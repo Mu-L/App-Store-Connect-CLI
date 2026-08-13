@@ -62,6 +62,18 @@ func TestMakeBuildAllUsesStrippedTrimmedReleaseFlags(t *testing.T) {
 	}
 }
 
+func TestMakeBuildAllSetsCGOPerTarget(t *testing.T) {
+	output := makeDryRun(t, "build-all")
+	for _, want := range []string{
+		`if [ "$os" = "darwin" ]; then cgo="1"; else cgo="0"; fi`,
+		`CGO_ENABLED="$cgo" GOOS="$os" GOARCH="$arch"`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected build-all recipe to contain %q, got:\n%s", want, output)
+		}
+	}
+}
+
 func TestMakeBuildAllQuotesCustomReleaseDirectory(t *testing.T) {
 	repoRoot, err := os.Getwd()
 	if err != nil {
