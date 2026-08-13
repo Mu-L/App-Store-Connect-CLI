@@ -18,20 +18,23 @@ The standalone command is:
 ```text
 asc xcode export-options generate \
   --archive-path .asc/artifacts/App.xcarchive \
-  [--output-path .asc/export-options-app-store.plist] \
+  [--method app-store-connect|release-testing] \
+  [--output-path ExportOptions.plist] \
   [--destination export|upload] \
   [--signing-style automatic|manual] \
   [--team-id TEAM_ID] [--overwrite] \
   [--output json|table|markdown] [--pretty]
 ```
 
-Defaults are `app-store-connect`, `destination=export`,
+Defaults are `method=app-store-connect`, `destination=export`,
 `signingStyle=automatic`, and the deterministic
-`.asc/export-options-app-store.plist` output path. The command never silently
+`.asc/export-options-app-store.plist` output path. `release-testing` uses
+`.asc/export-options-release-testing.plist` and requires `destination=export`.
+The command never silently
 replaces that file: a repeat write requires explicit `--overwrite` consent. The first
-release intentionally fixes the method to App Store Connect because this is the
-shared contract used by `asc xcode export` and both local-build publish flows.
-Other Xcode export methods can be added without changing this contract.
+release supported only App Store Connect; this extension adds Xcode's current
+name for registered-device distribution. Xcode's deprecated `ad-hoc` spelling
+is rejected with guidance to use `release-testing`.
 
 The archive is required so ASC can validate that the artifact is an Xcode
 archive and infer its team and bundle metadata. `--team-id` overrides archive
@@ -42,7 +45,8 @@ export-options generator for its supported iOS/tvOS archive shapes and fails
 clearly for unsupported or ambiguous archives; users can always retain an
 explicit custom plist.
 
-Existing invocations remain valid. `asc xcode export` makes
+Existing invocations remain valid. `asc xcode export` accepts the same
+`--method` value for implicit generation and makes
 `--export-options` optional. When omitted it generates a uniquely named,
 archive-adjacent plist for the current run; `--wait` selects
 `destination=upload`, otherwise `destination=export`. The implicit path is
@@ -67,7 +71,7 @@ The generator result contains:
 - `method`, `destination`, and `signing_style`;
 - inferred or explicit `team_id` when available;
 - `signing_certificate` and a stable bundle-ID-to-profile map for manual
-  signing;
+  signing and both supported methods;
 - `overwritten`.
 
 JSON uses those field names. Table and Markdown render the same values with one

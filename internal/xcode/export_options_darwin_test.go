@@ -11,8 +11,29 @@ import (
 	"testing"
 
 	"github.com/bitrise-io/go-utils/v2/log"
+	legacyexportoptions "github.com/bitrise-io/go-xcode/exportoptions"
 	"howett.net/plist"
 )
+
+func TestManualExportOptionsResolverMethodUsesLegacyAdHocProfileClassification(t *testing.T) {
+	if got := manualExportOptionsResolverMethod(exportOptionsMethodReleaseTesting); got != legacyexportoptions.MethodAdHoc {
+		t.Fatalf("release-testing resolver method = %q, want %q", got, legacyexportoptions.MethodAdHoc)
+	}
+	if got := manualExportOptionsResolverMethod(exportOptionsMethodAppStoreConnect); got != legacyexportoptions.MethodAppStoreConnect {
+		t.Fatalf("app-store-connect resolver method = %q, want %q", got, legacyexportoptions.MethodAppStoreConnect)
+	}
+}
+
+func TestManualExportOptionsResolverOptionsUseProductionCloudKitForReleaseTesting(t *testing.T) {
+	releaseTesting := manualExportOptionsResolverOptions("TEAM123", exportOptionsMethodReleaseTesting)
+	if releaseTesting.TeamID != "TEAM123" || releaseTesting.ContainerEnvironment != "Production" {
+		t.Fatalf("release-testing resolver options = %#v, want team and Production CloudKit", releaseTesting)
+	}
+	appStore := manualExportOptionsResolverOptions("TEAM123", exportOptionsMethodAppStoreConnect)
+	if appStore.TeamID != "TEAM123" || appStore.ContainerEnvironment != "" {
+		t.Fatalf("app-store-connect resolver options = %#v, want team and implied CloudKit environment", appStore)
+	}
+}
 
 func TestCaptureBitriseStdout(t *testing.T) {
 	wantErr := errors.New("generator sentinel")
@@ -43,7 +64,7 @@ func TestGenerateManualExportOptionsRejectsMacOSArchiveClearly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = generateManualExportOptions(t.Context(), archivePath, "TEAM123")
+	_, err = generateManualExportOptions(t.Context(), archivePath, "TEAM123", exportOptionsMethodAppStoreConnect)
 	if err == nil || !strings.Contains(err.Error(), "only supports iOS and tvOS archives") || !strings.Contains(err.Error(), "MAC_OS") {
 		t.Fatalf("expected clear macOS archive rejection, got %v", err)
 	}
