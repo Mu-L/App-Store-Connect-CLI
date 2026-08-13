@@ -4,7 +4,8 @@
 
 ASC should turn a local Xcode archive into a verifiable install result that an
 agent can hand to a person or another system. The public contract is based on
-the outcome, not on Fastlane lanes or AWS-specific vocabulary. Each stage emits
+the outcome, not on a particular automation framework or storage-provider
+vocabulary. Each stage emits
 structured output, writes deterministic artifacts under an operator-selected
 root, and can be retried without repeating completed account mutations.
 
