@@ -1297,6 +1297,397 @@ func TestRun_UnknownFlagReturnsConciseRecovery(t *testing.T) {
 	}
 }
 
+func TestRun_CommonWrongCommandPathsRecoverInOneStep(t *testing.T) {
+	resetReportFlags(t)
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+	t.Setenv("ASC_APP_ID", "")
+	t.Setenv("ASC_PROFILE", "")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	t.Setenv("ASC_KEY_ID", "")
+	t.Setenv("ASC_ISSUER_ID", "")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+	t.Setenv("ASC_PRIVATE_KEY", "")
+	t.Setenv("ASC_PRIVATE_KEY_B64", "")
+	t.Setenv("ASC_STRICT_AUTH", "")
+
+	tests := []struct {
+		name        string
+		args        []string
+		wantStderr  string
+		wantCommand string
+	}{
+		{
+			name:        "version info",
+			args:        []string{"--profile", "Team Profile", "versions", "info", "--version-id", "VERSION_ID", "--include-build"},
+			wantStderr:  "Error: unknown command `asc versions info`\nTry:\n  asc --profile 'Team Profile' versions view --version-id VERSION_ID --include-build\nFor help:\n  asc versions --help\n",
+			wantCommand: "asc versions",
+		},
+		{
+			name:        "version info with spaced false boolean",
+			args:        []string{"versions", "info", "--version-id", "VERSION_ID", "--include-build", "false"},
+			wantStderr:  "Error: unknown command `asc versions info`\nTry:\n  asc versions view --version-id VERSION_ID --include-build false\nFor help:\n  asc versions --help\n",
+			wantCommand: "asc versions",
+		},
+		{
+			name:        "joined review submissions",
+			args:        []string{"reviewsubmissions", "list", "--app", "APP_ID"},
+			wantStderr:  "Error: unknown command `asc reviewsubmissions list`\nTry:\n  asc review submissions list --app APP_ID\nFor help:\n  asc --help\n",
+			wantCommand: "asc",
+		},
+		{
+			name:        "joined review submissions with inline int",
+			args:        []string{"reviewsubmissions", "list", "--app", "APP_ID", "--limit=10"},
+			wantStderr:  "Error: unknown command `asc reviewsubmissions list`\nTry:\n  asc review submissions list --app APP_ID --limit=10\nFor help:\n  asc --help\n",
+			wantCommand: "asc",
+		},
+		{
+			name:        "joined review submissions with spaced int",
+			args:        []string{"reviewsubmissions", "list", "--app", "APP_ID", "--limit", "10"},
+			wantStderr:  "Error: unknown command `asc reviewsubmissions list`\nTry:\n  asc review submissions list --app APP_ID --limit 10\nFor help:\n  asc --help\n",
+			wantCommand: "asc",
+		},
+		{
+			name:        "groups builds list",
+			args:        []string{"testflight", "groups", "builds", "list", "--build-id", "BUILD_ID"},
+			wantStderr:  "Error: unknown command `asc testflight groups builds list`\nTry:\n  asc testflight groups list --build-id BUILD_ID\nFor help:\n  asc testflight groups --help\n",
+			wantCommand: "asc testflight groups",
+		},
+		{
+			name:        "version info help",
+			args:        []string{"versions", "info", "--help"},
+			wantStderr:  "Error: unknown command `asc versions info`\nTry:\n  asc versions view --help\nFor help:\n  asc versions --help\n",
+			wantCommand: "asc versions",
+		},
+		{
+			name:        "joined review submissions short help",
+			args:        []string{"reviewsubmissions", "list", "-h"},
+			wantStderr:  "Error: unknown command `asc reviewsubmissions list`\nTry:\n  asc review submissions list -h\nFor help:\n  asc --help\n",
+			wantCommand: "asc",
+		},
+		{
+			name:        "groups builds list help",
+			args:        []string{"testflight", "groups", "builds", "list", "--help"},
+			wantStderr:  "Error: unknown command `asc testflight groups builds list`\nTry:\n  asc testflight groups list --help\nFor help:\n  asc testflight groups --help\n",
+			wantCommand: "asc testflight groups",
+		},
+		{
+			name:        "version info with empty optional include",
+			args:        []string{"versions", "info", "--version-id", "VERSION_ID", "--include="},
+			wantStderr:  "Error: unknown command `asc versions info`\nTry:\n  asc versions view --version-id VERSION_ID --include=\nFor help:\n  asc versions --help\n",
+			wantCommand: "asc versions",
+		},
+		{
+			name:        "joined review submissions with empty optional platform",
+			args:        []string{"reviewsubmissions", "list", "--app", "APP_ID", "--platform="},
+			wantStderr:  "Error: unknown command `asc reviewsubmissions list`\nTry:\n  asc review submissions list --app APP_ID --platform=\nFor help:\n  asc --help\n",
+			wantCommand: "asc",
+		},
+		{
+			name:        "groups builds list with empty optional next",
+			args:        []string{"testflight", "groups", "builds", "list", "--app", "APP_ID", "--next="},
+			wantStderr:  "Error: unknown command `asc testflight groups builds list`\nTry:\n  asc testflight groups list --app APP_ID --next=\nFor help:\n  asc testflight groups --help\n",
+			wantCommand: "asc testflight groups",
+		},
+		{
+			name:        "version info with spaced empty optional include",
+			args:        []string{"versions", "info", "--version-id", "VERSION_ID", "--include", ""},
+			wantStderr:  "Error: unknown command `asc versions info`\nTry:\n  asc versions view --version-id VERSION_ID --include ''\nFor help:\n  asc versions --help\n",
+			wantCommand: "asc versions",
+		},
+		{
+			name:        "joined review submissions with spaced empty optional platform",
+			args:        []string{"reviewsubmissions", "list", "--app", "APP_ID", "--platform", ""},
+			wantStderr:  "Error: unknown command `asc reviewsubmissions list`\nTry:\n  asc review submissions list --app APP_ID --platform ''\nFor help:\n  asc --help\n",
+			wantCommand: "asc",
+		},
+		{
+			name:        "groups builds list with spaced empty optional next",
+			args:        []string{"testflight", "groups", "builds", "list", "--app", "APP_ID", "--next", ""},
+			wantStderr:  "Error: unknown command `asc testflight groups builds list`\nTry:\n  asc testflight groups list --app APP_ID --next ''\nFor help:\n  asc testflight groups --help\n",
+			wantCommand: "asc testflight groups",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			originalEmitTelemetry := emitTelemetry
+			t.Cleanup(func() { emitTelemetry = originalEmitTelemetry })
+
+			var telemetryCalls int
+			var gotCommand string
+			var gotExitCode int
+			var gotContext telemetry.EventContext
+			emitTelemetry = func(command, _ string, _ time.Duration, exitCode int, eventContext telemetry.EventContext) {
+				telemetryCalls++
+				gotCommand = command
+				gotExitCode = exitCode
+				gotContext = eventContext
+			}
+
+			stdout, stderr := captureCommandOutput(t, func() {
+				if code := Run(test.args, "1.0.0"); code != ExitUsage {
+					t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+				}
+			})
+
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if stderr != test.wantStderr {
+				t.Fatalf("stderr = %q, want %q", stderr, test.wantStderr)
+			}
+			if telemetryCalls != 1 || gotCommand != test.wantCommand || gotExitCode != ExitUsage {
+				t.Fatalf("unexpected telemetry call: calls=%d command=%q exit=%d", telemetryCalls, gotCommand, gotExitCode)
+			}
+			if gotContext.InvocationShape != telemetry.InvocationShapeUnknownChild ||
+				gotContext.ErrorKind != telemetry.ErrorKindOther ||
+				gotContext.FailureStage != telemetry.FailureStageValidation ||
+				gotContext.OutcomeKind != telemetry.OutcomeUsageError ||
+				gotContext.FailureParameter != "" {
+				t.Fatalf("unexpected telemetry context: %+v", gotContext)
+			}
+		})
+	}
+}
+
+func TestRun_CommonWrongCommandPathUsesConfiguredAppID(t *testing.T) {
+	resetReportFlags(t)
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+	t.Setenv("ASC_APP_ID", "temporary")
+	if err := os.Unsetenv("ASC_APP_ID"); err != nil {
+		t.Fatalf("Unsetenv() error: %v", err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"app_id":"APP_FROM_CONFIG"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{"reviewsubmissions", "list"}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	want := "Error: unknown command `asc reviewsubmissions list`\n" +
+		"Try:\n" +
+		"  asc review submissions list\n" +
+		"For help:\n" +
+		"  asc --help\n"
+	if stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
+	}
+}
+
+func TestRun_CommonWrongCommandPathDoesNotCopyInvalidTypedValues(t *testing.T) {
+	tests := [][]string{
+		{"reviewsubmissions", "list", "--limit=abc"},
+		{"reviewsubmissions", "list", "--limit", "abc"},
+	}
+	want := "Error: unknown command `asc reviewsubmissions`\n" +
+		"Try:\n" +
+		"  asc reviews\n" +
+		"  asc review\n" +
+		"For help:\n" +
+		"  asc --help\n"
+
+	for _, args := range tests {
+		resetReportFlags(t)
+		stdout, stderr := captureCommandOutput(t, func() {
+			if code := Run(args, "1.0.0"); code != ExitUsage {
+				t.Fatalf("Run(%q) exit code = %d, want %d", args, code, ExitUsage)
+			}
+		})
+
+		if stdout != "" {
+			t.Fatalf("Run(%q) stdout = %q, want empty", args, stdout)
+		}
+		if stderr != want {
+			t.Fatalf("Run(%q) stderr = %q, want %q", args, stderr, want)
+		}
+	}
+}
+
+func TestRun_CommonWrongCommandPathDoesNotCopyUnsupportedSuffix(t *testing.T) {
+	tests := [][]string{
+		{"versions", "info", "--version-id", "VERSION_ID", "localizations"},
+		{"versions", "info", "--version-id", "--include-build"},
+		{"versions", "info", "--version-id="},
+		{"versions", "info", "---version-id", "VERSION_ID"},
+		{"versions", "info", "--version-id", "VERSION_ID", "--include-build=maybe"},
+	}
+	want := "Error: unknown command `asc versions info`\n" +
+		"For help:\n" +
+		"  asc versions --help\n"
+
+	for _, args := range tests {
+		resetReportFlags(t)
+		stdout, stderr := captureCommandOutput(t, func() {
+			if code := Run(args, "1.0.0"); code != ExitUsage {
+				t.Fatalf("Run(%q) exit code = %d, want %d", args, code, ExitUsage)
+			}
+		})
+
+		if stdout != "" {
+			t.Fatalf("Run(%q) stdout = %q, want empty", args, stdout)
+		}
+		if stderr != want {
+			t.Fatalf("Run(%q) stderr = %q, want %q", args, stderr, want)
+		}
+	}
+}
+
+func TestRun_CommonWrongCommandPathRecoveryDoesNotInterceptCanonicalHelp(t *testing.T) {
+	resetReportFlags(t)
+
+	tests := [][]string{
+		{"versions", "view", "--help"},
+		{"review", "submissions", "list", "--help"},
+		{"review", "submissions-list", "--help"},
+		{"testflight", "groups", "list", "--help"},
+	}
+	for _, args := range tests {
+		stdout, stderr := captureCommandOutput(t, func() {
+			if code := Run(args, "1.0.0"); code != ExitSuccess {
+				t.Fatalf("Run(%q) exit code = %d, want %d", args, code, ExitSuccess)
+			}
+		})
+		if stdout != "" {
+			t.Fatalf("Run(%q) stdout = %q, want empty", args, stdout)
+		}
+		if strings.Contains(stderr, "Try:") {
+			t.Fatalf("Run(%q) was intercepted by recovery: %q", args, stderr)
+		}
+		if !strings.Contains(stderr, "USAGE") {
+			t.Fatalf("Run(%q) stderr = %q, want command help", args, stderr)
+		}
+	}
+}
+
+func TestRun_CommonWrongCommandPathWritesJUnitReport(t *testing.T) {
+	resetReportFlags(t)
+	reportPath := filepath.Join(t.TempDir(), "junit.xml")
+
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{
+			"--report", "junit",
+			"--report-file", reportPath,
+			"versions", "info", "--version-id", "VERSION_ID",
+		}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	wantStderr := "Error: unknown command `asc versions info`\n" +
+		"Try:\n" +
+		"  asc versions view --version-id VERSION_ID\n" +
+		"For help:\n" +
+		"  asc versions --help\n"
+	if stderr != wantStderr || strings.Contains(stderr, reportPath) {
+		t.Fatalf("stderr = %q, want %q without report path", stderr, wantStderr)
+	}
+
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+	var suite struct {
+		Failures  int `xml:"failures,attr"`
+		TestCases []struct {
+			Name    string `xml:"name,attr"`
+			Failure struct {
+				Message string `xml:"message,attr"`
+			} `xml:"failure"`
+		} `xml:"testcase"`
+	}
+	if err := xml.Unmarshal(data, &suite); err != nil {
+		t.Fatalf("xml.Unmarshal() error: %v", err)
+	}
+	if suite.Failures != 1 || len(suite.TestCases) != 1 || suite.TestCases[0].Name != "asc versions" {
+		t.Fatalf("unexpected JUnit payload: %+v", suite)
+	}
+	if got, want := suite.TestCases[0].Failure.Message, "unknown command `asc versions info`"; got != want {
+		t.Fatalf("failure message = %q, want %q", got, want)
+	}
+}
+
+func TestRun_CommonWrongCommandPathPreservesRootFlagValueNamedReport(t *testing.T) {
+	resetReportFlags(t)
+	resetSelectedProfile(t)
+
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{
+			"--profile", "--report", "versions", "info", "--version-id", "VERSION_ID",
+		}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	want := "Error: unknown command `asc versions info`\n" +
+		"Try:\n" +
+		"  asc --profile --report versions view --version-id VERSION_ID\n" +
+		"For help:\n" +
+		"  asc versions --help\n"
+	if stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
+	}
+}
+
+func TestRun_CommonWrongCommandPathReportWriteFailureReturnsExitError(t *testing.T) {
+	resetReportFlags(t)
+	reportPath := filepath.Join(t.TempDir(), "junit.xml")
+	if err := os.WriteFile(reportPath, []byte("existing"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	originalEmitTelemetry := emitTelemetry
+	t.Cleanup(func() { emitTelemetry = originalEmitTelemetry })
+	var calls int
+	var gotCommand string
+	var gotExit int
+	var gotContext telemetry.EventContext
+	emitTelemetry = func(command, _ string, _ time.Duration, exitCode int, eventContext telemetry.EventContext) {
+		calls++
+		gotCommand = command
+		gotExit = exitCode
+		gotContext = eventContext
+	}
+
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{
+			"--report", "junit",
+			"--report-file", reportPath,
+			"reviewsubmissions", "list", "--app", "APP_ID",
+		}, "1.0.0"); code != ExitError {
+			t.Fatalf("Run() exit code = %d, want %d", code, ExitError)
+		}
+	})
+
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.HasPrefix(stderr, "Error: unknown command `asc reviewsubmissions list`\nTry:\n") ||
+		!strings.Contains(stderr, "For help:\n  asc --help\n") ||
+		!strings.Contains(stderr, "Error: failed to write JUnit report:") {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+	if calls != 1 || gotCommand != "asc" || gotExit != ExitError ||
+		gotContext.FailureStage != telemetry.FailureStageExecution ||
+		gotContext.ErrorKind != telemetry.ErrorKindOther ||
+		gotContext.OutcomeKind != telemetry.OutcomeInternalError {
+		t.Fatalf("unexpected telemetry: calls=%d command=%q exit=%d context=%+v", calls, gotCommand, gotExit, gotContext)
+	}
+}
+
 func TestRun_UnknownHybridSubcommandReturnsUsageBeforeAuth(t *testing.T) {
 	resetReportFlags(t)
 

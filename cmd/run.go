@@ -108,6 +108,15 @@ func Run(args []string, versionInfo string) int {
 	}
 
 	commandName := getCommandName(root, args)
+	if invalid, suggested, ok := commonCommandPathRecovery(root, analysis, args); ok {
+		fmt.Fprintf(os.Stderr, "Error: unknown command `%s`\nTry:\n  %s\nFor help:\n  %s --help\n", invalid, suggested, commandName)
+		if err := writeUsageJUnitReport(commandName, commonCommandPathRecoveryError(invalid)); err != nil {
+			printUsageJUnitReportFailure(commandName, versionInfo, analysis, err)
+			return ExitError
+		}
+		emitImmediateTelemetry(args, root, versionInfo, validationFailureContext(analysis, flag.ErrHelp))
+		return ExitUsage
+	}
 	if shouldRenderConciseUnknownChild(root, analysis, commandName) {
 		printConciseUnknownCommand(analysis, commandName)
 		if err := writeUsageJUnitReport(commandName, unknownCommandError(analysis, commandName)); err != nil {
