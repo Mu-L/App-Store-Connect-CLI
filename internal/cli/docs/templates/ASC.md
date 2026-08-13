@@ -165,6 +165,7 @@ Use `asc <command> --help` for subcommands and flags.
 - `release` - Run high-level App Store release workflows.
 - `workflow` - Run multi-step automation workflows.
 - `xcode` - Produce deterministic `.xcarchive` and `.ipa` artifacts with local Xcode build/export helpers (macOS only).
+- `distribute` - Inspect and prepare provider-neutral iOS release-testing bundles (experimental).
 - `versions` - Manage App Store versions.
 - `product-pages` - Manage custom product pages and product page experiments.
 - `routing-coverage` - Manage routing app coverage files.
