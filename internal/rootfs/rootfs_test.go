@@ -533,6 +533,37 @@ func TestCreateNewFileRefusesExistingFile(t *testing.T) {
 	}
 }
 
+func TestCreateNewFileAtomicRefusesRacingDestination(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	root.afterValidationForTest = func() {
+		mustWrite(t, filepath.Join(dir, "plan.json"), "racing")
+	}
+
+	err := root.CreateNewFileAtomic("plan.json", []byte("planned"), 0o600)
+	if err == nil {
+		t.Fatal("CreateNewFileAtomic() replaced a racing destination")
+	}
+	if got := mustRead(t, filepath.Join(dir, "plan.json")); got != "racing" {
+		t.Fatalf("content = %q, want racing destination preserved", got)
+	}
+}
+
+func TestCreateNewFileAtomicWritesExactMode(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	if err := root.CreateNewFileAtomic("plan.json", []byte("planned"), 0o600); err != nil {
+		t.Fatalf("CreateNewFileAtomic() error = %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "plan.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %o, want 600", got)
+	}
+}
+
 func TestCreateNewFileDoesNotEscapeWhenParentIsSwappedAfterValidation(t *testing.T) {
 	requireSymlinks(t)
 

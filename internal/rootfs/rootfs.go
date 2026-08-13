@@ -286,6 +286,47 @@ func (r Root) OpenFile(name string) (*os.File, error) {
 	return file, nil
 }
 
+// OpenDir opens an existing directory beneath the root without following
+// symlinks in the final component or in any component below the root.
+func (r Root) OpenDir(name string) (*os.File, error) {
+	resolved, err := r.Resolve(name)
+	if err != nil {
+		return nil, err
+	}
+	parent, base, err := r.openParentRooted(resolved)
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	if err := r.checkParentComponents(resolved); err != nil {
+		return nil, err
+	}
+	info, err := parent.Lstat(base)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, symlinkError(resolved)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%q is not a directory", resolved)
+	}
+	file, err := secureopen.OpenExistingNoFollowInRoot(parent, base)
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !openedInfo.IsDir() {
+		_ = file.Close()
+		return nil, fmt.Errorf("%q is not a directory", resolved)
+	}
+	return file, nil
+}
+
 // ReadFile reads a regular file beneath the root without following symlinks.
 func (r Root) ReadFile(name string) ([]byte, error) {
 	file, err := r.OpenFile(name)
@@ -550,6 +591,86 @@ func (r Root) CreateNewFile(name string, data []byte, perm os.FileMode) error {
 		return writeErr
 	}
 	return file.Close()
+}
+
+// CreateNewFileAtomic atomically writes data to a new file beneath the root
+// and fails when the destination already exists. The temporary file and final
+// rename remain anchored to the already-open parent directory.
+func (r Root) CreateNewFileAtomic(name string, data []byte, perm os.FileMode) error {
+	resolved, err := r.prepareWrite(name)
+	if err != nil {
+		return err
+	}
+	parent, base, err := r.openParentRooted(resolved)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+
+	info, err := parent.Lstat(base)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSymlink != 0 {
+			return symlinkError(resolved)
+		}
+		return fmt.Errorf("%q already exists: %w", resolved, os.ErrExist)
+	case !errors.Is(err, os.ErrNotExist):
+		return err
+	}
+	if r.afterValidationForTest != nil {
+		r.afterValidationForTest()
+	}
+
+	temporary, temporaryName, err := secureopen.CreateTempNoFollowInRoot(parent, ".", temporaryFilePattern, perm)
+	if err != nil {
+		return err
+	}
+	success := false
+	defer func() {
+		_ = temporary.Close()
+		if !success {
+			_ = parent.Remove(temporaryName)
+		}
+	}()
+	if err := temporary.Chmod(perm); err != nil {
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := secureopen.RenameNoReplaceInRoot(parent, temporaryName, base); err != nil {
+		if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
+			return err
+		}
+		// A hard link is an atomic no-replace publish on filesystems without a
+		// native no-replace rename. It either exposes the complete staged inode
+		// or leaves an existing destination untouched.
+		if linkErr := parent.Link(temporaryName, base); linkErr != nil {
+			return linkErr
+		}
+		if removeErr := parent.Remove(temporaryName); removeErr != nil {
+			return fmt.Errorf("publish succeeded but remove staged file: %w", removeErr)
+		}
+	}
+	directory, err := parent.Open(".")
+	if err != nil {
+		return fmt.Errorf("open parent directory for durability sync: %w", err)
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		return fmt.Errorf("sync parent directory after publish: %w", err)
+	}
+	if err := directory.Close(); err != nil {
+		return fmt.Errorf("close parent directory after durability sync: %w", err)
+	}
+	success = true
+	return nil
 }
 
 // AppendFile appends data to a file beneath the root, creating it when missing,
