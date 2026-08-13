@@ -220,6 +220,20 @@ func TestReleaseWorkflowBuildsStrippedTrimmedBinaries(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowEnablesCGOForEveryMacOSArchitecture(t *testing.T) {
+	data, err := readReleaseWorkflow()
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	workflow := string(data)
+	for _, arch := range []string{"amd64", "arm64"} {
+		want := "CGO_ENABLED=1 GOOS=darwin GOARCH=" + arch + " go build"
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("release workflow missing cgo-enabled macOS %s build: %q", arch, want)
+		}
+	}
+}
+
 func TestReleaseWorkflowDoesNotInterpolateDispatchInputIntoShell(t *testing.T) {
 	data, err := readReleaseWorkflow()
 	if err != nil {

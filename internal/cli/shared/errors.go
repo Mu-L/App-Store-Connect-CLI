@@ -23,6 +23,15 @@ type ValidationFailure interface {
 	ValidationFailure() bool
 }
 
+// processExitCoder is deliberately private so ordinary errors with an
+// ExitCode method, including os/exec.ExitError, cannot opt into raw root-process
+// exit propagation by structural accident.
+type processExitCoder interface {
+	error
+	ascProcessExitCode() int
+	isASCProcessExit()
+}
+
 type reportedError struct {
 	err error
 }
@@ -47,6 +56,37 @@ const (
 type classifiedUsageError struct {
 	kind    UsageErrorKind
 	message string
+}
+
+type processExitError struct {
+	code int
+}
+
+func (e processExitError) Error() string {
+	return fmt.Sprintf("child command exited with status %d", e.code)
+}
+func (e processExitError) Reported() bool          { return true }
+func (e processExitError) ascProcessExitCode() int { return e.code }
+func (e processExitError) isASCProcessExit()       {}
+
+// NewProcessExitError preserves a child process exit code without duplicating
+// the child's stderr through the root error renderer.
+func NewProcessExitError(code int) error {
+	if code <= 0 || code > 255 {
+		code = 1
+	}
+	return processExitError{code: code}
+}
+
+// ProcessExitCode reports an exact child-process exit code only for errors
+// created by NewProcessExitError. The private marker prevents collisions with
+// ordinary command execution errors elsewhere in asc.
+func ProcessExitCode(err error) (int, bool) {
+	var exitErr processExitCoder
+	if !errors.As(err, &exitErr) {
+		return 0, false
+	}
+	return exitErr.ascProcessExitCode(), true
 }
 
 func (e classifiedUsageError) Error() string {

@@ -84,6 +84,34 @@ func TestExitCodeFromError(t *testing.T) {
 			err:      errors.New("something went wrong"),
 			expected: ExitError,
 		},
+		{
+			name:     "child exit code is preserved",
+			err:      shared.NewProcessExitError(42),
+			expected: 42,
+		},
+		{
+			name:     "wrapped child signal exit code is preserved",
+			err:      fmt.Errorf("cleanup failed: %w", shared.NewProcessExitError(143)),
+			expected: 143,
+		},
+		{
+			name:     "ordinary exec exit error remains generic",
+			err:      ordinaryExecExitError(t, 128),
+			expected: ExitError,
+		},
+		{
+			name:     "ordinary setup and cleanup failures remain generic",
+			err:      errors.Join(errors.New("setup failed"), errors.New("cleanup failed")),
+			expected: ExitError,
+		},
+		{
+			name: "child exit remains exact with a rendered companion",
+			err: errors.Join(
+				shared.NewProcessExitError(42),
+				shared.NewReportedError(errors.New("cleanup failed")),
+			),
+			expected: 42,
+		},
 	}
 
 	for _, tt := range tests {
@@ -94,6 +122,33 @@ func TestExitCodeFromError(t *testing.T) {
 			}
 		})
 	}
+}
+
+func ordinaryExecExitError(t *testing.T, code int) error {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestExitCodeHelperProcess$")
+	cmd.Env = append(os.Environ(), "ASC_EXIT_CODE_HELPER="+strconv.Itoa(code))
+	err := cmd.Run()
+	if err == nil {
+		t.Fatalf("helper unexpectedly exited successfully")
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("helper error = %T, want *exec.ExitError", err)
+	}
+	return err
+}
+
+func TestExitCodeHelperProcess(t *testing.T) {
+	value := os.Getenv("ASC_EXIT_CODE_HELPER")
+	if value == "" {
+		return
+	}
+	code, err := strconv.Atoi(value)
+	if err != nil {
+		os.Exit(125)
+	}
+	os.Exit(code)
 }
 
 func TestExitCodeFromError_Conflict(t *testing.T) {

@@ -38,6 +38,9 @@ func ExitCodeFromError(err error) int {
 	if err == nil {
 		return ExitSuccess
 	}
+	if code, ok := shared.ProcessExitCode(err); ok {
+		return code
+	}
 
 	// Usage errors
 	if errors.Is(err, flag.ErrHelp) {
