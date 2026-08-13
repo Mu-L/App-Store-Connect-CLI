@@ -23,19 +23,22 @@ func DistributeCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "distribute",
 		ShortUsage: "asc distribute <subcommand> [flags]",
-		ShortHelp:  "Inspect and prepare local iOS distribution artifacts. [experimental]",
-		LongHelp: `Inspect and prepare provider-neutral iOS release-testing artifacts.
+		ShortHelp:  "Inspect, prepare, and publish iOS distribution artifacts. [experimental]",
+		LongHelp: `Inspect, prepare, and publish provider-neutral iOS release-testing artifacts.
 
-This experimental command family performs local, deterministic work only. It
-does not access App Store Connect, a keychain, a storage provider, or a network.
+Inspect and prepare perform local, deterministic work without App Store Connect,
+a keychain, a storage provider, or a network. Publish is an explicit networked
+step to a caller-owned S3-compatible endpoint.
 
 Examples:
   asc distribute inspect --ipa "./App.ipa" --output json
-  asc distribute prepare --ipa "./App.ipa" --channel "pull-request-42"`,
+  asc distribute prepare --ipa "./App.ipa" --channel "pull-request-42"
+  asc distribute publish --help`,
 		FlagSet: fs,
 		Subcommands: []*ffcli.Command{
 			inspectCommand(),
 			prepareCommand(),
+			PublishCommand(),
 		},
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec:      func(context.Context, []string) error { return flag.ErrHelp },
