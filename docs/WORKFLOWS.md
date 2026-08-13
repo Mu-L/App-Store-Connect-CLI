@@ -110,7 +110,8 @@ asc publish testflight \
 ```
 
 An explicit `--export-options` plist cannot be combined with `--method`,
-`--signing-style`, or `--team-id`; the plist remains authoritative when supplied.
+`--signing-style`, or `--team-id`. When supplied without those flags, the
+plist is authoritative.
 
 Create `.asc/deployment.json`:
 
