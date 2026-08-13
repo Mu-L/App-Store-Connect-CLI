@@ -4,7 +4,8 @@
 
 ASC should turn a local Xcode archive into a verifiable install result that an
 agent can hand to a person or another system. The public contract is based on
-the outcome, not on Fastlane lanes or AWS-specific vocabulary. Each stage emits
+the outcome, not on a particular automation framework or storage-provider
+vocabulary. Each stage emits
 structured output, writes deterministic artifacts under an operator-selected
 root, and can be retried without repeating completed account mutations.
 
@@ -701,14 +702,15 @@ the smaller of this value and the plan's configured `verifyTimeout`.
 
 ### Why this is agent-native
 
-Fastlane lanes are useful imperative Ruby automation, but their task-oriented
-vocabulary, process-global environment, mutable keychain conventions, and
-human log stream are not the contract ASC wants agents to reason over. ASC
-instead exposes an immutable effect plan, exact hash authorization, closed
+Imperative task runners commonly expose task-oriented vocabulary,
+process-global environment, mutable keychain conventions, and a human log
+stream. Those are not the contract ASC wants agents to reason over. ASC instead
+exposes an immutable effect plan, exact hash authorization, closed
 schemas and enums, durable evidence per stage, parseable recovery state, and
 truthful verification scope. An agent can decide what will change,
 request authorization for those exact effects, recover after a crash, and
-prove what remains available without interpreting a lane or scraping logs.
+prove what remains available without interpreting opaque steps or scraping
+logs.
 
 The existing generic `asc workflow` runner is also the wrong security boundary
 for this default. It executes caller-authored shell commands, inherits broad
