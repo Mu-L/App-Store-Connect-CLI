@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,7 +28,6 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
-	xcodecore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/xcode"
 )
 
 const (
@@ -38,7 +38,8 @@ const (
 )
 
 var (
-	signingRunActiveXcodeMajorVersion     = xcodecore.ActiveXcodeMajorVersion
+	signingRunActiveXcodeMajorVersion     = activeSigningRunXcodeMajorVersion
+	signingRunCommandContext              = exec.CommandContext
 	signingRunProfileInstallDirFn         = signingRunProfileInstallDir
 	signingRunStateDirFn                  = signingRunStateDir
 	signingRunRecoveryRemoveSearchEntryFn = removeKeychainSearchEntry
@@ -64,7 +65,6 @@ func platformSigningRunDeps() signingRunDeps {
 		DeleteKeychain:            deleteSigningRunKeychain,
 		InstallProfile:            installSigningRunProfile,
 		RemoveProfile:             removeSigningRunProfile,
-		RunChild:                  runSigningRunChild,
 	}
 }
 
@@ -238,7 +238,7 @@ func recoverSigningRunJournal(ctx context.Context) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || int(stat.Uid) != os.Geteuid() || stat.Nlink != 1 || info.Mode().Perm() != 0o600 {
 		_ = file.Close()
-		return fmt.Errorf("invalid signing run recovery journal ownership or permissions")
+		return fmt.Errorf("%w: ownership or permissions", ErrEphemeralRecoveryJournalInvalid)
 	}
 	data, readErr := io.ReadAll(io.LimitReader(file, signingRunDiagnosticLimit+1))
 	closeErr := file.Close()
@@ -246,16 +246,22 @@ func recoverSigningRunJournal(ctx context.Context) error {
 		return errors.Join(readErr, closeErr)
 	}
 	if len(data) > signingRunDiagnosticLimit {
-		return fmt.Errorf("signing run recovery journal exceeds the size limit")
+		return fmt.Errorf("%w: size limit exceeded", ErrEphemeralRecoveryJournalInvalid)
+	}
+	if err := rejectDuplicateSigningRunJSONKeys(data); err != nil {
+		return fmt.Errorf("%w: %w", ErrEphemeralRecoveryJournalInvalid, err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var journal signingRunJournal
 	if err := decoder.Decode(&journal); err != nil {
-		return fmt.Errorf("invalid signing run recovery journal: %w", err)
+		return fmt.Errorf("%w: %w", ErrEphemeralRecoveryJournalInvalid, err)
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return fmt.Errorf("%w: %w", ErrEphemeralRecoveryJournalInvalid, err)
 	}
 	if err := validateSigningRunJournal(journal); err != nil {
-		return fmt.Errorf("invalid signing run recovery journal: %w", err)
+		return fmt.Errorf("%w: %w", ErrEphemeralRecoveryJournalInvalid, err)
 	}
 	var recoveryErr error
 	if journal.ProfileCreated {
@@ -276,6 +282,59 @@ func recoverSigningRunJournal(ctx context.Context) error {
 		return err
 	}
 	return removeSigningRunJournal()
+}
+
+type signingRunJSONFrame struct {
+	object    bool
+	expectKey bool
+	keys      map[string]struct{}
+}
+
+func rejectDuplicateSigningRunJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var stack []signingRunJSONFrame
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch value := token.(type) {
+		case json.Delim:
+			switch value {
+			case '{':
+				stack = append(stack, signingRunJSONFrame{object: true, expectKey: true, keys: make(map[string]struct{})})
+			case '[':
+				stack = append(stack, signingRunJSONFrame{})
+			case '}', ']':
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+				markSigningRunJSONValueConsumed(stack)
+			}
+		case string:
+			if len(stack) > 0 && stack[len(stack)-1].object && stack[len(stack)-1].expectKey {
+				current := &stack[len(stack)-1]
+				if _, exists := current.keys[value]; exists {
+					return fmt.Errorf("duplicate JSON field %q", value)
+				}
+				current.keys[value] = struct{}{}
+				current.expectKey = false
+			} else {
+				markSigningRunJSONValueConsumed(stack)
+			}
+		default:
+			markSigningRunJSONValueConsumed(stack)
+		}
+	}
+}
+
+func markSigningRunJSONValueConsumed(stack []signingRunJSONFrame) {
+	if len(stack) > 0 && stack[len(stack)-1].object && !stack[len(stack)-1].expectKey {
+		stack[len(stack)-1].expectKey = true
+	}
 }
 
 func validateSigningRunJournal(journal signingRunJournal) error {
@@ -331,7 +390,7 @@ func validateSigningRunJournal(journal signingRunJournal) error {
 }
 
 func acquireSigningRunLock(ctx context.Context) (func() error, error) {
-	dir, err := signingRunStateDir()
+	dir, err := signingRunStateDirFn()
 	if err != nil {
 		return nil, err
 	}
@@ -692,6 +751,35 @@ func removeSigningRunStagedProfile(path string, device, inode uint64) error {
 	return rooted.Remove(filepath.Base(path))
 }
 
+var signingRunXcodeVersionPattern = regexp.MustCompile(`(?m)^Xcode[\t ]+([0-9]+)(?:[.][0-9]+)*(?:[\t ].*)?$`)
+
+func activeSigningRunXcodeMajorVersion(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	cmd := signingRunCommandContext(ctx, "xcodebuild", "-version")
+	cmd.Env = SanitizedChildEnvironment(os.Environ())
+	stdout := &limitedSigningBuffer{limit: signingRunDiagnosticLimit}
+	stderr := &limitedSigningBuffer{limit: signingRunDiagnosticLimit}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, ctxErr
+		}
+		return 0, utilityFailure("inspect active Xcode version", stderr.Bytes(), err)
+	}
+	match := signingRunXcodeVersionPattern.FindSubmatch(stdout.Bytes())
+	if len(match) != 2 {
+		return 0, fmt.Errorf("inspect active Xcode version: unexpected xcodebuild output")
+	}
+	major, err := strconv.Atoi(string(match[1]))
+	if err != nil || major < 1 {
+		return 0, fmt.Errorf("inspect active Xcode version: invalid major version")
+	}
+	return major, nil
+}
+
 func signingRunProfileInstallDir(ctx context.Context) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -812,6 +900,9 @@ func validateSigningRunInputPermissions(path string, info os.FileInfo, private b
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || int(stat.Uid) != os.Geteuid() {
 		return fmt.Errorf("%q must be owned by the current user", path)
+	}
+	if stat.Nlink != 1 {
+		return fmt.Errorf("%q must not have multiple hard links", path)
 	}
 	if private && info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("%q must not be accessible by group or other users", path)

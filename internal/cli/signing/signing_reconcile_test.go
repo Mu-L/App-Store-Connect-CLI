@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -231,7 +232,9 @@ func TestExecuteSigningReconcileApplyCreatesAndVerifiesWithoutPatchOrDelete(t *t
 	}
 	target := signingTarget{Kind: "application", RelativePath: "Products/Applications/App.app", BundleID: "com.example.app", Executable: "App", Entitlements: map[string]any{"com.apple.developer.team-identifier": "TEAM1"}}
 	originalArchiveReader := readSigningArchiveRequirements
-	readSigningArchiveRequirements = func(string) (signingArchiveRequirements, error) {
+	var inspectedArchives []string
+	readSigningArchiveRequirements = func(path string) (signingArchiveRequirements, error) {
+		inspectedArchives = append(inspectedArchives, path)
 		return signingArchiveRequirements{TeamID: "TEAM1", Targets: []signingTarget{target}}, nil
 	}
 	t.Cleanup(func() { readSigningArchiveRequirements = originalArchiveReader })
@@ -246,9 +249,10 @@ func TestExecuteSigningReconcileApplyCreatesAndVerifiesWithoutPatchOrDelete(t *t
 	plan := signingReconcilePlanArtifact{
 		SchemaVersion: signingReconcileSchemaV1, GeneratedAt: "2026-01-01T00:00:00Z", Command: "signing reconcile plan", Ready: true,
 		TeamID: "TEAM1", MinimumValidityDays: 7, MaxMutations: 32, MutationCount: 3,
-		Paths:       signingReconcilePaths{ArchivePath: "App.xcarchive", DevicesFile: devicesPath, StateDir: stateDir, PlanPath: filepath.Join(stateDir, "plan.json"), ReceiptPath: filepath.Join(stateDir, "receipt.json"), ProfilesDir: filepath.Join(stateDir, "profiles")},
-		Certificate: &signingCertificateRef{ID: "cert-1", CertificateType: "IOS_DISTRIBUTION", SerialNumber: "123", ExpirationDate: "2100-01-01T00:00:00Z", SHA256: certificateFingerprint, TeamID: "TEAM1"},
-		Targets:     []signingTarget{target}, Devices: []signingDesiredDevice{{Platform: "IOS", Fingerprint: devices.Devices[0].Fingerprint, NameSHA256: fingerprintReconcileName("Phone")}},
+		DeviceSetSHA256: digestSigningDeviceInputs(devices.Devices).SHA256,
+		Paths:           signingReconcilePaths{ArchivePath: "App.xcarchive", DevicesFile: devicesPath, StateDir: stateDir, PlanPath: filepath.Join(stateDir, "plan.json"), ReceiptPath: filepath.Join(stateDir, "receipt.json"), ProfilesDir: filepath.Join(stateDir, "profiles")},
+		Certificate:     &signingCertificateRef{ID: "cert-1", CertificateType: "IOS_DISTRIBUTION", SerialNumber: "123", ExpirationDate: "2100-01-01T00:00:00Z", SHA256: certificateFingerprint, TeamID: "TEAM1"},
+		Targets:         []signingTarget{target}, Devices: []signingDesiredDevice{{Platform: "IOS", Fingerprint: devices.Devices[0].Fingerprint, NameSHA256: fingerprintReconcileName("Phone")}},
 		Actions: []signingAction{
 			{ID: "device:" + devices.Devices[0].Fingerprint, Kind: actionRegisterDevice, DeviceFingerprint: devices.Devices[0].Fingerprint, Platform: "IOS"},
 			{ID: "bundle:com.example.app", Kind: actionCreateBundleID, BundleID: "com.example.app", Platform: "IOS"},
@@ -263,10 +267,13 @@ func TestExecuteSigningReconcileApplyCreatesAndVerifiesWithoutPatchOrDelete(t *t
 		t.Fatal(err)
 	}
 
-	deviceExists, bundleExists, profileExists := false, false, false
+	deviceExists, bundleExists, profileExists, profileDrift, providerUnavailable := false, false, false, false, false
 	var methods []string
 	client := newSigningFetchTestClient(t, func(request *http.Request) *http.Response {
 		methods = append(methods, request.Method+" "+request.URL.Path)
+		if providerUnavailable {
+			return signingFetchJSONResponse(http.StatusServiceUnavailable, `{"errors":[{"status":"503","code":"SERVICE_UNAVAILABLE","detail":"VERIFY-503-CANARY"}]}`)
+		}
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/certificates":
 			return signingFetchJSONResponse(http.StatusOK, fmt.Sprintf(`{"data":[{"type":"certificates","id":"cert-1","attributes":{"certificateType":"IOS_DISTRIBUTION","serialNumber":"123","activated":true,"expirationDate":"2100-01-01T00:00:00Z","certificateContent":%q}}]}`, certificateContent))
@@ -324,11 +331,16 @@ func TestExecuteSigningReconcileApplyCreatesAndVerifiesWithoutPatchOrDelete(t *t
 			profileExists = true
 			return signingFetchJSONResponse(http.StatusCreated, `{"data":{"type":"profiles","id":"profile-1","attributes":{"name":"ASC Ad Hoc com.example.app abc","profileType":"IOS_APP_ADHOC","profileState":"ACTIVE"}}}`)
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/profiles/profile-1":
+			if profileDrift {
+				return signingFetchJSONResponse(http.StatusOK, `{"data":{"type":"profiles","id":"profile-1","attributes":{"name":"ASC Ad Hoc com.example.app abc","profileType":"IOS_APP_ADHOC","profileState":"ACTIVE","uuid":"00000000-0000-0000-0000-0000000000AD","expirationDate":"2000-01-01T00:00:00Z","profileContent":"`+profileContent+`"}}}`)
+			}
 			return signingFetchJSONResponse(http.StatusOK, `{"data":{"type":"profiles","id":"profile-1","attributes":{"name":"ASC Ad Hoc com.example.app abc","profileType":"IOS_APP_ADHOC","profileState":"ACTIVE","uuid":"00000000-0000-0000-0000-0000000000AD","expirationDate":"2100-01-01T00:00:00Z","profileContent":"`+profileContent+`"}}}`)
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/profiles/profile-1/certificates":
 			return signingFetchJSONResponse(http.StatusOK, `{"data":[{"type":"certificates","id":"cert-1","attributes":{}}]}`)
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/profiles/profile-1/devices":
 			return signingFetchJSONResponse(http.StatusOK, `{"data":[{"type":"devices","id":"device-1","attributes":{"name":"Phone","udid":"SECRET-UDID","platform":"IOS","status":"ENABLED"}}]}`)
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/profiles/profile-1/bundleId":
+			return signingFetchJSONResponse(http.StatusOK, `{"data":{"type":"bundleIds","id":"bundle-1","attributes":{"name":"App","identifier":"com.example.app","platform":"IOS"}}}`)
 		default:
 			return signingFetchJSONResponse(http.StatusInternalServerError, `{}`)
 		}
@@ -355,9 +367,14 @@ func TestExecuteSigningReconcileApplyCreatesAndVerifiesWithoutPatchOrDelete(t *t
 			posts++
 		}
 	}
-	second, err := executeSigningReconcileApply(context.Background(), filepath.Join(stateDir, "plan.json"))
+	second, err := ExecuteReconcileApply(context.Background(), ReconcileApplyOptions{
+		PlanPath: filepath.Join(stateDir, "plan.json"), ExpectedPlanHash: plan.PlanHash, Confirm: true,
+	})
 	if err != nil || !second.Complete {
 		t.Fatalf("resume receipt=%#v error=%v", second, err)
+	}
+	if second.MainProfile == nil || second.MainProfile.ResourceID != "profile-1" || second.MainProfile.UUID != "00000000-0000-0000-0000-0000000000AD" || second.MainProfile.SHA256 == "" {
+		t.Fatalf("resume main profile=%#v", second.MainProfile)
 	}
 	postsAfterResume := 0
 	for _, method := range methods {
@@ -374,6 +391,175 @@ func TestExecuteSigningReconcileApplyCreatesAndVerifiesWithoutPatchOrDelete(t *t
 	}
 	if strings.Contains(string(receiptBytes), "SECRET-UDID") {
 		t.Fatalf("receipt leaked raw UDID: %s", receiptBytes)
+	}
+	receiptInfo, err := os.Stat(filepath.Join(stateDir, "receipt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verificationStart := len(methods)
+	verified, err := VerifyReconcileCompletion(context.Background(), ReconcileApplyOptions{
+		PlanPath: filepath.Join(stateDir, "plan.json"), ExpectedPlanHash: plan.PlanHash,
+	})
+	if err != nil || !verified.Complete || verified.MainProfile == nil || verified.MainProfile.ResourceID != "profile-1" {
+		t.Fatalf("verified receipt=%#v error=%v", verified, err)
+	}
+	for _, method := range methods[verificationStart:] {
+		if !strings.HasPrefix(method, http.MethodGet+" ") {
+			t.Fatalf("completion verification mutated remote state: %s", method)
+		}
+	}
+	receiptAfterVerification, err := os.ReadFile(filepath.Join(stateDir, "receipt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptInfoAfterVerification, err := os.Stat(filepath.Join(stateDir, "receipt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(receiptBytes, receiptAfterVerification) || !receiptInfo.ModTime().Equal(receiptInfoAfterVerification.ModTime()) {
+		t.Fatal("completion verification rewrote receipt")
+	}
+	snapshotArchive := filepath.Join(t.TempDir(), "App.xcarchive")
+	if _, err := VerifyReconcileCompletionFromArchive(context.Background(), ReconcileApplyOptions{
+		PlanPath: filepath.Join(stateDir, "plan.json"), ExpectedPlanHash: plan.PlanHash,
+	}, snapshotArchive); err != nil {
+		t.Fatalf("snapshot-authoritative completion verification: %v", err)
+	}
+	if got := inspectedArchives[len(inspectedArchives)-1]; got != snapshotArchive {
+		t.Fatalf("verification inspected archive %q, want immutable snapshot %q", got, snapshotArchive)
+	}
+	profileDrift = true
+	verificationStart = len(methods)
+	if _, err := VerifyReconcileCompletion(context.Background(), ReconcileApplyOptions{
+		PlanPath: filepath.Join(stateDir, "plan.json"), ExpectedPlanHash: plan.PlanHash,
+	}); err == nil || !errors.Is(err, ErrReconcilePlanDrift) || ClassifyReconcileExecutionError(err) != ReconcileExecutionErrorPlanDrift {
+		t.Fatalf("profile drift verification error=%v", err)
+	}
+	for _, method := range methods[verificationStart:] {
+		if !strings.HasPrefix(method, http.MethodGet+" ") {
+			t.Fatalf("drift verification mutated remote state: %s", method)
+		}
+	}
+	receiptAfterDrift, err := os.ReadFile(filepath.Join(stateDir, "receipt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(receiptBytes, receiptAfterDrift) {
+		t.Fatal("drift verification rewrote receipt")
+	}
+	profileDrift = false
+	providerUnavailable = true
+	if _, err := VerifyReconcileCompletion(context.Background(), ReconcileApplyOptions{
+		PlanPath: filepath.Join(stateDir, "plan.json"), ExpectedPlanHash: plan.PlanHash,
+	}); err == nil || errors.Is(err, ErrReconcilePlanDrift) || ClassifyReconcileExecutionError(err) != ReconcileExecutionErrorRetryable || strings.Contains(err.Error(), "VERIFY-503-CANARY") {
+		t.Fatalf("503 verification error=%v", err)
+	}
+
+	providerUnavailable = false
+	evidenceDir := t.TempDir()
+	receiptCopyPath := filepath.Join(evidenceDir, "receipt.json")
+	profileCopyPath := filepath.Join(evidenceDir, "profile.mobileprovision")
+	profileBytes, err := os.ReadFile(second.MainProfile.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receiptCopyPath, receiptBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profileCopyPath, profileBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receiptCopyDigest := sha256.Sum256(receiptBytes)
+	profileCopyDigest := sha256.Sum256(profileBytes)
+	if err := os.Remove(plan.Paths.ReceiptPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(second.MainProfile.Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyReconcileCompletionFromArchive(context.Background(), ReconcileApplyOptions{
+		PlanPath: plan.Paths.PlanPath, ExpectedPlanHash: plan.PlanHash,
+	}, snapshotArchive); err == nil || ClassifyReconcileExecutionError(err) != ReconcileExecutionErrorPlanDrift {
+		t.Fatalf("nested-output verification error=%v", err)
+	}
+	stdout, stderr := captureOutput(t, func() {
+		_, err := VerifyReconcileCompletionFromEvidence(context.Background(), ReconcileApplyOptions{
+			PlanPath: plan.Paths.PlanPath, ExpectedPlanHash: plan.PlanHash,
+		}, snapshotArchive, ReconcileCompletionEvidence{
+			ReceiptPath: receiptCopyPath, ReceiptSHA256: strings.Repeat("0", 64),
+			Profiles: []ReconcileProfileEvidence{{
+				ResourceID: second.MainProfile.ResourceID, Path: profileCopyPath, SHA256: hex.EncodeToString(profileCopyDigest[:]),
+			}},
+		})
+		if err == nil || ClassifyReconcileExecutionError(err) != ReconcileExecutionErrorPlanDrift {
+			t.Fatalf("tampered evidence verification error=%v", err)
+		}
+		for _, secret := range []string{receiptCopyPath, profileCopyPath, second.MainProfile.ResourceID} {
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("tampered evidence error leaked %q: %v", secret, err)
+			}
+		}
+	})
+	if stdout != "" || stderr != "" {
+		t.Fatalf("tampered evidence verification wrote output: stdout=%q stderr=%q", stdout, stderr)
+	}
+	evidenceVerified, err := VerifyReconcileCompletionFromEvidence(context.Background(), ReconcileApplyOptions{
+		PlanPath: plan.Paths.PlanPath, ExpectedPlanHash: plan.PlanHash,
+	}, snapshotArchive, ReconcileCompletionEvidence{
+		ReceiptPath: receiptCopyPath, ReceiptSHA256: hex.EncodeToString(receiptCopyDigest[:]),
+		Profiles: []ReconcileProfileEvidence{{
+			ResourceID: second.MainProfile.ResourceID, Path: profileCopyPath, SHA256: hex.EncodeToString(profileCopyDigest[:]),
+		}},
+	})
+	if err != nil || !evidenceVerified.Complete || evidenceVerified.MainProfile == nil {
+		t.Fatalf("run-local evidence verification=%#v error=%v", evidenceVerified, err)
+	}
+	if evidenceVerified.ReceiptPath != plan.Paths.ReceiptPath || evidenceVerified.MainProfile.Path != second.MainProfile.Path || evidenceVerified.MainProfile.SHA256 != second.MainProfile.SHA256 {
+		t.Fatalf("run-local evidence changed nested semantics: %#v", evidenceVerified)
+	}
+
+	localConflictCanary := "LOCAL-PROFILE-CONFLICT-CANARY"
+	if err := os.WriteFile(second.MainProfile.Path, []byte(localConflictCanary), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr = captureOutput(t, func() {
+		_, err := ExecuteReconcileApply(context.Background(), ReconcileApplyOptions{
+			PlanPath: plan.Paths.PlanPath, ExpectedPlanHash: plan.PlanHash, Confirm: true,
+		})
+		if err == nil || !errors.Is(err, ErrReconcilePlanDrift) || ClassifyReconcileExecutionError(err) != ReconcileExecutionErrorPlanDrift {
+			t.Fatalf("local profile conflict error=%v", err)
+		}
+		for _, secret := range []string{localConflictCanary, second.MainProfile.Path, second.MainProfile.UUID} {
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("local profile conflict leaked %q: %v", secret, err)
+			}
+		}
+	})
+	if stdout != "" || stderr != "" {
+		t.Fatalf("local profile conflict wrote output: stdout=%q stderr=%q", stdout, stderr)
+	}
+
+	localIOCanary := filepath.Join(t.TempDir(), "LOCAL-PROFILE-IO-CANARY")
+	originalProfileWriter := writeReconcileVerifiedProfile
+	t.Cleanup(func() { writeReconcileVerifiedProfile = originalProfileWriter })
+	for _, errno := range []syscall.Errno{syscall.ENOSPC, syscall.EIO} {
+		writeReconcileVerifiedProfile = func(string, []byte) (string, error) {
+			return "", &os.PathError{Op: "write", Path: localIOCanary, Err: errno}
+		}
+		stdout, stderr = captureOutput(t, func() {
+			_, err := ExecuteReconcileApply(context.Background(), ReconcileApplyOptions{
+				PlanPath: plan.Paths.PlanPath, ExpectedPlanHash: plan.PlanHash, Confirm: true,
+			})
+			if err == nil || errors.Is(err, ErrReconcilePlanDrift) || ClassifyReconcileExecutionError(err) != ReconcileExecutionErrorRetryable {
+				t.Fatalf("local profile I/O error=%v", err)
+			}
+			if strings.Contains(err.Error(), localIOCanary) {
+				t.Fatalf("local profile I/O error leaked path: %v", err)
+			}
+		})
+		if stdout != "" || stderr != "" {
+			t.Fatalf("local profile I/O failure wrote output: stdout=%q stderr=%q", stdout, stderr)
+		}
 	}
 }
 

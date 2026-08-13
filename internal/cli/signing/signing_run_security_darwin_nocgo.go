@@ -4,6 +4,8 @@ package signing
 
 import "fmt"
 
+func signingRunSecurityAvailable() bool { return false }
+
 func createKeychainWithSecurityFramework(string, []byte) error {
 	return fmt.Errorf("signing run requires a cgo-enabled macOS build")
 }

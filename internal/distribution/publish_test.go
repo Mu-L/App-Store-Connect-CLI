@@ -26,7 +26,7 @@ func TestLoadPreparedBundleValidatesArtifact(t *testing.T) {
 	ipa := []byte("ipa bytes")
 	digest := sha256.Sum256(ipa)
 	certificateFingerprint := strings.Repeat("a", 64)
-	descriptor := `{"schemaVersion":"1","platform":"IOS","distributionMethod":"release-testing","app":{"bundleId":"com.example.app","title":"Example","version":"1.2","buildNumber":"3"},"artifact":{"relativePath":"payload/app.ipa","sha256":"` + hex.EncodeToString(digest[:]) + `","sizeBytes":9},"signing":{"profileClass":"ad-hoc","profileUuid":"uuid","teamId":"TEAM","expiresAt":"2035-01-01T00:00:00Z","deviceCount":1,"deviceSetSha256":"` + strings.Repeat("b", 64) + `","profileCertificateSha256Fingerprints":["` + certificateFingerprint + `"],"profileIntegrityVerification":{"status":"verified"},"profileTrustVerification":{"status":"verified"},"codeSignatureVerification":{"status":"verified","scope":"complete-main-app-code-resources-entitlements-and-profile-certificate-binding","signerCertificateSha256Fingerprints":["` + certificateFingerprint + `"]}}}`
+	descriptor := `{"schemaVersion":"1","platform":"IOS","distributionMethod":"release-testing","app":{"bundleId":"com.example.app","title":"Example","version":"1.2","buildNumber":"3"},"artifact":{"relativePath":"payload/app.ipa","sha256":"` + hex.EncodeToString(digest[:]) + `","sizeBytes":9},"signing":{"profileClass":"ad-hoc","profileUuid":"uuid","embeddedProfileSha256":"` + strings.Repeat("d", 64) + `","teamId":"TEAM","expiresAt":"2035-01-01T00:00:00Z","deviceCount":1,"deviceSetSha256":"` + strings.Repeat("b", 64) + `","profileCertificateSha256Fingerprints":["` + certificateFingerprint + `"],"profileIntegrityVerification":{"status":"verified"},"profileTrustVerification":{"status":"verified"},"codeSignatureVerification":{"status":"verified","scope":"complete-main-app-code-resources-entitlements-and-profile-certificate-binding","signerCertificateSha256Fingerprints":["` + certificateFingerprint + `"]}}}`
 	if err := os.WriteFile(filepath.Join(dir, "bundle.json"), []byte(descriptor), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,9 @@ func TestLoadPreparedBundleValidatesArtifact(t *testing.T) {
 		t.Fatalf("LoadPreparedBundle() error = %v", err)
 	}
 	defer got.IPA.Close()
-	if got.Descriptor.App.BundleID != "com.example.app" || got.IPASHA256 != hex.EncodeToString(digest[:]) {
+	descriptorDigest := sha256.Sum256([]byte(descriptor))
+	if got.Descriptor.App.BundleID != "com.example.app" || got.IPASHA256 != hex.EncodeToString(digest[:]) ||
+		got.DescriptorSHA256 != hex.EncodeToString(descriptorDigest[:]) || got.DescriptorSize != int64(len(descriptor)) {
 		t.Fatalf("unexpected bundle: %#v", got)
 	}
 
@@ -406,6 +408,20 @@ func TestVerifierProviderHeadersNeverReachDiagnostic(t *testing.T) {
 	}
 }
 
+func TestVerifierKeepsNonSuccessStatusRetryableBeforeRepresentationChecks(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusTooManyRequests, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"text/html"}}, Body: io.NopCloser(strings.NewReader("error")), Request: request}, nil
+			})}
+			err := NewHTTPVerifier(client, time.Second).Verify(context.Background(), VerifyRequest{URL: "https://example.com/app.ipa", Kind: VerifyIPA, SHA256: strings.Repeat("a", 64), ContentType: ContentTypeIPA, SizeBytes: 3})
+			if err == nil || errors.Is(err, ErrVerificationContentConflict) {
+				t.Fatalf("status %d error = %v, want non-terminal transport/status failure", status, err)
+			}
+		})
+	}
+}
+
 type fakeObjectStore struct {
 	objects map[string]StoredObject
 	bodies  map[string][]byte
@@ -478,7 +494,7 @@ func minimalDescriptor(ipa []byte) PreparedDescriptor {
 		App:      PreparedApp{BundleID: "com.example.app", Title: "Example", Version: "1", BuildNumber: "1"},
 		Artifact: PreparedArtifact{RelativePath: "payload/app.ipa", SHA256: sha256Hex(ipa), SizeBytes: int64(len(ipa))},
 		Signing: PreparedSigning{
-			ProfileClass: "ad-hoc", ProfileUUID: "uuid", TeamID: "TEAM", ExpiresAt: "2035-01-01T00:00:00Z", DeviceCount: 1,
+			ProfileClass: "ad-hoc", ProfileUUID: "uuid", EmbeddedProfileSHA256: strings.Repeat("d", 64), TeamID: "TEAM", ExpiresAt: "2035-01-01T00:00:00Z", DeviceCount: 1,
 			DeviceSetSHA256: strings.Repeat("b", 64), ProfileCertificateSHA256Fingerprints: []string{strings.Repeat("a", 64)},
 			ProfileIntegrityVerification: PreparedCodeSignatureVerification{Status: "verified"}, ProfileTrustVerification: PreparedCodeSignatureVerification{Status: "verified"},
 			CodeSignatureVerification: PreparedCodeSignatureVerification{Status: "verified", Scope: "complete-main-app-code-resources-entitlements-and-profile-certificate-binding", SignerCertificateSHA256Fingerprints: []string{strings.Repeat("a", 64)}},

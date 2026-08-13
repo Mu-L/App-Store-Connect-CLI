@@ -6,11 +6,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"math/big"
 	"os"
@@ -19,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/peterbourgon/ff/v3/ffcli"
 	"go.mozilla.org/pkcs7"
 	"howett.net/plist"
 
@@ -29,8 +32,13 @@ func TestDistributeCommandsAreRegisteredWithAgentOrientedFlags(t *testing.T) {
 	root := RootCommand("1.2.3")
 	inspect := findSubcommand(root, "distribute", "inspect")
 	prepare := findSubcommand(root, "distribute", "prepare")
-	if inspect == nil || prepare == nil {
-		t.Fatalf("distribute commands missing: inspect=%v prepare=%v", inspect, prepare)
+	plan := findSubcommand(root, "distribute", "plan")
+	apply := findSubcommand(root, "distribute", "apply")
+	resume := findSubcommand(root, "distribute", "resume")
+	status := findSubcommand(root, "distribute", "status")
+	verify := findSubcommand(root, "distribute", "verify")
+	if inspect == nil || prepare == nil || plan == nil || apply == nil || resume == nil || status == nil || verify == nil {
+		t.Fatalf("distribute commands missing: inspect=%v prepare=%v plan=%v apply=%v resume=%v status=%v verify=%v", inspect, prepare, plan, apply, resume, status, verify)
 	}
 	for _, name := range []string{"ipa", "include-devices", "output"} {
 		if inspect.FlagSet.Lookup(name) == nil {
@@ -42,6 +50,38 @@ func TestDistributeCommandsAreRegisteredWithAgentOrientedFlags(t *testing.T) {
 			t.Errorf("prepare --%s missing", name)
 		}
 	}
+	for _, name := range []string{"archive-path", "config", "plan", "state-dir", "output"} {
+		if plan.FlagSet.Lookup(name) == nil {
+			t.Errorf("plan --%s missing", name)
+		}
+	}
+	for _, name := range []string{"plan", "confirm", "output"} {
+		if apply.FlagSet.Lookup(name) == nil {
+			t.Errorf("apply --%s missing", name)
+		}
+	}
+	for _, command := range []*ffcli.Command{resume, status, verify} {
+		for _, name := range []string{"run", "state-dir", "output"} {
+			if command.FlagSet.Lookup(name) == nil {
+				t.Errorf("%s --%s missing", command.Name, name)
+			}
+		}
+	}
+}
+
+func TestDistributeApplyRequiresExactConfirmationBeforePlanRead(t *testing.T) {
+	assertUsageExit(t, []string{"distribute", "apply", "--plan", filepath.Join(t.TempDir(), "missing.json")}, "--confirm PLAN_HASH is required")
+	assertUsageExit(t, []string{"distribute", "apply", "--plan", filepath.Join(t.TempDir(), "missing.json"), "--confirm", "yes"}, "--confirm must be a 64-character lowercase SHA-256 plan hash")
+}
+
+func TestDistributeApplyWellFormedUnequalConfirmationExitsUsage(t *testing.T) {
+	planPath := writeBlockedDistributionPlan(t)
+	assertUsageExit(t, []string{
+		"distribute", "apply",
+		"--plan", planPath,
+		"--confirm", strings.Repeat("2", 64),
+		"--output", "json",
+	}, "--confirm must be the exact planHash")
 }
 
 func TestDistributeInspectRequiresIPAAndRejectsInvalidOutput(t *testing.T) {
@@ -213,6 +253,146 @@ func writeDistributionIPA(t *testing.T, device string) string {
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+type blackboxDistributionPlan struct {
+	SchemaVersion int                             `json:"schemaVersion"`
+	PlanID        string                          `json:"planId"`
+	PlanHash      string                          `json:"planHash"`
+	CreatedAt     string                          `json:"createdAt"`
+	Ready         bool                            `json:"ready"`
+	ConfigPath    string                          `json:"configPath"`
+	ConfigSHA256  string                          `json:"configSha256"`
+	Archive       blackboxDistributionArchive     `json:"archive"`
+	DeviceSet     blackboxDistributionDeviceSet   `json:"deviceSet"`
+	Identity      blackboxDistributionIdentity    `json:"identity"`
+	Publication   blackboxDistributionPublication `json:"publication"`
+	Reconcile     blackboxDistributionReconcile   `json:"reconcile"`
+	Effects       []blackboxDistributionEffect    `json:"effects"`
+	Blockers      []blackboxDistributionBlocker   `json:"blockers,omitempty"`
+	Paths         blackboxDistributionPlanPaths   `json:"paths"`
+}
+
+type blackboxDistributionArchive struct {
+	Path             string `json:"path"`
+	TreeSHA256       string `json:"treeSha256"`
+	SizeBytes        int64  `json:"sizeBytes"`
+	FileCount        int    `json:"fileCount"`
+	BundleID         string `json:"bundleId"`
+	Title            string `json:"title"`
+	PublishedTitle   string `json:"publishedTitle"`
+	Version          string `json:"version"`
+	BuildNumber      string `json:"buildNumber"`
+	MinimumOSVersion string `json:"minimumOSVersion,omitempty"`
+	TeamID           string `json:"teamId"`
+	TargetCount      int    `json:"targetCount"`
+}
+
+type blackboxDistributionDeviceSet struct {
+	SHA256     string `json:"sha256"`
+	FileSHA256 string `json:"fileSha256"`
+	Count      int    `json:"count"`
+}
+
+type blackboxDistributionIdentity struct {
+	CertificateResourceID string `json:"certificateResourceId"`
+	CertificateSHA256     string `json:"certificateSha256"`
+	TeamID                string `json:"teamId"`
+	ExpirationDate        string `json:"expirationDate"`
+	MinimumValidUntil     string `json:"minimumValidUntil"`
+}
+
+type blackboxDistributionPublication struct {
+	Endpoint         string `json:"endpoint"`
+	DownloadEndpoint string `json:"downloadEndpoint,omitempty"`
+	Region           string `json:"region"`
+	Bucket           string `json:"bucket"`
+	Prefix           string `json:"prefix"`
+	AddressingStyle  string `json:"addressingStyle"`
+	URLTTL           string `json:"urlTtl"`
+	DownloadGrace    string `json:"downloadGrace"`
+	VerifyTimeout    string `json:"verifyTimeout"`
+}
+
+type blackboxDistributionReconcile struct {
+	PlanPath            string `json:"planPath"`
+	PlanHash            string `json:"planHash"`
+	ReceiptPath         string `json:"receiptPath"`
+	MinimumValidityDays int    `json:"minimumValidityDays"`
+	MutationCount       int    `json:"mutationCount"`
+	MaxMutations        int    `json:"maxMutations"`
+}
+
+type blackboxDistributionEffect struct {
+	Stage    string `json:"stage"`
+	Kind     string `json:"kind"`
+	BundleID string `json:"bundleId,omitempty"`
+	Count    int    `json:"count,omitempty"`
+}
+
+type blackboxDistributionBlocker struct {
+	Code    string `json:"code"`
+	Stage   string `json:"stage"`
+	Message string `json:"message"`
+}
+
+type blackboxDistributionPlanPaths struct {
+	StateDir string `json:"stateDir"`
+}
+
+func writeBlockedDistributionPlan(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	digest := strings.Repeat("1", 64)
+	plan := blackboxDistributionPlan{
+		SchemaVersion: 1,
+		PlanID:        "dplan_11111111111111111111111111111111",
+		CreatedAt:     "2026-08-13T08:00:00Z",
+		Ready:         false,
+		ConfigPath:    filepath.Join(root, "distribution.json"),
+		ConfigSHA256:  digest,
+		Archive: blackboxDistributionArchive{
+			Path: filepath.Join(root, "Demo.xcarchive"), TreeSHA256: digest,
+			SizeBytes: 1, FileCount: 1, BundleID: "com.example.demo", Title: "Demo", PublishedTitle: "Demo",
+			Version: "1.2.3", BuildNumber: "42", MinimumOSVersion: "17.0",
+			TeamID: "TEAM123", TargetCount: 2,
+		},
+		DeviceSet: blackboxDistributionDeviceSet{SHA256: digest, FileSHA256: digest, Count: 1},
+		Identity: blackboxDistributionIdentity{
+			CertificateSHA256: digest, TeamID: "TEAM123",
+			ExpirationDate: "2027-08-13T08:00:00Z", MinimumValidUntil: "2026-08-13T08:00:00Z",
+		},
+		Publication: blackboxDistributionPublication{
+			Endpoint: "https://storage.example.com", Region: "us-east-1", Bucket: "private-previews",
+			Prefix: "previews", AddressingStyle: "path", URLTTL: "1h", DownloadGrace: "1h", VerifyTimeout: "30s",
+		},
+		Reconcile: blackboxDistributionReconcile{
+			PlanPath: filepath.Join(root, "reconcile-plan.json"), PlanHash: digest,
+			ReceiptPath: filepath.Join(root, "reconcile-receipt.json"), MinimumValidityDays: 1, MaxMutations: 1,
+		},
+		Effects: []blackboxDistributionEffect{},
+		Blockers: []blackboxDistributionBlocker{{
+			Code: "embedded_targets_unsupported", Stage: "preflight", Message: "One main application target is required.",
+		}},
+		Paths: blackboxDistributionPlanPaths{StateDir: filepath.Join(root, "runs")},
+	}
+	canonical := plan
+	canonical.PlanHash = ""
+	canonical.CreatedAt = ""
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.PlanHash = fmt.Sprintf("%x", sha256.Sum256(encoded))
+	encoded, err = json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "plan.json")
+	if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path

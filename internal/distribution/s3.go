@@ -2,6 +2,8 @@ package distribution
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -138,14 +140,19 @@ func (store *S3Store) Ensure(ctx context.Context, input PutObject) (StoredObject
 	if !errors.Is(err, os.ErrNotExist) {
 		return StoredObject{}, err
 	}
+	digest, decodeErr := hex.DecodeString(input.SHA256)
+	if decodeErr != nil || len(digest) != 32 {
+		return StoredObject{}, fmt.Errorf("put object identity has invalid SHA-256")
+	}
 	_, err = store.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:        aws.String(store.bucket),
-		Key:           aws.String(input.Key),
-		Body:          input.Body,
-		ContentLength: aws.Int64(input.SizeBytes),
-		ContentType:   aws.String(input.ContentType),
-		IfNoneMatch:   aws.String("*"),
-		Metadata:      map[string]string{objectSHA256MetadataKey: input.SHA256},
+		Bucket:         aws.String(store.bucket),
+		Key:            aws.String(input.Key),
+		Body:           input.Body,
+		ContentLength:  aws.Int64(input.SizeBytes),
+		ContentType:    aws.String(input.ContentType),
+		ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(digest)),
+		IfNoneMatch:    aws.String("*"),
+		Metadata:       map[string]string{objectSHA256MetadataKey: input.SHA256},
 	})
 	if err != nil {
 		existing, headErr := store.head(ctx, input.Key)
@@ -187,7 +194,7 @@ func (store *S3Store) head(ctx context.Context, key string) (StoredObject, error
 
 func reconcileStoredObject(input PutObject, existing StoredObject) (StoredObject, error) {
 	if !strings.EqualFold(existing.SHA256, input.SHA256) || existing.SizeBytes != input.SizeBytes || existing.ContentType != input.ContentType {
-		return StoredObject{}, fmt.Errorf("immutable object conflict at %q: existing metadata does not match expected SHA-256, size, and content type", input.Key)
+		return StoredObject{}, fmt.Errorf("%w at %q: existing metadata does not match expected SHA-256, size, and content type", ErrImmutableObjectConflict, input.Key)
 	}
 	existing.Status = "reused"
 	return existing, nil

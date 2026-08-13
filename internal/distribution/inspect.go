@@ -6,6 +6,7 @@ package distribution
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -22,6 +23,7 @@ import (
 	"go.mozilla.org/pkcs7"
 	"howett.net/plist"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/deviceset"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/infoplist"
 )
 
@@ -64,6 +66,7 @@ type Signing struct {
 	ExpiresAt                            string                    `json:"expiresAt,omitempty"`
 	DeviceCount                          int                       `json:"deviceCount"`
 	DeviceSetSHA256                      string                    `json:"deviceSetSha256,omitempty"`
+	EmbeddedProfileSHA256                string                    `json:"embeddedProfileSha256,omitempty"`
 	ProfileCertificateSHA256Fingerprints []string                  `json:"profileCertificateSha256Fingerprints,omitempty"`
 	Devices                              []string                  `json:"devices,omitempty"`
 	ProfileIntegrityVerification         CodeSignatureVerification `json:"profileIntegrityVerification"`
@@ -139,6 +142,7 @@ type parsedProfile struct {
 	embeddedProfile
 	BundleID                 string
 	Class                    ProfileClass
+	EmbeddedProfileSHA256    string
 	ProfileTrustVerification CodeSignatureVerification
 }
 
@@ -160,7 +164,7 @@ func InspectIPA(file *os.File, size int64, options InspectOptions) (Inspection, 
 	if size > MaxIPABytes {
 		return Inspection{}, fmt.Errorf("IPA size %d bytes exceeds supported limit of %d bytes", size, MaxIPABytes)
 	}
-	snapshot, digest, cleanup, err := snapshotIPA(file, size)
+	snapshot, digest, cleanup, err := snapshotIPAContext(context.Background(), file, size)
 	if err != nil {
 		return Inspection{}, err
 	}
@@ -168,10 +172,16 @@ func InspectIPA(file *os.File, size int64, options InspectOptions) (Inspection, 
 	if afterIPASnapshotForTest != nil {
 		afterIPASnapshotForTest()
 	}
-	return inspectSnapshot(snapshot, size, digest, options)
+	return inspectSnapshotContext(context.Background(), snapshot, size, digest, options)
 }
 
-func inspectSnapshot(file *os.File, size int64, digest string, options InspectOptions) (Inspection, error) {
+func inspectSnapshotContext(ctx context.Context, file *os.File, size int64, digest string, options InspectOptions) (Inspection, error) {
+	if ctx == nil {
+		return Inspection{}, fmt.Errorf("context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return Inspection{}, err
+	}
 	reader, err := zip.NewReader(file, size)
 	if err != nil {
 		return Inspection{}, fmt.Errorf("open IPA ZIP: %w", err)
@@ -247,7 +257,7 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 			},
 			CodeSignatureVerification: CodeSignatureVerification{
 				Status: CodeSignatureNotVerified,
-				Scope:  mainCodeSignatureScope,
+				Scope:  CodeSignatureScopeCompleteMainApp,
 				Reason: "Mach-O code signature and signer/profile certificate binding were not verified",
 			},
 		},
@@ -263,13 +273,15 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 			return Inspection{}, err
 		}
 		devices := canonicalSet(profile.ProvisionedDevices)
+		deviceSet := deviceset.Digest(profile.ProvisionedDevices)
 		certificates := certificateFingerprints(profile.DeveloperCertificates)
 		result.Signing = Signing{
 			ProfileClass:                         profile.Class,
 			ProfileUUID:                          strings.TrimSpace(profile.UUID),
 			TeamID:                               onlyTrimmed(profile.TeamIdentifier),
-			DeviceCount:                          len(devices),
-			DeviceSetSHA256:                      hashSet(devices),
+			DeviceCount:                          deviceSet.Count,
+			DeviceSetSHA256:                      deviceSet.SHA256,
+			EmbeddedProfileSHA256:                profile.EmbeddedProfileSHA256,
 			ProfileCertificateSHA256Fingerprints: certificates,
 			ProfileIntegrityVerification: CodeSignatureVerification{
 				Status: CodeSignatureVerified,
@@ -278,7 +290,7 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 			ProfileTrustVerification: profile.ProfileTrustVerification,
 			CodeSignatureVerification: CodeSignatureVerification{
 				Status: CodeSignatureNotVerified,
-				Scope:  mainCodeSignatureScope,
+				Scope:  CodeSignatureScopeCompleteMainApp,
 				Reason: "Mach-O code signature and signer/profile certificate binding were not verified",
 			},
 		}
@@ -289,7 +301,10 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 			result.Signing.Devices = devices
 		}
 		result.Preparation.Issues = preparationIssues(result, profile, effectiveNow(options.Now))
-		result.Signing.CodeSignatureVerification = verifyMainAppCodeSignature(reader.File, appDir, infoFiles[0], info.Executable, profile)
+		result.Signing.CodeSignatureVerification = verifyMainAppCodeSignature(ctx, reader.File, appDir, infoFiles[0], info.Executable, profile)
+		if err := ctx.Err(); err != nil {
+			return Inspection{}, err
+		}
 	}
 	result.Preparation.MetadataEligible = len(result.Preparation.Issues) == 0
 	return result, nil
@@ -400,6 +415,7 @@ func readProfile(member *zip.File, now time.Time) (parsedProfile, error) {
 	if err := p7.Verify(); err != nil {
 		return parsedProfile{}, fmt.Errorf("verify embedded provisioning profile CMS signature integrity: %w", err)
 	}
+	profileDigest := sha256.Sum256(data)
 	trust := verifyAppleProfileTrust(p7, now, appleProfileRootFingerprints)
 	if err := infoplist.ValidateStructure(p7.Content); err != nil {
 		return parsedProfile{}, fmt.Errorf("validate embedded provisioning profile plist: %w", err)
@@ -440,7 +456,10 @@ func readProfile(member *zip.File, now time.Time) (parsedProfile, error) {
 	case !profile.ProvisionsAllDevices && deviceCount == 0 && hasDebugValue && debugIsBool && !debuggable:
 		class = ProfileClassAppStore
 	}
-	return parsedProfile{embeddedProfile: profile, BundleID: profileBundleID, Class: class, ProfileTrustVerification: trust}, nil
+	return parsedProfile{
+		embeddedProfile: profile, BundleID: profileBundleID, Class: class,
+		EmbeddedProfileSHA256: hex.EncodeToString(profileDigest[:]), ProfileTrustVerification: trust,
+	}, nil
 }
 
 func verifyAppleProfileTrust(profile *pkcs7.PKCS7, now time.Time, allowedRoots map[string]struct{}) CodeSignatureVerification {
@@ -575,19 +594,6 @@ func canonicalSet(values []string) []string {
 	}
 	sort.Strings(result)
 	return result
-}
-
-func hashSet(values []string) string {
-	values = canonicalSet(values)
-	if len(values) == 0 {
-		return ""
-	}
-	hash := sha256.New()
-	for _, value := range values {
-		_, _ = fmt.Fprintf(hash, "%d:", len(value))
-		_, _ = hash.Write([]byte(value))
-	}
-	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func onlyTrimmed(values []string) string {

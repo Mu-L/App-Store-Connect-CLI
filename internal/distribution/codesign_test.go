@@ -149,6 +149,25 @@ func TestInspectIPACodeSignToolAbsenceIsExplicitlyNotVerified(t *testing.T) {
 	}
 }
 
+func TestCodeVerificationFailureKeepsSignaledToolFailureRetryable(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("codesign verification is macOS-only")
+	}
+	signaledErr := exec.Command("/bin/sh", "-c", "kill -TERM $$").Run()
+	var exitErr *exec.ExitError
+	if !errors.As(signaledErr, &exitErr) || exitErr.ProcessState == nil || exitErr.Exited() {
+		t.Fatalf("signaled command error = %#v, want a signaled exec.ExitError", signaledErr)
+	}
+	if status, _ := codeVerificationFailure(signaledErr, "main executable"); status != CodeSignatureNotVerified {
+		t.Fatalf("codeVerificationFailure() status = %q, want %q", status, CodeSignatureNotVerified)
+	}
+
+	rejectedErr := exec.Command("/bin/sh", "-c", "exit 1").Run()
+	if status, _ := codeVerificationFailure(rejectedErr, "main executable"); status != CodeSignatureInvalid {
+		t.Fatalf("codeVerificationFailure() status = %q, want %q", status, CodeSignatureInvalid)
+	}
+}
+
 func TestInspectIPARejectsSignerOutsideEmbeddedProfile(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("codesign verification is macOS-only")
@@ -194,7 +213,7 @@ func TestVerifyMainAppCodeSignatureRejectsExpandedExecutableBeforeTools(t *testi
 		return nil, errors.New("unexpected")
 	}
 	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
-	got := verifyMainAppCodeSignature([]*zip.File{member}, "Payload/Demo.app", nil, "Demo", parsedProfile{})
+	got := verifyMainAppCodeSignature(context.Background(), []*zip.File{member}, "Payload/Demo.app", nil, "Demo", parsedProfile{})
 	if got.Status != CodeSignatureInvalid || called {
 		t.Fatalf("verification=%#v called=%t", got, called)
 	}

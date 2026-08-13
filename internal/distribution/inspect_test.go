@@ -2,7 +2,6 @@ package distribution
 
 import (
 	"archive/zip"
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -65,11 +64,48 @@ func TestInspectIPAAdHocOmitsDevicesByDefault(t *testing.T) {
 	}
 }
 
+func TestInspectIPABindsExactEmbeddedProfileDigest(t *testing.T) {
+	profile := signedProfile(t, profileFixture{
+		BundleID: "com.example.demo",
+		Devices:  []string{"private-device"},
+		Expires:  time.Now().Add(24 * time.Hour),
+	})
+	path := writeIPA(t, map[string][]byte{
+		"Payload/Demo.app/Info.plist":               infoPlist(t, "com.example.demo"),
+		"Payload/Demo.app/embedded.mobileprovision": profile,
+	})
+
+	got := inspectPath(t, path, false)
+	want := sha256.Sum256(profile)
+	if got.Signing.EmbeddedProfileSHA256 != hex.EncodeToString(want[:]) {
+		t.Fatalf("embedded profile SHA-256 = %q, want %q", got.Signing.EmbeddedProfileSHA256, hex.EncodeToString(want[:]))
+	}
+	if len(got.Signing.Devices) != 0 {
+		t.Fatalf("inspection disclosed devices by default: %#v", got.Signing.Devices)
+	}
+}
+
 func TestInspectIPAIncludesSortedDevicesOnlyWhenRequested(t *testing.T) {
 	path := validIPA(t, []string{"device-b", "device-a"}, time.Now().Add(24*time.Hour), false)
 	got := inspectPath(t, path, true)
 	if len(got.Signing.Devices) != 2 || got.Signing.Devices[0] != "device-a" || got.Signing.Devices[1] != "device-b" {
 		t.Fatalf("devices = %#v", got.Signing.Devices)
+	}
+}
+
+func TestInspectIPADeviceSetDigestUsesSemanticUDIDs(t *testing.T) {
+	formatted := validIPA(t, []string{"0000-1111:aaaa", "2222-bbbb", "00001111AAAA"}, time.Now().Add(24*time.Hour), false)
+	canonical := validIPA(t, []string{"00001111AAAA", "2222BBBB"}, time.Now().Add(24*time.Hour), false)
+	different := validIPA(t, []string{"00001111AAAA", "3333CCCC"}, time.Now().Add(24*time.Hour), false)
+
+	formattedSigning := inspectPath(t, formatted, false).Signing
+	canonicalSigning := inspectPath(t, canonical, false).Signing
+	differentSigning := inspectPath(t, different, false).Signing
+	if formattedSigning.DeviceCount != 2 || formattedSigning.DeviceSetSHA256 != canonicalSigning.DeviceSetSHA256 {
+		t.Fatalf("formatted=%#v canonical=%#v", formattedSigning, canonicalSigning)
+	}
+	if formattedSigning.DeviceSetSHA256 == differentSigning.DeviceSetSHA256 {
+		t.Fatalf("different sets share digest %q", formattedSigning.DeviceSetSHA256)
 	}
 }
 
@@ -416,12 +452,4 @@ func writeIPA(t *testing.T, entries map[string][]byte) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-func TestHashSetDeterministic(t *testing.T) {
-	a := hashSet([]string{"b", "a", "a"})
-	b := hashSet([]string{"a", "b"})
-	if !bytes.Equal([]byte(a), []byte(b)) {
-		t.Fatalf("hashes differ: %q %q", a, b)
-	}
 }

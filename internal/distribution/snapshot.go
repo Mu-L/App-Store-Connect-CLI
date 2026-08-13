@@ -1,6 +1,7 @@
 package distribution
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -12,11 +13,17 @@ import (
 
 var afterIPASnapshotForTest func()
 
-// snapshotIPA copies the already-open input exactly once into a private,
+// snapshotIPAContext copies the already-open input exactly once into a private,
 // immutable-for-this-process file. Metadata parsing, hashing, and publishing
 // all consume this snapshot so concurrent writes to the source cannot produce
 // a descriptor assembled from different byte generations.
-func snapshotIPA(source *os.File, size int64) (*os.File, string, func(), error) {
+func snapshotIPAContext(ctx context.Context, source *os.File, size int64) (*os.File, string, func(), error) {
+	if ctx == nil {
+		return nil, "", nil, fmt.Errorf("context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", nil, err
+	}
 	if source == nil {
 		return nil, "", nil, fmt.Errorf("IPA file is nil")
 	}
@@ -54,7 +61,7 @@ func snapshotIPA(source *os.File, size int64) (*os.File, string, func(), error) 
 		return nil, "", nil, fmt.Errorf("create private IPA snapshot: %w", err)
 	}
 	hash := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(snapshot, hash), io.NewSectionReader(source, 0, size))
+	written, copyErr := io.Copy(io.MultiWriter(snapshot, hash), contextReader{ctx: ctx, reader: io.NewSectionReader(source, 0, size)})
 	if copyErr == nil && written != size {
 		copyErr = fmt.Errorf("copied %d of %d bytes", written, size)
 	}
@@ -85,4 +92,16 @@ func snapshotIPA(source *os.File, size int64) (*os.File, string, func(), error) 
 		cleanupDirectory()
 	}
 	return snapshot, hex.EncodeToString(hash.Sum(nil)), cleanup, nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (reader contextReader) Read(buffer []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return reader.reader.Read(buffer)
 }

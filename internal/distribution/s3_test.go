@@ -3,6 +3,8 @@ package distribution
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,6 +66,10 @@ func TestS3StorePathStyleConditionalUploadsAndPrivateVerification(t *testing.T) 
 			if request.Header.Get("If-None-Match") != "*" {
 				t.Errorf("If-None-Match = %q", request.Header.Get("If-None-Match"))
 			}
+			metadataDigest, decodeErr := hex.DecodeString(request.Header.Get("x-amz-meta-asc-sha256"))
+			if decodeErr != nil || request.Header.Get("x-amz-checksum-sha256") != base64.StdEncoding.EncodeToString(metadataDigest) {
+				t.Errorf("checksum header = %q, metadata digest = %q", request.Header.Get("x-amz-checksum-sha256"), request.Header.Get("x-amz-meta-asc-sha256"))
+			}
 			body, _ := io.ReadAll(request.Body)
 			objects[key] = object{body: string(body), sha: request.Header.Get("x-amz-meta-asc-sha256"), contentType: request.Header.Get("Content-Type")}
 			writer.WriteHeader(http.StatusOK)
@@ -112,6 +119,58 @@ func TestS3StorePathStyleConditionalUploadsAndPrivateVerification(t *testing.T) 
 	}
 	if strings.Join(operations, "\n") != strings.Join(wantTail, "\n") {
 		t.Fatalf("operations = %#v, want %#v", operations, wantTail)
+	}
+}
+
+func TestPrivatePublishStopsAfterS3HeadMatchesButFetchedBodyIsCorrupt(t *testing.T) {
+	t.Setenv("ASC_S3_ACCESS_KEY_ID", "test-access")
+	t.Setenv("ASC_S3_SECRET_ACCESS_KEY", "test-secret")
+	t.Setenv("ASC_S3_SESSION_TOKEN", "")
+	var operations []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		operations = append(operations, request.Method)
+		switch request.Method {
+		case http.MethodHead:
+			writer.Header().Set("Content-Length", "3")
+			writer.Header().Set("Content-Type", ContentTypeIPA)
+			writer.Header().Set("x-amz-meta-asc-sha256", sha256Hex([]byte("ipa")))
+			writer.WriteHeader(http.StatusOK)
+		case http.MethodGet:
+			writer.Header().Set("Content-Length", "3")
+			writer.Header().Set("Content-Type", ContentTypeIPA)
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte("bad"))
+		case http.MethodPut:
+			t.Error("exact HEAD evidence unexpectedly triggered a PUT")
+			writer.WriteHeader(http.StatusInternalServerError)
+		default:
+			writer.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+	store, _, err := NewS3Store(context.Background(), S3StoreConfig{
+		Endpoint: server.URL, Region: "auto", Bucket: "bucket", AddressingStyle: "path", HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	descriptor := minimalDescriptor([]byte("ipa"))
+	descriptor.Signing.ExpiresAt = now.Add(48 * time.Hour).Format(time.RFC3339)
+	options := PublishOptions{
+		Store: store, Verifier: NewHTTPVerifier(server.Client(), time.Second), Bucket: "bucket", Prefix: "app", Access: AccessPrivate,
+		URLTTL: time.Hour, DownloadGrace: time.Minute, Now: func() time.Time { return now }, RandomID: func() (string, error) { return "stable", nil },
+	}
+	intent, err := PreparePrivatePublishIntent(context.Background(), descriptor, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = ExecutePrivatePublishIntent(context.Background(), bytes.NewReader([]byte("ipa")), descriptor, options, intent)
+	if !errors.Is(err, ErrPrivatePublishConflict) || !errors.Is(err, ErrVerificationContentConflict) {
+		t.Fatalf("corrupt provider body error = %v, want permanent private conflict", err)
+	}
+	if want := []string{http.MethodHead, http.MethodGet}; !slices.Equal(operations, want) {
+		t.Fatalf("provider operations = %v, want %v (no PUT or later objects)", operations, want)
 	}
 }
 
@@ -238,7 +297,11 @@ func (client *ambiguousPutClient) HeadObject(context.Context, *awss3.HeadObjectI
 	return &awss3.HeadObjectOutput{ContentLength: aws.Int64(3), ContentType: aws.String(ContentTypeIPA), Metadata: map[string]string{objectSHA256MetadataKey: sha256Hex([]byte("ipa"))}}, nil
 }
 
-func (*ambiguousPutClient) PutObject(context.Context, *awss3.PutObjectInput, ...func(*awss3.Options)) (*awss3.PutObjectOutput, error) {
+func (*ambiguousPutClient) PutObject(_ context.Context, input *awss3.PutObjectInput, _ ...func(*awss3.Options)) (*awss3.PutObjectOutput, error) {
+	digest, _ := hex.DecodeString(sha256Hex([]byte("ipa")))
+	if aws.ToString(input.ChecksumSHA256) != base64.StdEncoding.EncodeToString(digest) {
+		return nil, errors.New("missing exact payload checksum")
+	}
 	return nil, errors.New("connection reset after server accepted object")
 }
 
