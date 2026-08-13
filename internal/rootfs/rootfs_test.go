@@ -871,6 +871,32 @@ func TestErrorMessagesIdentifyRejectedPath(t *testing.T) {
 	}
 }
 
+func TestOpenRootPinsOriginalDirectoryAcrossPathReplacement(t *testing.T) {
+	parent := t.TempDir()
+	directory := filepath.Join(parent, "root")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := mustRoot(t, directory)
+	opened, err := root.OpenRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	if err := os.Rename(directory, directory+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), directory); err != nil {
+		t.Fatal(err)
+	}
+	if err := opened.WriteFile("sentinel", []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(directory+"-original", "sentinel")); err != nil {
+		t.Fatalf("pinned root did not address original directory: %v", err)
+	}
+}
+
 func mustRoot(t *testing.T, path string) Root {
 	t.Helper()
 	root, err := New(path)

@@ -69,6 +69,66 @@ func (r Root) Path() string {
 	return r.path
 }
 
+// OpenRoot opens the trusted root without following a symlink substituted for
+// the root path. Each existing path component is pinned and compared with the
+// directory handle opened from its parent before the next component is used.
+func (r Root) OpenRoot() (*os.Root, error) {
+	physical, err := filepath.EvalSymlinks(r.path)
+	if err != nil {
+		return nil, err
+	}
+	return openAbsoluteRootNoFollow(physical)
+}
+
+func openAbsoluteRootNoFollow(absolute string) (*os.Root, error) {
+	absolute = filepath.Clean(absolute)
+	volume := filepath.VolumeName(absolute)
+	anchor := volume + string(filepath.Separator)
+	current, err := os.OpenRoot(anchor)
+	if err != nil {
+		return nil, err
+	}
+	relative := strings.TrimPrefix(absolute, anchor)
+	if relative == "" || relative == "." {
+		return current, nil
+	}
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		before, err := current.Lstat(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		if before.Mode()&os.ModeSymlink != 0 {
+			_ = current.Close()
+			return nil, symlinkError(absolute)
+		}
+		if !before.IsDir() {
+			_ = current.Close()
+			return nil, fmt.Errorf("%q is not a directory", absolute)
+		}
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		after, err := next.Stat(".")
+		if err != nil || !os.SameFile(before, after) {
+			_ = next.Close()
+			_ = current.Close()
+			if err != nil {
+				return nil, err
+			}
+			return nil, symlinkError(absolute)
+		}
+		_ = current.Close()
+		current = next
+	}
+	return current, nil
+}
+
 // AllowingInternalSymlinks returns a copy of the root that accepts a symlinked
 // directory component below the root when that component resolves back inside
 // the root, and still rejects one that escapes.
