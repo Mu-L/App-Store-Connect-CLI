@@ -162,10 +162,11 @@ func runtimeFailureContext(analysis invocationAnalysis, err error, exitCode int)
 	}
 
 	eventContext := telemetry.EventContext{
-		InvocationShape: analysis.shape,
-		ErrorKind:       telemetry.ErrorKindOther,
-		FailureStage:    telemetry.FailureStageExecution,
-		HTTPStatus:      httpStatusFromError(err),
+		InvocationShape:  analysis.shape,
+		ErrorKind:        telemetry.ErrorKindOther,
+		FailureStage:     telemetry.FailureStageExecution,
+		HTTPStatus:       httpStatusFromError(err),
+		PublicStorefront: isPublicStorefrontError(err),
 	}
 	switch {
 	case errors.Is(err, shared.ErrMissingAuth):
@@ -203,6 +204,8 @@ func runtimeOutcomeKind(err error, exitCode int, eventContext telemetry.EventCon
 		return telemetry.OutcomeAuthError
 	case shared.IsValidationError(err):
 		return telemetry.OutcomeExpectedNegative
+	case eventContext.PublicStorefront && (eventContext.HTTPStatus == 401 || eventContext.HTTPStatus == 403):
+		return telemetry.OutcomeAPIClientError
 	case eventContext.HTTPStatus == 401 || eventContext.HTTPStatus == 403:
 		return telemetry.OutcomeAuthError
 	case eventContext.HTTPStatus == 404:
@@ -222,6 +225,11 @@ func runtimeOutcomeKind(err error, exitCode int, eventContext telemetry.EventCon
 	default:
 		return telemetry.OutcomeInternalError
 	}
+}
+
+func isPublicStorefrontError(err error) bool {
+	var storefrontError interface{ PublicStorefrontError() bool }
+	return errors.As(err, &storefrontError) && storefrontError.PublicStorefrontError()
 }
 
 func httpStatusFromError(err error) int {
