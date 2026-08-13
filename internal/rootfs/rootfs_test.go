@@ -3,12 +3,22 @@ package rootfs
 import (
 	"bytes"
 	"errors"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+type errorReader struct {
+	err error
+}
+
+func (r errorReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
 
 func TestValidateRelativeRejectsEscapes(t *testing.T) {
 	cases := []struct {
@@ -561,6 +571,50 @@ func TestCreateNewFileAtomicWritesExactMode(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("mode = %o, want 600", got)
+	}
+}
+
+func TestCreateNewFromWriteFailureLeavesNoDestination(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	wantErr := errors.New("simulated reader failure")
+	reader := io.MultiReader(strings.NewReader("partial"), errorReader{err: wantErr})
+
+	if _, err := root.CreateNewFrom("identity.p12", reader, 0o600); !errors.Is(err, wantErr) {
+		t.Fatalf("CreateNewFrom() error = %v, want %v", err, wantErr)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "identity.p12")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial destination exists after failure: %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, ".asc-tmp-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary files remain after failure: %v", matches)
+	}
+}
+
+func TestReadFileLimitedRejectsOversize(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "artifact.enc"), "12345")
+	root := mustRoot(t, dir)
+
+	if _, err := root.ReadFileLimited("artifact.enc", 4); err == nil || !strings.Contains(err.Error(), "size limit") {
+		t.Fatalf("ReadFileLimited() error = %v, want size limit", err)
+	}
+}
+
+func TestReadFileLimitedMaxIntDoesNotOverflow(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "artifact.enc"), "complete")
+	root := mustRoot(t, dir)
+	data, err := root.ReadFileLimited("artifact.enc", math.MaxInt64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "complete" {
+		t.Fatalf("data = %q", data)
 	}
 }
 
