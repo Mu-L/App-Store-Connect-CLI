@@ -133,6 +133,79 @@ encryption, serialization, immutable object keys, channel indexes, comments,
 and final install URLs remain publishing concerns rather than local preparation
 concerns.
 
+## PR 3: provider-neutral publication
+
+`asc distribute publish` consumes the immutable bundle produced by
+`asc distribute prepare` and makes it installable through a caller-owned,
+S3-compatible object store. The command intentionally does not create buckets,
+change ACLs or policies, or expose an AWS-shaped public API. The required
+storage coordinates are `--endpoint`, `--region`, `--bucket`, and `--prefix`;
+credentials come from the ordinary SDK chain, with optional `ASC_S3_*` aliases
+for agents that should not need AWS-named environment variables. `--receipt` and
+`--link-path` are also explicit required destinations outside the immutable
+prepared bundle, so publication state never contaminates a bundle that prepare
+may later reuse exactly.
+
+Private publication is the default. It stores a content-addressed IPA first,
+then an Apple installation manifest, and finally a small first-party HTML page.
+The page and manifest use bounded presigned GET URLs. The IPA URL receives a
+short download grace period so a tap near expiry can still finish. URLs are
+bearer credentials: normal JSON and receipts expose only a redacted install URL,
+while the exact URL is written only to a mode-0600 link artifact. Public publication
+requires both `--access public` and `--public-base-url`; it assumes the caller
+has already configured anonymous reads and never mutates storage policy.
+Public objects can outlive the app's signing profile; the receipt therefore
+records the profile expiry and verification facts, and publication requires a
+currently valid profile with a safety margin. Private publication additionally
+requires the profile to remain valid through the complete requested link and
+download-grace lifetime.
+
+The publisher validates a prepared `bundle.json` plus `payload/app.ipa`, rejects
+unsafe descriptor paths, and verifies the IPA digest and size before any network
+request. Existing objects are reused only when their SHA-256 metadata, length,
+and content type match exactly; mismatches are immutable-key conflicts. Every
+upload is followed by a no-redirect read verification; the IPA is downloaded
+within the declared size bound and hashed end to end.
+Retention remains the object-store operator's responsibility, preferably via a
+bucket lifecycle rule; this command never deletes older builds.
+
+Publication also fails closed until preparation records both a verified IPA code
+signature and verified provisioning-profile integrity and trust. Code-signature
+status alone is insufficient: the descriptor must carry the exact full-app scope
+`complete-main-app-code-resources-entitlements-and-profile-certificate-binding`,
+covering CodeResources, entitlements, the main executable, and profile-certificate
+binding. The publisher also requires the verified signer-certificate fingerprints
+to be canonical SHA-256 values present in the embedded profile certificate set,
+and carries that evidence into recovery receipts. Narrow, missing, `not-verified`,
+or unknown verification results are rejected even if another preparation
+implementation writes such a descriptor.
+
+The stable output contract is a camelCase JSON receipt containing schema,
+provider-neutral object coordinates, artifact identity, verification results,
+and a redacted install URL. Diagnostics and progress stay on stderr. Required
+or malformed flags are usage errors (exit 2); local validation, authentication,
+upload, and verification failures are ordinary command failures (exit 1).
+
+RED-GREEN coverage starts at the CLI boundary, then uses local HTTP servers for
+endpoint validation, signed PUT/HEAD/GET behavior, collision reuse/conflict,
+upload ordering, generated manifest/page content, presigning, verification,
+receipt/link permissions, and secret redaction. A built-binary invalid-invocation
+check and an S3-compatible integration smoke test complete verification.
+
+Alternatives considered were an AWS-specific command surface and uploading only
+an IPA. The former would leak one provider's deployment model into an agent
+workflow; the latter cannot produce Apple's `itms-services` installation flow.
+Bundling a web server in ASC was also rejected because distribution ownership,
+TLS, retention, and availability belong at the caller's chosen endpoint.
+
+This shape follows the strongest production properties already proven in other
+projects: Blockstream separates local manifest generation from provider upload
+and leaves short retention to backend lifecycle; Mattermost uses immutable
+PR/merge/commit object paths plus bucket-managed lifecycle and server-side
+encryption; Onym publishes serially and emits a structured build index and URLs.
+`ipa-server` demonstrates the value of arbitrary endpoints and public URL bases,
+but its credential-in-configuration-string pattern is explicitly not adopted.
+
 ## Placement and current behavior
 
 `asc xcode export-options generate` currently always writes
