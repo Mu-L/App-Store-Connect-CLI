@@ -95,6 +95,23 @@ Coverage must establish:
 - real archive export with Xcode 26.6 and Xcode 27 before the distribution stack
   is declared complete.
 
+## Handoff and promotion gates
+
+Each slice must be committed on its own feature branch and pushed at the exact
+revision that passed its focused tests and repository validation gates. A
+downstream slice must not be folded into the same commit merely because it uses
+the preceding command. Review handoff must record the tested Xcode versions,
+the exact commit, live verification performed, and any gate that remains.
+
+`--method` remains experimental until the complete workflow has exported a real
+archive, published a fetch-verified HTTPS manifest and IPA, and installed the
+expected bundle and build on a registered device. Manual exports still depend
+on a locally available distribution private key and provisioning profiles that
+cover every embedded target and capability. Later slices must also settle the
+security and retention contract for caller-provided storage, bearer install
+URLs, device identifiers, and resumable state before `asc distribute` can be
+promoted to stable.
+
 ## Alternatives
 
 Accepting `ad-hoc` would mirror older automation tools but create a deprecated
