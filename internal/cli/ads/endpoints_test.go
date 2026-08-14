@@ -717,7 +717,7 @@ func TestPlatformOptimizationHelpUsesOperatorFriendlyVerbs(t *testing.T) {
 	}{
 		{path: []string{"platform", "recommendations", "target-cpas", "apply"}, want: "Apply target cpa recommendations."},
 		{path: []string{"platform", "recommendations", "daily-budgets", "dismiss"}, want: "Dismiss daily budget recommendations."},
-		{path: []string{"platform", "suggestions", "keywords", "find"}, want: "Query keyword suggestions."},
+		{path: []string{"platform", "suggestions", "keywords", "find"}, want: "Find keyword suggestions."},
 	}
 	for _, test := range tests {
 		cmd := findCommand(root, test.path...)
