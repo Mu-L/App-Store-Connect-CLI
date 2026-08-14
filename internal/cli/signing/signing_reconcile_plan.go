@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -21,6 +22,9 @@ import (
 
 func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePlanOptions) (signingReconcilePlanArtifact, error) {
 	paths := reconcilePaths(options)
+	if err := validateSigningReconcileInputPaths(paths); err != nil {
+		return signingReconcilePlanArtifact{}, err
+	}
 	deviceBytes, err := readProtectedFile(paths.DevicesFile)
 	if err != nil {
 		return signingReconcilePlanArtifact{}, protectedDevicesFileUsageError(err)
@@ -105,6 +109,26 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 		return signingReconcilePlanArtifact{}, fmt.Errorf("write %s: %w", plan.Paths.PlanPath, err)
 	}
 	return plan, nil
+}
+
+func validateSigningReconcileInputPaths(paths signingReconcilePaths) error {
+	devicesPath, err := filepath.Abs(paths.DevicesFile)
+	if err != nil {
+		return shared.UsageErrorf("invalid --devices-file path")
+	}
+	planPath, err := filepath.Abs(paths.PlanPath)
+	if err != nil {
+		return shared.UsageErrorf("invalid --state-dir path")
+	}
+	if devicesPath == planPath {
+		return shared.UsageErrorf("--devices-file must be distinct from the generated plan path")
+	}
+	devicesInfo, devicesErr := os.Stat(devicesPath)
+	planInfo, planErr := os.Stat(planPath)
+	if devicesErr == nil && planErr == nil && os.SameFile(devicesInfo, planInfo) {
+		return shared.UsageErrorf("--devices-file must be distinct from the generated plan path")
+	}
+	return nil
 }
 
 // These indirections make the planning core independently testable while the

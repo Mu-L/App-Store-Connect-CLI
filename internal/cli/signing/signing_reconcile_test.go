@@ -1058,6 +1058,38 @@ func TestSigningReconcilePlanClassifiesInvalidDevicesFileAsUsageErrorBeforeSideE
 	}
 }
 
+func TestSigningReconcilePlanRejectsDevicesPlanPathCollisionBeforeSideEffects(t *testing.T) {
+	stateDir := t.TempDir()
+	devicesPath := filepath.Join(stateDir, "plan.json")
+	originalDevices := []byte(`{"schemaVersion":1,"devices":[{"name":"Phone","udid":"ABC123","platform":"IOS"}]}`)
+	if err := os.WriteFile(devicesPath, originalDevices, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalArchiveReader := readSigningArchiveRequirements
+	readSigningArchiveRequirements = func(string) (signingArchiveRequirements, error) {
+		t.Fatal("archive must not be read when devices and plan paths collide")
+		return signingArchiveRequirements{}, nil
+	}
+	t.Cleanup(func() { readSigningArchiveRequirements = originalArchiveReader })
+
+	_, err := executeSigningReconcilePlan(context.Background(), signingReconcilePlanOptions{
+		ArchivePath: "App.xcarchive",
+		DevicesFile: devicesPath,
+		StateDir:    stateDir,
+		Overwrite:   true,
+	})
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("executeSigningReconcilePlan() error = %v, want usage error", err)
+	}
+	got, readErr := os.ReadFile(devicesPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(got, originalDevices) {
+		t.Fatalf("devices file was overwritten: got %q", got)
+	}
+}
+
 func TestDecodeSigningDevicesFileStrict(t *testing.T) {
 	tests := []struct {
 		name string
