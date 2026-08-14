@@ -260,6 +260,9 @@ func ValidatePrepareOptions(options PrepareOptions) error {
 			return err
 		}
 	}
+	if err := validateDescriptorText("--source-url", options.SourceURL, 2048); err != nil {
+		return err
+	}
 	return validateSourceURL(options.SourceURL)
 }
 
