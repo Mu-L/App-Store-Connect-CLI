@@ -156,6 +156,102 @@ func TestPlatformAdAccountCreateRequiresOneProductFeature(t *testing.T) {
 	}
 }
 
+func TestPlatformCampaignDeleteCommandsRequireConfirmationFirst(t *testing.T) {
+	for _, command := range [][]string{
+		{"campaigns", "delete"},
+		{"ad-groups", "delete"},
+		{"ads", "delete"},
+		{"targeting-keywords", "delete"},
+		{"negative-keywords", "delete"},
+		{"budget-orders", "delete"},
+	} {
+		spec, ok := appleads.PlatformEndpointByCommandPath(command...)
+		if !ok {
+			t.Fatalf("missing %q", strings.Join(command, " "))
+		}
+		_, flags := bindEndpointFlags(spec, "test")
+		if err := executeEndpoint(context.Background(), spec, flags); !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), "--confirm is required") {
+			t.Errorf("%q unconfirmed error = %v, want confirmation usage error", strings.Join(command, " "), err)
+		}
+	}
+}
+
+func TestPlatformGeoSearchSerializesFixtureQueryNames(t *testing.T) {
+	spec, ok := appleads.PlatformEndpointByCommandPath("geo", "search")
+	if !ok {
+		t.Fatal("missing geo search")
+	}
+	fs, flags := bindEndpointFlags(spec, "test")
+	if err := fs.Parse([]string{
+		"--supply-source", "appstore",
+		"--query", "San Francisco",
+		"--entity", "Locality",
+		"--country-code", "us",
+		"--eligible",
+		"--offset", "20",
+		"--page-size", "50",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	query, err := collectQuery(spec, flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := query.Encode(), "countrycode=US&eligible=true&entity=Locality&offset=20&pageSize=50&query=San+Francisco&supplySource=APPSTORE"; got != want {
+		t.Fatalf("geo query = %q, want %q", got, want)
+	}
+	_, flags = bindEndpointFlags(spec, "test")
+	*flags.queryStrings["supplySource"] = "MAPS"
+	*flags.queryStrings["query"] = "x"
+	if _, err := collectQuery(spec, flags); err == nil || !strings.Contains(err.Error(), "at least 2 characters") {
+		t.Fatalf("short geo query error = %v", err)
+	}
+}
+
+func TestPlatformCampaignPathIDsAreStringsButAdamIDIsNumeric(t *testing.T) {
+	campaign, _ := appleads.PlatformEndpointByCommandPath("campaigns", "view")
+	fs, flags := bindEndpointFlags(campaign, "test")
+	if err := fs.Set("campaign", "campaign_external_01"); err != nil {
+		t.Fatal(err)
+	}
+	params, err := collectPathParams(campaign, flags)
+	if err != nil || params["id"] != "campaign_external_01" {
+		t.Fatalf("campaign path params = %#v, error = %v", params, err)
+	}
+
+	locales, _ := appleads.PlatformEndpointByCommandPath("apps", "locales", "find")
+	fs, flags = bindEndpointFlags(locales, "test")
+	if err := fs.Set("adam-id", "not-a-number"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collectPathParams(locales, flags); err == nil || !strings.Contains(err.Error(), "--adam-id must be an integer") {
+		t.Fatalf("adam ID error = %v", err)
+	}
+}
+
+func TestPlatformCampaignPauseResumeWorkflowsUseStringIDsAndConfirm(t *testing.T) {
+	root := AdsCommand()
+	for _, name := range []string{"pause", "resume"} {
+		command := findCommand(root, "platform", "campaigns", name)
+		if command == nil || command.Exec == nil {
+			t.Fatalf("missing executable platform campaigns %s", name)
+		}
+		if command.FlagSet.Lookup("ad-account") == nil || command.FlagSet.Lookup("org") != nil {
+			t.Fatalf("platform campaigns %s context flags are incorrect", name)
+		}
+		if err := command.FlagSet.Set("campaign", "campaign_external_01"); err != nil {
+			t.Fatal(err)
+		}
+		err := command.Exec(context.Background(), nil)
+		if !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), "--confirm is required") {
+			t.Fatalf("platform campaigns %s unconfirmed error = %v", name, err)
+		}
+		if !strings.Contains(command.LongHelp, `{"status":"`) || !strings.Contains(command.LongHelp, "PUT v1/campaigns/{id}") {
+			t.Fatalf("platform campaigns %s help must document its direct v1 status payload: %q", name, command.LongHelp)
+		}
+	}
+}
+
 func TestAdsCampaignsHelpReadsAsManagementSurface(t *testing.T) {
 	root := AdsCommand()
 	campaigns := findCommand(root, "campaigns")

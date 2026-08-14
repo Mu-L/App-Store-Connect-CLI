@@ -196,6 +196,57 @@ The three `find` commands above accept an omitted `--file` and then send no
 request body. Use a `QueryRequest` or eligibility query file when filters,
 sorting, or pagination are needed.
 
+## Platform campaign resources
+
+Platform v1 campaign resources use string identifiers and an ad account
+context. Create, update, and bulk commands require a JSON object file. The
+read-only `find` commands accept an optional `QueryRequest` file; omit it to
+send no request body.
+
+```bash  theme={null}
+asc ads platform campaigns create --ad-account "987654" --file campaign.json
+asc ads platform campaigns find --ad-account "987654" --file query.json
+asc ads platform ad-groups view --ad-account "987654" --ad-group "adgroup-id"
+asc ads platform ads update --ad-account "987654" --ad "ad-id" --file ad.json
+asc ads platform targeting-keywords create-bulk --ad-account "987654" --file keywords.json
+asc ads platform negative-keywords find --ad-account "987654"
+```
+
+Delete commands require `--confirm`. Platform v1 has no bulk-delete operation:
+
+```bash  theme={null}
+asc ads platform campaigns delete --ad-account "987654" --campaign "campaign-id" --confirm
+asc ads platform targeting-keywords delete --ad-account "987654" --keyword "keyword-id" --confirm
+```
+
+Pause and resume use the v1 campaign update endpoint with direct
+`{"status":"PAUSED"}` or `{"status":"ENABLED"}` payloads and require
+confirmation:
+
+```bash  theme={null}
+asc ads platform campaigns pause --ad-account "987654" --campaign "campaign-id" --confirm
+asc ads platform campaigns resume --ad-account "987654" --campaign "campaign-id" --confirm
+```
+
+Search or resolve geographic targets, and query product-page locale data:
+
+```bash  theme={null}
+asc ads platform geo search --ad-account "987654" --supply-source APPSTORE --query "San Francisco" --entity Locality
+asc ads platform geo resolve --ad-account "987654" --file geo.json
+asc ads platform apps locales find --ad-account "987654" --adam-id "123456789"
+asc ads platform product-pages locales find --ad-account "987654" --file query.json
+```
+
+Shared budgets retain the `budget-orders` command name. Create, update, and
+delete are context-free; view and find accept an optional `--ad-account`.
+
+```bash  theme={null}
+asc ads platform budget-orders create --file shared-budget.json
+asc ads platform budget-orders find --ad-account "987654"
+asc ads platform budget-orders view --budget-order "budget-id"
+asc ads platform budget-orders delete --budget-order "budget-id" --confirm
+```
+
 ## Campaigns
 
 List campaigns. The short form aliases `list`:

@@ -103,6 +103,7 @@ func PlatformEndpointSpecs() []EndpointSpec {
 		platform("platform-find-app-rejection-reasons", "POST", "v1/rejection-reasons/apps/query", []string{"rejection-reasons", "apps", "find"}, ContextAdAccount, BodyObject, true, "CreativeRejectionReasonQueryRequest", "CreativeRejectionReasonQueryResponse", nil, nil),
 		platform("platform-get-app-rejection-reason", "GET", "v1/rejection-reasons/apps/{rejectionReasonId}", []string{"rejection-reasons", "apps", "view"}, ContextAdAccount, BodyNone, false, "", "RejectionReasonResponse", []ParamSpec{rejectionReasonID}, nil),
 	}
+	specs = append(specs, platformCampaignEndpointSpecs()...)
 
 	for i := range specs {
 		if specs[i].Method == "POST" && strings.HasSuffix(specs[i].Path, "/query") {
@@ -110,6 +111,9 @@ func PlatformEndpointSpecs() []EndpointSpec {
 		}
 		if specs[i].Name == "platform-search-apps" {
 			specs[i].SupportsPaginate = true
+		}
+		if specs[i].Name == "platform-resolve-geo-locations" {
+			specs[i].RetrySafe = true
 		}
 		if specs[i].Name == "platform-update-ad-account" {
 			specs[i].ConfirmBodyField = "delegations"
