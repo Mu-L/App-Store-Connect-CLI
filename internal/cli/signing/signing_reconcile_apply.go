@@ -62,14 +62,14 @@ func executeSigningReconcileApply(ctx context.Context, planPath string) (signing
 
 	deviceData, err := readProtectedFile(plan.Paths.DevicesFile)
 	if err != nil {
-		return receipt, err
+		return receipt, shared.UsageErrorf("invalid devices file: %v", err)
 	}
 	devicesFile, err := decodeSigningDevicesFile(deviceData)
 	if err != nil {
 		return receipt, shared.UsageErrorf("invalid devices file: %v", err)
 	}
 	if err := preflightSigningApply(requestCtx, client, plan, devicesFile); err != nil {
-		return receipt, shared.UsageErrorf("remote signing state changed: %v; rerun asc signing reconcile plan", err)
+		return receipt, shared.UsageErrorf("remote signing state changed: %v; rerun asc signing reconcile plan", sanitizeReconcileError(err, devicesFile))
 	}
 	createdProfiles := make(map[string]string)
 
@@ -232,7 +232,15 @@ func verifySigningLocalInputs(plan signingReconcilePlanArtifact) error {
 	if err != nil {
 		return fmt.Errorf("inspect archive: %w", err)
 	}
-	if archive.TeamID != plan.TeamID || !reflect.DeepEqual(archive.Targets, plan.Targets) {
+	archiveTargets, err := json.Marshal(archive.Targets)
+	if err != nil {
+		return fmt.Errorf("normalize archive signing requirements: %w", err)
+	}
+	planTargets, err := json.Marshal(plan.Targets)
+	if err != nil {
+		return fmt.Errorf("normalize planned signing requirements: %w", err)
+	}
+	if archive.TeamID != plan.TeamID || !bytes.Equal(archiveTargets, planTargets) {
 		return fmt.Errorf("archive signing requirements differ from plan")
 	}
 	data, err := readProtectedFile(plan.Paths.DevicesFile)
@@ -276,6 +284,8 @@ func loadOrStartSigningReceipt(plan signingReconcilePlanArtifact) (signingReconc
 		// remote drift and missing/corrupt local profiles are repaired or blocked.
 		receipt.Actions = nil
 		receipt.Complete = false
+		receipt.StateDir = plan.Paths.StateDir
+		receipt.ReceiptPath = receiptPath
 		return receipt, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {

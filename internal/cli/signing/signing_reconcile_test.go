@@ -275,6 +275,36 @@ func TestPlanSigningTargetBlocksMismatchedAppIDSeedBeforeProfileCreation(t *test
 	}
 }
 
+func TestEnsureReconcileProfileRechecksAppIDSeedBeforeMutation(t *testing.T) {
+	mutations := 0
+	client := newSigningFetchTestClient(t, func(request *http.Request) *http.Response {
+		if request.Method != http.MethodGet {
+			mutations++
+		}
+		switch request.URL.Path {
+		case "/v1/bundleIds":
+			return signingFetchJSONResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bundle-1","attributes":{"identifier":"com.example.app","platform":"IOS","seedId":"OTHERTEAM"}}]}`)
+		default:
+			return signingFetchJSONResponse(http.StatusInternalServerError, `{}`)
+		}
+	})
+
+	_, _, err := ensureReconcileProfile(
+		context.Background(),
+		client,
+		signingReconcilePlanArtifact{},
+		signingDevicesFile{},
+		signingAction{BundleID: "com.example.app"},
+		signingTarget{BundleID: "com.example.app", AppIDPrefix: "TEAM1"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "seed ID OTHERTEAM") {
+		t.Fatalf("ensureReconcileProfile() error=%v, want seed-prefix mismatch", err)
+	}
+	if mutations != 0 {
+		t.Fatalf("ensureReconcileProfile() made %d mutations despite seed-prefix mismatch", mutations)
+	}
+}
+
 func TestPlanSigningTargetBlocksUnverifiableCapabilityValues(t *testing.T) {
 	client := newSigningFetchTestClient(t, func(request *http.Request) *http.Response {
 		switch request.URL.Path {
@@ -1046,6 +1076,94 @@ func TestSanitizeReconcileErrorRedactsDeviceSecrets(t *testing.T) {
 		if strings.Contains(got, secret) {
 			t.Fatalf("sanitized error leaked %q: %s", secret, got)
 		}
+	}
+}
+
+func TestVerifySigningLocalInputsNormalizesNumericEntitlements(t *testing.T) {
+	devicesPath := filepath.Join(t.TempDir(), "devices.json")
+	devicesBody := []byte(`{"schemaVersion":1,"devices":[{"name":"Phone","udid":"SECRET-UDID","platform":"IOS"}]}`)
+	if err := os.WriteFile(devicesPath, devicesBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := decodeSigningDevicesFile(devicesBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveTarget := signingTarget{
+		Kind: "application", RelativePath: "Products/Applications/App.app",
+		BundleID: "com.example.app", AppIDPrefix: "TEAM1", Executable: "App",
+		Entitlements: map[string]any{
+			"com.apple.developer.team-identifier": "TEAM1",
+			"com.apple.developer.example-count":   uint64(42),
+		},
+	}
+	planTarget := archiveTarget
+	planTarget.Entitlements = map[string]any{
+		"com.apple.developer.team-identifier": "TEAM1",
+		"com.apple.developer.example-count":   float64(42),
+	}
+	originalArchiveReader := readSigningArchiveRequirements
+	readSigningArchiveRequirements = func(string) (signingArchiveRequirements, error) {
+		return signingArchiveRequirements{TeamID: "TEAM1", Targets: []signingTarget{archiveTarget}}, nil
+	}
+	t.Cleanup(func() { readSigningArchiveRequirements = originalArchiveReader })
+
+	plan := signingReconcilePlanArtifact{
+		TeamID:  "TEAM1",
+		Paths:   signingReconcilePaths{ArchivePath: "App.xcarchive", DevicesFile: devicesPath},
+		Targets: []signingTarget{planTarget},
+		Devices: []signingDesiredDevice{{
+			Platform: devices.Devices[0].Platform, Fingerprint: devices.Devices[0].Fingerprint,
+			NameSHA256: fingerprintReconcileName(devices.Devices[0].Name),
+		}},
+	}
+	if err := verifySigningLocalInputs(plan); err != nil {
+		t.Fatalf("verifySigningLocalInputs() error = %v", err)
+	}
+}
+
+func TestLoadOrStartSigningReceiptRebindsPlanPaths(t *testing.T) {
+	stateDir := t.TempDir()
+	receiptPath := filepath.Join(stateDir, "receipt.json")
+	receipt := signingReconcileReceipt{
+		SchemaVersion: signingReconcileSchemaV1,
+		PlanHash:      "plan-hash",
+		StateDir:      t.TempDir(),
+		ReceiptPath:   filepath.Join(t.TempDir(), "redirected.json"),
+		Complete:      true,
+	}
+	data, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receiptPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan := signingReconcilePlanArtifact{
+		SchemaVersion: signingReconcileSchemaV1,
+		PlanHash:      receipt.PlanHash,
+		Paths:         signingReconcilePaths{StateDir: stateDir},
+	}
+	got, err := loadOrStartSigningReceipt(plan)
+	if err != nil {
+		t.Fatalf("loadOrStartSigningReceipt() error = %v", err)
+	}
+	if got.StateDir != stateDir || got.ReceiptPath != receiptPath {
+		t.Fatalf("receipt paths = %q, %q; want %q, %q", got.StateDir, got.ReceiptPath, stateDir, receiptPath)
+	}
+	if got.Complete || len(got.Actions) != 0 {
+		t.Fatalf("resumed receipt was not reset: %#v", got)
+	}
+}
+
+func TestSigningReconcilePlanClassifiesProtectedInputFailureAsUsage(t *testing.T) {
+	_, err := executeSigningReconcilePlan(context.Background(), signingReconcilePlanOptions{
+		ArchivePath: "App.xcarchive",
+		DevicesFile: filepath.Join(t.TempDir(), "missing-devices.json"),
+		StateDir:    t.TempDir(),
+	})
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("executeSigningReconcilePlan() error = %v, want usage classification", err)
 	}
 }
 

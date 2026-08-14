@@ -108,9 +108,10 @@ The plan hash covers the archive target descriptors, team and entitlements,
 desired device fingerprints, selected certificate, observed remote
 preconditions, ordered actions, mutation ceiling, and output paths. It excludes
 `generatedAt` and the hash itself. Apply re-inventories the archive and devices
-file, recomputes the hash, and then re-resolves remote preconditions. Only
-monotonic, already-satisfied drift is accepted. A conflict response is followed
-by an exact reread rather than a blind retry.
+file, recomputes the hash, and then re-resolves remote preconditions, including
+the App ID platform, seed, and capabilities immediately before profile creation.
+Only monotonic, already-satisfied drift is accepted. A conflict response is
+followed by an exact reread rather than a blind retry.
 Downloaded profiles are written create-only. A retry may reuse the same UUID
 only when the existing bytes have the identical SHA-256 digest.
 

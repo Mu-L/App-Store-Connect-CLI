@@ -112,6 +112,18 @@ func TestValidateSigningArchivePlatformAcceptsIOSAndRejectsNonIOS(t *testing.T) 
 			},
 		},
 		{
+			name: "iOS supported platforms only",
+			info: map[string]any{
+				"CFBundleSupportedPlatforms": []any{"iPhoneOS"},
+			},
+		},
+		{
+			name: "iOS platform name only",
+			info: map[string]any{
+				"DTPlatformName": "iphoneos",
+			},
+		},
+		{
 			name: "macOS",
 			info: map[string]any{
 				"CFBundleSupportedPlatforms": []any{"MacOSX"},
@@ -124,6 +136,14 @@ func TestValidateSigningArchivePlatformAcceptsIOSAndRejectsNonIOS(t *testing.T) 
 			info: map[string]any{
 				"CFBundleSupportedPlatforms": []any{"AppleTVOS"},
 				"DTPlatformName":             "appletvos",
+			},
+			wantErr: true,
+		},
+		{
+			name: "conflicting platform metadata",
+			info: map[string]any{
+				"CFBundleSupportedPlatforms": []any{"iPhoneOS"},
+				"DTPlatformName":             "macosx",
 			},
 			wantErr: true,
 		},

@@ -234,6 +234,11 @@ func inspectSigningTarget(root rootfs.Root, targetPath archiveTargetPath) (signi
 	if bundleID == "" {
 		return signingTarget{}, fmt.Errorf("info.plist: missing CFBundleIdentifier")
 	}
+	if targetPath.Kind == "application" {
+		if err := validateSigningArchivePlatform(info); err != nil {
+			return signingTarget{}, fmt.Errorf("info.plist: %w", err)
+		}
+	}
 	executable := strings.TrimSpace(plistString(info["CFBundleExecutable"]))
 	if executable == "" || executable == "." || executable == ".." || filepath.Base(executable) != executable || strings.ContainsAny(executable, `/\\`) {
 		return signingTarget{}, fmt.Errorf("info.plist: missing or unsafe CFBundleExecutable")

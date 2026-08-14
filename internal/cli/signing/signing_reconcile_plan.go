@@ -23,7 +23,7 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	paths := reconcilePaths(options)
 	deviceBytes, err := readProtectedFile(paths.DevicesFile)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("read devices file: %w", err)
+		return signingReconcilePlanArtifact{}, shared.UsageErrorf("invalid devices file: %v", err)
 	}
 	devicesFile, err := decodeSigningDevicesFile(deviceBytes)
 	if err != nil {
