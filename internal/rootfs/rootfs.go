@@ -706,7 +706,7 @@ func (r Root) CreateNewFileAtomic(name string, data []byte, perm os.FileMode) er
 	if err != nil {
 		return fmt.Errorf("open parent directory for durability sync: %w", err)
 	}
-	if err := directory.Sync(); err != nil {
+	if err := syncDirectory(directory); err != nil {
 		_ = directory.Close()
 		return fmt.Errorf("sync parent directory after publish: %w", err)
 	}

@@ -349,6 +349,62 @@ func readProtectedFileBounded(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
+func protectedDevicesFileUsageError(err error) error {
+	rendered := shared.UsageError("invalid devices file: " + protectedInputDiagnostic(err))
+	return shared.NewErrorWithCause(rendered, err)
+}
+
+func protectedPlanArtifactUsageError(err error) error {
+	rendered := shared.UsageError("invalid signing reconcile plan: " + protectedInputDiagnostic(err))
+	return shared.NewErrorWithCause(rendered, err)
+}
+
+func protectedInputDiagnostic(err error) string {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "protected input was not found"
+	case errors.Is(err, rootfs.ErrSymlink):
+		return "protected input contains a symlinked path component"
+	case strings.Contains(err.Error(), "0600 or stricter"):
+		return "protected input permissions must be 0600 or stricter"
+	case strings.Contains(err.Error(), "not a regular file"):
+		return "protected input is not a regular file"
+	case strings.Contains(err.Error(), "exceeds"):
+		return "protected input exceeds the size limit"
+	default:
+		return "protected input could not be read safely"
+	}
+}
+
+func invalidDevicesFileUsageError(err error) error {
+	rendered := shared.UsageError("invalid devices file: " + invalidDevicesFileDiagnostic(err))
+	return shared.NewErrorWithCause(rendered, err)
+}
+
+func invalidDevicesFileDiagnostic(err error) string {
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "unknown field"):
+		return "contains an unknown field"
+	case strings.Contains(message, "decode devices file"):
+		return "contains invalid JSON"
+	case strings.Contains(message, "schemaVersion"):
+		return fmt.Sprintf("schemaVersion must be %d", signingReconcileSchemaV1)
+	case strings.Contains(message, "devices must contain"):
+		return "must contain at least one device"
+	case strings.Contains(message, ".name"):
+		return "contains an invalid device name"
+	case strings.Contains(message, ".udid"):
+		return "contains an invalid device UDID"
+	case strings.Contains(message, ".platform"):
+		return "contains an unsupported device platform"
+	case strings.Contains(message, "duplicate device"):
+		return "contains a duplicate device UDID"
+	default:
+		return "failed validation"
+	}
+}
+
 func decodeSigningDevicesFile(data []byte) (signingDevicesFile, error) {
 	type rawDevice struct {
 		Name     string `json:"name"`
@@ -499,19 +555,17 @@ func writeSigningStateJSON(stateDir, relativePath string, value any, overwrite b
 func readSigningPlanArtifact(path string) (signingReconcilePlanArtifact, error) {
 	data, err := readProtectedFileBounded(path, reconcilePlanFileMaxBytes)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return signingReconcilePlanArtifact{}, shared.UsageErrorf("plan artifact not found at %s; run asc signing reconcile plan first", path)
-		}
-		return signingReconcilePlanArtifact{}, err
+		return signingReconcilePlanArtifact{}, protectedPlanArtifactUsageError(err)
 	}
 	var plan signingReconcilePlanArtifact
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
 	if err := decoder.Decode(&plan); err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("decode plan: %w", err)
+		return signingReconcilePlanArtifact{}, shared.UsageError("invalid signing reconcile plan: contains invalid JSON")
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("decode plan: %w", err)
+		return signingReconcilePlanArtifact{}, shared.UsageError("invalid signing reconcile plan: contains invalid JSON")
 	}
 	if plan.SchemaVersion != signingReconcileSchemaV1 {
 		return signingReconcilePlanArtifact{}, shared.UsageErrorf("unsupported signing reconcile plan schema version %d", plan.SchemaVersion)

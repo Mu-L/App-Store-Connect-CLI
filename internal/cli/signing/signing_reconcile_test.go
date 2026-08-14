@@ -911,7 +911,7 @@ func TestSigningReconcilePlanClassifiesInvalidDevicesFileAsUsageErrorBeforeSideE
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want empty", stdout)
 	}
-	if !strings.Contains(stderr, "decode devices file") {
+	if !strings.Contains(stderr, "contains invalid JSON") {
 		t.Fatalf("stderr = %q, want devices validation error", stderr)
 	}
 	if _, err := os.Stat(stateDir); !errors.Is(err, os.ErrNotExist) {
@@ -1041,11 +1041,188 @@ func TestSanitizeReconcileErrorRedactsDeviceSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := sanitizeReconcileError(errors.New("API rejected SECRET-UDID for Rudrank Phone and SECRETUDID"), devices).Error()
-	for _, secret := range []string{"SECRET-UDID", "SECRETUDID", "Rudrank Phone"} {
+	got := sanitizeReconcileError(errors.New("API rejected SECRET-UDID for Rudrank Phone, Rudrank+Phone, Rudrank%20Phone, and SECRETUDID"), devices).Error()
+	for _, secret := range []string{"SECRET-UDID", "SECRETUDID", "Rudrank Phone", "Rudrank+Phone", "Rudrank%20Phone"} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("sanitized error leaked %q: %s", secret, got)
 		}
+	}
+}
+
+func TestPreflightSigningApplySanitizesRemoteDeviceErrors(t *testing.T) {
+	devices, err := decodeSigningDevicesFile([]byte(`{"schemaVersion":1,"devices":[{"name":"Rudrank Phone","udid":"SECRET-UDID","platform":"IOS"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := newSigningFetchTestClient(t, func(*http.Request) *http.Response {
+		return signingFetchJSONResponse(http.StatusBadRequest, `{"errors":[{"detail":"Rudrank Phone Rudrank+Phone Rudrank%20Phone SECRET-UDID SECRETUDID"}]}`)
+	})
+
+	err = preflightSigningApplySanitized(context.Background(), client, signingReconcilePlanArtifact{}, devices)
+	if err == nil {
+		t.Fatal("preflightSigningApplySanitized() error = nil")
+	}
+	for _, secret := range []string{"Rudrank Phone", "Rudrank+Phone", "Rudrank%20Phone", "SECRET-UDID", "SECRETUDID"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("preflight error leaked %q: %v", secret, err)
+		}
+	}
+}
+
+func TestSigningDevicesUsageErrorsDoNotLeakUntrustedPathsOrFields(t *testing.T) {
+	const secret = "SECRET-UDID-Rudrank-Phone"
+	tests := []struct {
+		name string
+		err  error
+		call func(error) error
+	}{
+		{
+			name: "protected read",
+			err:  &os.PathError{Op: "open", Path: filepath.Join(t.TempDir(), secret, "devices.json"), Err: os.ErrNotExist},
+			call: protectedDevicesFileUsageError,
+		},
+		{
+			name: "parse",
+			err:  fmt.Errorf("decode devices file: json: unknown field %q", secret),
+			call: invalidDevicesFileUsageError,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, stderr := captureOutput(t, func() {
+				err := test.call(test.err)
+				if !errors.Is(err, flag.ErrHelp) {
+					t.Fatalf("error = %v, want usage classification", err)
+				}
+			})
+			if strings.Contains(stderr, secret) {
+				t.Fatalf("stderr leaked %q: %s", secret, stderr)
+			}
+			if !strings.Contains(stderr, "invalid devices file") {
+				t.Fatalf("stderr = %q, want useful devices-file diagnostic", stderr)
+			}
+		})
+	}
+}
+
+func TestSigningTargetsEqualNormalizesExactNestedNumbers(t *testing.T) {
+	archive := []signingTarget{{
+		BundleID: "com.example.app",
+		Entitlements: map[string]any{
+			"integer": uint64(7),
+			"nested": []any{
+				map[string]any{"negative": int64(-4), "fraction": float64(1.5)},
+			},
+		},
+	}}
+	plan := []signingTarget{{
+		BundleID: "com.example.app",
+		Entitlements: map[string]any{
+			"integer": json.Number("7"),
+			"nested": []any{
+				map[string]any{"negative": json.Number("-4"), "fraction": json.Number("1.5")},
+			},
+		},
+	}}
+	if !signingTargetsEqual(archive, plan) {
+		t.Fatal("signingTargetsEqual() rejected semantically equal nested numbers")
+	}
+	plan[0].Entitlements["integer"] = json.Number("8")
+	if signingTargetsEqual(archive, plan) {
+		t.Fatal("signingTargetsEqual() accepted a different integer")
+	}
+}
+
+func TestSigningTargetsEqualPreservesLargeIntegerExactness(t *testing.T) {
+	const large = uint64(9007199254740993)
+	archive := []signingTarget{{BundleID: "com.example.app", Entitlements: map[string]any{"large": large}}}
+	exact := []signingTarget{{BundleID: "com.example.app", Entitlements: map[string]any{"large": json.Number("9007199254740993")}}}
+	if !signingTargetsEqual(archive, exact) {
+		t.Fatal("exact json.Number representation of large integer was rejected")
+	}
+	different := []signingTarget{{BundleID: "com.example.app", Entitlements: map[string]any{"large": json.Number("9007199254740992")}}}
+	if signingTargetsEqual(archive, different) {
+		t.Fatal("neighboring large integers were treated as equal")
+	}
+	lossy := []signingTarget{{BundleID: "com.example.app", Entitlements: map[string]any{"large": float64(large)}}}
+	if signingTargetsEqual(archive, lossy) {
+		t.Fatal("lossy float64 representation beyond JSON's safe integer range was accepted")
+	}
+}
+
+func TestReadSigningPlanPreservesLargeEntitlementInteger(t *testing.T) {
+	const large = uint64(9007199254740993)
+	stateDir := t.TempDir()
+	plan := signingReconcilePlanArtifact{
+		SchemaVersion: signingReconcileSchemaV1,
+		Targets: []signingTarget{{
+			BundleID:     "com.example.app",
+			Entitlements: map[string]any{"large": large},
+		}},
+	}
+	var err error
+	plan.PlanHash, err = hashSigningReconcilePlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSigningStateJSON(stateDir, "plan.json", plan, false); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := readSigningPlanArtifact(filepath.Join(stateDir, "plan.json"))
+	if err != nil {
+		t.Fatalf("readSigningPlanArtifact() error = %v", err)
+	}
+	if !signingTargetsEqual(plan.Targets, decoded.Targets) {
+		t.Fatalf("decoded targets lost numeric exactness: %#v", decoded.Targets)
+	}
+}
+
+func TestLoadSigningReceiptRebindsPlanPathsBeforePersistence(t *testing.T) {
+	stateDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideReceipt := filepath.Join(outsideDir, "receipt.json")
+	if err := os.WriteFile(outsideReceipt, []byte("outside sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan := signingReconcilePlanArtifact{
+		SchemaVersion: signingReconcileSchemaV1,
+		PlanHash:      "plan-hash",
+		Paths: signingReconcilePaths{
+			StateDir:    stateDir,
+			ReceiptPath: filepath.Join(stateDir, "receipt.json"),
+		},
+	}
+	edited := signingReconcileReceipt{
+		SchemaVersion: signingReconcileSchemaV1,
+		PlanHash:      plan.PlanHash,
+		StateDir:      outsideDir,
+		ReceiptPath:   outsideReceipt,
+		Complete:      true,
+	}
+	data, err := json.Marshal(edited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "receipt.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	receipt, err := loadOrStartSigningReceipt(plan)
+	if err != nil {
+		t.Fatalf("loadOrStartSigningReceipt() error = %v", err)
+	}
+	if receipt.StateDir != stateDir || receipt.ReceiptPath != plan.Paths.ReceiptPath {
+		t.Fatalf("receipt paths = (%q, %q), want plan paths", receipt.StateDir, receipt.ReceiptPath)
+	}
+	if err := persistSigningReceipt(&receipt); err != nil {
+		t.Fatalf("persistSigningReceipt() error = %v", err)
+	}
+	outside, err := os.ReadFile(outsideReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(outside) != "outside sentinel" {
+		t.Fatalf("outside receipt was overwritten: %q", outside)
 	}
 }
 

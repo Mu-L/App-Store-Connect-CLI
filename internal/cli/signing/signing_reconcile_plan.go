@@ -23,15 +23,15 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	paths := reconcilePaths(options)
 	deviceBytes, err := readProtectedFile(paths.DevicesFile)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("read devices file: %w", err)
+		return signingReconcilePlanArtifact{}, protectedDevicesFileUsageError(err)
 	}
 	devicesFile, err := decodeSigningDevicesFile(deviceBytes)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, shared.UsageErrorf("invalid devices file: %v", err)
+		return signingReconcilePlanArtifact{}, invalidDevicesFileUsageError(err)
 	}
 	archive, err := readSigningArchiveRequirements(paths.ArchivePath)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("inspect archive: %w", err)
+		return signingReconcilePlanArtifact{}, fmt.Errorf("inspect archive: %w", sanitizeReconcileError(err, devicesFile))
 	}
 	if len(archive.Targets) == 0 {
 		return signingReconcilePlanArtifact{}, fmt.Errorf("archive contains no signing targets")
@@ -58,7 +58,7 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 
 	remoteDevices, err := getAllReconcileDevices(requestCtx, client)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("list devices: %w", err)
+		return signingReconcilePlanArtifact{}, fmt.Errorf("list devices: %w", sanitizeReconcileError(err, devicesFile))
 	}
 	resolvedDevices, deviceActions, deviceBlockers := planDesiredDevices(devicesFile.Devices, remoteDevices)
 	plan.Devices = resolvedDevices
