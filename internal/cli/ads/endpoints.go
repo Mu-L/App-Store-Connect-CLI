@@ -28,10 +28,30 @@ type endpointFlagValues struct {
 	confirm  *bool
 	paginate *bool
 
-	pathStrings  map[string]*string
-	queryStrings map[string]*string
-	queryInts    map[string]*int
-	queryBools   map[string]*bool
+	pathStrings   map[string]*string
+	queryStrings  map[string]*string
+	queryRepeated map[string]*repeatedFlagValue
+	queryInts     map[string]*int
+	queryBools    map[string]*bool
+}
+
+// repeatedFlagValue preserves each occurrence of a repeated CLI flag. A
+// single occurrence may still contain comma-separated values for compatibility
+// with the API's existing examples.
+type repeatedFlagValue struct {
+	values []string
+}
+
+func (v *repeatedFlagValue) String() string {
+	if v == nil {
+		return ""
+	}
+	return strings.Join(v.values, ",")
+}
+
+func (v *repeatedFlagValue) Set(value string) error {
+	v.values = append(v.values, value)
+	return nil
 }
 
 type commandNode struct {
@@ -184,8 +204,11 @@ func endpointLongHelp(node *commandNode, path []string) string {
 			examples[0] += " --file payload.json"
 		}
 	}
-	if node.spec.RequiresConfirm {
+	switch {
+	case node.spec.RequiresConfirm:
 		examples[0] += " --confirm"
+	case node.spec.ConfirmBodyField != "":
+		examples[0] += " [--confirm]"
 	}
 	if node.spec.RequiresOrg {
 		examples[0] += " --org ORG_ID"
@@ -270,12 +293,13 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 		common: commonFlags{
 			AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 		},
-		output:       shared.BindOutputFlags(fs),
-		flagSet:      fs,
-		pathStrings:  map[string]*string{},
-		queryStrings: map[string]*string{},
-		queryInts:    map[string]*int{},
-		queryBools:   map[string]*bool{},
+		output:        shared.BindOutputFlags(fs),
+		flagSet:       fs,
+		pathStrings:   map[string]*string{},
+		queryStrings:  map[string]*string{},
+		queryRepeated: map[string]*repeatedFlagValue{},
+		queryInts:     map[string]*int{},
+		queryBools:    map[string]*bool{},
 	}
 	if spec.RequiresOrg {
 		values.common.Org = fs.String("org", "", "Apple Ads organization ID (or ASC_ADS_ORG_ID env)")
@@ -296,6 +320,12 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 		case appleads.ParamBool:
 			values.queryBools[param.Name] = fs.Bool(param.Flag, false, flagUsage(param))
 		default:
+			if param.Repeated {
+				repeated := &repeatedFlagValue{}
+				values.queryRepeated[param.Name] = repeated
+				fs.Var(repeated, param.Flag, flagUsage(param))
+				continue
+			}
 			values.queryStrings[param.Name] = fs.String(param.Flag, "", flagUsage(param))
 		}
 	}
@@ -436,6 +466,9 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 			if raw < 0 {
 				return nil, fmt.Errorf("--%s must be >= 0", param.Flag)
 			}
+			if param.Max > 0 && param.Name != "limit" && raw > param.Max {
+				return nil, fmt.Errorf("--%s must be at most %d", param.Flag, param.Max)
+			}
 			if param.Name == "limit" {
 				maxLimit := appleads.MaxPageLimit(spec)
 				if raw < 1 || (maxLimit > 0 && raw > maxLimit) {
@@ -455,6 +488,39 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 			if spec.Name == "platform-search-geo-locations" && (param.Name == "supplySource" || param.Name == "countrycode") {
 				raw = strings.ToUpper(raw)
 			}
+			if param.Repeated {
+				rawValues := []string(nil)
+				if repeated := flags.queryRepeated[param.Name]; repeated != nil {
+					rawValues = repeated.values
+				} else if raw != "" {
+					rawValues = []string{raw}
+				}
+				if len(rawValues) == 0 {
+					if param.Required {
+						return nil, fmt.Errorf("--%s is required", param.Flag)
+					}
+					continue
+				}
+				for _, occurrence := range rawValues {
+					for _, part := range strings.Split(occurrence, ",") {
+						part = strings.TrimSpace(part)
+						if part == "" {
+							return nil, fmt.Errorf("--%s must not contain empty values", param.Flag)
+						}
+						if err := validateAllowed(param, part); err != nil {
+							return nil, err
+						}
+						if param.Name == "storeFronts" {
+							if len(part) != 2 || !isASCIIAlpha(part[0]) || !isASCIIAlpha(part[1]) {
+								return nil, fmt.Errorf("--%s values must be ISO 3166-1 alpha-2 country or region codes", param.Flag)
+							}
+							part = strings.ToUpper(part)
+						}
+						query.Add(param.Name, part)
+					}
+				}
+				continue
+			}
 			if raw == "" {
 				if param.Required {
 					return nil, fmt.Errorf("--%s is required", param.Flag)
@@ -464,23 +530,7 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 			if err := validateAllowed(param, raw); err != nil {
 				return nil, err
 			}
-			if param.Repeated {
-				for _, part := range strings.Split(raw, ",") {
-					part = strings.TrimSpace(part)
-					if part == "" {
-						return nil, fmt.Errorf("--%s must not contain empty values", param.Flag)
-					}
-					if param.Name == "storeFronts" {
-						if len(part) != 2 || !isASCIIAlpha(part[0]) || !isASCIIAlpha(part[1]) {
-							return nil, fmt.Errorf("--%s values must be ISO 3166-1 alpha-2 country or region codes", param.Flag)
-						}
-						part = strings.ToUpper(part)
-					}
-					query.Add(param.Name, part)
-				}
-			} else {
-				query.Set(param.Name, raw)
-			}
+			query.Set(param.Name, raw)
 		}
 	}
 	if spec.Name == "platform-search-apps" {

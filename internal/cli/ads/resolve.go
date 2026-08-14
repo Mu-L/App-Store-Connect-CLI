@@ -209,9 +209,6 @@ func resolveOrgIDWithSource(flags commonFlags, credentials appleads.Credentials)
 		}
 		return orgID, "credential org_id", nil
 	}
-	if strings.TrimSpace(credentials.Profile) != "" {
-		return "", "", nil
-	}
 	cfg, err := config.Load()
 	if err != nil {
 		if errors.Is(err, config.ErrNotFound) {

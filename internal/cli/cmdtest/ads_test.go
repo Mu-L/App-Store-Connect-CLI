@@ -728,9 +728,16 @@ func TestAdsPlatformAPIRequestUsesV1HostAndAdAccountContext(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
-	var output map[string]any
+	var output struct {
+		Result struct {
+			ID string `json:"id"`
+		} `json:"result"`
+	}
 	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if output.Result.ID != "123" {
+		t.Fatalf("result = %+v, want preserved v1 result envelope with id 123", output.Result)
 	}
 }
 
