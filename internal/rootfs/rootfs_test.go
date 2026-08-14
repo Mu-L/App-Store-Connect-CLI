@@ -728,6 +728,61 @@ func TestMkdirAllCreatesMissingRoot(t *testing.T) {
 	}
 }
 
+func TestMkdirAllCreatesNestedMissingRootBelowSymlinkedAncestor(t *testing.T) {
+	requireSymlinks(t)
+	parent := t.TempDir()
+	physical := filepath.Join(parent, "physical")
+	if err := os.Mkdir(physical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	selected := filepath.Join(parent, "selected")
+	if err := os.Symlink(physical, selected); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(selected, "missing", "root")
+	root := mustRoot(t, directory)
+
+	if err := root.WriteFile("sentinel", []byte("selected"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if got := mustRead(t, filepath.Join(physical, "missing", "root", "sentinel")); got != "selected" {
+		t.Fatalf("nested missing root content = %q", got)
+	}
+}
+
+func TestRootedWriteRejectsMissingRootAncestorReplacedBeforeCreation(t *testing.T) {
+	requireSymlinks(t)
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	physical := filepath.Join(parent, "physical")
+	if err := os.Mkdir(physical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	selected := filepath.Join(parent, "selected")
+	if err := os.Symlink(physical, selected); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(selected, "missing", "root")
+	root := mustRoot(t, directory)
+	root.beforeCreateRootForTest = func() {
+		if err := os.Rename(physical, physical+"-original"); err != nil {
+			t.Fatalf("rename selected ancestor: %v", err)
+		}
+		if err := os.Mkdir(physical, 0o755); err != nil {
+			t.Fatalf("replace selected ancestor: %v", err)
+		}
+	}
+
+	if err := root.WriteFile("escaped", []byte("unsafe"), 0o600); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("WriteFile() error = %v, want ErrSymlink", err)
+	}
+	if _, err := os.Stat(filepath.Join(physical, "missing", "root", "escaped")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("WriteFile() reached replacement ancestor: %v", err)
+	}
+}
+
 func TestAppendFileRefusesSymlinkAndLeavesModeIntact(t *testing.T) {
 	requireSymlinks(t)
 
