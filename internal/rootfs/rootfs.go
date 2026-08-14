@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
@@ -43,16 +44,122 @@ const (
 
 // Root is a trusted directory anchor for rooted filesystem operations.
 type Root struct {
-	path string
+	path             string
+	openPath         string
+	selectedIdentity *rootIdentity
+	pendingCreation  *rootCreation
 	// internalSymlinks tolerates symlinked components below the root when they
 	// resolve back inside the root.
 	internalSymlinks bool
 	// afterValidationForTest makes path-swap regressions deterministic. It is
 	// intentionally unexported and unset outside package tests.
 	afterValidationForTest func()
+	// beforeOpenRootForTest makes trusted-root path-swap regressions
+	// deterministic. It is intentionally unexported and unset outside tests.
+	beforeOpenRootForTest func()
+	// beforeCreateRootForTest makes missing-root ancestor replacement races
+	// deterministic. It is intentionally unexported and unset outside tests.
+	beforeCreateRootForTest func()
 	// renameNoReplaceForTest makes unsupported-filesystem regressions
 	// deterministic. It is intentionally unexported and unset outside tests.
 	renameNoReplaceForTest func(root *os.Root, oldName, newName string) error
+}
+
+type rootCreation struct {
+	mu           sync.Mutex
+	lexicalBase  string
+	physicalBase string
+	suffix       []string
+	baseIdentity *rootIdentity
+}
+
+type rootIdentity struct {
+	mu         sync.RWMutex
+	pinned     *os.Root
+	cleanup    runtime.Cleanup
+	hasCleanup bool
+	closed     bool
+}
+
+func (identity *rootIdentity) isPinned() bool {
+	if identity == nil {
+		return false
+	}
+	identity.mu.RLock()
+	defer identity.mu.RUnlock()
+	return identity.pinned != nil
+}
+
+// pin retains one descriptor for the selected directory. Keeping that
+// descriptor open prevents the original inode or file ID from being recycled
+// while Root values still refer to it. The cleanup is attached to the shared
+// identity rather than a Root copy so the descriptor is closed exactly once.
+func (identity *rootIdentity) pin(candidate *os.Root) bool {
+	if candidate == nil {
+		return false
+	}
+	if identity == nil {
+		_ = candidate.Close()
+		return false
+	}
+	identity.mu.Lock()
+	defer identity.mu.Unlock()
+	if identity.closed {
+		_ = candidate.Close()
+		return false
+	}
+	if identity.pinned == nil {
+		identity.pinned = candidate
+		identity.cleanup = runtime.AddCleanup(identity, closePinnedRoot, candidate)
+		identity.hasCleanup = true
+		return true
+	}
+	selectedInfo, selectedErr := identity.pinned.Stat(".")
+	candidateInfo, candidateErr := candidate.Stat(".")
+	_ = candidate.Close()
+	return selectedErr == nil && candidateErr == nil && os.SameFile(selectedInfo, candidateInfo)
+}
+
+func (identity *rootIdentity) matches(candidate os.FileInfo) bool {
+	if identity == nil || candidate == nil {
+		return false
+	}
+	identity.mu.RLock()
+	defer identity.mu.RUnlock()
+	if identity.pinned == nil {
+		return false
+	}
+	selected, err := identity.pinned.Stat(".")
+	return err == nil && os.SameFile(selected, candidate)
+}
+
+func closePinnedRoot(root *os.Root) {
+	_ = root.Close()
+}
+
+func (identity *rootIdentity) close() error {
+	if identity == nil {
+		return nil
+	}
+	identity.mu.Lock()
+	if identity.closed {
+		identity.mu.Unlock()
+		return nil
+	}
+	identity.closed = true
+	pinned := identity.pinned
+	identity.pinned = nil
+	cleanup := identity.cleanup
+	hasCleanup := identity.hasCleanup
+	identity.hasCleanup = false
+	identity.mu.Unlock()
+	if hasCleanup {
+		cleanup.Stop()
+	}
+	if pinned != nil {
+		return pinned.Close()
+	}
+	return nil
 }
 
 // New returns a Root anchored at path. The root itself is operator-selected and
@@ -61,11 +168,122 @@ func New(path string) (Root, error) {
 	if path == "" {
 		return Root{}, fmt.Errorf("%w: trusted root path is empty", ErrEscapesRoot)
 	}
+	if strings.ContainsRune(path, 0) {
+		return Root{}, fmt.Errorf("%w: trusted root path contains a NUL byte", ErrEscapesRoot)
+	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return Root{}, fmt.Errorf("resolve trusted root %q: %w", path, err)
 	}
-	return Root{path: filepath.Clean(absolute)}, nil
+	absolute = filepath.Clean(absolute)
+	lexicalBase, physicalBase, suffix, err := resolveRootSelection(absolute)
+	if err != nil {
+		return Root{}, fmt.Errorf("resolve trusted root %q: %w", path, err)
+	}
+	openPath := filepath.Join(append([]string{physicalBase}, suffix...)...)
+	selectedExists := len(suffix) == 0
+	root := Root{path: absolute, openPath: openPath, selectedIdentity: &rootIdentity{}}
+	if !selectedExists {
+		base, err := openAbsoluteRootNoFollow(physicalBase)
+		if err != nil {
+			return Root{}, fmt.Errorf("open trusted root ancestor %q: %w", lexicalBase, err)
+		}
+		baseInfo, statErr := base.Stat(".")
+		if statErr != nil {
+			_ = base.Close()
+			return Root{}, fmt.Errorf("stat trusted root ancestor %q: %w", lexicalBase, statErr)
+		}
+		selectedAtPath, statErr := os.Stat(lexicalBase)
+		if statErr != nil {
+			_ = base.Close()
+			return Root{}, fmt.Errorf("stat selected root ancestor %q: %w", lexicalBase, statErr)
+		}
+		if !os.SameFile(baseInfo, selectedAtPath) {
+			_ = base.Close()
+			return Root{}, symlinkError(lexicalBase)
+		}
+		baseIdentity := &rootIdentity{}
+		if !baseIdentity.pin(base) {
+			return Root{}, symlinkError(lexicalBase)
+		}
+		root.pendingCreation = &rootCreation{
+			lexicalBase:  lexicalBase,
+			physicalBase: physicalBase,
+			suffix:       append([]string(nil), suffix...),
+			baseIdentity: baseIdentity,
+		}
+		return root, nil
+	}
+	selected, err := openAbsoluteRootNoFollow(openPath)
+	if err != nil {
+		return Root{}, fmt.Errorf("open trusted root %q: %w", path, err)
+	}
+	identity, statErr := selected.Stat(".")
+	if statErr != nil {
+		_ = selected.Close()
+		return Root{}, fmt.Errorf("stat trusted root %q: %w", path, statErr)
+	}
+	selectedAtPath, err := os.Stat(absolute)
+	if err != nil {
+		_ = selected.Close()
+		return Root{}, fmt.Errorf("stat selected root %q: %w", path, err)
+	}
+	if !os.SameFile(identity, selectedAtPath) {
+		_ = selected.Close()
+		return Root{}, symlinkError(absolute)
+	}
+	if !root.selectedIdentity.pin(selected) {
+		return Root{}, symlinkError(absolute)
+	}
+	return root, nil
+}
+
+func resolveRootSelection(absolute string) (string, string, []string, error) {
+	candidate := absolute
+	reversedSuffix := make([]string, 0)
+	for {
+		_, err := os.Lstat(candidate)
+		if err == nil {
+			physical, err := filepath.EvalSymlinks(candidate)
+			if err != nil {
+				return "", "", nil, fmt.Errorf("resolve existing ancestor %q: %w", candidate, err)
+			}
+			resolvedInfo, err := os.Stat(physical)
+			if err != nil {
+				return "", "", nil, fmt.Errorf("stat existing ancestor %q: %w", candidate, err)
+			}
+			if !resolvedInfo.IsDir() {
+				return "", "", nil, fmt.Errorf("trusted root ancestor %q is not a directory", candidate)
+			}
+			suffix := make([]string, len(reversedSuffix))
+			for index := range reversedSuffix {
+				suffix[len(reversedSuffix)-1-index] = reversedSuffix[index]
+			}
+			return candidate, physical, suffix, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", "", nil, fmt.Errorf("inspect trusted root ancestor %q: %w", candidate, err)
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return "", "", nil, fmt.Errorf("no existing ancestor for trusted root %q", absolute)
+		}
+		component := filepath.Base(candidate)
+		if err := validateMissingRootComponent(component); err != nil {
+			return "", "", nil, err
+		}
+		reversedSuffix = append(reversedSuffix, component)
+		candidate = parent
+	}
+}
+
+func validateMissingRootComponent(component string) error {
+	if component == "" || component == "." || component == ".." ||
+		filepath.Clean(component) != component || filepath.IsAbs(component) ||
+		filepath.VolumeName(component) != "" || strings.ContainsRune(component, 0) {
+		return fmt.Errorf("%w: unsafe missing trusted-root component %q", ErrEscapesRoot, component)
+	}
+	return nil
 }
 
 // OpenFile opens an existing regular file through a rooted traversal. Paths
@@ -115,6 +333,94 @@ func workingDirectory() string {
 // Path returns the absolute trusted root path.
 func (r Root) Path() string {
 	return r.path
+}
+
+// Close releases the selected directory descriptor shared by this Root and all
+// of its copies. Close is idempotent; no copied Root may be used afterward.
+func (r Root) Close() error {
+	var pendingErr error
+	if r.pendingCreation != nil {
+		r.pendingCreation.mu.Lock()
+		pendingErr = r.pendingCreation.baseIdentity.close()
+		r.pendingCreation.mu.Unlock()
+	}
+	return errors.Join(r.selectedIdentity.close(), pendingErr)
+}
+
+// OpenRoot opens the trusted root without following symlinks introduced after
+// New selected it. New records the physical target of a pre-existing trusted
+// symlink layout, while later path substitutions cannot change the selected
+// directory identity. Every physical component and the final root are reopened
+// from parent directory handles.
+func (r Root) OpenRoot() (*os.Root, error) {
+	if r.beforeOpenRootForTest != nil {
+		r.beforeOpenRootForTest()
+	}
+	if !r.selectedIdentity.isPinned() {
+		return nil, symlinkError(r.path)
+	}
+	opened, err := openAbsoluteRootNoFollow(r.openPath)
+	if err != nil {
+		return nil, err
+	}
+	identity, err := opened.Stat(".")
+	if err != nil || !r.selectedIdentity.matches(identity) {
+		_ = opened.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, symlinkError(r.path)
+	}
+	return opened, nil
+}
+
+func openAbsoluteRootNoFollow(absolute string) (*os.Root, error) {
+	absolute = filepath.Clean(absolute)
+	volume := filepath.VolumeName(absolute)
+	anchor := volume + string(filepath.Separator)
+	current, err := os.OpenRoot(anchor)
+	if err != nil {
+		return nil, err
+	}
+	relative := strings.TrimPrefix(absolute, anchor)
+	if relative == "" || relative == "." {
+		return current, nil
+	}
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		before, err := current.Lstat(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		if before.Mode()&os.ModeSymlink != 0 {
+			_ = current.Close()
+			return nil, symlinkError(absolute)
+		}
+		if !before.IsDir() {
+			_ = current.Close()
+			return nil, fmt.Errorf("%q is not a directory", absolute)
+		}
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		after, err := next.Stat(".")
+		if err != nil || !os.SameFile(before, after) {
+			_ = next.Close()
+			_ = current.Close()
+			if err != nil {
+				return nil, err
+			}
+			return nil, symlinkError(absolute)
+		}
+		_ = current.Close()
+		current = next
+	}
+	return current, nil
 }
 
 // AllowingInternalSymlinks returns a copy of the root that accepts a symlinked
@@ -951,18 +1257,161 @@ func (r Root) ensureRootDir(perm os.FileMode) error {
 		if !info.IsDir() {
 			return fmt.Errorf("trusted root %q is not a directory", r.path)
 		}
-		return nil
+		if r.selectedIdentity.isPinned() {
+			return nil
+		}
 	case !errors.Is(err, os.ErrNotExist):
 		return err
 	}
-	if err := os.MkdirAll(r.path, perm); err != nil {
+	if r.selectedIdentity.isPinned() {
+		return symlinkError(r.path)
+	}
+	if r.pendingCreation == nil {
+		return symlinkError(r.path)
+	}
+	r.pendingCreation.mu.Lock()
+	defer r.pendingCreation.mu.Unlock()
+	if r.selectedIdentity.isPinned() {
+		return nil
+	}
+	if r.beforeCreateRootForTest != nil {
+		r.beforeCreateRootForTest()
+	}
+	baseAtPath, err := os.Stat(r.pendingCreation.lexicalBase)
+	if err != nil {
 		return err
+	}
+	if !r.pendingCreation.baseIdentity.matches(baseAtPath) {
+		return symlinkError(r.pendingCreation.lexicalBase)
+	}
+	base, err := openAbsoluteRootNoFollow(r.pendingCreation.physicalBase)
+	if err != nil {
+		return err
+	}
+	baseInfo, err := base.Stat(".")
+	if err != nil || !r.pendingCreation.baseIdentity.matches(baseInfo) {
+		_ = base.Close()
+		if err != nil {
+			return err
+		}
+		return symlinkError(r.pendingCreation.physicalBase)
+	}
+	created, err := createMissingRoot(base, r.pendingCreation.suffix, perm, r.pendingCreation.physicalBase)
+	if err != nil {
+		return err
+	}
+	selectedAtPath, err := os.Stat(r.path)
+	if err != nil {
+		created.rollback()
+		return err
+	}
+	openedInfo, err := created.final.Stat(".")
+	if err != nil || !os.SameFile(openedInfo, selectedAtPath) {
+		created.rollback()
+		if err != nil {
+			return err
+		}
+		return symlinkError(r.path)
+	}
+	if err := r.pendingCreation.baseIdentity.close(); err != nil {
+		created.rollback()
+		return err
+	}
+	opened := created.release()
+	if !r.selectedIdentity.pin(opened) {
+		return symlinkError(r.path)
 	}
 	return nil
 }
 
+type missingRootCreation struct {
+	roots      []*os.Root
+	suffix     []string
+	created    []bool
+	final      *os.Root
+	terminated bool
+}
+
+func (creation *missingRootCreation) rollback() {
+	if creation == nil || creation.terminated {
+		return
+	}
+	creation.terminated = true
+	for index := len(creation.suffix) - 1; index >= 0; index-- {
+		if creation.created[index] {
+			_ = creation.roots[index].Remove(creation.suffix[index])
+		}
+	}
+	for _, root := range creation.roots {
+		_ = root.Close()
+	}
+}
+
+func (creation *missingRootCreation) release() *os.Root {
+	if creation == nil || creation.terminated {
+		return nil
+	}
+	creation.terminated = true
+	for index := 0; index < len(creation.roots)-1; index++ {
+		_ = creation.roots[index].Close()
+	}
+	return creation.final
+}
+
+func createMissingRoot(base *os.Root, suffix []string, perm os.FileMode, basePath string) (_ *missingRootCreation, resultErr error) {
+	creation := &missingRootCreation{
+		roots:   []*os.Root{base},
+		suffix:  append([]string(nil), suffix...),
+		created: make([]bool, len(suffix)),
+	}
+	defer func() {
+		if resultErr != nil {
+			creation.rollback()
+		}
+	}()
+	current := base
+	for index, component := range suffix {
+		componentPath := filepath.Join(append([]string{basePath}, suffix[:index+1]...)...)
+		if err := validateMissingRootComponent(component); err != nil {
+			return nil, err
+		}
+		if _, err := current.Lstat(component); err == nil {
+			return nil, symlinkError(componentPath)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		if err := current.Mkdir(component, perm); err != nil {
+			return nil, err
+		}
+		creation.created[index] = true
+		before, err := current.Lstat(component)
+		if err != nil {
+			return nil, err
+		}
+		if before.Mode()&os.ModeSymlink != 0 || !before.IsDir() {
+			return nil, symlinkError(componentPath)
+		}
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			return nil, err
+		}
+		after, err := next.Stat(".")
+		if err != nil || !os.SameFile(before, after) {
+			_ = next.Close()
+			if err != nil {
+				return nil, err
+			}
+			return nil, symlinkError(componentPath)
+		}
+		creation.roots = append(creation.roots, next)
+		current = next
+	}
+	creation.final = current
+	return creation, nil
+}
+
 func (r Root) openRooted(absolute string, resolveFinal bool) (*os.Root, string, error) {
-	rooted, err := os.OpenRoot(r.path)
+	rooted, err := r.OpenRoot()
 	if err != nil {
 		return nil, "", err
 	}

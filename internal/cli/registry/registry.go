@@ -31,6 +31,7 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/completion"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/devices"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/diffcmd"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/distribute"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/docs"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/encryption"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/eula"
@@ -153,6 +154,7 @@ func NewCatalog(version string) *Catalog {
 		commandFactory("release", "Run high-level App Store release workflows.", release.ReleaseCommand),
 		commandFactory("workflow", "Run multi-step automation workflows.", workflow.WorkflowCommand),
 		commandFactory("xcode", "Local Xcode build/archive/export helpers (macOS only).", xcode.XcodeCommand),
+		commandFactory("distribute", "Inspect and prepare local iOS distribution artifacts. [experimental]", distribute.DistributeCommand),
 		commandFactory("versions", "Manage App Store versions.", versions.VersionsCommand),
 		commandFactory("product-pages", "Manage custom product pages and product page experiments.", productpages.ProductPagesCommand),
 		commandFactory("routing-coverage", "Manage routing app coverage files.", routingcoverage.RoutingCoverageCommand),
