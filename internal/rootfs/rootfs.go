@@ -62,8 +62,11 @@ type Root struct {
 }
 
 type rootIdentity struct {
-	mu     sync.RWMutex
-	pinned *os.Root
+	mu         sync.RWMutex
+	pinned     *os.Root
+	cleanup    runtime.Cleanup
+	hasCleanup bool
+	closed     bool
 }
 
 func (identity *rootIdentity) isPinned() bool {
@@ -89,9 +92,14 @@ func (identity *rootIdentity) pin(candidate *os.Root) bool {
 	}
 	identity.mu.Lock()
 	defer identity.mu.Unlock()
+	if identity.closed {
+		_ = candidate.Close()
+		return false
+	}
 	if identity.pinned == nil {
 		identity.pinned = candidate
-		runtime.AddCleanup(identity, closePinnedRoot, candidate)
+		identity.cleanup = runtime.AddCleanup(identity, closePinnedRoot, candidate)
+		identity.hasCleanup = true
 		return true
 	}
 	selectedInfo, selectedErr := identity.pinned.Stat(".")
@@ -115,6 +123,31 @@ func (identity *rootIdentity) matches(candidate os.FileInfo) bool {
 
 func closePinnedRoot(root *os.Root) {
 	_ = root.Close()
+}
+
+func (identity *rootIdentity) close() error {
+	if identity == nil {
+		return nil
+	}
+	identity.mu.Lock()
+	if identity.closed {
+		identity.mu.Unlock()
+		return nil
+	}
+	identity.closed = true
+	pinned := identity.pinned
+	identity.pinned = nil
+	cleanup := identity.cleanup
+	hasCleanup := identity.hasCleanup
+	identity.hasCleanup = false
+	identity.mu.Unlock()
+	if hasCleanup {
+		cleanup.Stop()
+	}
+	if pinned != nil {
+		return pinned.Close()
+	}
+	return nil
 }
 
 // New returns a Root anchored at path. The root itself is operator-selected and
@@ -169,6 +202,12 @@ func New(path string) (Root, error) {
 // Path returns the absolute trusted root path.
 func (r Root) Path() string {
 	return r.path
+}
+
+// Close releases the descriptor that pins the selected root. Root copies share
+// that descriptor, so closing any copy closes the shared root identity.
+func (r Root) Close() error {
+	return r.selectedIdentity.close()
 }
 
 // OpenRoot opens the trusted root without following symlinks introduced after

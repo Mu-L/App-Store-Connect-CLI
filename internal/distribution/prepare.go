@@ -54,9 +54,30 @@ type PrepareResult struct {
 
 // PrepareIPA validates an already-open IPA and publishes an immutable local
 // bundle without replacing an existing destination.
-func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResult, error) {
+func PrepareIPA(file *os.File, size int64, options PrepareOptions) (result PrepareResult, resultErr error) {
 	if err := ValidatePrepareOptions(options); err != nil {
 		return PrepareResult{}, err
+	}
+	rootPath := strings.TrimSpace(options.Root)
+	if rootPath == "" {
+		rootPath = "."
+	}
+	root, err := rootfs.New(rootPath)
+	if err != nil {
+		return PrepareResult{}, fmt.Errorf("prepare output root: %w", err)
+	}
+	defer func() {
+		if err := root.Close(); resultErr == nil && err != nil {
+			result = PrepareResult{}
+			resultErr = fmt.Errorf("close distribution output root: %w", err)
+		}
+	}()
+	probe, err := root.OpenRoot()
+	if err != nil {
+		return PrepareResult{}, fmt.Errorf("open distribution output root: %w", err)
+	}
+	if err := probe.Close(); err != nil {
+		return PrepareResult{}, fmt.Errorf("close distribution output root: %w", err)
 	}
 	snapshot, digest, cleanup, err := snapshotIPA(file, size)
 	if err != nil {
@@ -110,14 +131,6 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	}
 	descriptorData = append(descriptorData, '\n')
 
-	rootPath := strings.TrimSpace(options.Root)
-	if rootPath == "" {
-		rootPath = "."
-	}
-	root, err := rootfs.New(rootPath)
-	if err != nil {
-		return PrepareResult{}, fmt.Errorf("prepare output root: %w", err)
-	}
 	relativeOutput, err := prepareOutputPath(inspection, options.OutputDir)
 	if err != nil {
 		return PrepareResult{}, err
@@ -141,7 +154,7 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	defer parent.Close()
 	bundlePath := filepath.Join(root.Path(), relativeOutput)
 	finalName := filepath.Base(relativeOutput)
-	result := PrepareResult{BundlePath: bundlePath, Descriptor: descriptor}
+	result = PrepareResult{BundlePath: bundlePath, Descriptor: descriptor}
 	if reused, exists, err := exactBundleExists(parent, finalName, descriptorData, descriptor.Artifact); err != nil {
 		return PrepareResult{}, err
 	} else if exists {

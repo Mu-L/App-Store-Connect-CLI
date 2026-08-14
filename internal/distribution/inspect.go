@@ -183,7 +183,8 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 		return Inspection{}, fmt.Errorf("IPA contains %d entries; limit is %d", len(reader.File), maxArchiveEntries)
 	}
 
-	seen := make(map[string]struct{}, len(reader.File))
+	seen := make(map[string]bool, len(reader.File))
+	hasDescendants := make(map[string]struct{}, len(reader.File))
 	var infoFiles []*zip.File
 	var embeddedTargets []string
 	var declaredExpandedBytes uint64
@@ -199,7 +200,21 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 		if _, exists := seen[key]; exists {
 			return Inspection{}, fmt.Errorf("IPA contains duplicate path %q", member.Name)
 		}
-		seen[key] = struct{}{}
+		isDirectory := member.FileInfo().IsDir()
+		for ancestor := path.Dir(key); ancestor != "."; ancestor = path.Dir(ancestor) {
+			if ancestorIsDirectory, exists := seen[ancestor]; exists && !ancestorIsDirectory {
+				return Inspection{}, fmt.Errorf("IPA contains file/directory path collision involving %q", member.Name)
+			}
+		}
+		if !isDirectory {
+			if _, exists := hasDescendants[key]; exists {
+				return Inspection{}, fmt.Errorf("IPA contains file/directory path collision involving %q", member.Name)
+			}
+		}
+		seen[key] = isDirectory
+		for ancestor := path.Dir(key); ancestor != "."; ancestor = path.Dir(ancestor) {
+			hasDescendants[ancestor] = struct{}{}
+		}
 		if isMainAppMember(member.Name, "Info.plist") && !member.FileInfo().IsDir() {
 			infoFiles = append(infoFiles, member)
 		} else if isEmbeddedTargetInfoPlist(member.Name) && !member.FileInfo().IsDir() {
@@ -359,6 +374,9 @@ func validateArchiveMember(member *zip.File) error {
 }
 
 func validateAppMetadata(app App) error {
+	if err := validateBundleIdentifier(app.BundleID); err != nil {
+		return err
+	}
 	for _, field := range []struct {
 		name  string
 		value string
@@ -376,6 +394,30 @@ func validateAppMetadata(app App) error {
 		for _, r := range field.value {
 			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.In(r, unicode.Bidi_Control) {
 				return fmt.Errorf("invalid %s: control or formatting characters are not allowed", field.name)
+			}
+		}
+	}
+	return nil
+}
+
+func validateBundleIdentifier(value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 255 {
+		return fmt.Errorf("invalid CFBundleIdentifier: must be at most 255 bytes")
+	}
+	for _, component := range strings.Split(value, ".") {
+		if component == "" {
+			return fmt.Errorf("invalid CFBundleIdentifier: components must not be empty")
+		}
+		for index := 0; index < len(component); index++ {
+			character := component[index]
+			if (character < 'a' || character > 'z') &&
+				(character < 'A' || character > 'Z') &&
+				(character < '0' || character > '9') &&
+				character != '-' {
+				return fmt.Errorf("invalid CFBundleIdentifier: only ASCII alphanumeric characters, hyphens, and periods are allowed")
 			}
 		}
 	}
