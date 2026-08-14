@@ -397,6 +397,25 @@ func TestNamedAdsProfileWithoutAdAccountDoesNotInheritAnotherProfileDefault(t *t
 	}
 }
 
+func TestAdsAuthDiscoveryPreservesInt64Identifiers(t *testing.T) {
+	const largeID = "9007199254740993"
+	if got := discoveryUserSummary(json.RawMessage(`{"userId":` + largeID + `}`)); got != largeID {
+		t.Fatalf("discoveryUserSummary() = %q, want %q", got, largeID)
+	}
+
+	accounts, err := summarizePlatformACLAccounts(
+		appleads.RawResponse(`{"result":{"acls":[{"adAccount":{"id":`+largeID+`,"orgId":`+largeID+`,"name":"Large"},"roles":["Admin"]}]}}`),
+		largeID,
+		largeID,
+	)
+	if err != nil {
+		t.Fatalf("summarizePlatformACLAccounts() error: %v", err)
+	}
+	if len(accounts) != 1 || accounts[0].AdAccountID != largeID || accounts[0].OrgID != largeID || !accounts[0].Active {
+		t.Fatalf("accounts = %+v, want exact active int64 identifiers", accounts)
+	}
+}
+
 func TestPlatformOptionalBodyAndUnboundedLimit(t *testing.T) {
 	spec := appleads.EndpointSpec{
 		Name:         "platform-query",

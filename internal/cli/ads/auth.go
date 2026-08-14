@@ -1,6 +1,7 @@
 package ads
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -590,7 +591,7 @@ func printDiscoveryTable(result adsAuthDiscoveryOutput) {
 
 func discoveryUserSummary(me json.RawMessage) string {
 	var user map[string]any
-	if err := json.Unmarshal(me, &user); err != nil {
+	if err := unmarshalJSONPreservingNumbers(me, &user); err != nil {
 		return ""
 	}
 	id := jsonScalarString(firstMapValue(user, "userId", "id"))
@@ -632,7 +633,7 @@ func summarizePlatformACLAccounts(raw appleads.RawResponse, activeOrgID, activeA
 			} `json:"acls"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
+	if err := unmarshalJSONPreservingNumbers(raw, &envelope); err != nil {
 		return nil, err
 	}
 	accounts := make([]adsAuthAccountSummary, 0, len(envelope.Result.ACLs))
@@ -649,6 +650,12 @@ func summarizePlatformACLAccounts(raw appleads.RawResponse, activeOrgID, activeA
 		accounts = append(accounts, account)
 	}
 	return accounts, nil
+}
+
+func unmarshalJSONPreservingNumbers(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	return decoder.Decode(target)
 }
 
 func firstMapValue(item map[string]any, keys ...string) any {
