@@ -8,11 +8,37 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	core "github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
 )
+
+type publicationVerifier struct {
+	delegate        core.Verifier
+	documentTimeout time.Duration
+}
+
+func newPublicationVerifier(documentTimeout time.Duration) (*publicationVerifier, error) {
+	delegate, err := core.NewHTTPVerifierWithEnvironmentTrust(0)
+	if err != nil {
+		return nil, err
+	}
+	return &publicationVerifier{delegate: delegate, documentTimeout: documentTimeout}, nil
+}
+
+func (verifier *publicationVerifier) Verify(ctx context.Context, request core.VerifyRequest) error {
+	verifyParent := ctx
+	var verifyCtx context.Context
+	var cancel context.CancelFunc
+	if request.Kind == core.VerifyIPA {
+		verifyParent = shared.ContextWithoutTimeout(ctx)
+		verifyCtx, cancel = shared.ContextWithUploadTimeout(verifyParent)
+	} else {
+		verifyCtx, cancel = context.WithTimeout(verifyParent, verifier.documentTimeout)
+	}
+	defer cancel()
+	return verifier.delegate.Verify(verifyCtx, request)
+}
 
 type publishRequest struct {
 	BundleDir              string
@@ -184,7 +210,7 @@ func executePublish(ctx context.Context, request publishRequest) (publishExecuti
 		if err := validateRecoveredState(recoveredState, bundle, validatedEndpoint.String(), effectiveDownloadEndpoint(request.Endpoint, request.DownloadEndpoint), normalizedPublicBase(request.PublicBaseURL), request.Region, request.AddressingStyle, request.Bucket, request.Prefix, accessMode, request.URLTTL, request.DownloadGrace, resolvedReceiptPath, resolvedLinkPath); err != nil {
 			return publishExecutionResult{}, fmt.Errorf("distribute publish: %w", err)
 		}
-		verifier, err := core.NewHTTPVerifierWithEnvironmentTrust(request.VerifyTimeout)
+		verifier, err := newPublicationVerifier(request.VerifyTimeout)
 		if err != nil {
 			return publishExecutionResult{}, fmt.Errorf("configure publication verifier: %w", err)
 		}
@@ -223,7 +249,7 @@ func executePublish(ctx context.Context, request publishRequest) (publishExecuti
 		credentialSource = provider.CredentialSource()
 	}
 	fmt.Fprintf(diagnostic, "Publishing to endpoint=%s download-endpoint=%s bucket=%s region=%s addressing=%s prefix=%s access=%s credentials=%s\n", endpointOrigin(request.Endpoint), effectiveDownloadEndpoint(request.Endpoint, request.DownloadEndpoint), request.Bucket, request.Region, request.AddressingStyle, request.Prefix, accessMode, credentialSource)
-	verifier, err := core.NewHTTPVerifierWithEnvironmentTrust(request.VerifyTimeout)
+	verifier, err := newPublicationVerifier(request.VerifyTimeout)
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("configure publication verifier: %w", err)
 	}
@@ -296,7 +322,7 @@ func reverifyPrivatePublish(ctx context.Context, request privatePublishVerificat
 	if err := artifacts.verifyExactReceipt(state.Receipt); err != nil {
 		return publishExecutionResult{}, fmt.Errorf("verify publication receipt: %w", err)
 	}
-	verifier, err := core.NewHTTPVerifierWithEnvironmentTrust(request.VerifyTimeout)
+	verifier, err := newPublicationVerifier(request.VerifyTimeout)
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("configure publication verifier: %w", err)
 	}
@@ -398,13 +424,5 @@ func validateStoredPrivateState(state publishState, bundle *core.PreparedBundle,
 }
 
 func validPublishBucket(bucket string) bool {
-	if bucket == "" || len(bucket) > 255 || strings.TrimSpace(bucket) != bucket {
-		return false
-	}
-	for _, character := range bucket {
-		if unicode.IsSpace(character) || unicode.IsControl(character) || unicode.In(character, unicode.Cf) {
-			return false
-		}
-	}
-	return true
+	return core.ValidateBucket(bucket) == nil
 }

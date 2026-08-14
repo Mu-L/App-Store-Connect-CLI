@@ -188,6 +188,16 @@ func TestGitStoreListEncryptedFilesRejectsLiteralBackslashPath(t *testing.T) {
 	}
 }
 
+func TestNormalizeEncryptedRepositoryPathAcceptsWindowsSeparators(t *testing.T) {
+	got, err := normalizeEncryptedRepositoryPath(`profiles\appstore\app.enc`, '\\')
+	if err != nil {
+		t.Fatalf("normalizeEncryptedRepositoryPath() error = %v", err)
+	}
+	if got != "profiles/appstore/app.enc" {
+		t.Fatalf("normalizeEncryptedRepositoryPath() = %q, want slash-separated path", got)
+	}
+}
+
 func TestGitStoreListEncryptedFilesRejectsControlAndBidiPaths(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows rejects some control characters at filesystem creation")

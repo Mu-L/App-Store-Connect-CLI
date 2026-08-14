@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -475,8 +476,8 @@ func Publish(ctx context.Context, ipa io.ReadSeeker, descriptor PreparedDescript
 	if err != nil {
 		return PublishReceipt{}, SensitiveLinks{}, err
 	}
-	if strings.TrimSpace(options.Bucket) == "" {
-		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("bucket is required")
+	if err := ValidateBucket(options.Bucket); err != nil {
+		return PublishReceipt{}, SensitiveLinks{}, err
 	}
 	if options.Access != AccessPrivate && options.Access != AccessPublic {
 		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("access must be private or public")
@@ -629,6 +630,27 @@ func Reverify(ctx context.Context, verifier Verifier, receipt PublishReceipt, li
 	if err := linkMatchesDestination(links.InstallURL, receipt.Page.Key, receipt); err != nil {
 		return fmt.Errorf("saved install URL: %w", err)
 	}
+	if receipt.Access == AccessPrivate {
+		grace, err := time.ParseDuration(receipt.DownloadGrace)
+		if err != nil || grace < 0 || grace > maxLinkLifetime {
+			return fmt.Errorf("saved publication has invalid download grace")
+		}
+		pageDeadline := *receipt.ExpiresAt
+		downloadDeadline := pageDeadline.Add(grace)
+		for _, link := range []struct {
+			name     string
+			rawURL   string
+			deadline time.Time
+		}{
+			{name: "artifact", rawURL: links.ArtifactURL, deadline: downloadDeadline},
+			{name: "manifest", rawURL: links.ManifestURL, deadline: downloadDeadline},
+			{name: "install", rawURL: links.InstallURL, deadline: pageDeadline},
+		} {
+			if err := privateSignatureWithinDeadline(link.rawURL, link.deadline); err != nil {
+				return fmt.Errorf("saved %s URL: %w", link.name, err)
+			}
+		}
+	}
 	manifest, err := makeManifest(receipt.App, links.ArtifactURL)
 	if err != nil || !objectMatchesBytes(receipt.Manifest, manifest, ContentTypeManifest) {
 		return fmt.Errorf("saved manifest identity does not match generated content")
@@ -652,6 +674,32 @@ func Reverify(ctx context.Context, verifier Verifier, receipt PublishReceipt, li
 			}
 			return err
 		}
+	}
+	return nil
+}
+
+func privateSignatureWithinDeadline(rawURL string, deadline time.Time) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("has invalid AWS Signature V4 expiry")
+	}
+	query := parsed.Query()
+	dates, dateFound := query["X-Amz-Date"]
+	lifetimes, lifetimeFound := query["X-Amz-Expires"]
+	if !dateFound || len(dates) != 1 || dates[0] == "" || !lifetimeFound || len(lifetimes) != 1 || lifetimes[0] == "" {
+		return fmt.Errorf("has invalid AWS Signature V4 expiry")
+	}
+	signedAt, err := time.Parse("20060102T150405Z", dates[0])
+	if err != nil {
+		return fmt.Errorf("has invalid AWS Signature V4 expiry")
+	}
+	lifetimeSeconds, err := strconv.ParseInt(lifetimes[0], 10, 64)
+	if err != nil || lifetimeSeconds <= 0 || lifetimeSeconds > int64(maxLinkLifetime/time.Second) || strconv.FormatInt(lifetimeSeconds, 10) != lifetimes[0] {
+		return fmt.Errorf("has invalid AWS Signature V4 expiry")
+	}
+	signedExpiry := signedAt.Add(time.Duration(lifetimeSeconds) * time.Second)
+	if signedExpiry.After(deadline) {
+		return fmt.Errorf("signed expiry exceeds saved publication deadline")
 	}
 	return nil
 }
@@ -783,11 +831,23 @@ func makeInstallPage(app PreparedApp, directInstallURL string) ([]byte, error) {
 
 func containsUnsafeText(value string) bool {
 	for _, character := range value {
-		if unicode.IsControl(character) || (character >= '\u202a' && character <= '\u202e') || (character >= '\u2066' && character <= '\u2069') {
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) || unicode.In(character, unicode.Bidi_Control) {
 			return true
 		}
 	}
 	return false
+}
+
+func ValidateBucket(raw string) error {
+	if raw == "" || len([]byte(raw)) > 255 || strings.TrimSpace(raw) != raw {
+		return fmt.Errorf("bucket must be a bounded name without whitespace, control, or formatting characters")
+	}
+	for _, character := range raw {
+		if unicode.IsSpace(character) || unicode.IsControl(character) || unicode.Is(unicode.Cf, character) || unicode.In(character, unicode.Bidi_Control) {
+			return fmt.Errorf("bucket must be a bounded name without whitespace, control, or formatting characters")
+		}
+	}
+	return nil
 }
 
 func requireHTTPSURL(raw string) error {

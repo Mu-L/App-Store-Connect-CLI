@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -182,6 +183,20 @@ func TestPublishRejectsProfileExpiringBeforePrivateLinkWithoutWriting(t *testing
 	}
 }
 
+func TestPublishRejectsUnsafeBucketBeforeWriting(t *testing.T) {
+	store := &fakeObjectStore{}
+	_, _, err := Publish(context.Background(), bytes.NewReader([]byte("ipa")), minimalDescriptor([]byte("ipa")), PublishOptions{
+		Store: store, Verifier: &recordingVerifier{}, Bucket: "bucket\u200bhidden", Prefix: "app", Access: AccessPrivate,
+		URLTTL: time.Hour, DownloadGrace: time.Minute,
+	})
+	if err == nil || !strings.Contains(err.Error(), "bucket") {
+		t.Fatalf("Publish() error = %v, want unsafe bucket rejection", err)
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("store calls = %v, want none", store.calls)
+	}
+}
+
 func TestPresignedLifetimesShrinkAsPublicationWorkElapses(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	store := &delayedPresignStore{fakeObjectStore: fakeObjectStore{}, now: now}
@@ -309,31 +324,79 @@ func TestReverifyRejectsDifferentPrivateOriginWithExpectedObjectPath(t *testing.
 }
 
 func TestReverifyAcceptsBoundPrivatePathStyleLinks(t *testing.T) {
-	expires := time.Now().Add(time.Hour)
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	expires := signedAt.Add(time.Hour)
 	receipt := PublishReceipt{
 		SchemaVersion: "1", Access: AccessPrivate, DownloadEndpoint: "https://downloads.example.com", AddressingStyle: "path", Bucket: "bucket",
-		Artifact:  StoredObject{Key: "prefix/app.ipa", SHA256: "a", SizeBytes: 1, ContentType: ContentTypeIPA},
-		Manifest:  StoredObject{Key: "prefix/manifest.plist", SHA256: "b", SizeBytes: 1, ContentType: ContentTypeManifest},
-		Page:      StoredObject{Key: "prefix/index.html", SHA256: "c", SizeBytes: 1, ContentType: ContentTypeHTML},
-		ExpiresAt: &expires,
+		Artifact:      StoredObject{Key: "prefix/app.ipa", SHA256: "a", SizeBytes: 1, ContentType: ContentTypeIPA},
+		Manifest:      StoredObject{Key: "prefix/manifest.plist", SHA256: "b", SizeBytes: 1, ContentType: ContentTypeManifest},
+		Page:          StoredObject{Key: "prefix/index.html", SHA256: "c", SizeBytes: 1, ContentType: ContentTypeHTML},
+		DownloadGrace: "0s", ExpiresAt: &expires,
 	}
 	links := SensitiveLinks{
 		SchemaVersion: "1", ExpiresAt: &expires,
-		InstallURL:  "https://downloads.example.com/bucket/prefix/index.html?X-Amz-Signature=one",
-		ManifestURL: "https://downloads.example.com/bucket/prefix/manifest.plist?X-Amz-Signature=two",
-		ArtifactURL: "https://downloads.example.com/bucket/prefix/app.ipa?X-Amz-Signature=three",
+		InstallURL:  privateSignatureFixture("/bucket/prefix/index.html", signedAt, time.Hour),
+		ManifestURL: privateSignatureFixture("/bucket/prefix/manifest.plist", signedAt, time.Hour),
+		ArtifactURL: privateSignatureFixture("/bucket/prefix/app.ipa", signedAt, time.Hour),
 	}
 	links.DirectInstallURL = "itms-services://?action=download-manifest&url=" + url.QueryEscape(links.ManifestURL)
 	receipt.InstallURL = redactBearerURL(links.InstallURL)
 	receipt.DirectInstallURL = redactDirectInstallURL(links.DirectInstallURL)
-	markRecoveryFixtureVerified(&receipt)
+	receipt.Verified = true
+	receipt.Signing.ProfileExpiresAt = expires.Add(time.Hour).Format(time.RFC3339)
 	bindGeneratedRecoveryObjects(t, &receipt, links)
 	verifier := &recordingVerifier{}
-	if err := Reverify(context.Background(), verifier, receipt, links, time.Now()); err != nil {
+	if err := Reverify(context.Background(), verifier, receipt, links, signedAt.Add(time.Minute)); err != nil {
 		t.Fatalf("Reverify() error = %v", err)
 	}
 	if len(verifier.urls) != 3 {
 		t.Fatalf("verified URLs = %d, want 3", len(verifier.urls))
+	}
+}
+
+func TestReverifyRejectsPrivateSignaturesOutlivingReceiptDeadlines(t *testing.T) {
+	signedAt := time.Date(2026, time.August, 14, 10, 0, 0, 0, time.UTC)
+	pageDeadline := signedAt.Add(time.Hour)
+	grace := 10 * time.Minute
+
+	for _, target := range []string{"install", "manifest", "artifact"} {
+		t.Run(target, func(t *testing.T) {
+			receipt := PublishReceipt{
+				SchemaVersion: "1", Access: AccessPrivate, DownloadEndpoint: "https://downloads.example.com", AddressingStyle: "path", Bucket: "bucket",
+				DownloadGrace: grace.String(), ExpiresAt: &pageDeadline, Verified: true,
+				Artifact: StoredObject{Key: "prefix/app.ipa", SHA256: "a", SizeBytes: 1, ContentType: ContentTypeIPA},
+				Manifest: StoredObject{Key: "prefix/manifest.plist", SHA256: "b", SizeBytes: 1, ContentType: ContentTypeManifest},
+				Page:     StoredObject{Key: "prefix/index.html", SHA256: "c", SizeBytes: 1, ContentType: ContentTypeHTML},
+				Signing:  ReceiptSigning{ProfileExpiresAt: pageDeadline.Add(grace + time.Hour).Format(time.RFC3339)},
+			}
+			links := SensitiveLinks{
+				SchemaVersion: "1", ExpiresAt: &pageDeadline,
+				InstallURL:  privateSignatureFixture("/bucket/prefix/index.html", signedAt, time.Hour),
+				ManifestURL: privateSignatureFixture("/bucket/prefix/manifest.plist", signedAt, time.Hour+grace),
+				ArtifactURL: privateSignatureFixture("/bucket/prefix/app.ipa", signedAt, time.Hour+grace),
+			}
+			switch target {
+			case "install":
+				links.InstallURL = privateSignatureFixture("/bucket/prefix/index.html", signedAt, time.Hour+time.Second)
+			case "manifest":
+				links.ManifestURL = privateSignatureFixture("/bucket/prefix/manifest.plist", signedAt, time.Hour+grace+time.Second)
+			case "artifact":
+				links.ArtifactURL = privateSignatureFixture("/bucket/prefix/app.ipa", signedAt, time.Hour+grace+time.Second)
+			}
+			links.DirectInstallURL = "itms-services://?action=download-manifest&url=" + url.QueryEscape(links.ManifestURL)
+			receipt.InstallURL = redactBearerURL(links.InstallURL)
+			receipt.DirectInstallURL = redactDirectInstallURL(links.DirectInstallURL)
+			bindGeneratedRecoveryObjects(t, &receipt, links)
+
+			verifier := &recordingVerifier{}
+			err := Reverify(context.Background(), verifier, receipt, links, signedAt.Add(time.Minute))
+			if err == nil || !strings.Contains(err.Error(), "signed expiry exceeds") {
+				t.Fatalf("Reverify() error = %v, want signed deadline rejection", err)
+			}
+			if len(verifier.urls) != 0 {
+				t.Fatalf("live verifier calls = %d, want none", len(verifier.urls))
+			}
+		})
 	}
 }
 
@@ -382,6 +445,14 @@ func bindGeneratedRecoveryObjects(t *testing.T, receipt *PublishReceipt, links S
 	receipt.Page.SHA256 = hex.EncodeToString(pageDigest[:])
 	receipt.Page.SizeBytes = int64(len(page))
 	receipt.Page.ContentType = ContentTypeHTML
+}
+
+func privateSignatureFixture(path string, signedAt time.Time, lifetime time.Duration) string {
+	query := url.Values{}
+	query.Set("X-Amz-Date", signedAt.UTC().Format("20060102T150405Z"))
+	query.Set("X-Amz-Expires", strconv.FormatInt(int64(lifetime/time.Second), 10))
+	query.Set("X-Amz-Signature", "fixture-signature")
+	return (&url.URL{Scheme: "https", Host: "downloads.example.com", Path: path, RawQuery: query.Encode()}).String()
 }
 
 func TestVerifyURLRefusesRedirectAndUsesIPARange(t *testing.T) {
@@ -436,11 +507,12 @@ type delayedPresignStore struct {
 
 func (store *delayedPresignStore) PresignGet(_ context.Context, key string, ttl time.Duration) (string, error) {
 	store.ttls = append(store.ttls, ttl)
+	signedAt := store.now
 	store.now = store.now.Add(time.Minute)
 	if strings.HasSuffix(key, "manifest.plist") {
 		store.now = store.now.Add(10 * time.Minute)
 	}
-	return (&url.URL{Scheme: "https", Host: "download.example.com", Path: "/" + key, RawQuery: "X-Amz-Signature=secret"}).String(), nil
+	return privateSignatureFixture("/"+key, signedAt, ttl), nil
 }
 
 func (f *fakeObjectStore) Ensure(_ context.Context, input PutObject) (StoredObject, error) {

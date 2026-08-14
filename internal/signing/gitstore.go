@@ -264,7 +264,8 @@ func (g *GitStore) ListEncryptedFiles() ([]string, error) {
 			if err != nil {
 				return err
 			}
-			if err := validateEncryptedRepositoryPath(rel); err != nil {
+			rel, err = normalizeEncryptedRepositoryPath(rel, filepath.Separator)
+			if err != nil {
 				return err
 			}
 			files = append(files, strings.TrimSuffix(rel, ".enc"))
@@ -274,16 +275,19 @@ func (g *GitStore) ListEncryptedFiles() ([]string, error) {
 	return files, err
 }
 
-func validateEncryptedRepositoryPath(path string) error {
-	if strings.ContainsRune(path, '\\') {
-		return fmt.Errorf("encrypted repository path %q contains a non-portable backslash", path)
+func normalizeEncryptedRepositoryPath(path string, separator rune) (string, error) {
+	if separator != '\\' && strings.ContainsRune(path, '\\') {
+		return "", fmt.Errorf("encrypted repository path %q contains a non-portable backslash", path)
 	}
 	for _, r := range path {
 		if unicode.IsControl(r) || isBidiControl(r) {
-			return fmt.Errorf("encrypted repository path contains control characters")
+			return "", fmt.Errorf("encrypted repository path contains control characters")
 		}
 	}
-	return nil
+	if separator != '/' {
+		path = strings.ReplaceAll(path, string(separator), "/")
+	}
+	return path, nil
 }
 
 func isBidiControl(r rune) bool {

@@ -34,7 +34,15 @@ func TestPreparePrivatePublishIntentHasNoRemoteWritesAndExecutionUsesSavedIdenti
 	if !reflect.DeepEqual(store.presignKeys, wantPresigns) {
 		t.Fatalf("presigns = %v, want %v", store.presignKeys, wantPresigns)
 	}
-	if !bytes.Contains(intent.Manifest.Body, []byte(intent.Links.ArtifactURL)) || !bytes.Contains(intent.Page.Body, []byte("itms-services://")) {
+	wantManifest, err := makeManifest(descriptor.App, intent.Links.ArtifactURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPage, err := makeInstallPage(descriptor.App, intent.Links.DirectInstallURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(intent.Manifest.Body, wantManifest) || !bytes.Equal(intent.Page.Body, wantPage) {
 		t.Fatal("intent did not persist the exact generated documents")
 	}
 
@@ -241,6 +249,43 @@ func TestExecutePrivatePublishIntentRejectsTamperAndExpiryBeforeWrite(t *testing
 	}
 }
 
+func TestExecutePrivatePublishIntentRejectsSignatureBeyondSavedDeadlineBeforeWrite(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	descriptor := minimalDescriptor([]byte("ipa"))
+	descriptor.Signing.ExpiresAt = now.Add(48 * time.Hour).Format(time.RFC3339)
+	initialStore := &intentTestStore{}
+	options := PublishOptions{
+		Store: initialStore, Verifier: &recordingVerifier{}, Bucket: "bucket", Prefix: "team/app", Access: AccessPrivate,
+		URLTTL: time.Hour, DownloadGrace: time.Minute, Now: func() time.Time { return now },
+		RandomID: func() (string, error) { return "stable-link", nil },
+	}
+	intent, err := PreparePrivatePublishIntent(context.Background(), descriptor, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	intent.Links.ArtifactURL = privateSignatureFixture(
+		"/bucket/"+intent.Artifact.Key,
+		intent.CreatedAt,
+		intent.DownloadExpiresAt.Sub(intent.CreatedAt)+time.Second,
+	)
+	manifestBody, err := makeManifest(descriptor.App, intent.Links.ArtifactURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent.Manifest = privatePublishDocument(intent.Manifest.Key, manifestBody, ContentTypeManifest)
+
+	executionStore := &intentTestStore{}
+	options.Store = executionStore
+	_, _, err = ExecutePrivatePublishIntent(context.Background(), bytes.NewReader([]byte("ipa")), descriptor, options, intent)
+	if err == nil || !strings.Contains(err.Error(), "signed expiry exceeds") {
+		t.Fatalf("ExecutePrivatePublishIntent() error = %v, want signed deadline rejection", err)
+	}
+	if len(executionStore.ensureKeys) != 0 {
+		t.Fatalf("invalid signature reached object writes: %v", executionStore.ensureKeys)
+	}
+}
+
 func intentStageName(index int) string {
 	return []string{"", "ipa", "manifest", "page"}[index]
 }
@@ -253,9 +298,9 @@ type intentTestStore struct {
 	failed          bool
 }
 
-func (store *intentTestStore) PresignGet(_ context.Context, key string, _ time.Duration) (string, error) {
+func (store *intentTestStore) PresignGet(_ context.Context, key string, ttl time.Duration) (string, error) {
 	store.presignKeys = append(store.presignKeys, key)
-	return "https://objects.example.com/bucket/" + key + "?X-Amz-Signature=saved-" + strings.ReplaceAll(key, "/", "-"), nil
+	return privateSignatureFixture("/bucket/"+key, time.Now().UTC().Add(-time.Minute), ttl), nil
 }
 
 func (store *intentTestStore) Ensure(_ context.Context, input PutObject) (StoredObject, error) {

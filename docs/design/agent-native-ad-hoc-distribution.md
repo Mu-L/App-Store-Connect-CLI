@@ -156,6 +156,9 @@ bearer credentials: normal JSON and receipts expose only a redacted install URL,
 while the exact URL is written only to a mode-0600 link artifact. Public publication
 requires both `--access public` and `--public-base-url`; it assumes the caller
 has already configured anonymous reads and never mutates storage policy.
+Private recovery validates each SigV4 signing time and lifetime against the
+receipt's page deadline, with the configured grace applied only to the manifest
+and IPA, before live-verifying any recovered URL.
 Public objects can outlive the app's signing profile; the receipt therefore
 records the profile expiry and verification facts, and publication requires a
 currently valid profile with a safety margin. Private publication additionally

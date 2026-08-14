@@ -83,8 +83,8 @@ func PreparePrivatePublishIntent(ctx context.Context, descriptor PreparedDescrip
 	if err != nil {
 		return PrivatePublishIntent{}, err
 	}
-	if strings.TrimSpace(options.Bucket) == "" {
-		return PrivatePublishIntent{}, fmt.Errorf("bucket is required")
+	if err := ValidateBucket(options.Bucket); err != nil {
+		return PrivatePublishIntent{}, err
 	}
 	clock := publishClock(options)
 	now := clock()
@@ -282,9 +282,20 @@ func validatePrivatePublishIntent(descriptor PreparedDescriptor, options Publish
 	if intent.Links.SchemaVersion != "1" || intent.Links.ExpiresAt == nil || !intent.Links.ExpiresAt.Equal(intent.PageExpiresAt) {
 		return fmt.Errorf("private publication intent sensitive-link expiry conflicts")
 	}
-	for label, raw := range map[string]string{"artifact": intent.Links.ArtifactURL, "manifest": intent.Links.ManifestURL, "page": intent.Links.InstallURL} {
-		if err := requireHTTPSURL(raw); err != nil {
-			return fmt.Errorf("private publication intent %s URL: %w", label, err)
+	for _, link := range []struct {
+		label    string
+		rawURL   string
+		deadline time.Time
+	}{
+		{label: "artifact", rawURL: intent.Links.ArtifactURL, deadline: intent.DownloadExpiresAt},
+		{label: "manifest", rawURL: intent.Links.ManifestURL, deadline: intent.DownloadExpiresAt},
+		{label: "page", rawURL: intent.Links.InstallURL, deadline: intent.PageExpiresAt},
+	} {
+		if err := requireHTTPSURL(link.rawURL); err != nil {
+			return fmt.Errorf("private publication intent %s URL: %w", link.label, err)
+		}
+		if err := privateSignatureWithinDeadline(link.rawURL, link.deadline); err != nil {
+			return fmt.Errorf("private publication intent %s URL: %w", link.label, err)
 		}
 	}
 	wantManifest, err := makeManifest(descriptor.App, intent.Links.ArtifactURL)

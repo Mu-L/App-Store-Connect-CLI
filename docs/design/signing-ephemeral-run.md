@@ -102,7 +102,9 @@ error before reading or changing host signing state. No current signing command
 or output changes, so no migration or deprecation is needed. Release, CI, and
 `make build-all` recipes explicitly enable CGO for both macOS architectures so
 every distributed Darwin binary includes the Security.framework boundary;
-Linux and Windows cross-builds keep CGO disabled.
+Linux and Windows cross-builds keep CGO disabled. Because the same target also
+builds those CGO-enabled Darwin binaries, `make build-all` requires a macOS host
+and fails before building on other hosts.
 
 ## RED-GREEN and verification
 

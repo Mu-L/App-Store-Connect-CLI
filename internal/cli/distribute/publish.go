@@ -46,7 +46,7 @@ func PublishCommand() *ffcli.Command {
 	publicBaseURL := fs.String("public-base-url", "", "Preconfigured anonymous HTTPS base URL (required with --access public)")
 	urlTTL := fs.Duration("url-ttl", 24*time.Hour, "Private install-page lifetime (maximum combined lifetime 7d)")
 	downloadGrace := fs.Duration("download-grace", time.Hour, "Additional private manifest and IPA download lifetime")
-	verifyTimeout := fs.Duration("verify-timeout", 30*time.Second, "Timeout for each published-object verification request")
+	verifyTimeout := fs.Duration("verify-timeout", 30*time.Second, "Timeout for manifest and install-page verification; IPA verification uses ASC_UPLOAD_TIMEOUT")
 	receiptPath := fs.String("receipt", "", "Redacted JSON receipt path outside the prepared bundle (required)")
 	linkPath := fs.String("link-path", "", "Mode-0600 sensitive link path (required)")
 	output := shared.BindOutputFlags(fs)
