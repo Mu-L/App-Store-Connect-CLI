@@ -192,14 +192,17 @@ Examples:
 				return fmt.Errorf("distribute publish: open prepared bundle: %w", err)
 			}
 			defer bundleRoot.Close()
-			if err := rejectBundleContainedArtifacts(bundleRoot, resolvedReceiptPath, resolvedLinkPath); err != nil {
-				return shared.UsageErrorf("publish artifacts: %v", err)
-			}
-			artifacts, err := preflightArtifactPaths(resolvedReceiptPath, resolvedLinkPath)
+			artifacts, err := anchorArtifactPaths(resolvedReceiptPath, resolvedLinkPath)
 			if err != nil {
 				return shared.UsageErrorf("publish artifacts: %v", err)
 			}
 			defer artifacts.close()
+			if err := rejectAnchoredBundleContainedArtifacts(bundleRoot, artifacts); err != nil {
+				return shared.UsageErrorf("publish artifacts: %v", err)
+			}
+			if err := artifacts.preflight(); err != nil {
+				return shared.UsageErrorf("publish artifacts: %v", err)
+			}
 			resolvedReceiptPath = artifacts.receiptPath
 			resolvedLinkPath = artifacts.linkPath
 
@@ -291,6 +294,7 @@ Examples:
 
 type artifactPaths struct {
 	root          *os.Root
+	rootPath      string
 	receipt       string
 	link          string
 	receiptPath   string
@@ -300,6 +304,18 @@ type artifactPaths struct {
 }
 
 func preflightArtifactPaths(receiptPath, linkPath string) (artifactPaths, error) {
+	paths, err := anchorArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		return artifactPaths{}, err
+	}
+	if err := paths.preflight(); err != nil {
+		paths.close()
+		return artifactPaths{}, err
+	}
+	return paths, nil
+}
+
+func anchorArtifactPaths(receiptPath, linkPath string) (artifactPaths, error) {
 	receiptAbsolute, err := filepath.Abs(receiptPath)
 	if err != nil {
 		return artifactPaths{}, err
@@ -318,30 +334,45 @@ func preflightArtifactPaths(receiptPath, linkPath string) (artifactPaths, error)
 	if err != nil {
 		return artifactPaths{}, err
 	}
-	root, err := openOrCreateAnchoredRoot(common)
+	root, rootPath, err := openAnchoredRoot(common)
 	if err != nil {
 		return artifactPaths{}, err
 	}
-	receiptRelative, _ := filepath.Rel(common, receiptAbsolute)
-	linkRelative, _ := filepath.Rel(common, linkAbsolute)
+	receiptRelative, _ := filepath.Rel(rootPath, receiptAbsolute)
+	linkRelative, _ := filepath.Rel(rootPath, linkAbsolute)
+	return artifactPaths{
+		root: root, rootPath: rootPath, receipt: receiptRelative, link: linkRelative,
+		receiptPath: receiptAbsolute, linkPath: linkAbsolute,
+	}, nil
+}
+
+func (paths *artifactPaths) preflight() error {
 	exists := map[string]bool{}
-	for _, name := range []string{receiptRelative, linkRelative} {
-		if info, err := root.Lstat(name); err == nil {
+	for _, name := range []string{paths.receipt, paths.link} {
+		parent, base, err := openAnchoredParent(paths.root, name)
+		if err != nil {
+			return err
+		}
+		info, statErr := parent.Lstat(base)
+		closeErr := parent.Close()
+		if statErr == nil {
 			if !info.Mode().IsRegular() {
-				_ = root.Close()
-				return artifactPaths{}, fmt.Errorf("%s is not a regular file", filepath.Join(common, name))
+				return fmt.Errorf("%s is not a regular file", filepath.Join(paths.rootPath, name))
 			}
 			if info.Mode().Perm()&0o077 != 0 {
-				_ = root.Close()
-				return artifactPaths{}, fmt.Errorf("%s must be owner-private (mode 0600 or stricter)", filepath.Join(common, name))
+				return fmt.Errorf("%s must be owner-private (mode 0600 or stricter)", filepath.Join(paths.rootPath, name))
 			}
 			exists[name] = true
-		} else if !os.IsNotExist(err) {
-			_ = root.Close()
-			return artifactPaths{}, err
+		} else if !os.IsNotExist(statErr) {
+			return statErr
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 	}
-	return artifactPaths{root: root, receipt: receiptRelative, link: linkRelative, receiptPath: receiptAbsolute, linkPath: linkAbsolute, receiptExists: exists[receiptRelative], linkExists: exists[linkRelative]}, nil
+	paths.receiptExists = exists[paths.receipt]
+	paths.linkExists = exists[paths.link]
+	return nil
 }
 
 func pathContains(parent, child string) bool {
@@ -352,54 +383,37 @@ func pathContains(parent, child string) bool {
 	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
-func openOrCreateAnchoredRoot(target string) (*os.Root, error) {
+func openAnchoredRoot(target string) (*os.Root, string, error) {
 	ancestor := filepath.Clean(target)
 	var ancestorInfo os.FileInfo
 	for {
 		info, err := os.Lstat(ancestor)
 		if err == nil {
 			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-				return nil, fmt.Errorf("artifact parent %s is not a trusted directory", ancestor)
+				return nil, "", fmt.Errorf("artifact parent %s is not a trusted directory", ancestor)
 			}
 			ancestorInfo = info
 			break
 		}
 		if !os.IsNotExist(err) {
-			return nil, err
+			return nil, "", err
 		}
 		parent := filepath.Dir(ancestor)
 		if parent == ancestor {
-			return nil, fmt.Errorf("no existing artifact path ancestor")
+			return nil, "", fmt.Errorf("no existing artifact path ancestor")
 		}
 		ancestor = parent
 	}
 	root, err := os.OpenRoot(ancestor)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	openedInfo, err := root.Stat(".")
 	if err != nil || !os.SameFile(ancestorInfo, openedInfo) {
 		_ = root.Close()
-		return nil, fmt.Errorf("artifact parent changed during preflight")
+		return nil, "", fmt.Errorf("artifact parent changed during preflight")
 	}
-	relative, err := filepath.Rel(ancestor, target)
-	if err != nil {
-		_ = root.Close()
-		return nil, err
-	}
-	if relative == "." {
-		return root, nil
-	}
-	if err := root.MkdirAll(relative, 0o700); err != nil {
-		_ = root.Close()
-		return nil, err
-	}
-	created, err := root.OpenRoot(relative)
-	_ = root.Close()
-	if err != nil {
-		return nil, err
-	}
-	return created, nil
+	return root, ancestor, nil
 }
 
 func (paths artifactPaths) close() {
@@ -456,7 +470,12 @@ type publishState struct {
 }
 
 func (paths artifactPaths) loadState() (publishState, bool, error) {
-	file, err := secureopen.OpenExistingNoFollowInRoot(paths.root, paths.link)
+	parent, name, err := openAnchoredParent(paths.root, paths.link)
+	if err != nil {
+		return publishState{}, false, err
+	}
+	defer parent.Close()
+	file, err := secureopen.OpenExistingNoFollowInRoot(parent, name)
 	if os.IsNotExist(err) {
 		return publishState{}, false, nil
 	}
@@ -504,7 +523,12 @@ func (paths artifactPaths) verifyExactReceipt(receipt core.PublishReceipt) error
 	if err != nil {
 		return err
 	}
-	file, err := secureopen.OpenExistingNoFollowInRoot(paths.root, paths.receipt)
+	parent, name, err := openAnchoredParent(paths.root, paths.receipt)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	file, err := secureopen.OpenExistingNoFollowInRoot(parent, name)
 	if err != nil {
 		return err
 	}
@@ -642,14 +666,64 @@ func (file *stagedFile) cleanup() {
 
 func openAnchoredParent(root *os.Root, relative string) (*os.Root, string, error) {
 	parentRelative := filepath.Dir(relative)
-	if err := root.MkdirAll(parentRelative, 0o700); err != nil {
-		return nil, "", err
-	}
-	parent, err := root.OpenRoot(parentRelative)
+	parent, err := openOrCreateAnchoredDirectory(root, parentRelative)
 	if err != nil {
 		return nil, "", err
 	}
 	return parent, filepath.Base(relative), nil
+}
+
+func openOrCreateAnchoredDirectory(root *os.Root, relative string) (*os.Root, error) {
+	if root == nil {
+		return nil, fmt.Errorf("artifact root is unavailable")
+	}
+	relative = filepath.Clean(relative)
+	if filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("artifact parent escapes its anchored root")
+	}
+	current, err := root.OpenRoot(".")
+	if err != nil {
+		return nil, err
+	}
+	if relative == "." {
+		return current, nil
+	}
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." || component == ".." {
+			_ = current.Close()
+			return nil, fmt.Errorf("artifact parent contains an unsafe path component")
+		}
+		info, err := current.Lstat(component)
+		if os.IsNotExist(err) {
+			if err := current.Mkdir(component, 0o700); err != nil {
+				_ = current.Close()
+				return nil, err
+			}
+			info, err = current.Lstat(component)
+		}
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			_ = current.Close()
+			return nil, fmt.Errorf("artifact parent component %q is not a trusted directory", component)
+		}
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		openedInfo, err := next.Stat(".")
+		if err != nil || !os.SameFile(info, openedInfo) {
+			_ = next.Close()
+			_ = current.Close()
+			return nil, fmt.Errorf("artifact parent changed during rooted creation")
+		}
+		_ = current.Close()
+		current = next
+	}
+	return current, nil
 }
 
 func commonPathRoot(left, right string) (string, error) {
@@ -710,6 +784,17 @@ func rejectBundleContainedArtifacts(bundleRoot rootfs.Root, receiptPath, linkPat
 		}
 	}
 	return nil
+}
+
+func rejectAnchoredBundleContainedArtifacts(bundleRoot rootfs.Root, artifacts artifactPaths) error {
+	contained, err := bundleRoot.ContainsAnchoredPath(artifacts.rootPath, artifacts.root)
+	if err != nil {
+		return err
+	}
+	if contained {
+		return fmt.Errorf("receipt and link paths must be outside the immutable prepared bundle")
+	}
+	return rejectBundleContainedArtifacts(bundleRoot, artifacts.receiptPath, artifacts.linkPath)
 }
 
 func flagWasSet(fs *flag.FlagSet, name string) bool {

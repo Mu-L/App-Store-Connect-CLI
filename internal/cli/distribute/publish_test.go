@@ -355,6 +355,140 @@ func TestPublishArtifactsCannotEnterPreparedBundleThroughSymlinkAlias(t *testing
 	}
 }
 
+func TestPublishArtifactsRejectIntermediateSymlinkRetargetAfterAnchoring(t *testing.T) {
+	base := t.TempDir()
+	bundle := filepath.Join(base, "bundle")
+	outside := filepath.Join(base, "outside")
+	for _, directory := range []string{bundle, filepath.Join(outside, "state")} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(outside, alias); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := anchorArtifactPaths(filepath.Join(alias, "state", "receipt.json"), filepath.Join(alias, "state", "link.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+	bundleRoot, err := rootfs.New(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundleRoot.Close()
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(bundle, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rejectAnchoredBundleContainedArtifacts(bundleRoot, paths); err == nil {
+		t.Fatal("anchored containment accepted a retargeted intermediate symlink")
+	}
+	for _, path := range []string{
+		filepath.Join(bundle, "state", "receipt.json"),
+		filepath.Join(bundle, "state", "link.json"),
+		filepath.Join(outside, "state", "receipt.json"),
+		filepath.Join(outside, "state", "link.json"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("containment failure wrote %s: %v", path, err)
+		}
+	}
+}
+
+func TestPublishArtifactsRejectOrdinaryRootSubstitutionAfterAnchoring(t *testing.T) {
+	base := t.TempDir()
+	bundle := filepath.Join(base, "bundle")
+	state := filepath.Join(base, "state")
+	moved := filepath.Join(base, "state-original")
+	for _, directory := range []string{bundle, state} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := anchorArtifactPaths(filepath.Join(state, "receipt.json"), filepath.Join(state, "link.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+	bundleRoot, err := rootfs.New(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundleRoot.Close()
+	if err := os.Rename(state, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rejectAnchoredBundleContainedArtifacts(bundleRoot, paths); err == nil {
+		t.Fatal("anchored containment accepted an ordinary directory substitution")
+	}
+	for _, directory := range []string{state, moved, bundle} {
+		for _, name := range []string{"receipt.json", "link.json"} {
+			path := filepath.Join(directory, name)
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("containment failure wrote %s: %v", path, err)
+			}
+		}
+	}
+}
+
+func TestPublishArtifactsRejectRetargetedChildForBothPaths(t *testing.T) {
+	for _, target := range []string{"receipt", "link"} {
+		t.Run(target, func(t *testing.T) {
+			base := t.TempDir()
+			bundle := filepath.Join(base, "bundle")
+			state := filepath.Join(base, "state")
+			receiptParent := filepath.Join(state, "receipt")
+			linkParent := filepath.Join(state, "link")
+			for _, directory := range []string{bundle, receiptParent, linkParent} {
+				if err := os.MkdirAll(directory, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			paths, err := anchorArtifactPaths(filepath.Join(receiptParent, "receipt.json"), filepath.Join(linkParent, "link.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer paths.close()
+			bundleRoot, err := rootfs.New(bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer bundleRoot.Close()
+			if err := rejectAnchoredBundleContainedArtifacts(bundleRoot, paths); err != nil {
+				t.Fatal(err)
+			}
+			selected := receiptParent
+			if target == "link" {
+				selected = linkParent
+			}
+			if err := os.Remove(selected); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(bundle, selected); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := paths.preflight(); err == nil {
+				t.Fatalf("preflight accepted retargeted %s parent", target)
+			}
+			for _, name := range []string{"receipt.json", "link.json"} {
+				if _, err := os.Stat(filepath.Join(bundle, name)); !os.IsNotExist(err) {
+					t.Fatalf("retargeted %s path wrote %s: %v", target, name, err)
+				}
+			}
+		})
+	}
+}
+
 func TestStagedFileRemainsAnchoredWhenParentPathIsSwapped(t *testing.T) {
 	base := t.TempDir()
 	original := filepath.Join(base, "original")

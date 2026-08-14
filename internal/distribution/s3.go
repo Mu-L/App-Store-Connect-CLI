@@ -21,7 +21,10 @@ import (
 	transporthttp "github.com/aws/smithy-go/transport/http"
 )
 
-const objectSHA256MetadataKey = "asc-sha256"
+const (
+	objectSHA256MetadataKey  = "asc-sha256"
+	mutationReconcileTimeout = 5 * time.Second
+)
 
 type S3StoreConfig struct {
 	Endpoint         string
@@ -204,6 +207,9 @@ func (store *S3Store) ReplaceCorrupt(ctx context.Context, input PutObject) (Stor
 	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
 		return StoredObject{}, fmt.Errorf("rewind corrupt object replacement: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return StoredObject{}, fmt.Errorf("conditionally replace corrupt object %q: %w", input.Key, err)
+	}
 	putCtx, putCancel := store.boundedRequestContext(ctx)
 	_, err = store.client.PutObject(putCtx, &s3.PutObjectInput{
 		Bucket:        aws.String(store.bucket),
@@ -216,7 +222,24 @@ func (store *S3Store) ReplaceCorrupt(ctx context.Context, input PutObject) (Stor
 	})
 	putCancel()
 	if err != nil {
-		return StoredObject{}, sanitizedStorageError("conditionally replace corrupt object", input.Key, err)
+		reconcileCtx, reconcileCancel := store.mutationReconcileContext(ctx)
+		replacement, headErr := store.head(reconcileCtx, input.Key)
+		reconcileCancel()
+		if isPreconditionFailed(err) {
+			return StoredObject{}, fmt.Errorf("conditional replacement conflict at %q", input.Key)
+		}
+		if headErr != nil || replacement.entityTag == existing.entityTag {
+			return StoredObject{}, sanitizedStorageError("conditionally replace corrupt object", input.Key, err)
+		}
+		if replacement.entityTag == "" {
+			return StoredObject{}, fmt.Errorf("conditional replacement conflict at %q: replacement generation is unavailable", input.Key)
+		}
+		reconciled, reconcileErr := reconcileStoredObject(input, replacement)
+		if reconcileErr != nil {
+			return StoredObject{}, fmt.Errorf("conditional replacement conflict at %q: observed a different object generation", input.Key)
+		}
+		reconciled.Status = "replaced"
+		return reconciled, nil
 	}
 	return StoredObject{Key: input.Key, SHA256: input.SHA256, SizeBytes: input.SizeBytes, ContentType: input.ContentType, Status: "replaced"}, nil
 }
@@ -238,6 +261,15 @@ func (store *S3Store) boundedRequestContext(ctx context.Context) (context.Contex
 		return ctx, func() {}
 	}
 	return store.requestContext(ctx)
+}
+
+func (store *S3Store) mutationReconcileContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	base, baseCancel := context.WithTimeout(context.WithoutCancel(ctx), mutationReconcileTimeout)
+	bounded, boundedCancel := store.boundedRequestContext(base)
+	return bounded, func() {
+		boundedCancel()
+		baseCancel()
+	}
 }
 
 func (store *S3Store) head(ctx context.Context, key string) (StoredObject, error) {

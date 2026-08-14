@@ -1125,6 +1125,34 @@ func TestContainsPathUsesPinnedRootIdentity(t *testing.T) {
 	}
 }
 
+func TestContainsAnchoredPathRejectsPathSubstitution(t *testing.T) {
+	parent := t.TempDir()
+	bundle := filepath.Join(parent, "bundle")
+	artifact := filepath.Join(bundle, "state")
+	if err := os.MkdirAll(artifact, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bundleRoot := mustRoot(t, bundle)
+	anchored, err := os.OpenRoot(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer anchored.Close()
+	contained, err := bundleRoot.ContainsAnchoredPath(artifact, anchored)
+	if err != nil || !contained {
+		t.Fatalf("ContainsAnchoredPath() = %t, %v, want true", contained, err)
+	}
+	if err := os.Rename(artifact, artifact+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(artifact, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bundleRoot.ContainsAnchoredPath(artifact, anchored); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("ContainsAnchoredPath() replacement error = %v, want ErrSymlink", err)
+	}
+}
+
 func TestRootCloseReleasesSharedPinnedIdentity(t *testing.T) {
 	root := mustRoot(t, t.TempDir())
 	copy := root

@@ -761,6 +761,61 @@ func TestPrivateSignatureMustMatchReceiptDeadlineAtSigningPrecision(t *testing.T
 	}
 }
 
+func TestReverifyNormalizesAndValidatesStoredContentTypes(t *testing.T) {
+	receipt := PublishReceipt{
+		SchemaVersion: "1", Access: AccessPublic, PublicBaseURL: "https://downloads.example.com",
+		Artifact: StoredObject{Key: "prefix/app.ipa", SHA256: "a", SizeBytes: 1, ContentType: ContentTypeIPA},
+		Manifest: StoredObject{Key: "prefix/manifest.plist"},
+		Page:     StoredObject{Key: "prefix/index.html"},
+		App:      PreparedApp{BundleID: "com.example.app", Title: "Example", Version: "1", BuildNumber: "1"},
+		Verified: true,
+	}
+	links := SensitiveLinks{
+		SchemaVersion: "1",
+		ArtifactURL:   "https://downloads.example.com/prefix/app.ipa",
+		ManifestURL:   "https://downloads.example.com/prefix/manifest.plist",
+		InstallURL:    "https://downloads.example.com/prefix/index.html",
+	}
+	links.DirectInstallURL = "itms-services://?action=download-manifest&url=" + url.QueryEscape(links.ManifestURL)
+	receipt.InstallURL = links.InstallURL
+	receipt.DirectInstallURL = redactDirectInstallURL(links.DirectInstallURL)
+	markRecoveryFixtureVerified(&receipt)
+	bindGeneratedRecoveryObjects(t, &receipt, links)
+
+	equivalent := receipt
+	equivalent.Artifact.ContentType = " Application/Octet-Stream "
+	equivalent.Manifest.ContentType = " APPLICATION/XML "
+	equivalent.Page.ContentType = " Text/HTML;charset=UTF-8 "
+	verifier := &recordingVerifier{}
+	if err := Reverify(context.Background(), verifier, equivalent, links, time.Now()); err != nil {
+		t.Fatalf("Reverify() rejected equivalent MIME spellings: %v", err)
+	}
+	if len(verifier.urls) != 3 {
+		t.Fatalf("live verifier calls = %d, want 3", len(verifier.urls))
+	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*PublishReceipt)
+	}{
+		{name: "artifact mismatch", mutate: func(value *PublishReceipt) { value.Artifact.ContentType = "text/plain" }},
+		{name: "manifest malformed", mutate: func(value *PublishReceipt) { value.Manifest.ContentType = "application/xml; charset" }},
+		{name: "page charset mismatch", mutate: func(value *PublishReceipt) { value.Page.ContentType = "text/html; charset=iso-8859-1" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := receipt
+			test.mutate(&invalid)
+			verifier := &recordingVerifier{}
+			if err := Reverify(context.Background(), verifier, invalid, links, time.Now()); err == nil || !strings.Contains(err.Error(), "content type") {
+				t.Fatalf("Reverify() error = %v, want content-type rejection", err)
+			}
+			if len(verifier.urls) != 0 {
+				t.Fatalf("live verifier calls = %d, want none", len(verifier.urls))
+			}
+		})
+	}
+}
+
 func TestReverifyRequiresExactPublicBaseURL(t *testing.T) {
 	receipt := PublishReceipt{
 		SchemaVersion: "1", Access: AccessPublic, PublicBaseURL: "https://downloads.example.com/releases",
@@ -837,6 +892,27 @@ func TestVerifierProviderHeadersNeverReachDiagnostic(t *testing.T) {
 	err := NewHTTPVerifier(client, time.Second).Verify(context.Background(), VerifyRequest{URL: "https://example.com/app.ipa", Kind: VerifyIPA, ContentType: ContentTypeIPA, SizeBytes: 1})
 	if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "\x1b") {
 		t.Fatalf("diagnostic leaked provider header: %q", err)
+	}
+}
+
+func TestHTTPVerifierComparesContentTypeSemantically(t *testing.T) {
+	body := []byte("page")
+	digest := sha256.Sum256(body)
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{`TEXT/HTML; LEVEL=1; CHARSET=UTF-8; TITLE="release"`}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    request,
+		}, nil
+	})}
+	err := NewHTTPVerifier(client, time.Second).Verify(context.Background(), VerifyRequest{
+		URL: "https://example.com/index.html", Kind: VerifyDocument,
+		ContentType: "text/html; charset=utf-8; title=release; level=1",
+		SizeBytes:   int64(len(body)), SHA256: hex.EncodeToString(digest[:]),
+	})
+	if err != nil {
+		t.Fatalf("Verify() rejected reordered equivalent MIME parameters: %v", err)
 	}
 }
 

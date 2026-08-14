@@ -407,6 +407,60 @@ func (r Root) ContainsPath(path string) (bool, error) {
 	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
 }
 
+// ContainsAnchoredPath reports whether an already-open directory is within this
+// root. The lexical path must still resolve to the supplied directory identity;
+// replacements between anchoring and comparison fail closed.
+func (r Root) ContainsAnchoredPath(path string, anchored *os.Root) (bool, error) {
+	if anchored == nil {
+		return false, fmt.Errorf("%w: anchored path is nil", ErrEscapesRoot)
+	}
+	anchoredInfo, err := anchored.Stat(".")
+	if err != nil {
+		return false, fmt.Errorf("stat anchored path %q: %w", path, err)
+	}
+	if path == "" {
+		return false, fmt.Errorf("%w: path is empty", ErrEscapesRoot)
+	}
+	if strings.ContainsRune(path, 0) {
+		return false, fmt.Errorf("%w: path contains a NUL byte", ErrEscapesRoot)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return false, fmt.Errorf("resolve path %q: %w", path, err)
+	}
+	selected, err := r.OpenRoot()
+	if err != nil {
+		return false, fmt.Errorf("verify selected root %q: %w", r.path, err)
+	}
+	if err := selected.Close(); err != nil {
+		return false, err
+	}
+	physical, err := resolveProspectivePhysicalPath(filepath.Clean(absolute))
+	if err != nil {
+		return false, err
+	}
+	current, err := openAbsoluteRootNoFollow(physical)
+	if err != nil {
+		return false, fmt.Errorf("open anchored path %q: %w", path, err)
+	}
+	currentInfo, statErr := current.Stat(".")
+	closeErr := current.Close()
+	if statErr != nil {
+		return false, statErr
+	}
+	if closeErr != nil {
+		return false, closeErr
+	}
+	if !os.SameFile(anchoredInfo, currentInfo) {
+		return false, symlinkError(path)
+	}
+	relative, err := filepath.Rel(r.openPath, physical)
+	if err != nil || filepath.IsAbs(relative) {
+		return false, err
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
+}
+
 func resolveProspectivePhysicalPath(absolute string) (string, error) {
 	candidate := absolute
 	reversedSuffix := make([]string, 0)

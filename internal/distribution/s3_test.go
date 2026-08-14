@@ -378,6 +378,78 @@ func TestS3ReplaceCorruptRefusesChangedObjectGeneration(t *testing.T) {
 	}
 }
 
+func TestS3ReplaceCorruptReconcilesAmbiguousConditionalPut(t *testing.T) {
+	body := []byte("expected")
+	old := StoredObject{SHA256: sha256Hex(body), SizeBytes: int64(len(body)), ContentType: ContentTypeIPA, entityTag: `"old"`}
+	replacement := StoredObject{SHA256: sha256Hex(body), SizeBytes: int64(len(body)), ContentType: " Application/Octet-Stream ", entityTag: `"replacement"`}
+	for _, test := range []struct {
+		name         string
+		putErr       error
+		after        StoredObject
+		headErr      error
+		cancelParent bool
+		wantSuccess  bool
+		wantConflict bool
+	}{
+		{name: "accepted then response lost", putErr: errors.New("connection reset"), after: replacement, wantSuccess: true},
+		{name: "accepted then parent deadline", putErr: context.DeadlineExceeded, after: replacement, cancelParent: true, wantSuccess: true},
+		{name: "old generation unchanged", putErr: errors.New("connection reset"), after: old},
+		{name: "competing replacement", putErr: errors.New("connection reset"), after: StoredObject{SHA256: "different", SizeBytes: old.SizeBytes, ContentType: old.ContentType, entityTag: `"competitor"`}, wantConflict: true},
+		{name: "reconcile HEAD failure", putErr: errors.New("connection reset"), headErr: errors.New("HEAD failed")},
+		{name: "reconcile HEAD timeout", putErr: errors.New("connection reset"), headErr: context.DeadlineExceeded},
+		{name: "explicit precondition is not success", putErr: &maliciousAPIError{code: "PreconditionFailed"}, after: replacement, wantConflict: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client := &ambiguousReplaceClient{before: old, after: test.after, headErr: test.headErr, putErr: test.putErr}
+			if test.cancelParent {
+				client.afterPut = cancel
+			}
+			store := &S3Store{client: client, bucket: "bucket"}
+			replaced, err := store.ReplaceCorrupt(parent, PutObject{
+				Key: "objects/app.ipa", Body: bytes.NewReader(body), SHA256: sha256Hex(body),
+				SizeBytes: int64(len(body)), ContentType: ContentTypeIPA,
+			})
+			if test.wantSuccess {
+				if err != nil {
+					t.Fatalf("ReplaceCorrupt() error = %v", err)
+				}
+				if replaced.Status != "replaced" || replaced.entityTag != replacement.entityTag {
+					t.Fatalf("replacement = %#v", replaced)
+				}
+			} else if err == nil {
+				t.Fatal("ReplaceCorrupt() unexpectedly succeeded")
+			} else if test.wantConflict && !strings.Contains(err.Error(), "conflict") {
+				t.Fatalf("ReplaceCorrupt() error = %v, want conflict", err)
+			}
+			if client.putCalls != 1 || client.headCalls != 2 {
+				t.Fatalf("PutObject calls=%d HeadObject calls=%d, want 1 and 2", client.putCalls, client.headCalls)
+			}
+		})
+	}
+}
+
+func TestS3ReplaceCorruptPreservesPreexistingParentCancellation(t *testing.T) {
+	body := []byte("expected")
+	object := StoredObject{SHA256: sha256Hex(body), SizeBytes: int64(len(body)), ContentType: ContentTypeIPA, entityTag: `"old"`}
+	client := &ambiguousReplaceClient{before: object}
+	store := &S3Store{client: client, bucket: "bucket"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := store.ReplaceCorrupt(ctx, PutObject{
+		Key: "objects/app.ipa", Body: bytes.NewReader(body), SHA256: sha256Hex(body),
+		SizeBytes: int64(len(body)), ContentType: ContentTypeIPA,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReplaceCorrupt() error = %v, want context cancellation", err)
+	}
+	if client.putCalls != 0 || client.headCalls != 1 {
+		t.Fatalf("PutObject calls=%d HeadObject calls=%d, want 0 and 1", client.putCalls, client.headCalls)
+	}
+}
+
 type conditionalReplaceClient struct {
 	object  StoredObject
 	ifMatch string
@@ -401,6 +473,38 @@ func (client *conditionalReplaceClient) PutObject(_ context.Context, input *awss
 	}
 	client.body = body
 	return &awss3.PutObjectOutput{}, nil
+}
+
+type ambiguousReplaceClient struct {
+	before, after StoredObject
+	headErr       error
+	putErr        error
+	afterPut      func()
+	headCalls     int
+	putCalls      int
+}
+
+func (client *ambiguousReplaceClient) HeadObject(context.Context, *awss3.HeadObjectInput, ...func(*awss3.Options)) (*awss3.HeadObjectOutput, error) {
+	client.headCalls++
+	object := client.before
+	if client.headCalls > 1 {
+		if client.headErr != nil {
+			return nil, client.headErr
+		}
+		object = client.after
+	}
+	return &awss3.HeadObjectOutput{
+		ContentLength: aws.Int64(object.SizeBytes), ContentType: aws.String(object.ContentType),
+		ETag: aws.String(object.entityTag), Metadata: map[string]string{objectSHA256MetadataKey: object.SHA256},
+	}, nil
+}
+
+func (client *ambiguousReplaceClient) PutObject(context.Context, *awss3.PutObjectInput, ...func(*awss3.Options)) (*awss3.PutObjectOutput, error) {
+	client.putCalls++
+	if client.afterPut != nil {
+		client.afterPut()
+	}
+	return nil, client.putErr
 }
 
 type ambiguousPutClient struct{ headCalls int }

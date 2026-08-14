@@ -678,6 +678,19 @@ func reverifyWithClock(ctx context.Context, verifier Verifier, receipt PublishRe
 			}
 		}
 	}
+	for _, object := range []struct {
+		name     string
+		stored   StoredObject
+		expected string
+	}{
+		{name: "artifact", stored: receipt.Artifact, expected: ContentTypeIPA},
+		{name: "manifest", stored: receipt.Manifest, expected: ContentTypeManifest},
+		{name: "install page", stored: receipt.Page, expected: ContentTypeHTML},
+	} {
+		if !equivalentContentType(object.stored.ContentType, object.expected) {
+			return fmt.Errorf("saved %s has invalid content type", object.name)
+		}
+	}
 	manifest, err := makeManifest(receipt.App, links.ArtifactURL)
 	if err != nil || !objectMatchesBytes(receipt.Manifest, manifest, ContentTypeManifest) {
 		return fmt.Errorf("saved manifest identity does not match generated content")
@@ -741,7 +754,7 @@ func privateSignatureExpiry(rawURL string) (time.Time, error) {
 
 func objectMatchesBytes(object StoredObject, body []byte, contentType string) bool {
 	digest := sha256.Sum256(body)
-	return object.ContentType == contentType && object.SizeBytes == int64(len(body)) && strings.EqualFold(object.SHA256, hex.EncodeToString(digest[:]))
+	return equivalentContentType(object.ContentType, contentType) && object.SizeBytes == int64(len(body)) && strings.EqualFold(object.SHA256, hex.EncodeToString(digest[:]))
 }
 
 func linkMatchesDestination(rawURL, key string, receipt PublishReceipt) error {
@@ -1094,7 +1107,7 @@ func (v *HTTPVerifier) Verify(ctx context.Context, verification VerifyRequest) e
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
 		return fmt.Errorf("GET %s returned redirect status %d", safeURLForError(verification.URL), response.StatusCode)
 	}
-	if !strings.EqualFold(strings.TrimSpace(response.Header.Get("Content-Type")), strings.TrimSpace(verification.ContentType)) {
+	if !equivalentContentType(response.Header.Get("Content-Type"), verification.ContentType) {
 		return fmt.Errorf("GET %s returned an unexpected content type", safeURLForError(verification.URL))
 	}
 	if verification.Kind == VerifyIPA {
