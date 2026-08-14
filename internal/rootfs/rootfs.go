@@ -843,6 +843,17 @@ func (r Root) CreateNewFrom(name string, reader io.Reader, perm os.FileMode) (in
 		return written, err
 	}
 	published = true
+	directory, err := parent.Open(".")
+	if err != nil {
+		return written, fmt.Errorf("open parent directory for durability sync: %w", err)
+	}
+	if err := directory.Sync(); err != nil && !unsupportedDirectorySyncError(err) {
+		_ = directory.Close()
+		return written, fmt.Errorf("sync parent directory after publish: %w", err)
+	}
+	if err := directory.Close(); err != nil {
+		return written, fmt.Errorf("close parent directory after durability sync: %w", err)
+	}
 	return written, nil
 }
 
