@@ -58,6 +58,19 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	if err := ValidatePrepareOptions(options); err != nil {
 		return PrepareResult{}, err
 	}
+	rootPath := strings.TrimSpace(options.Root)
+	if rootPath == "" {
+		rootPath = "."
+	}
+	root, err := rootfs.New(rootPath)
+	if err != nil {
+		return PrepareResult{}, fmt.Errorf("prepare output root: %w", err)
+	}
+	// Select and retain the output root before the potentially long snapshot,
+	// archive validation, and code-signing work.
+	if err := root.MkdirAll(".", 0o755); err != nil {
+		return PrepareResult{}, fmt.Errorf("pin distribution output root: %w", err)
+	}
 	snapshot, digest, cleanup, err := snapshotIPA(file, size)
 	if err != nil {
 		return PrepareResult{}, err
@@ -110,14 +123,6 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	}
 	descriptorData = append(descriptorData, '\n')
 
-	rootPath := strings.TrimSpace(options.Root)
-	if rootPath == "" {
-		rootPath = "."
-	}
-	root, err := rootfs.New(rootPath)
-	if err != nil {
-		return PrepareResult{}, fmt.Errorf("prepare output root: %w", err)
-	}
 	relativeOutput, err := prepareOutputPath(inspection, options.OutputDir)
 	if err != nil {
 		return PrepareResult{}, err

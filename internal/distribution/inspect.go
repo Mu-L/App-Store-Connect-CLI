@@ -183,7 +183,8 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 		return Inspection{}, fmt.Errorf("IPA contains %d entries; limit is %d", len(reader.File), maxArchiveEntries)
 	}
 
-	seen := make(map[string]struct{}, len(reader.File))
+	seen := make(map[string]bool, len(reader.File))
+	requiredDirectories := make(map[string]struct{}, len(reader.File))
 	var infoFiles []*zip.File
 	var embeddedTargets []string
 	var declaredExpandedBytes uint64
@@ -199,7 +200,19 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 		if _, exists := seen[key]; exists {
 			return Inspection{}, fmt.Errorf("IPA contains duplicate path %q", member.Name)
 		}
-		seen[key] = struct{}{}
+		isDirectory := member.FileInfo().IsDir()
+		if !isDirectory {
+			if _, required := requiredDirectories[key]; required {
+				return Inspection{}, fmt.Errorf("IPA regular member %q conflicts with a descendant path", member.Name)
+			}
+		}
+		for ancestor := path.Dir(key); ancestor != "."; ancestor = path.Dir(ancestor) {
+			if ancestorIsDirectory, exists := seen[ancestor]; exists && !ancestorIsDirectory {
+				return Inspection{}, fmt.Errorf("IPA regular member %q conflicts with descendant %q", ancestor, member.Name)
+			}
+			requiredDirectories[ancestor] = struct{}{}
+		}
+		seen[key] = isDirectory
 		if isMainAppMember(member.Name, "Info.plist") && !member.FileInfo().IsDir() {
 			infoFiles = append(infoFiles, member)
 		} else if isEmbeddedTargetInfoPlist(member.Name) && !member.FileInfo().IsDir() {
@@ -377,6 +390,30 @@ func validateAppMetadata(app App) error {
 			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.In(r, unicode.Bidi_Control) {
 				return fmt.Errorf("invalid %s: control or formatting characters are not allowed", field.name)
 			}
+		}
+	}
+	if err := validateBundleIdentifier(app.BundleID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateBundleIdentifier(identifier string) error {
+	if identifier == "" {
+		return nil
+	}
+	for _, component := range strings.Split(identifier, ".") {
+		if component == "" {
+			return fmt.Errorf("invalid CFBundleIdentifier: components must not be empty")
+		}
+		for _, character := range []byte(component) {
+			if (character >= 'a' && character <= 'z') ||
+				(character >= 'A' && character <= 'Z') ||
+				(character >= '0' && character <= '9') ||
+				character == '-' {
+				continue
+			}
+			return fmt.Errorf("invalid CFBundleIdentifier: components may contain only ASCII letters, digits, and hyphens")
 		}
 	}
 	return nil

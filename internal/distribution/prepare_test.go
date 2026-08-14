@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 func TestPrepareIPAWritesDeterministicPrivateBundle(t *testing.T) {
@@ -127,6 +129,48 @@ func TestPrepareIPAPublishesFromStableSnapshot(t *testing.T) {
 	}
 	if !bytes.Equal(copied, original) {
 		t.Fatal("prepared payload did not use the stable pre-mutation snapshot")
+	}
+}
+
+func TestPrepareIPAPinsOutputRootBeforeInspection(t *testing.T) {
+	installVerifiedPreparationForTest(t)
+	ipaPath := validIPA(t, []string{"one"}, time.Now().Add(time.Hour), false)
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(parent, "output-root")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	afterIPASnapshotForTest = func() {
+		if err := os.Rename(root, root+"-original"); err != nil {
+			t.Fatalf("rename selected output root: %v", err)
+		}
+		if err := os.Mkdir(root, 0o755); err != nil {
+			t.Fatalf("replace selected output root: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterIPASnapshotForTest = nil })
+
+	file, err := os.Open(ipaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareIPA(file, info.Size(), PrepareOptions{Root: root}); !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("PrepareIPA() error = %v, want ErrSymlink", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("PrepareIPA() wrote to replacement root: %#v", entries)
 	}
 }
 
