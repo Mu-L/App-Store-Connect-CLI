@@ -119,6 +119,7 @@ func TestNamedConfigProfileDoesNotInheritGlobalAdAccountID(t *testing.T) {
 func TestNamedConfigProfileDoesNotInheritPreviousDefaultContexts(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv(adsBypassKeychainEnvVar, "1")
 
 	profileA := testAdsCredentials()
 	profileA.OrgID = "ORG_A"

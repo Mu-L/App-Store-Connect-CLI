@@ -44,7 +44,8 @@ Resolution keeps the existing profile and strict-auth rules. A v1 ad-account-sco
 
 ## Endpoint coverage
 
-Apple documents 99 v1 endpoints in 24 collections. The implementation is split by dependency and operator workflow:
+Apple documents 99 v1 endpoints in 24 collections. The completed 4.4.0 stack is
+split by dependency and operator workflow:
 
 1. Foundation, account management, app search, and app eligibility.
 2. Campaigns, ad groups, geo targeting, keywords, negative keywords, ads, product pages, bulk operations, and budget orders.
@@ -52,7 +53,11 @@ Apple documents 99 v1 endpoints in 24 collections. The implementation is split b
 4. App and brand reports, insights, recommendations, suggestions, and change history.
 5. Legacy v5 deprecation warnings and migration guidance.
 
-The endpoint specs drive command registration. A separate checked-in contract fixture records method, path, parameters, SDK body optionality, response type, context requirement, confirmation, command path, and Apple source URL for all 99 operations. Tests compare the implementation with that fixture and assert exact count and uniqueness.
+The endpoint specs drive command registration. A separate checked-in contract
+fixture records method, path, parameters, SDK body optionality, response type,
+context requirement, confirmation, command path, and Apple source URL for all
+99 operations. Each feature PR checks its own fixture slice; the final endpoint
+PR adds an aggregate test for the exact 99-spec and 99-command inventory.
 
 ### Reports and optimization
 

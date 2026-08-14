@@ -29,6 +29,11 @@ Ads credentials through `ASC_ADS_*` variables. `ASC_ADS_ACCESS_TOKEN` skips
 token exchange. Scoped v5 calls still need an organization ID; scoped v1 calls
 need a separate ad account ID.
 
+Named profiles use only the context stored on that profile. They do not inherit
+`ads.org_id` or `ads.ad_account_id` from a different default profile. If an
+older profile relied on the root organization fallback, save its `org_id`
+again with `asc ads auth login --name ... --org ...` or pass `--org` explicitly.
+
 ## Authenticate
 
 Create an Apple Ads API key in Apple Ads, then store it with `asc ads auth`.
@@ -567,7 +572,9 @@ asc ads platform api request \
 
 It accepts only `v1/...` paths or `https://api.ads.apple.com/v1/...` URLs.
 `GET` requests may retry transient v1 failures; mutation requests are never
-replayed automatically. Empty successful v1 responses print `{}`.
+replayed automatically. `DELETE` requests, recommendation apply/dismiss
+mutations, and ad-account `PUT` requests whose payload contains `delegations`
+require `--confirm`. Empty successful v1 responses print `{}`.
 
 ## Agent Checklist
 

@@ -378,6 +378,11 @@ func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endp
 	if flags.paginate != nil && *flags.paginate {
 		startOffset := intValue(flags.queryInts["offset"])
 		pageSize := intValue(flags.queryInts["limit"])
+		if pageSize == 0 {
+			// Geo search uses the Platform API's pageSize spelling instead of
+			// the limit used by apps and the legacy API.
+			pageSize = intValue(flags.queryInts["pageSize"])
+		}
 		result, err = client.PaginateAll(requestCtx, spec, pathParams, query, startOffset, pageSize, body)
 	} else {
 		result, err = client.Do(requestCtx, spec, pathParams, query, body)
@@ -422,12 +427,12 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 				if param.Required {
 					return nil, fmt.Errorf("--%s is required", param.Flag)
 				}
-				if provided && param.Name == "limit" {
+				if provided && (param.Name == "limit" || param.Name == "pageSize") {
 					maxLimit := appleads.MaxPageLimit(spec)
 					if maxLimit > 0 {
-						return nil, fmt.Errorf("--limit must be between 1 and %d", maxLimit)
+						return nil, fmt.Errorf("--%s must be between 1 and %d", param.Flag, maxLimit)
 					}
-					return nil, fmt.Errorf("--limit must be greater than 0")
+					return nil, fmt.Errorf("--%s must be greater than 0", param.Flag)
 				}
 				continue
 			}
