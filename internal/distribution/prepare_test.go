@@ -132,6 +132,48 @@ func TestPrepareIPAPublishesFromStableSnapshot(t *testing.T) {
 	}
 }
 
+func TestPrepareIPAPinsOutputRootBeforeInspection(t *testing.T) {
+	installVerifiedPreparationForTest(t)
+	ipaPath := validIPA(t, []string{"one"}, time.Now().Add(time.Hour), false)
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(parent, "output-root")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	afterIPASnapshotForTest = func() {
+		if err := os.Rename(root, root+"-original"); err != nil {
+			t.Fatalf("rename selected output root: %v", err)
+		}
+		if err := os.Mkdir(root, 0o755); err != nil {
+			t.Fatalf("replace selected output root: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterIPASnapshotForTest = nil })
+
+	file, err := os.Open(ipaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareIPA(file, info.Size(), PrepareOptions{Root: root}); !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("PrepareIPA() error = %v, want ErrSymlink", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("PrepareIPA() wrote to replacement root: %#v", entries)
+	}
+}
+
 func TestPrepareIPARejectsOutputParentSwappedToSymlink(t *testing.T) {
 	installVerifiedPreparationForTest(t)
 	ipaPath := validIPA(t, []string{"one"}, time.Now().Add(time.Hour), false)
@@ -170,53 +212,17 @@ func TestPrepareIPARejectsOutputParentSwappedToSymlink(t *testing.T) {
 	}
 }
 
-func TestPrepareIPAPinsOutputRootBeforeInspection(t *testing.T) {
-	installVerifiedPreparationForTest(t)
-	ipaPath := validIPA(t, []string{"one"}, time.Now().Add(time.Hour), false)
-	parent := t.TempDir()
-	rootPath := filepath.Join(parent, "root")
-	replacement := filepath.Join(parent, "replacement")
-	if err := os.Mkdir(rootPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(replacement, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	afterIPASnapshotForTest = func() {
-		if err := os.Rename(rootPath, rootPath+"-original"); err != nil {
-			t.Fatalf("rename selected output root: %v", err)
-		}
-		if err := os.Rename(replacement, rootPath); err != nil {
-			t.Fatalf("replace selected output root: %v", err)
-		}
-	}
-	t.Cleanup(func() { afterIPASnapshotForTest = nil })
-
-	file, err := os.Open(ipaPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := PrepareIPA(file, info.Size(), PrepareOptions{Root: rootPath}); !errors.Is(err, rootfs.ErrSymlink) {
-		t.Fatalf("PrepareIPA() error = %v, want pinned-root replacement rejection", err)
-	}
-	for _, directory := range []string{rootPath, rootPath + "-original"} {
-		entries, err := os.ReadDir(directory)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(entries) != 0 {
-			t.Fatalf("PrepareIPA() wrote into %q: %#v", directory, entries)
-		}
-	}
-}
-
-func TestPrepareIPARequiresExistingOutputRootBeforeInspection(t *testing.T) {
-	ipaPath := validIPA(t, []string{"one"}, time.Now().Add(time.Hour), false)
+func TestPrepareIPACreatesEmptyOutputRootBeforeInspection(t *testing.T) {
+	ipaPath := writeIPA(t, map[string][]byte{
+		"Payload/Demo.app/Info.plist": plistBytes(t, map[string]any{
+			"CFBundleIdentifier":         "com.example.demo",
+			"CFBundleName":               "Demo",
+			"CFBundleShortVersionString": "1.0",
+			"CFBundleVersion":            "1",
+			"DTPlatformName":             "xros",
+			"CFBundleSupportedPlatforms": []string{"XROS"},
+		}),
+	})
 	rootPath := filepath.Join(t.TempDir(), "missing")
 	inspected := false
 	afterIPASnapshotForTest = func() { inspected = true }
@@ -232,13 +238,17 @@ func TestPrepareIPARequiresExistingOutputRootBeforeInspection(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := PrepareIPA(file, info.Size(), PrepareOptions{Root: rootPath}); err == nil {
-		t.Fatal("PrepareIPA() accepted a root that did not exist when preparation began")
+		t.Fatal("PrepareIPA() accepted unsupported archive platform")
 	}
-	if inspected {
-		t.Fatal("PrepareIPA() inspected the IPA before rejecting the missing output root")
+	if !inspected {
+		t.Fatal("PrepareIPA() did not create and pin the output root before inspection")
 	}
-	if _, err := os.Stat(rootPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("PrepareIPA() created the missing output root: %v", err)
+	entries, err := os.ReadDir(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("PrepareIPA() published output after inspection failure: %#v", entries)
 	}
 }
 

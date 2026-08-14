@@ -72,12 +72,10 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (result Prepa
 			resultErr = fmt.Errorf("close distribution output root: %w", err)
 		}
 	}()
-	probe, err := root.OpenRoot()
-	if err != nil {
-		return PrepareResult{}, fmt.Errorf("open distribution output root: %w", err)
-	}
-	if err := probe.Close(); err != nil {
-		return PrepareResult{}, fmt.Errorf("close distribution output root: %w", err)
+	// Select and retain the output root before the potentially long snapshot,
+	// archive validation, and code-signing work.
+	if err := root.MkdirAll(".", 0o755); err != nil {
+		return PrepareResult{}, fmt.Errorf("pin distribution output root: %w", err)
 	}
 	snapshot, digest, cleanup, err := snapshotIPA(file, size)
 	if err != nil {

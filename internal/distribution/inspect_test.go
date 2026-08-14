@@ -167,6 +167,8 @@ func TestInspectIPARejectsUnsafeAndAmbiguousArchives(t *testing.T) {
 		{name: "bidirectional control", entries: map[string][]byte{"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"), "Payload/evil\u202Eipa": {1}}},
 		{name: "oversized member name", entries: map[string][]byte{"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"), "Payload/" + strings.Repeat("a", maxArchiveMemberNameLen): {1}}},
 		{name: "ambiguous main app", entries: map[string][]byte{"Payload/A.app/Info.plist": infoPlist(t, "com.example.a"), "Payload/B.app/Info.plist": infoPlist(t, "com.example.b")}},
+		{name: "regular file shadows top-level directory", entries: map[string][]byte{"Payload": {1}, "Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo")}},
+		{name: "regular file shadows app directory", entries: map[string][]byte{"Payload/Demo.app": {1}, "Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo")}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -460,6 +462,9 @@ func TestInspectIPARejectsUnsafeAppMetadataBeforeDescriptorUse(t *testing.T) {
 	}{
 		{name: "bidirectional title", field: "CFBundleDisplayName", value: "Demo\u202Eipa"},
 		{name: "format control bundle identifier", field: "CFBundleIdentifier", value: "com.example.\u200Bdemo"},
+		{name: "bundle identifier path separator", field: "CFBundleIdentifier", value: "com.example/bad"},
+		{name: "empty bundle identifier component", field: "CFBundleIdentifier", value: "com..example"},
+		{name: "non-ASCII bundle identifier", field: "CFBundleIdentifier", value: "com.example.démo"},
 		{name: "oversized version", field: "CFBundleShortVersionString", value: strings.Repeat("1", 65)},
 	}
 	for _, test := range tests {

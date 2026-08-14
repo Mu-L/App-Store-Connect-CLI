@@ -397,6 +397,9 @@ func validateAppMetadata(app App) error {
 			}
 		}
 	}
+	if err := validateBundleIdentifier(app.BundleID); err != nil {
+		return err
+	}
 	return nil
 }
 
