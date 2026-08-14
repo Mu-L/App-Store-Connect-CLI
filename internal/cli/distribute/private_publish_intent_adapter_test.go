@@ -14,6 +14,7 @@ import (
 	"time"
 
 	core "github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 func TestPrivatePublishIntentReceiptRejectsBearerAndEvidenceTamper(t *testing.T) {
@@ -122,7 +123,7 @@ func TestExecutePrivatePublishIntentPersistsBeforeExecutionAndRecoversWithoutPre
 	})
 
 	bundleDir, bundle := privatePublishIntentTestBundle(t)
-	loadPreparedBundle = func(string) (*core.PreparedBundle, error) { return bundle(), nil }
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*core.PreparedBundle, error) { return bundle(), nil }
 	storeCalls := 0
 	newObjectStore = func(ctx context.Context, _ core.S3StoreConfig) (core.ObjectStore, time.Time, error) {
 		storeCalls++
@@ -229,7 +230,7 @@ func TestExecutePrivatePublishIntentRejectsChangedDestinationBeforeRemoteExecuti
 		newPrivatePublicationVerifier, afterPrivatePublicationIntentPersisted = originalVerifier, originalAfterPersist
 	})
 	bundleDir, bundle := privatePublishIntentTestBundle(t)
-	loadPreparedBundle = func(string) (*core.PreparedBundle, error) { return bundle(), nil }
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*core.PreparedBundle, error) { return bundle(), nil }
 	newObjectStore = func(context.Context, core.S3StoreConfig) (core.ObjectStore, time.Time, error) {
 		return noOpStore{}, time.Time{}, nil
 	}
@@ -271,7 +272,7 @@ func TestExecutePrivatePublishIntentRejectsCredentialClampedLifetimeBeforePersis
 		newPrivatePublicationVerifier = originalVerifier
 	})
 	bundleDir, bundle := privatePublishIntentTestBundle(t)
-	loadPreparedBundle = func(string) (*core.PreparedBundle, error) { return bundle(), nil }
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*core.PreparedBundle, error) { return bundle(), nil }
 	newObjectStore = func(context.Context, core.S3StoreConfig) (core.ObjectStore, time.Time, error) {
 		return noOpStore{}, time.Now().Add(2 * time.Hour), nil
 	}

@@ -40,7 +40,9 @@ non-iOS devices, and an empty device list:
 ```
 
 The devices and plan inputs are protected, bounded regular files: on Unix they
-must be mode 0600 or stricter and no symlink component is followed.
+must be mode 0600 or stricter and no symlink component is followed. Protected
+input and parse failures are usage errors with path- and value-safe diagnostics;
+raw device names and UDIDs are redacted from remote preflight failures.
 
 Neither the plan nor normal output contains raw UDIDs. Device references use a
 SHA-256-derived fingerprint and the App Store Connect resource ID when known.
@@ -73,9 +75,20 @@ capability.
 The archive inventory contains the main application and embedded application,
 extension, Watch, and App Clip bundles in stable path order. Each target records
 its bundle identifier and signed executable entitlements. All targets must use
-one team. Missing explicit App IDs may be planned only for baseline entitlement
-sets; a target requiring a capability that has not already been registered is a
-blocker because this command does not mutate capabilities.
+one team. The main application must unambiguously declare the `iPhoneOS`
+platform in `CFBundleSupportedPlatforms` and/or `DTPlatformName`; other or
+unverifiable archive platforms are rejected before planning iOS resources.
+Missing explicit App IDs may be planned only for baseline entitlement sets; a
+target requiring a capability that has not already been registered is a blocker
+because this command does not mutate capabilities.
+
+For an existing App ID, `seedId` must exactly match the archive target's
+`AppIDPrefix`. Apply repeats this check against the exact App ID returned after
+concurrent-create convergence and again before profile creation. Capability
+presence alone is insufficient for entitlements with value-specific settings
+such as App Groups, Apple Pay merchant identifiers, Network Extensions, and
+Wallet pass identifiers. Those entitlements remain blocked as unverifiable
+rather than risking creation of an unusable profile.
 
 Certificate selection considers only active, unexpired iOS distribution
 certificates. More than one eligible certificate is a blocker unless
@@ -97,11 +110,19 @@ The plan hash covers the archive target descriptors, team and entitlements,
 desired device fingerprints, selected certificate, observed remote
 preconditions, ordered actions, mutation ceiling, and output paths. It excludes
 `generatedAt` and the hash itself. Apply re-inventories the archive and devices
-file, recomputes the hash, and then re-resolves remote preconditions. Only
-monotonic, already-satisfied drift is accepted. A conflict response is followed
-by an exact reread rather than a blind retry.
+file, compares entitlement numbers with exact JSON numeric semantics, recomputes
+the hash, and then re-resolves remote preconditions, including the App ID
+platform, seed, and capabilities immediately before profile creation. Numeric
+comparisons retain integer exactness beyond the lossless `float64` range rather
+than rounding. Only monotonic, already-satisfied drift is accepted. A conflict
+response is followed by an exact reread rather than a blind retry. Resume
+receipts are rebound to the hash-protected plan state directory before any
+persistence, so receipt fields cannot redirect recovery writes.
 Downloaded profiles are written create-only. A retry may reuse the same UUID
-only when the existing bytes have the identical SHA-256 digest.
+only when the existing bytes have the identical SHA-256 digest. Atomic
+publication tolerates only platform/filesystem errors that specifically report
+directory durability sync as unsupported after a successful no-replace publish;
+other sync failures remain fatal.
 
 ## Compatibility, tests, and alternatives
 

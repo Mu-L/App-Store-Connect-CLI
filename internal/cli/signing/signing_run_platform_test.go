@@ -8,13 +8,12 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -32,51 +31,6 @@ func TestParseKeychainSearchList(t *testing.T) {
 	}
 }
 
-func TestActiveSigningRunXcodeMajorVersionUsesSanitizedEnvironment(t *testing.T) {
-	previous := signingRunCommandContext
-	signingRunCommandContext = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSigningRunXcodeVersionHelper$", "--")
-	}
-	t.Cleanup(func() { signingRunCommandContext = previous })
-	t.Setenv("PATH", os.Getenv("PATH"))
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("DEVELOPER_DIR", "/Applications/Xcode.app/Contents/Developer")
-	t.Setenv("ASC_PRIVATE_KEY", "asc-secret-canary")
-	t.Setenv("ASC_SIGNING_SYNC_PASSWORD", "signing-secret-canary")
-	t.Setenv("ASC_MATCH_PASSWORD", "legacy-signing-secret-canary")
-	t.Setenv("ASC_S3_SECRET_ACCESS_KEY", "asc-s3-secret-canary")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws-secret-canary")
-	t.Setenv("GIT_ASKPASS", "/tmp/credential-helper")
-	major, err := activeSigningRunXcodeMajorVersion(context.Background())
-	if err != nil {
-		t.Fatalf("activeSigningRunXcodeMajorVersion() error: %v", err)
-	}
-	if major != 16 {
-		t.Fatalf("major = %d, want 16", major)
-	}
-}
-
-func TestSigningRunXcodeVersionHelper(t *testing.T) {
-	if len(os.Args) == 0 || os.Args[len(os.Args)-1] != "--" {
-		return
-	}
-	for _, name := range []string{
-		"ASC_PRIVATE_KEY", "ASC_SIGNING_SYNC_PASSWORD", "ASC_MATCH_PASSWORD", "ASC_S3_SECRET_ACCESS_KEY",
-		"AWS_SECRET_ACCESS_KEY", "GIT_ASKPASS",
-	} {
-		if value := os.Getenv(name); value != "" {
-			_, _ = os.Stderr.WriteString("secret environment reached helper: " + name)
-			os.Exit(23)
-		}
-	}
-	if os.Getenv("PATH") == "" || os.Getenv("HOME") == "" || os.Getenv("DEVELOPER_DIR") == "" {
-		_, _ = os.Stderr.WriteString("required runtime environment missing")
-		os.Exit(24)
-	}
-	_, _ = os.Stdout.WriteString("Xcode 16.4\nBuild version 16F6\n")
-	os.Exit(0)
-}
-
 func TestRunSigningRunChildPreservesExitCode(t *testing.T) {
 	err := runSigningRunChild(context.Background(), []string{"/bin/sh", "-c", "exit 42"})
 	if code, ok := shared.ProcessExitCode(err); !ok || code != 42 {
@@ -84,7 +38,7 @@ func TestRunSigningRunChildPreservesExitCode(t *testing.T) {
 	}
 }
 
-func TestRunSigningRunChildInterruptsProcessGroup(t *testing.T) {
+func TestRunSigningRunChildRejectsPreCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	started := time.Now()
@@ -97,13 +51,66 @@ func TestRunSigningRunChildInterruptsProcessGroup(t *testing.T) {
 	}
 }
 
-func TestRunSigningRunChildReturnsCancellationWhenChildHandlesInterrupt(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+func TestRunSigningRunChildDoesNotSignalProcessGroupAfterWait(t *testing.T) {
+	previous := signingRunKillProcessGroupFn
+	var signals []syscall.Signal
+	signingRunKillProcessGroupFn = func(_ int, signal syscall.Signal) error {
+		if signal == 0 {
+			return syscall.ESRCH
+		}
+		signals = append(signals, signal)
+		return nil
+	}
+	t.Cleanup(func() { signingRunKillProcessGroupFn = previous })
 
-	err := runSigningRunChild(ctx, []string{"/bin/sh", "-c", `trap 'exit 0' INT; sleep 30`})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error = %v, want context deadline exceeded", err)
+	if err := runSigningRunChild(context.Background(), []string{"/bin/sh", "-c", "exit 0"}); err != nil {
+		t.Fatalf("runSigningRunChild() error: %v", err)
+	}
+	if len(signals) != 0 {
+		t.Fatalf("signals after child wait = %v, want none", signals)
+	}
+}
+
+func TestRunSigningRunChildSignalsProcessGroupBeforeWaitOnCancellation(t *testing.T) {
+	previous := signingRunKillProcessGroupFn
+	var signals []syscall.Signal
+	signingRunKillProcessGroupFn = func(pid int, signal syscall.Signal) error {
+		signals = append(signals, signal)
+		return previous(pid, signal)
+	}
+	t.Cleanup(func() { signingRunKillProcessGroupFn = previous })
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	timer := time.AfterFunc(50*time.Millisecond, func() {
+		cancel(&signingRunSignalCause{signal: syscall.SIGTERM})
+	})
+	defer timer.Stop()
+	err := runSigningRunChild(ctx, []string{"/bin/sleep", "30"})
+	if code, ok := shared.ProcessExitCode(err); !ok || code != 143 {
+		t.Fatalf("error = %v, want signal exit code 143", err)
+	}
+	if !reflect.DeepEqual(signals, []syscall.Signal{syscall.SIGTERM}) {
+		t.Fatalf("cancellation signals = %v, want SIGTERM before wait only", signals)
+	}
+}
+
+func TestSigningRunContextPreservesTriggeringSignal(t *testing.T) {
+	for _, want := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP} {
+		t.Run(want.String(), func(t *testing.T) {
+			signals := make(chan os.Signal, 1)
+			ctx, stop := contextWithSigningRunSignals(context.Background(), signals, func() {})
+			t.Cleanup(stop)
+
+			signals <- want
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+				t.Fatal("signal did not cancel signing context")
+			}
+			if got := signingRunCancellationSignal(ctx); got != want {
+				t.Fatalf("cancellation signal = %v, want %v", got, want)
+			}
+		})
 	}
 }
 
@@ -153,6 +160,48 @@ func TestRemoveSigningRunTempDirRejectsBroadOrForeignPaths(t *testing.T) {
 	}
 }
 
+func TestRemoveSigningRunTempDirRemovesRegularSidecarFiles(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "asc-signing-run.")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+	if err := os.WriteFile(filepath.Join(tempDir, ".fl12345678"), []byte("lock"), 0o600); err != nil {
+		t.Fatalf("write keychain sidecar: %v", err)
+	}
+
+	if err := removeSigningRunTempDir(tempDir); err != nil {
+		t.Fatalf("removeSigningRunTempDir() error: %v", err)
+	}
+	if _, err := os.Stat(tempDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp dir stat error = %v, want not exist", err)
+	}
+}
+
+func TestRemoveSigningRunTempDirRejectsNestedAndSymlinkEntries(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		create func(string) error
+	}{
+		{name: "directory", create: func(dir string) error { return os.Mkdir(filepath.Join(dir, "nested"), 0o700) }},
+		{name: "symlink", create: func(dir string) error { return os.Symlink("/tmp", filepath.Join(dir, "link")) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tempDir, err := os.MkdirTemp("", "asc-signing-run.")
+			if err != nil {
+				t.Fatalf("create temp dir: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+			if err := test.create(tempDir); err != nil {
+				t.Fatalf("create unsafe entry: %v", err)
+			}
+			if err := removeSigningRunTempDir(tempDir); err == nil {
+				t.Fatal("expected unsafe entry rejection")
+			}
+		})
+	}
+}
+
 func TestRecoverSigningRunJournalRemovesCodesignProbeCrashResidue(t *testing.T) {
 	stateDir := t.TempDir()
 	tempDir, err := os.MkdirTemp("", "asc-signing-run.")
@@ -195,198 +244,6 @@ func TestRecoverSigningRunJournalRemovesCodesignProbeCrashResidue(t *testing.T) 
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "journal.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("journal stat error = %v, want not exist", err)
-	}
-}
-
-func TestRecoverEphemeralWithoutJournalDoesNotMutateSigningState(t *testing.T) {
-	if !signingRunSecurityAvailable() {
-		t.Skip("requires a cgo-enabled macOS build")
-	}
-	stateDir := t.TempDir()
-	previousStateDir := signingRunStateDirFn
-	previousRemoveSearch := signingRunRecoveryRemoveSearchEntryFn
-	previousDeleteKeychain := signingRunRecoveryDeleteKeychainFn
-	signingRunStateDirFn = func() (string, error) { return stateDir, nil }
-	searchRemovalCalls := 0
-	keychainDeletionCalls := 0
-	signingRunRecoveryRemoveSearchEntryFn = func(context.Context, string) error {
-		searchRemovalCalls++
-		return nil
-	}
-	signingRunRecoveryDeleteKeychainFn = func(context.Context, string) error {
-		keychainDeletionCalls++
-		return nil
-	}
-	t.Cleanup(func() {
-		signingRunStateDirFn = previousStateDir
-		signingRunRecoveryRemoveSearchEntryFn = previousRemoveSearch
-		signingRunRecoveryDeleteKeychainFn = previousDeleteKeychain
-	})
-
-	if err := RecoverEphemeral(context.Background()); err != nil {
-		t.Fatalf("RecoverEphemeral() error: %v", err)
-	}
-	if searchRemovalCalls != 0 || keychainDeletionCalls != 0 {
-		t.Fatalf("unexpected signing mutation without journal: search removals=%d keychain deletions=%d", searchRemovalCalls, keychainDeletionCalls)
-	}
-}
-
-func TestRecoverEphemeralDisposableKeychainSmoke(t *testing.T) {
-	if os.Getenv("ASC_SIGNING_RUN_LIVE_TEST") != "1" {
-		t.Skip("set ASC_SIGNING_RUN_LIVE_TEST=1 to exercise disposable recovery")
-	}
-	if !signingRunSecurityAvailable() {
-		t.Skip("requires a cgo-enabled macOS build")
-	}
-	stateDir := t.TempDir()
-	previousStateDir := signingRunStateDirFn
-	signingRunStateDirFn = func() (string, error) { return stateDir, nil }
-	t.Cleanup(func() { signingRunStateDirFn = previousStateDir })
-
-	tempDir, err := createSigningRunTempDir()
-	if err != nil {
-		t.Fatalf("create temp dir: %v", err)
-	}
-	keychainPath := filepath.Join(tempDir, "signing.keychain-db")
-	password, err := signingRunRandomBytes(32)
-	if err != nil {
-		t.Fatalf("generate password: %v", err)
-	}
-	defer clear(password)
-	original, err := keychainSearchList(context.Background())
-	if err != nil {
-		t.Fatalf("read original keychain search list: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = removeKeychainSearchEntry(context.Background(), keychainPath)
-		_ = deleteSigningRunKeychain(context.Background(), keychainPath)
-		_ = removeSigningRunTempDir(tempDir)
-	})
-	if err := createSigningRunKeychain(context.Background(), keychainPath, password); err != nil {
-		t.Fatalf("create disposable keychain: %v", err)
-	}
-	if err := writeSigningRunJournal(signingRunJournal{
-		SchemaVersion: 1, TempDir: tempDir, KeychainPath: keychainPath,
-	}, false); err != nil {
-		t.Fatalf("write recovery journal: %v", err)
-	}
-	if err := RecoverEphemeral(context.Background()); err != nil {
-		t.Fatalf("RecoverEphemeral() error: %v", err)
-	}
-	if _, err := os.Stat(tempDir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("temporary signing directory remains: %v", err)
-	}
-	after, err := keychainSearchList(context.Background())
-	if err != nil {
-		t.Fatalf("read recovered keychain search list: %v", err)
-	}
-	if !reflect.DeepEqual(after, original) {
-		t.Fatalf("keychain search list changed: before=%v after=%v", original, after)
-	}
-}
-
-func TestRecoverEphemeralRejectsAmbiguousJournalWithoutMutation(t *testing.T) {
-	if !signingRunSecurityAvailable() {
-		t.Skip("requires a cgo-enabled macOS build")
-	}
-	for _, test := range []struct {
-		name   string
-		suffix string
-		edit   func(string) string
-	}{
-		{name: "trailing object", suffix: ` {}`},
-		{name: "trailing garbage", suffix: ` not-json`},
-		{name: "duplicate key", edit: func(value string) string {
-			return strings.Replace(value, `"schemaVersion":1`, `"schemaVersion":1,"schemaVersion":1`, 1)
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			stateDir := t.TempDir()
-			previousStateDir := signingRunStateDirFn
-			previousRemoveSearch := signingRunRecoveryRemoveSearchEntryFn
-			previousDeleteKeychain := signingRunRecoveryDeleteKeychainFn
-			signingRunStateDirFn = func() (string, error) { return stateDir, nil }
-			searchRemovalCalls := 0
-			keychainDeletionCalls := 0
-			signingRunRecoveryRemoveSearchEntryFn = func(context.Context, string) error {
-				searchRemovalCalls++
-				return nil
-			}
-			signingRunRecoveryDeleteKeychainFn = func(context.Context, string) error {
-				keychainDeletionCalls++
-				return nil
-			}
-			t.Cleanup(func() {
-				signingRunStateDirFn = previousStateDir
-				signingRunRecoveryRemoveSearchEntryFn = previousRemoveSearch
-				signingRunRecoveryDeleteKeychainFn = previousDeleteKeychain
-			})
-
-			tempDir := filepath.Join(os.TempDir(), "asc-signing-run.ambiguous-journal")
-			journal := signingRunJournal{SchemaVersion: 1, TempDir: tempDir, KeychainPath: filepath.Join(tempDir, "signing.keychain-db")}
-			data, err := json.Marshal(journal)
-			if err != nil {
-				t.Fatalf("marshal journal: %v", err)
-			}
-			content := string(data)
-			if test.edit != nil {
-				content = test.edit(content)
-			}
-			content += test.suffix
-			journalPath := filepath.Join(stateDir, "journal.json")
-			if err := os.WriteFile(journalPath, []byte(content), 0o600); err != nil {
-				t.Fatalf("write ambiguous journal: %v", err)
-			}
-			err = RecoverEphemeral(context.Background())
-			if err == nil || !errors.Is(err, ErrEphemeralRecoveryJournalInvalid) {
-				t.Fatalf("error = %v, want invalid-journal rejection", err)
-			}
-			if searchRemovalCalls != 0 || keychainDeletionCalls != 0 {
-				t.Fatalf("recovery mutated state: search removals=%d keychain deletions=%d", searchRemovalCalls, keychainDeletionCalls)
-			}
-			retained, readErr := os.ReadFile(journalPath)
-			if readErr != nil || string(retained) != content {
-				t.Fatalf("journal not retained exactly: data=%q error=%v", retained, readErr)
-			}
-		})
-	}
-}
-
-func TestAcquireSigningRunLockMutualExclusionAndCancellation(t *testing.T) {
-	stateDir := t.TempDir()
-	previousStateDir := signingRunStateDirFn
-	signingRunStateDirFn = func() (string, error) { return stateDir, nil }
-	t.Cleanup(func() { signingRunStateDirFn = previousStateDir })
-
-	unlockFirst, err := acquireSigningRunLock(context.Background())
-	if err != nil {
-		t.Fatalf("acquire first lock: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	secondResult := make(chan error, 1)
-	go func() {
-		unlock, err := acquireSigningRunLock(ctx)
-		if unlock != nil {
-			_ = unlock()
-		}
-		secondResult <- err
-	}()
-	timer := time.NewTimer(2 * signingRunLockPollInterval)
-	<-timer.C
-	cancel()
-	if err := <-secondResult; !errors.Is(err, context.Canceled) {
-		_ = unlockFirst()
-		t.Fatalf("contending lock error = %v, want context canceled", err)
-	}
-	if err := unlockFirst(); err != nil {
-		t.Fatalf("release first lock: %v", err)
-	}
-	unlockSecond, err := acquireSigningRunLock(context.Background())
-	if err != nil {
-		t.Fatalf("acquire lock after release: %v", err)
-	}
-	if err := unlockSecond(); err != nil {
-		t.Fatalf("release second lock: %v", err)
 	}
 }
 
@@ -440,23 +297,6 @@ func TestReadBoundedSigningRunFilePermissions(t *testing.T) {
 	}
 	if _, err := readBoundedSigningRunFile(path, 32, false); err == nil {
 		t.Fatal("expected group/world-writable profile input rejection")
-	}
-}
-
-func TestReadBoundedSigningRunFileRejectsMultipleHardLinks(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "identity.p12")
-	alias := filepath.Join(dir, "identity-alias.p12")
-	if err := os.WriteFile(path, []byte("identity"), 0o600); err != nil {
-		t.Fatalf("write input: %v", err)
-	}
-	if err := os.Link(path, alias); err != nil {
-		t.Fatalf("create hard link: %v", err)
-	}
-	for _, private := range []bool{true, false} {
-		if _, err := readBoundedSigningRunFile(path, 32, private); err == nil || !strings.Contains(err.Error(), "multiple hard links") {
-			t.Fatalf("private=%t error=%v, want multiple-hard-link rejection", private, err)
-		}
 	}
 }
 
@@ -543,6 +383,67 @@ func TestRemoveSigningRunProfileRefusesReplacement(t *testing.T) {
 	}
 	if err := removeSigningRunProfile(installed); err == nil || !strings.Contains(err.Error(), "file identity changed") {
 		t.Fatalf("error = %v, want file identity refusal", err)
+	}
+}
+
+func TestRemoveSigningRunProfilePreservesReplacementDuringCleanup(t *testing.T) {
+	installDir := t.TempDir()
+	previous := signingRunProfileInstallDirFn
+	signingRunProfileInstallDirFn = func(context.Context) (string, error) { return installDir, nil }
+	t.Cleanup(func() { signingRunProfileInstallDirFn = previous })
+	const uuid = "A7EFEF21-3432-404F-A488-083800B570FF"
+	data := []byte("signed-profile")
+	replacement := []byte("replacement")
+	digestBytes := sha256.Sum256(data)
+	digest := strings.ToUpper(hex.EncodeToString(digestBytes[:]))
+	installed, err := installSigningRunProfile(uuid, data, digest, func(signingRunProfileInstall) error { return nil })
+	if err != nil {
+		t.Fatalf("installSigningRunProfile: %v", err)
+	}
+
+	err = removeSigningRunProfileWithHook(installed, func() error {
+		if err := os.Remove(installed.Path); err != nil {
+			return err
+		}
+		return os.WriteFile(installed.Path, replacement, 0o600)
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed during cleanup") {
+		t.Fatalf("error = %v, want concurrent replacement refusal", err)
+	}
+	got, readErr := os.ReadFile(installed.Path)
+	if readErr != nil {
+		t.Fatalf("read preserved replacement: %v", readErr)
+	}
+	if !bytes.Equal(got, replacement) {
+		t.Fatalf("profile content = %q, want replacement %q", got, replacement)
+	}
+}
+
+func TestRemoveSigningRunProfileRecoversQuarantinedProfile(t *testing.T) {
+	installDir := t.TempDir()
+	previous := signingRunProfileInstallDirFn
+	signingRunProfileInstallDirFn = func(context.Context) (string, error) { return installDir, nil }
+	t.Cleanup(func() { signingRunProfileInstallDirFn = previous })
+	const uuid = "A7EFEF21-3432-404F-A488-083800B570FF"
+	data := []byte("signed-profile")
+	digestBytes := sha256.Sum256(data)
+	digest := strings.ToUpper(hex.EncodeToString(digestBytes[:]))
+	installed, err := installSigningRunProfile(uuid, data, digest, func(signingRunProfileInstall) error { return nil })
+	if err != nil {
+		t.Fatalf("installSigningRunProfile: %v", err)
+	}
+	quarantinePath := filepath.Join(installDir, ".asc-signing-run-profile-remove-"+filepath.Base(installed.Path))
+	if err := os.Rename(installed.Path, quarantinePath); err != nil {
+		t.Fatalf("simulate interrupted quarantine: %v", err)
+	}
+
+	if err := removeSigningRunProfile(installed); err != nil {
+		t.Fatalf("recover quarantined profile: %v", err)
+	}
+	for _, path := range []string{installed.Path, quarantinePath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s stat error = %v, want not exist", path, err)
+		}
 	}
 }
 

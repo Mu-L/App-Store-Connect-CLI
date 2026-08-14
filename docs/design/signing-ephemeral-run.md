@@ -65,23 +65,28 @@ operating system are immutable or outside ASC's direct control.
 The profile is installed at Xcode's version-appropriate provisioning profile
 path only if no file exists for that UUID. An identical pre-existing profile is
 reused and left untouched; a different file at that path is a hard conflict.
-A profile created by this command is removed only when its path still identifies
-the exact inode and digest the command wrote. User files are never overwritten
-or deleted.
+A profile created by this command is atomically moved to a same-directory
+quarantine name and its inode and digest are reverified before unlinking. A file
+replaced during cleanup is restored rather than deleted. User files are never
+overwritten or deleted.
 
 A mode-0600 crash journal contains only cleanup coordinates, never credentials.
 It is written before keychain creation and before publishing a staged profile.
 After acquiring the per-user lock, the next run validates journal ownership,
 permissions, hard-link count, containment, schema, digests, and file identities
-before attempting bounded recovery. Recovery also recognizes only the exact
-regular `codesign-probe` file that can remain if the process is killed during
-the signer proof; arbitrary residue still fails closed. Incomplete cleanup
-retains the journal and private temporary directory for the next run.
+before attempting bounded recovery. Recovery removes regular files contained by
+the validated mode-0700 temporary directory, including keychain lock sidecars,
+while rejecting nested directories, symlinks, and other non-regular entries.
+Incomplete cleanup retains the journal and private temporary directory for the
+next run.
 
 The optional receipt is a mode-0600, no-overwrite JSON file. It records only
 purpose, outcome, child exit code, certificate and profile SHA-256 digests,
 profile UUID, team and bundle identifiers, and cleanup state. It never records
-passwords, private keys, device identifiers, or child command arguments.
+passwords, private keys, device identifiers, or child command arguments. Its
+destination and parent are preflighted before any signing-environment or child
+side effects; the completed receipt is still published atomically without
+replacing a file created after that preflight.
 
 ## Output, failures, and compatibility
 
@@ -90,21 +95,21 @@ stream. Setup and cleanup failures are diagnostics on stderr. Usage failures
 exit 2. The wrapped child's normal exit code and signal-derived shell exit code
 are preserved exactly after best-effort cleanup through a private ASC-only error
 marker, so ordinary subprocess failures elsewhere retain the existing generic
-ASC mapping. Receipt write failure is a command failure when the child
-succeeded; a child failure remains authoritative and the receipt failure is
-rendered separately before root handling suppresses the already-inherited child
-diagnostic. The same render-before-join rule applies to cleanup and lock-release
-failures accompanying a child exit. Setup failures and their cleanup failures
-remain unreported until the root renders their complete joined diagnostic once.
+ASC mapping. `SIGINT`, `SIGTERM`, and `SIGHUP` received by the wrapper are
+forwarded unchanged to the running child process group before waiting for it.
+Receipt write failure is a command failure when the child succeeded; a child
+failure remains authoritative and the receipt failure is rendered separately
+before root handling suppresses the already-inherited child diagnostic. The same
+render-before-join rule applies to cleanup and lock-release failures accompanying
+a child exit. Setup failures and their cleanup failures remain unreported until
+the root renders their complete joined diagnostic once.
 
 The change is additive and macOS-only. Other platforms return a validation
 error before reading or changing host signing state. No current signing command
 or output changes, so no migration or deprecation is needed. Release, CI, and
 `make build-all` recipes explicitly enable CGO for both macOS architectures so
 every distributed Darwin binary includes the Security.framework boundary;
-Linux and Windows cross-builds keep CGO disabled. Because the same target also
-builds those CGO-enabled Darwin binaries, `make build-all` requires a macOS host
-and fails before building on other hosts.
+Linux and Windows cross-builds keep CGO disabled.
 
 ## RED-GREEN and verification
 

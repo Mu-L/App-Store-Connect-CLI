@@ -1,9 +1,11 @@
 package distribute
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,13 +14,14 @@ import (
 	"time"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 func TestPublishCommandRequiresFlagsBeforeSideEffects(t *testing.T) {
 	originalLoad := loadPreparedBundle
 	t.Cleanup(func() { loadPreparedBundle = originalLoad })
 	called := false
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) {
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
 		called = true
 		return nil, nil
 	}
@@ -32,11 +35,34 @@ func TestPublishCommandRequiresFlagsBeforeSideEffects(t *testing.T) {
 	}
 }
 
+func TestPublicationVerifierUsesUploadTimeoutForIPA(t *testing.T) {
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	t.Setenv("ASC_UPLOAD_TIMEOUT", "5m")
+	t.Setenv("ASC_UPLOAD_TIMEOUT_SECONDS", "")
+
+	recorder := &deadlineRecordingVerifier{}
+	verifier := publicationVerifier{delegate: recorder, documentTimeout: 30 * time.Second}
+
+	if err := verifier.Verify(context.Background(), distribution.VerifyRequest{Kind: distribution.VerifyIPA}); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifier.Verify(context.Background(), distribution.VerifyRequest{Kind: distribution.VerifyDocument}); err != nil {
+		t.Fatal(err)
+	}
+
+	if recorder.ipaBudget < 4*time.Minute {
+		t.Fatalf("IPA verification budget = %s, want upload-sized timeout", recorder.ipaBudget)
+	}
+	if recorder.documentBudget <= 0 || recorder.documentBudget > 30*time.Second {
+		t.Fatalf("document verification budget = %s, want at most 30s", recorder.documentBudget)
+	}
+}
+
 func TestPublishCommandValidatesOutputBeforeLocalOrRemoteSideEffects(t *testing.T) {
 	originalLoad, originalStore := loadPreparedBundle, newObjectStore
 	t.Cleanup(func() { loadPreparedBundle, newObjectStore = originalLoad, originalStore })
 	loadCalled, storeCalled := false, false
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) {
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
 		loadCalled = true
 		return nil, nil
 	}
@@ -60,6 +86,92 @@ func TestPublishCommandValidatesOutputBeforeLocalOrRemoteSideEffects(t *testing.
 	}
 }
 
+func TestPublishCommandRejectsUnsafeBucketBeforeSideEffects(t *testing.T) {
+	originalLoad := loadPreparedBundle
+	t.Cleanup(func() { loadPreparedBundle = originalLoad })
+	loadCalled := false
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
+		loadCalled = true
+		return nil, errors.New("unexpected bundle load")
+	}
+	stateDir := t.TempDir()
+	err := PublishCommand().ParseAndRun(context.Background(), []string{
+		"--bundle-dir", t.TempDir(), "--endpoint", "https://objects.example.com", "--region", "auto", "--bucket", "bucket\x1b]0;pwned\x07", "--prefix", "app",
+		"--receipt", filepath.Join(stateDir, "receipt.json"), "--link-path", filepath.Join(stateDir, "link.json"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "--bucket") {
+		t.Fatalf("error = %v, want unsafe bucket usage error", err)
+	}
+	if loadCalled {
+		t.Fatal("bundle was loaded before unsafe bucket rejection")
+	}
+}
+
+func TestPublishCommandRejectsOverflowingLifetimeBeforeSideEffects(t *testing.T) {
+	originalLoad, originalStore := loadPreparedBundle, newObjectStore
+	t.Cleanup(func() { loadPreparedBundle, newObjectStore = originalLoad, originalStore })
+	loadCalled, storeCalled := false, false
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
+		loadCalled = true
+		return nil, errors.New("unexpected bundle load")
+	}
+	newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
+		storeCalled = true
+		return noOpStore{}, time.Time{}, nil
+	}
+	base := t.TempDir()
+	bundleDir := filepath.Join(base, "missing-bundle")
+	stateDir := filepath.Join(base, "missing-state")
+	err := PublishCommand().ParseAndRun(context.Background(), []string{
+		"--bundle-dir", bundleDir, "--endpoint", "https://objects.example.com", "--region", "auto",
+		"--bucket", "bucket", "--prefix", "app", "--receipt", filepath.Join(stateDir, "receipt.json"),
+		"--link-path", filepath.Join(stateDir, "link.json"), "--url-ttl", "2562047h", "--download-grace", "100h",
+	})
+	const wantError = "--url-ttl must not exceed 7d"
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("ParseAndRun() error = %v, want flag.ErrHelp usage classification", err)
+	}
+	if err.Error() != wantError {
+		t.Fatalf("ParseAndRun() error = %q, want %q", err.Error(), wantError)
+	}
+	if loadCalled || storeCalled {
+		t.Fatalf("side effects before lifetime validation: load=%t store=%t", loadCalled, storeCalled)
+	}
+	for _, path := range []string{bundleDir, stateDir} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("validation created %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestPublishCommandAcceptsExactlySevenDayPrivateLifetime(t *testing.T) {
+	originalLoad, originalStore := loadPreparedBundle, newObjectStore
+	t.Cleanup(func() { loadPreparedBundle, newObjectStore = originalLoad, originalStore })
+	want := errors.New("accepted lifetime reached bundle load")
+	loadCalled, storeCalled := false, false
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
+		loadCalled = true
+		return nil, want
+	}
+	newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
+		storeCalled = true
+		return noOpStore{}, time.Time{}, nil
+	}
+	bundleDir := t.TempDir()
+	stateDir := t.TempDir()
+	err := PublishCommand().ParseAndRun(context.Background(), []string{
+		"--bundle-dir", bundleDir, "--endpoint", "https://objects.example.com", "--region", "auto",
+		"--bucket", "bucket", "--prefix", "app", "--receipt", filepath.Join(stateDir, "receipt.json"),
+		"--link-path", filepath.Join(stateDir, "link.json"), "--url-ttl", "167h", "--download-grace", "1h",
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("ParseAndRun() error = %v, want accepted-lifetime sentinel", err)
+	}
+	if !loadCalled || storeCalled {
+		t.Fatalf("exact boundary flow: load=%t store=%t", loadCalled, storeCalled)
+	}
+}
+
 func TestPublishCommandWritesSensitiveLink0600AndRedactedReceipt(t *testing.T) {
 	originalLoad, originalStore, originalPublish, originalReverify := loadPreparedBundle, newObjectStore, runPublish, reverifyPublication
 	t.Cleanup(func() {
@@ -71,15 +183,18 @@ func TestPublishCommandWritesSensitiveLink0600AndRedactedReceipt(t *testing.T) {
 	if err := os.WriteFile(ipaPath, []byte("ipa"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) {
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
 		file, err := os.Open(ipaPath)
 		return &distribution.PreparedBundle{IPA: file, IPASHA256: "sha", IPASize: 3, Descriptor: distribution.PreparedDescriptor{App: distribution.PreparedApp{BundleID: "com.example", Version: "1", BuildNumber: "2"}}}, err
 	}
 	storeCalls := 0
-	newObjectStore = func(ctx context.Context, _ distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
+	newObjectStore = func(ctx context.Context, config distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
 		storeCalls++
 		if _, ok := ctx.Deadline(); !ok {
 			return nil, time.Time{}, errors.New("object-store setup context has no deadline")
+		}
+		if config.RequestTimeout <= 0 {
+			return nil, time.Time{}, errors.New("object-store request timeout is not bounded")
 		}
 		return noOpStore{}, time.Time{}, nil
 	}
@@ -187,7 +302,7 @@ func TestPublishCommandPreflightsArtifactCollisionBeforeObjectStore(t *testing.T
 		t.Fatal(err)
 	}
 	loadCalled, storeCalled := false, false
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) {
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
 		loadCalled = true
 		return nil, nil
 	}
@@ -209,7 +324,12 @@ func TestPublishCommandPreflightsArtifactCollisionBeforeObjectStore(t *testing.T
 
 func TestPublishArtifactsMustRemainOutsidePreparedBundle(t *testing.T) {
 	bundle := t.TempDir()
-	err := rejectBundleContainedArtifacts(bundle, filepath.Join(bundle, "receipt.json"), filepath.Join(t.TempDir(), "link.json"))
+	bundleRoot, err := rootfs.New(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundleRoot.Close()
+	err = rejectBundleContainedArtifacts(bundleRoot, filepath.Join(bundle, "receipt.json"), filepath.Join(t.TempDir(), "link.json"))
 	if err == nil || !strings.Contains(err.Error(), "outside") {
 		t.Fatalf("error = %v", err)
 	}
@@ -221,12 +341,151 @@ func TestPublishArtifactsCannotEnterPreparedBundleThroughSymlinkAlias(t *testing
 	if err := os.Symlink(realBundle, alias); err != nil {
 		t.Fatal(err)
 	}
-	err := rejectBundleContainedArtifacts(alias, filepath.Join(realBundle, "state", "receipt.json"), filepath.Join(realBundle, "state", "link.json"))
+	bundleRoot, err := rootfs.New(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundleRoot.Close()
+	err = rejectBundleContainedArtifacts(bundleRoot, filepath.Join(realBundle, "state", "receipt.json"), filepath.Join(realBundle, "state", "link.json"))
 	if err == nil || !strings.Contains(err.Error(), "outside") {
 		t.Fatalf("error = %v, want physical containment rejection", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(realBundle, "state")); !os.IsNotExist(statErr) {
 		t.Fatalf("containment check created state directory: %v", statErr)
+	}
+}
+
+func TestPublishArtifactsRejectIntermediateSymlinkRetargetAfterAnchoring(t *testing.T) {
+	base := t.TempDir()
+	bundle := filepath.Join(base, "bundle")
+	outside := filepath.Join(base, "outside")
+	for _, directory := range []string{bundle, filepath.Join(outside, "state")} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(outside, alias); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := anchorArtifactPaths(filepath.Join(alias, "state", "receipt.json"), filepath.Join(alias, "state", "link.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+	bundleRoot, err := rootfs.New(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundleRoot.Close()
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(bundle, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rejectAnchoredBundleContainedArtifacts(bundleRoot, paths); err == nil {
+		t.Fatal("anchored containment accepted a retargeted intermediate symlink")
+	}
+	for _, path := range []string{
+		filepath.Join(bundle, "state", "receipt.json"),
+		filepath.Join(bundle, "state", "link.json"),
+		filepath.Join(outside, "state", "receipt.json"),
+		filepath.Join(outside, "state", "link.json"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("containment failure wrote %s: %v", path, err)
+		}
+	}
+}
+
+func TestPublishArtifactsRejectOrdinaryRootSubstitutionAfterAnchoring(t *testing.T) {
+	base := t.TempDir()
+	bundle := filepath.Join(base, "bundle")
+	state := filepath.Join(base, "state")
+	moved := filepath.Join(base, "state-original")
+	for _, directory := range []string{bundle, state} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := anchorArtifactPaths(filepath.Join(state, "receipt.json"), filepath.Join(state, "link.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+	bundleRoot, err := rootfs.New(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundleRoot.Close()
+	if err := os.Rename(state, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rejectAnchoredBundleContainedArtifacts(bundleRoot, paths); err == nil {
+		t.Fatal("anchored containment accepted an ordinary directory substitution")
+	}
+	for _, directory := range []string{state, moved, bundle} {
+		for _, name := range []string{"receipt.json", "link.json"} {
+			path := filepath.Join(directory, name)
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("containment failure wrote %s: %v", path, err)
+			}
+		}
+	}
+}
+
+func TestPublishArtifactsRejectRetargetedChildForBothPaths(t *testing.T) {
+	for _, target := range []string{"receipt", "link"} {
+		t.Run(target, func(t *testing.T) {
+			base := t.TempDir()
+			bundle := filepath.Join(base, "bundle")
+			state := filepath.Join(base, "state")
+			receiptParent := filepath.Join(state, "receipt")
+			linkParent := filepath.Join(state, "link")
+			for _, directory := range []string{bundle, receiptParent, linkParent} {
+				if err := os.MkdirAll(directory, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			paths, err := anchorArtifactPaths(filepath.Join(receiptParent, "receipt.json"), filepath.Join(linkParent, "link.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer paths.close()
+			bundleRoot, err := rootfs.New(bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer bundleRoot.Close()
+			if err := rejectAnchoredBundleContainedArtifacts(bundleRoot, paths); err != nil {
+				t.Fatal(err)
+			}
+			selected := receiptParent
+			if target == "link" {
+				selected = linkParent
+			}
+			if err := os.Remove(selected); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(bundle, selected); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := paths.preflight(); err == nil {
+				t.Fatalf("preflight accepted retargeted %s parent", target)
+			}
+			for _, name := range []string{"receipt.json", "link.json"} {
+				if _, err := os.Stat(filepath.Join(bundle, name)); !os.IsNotExist(err) {
+					t.Fatalf("retargeted %s path wrote %s: %v", target, name, err)
+				}
+			}
+		})
 	}
 }
 
@@ -338,6 +597,26 @@ func TestArtifactPairRejectsDistinctParentSymlinkSwap(t *testing.T) {
 	}
 }
 
+func TestPreflightRejectsArtifactPathsThatContainEachOther(t *testing.T) {
+	base := t.TempDir()
+	for _, test := range []struct {
+		name    string
+		receipt string
+		link    string
+	}{
+		{name: "receipt contains link", receipt: filepath.Join(base, "result"), link: filepath.Join(base, "result", "link.json")},
+		{name: "link contains receipt", receipt: filepath.Join(base, "result", "receipt.json"), link: filepath.Join(base, "result")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			paths, err := preflightArtifactPaths(test.receipt, test.link)
+			paths.close()
+			if err == nil || !strings.Contains(err.Error(), "contain") {
+				t.Fatalf("preflightArtifactPaths() error = %v, want containment rejection", err)
+			}
+		})
+	}
+}
+
 func TestPreflightSecurelyCreatesMissingCommonParent(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "nested", "publishes")
 	paths, err := preflightArtifactPaths(filepath.Join(parent, "receipt.json"), filepath.Join(parent, "link.json"))
@@ -373,18 +652,62 @@ func TestPreflightRejectsWorldReadableSensitiveLink(t *testing.T) {
 	}
 }
 
+func TestReadBoundedPublishStateEnforcesExactLimit(t *testing.T) {
+	exact := bytes.Repeat([]byte("x"), maxPublishStateBytes)
+	data, err := readBoundedPublishState(bytes.NewReader(exact))
+	if err != nil {
+		t.Fatalf("readBoundedPublishState() exact-limit error = %v", err)
+	}
+	if !bytes.Equal(data, exact) {
+		t.Fatalf("readBoundedPublishState() returned %d bytes, want %d", len(data), len(exact))
+	}
+
+	secret := "X-Amz-Security-Token=do-not-echo"
+	oversized := append(append([]byte(nil), exact...), secret...)
+	if _, err := readBoundedPublishState(bytes.NewReader(oversized)); err == nil || !strings.Contains(err.Error(), "exceeds 2 MiB") {
+		t.Fatalf("readBoundedPublishState() error = %v, want size rejection", err)
+	} else if strings.Contains(err.Error(), secret) {
+		t.Fatalf("size error leaked sensitive content: %q", err)
+	}
+}
+
+func TestReadBoundedPublishStatePreservesReadError(t *testing.T) {
+	want := errors.New("read failed")
+	if _, err := readBoundedPublishState(errorReader{err: want}); !errors.Is(err, want) {
+		t.Fatalf("readBoundedPublishState() error = %v, want %v", err, want)
+	}
+}
+
+type errorReader struct{ err error }
+
+func (reader errorReader) Read([]byte) (int, error) { return 0, reader.err }
+
 type noOpStore struct{}
 
-func (noOpStore) Ensure(ctx context.Context, _ distribution.PutObject) (distribution.StoredObject, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		return distribution.StoredObject{}, errors.New("store request context has no deadline")
-	}
+func (noOpStore) Ensure(context.Context, distribution.PutObject) (distribution.StoredObject, error) {
 	return distribution.StoredObject{}, nil
 }
 
-func (noOpStore) PresignGet(ctx context.Context, _ string, _ time.Duration) (string, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		return "", errors.New("presign request context has no deadline")
-	}
+func (noOpStore) PresignGet(context.Context, string, time.Duration) (string, error) {
 	return "", nil
+}
+
+type deadlineRecordingVerifier struct {
+	ipaBudget      time.Duration
+	documentBudget time.Duration
+}
+
+func (verifier *deadlineRecordingVerifier) Verify(ctx context.Context, request distribution.VerifyRequest) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return errors.New("verification context has no deadline")
+	}
+	budget := time.Until(deadline)
+	switch request.Kind {
+	case distribution.VerifyIPA:
+		verifier.ipaBudget = budget
+	default:
+		verifier.documentBudget = budget
+	}
+	return nil
 }

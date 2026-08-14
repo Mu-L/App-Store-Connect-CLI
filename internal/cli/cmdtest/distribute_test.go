@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +98,9 @@ func TestDistributePrepareRejectsCredentialSourceURLBeforeFilesystemAccess(t *te
 	assertUsageExit(t, []string{
 		"distribute", "prepare", "--ipa", "missing.ipa", "--source-url", "https://example.com/revision?token=secret",
 	}, "query and fragment are not allowed")
+	assertUsageExit(t, []string{
+		"distribute", "prepare", "--ipa", "missing.ipa", "--source-url", "https://:443/path",
+	}, "must be an absolute HTTPS URL")
 	assertUsageExit(t, []string{"distribute", "prepare", "unexpected", "--ipa", "missing.ipa"}, "does not accept positional arguments")
 }
 
@@ -119,8 +123,12 @@ func TestDistributeInspectJSONPrivacyAndExplicitDisclosure(t *testing.T) {
 	if !result.Preparation.MetadataEligible || result.Signing.DeviceCount != 1 || result.App.BundleID != "com.example.demo" {
 		t.Fatalf("unexpected inspection: %#v", result)
 	}
-	if result.Signing.CodeSignatureVerification.Status != distribution.CodeSignatureInvalid {
+	wantCodeSignatureStatus := expectedDistributionFixtureCodeSignatureStatus()
+	if result.Signing.CodeSignatureVerification.Status != wantCodeSignatureStatus {
 		t.Fatalf("unexpected signer verification: %#v", result.Signing.CodeSignatureVerification)
+	}
+	if runtime.GOOS != "darwin" && result.Signing.CodeSignatureVerification.Reason != "complete main-app code-signature verification is available only on macOS" {
+		t.Fatalf("unexpected portable signer verification: %#v", result.Signing.CodeSignatureVerification)
 	}
 
 	stdout, stderr, runErr = runRootCommand(t, []string{"distribute", "inspect", "--ipa", ipa, "--include-devices", "--output", "json"})
@@ -132,19 +140,74 @@ func TestDistributeInspectJSONPrivacyAndExplicitDisclosure(t *testing.T) {
 	}
 }
 
-func TestDistributeInspectTableAndMarkdown(t *testing.T) {
-	ipa := writeDistributionIPA(t, "device")
+func TestDistributeInspectTableAndMarkdownDeviceDisclosure(t *testing.T) {
+	ipa := writeDistributionIPA(t, "private-device-udid")
 	for _, format := range []string{"table", "markdown"} {
 		t.Run(format, func(t *testing.T) {
 			stdout, stderr, runErr := runRootCommand(t, []string{"distribute", "inspect", "--ipa", ipa, "--output", format})
 			if runErr != nil || stderr != "" {
 				t.Fatalf("run error=%v stderr=%q", runErr, stderr)
 			}
-			if !strings.Contains(stdout, "Bundle ID") || !strings.Contains(stdout, "com.example.demo") {
-				t.Fatalf("unexpected %s: %s", format, stdout)
+			rows := parseDistributeInspectHumanRows(t, format, stdout)
+			if rows["Bundle ID"] != "com.example.demo" ||
+				rows["Code Signature"] != string(expectedDistributionFixtureCodeSignatureStatus()) ||
+				rows["Devices"] != "1" {
+				t.Fatalf("unexpected default %s rows: %#v", format, rows)
+			}
+			if value, exists := rows["Device UDIDs"]; exists {
+				t.Fatalf("default %s output disclosed Device UDIDs row %q: %#v", format, value, rows)
+			}
+			for field, value := range rows {
+				if strings.Contains(value, "private-device-udid") {
+					t.Fatalf("default %s output leaked UDID in %q row: %#v", format, field, rows)
+				}
+			}
+
+			stdout, stderr, runErr = runRootCommand(t, []string{
+				"distribute", "inspect", "--ipa", ipa, "--include-devices", "--output", format,
+			})
+			if runErr != nil || stderr != "" {
+				t.Fatalf("run with --include-devices error=%v stderr=%q", runErr, stderr)
+			}
+			rows = parseDistributeInspectHumanRows(t, format, stdout)
+			if rows["Devices"] != "1" || rows["Device UDIDs"] != "private-device-udid" {
+				t.Fatalf("public %s output omitted exact Device UDIDs row: %#v", format, rows)
 			}
 		})
 	}
+}
+
+func expectedDistributionFixtureCodeSignatureStatus() distribution.CodeSignatureVerificationStatus {
+	if runtime.GOOS == "darwin" {
+		return distribution.CodeSignatureInvalid
+	}
+	return distribution.CodeSignatureNotVerified
+}
+
+func parseDistributeInspectHumanRows(t *testing.T, format, output string) map[string]string {
+	t.Helper()
+	delimiter := "│"
+	if format == "markdown" {
+		delimiter = "|"
+	}
+	rows := make(map[string]string)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, delimiter) || !strings.HasSuffix(line, delimiter) {
+			continue
+		}
+		cells := strings.Split(strings.Trim(line, delimiter), delimiter)
+		if len(cells) != 2 {
+			t.Fatalf("malformed %s row %q", format, line)
+		}
+		field := strings.TrimSpace(cells[0])
+		value := strings.TrimSpace(cells[1])
+		if field == "Field" || strings.HasPrefix(field, ":-") {
+			continue
+		}
+		rows[field] = value
+	}
+	return rows
 }
 
 func TestDistributePrepareFailsClosedForUnverifiedFixture(t *testing.T) {
@@ -227,6 +290,7 @@ func writeDistributionIPA(t *testing.T, device string) string {
 	}
 	infoPlist, err := plist.Marshal(map[string]any{
 		"CFBundleIdentifier": "com.example.demo", "CFBundleDisplayName": "Demo", "CFBundleShortVersionString": "1.0", "CFBundleVersion": "7", "MinimumOSVersion": "17.0",
+		"DTPlatformName": "iphoneos", "CFBundleSupportedPlatforms": []string{"iPhoneOS"},
 	}, plist.XMLFormat)
 	if err != nil {
 		t.Fatal(err)

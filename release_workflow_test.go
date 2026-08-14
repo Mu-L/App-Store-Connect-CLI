@@ -234,6 +234,24 @@ func TestReleaseWorkflowEnablesCGOForEveryMacOSArchitecture(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowDisablesCGOForNonDarwinBuilds(t *testing.T) {
+	data, err := readReleaseWorkflow()
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	workflow := string(data)
+	for _, target := range []string{
+		"GOOS=linux GOARCH=amd64",
+		"GOOS=linux GOARCH=arm64",
+		"GOOS=windows GOARCH=amd64",
+	} {
+		want := "CGO_ENABLED=0 " + target + " go build"
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("release workflow missing Cgo-disabled %s build: %q", target, want)
+		}
+	}
+}
+
 func TestReleaseWorkflowDoesNotInterpolateDispatchInputIntoShell(t *testing.T) {
 	data, err := readReleaseWorkflow()
 	if err != nil {

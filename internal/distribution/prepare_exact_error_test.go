@@ -206,10 +206,11 @@ func TestPrepareIPAPathExactKeepsMaterializationWorkspaceIOFailureRetryable(t *t
 	}
 	path := validExecutableIPA(t)
 	trustExactErrorProfileForTest(t)
+	originalMaterialize := materializeMainAppForVerification
 	materializeMainAppForVerification = func(*os.Root, []*zip.File, string) error {
 		return &os.PathError{Op: "write", Path: "Verify.app/Demo", Err: errors.New("input/output error")}
 	}
-	t.Cleanup(func() { materializeMainAppForVerification = materializeMainApp })
+	t.Cleanup(func() { materializeMainAppForVerification = originalMaterialize })
 
 	_, err := prepareExactErrorPath(t, context.Background(), path, t.TempDir())
 	if err == nil || errors.Is(err, ErrNotEligible) {
@@ -315,11 +316,13 @@ func exactErrorCodeSignTool(t *testing.T, injectedTool string, injectedErr error
 		if name != "/usr/bin/codesign" {
 			t.Fatalf("unexpected verification tool %q", name)
 		}
-		if len(args) > 2 && args[0] == "-d" && args[1] == "--entitlements" && args[2] == ":-" {
-			return plist.Marshal(map[string]any{
-				"application-identifier":              "TEAM123.com.example.demo",
-				"com.apple.developer.team-identifier": "TEAM123",
-			}, plist.XMLFormat)
+		for _, argument := range args {
+			if argument == "--entitlements" {
+				return plist.Marshal(map[string]any{
+					"application-identifier":              "TEAM123.com.example.demo",
+					"com.apple.developer.team-identifier": "TEAM123",
+				}, plist.XMLFormat)
+			}
 		}
 		for _, argument := range args {
 			if strings.HasPrefix(argument, "--extract-certificates=") {

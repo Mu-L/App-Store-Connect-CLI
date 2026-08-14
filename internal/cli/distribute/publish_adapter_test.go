@@ -13,30 +13,8 @@ import (
 	"time"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
-
-func TestPublicationVerifierUsesUploadTimeoutForIPA(t *testing.T) {
-	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
-	t.Setenv("ASC_UPLOAD_TIMEOUT", "5m")
-	t.Setenv("ASC_UPLOAD_TIMEOUT_SECONDS", "")
-
-	recorder := &deadlineRecordingVerifier{}
-	verifier := publicationVerifier{delegate: recorder, documentTimeout: 30 * time.Second}
-
-	if err := verifier.Verify(context.Background(), distribution.VerifyRequest{Kind: distribution.VerifyIPA}); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifier.Verify(context.Background(), distribution.VerifyRequest{Kind: distribution.VerifyDocument}); err != nil {
-		t.Fatal(err)
-	}
-
-	if recorder.ipaBudget < 4*time.Minute {
-		t.Fatalf("IPA verification budget = %s, want upload-sized timeout", recorder.ipaBudget)
-	}
-	if recorder.documentBudget <= 0 || recorder.documentBudget > 30*time.Second {
-		t.Fatalf("document verification budget = %s, want at most 30s", recorder.documentBudget)
-	}
-}
 
 func TestExecutePrivatePublishUsesSharedPrivatePathAndReturnsRedactedResult(t *testing.T) {
 	originalLoad, originalStore, originalPublish, originalReverify := loadPreparedBundle, newObjectStore, runPublish, reverifyPublication
@@ -46,7 +24,7 @@ func TestExecutePrivatePublishUsesSharedPrivatePathAndReturnsRedactedResult(t *t
 	})
 
 	bundleDir, bundle := privatePublishTestBundle(t)
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) { return bundle(), nil }
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
 	storeCalls := 0
 	newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
 		storeCalls++
@@ -129,7 +107,7 @@ func TestExecutePublishPreservesExplicitPublicAccess(t *testing.T) {
 		loadPreparedBundle, newObjectStore, runPublish = originalLoad, originalStore, originalPublish
 	})
 	bundleDir, bundle := privatePublishTestBundle(t)
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) { return bundle(), nil }
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
 	newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
 		return noOpStore{}, time.Time{}, nil
 	}
@@ -163,7 +141,7 @@ func TestReverifyPrivatePublishIsReadOnly(t *testing.T) {
 	})
 
 	bundleDir, bundle := privatePublishTestBundle(t)
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) { return bundle(), nil }
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
 	newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
 		t.Fatal("read-only verification constructed an object store")
 		return nil, time.Time{}, nil
@@ -272,7 +250,7 @@ func TestReverifyPrivatePublishRejectsPublicStateWithoutNetwork(t *testing.T) {
 	originalLoad, originalReverify := loadPreparedBundle, reverifyPublication
 	t.Cleanup(func() { loadPreparedBundle, reverifyPublication = originalLoad, originalReverify })
 	bundleDir, bundle := privatePublishTestBundle(t)
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) { return bundle(), nil }
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
 	networkCalled := false
 	reverifyPublication = func(context.Context, distribution.Verifier, distribution.PublishReceipt, distribution.SensitiveLinks, time.Time) error {
 		networkCalled = true
@@ -308,7 +286,7 @@ func TestReverifyPrivatePublishDoesNotRefreshExpiredLinks(t *testing.T) {
 		loadPreparedBundle, newObjectStore, runPublish, reverifyPublication = originalLoad, originalStore, originalPublish, originalReverify
 	})
 	bundleDir, bundle := privatePublishTestBundle(t)
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) { return bundle(), nil }
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
 	newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
 		t.Fatal("expired-link verification constructed an object store")
 		return nil, time.Time{}, nil
@@ -360,7 +338,7 @@ func TestExecutePrivatePublishRecoveryRejectsHardLinkedArtifacts(t *testing.T) {
 				loadPreparedBundle, newObjectStore, runPublish, reverifyPublication = originalLoad, originalStore, originalPublish, originalReverify
 			})
 			bundleDir, bundle := privatePublishTestBundle(t)
-			loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) { return bundle(), nil }
+			loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
 			storeCalls := 0
 			newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
 				storeCalls++
@@ -408,7 +386,7 @@ func TestReverifyPrivatePublishRejectsHardLinkedArtifacts(t *testing.T) {
 			originalLoad, originalReverify := loadPreparedBundle, reverifyPublication
 			t.Cleanup(func() { loadPreparedBundle, reverifyPublication = originalLoad, originalReverify })
 			bundleDir, bundle := privatePublishTestBundle(t)
-			loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) { return bundle(), nil }
+			loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
 			networkCalled := false
 			reverifyPublication = func(context.Context, distribution.Verifier, distribution.PublishReceipt, distribution.SensitiveLinks, time.Time) error {
 				networkCalled = true
@@ -502,24 +480,4 @@ func directoryEntryNames(entries []os.DirEntry) []string {
 		names = append(names, entry.Name())
 	}
 	return names
-}
-
-type deadlineRecordingVerifier struct {
-	ipaBudget      time.Duration
-	documentBudget time.Duration
-}
-
-func (verifier *deadlineRecordingVerifier) Verify(ctx context.Context, request distribution.VerifyRequest) error {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return errors.New("verification context has no deadline")
-	}
-	budget := time.Until(deadline)
-	switch request.Kind {
-	case distribution.VerifyIPA:
-		verifier.ipaBudget = budget
-	default:
-		verifier.documentBudget = budget
-	}
-	return nil
 }

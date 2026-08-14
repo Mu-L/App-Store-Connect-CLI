@@ -11,12 +11,9 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	core "github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
-
-type publicationVerifier struct {
-	delegate        core.Verifier
-	documentTimeout time.Duration
-}
 
 type publicationStore struct {
 	delegate core.ObjectStore
@@ -32,26 +29,6 @@ func (store publicationStore) PresignGet(ctx context.Context, key string, ttl ti
 	requestCtx, cancel := shared.ContextWithUploadTimeout(ctx)
 	defer cancel()
 	return store.delegate.PresignGet(requestCtx, key, ttl)
-}
-
-func newPublicationVerifier(documentTimeout time.Duration) (*publicationVerifier, error) {
-	delegate, err := core.NewHTTPVerifierWithEnvironmentTrust(0)
-	if err != nil {
-		return nil, err
-	}
-	return &publicationVerifier{delegate: delegate, documentTimeout: documentTimeout}, nil
-}
-
-func (verifier *publicationVerifier) Verify(ctx context.Context, request core.VerifyRequest) error {
-	var verifyCtx context.Context
-	var cancel context.CancelFunc
-	if request.Kind == core.VerifyIPA {
-		verifyCtx, cancel = shared.ContextWithUploadTimeout(ctx)
-	} else {
-		verifyCtx, cancel = context.WithTimeout(ctx, verifier.documentTimeout)
-	}
-	defer cancel()
-	return verifier.delegate.Verify(verifyCtx, request)
 }
 
 type publishRequest struct {
@@ -197,7 +174,12 @@ func executePublish(ctx context.Context, request publishRequest) (publishExecuti
 	if resolvedReceiptPath == "" || resolvedLinkPath == "" {
 		return publishExecutionResult{}, shared.UsageError("--receipt and --link-path are required and must be outside --bundle-dir")
 	}
-	if err := rejectBundleContainedArtifacts(request.BundleDir, resolvedReceiptPath, resolvedLinkPath); err != nil {
+	bundleRoot, err := rootfs.New(strings.TrimSpace(request.BundleDir))
+	if err != nil {
+		return publishExecutionResult{}, fmt.Errorf("distribute publish: open prepared bundle: %w", err)
+	}
+	defer bundleRoot.Close()
+	if err := rejectBundleContainedArtifacts(bundleRoot, resolvedReceiptPath, resolvedLinkPath); err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
 	artifacts, err := preflightArtifactPaths(resolvedReceiptPath, resolvedLinkPath)
@@ -215,7 +197,7 @@ func executePublish(ctx context.Context, request publishRequest) (publishExecuti
 	if artifacts.receiptExists && !stateFound {
 		return publishExecutionResult{}, fmt.Errorf("distribute publish: receipt exists without its sensitive link recovery artifact")
 	}
-	bundle, err := loadPreparedBundle(request.BundleDir)
+	bundle, err := loadPreparedBundle(ctx, bundleRoot)
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("distribute publish: %w", err)
 	}
@@ -308,7 +290,12 @@ func reverifyPrivatePublish(ctx context.Context, request privatePublishVerificat
 	if request.VerifyTimeout <= 0 {
 		return publishExecutionResult{}, shared.UsageError("verify timeout must be positive")
 	}
-	if err := rejectBundleContainedArtifacts(request.BundleDir, request.ReceiptPath, request.LinkPath); err != nil {
+	bundleRoot, err := rootfs.New(strings.TrimSpace(request.BundleDir))
+	if err != nil {
+		return publishExecutionResult{}, fmt.Errorf("open prepared bundle: %w", err)
+	}
+	defer bundleRoot.Close()
+	if err := rejectBundleContainedArtifacts(bundleRoot, request.ReceiptPath, request.LinkPath); err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
 	artifacts, err := openExistingArtifactPaths(request.ReceiptPath, request.LinkPath)
@@ -323,7 +310,7 @@ func reverifyPrivatePublish(ctx context.Context, request privatePublishVerificat
 	if !found {
 		return publishExecutionResult{}, fmt.Errorf("sensitive publication state does not exist")
 	}
-	bundle, err := loadPreparedBundle(request.BundleDir)
+	bundle, err := loadPreparedBundle(ctx, bundleRoot)
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("load prepared bundle: %w", err)
 	}
@@ -395,6 +382,25 @@ func openExistingArtifactPaths(receiptPath, linkPath string) (artifactPaths, err
 		root: root, receipt: receiptRelative, link: linkRelative, receiptPath: receiptAbsolute, linkPath: linkAbsolute,
 		receiptExists: true, linkExists: true,
 	}, nil
+}
+
+func inspectExistingProtectedPublishArtifact(root *os.Root, name, label string) (bool, error) {
+	file, err := secureopen.OpenExistingNoFollowInRoot(root, name)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	if err := validateProtectedPublishArtifact(file, info, label); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func validateStoredPrivateState(state publishState, bundle *core.PreparedBundle, receiptPath, linkPath string) error {

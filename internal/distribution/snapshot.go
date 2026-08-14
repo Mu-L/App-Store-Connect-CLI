@@ -11,17 +11,18 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
-var afterIPASnapshotForTest func()
+var (
+	afterIPASnapshotForTest  func()
+	duringIPASnapshotForTest func()
+	snapshotCreatedForTest   func(string)
+)
 
 // snapshotIPAContext copies the already-open input exactly once into a private,
 // immutable-for-this-process file. Metadata parsing, hashing, and publishing
 // all consume this snapshot so concurrent writes to the source cannot produce
 // a descriptor assembled from different byte generations.
 func snapshotIPAContext(ctx context.Context, source *os.File, size int64) (*os.File, string, func(), error) {
-	if ctx == nil {
-		return nil, "", nil, fmt.Errorf("context is nil")
-	}
-	if err := ctx.Err(); err != nil {
+	if err := contextError(ctx); err != nil {
 		return nil, "", nil, err
 	}
 	if source == nil {
@@ -44,9 +45,16 @@ func snapshotIPAContext(ctx context.Context, source *os.File, size int64) (*os.F
 		return nil, "", nil, fmt.Errorf("IPA size changed before snapshot")
 	}
 
+	return snapshotReaderContext(ctx, io.NewSectionReader(source, 0, size), size)
+}
+
+func snapshotReaderContext(ctx context.Context, source io.Reader, size int64) (*os.File, string, func(), error) {
 	directory, err := os.MkdirTemp("", ".asc-distribute-snapshot-")
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("create private IPA snapshot directory: %w", err)
+	}
+	if snapshotCreatedForTest != nil {
+		snapshotCreatedForTest(directory)
 	}
 	cleanupDirectory := func() { _ = os.Remove(directory) }
 	root, err := os.OpenRoot(directory)
@@ -61,7 +69,7 @@ func snapshotIPAContext(ctx context.Context, source *os.File, size int64) (*os.F
 		return nil, "", nil, fmt.Errorf("create private IPA snapshot: %w", err)
 	}
 	hash := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(snapshot, hash), contextReader{ctx: ctx, reader: io.NewSectionReader(source, 0, size)})
+	written, copyErr := copyWithContext(ctx, io.MultiWriter(snapshot, hash), source, duringIPASnapshotForTest)
 	if copyErr == nil && written != size {
 		copyErr = fmt.Errorf("copied %d of %d bytes", written, size)
 	}
@@ -94,14 +102,45 @@ func snapshotIPAContext(ctx context.Context, source *os.File, size int64) (*os.F
 	return snapshot, hex.EncodeToString(hash.Sum(nil)), cleanup, nil
 }
 
-type contextReader struct {
-	ctx    context.Context
-	reader io.Reader
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
 }
 
-func (reader contextReader) Read(buffer []byte) (int, error) {
-	if err := reader.ctx.Err(); err != nil {
-		return 0, err
+func copyWithContext(ctx context.Context, destination io.Writer, source io.Reader, hook func()) (int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return reader.reader.Read(buffer)
+	buffer := make([]byte, 64<<10)
+	var written int64
+	for {
+		if hook != nil {
+			hook()
+		}
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		read, readErr := source.Read(buffer)
+		if read > 0 {
+			if err := ctx.Err(); err != nil {
+				return written, err
+			}
+			count, writeErr := destination.Write(buffer[:read])
+			written += int64(count)
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if count != read {
+				return written, io.ErrShortWrite
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return written, nil
+			}
+			return written, readErr
+		}
+	}
 }

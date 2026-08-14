@@ -18,11 +18,12 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	core "github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 var (
-	loadPreparedBundle = core.LoadPreparedBundle
+	loadPreparedBundle = core.LoadPreparedBundleContext
 	newObjectStore     = func(ctx context.Context, config core.S3StoreConfig) (core.ObjectStore, time.Time, error) {
 		return core.NewS3Store(ctx, config)
 	}
@@ -31,6 +32,36 @@ var (
 )
 
 var regionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+
+const (
+	maxPrivateLinkLifetime = 7 * 24 * time.Hour
+	maxPublishStateBytes   = 2 << 20
+)
+
+type publicationVerifier struct {
+	delegate        core.Verifier
+	documentTimeout time.Duration
+}
+
+func newPublicationVerifier(documentTimeout time.Duration) (*publicationVerifier, error) {
+	delegate, err := core.NewHTTPVerifierWithEnvironmentTrust(0)
+	if err != nil {
+		return nil, err
+	}
+	return &publicationVerifier{delegate: delegate, documentTimeout: documentTimeout}, nil
+}
+
+func (verifier *publicationVerifier) Verify(ctx context.Context, request core.VerifyRequest) error {
+	var verifyCtx context.Context
+	var cancel context.CancelFunc
+	if request.Kind == core.VerifyIPA {
+		verifyCtx, cancel = shared.ContextWithUploadTimeout(ctx)
+	} else {
+		verifyCtx, cancel = context.WithTimeout(ctx, verifier.documentTimeout)
+	}
+	defer cancel()
+	return verifier.delegate.Verify(verifyCtx, request)
+}
 
 // PublishCommand returns the provider-neutral S3-compatible publisher.
 func PublishCommand() *ffcli.Command {
@@ -82,30 +113,188 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: distribute publish does not accept positional arguments")
 				return flag.ErrHelp
 			}
-			result, err := executePublish(ctx, publishRequest{
-				BundleDir: *bundleDir, Endpoint: *endpoint, DownloadEndpoint: *downloadEndpoint,
-				Region: *region, Bucket: *bucket, Prefix: *prefix, AddressingStyle: *addressingStyle,
-				Access: *access, PublicBaseURL: *publicBaseURL, URLTTL: *urlTTL, DownloadGrace: *downloadGrace,
-				VerifyTimeout: *verifyTimeout, ReceiptPath: *receiptPath, LinkPath: *linkPath,
-				PrivateOptionsExplicit: flagWasSet(fs, "url-ttl") || flagWasSet(fs, "download-grace") || flagWasSet(fs, "download-endpoint"),
-				DiagnosticWriter:       os.Stderr,
-				ValidateOutput: func() error {
-					if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
-						return shared.UsageErrorf("%v", err)
+			required := []struct{ name, value string }{
+				{"bundle-dir", *bundleDir}, {"endpoint", *endpoint}, {"region", *region}, {"bucket", *bucket}, {"prefix", *prefix},
+			}
+			for _, item := range required {
+				if strings.TrimSpace(item.value) == "" {
+					fmt.Fprintf(os.Stderr, "Error: --%s is required\n", item.name)
+					return shared.MissingRequiredUsageError()
+				}
+			}
+			if _, err := core.ValidateEndpoint(*endpoint); err != nil {
+				return shared.UsageErrorf("--endpoint: %v", err)
+			}
+			if strings.TrimSpace(*downloadEndpoint) != "" {
+				if _, err := core.ValidateEndpoint(*downloadEndpoint); err != nil {
+					return shared.UsageErrorf("--download-endpoint: %v", err)
+				}
+			}
+			if *addressingStyle != "path" && *addressingStyle != "virtual" {
+				return shared.UsageErrorf("--addressing-style must be path or virtual")
+			}
+			accessMode := core.Access(strings.ToLower(strings.TrimSpace(*access)))
+			if accessMode != core.AccessPrivate && accessMode != core.AccessPublic {
+				return shared.UsageErrorf("--access must be private or public")
+			}
+			if accessMode == core.AccessPublic {
+				if strings.TrimSpace(*publicBaseURL) == "" {
+					return shared.UsageErrorf("--public-base-url is required with --access public")
+				}
+				if _, err := core.ValidatePublicBaseURL(*publicBaseURL); err != nil {
+					return shared.UsageErrorf("--public-base-url: %v", err)
+				}
+				if flagWasSet(fs, "url-ttl") || flagWasSet(fs, "download-grace") || flagWasSet(fs, "download-endpoint") {
+					return shared.UsageErrorf("--url-ttl, --download-grace, and --download-endpoint are only valid with --access private")
+				}
+			} else if strings.TrimSpace(*publicBaseURL) != "" {
+				return shared.UsageErrorf("--public-base-url is only valid with --access public")
+			}
+			if *urlTTL <= 0 {
+				return shared.UsageErrorf("--url-ttl must be positive")
+			}
+			if *downloadGrace < 0 {
+				return shared.UsageErrorf("--download-grace must not be negative")
+			}
+			if accessMode == core.AccessPrivate {
+				if *urlTTL > maxPrivateLinkLifetime {
+					return shared.UsageErrorf("--url-ttl must not exceed 7d")
+				}
+				if *downloadGrace > maxPrivateLinkLifetime {
+					return shared.UsageErrorf("--download-grace must not exceed 7d")
+				}
+				if *urlTTL > maxPrivateLinkLifetime-*downloadGrace {
+					return shared.UsageErrorf("--url-ttl plus --download-grace must not exceed 7d")
+				}
+			}
+			if *verifyTimeout <= 0 {
+				return shared.UsageErrorf("--verify-timeout must be positive")
+			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageErrorf("%v", err)
+			}
+			if _, err := core.NormalizePrefix(*prefix); err != nil {
+				return shared.UsageErrorf("--prefix: %v", err)
+			}
+			if !regionPattern.MatchString(*region) {
+				return shared.UsageErrorf("--region must be 1-100 letters, digits, dots, underscores, or hyphens")
+			}
+			if err := core.ValidateBucket(*bucket); err != nil {
+				return shared.UsageErrorf("--bucket: %v", err)
+			}
+			resolvedReceiptPath := strings.TrimSpace(*receiptPath)
+			resolvedLinkPath := strings.TrimSpace(*linkPath)
+			if resolvedReceiptPath == "" || resolvedLinkPath == "" {
+				return shared.UsageErrorf("--receipt and --link-path are required and must be outside --bundle-dir")
+			}
+			bundleRoot, err := rootfs.New(strings.TrimSpace(*bundleDir))
+			if err != nil {
+				return fmt.Errorf("distribute publish: open prepared bundle: %w", err)
+			}
+			defer bundleRoot.Close()
+			artifacts, err := anchorArtifactPaths(resolvedReceiptPath, resolvedLinkPath)
+			if err != nil {
+				return shared.UsageErrorf("publish artifacts: %v", err)
+			}
+			defer artifacts.close()
+			if err := rejectAnchoredBundleContainedArtifacts(bundleRoot, artifacts); err != nil {
+				return shared.UsageErrorf("publish artifacts: %v", err)
+			}
+			if err := artifacts.preflight(); err != nil {
+				return shared.UsageErrorf("publish artifacts: %v", err)
+			}
+			resolvedReceiptPath = artifacts.receiptPath
+			resolvedLinkPath = artifacts.linkPath
+
+			recoveredState, stateFound, err := artifacts.loadState()
+			if err != nil {
+				return fmt.Errorf("distribute publish: %w", err)
+			}
+			if artifacts.receiptExists && !stateFound {
+				return fmt.Errorf("distribute publish: receipt exists without its sensitive link recovery artifact")
+			}
+			bundle, err := loadPreparedBundle(ctx, bundleRoot)
+			if err != nil {
+				return fmt.Errorf("distribute publish: %w", err)
+			}
+			defer bundle.IPA.Close()
+			validatedEndpoint, _ := core.ValidateEndpoint(*endpoint)
+			if stateFound {
+				if err := validateRecoveredState(recoveredState, bundle, validatedEndpoint.String(), effectiveDownloadEndpoint(*endpoint, *downloadEndpoint), normalizedPublicBase(*publicBaseURL), *region, *addressingStyle, *bucket, *prefix, accessMode, *urlTTL, *downloadGrace, resolvedReceiptPath, resolvedLinkPath); err != nil {
+					return fmt.Errorf("distribute publish: %w", err)
+				}
+				verifier, err := newPublicationVerifier(*verifyTimeout)
+				if err != nil {
+					return fmt.Errorf("configure publication verifier: %w", err)
+				}
+				if err := reverifyPublication(ctx, verifier, recoveredState.Receipt, recoveredState.Links, time.Now().UTC()); err != nil {
+					return fmt.Errorf("reverify recovered publication: %w", err)
+				}
+				if artifacts.receiptExists {
+					if err := artifacts.verifyExactReceipt(recoveredState.Receipt); err != nil {
+						return fmt.Errorf("recover publish receipt: %w", err)
 					}
-					return nil
-				},
+				} else if err := artifacts.publishReceipt(recoveredState.Receipt); err != nil {
+					return fmt.Errorf("recover publish receipt: %w", err)
+				}
+				return printPublishReceipt(recoveredState.Receipt, *output.Output, *output.Pretty, resolvedReceiptPath, resolvedLinkPath)
+			}
+			staged, err := artifacts.stagePair()
+			if err != nil {
+				return fmt.Errorf("stage local publish artifacts: %w", err)
+			}
+			defer staged.cleanup()
+
+			setupCtx, setupCancel := shared.ContextWithUploadTimeout(ctx)
+			store, credentialLimit, err := newObjectStore(setupCtx, core.S3StoreConfig{
+				Endpoint: *endpoint, DownloadEndpoint: *downloadEndpoint, Region: *region, Bucket: *bucket,
+				AddressingStyle: *addressingStyle, RequestTimeout: asc.ResolveUploadTimeout(),
+			})
+			setupCancel()
+			if err != nil {
+				return fmt.Errorf("distribute publish: %w", err)
+			}
+			credentialSource := "standard-sdk-chain"
+			if provider, ok := store.(interface{ CredentialSource() string }); ok {
+				credentialSource = provider.CredentialSource()
+			}
+			fmt.Fprintf(os.Stderr, "Publishing to endpoint=%s download-endpoint=%s bucket=%s region=%s addressing=%s prefix=%s access=%s credentials=%s\n", endpointOrigin(*endpoint), effectiveDownloadEndpoint(*endpoint, *downloadEndpoint), *bucket, *region, *addressingStyle, *prefix, accessMode, credentialSource)
+			verifier, err := newPublicationVerifier(*verifyTimeout)
+			if err != nil {
+				return fmt.Errorf("configure publication verifier: %w", err)
+			}
+			receipt, links, err := runPublish(ctx, bundle.IPA, bundle.Descriptor, core.PublishOptions{
+				Store: store, Verifier: verifier, Bucket: *bucket, Prefix: *prefix, Access: accessMode,
+				PublicBaseURL: *publicBaseURL, URLTTL: *urlTTL, DownloadGrace: *downloadGrace, CredentialLimit: credentialLimit,
 			})
 			if err != nil {
-				return err
+				return fmt.Errorf("distribute publish: %w", err)
 			}
-			return printPublishReceipt(result.Receipt, *output.Output, *output.Pretty, result.Receipt.ReceiptPath, result.Receipt.LinkPath)
+			receipt.ReceiptPath = resolvedReceiptPath
+			receipt.LinkPath = resolvedLinkPath
+			receipt.Endpoint = validatedEndpoint.String()
+			receipt.DownloadEndpoint = effectiveDownloadEndpoint(*endpoint, *downloadEndpoint)
+			receipt.PublicBaseURL = normalizedPublicBase(*publicBaseURL)
+			receipt.Region = *region
+			receipt.AddressingStyle = *addressingStyle
+			if accessMode == core.AccessPrivate {
+				receipt.URLTTL = urlTTL.String()
+				receipt.DownloadGrace = downloadGrace.String()
+			}
+
+			state := publishState{SchemaVersion: "1", Receipt: receipt, Links: links}
+			if err := staged.publish(state, receipt); err != nil {
+				return fmt.Errorf("write sensitive install link: %w", err)
+			}
+
+			return printPublishReceipt(receipt, *output.Output, *output.Pretty, resolvedReceiptPath, resolvedLinkPath)
 		},
 	}
 }
 
 type artifactPaths struct {
 	root          *os.Root
+	rootPath      string
 	receipt       string
 	link          string
 	receiptPath   string
@@ -115,6 +304,18 @@ type artifactPaths struct {
 }
 
 func preflightArtifactPaths(receiptPath, linkPath string) (artifactPaths, error) {
+	paths, err := anchorArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		return artifactPaths{}, err
+	}
+	if err := paths.preflight(); err != nil {
+		paths.close()
+		return artifactPaths{}, err
+	}
+	return paths, nil
+}
+
+func anchorArtifactPaths(receiptPath, linkPath string) (artifactPaths, error) {
 	receiptAbsolute, err := filepath.Abs(receiptPath)
 	if err != nil {
 		return artifactPaths{}, err
@@ -126,78 +327,93 @@ func preflightArtifactPaths(receiptPath, linkPath string) (artifactPaths, error)
 	if receiptAbsolute == linkAbsolute {
 		return artifactPaths{}, fmt.Errorf("--receipt and --link-path must be distinct")
 	}
+	if pathContains(receiptAbsolute, linkAbsolute) || pathContains(linkAbsolute, receiptAbsolute) {
+		return artifactPaths{}, fmt.Errorf("--receipt and --link-path must not contain one another")
+	}
 	common, err := commonPathRoot(filepath.Dir(receiptAbsolute), filepath.Dir(linkAbsolute))
 	if err != nil {
 		return artifactPaths{}, err
 	}
-	root, err := openOrCreateAnchoredRoot(common)
+	root, rootPath, err := openAnchoredRoot(common)
 	if err != nil {
 		return artifactPaths{}, err
 	}
-	receiptRelative, _ := filepath.Rel(common, receiptAbsolute)
-	linkRelative, _ := filepath.Rel(common, linkAbsolute)
-	exists := map[string]bool{}
-	for _, item := range []struct {
-		name, label string
-	}{{receiptRelative, "receipt"}, {linkRelative, "sensitive link artifact"}} {
-		found, err := inspectExistingProtectedPublishArtifact(root, item.name, item.label)
-		if err != nil {
-			_ = root.Close()
-			return artifactPaths{}, err
-		}
-		exists[item.name] = found
-	}
-	return artifactPaths{root: root, receipt: receiptRelative, link: linkRelative, receiptPath: receiptAbsolute, linkPath: linkAbsolute, receiptExists: exists[receiptRelative], linkExists: exists[linkRelative]}, nil
+	receiptRelative, _ := filepath.Rel(rootPath, receiptAbsolute)
+	linkRelative, _ := filepath.Rel(rootPath, linkAbsolute)
+	return artifactPaths{
+		root: root, rootPath: rootPath, receipt: receiptRelative, link: linkRelative,
+		receiptPath: receiptAbsolute, linkPath: linkAbsolute,
+	}, nil
 }
 
-func openOrCreateAnchoredRoot(target string) (*os.Root, error) {
+func (paths *artifactPaths) preflight() error {
+	exists := map[string]bool{}
+	for _, name := range []string{paths.receipt, paths.link} {
+		parent, base, err := openAnchoredParent(paths.root, name)
+		if err != nil {
+			return err
+		}
+		info, statErr := parent.Lstat(base)
+		closeErr := parent.Close()
+		if statErr == nil {
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("%s is not a regular file", filepath.Join(paths.rootPath, name))
+			}
+			if info.Mode().Perm()&0o077 != 0 {
+				return fmt.Errorf("%s must be owner-private (mode 0600 or stricter)", filepath.Join(paths.rootPath, name))
+			}
+			exists[name] = true
+		} else if !os.IsNotExist(statErr) {
+			return statErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	paths.receiptExists = exists[paths.receipt]
+	paths.linkExists = exists[paths.link]
+	return nil
+}
+
+func pathContains(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	if err != nil || filepath.IsAbs(relative) {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
+func openAnchoredRoot(target string) (*os.Root, string, error) {
 	ancestor := filepath.Clean(target)
 	var ancestorInfo os.FileInfo
 	for {
 		info, err := os.Lstat(ancestor)
 		if err == nil {
 			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-				return nil, fmt.Errorf("artifact parent %s is not a trusted directory", ancestor)
+				return nil, "", fmt.Errorf("artifact parent %s is not a trusted directory", ancestor)
 			}
 			ancestorInfo = info
 			break
 		}
 		if !os.IsNotExist(err) {
-			return nil, err
+			return nil, "", err
 		}
 		parent := filepath.Dir(ancestor)
 		if parent == ancestor {
-			return nil, fmt.Errorf("no existing artifact path ancestor")
+			return nil, "", fmt.Errorf("no existing artifact path ancestor")
 		}
 		ancestor = parent
 	}
 	root, err := os.OpenRoot(ancestor)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	openedInfo, err := root.Stat(".")
 	if err != nil || !os.SameFile(ancestorInfo, openedInfo) {
 		_ = root.Close()
-		return nil, fmt.Errorf("artifact parent changed during preflight")
+		return nil, "", fmt.Errorf("artifact parent changed during preflight")
 	}
-	relative, err := filepath.Rel(ancestor, target)
-	if err != nil {
-		_ = root.Close()
-		return nil, err
-	}
-	if relative == "." {
-		return root, nil
-	}
-	if err := root.MkdirAll(relative, 0o700); err != nil {
-		_ = root.Close()
-		return nil, err
-	}
-	created, err := root.OpenRoot(relative)
-	_ = root.Close()
-	if err != nil {
-		return nil, err
-	}
-	return created, nil
+	return root, ancestor, nil
 }
 
 func (paths artifactPaths) close() {
@@ -254,7 +470,12 @@ type publishState struct {
 }
 
 func (paths artifactPaths) loadState() (publishState, bool, error) {
-	file, err := secureopen.OpenExistingNoFollowInRoot(paths.root, paths.link)
+	parent, name, err := openAnchoredParent(paths.root, paths.link)
+	if err != nil {
+		return publishState{}, false, err
+	}
+	defer parent.Close()
+	file, err := secureopen.OpenExistingNoFollowInRoot(parent, name)
 	if os.IsNotExist(err) {
 		return publishState{}, false, nil
 	}
@@ -269,13 +490,12 @@ func (paths artifactPaths) loadState() (publishState, bool, error) {
 	if err := validateProtectedPublishArtifact(file, info, "sensitive link artifact"); err != nil {
 		return publishState{}, true, err
 	}
-	if info.Size() > 2<<20 {
+	if info.Size() > maxPublishStateBytes {
 		return publishState{}, true, fmt.Errorf("sensitive link artifact exceeds 2 MiB")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, (2<<20)+1))
-	found := true
-	if err != nil || !found {
-		return publishState{}, found, err
+	data, err := readBoundedPublishState(file)
+	if err != nil {
+		return publishState{}, true, err
 	}
 	var state publishState
 	if err := json.Unmarshal(data, &state); err != nil {
@@ -287,12 +507,38 @@ func (paths artifactPaths) loadState() (publishState, bool, error) {
 	return state, true, nil
 }
 
+func readBoundedPublishState(reader io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxPublishStateBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxPublishStateBytes {
+		return nil, fmt.Errorf("sensitive link artifact exceeds 2 MiB")
+	}
+	return data, nil
+}
+
+func validateProtectedPublishArtifact(file *os.File, info os.FileInfo, label string) error {
+	if file == nil || info == nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%s must remain a mode-0600 regular file", label)
+	}
+	if err := validateProtectedPublishArtifactPlatform(file, info); err != nil {
+		return fmt.Errorf("%s is not a protected local file: %w", label, err)
+	}
+	return nil
+}
+
 func (paths artifactPaths) verifyExactReceipt(receipt core.PublishReceipt) error {
 	want, err := encodeJSON(receipt)
 	if err != nil {
 		return err
 	}
-	file, err := secureopen.OpenExistingNoFollowInRoot(paths.root, paths.receipt)
+	parent, name, err := openAnchoredParent(paths.root, paths.receipt)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	file, err := secureopen.OpenExistingNoFollowInRoot(parent, name)
 	if err != nil {
 		return err
 	}
@@ -305,7 +551,7 @@ func (paths artifactPaths) verifyExactReceipt(receipt core.PublishReceipt) error
 		return err
 	}
 	if info.Size() > 2<<20 {
-		return fmt.Errorf("receipt must remain bounded to 2 MiB")
+		return fmt.Errorf("receipt must remain a bounded owner-private regular file")
 	}
 	got, err := io.ReadAll(io.LimitReader(file, 2<<20))
 	if err != nil {
@@ -313,38 +559,6 @@ func (paths artifactPaths) verifyExactReceipt(receipt core.PublishReceipt) error
 	}
 	if !bytes.Equal(got, want) {
 		return fmt.Errorf("receipt conflicts with sensitive recovery artifact")
-	}
-	return nil
-}
-
-func inspectExistingProtectedPublishArtifact(root *os.Root, name, label string) (bool, error) {
-	file, err := secureopen.OpenExistingNoFollowInRoot(root, name)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return false, err
-	}
-	if err := validateProtectedPublishArtifact(file, info, label); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func validateProtectedPublishArtifact(file *os.File, info os.FileInfo, label string) error {
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s must be a regular file", label)
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("%s must be owner-private (mode 0600 or stricter)", label)
-	}
-	if err := validateProtectedPublishArtifactPlatform(file, info); err != nil {
-		return fmt.Errorf("%s: %w", label, err)
 	}
 	return nil
 }
@@ -448,7 +662,10 @@ func (file *stagedFile) publish(data []byte) error {
 		return err
 	}
 	file.tempName = ""
-	return syncPublishArtifactDirectory(file.parent)
+	if err := syncPublishArtifactDirectory(file.parent); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (file *stagedFile) cleanup() {
@@ -465,14 +682,64 @@ func (file *stagedFile) cleanup() {
 
 func openAnchoredParent(root *os.Root, relative string) (*os.Root, string, error) {
 	parentRelative := filepath.Dir(relative)
-	if err := root.MkdirAll(parentRelative, 0o700); err != nil {
-		return nil, "", err
-	}
-	parent, err := root.OpenRoot(parentRelative)
+	parent, err := openOrCreateAnchoredDirectory(root, parentRelative)
 	if err != nil {
 		return nil, "", err
 	}
 	return parent, filepath.Base(relative), nil
+}
+
+func openOrCreateAnchoredDirectory(root *os.Root, relative string) (*os.Root, error) {
+	if root == nil {
+		return nil, fmt.Errorf("artifact root is unavailable")
+	}
+	relative = filepath.Clean(relative)
+	if filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("artifact parent escapes its anchored root")
+	}
+	current, err := root.OpenRoot(".")
+	if err != nil {
+		return nil, err
+	}
+	if relative == "." {
+		return current, nil
+	}
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." || component == ".." {
+			_ = current.Close()
+			return nil, fmt.Errorf("artifact parent contains an unsafe path component")
+		}
+		info, err := current.Lstat(component)
+		if os.IsNotExist(err) {
+			if err := current.Mkdir(component, 0o700); err != nil {
+				_ = current.Close()
+				return nil, err
+			}
+			info, err = current.Lstat(component)
+		}
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			_ = current.Close()
+			return nil, fmt.Errorf("artifact parent component %q is not a trusted directory", component)
+		}
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		openedInfo, err := next.Stat(".")
+		if err != nil || !os.SameFile(info, openedInfo) {
+			_ = next.Close()
+			_ = current.Close()
+			return nil, fmt.Errorf("artifact parent changed during rooted creation")
+		}
+		_ = current.Close()
+		current = next
+	}
+	return current, nil
 }
 
 func commonPathRoot(left, right string) (string, error) {
@@ -522,61 +789,28 @@ func normalizedPublicBase(raw string) string {
 	return parsed.String()
 }
 
-func rejectBundleContainedArtifacts(bundleDir, receiptPath, linkPath string) error {
-	bundleAbsolute, err := filepath.Abs(bundleDir)
-	if err != nil {
-		return err
-	}
-	bundlePhysical, err := filepath.EvalSymlinks(bundleAbsolute)
-	if err != nil {
-		return fmt.Errorf("resolve prepared bundle: %w", err)
-	}
+func rejectBundleContainedArtifacts(bundleRoot rootfs.Root, receiptPath, linkPath string) error {
 	for _, candidate := range []string{receiptPath, linkPath} {
-		absolute, err := filepath.Abs(candidate)
+		contained, err := bundleRoot.ContainsPath(candidate)
 		if err != nil {
 			return err
 		}
-		physical, err := prospectivePhysicalPath(absolute)
-		if err != nil {
-			return err
-		}
-		relative, err := filepath.Rel(bundlePhysical, physical)
-		if err != nil {
-			return err
-		}
-		if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		if contained {
 			return fmt.Errorf("receipt and link paths must be outside the immutable prepared bundle")
 		}
 	}
 	return nil
 }
 
-func prospectivePhysicalPath(target string) (string, error) {
-	existing := filepath.Clean(target)
-	var suffix []string
-	for {
-		_, err := os.Lstat(existing)
-		if err == nil {
-			break
-		}
-		if !os.IsNotExist(err) {
-			return "", err
-		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			return "", fmt.Errorf("no existing path ancestor for %s", target)
-		}
-		suffix = append(suffix, filepath.Base(existing))
-		existing = parent
-	}
-	physical, err := filepath.EvalSymlinks(existing)
+func rejectAnchoredBundleContainedArtifacts(bundleRoot rootfs.Root, artifacts artifactPaths) error {
+	contained, err := bundleRoot.ContainsAnchoredPath(artifacts.rootPath, artifacts.root)
 	if err != nil {
-		return "", err
+		return err
 	}
-	for index := len(suffix) - 1; index >= 0; index-- {
-		physical = filepath.Join(physical, suffix[index])
+	if contained {
+		return fmt.Errorf("receipt and link paths must be outside the immutable prepared bundle")
 	}
-	return physical, nil
+	return rejectBundleContainedArtifacts(bundleRoot, artifacts.receiptPath, artifacts.linkPath)
 }
 
 func flagWasSet(fs *flag.FlagSet, name string) bool {
