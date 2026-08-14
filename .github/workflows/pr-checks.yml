@@ -282,19 +282,19 @@ jobs:
             runner: macos-latest
             command: |
               ASC_BYPASS_KEYCHAIN=1 go test -short ./internal/screenshots
-              GOOS=darwin GOARCH=amd64 go build -o build/asc_dev_macos_amd64 .
-              GOOS=darwin GOARCH=arm64 go build -o build/asc_dev_macos_arm64 .
+              CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -o build/asc_dev_macos_amd64 .
+              CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -o build/asc_dev_macos_arm64 .
           - name: Linux
             runner: ubuntu-latest
             command: |
-              GOOS=linux GOARCH=amd64 go build -o build/asc_dev_linux_amd64 .
-              GOOS=linux GOARCH=arm64 go build -o build/asc_dev_linux_arm64 .
+              CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/asc_dev_linux_amd64 .
+              CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o build/asc_dev_linux_arm64 .
           - name: Windows
             runner: windows-latest
             command: |
               ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/secureopen
               ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/cli/shared -run '^(TestSafeWriteFileNoSymlink|TestPublishStagedFileNoReplace|TestWriteNewFileNoSymlink|TestCleanupIncompleteFile)'
-              GOOS=windows GOARCH=amd64 go build -o build/asc_dev_windows_amd64.exe .
+              CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o build/asc_dev_windows_amd64.exe .
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
