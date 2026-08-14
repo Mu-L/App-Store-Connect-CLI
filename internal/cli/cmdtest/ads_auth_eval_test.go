@@ -4,10 +4,58 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestAdsAuthNetworkValidationUsesPlatformV1(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	keyPath := filepath.Join(t.TempDir(), "apple-ads-private-key.pem")
+	writeECDSAPEM(t, keyPath)
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
+
+	seenMe := 0
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/auth/oauth2/token":
+			return adsJSONResponse(200, `{"access_token":"ACCESS","token_type":"Bearer","expires_in":3600}`), nil
+		case "/v1/me":
+			seenMe++
+			if req.Header.Get("X-AP-Context") != "" {
+				t.Fatalf("v1 me context = %q, want empty", req.Header.Get("X-AP-Context"))
+			}
+			return adsJSONResponse(200, `{"result":{"userId":1001,"orgId":987654}}`), nil
+		default:
+			t.Fatalf("unexpected auth validation request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	}))
+
+	_, stderr, err := runAdsEvalCommand(
+		t,
+		"ads", "auth", "login",
+		"--bypass-keychain",
+		"--name", "Marketing",
+		"--client-id", "SEARCHADS.CLIENT",
+		"--team-id", "SEARCHADS.TEAM",
+		"--key-id", "KEY_ID",
+		"--private-key", keyPath,
+		"--network",
+	)
+	if err != nil || stderr != "" {
+		t.Fatalf("network login stderr=%q error=%v", stderr, err)
+	}
+	_, stderr, err = runAdsEvalCommand(t, "ads", "auth", "status", "--validate", "--output", "json")
+	if err != nil || stderr != "" {
+		t.Fatalf("validated status stderr=%q error=%v", stderr, err)
+	}
+	if seenMe != 2 {
+		t.Fatalf("v1 me requests = %d, want login and status validation", seenMe)
+	}
+}
 
 func TestAdsAuthEvalWorkflow(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
@@ -27,6 +75,7 @@ func TestAdsAuthEvalWorkflow(t *testing.T) {
 		"--key-id", "KEY_ID",
 		"--private-key", keyPath,
 		"--org", "987654",
+		"--ad-account", "876543",
 	)
 	if err != nil {
 		t.Fatalf("login error: %v\nstderr: %s", err, stderr)
@@ -48,11 +97,12 @@ func TestAdsAuthEvalWorkflow(t *testing.T) {
 	var status struct {
 		Storage     string `json:"storage"`
 		Credentials []struct {
-			Name     string `json:"name"`
-			ClientID string `json:"client_id"`
-			OrgID    string `json:"org_id"`
-			Default  bool   `json:"default"`
-			Source   string `json:"source"`
+			Name        string `json:"name"`
+			ClientID    string `json:"client_id"`
+			OrgID       string `json:"org_id"`
+			AdAccountID string `json:"ad_account_id"`
+			Default     bool   `json:"default"`
+			Source      string `json:"source"`
 		} `json:"credentials"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
@@ -62,7 +112,7 @@ func TestAdsAuthEvalWorkflow(t *testing.T) {
 		t.Fatalf("status = %+v, want one config credential", status)
 	}
 	got := status.Credentials[0]
-	if got.Name != "Marketing" || got.ClientID != "SEARCHADS.CLIENT" || got.OrgID != "987654" || !got.Default || got.Source != "config" {
+	if got.Name != "Marketing" || got.ClientID != "SEARCHADS.CLIENT" || got.OrgID != "987654" || got.AdAccountID != "876543" || !got.Default || got.Source != "config" {
 		t.Fatalf("credential = %+v, want stored Marketing profile", got)
 	}
 
@@ -133,6 +183,7 @@ func TestAdsAuthStatusShowsActiveEnvironmentContext(t *testing.T) {
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_ORG_ID", "987654")
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "876543")
 
 	stdout, stderr, err := runAdsEvalCommand(t, "ads", "auth", "status", "--output", "json")
 	if err != nil {
@@ -146,9 +197,11 @@ func TestAdsAuthStatusShowsActiveEnvironmentContext(t *testing.T) {
 	}
 	var status struct {
 		Active struct {
-			Source      string `json:"source"`
-			OrgID       string `json:"org_id"`
-			OrgIDSource string `json:"org_id_source"`
+			Source            string `json:"source"`
+			OrgID             string `json:"org_id"`
+			OrgIDSource       string `json:"org_id_source"`
+			AdAccountID       string `json:"ad_account_id"`
+			AdAccountIDSource string `json:"ad_account_id_source"`
 		} `json:"active"`
 		Credentials []struct {
 			Name string `json:"name"`
@@ -157,7 +210,7 @@ func TestAdsAuthStatusShowsActiveEnvironmentContext(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
 		t.Fatalf("status stdout is not JSON: %v\n%s", err, stdout)
 	}
-	if status.Active.Source != "ASC_ADS_ACCESS_TOKEN" || status.Active.OrgID != "987654" || status.Active.OrgIDSource != "ASC_ADS_ORG_ID" {
+	if status.Active.Source != "ASC_ADS_ACCESS_TOKEN" || status.Active.OrgID != "987654" || status.Active.OrgIDSource != "ASC_ADS_ORG_ID" || status.Active.AdAccountID != "876543" || status.Active.AdAccountIDSource != "ASC_ADS_AD_ACCOUNT_ID" {
 		t.Fatalf("active = %+v, want env access token and org source", status.Active)
 	}
 	if len(status.Credentials) != 0 {
@@ -174,6 +227,7 @@ func TestAdsAuthStatusShowsActiveEnvironmentContext(t *testing.T) {
 	for _, want := range []string{
 		"Active auth: ASC_ADS_ACCESS_TOKEN",
 		"Org ID: 987654 (ASC_ADS_ORG_ID)",
+		"Ad account ID: 876543 (ASC_ADS_AD_ACCOUNT_ID)",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("table status = %q, missing %q", stdout, want)

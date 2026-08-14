@@ -127,7 +127,7 @@ func NewCatalog(version string) *Catalog {
 		commandFactory("reviews", "List and manage App Store customer reviews.", reviews.ReviewsCommand),
 		commandFactory("review", "Manage App Store review details, attachments, and submissions.", reviews.ReviewCommand),
 		commandFactory("analytics", "Request and download analytics and sales reports.", analytics.AnalyticsCommand),
-		commandFactory("ads", "Manage Apple Ads Campaign Management API resources.", ads.AdsCommand),
+		commandFactory("ads", "Manage Apple Ads API resources.", ads.AdsCommand),
 		commandFactory("performance", "Access performance metrics and diagnostic logs.", performance.PerformanceCommand),
 		commandFactory("finance", "Download payments and financial reports.", finance.FinanceCommand),
 		commandFactory("apps", "List and manage apps in App Store Connect.", apps.AppsCommand),

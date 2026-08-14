@@ -22,12 +22,14 @@ const (
 
 // ParamSpec describes a documented Apple Ads path or query parameter.
 type ParamSpec struct {
-	Name     string
-	Flag     string
-	Type     ParamType
-	Required bool
-	Max      int
-	Allowed  []string
+	Name         string
+	Flag         string
+	Type         ParamType
+	Required     bool
+	Repeated     bool
+	ContextValue bool
+	Max          int
+	Allowed      []string
 }
 
 // EndpointSpec is the single source of truth for the Apple Ads command and
@@ -36,16 +38,95 @@ type EndpointSpec struct {
 	Name             string
 	Method           string
 	Path             string
+	Version          APIVersion
+	Context          ContextKind
 	CommandPath      []string
 	BodyKind         BodyKind
+	BodyOptional     bool
 	BodyType         string
 	ResponseType     string
 	RequiresOrg      bool
 	RequiresConfirm  bool
+	ConfirmBodyField string
+	RetrySafe        bool
 	PathParams       []ParamSpec
 	QueryParams      []ParamSpec
 	SupportsPaginate bool
 	DefaultListAlias bool
+}
+
+// PlatformEndpointSpecs returns the implemented Apple Ads Platform API v1
+// account-management and app-discovery surface.
+func PlatformEndpointSpecs() []EndpointSpec {
+	platform := func(name, method, path string, commandPath []string, context ContextKind, bodyKind BodyKind, bodyOptional bool, bodyType, responseType string, pathParams, queryParams []ParamSpec) EndpointSpec {
+		return EndpointSpec{
+			Name:         name,
+			Method:       method,
+			Path:         path,
+			Version:      APIVersionPlatformV1,
+			Context:      context,
+			CommandPath:  append([]string(nil), commandPath...),
+			BodyKind:     bodyKind,
+			BodyOptional: bodyOptional,
+			BodyType:     bodyType,
+			ResponseType: responseType,
+			PathParams:   append([]ParamSpec(nil), pathParams...),
+			QueryParams:  append([]ParamSpec(nil), queryParams...),
+		}
+	}
+
+	id := ParamSpec{Name: "id", Flag: "ad-account", Type: ParamString, Required: true, ContextValue: true}
+	orgID := ParamSpec{Name: "id", Flag: "org-id", Type: ParamString, Required: true}
+	rejectionReasonID := ParamSpec{Name: "rejectionReasonId", Flag: "reason", Type: ParamInt, Required: true}
+	searchLimit := ParamSpec{Name: "limit", Flag: "limit", Type: ParamInt}
+	searchOffset := ParamSpec{Name: "offset", Flag: "offset", Type: ParamInt}
+
+	specs := []EndpointSpec{
+		platform("platform-get-me-details", "GET", "v1/me", []string{"me", "view"}, ContextNone, BodyNone, false, "", "MeResponse", nil, nil),
+		platform("platform-get-user-acls", "GET", "v1/acls", []string{"acls", "list"}, ContextNone, BodyNone, false, "", "UserAclListResponse", nil, nil),
+		platform("platform-get-org", "GET", "v1/orgs/{id}", []string{"orgs", "view"}, ContextNone, BodyNone, false, "", "OrgResponse", []ParamSpec{orgID}, nil),
+		platform("platform-create-ad-account", "POST", "v1/ad-accounts", []string{"ad-accounts", "create"}, ContextNone, BodyObject, false, "AdAccountCreate", "AdAccountResponse", nil, nil),
+		platform("platform-get-ad-account", "GET", "v1/ad-accounts/{id}", []string{"ad-accounts", "view"}, ContextAdAccount, BodyNone, false, "", "AdAccountResponse", []ParamSpec{id}, nil),
+		platform("platform-update-ad-account", "PUT", "v1/ad-accounts/{id}", []string{"ad-accounts", "update"}, ContextAdAccount, BodyObject, false, "AdAccountUpdate", "AdAccountResponse", []ParamSpec{id}, nil),
+		platform("platform-get-advertiser-resources", "GET", "v1/advertiser-resources", []string{"advertiser-resources", "list"}, ContextNone, BodyNone, false, "", "AdvertiserResourceListResponse", nil, []ParamSpec{{Name: "resourceType", Flag: "resource-type", Type: ParamString, Required: true, Allowed: []string{"CONTENT_PROVIDER", "BUSINESS_BRAND"}}}),
+		platform("platform-search-apps", "GET", "v1/search/apps", []string{"apps", "search"}, ContextAdAccount, BodyNone, false, "", "AppsSearchResponse", nil, []ParamSpec{
+			q("query", "query", ParamString, false),
+			q("returnOwnedApps", "return-owned-apps", ParamBool, false),
+			q("cpids", "cpids", ParamString, false),
+			{Name: "storeFronts", Flag: "store-fronts", Type: ParamString, Repeated: true},
+			searchOffset,
+			searchLimit,
+		}),
+		platform("platform-get-app", "GET", "v1/apps/{adamId}", []string{"apps", "view"}, ContextAdAccount, BodyNone, false, "", "AppDetailsResponse", []ParamSpec{adamIDParam}, nil),
+		platform("platform-query-supported-app-languages", "POST", "v1/metadata/apps/supported-languages/query", []string{"apps", "supported-languages", "find"}, ContextAdAccount, BodyObject, true, "QueryRequest", "AppSupportedLanguagesQueryResponse", nil, nil),
+		platform("platform-find-app-eligibilities", "POST", "v1/eligibilities/apps/query", []string{"apps", "eligibility", "find"}, ContextAdAccount, BodyObject, true, "EligibilityQueryRequest", "EligibilityQueryResponse", nil, nil),
+		platform("platform-find-app-rejection-reasons", "POST", "v1/rejection-reasons/apps/query", []string{"rejection-reasons", "apps", "find"}, ContextAdAccount, BodyObject, true, "CreativeRejectionReasonQueryRequest", "CreativeRejectionReasonQueryResponse", nil, nil),
+		platform("platform-get-app-rejection-reason", "GET", "v1/rejection-reasons/apps/{rejectionReasonId}", []string{"rejection-reasons", "apps", "view"}, ContextAdAccount, BodyNone, false, "", "RejectionReasonResponse", []ParamSpec{rejectionReasonID}, nil),
+	}
+
+	for i := range specs {
+		if specs[i].Method == "POST" && strings.HasSuffix(specs[i].Path, "/query") {
+			specs[i].RetrySafe = true
+		}
+		if specs[i].Name == "platform-search-apps" {
+			specs[i].SupportsPaginate = true
+		}
+		if specs[i].Name == "platform-update-ad-account" {
+			specs[i].ConfirmBodyField = "delegations"
+		}
+	}
+	return specs
+}
+
+// PlatformEndpointByCommandPath returns a Platform API v1 spec by command path.
+func PlatformEndpointByCommandPath(path ...string) (EndpointSpec, bool) {
+	joined := strings.Join(path, " ")
+	for _, spec := range PlatformEndpointSpecs() {
+		if strings.Join(spec.CommandPath, " ") == joined {
+			return spec, true
+		}
+	}
+	return EndpointSpec{}, false
 }
 
 const maxAppleAdsPageLimit = 1000

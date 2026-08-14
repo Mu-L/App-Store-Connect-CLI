@@ -20,8 +20,22 @@ type paginatedEnvelope struct {
 	Pagination PageDetail        `json:"pagination"`
 }
 
+type platformPageDetail struct {
+	TotalCount *int `json:"totalCount,omitempty"`
+	Offset     int  `json:"offset"`
+	PageSize   int  `json:"pageSize"`
+}
+
+type platformPaginatedEnvelope struct {
+	Result     []json.RawMessage  `json:"result"`
+	Pagination platformPageDetail `json:"pagination"`
+}
+
 // PaginateAll fetches all pages for an offset-paginated endpoint.
 func (c *Client) PaginateAll(ctx context.Context, spec EndpointSpec, pathParams map[string]string, query url.Values, startOffset, pageSize int, body json.RawMessage) (RawResponse, error) {
+	if spec.Version == APIVersionPlatformV1 {
+		return c.paginatePlatformGET(ctx, spec, pathParams, query, startOffset, pageSize, body)
+	}
 	maxLimit := MaxPageLimit(spec)
 	if pageSize <= 0 {
 		pageSize = maxLimit
@@ -82,8 +96,78 @@ func (c *Client) PaginateAll(ctx context.Context, spec EndpointSpec, pathParams 
 	return RawResponse(data), nil
 }
 
+func (c *Client) paginatePlatformGET(ctx context.Context, spec EndpointSpec, pathParams map[string]string, query url.Values, startOffset, pageSize int, body json.RawMessage) (RawResponse, error) {
+	if spec.Method != "GET" || len(body) != 0 {
+		return nil, fmt.Errorf("platform API v1 body pagination is not supported by the GET offset paginator")
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	offset := max(0, startOffset)
+	var aggregated []json.RawMessage
+	var total *int
+	for {
+		pageQuery := cloneValues(query)
+		pageQuery.Set("limit", strconv.Itoa(pageSize))
+		pageQuery.Set("offset", strconv.Itoa(offset))
+		raw, err := c.Do(ctx, spec, pathParams, pageQuery, body)
+		if err != nil {
+			return nil, err
+		}
+		var page platformPaginatedEnvelope
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, fmt.Errorf("parse paginated response: %w", err)
+		}
+		aggregated = append(aggregated, page.Result...)
+		if page.Pagination.TotalCount != nil {
+			value := *page.Pagination.TotalCount
+			total = &value
+		}
+		if len(page.Result) == 0 {
+			break
+		}
+		step := page.Pagination.PageSize
+		if step <= 0 {
+			step = len(page.Result)
+		}
+		nextOffset := page.Pagination.Offset + step
+		if total != nil && nextOffset >= *total {
+			break
+		}
+		if total == nil && len(page.Result) < step {
+			break
+		}
+		if nextOffset <= offset {
+			nextOffset = offset + len(page.Result)
+		}
+		offset = nextOffset
+	}
+
+	out := platformPaginatedEnvelope{
+		Result: aggregated,
+		Pagination: platformPageDetail{
+			TotalCount: total,
+			Offset:     max(0, startOffset),
+			PageSize:   pageSize,
+		},
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	return RawResponse(data), nil
+}
+
 // MaxPageLimit returns the endpoint-specific maximum page size.
 func MaxPageLimit(spec EndpointSpec) int {
+	if spec.Version == APIVersionPlatformV1 {
+		for _, param := range spec.QueryParams {
+			if param.Name == "limit" && param.Max > 0 {
+				return param.Max
+			}
+		}
+		return 0
+	}
 	maxLimit := maxAppleAdsPageLimit
 	for _, param := range spec.QueryParams {
 		if param.Name == "limit" && param.Max > 0 {

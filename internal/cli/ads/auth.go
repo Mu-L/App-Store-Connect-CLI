@@ -1,7 +1,6 @@
 package ads
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -58,6 +57,7 @@ func AuthLoginCommand() *ffcli.Command {
 	keyID := fs.String("key-id", "", "Apple Ads API key ID")
 	privateKey := fs.String("private-key", "", "Path to Apple Ads EC private key PEM")
 	org := fs.String("org", "", "Default Apple Ads organization ID")
+	adAccount := fs.String("ad-account", "", "Default Apple Ads ad account ID")
 	bypassKeychain := fs.Bool("bypass-keychain", false, "Store credentials in config.json instead of keychain")
 	local := fs.Bool("local", false, "When bypassing keychain, write to ./.asc/config.json")
 	network := fs.Bool("network", false, "Validate credentials with Apple Ads API")
@@ -70,7 +70,7 @@ func AuthLoginCommand() *ffcli.Command {
 		LongHelp: `Register and store Apple Ads API credentials.
 
 Examples:
-  asc ads auth login --name "Ads" --client-id "SEARCHADS..." --team-id "SEARCHADS..." --key-id "KEY_ID" --private-key ./private-key.pem --org "123456"
+  asc ads auth login --name "Ads" --client-id "SEARCHADS..." --team-id "SEARCHADS..." --key-id "KEY_ID" --private-key ./private-key.pem --org "123456" --ad-account "987654"
   asc ads auth login --bypass-keychain --local --name "Ads" --client-id "SEARCHADS..." --team-id "SEARCHADS..." --key-id "KEY_ID" --private-key ./private-key.pem`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -116,6 +116,7 @@ Examples:
 				KeyID:          *keyID,
 				PrivateKeyPath: *privateKey,
 				OrgID:          *org,
+				AdAccountID:    *adAccount,
 			}
 			if *network {
 				client, err := appleads.NewClient(credentials)
@@ -124,7 +125,7 @@ Examples:
 				}
 				requestCtx, cancel := requestContext(ctx)
 				defer cancel()
-				spec, _ := appleads.EndpointByCommandPath("me", "view")
+				spec, _ := appleads.PlatformEndpointByCommandPath("me", "view")
 				if _, err := client.Do(requestCtx, spec, nil, nil, nil); err != nil {
 					return fmt.Errorf("ads auth login: network validation failed: %w", err)
 				}
@@ -188,14 +189,15 @@ Examples:
 			failures := 0
 			for _, cred := range credentials {
 				row := adsAuthStatusRow{
-					Name:      cred.Name,
-					ClientID:  cred.ClientID,
-					TeamID:    cred.TeamID,
-					KeyID:     cred.KeyID,
-					OrgID:     cred.OrgID,
-					Default:   cred.IsDefault,
-					Source:    cred.Source,
-					Validated: !*validate,
+					Name:        cred.Name,
+					ClientID:    cred.ClientID,
+					TeamID:      cred.TeamID,
+					KeyID:       cred.KeyID,
+					OrgID:       cred.OrgID,
+					AdAccountID: cred.AdAccountID,
+					Default:     cred.IsDefault,
+					Source:      cred.Source,
+					Validated:   !*validate,
 				}
 				if *verbose {
 					row.SourcePath = cred.SourcePath
@@ -204,7 +206,7 @@ Examples:
 					client, err := appleads.NewClient(cred.Credentials)
 					if err == nil {
 						requestCtx, cancel := requestContext(ctx)
-						spec, _ := appleads.EndpointByCommandPath("me", "view")
+						spec, _ := appleads.PlatformEndpointByCommandPath("me", "view")
 						_, err = client.Do(requestCtx, spec, nil, nil, nil)
 						cancel()
 					}
@@ -250,24 +252,27 @@ type adsAuthStatusOutput struct {
 }
 
 type adsAuthContext struct {
-	Profile     string `json:"profile,omitempty"`
-	Source      string `json:"source,omitempty"`
-	OrgID       string `json:"org_id,omitempty"`
-	OrgIDSource string `json:"org_id_source,omitempty"`
-	Error       string `json:"error,omitempty"`
+	Profile           string `json:"profile,omitempty"`
+	Source            string `json:"source,omitempty"`
+	OrgID             string `json:"org_id,omitempty"`
+	OrgIDSource       string `json:"org_id_source,omitempty"`
+	AdAccountID       string `json:"ad_account_id,omitempty"`
+	AdAccountIDSource string `json:"ad_account_id_source,omitempty"`
+	Error             string `json:"error,omitempty"`
 }
 
 type adsAuthStatusRow struct {
-	Name       string `json:"name"`
-	ClientID   string `json:"client_id"`
-	TeamID     string `json:"team_id"`
-	KeyID      string `json:"key_id"`
-	OrgID      string `json:"org_id,omitempty"`
-	Default    bool   `json:"default"`
-	Source     string `json:"source"`
-	SourcePath string `json:"source_path,omitempty"`
-	Validated  bool   `json:"validated"`
-	Error      string `json:"error,omitempty"`
+	Name        string `json:"name"`
+	ClientID    string `json:"client_id"`
+	TeamID      string `json:"team_id"`
+	KeyID       string `json:"key_id"`
+	OrgID       string `json:"org_id,omitempty"`
+	AdAccountID string `json:"ad_account_id,omitempty"`
+	Default     bool   `json:"default"`
+	Source      string `json:"source"`
+	SourcePath  string `json:"source_path,omitempty"`
+	Validated   bool   `json:"validated"`
+	Error       string `json:"error,omitempty"`
 }
 
 func printStatusTable(result adsAuthStatusOutput) {
@@ -293,6 +298,9 @@ func printStatusTable(result adsAuthStatusOutput) {
 		fmt.Printf("  Key ID: %s\n", cred.KeyID)
 		if cred.OrgID != "" {
 			fmt.Printf("  Org ID: %s\n", cred.OrgID)
+		}
+		if cred.AdAccountID != "" {
+			fmt.Printf("  Ad account ID: %s\n", cred.AdAccountID)
 		}
 		fmt.Printf("  Source: %s\n", cred.Source)
 		if cred.SourcePath != "" {
@@ -336,6 +344,15 @@ func printActiveContext(active adsAuthContext) {
 	} else {
 		fmt.Println("  Org ID: not selected")
 	}
+	if active.AdAccountID != "" {
+		if active.AdAccountIDSource != "" {
+			fmt.Printf("  Ad account ID: %s (%s)\n", active.AdAccountID, active.AdAccountIDSource)
+		} else {
+			fmt.Printf("  Ad account ID: %s\n", active.AdAccountID)
+		}
+	} else {
+		fmt.Println("  Ad account ID: not selected")
+	}
 }
 
 func statusActiveContext() adsAuthContext {
@@ -354,11 +371,23 @@ func statusActiveContext() adsAuthContext {
 			Error:   err.Error(),
 		}
 	}
+	adAccountID, adAccountSource, err := resolveAdAccountIDWithSource(commonFlags{}, credentials)
+	if err != nil {
+		return adsAuthContext{
+			Profile:     credentials.Profile,
+			Source:      source,
+			OrgID:       orgID,
+			OrgIDSource: orgSource,
+			Error:       err.Error(),
+		}
+	}
 	return adsAuthContext{
-		Profile:     credentials.Profile,
-		Source:      source,
-		OrgID:       orgID,
-		OrgIDSource: orgSource,
+		Profile:           credentials.Profile,
+		Source:            source,
+		OrgID:             orgID,
+		OrgIDSource:       orgSource,
+		AdAccountID:       adAccountID,
+		AdAccountIDSource: adAccountSource,
 	}
 }
 
@@ -397,15 +426,16 @@ func AuthDiscoverCommand() *ffcli.Command {
 	common := commonFlags{
 		AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 		Org:        fs.String("org", "", "Apple Ads organization ID to mark active"),
+		AdAccount:  fs.String("ad-account", "", "Apple Ads ad account ID to mark active"),
 	}
 	output := shared.BindOutputFlagsWithAllowed(fs, "output", "table", "Output format: table, json", "table", "json")
 	return &ffcli.Command{
 		Name:       "discover",
 		ShortUsage: "asc ads auth discover [flags]",
 		ShortHelp:  "Discover Apple Ads user and organization access.",
-		LongHelp: `Discover Apple Ads user and organization access.
+		LongHelp: `Discover Apple Ads user and ad account access.
 
-This read-only command calls GET v5/me and GET v5/acls. It does not print access tokens.
+This read-only command calls GET v1/me and GET v1/acls. It does not print access tokens.
 
 Examples:
   asc ads auth discover
@@ -426,6 +456,7 @@ Examples:
 				return fmt.Errorf("ads auth discover: %w", err)
 			}
 			orgID, orgSource := discoverOrgIDWithSource(common, credentials)
+			adAccountID, adAccountSource := discoverAdAccountIDWithSource(common, credentials)
 			client, err := appleads.NewClient(credentials)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: %w", err)
@@ -433,33 +464,35 @@ Examples:
 			requestCtx, cancel := requestContext(ctx)
 			defer cancel()
 
-			meSpec, _ := appleads.EndpointByCommandPath("me", "view")
+			meSpec, _ := appleads.PlatformEndpointByCommandPath("me", "view")
 			meRaw, err := client.Do(requestCtx, meSpec, nil, nil, nil)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: me lookup failed: %w", err)
 			}
-			aclsSpec, _ := appleads.EndpointByCommandPath("acls", "list")
+			aclsSpec, _ := appleads.PlatformEndpointByCommandPath("acls", "list")
 			aclsRaw, err := client.Do(requestCtx, aclsSpec, nil, nil, nil)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: acl lookup failed: %w", err)
 			}
 
-			me, err := envelopeData(meRaw)
+			me, err := platformEnvelopeResult(meRaw)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: me response parse failed: %w", err)
 			}
-			accounts, err := summarizeACLAccounts(aclsRaw, orgID)
+			accounts, err := summarizePlatformACLAccounts(aclsRaw, orgID, adAccountID)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: acl response parse failed: %w", err)
 			}
 
 			result := adsAuthDiscoveryOutput{
-				AuthSource:  source,
-				Profile:     credentials.Profile,
-				OrgID:       orgID,
-				OrgIDSource: orgSource,
-				Me:          me,
-				Accounts:    accounts,
+				AuthSource:        source,
+				Profile:           credentials.Profile,
+				OrgID:             orgID,
+				OrgIDSource:       orgSource,
+				AdAccountID:       adAccountID,
+				AdAccountIDSource: adAccountSource,
+				Me:                me,
+				Accounts:          accounts,
 			}
 			if normalized == "json" {
 				return shared.PrintOutput(result, "json", *output.Pretty)
@@ -468,6 +501,14 @@ Examples:
 			return nil
 		},
 	}
+}
+
+func discoverAdAccountIDWithSource(flags commonFlags, credentials appleads.Credentials) (string, string) {
+	adAccountID, source, err := resolveAdAccountIDWithSource(flags, credentials)
+	if err != nil {
+		return "", ""
+	}
+	return adAccountID, source
 }
 
 func discoverOrgIDWithSource(flags commonFlags, credentials appleads.Credentials) (string, string) {
@@ -479,19 +520,22 @@ func discoverOrgIDWithSource(flags commonFlags, credentials appleads.Credentials
 }
 
 type adsAuthDiscoveryOutput struct {
-	AuthSource  string                  `json:"auth_source"`
-	Profile     string                  `json:"profile,omitempty"`
-	OrgID       string                  `json:"org_id,omitempty"`
-	OrgIDSource string                  `json:"org_id_source,omitempty"`
-	Me          json.RawMessage         `json:"me"`
-	Accounts    []adsAuthAccountSummary `json:"accounts"`
+	AuthSource        string                  `json:"auth_source"`
+	Profile           string                  `json:"profile,omitempty"`
+	OrgID             string                  `json:"org_id,omitempty"`
+	OrgIDSource       string                  `json:"org_id_source,omitempty"`
+	AdAccountID       string                  `json:"ad_account_id,omitempty"`
+	AdAccountIDSource string                  `json:"ad_account_id_source,omitempty"`
+	Me                json.RawMessage         `json:"me"`
+	Accounts          []adsAuthAccountSummary `json:"accounts"`
 }
 
 type adsAuthAccountSummary struct {
-	OrgID  string   `json:"org_id,omitempty"`
-	Name   string   `json:"name,omitempty"`
-	Roles  []string `json:"roles,omitempty"`
-	Active bool     `json:"active"`
+	AdAccountID string   `json:"ad_account_id,omitempty"`
+	OrgID       string   `json:"org_id,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Roles       []string `json:"roles,omitempty"`
+	Active      bool     `json:"active"`
 }
 
 func printDiscoveryTable(result adsAuthDiscoveryOutput) {
@@ -511,6 +555,15 @@ func printDiscoveryTable(result adsAuthDiscoveryOutput) {
 	} else {
 		fmt.Println("Selected org: none")
 	}
+	if result.AdAccountID != "" {
+		if result.AdAccountIDSource != "" {
+			fmt.Printf("Selected ad account: %s (%s)\n", result.AdAccountID, result.AdAccountIDSource)
+		} else {
+			fmt.Printf("Selected ad account: %s\n", result.AdAccountID)
+		}
+	} else {
+		fmt.Println("Selected ad account: none")
+	}
 	if len(result.Accounts) == 0 {
 		fmt.Println("Accounts: none returned")
 		return
@@ -521,7 +574,10 @@ func printDiscoveryTable(result adsAuthDiscoveryOutput) {
 		if account.Active {
 			marker = " (active)"
 		}
-		label := account.OrgID
+		label := account.AdAccountID
+		if label == "" {
+			label = account.OrgID
+		}
 		if account.Name != "" {
 			label += " - " + account.Name
 		}
@@ -554,61 +610,45 @@ func discoveryUserSummary(me json.RawMessage) string {
 	}
 }
 
-func envelopeData(raw appleads.RawResponse) (json.RawMessage, error) {
+func platformEnvelopeResult(raw appleads.RawResponse) (json.RawMessage, error) {
 	var envelope struct {
-		Data json.RawMessage `json:"data"`
+		Result json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, err
 	}
-	if len(envelope.Data) == 0 {
+	if len(envelope.Result) == 0 {
 		return json.RawMessage("null"), nil
 	}
-	return envelope.Data, nil
+	return envelope.Result, nil
 }
 
-func summarizeACLAccounts(raw appleads.RawResponse, activeOrgID string) ([]adsAuthAccountSummary, error) {
+func summarizePlatformACLAccounts(raw appleads.RawResponse, activeOrgID, activeAdAccountID string) ([]adsAuthAccountSummary, error) {
 	var envelope struct {
-		Data json.RawMessage `json:"data"`
+		Result struct {
+			ACLs []struct {
+				AdAccount map[string]any `json:"adAccount"`
+				Roles     []string       `json:"roles"`
+			} `json:"acls"`
+		} `json:"result"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, err
 	}
-	items, err := aclDataItems(envelope.Data)
-	if err != nil {
-		return nil, err
-	}
-	accounts := make([]adsAuthAccountSummary, 0, len(items))
-	for _, item := range items {
-		orgID := jsonScalarString(firstMapValue(item, "orgId", "orgID", "organizationId", "id"))
+	accounts := make([]adsAuthAccountSummary, 0, len(envelope.Result.ACLs))
+	for _, item := range envelope.Result.ACLs {
+		adAccountID := jsonScalarString(firstMapValue(item.AdAccount, "id"))
+		orgID := jsonScalarString(firstMapValue(item.AdAccount, "orgId", "orgID", "organizationId"))
 		account := adsAuthAccountSummary{
-			OrgID:  orgID,
-			Name:   jsonScalarString(firstMapValue(item, "orgName", "organizationName", "name")),
-			Roles:  jsonStringList(firstMapValue(item, "roleNames", "roles")),
-			Active: orgID != "" && activeOrgID != "" && orgID == activeOrgID,
+			AdAccountID: adAccountID,
+			OrgID:       orgID,
+			Name:        jsonScalarString(firstMapValue(item.AdAccount, "name")),
+			Roles:       append([]string(nil), item.Roles...),
+			Active:      (adAccountID != "" && activeAdAccountID != "" && adAccountID == activeAdAccountID) || (activeAdAccountID == "" && orgID != "" && activeOrgID != "" && orgID == activeOrgID),
 		}
 		accounts = append(accounts, account)
 	}
 	return accounts, nil
-}
-
-func aclDataItems(data json.RawMessage) ([]map[string]any, error) {
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		return nil, nil
-	}
-	if trimmed[0] == '[' {
-		var items []map[string]any
-		if err := json.Unmarshal(trimmed, &items); err != nil {
-			return nil, err
-		}
-		return items, nil
-	}
-	var item map[string]any
-	if err := json.Unmarshal(trimmed, &item); err != nil {
-		return nil, err
-	}
-	return []map[string]any{item}, nil
 }
 
 func firstMapValue(item map[string]any, keys ...string) any {
@@ -631,20 +671,6 @@ func jsonScalarString(value any) string {
 	default:
 		return ""
 	}
-}
-
-func jsonStringList(value any) []string {
-	items, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	result := make([]string, 0, len(items))
-	for _, item := range items {
-		if text := jsonScalarString(item); text != "" {
-			result = append(result, text)
-		}
-	}
-	return result
 }
 
 func AuthSwitchCommand() *ffcli.Command {

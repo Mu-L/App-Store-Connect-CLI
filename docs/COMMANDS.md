@@ -49,7 +49,7 @@ asc <subcommand> [flags]
 ### Analytics and Finance
 
 - `analytics` - Request and download analytics and sales reports.
-- `ads` - Manage Apple Ads Campaign Management API resources.
+- `ads` - Manage Apple Ads API resources.
 - `insights` - Generate weekly and daily insights from App Store data sources.
 - `finance` - Download payments and financial reports.
 - `performance` - Access performance metrics and diagnostic logs.

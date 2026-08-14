@@ -697,6 +697,112 @@ func TestAdsAPIRequestRejectsUnexpectedArgsBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestAdsPlatformAPIRequestUsesV1HostAndAdAccountContext(t *testing.T) {
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.Host != "api.ads.apple.com" || req.URL.Path != "/v1/ad-accounts/123" {
+			t.Fatalf("request = %s %s", req.Method, req.URL.String())
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer ACCESS" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := req.Header.Get("X-AP-Context"); got != "adAccountId=AD_ACCOUNT;" {
+			t.Fatalf("X-AP-Context = %q", got)
+		}
+		return adsJSONResponse(200, `{"result":{"id":"123"}}`), nil
+	}))
+
+	root := RootCommand("dev")
+	if err := root.Parse([]string{"ads", "platform", "api", "request", "--path", "v1/ad-accounts/123", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	var output map[string]any
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+}
+
+func TestAdsPlatformAPIRequestOmitsContextForMe(t *testing.T) {
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "api.ads.apple.com" || req.URL.Path != "/v1/me" {
+			t.Fatalf("request URL = %s", req.URL.String())
+		}
+		if got := req.Header.Get("X-AP-Context"); got != "" {
+			t.Fatalf("X-AP-Context = %q, want empty", got)
+		}
+		return adsJSONResponse(200, `{"result":{"userId":"1"}}`), nil
+	}))
+
+	root := RootCommand("dev")
+	if err := root.Parse([]string{"ads", "platform", "api", "request", "--path", "v1/me", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	_, stderr := captureOutput(t, func() {
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestAdsPlatformAPIRequestRequiresAdAccountBeforeNetwork(t *testing.T) {
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected network request: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	}))
+
+	root := RootCommand("dev")
+	if err := root.Parse([]string{"ads", "platform", "api", "request", "--path", "v1/campaigns/123"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	_, stderr := captureOutput(t, func() {
+		runErr = root.Run(context.Background())
+	})
+	if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, "--ad-account is required") {
+		t.Fatalf("run error = %v stderr = %q", runErr, stderr)
+	}
+}
+
+func TestAdsPlatformAPIRequestRejectsAdAccountForContextFreeEndpoint(t *testing.T) {
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected network request: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	}))
+
+	root := RootCommand("dev")
+	if err := root.Parse([]string{"ads", "platform", "api", "request", "--path", "v1/me", "--ad-account", "AD_ACCOUNT"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	_, stderr := captureOutput(t, func() {
+		runErr = root.Run(context.Background())
+	})
+	if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, "--ad-account is not supported") {
+		t.Fatalf("run error = %v stderr = %q", runErr, stderr)
+	}
+}
+
 func adsJSONResponse(status int, body string) *http.Response {
 	return &http.Response{
 		StatusCode: status,

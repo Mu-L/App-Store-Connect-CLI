@@ -2,6 +2,7 @@ package ads
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"net/url"
@@ -38,6 +39,120 @@ func TestAdsCommandRegistersEveryEndpointSpec(t *testing.T) {
 			}
 			assertSpecFlags(t, alias, spec)
 		}
+	}
+}
+
+func TestPlatformCommandRegistersAccountAndAppEndpointSpecs(t *testing.T) {
+	root := AdsCommand()
+	for _, spec := range appleads.PlatformEndpointSpecs() {
+		path := append([]string{"platform"}, spec.CommandPath...)
+		cmd := findCommand(root, path...)
+		if cmd == nil || cmd.Exec == nil {
+			t.Fatalf("missing executable command asc ads %s", strings.Join(path, " "))
+		}
+		assertSpecFlags(t, cmd, spec)
+		if spec.Context == appleads.ContextAdAccount && cmd.FlagSet.Lookup("ad-account") == nil {
+			t.Fatalf("asc ads %s missing --ad-account", strings.Join(path, " "))
+		}
+		if cmd.FlagSet.Lookup("org") != nil {
+			t.Fatalf("asc ads %s must not expose legacy --org", strings.Join(path, " "))
+		}
+		if (strings.Join(spec.CommandPath, " ") == "ad-accounts view" || strings.Join(spec.CommandPath, " ") == "ad-accounts update") && cmd.FlagSet.Lookup("id") != nil {
+			t.Fatalf("asc ads %s must use --ad-account for both the path and context", strings.Join(path, " "))
+		}
+	}
+}
+
+func TestPlatformAppSearchValidationAndRepeatedStoreFronts(t *testing.T) {
+	spec, ok := appleads.PlatformEndpointByCommandPath("apps", "search")
+	if !ok {
+		t.Fatal("missing platform apps search")
+	}
+	fs, flags := bindEndpointFlags(spec, "test")
+	if _, err := collectQuery(spec, flags); err == nil || !strings.Contains(err.Error(), "--query, --cpids, or --return-owned-apps") {
+		t.Fatalf("empty search error = %v", err)
+	}
+	if err := fs.Set("query", "ab"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collectQuery(spec, flags); err == nil || !strings.Contains(err.Error(), "at least 3 characters") {
+		t.Fatalf("short query error = %v", err)
+	}
+	if err := fs.Set("query", "test app"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Set("store-fronts", "us, gB"); err != nil {
+		t.Fatal(err)
+	}
+	query, err := collectQuery(spec, flags)
+	if err != nil {
+		t.Fatalf("collectQuery() error: %v", err)
+	}
+	if got := query["storeFronts"]; len(got) != 2 || got[0] != "US" || got[1] != "GB" {
+		t.Fatalf("storeFronts = %#v, want repeated US and GB", got)
+	}
+}
+
+func TestPlatformAppSearchRejectsInvalidStoreFronts(t *testing.T) {
+	spec, _ := appleads.PlatformEndpointByCommandPath("apps", "search")
+	for _, storefronts := range []string{"US,,GB", "USA", "U1"} {
+		t.Run(storefronts, func(t *testing.T) {
+			_, flags := bindEndpointFlags(spec, "test")
+			*flags.queryStrings["query"] = "test"
+			*flags.queryStrings["storeFronts"] = storefronts
+			if _, err := collectQuery(spec, flags); err == nil {
+				t.Fatalf("storefronts %q unexpectedly accepted", storefronts)
+			}
+		})
+	}
+}
+
+func TestPlatformAdAccountUpdateBodySafeguards(t *testing.T) {
+	spec, ok := appleads.PlatformEndpointByCommandPath("ad-accounts", "update")
+	if !ok {
+		t.Fatal("missing platform ad-account update")
+	}
+
+	if err := validateEndpointBody(spec, json.RawMessage(`{"productFeatures":["APPSTORE_APP_MANUAL"]}`), true); err == nil || !strings.Contains(err.Error(), "productFeatures") {
+		t.Fatalf("productFeatures error = %v", err)
+	}
+	delegations := json.RawMessage(`{"delegations":[{"resourceId":"123","resourceType":"CONTENT_PROVIDER"}]}`)
+	if err := validateEndpointBody(spec, delegations, false); err == nil || !strings.Contains(err.Error(), "--confirm") {
+		t.Fatalf("delegation confirm error = %v", err)
+	}
+	if err := validateEndpointBody(spec, delegations, true); err != nil {
+		t.Fatalf("confirmed delegations error: %v", err)
+	}
+	if err := validateEndpointBody(spec, json.RawMessage(`{"delegations":[{"resourceId":"123"}]}`), true); err == nil || !strings.Contains(err.Error(), "resourceType") {
+		t.Fatalf("delegation shape error = %v", err)
+	}
+	if spec.RequiresConfirm {
+		t.Fatal("ad-account update must not require confirmation for every payload")
+	}
+	if err := validateEndpointBody(spec, json.RawMessage(`{"name":"Renamed"}`), false); err != nil {
+		t.Fatalf("name-only update without confirmation error: %v", err)
+	}
+}
+
+func TestPlatformAdAccountCreateRequiresOneProductFeature(t *testing.T) {
+	spec, _ := appleads.PlatformEndpointByCommandPath("ad-accounts", "create")
+	for _, test := range []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "empty", body: `{"name":"Account","productFeatures":[]}`, wantErr: true},
+		{name: "both", body: `{"name":"Account","productFeatures":["APPSTORE_APP_MANUAL","BUSINESS_BRAND_MANUAL"]}`, wantErr: true},
+		{name: "invalid", body: `{"name":"Account","productFeatures":["OTHER"]}`, wantErr: true},
+		{name: "app", body: `{"name":"Account","productFeatures":["APPSTORE_APP_MANUAL"]}`},
+		{name: "brand", body: `{"name":"Account","productFeatures":["BUSINESS_BRAND_MANUAL"]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateEndpointBody(spec, json.RawMessage(test.body), false)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
 	}
 }
 
@@ -166,6 +281,151 @@ func TestRawRequestRequiresOrgGuardrails(t *testing.T) {
 				t.Fatalf("requiresOrg = %t, want %t", requiresOrg, tt.requiresOrg)
 			}
 		})
+	}
+}
+
+func TestRawPlatformRequestRequiresAdAccount(t *testing.T) {
+	tests := []struct {
+		name     string
+		method   string
+		path     string
+		requires bool
+		wantErr  string
+	}{
+		{name: "me", method: "GET", path: "v1/me", requires: false},
+		{name: "acls absolute", method: "GET", path: "https://api.ads.apple.com/v1/acls", requires: false},
+		{name: "org", method: "GET", path: "v1/orgs/123", requires: false},
+		{name: "advertiser resources", method: "GET", path: "v1/advertiser-resources?resourceType=APP", requires: false},
+		{name: "create ad account", method: "POST", path: "v1/ad-accounts", requires: false},
+		{name: "list ad accounts defaults scoped", method: "GET", path: "v1/ad-accounts", requires: true},
+		{name: "view ad account", method: "GET", path: "v1/ad-accounts/123", requires: true},
+		{name: "update ad account", method: "PUT", path: "v1/ad-accounts/123", requires: true},
+		{name: "unknown defaults scoped", method: "GET", path: "v1/future-resource", requires: true},
+		{name: "reject wrong host", method: "GET", path: "https://example.com/v1/me", wantErr: "Apple Ads Platform API v1 URL"},
+		{name: "reject userinfo", method: "GET", path: "https://example.com@api.ads.apple.com/v1/me", wantErr: "Apple Ads Platform API v1 URL"},
+		{name: "reject legacy version", method: "GET", path: "v5/me", wantErr: "start with v1/"},
+		{name: "reject traversal", method: "GET", path: "v1/../me", wantErr: "path traversal"},
+		{name: "reject encoded traversal", method: "GET", path: "v1/%2e%2e/campaigns", wantErr: "path traversal"},
+		{name: "reject network path", method: "GET", path: "v1//example.com/campaigns", wantErr: "must not escape"},
+		{name: "reject embedded absolute URL", method: "GET", path: "v1/https://example.com/campaigns", wantErr: "must not escape"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requires, err := rawPlatformRequestRequiresAdAccount(tt.method, tt.path)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("rawPlatformRequestRequiresAdAccount() error: %v", err)
+			}
+			if requires != tt.requires {
+				t.Fatalf("requires = %t, want %t", requires, tt.requires)
+			}
+		})
+	}
+}
+
+func TestResolveAdAccountIDPrecedenceDoesNotUseLegacyOrg(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "ENV_ACCOUNT")
+	if err := config.SaveAt(configPath, &config.Config{Ads: config.AdsConfig{
+		OrgID:       "LEGACY_ORG",
+		AdAccountID: "CONFIG_ACCOUNT",
+	}}); err != nil {
+		t.Fatalf("SaveAt() error: %v", err)
+	}
+
+	explicit := "FLAG_ACCOUNT"
+	got, source, err := resolveAdAccountIDWithSource(commonFlags{AdAccount: &explicit}, appleads.Credentials{OrgID: "PROFILE_ORG", AdAccountID: "PROFILE_ACCOUNT"})
+	if err != nil || got != "FLAG_ACCOUNT" || source != "--ad-account" {
+		t.Fatalf("explicit resolution = %q %q %v", got, source, err)
+	}
+	got, source, err = resolveAdAccountIDWithSource(commonFlags{}, appleads.Credentials{OrgID: "PROFILE_ORG", AdAccountID: "PROFILE_ACCOUNT"})
+	if err != nil || got != "ENV_ACCOUNT" || source != "ASC_ADS_AD_ACCOUNT_ID" {
+		t.Fatalf("env resolution = %q %q %v", got, source, err)
+	}
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "")
+	got, source, err = resolveAdAccountIDWithSource(commonFlags{}, appleads.Credentials{Profile: "ads", OrgID: "PROFILE_ORG", AdAccountID: "PROFILE_ACCOUNT"})
+	if err != nil || got != "PROFILE_ACCOUNT" || source != "Ads profile ad_account_id" {
+		t.Fatalf("profile resolution = %q %q %v", got, source, err)
+	}
+	got, source, err = resolveAdAccountIDWithSource(commonFlags{}, appleads.Credentials{Profile: "profile-without-account", OrgID: "PROFILE_ORG"})
+	if err != nil || got != "" || source != "" {
+		t.Fatalf("empty named profile must not inherit root ad account: %q %q %v", got, source, err)
+	}
+	got, source, err = resolveAdAccountIDWithSource(commonFlags{}, appleads.Credentials{OrgID: "PROFILE_ORG"})
+	if err != nil || got != "CONFIG_ACCOUNT" || source != "ads.ad_account_id" {
+		t.Fatalf("config resolution = %q %q %v", got, source, err)
+	}
+	if err := config.SaveAt(configPath, &config.Config{Ads: config.AdsConfig{OrgID: "LEGACY_ORG"}}); err != nil {
+		t.Fatalf("SaveAt(legacy) error: %v", err)
+	}
+	got, source, err = resolveAdAccountIDWithSource(commonFlags{}, appleads.Credentials{OrgID: "PROFILE_ORG"})
+	if err != nil || got != "" || source != "" {
+		t.Fatalf("legacy org must not resolve as ad account: %q %q %v", got, source, err)
+	}
+}
+
+func TestNamedAdsProfileWithoutAdAccountDoesNotInheritAnotherProfileDefault(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "")
+	if err := config.SaveAt(configPath, &config.Config{Ads: config.AdsConfig{
+		DefaultKeyName: "profile-a",
+		AdAccountID:    "ACCOUNT_A",
+		Keys: []config.AdsCredential{
+			{Name: "profile-a", ClientID: "A", TeamID: "T", KeyID: "K", PrivateKeyPath: "a.pem", AdAccountID: "ACCOUNT_A"},
+			{Name: "profile-b", ClientID: "B", TeamID: "T", KeyID: "K", PrivateKeyPath: "b.pem"},
+		},
+	}}); err != nil {
+		t.Fatalf("SaveAt() error: %v", err)
+	}
+
+	profile := "profile-b"
+	credentials, err := resolveCredentials(commonFlags{AdsProfile: &profile})
+	if err != nil {
+		t.Fatalf("resolveCredentials() error: %v", err)
+	}
+	got, source, err := resolveAdAccountIDWithSource(commonFlags{}, credentials)
+	if err != nil || got != "" || source != "" {
+		t.Fatalf("profile-b ad account = %q source=%q error=%v, want no inherited account", got, source, err)
+	}
+}
+
+func TestPlatformOptionalBodyAndUnboundedLimit(t *testing.T) {
+	spec := appleads.EndpointSpec{
+		Name:         "platform-query",
+		Method:       "POST",
+		Path:         "v1/resources/query",
+		Version:      appleads.APIVersionPlatformV1,
+		Context:      appleads.ContextAdAccount,
+		BodyKind:     appleads.BodyObject,
+		BodyOptional: true,
+		QueryParams: []appleads.ParamSpec{{
+			Name: "limit",
+			Flag: "limit",
+			Type: appleads.ParamInt,
+		}},
+	}
+	fs, flags := bindEndpointFlags(spec, "platform query")
+	body, err := readBody(spec, flags)
+	if err != nil || body != nil {
+		t.Fatalf("optional body = %s error = %v, want nil", body, err)
+	}
+	if err := fs.Set("limit", "50000"); err != nil {
+		t.Fatalf("Set(limit) error: %v", err)
+	}
+	query, err := collectQuery(spec, flags)
+	if err != nil || query.Get("limit") != "50000" {
+		t.Fatalf("query = %v error = %v", query, err)
+	}
+	if got := appleads.MaxPageLimit(spec); got != 0 {
+		t.Fatalf("MaxPageLimit() = %d, want no v5 cap", got)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 type commonFlags struct {
 	AdsProfile *string
 	Org        *string
+	AdAccount  *string
 }
 
 func resolveClient(ctx context.Context, flags commonFlags, requiresOrg bool) (*appleads.Client, error) {
@@ -35,6 +36,32 @@ func resolveClient(ctx context.Context, flags commonFlags, requiresOrg bool) (*a
 	}
 	_ = ctx
 	return appleads.NewClient(credentials)
+}
+
+func resolvePlatformClient(ctx context.Context, flags commonFlags, contextKind appleads.ContextKind) (*appleads.Client, error) {
+	client, _, err := resolvePlatformClientAndAdAccountID(ctx, flags, contextKind)
+	return client, err
+}
+
+func resolvePlatformClientAndAdAccountID(ctx context.Context, flags commonFlags, contextKind appleads.ContextKind) (*appleads.Client, string, error) {
+	credentials, err := resolveCredentials(flags)
+	if err != nil {
+		return nil, "", err
+	}
+	adAccountID := ""
+	if contextKind == appleads.ContextAdAccount || contextKind == appleads.ContextAdAccountOptional {
+		adAccountID, err = resolveAdAccountID(flags, credentials)
+		if err != nil {
+			return nil, "", err
+		}
+		if adAccountID == "" && contextKind == appleads.ContextAdAccount {
+			return nil, "", shared.UsageError("--ad-account is required (or set ASC_ADS_AD_ACCOUNT_ID or an Ads profile ad_account_id)")
+		}
+		credentials.AdAccountID = adAccountID
+	}
+	_ = ctx
+	client, err := appleads.NewClient(credentials)
+	return client, adAccountID, err
 }
 
 func resolveCredentials(flags commonFlags) (appleads.Credentials, error) {
@@ -102,6 +129,7 @@ func envCredentials() (appleads.Credentials, bool, error) {
 		PrivateKeyPath: strings.TrimSpace(os.Getenv("ASC_ADS_PRIVATE_KEY_PATH")),
 		PrivateKeyPEM:  strings.TrimSpace(os.Getenv("ASC_ADS_PRIVATE_KEY")),
 		OrgID:          strings.TrimSpace(os.Getenv("ASC_ADS_ORG_ID")),
+		AdAccountID:    strings.TrimSpace(os.Getenv("ASC_ADS_AD_ACCOUNT_ID")),
 	}
 	privateKeyB64 := strings.TrimSpace(os.Getenv("ASC_ADS_PRIVATE_KEY_B64"))
 	if privateKeyB64 != "" {
@@ -126,6 +154,41 @@ func envCredentials() (appleads.Credentials, bool, error) {
 		return appleads.Credentials{}, false, fmt.Errorf("incomplete Apple Ads environment credentials: set ASC_ADS_CLIENT_ID, ASC_ADS_TEAM_ID, ASC_ADS_KEY_ID, and one of ASC_ADS_PRIVATE_KEY_PATH, ASC_ADS_PRIVATE_KEY, or ASC_ADS_PRIVATE_KEY_B64")
 	}
 	return credentials, complete, nil
+}
+
+func resolveAdAccountID(flags commonFlags, credentials appleads.Credentials) (string, error) {
+	adAccountID, _, err := resolveAdAccountIDWithSource(flags, credentials)
+	return adAccountID, err
+}
+
+func resolveAdAccountIDWithSource(flags commonFlags, credentials appleads.Credentials) (string, string, error) {
+	if adAccountID := value(flags.AdAccount); adAccountID != "" {
+		return adAccountID, "--ad-account", nil
+	}
+	if adAccountID := strings.TrimSpace(os.Getenv("ASC_ADS_AD_ACCOUNT_ID")); adAccountID != "" {
+		return adAccountID, "ASC_ADS_AD_ACCOUNT_ID", nil
+	}
+	if adAccountID := strings.TrimSpace(credentials.AdAccountID); adAccountID != "" {
+		if strings.TrimSpace(credentials.Profile) != "" {
+			return adAccountID, "Ads profile ad_account_id", nil
+		}
+		return adAccountID, "credential ad_account_id", nil
+	}
+	if strings.TrimSpace(credentials.Profile) != "" {
+		return "", "", nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		if errors.Is(err, config.ErrNotFound) {
+			return "", "", nil
+		}
+		return "", "", err
+	}
+	adAccountID := strings.TrimSpace(cfg.Ads.AdAccountID)
+	if adAccountID == "" {
+		return "", "", nil
+	}
+	return adAccountID, "ads.ad_account_id", nil
 }
 
 func resolveOrgID(flags commonFlags, credentials appleads.Credentials) (string, error) {

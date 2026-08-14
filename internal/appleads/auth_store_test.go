@@ -29,6 +29,112 @@ func TestStoreCredentialsConfigUsesActiveConfigPath(t *testing.T) {
 	}
 }
 
+func TestStoreCredentialsConfigRoundTripsIndependentAdAccountID(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "active-config.json")
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	credentials := testAdsCredentials()
+	credentials.AdAccountID = "AD_ACCOUNT"
+
+	if err := StoreCredentialsConfig("ads", credentials); err != nil {
+		t.Fatalf("StoreCredentialsConfig() error: %v", err)
+	}
+
+	loaded, _, err := GetCredentialsWithSource("ads")
+	if err != nil {
+		t.Fatalf("GetCredentialsWithSource() error: %v", err)
+	}
+	if loaded.OrgID != "123456" || loaded.AdAccountID != "AD_ACCOUNT" {
+		t.Fatalf("contexts = org %q ad account %q", loaded.OrgID, loaded.AdAccountID)
+	}
+	cfg, err := config.LoadAt(configPath)
+	if err != nil {
+		t.Fatalf("LoadAt() error: %v", err)
+	}
+	if cfg.Ads.OrgID != "123456" || cfg.Ads.AdAccountID != "AD_ACCOUNT" || cfg.Ads.Keys[0].AdAccountID != "AD_ACCOUNT" {
+		t.Fatalf("stored ads config = %+v", cfg.Ads)
+	}
+}
+
+func TestStoreCredentialsConfigCanClearDefaultAdAccountID(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "active-config.json")
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	credentials := testAdsCredentials()
+	credentials.AdAccountID = "AD_ACCOUNT"
+	if err := StoreCredentialsConfig("ads", credentials); err != nil {
+		t.Fatalf("StoreCredentialsConfig(initial) error: %v", err)
+	}
+
+	credentials.AdAccountID = ""
+	if err := StoreCredentialsConfig("ads", credentials); err != nil {
+		t.Fatalf("StoreCredentialsConfig(clear) error: %v", err)
+	}
+	loaded, _, err := GetCredentialsWithSource("ads")
+	if err != nil {
+		t.Fatalf("GetCredentialsWithSource() error: %v", err)
+	}
+	if loaded.AdAccountID != "" {
+		t.Fatalf("AdAccountID = %q, want cleared", loaded.AdAccountID)
+	}
+	cfg, err := config.LoadAt(configPath)
+	if err != nil {
+		t.Fatalf("LoadAt() error: %v", err)
+	}
+	if cfg.Ads.AdAccountID != "" || cfg.Ads.Keys[0].AdAccountID != "" {
+		t.Fatalf("stored ad account was not cleared: %+v", cfg.Ads)
+	}
+}
+
+func TestNamedConfigProfileDoesNotInheritGlobalAdAccountID(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "active-config.json")
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	credentialsA := testAdsCredentials()
+	credentialsA.AdAccountID = "ACCOUNT_A"
+	credentialsB := testAdsCredentials()
+	credentialsB.ClientID = "CLIENT_B"
+	if err := config.SaveAt(configPath, &config.Config{Ads: config.AdsConfig{
+		DefaultKeyName: "profile-b",
+		AdAccountID:    "ACCOUNT_A",
+		Keys: []config.AdsCredential{
+			{Name: "profile-a", ClientID: credentialsA.ClientID, TeamID: credentialsA.TeamID, KeyID: credentialsA.KeyID, PrivateKeyPath: credentialsA.PrivateKeyPath, OrgID: credentialsA.OrgID, AdAccountID: credentialsA.AdAccountID},
+			{Name: "profile-b", ClientID: credentialsB.ClientID, TeamID: credentialsB.TeamID, KeyID: credentialsB.KeyID, PrivateKeyPath: credentialsB.PrivateKeyPath, OrgID: credentialsB.OrgID},
+		},
+	}}); err != nil {
+		t.Fatalf("SaveAt() error: %v", err)
+	}
+
+	for _, profile := range []string{"profile-b", ""} {
+		loaded, _, err := GetCredentialsWithSource(profile)
+		if err != nil {
+			t.Fatalf("GetCredentialsWithSource(%q) error: %v", profile, err)
+		}
+		if loaded.AdAccountID != "" {
+			t.Fatalf("GetCredentialsWithSource(%q).AdAccountID = %q, want empty", profile, loaded.AdAccountID)
+		}
+	}
+}
+
+func TestRemoveDefaultConfigProfileClearsAdAccountContext(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "active-config.json")
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv(adsBypassKeychainEnvVar, "1")
+	credentials := testAdsCredentials()
+	credentials.AdAccountID = "ACCOUNT_A"
+	if err := StoreCredentialsConfig("profile-a", credentials); err != nil {
+		t.Fatalf("StoreCredentialsConfig() error: %v", err)
+	}
+	if err := RemoveCredentials("profile-a"); err != nil {
+		t.Fatalf("RemoveCredentials() error: %v", err)
+	}
+
+	cfg, err := config.LoadAt(configPath)
+	if err != nil {
+		t.Fatalf("LoadAt() error: %v", err)
+	}
+	if cfg.Ads.DefaultKeyName != "" || cfg.Ads.AdAccountID != "" {
+		t.Fatalf("removed default left context behind: %+v", cfg.Ads)
+	}
+}
+
 func TestLoadConfigWithPathDoesNotFallbackToGlobalWhenASCConfigPathSet(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

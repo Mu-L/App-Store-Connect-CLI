@@ -61,6 +61,11 @@ func TestAdsGuideExamplesDispatchRepresentativeCommands(t *testing.T) {
 				return adsJSONResponse(http.StatusOK, `{"data":[{"id":123456789}],"pagination":{"itemsPerPage":1,"startIndex":0,"totalResults":1}}`), nil
 			}
 			return adsJSONResponse(http.StatusOK, `{"data":{"id":123456789}}`), nil
+		case "api.ads.apple.com":
+			if req.URL.Path != "/v1/me" {
+				t.Fatalf("unexpected Platform API request %s %s", req.Method, req.URL.String())
+			}
+			return adsJSONResponse(http.StatusOK, `{"result":{"userId":123456789,"orgId":123456}}`), nil
 		default:
 			t.Fatalf("unexpected host %s for %s %s", req.URL.Host, req.Method, req.URL.String())
 			return nil, nil
