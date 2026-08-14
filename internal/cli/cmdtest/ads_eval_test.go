@@ -82,12 +82,12 @@ func TestAdsAgentReadOnlyEvalWorkflow(t *testing.T) {
 	}))
 
 	for _, args := range [][]string{
-		{"ads", "me", "--output", "json"},
-		{"ads", "me", "view", "--output", "json"},
-		{"ads", "acls", "--output", "json"},
-		{"ads", "campaigns", "--limit", "1", "--output", "json"},
-		{"ads", "reports", "campaigns", "--file", reportPayload, "--output", "json"},
-		{"ads", "api", "request", "--method", "GET", "--path", "v5/me", "--output", "json"},
+		{"ads", "v5", "me", "--output", "json"},
+		{"ads", "v5", "me", "view", "--output", "json"},
+		{"ads", "v5", "acls", "--output", "json"},
+		{"ads", "v5", "campaigns", "--limit", "1", "--output", "json"},
+		{"ads", "v5", "reports", "campaigns", "--file", reportPayload, "--output", "json"},
+		{"ads", "v5", "api", "request", "--method", "GET", "--path", "v5/me", "--output", "json"},
 	} {
 		stdout, stderr, err := runAdsEvalCommand(t, args...)
 		if err != nil {
@@ -206,8 +206,8 @@ func TestAdsPlatformAdAccountViewUsesOneValueForPathAndContext(t *testing.T) {
 	}))
 
 	for _, args := range [][]string{
-		{"ads", "platform", "ad-accounts", "view", "--output", "json"},
-		{"ads", "platform", "ad-accounts", "view", "--ad-account", "456", "--output", "json"},
+		{"ads", "ad-accounts", "view", "--output", "json"},
+		{"ads", "ad-accounts", "view", "--ad-account", "456", "--output", "json"},
 	} {
 		stdout, stderr, err := runAdsEvalCommand(t, args...)
 		if err != nil || stderr != "" || !json.Valid([]byte(stdout)) {
@@ -506,7 +506,7 @@ func TestAdsCampaignUpdateSendsRequiredEnvelope(t *testing.T) {
 
 	stdout, stderr, err := runAdsEvalCommand(
 		t,
-		"ads", "campaigns", "update",
+		"ads", "v5", "campaigns", "update",
 		"--campaign", "1001",
 		"--file", campaignUpdate,
 		"--output", "json",
@@ -572,11 +572,11 @@ func TestAdsAgentMutationEvalWorkflow(t *testing.T) {
 	}))
 
 	for _, args := range [][]string{
-		{"ads", "campaigns", "create", "--file", campaignCreate, "--output", "json"},
-		{"ads", "campaigns", "update", "--campaign", "1001", "--file", campaignUpdate, "--output", "json"},
-		{"ads", "targeting-keywords", "create-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywords, "--output", "json"},
-		{"ads", "targeting-keywords", "delete-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywordIDs, "--confirm", "--output", "json"},
-		{"ads", "campaigns", "delete", "--campaign", "1001", "--confirm", "--output", "json"},
+		{"ads", "v5", "campaigns", "create", "--file", campaignCreate, "--output", "json"},
+		{"ads", "v5", "campaigns", "update", "--campaign", "1001", "--file", campaignUpdate, "--output", "json"},
+		{"ads", "v5", "targeting-keywords", "create-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywords, "--output", "json"},
+		{"ads", "v5", "targeting-keywords", "delete-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywordIDs, "--confirm", "--output", "json"},
+		{"ads", "v5", "campaigns", "delete", "--campaign", "1001", "--confirm", "--output", "json"},
 	} {
 		stdout, stderr, err := runAdsEvalCommand(t, args...)
 		if err != nil {
@@ -617,7 +617,7 @@ func TestAdsAgentEvalRejectsArrayPayloadMistakesBeforeNetwork(t *testing.T) {
 	objectPayload := writeAdsEvalPayload(t, "keyword-object.json", `{"text":"not an array"}`)
 	_, _, err := runAdsEvalCommand(
 		t,
-		"ads", "targeting-keywords", "create-bulk",
+		"ads", "v5", "targeting-keywords", "create-bulk",
 		"--campaign", "1001",
 		"--ad-group", "2002",
 		"--file", objectPayload,
@@ -650,7 +650,7 @@ func TestAdsAgentRawAPIEvalRequiresConfirmAndAcceptsAppleURL(t *testing.T) {
 
 	_, stderr, err := runAdsEvalCommand(
 		t,
-		"ads", "api", "request",
+		"ads", "v5", "api", "request",
 		"--method", "DELETE",
 		"--path", "https://api.searchads.apple.com/api/v5/campaigns/1001?audit=true",
 		"--output", "json",
@@ -664,7 +664,7 @@ func TestAdsAgentRawAPIEvalRequiresConfirmAndAcceptsAppleURL(t *testing.T) {
 
 	stdout, stderr, err := runAdsEvalCommand(
 		t,
-		"ads", "api", "request",
+		"ads", "v5", "api", "request",
 		"--method", "DELETE",
 		"--path", "https://api.searchads.apple.com/api/v5/campaigns/1001?audit=true",
 		"--confirm",

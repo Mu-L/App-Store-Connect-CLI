@@ -60,12 +60,12 @@ type commandNode struct {
 	spec     *appleads.EndpointSpec
 }
 
-func endpointCommands() []*ffcli.Command {
-	return commandsForEndpointSpecs(appleads.EndpointSpecs(), nil)
+func legacyEndpointCommands() []*ffcli.Command {
+	return commandsForEndpointSpecs(appleads.EndpointSpecs(), []string{"v5"})
 }
 
 func platformEndpointCommands() []*ffcli.Command {
-	return commandsForEndpointSpecs(appleads.PlatformEndpointSpecs(), []string{"platform"})
+	return commandsForEndpointSpecs(appleads.PlatformEndpointSpecs(), nil)
 }
 
 func commandsForEndpointSpecs(specs []appleads.EndpointSpec, commandPrefix []string) []*ffcli.Command {
@@ -119,13 +119,13 @@ func buildNodeCommand(node *commandNode, parentPath, commandPrefix []string) *ff
 	for _, name := range sortedChildNames(node) {
 		subcommands = append(subcommands, buildNodeCommand(node.children[name], path, commandPrefix))
 	}
-	if len(commandPrefix) == 0 && len(path) == 1 && path[0] == "reports" {
+	if slices.Equal(commandPrefix, []string{"v5"}) && len(path) == 1 && path[0] == "reports" {
 		subcommands = append(subcommands, ReportsPresetCommand())
 	}
-	if len(commandPrefix) == 0 {
+	if slices.Equal(commandPrefix, []string{"v5"}) {
 		subcommands = append(subcommands, workflowSubcommands(path, &flags)...)
 	}
-	if slices.Equal(commandPrefix, []string{"platform"}) {
+	if len(commandPrefix) == 0 {
 		subcommands = append(subcommands, platformWorkflowSubcommands(path)...)
 	}
 
