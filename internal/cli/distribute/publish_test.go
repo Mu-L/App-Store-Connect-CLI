@@ -1,6 +1,7 @@
 package distribute
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -102,6 +103,67 @@ func TestPublishCommandRejectsUnsafeBucketBeforeSideEffects(t *testing.T) {
 	}
 	if loadCalled {
 		t.Fatal("bundle was loaded before unsafe bucket rejection")
+	}
+}
+
+func TestPublishCommandRejectsOverflowingLifetimeBeforeSideEffects(t *testing.T) {
+	originalLoad, originalStore := loadPreparedBundle, newObjectStore
+	t.Cleanup(func() { loadPreparedBundle, newObjectStore = originalLoad, originalStore })
+	loadCalled, storeCalled := false, false
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
+		loadCalled = true
+		return nil, errors.New("unexpected bundle load")
+	}
+	newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
+		storeCalled = true
+		return noOpStore{}, time.Time{}, nil
+	}
+	base := t.TempDir()
+	bundleDir := filepath.Join(base, "missing-bundle")
+	stateDir := filepath.Join(base, "missing-state")
+	err := PublishCommand().ParseAndRun(context.Background(), []string{
+		"--bundle-dir", bundleDir, "--endpoint", "https://objects.example.com", "--region", "auto",
+		"--bucket", "bucket", "--prefix", "app", "--receipt", filepath.Join(stateDir, "receipt.json"),
+		"--link-path", filepath.Join(stateDir, "link.json"), "--url-ttl", "2562047h", "--download-grace", "100h",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--url-ttl must not exceed 7d") {
+		t.Fatalf("ParseAndRun() error = %v, want overflow rejection", err)
+	}
+	if loadCalled || storeCalled {
+		t.Fatalf("side effects before lifetime validation: load=%t store=%t", loadCalled, storeCalled)
+	}
+	for _, path := range []string{bundleDir, stateDir} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("validation created %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestPublishCommandAcceptsExactlySevenDayPrivateLifetime(t *testing.T) {
+	originalLoad, originalStore := loadPreparedBundle, newObjectStore
+	t.Cleanup(func() { loadPreparedBundle, newObjectStore = originalLoad, originalStore })
+	want := errors.New("accepted lifetime reached bundle load")
+	loadCalled, storeCalled := false, false
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
+		loadCalled = true
+		return nil, want
+	}
+	newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
+		storeCalled = true
+		return noOpStore{}, time.Time{}, nil
+	}
+	bundleDir := t.TempDir()
+	stateDir := t.TempDir()
+	err := PublishCommand().ParseAndRun(context.Background(), []string{
+		"--bundle-dir", bundleDir, "--endpoint", "https://objects.example.com", "--region", "auto",
+		"--bucket", "bucket", "--prefix", "app", "--receipt", filepath.Join(stateDir, "receipt.json"),
+		"--link-path", filepath.Join(stateDir, "link.json"), "--url-ttl", "167h", "--download-grace", "1h",
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("ParseAndRun() error = %v, want accepted-lifetime sentinel", err)
+	}
+	if !loadCalled || storeCalled {
+		t.Fatalf("exact boundary flow: load=%t store=%t", loadCalled, storeCalled)
 	}
 }
 
@@ -450,6 +512,36 @@ func TestPreflightRejectsWorldReadableSensitiveLink(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestReadBoundedPublishStateEnforcesExactLimit(t *testing.T) {
+	exact := bytes.Repeat([]byte("x"), maxPublishStateBytes)
+	data, err := readBoundedPublishState(bytes.NewReader(exact))
+	if err != nil {
+		t.Fatalf("readBoundedPublishState() exact-limit error = %v", err)
+	}
+	if !bytes.Equal(data, exact) {
+		t.Fatalf("readBoundedPublishState() returned %d bytes, want %d", len(data), len(exact))
+	}
+
+	secret := "X-Amz-Security-Token=do-not-echo"
+	oversized := append(append([]byte(nil), exact...), secret...)
+	if _, err := readBoundedPublishState(bytes.NewReader(oversized)); err == nil || !strings.Contains(err.Error(), "exceeds 2 MiB") {
+		t.Fatalf("readBoundedPublishState() error = %v, want size rejection", err)
+	} else if strings.Contains(err.Error(), secret) {
+		t.Fatalf("size error leaked sensitive content: %q", err)
+	}
+}
+
+func TestReadBoundedPublishStatePreservesReadError(t *testing.T) {
+	want := errors.New("read failed")
+	if _, err := readBoundedPublishState(errorReader{err: want}); !errors.Is(err, want) {
+		t.Fatalf("readBoundedPublishState() error = %v, want %v", err, want)
+	}
+}
+
+type errorReader struct{ err error }
+
+func (reader errorReader) Read([]byte) (int, error) { return 0, reader.err }
 
 type noOpStore struct{}
 

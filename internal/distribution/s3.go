@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"strings"
@@ -258,11 +259,33 @@ func (store *S3Store) head(ctx context.Context, key string) (StoredObject, error
 }
 
 func reconcileStoredObject(input PutObject, existing StoredObject) (StoredObject, error) {
-	if !strings.EqualFold(existing.SHA256, input.SHA256) || existing.SizeBytes != input.SizeBytes || existing.ContentType != input.ContentType {
+	if !strings.EqualFold(existing.SHA256, input.SHA256) || existing.SizeBytes != input.SizeBytes || !equivalentContentType(existing.ContentType, input.ContentType) {
 		return StoredObject{}, fmt.Errorf("immutable object conflict at %q: existing metadata does not match expected SHA-256, size, and content type", input.Key)
 	}
 	existing.Status = "reused"
 	return existing, nil
+}
+
+func equivalentContentType(left, right string) bool {
+	leftType, leftParameters, leftErr := mime.ParseMediaType(strings.TrimSpace(left))
+	rightType, rightParameters, rightErr := mime.ParseMediaType(strings.TrimSpace(right))
+	if leftErr != nil || rightErr != nil || !strings.EqualFold(leftType, rightType) || len(leftParameters) != len(rightParameters) {
+		return false
+	}
+	for name, leftValue := range leftParameters {
+		rightValue, ok := rightParameters[name]
+		if !ok {
+			return false
+		}
+		if strings.EqualFold(name, "charset") {
+			if !strings.EqualFold(leftValue, rightValue) {
+				return false
+			}
+		} else if leftValue != rightValue {
+			return false
+		}
+	}
+	return true
 }
 
 func addressingPathStyle(value string) (bool, error) {

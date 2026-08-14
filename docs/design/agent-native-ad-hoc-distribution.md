@@ -149,8 +149,9 @@ may later reuse exactly.
 
 Private publication is the default. It stores a content-addressed IPA first,
 then an Apple installation manifest, and finally a small first-party HTML page.
-The page and manifest use bounded presigned GET URLs. The IPA URL receives a
-short download grace period so a tap near expiry can still finish. URLs are
+All three objects use bounded presigned GET URLs. The install page expires at
+the requested `--url-ttl`; the manifest and IPA URLs receive an additional
+`--download-grace` period so a tap near expiry can still finish. URLs are
 bearer credentials: normal JSON and receipts expose only a redacted install URL,
 while the exact URL is written only to a mode-0600 link artifact. Public publication
 requires both `--access public` and `--public-base-url`; it assumes the caller

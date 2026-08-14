@@ -786,9 +786,16 @@ func boundedLifetimes(now time.Time, ttl, grace time.Duration, credentialLimit t
 	if grace < 0 {
 		return 0, 0, fmt.Errorf("download grace must not be negative")
 	}
-	if ttl+grace > maxLinkLifetime {
+	if ttl > maxLinkLifetime {
+		return 0, 0, fmt.Errorf("URL TTL must not exceed 7d")
+	}
+	if grace > maxLinkLifetime {
+		return 0, 0, fmt.Errorf("download grace must not exceed 7d")
+	}
+	if ttl > maxLinkLifetime-grace {
 		return 0, 0, fmt.Errorf("URL TTL plus download grace must not exceed 7d")
 	}
+	totalLifetime := ttl + grace
 	if !credentialLimit.IsZero() {
 		remaining := credentialLimit.Sub(now) - time.Minute
 		if remaining <= 0 {
@@ -797,7 +804,7 @@ func boundedLifetimes(now time.Time, ttl, grace time.Duration, credentialLimit t
 		if remaining <= grace {
 			return 0, 0, fmt.Errorf("storage credentials do not remain valid for the requested download grace")
 		}
-		if ttl+grace > remaining {
+		if totalLifetime > remaining {
 			ttl = remaining - grace
 		}
 	}

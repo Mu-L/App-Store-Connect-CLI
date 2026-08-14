@@ -33,6 +33,11 @@ var (
 
 var regionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 
+const (
+	maxPrivateLinkLifetime = 7 * 24 * time.Hour
+	maxPublishStateBytes   = 2 << 20
+)
+
 type publicationVerifier struct {
 	delegate        core.Verifier
 	documentTimeout time.Duration
@@ -151,8 +156,16 @@ Examples:
 			if *downloadGrace < 0 {
 				return shared.UsageErrorf("--download-grace must not be negative")
 			}
-			if accessMode == core.AccessPrivate && *urlTTL+*downloadGrace > 7*24*time.Hour {
-				return shared.UsageErrorf("--url-ttl plus --download-grace must not exceed 7d")
+			if accessMode == core.AccessPrivate {
+				if *urlTTL > maxPrivateLinkLifetime {
+					return shared.UsageErrorf("--url-ttl must not exceed 7d")
+				}
+				if *downloadGrace > maxPrivateLinkLifetime {
+					return shared.UsageErrorf("--download-grace must not exceed 7d")
+				}
+				if *urlTTL > maxPrivateLinkLifetime-*downloadGrace {
+					return shared.UsageErrorf("--url-ttl plus --download-grace must not exceed 7d")
+				}
 			}
 			if *verifyTimeout <= 0 {
 				return shared.UsageErrorf("--verify-timeout must be positive")
@@ -458,13 +471,12 @@ func (paths artifactPaths) loadState() (publishState, bool, error) {
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
 		return publishState{}, true, fmt.Errorf("sensitive link artifact must remain a mode-0600 regular file")
 	}
-	if info.Size() > 2<<20 {
+	if info.Size() > maxPublishStateBytes {
 		return publishState{}, true, fmt.Errorf("sensitive link artifact exceeds 2 MiB")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, (2<<20)+1))
-	found := true
-	if err != nil || !found {
-		return publishState{}, found, err
+	data, err := readBoundedPublishState(file)
+	if err != nil {
+		return publishState{}, true, err
 	}
 	var state publishState
 	if err := json.Unmarshal(data, &state); err != nil {
@@ -474,6 +486,17 @@ func (paths artifactPaths) loadState() (publishState, bool, error) {
 		return publishState{}, true, fmt.Errorf("unsupported pending publish state")
 	}
 	return state, true, nil
+}
+
+func readBoundedPublishState(reader io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxPublishStateBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxPublishStateBytes {
+		return nil, fmt.Errorf("sensitive link artifact exceeds 2 MiB")
+	}
+	return data, nil
 }
 
 func (paths artifactPaths) verifyExactReceipt(receipt core.PublishReceipt) error {

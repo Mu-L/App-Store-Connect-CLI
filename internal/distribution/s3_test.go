@@ -228,6 +228,69 @@ func TestProviderControlledDiagnosticsNeverEchoMetadataOrAPICode(t *testing.T) {
 	}
 }
 
+func TestReconcileStoredObjectNormalizesEquivalentContentTypes(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		expected string
+		provider string
+	}{
+		{name: "semicolon whitespace and charset case", expected: "text/html; charset=utf-8", provider: " Text/HTML;charset=UTF-8 "},
+		{
+			name:     "parameter case order and quoted value",
+			expected: "text/html; charset=utf-8; level=1; title=release",
+			provider: `TEXT/HTML; TITLE="release"; LEVEL=1; CHARSET=UTF-8`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := PutObject{Key: "index.html", SHA256: "digest", SizeBytes: 10, ContentType: test.expected}
+			existing := StoredObject{Key: input.Key, SHA256: input.SHA256, SizeBytes: input.SizeBytes, ContentType: test.provider}
+			got, err := reconcileStoredObject(input, existing)
+			if err != nil {
+				t.Fatalf("reconcileStoredObject() error = %v", err)
+			}
+			if got.Status != "reused" {
+				t.Fatalf("status = %q, want reused", got.Status)
+			}
+		})
+	}
+}
+
+func TestReconcileStoredObjectRejectsGenuineOrMalformedContentTypeDifferences(t *testing.T) {
+	const expected = "text/html; charset=utf-8; profile=mobile"
+	for _, test := range []struct {
+		name     string
+		expected string
+		provider string
+	}{
+		{name: "media type", expected: expected, provider: "application/xml; charset=utf-8; profile=mobile"},
+		{name: "charset", expected: expected, provider: "text/html; charset=iso-8859-1; profile=mobile"},
+		{name: "extra parameter", expected: expected, provider: "text/html; charset=utf-8; profile=mobile; level=1"},
+		{name: "non-charset parameter value case", expected: expected, provider: "text/html; charset=utf-8; profile=Mobile"},
+		{name: "malformed provider", expected: expected, provider: "text/html; charset"},
+		{name: "malformed expected", expected: "text/html; charset", provider: expected},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := PutObject{Key: "index.html", SHA256: "digest", SizeBytes: 10, ContentType: test.expected}
+			existing := StoredObject{Key: input.Key, SHA256: input.SHA256, SizeBytes: input.SizeBytes, ContentType: test.provider}
+			if _, err := reconcileStoredObject(input, existing); err == nil {
+				t.Fatal("reconcileStoredObject() accepted differing content types")
+			}
+		})
+	}
+}
+
+func TestReconcileStoredObjectRetainsDigestAndSizeChecks(t *testing.T) {
+	input := PutObject{Key: "index.html", SHA256: "digest", SizeBytes: 10, ContentType: "text/html; charset=utf-8"}
+	for _, existing := range []StoredObject{
+		{SHA256: "different", SizeBytes: input.SizeBytes, ContentType: input.ContentType},
+		{SHA256: input.SHA256, SizeBytes: input.SizeBytes + 1, ContentType: input.ContentType},
+	} {
+		if _, err := reconcileStoredObject(input, existing); err == nil {
+			t.Fatal("reconcileStoredObject() accepted mismatched digest or size")
+		}
+	}
+}
+
 func TestS3EnsureReconcilesAmbiguousPutFailure(t *testing.T) {
 	client := &ambiguousPutClient{}
 	store := &S3Store{client: client, bucket: "bucket"}
@@ -273,7 +336,7 @@ func TestS3ReplaceCorruptUsesFreshHeadAndConditionalPut(t *testing.T) {
 	client := &conditionalReplaceClient{
 		object: StoredObject{
 			Key: "objects/app.ipa", SHA256: sha256Hex(body), SizeBytes: int64(len(body)),
-			ContentType: ContentTypeIPA, entityTag: `"poisoned-generation"`,
+			ContentType: " Application/Octet-Stream ", entityTag: `"poisoned-generation"`,
 		},
 	}
 	store := &S3Store{client: client, bucket: "bucket"}

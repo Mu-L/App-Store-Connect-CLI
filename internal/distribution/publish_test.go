@@ -244,8 +244,14 @@ func TestPublishOrdersObjectsAndRedactsInstallURL(t *testing.T) {
 		t.Fatalf("sensitive URL missing signature: %q", sensitive.InstallURL)
 	}
 	manifest := string(store.bodies["team/app/links/link-id/manifest.plist"])
-	if !strings.Contains(manifest, "itms-services") && !strings.Contains(manifest, "software-package") {
-		t.Fatalf("unexpected manifest: %s", manifest)
+	for name, marker := range map[string]string{
+		"software-package asset": "software-package",
+		"bundle identifier":      descriptor.App.BundleID,
+		"intended IPA URL":       "team/app/objects/sha256/" + descriptor.Artifact.SHA256 + ".ipa",
+	} {
+		if !strings.Contains(manifest, marker) {
+			t.Fatalf("manifest missing %s marker %q: %s", name, marker, manifest)
+		}
 	}
 	page := string(store.bodies["team/app/links/link-id/index.html"])
 	if !strings.Contains(page, "itms-services://?action=download-manifest") || strings.Contains(page, "<script") {
@@ -496,6 +502,43 @@ func TestBoundedLifetimesPreservesGraceWhenCredentialsExpireSooner(t *testing.T)
 	}
 	if grace != time.Hour || ttl != 8*time.Hour+59*time.Minute {
 		t.Fatalf("ttl=%s grace=%s", ttl, grace)
+	}
+}
+
+func TestBoundedLifetimesValidatesWithoutDurationOverflow(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		ttl       time.Duration
+		grace     time.Duration
+		access    Access
+		wantTTL   time.Duration
+		wantGrace time.Duration
+		wantErr   string
+	}{
+		{name: "exactly seven days", ttl: 6 * 24 * time.Hour, grace: 24 * time.Hour, access: AccessPrivate, wantTTL: 6 * 24 * time.Hour, wantGrace: 24 * time.Hour},
+		{name: "one nanosecond over", ttl: maxLinkLifetime, grace: time.Nanosecond, access: AccessPrivate, wantErr: "plus download grace"},
+		{name: "maximum URL TTL", ttl: time.Duration(1<<63 - 1), grace: 100 * time.Hour, access: AccessPrivate, wantErr: "URL TTL must not exceed"},
+		{name: "maximum download grace", ttl: time.Hour, grace: time.Duration(1<<63 - 1), access: AccessPrivate, wantErr: "download grace must not exceed"},
+		{name: "zero URL TTL", grace: time.Hour, access: AccessPrivate, wantErr: "URL TTL must be positive"},
+		{name: "negative URL TTL", ttl: -time.Nanosecond, grace: time.Hour, access: AccessPrivate, wantErr: "URL TTL must be positive"},
+		{name: "negative download grace", ttl: time.Hour, grace: -time.Nanosecond, access: AccessPrivate, wantErr: "download grace must not be negative"},
+		{name: "public ignores private lifetime inputs", ttl: time.Duration(1<<63 - 1), grace: time.Duration(1<<63 - 1), access: AccessPublic},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ttl, grace, err := boundedLifetimes(time.Unix(1000, 0), test.ttl, test.grace, time.Time{}, test.access)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("boundedLifetimes() error = %v, want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("boundedLifetimes() error = %v", err)
+			}
+			if ttl != test.wantTTL || grace != test.wantGrace {
+				t.Fatalf("boundedLifetimes() = (%s, %s), want (%s, %s)", ttl, grace, test.wantTTL, test.wantGrace)
+			}
+		})
 	}
 }
 
