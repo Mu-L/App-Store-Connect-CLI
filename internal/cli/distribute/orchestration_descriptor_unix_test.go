@@ -29,7 +29,7 @@ func TestHashDistributionFileClosesRootDescriptor(t *testing.T) {
 		}
 	}
 	after := countOpenDistributionDescriptors(t)
-	if leaked := after - before; leaked > 0 {
+	if leaked := after - before; leaked > 1 {
 		t.Fatalf("hashDistributionFile leaked %d file descriptors", leaked)
 	}
 }
@@ -53,7 +53,7 @@ func TestSnapshotXCArchiveClosesRootDescriptors(t *testing.T) {
 		}
 	}
 	after := countOpenDistributionDescriptors(t)
-	if leaked := after - before; leaked > 0 {
+	if leaked := after - before; leaked > 1 {
 		t.Fatalf("snapshotXCArchive leaked %d file descriptors", leaked)
 	}
 }

@@ -334,8 +334,11 @@ func validatePrivatePublishIntentRequest(request privatePublishIntentRequest) er
 	if _, err := core.NormalizePrefix(request.Prefix); err != nil {
 		return shared.UsageErrorf("--prefix: %v", err)
 	}
-	if !regionPattern.MatchString(request.Region) || !validPublishBucket(request.Bucket) {
-		return shared.UsageError("invalid object-store region or bucket")
+	if !regionPattern.MatchString(request.Region) {
+		return shared.UsageError("invalid object-store region")
+	}
+	if !validPublishBucket(request.Bucket) {
+		return shared.UsageError("invalid object-store bucket")
 	}
 	if err := validatePrivatePublishBundleAuthorization(request.ExpectedBundle); err != nil {
 		return shared.UsageErrorf("authorized prepared bundle: %v", err)
