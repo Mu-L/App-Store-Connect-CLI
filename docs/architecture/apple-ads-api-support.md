@@ -60,8 +60,11 @@ Campaign Management API command surface and has different caller requirements.
 
 ## Platform API v1 in 4.4.0
 
-The Platform API v1 implementation adds the 99 documented operations under
-`asc ads platform`. Ad-account context is carried in
+The cumulative 4.4.0 implementation stack adds all 99 documented operations
+under `asc ads platform`: the foundation layer registers 13 operations, the
+campaign layer adds 41, Maps and assets add 21, and reports and optimization add
+24. Each cumulative PR guarantees only the operations present at that layer.
+Ad-account context is carried in
 `X-AP-Context: adAccountId=<ad-account-id>;` for account-scoped requests. The
 `--ad-account` flag, `ASC_ADS_AD_ACCOUNT_ID`, and the selected profile's
 `ad_account_id` are independent of the legacy v5 `--org`/`org_id` context.

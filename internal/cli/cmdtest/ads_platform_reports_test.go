@@ -13,6 +13,8 @@ import (
 )
 
 func TestAdsPlatformAppCampaignReportRequest(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
@@ -60,6 +62,8 @@ func TestAdsPlatformAppCampaignReportRequest(t *testing.T) {
 }
 
 func TestAdsPlatformChangeHistoryDetailRequest(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))

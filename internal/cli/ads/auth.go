@@ -325,17 +325,8 @@ func printStatusTable(result adsAuthStatusOutput) {
 }
 
 func printActiveContext(active adsAuthContext) {
-	if active.Error != "" {
-		if active.Source == "" {
-			fmt.Printf("Active auth: unavailable (%s)\n", active.Error)
-			return
-		}
-		fmt.Printf("Active auth: %s\n", active.Source)
-		if active.Profile != "" {
-			fmt.Printf("  Profile: %s\n", active.Profile)
-		}
-		fmt.Printf("  Org ID: unavailable (%s)\n", active.Error)
-		fmt.Printf("  Ad account ID: unavailable (%s)\n", active.Error)
+	if active.Error != "" && active.Source == "" {
+		fmt.Printf("Active auth: unavailable (%s)\n", active.Error)
 		return
 	}
 	if active.Source == "" {
@@ -389,6 +380,9 @@ func statusActiveContext() adsAuthContext {
 		AdAccountIDSource: adAccountSource,
 	}
 	if orgErr != nil {
+		// Keep the pre-4.4 JSON error field for existing status consumers while
+		// also exposing the context-specific field used by new consumers.
+		active.Error = orgErr.Error()
 		active.OrgError = orgErr.Error()
 	}
 	if adAccountErr != nil {
