@@ -10,32 +10,76 @@ import (
 
 var terminateXcodeProcessGroupFn = terminateExactXcodeProcessGroup
 
-// runXcodeCommandWithProcessGroupCleanup owns a fresh process group for one
-// xcodebuild invocation. Its cancellation hook kills the group immediately;
-// the post-Wait cleanup handles build scripts left after a successful parent
-// exit before the signing environment can be torn down.
-func runXcodeCommandWithProcessGroupCleanup(cmd *exec.Cmd) error {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+type xcodeProcessGroupAnchor struct {
+	command *exec.Cmd
+	release *os.File
+	pid     int
+}
+
+// runXcodeCommandWithProcessGroupCleanup owns a fresh process group whose
+// anchor remains live until post-Wait cleanup completes. The anchor prevents
+// the numeric group ID from being reused after the command leader is reaped.
+func runXcodeCommandWithProcessGroupCleanup(cmd *exec.Cmd) (result error) {
+	anchor, err := startXcodeProcessGroupAnchor()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		result = errors.Join(result, anchor.Close())
+	}()
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: anchor.pid}
 	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		return killExactXcodeProcessGroup(cmd.Process.Pid)
+		return killExactXcodeProcessGroup(anchor.pid)
 	}
 	cmd.WaitDelay = xcodeCommandPipeWaitDelay
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	pid := cmd.Process.Pid
 	waitErr := normalizeXcodeCommandWaitError(cmd, cmd.Wait())
-	cleanupErr := terminateXcodeProcessGroupFn(pid)
+	cleanupErr := terminateXcodeProcessGroupFn(anchor.pid)
 	return errors.Join(waitErr, cleanupErr)
 }
 
+func startXcodeProcessGroupAnchor() (*xcodeProcessGroupAnchor, error) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("create xcodebuild process-group anchor: %w", err)
+	}
+	command := exec.Command("/bin/sh", "-c", "read _ || :")
+	command.Stdin = reader
+	command.Env = []string{}
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := command.Start(); err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		return nil, fmt.Errorf("start xcodebuild process-group anchor: %w", err)
+	}
+	if err := reader.Close(); err != nil {
+		_ = writer.Close()
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return nil, fmt.Errorf("close xcodebuild process-group anchor reader: %w", err)
+	}
+	return &xcodeProcessGroupAnchor{command: command, release: writer, pid: command.Process.Pid}, nil
+}
+
+func (anchor *xcodeProcessGroupAnchor) Close() error {
+	if anchor == nil {
+		return nil
+	}
+	closeErr := anchor.release.Close()
+	waitErr := anchor.command.Wait()
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) {
+		waitErr = nil
+	}
+	return errors.Join(closeErr, waitErr)
+}
+
 func killExactXcodeProcessGroup(pid int) error {
-	// The group ID is the exact child PID created with Setsid. Check it still
-	// exists immediately before signalling, which avoids a broad or inferred
-	// target and makes an already-finished group benign.
+	// The group ID belongs to the live anchor process. Check it immediately
+	// before signalling so an already-finished group remains benign.
 	if err := syscall.Kill(-pid, 0); errors.Is(err, syscall.ESRCH) {
 		return os.ErrProcessDone
 	} else if err != nil {
