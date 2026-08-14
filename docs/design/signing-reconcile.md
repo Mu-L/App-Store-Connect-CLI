@@ -111,12 +111,13 @@ desired device fingerprints, selected certificate, observed remote
 preconditions, ordered actions, mutation ceiling, and output paths. It excludes
 `generatedAt` and the hash itself. Apply re-inventories the archive and devices
 file, compares entitlement numbers with exact JSON numeric semantics, recomputes
-the hash, and then re-resolves remote preconditions. Numeric comparisons retain
-integer exactness beyond the lossless `float64` range rather than rounding.
-Only monotonic, already-satisfied drift is accepted. A conflict response is
-followed by an exact reread rather than a blind retry. Resume receipts are
-rebound to the hash-protected plan state directory before any persistence, so
-receipt fields cannot redirect recovery writes.
+the hash, and then re-resolves remote preconditions, including the App ID
+platform, seed, and capabilities immediately before profile creation. Numeric
+comparisons retain integer exactness beyond the lossless `float64` range rather
+than rounding. Only monotonic, already-satisfied drift is accepted. A conflict
+response is followed by an exact reread rather than a blind retry. Resume
+receipts are rebound to the hash-protected plan state directory before any
+persistence, so receipt fields cannot redirect recovery writes.
 Downloaded profiles are written create-only. A retry may reuse the same UUID
 only when the existing bytes have the identical SHA-256 digest. Atomic
 publication tolerates only platform/filesystem errors that specifically report

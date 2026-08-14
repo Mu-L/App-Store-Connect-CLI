@@ -4,12 +4,14 @@ package rootfs
 
 import (
 	"errors"
-	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
 func unsupportedDirectorySyncError(err error) bool {
-	// os.File.Sync uses FlushFileBuffers on Windows. Directory handles are
-	// opened read-only, while FlushFileBuffers requires write access and returns
-	// ERROR_ACCESS_DENIED even though the atomic publish already succeeded.
-	return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
+	// os.File.Sync delegates to FlushFileBuffers. Read-only directory handles
+	// commonly reject that unsupported durability operation after publication.
+	return errors.Is(err, windows.ERROR_ACCESS_DENIED) ||
+		errors.Is(err, windows.ERROR_INVALID_FUNCTION) ||
+		errors.Is(err, windows.ERROR_NOT_SUPPORTED)
 }

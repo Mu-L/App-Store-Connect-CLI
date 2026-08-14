@@ -275,6 +275,36 @@ func TestPlanSigningTargetBlocksMismatchedAppIDSeedBeforeProfileCreation(t *test
 	}
 }
 
+func TestEnsureReconcileProfileRechecksAppIDSeedBeforeMutation(t *testing.T) {
+	mutations := 0
+	client := newSigningFetchTestClient(t, func(request *http.Request) *http.Response {
+		if request.Method != http.MethodGet {
+			mutations++
+		}
+		switch request.URL.Path {
+		case "/v1/bundleIds":
+			return signingFetchJSONResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bundle-1","attributes":{"identifier":"com.example.app","platform":"IOS","seedId":"OTHERTEAM"}}]}`)
+		default:
+			return signingFetchJSONResponse(http.StatusInternalServerError, `{}`)
+		}
+	})
+
+	_, _, err := ensureReconcileProfile(
+		context.Background(),
+		client,
+		signingReconcilePlanArtifact{},
+		signingDevicesFile{},
+		signingAction{BundleID: "com.example.app"},
+		signingTarget{BundleID: "com.example.app", AppIDPrefix: "TEAM1"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "seed ID OTHERTEAM") {
+		t.Fatalf("ensureReconcileProfile() error=%v, want seed-prefix mismatch", err)
+	}
+	if mutations != 0 {
+		t.Fatalf("ensureReconcileProfile() made %d mutations despite seed-prefix mismatch", mutations)
+	}
+}
+
 func TestPlanSigningTargetBlocksUnverifiableCapabilityValues(t *testing.T) {
 	client := newSigningFetchTestClient(t, func(request *http.Request) *http.Response {
 		switch request.URL.Path {

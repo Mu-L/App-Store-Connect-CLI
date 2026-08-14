@@ -6,16 +6,17 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
-func TestUnsupportedDirectorySyncErrorWindows(t *testing.T) {
-	if !unsupportedDirectorySyncError(syscall.ERROR_ACCESS_DENIED) {
-		t.Fatal("ERROR_ACCESS_DENIED should be treated as unsupported for a directory handle")
+func TestUnsupportedDirectorySyncErrorOnWindows(t *testing.T) {
+	if !unsupportedDirectorySyncError(windows.ERROR_ACCESS_DENIED) {
+		t.Fatal("ERROR_ACCESS_DENIED should be treated as an unsupported directory sync")
 	}
-	if unsupportedDirectorySyncError(syscall.Errno(29)) {
-		t.Fatal("real write failures must not be suppressed")
+	if unsupportedDirectorySyncError(windows.ERROR_WRITE_FAULT) {
+		t.Fatal("ERROR_WRITE_FAULT should remain a directory sync failure")
 	}
 }
 
