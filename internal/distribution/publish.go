@@ -577,6 +577,9 @@ func Publish(ctx context.Context, ipa io.ReadSeeker, descriptor PreparedDescript
 	if err := options.Verifier.Verify(ctx, VerifyRequest{URL: installURL, Kind: VerifyDocument, SHA256: pageObject.SHA256, SizeBytes: pageObject.SizeBytes, ContentType: pageObject.ContentType}); err != nil {
 		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("verify install page: %w", err)
 	}
+	if options.Access == AccessPublic && !profileExpiry.After(clock().Add(time.Minute)) {
+		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("signing profile expires too soon to complete publication with the required safety margin")
+	}
 
 	var expiresAt *time.Time
 	if options.Access == AccessPrivate {

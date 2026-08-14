@@ -3,6 +3,7 @@ package distribute
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -75,15 +76,30 @@ func TestPublishCommandWritesSensitiveLink0600AndRedactedReceipt(t *testing.T) {
 		return &distribution.PreparedBundle{IPA: file, IPASHA256: "sha", IPASize: 3, Descriptor: distribution.PreparedDescriptor{App: distribution.PreparedApp{BundleID: "com.example", Version: "1", BuildNumber: "2"}}}, err
 	}
 	storeCalls := 0
-	newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
+	newObjectStore = func(ctx context.Context, _ distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
 		storeCalls++
+		if _, ok := ctx.Deadline(); !ok {
+			return nil, time.Time{}, errors.New("object-store setup context has no deadline")
+		}
 		return noOpStore{}, time.Time{}, nil
 	}
-	runPublish = func(context.Context, io.ReadSeeker, distribution.PreparedDescriptor, distribution.PublishOptions) (distribution.PublishReceipt, distribution.SensitiveLinks, error) {
+	runPublish = func(ctx context.Context, _ io.ReadSeeker, _ distribution.PreparedDescriptor, options distribution.PublishOptions) (distribution.PublishReceipt, distribution.SensitiveLinks, error) {
+		if _, ok := ctx.Deadline(); ok {
+			return distribution.PublishReceipt{}, distribution.SensitiveLinks{}, errors.New("publication flow inherited an expiring phase context")
+		}
+		if _, err := options.Store.Ensure(ctx, distribution.PutObject{}); err != nil {
+			return distribution.PublishReceipt{}, distribution.SensitiveLinks{}, err
+		}
+		if _, err := options.Store.PresignGet(ctx, "key", time.Minute); err != nil {
+			return distribution.PublishReceipt{}, distribution.SensitiveLinks{}, err
+		}
 		return distribution.PublishReceipt{SchemaVersion: "1", Access: distribution.AccessPrivate, Bucket: "bucket", Prefix: "app", Artifact: distribution.StoredObject{SHA256: "sha", SizeBytes: 3}, App: distribution.PreparedApp{BundleID: "com.example", Version: "1", BuildNumber: "2"}, InstallURL: "https://example.com/?X-Amz-Signature=REDACTED", Verified: true},
 			distribution.SensitiveLinks{SchemaVersion: "1", InstallURL: "https://example.com/?X-Amz-Signature=secret"}, nil
 	}
-	reverifyPublication = func(context.Context, distribution.Verifier, distribution.PublishReceipt, distribution.SensitiveLinks, time.Time) error {
+	reverifyPublication = func(ctx context.Context, _ distribution.Verifier, _ distribution.PublishReceipt, _ distribution.SensitiveLinks, _ time.Time) error {
+		if _, ok := ctx.Deadline(); ok {
+			return errors.New("recovery flow inherited an expiring phase context")
+		}
 		return nil
 	}
 	stateDir := t.TempDir()
@@ -292,6 +308,36 @@ func TestArtifactPairUsesRootHandleRetainedFromPreflight(t *testing.T) {
 	}
 }
 
+func TestArtifactPairRejectsDistinctParentSymlinkSwap(t *testing.T) {
+	base := t.TempDir()
+	receiptDir := filepath.Join(base, "receipts")
+	linkDir := filepath.Join(base, "links")
+	unintendedDir := filepath.Join(base, "unintended")
+	for _, dir := range []string{receiptDir, linkDir, unintendedDir} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := preflightArtifactPaths(filepath.Join(receiptDir, "receipt.json"), filepath.Join(linkDir, "link.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+	if err := os.Remove(receiptDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(unintendedDir, receiptDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := paths.stagePair(); err == nil {
+		t.Fatal("stagePair() accepted a swapped parent symlink")
+	}
+	if _, err := os.Stat(filepath.Join(unintendedDir, "receipt.json")); !os.IsNotExist(err) {
+		t.Fatalf("unintended receipt exists or stat error = %v", err)
+	}
+}
+
 func TestPreflightSecurelyCreatesMissingCommonParent(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "nested", "publishes")
 	paths, err := preflightArtifactPaths(filepath.Join(parent, "receipt.json"), filepath.Join(parent, "link.json"))
@@ -329,10 +375,16 @@ func TestPreflightRejectsWorldReadableSensitiveLink(t *testing.T) {
 
 type noOpStore struct{}
 
-func (noOpStore) Ensure(context.Context, distribution.PutObject) (distribution.StoredObject, error) {
+func (noOpStore) Ensure(ctx context.Context, _ distribution.PutObject) (distribution.StoredObject, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		return distribution.StoredObject{}, errors.New("store request context has no deadline")
+	}
 	return distribution.StoredObject{}, nil
 }
 
-func (noOpStore) PresignGet(context.Context, string, time.Duration) (string, error) {
+func (noOpStore) PresignGet(ctx context.Context, _ string, _ time.Duration) (string, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		return "", errors.New("presign request context has no deadline")
+	}
 	return "", nil
 }

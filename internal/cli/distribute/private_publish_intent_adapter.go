@@ -151,21 +151,19 @@ func executePrivatePublishIntent(ctx context.Context, request privatePublishInte
 			if err != nil {
 				return publishExecutionResult{}, fmt.Errorf("configure publication verifier: %w", err)
 			}
-			verifyCtx, cancel := shared.ContextWithUploadTimeout(ctx)
-			defer cancel()
-			if err := reverifyPublication(verifyCtx, verifier, receipt, state.Intent.Links, time.Now().UTC()); err != nil {
+			if err := reverifyPublication(ctx, verifier, receipt, state.Intent.Links, time.Now().UTC()); err != nil {
 				return publishExecutionResult{}, fmt.Errorf("reverify recovered private publication: %w", err)
 			}
 			return publishExecutionResult{Receipt: receipt, Recovered: true}, nil
 		}
 	}
 
-	uploadCtx, cancel := shared.ContextWithUploadTimeout(ctx)
-	defer cancel()
-	store, credentialLimit, err := newObjectStore(uploadCtx, core.S3StoreConfig{
+	setupCtx, setupCancel := shared.ContextWithUploadTimeout(ctx)
+	store, credentialLimit, err := newObjectStore(setupCtx, core.S3StoreConfig{
 		Endpoint: request.Endpoint, DownloadEndpoint: request.DownloadEndpoint, Region: request.Region,
 		Bucket: request.Bucket, AddressingStyle: request.AddressingStyle,
 	})
+	setupCancel()
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("distribute private publish intent: %w", err)
 	}
@@ -180,7 +178,7 @@ func executePrivatePublishIntent(ctx context.Context, request privatePublishInte
 	}
 	publicationNow := time.Now().UTC()
 	options := core.PublishOptions{
-		Store: store, Verifier: verifier, Bucket: request.Bucket, Prefix: normalizedPrefix, Access: core.AccessPrivate,
+		Store: publicationStore{delegate: store}, Verifier: verifier, Bucket: request.Bucket, Prefix: normalizedPrefix, Access: core.AccessPrivate,
 		URLTTL: request.URLTTL, DownloadGrace: request.DownloadGrace, CredentialLimit: credentialLimit,
 		Now: func() time.Time { return publicationNow },
 	}
@@ -189,7 +187,7 @@ func executePrivatePublishIntent(ctx context.Context, request privatePublishInte
 		if !credentialLimitCoversDistributionPublication(credentialLimit, publicationNow, request.URLTTL, request.DownloadGrace) {
 			return publishExecutionResult{}, errDistributionPublicationCredentialsExpireTooSoon
 		}
-		intent, err := preparePrivatePublicationIntent(uploadCtx, bundle.Descriptor, options)
+		intent, err := preparePrivatePublicationIntent(ctx, bundle.Descriptor, options)
 		if err != nil {
 			return publishExecutionResult{}, fmt.Errorf("prepare private publication intent: %w", err)
 		}
@@ -209,7 +207,7 @@ func executePrivatePublishIntent(ctx context.Context, request privatePublishInte
 		}
 	}
 
-	receipt, links, err := executePrivatePublicationIntent(uploadCtx, bundle.IPA, bundle.Descriptor, options, state.Intent)
+	receipt, links, err := executePrivatePublicationIntent(ctx, bundle.IPA, bundle.Descriptor, options, state.Intent)
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("execute private publication intent: %w", err)
 	}
@@ -285,9 +283,7 @@ func reverifyPrivatePublishIntent(ctx context.Context, request privatePublishVer
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("configure publication verifier: %w", err)
 	}
-	verifyCtx, cancel := shared.ContextWithUploadTimeout(ctx)
-	defer cancel()
-	if err := reverifyPublication(verifyCtx, verifier, receipt, state.Intent.Links, time.Now().UTC()); err != nil {
+	if err := reverifyPublication(ctx, verifier, receipt, state.Intent.Links, time.Now().UTC()); err != nil {
 		return publishExecutionResult{}, fmt.Errorf("reverify private publication intent: %w", err)
 	}
 	return publishExecutionResult{Receipt: receipt, Recovered: true}, nil

@@ -124,19 +124,34 @@ func TestExecutePrivatePublishIntentPersistsBeforeExecutionAndRecoversWithoutPre
 	bundleDir, bundle := privatePublishIntentTestBundle(t)
 	loadPreparedBundle = func(string) (*core.PreparedBundle, error) { return bundle(), nil }
 	storeCalls := 0
-	newObjectStore = func(context.Context, core.S3StoreConfig) (core.ObjectStore, time.Time, error) {
+	newObjectStore = func(ctx context.Context, _ core.S3StoreConfig) (core.ObjectStore, time.Time, error) {
 		storeCalls++
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("object-store setup context has no deadline")
+		}
 		return noOpStore{}, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), nil
 	}
 	newPrivatePublicationVerifier = func(time.Duration) (core.Verifier, error) { return noOpVerifier{}, nil }
 	intent := adapterTestIntent()
 	prepareCalls, executeCalls := 0, 0
-	preparePrivatePublicationIntent = func(context.Context, core.PreparedDescriptor, core.PublishOptions) (core.PrivatePublishIntent, error) {
+	preparePrivatePublicationIntent = func(ctx context.Context, _ core.PreparedDescriptor, options core.PublishOptions) (core.PrivatePublishIntent, error) {
 		prepareCalls++
+		if _, ok := ctx.Deadline(); ok {
+			t.Fatal("intent preparation inherited an expiring phase context")
+		}
+		if _, err := options.Store.PresignGet(ctx, "key", time.Minute); err != nil {
+			t.Fatal(err)
+		}
 		return intent, nil
 	}
-	executePrivatePublicationIntent = func(_ context.Context, _ io.ReadSeeker, _ core.PreparedDescriptor, _ core.PublishOptions, got core.PrivatePublishIntent) (core.PublishReceipt, core.SensitiveLinks, error) {
+	executePrivatePublicationIntent = func(ctx context.Context, _ io.ReadSeeker, _ core.PreparedDescriptor, options core.PublishOptions, got core.PrivatePublishIntent) (core.PublishReceipt, core.SensitiveLinks, error) {
 		executeCalls++
+		if _, ok := ctx.Deadline(); ok {
+			t.Fatal("intent execution inherited an expiring phase context")
+		}
+		if _, err := options.Store.Ensure(ctx, core.PutObject{}); err != nil {
+			t.Fatal(err)
+		}
 		if got.LinkID != intent.LinkID || got.Links.InstallURL != intent.Links.InstallURL {
 			t.Fatalf("execution got different intent: %+v", got)
 		}
