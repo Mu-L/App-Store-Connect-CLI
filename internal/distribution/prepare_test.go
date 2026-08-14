@@ -438,10 +438,13 @@ func preparePath(t *testing.T, path string, options PrepareOptions) PrepareResul
 func installVerifiedPreparationForTest(t *testing.T) {
 	t.Helper()
 	verifyCompleteSigningForTest = func(inspection *Inspection) {
+		certificate := strings.Repeat("a", 64)
 		inspection.Signing.ProfileIntegrityVerification.Status = CodeSignatureVerified
 		inspection.Signing.ProfileTrustVerification.Status = CodeSignatureVerified
 		inspection.Signing.CodeSignatureVerification.Status = CodeSignatureVerified
 		inspection.Signing.CodeSignatureVerification.Scope = mainCodeSignatureScope
+		inspection.Signing.ProfileCertificateSHA256Fingerprints = []string{certificate}
+		inspection.Signing.CodeSignatureVerification.SignerCertificateSHA256Fingerprints = []string{certificate}
 	}
 	t.Cleanup(func() { verifyCompleteSigningForTest = nil })
 }
