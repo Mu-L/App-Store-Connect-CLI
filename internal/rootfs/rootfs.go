@@ -69,9 +69,11 @@ type Root struct {
 }
 
 type rootIdentity struct {
-	mu     sync.RWMutex
-	pinned *os.Root
-	closed bool
+	mu         sync.RWMutex
+	pinned     *os.Root
+	cleanup    runtime.Cleanup
+	hasCleanup bool
+	closed     bool
 }
 
 func (identity *rootIdentity) isPinned() bool {
@@ -103,7 +105,8 @@ func (identity *rootIdentity) pin(candidate *os.Root) bool {
 	}
 	if identity.pinned == nil {
 		identity.pinned = candidate
-		runtime.AddCleanup(identity, closePinnedRoot, candidate)
+		identity.cleanup = runtime.AddCleanup(identity, closePinnedRoot, candidate)
+		identity.hasCleanup = true
 		return true
 	}
 	selectedInfo, selectedErr := identity.pinned.Stat(".")
@@ -153,11 +156,17 @@ func (identity *rootIdentity) close() error {
 	identity.closed = true
 	pinned := identity.pinned
 	identity.pinned = nil
+	cleanup := identity.cleanup
+	hasCleanup := identity.hasCleanup
+	identity.hasCleanup = false
 	identity.mu.Unlock()
-	if pinned == nil {
-		return nil
+	if hasCleanup {
+		cleanup.Stop()
 	}
-	return pinned.Close()
+	if pinned != nil {
+		return pinned.Close()
+	}
+	return nil
 }
 
 type rootSelection struct {

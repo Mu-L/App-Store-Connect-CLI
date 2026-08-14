@@ -54,7 +54,7 @@ type PrepareResult struct {
 
 // PrepareIPA validates an already-open IPA and publishes an immutable local
 // bundle without replacing an existing destination.
-func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResult, error) {
+func PrepareIPA(file *os.File, size int64, options PrepareOptions) (result PrepareResult, resultErr error) {
 	if err := ValidatePrepareOptions(options); err != nil {
 		return PrepareResult{}, err
 	}
@@ -66,7 +66,12 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	if err != nil {
 		return PrepareResult{}, fmt.Errorf("prepare output root: %w", err)
 	}
-	defer root.Close()
+	defer func() {
+		if err := root.Close(); resultErr == nil && err != nil {
+			result = PrepareResult{}
+			resultErr = fmt.Errorf("close distribution output root: %w", err)
+		}
+	}()
 	// Select and retain the output root before the potentially long snapshot,
 	// archive validation, and code-signing work.
 	if err := root.MkdirAll(".", 0o755); err != nil {
@@ -147,7 +152,7 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	defer parent.Close()
 	bundlePath := filepath.Join(root.Path(), relativeOutput)
 	finalName := filepath.Base(relativeOutput)
-	result := PrepareResult{BundlePath: bundlePath, Descriptor: descriptor}
+	result = PrepareResult{BundlePath: bundlePath, Descriptor: descriptor}
 	if reused, exists, err := exactBundleExists(parent, finalName, descriptorData, descriptor.Artifact); err != nil {
 		return PrepareResult{}, err
 	} else if exists {

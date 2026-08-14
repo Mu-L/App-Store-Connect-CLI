@@ -212,6 +212,46 @@ func TestPrepareIPARejectsOutputParentSwappedToSymlink(t *testing.T) {
 	}
 }
 
+func TestPrepareIPACreatesEmptyOutputRootBeforeInspection(t *testing.T) {
+	ipaPath := writeIPA(t, map[string][]byte{
+		"Payload/Demo.app/Info.plist": plistBytes(t, map[string]any{
+			"CFBundleIdentifier":         "com.example.demo",
+			"CFBundleName":               "Demo",
+			"CFBundleShortVersionString": "1.0",
+			"CFBundleVersion":            "1",
+			"DTPlatformName":             "xros",
+			"CFBundleSupportedPlatforms": []string{"XROS"},
+		}),
+	})
+	rootPath := filepath.Join(t.TempDir(), "missing")
+	inspected := false
+	afterIPASnapshotForTest = func() { inspected = true }
+	t.Cleanup(func() { afterIPASnapshotForTest = nil })
+
+	file, err := os.Open(ipaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareIPA(file, info.Size(), PrepareOptions{Root: rootPath}); err == nil {
+		t.Fatal("PrepareIPA() accepted unsupported archive platform")
+	}
+	if !inspected {
+		t.Fatal("PrepareIPA() did not create and pin the output root before inspection")
+	}
+	entries, err := os.ReadDir(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("PrepareIPA() published output after inspection failure: %#v", entries)
+	}
+}
+
 func TestPrepareIPARejectsIneligibleAndCredentialURLBeforeWriting(t *testing.T) {
 	unsupportedPlatformIPA := writeIPA(t, map[string][]byte{
 		"Payload/Demo.app/Info.plist": plistBytes(t, map[string]any{

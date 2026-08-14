@@ -184,7 +184,7 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 	}
 
 	seen := make(map[string]bool, len(reader.File))
-	requiredDirectories := make(map[string]struct{}, len(reader.File))
+	hasDescendants := make(map[string]struct{}, len(reader.File))
 	var infoFiles []*zip.File
 	var embeddedTargets []string
 	var declaredExpandedBytes uint64
@@ -201,18 +201,20 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 			return Inspection{}, fmt.Errorf("IPA contains duplicate path %q", member.Name)
 		}
 		isDirectory := member.FileInfo().IsDir()
-		if !isDirectory {
-			if _, required := requiredDirectories[key]; required {
-				return Inspection{}, fmt.Errorf("IPA regular member %q conflicts with a descendant path", member.Name)
-			}
-		}
 		for ancestor := path.Dir(key); ancestor != "."; ancestor = path.Dir(ancestor) {
 			if ancestorIsDirectory, exists := seen[ancestor]; exists && !ancestorIsDirectory {
-				return Inspection{}, fmt.Errorf("IPA regular member %q conflicts with descendant %q", ancestor, member.Name)
+				return Inspection{}, fmt.Errorf("IPA contains file/directory path collision involving %q", member.Name)
 			}
-			requiredDirectories[ancestor] = struct{}{}
+		}
+		if !isDirectory {
+			if _, exists := hasDescendants[key]; exists {
+				return Inspection{}, fmt.Errorf("IPA contains file/directory path collision involving %q", member.Name)
+			}
 		}
 		seen[key] = isDirectory
+		for ancestor := path.Dir(key); ancestor != "."; ancestor = path.Dir(ancestor) {
+			hasDescendants[ancestor] = struct{}{}
+		}
 		if isMainAppMember(member.Name, "Info.plist") && !member.FileInfo().IsDir() {
 			infoFiles = append(infoFiles, member)
 		} else if isEmbeddedTargetInfoPlist(member.Name) && !member.FileInfo().IsDir() {
@@ -372,6 +374,9 @@ func validateArchiveMember(member *zip.File) error {
 }
 
 func validateAppMetadata(app App) error {
+	if err := validateBundleIdentifier(app.BundleID); err != nil {
+		return err
+	}
 	for _, field := range []struct {
 		name  string
 		value string
@@ -398,22 +403,25 @@ func validateAppMetadata(app App) error {
 	return nil
 }
 
-func validateBundleIdentifier(identifier string) error {
-	if identifier == "" {
+func validateBundleIdentifier(value string) error {
+	if value == "" {
 		return nil
 	}
-	for _, component := range strings.Split(identifier, ".") {
+	if len(value) > 255 {
+		return fmt.Errorf("invalid CFBundleIdentifier: must be at most 255 bytes")
+	}
+	for _, component := range strings.Split(value, ".") {
 		if component == "" {
 			return fmt.Errorf("invalid CFBundleIdentifier: components must not be empty")
 		}
-		for _, character := range []byte(component) {
-			if (character >= 'a' && character <= 'z') ||
-				(character >= 'A' && character <= 'Z') ||
-				(character >= '0' && character <= '9') ||
-				character == '-' {
-				continue
+		for index := 0; index < len(component); index++ {
+			character := component[index]
+			if (character < 'a' || character > 'z') &&
+				(character < 'A' || character > 'Z') &&
+				(character < '0' || character > '9') &&
+				character != '-' {
+				return fmt.Errorf("invalid CFBundleIdentifier: only ASCII alphanumeric characters, hyphens, and periods are allowed")
 			}
-			return fmt.Errorf("invalid CFBundleIdentifier: components may contain only ASCII letters, digits, and hyphens")
 		}
 	}
 	return nil

@@ -186,6 +186,80 @@ func TestInspectIPARejectsUnsafeAndAmbiguousArchives(t *testing.T) {
 	}
 }
 
+func TestInspectIPARejectsArchivePathPrefixCollisions(t *testing.T) {
+	info := infoPlist(t, "com.example.demo")
+	tests := []struct {
+		name    string
+		entries []orderedZipEntry
+	}{
+		{
+			name: "regular Payload before descendant",
+			entries: []orderedZipEntry{
+				{Name: "Payload", Data: []byte("file")},
+				{Name: "Payload/Demo.app/Info.plist", Data: info},
+			},
+		},
+		{
+			name: "regular app directory before Info plist",
+			entries: []orderedZipEntry{
+				{Name: "Payload/Demo.app", Data: []byte("file")},
+				{Name: "Payload/Demo.app/Info.plist", Data: info},
+			},
+		},
+		{
+			name: "descendant before regular app directory",
+			entries: []orderedZipEntry{
+				{Name: "Payload/Demo.app/Info.plist", Data: info},
+				{Name: "Payload/Demo.app", Data: []byte("file")},
+			},
+		},
+		{
+			name: "trailing slash alias changes kind",
+			entries: []orderedZipEntry{
+				{Name: "Payload/", Mode: os.ModeDir | 0o755},
+				{Name: "Payload", Data: []byte("file")},
+			},
+		},
+		{
+			name: "symlink ancestor",
+			entries: []orderedZipEntry{
+				{Name: "Payload", Data: []byte("outside"), Mode: os.ModeSymlink | 0o777},
+				{Name: "Payload/Demo.app/Info.plist", Data: info},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeOrderedIPA(t, test.entries)
+			assertInspectErrorContains(t, path, "Payload")
+		})
+	}
+}
+
+func TestInspectIPAAcceptsExplicitDirectoriesAndSimilarlyPrefixedSiblings(t *testing.T) {
+	path := writeOrderedIPA(t, []orderedZipEntry{
+		{Name: "Payload/", Mode: os.ModeDir | 0o755},
+		{Name: "Payload/Demo.app/", Mode: os.ModeDir | 0o755},
+		{Name: "Payload/Demo.application", Data: []byte("sibling")},
+		{Name: "Payload/Demo.app/Info.plist", Data: infoPlist(t, "com.example.demo")},
+		{Name: "Payload/Demo.app/embedded.mobileprovision", Data: signedProfile(t, profileFixture{
+			BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		})},
+	})
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err != nil {
+		t.Fatalf("InspectIPA() error = %v, want valid explicit directories and sibling", err)
+	}
+}
+
 func TestInspectIPARejectsUnreadableNonMainMembers(t *testing.T) {
 	baseEntries := map[string][]byte{
 		"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"),
@@ -417,6 +491,52 @@ func TestInspectIPARejectsUnsafeAppMetadataBeforeDescriptorUse(t *testing.T) {
 			if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err == nil {
 				t.Fatal("expected unsafe app metadata rejection")
 			}
+		})
+	}
+}
+
+func TestValidateBundleIdentifierSyntax(t *testing.T) {
+	valid := []string{
+		"",
+		"com.example.demo",
+		"Com.Example-2.App",
+		"7legacy.-component",
+		"single",
+		strings.Repeat("a", 255),
+	}
+	for _, value := range valid {
+		if err := validateBundleIdentifier(value); err != nil {
+			t.Fatalf("validateBundleIdentifier(%q) = %v", value, err)
+		}
+	}
+	invalid := []string{
+		"com.example/bad",
+		"com..example",
+		".com.example",
+		"com.example.",
+		"com.example bad",
+		"com.exаmple.demo",
+		"com.example.*",
+		"com.example_bad",
+		strings.Repeat("a", 256),
+	}
+	for _, value := range invalid {
+		if err := validateBundleIdentifier(value); err == nil {
+			t.Fatalf("validateBundleIdentifier(%q) unexpectedly succeeded", value)
+		}
+	}
+}
+
+func TestInspectIPARejectsInvalidConcreteBundleIdentifierBeforeProfileMatching(t *testing.T) {
+	for _, bundleID := range []string{"com.example/bad", "com..example", "com.example.*"} {
+		t.Run(bundleID, func(t *testing.T) {
+			path := writeIPA(t, map[string][]byte{
+				"Payload/Demo.app/Info.plist": infoPlist(t, bundleID),
+				"Payload/Demo.app/embedded.mobileprovision": signedProfile(t, profileFixture{
+					BundleID: "*", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+				}),
+			})
+			assertInspectErrorContains(t, path, "CFBundleIdentifier")
 		})
 	}
 }
@@ -729,6 +849,45 @@ func writeIPA(t *testing.T, entries map[string][]byte) string {
 			t.Fatal(err)
 		}
 		if _, err := entry.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+type orderedZipEntry struct {
+	Name string
+	Data []byte
+	Mode os.FileMode
+}
+
+func writeOrderedIPA(t *testing.T, entries []orderedZipEntry) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "App.ipa")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	for _, fixture := range entries {
+		header := &zip.FileHeader{Name: fixture.Name, Method: zip.Deflate}
+		if fixture.Mode != 0 {
+			header.SetMode(fixture.Mode)
+		}
+		if fixture.Mode.IsDir() {
+			header.Method = zip.Store
+		}
+		entry, err := writer.CreateHeader(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write(fixture.Data); err != nil {
 			t.Fatal(err)
 		}
 	}

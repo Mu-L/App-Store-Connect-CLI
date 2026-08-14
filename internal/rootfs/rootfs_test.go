@@ -1040,6 +1040,25 @@ func TestOpenRootPinsOriginalDirectoryAcrossPathReplacement(t *testing.T) {
 	}
 }
 
+func TestRootCloseReleasesSharedPinnedIdentity(t *testing.T) {
+	root := mustRoot(t, t.TempDir())
+	copy := root
+	if err := copy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	opened, err := root.OpenRoot()
+	if opened != nil {
+		_ = opened.Close()
+		t.Fatal("OpenRoot() succeeded after a copied Root was closed")
+	}
+	if !errors.Is(err, ErrSymlink) {
+		t.Fatalf("OpenRoot() error = %v, want ErrSymlink", err)
+	}
+}
+
 func TestOpenRootRejectsSelectedPathSwappedBeforeOpen(t *testing.T) {
 	requireSymlinks(t)
 	for _, test := range []struct {
