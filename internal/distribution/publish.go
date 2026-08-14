@@ -202,8 +202,12 @@ func LoadPreparedBundleContext(ctx context.Context, root rootfs.Root) (*Prepared
 		return nil, fmt.Errorf("payload/app.ipa exceeds %d bytes", MaxIPABytes)
 	}
 	digest := sha256.New()
-	if written, err := copyWithContext(ctx, digest, io.LimitReader(ipa, MaxIPABytes+1), nil); err != nil || written != info.Size() {
+	written, err := copyWithContext(ctx, digest, io.LimitReader(ipa, MaxIPABytes+1), nil)
+	if err != nil {
 		return nil, fmt.Errorf("hash payload/app.ipa: %w", err)
+	}
+	if written != info.Size() {
+		return nil, fmt.Errorf("payload/app.ipa size changed while hashing: read %d of %d bytes", written, info.Size())
 	}
 	actualSHA := hex.EncodeToString(digest.Sum(nil))
 	if actualSHA != strings.ToLower(descriptor.Artifact.SHA256) {

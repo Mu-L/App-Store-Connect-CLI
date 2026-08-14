@@ -293,6 +293,28 @@ func TestS3ReplaceCorruptUsesFreshHeadAndConditionalPut(t *testing.T) {
 	}
 }
 
+func TestS3ReplaceCorruptRefusesChangedObjectGeneration(t *testing.T) {
+	body := []byte("expected")
+	client := &conditionalReplaceClient{
+		object: StoredObject{
+			Key: "objects/app.ipa", SHA256: sha256Hex([]byte("legitimate-new-object")),
+			SizeBytes: int64(len(body)), ContentType: ContentTypeIPA, entityTag: `"new-generation"`,
+		},
+	}
+	store := &S3Store{client: client, bucket: "bucket"}
+
+	_, err := store.ReplaceCorrupt(context.Background(), PutObject{
+		Key: "objects/app.ipa", Body: bytes.NewReader(body), SHA256: sha256Hex(body),
+		SizeBytes: int64(len(body)), ContentType: ContentTypeIPA,
+	})
+	if err == nil || !strings.Contains(err.Error(), "refuse") {
+		t.Fatalf("ReplaceCorrupt() error = %v, want changed-generation refusal", err)
+	}
+	if client.ifMatch != "" || client.body != nil {
+		t.Fatalf("changed object was overwritten: If-Match=%q body=%q", client.ifMatch, client.body)
+	}
+}
+
 type conditionalReplaceClient struct {
 	object  StoredObject
 	ifMatch string

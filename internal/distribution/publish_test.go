@@ -83,6 +83,9 @@ func TestLoadPreparedBundleContextPinsSelectedRoot(t *testing.T) {
 		if bundle.Descriptor.App.Title != "Original" {
 			t.Fatalf("loaded title = %q, want pinned original", bundle.Descriptor.App.Title)
 		}
+		if _, err := os.Stat(filepath.Join(replacement, "receipt.json")); !os.IsNotExist(err) {
+			t.Fatalf("retargeted replacement received an unexpected write: %v", err)
+		}
 		if err := bundle.IPA.Close(); err != nil {
 			t.Fatal(err)
 		}
@@ -115,6 +118,9 @@ func TestLoadPreparedBundleContextPinsSelectedRoot(t *testing.T) {
 		if bundle, err := LoadPreparedBundleContext(context.Background(), root); err == nil {
 			_ = bundle.IPA.Close()
 			t.Fatal("LoadPreparedBundleContext() accepted replacement directory")
+		}
+		if _, err := os.Stat(filepath.Join(selected, "receipt.json")); !os.IsNotExist(err) {
+			t.Fatalf("replacement directory received an unexpected write: %v", err)
 		}
 	})
 }
@@ -726,6 +732,24 @@ func TestVerifierProviderHeadersNeverReachDiagnostic(t *testing.T) {
 	err := NewHTTPVerifier(client, time.Second).Verify(context.Background(), VerifyRequest{URL: "https://example.com/app.ipa", Kind: VerifyIPA, ContentType: ContentTypeIPA, SizeBytes: 1})
 	if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "\x1b") {
 		t.Fatalf("diagnostic leaked provider header: %q", err)
+	}
+}
+
+func TestHTTPVerifierClassifiesDeterministicIPAMismatch(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{ContentTypeIPA}, "Content-Length": []string{"3"}},
+			Body:       io.NopCloser(strings.NewReader("bad")),
+			Request:    request,
+		}, nil
+	})}
+	err := NewHTTPVerifier(client, time.Second).Verify(context.Background(), VerifyRequest{
+		URL: "https://example.com/app.ipa", Kind: VerifyIPA, ContentType: ContentTypeIPA,
+		SizeBytes: 3, SHA256: sha256Hex([]byte("ipa")),
+	})
+	if !errors.Is(err, ErrObjectVerificationMismatch) {
+		t.Fatalf("Verify() error = %v, want ErrObjectVerificationMismatch", err)
 	}
 }
 
