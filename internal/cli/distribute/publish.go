@@ -292,11 +292,16 @@ Examples:
 	}
 }
 
+type artifactPath struct {
+	root     *os.Root
+	rootPath string
+	relative string
+	rootInfo os.FileInfo
+}
+
 type artifactPaths struct {
-	root          *os.Root
-	rootPath      string
-	receipt       string
-	link          string
+	receipt       artifactPath
+	link          artifactPath
 	receiptPath   string
 	linkPath      string
 	receiptExists bool
@@ -330,26 +335,58 @@ func anchorArtifactPaths(receiptPath, linkPath string) (artifactPaths, error) {
 	if pathContains(receiptAbsolute, linkAbsolute) || pathContains(linkAbsolute, receiptAbsolute) {
 		return artifactPaths{}, fmt.Errorf("--receipt and --link-path must not contain one another")
 	}
-	common, err := commonPathRoot(filepath.Dir(receiptAbsolute), filepath.Dir(linkAbsolute))
+	receipt, err := anchorArtifactPath(receiptAbsolute)
 	if err != nil {
 		return artifactPaths{}, err
 	}
-	root, rootPath, err := openAnchoredRoot(common)
+	link, err := anchorArtifactPath(linkAbsolute)
 	if err != nil {
+		_ = receipt.root.Close()
 		return artifactPaths{}, err
 	}
-	receiptRelative, _ := filepath.Rel(rootPath, receiptAbsolute)
-	linkRelative, _ := filepath.Rel(rootPath, linkAbsolute)
 	return artifactPaths{
-		root: root, rootPath: rootPath, receipt: receiptRelative, link: linkRelative,
+		receipt: receipt, link: link,
 		receiptPath: receiptAbsolute, linkPath: linkAbsolute,
 	}, nil
 }
 
+func anchorArtifactPath(absolute string) (artifactPath, error) {
+	root, rootPath, err := openAnchoredRoot(filepath.Dir(absolute))
+	if err != nil {
+		return artifactPath{}, err
+	}
+	relative, err := filepath.Rel(rootPath, absolute)
+	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		_ = root.Close()
+		return artifactPath{}, fmt.Errorf("artifact path escapes its anchored root")
+	}
+	rootInfo, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return artifactPath{}, err
+	}
+	return artifactPath{root: root, rootPath: rootPath, relative: relative, rootInfo: rootInfo}, nil
+}
+
+func (paths artifactPaths) openParent(target artifactPath) (*os.Root, string, error) {
+	if !os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) {
+		current, err := os.Lstat(target.rootPath)
+		if err != nil || current.Mode()&os.ModeSymlink != 0 || !current.IsDir() || !os.SameFile(target.rootInfo, current) {
+			return nil, "", fmt.Errorf("artifact parent changed after anchoring")
+		}
+	}
+	return openAnchoredParent(target.root, target.relative)
+}
+
 func (paths *artifactPaths) preflight() error {
-	exists := map[string]bool{}
-	for _, name := range []string{paths.receipt, paths.link} {
-		parent, base, err := openAnchoredParent(paths.root, name)
+	for _, target := range []struct {
+		path   artifactPath
+		exists *bool
+	}{
+		{path: paths.receipt, exists: &paths.receiptExists},
+		{path: paths.link, exists: &paths.linkExists},
+	} {
+		parent, base, err := paths.openParent(target.path)
 		if err != nil {
 			return err
 		}
@@ -357,12 +394,12 @@ func (paths *artifactPaths) preflight() error {
 		closeErr := parent.Close()
 		if statErr == nil {
 			if !info.Mode().IsRegular() {
-				return fmt.Errorf("%s is not a regular file", filepath.Join(paths.rootPath, name))
+				return fmt.Errorf("%s is not a regular file", filepath.Join(target.path.rootPath, target.path.relative))
 			}
 			if info.Mode().Perm()&0o077 != 0 {
-				return fmt.Errorf("%s must be owner-private (mode 0600 or stricter)", filepath.Join(paths.rootPath, name))
+				return fmt.Errorf("%s must be owner-private (mode 0600 or stricter)", filepath.Join(target.path.rootPath, target.path.relative))
 			}
-			exists[name] = true
+			*target.exists = true
 		} else if !os.IsNotExist(statErr) {
 			return statErr
 		}
@@ -370,8 +407,6 @@ func (paths *artifactPaths) preflight() error {
 			return closeErr
 		}
 	}
-	paths.receiptExists = exists[paths.receipt]
-	paths.linkExists = exists[paths.link]
 	return nil
 }
 
@@ -417,8 +452,11 @@ func openAnchoredRoot(target string) (*os.Root, string, error) {
 }
 
 func (paths artifactPaths) close() {
-	if paths.root != nil {
-		_ = paths.root.Close()
+	if paths.receipt.root != nil {
+		_ = paths.receipt.root.Close()
+	}
+	if paths.link.root != nil {
+		_ = paths.link.root.Close()
 	}
 }
 
@@ -470,7 +508,7 @@ type publishState struct {
 }
 
 func (paths artifactPaths) loadState() (publishState, bool, error) {
-	parent, name, err := openAnchoredParent(paths.root, paths.link)
+	parent, name, err := paths.openParent(paths.link)
 	if err != nil {
 		return publishState{}, false, err
 	}
@@ -523,7 +561,7 @@ func (paths artifactPaths) verifyExactReceipt(receipt core.PublishReceipt) error
 	if err != nil {
 		return err
 	}
-	parent, name, err := openAnchoredParent(paths.root, paths.receipt)
+	parent, name, err := paths.openParent(paths.receipt)
 	if err != nil {
 		return err
 	}
@@ -551,7 +589,7 @@ func (paths artifactPaths) verifyExactReceipt(receipt core.PublishReceipt) error
 }
 
 func (paths artifactPaths) publishReceipt(receipt core.PublishReceipt) error {
-	parent, name, err := openAnchoredParent(paths.root, paths.receipt)
+	parent, name, err := paths.openParent(paths.receipt)
 	if err != nil {
 		return err
 	}
@@ -574,7 +612,7 @@ type stagedPair struct {
 }
 
 func (paths artifactPaths) stagePair() (*stagedPair, error) {
-	linkParent, linkName, err := openAnchoredParent(paths.root, paths.link)
+	linkParent, linkName, err := paths.openParent(paths.link)
 	if err != nil {
 		return nil, err
 	}
@@ -583,7 +621,7 @@ func (paths artifactPaths) stagePair() (*stagedPair, error) {
 		_ = linkParent.Close()
 		return nil, err
 	}
-	receiptParent, receiptName, err := openAnchoredParent(paths.root, paths.receipt)
+	receiptParent, receiptName, err := paths.openParent(paths.receipt)
 	if err != nil {
 		link.cleanup()
 		_ = linkParent.Close()
@@ -726,27 +764,6 @@ func openOrCreateAnchoredDirectory(root *os.Root, relative string) (*os.Root, er
 	return current, nil
 }
 
-func commonPathRoot(left, right string) (string, error) {
-	for {
-		relative, err := filepath.Rel(left, right)
-		if err != nil {
-			return "", err
-		}
-		if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
-			volumeRoot := filepath.Clean(filepath.VolumeName(left) + string(filepath.Separator))
-			if filepath.Clean(left) == volumeRoot {
-				return "", fmt.Errorf("artifact paths share only the filesystem root")
-			}
-			return left, nil
-		}
-		parent := filepath.Dir(left)
-		if parent == left {
-			return "", fmt.Errorf("artifact paths do not share a safe parent")
-		}
-		left = parent
-	}
-}
-
 func endpointOrigin(raw string) string {
 	parsed, err := core.ValidateEndpoint(raw)
 	if err != nil {
@@ -787,12 +804,14 @@ func rejectBundleContainedArtifacts(bundleRoot rootfs.Root, receiptPath, linkPat
 }
 
 func rejectAnchoredBundleContainedArtifacts(bundleRoot rootfs.Root, artifacts artifactPaths) error {
-	contained, err := bundleRoot.ContainsAnchoredPath(artifacts.rootPath, artifacts.root)
-	if err != nil {
-		return err
-	}
-	if contained {
-		return fmt.Errorf("receipt and link paths must be outside the immutable prepared bundle")
+	for _, target := range []artifactPath{artifacts.receipt, artifacts.link} {
+		contained, err := bundleRoot.ContainsAnchoredPath(target.rootPath, target.root)
+		if err != nil {
+			return err
+		}
+		if contained {
+			return fmt.Errorf("receipt and link paths must be outside the immutable prepared bundle")
+		}
 	}
 	return rejectBundleContainedArtifacts(bundleRoot, artifacts.receiptPath, artifacts.linkPath)
 }

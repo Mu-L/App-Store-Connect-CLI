@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -564,6 +565,101 @@ func TestArtifactPairUsesRootHandleRetainedFromPreflight(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(moved, name)); err != nil {
 			t.Fatalf("anchored %s: %v", name, err)
 		}
+	}
+}
+
+func TestArtifactPairSupportsDistinctTopLevelParents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test host does not provide two writable Windows volumes")
+	}
+	receiptDir, err := os.MkdirTemp("/tmp", "asc-publish-receipt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(receiptDir) })
+	linkDir, err := os.MkdirTemp("/var/tmp", "asc-publish-link-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(linkDir) })
+
+	receiptPath := filepath.Join(receiptDir, "receipt.json")
+	linkPath := filepath.Join(linkDir, "link.json")
+	paths, err := preflightArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+	staged, err := paths.stagePair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staged.cleanup()
+	receipt := distribution.PublishReceipt{SchemaVersion: "1"}
+	if err := staged.publish(publishState{SchemaVersion: "1", Receipt: receipt}, receipt); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{receiptPath, linkPath} {
+		info, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode = %v, want mode-0600 regular file", target, info.Mode())
+		}
+	}
+}
+
+func TestArtifactPairDistinctParentsFailWithoutPartialArtifacts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test host does not provide two writable Windows volumes")
+	}
+	receiptDir, err := os.MkdirTemp("/tmp", "asc-publish-receipt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(receiptDir) })
+	linkDir, err := os.MkdirTemp("/var/tmp", "asc-publish-link-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(linkDir) })
+
+	receiptPath := filepath.Join(receiptDir, "receipt.json")
+	linkPath := filepath.Join(linkDir, "link.json")
+	paths, err := preflightArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+
+	retainedDir := receiptDir + "-retained"
+	if err := os.Rename(receiptDir, retainedDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(retainedDir) })
+	unintendedDir := t.TempDir()
+	if err := os.Symlink(unintendedDir, receiptDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := paths.stagePair(); err == nil {
+		t.Fatal("stagePair() accepted a replaced receipt parent")
+	}
+	for _, dir := range []string{linkDir, retainedDir, unintendedDir} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("%s contains partial artifacts after failure: %v", dir, entries)
+		}
+	}
+	if _, err := os.Lstat(linkPath); !os.IsNotExist(err) {
+		t.Fatalf("link artifact exists after failure: %v", err)
+	}
+	if _, err := os.Lstat(receiptPath); !os.IsNotExist(err) {
+		t.Fatalf("receipt artifact exists after failure: %v", err)
 	}
 }
 
