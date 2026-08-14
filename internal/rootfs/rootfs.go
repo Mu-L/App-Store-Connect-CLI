@@ -26,6 +26,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
@@ -47,6 +48,9 @@ type Root struct {
 	path             string
 	openPath         string
 	selectedIdentity *rootIdentity
+	creationIdentity *rootIdentity
+	creationRelative string
+	creationErr      error
 	// internalSymlinks tolerates symlinked components below the root when they
 	// resolve back inside the root.
 	internalSymlinks bool
@@ -56,6 +60,9 @@ type Root struct {
 	// beforeOpenRootForTest makes trusted-root path-swap regressions
 	// deterministic. It is intentionally unexported and unset outside tests.
 	beforeOpenRootForTest func()
+	// beforeCreateRootForTest makes missing-root ancestor races deterministic.
+	// It is intentionally unexported and unset outside tests.
+	beforeCreateRootForTest func()
 	// renameNoReplaceForTest makes unsupported-filesystem regressions
 	// deterministic. It is intentionally unexported and unset outside tests.
 	renameNoReplaceForTest func(root *os.Root, oldName, newName string) error
@@ -118,6 +125,18 @@ func (identity *rootIdentity) matches(candidate os.FileInfo) bool {
 	return err == nil && os.SameFile(selected, candidate)
 }
 
+func (identity *rootIdentity) createRelative(relative string, perm os.FileMode) (*os.Root, error) {
+	if identity == nil {
+		return nil, ErrSymlink
+	}
+	identity.mu.RLock()
+	defer identity.mu.RUnlock()
+	if identity.pinned == nil {
+		return nil, ErrSymlink
+	}
+	return createRelativeRootNoFollow(identity.pinned, relative, perm)
+}
+
 func closePinnedRoot(root *os.Root) {
 	_ = root.Close()
 }
@@ -141,6 +160,49 @@ func (identity *rootIdentity) close() error {
 	return pinned.Close()
 }
 
+type rootSelection struct {
+	openPath         string
+	existingPath     string
+	existingOpenPath string
+	missingRelative  string
+	selectedExists   bool
+}
+
+func resolveRootSelection(absolute string) (rootSelection, error) {
+	candidate := absolute
+	var missing []string
+	for {
+		physical, err := filepath.EvalSymlinks(candidate)
+		if err == nil {
+			selection := rootSelection{
+				openPath:         physical,
+				existingPath:     candidate,
+				existingOpenPath: physical,
+				selectedExists:   candidate == absolute,
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				selection.openPath = filepath.Join(selection.openPath, missing[i])
+				selection.missingRelative = filepath.Join(selection.missingRelative, missing[i])
+			}
+			return selection, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+			return rootSelection{}, err
+		}
+		if _, lstatErr := os.Lstat(candidate); lstatErr == nil {
+			return rootSelection{}, err
+		} else if !errors.Is(lstatErr, os.ErrNotExist) && !errors.Is(lstatErr, syscall.ENOTDIR) {
+			return rootSelection{}, lstatErr
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return rootSelection{}, err
+		}
+		missing = append(missing, filepath.Base(candidate))
+		candidate = parent
+	}
+}
+
 // New returns a Root anchored at path. The root itself is operator-selected and
 // may live outside the current repository; only paths below it are constrained.
 func New(path string) (Root, error) {
@@ -152,21 +214,47 @@ func New(path string) (Root, error) {
 		return Root{}, fmt.Errorf("resolve trusted root %q: %w", path, err)
 	}
 	absolute = filepath.Clean(absolute)
-	openPath := absolute
-	selectedExists := false
-	if physicalRoot, err := filepath.EvalSymlinks(absolute); err == nil {
-		openPath = physicalRoot
-		selectedExists = true
-	} else if physicalParent, err := filepath.EvalSymlinks(filepath.Dir(absolute)); err == nil {
-		openPath = filepath.Join(physicalParent, filepath.Base(absolute))
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Root{}, fmt.Errorf("resolve trusted root parent %q: %w", path, err)
+	selection, err := resolveRootSelection(absolute)
+	if err != nil {
+		return Root{}, fmt.Errorf("resolve trusted root %q: %w", path, err)
 	}
-	root := Root{path: absolute, openPath: openPath, selectedIdentity: &rootIdentity{}}
-	if !selectedExists {
+	root := Root{
+		path:             absolute,
+		openPath:         selection.openPath,
+		selectedIdentity: &rootIdentity{},
+		creationIdentity: &rootIdentity{},
+		creationRelative: selection.missingRelative,
+	}
+	if !selection.selectedExists {
+		selectedAtPath, err := os.Stat(selection.existingPath)
+		if err != nil {
+			return Root{}, fmt.Errorf("stat selected root ancestor %q: %w", selection.existingPath, err)
+		}
+		if !selectedAtPath.IsDir() {
+			root.creationErr = fmt.Errorf("%q is not a directory", selection.existingPath)
+			return root, nil
+		}
+		creationRoot, err := openAbsoluteRootNoFollow(selection.existingOpenPath)
+		if err != nil {
+			return Root{}, fmt.Errorf("open trusted root ancestor %q: %w", selection.existingPath, err)
+		}
+		identity, statErr := creationRoot.Stat(".")
+		if statErr != nil {
+			_ = creationRoot.Close()
+			return Root{}, fmt.Errorf("stat trusted root ancestor %q: %w", selection.existingPath, statErr)
+		}
+		selectedAtPath, err = os.Stat(selection.existingPath)
+		if err != nil {
+			_ = creationRoot.Close()
+			return Root{}, fmt.Errorf("stat selected root ancestor %q: %w", selection.existingPath, err)
+		}
+		if !os.SameFile(identity, selectedAtPath) || !root.creationIdentity.pin(creationRoot) {
+			_ = creationRoot.Close()
+			return Root{}, symlinkError(selection.existingPath)
+		}
 		return root, nil
 	}
-	selected, err := openAbsoluteRootNoFollow(openPath)
+	selected, err := openAbsoluteRootNoFollow(selection.openPath)
 	if err != nil {
 		return Root{}, fmt.Errorf("open trusted root %q: %w", path, err)
 	}
@@ -198,7 +286,7 @@ func (r Root) Path() string {
 // Close releases the selected directory descriptor shared by this Root and all
 // of its copies. Close is idempotent; no copied Root may be used afterward.
 func (r Root) Close() error {
-	return r.selectedIdentity.close()
+	return errors.Join(r.selectedIdentity.close(), r.creationIdentity.close())
 }
 
 // OpenRoot opens the trusted root without following symlinks introduced after
@@ -270,6 +358,55 @@ func openAbsoluteRootNoFollow(absolute string) (*os.Root, error) {
 				return nil, err
 			}
 			return nil, symlinkError(absolute)
+		}
+		_ = current.Close()
+		current = next
+	}
+	return current, nil
+}
+
+func createRelativeRootNoFollow(anchor *os.Root, relative string, perm os.FileMode) (*os.Root, error) {
+	current, err := anchor.OpenRoot(".")
+	if err != nil {
+		return nil, err
+	}
+	for _, component := range strings.Split(filepath.Clean(relative), string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		before, err := current.Lstat(component)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := current.Mkdir(component, perm); err != nil && !errors.Is(err, os.ErrExist) {
+				_ = current.Close()
+				return nil, err
+			}
+			before, err = current.Lstat(component)
+		}
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		if before.Mode()&os.ModeSymlink != 0 {
+			_ = current.Close()
+			return nil, symlinkError(relative)
+		}
+		if !before.IsDir() {
+			_ = current.Close()
+			return nil, fmt.Errorf("%q is not a directory", relative)
+		}
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		after, err := next.Stat(".")
+		if err != nil || !os.SameFile(before, after) {
+			_ = next.Close()
+			_ = current.Close()
+			if err != nil {
+				return nil, err
+			}
+			return nil, symlinkError(relative)
 		}
 		_ = current.Close()
 		current = next
@@ -1012,32 +1149,40 @@ func (r Root) prepareWrite(name string) (string, error) {
 }
 
 func (r Root) ensureRootDir(perm os.FileMode) error {
-	info, err := os.Stat(r.path)
-	switch {
-	case err == nil:
-		if !info.IsDir() {
-			return fmt.Errorf("trusted root %q is not a directory", r.path)
-		}
-		if r.selectedIdentity.isPinned() {
-			return nil
-		}
-	case !errors.Is(err, os.ErrNotExist):
-		return err
-	}
 	if r.selectedIdentity.isPinned() {
-		return symlinkError(r.path)
+		return nil
 	}
-	if err := os.MkdirAll(r.path, perm); err != nil {
-		return err
+	if r.creationErr != nil {
+		return r.creationErr
 	}
-	opened, err := openAbsoluteRootNoFollow(r.openPath)
+	if r.beforeCreateRootForTest != nil {
+		r.beforeCreateRootForTest()
+	}
+	opened, err := r.creationIdentity.createRelative(r.creationRelative, perm)
 	if err != nil {
 		return err
+	}
+	identity, statErr := opened.Stat(".")
+	if statErr != nil {
+		_ = opened.Close()
+		return statErr
+	}
+	selectedAtPath, err := os.Stat(r.path)
+	if err != nil {
+		_ = opened.Close()
+		if errors.Is(err, os.ErrNotExist) {
+			return symlinkError(r.path)
+		}
+		return err
+	}
+	if !os.SameFile(identity, selectedAtPath) {
+		_ = opened.Close()
+		return symlinkError(r.path)
 	}
 	if !r.selectedIdentity.pin(opened) {
 		return symlinkError(r.path)
 	}
-	return nil
+	return r.creationIdentity.close()
 }
 
 func (r Root) openRooted(absolute string, resolveFinal bool) (*os.Root, string, error) {
