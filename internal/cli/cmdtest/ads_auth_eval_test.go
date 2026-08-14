@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestAdsAuthNetworkValidationUsesPlatformV1(t *testing.T) {
+func TestAdsAuthNetworkValidationUsesCampaignV5(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	keyPath := filepath.Join(t.TempDir(), "apple-ads-private-key.pem")
 	writeECDSAPEM(t, keyPath)
@@ -23,10 +23,10 @@ func TestAdsAuthNetworkValidationUsesPlatformV1(t *testing.T) {
 		switch req.URL.Path {
 		case "/auth/oauth2/token":
 			return adsJSONResponse(200, `{"access_token":"ACCESS","token_type":"Bearer","expires_in":3600}`), nil
-		case "/v1/me":
+		case "/api/v5/me":
 			seenMe++
 			if req.Header.Get("X-AP-Context") != "" {
-				t.Fatalf("v1 me context = %q, want empty", req.Header.Get("X-AP-Context"))
+				t.Fatalf("v5 me context = %q, want empty", req.Header.Get("X-AP-Context"))
 			}
 			return adsJSONResponse(200, `{"result":{"userId":1001,"orgId":987654}}`), nil
 		default:
@@ -54,7 +54,7 @@ func TestAdsAuthNetworkValidationUsesPlatformV1(t *testing.T) {
 		t.Fatalf("validated status stderr=%q error=%v", stderr, err)
 	}
 	if seenMe != 2 {
-		t.Fatalf("v1 me requests = %d, want login and status validation", seenMe)
+		t.Fatalf("v5 me requests = %d, want login and status validation", seenMe)
 	}
 }
 
@@ -319,8 +319,10 @@ func TestAdsAuthStatusKeepsAuthSourceWhenOptionalOrgConfigIsInvalid(t *testing.T
 	}
 	var status struct {
 		Active struct {
-			Source string `json:"source"`
-			Error  string `json:"error"`
+			Source         string `json:"source"`
+			Error          string `json:"error"`
+			OrgError       string `json:"org_error"`
+			AdAccountError string `json:"ad_account_error"`
 		} `json:"active"`
 		CredentialsError string `json:"credentials_error"`
 	}
@@ -330,8 +332,14 @@ func TestAdsAuthStatusKeepsAuthSourceWhenOptionalOrgConfigIsInvalid(t *testing.T
 	if status.Active.Source != "ASC_ADS_ACCESS_TOKEN" {
 		t.Fatalf("active.source = %q, want ASC_ADS_ACCESS_TOKEN", status.Active.Source)
 	}
-	if status.Active.Error == "" || !strings.Contains(status.Active.Error, "failed to parse config") {
-		t.Fatalf("active.error = %q, want config parse error", status.Active.Error)
+	if status.Active.Error != "" {
+		t.Fatalf("active.error = %q, want no aggregate context error", status.Active.Error)
+	}
+	if status.Active.OrgError == "" || !strings.Contains(status.Active.OrgError, "failed to parse config") {
+		t.Fatalf("active.org_error = %q, want org config parse error", status.Active.OrgError)
+	}
+	if status.Active.AdAccountError == "" || !strings.Contains(status.Active.AdAccountError, "failed to parse config") {
+		t.Fatalf("active.ad_account_error = %q, want ad-account config parse error", status.Active.AdAccountError)
 	}
 	if status.CredentialsError == "" || !strings.Contains(status.CredentialsError, "failed to parse config") {
 		t.Fatalf("credentials_error = %q, want config parse error", status.CredentialsError)
@@ -347,6 +355,7 @@ func TestAdsAuthStatusKeepsAuthSourceWhenOptionalOrgConfigIsInvalid(t *testing.T
 	for _, want := range []string{
 		"Active auth: ASC_ADS_ACCESS_TOKEN",
 		"Org ID: unavailable (",
+		"Ad account ID: unavailable (",
 		"Stored credentials: unavailable (",
 		"failed to parse config",
 	} {
@@ -391,6 +400,7 @@ func TestAdsAuthStatusKeepsResolvedOrgWhenAdAccountConfigIsInvalid(t *testing.T)
 			Source         string `json:"source"`
 			OrgID          string `json:"org_id"`
 			OrgIDSource    string `json:"org_id_source"`
+			OrgError       string `json:"org_error"`
 			Error          string `json:"error"`
 			AdAccountError string `json:"ad_account_error"`
 		} `json:"active"`
@@ -398,7 +408,7 @@ func TestAdsAuthStatusKeepsResolvedOrgWhenAdAccountConfigIsInvalid(t *testing.T)
 	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
 		t.Fatalf("status stdout is not JSON: %v\n%s", err, stdout)
 	}
-	if status.Active.Source != "ASC_ADS_ACCESS_TOKEN" || status.Active.OrgID != "ORG_FROM_ENV" || status.Active.OrgIDSource != "ASC_ADS_ORG_ID" || status.Active.Error != "" || !strings.Contains(status.Active.AdAccountError, "failed to parse config") {
+	if status.Active.Source != "ASC_ADS_ACCESS_TOKEN" || status.Active.OrgID != "ORG_FROM_ENV" || status.Active.OrgIDSource != "ASC_ADS_ORG_ID" || status.Active.OrgError != "" || status.Active.Error != "" || !strings.Contains(status.Active.AdAccountError, "failed to parse config") {
 		t.Fatalf("active context = %+v, want resolved org and separate ad-account error", status.Active)
 	}
 

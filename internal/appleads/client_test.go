@@ -521,6 +521,9 @@ func TestAdsRetryDelayPrefersRetryAfterThenRateLimitReset(t *testing.T) {
 		{name: "negative ignored", headers: http.Header{"RateLimit-Reset": {"-1"}}, maxDelay: 30 * time.Second, want: 0},
 		{name: "retry after capped", headers: http.Header{"Retry-After": {"31"}}, maxDelay: 5 * time.Second, want: 5 * time.Second},
 		{name: "rate limit reset capped", headers: http.Header{"RateLimit-Reset": {"31"}}, maxDelay: 5 * time.Second, want: 5 * time.Second},
+		{name: "retry after overflow capped", headers: http.Header{"Retry-After": {"9223372036854775807"}}, maxDelay: 5 * time.Second, want: 5 * time.Second},
+		{name: "rate limit reset overflow capped", headers: http.Header{"RateLimit-Reset": {"9223372036854775807"}}, maxDelay: 5 * time.Second, want: 5 * time.Second},
+		{name: "overflow remains bounded without cap", headers: http.Header{"Retry-After": {"9223372036854775807"}}, want: time.Duration(1<<63 - 1)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

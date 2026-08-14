@@ -8,7 +8,7 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
 )
 
-func TestNamedAdsProfileWithoutOrgDoesNotInheritAnotherProfileDefault(t *testing.T) {
+func TestNamedAdsProfileKeepsLegacyRootOrgFallback(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
 	setAdsResolverTestEnv(t)
@@ -29,8 +29,22 @@ func TestNamedAdsProfileWithoutOrgDoesNotInheritAnotherProfileDefault(t *testing
 		t.Fatalf("resolveCredentials() error: %v", err)
 	}
 	got, source, err := resolveOrgIDWithSource(commonFlags{}, credentials)
-	if err != nil || got != "" || source != "" {
-		t.Fatalf("profile-b org = %q source=%q error=%v, want no inherited org", got, source, err)
+	if err != nil || got != "ORG_A" || source != "Ads profile org_id" {
+		t.Fatalf("profile-b org = %q source=%q error=%v, want legacy root org", got, source, err)
+	}
+}
+
+func TestNamedCredentialsCanUseLegacyRootOrgFallback(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	setAdsResolverTestEnv(t)
+	if err := config.SaveAt(configPath, &config.Config{Ads: config.AdsConfig{OrgID: "ROOT_ORG"}}); err != nil {
+		t.Fatalf("SaveAt() error: %v", err)
+	}
+
+	got, source, err := resolveOrgIDWithSource(commonFlags{}, appleads.Credentials{Profile: "named-profile"})
+	if err != nil || got != "ROOT_ORG" || source != "ads.org_id" {
+		t.Fatalf("named profile org = %q source=%q error=%v, want legacy root org", got, source, err)
 	}
 }
 

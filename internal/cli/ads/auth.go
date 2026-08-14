@@ -126,7 +126,7 @@ Examples:
 				}
 				requestCtx, cancel := requestContext(ctx)
 				defer cancel()
-				spec, err := authPlatformEndpointSpec("me", "view")
+				spec, err := authLegacyEndpointSpec("me", "view")
 				if err != nil {
 					return fmt.Errorf("ads auth login: %w", err)
 				}
@@ -210,7 +210,7 @@ Examples:
 					client, err := appleads.NewClient(cred.Credentials)
 					if err == nil {
 						requestCtx, cancel := requestContext(ctx)
-						spec, specErr := authPlatformEndpointSpec("me", "view")
+						spec, specErr := authLegacyEndpointSpec("me", "view")
 						if specErr != nil {
 							err = specErr
 						} else {
@@ -264,6 +264,7 @@ type adsAuthContext struct {
 	Source            string `json:"source,omitempty"`
 	OrgID             string `json:"org_id,omitempty"`
 	OrgIDSource       string `json:"org_id_source,omitempty"`
+	OrgError          string `json:"org_error,omitempty"`
 	AdAccountID       string `json:"ad_account_id,omitempty"`
 	AdAccountIDSource string `json:"ad_account_id_source,omitempty"`
 	AdAccountError    string `json:"ad_account_error,omitempty"`
@@ -334,6 +335,7 @@ func printActiveContext(active adsAuthContext) {
 			fmt.Printf("  Profile: %s\n", active.Profile)
 		}
 		fmt.Printf("  Org ID: unavailable (%s)\n", active.Error)
+		fmt.Printf("  Ad account ID: unavailable (%s)\n", active.Error)
 		return
 	}
 	if active.Source == "" {
@@ -344,7 +346,9 @@ func printActiveContext(active adsAuthContext) {
 	if active.Profile != "" {
 		fmt.Printf("  Profile: %s\n", active.Profile)
 	}
-	if active.OrgID != "" {
+	if active.OrgError != "" {
+		fmt.Printf("  Org ID: unavailable (%s)\n", active.OrgError)
+	} else if active.OrgID != "" {
 		if active.OrgIDSource != "" {
 			fmt.Printf("  Org ID: %s (%s)\n", active.OrgID, active.OrgIDSource)
 		} else {
@@ -374,25 +378,9 @@ func statusActiveContext() adsAuthContext {
 		}
 		return adsAuthContext{Error: err.Error()}
 	}
-	orgID, orgSource, err := resolveOrgIDWithSource(commonFlags{}, credentials)
-	if err != nil {
-		return adsAuthContext{
-			Profile: credentials.Profile,
-			Source:  source,
-			Error:   err.Error(),
-		}
-	}
-	adAccountID, adAccountSource, err := resolveAdAccountIDWithSource(commonFlags{}, credentials)
-	if err != nil {
-		return adsAuthContext{
-			Profile:        credentials.Profile,
-			Source:         source,
-			OrgID:          orgID,
-			OrgIDSource:    orgSource,
-			AdAccountError: err.Error(),
-		}
-	}
-	return adsAuthContext{
+	orgID, orgSource, orgErr := resolveOrgIDWithSource(commonFlags{}, credentials)
+	adAccountID, adAccountSource, adAccountErr := resolveAdAccountIDWithSource(commonFlags{}, credentials)
+	active := adsAuthContext{
 		Profile:           credentials.Profile,
 		Source:            source,
 		OrgID:             orgID,
@@ -400,6 +388,13 @@ func statusActiveContext() adsAuthContext {
 		AdAccountID:       adAccountID,
 		AdAccountIDSource: adAccountSource,
 	}
+	if orgErr != nil {
+		active.OrgError = orgErr.Error()
+	}
+	if adAccountErr != nil {
+		active.AdAccountError = adAccountErr.Error()
+	}
+	return active
 }
 
 func isNoAdsCredentialError(err error) bool {
@@ -470,9 +465,9 @@ Examples:
 				return fmt.Errorf("ads auth discover: %w", err)
 			}
 			orgID, orgSource := discoverOrgIDWithSource(common, credentials)
-			adAccountID, adAccountSource := "", ""
-			if resolvedID, resolvedSource, resolveErr := resolveAdAccountIDWithSource(common, credentials); resolveErr == nil {
-				adAccountID, adAccountSource = resolvedID, resolvedSource
+			adAccountID, adAccountSource, err := resolveAdAccountIDWithSource(common, credentials)
+			if err != nil {
+				return fmt.Errorf("ads auth discover: ad account resolution failed: %w", err)
 			}
 			client, err := appleads.NewClient(credentials)
 			if err != nil {
@@ -524,14 +519,6 @@ Examples:
 			return nil
 		},
 	}
-}
-
-func authPlatformEndpointSpec(path ...string) (appleads.EndpointSpec, error) {
-	spec, ok := appleads.PlatformEndpointByCommandPath(path...)
-	if !ok {
-		return appleads.EndpointSpec{}, fmt.Errorf("internal error: missing Apple Ads Platform endpoint spec for command %q", strings.Join(path, " "))
-	}
-	return spec, nil
 }
 
 func authLegacyEndpointSpec(path ...string) (appleads.EndpointSpec, error) {
