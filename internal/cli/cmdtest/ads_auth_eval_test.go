@@ -14,6 +14,7 @@ func TestAdsAuthNetworkValidationUsesPlatformV1(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	keyPath := filepath.Join(t.TempDir(), "apple-ads-private-key.pem")
 	writeECDSAPEM(t, keyPath)
+	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_CONFIG_PATH", configPath)
 	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
 
@@ -371,10 +372,12 @@ func TestAdsAuthStatusKeepsAuthSourceWhenOptionalOrgConfigIsInvalid(t *testing.T
 
 func TestAdsAuthStatusKeepsResolvedOrgWhenAdAccountConfigIsInvalid(t *testing.T) {
 	configPath := writeAdsEvalPayload(t, "config.json", `{"ads":`)
+	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_CONFIG_PATH", configPath)
 	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_ORG_ID", "ORG_FROM_ENV")
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "")
 
 	stdout, stderr, err := runAdsEvalCommand(t, "ads", "auth", "status", "--output", "json")
 	if err != nil {
