@@ -245,6 +245,9 @@ Example:
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				return shared.MissingRequiredUsageError()
 			}
+			if err := requireSigningReconcilePlatform(); err != nil {
+				return err
+			}
 			plan, err := executeSigningReconcilePlan(ctx, signingReconcilePlanOptions{
 				ArchivePath:         *archivePath,
 				DevicesFile:         *devicesFile,
@@ -293,6 +296,9 @@ Example:
 			if strings.TrimSpace(*planPath) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --plan is required")
 				return shared.MissingRequiredUsageError()
+			}
+			if err := requireSigningReconcilePlatform(); err != nil {
+				return err
 			}
 			receipt, err := executeSigningReconcileApply(ctx, *planPath)
 			if err != nil {
