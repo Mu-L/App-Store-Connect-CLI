@@ -456,10 +456,11 @@ func sameArtifactRelativePathWithEquivalence(left, right string, equivalence art
 	if left == right {
 		return true
 	}
-	if equivalence.normalizationInsensitive && norm.NFC.String(left) == norm.NFC.String(right) {
-		return true
+	if equivalence.normalizationInsensitive {
+		left = norm.NFC.String(left)
+		right = norm.NFC.String(right)
 	}
-	return equivalence.caseInsensitive && strings.EqualFold(left, right)
+	return left == right || (equivalence.caseInsensitive && strings.EqualFold(left, right))
 }
 
 var (
