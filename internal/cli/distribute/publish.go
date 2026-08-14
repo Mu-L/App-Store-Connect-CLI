@@ -292,6 +292,9 @@ func preflightArtifactPaths(receiptPath, linkPath string) (artifactPaths, error)
 	if receiptAbsolute == linkAbsolute {
 		return artifactPaths{}, fmt.Errorf("--receipt and --link-path must be distinct")
 	}
+	if pathContains(receiptAbsolute, linkAbsolute) || pathContains(linkAbsolute, receiptAbsolute) {
+		return artifactPaths{}, fmt.Errorf("--receipt and --link-path must not contain one another")
+	}
 	common, err := commonPathRoot(filepath.Dir(receiptAbsolute), filepath.Dir(linkAbsolute))
 	if err != nil {
 		return artifactPaths{}, err
@@ -320,6 +323,14 @@ func preflightArtifactPaths(receiptPath, linkPath string) (artifactPaths, error)
 		}
 	}
 	return artifactPaths{root: root, receipt: receiptRelative, link: linkRelative, receiptPath: receiptAbsolute, linkPath: linkAbsolute, receiptExists: exists[receiptRelative], linkExists: exists[linkRelative]}, nil
+}
+
+func pathContains(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	if err != nil || filepath.IsAbs(relative) {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
 func openOrCreateAnchoredRoot(target string) (*os.Root, error) {

@@ -385,6 +385,26 @@ func TestArtifactPairRejectsDistinctParentSymlinkSwap(t *testing.T) {
 	}
 }
 
+func TestPreflightRejectsArtifactPathsThatContainEachOther(t *testing.T) {
+	base := t.TempDir()
+	for _, test := range []struct {
+		name    string
+		receipt string
+		link    string
+	}{
+		{name: "receipt contains link", receipt: filepath.Join(base, "result"), link: filepath.Join(base, "result", "link.json")},
+		{name: "link contains receipt", receipt: filepath.Join(base, "result", "receipt.json"), link: filepath.Join(base, "result")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			paths, err := preflightArtifactPaths(test.receipt, test.link)
+			paths.close()
+			if err == nil || !strings.Contains(err.Error(), "contain") {
+				t.Fatalf("preflightArtifactPaths() error = %v, want containment rejection", err)
+			}
+		})
+	}
+}
+
 func TestPreflightSecurelyCreatesMissingCommonParent(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "nested", "publishes")
 	paths, err := preflightArtifactPaths(filepath.Join(parent, "receipt.json"), filepath.Join(parent, "link.json"))
