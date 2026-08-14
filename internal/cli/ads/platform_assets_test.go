@@ -38,6 +38,8 @@ func TestPlatformAssetsUploadIsOneCustomCommand(t *testing.T) {
 }
 
 func TestPlatformMapDeleteCommandsRequireConfirmationBeforeOtherWork(t *testing.T) {
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+	setAdsResolverTestEnv(t)
 	for _, path := range [][]string{{"location-groups", "delete"}, {"creatives", "delete"}, {"assets", "delete"}} {
 		t.Run(strings.Join(path, "_"), func(t *testing.T) {
 			spec, ok := appleads.PlatformEndpointByCommandPath(path...)
@@ -131,7 +133,7 @@ func TestOpenPlatformAssetUploadFileValidation(t *testing.T) {
 
 func TestPlatformAssetUploadMissingFlagsFailBeforeAuth(t *testing.T) {
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
-	t.Setenv("ASC_ADS_ACCESS_TOKEN", "")
+	setAdsResolverTestEnv(t)
 	command := PlatformAssetUploadCommand()
 	if err := command.FlagSet.Parse([]string{"--brand", "BRAND", "--ad-account", "ACCOUNT"}); err != nil {
 		t.Fatal(err)
@@ -144,7 +146,7 @@ func TestPlatformAssetUploadMissingFlagsFailBeforeAuth(t *testing.T) {
 
 func TestPlatformAssetUploadRejectsUnsafeFilesBeforeAuth(t *testing.T) {
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
-	t.Setenv("ASC_ADS_ACCESS_TOKEN", "")
+	setAdsResolverTestEnv(t)
 	dir := t.TempDir()
 	empty := filepath.Join(dir, "empty.png")
 	if err := os.WriteFile(empty, nil, 0o600); err != nil {
