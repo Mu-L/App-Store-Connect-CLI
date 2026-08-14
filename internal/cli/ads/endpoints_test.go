@@ -84,12 +84,15 @@ func TestPlatformAppSearchValidationAndRepeatedStoreFronts(t *testing.T) {
 	if err := fs.Set("store-fronts", "us, gB"); err != nil {
 		t.Fatal(err)
 	}
+	if err := fs.Set("store-fronts", "ca"); err != nil {
+		t.Fatal(err)
+	}
 	query, err := collectQuery(spec, flags)
 	if err != nil {
 		t.Fatalf("collectQuery() error: %v", err)
 	}
-	if got := query["storeFronts"]; len(got) != 2 || got[0] != "US" || got[1] != "GB" {
-		t.Fatalf("storeFronts = %#v, want repeated US and GB", got)
+	if got := query["storeFronts"]; len(got) != 3 || got[0] != "US" || got[1] != "GB" || got[2] != "CA" {
+		t.Fatalf("storeFronts = %#v, want repeated US, GB, and CA", got)
 	}
 }
 
@@ -97,13 +100,37 @@ func TestPlatformAppSearchRejectsInvalidStoreFronts(t *testing.T) {
 	spec, _ := appleads.PlatformEndpointByCommandPath("apps", "search")
 	for _, storefronts := range []string{"US,,GB", "USA", "U1"} {
 		t.Run(storefronts, func(t *testing.T) {
-			_, flags := bindEndpointFlags(spec, "test")
-			*flags.queryStrings["query"] = "test"
-			*flags.queryStrings["storeFronts"] = storefronts
+			fs, flags := bindEndpointFlags(spec, "test")
+			if err := fs.Set("query", "test"); err != nil {
+				t.Fatal(err)
+			}
+			if err := fs.Set("store-fronts", storefronts); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := collectQuery(spec, flags); err == nil {
 				t.Fatalf("storefronts %q unexpectedly accepted", storefronts)
 			}
 		})
+	}
+}
+
+func TestPlatformAppSearchRejectsInvalidRepeatedStoreFrontOccurrence(t *testing.T) {
+	spec, ok := appleads.PlatformEndpointByCommandPath("apps", "search")
+	if !ok {
+		t.Fatal("missing platform apps search")
+	}
+	fs, flags := bindEndpointFlags(spec, "test")
+	if err := fs.Set("query", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Set("store-fronts", "US"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Set("store-fronts", "CA,USA"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collectQuery(spec, flags); err == nil {
+		t.Fatal("invalid storefront in a later repeated occurrence unexpectedly accepted")
 	}
 }
 
@@ -475,7 +502,7 @@ func TestResolveAdAccountIDPrecedenceDoesNotUseLegacyOrg(t *testing.T) {
 func TestNamedAdsProfileWithoutAdAccountDoesNotInheritAnotherProfileDefault(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
-	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
+	setAdsResolverTestEnv(t)
 	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "")
 	if err := config.SaveAt(configPath, &config.Config{Ads: config.AdsConfig{
 		DefaultKeyName: "profile-a",
