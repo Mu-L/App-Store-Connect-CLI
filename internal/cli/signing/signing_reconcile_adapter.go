@@ -57,11 +57,30 @@ func ClassifyReconcileExecutionError(err error) ReconcileExecutionErrorKind {
 	if errors.As(err, &executionErr) {
 		return executionErr.kind
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return ReconcileExecutionErrorRetryable
+	}
 	return ""
 }
 
 type reconcilePlanDriftCause struct {
 	err error
+}
+
+type reconcilePlanInvalidCause struct {
+	err error
+}
+
+func (cause reconcilePlanInvalidCause) Error() string {
+	return cause.err.Error()
+}
+
+func (cause reconcilePlanInvalidCause) Unwrap() error {
+	return cause.err
+}
+
+func newReconcilePlanInvalid(err error) error {
+	return reconcilePlanInvalidCause{err: err}
 }
 
 func (cause reconcilePlanDriftCause) Error() string { return cause.err.Error() }
@@ -217,6 +236,10 @@ func ExecuteReconcilePlan(ctx context.Context, options ReconcilePlanOptions) (Re
 		StateDir: options.StateDir, Overwrite: options.Overwrite,
 	})
 	if err != nil {
+		var invalid reconcilePlanInvalidCause
+		if errors.As(err, &invalid) || shared.ClassifyUsageError(err) != "" {
+			return ReconcilePlanView{}, redactedReconcileExecutionError(ReconcileExecutionErrorPlanInvalid)
+		}
 		return ReconcilePlanView{}, redactedReconcileExecutionError(ReconcileExecutionErrorRetryable)
 	}
 	return newReconcilePlanView(plan), nil

@@ -25,6 +25,7 @@ const (
 	deviceObservationDiagnosticLimit = 32 << 10
 	deviceObservationMinimumTimeout  = 5 * time.Second
 	deviceObservationMaximumTimeout  = 5 * time.Minute
+	deviceObservationTimeoutHeadroom = 2 * time.Second
 	deviceObservationJSONVersion     = 5
 	deviceObservationJSONFilename    = "observation.json"
 )
@@ -232,7 +233,8 @@ func observeInstalledAppOnDeviceWithRunner(
 		return observation, fmt.Errorf("inspect devicectl JSON destination: %w", err)
 	}
 
-	timeoutSeconds := int64((request.Timeout + time.Second - 1) / time.Second)
+	toolTimeout := request.Timeout - deviceObservationTimeoutHeadroom
+	timeoutSeconds := int64((toolTimeout + time.Second - 1) / time.Second)
 	args := []string{
 		"--quiet",
 		"--timeout", strconv.FormatInt(timeoutSeconds, 10),

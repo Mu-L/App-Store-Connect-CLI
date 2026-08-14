@@ -2,8 +2,6 @@ package distribute
 
 import (
 	"context"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/signing"
@@ -132,16 +130,8 @@ func TestDistributionResumeCheckpointsClosedReconcileVerificationClassification(
 
 func newRetryableReconcileExecutionError(t *testing.T) error {
 	t.Helper()
-	root := t.TempDir()
-	_, err := signing.ExecuteReconcilePlan(context.Background(), signing.ReconcilePlanOptions{
-		ArchivePath:         filepath.Join(root, "missing.xcarchive"),
-		DevicesFile:         filepath.Join(root, "missing-devices.json"),
-		CertificateSHA256:   strings.Repeat("a", 64),
-		MinimumValidityDays: 1,
-		MaxMutations:        1,
-		StateDir:            filepath.Join(root, "reconcile"),
-	})
-	if err == nil || signing.ClassifyReconcileExecutionError(err) != signing.ReconcileExecutionErrorRetryable {
+	err := context.DeadlineExceeded
+	if signing.ClassifyReconcileExecutionError(err) != signing.ReconcileExecutionErrorRetryable {
 		t.Fatalf("retryable reconcile error fixture = %v", err)
 	}
 	return err

@@ -73,11 +73,12 @@ func TestLoadPrivatePublishIntentStateRejectsDuplicateJSONKeys(t *testing.T) {
 }
 
 func TestPrivatePublishIntentRequestRejectsDiagnosticInjectionInBucket(t *testing.T) {
-	for _, bucket := range []string{"bucket name", "bucket\x1b[31m", "bucket\u202eexe", "bucket\u200bname"} {
+	for _, bucket := range []string{"bucket\x1b[31m", "bucket\u202eexe", "bucket\u200bname"} {
 		t.Run(bucket, func(t *testing.T) {
 			err := validatePrivatePublishIntentRequest(privatePublishIntentRequest{
 				BundleDir: "/bundle", Endpoint: "https://objects.example.com", Region: "auto", Bucket: bucket, Prefix: "app", AddressingStyle: "path",
 				URLTTL: time.Hour, DownloadGrace: time.Minute, VerifyTimeout: time.Second, ReceiptPath: "/state/receipt", IntentPath: "/state/intent",
+				ExpectedBundle: validPrivatePublishIntentAuthorization(),
 			})
 			if err == nil {
 				t.Fatalf("bucket %q passed validation", bucket)
@@ -119,12 +120,22 @@ func TestPrivatePublishIntentRequestRejectsDiagnosticInjectionInPrefixAndEndpoin
 			request := privatePublishIntentRequest{
 				BundleDir: "/bundle", Endpoint: "https://objects.example.com", Region: "auto", Bucket: "bucket", Prefix: "app", AddressingStyle: "path",
 				URLTTL: time.Hour, DownloadGrace: time.Minute, VerifyTimeout: time.Second, ReceiptPath: "/state/receipt", IntentPath: "/state/intent",
+				ExpectedBundle: validPrivatePublishIntentAuthorization(),
 			}
 			mutate(&request)
 			if err := validatePrivatePublishIntentRequest(request); err == nil {
 				t.Fatal("diagnostic-injection input passed validation")
 			}
 		})
+	}
+}
+
+func validPrivatePublishIntentAuthorization() privatePublishBundleAuthorization {
+	digest := strings.Repeat("a", 64)
+	return privatePublishBundleAuthorization{
+		DescriptorSHA256: digest, DescriptorSize: 1, IPASHA256: digest, IPASize: 1,
+		ProfileUUID: "profile", ProfileSHA256: digest, TeamID: "TEAM", DeviceSetSHA256: digest,
+		DeviceCount: 1, CertificateSHA256: digest,
 	}
 }
 

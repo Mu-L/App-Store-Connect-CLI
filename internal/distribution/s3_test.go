@@ -126,6 +126,9 @@ func TestPrivatePublishStopsAfterS3HeadMatchesButFetchedBodyIsCorrupt(t *testing
 	t.Setenv("ASC_S3_ACCESS_KEY_ID", "test-access")
 	t.Setenv("ASC_S3_SECRET_ACCESS_KEY", "test-secret")
 	t.Setenv("ASC_S3_SESSION_TOKEN", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
 	var operations []string
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		operations = append(operations, request.Method)

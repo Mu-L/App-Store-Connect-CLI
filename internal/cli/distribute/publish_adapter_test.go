@@ -270,11 +270,26 @@ func TestReverifyPrivatePublishIsReadOnly(t *testing.T) {
 		InstallURL:    "https://objects.example.com/bucket/app/page?X-Amz-Signature=exact-secret-canary",
 	}
 	writePrivatePublishTestState(t, receiptPath, linkPath, receipt, links)
-	beforeReceipt, _ := os.ReadFile(receiptPath)
-	beforeLink, _ := os.ReadFile(linkPath)
-	beforeReceiptInfo, _ := os.Stat(receiptPath)
-	beforeLinkInfo, _ := os.Stat(linkPath)
-	beforeEntries, _ := os.ReadDir(stateDir)
+	beforeReceipt, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeLink, err := os.ReadFile(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeReceiptInfo, err := os.Stat(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeLinkInfo, err := os.Stat(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEntries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := reverifyPrivatePublish(context.Background(), privatePublishVerificationRequest{
 		BundleDir:     bundleDir,
@@ -288,14 +303,29 @@ func TestReverifyPrivatePublishIsReadOnly(t *testing.T) {
 	if !result.Recovered || reverifyCalls != 1 {
 		t.Fatalf("result=%+v reverifyCalls=%d", result, reverifyCalls)
 	}
-	afterReceipt, _ := os.ReadFile(receiptPath)
-	afterLink, _ := os.ReadFile(linkPath)
+	afterReceipt, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterLink, err := os.ReadFile(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(afterReceipt) != string(beforeReceipt) || string(afterLink) != string(beforeLink) {
 		t.Fatal("read-only verification changed publication artifacts")
 	}
-	afterReceiptInfo, _ := os.Stat(receiptPath)
-	afterLinkInfo, _ := os.Stat(linkPath)
-	afterEntries, _ := os.ReadDir(stateDir)
+	afterReceiptInfo, err := os.Stat(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterLinkInfo, err := os.Stat(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEntries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if beforeReceiptInfo.Mode() != afterReceiptInfo.Mode() || !beforeReceiptInfo.ModTime().Equal(afterReceiptInfo.ModTime()) ||
 		beforeLinkInfo.Mode() != afterLinkInfo.Mode() || !beforeLinkInfo.ModTime().Equal(afterLinkInfo.ModTime()) ||
 		!reflect.DeepEqual(directoryEntryNames(beforeEntries), directoryEntryNames(afterEntries)) {

@@ -125,7 +125,7 @@ func TestObserveInstalledAppOnDeviceUsesExactReadOnlyDevicectlQuery(t *testing.T
 	}
 	wantArgsPrefix := []string{
 		"--quiet",
-		"--timeout", "30",
+		"--timeout", "28",
 		"--json-output",
 	}
 	if len(runner.args) < len(wantArgsPrefix)+1 || !reflect.DeepEqual(runner.args[:len(wantArgsPrefix)], wantArgsPrefix) {

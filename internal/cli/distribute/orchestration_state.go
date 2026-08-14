@@ -39,6 +39,8 @@ var (
 	distributionAfterParentOpenForTest    func()
 	distributionAfterProtectedReadForTest func()
 	distributionSyncDirectoryForTest      = syncDistributionDirectory
+	distributionRenameNoReplaceForTest    = secureopen.RenameNoReplaceInRoot
+	distributionRemoveTemporaryForTest    = func(rooted *os.Root, name string) error { return rooted.Remove(name) }
 )
 
 // distributionConfig is deliberately narrower than the standalone commands:
@@ -396,12 +398,13 @@ func validateDistributionSourceURL(raw string) error {
 		return fmt.Errorf("metadata.sourceUrl must be an HTTPS URL without credentials, query, or fragment")
 	}
 	parsed, err := core.ValidatePublicBaseURL(raw)
-	if err != nil || parsed.Path == "" {
-		// ValidatePublicBaseURL intentionally permits a path; the non-empty-path
-		// check only keeps source provenance meaningful.
-		if err != nil {
-			return fmt.Errorf("metadata.sourceUrl: %w", err)
-		}
+	if err != nil {
+		return fmt.Errorf("metadata.sourceUrl: %w", err)
+	}
+	// ValidatePublicBaseURL intentionally permits an empty path; source
+	// provenance must identify a concrete resource rather than only an origin.
+	if parsed.Path == "" {
+		return fmt.Errorf("metadata.sourceUrl must include a non-empty path")
 	}
 	return nil
 }
@@ -1539,7 +1542,7 @@ func writeProtectedDistributionFileInRoot(rooted *os.Root, name string, data []b
 	}
 	createdViaLink := false
 	if createOnly {
-		if err := secureopen.RenameNoReplaceInRoot(rooted, temporaryName, name); err != nil {
+		if err := distributionRenameNoReplaceForTest(rooted, temporaryName, name); err != nil {
 			if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
 				return err
 			}
@@ -1547,8 +1550,17 @@ func writeProtectedDistributionFileInRoot(rooted *os.Root, name string, data []b
 				return err
 			}
 			createdViaLink = true
-			if err := rooted.Remove(temporaryName); err != nil {
-				return err
+			if err := distributionRemoveTemporaryForTest(rooted, temporaryName); err != nil {
+				rollbackErr := rooted.Remove(name)
+				syncErr := distributionSyncDirectoryForTest(rooted)
+				failures := []error{fmt.Errorf("remove linked distribution state temporary file: %w", err)}
+				if rollbackErr != nil && !errors.Is(rollbackErr, os.ErrNotExist) {
+					failures = append(failures, fmt.Errorf("roll back linked distribution state file: %w", rollbackErr))
+				}
+				if syncErr != nil {
+					failures = append(failures, fmt.Errorf("sync protected output parent after rollback: %w", syncErr))
+				}
+				return errors.Join(failures...)
 			}
 		}
 	} else if err := rooted.Rename(temporaryName, name); err != nil {

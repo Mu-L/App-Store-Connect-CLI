@@ -40,8 +40,7 @@ type distributionRunPathLease struct {
 // It deliberately does not acquire the advisory run lock: verification must
 // not create or modify local run artifacts.
 type distributionVerifyPathLease struct {
-	run      *distributionRunPathLease
-	subtrees []distributionPinnedSubtree
+	run *distributionRunPathLease
 }
 
 type distributionPinnedSubtree struct {
@@ -202,64 +201,21 @@ func (lease *distributionVerifyPathLease) PinSubtrees(relatives ...string) error
 	if lease == nil || lease.run == nil {
 		return fmt.Errorf("distribution verification path lease is unavailable")
 	}
-	for _, relative := range relatives {
-		clean := path.Clean(strings.TrimSpace(relative))
-		if clean == "." || clean == "" || path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, `\`) {
-			return fmt.Errorf("invalid distribution verification subtree")
-		}
-		alreadyPinned := false
-		for _, pinned := range lease.subtrees {
-			if pinned.relative == clean {
-				alreadyPinned = true
-				break
-			}
-		}
-		if alreadyPinned {
-			continue
-		}
-		rooted, err := openPinnedDistributionRelativeDirectory(lease.run.runRoot, clean)
-		if err != nil {
-			return fmt.Errorf("pin distribution verification subtree: %w", err)
-		}
-		lease.subtrees = append(lease.subtrees, distributionPinnedSubtree{relative: clean, root: rooted})
-	}
-	return lease.Verify()
+	return lease.run.pinSubtrees(relatives...)
 }
 
 func (lease *distributionVerifyPathLease) Verify() error {
 	if lease == nil || lease.run == nil {
 		return fmt.Errorf("distribution verification path lease is unavailable")
 	}
-	if err := lease.run.verify(); err != nil {
-		return err
-	}
-	for _, pinned := range lease.subtrees {
-		opened, err := openPinnedDistributionRelativeDirectory(lease.run.runRoot, pinned.relative)
-		if err != nil {
-			return fmt.Errorf("distribution verification subtree changed: %w", err)
-		}
-		want, wantErr := pinned.root.Stat(".")
-		got, gotErr := opened.Stat(".")
-		closeErr := opened.Close()
-		if wantErr != nil || gotErr != nil || closeErr != nil || !os.SameFile(want, got) {
-			return fmt.Errorf("distribution verification subtree path changed while verification was active")
-		}
-	}
-	return nil
+	return lease.run.verify()
 }
 
 func (lease *distributionVerifyPathLease) Close() error {
-	if lease == nil {
+	if lease == nil || lease.run == nil {
 		return nil
 	}
-	var err error
-	for index := len(lease.subtrees) - 1; index >= 0; index-- {
-		err = errors.Join(err, lease.subtrees[index].root.Close())
-	}
-	if lease.run != nil {
-		err = errors.Join(err, lease.run.close())
-	}
-	return err
+	return lease.run.close()
 }
 
 func openPinnedDistributionRelativeDirectory(runRoot *os.Root, relative string) (*os.Root, error) {

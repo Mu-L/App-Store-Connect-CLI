@@ -36,6 +36,14 @@ func TestSelectReconcileCertificateWithSHA256(t *testing.T) {
 		resource("cert-1", first.Raw),
 		resource("cert-2", second.Raw),
 	}
+	resources = append([]asc.Resource[asc.CertificateAttributes]{{
+		ID: "cert-malformed",
+		Attributes: asc.CertificateAttributes{
+			CertificateType:    "IOS_DISTRIBUTION",
+			ExpirationDate:     certificateExpiryRFC3339(t, first.Raw),
+			CertificateContent: "not-base64",
+		},
+	}}, resources...)
 	secondDigest := sha256.Sum256(second.Raw)
 	secondSHA := hex.EncodeToString(secondDigest[:])
 
@@ -175,6 +183,37 @@ func TestExecuteReconcilePlanCollapsesOperationalCanaryWithoutOutput(t *testing.
 	})
 	if stdout != "" || stderr != "" {
 		t.Fatalf("planning adapter wrote output: stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestExecuteReconcilePlanClassifiesTerminalArchiveFailureAsPlanInvalid(t *testing.T) {
+	stateDir := t.TempDir()
+	devicesPath := filepath.Join(stateDir, "devices.json")
+	if err := os.WriteFile(devicesPath, []byte(`{"schemaVersion":1,"devices":[{"name":"Phone","udid":"AABBCCDD","platform":"IOS"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalArchiveReader := readSigningArchiveRequirements
+	readSigningArchiveRequirements = func(string) (signingArchiveRequirements, error) {
+		return signingArchiveRequirements{TeamID: "TEAM1"}, nil
+	}
+	t.Cleanup(func() { readSigningArchiveRequirements = originalArchiveReader })
+	authCalls := 0
+	originalFactory := sharedASCClient
+	sharedASCClient = func() (*asc.Client, error) {
+		authCalls++
+		return nil, errors.New("auth must not be reached")
+	}
+	t.Cleanup(func() { sharedASCClient = originalFactory })
+
+	_, err := ExecuteReconcilePlan(context.Background(), ReconcilePlanOptions{
+		ArchivePath: "App.xcarchive", DevicesFile: devicesPath, CertificateSHA256: strings.Repeat("a", 64),
+		MinimumValidityDays: 7, MaxMutations: 32, StateDir: stateDir,
+	})
+	if err == nil || ClassifyReconcileExecutionError(err) != ReconcileExecutionErrorPlanInvalid {
+		t.Fatalf("terminal planning error = %v", err)
+	}
+	if authCalls != 0 {
+		t.Fatalf("terminal archive failure reached auth %d times", authCalls)
 	}
 }
 

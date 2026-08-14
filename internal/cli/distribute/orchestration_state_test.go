@@ -13,6 +13,7 @@ import (
 	"time"
 
 	core "github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 func TestReadDistributionConfigStrictPrivateS3(t *testing.T) {
@@ -65,6 +66,7 @@ func TestReadDistributionConfigStrictPrivateS3(t *testing.T) {
 		"trailing":          body + `{}`,
 		"inline secret":     strings.Replace(body, `"passwordFile":"`+passwordPath+`"`, `"passwordFile":"`+passwordPath+`","password":"secret"`, 1),
 		"public config":     strings.Replace(body, `"prefix":"ios/pr-42"`, `"prefix":"ios/pr-42","publicBaseUrl":"https://public.example.com"`, 1),
+		"origin source URL": strings.Replace(body, "https://example.com/commit/abc123", "https://example.com", 1),
 		"bidi source URL":   strings.Replace(body, "https://example.com/commit/abc123", "https://example.com/commit/abc\u202e123", 1),
 		"format source URL": strings.Replace(body, "https://example.com/commit/abc123", "https://example.com/commit/abc\u200b123", 1),
 	} {
@@ -624,6 +626,34 @@ func TestDistributionPersistenceReportsDirectorySyncFailure(t *testing.T) {
 	err := writePersistedDistributionPlan(filepath.Join(t.TempDir(), "private", "plan.json"), plan)
 	if err == nil || !strings.Contains(err.Error(), "fsync canary") {
 		t.Fatalf("directory sync error = %v", err)
+	}
+}
+
+func TestDistributionCreateOnlyLinkFallbackRollsBackPublishedFileWhenTemporaryCleanupFails(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "state.json")
+	previousRename := distributionRenameNoReplaceForTest
+	previousRemove := distributionRemoveTemporaryForTest
+	distributionRenameNoReplaceForTest = func(*os.Root, string, string) error {
+		return secureopen.ErrRenameNoReplaceUnsupported
+	}
+	distributionRemoveTemporaryForTest = func(*os.Root, string) error {
+		return errors.New("temporary cleanup canary")
+	}
+	t.Cleanup(func() {
+		distributionRenameNoReplaceForTest = previousRename
+		distributionRemoveTemporaryForTest = previousRemove
+	})
+
+	err := writeProtectedDistributionJSONCreateOnly(path, map[string]string{"state": "pending"})
+	if err == nil || !strings.Contains(err.Error(), "temporary cleanup canary") {
+		t.Fatalf("writeProtectedDistributionJSONCreateOnly() error = %v", err)
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("published file remains after failed temporary cleanup: %v", statErr)
 	}
 }
 
