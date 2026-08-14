@@ -45,6 +45,10 @@ func snapshotIPAContext(ctx context.Context, source *os.File, size int64) (*os.F
 		return nil, "", nil, fmt.Errorf("IPA size changed before snapshot")
 	}
 
+	return snapshotReaderContext(ctx, io.NewSectionReader(source, 0, size), size)
+}
+
+func snapshotReaderContext(ctx context.Context, source io.Reader, size int64) (*os.File, string, func(), error) {
 	directory, err := os.MkdirTemp("", ".asc-distribute-snapshot-")
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("create private IPA snapshot directory: %w", err)
@@ -65,7 +69,7 @@ func snapshotIPAContext(ctx context.Context, source *os.File, size int64) (*os.F
 		return nil, "", nil, fmt.Errorf("create private IPA snapshot: %w", err)
 	}
 	hash := sha256.New()
-	written, copyErr := copyWithContext(ctx, io.MultiWriter(snapshot, hash), io.NewSectionReader(source, 0, size), duringIPASnapshotForTest)
+	written, copyErr := copyWithContext(ctx, io.MultiWriter(snapshot, hash), source, duringIPASnapshotForTest)
 	if copyErr == nil && written != size {
 		copyErr = fmt.Errorf("copied %d of %d bytes", written, size)
 	}

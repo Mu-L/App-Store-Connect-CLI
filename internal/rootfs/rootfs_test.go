@@ -1090,6 +1090,100 @@ func TestOpenRootPinsOriginalDirectoryAcrossPathReplacement(t *testing.T) {
 	}
 }
 
+func TestContainsPathUsesPinnedRootIdentity(t *testing.T) {
+	requireSymlinks(t)
+	parent := t.TempDir()
+	selected := filepath.Join(parent, "selected")
+	inside := filepath.Join(selected, "state", "receipt.json")
+	outside := filepath.Join(parent, "outside", "receipt.json")
+	if err := os.MkdirAll(filepath.Dir(inside), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outside), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := mustRoot(t, selected)
+
+	for path, want := range map[string]bool{inside: true, outside: false} {
+		got, err := root.ContainsPath(path)
+		if err != nil {
+			t.Fatalf("ContainsPath(%q) error = %v", path, err)
+		}
+		if got != want {
+			t.Fatalf("ContainsPath(%q) = %t, want %t", path, got, want)
+		}
+	}
+
+	if err := os.Rename(selected, selected+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(selected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.ContainsPath(filepath.Join(selected, "receipt.json")); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("ContainsPath() after root replacement error = %v, want ErrSymlink", err)
+	}
+}
+
+func TestContainsAnchoredPathRejectsPathSubstitution(t *testing.T) {
+	parent := t.TempDir()
+	bundle := filepath.Join(parent, "bundle")
+	artifact := filepath.Join(bundle, "state")
+	if err := os.MkdirAll(artifact, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bundleRoot := mustRoot(t, bundle)
+	anchored, err := os.OpenRoot(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer anchored.Close()
+	contained, err := bundleRoot.ContainsAnchoredPath(artifact, anchored)
+	if err != nil || !contained {
+		t.Fatalf("ContainsAnchoredPath() = %t, %v, want true", contained, err)
+	}
+	if err := os.Rename(artifact, artifact+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(artifact, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bundleRoot.ContainsAnchoredPath(artifact, anchored); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("ContainsAnchoredPath() replacement error = %v, want ErrSymlink", err)
+	}
+}
+
+func TestContainmentUsesIdentityOnCaseInsensitiveVolume(t *testing.T) {
+	parent := t.TempDir()
+	selected := filepath.Join(parent, "PreparedBundle")
+	if err := os.Mkdir(selected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	caseAlias := filepath.Join(parent, "preparedbundle")
+	selectedInfo, err := os.Stat(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasInfo, err := os.Stat(caseAlias)
+	if err != nil || !os.SameFile(selectedInfo, aliasInfo) {
+		t.Skip("test volume is case-sensitive")
+	}
+	root := mustRoot(t, selected)
+	contained, err := root.ContainsPath(filepath.Join(caseAlias, "state", "receipt.json"))
+	if err != nil || !contained {
+		t.Fatalf("ContainsPath() = %t, %v, want identity-based containment", contained, err)
+	}
+	anchored, err := os.OpenRoot(caseAlias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer anchored.Close()
+	contained, err = root.ContainsAnchoredPath(caseAlias, anchored)
+	if err != nil || !contained {
+		t.Fatalf("ContainsAnchoredPath() = %t, %v, want identity-based containment", contained, err)
+	}
+}
+
 func TestRootCloseReleasesSharedPinnedIdentity(t *testing.T) {
 	root := mustRoot(t, t.TempDir())
 	copy := root
