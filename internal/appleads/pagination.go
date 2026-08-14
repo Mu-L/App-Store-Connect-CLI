@@ -31,6 +31,8 @@ type platformPaginatedEnvelope struct {
 	Pagination platformPageDetail `json:"pagination"`
 }
 
+const maxPlatformPaginationPages = 1000
+
 // PaginateAll fetches all pages for an offset-paginated endpoint.
 func (c *Client) PaginateAll(ctx context.Context, spec EndpointSpec, pathParams map[string]string, query url.Values, startOffset, pageSize int, body json.RawMessage) (RawResponse, error) {
 	if spec.Version == APIVersionPlatformV1 {
@@ -104,11 +106,17 @@ func (c *Client) paginatePlatformGET(ctx context.Context, spec EndpointSpec, pat
 		pageSize = 20
 	}
 	offset := max(0, startOffset)
+	pageSizeParam := platformPageSizeParam(spec)
 	var aggregated []json.RawMessage
 	var total *int
+	pages := 0
 	for {
+		if pages >= maxPlatformPaginationPages {
+			return nil, fmt.Errorf("platform API v1 pagination exceeded the %d-page safety limit; narrow your query or use --offset to continue from a smaller result set", maxPlatformPaginationPages)
+		}
+		pages++
 		pageQuery := cloneValues(query)
-		pageQuery.Set("limit", strconv.Itoa(pageSize))
+		pageQuery.Set(pageSizeParam, strconv.Itoa(pageSize))
 		pageQuery.Set("offset", strconv.Itoa(offset))
 		raw, err := c.Do(ctx, spec, pathParams, pageQuery, body)
 		if err != nil {
@@ -156,6 +164,18 @@ func (c *Client) paginatePlatformGET(ctx context.Context, spec EndpointSpec, pat
 		return nil, err
 	}
 	return RawResponse(data), nil
+}
+
+// platformPageSizeParam returns the query parameter used to control the page
+// size for a Platform API v1 GET endpoint. Most endpoints use limit, while
+// geo search follows the service's pageSize spelling.
+func platformPageSizeParam(spec EndpointSpec) string {
+	for _, param := range spec.QueryParams {
+		if param.Name == "pageSize" {
+			return "pageSize"
+		}
+	}
+	return "limit"
 }
 
 // MaxPageLimit returns the endpoint-specific maximum page size.

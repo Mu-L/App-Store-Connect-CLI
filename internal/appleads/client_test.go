@@ -509,19 +509,22 @@ func TestEmptySuccessBodyIsVersionSpecific(t *testing.T) {
 func TestAdsRetryDelayPrefersRetryAfterThenRateLimitReset(t *testing.T) {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name    string
-		headers http.Header
-		want    time.Duration
+		name     string
+		headers  http.Header
+		maxDelay time.Duration
+		want     time.Duration
 	}{
-		{name: "retry after seconds", headers: http.Header{"Retry-After": {"3"}, "RateLimit-Reset": {"9"}}, want: 3 * time.Second},
-		{name: "retry after date", headers: http.Header{"Retry-After": {now.Add(4 * time.Second).Format(http.TimeFormat)}}, want: 4 * time.Second},
-		{name: "rate limit reset delta", headers: http.Header{"Retry-After": {"invalid"}, "RateLimit-Reset": {"5"}}, want: 5 * time.Second},
-		{name: "zero ignored", headers: http.Header{"Retry-After": {"0"}, "RateLimit-Reset": {"0"}}, want: 0},
-		{name: "negative ignored", headers: http.Header{"RateLimit-Reset": {"-1"}}, want: 0},
+		{name: "retry after seconds", headers: http.Header{"Retry-After": {"3"}, "RateLimit-Reset": {"9"}}, maxDelay: 30 * time.Second, want: 3 * time.Second},
+		{name: "retry after date", headers: http.Header{"Retry-After": {now.Add(4 * time.Second).Format(http.TimeFormat)}}, maxDelay: 30 * time.Second, want: 4 * time.Second},
+		{name: "rate limit reset delta", headers: http.Header{"Retry-After": {"invalid"}, "RateLimit-Reset": {"5"}}, maxDelay: 30 * time.Second, want: 5 * time.Second},
+		{name: "zero ignored", headers: http.Header{"Retry-After": {"0"}, "RateLimit-Reset": {"0"}}, maxDelay: 30 * time.Second, want: 0},
+		{name: "negative ignored", headers: http.Header{"RateLimit-Reset": {"-1"}}, maxDelay: 30 * time.Second, want: 0},
+		{name: "retry after capped", headers: http.Header{"Retry-After": {"31"}}, maxDelay: 5 * time.Second, want: 5 * time.Second},
+		{name: "rate limit reset capped", headers: http.Header{"RateLimit-Reset": {"31"}}, maxDelay: 5 * time.Second, want: 5 * time.Second},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := adsRetryDelay(tt.headers, now); got != tt.want {
+			if got := adsRetryDelay(tt.headers, now, tt.maxDelay); got != tt.want {
 				t.Fatalf("adsRetryDelay() = %s, want %s", got, tt.want)
 			}
 		})

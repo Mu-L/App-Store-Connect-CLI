@@ -91,7 +91,7 @@ func PlatformEndpointSpecs() []EndpointSpec {
 	specs = append(specs, platformCampaignEndpointSpecs()...)
 
 	for i := range specs {
-		if specs[i].Name == "platform-search-apps" {
+		if specs[i].Name == "platform-search-apps" || specs[i].Name == "platform-search-geo-locations" {
 			specs[i].SupportsPaginate = true
 		}
 		if specs[i].Name == "platform-resolve-geo-locations" {

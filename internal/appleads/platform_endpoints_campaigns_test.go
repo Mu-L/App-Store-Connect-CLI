@@ -138,6 +138,22 @@ func TestPlatformCampaignIdentifiersAndSharedBudgetContexts(t *testing.T) {
 	}
 }
 
+func TestPlatformGeoSearchSupportsPagePagination(t *testing.T) {
+	spec, ok := PlatformEndpointByCommandPath("geo", "search")
+	if !ok {
+		t.Fatal("missing geo search endpoint")
+	}
+	if !spec.SupportsPaginate {
+		t.Fatal("geo search must support --paginate")
+	}
+	if param := findQueryParam(spec, "pageSize"); param.Name != "pageSize" || param.Flag != "page-size" {
+		t.Fatalf("geo page size parameter = %+v, want pageSize/page-size", param)
+	}
+	if param := findQueryParam(spec, "offset"); param.Name != "offset" || param.Flag != "offset" {
+		t.Fatalf("geo offset parameter = %+v, want offset/offset", param)
+	}
+}
+
 func TestPlatformCampaignSpecsRouteRepresentativeHTTPContracts(t *testing.T) {
 	type requestRecord struct {
 		method  string
