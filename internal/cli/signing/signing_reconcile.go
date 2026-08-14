@@ -44,6 +44,17 @@ const (
 	reconcileMaximumValidityDays   = 3650
 )
 
+func validateSigningReconcilePlatform(goos string) error {
+	if goos != "darwin" {
+		return shared.UsageError("signing reconcile requires macOS because archive entitlement inspection uses codesign")
+	}
+	return nil
+}
+
+func requireSigningReconcilePlatform() error {
+	return validateSigningReconcilePlatform(runtime.GOOS)
+}
+
 type signingDevicesFile struct {
 	SchemaVersion int                  `json:"schemaVersion"`
 	Devices       []signingDeviceInput `json:"devices"`
@@ -233,6 +244,9 @@ Example:
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				return shared.MissingRequiredUsageError()
 			}
+			if err := requireSigningReconcilePlatform(); err != nil {
+				return err
+			}
 			plan, err := executeSigningReconcilePlan(ctx, signingReconcilePlanOptions{
 				ArchivePath:         *archivePath,
 				DevicesFile:         *devicesFile,
@@ -281,6 +295,9 @@ Example:
 			if strings.TrimSpace(*planPath) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --plan is required")
 				return shared.MissingRequiredUsageError()
+			}
+			if err := requireSigningReconcilePlatform(); err != nil {
+				return err
 			}
 			receipt, err := executeSigningReconcileApply(ctx, *planPath)
 			if err != nil {
@@ -502,16 +519,17 @@ func readSigningPlanArtifact(path string) (signingReconcilePlanArtifact, error) 
 		if errors.Is(err, os.ErrNotExist) {
 			return signingReconcilePlanArtifact{}, shared.UsageErrorf("plan artifact not found at %s; run asc signing reconcile plan first", path)
 		}
-		return signingReconcilePlanArtifact{}, err
+		usageErr := shared.UsageErrorf("invalid signing reconcile plan: %v", err)
+		return signingReconcilePlanArtifact{}, errors.Join(usageErr, err)
 	}
 	var plan signingReconcilePlanArtifact
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&plan); err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("decode plan: %w", err)
+		return signingReconcilePlanArtifact{}, shared.UsageErrorf("invalid signing reconcile plan: %v", err)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("decode plan: %w", err)
+		return signingReconcilePlanArtifact{}, shared.UsageErrorf("invalid signing reconcile plan: %v", err)
 	}
 	if plan.SchemaVersion != signingReconcileSchemaV1 {
 		return signingReconcilePlanArtifact{}, shared.UsageErrorf("unsupported signing reconcile plan schema version %d", plan.SchemaVersion)

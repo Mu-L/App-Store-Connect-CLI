@@ -940,6 +940,36 @@ func TestSigningReconcileApplyRequiresConfirmBeforeReadingPlan(t *testing.T) {
 	}
 }
 
+func TestSigningReconcilePlatformRequiresDarwin(t *testing.T) {
+	if err := validateSigningReconcilePlatform("darwin"); err != nil {
+		t.Fatalf("validateSigningReconcilePlatform(darwin) error = %v", err)
+	}
+	for _, goos := range []string{"linux", "windows"} {
+		err := validateSigningReconcilePlatform(goos)
+		if !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), "macOS") {
+			t.Fatalf("validateSigningReconcilePlatform(%q) error = %v, want macOS usage error", goos, err)
+		}
+	}
+}
+
+func TestReadSigningPlanArtifactClassifiesMalformedJSONAsUsage(t *testing.T) {
+	for name, body := range map[string]string{
+		"truncated":     `{"schemaVersion":1`,
+		"unknown field": `{"schemaVersion":1,"unexpected":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "plan.json")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := readSigningPlanArtifact(path)
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("readSigningPlanArtifact() error = %v, want usage classification", err)
+			}
+		})
+	}
+}
+
 func TestSigningReconcilePlanClassifiesInvalidDevicesFileAsUsageErrorBeforeSideEffects(t *testing.T) {
 	devicesPath := filepath.Join(t.TempDir(), "devices.json")
 	if err := os.WriteFile(devicesPath, []byte(`{"schemaVersion":1,"devices":[`), 0o600); err != nil {
