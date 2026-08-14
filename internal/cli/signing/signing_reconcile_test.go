@@ -237,6 +237,21 @@ func TestSigningCapabilitiesDoesNotTreatTypeAsProofOfEntitlementSettings(t *test
 	}
 }
 
+func TestSigningCapabilitiesRejectsDevelopmentTaskEntitlement(t *testing.T) {
+	capabilities, unverified := signingCapabilitiesForEntitlements(map[string]any{
+		"get-task-allow": true,
+	})
+	if len(capabilities) != 0 || len(unverified) != 1 || !strings.Contains(unverified[0], "get-task-allow") {
+		t.Fatalf("capabilities=%#v unverified=%#v, want development entitlement blocker", capabilities, unverified)
+	}
+	capabilities, unverified = signingCapabilitiesForEntitlements(map[string]any{
+		"get-task-allow": false,
+	})
+	if len(capabilities) != 0 || len(unverified) != 0 {
+		t.Fatalf("false get-task-allow capabilities=%#v unverified=%#v", capabilities, unverified)
+	}
+}
+
 func TestPlanSigningTargetBlocksMismatchedAppIDSeedBeforeProfileCreation(t *testing.T) {
 	client := newSigningFetchTestClient(t, func(request *http.Request) *http.Response {
 		switch request.URL.Path {
@@ -884,6 +899,27 @@ func TestWriteVerifiedProfileRejectsDifferentContentForExistingUUID(t *testing.T
 	}
 	if string(got) != string(first) {
 		t.Fatal("existing profile content changed")
+	}
+}
+
+func TestPrepareReconcileProfileOutputRejectsUnusablePath(t *testing.T) {
+	stateDir := t.TempDir()
+	profilesPath := filepath.Join(stateDir, "profiles")
+	if err := os.WriteFile(profilesPath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareReconcileProfileOutput(stateDir); err == nil {
+		t.Fatal("prepareReconcileProfileOutput() accepted a non-directory profiles path")
+	}
+	if err := os.Remove(profilesPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareReconcileProfileOutput(stateDir); err != nil {
+		t.Fatalf("prepareReconcileProfileOutput() error = %v", err)
+	}
+	info, err := os.Stat(profilesPath)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("profiles directory info=%v error=%v", info, err)
 	}
 }
 

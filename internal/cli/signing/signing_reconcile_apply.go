@@ -40,6 +40,9 @@ func executeSigningReconcileApply(ctx context.Context, planPath string) (signing
 	if err := verifySigningLocalInputs(plan); err != nil {
 		return signingReconcileReceipt{}, shared.UsageErrorf("local inputs changed: %v; rerun asc signing reconcile plan", err)
 	}
+	if err := prepareReconcileProfileOutput(plan.Paths.StateDir); err != nil {
+		return signingReconcileReceipt{}, shared.UsageErrorf("invalid profile output directory: %v", err)
+	}
 
 	receipt, err := loadOrStartSigningReceipt(plan)
 	if err != nil {
@@ -683,6 +686,14 @@ func writeVerifiedProfile(stateDir string, content []byte) (string, error) {
 		return "", err
 	}
 	return filepath.Join(stateDir, filepath.FromSlash(relative)), nil
+}
+
+func prepareReconcileProfileOutput(stateDir string) error {
+	root, err := rootfs.New(stateDir)
+	if err != nil {
+		return err
+	}
+	return root.MkdirAll("profiles", 0o700)
 }
 
 func readOptionalBoundedRootFile(root rootfs.Root, relative string, limit int64) ([]byte, bool, error) {

@@ -733,7 +733,14 @@ func signingCapabilitiesForEntitlements(entitlements map[string]any) ([]string, 
 	}
 	var capabilities []string
 	var unverified []string
-	for key := range entitlements {
+	for key, value := range entitlements {
+		if key == "get-task-allow" {
+			allowed, ok := value.(bool)
+			if !ok || allowed {
+				unverified = append(unverified, key+" (must be false for ad hoc distribution)")
+			}
+			continue
+		}
 		if _, ok := baseline[key]; ok {
 			continue
 		}
