@@ -825,6 +825,14 @@ func TestAdsPlatformAPIRequestRequiresConfirmForKnownDestructiveMutations(t *tes
 			args: []string{"ads", "platform", "api", "request", "--method", "POST", "--path", "v1/recommendations/daily-budgets/apply", "--ad-account", "AD_ACCOUNT"},
 		},
 		{
+			name: "daily budget dismiss",
+			args: []string{"ads", "platform", "api", "request", "--method", "POST", "--path", "v1/recommendations/daily-budgets/dismiss", "--ad-account", "AD_ACCOUNT"},
+		},
+		{
+			name: "target CPA apply",
+			args: []string{"ads", "platform", "api", "request", "--method", "POST", "--path", "v1/recommendations/target-cpas/apply", "--ad-account", "AD_ACCOUNT"},
+		},
+		{
 			name: "target CPA dismiss",
 			args: []string{"ads", "platform", "api", "request", "--method", "POST", "--path", "v1/recommendations/target-cpas/dismiss", "--ad-account", "AD_ACCOUNT"},
 		},
@@ -848,7 +856,7 @@ func TestAdsPlatformAPIRequestRequiresConfirmForKnownDestructiveMutations(t *tes
 			_, stderr := captureOutput(t, func() {
 				runErr = root.Run(context.Background())
 			})
-			if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, "--confirm is required") {
+			if !errors.Is(runErr, flag.ErrHelp) || runErr.Error() != "--confirm is required" || !strings.Contains(stderr, "--confirm is required") {
 				t.Fatalf("run error = %v stderr = %q", runErr, stderr)
 			}
 		})
@@ -885,7 +893,7 @@ func TestAdsPlatformAPIRequestRequiresConfirmForDelegationReplacement(t *testing
 	_, stderr := captureOutput(t, func() {
 		runErr = root.Run(context.Background())
 	})
-	if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, "--confirm is required") {
+	if !errors.Is(runErr, flag.ErrHelp) || runErr.Error() != "--confirm is required" || !strings.Contains(stderr, "--confirm is required") {
 		t.Fatalf("run error = %v stderr = %q", runErr, stderr)
 	}
 }

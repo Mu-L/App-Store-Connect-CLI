@@ -27,6 +27,12 @@ type APIErrorDetail struct {
 	Info    map[string]any `json:"info,omitempty"`
 }
 
+type platformError struct {
+	Code    string           `json:"code"`
+	Message string           `json:"message"`
+	Details []APIErrorDetail `json:"details"`
+}
+
 // RateLimit preserves the Apple Ads Platform API rate-limit response headers.
 type RateLimit struct {
 	Limit     string `json:"limit,omitempty"`
@@ -118,11 +124,6 @@ func parseErrorForVersion(body []byte, statusCode int, headers http.Header, vers
 }
 
 func parsePlatformError(body []byte, statusCode int, headers http.Header) *APIError {
-	type platformError struct {
-		Code    string           `json:"code"`
-		Message string           `json:"message"`
-		Details []APIErrorDetail `json:"details"`
-	}
 	var wrapped struct {
 		Error platformError `json:"error"`
 	}
@@ -136,22 +137,12 @@ func parsePlatformError(body []byte, statusCode int, headers http.Header) *APIEr
 	return nil
 }
 
-func platformErrorPresent(err struct {
-	Code    string           `json:"code"`
-	Message string           `json:"message"`
-	Details []APIErrorDetail `json:"details"`
-},
-) bool {
+func platformErrorPresent(err platformError) bool {
 	return strings.TrimSpace(err.Code) != "" || strings.TrimSpace(err.Message) != "" || len(err.Details) > 0
 }
 
-func platformAPIError(err struct {
-	Code    string           `json:"code"`
-	Message string           `json:"message"`
-	Details []APIErrorDetail `json:"details"`
-}, statusCode int, headers http.Header,
-) *APIError {
-	return &APIError{
+func platformAPIError(err platformError, statusCode int, headers http.Header) *APIError {
+	apiErr := &APIError{
 		StatusCode: statusCode,
 		Version:    APIVersionPlatformV1,
 		Code:       strings.TrimSpace(err.Code),
@@ -159,6 +150,11 @@ func platformAPIError(err struct {
 		Details:    err.Details,
 		RateLimit:  rateLimitFromHeaders(headers),
 	}
+	if apiErr.Message == "" && len(apiErr.Details) > 0 {
+		apiErr.Field = strings.TrimSpace(apiErr.Details[0].Code)
+		apiErr.Detail = strings.TrimSpace(apiErr.Details[0].Message)
+	}
+	return apiErr
 }
 
 func rateLimitFromHeaders(headers http.Header) RateLimit {
