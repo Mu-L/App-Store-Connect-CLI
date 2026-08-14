@@ -126,7 +126,10 @@ Examples:
 				}
 				requestCtx, cancel := requestContext(ctx)
 				defer cancel()
-				spec, _ := appleads.PlatformEndpointByCommandPath("me", "view")
+				spec, err := authPlatformEndpointSpec("me", "view")
+				if err != nil {
+					return fmt.Errorf("ads auth login: %w", err)
+				}
 				if _, err := client.Do(requestCtx, spec, nil, nil, nil); err != nil {
 					return fmt.Errorf("ads auth login: network validation failed: %w", err)
 				}
@@ -207,8 +210,12 @@ Examples:
 					client, err := appleads.NewClient(cred.Credentials)
 					if err == nil {
 						requestCtx, cancel := requestContext(ctx)
-						spec, _ := appleads.PlatformEndpointByCommandPath("me", "view")
-						_, err = client.Do(requestCtx, spec, nil, nil, nil)
+						spec, specErr := authPlatformEndpointSpec("me", "view")
+						if specErr != nil {
+							err = specErr
+						} else {
+							_, err = client.Do(requestCtx, spec, nil, nil, nil)
+						}
 						cancel()
 					}
 					if err != nil {
@@ -436,7 +443,7 @@ func AuthDiscoverCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "discover",
 		ShortUsage: "asc ads auth discover [flags]",
-		ShortHelp:  "Discover Apple Ads user and organization access.",
+		ShortHelp:  "Discover Apple Ads user and ad account access.",
 		LongHelp: `Discover Apple Ads user and ad account access.
 
 This read-only command calls GET v1/me and GET v1/acls. It does not print access tokens.
@@ -468,12 +475,18 @@ Examples:
 			requestCtx, cancel := requestContext(ctx)
 			defer cancel()
 
-			meSpec, _ := appleads.PlatformEndpointByCommandPath("me", "view")
+			meSpec, err := authPlatformEndpointSpec("me", "view")
+			if err != nil {
+				return fmt.Errorf("ads auth discover: %w", err)
+			}
 			meRaw, err := client.Do(requestCtx, meSpec, nil, nil, nil)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: me lookup failed: %w", err)
 			}
-			aclsSpec, _ := appleads.PlatformEndpointByCommandPath("acls", "list")
+			aclsSpec, err := authPlatformEndpointSpec("acls", "list")
+			if err != nil {
+				return fmt.Errorf("ads auth discover: %w", err)
+			}
 			aclsRaw, err := client.Do(requestCtx, aclsSpec, nil, nil, nil)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: acl lookup failed: %w", err)
@@ -517,6 +530,14 @@ func discoverAdAccountIDWithSource(flags commonFlags, credentials appleads.Crede
 		return "", ""
 	}
 	return adAccountID, source
+}
+
+func authPlatformEndpointSpec(path ...string) (appleads.EndpointSpec, error) {
+	spec, ok := appleads.PlatformEndpointByCommandPath(path...)
+	if !ok {
+		return appleads.EndpointSpec{}, fmt.Errorf("internal error: missing Apple Ads Platform endpoint spec for command %q", strings.Join(path, " "))
+	}
+	return spec, nil
 }
 
 func discoverOrgIDWithSource(flags commonFlags, credentials appleads.Credentials) (string, string) {
@@ -637,6 +658,7 @@ func normalizePlatformDiscoveryMe(raw json.RawMessage) (json.RawMessage, error) 
 		return nil, err
 	}
 	userID := jsonScalarString(firstMapValue(value, "userId", "id"))
+	name := jsonScalarString(firstMapValue(value, "name"))
 	orgID := jsonScalarString(firstMapValue(value, "orgId", "parentOrgId"))
 	return json.Marshal(struct {
 		ID          string `json:"id"`
@@ -646,7 +668,7 @@ func normalizePlatformDiscoveryMe(raw json.RawMessage) (json.RawMessage, error) 
 		OrgID       string `json:"orgId,omitempty"`
 	}{
 		ID:          userID,
-		Name:        "",
+		Name:        name,
 		UserID:      userID,
 		ParentOrgID: orgID,
 		OrgID:       orgID,

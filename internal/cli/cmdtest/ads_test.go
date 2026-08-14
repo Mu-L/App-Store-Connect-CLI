@@ -698,6 +698,7 @@ func TestAdsAPIRequestRejectsUnexpectedArgsBeforeNetwork(t *testing.T) {
 }
 
 func TestAdsPlatformAPIRequestUsesV1HostAndAdAccountContext(t *testing.T) {
+	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
@@ -733,6 +734,7 @@ func TestAdsPlatformAPIRequestUsesV1HostAndAdAccountContext(t *testing.T) {
 }
 
 func TestAdsPlatformAPIRequestOmitsContextForMe(t *testing.T) {
+	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
@@ -761,6 +763,7 @@ func TestAdsPlatformAPIRequestOmitsContextForMe(t *testing.T) {
 }
 
 func TestAdsPlatformAPIRequestRequiresAdAccountBeforeNetwork(t *testing.T) {
+	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
@@ -783,6 +786,7 @@ func TestAdsPlatformAPIRequestRequiresAdAccountBeforeNetwork(t *testing.T) {
 }
 
 func TestAdsPlatformAPIRequestRejectsAdAccountForContextFreeEndpoint(t *testing.T) {
+	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
 	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
