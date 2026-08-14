@@ -54,6 +54,13 @@ func inspectSigningArchive(archivePath string) (signingArchiveRequirements, erro
 	}
 
 	mainPath := filepath.ToSlash(filepath.Join("Products", filepath.FromSlash(applicationPath)))
+	mainInfo, err := readSigningPlist(root, filepath.ToSlash(filepath.Join(mainPath, "Info.plist")))
+	if err != nil {
+		return signingArchiveRequirements{}, fmt.Errorf("read application Info.plist: %w", err)
+	}
+	if err := validateSigningArchivePlatform(mainInfo); err != nil {
+		return signingArchiveRequirements{}, err
+	}
 	targetPaths := []archiveTargetPath{{Kind: "application", RelativePath: mainPath}}
 	embedded, err := discoverEmbeddedSigningTargets(root, mainPath)
 	if err != nil {
@@ -113,6 +120,42 @@ func validateTargetApplicationIdentifier(target signingTarget) error {
 		return fmt.Errorf("target %s signed application identifier %s does not match its bundle identifier", target.BundleID, values[0])
 	}
 	return nil
+}
+
+func validateSigningArchivePlatform(info map[string]any) error {
+	supported := uniqueSortedStrings(plistStrings(info["CFBundleSupportedPlatforms"]))
+	platformName := strings.ToLower(plistString(info["DTPlatformName"]))
+	hasPlatformMetadata := len(supported) > 0 || platformName != ""
+
+	if len(supported) != 0 {
+		if len(supported) != 1 || !strings.EqualFold(supported[0], "iPhoneOS") {
+			return fmt.Errorf("archive application supports platform %s; signing reconcile supports only iOS archives", strings.Join(supported, ","))
+		}
+	}
+	if platformName != "" && platformName != "iphoneos" {
+		return fmt.Errorf("archive application uses platform %s; signing reconcile supports only iOS archives", platformName)
+	}
+	if !hasPlatformMetadata {
+		return fmt.Errorf("archive application platform cannot be verified; signing reconcile supports only iOS archives")
+	}
+	return nil
+}
+
+func plistStrings(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if stringValue := plistString(item); stringValue != "" {
+				result = append(result, stringValue)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
 }
 
 type archiveTargetPath struct {

@@ -664,6 +664,58 @@ func TestEnsureReconcileBundleIDConvergesAfterAmbiguousPOST(t *testing.T) {
 	}
 }
 
+func TestApplyRejectsConcurrentBundleSeedMismatchBeforeProfilePOST(t *testing.T) {
+	bundleLookups := 0
+	profilePosts := 0
+	client := newSigningFetchTestClient(t, func(request *http.Request) *http.Response {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/bundleIds":
+			bundleLookups++
+			if bundleLookups == 1 {
+				return signingFetchJSONResponse(http.StatusOK, `{"data":[]}`)
+			}
+			return signingFetchJSONResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bundle-1","attributes":{"identifier":"com.example.app","platform":"IOS","seedId":"OTHERTEAM"}}]}`)
+		case request.Method == http.MethodPost && request.URL.Path == "/v1/bundleIds":
+			return signingFetchJSONResponse(http.StatusConflict, `{"errors":[{"detail":"created concurrently"}]}`)
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/devices":
+			return signingFetchJSONResponse(http.StatusOK, `{"data":[]}`)
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/bundleIds/bundle-1/profiles":
+			return signingFetchJSONResponse(http.StatusOK, `{"data":[]}`)
+		case request.Method == http.MethodPost && request.URL.Path == "/v1/profiles":
+			profilePosts++
+			return signingFetchJSONResponse(http.StatusCreated, `{"data":{"type":"profiles","id":"profile-1","attributes":{}}}`)
+		default:
+			return signingFetchJSONResponse(http.StatusInternalServerError, `{}`)
+		}
+	})
+	target := signingTarget{
+		BundleID:    "com.example.app",
+		AppIDPrefix: "TEAM1",
+		Entitlements: map[string]any{
+			"com.apple.developer.team-identifier": "TEAM1",
+		},
+	}
+	plan := signingReconcilePlanArtifact{
+		Certificate: &signingCertificateRef{ID: "cert-1"},
+		Targets:     []signingTarget{target},
+	}
+
+	_, _, err := applySigningAction(
+		context.Background(),
+		client,
+		plan,
+		signingDevicesFile{},
+		signingAction{Kind: actionCreateBundleID, BundleID: target.BundleID},
+		map[string]string{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "seed ID OTHERTEAM") {
+		t.Fatalf("create Bundle ID action error = %v, want seed mismatch", err)
+	}
+	if profilePosts != 0 {
+		t.Fatalf("profile POST count = %d, want 0", profilePosts)
+	}
+}
+
 func TestEnsureReconcileProfileConvergesAfterAmbiguousPOSTOnlyWhenExact(t *testing.T) {
 	certificate, key := newReconcileTestCertificate(t, "Distribution")
 	profileBytes := buildReconcileTestMobileProvision(t, map[string]any{

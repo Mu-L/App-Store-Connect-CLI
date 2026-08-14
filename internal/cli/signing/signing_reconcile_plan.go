@@ -309,14 +309,8 @@ func planSigningTarget(ctx context.Context, client *asc.Client, target signingTa
 	} else {
 		observed.ResourceID = bundle.ID
 		observed.Platform = string(bundle.Attributes.Platform)
-		targetPrefix := strings.TrimSpace(target.AppIDPrefix)
-		bundleSeedID := strings.TrimSpace(bundle.Attributes.SeedID)
-		if targetPrefix != "" && bundleSeedID != targetPrefix {
-			displaySeedID := bundleSeedID
-			if displaySeedID == "" {
-				displaySeedID = "<missing>"
-			}
-			blockers = append(blockers, fmt.Sprintf("bundle ID %s has seed ID %s, but target requires App ID prefix %s; refusing profile creation", target.BundleID, displaySeedID, targetPrefix))
+		if seedErr := validateReconcileBundleSeed(*bundle, target); seedErr != nil {
+			blockers = append(blockers, seedErr.Error())
 			canCreateProfile = false
 		}
 		if bundle.Attributes.Platform != asc.BundleIDPlatformIOS && bundle.Attributes.Platform != asc.BundleIDPlatformUniversal {
@@ -388,6 +382,19 @@ func planSigningTarget(ctx context.Context, client *asc.Client, target signingTa
 		ProfileName: deterministicProfileName(target.BundleID, certificate.ID, devices),
 	})
 	return observed, actions, blockers, nil
+}
+
+func validateReconcileBundleSeed(bundle asc.Resource[asc.BundleIDAttributes], target signingTarget) error {
+	targetPrefix := strings.TrimSpace(target.AppIDPrefix)
+	bundleSeedID := strings.TrimSpace(bundle.Attributes.SeedID)
+	if targetPrefix == "" || bundleSeedID == targetPrefix {
+		return nil
+	}
+	displaySeedID := bundleSeedID
+	if displaySeedID == "" {
+		displaySeedID = "<missing>"
+	}
+	return fmt.Errorf("bundle ID %s has seed ID %s, but target requires App ID prefix %s; refusing profile creation", target.BundleID, displaySeedID, targetPrefix)
 }
 
 func hashSortedStrings(values []string) string {

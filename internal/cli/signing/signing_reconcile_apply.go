@@ -334,6 +334,13 @@ func applySigningAction(ctx context.Context, client *asc.Client, plan signingRec
 		if err != nil {
 			return "", "", err
 		}
+		target, ok := targetByBundleID(plan.Targets, action.BundleID)
+		if !ok {
+			return "", "", fmt.Errorf("target is missing from plan")
+		}
+		if err := validateReconcileBundleSeed(*bundle, target); err != nil {
+			return "", "", err
+		}
 		return bundle.ID, "", nil
 	case actionCreateProfile:
 		target, ok := targetByBundleID(plan.Targets, action.BundleID)
@@ -447,6 +454,9 @@ func ensureReconcileProfile(ctx context.Context, client *asc.Client, plan signin
 	}
 	if bundle.Attributes.Platform != asc.BundleIDPlatformIOS && bundle.Attributes.Platform != asc.BundleIDPlatformUniversal {
 		return nil, nil, fmt.Errorf("bundle ID has incompatible platform %s", bundle.Attributes.Platform)
+	}
+	if err := validateReconcileBundleSeed(*bundle, target); err != nil {
+		return nil, nil, err
 	}
 	if err := verifyReconcileBundleCapabilities(ctx, client, bundle.ID, target.Entitlements); err != nil {
 		return nil, nil, err

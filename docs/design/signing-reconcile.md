@@ -73,15 +73,20 @@ capability.
 The archive inventory contains the main application and embedded application,
 extension, Watch, and App Clip bundles in stable path order. Each target records
 its bundle identifier and signed executable entitlements. All targets must use
-one team. Missing explicit App IDs may be planned only for baseline entitlement
-sets; a target requiring a capability that has not already been registered is a
-blocker because this command does not mutate capabilities.
+one team. The main application must unambiguously declare the `iPhoneOS`
+platform in `CFBundleSupportedPlatforms` and/or `DTPlatformName`; other or
+unverifiable archive platforms are rejected before planning iOS resources.
+Missing explicit App IDs may be planned only for baseline entitlement sets; a
+target requiring a capability that has not already been registered is a blocker
+because this command does not mutate capabilities.
 
 For an existing App ID, `seedId` must exactly match the archive target's
-`AppIDPrefix`. Capability presence alone is insufficient for entitlements with
-value-specific settings such as App Groups, Apple Pay merchant identifiers,
-Network Extensions, and Wallet pass identifiers. Those entitlements remain
-blocked as unverifiable rather than risking creation of an unusable profile.
+`AppIDPrefix`. Apply repeats this check against the exact App ID returned after
+concurrent-create convergence and again before profile creation. Capability
+presence alone is insufficient for entitlements with value-specific settings
+such as App Groups, Apple Pay merchant identifiers, Network Extensions, and
+Wallet pass identifiers. Those entitlements remain blocked as unverifiable
+rather than risking creation of an unusable profile.
 
 Certificate selection considers only active, unexpired iOS distribution
 certificates. More than one eligible certificate is a blocker unless
