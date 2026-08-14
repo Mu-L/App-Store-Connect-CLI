@@ -206,6 +206,32 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 			embeddedTargets = append(embeddedTargets, member.Name)
 		}
 	}
+	var expandedBytes uint64
+	for _, member := range reader.File {
+		if member.FileInfo().IsDir() {
+			continue
+		}
+		remaining := maxArchiveExpandedBytes - expandedBytes
+		opened, err := member.Open()
+		if err != nil {
+			return Inspection{}, fmt.Errorf("open IPA member %q: %w", member.Name, err)
+		}
+		written, readErr := io.Copy(io.Discard, io.LimitReader(opened, int64(remaining)+1))
+		closeErr := opened.Close()
+		if written < 0 || uint64(written) > remaining {
+			return Inspection{}, fmt.Errorf("IPA expanded contents exceed %d bytes", maxArchiveExpandedBytes)
+		}
+		expandedBytes += uint64(written)
+		if readErr != nil {
+			return Inspection{}, fmt.Errorf("validate IPA member %q compressed data: %w", member.Name, readErr)
+		}
+		if closeErr != nil {
+			return Inspection{}, fmt.Errorf("close IPA member %q: %w", member.Name, closeErr)
+		}
+		if uint64(written) != member.UncompressedSize64 {
+			return Inspection{}, fmt.Errorf("IPA member %q expanded size does not match its declaration", member.Name)
+		}
+	}
 	if len(infoFiles) == 0 {
 		return Inspection{}, fmt.Errorf("IPA is missing Payload/*.app/Info.plist")
 	}

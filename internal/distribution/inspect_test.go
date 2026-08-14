@@ -184,6 +184,61 @@ func TestInspectIPARejectsUnsafeAndAmbiguousArchives(t *testing.T) {
 	}
 }
 
+func TestInspectIPARejectsUnreadableNonMainMembers(t *testing.T) {
+	baseEntries := map[string][]byte{
+		"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"),
+		"Payload/Demo.app/embedded.mobileprovision": signedProfile(t, profileFixture{
+			BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		}),
+	}
+
+	t.Run("checksum failure", func(t *testing.T) {
+		entries := cloneByteMap(baseEntries)
+		entries["Symbols/resource.bin"] = bytes.Repeat([]byte("signed-resource"), 64)
+		path := writeIPA(t, entries)
+		file, err := os.OpenFile(path, os.O_RDWR, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := file.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader, err := zip.NewReader(file, info.Size())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, member := range reader.File {
+			if member.Name != "Symbols/resource.bin" {
+				continue
+			}
+			offset, err := member.DataOffset()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var value [1]byte
+			if _, err := file.ReadAt(value[:], offset); err != nil {
+				t.Fatal(err)
+			}
+			value[0] ^= 0xff
+			if _, err := file.WriteAt(value[:], offset); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		assertInspectErrorContains(t, path, "Symbols/resource.bin")
+	})
+
+	t.Run("truncated stream", func(t *testing.T) {
+		path := writeIPAWithDeclaredRawEntries(t, baseEntries, []declaredRawZipEntry{
+			{Name: "Symbols/truncated.bin", UncompressedSize: 1},
+		})
+		assertInspectErrorContains(t, path, "Symbols/truncated.bin")
+	})
+}
+
 func TestInspectIPARejectsArchiveWideDeclaredExpansionFromCompressedNonMainMembers(t *testing.T) {
 	const archiveExpansionLimit = uint64(16 << 30)
 	baseEntries := map[string][]byte{
@@ -507,6 +562,30 @@ func clonePlistMap(value map[string]any) map[string]any {
 		result[key] = item
 	}
 	return result
+}
+
+func cloneByteMap(value map[string][]byte) map[string][]byte {
+	result := make(map[string][]byte, len(value))
+	for key, item := range value {
+		result[key] = item
+	}
+	return result
+}
+
+func assertInspectErrorContains(t *testing.T, path, want string) {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("InspectIPA() error = %v, want member %q rejection", err, want)
+	}
 }
 
 type profileFixture struct {
