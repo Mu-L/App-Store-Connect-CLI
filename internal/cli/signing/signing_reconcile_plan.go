@@ -29,9 +29,6 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	if err != nil {
 		return signingReconcilePlanArtifact{}, invalidDevicesFileUsageError(err)
 	}
-	if err := requireSigningReconcilePlatform(); err != nil {
-		return signingReconcilePlanArtifact{}, err
-	}
 	archive, err := readSigningArchiveRequirements(paths.ArchivePath)
 	if err != nil {
 		return signingReconcilePlanArtifact{}, fmt.Errorf("inspect archive: %w", sanitizeReconcileError(err, devicesFile))
