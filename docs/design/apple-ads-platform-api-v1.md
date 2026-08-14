@@ -53,11 +53,7 @@ split by dependency and operator workflow:
 4. App and brand reports, insights, recommendations, suggestions, and change history.
 5. Legacy v5 deprecation warnings and migration guidance.
 
-The endpoint specs drive command registration. A separate checked-in contract
-fixture records method, path, parameters, SDK body optionality, response type,
-context requirement, confirmation, command path, and Apple source URL for all
-99 operations. Each feature PR checks its own fixture slice; the final endpoint
-PR adds an aggregate test for the exact 99-spec and 99-command inventory.
+The cumulative 4.4.0 stack implements all 99 operations. Its foundation layer registers 13 operations, the campaign layer adds 41, Maps and assets add 21, and reports and optimization add 24. The endpoint specs drive command registration. A separate checked-in contract fixture records method, path, parameters, SDK body optionality, response type, context requirement, confirmation, command path, and Apple source URL for all 99 operations. The final cumulative layer compares the implementation with that fixture and asserts exact count and uniqueness; earlier layers assert their implemented subsets.
 
 ### Reports and optimization
 
@@ -109,7 +105,16 @@ RED-GREEN coverage includes:
 - exact legacy warning text and direct-help migration paths;
 - generated command docs and built-binary smoke tests.
 
-The local repository gate is `make format`, `make check-docs`, `make lint`, and `ASC_BYPASS_KEYCHAIN=1 make test`. Live account verification remains read-only first and is deferred to the operator with real credentials.
+The local repository gate is `make format`, `make check-docs`, `make lint`, and `ASC_BYPASS_KEYCHAIN=1 make test`.
+
+## Handoff contract
+
+Before any commit or push, run the full local repository gate above and keep
+the endpoint fixture, generated command docs, and migration tests synchronized.
+Live-account behavior remains the principal unverified risk: an operator with
+real Apple Ads credentials must validate read-only Platform calls first, then
+explicitly authorize any mutation testing. Never place those credentials in
+the repository or test fixtures.
 
 ## Alternatives considered
 

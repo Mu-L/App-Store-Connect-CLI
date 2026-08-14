@@ -87,8 +87,12 @@ func TestPlatformMapsEndpointSpecsMatchFixtureLane(t *testing.T) {
 			"JSON object":         BodyObject,
 			"multipart/form-data": BodyMultipart,
 		}
-		if spec.BodyKind != bodyKinds[contract.bodyKind] {
-			t.Fatalf("%s body kind = %v, want %v", command, spec.BodyKind, bodyKinds[contract.bodyKind])
+		wantBodyKind, known := bodyKinds[contract.bodyKind]
+		if !known {
+			t.Fatalf("%s unexpected fixture body kind %q", command, contract.bodyKind)
+		}
+		if spec.BodyKind != wantBodyKind {
+			t.Fatalf("%s body kind = %v, want %v", command, spec.BodyKind, wantBodyKind)
 		}
 		wantBodyType := contract.bodyType
 		if wantBodyType == "none" {
@@ -111,7 +115,7 @@ func TestPlatformMapsEndpointSpecsMatchFixtureLane(t *testing.T) {
 			t.Fatalf("read-only query %s must be retry-safe", command)
 		}
 		if (contract.destructive == "yes") != spec.RequiresConfirm {
-			t.Fatalf("delete %s must require confirmation", command)
+			t.Fatalf("%s confirmation = %t, fixture destructive = %q", command, spec.RequiresConfirm, contract.destructive)
 		}
 		delete(want, command)
 	}

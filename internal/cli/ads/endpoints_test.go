@@ -184,6 +184,8 @@ func TestPlatformAdAccountCreateRequiresOneProductFeature(t *testing.T) {
 }
 
 func TestPlatformCampaignDeleteCommandsRequireConfirmationFirst(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
 	for _, command := range [][]string{
 		{"campaigns", "delete"},
 		{"ad-groups", "delete"},
@@ -263,6 +265,8 @@ func TestPlatformCampaignPathIDsAreStringsButAdamIDIsNumeric(t *testing.T) {
 }
 
 func TestPlatformCampaignPauseResumeWorkflowsUseStringIDsAndConfirm(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
 	root := AdsCommand()
 	for _, name := range []string{"pause", "resume"} {
 		command := findCommand(root, "platform", "campaigns", name)

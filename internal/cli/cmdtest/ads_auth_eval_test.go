@@ -332,8 +332,8 @@ func TestAdsAuthStatusKeepsAuthSourceWhenOptionalOrgConfigIsInvalid(t *testing.T
 	if status.Active.Source != "ASC_ADS_ACCESS_TOKEN" {
 		t.Fatalf("active.source = %q, want ASC_ADS_ACCESS_TOKEN", status.Active.Source)
 	}
-	if status.Active.Error != "" {
-		t.Fatalf("active.error = %q, want no aggregate context error", status.Active.Error)
+	if status.Active.Error == "" || !strings.Contains(status.Active.Error, "failed to parse config") {
+		t.Fatalf("active.error = %q, want legacy org resolution error", status.Active.Error)
 	}
 	if status.Active.OrgError == "" || !strings.Contains(status.Active.OrgError, "failed to parse config") {
 		t.Fatalf("active.org_error = %q, want org config parse error", status.Active.OrgError)
