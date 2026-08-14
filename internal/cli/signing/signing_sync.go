@@ -509,8 +509,13 @@ func syncPullCommand() *ffcli.Command {
 			if err := os.MkdirAll(outDir, 0o755); err != nil {
 				return fmt.Errorf("signing sync pull: create output dir: %w", err)
 			}
+			outputRoot, err := rootfs.New(outDir)
+			if err != nil {
+				return fmt.Errorf("signing sync pull: create output root: %w", err)
+			}
+			defer outputRoot.Close()
 
-			decrypted, err := prepareDecryptedSigningFiles(store, encryptedFiles, pass, outDir)
+			decrypted, err := prepareDecryptedSigningFilesInRoot(store, encryptedFiles, pass, outputRoot)
 			if err != nil {
 				return fmt.Errorf("signing sync pull: %w", err)
 			}
@@ -519,7 +524,7 @@ func syncPullCommand() *ffcli.Command {
 			var sensitiveFiles []string
 			identityPresent := false
 			for _, file := range decrypted {
-				if err := writeDecryptedOutputFile(outDir, file.RelativePath, file.Plaintext, file.Sensitive); err != nil {
+				if err := writeDecryptedOutputFileInRoot(outputRoot, file.RelativePath, file.Plaintext, file.Sensitive); err != nil {
 					return fmt.Errorf("signing sync pull: %w", err)
 				}
 
@@ -548,6 +553,15 @@ func syncPullCommand() *ffcli.Command {
 }
 
 func prepareDecryptedSigningFiles(store *signingpkg.GitStore, encryptedFiles []string, password, outDir string) ([]decryptedSigningFile, error) {
+	root, err := rootfs.New(outDir)
+	if err != nil {
+		return nil, fmt.Errorf("create output root: %w", err)
+	}
+	defer root.Close()
+	return prepareDecryptedSigningFilesInRoot(store, encryptedFiles, password, root)
+}
+
+func prepareDecryptedSigningFilesInRoot(store *signingpkg.GitStore, encryptedFiles []string, password string, root rootfs.Root) ([]decryptedSigningFile, error) {
 	if len(encryptedFiles) > maxEncryptedSigningFiles {
 		return nil, fmt.Errorf("encrypted signing repository contains %d files; limit is %d", len(encryptedFiles), maxEncryptedSigningFiles)
 	}
@@ -606,10 +620,6 @@ func prepareDecryptedSigningFiles(store *signingpkg.GitStore, encryptedFiles []s
 	}
 	decrypted = filtered
 
-	root, err := rootfs.New(outDir)
-	if err != nil {
-		return nil, fmt.Errorf("create output root: %w", err)
-	}
 	for _, file := range decrypted {
 		if file.Sensitive {
 			err = root.CheckCreateNewFile(file.RelativePath)
@@ -825,6 +835,12 @@ func writeDecryptedOutputFile(outDir, relPath string, plaintext []byte, sensitiv
 	if err != nil {
 		return fmt.Errorf("create output root: %w", err)
 	}
+	defer root.Close()
+	return writeDecryptedOutputFileInRoot(root, relPath, plaintext, sensitive)
+}
+
+func writeDecryptedOutputFileInRoot(root rootfs.Root, relPath string, plaintext []byte, sensitive bool) error {
+	var err error
 	if sensitive {
 		err = root.CreateNewFile(relPath, plaintext, 0o600)
 	} else {

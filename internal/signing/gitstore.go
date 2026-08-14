@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -69,6 +70,46 @@ type GitStore struct {
 	RepoURL  string
 	LocalDir string
 	Branch   string
+
+	rootMu sync.Mutex
+	root   *rootfs.Root
+}
+
+func (g *GitStore) filesystemRoot() (rootfs.Root, error) {
+	absolute, err := filepath.Abs(g.LocalDir)
+	if err != nil {
+		return rootfs.Root{}, err
+	}
+	absolute = filepath.Clean(absolute)
+
+	g.rootMu.Lock()
+	defer g.rootMu.Unlock()
+	if g.root != nil && g.root.Path() == absolute {
+		return *g.root, nil
+	}
+	if g.root != nil {
+		if err := g.root.Close(); err != nil {
+			return rootfs.Root{}, err
+		}
+		g.root = nil
+	}
+	root, err := rootfs.New(absolute)
+	if err != nil {
+		return rootfs.Root{}, err
+	}
+	g.root = &root
+	return root, nil
+}
+
+func (g *GitStore) closeFilesystemRoot() error {
+	g.rootMu.Lock()
+	defer g.rootMu.Unlock()
+	if g.root == nil {
+		return nil
+	}
+	err := g.root.Close()
+	g.root = nil
+	return err
 }
 
 // Clone clones the git repo. If allowCreate is true (push mode), falls back to
@@ -131,7 +172,7 @@ func (g *GitStore) WriteEncryptedFile(relPath string, plaintext []byte, password
 		return err
 	}
 
-	root, err := rootfs.New(g.LocalDir)
+	root, err := g.filesystemRoot()
 	if err != nil {
 		return err
 	}
@@ -149,7 +190,7 @@ func (g *GitStore) WriteEncryptedFileWithMetadata(relPath string, plaintext []by
 	if err != nil {
 		return err
 	}
-	root, err := rootfs.New(g.LocalDir)
+	root, err := g.filesystemRoot()
 	if err != nil {
 		return err
 	}
@@ -167,7 +208,7 @@ func (g *GitStore) ReplaceEncryptedFileWithMetadata(relPath string, plaintext []
 	if err != nil {
 		return err
 	}
-	root, err := rootfs.New(g.LocalDir)
+	root, err := g.filesystemRoot()
 	if err != nil {
 		return err
 	}
@@ -180,7 +221,7 @@ func (g *GitStore) CheckNewEncryptedFile(relPath string) error {
 	if err := validateEncryptedRepositoryPath(filepath.ToSlash(relPath)); err != nil {
 		return err
 	}
-	root, err := rootfs.New(g.LocalDir)
+	root, err := g.filesystemRoot()
 	if err != nil {
 		return err
 	}
@@ -193,7 +234,7 @@ func (g *GitStore) CheckWriteEncryptedFile(relPath string) error {
 	if err := validateEncryptedRepositoryPath(filepath.ToSlash(relPath)); err != nil {
 		return err
 	}
-	root, err := rootfs.New(g.LocalDir)
+	root, err := g.filesystemRoot()
 	if err != nil {
 		return err
 	}
@@ -206,7 +247,7 @@ func (g *GitStore) CheckEncryptedFileParent(relPath string) error {
 	if err := validateEncryptedRepositoryPath(filepath.ToSlash(relPath)); err != nil {
 		return err
 	}
-	root, err := rootfs.New(g.LocalDir)
+	root, err := g.filesystemRoot()
 	if err != nil {
 		return err
 	}
@@ -218,7 +259,7 @@ func (g *GitStore) EncryptedFileSize(relPath string) (int64, error) {
 	if err := validateEncryptedRepositoryPath(filepath.ToSlash(relPath)); err != nil {
 		return 0, err
 	}
-	root, err := rootfs.New(g.LocalDir)
+	root, err := g.filesystemRoot()
 	if err != nil {
 		return 0, err
 	}
@@ -247,7 +288,7 @@ func (g *GitStore) ReadEncryptedFileWithMetadata(relPath string, password string
 	if err := validateEncryptedRepositoryPath(filepath.ToSlash(relPath)); err != nil {
 		return nil, EncryptedFileMetadata{}, err
 	}
-	root, err := rootfs.New(g.LocalDir)
+	root, err := g.filesystemRoot()
 	if err != nil {
 		return nil, EncryptedFileMetadata{}, err
 	}
@@ -445,10 +486,12 @@ func (g *GitStore) CommitAndPush(ctx context.Context, message string) error {
 
 // Cleanup removes the local clone directory.
 func (g *GitStore) Cleanup() error {
-	if g.LocalDir == "" {
-		return nil
+	closeErr := g.closeFilesystemRoot()
+	var removeErr error
+	if g.LocalDir != "" {
+		removeErr = os.RemoveAll(g.LocalDir)
 	}
-	return os.RemoveAll(g.LocalDir)
+	return errors.Join(closeErr, removeErr)
 }
 
 // EnsureInsideDir checks that target stays inside baseDir and does not traverse
