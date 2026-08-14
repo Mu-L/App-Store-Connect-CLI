@@ -42,6 +42,7 @@ const (
 	reconcileDeviceNameMaxBytes    = 128
 	reconcileProfileMaxBytes       = 16 << 20
 	reconcileMaximumValidityDays   = 3650
+	reconcileWorkflowTimeout       = 15 * time.Minute
 )
 
 func validateSigningReconcilePlatform(goos string) error {

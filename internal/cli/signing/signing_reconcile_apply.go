@@ -52,7 +52,7 @@ func executeSigningReconcileApply(ctx context.Context, planPath string) (signing
 	if err != nil {
 		return receipt, err
 	}
-	requestCtx, cancel := shared.ContextWithTimeout(ctx)
+	requestCtx, cancel := signingRequestContext(ctx)
 	defer cancel()
 	certificates, err := getAllReconcileCertificates(requestCtx, client)
 	if err != nil {

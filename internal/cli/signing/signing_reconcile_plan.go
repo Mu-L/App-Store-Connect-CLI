@@ -112,7 +112,7 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 var (
 	sharedASCClient       = func() (*asc.Client, error) { return shared.GetASCClient() }
 	signingRequestContext = func(ctx context.Context) (context.Context, context.CancelFunc) {
-		return shared.ContextWithTimeout(ctx)
+		return shared.ContextWithResolvedTimeout(ctx, reconcileWorkflowTimeout)
 	}
 )
 
@@ -738,6 +738,15 @@ func signingCapabilitiesForEntitlements(entitlements map[string]any) ([]string, 
 			allowed, ok := value.(bool)
 			if !ok || allowed {
 				unverified = append(unverified, key+" (must be false for ad hoc distribution)")
+			}
+			continue
+		}
+		if key == "aps-environment" {
+			environment, ok := value.(string)
+			if !ok || environment != "production" {
+				unverified = append(unverified, key+" (must be production for ad hoc distribution)")
+			} else {
+				capabilities = append(capabilities, "PUSH_NOTIFICATIONS")
 			}
 			continue
 		}
