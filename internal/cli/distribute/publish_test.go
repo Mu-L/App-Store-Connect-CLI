@@ -3,6 +3,7 @@ package distribute
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -56,6 +57,27 @@ func TestPublishCommandValidatesOutputBeforeLocalOrRemoteSideEffects(t *testing.
 	}
 	if _, statErr := os.Stat(stateDir); !os.IsNotExist(statErr) {
 		t.Fatalf("state directory was created before output validation: %v", statErr)
+	}
+}
+
+func TestPublishCommandRejectsUnsafeBucketBeforeSideEffects(t *testing.T) {
+	originalLoad := loadPreparedBundle
+	t.Cleanup(func() { loadPreparedBundle = originalLoad })
+	loadCalled := false
+	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) {
+		loadCalled = true
+		return nil, errors.New("unexpected bundle load")
+	}
+	stateDir := t.TempDir()
+	err := PublishCommand().ParseAndRun(context.Background(), []string{
+		"--bundle-dir", t.TempDir(), "--endpoint", "https://objects.example.com", "--region", "auto", "--bucket", "bucket\x1b]0;pwned\x07", "--prefix", "app",
+		"--receipt", filepath.Join(stateDir, "receipt.json"), "--link-path", filepath.Join(stateDir, "link.json"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "--bucket") {
+		t.Fatalf("error = %v, want unsafe bucket usage error", err)
+	}
+	if loadCalled {
+		t.Fatal("bundle was loaded before unsafe bucket rejection")
 	}
 }
 

@@ -61,8 +61,8 @@ func NewS3Store(ctx context.Context, options S3StoreConfig) (*S3Store, time.Time
 	if strings.TrimSpace(options.Region) == "" {
 		return nil, time.Time{}, fmt.Errorf("region is required")
 	}
-	if strings.TrimSpace(options.Bucket) == "" {
-		return nil, time.Time{}, fmt.Errorf("bucket is required")
+	if err := ValidateBucket(options.Bucket); err != nil {
+		return nil, time.Time{}, err
 	}
 	usePathStyle, err := addressingPathStyle(options.AddressingStyle)
 	if err != nil {

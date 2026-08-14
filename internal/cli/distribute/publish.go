@@ -140,8 +140,8 @@ Examples:
 			if !regionPattern.MatchString(*region) {
 				return shared.UsageErrorf("--region must be 1-100 letters, digits, dots, underscores, or hyphens")
 			}
-			if len(*bucket) > 255 || strings.ContainsAny(*bucket, "\r\n\x00") || strings.TrimSpace(*bucket) != *bucket {
-				return shared.UsageErrorf("--bucket must be a bounded name without whitespace or control characters")
+			if err := core.ValidateBucket(*bucket); err != nil {
+				return shared.UsageErrorf("--bucket: %v", err)
 			}
 			resolvedReceiptPath := strings.TrimSpace(*receiptPath)
 			resolvedLinkPath := strings.TrimSpace(*linkPath)

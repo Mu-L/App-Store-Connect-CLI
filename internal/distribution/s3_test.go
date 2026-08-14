@@ -103,6 +103,19 @@ func TestS3StorePathStyleConditionalUploadsAndPrivateVerification(t *testing.T) 
 	if !receipt.Verified || strings.Contains(receipt.InstallURL, "test-secret") || !strings.Contains(sensitive.InstallURL, "X-Amz-") {
 		t.Fatalf("unexpected receipt/links: %#v %#v", receipt, sensitive)
 	}
+	for _, link := range []struct {
+		name     string
+		rawURL   string
+		deadline time.Time
+	}{
+		{name: "install", rawURL: sensitive.InstallURL, deadline: *receipt.ExpiresAt},
+		{name: "manifest", rawURL: sensitive.ManifestURL, deadline: receipt.ExpiresAt.Add(time.Minute)},
+		{name: "artifact", rawURL: sensitive.ArtifactURL, deadline: receipt.ExpiresAt.Add(time.Minute)},
+	} {
+		if err := privateSignatureWithinDeadline(link.rawURL, link.deadline); err != nil {
+			t.Fatalf("%s signature deadline: %v", link.name, err)
+		}
+	}
 	wantTail := []string{
 		"head:channel/objects/sha256/" + sha256Hex(ipa) + ".ipa",
 		"put:channel/objects/sha256/" + sha256Hex(ipa) + ".ipa",
