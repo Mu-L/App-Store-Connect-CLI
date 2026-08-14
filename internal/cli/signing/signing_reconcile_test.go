@@ -267,6 +267,21 @@ func TestSigningCapabilitiesRejectsDevelopmentPushEnvironment(t *testing.T) {
 	}
 }
 
+func TestSigningCapabilitiesRejectsTestFlightEntitlement(t *testing.T) {
+	capabilities, unverified := signingCapabilitiesForEntitlements(map[string]any{
+		"beta-reports-active": true,
+	})
+	if len(capabilities) != 0 || len(unverified) != 1 || !strings.Contains(unverified[0], "beta-reports-active") {
+		t.Fatalf("capabilities=%#v unverified=%#v, want TestFlight entitlement blocker", capabilities, unverified)
+	}
+	capabilities, unverified = signingCapabilitiesForEntitlements(map[string]any{
+		"beta-reports-active": false,
+	})
+	if len(capabilities) != 0 || len(unverified) != 0 {
+		t.Fatalf("false beta reports capabilities=%#v unverified=%#v", capabilities, unverified)
+	}
+}
+
 func TestSigningReconcileRequestContextUsesWorkflowTimeout(t *testing.T) {
 	t.Setenv("ASC_TIMEOUT", "")
 	ctx, cancel := signingRequestContext(context.Background())
