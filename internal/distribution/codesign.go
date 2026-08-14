@@ -257,8 +257,9 @@ func enumerateMachOFiles(appPath string) ([]string, error) {
 		var magic [4]byte
 		_, readErr := io.ReadFull(file, magic[:])
 		isMachO := false
+		var classificationErr error
 		if readErr == nil {
-			isMachO = isMachOFile(file, magic, info.Size())
+			isMachO, classificationErr = classifyMachOFile(file, magic, info.Size())
 		}
 		closeErr := file.Close()
 		if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
@@ -266,6 +267,9 @@ func enumerateMachOFiles(appPath string) ([]string, error) {
 		}
 		if closeErr != nil {
 			return closeErr
+		}
+		if classificationErr != nil {
+			return fmt.Errorf("classify Mach-O file %q: %w", candidate, classificationErr)
 		}
 		if isMachO {
 			result = append(result, candidate)
@@ -279,49 +283,60 @@ func enumerateMachOFiles(appPath string) ([]string, error) {
 	return result, nil
 }
 
-func isMachOFile(file *os.File, magic [4]byte, fileSize int64) bool {
+func classifyMachOFile(file *os.File, magic [4]byte, fileSize int64) (bool, error) {
 	switch magic {
 	case [4]byte{0xfe, 0xed, 0xfa, 0xce}, [4]byte{0xce, 0xfa, 0xed, 0xfe},
 		[4]byte{0xfe, 0xed, 0xfa, 0xcf}, [4]byte{0xcf, 0xfa, 0xed, 0xfe}:
-		return isValidThinMachO(file, fileSize)
+		return isLoadableThinMachO(file, fileSize), nil
 	case [4]byte{0xca, 0xfe, 0xba, 0xbe}:
-		return isValidFatMachO(file, fileSize, binary.BigEndian, 20)
+		return classifyFatMachO(file, fileSize, binary.BigEndian, 20)
 	case [4]byte{0xbe, 0xba, 0xfe, 0xca}:
-		return isValidFatMachO(file, fileSize, binary.LittleEndian, 20)
+		return classifyFatMachO(file, fileSize, binary.LittleEndian, 20)
 	case [4]byte{0xca, 0xfe, 0xba, 0xbf}:
-		return isValidFatMachO(file, fileSize, binary.BigEndian, 32)
+		return classifyFatMachO(file, fileSize, binary.BigEndian, 32)
 	case [4]byte{0xbf, 0xba, 0xfe, 0xca}:
-		return isValidFatMachO(file, fileSize, binary.LittleEndian, 32)
+		return classifyFatMachO(file, fileSize, binary.LittleEndian, 32)
+	default:
+		return false, nil
+	}
+}
+
+func isLoadableThinMachO(file *os.File, fileSize int64) bool {
+	if fileSize <= 0 {
+		return false
+	}
+	image, err := macho.NewFile(io.NewSectionReader(file, 0, fileSize))
+	return err == nil && isLoadableMachOImage(image)
+}
+
+func isLoadableMachOImage(file *macho.File) bool {
+	switch file.Type {
+	case macho.TypeExec, macho.TypeDylib, macho.TypeBundle:
+		return true
 	default:
 		return false
 	}
 }
 
-func isValidThinMachO(file *os.File, fileSize int64) bool {
-	if fileSize <= 0 {
-		return false
-	}
-	_, err := macho.NewFile(io.NewSectionReader(file, 0, fileSize))
-	return err == nil
-}
-
-func isValidFatMachO(file *os.File, fileSize int64, order binary.ByteOrder, archHeaderSize int64) bool {
+func classifyFatMachO(file *os.File, fileSize int64, order binary.ByteOrder, archHeaderSize int64) (bool, error) {
 	var countBytes [4]byte
 	if _, err := file.ReadAt(countBytes[:], 4); err != nil {
-		return false
+		return false, nil
 	}
 	architectureCount := order.Uint32(countBytes[:])
 	if architectureCount == 0 || architectureCount > 64 {
-		return false
+		return false, nil
 	}
 	tableEnd := int64(8) + int64(architectureCount)*archHeaderSize
 	if tableEnd > fileSize {
-		return false
+		return false, nil
 	}
 	header := make([]byte, archHeaderSize)
+	hasLoadableSlice := false
+	hasNonLoadableSlice := false
 	for index := uint32(0); index < architectureCount; index++ {
 		if _, err := file.ReadAt(header, int64(8)+int64(index)*archHeaderSize); err != nil {
-			return false
+			return false, nil
 		}
 		var offset, size uint64
 		if archHeaderSize == 20 {
@@ -332,14 +347,25 @@ func isValidFatMachO(file *os.File, fileSize int64, order binary.ByteOrder, arch
 			size = order.Uint64(header[16:24])
 		}
 		if offset < uint64(tableEnd) || size == 0 || offset > uint64(fileSize) || size > uint64(fileSize)-offset {
-			return false
+			return false, nil
 		}
 		slice, err := macho.NewFile(io.NewSectionReader(file, int64(offset), int64(size)))
-		if err != nil || uint32(slice.Cpu) != order.Uint32(header[:4]) {
-			return false
+		if err != nil {
+			return false, fmt.Errorf("fat Mach-O contains a malformed architecture slice")
+		}
+		if uint32(slice.Cpu) != order.Uint32(header[:4]) {
+			return false, fmt.Errorf("fat Mach-O architecture header does not match its slice")
+		}
+		if isLoadableMachOImage(slice) {
+			hasLoadableSlice = true
+		} else {
+			hasNonLoadableSlice = true
+		}
+		if hasLoadableSlice && hasNonLoadableSlice {
+			return false, fmt.Errorf("fat Mach-O mixes loadable and non-loadable image types")
 		}
 	}
-	return true
+	return hasLoadableSlice, nil
 }
 
 func codeObjectFingerprints(ctx context.Context, directory string, objectIndex int, codePath string) ([]string, error) {

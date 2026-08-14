@@ -928,6 +928,118 @@ func TestOpenRootRejectsSelectedPathSwappedBeforeOpen(t *testing.T) {
 	}
 }
 
+func TestOpenRootRejectsSelectedDirectoryReplacedBeforeOpen(t *testing.T) {
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(parent, "root")
+	replacement := filepath.Join(parent, "replacement")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(replacement, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	root := mustRoot(t, directory)
+	root.beforeOpenRootForTest = func() {
+		if err := os.Rename(directory, directory+"-original"); err != nil {
+			t.Fatalf("rename selected root: %v", err)
+		}
+		if err := os.Rename(replacement, directory); err != nil {
+			t.Fatalf("replace selected root: %v", err)
+		}
+	}
+
+	writeErr := root.WriteFile("escaped", []byte("unsafe"), 0o600)
+	if !errors.Is(writeErr, ErrSymlink) {
+		t.Fatalf("WriteFile() error = %v, want ErrSymlink", writeErr)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "escaped")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("WriteFile() reached replacement directory: %v", err)
+	}
+}
+
+func TestRootedWriteRejectsSelectedDirectoryRecreatedBeforeOpen(t *testing.T) {
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(parent, "root")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := mustRoot(t, directory)
+	root.beforeOpenRootForTest = func() {
+		if err := os.Remove(directory); err != nil {
+			t.Fatalf("remove selected root: %v", err)
+		}
+		if err := os.Mkdir(directory, 0o755); err != nil {
+			t.Fatalf("recreate selected root: %v", err)
+		}
+	}
+	if err := root.WriteFile("escaped", []byte("unsafe"), 0o600); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("WriteFile() error = %v, want ErrSymlink", err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "escaped")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("WriteFile() reached recreated directory: %v", err)
+	}
+}
+
+func TestOpenRootDoesNotAdoptDirectoryCreatedAfterNew(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "not-yet-selected")
+	root, err := New(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := root.OpenRoot()
+	if opened != nil {
+		_ = opened.Close()
+		t.Fatal("OpenRoot() adopted a directory created after New")
+	}
+	if !errors.Is(err, ErrSymlink) {
+		t.Fatalf("OpenRoot() error = %v, want ErrSymlink", err)
+	}
+}
+
+func TestRootedWriteRejectsIntermediateDirectoryReplacedBeforeOpen(t *testing.T) {
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedParent := filepath.Join(parent, "selected")
+	directory := filepath.Join(selectedParent, "root")
+	replacementParent := filepath.Join(parent, "replacement")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(replacementParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := mustRoot(t, directory)
+	root.beforeOpenRootForTest = func() {
+		if err := os.Rename(selectedParent, selectedParent+"-original"); err != nil {
+			t.Fatalf("rename selected parent: %v", err)
+		}
+		if err := os.Rename(replacementParent, selectedParent); err != nil {
+			t.Fatalf("replace selected parent: %v", err)
+		}
+	}
+	if err := root.WriteFile("escaped", []byte("unsafe"), 0o600); err == nil {
+		t.Fatal("WriteFile() succeeded through replacement ancestor")
+	}
+	if _, err := os.Stat(filepath.Join(directory, "escaped")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("WriteFile() reached replacement ancestor: %v", err)
+	}
+	if _, err := os.Stat(directory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("WriteFile() created the selected root in replacement ancestor: %v", err)
+	}
+}
+
 func TestOpenRootPreservesSelectedSymlinkedParentLayout(t *testing.T) {
 	requireSymlinks(t)
 	parent, err := filepath.EvalSymlinks(t.TempDir())

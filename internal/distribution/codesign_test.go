@@ -3,6 +3,7 @@ package distribution
 import (
 	"archive/zip"
 	"context"
+	"encoding/binary"
 	"errors"
 	"os"
 	"os/exec"
@@ -535,6 +536,98 @@ func TestEnumerateMachOFilesIgnoresJavaClassMagicCollision(t *testing.T) {
 	}
 }
 
+func TestEnumerateMachOFilesIgnoresNonLoadableObjectFile(t *testing.T) {
+	appPath := t.TempDir()
+	mainPath := filepath.Join(appPath, "Demo")
+	objectPath := filepath.Join(appPath, "Resource.o")
+	if err := os.WriteFile(mainPath, fakeMachO("main"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(objectPath, fakeMachOType("resource", 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := enumerateMachOFiles(appPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != mainPath {
+		t.Fatalf("enumerateMachOFiles() = %#v, want only %q", got, mainPath)
+	}
+}
+
+func TestEnumerateMachOFilesIncludesOnlyLoadableThinImageTypes(t *testing.T) {
+	appPath := t.TempDir()
+	want := []string{
+		filepath.Join(appPath, "Bundle"),
+		filepath.Join(appPath, "Dylib"),
+		filepath.Join(appPath, "Executable"),
+	}
+	for _, fixture := range []struct {
+		name     string
+		fileType byte
+	}{
+		{name: "Executable", fileType: 2},
+		{name: "Dylib", fileType: 6},
+		{name: "Bundle", fileType: 8},
+		{name: "ObjectResource", fileType: 1},
+	} {
+		if err := os.WriteFile(filepath.Join(appPath, fixture.name), fakeMachOType(fixture.name, fixture.fileType), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := enumerateMachOFiles(appPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("enumerateMachOFiles() = %#v, want %#v", got, want)
+	}
+}
+
+func TestEnumerateMachOFilesClassifiesFatImageTypesSafely(t *testing.T) {
+	t.Run("fat object is a resource", func(t *testing.T) {
+		appPath := t.TempDir()
+		mainPath := filepath.Join(appPath, "Demo")
+		if err := os.WriteFile(mainPath, fakeMachO("main"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(appPath, "Resource.o"), fatMachOWithTypes(1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := enumerateMachOFiles(appPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0] != mainPath {
+			t.Fatalf("enumerateMachOFiles() = %#v, want only %q", got, mainPath)
+		}
+	})
+
+	t.Run("mixed loadable and object slices are rejected", func(t *testing.T) {
+		appPath := t.TempDir()
+		if err := os.WriteFile(filepath.Join(appPath, "Mixed"), fatMachOWithTypes(2, 1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := enumerateMachOFiles(appPath); err == nil || !strings.Contains(err.Error(), "mixes loadable and non-loadable") {
+			t.Fatalf("enumerateMachOFiles() error = %v, want mixed-type rejection", err)
+		}
+	})
+
+	t.Run("malformed slice is rejected after valid fat header", func(t *testing.T) {
+		appPath := t.TempDir()
+		data := fatMachOWithTypes(2, 6)
+		secondSliceOffset := 8 + 2*20 + 32
+		clear(data[secondSliceOffset : secondSliceOffset+4])
+		if err := os.WriteFile(filepath.Join(appPath, "Malformed"), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := enumerateMachOFiles(appPath); err == nil || !strings.Contains(err.Error(), "malformed architecture slice") {
+			t.Fatalf("enumerateMachOFiles() error = %v, want malformed-slice rejection", err)
+		}
+	})
+}
+
 func TestValidateTeamIdentifierRejectsRequirementInjection(t *testing.T) {
 	for _, value := range []string{"TEAM123", "abc123", strings.Repeat("A", 32)} {
 		if err := validateTeamIdentifier(value); err != nil {
@@ -634,11 +727,15 @@ func requireEntitlementDisplayArgs(t *testing.T, args []string, codePath string)
 }
 
 func fakeMachO(payload string) []byte {
+	return fakeMachOType(payload, 2)
+}
+
+func fakeMachOType(payload string, fileType byte) []byte {
 	header := []byte{
 		0xcf, 0xfa, 0xed, 0xfe, // MH_MAGIC_64
 		0x0c, 0x00, 0x00, 0x01, // CPU_TYPE_ARM64
 		0x00, 0x00, 0x00, 0x00, // CPU subtype
-		0x02, 0x00, 0x00, 0x00, // MH_EXECUTE
+		fileType, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00, // no load commands
 		0x00, 0x00, 0x00, 0x00, // load command size
 		0x00, 0x00, 0x00, 0x00, // flags
@@ -648,23 +745,28 @@ func fakeMachO(payload string) []byte {
 }
 
 func validFatMachO() []byte {
-	return []byte{
-		0xca, 0xfe, 0xba, 0xbe, // FAT_MAGIC
-		0x00, 0x00, 0x00, 0x01, // one architecture
-		0x01, 0x00, 0x00, 0x0c, // CPU_TYPE_ARM64
-		0x00, 0x00, 0x00, 0x00, // CPU subtype
-		0x00, 0x00, 0x00, 0x1c, // slice offset
-		0x00, 0x00, 0x00, 0x20, // slice size
-		0x00, 0x00, 0x00, 0x02, // alignment
-		0xcf, 0xfa, 0xed, 0xfe, // MH_MAGIC_64
-		0x0c, 0x00, 0x00, 0x01, // CPU_TYPE_ARM64
-		0x00, 0x00, 0x00, 0x00, // CPU subtype
-		0x02, 0x00, 0x00, 0x00, // MH_EXECUTE
-		0x00, 0x00, 0x00, 0x00, // no load commands
-		0x00, 0x00, 0x00, 0x00, // load command size
-		0x00, 0x00, 0x00, 0x00, // flags
-		0x00, 0x00, 0x00, 0x00, // reserved
+	return fatMachOWithTypes(2)
+}
+
+func fatMachOWithTypes(fileTypes ...byte) []byte {
+	const (
+		architectureHeaderSize = 20
+		sliceSize              = 32
+	)
+	tableEnd := 8 + len(fileTypes)*architectureHeaderSize
+	data := make([]byte, tableEnd+len(fileTypes)*sliceSize)
+	copy(data[:4], []byte{0xca, 0xfe, 0xba, 0xbe})
+	binary.BigEndian.PutUint32(data[4:8], uint32(len(fileTypes)))
+	for index, fileType := range fileTypes {
+		headerOffset := 8 + index*architectureHeaderSize
+		sliceOffset := tableEnd + index*sliceSize
+		binary.BigEndian.PutUint32(data[headerOffset:headerOffset+4], 0x0100000c)
+		binary.BigEndian.PutUint32(data[headerOffset+8:headerOffset+12], uint32(sliceOffset))
+		binary.BigEndian.PutUint32(data[headerOffset+12:headerOffset+16], sliceSize)
+		binary.BigEndian.PutUint32(data[headerOffset+16:headerOffset+20], 2)
+		copy(data[sliceOffset:sliceOffset+sliceSize], fakeMachOType("", fileType))
 	}
+	return data
 }
 
 func TestValidateExecutableNameRejectsTraversalAndFormatting(t *testing.T) {
