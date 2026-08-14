@@ -414,6 +414,14 @@ func TestAdsAuthDiscoveryPreservesInt64Identifiers(t *testing.T) {
 	if len(accounts) != 1 || accounts[0].AdAccountID != largeID || accounts[0].OrgID != largeID || !accounts[0].Active {
 		t.Fatalf("accounts = %+v, want exact active int64 identifiers", accounts)
 	}
+
+	me, err := normalizePlatformDiscoveryMe(json.RawMessage(`{"userId":` + largeID + `,"orgId":` + largeID + `}`))
+	if err != nil {
+		t.Fatalf("normalizePlatformDiscoveryMe() error: %v", err)
+	}
+	if got := string(me); !strings.Contains(got, `"id":"`+largeID+`"`) || !strings.Contains(got, `"userId":"`+largeID+`"`) || !strings.Contains(got, `"orgId":"`+largeID+`"`) {
+		t.Fatalf("normalizePlatformDiscoveryMe() = %s, want exact string identifiers", got)
+	}
 }
 
 func TestPlatformOptionalBodyAndUnboundedLimit(t *testing.T) {

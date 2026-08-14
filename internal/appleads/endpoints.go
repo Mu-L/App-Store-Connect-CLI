@@ -74,6 +74,10 @@ func PlatformEndpointSpecs() []EndpointSpec {
 			QueryParams:  append([]ParamSpec(nil), queryParams...),
 		}
 	}
+	retrySafe := func(spec EndpointSpec) EndpointSpec {
+		spec.RetrySafe = true
+		return spec
+	}
 
 	id := ParamSpec{Name: "id", Flag: "ad-account", Type: ParamString, Required: true, ContextValue: true}
 	orgID := ParamSpec{Name: "id", Flag: "org-id", Type: ParamString, Required: true}
@@ -98,16 +102,13 @@ func PlatformEndpointSpecs() []EndpointSpec {
 			searchLimit,
 		}),
 		platform("platform-get-app", "GET", "v1/apps/{adamId}", []string{"apps", "view"}, ContextAdAccount, BodyNone, false, "", "AppDetailsResponse", []ParamSpec{adamIDParam}, nil),
-		platform("platform-query-supported-app-languages", "POST", "v1/metadata/apps/supported-languages/query", []string{"apps", "supported-languages", "find"}, ContextAdAccount, BodyObject, true, "QueryRequest", "AppSupportedLanguagesQueryResponse", nil, nil),
-		platform("platform-find-app-eligibilities", "POST", "v1/eligibilities/apps/query", []string{"apps", "eligibility", "find"}, ContextAdAccount, BodyObject, true, "EligibilityQueryRequest", "EligibilityQueryResponse", nil, nil),
-		platform("platform-find-app-rejection-reasons", "POST", "v1/rejection-reasons/apps/query", []string{"rejection-reasons", "apps", "find"}, ContextAdAccount, BodyObject, true, "CreativeRejectionReasonQueryRequest", "CreativeRejectionReasonQueryResponse", nil, nil),
+		retrySafe(platform("platform-query-supported-app-languages", "POST", "v1/metadata/apps/supported-languages/query", []string{"apps", "supported-languages", "find"}, ContextAdAccount, BodyObject, true, "QueryRequest", "AppSupportedLanguagesQueryResponse", nil, nil)),
+		retrySafe(platform("platform-find-app-eligibilities", "POST", "v1/eligibilities/apps/query", []string{"apps", "eligibility", "find"}, ContextAdAccount, BodyObject, true, "EligibilityQueryRequest", "EligibilityQueryResponse", nil, nil)),
+		retrySafe(platform("platform-find-app-rejection-reasons", "POST", "v1/rejection-reasons/apps/query", []string{"rejection-reasons", "apps", "find"}, ContextAdAccount, BodyObject, true, "CreativeRejectionReasonQueryRequest", "CreativeRejectionReasonQueryResponse", nil, nil)),
 		platform("platform-get-app-rejection-reason", "GET", "v1/rejection-reasons/apps/{rejectionReasonId}", []string{"rejection-reasons", "apps", "view"}, ContextAdAccount, BodyNone, false, "", "RejectionReasonResponse", []ParamSpec{rejectionReasonID}, nil),
 	}
 
 	for i := range specs {
-		if specs[i].Method == "POST" && strings.HasSuffix(specs[i].Path, "/query") {
-			specs[i].RetrySafe = true
-		}
 		if specs[i].Name == "platform-search-apps" {
 			specs[i].SupportsPaginate = true
 		}

@@ -32,6 +32,7 @@ func TestStoreCredentialsConfigUsesActiveConfigPath(t *testing.T) {
 func TestStoreCredentialsConfigRoundTripsIndependentAdAccountID(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv(adsBypassKeychainEnvVar, "1")
 	credentials := testAdsCredentials()
 	credentials.AdAccountID = "AD_ACCOUNT"
 
@@ -58,6 +59,7 @@ func TestStoreCredentialsConfigRoundTripsIndependentAdAccountID(t *testing.T) {
 func TestStoreCredentialsConfigCanClearDefaultAdAccountID(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv(adsBypassKeychainEnvVar, "1")
 	credentials := testAdsCredentials()
 	credentials.AdAccountID = "AD_ACCOUNT"
 	if err := StoreCredentialsConfig("ads", credentials); err != nil {
@@ -87,6 +89,7 @@ func TestStoreCredentialsConfigCanClearDefaultAdAccountID(t *testing.T) {
 func TestNamedConfigProfileDoesNotInheritGlobalAdAccountID(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv(adsBypassKeychainEnvVar, "1")
 	credentialsA := testAdsCredentials()
 	credentialsA.AdAccountID = "ACCOUNT_A"
 	credentialsB := testAdsCredentials()

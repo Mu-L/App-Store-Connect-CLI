@@ -259,6 +259,7 @@ type adsAuthContext struct {
 	OrgIDSource       string `json:"org_id_source,omitempty"`
 	AdAccountID       string `json:"ad_account_id,omitempty"`
 	AdAccountIDSource string `json:"ad_account_id_source,omitempty"`
+	AdAccountError    string `json:"ad_account_error,omitempty"`
 	Error             string `json:"error,omitempty"`
 }
 
@@ -345,7 +346,9 @@ func printActiveContext(active adsAuthContext) {
 	} else {
 		fmt.Println("  Org ID: not selected")
 	}
-	if active.AdAccountID != "" {
+	if active.AdAccountError != "" {
+		fmt.Printf("  Ad account ID: unavailable (%s)\n", active.AdAccountError)
+	} else if active.AdAccountID != "" {
 		if active.AdAccountIDSource != "" {
 			fmt.Printf("  Ad account ID: %s (%s)\n", active.AdAccountID, active.AdAccountIDSource)
 		} else {
@@ -375,11 +378,11 @@ func statusActiveContext() adsAuthContext {
 	adAccountID, adAccountSource, err := resolveAdAccountIDWithSource(commonFlags{}, credentials)
 	if err != nil {
 		return adsAuthContext{
-			Profile:     credentials.Profile,
-			Source:      source,
-			OrgID:       orgID,
-			OrgIDSource: orgSource,
-			Error:       err.Error(),
+			Profile:        credentials.Profile,
+			Source:         source,
+			OrgID:          orgID,
+			OrgIDSource:    orgSource,
+			AdAccountError: err.Error(),
 		}
 	}
 	return adsAuthContext{
@@ -477,6 +480,10 @@ Examples:
 			}
 
 			me, err := platformEnvelopeResult(meRaw)
+			if err != nil {
+				return fmt.Errorf("ads auth discover: me response parse failed: %w", err)
+			}
+			me, err = normalizePlatformDiscoveryMe(me)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: me response parse failed: %w", err)
 			}
@@ -622,6 +629,28 @@ func platformEnvelopeResult(raw appleads.RawResponse) (json.RawMessage, error) {
 		return json.RawMessage("null"), nil
 	}
 	return envelope.Result, nil
+}
+
+func normalizePlatformDiscoveryMe(raw json.RawMessage) (json.RawMessage, error) {
+	var value map[string]any
+	if err := unmarshalJSONPreservingNumbers(raw, &value); err != nil {
+		return nil, err
+	}
+	userID := jsonScalarString(firstMapValue(value, "userId", "id"))
+	orgID := jsonScalarString(firstMapValue(value, "orgId", "parentOrgId"))
+	return json.Marshal(struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		UserID      string `json:"userId,omitempty"`
+		ParentOrgID string `json:"parentOrgId,omitempty"`
+		OrgID       string `json:"orgId,omitempty"`
+	}{
+		ID:          userID,
+		Name:        "",
+		UserID:      userID,
+		ParentOrgID: orgID,
+		OrgID:       orgID,
+	})
 }
 
 func summarizePlatformACLAccounts(raw appleads.RawResponse, activeOrgID, activeAdAccountID string) ([]adsAuthAccountSummary, error) {

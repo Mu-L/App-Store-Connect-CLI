@@ -157,7 +157,12 @@ func WithBaseURL(baseURL string) ClientOption {
 // WithPlatformBaseURL configures the Apple Ads Platform API v1 base URL.
 func WithPlatformBaseURL(baseURL string) ClientOption {
 	return func(client *Client) {
-		client.platformBaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/"
+		trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+		if trimmed == "" {
+			client.platformBaseURL = ""
+			return
+		}
+		client.platformBaseURL = trimmed + "/"
 	}
 }
 
@@ -394,7 +399,7 @@ func (c *Client) requestURLForVersion(version APIVersion, path string, query url
 		return "", fmt.Errorf("invalid path: %w", err)
 	}
 	if parsed.IsAbs() {
-		baseURL, relativePrefix, absolutePrefix, description, err := c.versionRouting(version)
+		baseURL, _, absolutePrefix, description, err := c.versionRouting(version)
 		if err != nil {
 			return "", err
 		}
@@ -402,7 +407,6 @@ func (c *Client) requestURLForVersion(version APIVersion, path string, query url
 		if err != nil {
 			return "", err
 		}
-		_ = relativePrefix
 		if parsed.Scheme != "https" || parsed.User != nil || parsed.Host != base.Host || !strings.HasPrefix(parsed.Path, absolutePrefix) || hasPathTraversal(parsed.Path) {
 			return "", fmt.Errorf("--path must be %s", description)
 		}
