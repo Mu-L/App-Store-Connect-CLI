@@ -43,6 +43,9 @@ func executeSigningReconcileApply(ctx context.Context, planPath string) (signing
 	if err != nil {
 		return signingReconcileReceipt{}, shared.UsageErrorf("local inputs changed: %v; rerun asc signing reconcile plan", err)
 	}
+	if err := prepareReconcileProfileOutput(plan.Paths.StateDir); err != nil {
+		return signingReconcileReceipt{}, shared.UsageErrorf("invalid profile output directory: %v", err)
+	}
 
 	receipt, err := loadOrStartSigningReceipt(plan)
 	if err != nil {
@@ -234,6 +237,9 @@ func verifySigningLocalInputs(plan signingReconcilePlanArtifact) (signingDevices
 	devices, err := decodeSigningDevicesFile(data)
 	if err != nil {
 		return signingDevicesFile{}, fmt.Errorf("invalid devices file: %s", invalidDevicesFileDiagnostic(err))
+	}
+	if err := requireSigningReconcilePlatform(); err != nil {
+		return signingDevicesFile{}, err
 	}
 	archive, err := readSigningArchiveRequirements(plan.Paths.ArchivePath)
 	if err != nil {
@@ -777,6 +783,14 @@ func writeVerifiedProfile(stateDir string, content []byte) (string, error) {
 		return "", err
 	}
 	return filepath.Join(stateDir, filepath.FromSlash(relative)), nil
+}
+
+func prepareReconcileProfileOutput(stateDir string) error {
+	root, err := rootfs.New(stateDir)
+	if err != nil {
+		return err
+	}
+	return root.MkdirAll("profiles", 0o700)
 }
 
 func readOptionalBoundedRootFile(root rootfs.Root, relative string, limit int64) ([]byte, bool, error) {

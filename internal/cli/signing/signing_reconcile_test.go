@@ -237,6 +237,21 @@ func TestSigningCapabilitiesDoesNotTreatTypeAsProofOfEntitlementSettings(t *test
 	}
 }
 
+func TestSigningCapabilitiesRejectsDevelopmentTaskEntitlement(t *testing.T) {
+	capabilities, unverified := signingCapabilitiesForEntitlements(map[string]any{
+		"get-task-allow": true,
+	})
+	if len(capabilities) != 0 || len(unverified) != 1 || !strings.Contains(unverified[0], "get-task-allow") {
+		t.Fatalf("capabilities=%#v unverified=%#v, want development entitlement blocker", capabilities, unverified)
+	}
+	capabilities, unverified = signingCapabilitiesForEntitlements(map[string]any{
+		"get-task-allow": false,
+	})
+	if len(capabilities) != 0 || len(unverified) != 0 {
+		t.Fatalf("false get-task-allow capabilities=%#v unverified=%#v", capabilities, unverified)
+	}
+}
+
 func TestPlanSigningTargetBlocksMismatchedAppIDSeedBeforeProfileCreation(t *testing.T) {
 	client := newSigningFetchTestClient(t, func(request *http.Request) *http.Response {
 		switch request.URL.Path {
@@ -887,6 +902,27 @@ func TestWriteVerifiedProfileRejectsDifferentContentForExistingUUID(t *testing.T
 	}
 }
 
+func TestPrepareReconcileProfileOutputRejectsUnusablePath(t *testing.T) {
+	stateDir := t.TempDir()
+	profilesPath := filepath.Join(stateDir, "profiles")
+	if err := os.WriteFile(profilesPath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareReconcileProfileOutput(stateDir); err == nil {
+		t.Fatal("prepareReconcileProfileOutput() accepted a non-directory profiles path")
+	}
+	if err := os.Remove(profilesPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareReconcileProfileOutput(stateDir); err != nil {
+		t.Fatalf("prepareReconcileProfileOutput() error = %v", err)
+	}
+	info, err := os.Stat(profilesPath)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("profiles directory info=%v error=%v", info, err)
+	}
+}
+
 func TestSigningReconcileApplyRequiresConfirmBeforeReadingPlan(t *testing.T) {
 	cmd := SigningReconcileApplyCommand()
 	cmd.FlagSet.SetOutput(io.Discard)
@@ -901,6 +937,36 @@ func TestSigningReconcileApplyRequiresConfirmBeforeReadingPlan(t *testing.T) {
 	})
 	if stdout != "" || !strings.Contains(stderr, "Error: --confirm is required") {
 		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestSigningReconcilePlatformRequiresDarwin(t *testing.T) {
+	if err := validateSigningReconcilePlatform("darwin"); err != nil {
+		t.Fatalf("validateSigningReconcilePlatform(darwin) error = %v", err)
+	}
+	for _, goos := range []string{"linux", "windows"} {
+		err := validateSigningReconcilePlatform(goos)
+		if !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), "macOS") {
+			t.Fatalf("validateSigningReconcilePlatform(%q) error = %v, want macOS usage error", goos, err)
+		}
+	}
+}
+
+func TestReadSigningPlanArtifactClassifiesMalformedJSONAsUsage(t *testing.T) {
+	for name, body := range map[string]string{
+		"truncated":     `{"schemaVersion":1`,
+		"unknown field": `{"schemaVersion":1,"unexpected":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "plan.json")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := readSigningPlanArtifact(path)
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("readSigningPlanArtifact() error = %v, want usage classification", err)
+			}
+		})
 	}
 }
 

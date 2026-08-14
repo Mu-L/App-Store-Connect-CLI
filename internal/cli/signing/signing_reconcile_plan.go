@@ -29,6 +29,9 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	if err != nil {
 		return signingReconcilePlanArtifact{}, invalidDevicesFileUsageError(err)
 	}
+	if err := requireSigningReconcilePlatform(); err != nil {
+		return signingReconcilePlanArtifact{}, err
+	}
 	archive, err := readSigningArchiveRequirements(paths.ArchivePath)
 	if err != nil {
 		return signingReconcilePlanArtifact{}, fmt.Errorf("inspect archive: %w", sanitizeReconcileError(err, devicesFile))
@@ -733,7 +736,14 @@ func signingCapabilitiesForEntitlements(entitlements map[string]any) ([]string, 
 	}
 	var capabilities []string
 	var unverified []string
-	for key := range entitlements {
+	for key, value := range entitlements {
+		if key == "get-task-allow" {
+			allowed, ok := value.(bool)
+			if !ok || allowed {
+				unverified = append(unverified, key+" (must be false for ad hoc distribution)")
+			}
+			continue
+		}
 		if _, ok := baseline[key]; ok {
 			continue
 		}

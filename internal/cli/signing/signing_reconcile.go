@@ -44,6 +44,17 @@ const (
 	reconcileMaximumValidityDays   = 3650
 )
 
+func validateSigningReconcilePlatform(goos string) error {
+	if goos != "darwin" {
+		return shared.UsageError("signing reconcile requires macOS because archive entitlement inspection uses codesign")
+	}
+	return nil
+}
+
+func requireSigningReconcilePlatform() error {
+	return validateSigningReconcilePlatform(runtime.GOOS)
+}
+
 type signingDevicesFile struct {
 	SchemaVersion int                  `json:"schemaVersion"`
 	Devices       []signingDeviceInput `json:"devices"`
