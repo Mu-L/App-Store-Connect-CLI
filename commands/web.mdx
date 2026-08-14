@@ -149,6 +149,10 @@ asc web app-groups assign \
 Repeating an assignment that already exists succeeds without mutating the
 Bundle ID and returns `{"changed":false,"status":"already-assigned"}`.
 
+When an assignment changes the App ID, existing provisioning profiles that
+contain that App ID become invalid. Regenerate affected profiles before the next
+signed build.
+
 These commands require an Account Holder or Admin web session. Because Apple
 does not publish these Developer Portal endpoints, scripts should treat this
 command family as a web-session workflow rather than a public API guarantee.
