@@ -731,8 +731,7 @@ archive, a local PKCS#12 identity, a reconciled ad hoc profile, and private
 S3-compatible publication. The private OTA link was opened on a registered
 physical iPhone, installation completed, and SmolLens launched successfully.
 This establishes the real install-and-launch promotion gate for the composed
-path. The PR 6 state machine still requires its own local crash/recovery and
-private-object-store integration smoke before merge.
+path.
 
 The sanitized Xcode environment and process-group cleanup are isolation and
 recovery controls, not a sandbox. Trusted project build scripts still execute
