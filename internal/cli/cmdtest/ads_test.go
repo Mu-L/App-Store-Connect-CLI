@@ -50,7 +50,7 @@ func TestAdsCampaignsAliasPaginatesWithOrgContext(t *testing.T) {
 
 	root := RootCommand("dev")
 	stdout, stderr := captureOutput(t, func() {
-		if err := root.Parse([]string{"ads", "campaigns", "--limit", "2", "--paginate", "--output", "json"}); err != nil {
+		if err := root.Parse([]string{"ads", "v5", "campaigns", "--limit", "2", "--paginate", "--output", "json"}); err != nil {
 			t.Fatalf("parse error: %v", err)
 		}
 		if err := root.Run(context.Background()); err != nil {
@@ -136,7 +136,7 @@ func TestAdsReportsPresetBuildsCampaignRequest(t *testing.T) {
 
 	root := RootCommand("dev")
 	args := []string{
-		"ads", "reports", "preset",
+		"ads", "v5", "reports", "preset",
 		"--level", "campaigns",
 		"--last-days", "7",
 		"--fields", "campaignName,impressions,taps,spend",
@@ -189,7 +189,7 @@ func TestAdsReportsPresetBuildsScopedKeywordRequest(t *testing.T) {
 
 	root := RootCommand("dev")
 	args := []string{
-		"ads", "reports", "preset",
+		"ads", "v5", "reports", "preset",
 		"--level", "keywords",
 		"--campaign", "12345",
 		"--from", from,
@@ -243,7 +243,7 @@ func TestAdsReportsPresetBuildsAdLevelRequestWithSort(t *testing.T) {
 
 	root := RootCommand("dev")
 	args := []string{
-		"ads", "reports", "preset",
+		"ads", "v5", "reports", "preset",
 		"--level", "ads",
 		"--campaign", "12345",
 		"--from", from,
@@ -288,87 +288,87 @@ func TestAdsReportsPresetValidatesUsageBeforeNetwork(t *testing.T) {
 	}{
 		{
 			name:    "missing date range",
-			args:    []string{"ads", "reports", "preset", "--level", "campaigns", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "campaigns", "--output", "json"},
 			wantErr: "either --last-days or both --from and --to are required",
 		},
 		{
 			name:    "invalid level",
-			args:    []string{"ads", "reports", "preset", "--level", "unsupported", "--from", recentFrom, "--to", recentTo, "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "unsupported", "--from", recentFrom, "--to", recentTo, "--output", "json"},
 			wantErr: "--level must be one of:",
 		},
 		{
 			name:    "campaign required",
-			args:    []string{"ads", "reports", "preset", "--level", "keywords", "--from", recentFrom, "--to", recentTo, "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "keywords", "--from", recentFrom, "--to", recentTo, "--output", "json"},
 			wantErr: "--campaign is required for --level keywords",
 		},
 		{
 			name:    "campaign nonnegative",
-			args:    []string{"ads", "reports", "preset", "--level", "keywords", "--campaign", "-1", "--from", recentFrom, "--to", recentTo, "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "keywords", "--campaign", "-1", "--from", recentFrom, "--to", recentTo, "--output", "json"},
 			wantErr: "--campaign must be >= 0",
 		},
 		{
 			name:    "campaign unsupported for campaign level",
-			args:    []string{"ads", "reports", "preset", "--level", "campaigns", "--campaign", "12345", "--from", recentFrom, "--to", recentTo, "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "campaigns", "--campaign", "12345", "--from", recentFrom, "--to", recentTo, "--output", "json"},
 			wantErr: "--campaign is not supported for --level campaigns",
 		},
 		{
 			name:    "ad group unsupported for keyword level",
-			args:    []string{"ads", "reports", "preset", "--level", "keywords", "--campaign", "12345", "--ad-group", "67890", "--from", recentFrom, "--to", recentTo, "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "keywords", "--campaign", "12345", "--ad-group", "67890", "--from", recentFrom, "--to", recentTo, "--output", "json"},
 			wantErr: "--ad-group is not supported for --level keywords",
 		},
 		{
 			name:    "invalid sort direction",
-			args:    []string{"ads", "reports", "preset", "--level", "campaigns", "--from", recentFrom, "--to", recentTo, "--sort", "impressions:sideways", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "campaigns", "--from", recentFrom, "--to", recentTo, "--sort", "impressions:sideways", "--output", "json"},
 			wantErr: "--sort direction must be asc or desc",
 		},
 		{
 			name:    "invalid granularity",
-			args:    []string{"ads", "reports", "preset", "--level", "campaigns", "--from", recentFrom, "--to", recentTo, "--granularity", "YEARLY", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "campaigns", "--from", recentFrom, "--to", recentTo, "--granularity", "YEARLY", "--output", "json"},
 			wantErr: "--granularity must be one of: HOURLY, DAILY, WEEKLY, MONTHLY",
 		},
 		{
 			name:    "hourly unsupported for search terms",
-			args:    []string{"ads", "reports", "preset", "--level", "search-terms", "--campaign", "12345", "--from", recentFrom, "--to", recentTo, "--granularity", "HOURLY", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "search-terms", "--campaign", "12345", "--from", recentFrom, "--to", recentTo, "--granularity", "HOURLY", "--output", "json"},
 			wantErr: "--granularity HOURLY is only supported",
 		},
 		{
 			name:    "hourly unsupported for ads",
-			args:    []string{"ads", "reports", "preset", "--level", "ads", "--campaign", "12345", "--from", recentFrom, "--to", recentTo, "--granularity", "HOURLY", "--sort", "-impressions", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "ads", "--campaign", "12345", "--from", recentFrom, "--to", recentTo, "--granularity", "HOURLY", "--sort", "-impressions", "--output", "json"},
 			wantErr: "--granularity HOURLY is only supported",
 		},
 		{
 			name:    "hourly range too long",
-			args:    []string{"ads", "reports", "preset", "--level", "campaigns", "--from", hourlyLongFrom, "--to", hourlyLongTo, "--granularity", "HOURLY", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "campaigns", "--from", hourlyLongFrom, "--to", hourlyLongTo, "--granularity", "HOURLY", "--output", "json"},
 			wantErr: "--granularity HOURLY supports a maximum 7-day date range",
 		},
 		{
 			name:    "hourly start too old",
-			args:    []string{"ads", "reports", "preset", "--level", "campaigns", "--from", hourlyOldFrom, "--to", hourlyOldTo, "--granularity", "HOURLY", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "campaigns", "--from", hourlyOldFrom, "--to", hourlyOldTo, "--granularity", "HOURLY", "--output", "json"},
 			wantErr: "--granularity HOURLY start date must be within the last 30 days",
 		},
 		{
 			name:    "daily range too long",
-			args:    []string{"ads", "reports", "preset", "--level", "campaigns", "--from", dailyLongFrom, "--to", dailyLongTo, "--granularity", "DAILY", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "campaigns", "--from", dailyLongFrom, "--to", dailyLongTo, "--granularity", "DAILY", "--output", "json"},
 			wantErr: "--granularity DAILY supports a maximum 90-day date range",
 		},
 		{
 			name:    "row totals unsupported for search terms",
-			args:    []string{"ads", "reports", "preset", "--level", "search-terms", "--campaign", "12345", "--from", recentFrom, "--to", recentTo, "--return-row-totals", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "search-terms", "--campaign", "12345", "--from", recentFrom, "--to", recentTo, "--return-row-totals", "--output", "json"},
 			wantErr: "--return-row-totals cannot be used with search-term report levels",
 		},
 		{
 			name:    "invalid time zone",
-			args:    []string{"ads", "reports", "preset", "--level", "campaigns", "--last-days", "1", "--time-zone", "America/Los_Angeles", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "campaigns", "--last-days", "1", "--time-zone", "America/Los_Angeles", "--output", "json"},
 			wantErr: "--time-zone must be UTC or ORTZ",
 		},
 		{
 			name:    "search terms require explicit ORTZ",
-			args:    []string{"ads", "reports", "preset", "--level", "search-terms", "--campaign", "12345", "--from", recentFrom, "--to", recentTo, "--time-zone", "UTC", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "search-terms", "--campaign", "12345", "--from", recentFrom, "--to", recentTo, "--time-zone", "UTC", "--output", "json"},
 			wantErr: "--time-zone must be ORTZ for search-term report levels",
 		},
 		{
 			name:    "last days unsupported for ORTZ",
-			args:    []string{"ads", "reports", "preset", "--level", "campaigns", "--last-days", "1", "--time-zone", "ORTZ", "--output", "json"},
+			args:    []string{"ads", "v5", "reports", "preset", "--level", "campaigns", "--last-days", "1", "--time-zone", "ORTZ", "--output", "json"},
 			wantErr: "--last-days is not supported for ORTZ reports; use --from and --to",
 		},
 	}
@@ -396,7 +396,7 @@ func TestAdsImpressionShareReportsLimitValidation(t *testing.T) {
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "impression-share-reports", "--limit", "51", "--output", "json"}); err != nil {
+	if err := root.Parse([]string{"ads", "v5", "impression-share-reports", "--limit", "51", "--output", "json"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -427,7 +427,7 @@ func TestAdsLimitZeroValidation(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "campaigns", "--limit", "0", "--output", "json"}); err != nil {
+	if err := root.Parse([]string{"ads", "v5", "campaigns", "--limit", "0", "--output", "json"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -449,7 +449,7 @@ func TestAdsDeleteRequiresConfirmBeforeNetwork(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "campaigns", "delete", "--campaign", "123"}); err != nil {
+	if err := root.Parse([]string{"ads", "v5", "campaigns", "delete", "--campaign", "123"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -488,8 +488,8 @@ func TestAdsCampaignPauseAndResumeUseCuratedStatusPayloads(t *testing.T) {
 	}))
 
 	for _, args := range [][]string{
-		{"ads", "campaigns", "pause", "--campaign", "123", "--confirm", "--output", "json"},
-		{"ads", "campaigns", "resume", "--campaign", "123", "--confirm", "--output", "json"},
+		{"ads", "v5", "campaigns", "pause", "--campaign", "123", "--confirm", "--output", "json"},
+		{"ads", "v5", "campaigns", "resume", "--campaign", "123", "--confirm", "--output", "json"},
 	} {
 		root := RootCommand("dev")
 		if err := root.Parse(args); err != nil {
@@ -538,7 +538,7 @@ func TestAdsCampaignPauseHonorsParentFlagsBeforeWorkflowSubcommand(t *testing.T)
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "campaigns", "--org", "123456", "pause", "--campaign", "123", "--confirm"}); err != nil {
+	if err := root.Parse([]string{"ads", "v5", "campaigns", "--org", "123456", "pause", "--campaign", "123", "--confirm"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	stdout, stderr := captureOutput(t, func() {
@@ -570,27 +570,27 @@ func TestAdsCampaignPauseValidatesBeforeNetwork(t *testing.T) {
 	}{
 		{
 			name:    "missing confirm",
-			args:    []string{"ads", "campaigns", "pause", "--campaign", "123"},
+			args:    []string{"ads", "v5", "campaigns", "pause", "--campaign", "123"},
 			wantErr: "--confirm is required",
 		},
 		{
 			name:    "invalid campaign",
-			args:    []string{"ads", "campaigns", "pause", "--campaign", "abc", "--confirm"},
+			args:    []string{"ads", "v5", "campaigns", "pause", "--campaign", "abc", "--confirm"},
 			wantErr: "--campaign must be an integer",
 		},
 		{
 			name:    "missing campaign",
-			args:    []string{"ads", "campaigns", "pause", "--confirm"},
+			args:    []string{"ads", "v5", "campaigns", "pause", "--confirm"},
 			wantErr: "--campaign is required",
 		},
 		{
 			name:    "parent output conflicts with child pretty",
-			args:    []string{"ads", "campaigns", "--output", "table", "pause", "--campaign", "123", "--confirm", "--pretty"},
+			args:    []string{"ads", "v5", "campaigns", "--output", "table", "pause", "--campaign", "123", "--confirm", "--pretty"},
 			wantErr: "--pretty is only valid with JSON output",
 		},
 		{
 			name:    "parent pretty conflicts with child output",
-			args:    []string{"ads", "campaigns", "--pretty", "resume", "--campaign", "123", "--confirm", "--output", "table"},
+			args:    []string{"ads", "v5", "campaigns", "--pretty", "resume", "--campaign", "123", "--confirm", "--output", "table"},
 			wantErr: "--pretty is only valid with JSON output",
 		},
 	} {
@@ -618,14 +618,14 @@ func TestAdsCampaignResumeReportsCommandNameOnAuthFailure(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "campaigns", "resume", "--campaign", "123", "--confirm", "--output", "json"}); err != nil {
+	if err := root.Parse([]string{"ads", "v5", "campaigns", "resume", "--campaign", "123", "--confirm", "--output", "json"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
 	_, stderr := captureOutput(t, func() {
 		runErr = root.Run(context.Background())
 	})
-	if runErr == nil || !strings.Contains(runErr.Error(), "ads campaigns resume:") {
+	if runErr == nil || !strings.Contains(runErr.Error(), "ads v5 campaigns resume:") {
 		t.Fatalf("run error = %v, want resume command name", runErr)
 	}
 	if stderr != "" {
@@ -643,7 +643,7 @@ func TestAdsEndpointRejectsUnexpectedArgsBeforeNetwork(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "campaigns", "--output", "json", "unexpected"}); err != nil {
+	if err := root.Parse([]string{"ads", "v5", "campaigns", "--output", "json", "unexpected"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -664,7 +664,7 @@ func TestAdsAPIRequestRejectsNonAppleURLsBeforeNetwork(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "api", "request", "--path", "https://example.com/api/v5/campaigns"}); err != nil {
+	if err := root.Parse([]string{"ads", "v5", "api", "request", "--path", "https://example.com/api/v5/campaigns"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -686,7 +686,7 @@ func TestAdsAPIRequestRejectsUnexpectedArgsBeforeNetwork(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "api", "request", "--path", "v5/campaigns", "--output", "json", "unexpected"}); err != nil {
+	if err := root.Parse([]string{"ads", "v5", "api", "request", "--path", "v5/campaigns", "--output", "json", "unexpected"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -717,7 +717,7 @@ func TestAdsPlatformAPIRequestUsesV1HostAndAdAccountContext(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "platform", "api", "request", "--path", "v1/ad-accounts/123", "--output", "json"}); err != nil {
+	if err := root.Parse([]string{"ads", "api", "request", "--path", "v1/ad-accounts/123", "--output", "json"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	stdout, stderr := captureOutput(t, func() {
@@ -757,7 +757,7 @@ func TestAdsPlatformAPIRequestOmitsContextForMe(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "platform", "api", "request", "--path", "v1/me", "--output", "json"}); err != nil {
+	if err := root.Parse([]string{"ads", "api", "request", "--path", "v1/me", "--output", "json"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	_, stderr := captureOutput(t, func() {
@@ -781,7 +781,7 @@ func TestAdsPlatformAPIRequestRequiresAdAccountBeforeNetwork(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "platform", "api", "request", "--path", "v1/campaigns/123"}); err != nil {
+	if err := root.Parse([]string{"ads", "api", "request", "--path", "v1/campaigns/123"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -803,7 +803,7 @@ func TestAdsPlatformAPIRequestRejectsAdAccountForContextFreeEndpoint(t *testing.
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "platform", "api", "request", "--path", "v1/me", "--ad-account", "AD_ACCOUNT"}); err != nil {
+	if err := root.Parse([]string{"ads", "api", "request", "--path", "v1/me", "--ad-account", "AD_ACCOUNT"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -822,19 +822,19 @@ func TestAdsPlatformAPIRequestRequiresConfirmForKnownDestructiveMutations(t *tes
 	}{
 		{
 			name: "daily budget apply",
-			args: []string{"ads", "platform", "api", "request", "--method", "POST", "--path", "v1/recommendations/daily-budgets/apply", "--ad-account", "AD_ACCOUNT"},
+			args: []string{"ads", "api", "request", "--method", "POST", "--path", "v1/recommendations/daily-budgets/apply", "--ad-account", "AD_ACCOUNT"},
 		},
 		{
 			name: "daily budget dismiss",
-			args: []string{"ads", "platform", "api", "request", "--method", "POST", "--path", "v1/recommendations/daily-budgets/dismiss", "--ad-account", "AD_ACCOUNT"},
+			args: []string{"ads", "api", "request", "--method", "POST", "--path", "v1/recommendations/daily-budgets/dismiss", "--ad-account", "AD_ACCOUNT"},
 		},
 		{
 			name: "target CPA apply",
-			args: []string{"ads", "platform", "api", "request", "--method", "POST", "--path", "v1/recommendations/target-cpas/apply", "--ad-account", "AD_ACCOUNT"},
+			args: []string{"ads", "api", "request", "--method", "POST", "--path", "v1/recommendations/target-cpas/apply", "--ad-account", "AD_ACCOUNT"},
 		},
 		{
 			name: "target CPA dismiss",
-			args: []string{"ads", "platform", "api", "request", "--method", "POST", "--path", "v1/recommendations/target-cpas/dismiss", "--ad-account", "AD_ACCOUNT"},
+			args: []string{"ads", "api", "request", "--method", "POST", "--path", "v1/recommendations/target-cpas/dismiss", "--ad-account", "AD_ACCOUNT"},
 		},
 	}
 	for _, tt := range tests {
@@ -881,7 +881,7 @@ func TestAdsPlatformAPIRequestRequiresConfirmForDelegationReplacement(t *testing
 
 	root := RootCommand("dev")
 	if err := root.Parse([]string{
-		"ads", "platform", "api", "request",
+		"ads", "api", "request",
 		"--method", "PUT",
 		"--path", "v1/ad-accounts/AD_ACCOUNT",
 		"--file", payloadPath,
