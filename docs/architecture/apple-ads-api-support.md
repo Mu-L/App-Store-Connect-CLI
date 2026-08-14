@@ -192,14 +192,18 @@ Mirror the existing `asc auth` behavior:
 - `--org` stores a default Apple Ads org ID for API calls.
 - `--private-key` accepts the EC P-256 PEM Apple documents for Ads. Reuse the
   existing private-key parsing helpers because they already support ES256 keys.
-- `--network` requests an access token and calls `GET /v5/me`.
+- `--network` requests an access token and calls Platform API `GET /v1/me`.
 - `--skip-validation` skips JWT and network validation.
 - `--network` and `--skip-validation` are mutually exclusive.
 - `--local` requires keychain bypass, exactly like `asc auth login`.
 - Keychain is preferred; config fallback is allowed when bypassing keychain.
 - `auth status` supports `--verbose` and `--validate`, matching `asc auth status`.
-- `auth discover` calls `/v5/me` and `/v5/acls` to show the active Ads user and
-  available organizations without printing access tokens.
+- `auth discover` retains its stable organization-level output contract by
+  calling legacy `/v5/me` and `/v5/acls` without printing access tokens. Use
+  `asc ads platform me view` and `asc ads platform acls list` for the v1 user
+  and ad-account ACL shapes. This version-neutral command needs an explicit
+  output transition before the v5 retirement date; 4.4.0 does not silently
+  change the meaning of its existing `accounts` field.
 - `auth logout` supports `--all` and `--name`. It requires one of those flags
   so bare `asc ads auth logout` does not clear every stored Ads profile, and
   `--all` requires `--confirm`.

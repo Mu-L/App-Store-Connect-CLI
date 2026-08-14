@@ -76,6 +76,11 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
   Apple retires Campaign Management API v5 on January 26, 2027. The legacy raw
   `asc ads api request` command stays a v5 request and is not rewritten; raw v1
   requests use `asc ads platform api request`.
+- The version-neutral `asc ads auth discover` command temporarily retains its
+  v5 organization-level response contract so existing JSON consumers do not
+  receive ad-account rows under the old `accounts` field. Use `asc ads platform
+  me view` and `asc ads platform acls list` for v1 discovery. A versioned output
+  transition is still required before v5 retirement.
 - Platform v1 has one negative-keywords resource for campaign and ad-group
   scope, and does not provide a bulk-delete operation. Product-page countries,
   product-page devices, and custom impression-share report list/view likewise

@@ -307,6 +307,12 @@ Use `asc ads platform ...` for new scripts and migrate v5 scripts one command
 at a time. Run `asc ads platform --help` and the relevant nested `--help`
 command when choosing a v1 leaf.
 
+`asc ads auth discover` is a compatibility exception in 4.4.0. It keeps its
+existing organization-level JSON and table contract by calling v5 `me` and
+`acls`; it does not print the legacy command warning because the public auth
+command is version-neutral. Use `asc ads platform me view` and `asc ads
+platform acls list` when you need the v1 user and ad-account ACL responses.
+
 ### Context and request shape
 
 `--org` is the Campaign Management API v5 organization context. `--ad-account`
