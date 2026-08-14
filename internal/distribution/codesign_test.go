@@ -328,6 +328,13 @@ func TestValidateSignedMainAppEntitlementsBindsExactBundleIdentifier(t *testing.
 			signedTeamID:         "OTHERTEAM",
 			wantError:            true,
 		},
+		{
+			name:                 "signed team entitlement has trailing whitespace",
+			profileApplicationID: "TEAM123.com.example.demo",
+			signedApplicationID:  "TEAM123.com.example.demo",
+			signedTeamID:         "TEAM123 ",
+			wantError:            true,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			profile := entitlementTestProfile()
@@ -457,6 +464,22 @@ func TestRunCodeSignInvocationUsesIndependentDeadlines(t *testing.T) {
 	}
 	if len(deadlines) != 2 || !deadlines[1].After(deadlines[0]) {
 		t.Fatalf("invocation deadlines = %#v, want a fresh deadline for every tool call", deadlines)
+	}
+}
+
+func TestRunCodeSignInvocationPropagatesParentCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runCodeSignTool = func(toolCtx context.Context, _ string, _ ...string) ([]byte, error) {
+		if !errors.Is(toolCtx.Err(), context.Canceled) {
+			t.Fatalf("tool context error = %v, want context.Canceled", toolCtx.Err())
+		}
+		return nil, toolCtx.Err()
+	}
+	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
+
+	if _, err := runCodeSignInvocation(ctx, "codesign", "--verify"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("runCodeSignInvocation() error = %v, want context.Canceled", err)
 	}
 }
 
@@ -709,7 +732,7 @@ func TestVerifyMainAppCodeSignatureRejectsUnsafeTeamBeforeTools(t *testing.T) {
 	}
 	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
 
-	got := verifyMainAppCodeSignature(nil, "Payload/Demo.app", "Demo", "com.example.demo", parsedProfile{
+	got := verifyMainAppCodeSignatureContext(context.Background(), nil, "Payload/Demo.app", "Demo", "com.example.demo", parsedProfile{
 		embeddedProfile: embeddedProfile{TeamIdentifier: []string{`TEAM" or true`}},
 	})
 	if got.Status != CodeSignatureInvalid || !strings.Contains(got.Reason, "unsupported characters") || called {
@@ -728,7 +751,7 @@ func TestVerifyMainAppCodeSignatureRejectsExpandedExecutableBeforeTools(t *testi
 		return nil, errors.New("unexpected")
 	}
 	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
-	got := verifyMainAppCodeSignature([]*zip.File{member}, "Payload/Demo.app", "Demo", "com.example.demo", parsedProfile{})
+	got := verifyMainAppCodeSignatureContext(context.Background(), []*zip.File{member}, "Payload/Demo.app", "Demo", "com.example.demo", parsedProfile{})
 	if got.Status != CodeSignatureInvalid || called {
 		t.Fatalf("verification=%#v called=%t", got, called)
 	}
@@ -845,7 +868,13 @@ func TestEntitlementValuePermitsExactWildcardAndSubsetOnly(t *testing.T) {
 		{name: "terminal wildcard", profile: "TEAM.com.example.*", signed: "TEAM.com.example.app", want: true},
 		{name: "wildcard needs suffix", profile: "TEAM.com.example.*", signed: "TEAM.com.example.", want: false},
 		{name: "mismatched prefix", profile: "TEAM.com.example.*", signed: "OTHER.com.example.app", want: false},
+		{name: "signed exact leading whitespace", profile: "TEAM.com.example.app", signed: " TEAM.com.example.app", want: false},
+		{name: "signed exact trailing whitespace", profile: "TEAM.com.example.app", signed: "TEAM.com.example.app ", want: false},
+		{name: "signed wildcard leading whitespace", profile: "TEAM.com.example.*", signed: " TEAM.com.example.app", want: false},
+		{name: "profile exact whitespace is not normalized", profile: " TEAM.com.example.app", signed: "TEAM.com.example.app", want: false},
+		{name: "profile wildcard whitespace is not normalized", profile: " TEAM.com.example.*", signed: "TEAM.com.example.app", want: false},
 		{name: "list subset", profile: []any{"group.one", "group.two"}, signed: []any{"group.two"}, want: true},
+		{name: "list signed whitespace", profile: []any{"group.one"}, signed: []any{" group.one"}, want: false},
 		{name: "list extra", profile: []any{"group.one"}, signed: []any{"group.two"}, want: false},
 		{name: "bool mismatch", profile: false, signed: true, want: false},
 	}

@@ -41,10 +41,6 @@ var (
 	duringMaterializedCopyForTest func()
 )
 
-func verifyMainAppCodeSignature(members []*zip.File, appDir, executable, bundleID string, profile parsedProfile) CodeSignatureVerification {
-	return verifyMainAppCodeSignatureContext(context.Background(), members, appDir, executable, bundleID, profile)
-}
-
 func verifyMainAppCodeSignatureContext(ctx context.Context, members []*zip.File, appDir, executable, bundleID string, profile parsedProfile) CodeSignatureVerification {
 	result := CodeSignatureVerification{Status: CodeSignatureNotVerified, Scope: mainCodeSignatureScope}
 	if err := contextError(ctx); err != nil {
@@ -222,7 +218,7 @@ func validateSignedMainAppEntitlements(entitlementsData []byte, bundleID string,
 		return fmt.Errorf("inspected CFBundleIdentifier is missing")
 	}
 	profileApplicationID, _ := profile.Entitlements["application-identifier"].(string)
-	if strings.TrimSpace(teamIdentifier) != teamID || !entitlementValuePermits(profileApplicationID, appIdentifier) {
+	if teamIdentifier != teamID || !entitlementValuePermits(profileApplicationID, appIdentifier) {
 		return fmt.Errorf("signed main-app entitlements do not match the embedded profile team and application identifier")
 	}
 	if appIdentifier != applicationIdentifierPrefix+"."+bundleID {
@@ -469,7 +465,6 @@ func entitlementValuePermits(profileValue, signedValue any) bool {
 	profileString, profileIsString := profileValue.(string)
 	signedString, signedIsString := signedValue.(string)
 	if profileIsString && signedIsString {
-		profileString, signedString = strings.TrimSpace(profileString), strings.TrimSpace(signedString)
 		if strings.HasSuffix(profileString, "*") {
 			prefix := strings.TrimSuffix(profileString, "*")
 			return strings.HasPrefix(signedString, prefix) && len(signedString) > len(prefix)

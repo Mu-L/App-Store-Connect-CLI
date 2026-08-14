@@ -406,38 +406,7 @@ func TestInspectIPARejectsUnreadableNonMainMembers(t *testing.T) {
 		entries := cloneByteMap(baseEntries)
 		entries["Symbols/resource.bin"] = bytes.Repeat([]byte("signed-resource"), 64)
 		path := writeIPA(t, entries)
-		file, err := os.OpenFile(path, os.O_RDWR, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		info, err := file.Stat()
-		if err != nil {
-			t.Fatal(err)
-		}
-		reader, err := zip.NewReader(file, info.Size())
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, member := range reader.File {
-			if member.Name != "Symbols/resource.bin" {
-				continue
-			}
-			offset, err := member.DataOffset()
-			if err != nil {
-				t.Fatal(err)
-			}
-			var value [1]byte
-			if _, err := file.ReadAt(value[:], offset); err != nil {
-				t.Fatal(err)
-			}
-			value[0] ^= 0xff
-			if _, err := file.WriteAt(value[:], offset); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := file.Close(); err != nil {
-			t.Fatal(err)
-		}
+		corruptZipMemberData(t, path, "Symbols/resource.bin")
 		assertInspectErrorContains(t, path, "Symbols/resource.bin")
 	})
 
@@ -446,6 +415,33 @@ func TestInspectIPARejectsUnreadableNonMainMembers(t *testing.T) {
 			{Name: "Symbols/truncated.bin", UncompressedSize: 1},
 		})
 		assertInspectErrorContains(t, path, "Symbols/truncated.bin")
+	})
+}
+
+func TestInspectIPARejectsUnreadableDirectoryMembers(t *testing.T) {
+	baseEntries := []orderedZipEntry{
+		{Name: "Payload/Demo.app/Info.plist", Data: infoPlist(t, "com.example.demo")},
+		{Name: "Payload/Demo.app/embedded.mobileprovision", Data: signedProfile(t, profileFixture{
+			BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		})},
+	}
+
+	t.Run("checksum failure", func(t *testing.T) {
+		entries := append([]orderedZipEntry(nil), baseEntries...)
+		entries = append(entries, orderedZipEntry{Name: "SymbolsX", Data: []byte("directory-data")})
+		path := writeOrderedIPA(t, entries)
+		renameZipMember(t, path, "SymbolsX", "Symbols/")
+		corruptZipMemberData(t, path, "Symbols/")
+		assertInspectErrorContains(t, path, "Symbols/")
+	})
+
+	t.Run("truncated stream", func(t *testing.T) {
+		path := writeIPAWithDeclaredRawEntries(t, map[string][]byte{
+			baseEntries[0].Name: baseEntries[0].Data,
+			baseEntries[1].Name: baseEntries[1].Data,
+		}, []declaredRawZipEntry{{Name: "SymbolsX", UncompressedSize: 1}})
+		renameZipMember(t, path, "SymbolsX", "Symbols/")
+		assertInspectErrorContains(t, path, "Symbols/")
 	})
 }
 
@@ -1200,6 +1196,24 @@ func writeIPAWithDeclaredRawEntries(t *testing.T, entries map[string][]byte, dec
 		t.Fatal(err)
 	}
 	return path
+}
+
+func renameZipMember(t *testing.T, path, oldName, newName string) {
+	t.Helper()
+	if len(oldName) != len(newName) {
+		t.Fatal("ZIP member replacement names must have equal lengths")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := bytes.ReplaceAll(data, []byte(oldName), []byte(newName))
+	if bytes.Equal(replaced, data) {
+		t.Fatalf("ZIP member %q not found", oldName)
+	}
+	if err := os.WriteFile(path, replaced, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestHashSetDeterministic(t *testing.T) {
