@@ -841,6 +841,7 @@ func TestErrorMessagesIdentifyRejectedPath(t *testing.T) {
 }
 
 func TestOpenRootPinsOriginalDirectoryAcrossPathReplacement(t *testing.T) {
+	requireSymlinks(t)
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

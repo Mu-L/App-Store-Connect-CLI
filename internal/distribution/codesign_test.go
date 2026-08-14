@@ -253,6 +253,30 @@ func TestVerifyMainExecutableEntitlementsRejectsInvalidLipoOutput(t *testing.T) 
 	}
 }
 
+func TestRunCodeSignInvocationUsesIndependentDeadlines(t *testing.T) {
+	var deadlines []time.Time
+	runCodeSignTool = func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("codesign invocation context has no deadline")
+		}
+		deadlines = append(deadlines, deadline)
+		return nil, nil
+	}
+	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
+
+	if _, err := runCodeSignInvocation(context.Background(), "codesign", "--verify"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	if _, err := runCodeSignInvocation(context.Background(), "lipo", "-archs"); err != nil {
+		t.Fatal(err)
+	}
+	if len(deadlines) != 2 || !deadlines[1].After(deadlines[0]) {
+		t.Fatalf("invocation deadlines = %#v, want a fresh deadline for every tool call", deadlines)
+	}
+}
+
 func TestInspectIPARejectsNestedCodeSignedByDifferentLeafEvenWhenDeepVerifyPasses(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("codesign verification is macOS-only")
@@ -359,6 +383,7 @@ func TestEnumerateMachOFilesIgnoresJavaClassMagicCollision(t *testing.T) {
 	fatPath := filepath.Join(appPath, "Universal")
 	classPath := filepath.Join(appPath, "Resource.class")
 	malformedFatPath := filepath.Join(appPath, "MalformedUniversal")
+	thinMagicResourcePath := filepath.Join(appPath, "ThinMagicResource")
 	if err := os.WriteFile(mainPath, fakeMachO("main"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -369,6 +394,9 @@ func TestEnumerateMachOFilesIgnoresJavaClassMagicCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(malformedFatPath, []byte{0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(thinMagicResourcePath, []byte{0xcf, 0xfa, 0xed, 0xfe, 'n', 'o', 't', '-', 'm', 'a', 'c', 'h', 'o'}, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -480,7 +508,17 @@ func requireEntitlementDisplayArgs(t *testing.T, args []string, codePath string)
 }
 
 func fakeMachO(payload string) []byte {
-	return append([]byte{0xcf, 0xfa, 0xed, 0xfe}, []byte(payload)...)
+	header := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, // MH_MAGIC_64
+		0x0c, 0x00, 0x00, 0x01, // CPU_TYPE_ARM64
+		0x00, 0x00, 0x00, 0x00, // CPU subtype
+		0x02, 0x00, 0x00, 0x00, // MH_EXECUTE
+		0x00, 0x00, 0x00, 0x00, // no load commands
+		0x00, 0x00, 0x00, 0x00, // load command size
+		0x00, 0x00, 0x00, 0x00, // flags
+		0x00, 0x00, 0x00, 0x00, // reserved
+	}
+	return append(header, []byte(payload)...)
 }
 
 func validFatMachO() []byte {

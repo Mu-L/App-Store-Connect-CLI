@@ -28,9 +28,10 @@ import (
 )
 
 const (
-	maxMainAppExpandedBytes int64 = 4 << 30
-	maxToolOutputBytes            = 1 << 20
-	mainCodeSignatureScope        = "complete-main-app-code-resources-entitlements-and-profile-certificate-binding"
+	maxMainAppExpandedBytes   int64 = 4 << 30
+	maxToolOutputBytes              = 1 << 20
+	codeSignInvocationTimeout       = 30 * time.Second
+	mainCodeSignatureScope          = "complete-main-app-code-resources-entitlements-and-profile-certificate-binding"
 )
 
 var runCodeSignTool = runBoundedTool
@@ -81,9 +82,8 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir string, _ *zip.File,
 		return result
 	}
 	appPath := path.Join(directory, "Verify.app")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := runCodeSignTool(ctx, "/usr/bin/codesign", "--verify", "--deep", "--strict", "--all-architectures", "--verbose=4", appPath); err != nil {
+	ctx := context.Background()
+	if _, err := runCodeSignInvocation(ctx, "/usr/bin/codesign", "--verify", "--deep", "--strict", "--all-architectures", "--verbose=4", appPath); err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 			result.Reason = "codesign is unavailable"
 			return result
@@ -125,7 +125,7 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir string, _ *zip.File,
 	mainFingerprintSet := stringSet(mainFingerprints)
 	teamRequirement := `anchor apple generic and certificate leaf[subject.OU] = "` + teamID + `"`
 	for index, codePath := range codePaths {
-		if _, err := runCodeSignTool(ctx, "/usr/bin/codesign", "--verify", "--strict", "--all-architectures", "-R="+teamRequirement, codePath); err != nil {
+		if _, err := runCodeSignInvocation(ctx, "/usr/bin/codesign", "--verify", "--strict", "--all-architectures", "-R="+teamRequirement, codePath); err != nil {
 			result.Status, result.Reason = CodeSignatureInvalid, "nested signed code does not satisfy the main app signing-team requirement"
 			return result
 		}
@@ -160,7 +160,7 @@ func verifyMainExecutableEntitlements(ctx context.Context, codePath string, prof
 		return nil, err
 	}
 	for _, architecture := range architectures {
-		entitlementsData, err := runCodeSignTool(
+		entitlementsData, err := runCodeSignInvocation(
 			ctx,
 			"/usr/bin/codesign",
 			"-d",
@@ -268,7 +268,7 @@ func isMachOFile(file *os.File, magic [4]byte, fileSize int64) bool {
 	switch magic {
 	case [4]byte{0xfe, 0xed, 0xfa, 0xce}, [4]byte{0xce, 0xfa, 0xed, 0xfe},
 		[4]byte{0xfe, 0xed, 0xfa, 0xcf}, [4]byte{0xcf, 0xfa, 0xed, 0xfe}:
-		return true
+		return isValidThinMachO(file, fileSize)
 	case [4]byte{0xca, 0xfe, 0xba, 0xbe}:
 		return isValidFatMachO(file, fileSize, binary.BigEndian, 20)
 	case [4]byte{0xbe, 0xba, 0xfe, 0xca}:
@@ -280,6 +280,14 @@ func isMachOFile(file *os.File, magic [4]byte, fileSize int64) bool {
 	default:
 		return false
 	}
+}
+
+func isValidThinMachO(file *os.File, fileSize int64) bool {
+	if fileSize <= 0 {
+		return false
+	}
+	_, err := macho.NewFile(io.NewSectionReader(file, 0, fileSize))
+	return err == nil
 }
 
 func isValidFatMachO(file *os.File, fileSize int64, order binary.ByteOrder, archHeaderSize int64) bool {
@@ -328,7 +336,7 @@ func codeObjectFingerprints(ctx context.Context, directory string, objectIndex i
 }
 
 func codeObjectArchitectures(ctx context.Context, codePath string) ([]string, error) {
-	archOutput, err := runCodeSignTool(ctx, "/usr/bin/lipo", "-archs", codePath)
+	archOutput, err := runCodeSignInvocation(ctx, "/usr/bin/lipo", "-archs", codePath)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +361,7 @@ func codeObjectFingerprintsForArchitectures(ctx context.Context, directory strin
 	var fingerprints []string
 	for architectureIndex, architecture := range architectures {
 		prefix := path.Join(directory, fmt.Sprintf("certificate-%d-%d-", objectIndex, architectureIndex))
-		if _, err := runCodeSignTool(ctx, "/usr/bin/codesign", "-d", "-a", architecture, "--extract-certificates="+prefix, codePath); err != nil {
+		if _, err := runCodeSignInvocation(ctx, "/usr/bin/codesign", "-d", "-a", architecture, "--extract-certificates="+prefix, codePath); err != nil {
 			return nil, err
 		}
 		leaf, err := os.ReadFile(prefix + "0")
@@ -557,6 +565,12 @@ func copyZipMemberToNewFile(root *os.Root, name string, member *zip.File, limit 
 		return fmt.Errorf("expanded member exceeds %d bytes", limit)
 	}
 	return nil
+}
+
+func runCodeSignInvocation(parent context.Context, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, codeSignInvocationTimeout)
+	defer cancel()
+	return runCodeSignTool(ctx, name, args...)
 }
 
 func runBoundedTool(ctx context.Context, name string, args ...string) ([]byte, error) {
