@@ -20,12 +20,12 @@ type signingArchiveRequirements struct {
 	Targets []signingTarget `json:"targets"`
 }
 
-var readSigningArchiveRequirements = inspectSigningArchive
+var (
+	readSigningArchiveRequirements = inspectSigningArchive
+	signingReconcilePlatformCheck  = requireSigningReconcilePlatform
+)
 
 func inspectSigningArchive(archivePath string) (signingArchiveRequirements, error) {
-	if err := requireSigningReconcilePlatform(); err != nil {
-		return signingArchiveRequirements{}, err
-	}
 	archivePath = filepath.Clean(strings.TrimSpace(archivePath))
 	info, err := os.Lstat(archivePath)
 	if err != nil {
@@ -269,6 +269,9 @@ func inspectSigningTarget(root rootfs.Root, targetPath archiveTargetPath) (signi
 func readCodesignEntitlements(executable *os.File) (map[string]any, error) {
 	if _, err := executable.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("seek signed executable: %w", err)
+	}
+	if err := signingReconcilePlatformCheck(); err != nil {
+		return nil, err
 	}
 	// codesign refuses /dev/fd code objects. Copy the already-open no-follow
 	// handle into a private directory instead of reconstructing and reopening the

@@ -557,9 +557,6 @@ func TestBuildsListMissingAppExitCode(t *testing.T) {
 }
 
 func TestSigningReconcileInvalidDevicesFileExitsTwoWithoutSideEffects(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("signing reconcile rejects unsupported hosts before reading devices")
-	}
 	binaryPath := buildASCBlackboxBinary(t)
 
 	tests := []struct {
@@ -621,9 +618,6 @@ func TestSigningReconcileInvalidDevicesFileExitsTwoWithoutSideEffects(t *testing
 }
 
 func TestSigningReconcileProtectedDevicesFileExitsTwoWithoutLeakingPath(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("signing reconcile rejects unsupported hosts before reading devices")
-	}
 	binaryPath := buildASCBlackboxBinary(t)
 	tmpDir := t.TempDir()
 	const secret = "SECRET-UDID-Rudrank-Phone"

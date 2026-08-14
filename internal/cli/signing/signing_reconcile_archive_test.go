@@ -1,6 +1,7 @@
 package signing
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +47,27 @@ func TestReadCodesignEntitlementsUsesValidatedOpenHandle(t *testing.T) {
 	}
 	if got := plistString(entitlements["com.apple.developer.team-identifier"]); got != "ORIGINALTEAM" {
 		t.Fatalf("team entitlement = %q, want ORIGINALTEAM", got)
+	}
+}
+
+func TestReadCodesignEntitlementsRejectsUnsupportedHostAtCodesignBoundary(t *testing.T) {
+	executablePath := filepath.Join(t.TempDir(), "Executable")
+	if err := os.WriteFile(executablePath, []byte("signed executable"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Open(executablePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer executable.Close()
+
+	unsupported := errors.New("codesign unavailable")
+	originalPlatformCheck := signingReconcilePlatformCheck
+	signingReconcilePlatformCheck = func() error { return unsupported }
+	t.Cleanup(func() { signingReconcilePlatformCheck = originalPlatformCheck })
+
+	if _, err := readCodesignEntitlements(executable); !errors.Is(err, unsupported) {
+		t.Fatalf("readCodesignEntitlements() error = %v, want unsupported host", err)
 	}
 }
 
@@ -165,6 +187,14 @@ func TestValidateSigningArchivePlatformAcceptsIOSAndRejectsNonIOS(t *testing.T) 
 }
 
 func TestInspectSigningArchiveRejectsMacOSBeforeTargetInspection(t *testing.T) {
+	originalPlatformCheck := signingReconcilePlatformCheck
+	platformChecked := false
+	signingReconcilePlatformCheck = func() error {
+		platformChecked = true
+		return errors.New("codesign unavailable")
+	}
+	t.Cleanup(func() { signingReconcilePlatformCheck = originalPlatformCheck })
+
 	archive := t.TempDir()
 	applicationPath := filepath.Join("Applications", "Example.app")
 	applicationDirectory := filepath.Join(archive, "Products", applicationPath)
@@ -197,6 +227,9 @@ func TestInspectSigningArchiveRejectsMacOSBeforeTargetInspection(t *testing.T) {
 	_, err = inspectSigningArchive(archive)
 	if err == nil || !strings.Contains(err.Error(), "supports only iOS archives") {
 		t.Fatalf("inspectSigningArchive() error = %v, want non-iOS rejection", err)
+	}
+	if platformChecked {
+		t.Fatal("inspectSigningArchive() checked codesign support before rejecting non-iOS evidence")
 	}
 }
 
