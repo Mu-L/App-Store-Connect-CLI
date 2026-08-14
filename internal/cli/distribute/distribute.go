@@ -75,6 +75,9 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if len(args) != 0 {
 				return shared.UsageError("distribute inspect does not accept positional arguments")
 			}
@@ -89,9 +92,12 @@ Examples:
 				return fmt.Errorf("distribute inspect: %w", err)
 			}
 			defer file.Close()
-			result, err := distribution.InspectIPA(file, size, distribution.InspectOptions{IncludeDevices: *includeDevices})
+			result, err := distribution.InspectIPAContext(ctx, file, size, distribution.InspectOptions{IncludeDevices: *includeDevices})
 			if err != nil {
 				return fmt.Errorf("distribute inspect: %w", err)
+			}
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 			return printInspection(result, *output.Output, *output.Pretty)
 		},
@@ -130,6 +136,9 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if len(args) != 0 {
 				return shared.UsageError("distribute prepare does not accept positional arguments")
 			}
@@ -156,9 +165,12 @@ Examples:
 			defer file.Close()
 			prepareOptions.Root = root
 			prepareOptions.OutputDir = relativeOutput
-			result, err := distribution.PrepareIPA(file, size, prepareOptions)
+			result, err := distribution.PrepareIPAContext(ctx, file, size, prepareOptions)
 			if err != nil {
 				return fmt.Errorf("distribute prepare: %w", err)
+			}
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 			return printPrepareResult(result, *output.Output, *output.Pretty)
 		},
@@ -174,6 +186,7 @@ func openIPA(pathValue string) (*os.File, int64, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("open IPA root: %w", err)
 	}
+	defer root.Close()
 	file, err := root.OpenFile(filepath.Base(absolute))
 	if err != nil {
 		return nil, 0, fmt.Errorf("open IPA: %w", err)
@@ -241,7 +254,7 @@ func renderInspection(result distribution.Inspection, markdown bool) error {
 	if markdown {
 		render = asc.RenderMarkdown
 	}
-	render([]string{"Field", "Value"}, [][]string{
+	rows := [][]string{
 		{"Metadata Eligible", fmt.Sprintf("%t", result.Preparation.MetadataEligible)},
 		{"Code Signature", string(result.Signing.CodeSignatureVerification.Status)},
 		{"Profile Integrity", string(result.Signing.ProfileIntegrityVerification.Status)},
@@ -254,9 +267,16 @@ func renderInspection(result distribution.Inspection, markdown bool) error {
 		{"Profile UUID", result.Signing.ProfileUUID},
 		{"Team ID", result.Signing.TeamID},
 		{"Devices", fmt.Sprintf("%d", result.Signing.DeviceCount)},
-		{"IPA SHA-256", result.Artifact.SHA256},
-		{"Issues", strings.Join(result.Preparation.Issues, "; ")},
-	})
+	}
+	if len(result.Signing.Devices) > 0 {
+		rows = append(rows, []string{"Device UDIDs", strings.Join(result.Signing.Devices, ", ")})
+	}
+	rows = append(
+		rows,
+		[]string{"IPA SHA-256", result.Artifact.SHA256},
+		[]string{"Issues", strings.Join(result.Preparation.Issues, "; ")},
+	)
+	render([]string{"Field", "Value"}, rows)
 	return nil
 }
 

@@ -23,11 +23,11 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	paths := reconcilePaths(options)
 	deviceBytes, err := readProtectedFile(paths.DevicesFile)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("read devices file: %w", err)
+		return signingReconcilePlanArtifact{}, protectedDevicesFileUsageError(err)
 	}
 	devicesFile, err := decodeSigningDevicesFile(deviceBytes)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, err
+		return signingReconcilePlanArtifact{}, invalidDevicesFileUsageError(err)
 	}
 	archive, err := readSigningArchiveRequirements(paths.ArchivePath)
 	if err != nil {

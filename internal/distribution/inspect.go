@@ -155,6 +155,15 @@ var appleProfileRootFingerprints = map[string]struct{}{
 // InspectIPA validates and reads deterministic metadata from an already-open
 // regular IPA file. The file must remain open for the duration of the call.
 func InspectIPA(file *os.File, size int64, options InspectOptions) (Inspection, error) {
+	return InspectIPAContext(context.Background(), file, size, options)
+}
+
+// InspectIPAContext validates and reads deterministic metadata while
+// propagating caller cancellation through snapshotting and inspection.
+func InspectIPAContext(ctx context.Context, file *os.File, size int64, options InspectOptions) (Inspection, error) {
+	if ctx == nil {
+		return Inspection{}, fmt.Errorf("context is nil")
+	}
 	if file == nil {
 		return Inspection{}, fmt.Errorf("IPA file is nil")
 	}
@@ -164,7 +173,7 @@ func InspectIPA(file *os.File, size int64, options InspectOptions) (Inspection, 
 	if size > MaxIPABytes {
 		return Inspection{}, fmt.Errorf("IPA size %d bytes exceeds supported limit of %d bytes", size, MaxIPABytes)
 	}
-	snapshot, digest, cleanup, err := snapshotIPAContext(context.Background(), file, size)
+	snapshot, digest, cleanup, err := snapshotIPAContext(ctx, file, size)
 	if err != nil {
 		return Inspection{}, err
 	}
@@ -172,7 +181,7 @@ func InspectIPA(file *os.File, size int64, options InspectOptions) (Inspection, 
 	if afterIPASnapshotForTest != nil {
 		afterIPASnapshotForTest()
 	}
-	return inspectSnapshotContext(context.Background(), snapshot, size, digest, options)
+	return inspectSnapshotContext(ctx, snapshot, size, digest, options)
 }
 
 func inspectSnapshotContext(ctx context.Context, file *os.File, size int64, digest string, options InspectOptions) (Inspection, error) {

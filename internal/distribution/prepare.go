@@ -73,6 +73,12 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	return prepareIPA(context.Background(), file, size, options, nil)
 }
 
+// PrepareIPAContext preserves the existing open-file API while propagating
+// caller cancellation through snapshotting and preparation.
+func PrepareIPAContext(ctx context.Context, file *os.File, size int64, options PrepareOptions) (PrepareResult, error) {
+	return prepareIPA(ctx, file, size, options, nil)
+}
+
 // PrepareIPAPath opens a relative IPA path beneath inputRoot without following
 // symlinks and prepares it with cancellation propagated through snapshotting
 // and code-signature verification.
@@ -499,7 +505,7 @@ func validateSourceURL(raw string) error {
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return fmt.Errorf("invalid --source-url: query and fragment are not allowed")
 	}
-	if parsed.Scheme != "https" || parsed.Host == "" {
+	if parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" {
 		return fmt.Errorf("invalid --source-url: must be an absolute HTTPS URL")
 	}
 	return nil

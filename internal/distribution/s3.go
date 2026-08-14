@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	"os"
 	"strings"
@@ -21,7 +23,10 @@ import (
 	transporthttp "github.com/aws/smithy-go/transport/http"
 )
 
-const objectSHA256MetadataKey = "asc-sha256"
+const (
+	objectSHA256MetadataKey  = "asc-sha256"
+	mutationReconcileTimeout = 5 * time.Second
+)
 
 type S3StoreConfig struct {
 	Endpoint         string
@@ -30,6 +35,7 @@ type S3StoreConfig struct {
 	Bucket           string
 	AddressingStyle  string
 	HTTPClient       *http.Client
+	RequestTimeout   time.Duration
 }
 
 type s3API interface {
@@ -46,6 +52,7 @@ type S3Store struct {
 	presigner        s3Presigner
 	bucket           string
 	credentialSource string
+	requestContext   func(context.Context) (context.Context, context.CancelFunc)
 }
 
 func NewS3Store(ctx context.Context, options S3StoreConfig) (*S3Store, time.Time, error) {
@@ -127,35 +134,51 @@ func NewS3Store(ctx context.Context, options S3StoreConfig) (*S3Store, time.Time
 	} else {
 		credentialSource = categorizeCredentialSource(resolvedCredentials.Source)
 	}
-	return &S3Store{client: uploadClient, presigner: s3.NewPresignClient(downloadClient), bucket: strings.TrimSpace(options.Bucket), credentialSource: credentialSource}, credentialLimit, nil
+	requestContext := func(parent context.Context) (context.Context, context.CancelFunc) {
+		if options.RequestTimeout <= 0 {
+			return parent, func() {}
+		}
+		return context.WithTimeout(parent, options.RequestTimeout)
+	}
+	return &S3Store{
+		client: uploadClient, presigner: s3.NewPresignClient(downloadClient),
+		bucket: strings.TrimSpace(options.Bucket), credentialSource: credentialSource,
+		requestContext: requestContext,
+	}, credentialLimit, nil
 }
 
 func (store *S3Store) CredentialSource() string { return store.credentialSource }
 
 func (store *S3Store) Ensure(ctx context.Context, input PutObject) (StoredObject, error) {
-	existing, err := store.head(ctx, input.Key)
+	headCtx, headCancel := store.boundedRequestContext(ctx)
+	existing, err := store.head(headCtx, input.Key)
+	headCancel()
 	if err == nil {
 		return reconcileStoredObject(input, existing)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return StoredObject{}, err
 	}
-	digest, decodeErr := hex.DecodeString(input.SHA256)
-	if decodeErr != nil || len(digest) != 32 {
-		return StoredObject{}, fmt.Errorf("put object identity has invalid SHA-256")
+	checksum, err := objectChecksumSHA256(input.SHA256)
+	if err != nil {
+		return StoredObject{}, err
 	}
-	_, err = store.client.PutObject(ctx, &s3.PutObjectInput{
+	putCtx, putCancel := store.boundedRequestContext(ctx)
+	_, err = store.client.PutObject(putCtx, &s3.PutObjectInput{
 		Bucket:         aws.String(store.bucket),
 		Key:            aws.String(input.Key),
 		Body:           input.Body,
 		ContentLength:  aws.Int64(input.SizeBytes),
 		ContentType:    aws.String(input.ContentType),
-		ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(digest)),
+		ChecksumSHA256: aws.String(checksum),
 		IfNoneMatch:    aws.String("*"),
 		Metadata:       map[string]string{objectSHA256MetadataKey: input.SHA256},
 	})
+	putCancel()
 	if err != nil {
-		existing, headErr := store.head(ctx, input.Key)
+		reconcileCtx, reconcileCancel := store.boundedRequestContext(ctx)
+		existing, headErr := store.head(reconcileCtx, input.Key)
+		reconcileCancel()
 		if headErr == nil {
 			return reconcileStoredObject(input, existing)
 		}
@@ -167,14 +190,106 @@ func (store *S3Store) Ensure(ctx context.Context, input PutObject) (StoredObject
 	return StoredObject{Key: input.Key, SHA256: input.SHA256, SizeBytes: input.SizeBytes, ContentType: input.ContentType, Status: "uploaded"}, nil
 }
 
+// ReplaceCorrupt conditionally replaces the exact object generation observed
+// by a fresh HEAD. Matching metadata alone is insufficient after a full GET
+// proved the body corrupt, while If-Match prevents overwriting a concurrent
+// legitimate replacement.
+func (store *S3Store) ReplaceCorrupt(ctx context.Context, input PutObject) (StoredObject, error) {
+	headCtx, headCancel := store.boundedRequestContext(ctx)
+	existing, err := store.head(headCtx, input.Key)
+	headCancel()
+	if err != nil {
+		return StoredObject{}, err
+	}
+	if _, err := reconcileStoredObject(input, existing); err != nil {
+		return StoredObject{}, fmt.Errorf("refuse corrupt object replacement: %w", err)
+	}
+	if existing.entityTag == "" {
+		return StoredObject{}, fmt.Errorf("refuse corrupt object replacement at %q without an entity tag", input.Key)
+	}
+	seeker, ok := input.Body.(io.Seeker)
+	if !ok {
+		return StoredObject{}, fmt.Errorf("corrupt object replacement body must be seekable")
+	}
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+		return StoredObject{}, fmt.Errorf("rewind corrupt object replacement: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return StoredObject{}, fmt.Errorf("conditionally replace corrupt object %q: %w", input.Key, err)
+	}
+	checksum, err := objectChecksumSHA256(input.SHA256)
+	if err != nil {
+		return StoredObject{}, err
+	}
+	putCtx, putCancel := store.boundedRequestContext(ctx)
+	_, err = store.client.PutObject(putCtx, &s3.PutObjectInput{
+		Bucket:         aws.String(store.bucket),
+		Key:            aws.String(input.Key),
+		Body:           input.Body,
+		ContentLength:  aws.Int64(input.SizeBytes),
+		ContentType:    aws.String(input.ContentType),
+		ChecksumSHA256: aws.String(checksum),
+		IfMatch:        aws.String(existing.entityTag),
+		Metadata:       map[string]string{objectSHA256MetadataKey: input.SHA256},
+	})
+	putCancel()
+	if err != nil {
+		reconcileCtx, reconcileCancel := store.mutationReconcileContext(ctx)
+		replacement, headErr := store.head(reconcileCtx, input.Key)
+		reconcileCancel()
+		if isPreconditionFailed(err) {
+			return StoredObject{}, fmt.Errorf("conditional replacement conflict at %q", input.Key)
+		}
+		if headErr != nil || replacement.entityTag == existing.entityTag {
+			return StoredObject{}, sanitizedStorageError("conditionally replace corrupt object", input.Key, err)
+		}
+		if replacement.entityTag == "" {
+			return StoredObject{}, fmt.Errorf("conditional replacement conflict at %q: replacement generation is unavailable", input.Key)
+		}
+		reconciled, reconcileErr := reconcileStoredObject(input, replacement)
+		if reconcileErr != nil {
+			return StoredObject{}, fmt.Errorf("conditional replacement conflict at %q: observed a different object generation", input.Key)
+		}
+		reconciled.Status = "replaced"
+		return reconciled, nil
+	}
+	return StoredObject{Key: input.Key, SHA256: input.SHA256, SizeBytes: input.SizeBytes, ContentType: input.ContentType, Status: "replaced"}, nil
+}
+
+func objectChecksumSHA256(value string) (string, error) {
+	digest, err := hex.DecodeString(value)
+	if err != nil || len(digest) != 32 {
+		return "", fmt.Errorf("put object identity has invalid SHA-256")
+	}
+	return base64.StdEncoding.EncodeToString(digest), nil
+}
+
 func (store *S3Store) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	request, err := store.presigner.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(store.bucket), Key: aws.String(key)}, func(options *s3.PresignOptions) {
+	requestCtx, cancel := store.boundedRequestContext(ctx)
+	defer cancel()
+	request, err := store.presigner.PresignGetObject(requestCtx, &s3.GetObjectInput{Bucket: aws.String(store.bucket), Key: aws.String(key)}, func(options *s3.PresignOptions) {
 		options.Expires = ttl
 	})
 	if err != nil {
 		return "", sanitizedStorageError("presign object", key, err)
 	}
 	return request.URL, nil
+}
+
+func (store *S3Store) boundedRequestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if store.requestContext == nil {
+		return ctx, func() {}
+	}
+	return store.requestContext(ctx)
+}
+
+func (store *S3Store) mutationReconcileContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	base, baseCancel := context.WithTimeout(context.WithoutCancel(ctx), mutationReconcileTimeout)
+	bounded, boundedCancel := store.boundedRequestContext(base)
+	return bounded, func() {
+		boundedCancel()
+		baseCancel()
+	}
 }
 
 func (store *S3Store) head(ctx context.Context, key string) (StoredObject, error) {
@@ -189,15 +304,40 @@ func (store *S3Store) head(ctx context.Context, key string) (StoredObject, error
 	if sha == "" {
 		sha = response.Metadata[strings.ToLower(objectSHA256MetadataKey)]
 	}
-	return StoredObject{Key: key, SHA256: strings.ToLower(sha), SizeBytes: aws.ToInt64(response.ContentLength), ContentType: aws.ToString(response.ContentType)}, nil
+	return StoredObject{
+		Key: key, SHA256: strings.ToLower(sha), SizeBytes: aws.ToInt64(response.ContentLength),
+		ContentType: aws.ToString(response.ContentType), entityTag: aws.ToString(response.ETag),
+	}, nil
 }
 
 func reconcileStoredObject(input PutObject, existing StoredObject) (StoredObject, error) {
-	if !strings.EqualFold(existing.SHA256, input.SHA256) || existing.SizeBytes != input.SizeBytes || existing.ContentType != input.ContentType {
-		return StoredObject{}, fmt.Errorf("%w at %q: existing metadata does not match expected SHA-256, size, and content type", ErrImmutableObjectConflict, input.Key)
+	if !strings.EqualFold(existing.SHA256, input.SHA256) || existing.SizeBytes != input.SizeBytes || !equivalentContentType(existing.ContentType, input.ContentType) {
+		return StoredObject{}, fmt.Errorf("immutable object conflict at %q: existing metadata does not match expected SHA-256, size, and content type", input.Key)
 	}
 	existing.Status = "reused"
 	return existing, nil
+}
+
+func equivalentContentType(left, right string) bool {
+	leftType, leftParameters, leftErr := mime.ParseMediaType(strings.TrimSpace(left))
+	rightType, rightParameters, rightErr := mime.ParseMediaType(strings.TrimSpace(right))
+	if leftErr != nil || rightErr != nil || !strings.EqualFold(leftType, rightType) || len(leftParameters) != len(rightParameters) {
+		return false
+	}
+	for name, leftValue := range leftParameters {
+		rightValue, ok := rightParameters[name]
+		if !ok {
+			return false
+		}
+		if strings.EqualFold(name, "charset") {
+			if !strings.EqualFold(leftValue, rightValue) {
+				return false
+			}
+		} else if leftValue != rightValue {
+			return false
+		}
+	}
+	return true
 }
 
 func addressingPathStyle(value string) (bool, error) {

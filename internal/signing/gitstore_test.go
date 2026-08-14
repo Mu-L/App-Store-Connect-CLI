@@ -149,6 +149,38 @@ func TestGitStoreReadEncryptedFileWithMetadataRejectsOversizedArtifact(t *testin
 	}
 }
 
+func TestGitStoreReusesAndClosesRootAcrossEncryptedFileSizing(t *testing.T) {
+	store := &GitStore{LocalDir: t.TempDir()}
+	const relPath = "artifact"
+	if err := os.WriteFile(filepath.Join(store.LocalDir, relPath+".enc"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 256 {
+		size, err := store.EncryptedFileSize(relPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if size != 4 {
+			t.Fatalf("EncryptedFileSize() = %d, want 4", size)
+		}
+	}
+	if store.root == nil {
+		t.Fatal("GitStore did not retain a shared root")
+	}
+	pinned := *store.root
+	if err := store.Cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if store.root != nil {
+		t.Fatal("Cleanup() retained the shared root")
+	}
+	if opened, err := pinned.OpenRoot(); err == nil {
+		_ = opened.Close()
+		t.Fatal("Cleanup() left a copied shared root usable")
+	}
+}
+
 func TestGitStoreReadEncryptedFileWithMetadataCanonicalizesCrossPlatformPath(t *testing.T) {
 	store := &GitStore{LocalDir: t.TempDir()}
 	localPath := filepath.Join("identities", "distribution", "ABC.p12")
@@ -188,13 +220,22 @@ func TestGitStoreListEncryptedFilesRejectsLiteralBackslashPath(t *testing.T) {
 	}
 }
 
-func TestNormalizeEncryptedRepositoryPathAcceptsWindowsSeparators(t *testing.T) {
-	got, err := normalizeEncryptedRepositoryPath(`profiles\appstore\app.enc`, '\\')
-	if err != nil {
-		t.Fatalf("normalizeEncryptedRepositoryPath() error = %v", err)
+func TestGitStoreListEncryptedFilesReturnsPortablePaths(t *testing.T) {
+	store := &GitStore{LocalDir: t.TempDir()}
+	encryptedPath := filepath.Join(store.LocalDir, "identities", "distribution", "ABC.p12.enc")
+	if err := os.MkdirAll(filepath.Dir(encryptedPath), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if got != "profiles/appstore/app.enc" {
-		t.Fatalf("normalizeEncryptedRepositoryPath() = %q, want slash-separated path", got)
+	if err := os.WriteFile(encryptedPath, []byte("ciphertext"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := store.ListEncryptedFiles()
+	if err != nil {
+		t.Fatalf("ListEncryptedFiles() error = %v", err)
+	}
+	if got, want := files, []string{"identities/distribution/ABC.p12"}; !slices.Equal(got, want) {
+		t.Fatalf("ListEncryptedFiles() = %q, want portable paths %q", got, want)
 	}
 }
 
@@ -216,6 +257,167 @@ func TestGitStoreListEncryptedFilesRejectsControlAndBidiPaths(t *testing.T) {
 				t.Fatalf("ListEncryptedFiles() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestGitStoreWriteEncryptedFileRejectsControlAndBidiPaths(t *testing.T) {
+	for name, hostile := range map[string]string{
+		"newline": "bad\nname",
+		"escape":  "bad\x1bname",
+		"bidi":    "bad\u202ename",
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := &GitStore{LocalDir: t.TempDir()}
+			relPath := filepath.Join("profiles", "adhoc", hostile+".mobileprovision")
+			if err := store.WriteEncryptedFile(relPath, []byte("profile"), "password"); err == nil || !strings.Contains(err.Error(), "control characters") {
+				t.Fatalf("WriteEncryptedFile() error = %v, want portable-path refusal", err)
+			}
+		})
+	}
+}
+
+func TestGitStoreWriteEncryptedFileRejectsWindowsIncompatiblePaths(t *testing.T) {
+	tests := map[string]string{
+		"invalid character": "release:adhoc",
+		"reserved name":     "CON",
+		"reserved stem":     "com1.mobileprovision",
+		"trailing dot":      "release.",
+		"trailing space":    "release ",
+		"nested reserved":   "profiles/NUL/release",
+	}
+	for name, hostile := range tests {
+		t.Run(name, func(t *testing.T) {
+			store := &GitStore{LocalDir: t.TempDir()}
+			err := store.WriteEncryptedFile(hostile, []byte("profile"), "password")
+			if err == nil || !strings.Contains(err.Error(), "Windows-incompatible") {
+				t.Fatalf("WriteEncryptedFile() error = %v, want portable-path refusal", err)
+			}
+			entries, readErr := os.ReadDir(store.LocalDir)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("rejected path created repository entries: %v", entries)
+			}
+		})
+	}
+}
+
+func TestValidateEncryptedRepositoryPathsRejectsCaseFoldCollisions(t *testing.T) {
+	tests := map[string][]string{
+		"profile": {
+			"profiles/adhoc/Release.mobileprovision",
+			"profiles/adhoc/release.mobileprovision",
+		},
+		"certificate": {
+			"certs/distribution/ABC.cer",
+			"certs/distribution/abc.cer",
+		},
+		"identity": {
+			"identities/distribution/ABC.p12",
+			"identities/distribution/abc.p12",
+		},
+		"context": {
+			"identity-contexts/ABC.json",
+			"identity-contexts/abc.json",
+		},
+		"Unicode simple fold": {
+			"profiles/adhoc/K.mobileprovision",
+			"profiles/adhoc/\u212A.mobileprovision",
+		},
+		"Unicode canonical normalization": {
+			"profiles/adhoc/r\u00e9lease.mobileprovision",
+			"profiles/adhoc/re\u0301lease.mobileprovision",
+		},
+	}
+	const want = "encrypted repository paths collide under Windows Unicode case folding"
+	for name, paths := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateEncryptedRepositoryPaths(paths); err == nil || err.Error() != want {
+				t.Fatalf("ValidateEncryptedRepositoryPaths() error = %v, want %q", err, want)
+			}
+		})
+	}
+
+	if err := ValidateEncryptedRepositoryPaths([]string{
+		"profiles/adhoc/Release.mobileprovision",
+		"profiles/adhoc/Release.mobileprovision",
+	}); err != nil {
+		t.Fatalf("exact duplicate path rejected: %v", err)
+	}
+}
+
+func TestGitStoreListEncryptedFilesRejectsCaseFoldCollisions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot create distinct case-only paths")
+	}
+	store := &GitStore{LocalDir: t.TempDir()}
+	directory := filepath.Join(store.LocalDir, "profiles", "adhoc")
+	for _, name := range []string{"Release.mobileprovision.enc", "release.mobileprovision.enc"} {
+		path := filepath.Join(directory, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("ciphertext"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Skip("filesystem cannot create distinct case-only paths")
+	}
+	if _, err := store.ListEncryptedFiles(); err == nil || err.Error() != "encrypted repository paths collide under Windows Unicode case folding" {
+		t.Fatalf("ListEncryptedFiles() error = %v", err)
+	}
+}
+
+func TestEncryptedRepositoryPathsRejectInvalidUTF8(t *testing.T) {
+	invalid := string([]byte{0xff, 'x'})
+	if err := validateEncryptedRepositoryPath(invalid); err == nil || err.Error() != "encrypted repository path is not valid UTF-8" {
+		t.Fatalf("validateEncryptedRepositoryPath() error = %v", err)
+	}
+
+	store := &GitStore{LocalDir: t.TempDir()}
+	if err := store.WriteEncryptedFile(invalid, []byte("profile"), "password"); err == nil || err.Error() != "encrypted repository path is not valid UTF-8" {
+		t.Fatalf("WriteEncryptedFile() error = %v", err)
+	}
+	entries, err := os.ReadDir(store.LocalDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("invalid UTF-8 write created repository entries: %v", entries)
+	}
+}
+
+func TestGitStoreListEncryptedFilesRejectsInvalidUTF8(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose raw invalid UTF-8 path bytes")
+	}
+	store := &GitStore{LocalDir: t.TempDir()}
+	invalid := string([]byte{0xff}) + ".enc"
+	if err := os.WriteFile(filepath.Join(store.LocalDir, invalid), []byte("ciphertext"), 0o600); err != nil {
+		t.Skipf("filesystem rejects invalid UTF-8 names: %v", err)
+	}
+	if _, err := store.ListEncryptedFiles(); err == nil || err.Error() != "encrypted repository path is not valid UTF-8" {
+		t.Fatalf("ListEncryptedFiles() error = %v", err)
+	}
+}
+
+func TestValidateEncryptedRepositoryPathAcceptsPortableWindowsNames(t *testing.T) {
+	for _, path := range []string{
+		"profiles/adhoc/release.mobileprovision",
+		"profiles/adhoc/CONTEXT.mobileprovision",
+		"profiles/adhoc/COM10.mobileprovision",
+		"profiles/adhoc/.hidden.mobileprovision",
+		"profiles/adhoc/réléase.mobileprovision",
+	} {
+		if err := validateEncryptedRepositoryPath(path); err != nil {
+			t.Fatalf("validateEncryptedRepositoryPath(%q) error = %v", path, err)
+		}
 	}
 }
 

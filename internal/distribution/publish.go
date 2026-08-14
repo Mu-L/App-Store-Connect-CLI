@@ -26,25 +26,6 @@ import (
 	"howett.net/plist"
 )
 
-var (
-	// ErrPrivatePublishLinkExpired means an immutable private install lease can
-	// no longer be verified and must be replaced by a newly authorized run.
-	ErrPrivatePublishLinkExpired = errors.New("private publication link expired")
-	// ErrPrivatePublishProfileExpired means the signed payload is no longer
-	// usable for publication and must be rebuilt under a new plan.
-	ErrPrivatePublishProfileExpired = errors.New("private publication profile expired")
-	// ErrPrivatePublishConflict means exact immutable local or remote evidence
-	// conflicts with the saved publication intent. Retrying cannot repair it.
-	ErrPrivatePublishConflict = errors.New("private publication intent conflict")
-	// ErrImmutableObjectConflict means an existing object at an exact key does
-	// not match the expected immutable content identity.
-	ErrImmutableObjectConflict = errors.New("immutable object conflict")
-	// ErrVerificationContentConflict means a successful fetch returned bytes or
-	// representation metadata that conflict with the immutable expected object.
-	// Retrying cannot make that exact destination safe to reuse.
-	ErrVerificationContentConflict = errors.New("published object content conflict")
-)
-
 const (
 	ContentTypeIPA      = "application/octet-stream"
 	ContentTypeManifest = "application/xml"
@@ -52,6 +33,8 @@ const (
 	maxLinkLifetime     = 7 * 24 * time.Hour
 	maxDescriptorBytes  = 1 << 20
 )
+
+var ErrObjectVerificationMismatch = errors.New("published object verification mismatch")
 
 type Access string
 
@@ -154,6 +137,17 @@ func LoadPreparedBundle(bundleDir string) (*PreparedBundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open prepared bundle: %w", err)
 	}
+	defer root.Close()
+	return LoadPreparedBundleContext(context.Background(), root)
+}
+
+// LoadPreparedBundleContext reads a prepared bundle through an already-pinned
+// root. The caller owns root and must retain it for the complete publication
+// workflow so a lexical path replacement cannot select a different bundle.
+func LoadPreparedBundleContext(ctx context.Context, root rootfs.Root) (*PreparedBundle, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	descriptorFile, err := root.OpenFile("bundle.json")
 	if err != nil {
 		return nil, fmt.Errorf("read bundle.json: %w", err)
@@ -167,19 +161,10 @@ func LoadPreparedBundle(bundleDir string) (*PreparedBundle, error) {
 		_ = descriptorFile.Close()
 		return nil, fmt.Errorf("bundle.json exceeds %d bytes", maxDescriptorBytes)
 	}
-	if !descriptorInfo.Mode().IsRegular() {
-		_ = descriptorFile.Close()
-		return nil, fmt.Errorf("bundle.json is not a regular file")
-	}
 	descriptorBytes, err := io.ReadAll(io.LimitReader(descriptorFile, maxDescriptorBytes+1))
-	if err != nil || len(descriptorBytes) > maxDescriptorBytes {
-		_ = descriptorFile.Close()
-		return nil, fmt.Errorf("read bounded bundle.json")
-	}
-	descriptorAfterRead, err := descriptorFile.Stat()
 	_ = descriptorFile.Close()
-	if err != nil || !stablePreparedFile(descriptorInfo, descriptorAfterRead) || int64(len(descriptorBytes)) != descriptorInfo.Size() {
-		return nil, fmt.Errorf("bundle.json changed while it was read")
+	if err != nil || len(descriptorBytes) > maxDescriptorBytes {
+		return nil, fmt.Errorf("read bounded bundle.json")
 	}
 	descriptorDigest := sha256.Sum256(descriptorBytes)
 	descriptorSHA := hex.EncodeToString(descriptorDigest[:])
@@ -222,12 +207,12 @@ func LoadPreparedBundle(bundleDir string) (*PreparedBundle, error) {
 		return nil, fmt.Errorf("payload/app.ipa exceeds %d bytes", MaxIPABytes)
 	}
 	digest := sha256.New()
-	if written, err := io.Copy(digest, io.LimitReader(ipa, MaxIPABytes+1)); err != nil || written != info.Size() {
+	written, err := copyWithContext(ctx, digest, io.LimitReader(ipa, MaxIPABytes+1), nil)
+	if err != nil {
 		return nil, fmt.Errorf("hash payload/app.ipa: %w", err)
 	}
-	infoAfterHash, err := ipa.Stat()
-	if err != nil || !stablePreparedFile(info, infoAfterHash) {
-		return nil, fmt.Errorf("payload/app.ipa changed while it was hashed")
+	if written != info.Size() {
+		return nil, fmt.Errorf("payload/app.ipa size changed while hashing: read %d of %d bytes", written, info.Size())
 	}
 	actualSHA := hex.EncodeToString(digest.Sum(nil))
 	if actualSHA != strings.ToLower(descriptor.Artifact.SHA256) {
@@ -283,8 +268,8 @@ func validateDescriptor(descriptor PreparedDescriptor) error {
 	if strings.TrimSpace(descriptor.Signing.ProfileUUID) == "" || strings.TrimSpace(descriptor.Signing.TeamID) == "" || strings.TrimSpace(descriptor.Signing.ExpiresAt) == "" {
 		return fmt.Errorf("bundle.json signing requires profileUuid, teamId, and expiresAt")
 	}
-	if descriptor.Signing.DeviceCount <= 0 || !isCanonicalSHA256(descriptor.Signing.DeviceSetSHA256) || !isCanonicalSHA256(descriptor.Signing.EmbeddedProfileSHA256) || len(descriptor.Signing.ProfileCertificateSHA256Fingerprints) == 0 {
-		return fmt.Errorf("bundle.json signing requires a non-empty device set, embedded profile digest, and profile certificate fingerprints")
+	if descriptor.Signing.DeviceCount <= 0 || !isCanonicalSHA256(descriptor.Signing.DeviceSetSHA256) || len(descriptor.Signing.ProfileCertificateSHA256Fingerprints) == 0 {
+		return fmt.Errorf("bundle.json signing requires a non-empty device set and profile certificate fingerprints")
 	}
 	if descriptor.Signing.CodeSignatureVerification.Status != "verified" {
 		return fmt.Errorf("bundle.json signing.codeSignatureVerification.status must be verified")
@@ -351,11 +336,16 @@ type StoredObject struct {
 	SizeBytes   int64  `json:"sizeBytes"`
 	ContentType string `json:"contentType"`
 	Status      string `json:"status"`
+	entityTag   string
 }
 
 type ObjectStore interface {
 	Ensure(context.Context, PutObject) (StoredObject, error)
 	PresignGet(context.Context, string, time.Duration) (string, error)
+}
+
+type CorruptObjectReplacer interface {
+	ReplaceCorrupt(context.Context, PutObject) (StoredObject, error)
 }
 
 type VerifyKind int
@@ -507,6 +497,21 @@ func Publish(ctx context.Context, ipa io.ReadSeeker, descriptor PreparedDescript
 	if !profileExpiry.After(now.Add(requiredProfileValidity)) {
 		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("signing profile expires too soon for the requested link lifetime and safety margin")
 	}
+	if ipa == nil {
+		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("IPA is required")
+	}
+	if _, err := ipa.Seek(0, io.SeekStart); err != nil {
+		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("rewind IPA for snapshot: %w", err)
+	}
+	ipaSnapshot, ipaDigest, cleanupSnapshot, err := snapshotReaderContext(ctx, io.LimitReader(ipa, descriptor.Artifact.SizeBytes+1), descriptor.Artifact.SizeBytes)
+	if err != nil {
+		return PublishReceipt{}, SensitiveLinks{}, err
+	}
+	defer cleanupSnapshot()
+	if ipaDigest != strings.ToLower(descriptor.Artifact.SHA256) {
+		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("IPA snapshot SHA-256 %s does not match bundle.json %s", ipaDigest, descriptor.Artifact.SHA256)
+	}
+	ipa = ipaSnapshot
 	randomID := randomLinkID
 	if options.RandomID != nil {
 		randomID = options.RandomID
@@ -530,8 +535,33 @@ func Publish(ctx context.Context, ipa io.ReadSeeker, descriptor PreparedDescript
 	if err != nil {
 		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("create IPA URL: %w", err)
 	}
-	if err := options.Verifier.Verify(ctx, VerifyRequest{URL: ipaURL, Kind: VerifyIPA, SHA256: ipaObject.SHA256, SizeBytes: ipaObject.SizeBytes, ContentType: ipaObject.ContentType}); err != nil {
-		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("verify IPA: %w", err)
+	ipaVerification := VerifyRequest{URL: ipaURL, Kind: VerifyIPA, SHA256: ipaObject.SHA256, SizeBytes: ipaObject.SizeBytes, ContentType: ipaObject.ContentType}
+	if verifyErr := options.Verifier.Verify(ctx, ipaVerification); verifyErr != nil {
+		replacer, canReplace := options.Store.(CorruptObjectReplacer)
+		if !canReplace || !errors.Is(verifyErr, ErrObjectVerificationMismatch) {
+			return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("verify IPA: %w", verifyErr)
+		}
+		if _, err := ipa.Seek(0, io.SeekStart); err != nil {
+			return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("rewind IPA for conditional replacement: %w", err)
+		}
+		ipaObject, err = replacer.ReplaceCorrupt(ctx, PutObject{
+			Key: ipaKey, Body: ipa, SHA256: strings.ToLower(descriptor.Artifact.SHA256),
+			SizeBytes: descriptor.Artifact.SizeBytes, ContentType: ContentTypeIPA,
+		})
+		if err != nil {
+			return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("replace corrupt IPA after verification mismatch: %w", err)
+		}
+		ipaURL, err = resolveObjectURL(ctx, options, ipaKey, downloadDeadline, clock)
+		if err != nil {
+			return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("create replacement IPA URL: %w", err)
+		}
+		ipaVerification.URL = ipaURL
+		ipaVerification.SHA256 = ipaObject.SHA256
+		ipaVerification.SizeBytes = ipaObject.SizeBytes
+		ipaVerification.ContentType = ipaObject.ContentType
+		if err := options.Verifier.Verify(ctx, ipaVerification); err != nil {
+			return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("verify replaced IPA: %w", err)
+		}
 	}
 
 	if err := requireHTTPSURL(ipaURL); err != nil {
@@ -601,15 +631,19 @@ func Publish(ctx context.Context, ipa io.ReadSeeker, descriptor PreparedDescript
 }
 
 func Reverify(ctx context.Context, verifier Verifier, receipt PublishReceipt, links SensitiveLinks, now time.Time) error {
+	return reverifyWithClock(ctx, verifier, receipt, links, now, func() time.Time { return time.Now().UTC() })
+}
+
+func reverifyWithClock(ctx context.Context, verifier Verifier, receipt PublishReceipt, links SensitiveLinks, now time.Time, clock func() time.Time) error {
 	if verifier == nil || receipt.SchemaVersion != "1" || links.SchemaVersion != "1" || !receipt.Verified {
 		return fmt.Errorf("invalid recovery verification input")
 	}
 	profileExpiry, err := time.Parse(time.RFC3339, receipt.Signing.ProfileExpiresAt)
 	if err != nil || !profileExpiry.After(now.Add(time.Minute)) {
-		return fmt.Errorf("%w: saved signing profile is expired or expires too soon", ErrPrivatePublishProfileExpired)
+		return fmt.Errorf("saved publication signing profile is expired or expires too soon")
 	}
 	if receipt.Access == AccessPrivate && (links.ExpiresAt == nil || !links.ExpiresAt.After(now)) {
-		return fmt.Errorf("%w: saved install link is expired", ErrPrivatePublishLinkExpired)
+		return fmt.Errorf("saved install link is expired")
 	}
 	if links.ExpiresAt != nil && !profileExpiry.After(links.ExpiresAt.Add(time.Minute)) {
 		return fmt.Errorf("saved install link exceeds the signing profile expiry")
@@ -654,6 +688,19 @@ func Reverify(ctx context.Context, verifier Verifier, receipt PublishReceipt, li
 			}
 		}
 	}
+	for _, object := range []struct {
+		name     string
+		stored   StoredObject
+		expected string
+	}{
+		{name: "artifact", stored: receipt.Artifact, expected: ContentTypeIPA},
+		{name: "manifest", stored: receipt.Manifest, expected: ContentTypeManifest},
+		{name: "install page", stored: receipt.Page, expected: ContentTypeHTML},
+	} {
+		if !equivalentContentType(object.stored.ContentType, object.expected) {
+			return fmt.Errorf("saved %s has invalid content type", object.name)
+		}
+	}
 	manifest, err := makeManifest(receipt.App, links.ArtifactURL)
 	if err != nil || !objectMatchesBytes(receipt.Manifest, manifest, ContentTypeManifest) {
 		return fmt.Errorf("saved manifest identity does not match generated content")
@@ -672,44 +719,52 @@ func Reverify(ctx context.Context, verifier Verifier, receipt PublishReceipt, li
 			return err
 		}
 		if err := verifier.Verify(ctx, check); err != nil {
-			if errors.Is(err, ErrVerificationContentConflict) {
-				return fmt.Errorf("%w: recovered object fetch conflicts with saved receipt: %w", ErrPrivatePublishConflict, err)
-			}
 			return err
 		}
+	}
+	if receipt.Access == AccessPublic && !profileExpiry.After(clock().Add(time.Minute)) {
+		return fmt.Errorf("saved publication signing profile is expired or expires too soon")
 	}
 	return nil
 }
 
 func privateSignatureWithinDeadline(rawURL string, deadline time.Time) error {
+	signedExpiry, err := privateSignatureExpiry(rawURL)
+	if err != nil {
+		return err
+	}
+	delta := signedExpiry.Sub(deadline)
+	if delta <= -time.Second || delta >= time.Second {
+		return fmt.Errorf("signed expiry does not match saved publication deadline")
+	}
+	return nil
+}
+
+func privateSignatureExpiry(rawURL string) (time.Time, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("has invalid AWS Signature V4 expiry")
+		return time.Time{}, fmt.Errorf("has invalid AWS Signature V4 expiry")
 	}
 	query := parsed.Query()
 	dates, dateFound := query["X-Amz-Date"]
 	lifetimes, lifetimeFound := query["X-Amz-Expires"]
 	if !dateFound || len(dates) != 1 || dates[0] == "" || !lifetimeFound || len(lifetimes) != 1 || lifetimes[0] == "" {
-		return fmt.Errorf("has invalid AWS Signature V4 expiry")
+		return time.Time{}, fmt.Errorf("has invalid AWS Signature V4 expiry")
 	}
 	signedAt, err := time.Parse("20060102T150405Z", dates[0])
 	if err != nil {
-		return fmt.Errorf("has invalid AWS Signature V4 expiry")
+		return time.Time{}, fmt.Errorf("has invalid AWS Signature V4 expiry")
 	}
 	lifetimeSeconds, err := strconv.ParseInt(lifetimes[0], 10, 64)
 	if err != nil || lifetimeSeconds <= 0 || lifetimeSeconds > int64(maxLinkLifetime/time.Second) || strconv.FormatInt(lifetimeSeconds, 10) != lifetimes[0] {
-		return fmt.Errorf("has invalid AWS Signature V4 expiry")
+		return time.Time{}, fmt.Errorf("has invalid AWS Signature V4 expiry")
 	}
-	signedExpiry := signedAt.Add(time.Duration(lifetimeSeconds) * time.Second)
-	if signedExpiry.After(deadline) {
-		return fmt.Errorf("signed expiry exceeds saved publication deadline")
-	}
-	return nil
+	return signedAt.Add(time.Duration(lifetimeSeconds) * time.Second), nil
 }
 
 func objectMatchesBytes(object StoredObject, body []byte, contentType string) bool {
 	digest := sha256.Sum256(body)
-	return object.ContentType == contentType && object.SizeBytes == int64(len(body)) && strings.EqualFold(object.SHA256, hex.EncodeToString(digest[:]))
+	return equivalentContentType(object.ContentType, contentType) && object.SizeBytes == int64(len(body)) && strings.EqualFold(object.SHA256, hex.EncodeToString(digest[:]))
 }
 
 func linkMatchesDestination(rawURL, key string, receipt PublishReceipt) error {
@@ -768,9 +823,16 @@ func boundedLifetimes(now time.Time, ttl, grace time.Duration, credentialLimit t
 	if grace < 0 {
 		return 0, 0, fmt.Errorf("download grace must not be negative")
 	}
-	if ttl+grace > maxLinkLifetime {
+	if ttl > maxLinkLifetime {
+		return 0, 0, fmt.Errorf("URL TTL must not exceed 7d")
+	}
+	if grace > maxLinkLifetime {
+		return 0, 0, fmt.Errorf("download grace must not exceed 7d")
+	}
+	if ttl > maxLinkLifetime-grace {
 		return 0, 0, fmt.Errorf("URL TTL plus download grace must not exceed 7d")
 	}
+	totalLifetime := ttl + grace
 	if !credentialLimit.IsZero() {
 		remaining := credentialLimit.Sub(now) - time.Minute
 		if remaining <= 0 {
@@ -779,7 +841,7 @@ func boundedLifetimes(now time.Time, ttl, grace time.Duration, credentialLimit t
 		if remaining <= grace {
 			return 0, 0, fmt.Errorf("storage credentials do not remain valid for the requested download grace")
 		}
-		if ttl+grace > remaining {
+		if totalLifetime > remaining {
 			ttl = remaining - grace
 		}
 	}
@@ -792,7 +854,45 @@ func resolveObjectURL(ctx context.Context, options PublishOptions, key string, d
 		if ttl <= 0 {
 			return "", fmt.Errorf("credential-safe URL lifetime elapsed before presigning")
 		}
-		return options.Store.PresignGet(ctx, key, ttl)
+		// SigV4 records X-Amz-Date and X-Amz-Expires at whole-second
+		// precision. Round the remaining lifetime up so flooring both fields
+		// cannot produce a signature one second earlier than the receipt.
+		ttl = (ttl + time.Second - 1).Truncate(time.Second)
+		for attempt := 0; attempt < 2; attempt++ {
+			rawURL, err := options.Store.PresignGet(ctx, key, ttl)
+			if err != nil {
+				return "", err
+			}
+			parsed, parseErr := url.Parse(rawURL)
+			if parseErr != nil {
+				return "", fmt.Errorf("presigned URL has invalid AWS Signature V4 expiry")
+			}
+			query := parsed.Query()
+			if !query.Has("X-Amz-Date") && !query.Has("X-Amz-Expires") {
+				return rawURL, nil
+			}
+			signedExpiry, expiryErr := privateSignatureExpiry(rawURL)
+			if expiryErr != nil {
+				return "", fmt.Errorf("presigned URL: %w", expiryErr)
+			}
+			delta := signedExpiry.Sub(deadline)
+			if delta <= 0 && delta > -time.Second {
+				return rawURL, nil
+			}
+			if attempt == 0 && delta > 0 && delta < ttl {
+				adjustment := delta.Truncate(time.Second)
+				if delta%time.Second != 0 {
+					adjustment += time.Second
+				}
+				if adjustment >= ttl {
+					return "", fmt.Errorf("presigned URL: signed expiry does not match saved publication deadline")
+				}
+				ttl -= adjustment
+				continue
+			}
+			return "", fmt.Errorf("presigned URL: signed expiry does not match saved publication deadline")
+		}
+		return "", fmt.Errorf("presigned URL: signed expiry does not match saved publication deadline")
 	}
 	return PublicObjectURL(options.PublicBaseURL, key)
 }
@@ -842,13 +942,8 @@ func containsUnsafeText(value string) bool {
 }
 
 func ValidateBucket(raw string) error {
-	if raw == "" || len([]byte(raw)) > 255 || strings.TrimSpace(raw) != raw {
-		return fmt.Errorf("bucket must be a bounded name without whitespace, control, or formatting characters")
-	}
-	for _, character := range raw {
-		if unicode.IsSpace(character) || unicode.IsControl(character) || unicode.Is(unicode.Cf, character) || unicode.In(character, unicode.Bidi_Control) {
-			return fmt.Errorf("bucket must be a bounded name without whitespace, control, or formatting characters")
-		}
+	if raw == "" || len([]byte(raw)) > 255 || strings.TrimSpace(raw) != raw || containsUnsafeText(raw) {
+		return fmt.Errorf("bucket must be a bounded name without surrounding whitespace, control, or formatting characters")
 	}
 	return nil
 }
@@ -869,7 +964,7 @@ func NormalizePrefix(raw string) (string, error) {
 	if strings.Contains(trimmed, "\\") || strings.ContainsAny(trimmed, "\r\n\x00") {
 		return "", fmt.Errorf("prefix contains unsafe characters")
 	}
-	if len([]byte(trimmed)) > 1024 || containsUnsafeText(trimmed) || containsUnsafeIdentifierText(trimmed) {
+	if len([]byte(trimmed)) > 1024 || containsUnsafeText(trimmed) {
 		return "", fmt.Errorf("prefix is too long or contains control or bidi characters")
 	}
 	parts := strings.Split(trimmed, "/")
@@ -882,11 +977,7 @@ func NormalizePrefix(raw string) (string, error) {
 }
 
 func ValidateEndpoint(raw string) (*url.URL, error) {
-	trimmed := strings.TrimSpace(raw)
-	if containsUnsafeIdentifierText(trimmed) {
-		return nil, fmt.Errorf("endpoint contains whitespace, control, or format characters")
-	}
-	parsed, err := url.Parse(trimmed)
+	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return nil, fmt.Errorf("invalid endpoint: %w", err)
 	}
@@ -898,15 +989,6 @@ func ValidateEndpoint(raw string) (*url.URL, error) {
 	}
 	parsed.Path = ""
 	return parsed, nil
-}
-
-func containsUnsafeIdentifierText(value string) bool {
-	for _, character := range value {
-		if unicode.IsSpace(character) || unicode.IsControl(character) || unicode.In(character, unicode.Cf) {
-			return true
-		}
-	}
-	return false
 }
 
 func ValidatePublicBaseURL(raw string) (*url.URL, error) {
@@ -1035,39 +1117,39 @@ func (v *HTTPVerifier) Verify(ctx context.Context, verification VerifyRequest) e
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
 		return fmt.Errorf("GET %s returned redirect status %d", safeURLForError(verification.URL), response.StatusCode)
 	}
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s returned status %d", safeURLForError(verification.URL), response.StatusCode)
-	}
-	if !strings.EqualFold(strings.TrimSpace(response.Header.Get("Content-Type")), strings.TrimSpace(verification.ContentType)) {
-		return fmt.Errorf("%w: GET %s returned an unexpected content type", ErrVerificationContentConflict, safeURLForError(verification.URL))
+	if !equivalentContentType(response.Header.Get("Content-Type"), verification.ContentType) {
+		return fmt.Errorf("GET %s returned an unexpected content type", safeURLForError(verification.URL))
 	}
 	if verification.Kind == VerifyIPA {
+		if response.StatusCode != http.StatusOK {
+			return fmt.Errorf("GET %s returned status %d", safeURLForError(verification.URL), response.StatusCode)
+		}
 		if response.ContentLength >= 0 && response.ContentLength != verification.SizeBytes {
-			return fmt.Errorf("%w: GET %s returned content length %d, expected %d", ErrVerificationContentConflict, safeURLForError(verification.URL), response.ContentLength, verification.SizeBytes)
+			return fmt.Errorf("%w: GET %s returned content length %d, expected %d", ErrObjectVerificationMismatch, safeURLForError(verification.URL), response.ContentLength, verification.SizeBytes)
 		}
 		digest := sha256.New()
 		written, err := io.Copy(digest, io.LimitReader(response.Body, verification.SizeBytes+1))
 		if err != nil {
-			return fmt.Errorf("GET %s response body failed", safeURLForError(verification.URL))
+			return fmt.Errorf("GET %s failed while reading IPA body", safeURLForError(verification.URL))
 		}
 		if written != verification.SizeBytes {
-			return fmt.Errorf("%w: GET %s returned unexpected IPA length", ErrVerificationContentConflict, safeURLForError(verification.URL))
+			return fmt.Errorf("%w: GET %s returned unexpected IPA length", ErrObjectVerificationMismatch, safeURLForError(verification.URL))
 		}
 		if !strings.EqualFold(hex.EncodeToString(digest.Sum(nil)), verification.SHA256) {
-			return fmt.Errorf("%w: GET %s returned an unexpected IPA SHA-256", ErrVerificationContentConflict, safeURLForError(verification.URL))
+			return fmt.Errorf("%w: GET %s returned an unexpected IPA SHA-256", ErrObjectVerificationMismatch, safeURLForError(verification.URL))
 		}
 		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, verification.SizeBytes+1))
-	if err != nil {
-		return fmt.Errorf("GET %s response body failed", safeURLForError(verification.URL))
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s returned status %d", safeURLForError(verification.URL), response.StatusCode)
 	}
-	if int64(len(body)) != verification.SizeBytes {
-		return fmt.Errorf("%w: GET %s returned unexpected body length", ErrVerificationContentConflict, safeURLForError(verification.URL))
+	body, err := io.ReadAll(io.LimitReader(response.Body, verification.SizeBytes+1))
+	if err != nil || int64(len(body)) != verification.SizeBytes {
+		return fmt.Errorf("GET %s returned unexpected body length", safeURLForError(verification.URL))
 	}
 	digest := sha256.Sum256(body)
 	if !strings.EqualFold(hex.EncodeToString(digest[:]), verification.SHA256) {
-		return fmt.Errorf("%w: GET %s returned an unexpected SHA-256", ErrVerificationContentConflict, safeURLForError(verification.URL))
+		return fmt.Errorf("GET %s returned an unexpected SHA-256", safeURLForError(verification.URL))
 	}
 	return nil
 }

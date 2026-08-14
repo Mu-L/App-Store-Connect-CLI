@@ -278,7 +278,7 @@ func TestExecutePrivatePublishIntentRejectsSignatureBeyondSavedDeadlineBeforeWri
 	executionStore := &intentTestStore{}
 	options.Store = executionStore
 	_, _, err = ExecutePrivatePublishIntent(context.Background(), bytes.NewReader([]byte("ipa")), descriptor, options, intent)
-	if err == nil || !strings.Contains(err.Error(), "signed expiry exceeds") {
+	if err == nil || !strings.Contains(err.Error(), "signed expiry does not match") {
 		t.Fatalf("ExecutePrivatePublishIntent() error = %v, want signed deadline rejection", err)
 	}
 	if len(executionStore.ensureKeys) != 0 {
@@ -300,7 +300,7 @@ type intentTestStore struct {
 
 func (store *intentTestStore) PresignGet(_ context.Context, key string, ttl time.Duration) (string, error) {
 	store.presignKeys = append(store.presignKeys, key)
-	return privateSignatureFixture("/bucket/"+key, time.Now().UTC().Add(-time.Minute), ttl), nil
+	return privateSignatureFixture("/bucket/"+key, time.Now().UTC().Truncate(time.Second), ttl), nil
 }
 
 func (store *intentTestStore) Ensure(_ context.Context, input PutObject) (StoredObject, error) {

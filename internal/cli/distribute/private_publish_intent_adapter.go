@@ -15,6 +15,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	core "github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
@@ -104,7 +105,12 @@ func executePrivatePublishIntent(ctx context.Context, request privatePublishInte
 	downloadEndpoint := effectiveDownloadEndpoint(request.Endpoint, request.DownloadEndpoint)
 	normalizedPrefix, _ := core.NormalizePrefix(request.Prefix)
 
-	if err := rejectBundleContainedArtifacts(request.BundleDir, request.ReceiptPath, request.IntentPath); err != nil {
+	bundleRoot, err := rootfs.New(strings.TrimSpace(request.BundleDir))
+	if err != nil {
+		return publishExecutionResult{}, fmt.Errorf("distribute private publish intent: open prepared bundle: %w", err)
+	}
+	defer bundleRoot.Close()
+	if err := rejectBundleContainedArtifacts(bundleRoot, request.ReceiptPath, request.IntentPath); err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
 	artifacts, err := preflightArtifactPaths(request.ReceiptPath, request.IntentPath)
@@ -113,7 +119,7 @@ func executePrivatePublishIntent(ctx context.Context, request privatePublishInte
 	}
 	defer artifacts.close()
 
-	bundle, err := loadPreparedBundle(request.BundleDir)
+	bundle, err := loadPreparedBundle(ctx, bundleRoot)
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("distribute private publish intent: %w", err)
 	}
@@ -246,7 +252,12 @@ func reverifyPrivatePublishIntent(ctx context.Context, request privatePublishVer
 	if request.VerifyTimeout <= 0 {
 		return publishExecutionResult{}, shared.UsageError("verify timeout must be positive")
 	}
-	if err := rejectBundleContainedArtifacts(request.BundleDir, request.ReceiptPath, request.LinkPath); err != nil {
+	bundleRoot, err := rootfs.New(strings.TrimSpace(request.BundleDir))
+	if err != nil {
+		return publishExecutionResult{}, fmt.Errorf("open prepared bundle: %w", err)
+	}
+	defer bundleRoot.Close()
+	if err := rejectBundleContainedArtifacts(bundleRoot, request.ReceiptPath, request.LinkPath); err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
 	artifacts, err := openExistingArtifactPaths(request.ReceiptPath, request.LinkPath)
@@ -261,7 +272,7 @@ func reverifyPrivatePublishIntent(ctx context.Context, request privatePublishVer
 	if !found {
 		return publishExecutionResult{}, fmt.Errorf("private publication intent does not exist")
 	}
-	bundle, err := loadPreparedBundle(request.BundleDir)
+	bundle, err := loadPreparedBundle(ctx, bundleRoot)
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("load prepared bundle: %w", err)
 	}

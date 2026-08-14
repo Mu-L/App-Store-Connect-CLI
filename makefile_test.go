@@ -74,6 +74,46 @@ func TestMakeBuildAllSetsCGOPerTarget(t *testing.T) {
 	}
 }
 
+func TestMakeBuildAllFailsWhenAnyTargetFails(t *testing.T) {
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	workspaceDir := t.TempDir()
+	fakeGo := filepath.Join(workspaceDir, "fake-go")
+	script := `#!/bin/sh
+if [ "$1" = "env" ]; then
+	exit 0
+fi
+if [ "$GOOS" = "darwin" ]; then
+	echo "simulated Darwin Cgo failure" >&2
+	exit 42
+fi
+exit 0
+`
+	if err := os.WriteFile(fakeGo, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake go: %v", err)
+	}
+
+	cmd := exec.Command(
+		"make",
+		"-f",
+		filepath.Join(repoRoot, "Makefile"),
+		"-C",
+		workspaceDir,
+		"build-all",
+		"GO="+fakeGo,
+		"VERSION=1.2.3",
+	)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("make build-all succeeded despite a failed target:\n%s", output)
+	}
+	if strings.Contains(string(output), "Release binaries written") {
+		t.Fatalf("make build-all reported success after a failed target:\n%s", output)
+	}
+}
+
 func TestMakeBuildAllRejectsNonDarwinHostBeforeBuilding(t *testing.T) {
 	repoRoot, err := os.Getwd()
 	if err != nil {

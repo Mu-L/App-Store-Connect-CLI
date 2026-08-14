@@ -1658,7 +1658,9 @@ func preflightDistributionPublication(ctx context.Context, config distributionPu
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_, credentialLimit, err := newObjectStore(ctx, core.S3StoreConfig{Endpoint: config.Endpoint, DownloadEndpoint: config.DownloadEndpoint, Region: config.Region, Bucket: config.Bucket, AddressingStyle: config.AddressingStyle})
+	setupCtx, setupCancel := shared.ContextWithUploadTimeout(ctx)
+	_, credentialLimit, err := newObjectStore(setupCtx, core.S3StoreConfig{Endpoint: config.Endpoint, DownloadEndpoint: config.DownloadEndpoint, Region: config.Region, Bucket: config.Bucket, AddressingStyle: config.AddressingStyle})
+	setupCancel()
 	if err != nil {
 		return err
 	}

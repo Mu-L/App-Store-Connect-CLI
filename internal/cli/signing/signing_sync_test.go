@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/peterbourgon/ff/v3/ffcli"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	signingpkg "github.com/rudrankriyam/App-Store-Connect-CLI/internal/signing"
@@ -216,6 +217,55 @@ func TestSigningSyncLegacyDestinationConflictFailsBeforeProfileCreatePOST(t *tes
 	})
 	if err == nil || !strings.Contains(err.Error(), "preflight profile destination") {
 		t.Fatalf("legacy destination preflight error = %v", err)
+	}
+}
+
+func TestSigningSyncCaseCollisionFailsBeforeProfileCreatePOST(t *testing.T) {
+	active := true
+	postCalls := 0
+	client := newSigningFetchTestClient(t, func(req *http.Request) *http.Response {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/bundleIds/bundle-main/profiles":
+			return signingFetchJSONResponse(http.StatusOK, `{"data":[]}`)
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/certificates":
+			return signingFetchJSONResponse(http.StatusOK, fmt.Sprintf(`{"data":[{"type":"certificates","id":"cert-1","attributes":{"serialNumber":"SERIAL","certificateType":"IOS_DISTRIBUTION","activated":%t,"expirationDate":%q}}]}`,
+				active, time.Now().Add(time.Hour).Format(time.RFC3339)))
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/profiles":
+			postCalls++
+			return signingFetchJSONResponse(http.StatusCreated, `{}`)
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
+			return signingFetchJSONResponse(http.StatusInternalServerError, `{}`)
+		}
+	})
+	store := &signingpkg.GitStore{LocalDir: t.TempDir()}
+	_, _, _, err := resolveSigningAssets(context.Background(), client, signingAssetsOptions{
+		BundleIDResourceID: "bundle-main", BundleIdentifier: "com.example.app", ProfileType: "IOS_APP_ADHOC", CreateMissing: true,
+		BeforeCreate: func(plan profileCreatePlan) error {
+			existing := filepath.Join("profiles", "adhoc", strings.ToLower(safeFileName(plan.ProfileName, "profile"))+".mobileprovision")
+			path := filepath.Join(store.LocalDir, existing+".enc")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(path, []byte("existing"), 0o600); err != nil {
+				return err
+			}
+			planned := signingAssetRepositoryPaths(plan.Certificates, "IOS_APP_ADHOC", plan.ProfileName, "profile", nil)
+			return store.CheckEncryptedRepositoryPaths(planned)
+		},
+	})
+	if err == nil || err.Error() != "preflight before creating profile: encrypted repository paths collide under Windows Unicode case folding" {
+		t.Fatalf("case collision error = %v", err)
+	}
+	if postCalls != 0 {
+		t.Fatalf("profile POST calls = %d, want 0", postCalls)
+	}
+	entries, readErr := store.ListEncryptedFiles()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("repository files = %v, want only existing collision", entries)
 	}
 }
 
@@ -751,11 +801,58 @@ func TestValidateIdentityArtifactGraphRejectsConflictingContextScope(t *testing.
 	files := []decryptedSigningFile{
 		{RelativePath: "identities/distribution/AAA.p12", Metadata: signingpkg.EncryptedFileMetadata{Kind: "pkcs12-identity", TeamID: "TEAM123"}},
 		{RelativePath: "identities/distribution/BBB.p12", Metadata: signingpkg.EncryptedFileMetadata{Kind: "pkcs12-identity", TeamID: "TEAM123"}},
-		{Plaintext: binding("AAA"), Metadata: signingpkg.EncryptedFileMetadata{Kind: "identity-context"}},
-		{Plaintext: binding("BBB"), Metadata: signingpkg.EncryptedFileMetadata{Kind: "identity-context"}},
+		{RelativePath: "identity-contexts/AAA.json", Plaintext: binding("AAA"), Metadata: signingpkg.EncryptedFileMetadata{Kind: "identity-context"}},
+		{RelativePath: "identity-contexts/BBB.json", Plaintext: binding("BBB"), Metadata: signingpkg.EncryptedFileMetadata{Kind: "identity-context"}},
 	}
 	if _, err := validateIdentityArtifactGraph(files); err == nil || !strings.Contains(err.Error(), "conflicting") {
 		t.Fatalf("conflicting graph error = %v", err)
+	}
+}
+
+func TestIdentityArtifactGraphRejectsCaseFoldedRepositoryPaths(t *testing.T) {
+	for name, paths := range map[string][]string{
+		"profile": {
+			"profiles/adhoc/Release.mobileprovision",
+			"profiles/adhoc/release.mobileprovision",
+		},
+		"certificate": {
+			"certs/distribution/ABC.cer",
+			"certs/distribution/abc.cer",
+		},
+		"identity": {
+			"identities/distribution/ABC.p12",
+			"identities/distribution/abc.p12",
+		},
+		"context": {
+			"identity-contexts/ABC.json",
+			"identity-contexts/abc.json",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := []decryptedSigningFile{{RelativePath: paths[0]}, {RelativePath: paths[1]}}
+			if _, err := validateIdentityArtifactGraph(files); err == nil || err.Error() != "encrypted repository paths collide under Windows Unicode case folding" {
+				t.Fatalf("validateIdentityArtifactGraph() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestPrepareDecryptedSigningFilesRejectsCaseCollisionBeforeOutput(t *testing.T) {
+	outDir := t.TempDir()
+	store := &signingpkg.GitStore{LocalDir: t.TempDir()}
+	_, err := prepareDecryptedSigningFiles(store, []string{
+		"profiles/adhoc/Release.mobileprovision",
+		"profiles/adhoc/release.mobileprovision",
+	}, "password", outDir)
+	if err == nil || err.Error() != "encrypted repository paths collide under Windows Unicode case folding" {
+		t.Fatalf("prepareDecryptedSigningFiles() error = %v", err)
+	}
+	entries, readErr := os.ReadDir(outDir)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("collision created output entries: %v", entries)
 	}
 }
 
@@ -766,7 +863,7 @@ func TestValidateIdentityArtifactGraphRejectsCrossTeamContext(t *testing.T) {
 	}
 	files := []decryptedSigningFile{
 		{RelativePath: "identities/distribution/AAA.p12", Metadata: signingpkg.EncryptedFileMetadata{Kind: "pkcs12-identity", TeamID: "TEAM-A"}},
-		{Plaintext: binding, Metadata: signingpkg.EncryptedFileMetadata{Kind: "identity-context"}},
+		{RelativePath: "identity-contexts/AAA.json", Plaintext: binding, Metadata: signingpkg.EncryptedFileMetadata{Kind: "identity-context"}},
 	}
 	if _, err := validateIdentityArtifactGraph(files); err == nil || !strings.Contains(err.Error(), "team") {
 		t.Fatalf("cross-team graph error = %v", err)
@@ -863,6 +960,71 @@ func TestSigningSyncPushRejectsIdentityFlagConflictsBeforeSecretsOrClient(t *tes
 	}
 }
 
+func TestSigningSyncRejectsBlankPasswordFile(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  *ffcli.Command
+		args []string
+	}{
+		{
+			name: "push",
+			cmd:  syncPushCommand(),
+			args: []string{
+				"--bundle-id", "com.example.app",
+				"--profile-type", "IOS_APP_STORE",
+				"--repo", "git@example.com:team/signing.git",
+				"--password-file", " \t ",
+			},
+		},
+		{
+			name: "pull",
+			cmd:  syncPullCommand(),
+			args: []string{
+				"--repo", "git@example.com:team/signing.git",
+				"--password-file", " \t ",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(signingSyncPasswordEnvVar, "environment-fallback-must-not-be-used")
+			t.Setenv(matchPasswordEnvVar, "legacy-fallback-must-not-be-used")
+			clientCalls := 0
+			t.Cleanup(shared.SetASCClientFactoryForTesting(func() (*asc.Client, error) {
+				clientCalls++
+				return nil, errors.New("client must not be created")
+			}))
+			if err := tt.cmd.Parse(tt.args); err != nil {
+				t.Fatal(err)
+			}
+			var runErr error
+			stdout, stderr := captureOutput(t, func() {
+				runErr = tt.cmd.Run(context.Background())
+			})
+			err := runErr
+			if err == nil || err.Error() != "--password-file must not be empty" {
+				t.Fatalf("error = %v, want blank password-file usage error", err)
+			}
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("error = %v, want usage error", err)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.HasPrefix(stderr, "Error: --password-file must not be empty\n") {
+				t.Fatalf("stderr = %q", stderr)
+			}
+			if strings.Contains(stderr, "Cloning signing repo") {
+				t.Fatalf("stderr shows repository side effects: %q", stderr)
+			}
+			if clientCalls != 0 {
+				t.Fatalf("client factory calls = %d, want 0", clientCalls)
+			}
+		})
+	}
+}
+
 func TestSigningSyncPushRejectsDirectDistributionIdentityBeforeSecretReads(t *testing.T) {
 	for _, profileType := range []string{"MAC_APP_DIRECT", "MAC_CATALYST_APP_DIRECT"} {
 		t.Run(profileType, func(t *testing.T) {
@@ -881,6 +1043,27 @@ func TestSigningSyncPushRejectsDirectDistributionIdentityBeforeSecretReads(t *te
 				t.Fatalf("error = %v, want usage error %q", err, want)
 			}
 		})
+	}
+}
+
+func TestSigningSyncPushIdentityLoadFailureIsOperational(t *testing.T) {
+	t.Setenv(signingSyncPasswordEnvVar, "repository-password")
+	cmd := syncPushCommand()
+	if err := cmd.Parse([]string{
+		"--bundle-id", "com.example.app",
+		"--profile-type", "IOS_APP_STORE",
+		"--repo", "git@example.com:team/signing.git",
+		"--identity", filepath.Join(t.TempDir(), "missing.p12"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := cmd.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "signing sync push: signing identity") {
+		t.Fatalf("error = %v, want signing identity load failure", err)
+	}
+	if errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("error = %v, want operational error", err)
 	}
 }
 

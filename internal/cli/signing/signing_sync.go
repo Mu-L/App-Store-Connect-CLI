@@ -95,6 +95,9 @@ func resolvePassword(flagValue string) (string, error) {
 }
 
 func resolveSyncPassword(passwordFile, legacyFlagValue string) (password string, legacy bool, err error) {
+	if passwordFile != "" && strings.TrimSpace(passwordFile) == "" {
+		return "", false, shared.UsageError("--password-file must not be empty")
+	}
 	if strings.TrimSpace(passwordFile) != "" {
 		data, readErr := readProtectedSecretFile(passwordFile, "signing sync password")
 		if readErr != nil {
@@ -230,7 +233,7 @@ func syncPushCommand() *ffcli.Command {
 				if strings.TrimSpace(*identityPasswordFile) != "" {
 					passwordBytes, readErr := readProtectedSecretFile(*identityPasswordFile, "identity password")
 					if readErr != nil {
-						return shared.UsageErrorf("--identity-password-file: %v", readErr)
+						return fmt.Errorf("signing sync push: identity password: %w", readErr)
 					}
 					identityPassword = trimPasswordFileNewline(string(passwordBytes))
 				}
@@ -242,7 +245,7 @@ func syncPushCommand() *ffcli.Command {
 				}
 			}
 			if err != nil {
-				return shared.UsageErrorf("signing identity: %v", err)
+				return fmt.Errorf("signing sync push: signing identity: %w", err)
 			}
 
 			client, err := shared.GetASCClient()
@@ -301,14 +304,20 @@ func syncPushCommand() *ffcli.Command {
 						if err := prepareRepository(); err != nil {
 							return err
 						}
-						if err := preflightSigningAssetDestinations(store, plan, profType); err != nil {
-							return err
-						}
 						if identity != nil {
 							identityArtifacts, err = prepareSigningIdentityArtifacts(identity, pass, bundle, profType)
 							if err != nil {
 								return err
 							}
+						}
+						plannedPaths := signingAssetRepositoryPaths(plan.Certificates, profType, plan.ProfileName, "profile", identityArtifacts)
+						if err := store.CheckEncryptedRepositoryPaths(plannedPaths); err != nil {
+							return err
+						}
+						if err := preflightSigningAssetDestinations(store, plan, profType); err != nil {
+							return err
+						}
+						if identity != nil {
 							if err := preflightSigningIdentityArtifactsForContextUpdate(store, identityArtifacts, pass); err != nil {
 								return err
 							}
@@ -351,6 +360,12 @@ func syncPushCommand() *ffcli.Command {
 				if err := bindSigningIdentityProfile(identityArtifacts, profile, profileRelPath, profileContent); err != nil {
 					return fmt.Errorf("signing sync push: bind signing identity profile: %w", err)
 				}
+			}
+			plannedPaths := signingAssetRepositoryPaths(certs.Data, profType, profile.Data.Attributes.Name, profile.Data.ID, identityArtifacts)
+			if err := store.CheckEncryptedRepositoryPaths(plannedPaths); err != nil {
+				return fmt.Errorf("signing sync push: preflight repository paths: %w", err)
+			}
+			if identity != nil {
 				if err := preflightSigningIdentityArtifactsForContextUpdate(store, identityArtifacts, pass); err != nil {
 					return fmt.Errorf("signing sync push: preflight signing identity: %w", err)
 				}
@@ -494,8 +509,13 @@ func syncPullCommand() *ffcli.Command {
 			if err := os.MkdirAll(outDir, 0o755); err != nil {
 				return fmt.Errorf("signing sync pull: create output dir: %w", err)
 			}
+			outputRoot, err := rootfs.New(outDir)
+			if err != nil {
+				return fmt.Errorf("signing sync pull: create output root: %w", err)
+			}
+			defer outputRoot.Close()
 
-			decrypted, err := prepareDecryptedSigningFiles(store, encryptedFiles, pass, outDir)
+			decrypted, err := prepareDecryptedSigningFilesInRoot(store, encryptedFiles, pass, outputRoot)
 			if err != nil {
 				return fmt.Errorf("signing sync pull: %w", err)
 			}
@@ -504,7 +524,7 @@ func syncPullCommand() *ffcli.Command {
 			var sensitiveFiles []string
 			identityPresent := false
 			for _, file := range decrypted {
-				if err := writeDecryptedOutputFile(outDir, file.RelativePath, file.Plaintext, file.Sensitive); err != nil {
+				if err := writeDecryptedOutputFileInRoot(outputRoot, file.RelativePath, file.Plaintext, file.Sensitive); err != nil {
 					return fmt.Errorf("signing sync pull: %w", err)
 				}
 
@@ -533,8 +553,20 @@ func syncPullCommand() *ffcli.Command {
 }
 
 func prepareDecryptedSigningFiles(store *signingpkg.GitStore, encryptedFiles []string, password, outDir string) ([]decryptedSigningFile, error) {
+	root, err := rootfs.New(outDir)
+	if err != nil {
+		return nil, fmt.Errorf("create output root: %w", err)
+	}
+	defer root.Close()
+	return prepareDecryptedSigningFilesInRoot(store, encryptedFiles, password, root)
+}
+
+func prepareDecryptedSigningFilesInRoot(store *signingpkg.GitStore, encryptedFiles []string, password string, root rootfs.Root) ([]decryptedSigningFile, error) {
 	if len(encryptedFiles) > maxEncryptedSigningFiles {
 		return nil, fmt.Errorf("encrypted signing repository contains %d files; limit is %d", len(encryptedFiles), maxEncryptedSigningFiles)
+	}
+	if err := signingpkg.ValidateEncryptedRepositoryPaths(encryptedFiles); err != nil {
+		return nil, err
 	}
 	var cumulativeSize int64
 	for _, relPath := range encryptedFiles {
@@ -588,10 +620,6 @@ func prepareDecryptedSigningFiles(store *signingpkg.GitStore, encryptedFiles []s
 	}
 	decrypted = filtered
 
-	root, err := rootfs.New(outDir)
-	if err != nil {
-		return nil, fmt.Errorf("create output root: %w", err)
-	}
 	for _, file := range decrypted {
 		if file.Sensitive {
 			err = root.CheckCreateNewFile(file.RelativePath)
@@ -606,6 +634,14 @@ func prepareDecryptedSigningFiles(store *signingpkg.GitStore, encryptedFiles []s
 }
 
 func validateIdentityArtifactGraph(files []decryptedSigningFile) (map[string]struct{}, error) {
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.RelativePath)
+	}
+	if err := signingpkg.ValidateEncryptedRepositoryPaths(paths); err != nil {
+		return nil, err
+	}
+
 	type identityCore struct {
 		teamID            string
 		certificateSHA256 string
@@ -670,7 +706,12 @@ func validateIdentityArtifactGraph(files []decryptedSigningFile) (map[string]str
 		if err != nil {
 			return nil, fmt.Errorf("identity context profile is invalid: %w", err)
 		}
-		if strings.TrimSpace(profile.UUID) == "" || profile.UUID != binding.ProfileUUID {
+		profileUUID, err := normalizeIdentityProfileUUID(profile.UUID)
+		if err != nil {
+			return nil, fmt.Errorf("identity context profile UUID is invalid: %w", err)
+		}
+		bindingUUID, err := normalizeIdentityProfileUUID(binding.ProfileUUID)
+		if err != nil || profileUUID != bindingUUID {
 			return nil, fmt.Errorf("identity context profile UUID does not match profile artifact")
 		}
 		if !profile.ExpirationDate.After(time.Now()) || !containsFold(profile.TeamIdentifier, binding.TeamID) {
@@ -794,6 +835,12 @@ func writeDecryptedOutputFile(outDir, relPath string, plaintext []byte, sensitiv
 	if err != nil {
 		return fmt.Errorf("create output root: %w", err)
 	}
+	defer root.Close()
+	return writeDecryptedOutputFileInRoot(root, relPath, plaintext, sensitive)
+}
+
+func writeDecryptedOutputFileInRoot(root rootfs.Root, relPath string, plaintext []byte, sensitive bool) error {
+	var err error
 	if sensitive {
 		err = root.CreateNewFile(relPath, plaintext, 0o600)
 	} else {

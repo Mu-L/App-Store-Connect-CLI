@@ -30,18 +30,6 @@ func validateProtectedPublishArtifactPlatform(_ *os.File, info os.FileInfo) erro
 	return nil
 }
 
-func syncPublishArtifactDirectory(root *os.Root) error {
-	directory, err := root.Open(".")
-	if err != nil {
-		return fmt.Errorf("open publish artifact directory for sync: %w", err)
-	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
-		return fmt.Errorf("sync publish artifact directory: %w", err)
-	}
-	return nil
-}
-
 func unsignedStatField(stat reflect.Value, name string) (uint64, bool) {
 	if stat.Kind() != reflect.Struct {
 		return 0, false

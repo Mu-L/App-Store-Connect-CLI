@@ -161,6 +161,21 @@ func TestPreflightDistributionPublicationEnforcesKnownCredentialLifetime(t *test
 	}
 }
 
+func TestPreflightDistributionPublicationBoundsCredentialResolution(t *testing.T) {
+	original := newObjectStore
+	t.Cleanup(func() { newObjectStore = original })
+	newObjectStore = func(ctx context.Context, _ core.S3StoreConfig) (core.ObjectStore, time.Time, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("credential preflight context has no deadline")
+		}
+		return nil, time.Time{}, nil
+	}
+
+	if err := preflightDistributionPublication(context.Background(), validDistributionOrchestrationConfig().Publication); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDistributionShortCredentialPreflightStopsBeforeAccountMutation(t *testing.T) {
 	plan := validPersistedDistributionPlan(t)
 	deps := validApplyDistributionOrchestrationDependencies(t, plan)

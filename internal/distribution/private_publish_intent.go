@@ -117,7 +117,7 @@ func PreparePrivatePublishIntent(ctx context.Context, descriptor PreparedDescrip
 		SizeBytes:   descriptor.Artifact.SizeBytes,
 		ContentType: ContentTypeIPA,
 	}
-	artifactURL, err := presignIntentObject(ctx, options.Store, artifact.Key, downloadDeadline.Sub(clock()))
+	artifactURL, err := resolveObjectURL(ctx, options, artifact.Key, downloadDeadline, clock)
 	if err != nil {
 		return PrivatePublishIntent{}, fmt.Errorf("create IPA URL: %w", err)
 	}
@@ -126,7 +126,7 @@ func PreparePrivatePublishIntent(ctx context.Context, descriptor PreparedDescrip
 		return PrivatePublishIntent{}, fmt.Errorf("generate manifest: %w", err)
 	}
 	manifest := privatePublishDocument(path.Join(prefix, "links", linkID, "manifest.plist"), manifestBody, ContentTypeManifest)
-	manifestURL, err := presignIntentObject(ctx, options.Store, manifest.Key, downloadDeadline.Sub(clock()))
+	manifestURL, err := resolveObjectURL(ctx, options, manifest.Key, downloadDeadline, clock)
 	if err != nil {
 		return PrivatePublishIntent{}, fmt.Errorf("create manifest URL: %w", err)
 	}
@@ -136,7 +136,7 @@ func PreparePrivatePublishIntent(ctx context.Context, descriptor PreparedDescrip
 		return PrivatePublishIntent{}, fmt.Errorf("generate install page: %w", err)
 	}
 	page := privatePublishDocument(path.Join(prefix, "links", linkID, "index.html"), pageBody, ContentTypeHTML)
-	pageURL, err := presignIntentObject(ctx, options.Store, page.Key, pageDeadline.Sub(clock()))
+	pageURL, err := resolveObjectURL(ctx, options, page.Key, pageDeadline, clock)
 	if err != nil {
 		return PrivatePublishIntent{}, fmt.Errorf("create install page URL: %w", err)
 	}
@@ -323,20 +323,6 @@ func publishClock(options PublishOptions) func() time.Time {
 func privatePublishDocument(key string, body []byte, contentType string) PrivatePublishDocument {
 	digest := sha256.Sum256(body)
 	return PrivatePublishDocument{StoredObject: StoredObject{Key: key, SHA256: hex.EncodeToString(digest[:]), SizeBytes: int64(len(body)), ContentType: contentType}, Body: append([]byte(nil), body...)}
-}
-
-func presignIntentObject(ctx context.Context, store ObjectStore, key string, ttl time.Duration) (string, error) {
-	if ttl <= 0 {
-		return "", fmt.Errorf("credential-safe URL lifetime elapsed before presigning")
-	}
-	raw, err := store.PresignGet(ctx, key, ttl)
-	if err != nil {
-		return "", err
-	}
-	if err := requireHTTPSURL(raw); err != nil {
-		return "", err
-	}
-	return raw, nil
 }
 
 func ensureIntentObject(ctx context.Context, store ObjectStore, input PutObject, planned StoredObject) (StoredObject, error) {
