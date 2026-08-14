@@ -1225,6 +1225,32 @@ func TestDistributionVerifyUsesOneTotalTimeoutBudget(t *testing.T) {
 	}
 }
 
+func TestDistributionVerifyTreatsInsufficientRemainingDeviceBudgetAsTimeout(t *testing.T) {
+	plan := validPersistedDistributionPlan(t)
+	run := validCompletedDistributionRun(plan)
+	receipt := validPersistedDistributionReceipt(run)
+	deps := panicOnDistributionOrchestrationSideEffects(t)
+	deps.hashFile = fakeDistributionSizedArtifact
+	deps.readRun = func(string, string) (persistedDistributionRunState, error) { return run, nil }
+	deps.readPlan = func(string) (persistedDistributionPlan, error) { return plan, nil }
+	deps.readReceipt = func(string, string) (persistedDistributionReceipt, error) { return receipt, nil }
+	deps.reverifyPublish = func(context.Context, privatePublishVerificationRequest) (publishExecutionResult, error) {
+		return validDistributionPublishResultForCompletion(plan, run), nil
+	}
+	deps.observeDevice = func(context.Context, distributionDeviceObservationRequest) (deviceObservation, error) {
+		t.Fatal("device observation must not receive less than its minimum timeout")
+		return deviceObservation{}, nil
+	}
+	installDistributionOrchestrationDependencies(t, deps)
+
+	result, err := executeDistributionVerify(context.Background(), distributionVerifyRequest{
+		RunID: run.RunID, StateDir: plan.Paths.StateDir, Device: "phone", Timeout: deviceObservationMinimumTimeout,
+	})
+	if err == nil || result != nil || !strings.Contains(err.Error(), "verification_timeout") {
+		t.Fatalf("result=%#v error=%v, want device verification timeout", result, err)
+	}
+}
+
 func TestExecuteDistributionApplySamePlanReturnsSameRunWithoutRepeatingStages(t *testing.T) {
 	plan := validPersistedDistributionPlan(t)
 	deps := validApplyDistributionOrchestrationDependencies(t, plan)

@@ -133,6 +133,12 @@ func distributionStatusCommand() *ffcli.Command {
 }
 
 func distributionVerifyCommand() *ffcli.Command {
+	return distributionVerifyCommandWithExecutor(executeDistributionVerify)
+}
+
+type distributionVerifyExecutor func(context.Context, distributionVerifyRequest) (*distributionVerificationResult, error)
+
+func distributionVerifyCommandWithExecutor(execute distributionVerifyExecutor) *ffcli.Command {
 	fs := flag.NewFlagSet("distribute verify", flag.ExitOnError)
 	runID := fs.String("run", "", "Distribution run ID (required)")
 	stateDir := fs.String("state-dir", ".asc/distribution/runs", "Distribution run-state directory")
@@ -156,8 +162,16 @@ and build on a connected device; it does not claim byte identity with the IPA.`,
 			if *timeout <= 0 {
 				return shared.UsageError("--timeout must be positive")
 			}
-			result, err := executeDistributionVerify(ctx, distributionVerifyRequest{
-				RunID: *runID, StateDir: *stateDir, Device: strings.TrimSpace(*device), Timeout: *timeout,
+			deviceSelector := strings.TrimSpace(*device)
+			if deviceSelector != "" && (*timeout < deviceObservationMinimumTimeout || *timeout > deviceObservationMaximumTimeout) {
+				return shared.UsageError(fmt.Sprintf(
+					"--timeout with --device must be between %s and %s",
+					deviceObservationMinimumTimeout,
+					deviceObservationMaximumTimeout,
+				))
+			}
+			result, err := execute(ctx, distributionVerifyRequest{
+				RunID: *runID, StateDir: *stateDir, Device: deviceSelector, Timeout: *timeout,
 			})
 			if result != nil {
 				if printErr := printDistributionValue(result, *output.Output, *output.Pretty); printErr != nil {

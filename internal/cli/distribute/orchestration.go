@@ -670,8 +670,15 @@ func executeDistributionVerify(ctx context.Context, request distributionVerifyRe
 	}
 	if strings.TrimSpace(request.Device) != "" {
 		remaining := remainingDistributionTimeout(verifyCtx, totalTimeout)
-		if remaining <= 0 {
-			return nil, safeDistributionFailure("device verification", "verification_timeout", verifyCtx.Err())
+		if remaining < deviceObservationMinimumTimeout {
+			timeoutErr := verifyCtx.Err()
+			if timeoutErr == nil {
+				timeoutErr = context.DeadlineExceeded
+			}
+			return nil, safeDistributionFailure("device verification", "verification_timeout", timeoutErr)
+		}
+		if remaining > deviceObservationMaximumTimeout {
+			remaining = deviceObservationMaximumTimeout
 		}
 		observation, err := distributionOrchestrationDeps.observeDevice(verifyCtx, distributionDeviceObservationRequest{
 			Device: request.Device, BundleID: receipt.AppBundleID, Version: receipt.AppVersion, Build: receipt.AppBuildNumber, Timeout: remaining,

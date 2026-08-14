@@ -155,6 +155,32 @@ func TestDistributionApplyPrintsJSONResultBeforeReturningOperationalError(t *tes
 	}
 }
 
+func TestDistributionVerifyRejectsInvalidDeviceTimeoutBeforeExecution(t *testing.T) {
+	for _, timeout := range []string{"4s", "6m"} {
+		t.Run(timeout, func(t *testing.T) {
+			executeCalls := 0
+			cmd := distributionVerifyCommandWithExecutor(func(context.Context, distributionVerifyRequest) (*distributionVerificationResult, error) {
+				executeCalls++
+				return nil, nil
+			})
+			if err := cmd.FlagSet.Parse([]string{
+				"--run", "drun_11111111111111111111111111111111",
+				"--device", "phone",
+				"--timeout", timeout,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			err := cmd.Exec(context.Background(), cmd.FlagSet.Args())
+			if got := shared.ClassifyUsageError(err); got != shared.UsageErrorInvalidValue {
+				t.Fatalf("usage classification = %q, want %q (error=%v)", got, shared.UsageErrorInvalidValue, err)
+			}
+			if executeCalls != 0 {
+				t.Fatalf("executor calls = %d, want none", executeCalls)
+			}
+		})
+	}
+}
+
 func captureDistributionCommandOutput(t *testing.T, run func() error) (string, string, error) {
 	t.Helper()
 	oldStdout, oldStderr := os.Stdout, os.Stderr
