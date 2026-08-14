@@ -964,6 +964,24 @@ func TestPrepareReconcileProfileOutputRejectsUnusablePath(t *testing.T) {
 	if err != nil || !info.IsDir() {
 		t.Fatalf("profiles directory info=%v error=%v", info, err)
 	}
+	entries, err := os.ReadDir(profilesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("profile writability probe left files behind: %v", entries)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(profilesPath, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		if err := prepareReconcileProfileOutput(stateDir); err == nil {
+			t.Fatal("prepareReconcileProfileOutput() accepted an unwritable profiles directory")
+		}
+		if err := os.Chmod(profilesPath, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestSigningReconcileApplyRequiresConfirmBeforeReadingPlan(t *testing.T) {
@@ -1212,7 +1230,11 @@ func TestSanitizeReconcileErrorRedactsDeviceSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := sanitizeReconcileError(errors.New("API rejected SECRET-UDID for Rudrank Phone, Rudrank+Phone, Rudrank%20Phone, and SECRETUDID"), devices).Error()
+	sanitized := sanitizeReconcileError(shared.UsageErrorf("API rejected SECRET-UDID for Rudrank Phone, Rudrank+Phone, Rudrank%%20Phone, and SECRETUDID"), devices)
+	if !errors.Is(sanitized, flag.ErrHelp) {
+		t.Fatalf("sanitized error lost usage classification: %v", sanitized)
+	}
+	got := sanitized.Error()
 	for _, secret := range []string{"SECRET-UDID", "SECRETUDID", "Rudrank Phone", "Rudrank+Phone", "Rudrank%20Phone"} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("sanitized error leaked %q: %s", secret, got)

@@ -421,8 +421,19 @@ func sanitizeReconcileError(err error, devices signingDevicesFile) error {
 			}
 		}
 	}
-	return errors.New(message)
+	if message == err.Error() {
+		return err
+	}
+	return sanitizedReconcileError{message: message, cause: err}
 }
+
+type sanitizedReconcileError struct {
+	message string
+	cause   error
+}
+
+func (e sanitizedReconcileError) Error() string { return e.message }
+func (e sanitizedReconcileError) Unwrap() error { return e.cause }
 
 func applySigningAction(ctx context.Context, client *asc.Client, plan signingReconcilePlanArtifact, devicesFile signingDevicesFile, action signingAction, createdProfiles map[string]string) (string, string, error) {
 	switch action.Kind {
@@ -787,7 +798,10 @@ func prepareReconcileProfileOutput(stateDir string) error {
 	if err != nil {
 		return err
 	}
-	return root.MkdirAll("profiles", 0o700)
+	if err := root.MkdirAll("profiles", 0o700); err != nil {
+		return err
+	}
+	return root.CheckDirectoryWritable("profiles", 0o600)
 }
 
 func readOptionalBoundedRootFile(root rootfs.Root, relative string, limit int64) ([]byte, bool, error) {

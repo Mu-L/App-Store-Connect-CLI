@@ -667,6 +667,47 @@ func (r Root) CheckFileParent(name string) error {
 	return r.checkParentComponents(resolved)
 }
 
+// CheckDirectoryWritable verifies that a temporary regular file can be created
+// and removed within an existing directory beneath the root.
+func (r Root) CheckDirectoryWritable(name string, perm os.FileMode) error {
+	resolved, err := r.Resolve(name)
+	if err != nil {
+		return err
+	}
+	if err := r.validateExistingDir(resolved); err != nil {
+		return err
+	}
+	rooted, relative, err := r.openRooted(resolved, false)
+	if err != nil {
+		return err
+	}
+	directory, err := rooted.OpenRoot(relative)
+	_ = rooted.Close()
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+
+	probe, probeName, err := secureopen.CreateTempNoFollowInRoot(directory, ".", ".asc-write-probe-*", perm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = probe.Close()
+		_ = directory.Remove(probeName)
+	}()
+	if err := probe.Chmod(perm); err != nil {
+		return err
+	}
+	if err := probe.Close(); err != nil {
+		return err
+	}
+	if err := directory.Remove(probeName); err != nil {
+		return err
+	}
+	return nil
+}
+
 // CreateNewFile writes data to a new file beneath the root and fails when the
 // destination already exists. It prefers atomic no-replace publication, then
 // falls back to rooted, no-follow O_EXCL creation when the filesystem does not
