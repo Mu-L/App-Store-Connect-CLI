@@ -116,6 +116,8 @@ import (
 	"unsafe"
 )
 
+func signingRunSecurityAvailable() bool { return true }
+
 func createKeychainWithSecurityFramework(path string, password []byte) error {
 	if len(password) == 0 {
 		return fmt.Errorf("keychain password is empty")

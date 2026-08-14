@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,10 +36,10 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	}
 	archive, err := readSigningArchiveRequirements(paths.ArchivePath)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("inspect archive: %w", sanitizeReconcileError(err, devicesFile))
+		return signingReconcilePlanArtifact{}, newReconcilePlanInvalid(fmt.Errorf("inspect archive: %w", sanitizeReconcileError(err, devicesFile)))
 	}
 	if len(archive.Targets) == 0 {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("archive contains no signing targets")
+		return signingReconcilePlanArtifact{}, newReconcilePlanInvalid(fmt.Errorf("archive contains no signing targets"))
 	}
 
 	client, err := sharedASCClient()
@@ -58,6 +59,7 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 		MaxMutations:        options.MaxMutations,
 		Paths:               paths,
 		Targets:             archive.Targets,
+		DeviceSetSHA256:     digestSigningDeviceInputs(devicesFile.Devices).SHA256,
 	}
 
 	remoteDevices, err := getAllReconcileDevices(requestCtx, client)
@@ -73,7 +75,7 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	if err != nil {
 		return signingReconcilePlanArtifact{}, fmt.Errorf("list certificates: %w", err)
 	}
-	selectedCertificate, certBlockers := selectReconcileCertificate(certificates, options.CertificateID, time.Now(), options.MinimumValidityDays)
+	selectedCertificate, certBlockers := selectReconcileCertificateWithFingerprint(certificates, options.CertificateID, options.CertificateSHA256, time.Now(), options.MinimumValidityDays)
 	plan.Certificate = selectedCertificate
 	plan.Blockers = append(plan.Blockers, certBlockers...)
 	if selectedCertificate != nil && selectedCertificate.TeamID != archive.TeamID {
@@ -103,9 +105,12 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	plan.Ready = len(plan.Blockers) == 0
 	plan.PlanHash, err = hashSigningReconcilePlan(plan)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("hash plan: %w", err)
+		return signingReconcilePlanArtifact{}, newReconcilePlanInvalid(fmt.Errorf("hash plan: %w", err))
 	}
 	if err := writeSigningStateJSON(plan.Paths.StateDir, "plan.json", plan, options.Overwrite); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return signingReconcilePlanArtifact{}, newReconcilePlanInvalid(fmt.Errorf("write %s: %w", plan.Paths.PlanPath, err))
+		}
 		return signingReconcilePlanArtifact{}, fmt.Errorf("write %s: %w", plan.Paths.PlanPath, err)
 	}
 	return plan, nil
@@ -231,6 +236,10 @@ func planDesiredDevices(desired []signingDeviceInput, remote []asc.Resource[asc.
 }
 
 func selectReconcileCertificate(certificates []asc.Resource[asc.CertificateAttributes], explicitID string, now time.Time, minimumValidityDays int) (*signingCertificateRef, []string) {
+	return selectReconcileCertificateWithFingerprint(certificates, explicitID, "", now, minimumValidityDays)
+}
+
+func selectReconcileCertificateWithFingerprint(certificates []asc.Resource[asc.CertificateAttributes], explicitID, explicitSHA256 string, now time.Time, minimumValidityDays int) (*signingCertificateRef, []string) {
 	minimumExpiration := now.Add(time.Duration(minimumValidityDays) * 24 * time.Hour)
 	var eligible []asc.Resource[asc.CertificateAttributes]
 	for _, certificate := range certificates {
@@ -252,6 +261,33 @@ func selectReconcileCertificate(certificates []asc.Resource[asc.CertificateAttri
 	}
 	sort.Slice(eligible, func(i, j int) bool { return eligible[i].ID < eligible[j].ID })
 	explicitID = strings.TrimSpace(explicitID)
+	explicitSHA256 = strings.ToLower(strings.TrimSpace(explicitSHA256))
+	if explicitSHA256 != "" {
+		decoded, err := hex.DecodeString(explicitSHA256)
+		if err != nil || len(decoded) != sha256.Size {
+			return nil, []string{"certificate SHA-256 must be exactly 64 hexadecimal characters"}
+		}
+		var matches []*signingCertificateRef
+		for _, certificate := range eligible {
+			candidate, err := certificatePlanRef(certificate)
+			if err != nil {
+				continue
+			}
+			if candidate.SHA256 == explicitSHA256 {
+				matches = append(matches, candidate)
+			}
+		}
+		if len(matches) == 0 {
+			return nil, []string{"no eligible iOS distribution certificate matches the requested SHA-256"}
+		}
+		if len(matches) > 1 {
+			return nil, []string{"multiple eligible iOS distribution certificates match the requested SHA-256"}
+		}
+		if explicitID != "" && matches[0].ID != explicitID {
+			return nil, []string{fmt.Sprintf("certificate %s does not match the requested SHA-256", explicitID)}
+		}
+		return matches[0], nil
+	}
 	if explicitID != "" {
 		for _, certificate := range eligible {
 			if certificate.ID == explicitID {

@@ -22,6 +22,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/deviceset"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
@@ -146,6 +147,7 @@ type signingReconcilePlanArtifact struct {
 	MinimumValidityDays int                     `json:"minimumValidityDays"`
 	MaxMutations        int                     `json:"maxMutations"`
 	MutationCount       int                     `json:"mutationCount"`
+	DeviceSetSHA256     string                  `json:"deviceSetSha256"`
 	Paths               signingReconcilePaths   `json:"paths"`
 	Certificate         *signingCertificateRef  `json:"certificate,omitempty"`
 	Targets             []signingTarget         `json:"targets"`
@@ -179,6 +181,7 @@ type signingReconcilePlanOptions struct {
 	ArchivePath         string
 	DevicesFile         string
 	CertificateID       string
+	CertificateSHA256   string
 	MinimumValidityDays int
 	MaxMutations        int
 	StateDir            string
@@ -345,6 +348,9 @@ func readProtectedFileBounded(path string, limit int64) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("protected input is not a regular file")
 	}
+	if err := validateReconcileProtectedFilePlatform(file, info); err != nil {
+		return nil, err
+	}
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o177 != 0 {
 		return nil, fmt.Errorf("protected input permissions must be 0600 or stricter")
 	}
@@ -358,16 +364,21 @@ func readProtectedFileBounded(path string, limit int64) ([]byte, error) {
 	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("protected input exceeds %d bytes", limit)
 	}
+	after, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if err := validateReconcileProtectedFilePlatform(file, after); err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, after) || info.Mode() != after.Mode() || info.Size() != after.Size() || !info.ModTime().Equal(after.ModTime()) {
+		return nil, fmt.Errorf("protected input changed while reading")
+	}
 	return data, nil
 }
 
 func protectedDevicesFileUsageError(err error) error {
 	rendered := shared.UsageError("invalid devices file: " + protectedInputDiagnostic(err))
-	return shared.NewErrorWithCause(rendered, err)
-}
-
-func protectedPlanArtifactUsageError(err error) error {
-	rendered := shared.UsageError("invalid signing reconcile plan: " + protectedInputDiagnostic(err))
 	return shared.NewErrorWithCause(rendered, err)
 }
 
@@ -526,6 +537,14 @@ func fingerprintReconcileName(name string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func digestSigningDeviceInputs(devices []signingDeviceInput) deviceset.Result {
+	values := make([]string, 0, len(devices))
+	for _, device := range devices {
+		values = append(values, device.UDID)
+	}
+	return deviceset.Digest(values)
+}
+
 func hashSigningReconcilePlan(plan signingReconcilePlanArtifact) (string, error) {
 	plan.GeneratedAt = ""
 	plan.PlanHash = ""
@@ -542,6 +561,7 @@ func writeSigningStateJSON(stateDir, relativePath string, value any, overwrite b
 	if err != nil {
 		return err
 	}
+	defer root.Close()
 	parent := filepath.Dir(relativePath)
 	if parent != "." {
 		if err := root.MkdirAll(parent, 0o700); err != nil {
@@ -565,32 +585,47 @@ func writeSigningStateJSON(stateDir, relativePath string, value any, overwrite b
 }
 
 func readSigningPlanArtifact(path string) (signingReconcilePlanArtifact, error) {
+	return readSigningPlanArtifactWithUsage(path, shared.UsageError)
+}
+
+func readSigningPlanArtifactSilent(path string) (signingReconcilePlanArtifact, error) {
+	return readSigningPlanArtifactWithUsage(path, func(message string) error { return errors.New(message) })
+}
+
+func readSigningPlanArtifactWithUsage(path string, usageError func(string) error) (signingReconcilePlanArtifact, error) {
+	if usageError == nil {
+		return signingReconcilePlanArtifact{}, errors.New("signing reconcile usage error handler is required")
+	}
 	data, err := readProtectedFileBounded(path, reconcilePlanFileMaxBytes)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, protectedPlanArtifactUsageError(err)
+		message := "invalid signing reconcile plan: " + protectedInputDiagnostic(err)
+		if errors.Is(err, os.ErrNotExist) {
+			message = fmt.Sprintf("plan artifact not found at %s; run asc signing reconcile plan first", path)
+		}
+		return signingReconcilePlanArtifact{}, shared.NewErrorWithCause(usageError(message), err)
 	}
 	var plan signingReconcilePlanArtifact
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	decoder.UseNumber()
 	if err := decoder.Decode(&plan); err != nil {
-		return signingReconcilePlanArtifact{}, shared.UsageError("invalid signing reconcile plan: contains invalid JSON")
+		return signingReconcilePlanArtifact{}, usageError("invalid signing reconcile plan: contains invalid JSON")
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
-		return signingReconcilePlanArtifact{}, shared.UsageError("invalid signing reconcile plan: contains invalid JSON")
+		return signingReconcilePlanArtifact{}, usageError("invalid signing reconcile plan: contains invalid JSON")
 	}
 	if plan.SchemaVersion != signingReconcileSchemaV1 {
-		return signingReconcilePlanArtifact{}, shared.UsageErrorf("unsupported signing reconcile plan schema version %d", plan.SchemaVersion)
+		return signingReconcilePlanArtifact{}, usageError(fmt.Sprintf("unsupported signing reconcile plan schema version %d", plan.SchemaVersion))
 	}
 	if strings.TrimSpace(plan.PlanHash) == "" {
-		return signingReconcilePlanArtifact{}, shared.UsageError("signing reconcile plan is missing planHash")
+		return signingReconcilePlanArtifact{}, usageError("signing reconcile plan is missing planHash")
 	}
 	actual, err := hashSigningReconcilePlan(plan)
 	if err != nil {
 		return signingReconcilePlanArtifact{}, err
 	}
 	if actual != plan.PlanHash {
-		return signingReconcilePlanArtifact{}, shared.UsageError("signing reconcile plan hash does not match its contents; rerun asc signing reconcile plan")
+		return signingReconcilePlanArtifact{}, usageError("signing reconcile plan hash does not match its contents; rerun asc signing reconcile plan")
 	}
 	return plan, nil
 }
