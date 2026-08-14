@@ -1013,21 +1013,17 @@ func TestRemoveArtifactAliasProbePreservesReplacement(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = root.Close() })
 
-	const name = "receipt.json"
-	probe, err := secureopen.OpenNewFileNoFollowInRoot(root, name, 0o600)
+	const probeName = "probe-source"
+	probe, err := secureopen.OpenNewFileNoFollowInRoot(root, probeName, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = probe.Close() })
 	probeInfo, err := probe.Stat()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := probe.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := root.Remove(name); err != nil {
-		t.Fatal(err)
-	}
+	const name = "receipt.json"
 	const replacement = "operator data"
 	if err := os.WriteFile(filepath.Join(rootPath, name), []byte(replacement), 0o600); err != nil {
 		t.Fatal(err)

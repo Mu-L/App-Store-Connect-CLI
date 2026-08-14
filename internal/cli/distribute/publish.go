@@ -480,20 +480,19 @@ func probeConfiguredArtifactAlias(paths artifactPaths) (err error) {
 		return err
 	}
 	var (
-		probe       *os.File
-		probeInfo   os.FileInfo
-		probeClosed bool
-		created     bool
-		cleanupErr  error
+		probe      *os.File
+		probeInfo  os.FileInfo
+		created    bool
+		cleanupErr error
 	)
 	defer func() {
-		if probe != nil && !probeClosed {
-			cleanupErr = errors.Join(cleanupErr, probe.Close())
-		}
 		if created {
 			if removeErr := removeArtifactAliasProbe(parent, name, probeInfo); removeErr != nil {
 				cleanupErr = errors.Join(cleanupErr, removeErr)
 			}
+		}
+		if probe != nil {
+			cleanupErr = errors.Join(cleanupErr, probe.Close())
 		}
 		cleanupErr = errors.Join(cleanupErr, parent.Close())
 		if cleanupErr != nil {
@@ -515,14 +514,6 @@ func probeConfiguredArtifactAlias(paths artifactPaths) (err error) {
 	if err != nil {
 		return err
 	}
-	if err := probe.Close(); err != nil {
-		probeClosed = true
-		probe = nil
-		return err
-	}
-	probeClosed = true
-	probe = nil
-
 	_, aliasErr := paths.lstatExisting(paths.link)
 	if os.IsNotExist(aliasErr) {
 		return nil
