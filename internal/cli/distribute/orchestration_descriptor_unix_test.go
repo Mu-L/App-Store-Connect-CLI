@@ -3,12 +3,15 @@
 package distribute
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"golang.org/x/sys/unix"
 )
 
@@ -28,6 +31,30 @@ func TestHashDistributionFileClosesRootDescriptor(t *testing.T) {
 	after := countOpenDistributionDescriptors(t)
 	if leaked := after - before; leaked > 0 {
 		t.Fatalf("hashDistributionFile leaked %d file descriptors", leaked)
+	}
+}
+
+func TestSnapshotXCArchiveClosesRootDescriptors(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "App.xcarchive")
+	writeIdentityArchiveFixture(t, archive, "Descriptor Leak", "9.8.7", "654", "16.0")
+	runRoot, err := rootfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runRoot.Close()
+
+	previousGCPercent := debug.SetGCPercent(-1)
+	defer debug.SetGCPercent(previousGCPercent)
+	before := countOpenDistributionDescriptors(t)
+	for index := range 8 {
+		relative := filepath.Join("inputs", fmt.Sprintf("App-%d.xcarchive", index))
+		if _, err := snapshotXCArchive(context.Background(), archive, runRoot, relative); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after := countOpenDistributionDescriptors(t)
+	if leaked := after - before; leaked > 0 {
+		t.Fatalf("snapshotXCArchive leaked %d file descriptors", leaked)
 	}
 }
 

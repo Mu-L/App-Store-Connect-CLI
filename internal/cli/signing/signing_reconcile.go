@@ -561,6 +561,7 @@ func writeSigningStateJSON(stateDir, relativePath string, value any, overwrite b
 	if err != nil {
 		return err
 	}
+	defer root.Close()
 	parent := filepath.Dir(relativePath)
 	if parent != "." {
 		if err := root.MkdirAll(parent, 0o700); err != nil {

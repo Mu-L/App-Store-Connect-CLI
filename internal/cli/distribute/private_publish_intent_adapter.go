@@ -325,10 +325,7 @@ func validatePrivatePublishIntentRequest(request privatePublishIntentRequest) er
 	if request.AddressingStyle != "path" && request.AddressingStyle != "virtual" {
 		return shared.UsageError("--addressing-style must be path or virtual")
 	}
-	const maximumPrivateLifetime = 7 * 24 * time.Hour
-	if request.URLTTL <= 0 || request.DownloadGrace < 0 ||
-		request.URLTTL > maximumPrivateLifetime ||
-		request.DownloadGrace > maximumPrivateLifetime-request.URLTTL {
+	if !validPrivatePublishLifetime(request.URLTTL, request.DownloadGrace) {
 		return shared.UsageError("private link lifetimes must be positive, non-negative, and at most 7d combined")
 	}
 	if request.VerifyTimeout <= 0 {
@@ -458,7 +455,7 @@ func loadPrivatePublishIntentState(paths artifactPaths) (privatePublishIntentSta
 	if info.Size() > 2<<20 {
 		return privatePublishIntentState{}, true, fmt.Errorf("private publication intent exceeds 2 MiB")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, (2<<20)+1))
+	data, err := readStableProtectedPublishArtifact(paths.root, paths.link, file, info, "private publication intent")
 	if err != nil {
 		return privatePublishIntentState{}, true, err
 	}
@@ -503,7 +500,7 @@ func readPrivatePublishIntentReceipt(paths artifactPaths) (core.PublishReceipt, 
 	if info.Size() > 2<<20 {
 		return core.PublishReceipt{}, fmt.Errorf("receipt exceeds 2 MiB")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, (2<<20)+1))
+	data, err := readStableProtectedPublishArtifact(paths.root, paths.receipt, file, info, "receipt")
 	if err != nil {
 		return core.PublishReceipt{}, err
 	}

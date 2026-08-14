@@ -1000,6 +1000,7 @@ func writeVerifiedProfile(stateDir string, content []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer root.Close()
 	if err := root.MkdirAll("profiles", 0o700); err != nil {
 		return "", err
 	}
@@ -1040,6 +1041,7 @@ func prepareReconcileProfileOutput(stateDir string) error {
 	if err != nil {
 		return err
 	}
+	defer root.Close()
 	if err := root.MkdirAll("profiles", 0o700); err != nil {
 		return err
 	}

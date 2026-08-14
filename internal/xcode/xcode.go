@@ -1950,6 +1950,7 @@ func moveExportedIPA(sourcePath, destinationPath string, overwrite bool) error {
 		if err != nil {
 			return fmt.Errorf("open ipa output root: %w", err)
 		}
+		defer root.Close()
 		if _, err := root.CreateNewFrom(filepath.Base(destinationPath), source, info.Mode().Perm()); err != nil {
 			return newDestinationExistsError(destinationPath, err)
 		}

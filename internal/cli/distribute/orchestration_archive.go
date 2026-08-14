@@ -102,6 +102,7 @@ func snapshotXCArchive(
 	if err != nil {
 		return archiveTreeSnapshot{}, fmt.Errorf("anchor archive snapshot parent: %w", err)
 	}
+	defer parentRoot.Close()
 	openedParent, err := parentRoot.OpenRoot()
 	if err != nil {
 		return archiveTreeSnapshot{}, fmt.Errorf("open archive snapshot parent: %w", err)
@@ -123,6 +124,7 @@ func snapshotXCArchive(
 	if err != nil {
 		return archiveTreeSnapshot{}, fmt.Errorf("anchor staged archive snapshot: %w", err)
 	}
+	defer destinationRoot.Close()
 	openedDestination, err := destinationRoot.OpenRoot()
 	if err != nil {
 		return archiveTreeSnapshot{}, fmt.Errorf("open staged archive snapshot: %w", err)

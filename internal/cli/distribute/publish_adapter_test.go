@@ -101,6 +101,103 @@ func TestPrivatePublishRequestCannotExpressPublicAccess(t *testing.T) {
 	}
 }
 
+func TestExecutePrivatePublishRejectsLifetimeOverflow(t *testing.T) {
+	request := privatePublishRequest{
+		BundleDir:        "/bundle",
+		Endpoint:         "https://objects.example.com",
+		Region:           "auto",
+		Bucket:           "bucket",
+		Prefix:           "app",
+		AddressingStyle:  "path",
+		URLTTL:           time.Duration(1 << 62),
+		DownloadGrace:    time.Duration(1 << 62),
+		VerifyTimeout:    time.Second,
+		ReceiptPath:      "/state/receipt.json",
+		LinkPath:         "/state/link.json",
+		DiagnosticWriter: io.Discard,
+	}
+
+	_, err := executePrivatePublish(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "must not exceed 7d") {
+		t.Fatalf("overflowing private publication lifetime error = %v", err)
+	}
+}
+
+func TestValidateStoredPrivateStateRejectsLifetimeOverflow(t *testing.T) {
+	receipt := privatePublishTestReceipt()
+	receipt.Endpoint = "https://objects.example.com"
+	receipt.DownloadEndpoint = "https://objects.example.com"
+	receipt.Region = "auto"
+	receipt.AddressingStyle = "path"
+	receipt.URLTTL = time.Duration(1 << 62).String()
+	receipt.DownloadGrace = time.Duration(1 << 62).String()
+	receipt.ReceiptPath = "/state/receipt.json"
+	receipt.LinkPath = "/state/link.json"
+	bundle := &distribution.PreparedBundle{
+		IPASHA256: "sha",
+		IPASize:   3,
+		Descriptor: distribution.PreparedDescriptor{
+			App: distribution.PreparedApp{BundleID: "com.example", Version: "1", BuildNumber: "2"},
+		},
+	}
+
+	err := validateStoredPrivateState(
+		publishState{
+			SchemaVersion: "1",
+			Receipt:       receipt,
+			Links:         distribution.SensitiveLinks{SchemaVersion: "1", InstallURL: "https://objects.example.com/install?secret"},
+		},
+		bundle,
+		receipt.ReceiptPath,
+		receipt.LinkPath,
+	)
+	if err == nil || !strings.Contains(err.Error(), "invalid saved download grace") {
+		t.Fatalf("overflowing saved publication lifetime error = %v", err)
+	}
+}
+
+func TestLoadPublishStateRejectsInPlaceMutation(t *testing.T) {
+	originalHook := publishAfterProtectedReadForTest
+	t.Cleanup(func() { publishAfterProtectedReadForTest = originalHook })
+
+	stateDir := t.TempDir()
+	receiptPath := filepath.Join(stateDir, "receipt.json")
+	linkPath := filepath.Join(stateDir, "link.json")
+	writePrivatePublishTestState(
+		t,
+		receiptPath,
+		linkPath,
+		privatePublishTestReceipt(),
+		distribution.SensitiveLinks{SchemaVersion: "1", InstallURL: "https://objects.example.com/install?secret"},
+	)
+	artifacts, err := openExistingArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifacts.close()
+	publishAfterProtectedReadForTest = func(label string) {
+		if label != "sensitive link artifact" {
+			return
+		}
+		file, openErr := os.OpenFile(linkPath, os.O_APPEND|os.O_WRONLY, 0)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		if _, writeErr := file.Write([]byte(" ")); writeErr != nil {
+			_ = file.Close()
+			t.Fatal(writeErr)
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+	}
+
+	_, _, err = artifacts.loadState()
+	if err == nil || !strings.Contains(err.Error(), "changed while reading") {
+		t.Fatalf("mutated sensitive state error = %v", err)
+	}
+}
+
 func TestExecutePublishPreservesExplicitPublicAccess(t *testing.T) {
 	originalLoad, originalStore, originalPublish := loadPreparedBundle, newObjectStore, runPublish
 	t.Cleanup(func() {

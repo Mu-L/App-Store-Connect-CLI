@@ -148,7 +148,7 @@ func executePublish(ctx context.Context, request publishRequest) (publishExecuti
 	if request.DownloadGrace < 0 {
 		return publishExecutionResult{}, shared.UsageError("--download-grace must not be negative")
 	}
-	if accessMode == core.AccessPrivate && request.URLTTL+request.DownloadGrace > 7*24*time.Hour {
+	if accessMode == core.AccessPrivate && !validPrivatePublishLifetime(request.URLTTL, request.DownloadGrace) {
 		return publishExecutionResult{}, shared.UsageError("--url-ttl plus --download-grace must not exceed 7d")
 	}
 	if request.VerifyTimeout <= 0 {
@@ -430,7 +430,7 @@ func validateStoredPrivateState(state publishState, bundle *core.PreparedBundle,
 		return fmt.Errorf("invalid saved URL lifetime")
 	}
 	downloadGrace, err := time.ParseDuration(receipt.DownloadGrace)
-	if err != nil || downloadGrace < 0 || urlTTL+downloadGrace > 7*24*time.Hour {
+	if err != nil || !validPrivatePublishLifetime(urlTTL, downloadGrace) {
 		return fmt.Errorf("invalid saved download grace")
 	}
 	return validateRecoveredState(
@@ -441,4 +441,12 @@ func validateStoredPrivateState(state publishState, bundle *core.PreparedBundle,
 
 func validPublishBucket(bucket string) bool {
 	return core.ValidateBucket(bucket) == nil
+}
+
+func validPrivatePublishLifetime(urlTTL, downloadGrace time.Duration) bool {
+	const maximumPrivateLifetime = 7 * 24 * time.Hour
+	return urlTTL > 0 &&
+		downloadGrace >= 0 &&
+		urlTTL <= maximumPrivateLifetime &&
+		downloadGrace <= maximumPrivateLifetime-urlTTL
 }
