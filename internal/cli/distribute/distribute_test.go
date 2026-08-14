@@ -1,9 +1,13 @@
 package distribute
 
 import (
+	"context"
+	"errors"
 	"io"
 	"os"
 	"testing"
+
+	"github.com/peterbourgon/ff/v3/ffcli"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
 )
@@ -132,6 +136,24 @@ func TestRenderInspectionDeviceDisclosure(t *testing.T) {
 			})
 			if output != test.wantPrivate {
 				t.Fatalf("private %s renderer output:\n%s\nwant:\n%s", test.name, output, test.wantPrivate)
+			}
+		})
+	}
+}
+
+func TestDistributionCommandsHonorAlreadyCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, command := range []struct {
+		name string
+		cmd  *ffcli.Command
+	}{
+		{name: "inspect", cmd: inspectCommand()},
+		{name: "prepare", cmd: prepareCommand()},
+	} {
+		t.Run(command.name, func(t *testing.T) {
+			if err := command.cmd.Exec(ctx, nil); !errors.Is(err, context.Canceled) {
+				t.Fatalf("Exec() error = %v, want context.Canceled", err)
 			}
 		})
 	}

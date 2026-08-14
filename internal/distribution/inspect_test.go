@@ -3,13 +3,16 @@ package distribution
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -257,6 +260,137 @@ func TestInspectIPAAcceptsExplicitDirectoriesAndSimilarlyPrefixedSiblings(t *tes
 	}
 	if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err != nil {
 		t.Fatalf("InspectIPA() error = %v, want valid explicit directories and sibling", err)
+	}
+}
+
+func TestInspectIPAValidatesDirectoryEntryStreams(t *testing.T) {
+	base := func(directory orderedZipEntry) []orderedZipEntry {
+		return []orderedZipEntry{
+			directory,
+			{Name: "Payload/Demo.app/Info.plist", Data: infoPlist(t, "com.example.demo")},
+			{Name: "Payload/Demo.app/embedded.mobileprovision", Data: signedProfile(t, profileFixture{
+				BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+			})},
+		}
+	}
+	for _, test := range []struct {
+		name      string
+		directory orderedZipEntry
+	}{
+		{name: "stored empty", directory: orderedZipEntry{Name: "Payload/", Mode: os.ModeDir | 0o755}},
+		{name: "deflated empty with data descriptor", directory: orderedZipEntry{Name: "Payload/", Mode: os.ModeDir | 0o755, Deflate: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeOrderedIPA(t, base(test.directory))
+			if test.directory.Deflate {
+				file, err := os.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				info, err := file.Stat()
+				if err != nil {
+					t.Fatal(err)
+				}
+				reader, err := zip.NewReader(file, info.Size())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if reader.File[0].Flags&0x8 == 0 {
+					t.Fatal("deflated empty directory did not use a data descriptor")
+				}
+				_ = file.Close()
+			}
+			_ = inspectPath(t, path, false)
+		})
+	}
+
+	t.Run("nonzero payload", func(t *testing.T) {
+		path := writeOrderedIPA(t, base(orderedZipEntry{
+			Name: "Payload/", Data: []byte("directory-data"), Mode: os.ModeDir | 0o755, Deflate: true,
+		}))
+		assertInspectErrorContains(t, path, "contains data")
+	})
+	t.Run("corrupt compressed stream", func(t *testing.T) {
+		path := writeOrderedIPA(t, base(orderedZipEntry{
+			Name: "Payload/", Data: bytes.Repeat([]byte("directory-data"), 32), Mode: os.ModeDir | 0o755, Deflate: true,
+		}))
+		corruptZipMemberData(t, path, "Payload/")
+		assertInspectErrorContains(t, path, "Payload/")
+	})
+	t.Run("CRC mismatch", func(t *testing.T) {
+		path := writeOrderedIPA(t, base(orderedZipEntry{Name: "Payload/", Mode: os.ModeDir | 0o755}))
+		corruptCentralDirectoryCRC(t, path, "Payload/")
+		assertInspectErrorContains(t, path, "Payload/")
+	})
+}
+
+func TestInspectIPAContextCancellationDuringZIPValidationStopsImmediately(t *testing.T) {
+	path := writeOrderedIPA(t, []orderedZipEntry{
+		{Name: "Payload/", Mode: os.ModeDir | 0o755},
+		{Name: "Payload/Demo.app/Info.plist", Data: infoPlist(t, "com.example.demo")},
+		{Name: "Payload/Demo.app/embedded.mobileprovision", Data: signedProfile(t, profileFixture{
+			BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		})},
+	})
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var visited []string
+	duringZIPValidationForTest = func(name string) {
+		visited = append(visited, name)
+	}
+	duringZIPStreamReadForTest = cancel
+	t.Cleanup(func() {
+		duringZIPValidationForTest = nil
+		duringZIPStreamReadForTest = nil
+	})
+	if _, err := InspectIPAContext(ctx, file, info.Size(), InspectOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("InspectIPAContext() error = %v, want context.Canceled", err)
+	}
+	if len(visited) != 1 {
+		t.Fatalf("visited ZIP members = %#v, want exactly one", visited)
+	}
+}
+
+func TestSnapshotIPAContextCancellationCleansPrivateSnapshot(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "app.ipa")
+	if err := os.WriteFile(sourcePath, bytes.Repeat([]byte("snapshot"), 1<<17), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var snapshotDirectory string
+	snapshotCreatedForTest = func(path string) { snapshotDirectory = path }
+	duringIPASnapshotForTest = cancel
+	t.Cleanup(func() {
+		duringIPASnapshotForTest = nil
+		snapshotCreatedForTest = nil
+	})
+	if _, _, cleanup, err := snapshotIPAContext(ctx, source, info.Size()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("snapshotIPAContext() error = %v, want context.Canceled", err)
+	} else if cleanup != nil {
+		t.Fatal("snapshotIPAContext() returned cleanup after cancellation")
+	}
+	if snapshotDirectory == "" {
+		t.Fatal("snapshot directory creation hook was not called")
+	}
+	if _, err := os.Lstat(snapshotDirectory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("snapshot directory stat error = %v, want not found", err)
 	}
 }
 
@@ -862,9 +996,10 @@ func writeIPA(t *testing.T, entries map[string][]byte) string {
 }
 
 type orderedZipEntry struct {
-	Name string
-	Data []byte
-	Mode os.FileMode
+	Name    string
+	Data    []byte
+	Mode    os.FileMode
+	Deflate bool
 }
 
 func writeOrderedIPA(t *testing.T, entries []orderedZipEntry) string {
@@ -875,12 +1010,19 @@ func writeOrderedIPA(t *testing.T, entries []orderedZipEntry) string {
 		t.Fatal(err)
 	}
 	writer := zip.NewWriter(file)
+	directoryAliases := map[string]string{}
 	for _, fixture := range entries {
-		header := &zip.FileHeader{Name: fixture.Name, Method: zip.Deflate}
-		if fixture.Mode != 0 {
+		writeName := fixture.Name
+		streamDirectory := fixture.Mode.IsDir() && (fixture.Deflate || len(fixture.Data) > 0)
+		if streamDirectory {
+			writeName = strings.TrimSuffix(fixture.Name, "/") + "X"
+			directoryAliases[writeName] = fixture.Name
+		}
+		header := &zip.FileHeader{Name: writeName, Method: zip.Deflate}
+		if fixture.Mode != 0 && !streamDirectory {
 			header.SetMode(fixture.Mode)
 		}
-		if fixture.Mode.IsDir() {
+		if fixture.Mode.IsDir() && !fixture.Deflate {
 			header.Method = zip.Store
 		}
 		entry, err := writer.CreateHeader(header)
@@ -897,7 +1039,121 @@ func writeOrderedIPA(t *testing.T, entries []orderedZipEntry) string {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
+	for from, to := range directoryAliases {
+		convertZipEntryToDirectory(t, path, from, to)
+	}
 	return path
+}
+
+func convertZipEntryToDirectory(t *testing.T, path, from, to string) {
+	t.Helper()
+	if len(from) != len(to) {
+		t.Fatalf("directory alias lengths differ: %q, %q", from, to)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.ReplaceAll(data, []byte(from), []byte(to))
+	signature := []byte{'P', 'K', 1, 2}
+	for offset := 0; ; {
+		index := bytes.Index(data[offset:], signature)
+		if index < 0 {
+			break
+		}
+		index += offset
+		if index+46 > len(data) {
+			break
+		}
+		nameLength := int(binary.LittleEndian.Uint16(data[index+28 : index+30]))
+		extraLength := int(binary.LittleEndian.Uint16(data[index+30 : index+32]))
+		commentLength := int(binary.LittleEndian.Uint16(data[index+32 : index+34]))
+		end := index + 46 + nameLength
+		if end > len(data) {
+			break
+		}
+		if string(data[index+46:end]) == to {
+			binary.LittleEndian.PutUint16(data[index+4:index+6], 3<<8|20)
+			binary.LittleEndian.PutUint32(data[index+38:index+42], uint32(0o40755)<<16)
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		offset = end + extraLength + commentLength
+	}
+	t.Fatalf("central directory entry %q not found", to)
+}
+
+func corruptZipMemberData(t *testing.T, path, name string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.NewReader(file, info.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range reader.File {
+		if member.Name != name {
+			continue
+		}
+		offset, err := member.DataOffset()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value [1]byte
+		if _, err := file.ReadAt(value[:], offset); err != nil {
+			t.Fatal(err)
+		}
+		value[0] ^= 0xff
+		if _, err := file.WriteAt(value[:], offset); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t.Fatalf("ZIP member %q not found", name)
+}
+
+func corruptCentralDirectoryCRC(t *testing.T, path, name string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := []byte{'P', 'K', 1, 2}
+	for offset := 0; ; {
+		index := bytes.Index(data[offset:], signature)
+		if index < 0 {
+			break
+		}
+		index += offset
+		if index+46 > len(data) {
+			break
+		}
+		nameLength := int(binary.LittleEndian.Uint16(data[index+28 : index+30]))
+		extraLength := int(binary.LittleEndian.Uint16(data[index+30 : index+32]))
+		commentLength := int(binary.LittleEndian.Uint16(data[index+32 : index+34]))
+		end := index + 46 + nameLength
+		if end > len(data) {
+			break
+		}
+		if string(data[index+46:end]) == name {
+			binary.LittleEndian.PutUint32(data[index+16:index+20], 1)
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		offset = end + extraLength + commentLength
+	}
+	t.Fatalf("central directory entry %q not found", name)
 }
 
 type declaredRawZipEntry struct {

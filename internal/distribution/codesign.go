@@ -2,6 +2,7 @@ package distribution
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
@@ -34,10 +35,22 @@ const (
 	mainCodeSignatureScope          = "complete-main-app-code-resources-entitlements-and-profile-certificate-binding"
 )
 
-var runCodeSignTool = runBoundedTool
+var (
+	runCodeSignTool               = runBoundedTool
+	duringMaterializationForTest  func(string)
+	duringMaterializedCopyForTest func()
+)
 
 func verifyMainAppCodeSignature(members []*zip.File, appDir, executable, bundleID string, profile parsedProfile) CodeSignatureVerification {
+	return verifyMainAppCodeSignatureContext(context.Background(), members, appDir, executable, bundleID, profile)
+}
+
+func verifyMainAppCodeSignatureContext(ctx context.Context, members []*zip.File, appDir, executable, bundleID string, profile parsedProfile) CodeSignatureVerification {
 	result := CodeSignatureVerification{Status: CodeSignatureNotVerified, Scope: mainCodeSignatureScope}
+	if err := contextError(ctx); err != nil {
+		result.Reason = err.Error()
+		return result
+	}
 	if runtime.GOOS != "darwin" {
 		result.Reason = "complete main-app code-signature verification is available only on macOS"
 		return result
@@ -77,12 +90,11 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir, executable, bundleI
 		return result
 	}
 	defer app.Close()
-	if err := materializeMainApp(app, members, appDir); err != nil {
+	if err := materializeMainAppContext(ctx, app, members, appDir); err != nil {
 		result.Status, result.Reason = CodeSignatureInvalid, "could not safely materialize the complete bounded main app: "+err.Error()
 		return result
 	}
 	appPath := path.Join(directory, "Verify.app")
-	ctx := context.Background()
 	if _, err := runCodeSignInvocation(ctx, "/usr/bin/codesign", "--verify", "--deep", "--strict", "--all-architectures", "--verbose=4", appPath); err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 			result.Reason = "codesign is unavailable"
@@ -92,7 +104,7 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir, executable, bundleI
 		return result
 	}
 	mainExecutablePath := filepath.Join(appPath, executable)
-	codePaths, err := enumerateMachOFiles(appPath)
+	codePaths, err := enumerateMachOFilesContext(ctx, appPath)
 	if err != nil {
 		result.Status, result.Reason = CodeSignatureInvalid, "could not enumerate nested signed code: "+err.Error()
 		return result
@@ -125,6 +137,10 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir, executable, bundleI
 	mainFingerprintSet := stringSet(mainFingerprints)
 	teamRequirement := `anchor apple generic and certificate leaf[subject.OU] = "` + teamID + `"`
 	for index, codePath := range codePaths {
+		if err := contextError(ctx); err != nil {
+			result.Reason = err.Error()
+			return result
+		}
 		if _, err := runCodeSignInvocation(ctx, "/usr/bin/codesign", "--verify", "--strict", "--all-architectures", "-R="+teamRequirement, codePath); err != nil {
 			result.Status, result.Reason = CodeSignatureInvalid, "nested signed code does not satisfy the main app signing-team requirement"
 			return result
@@ -232,8 +248,15 @@ func validateSignedMainAppEntitlements(entitlementsData []byte, bundleID string,
 }
 
 func enumerateMachOFiles(appPath string) ([]string, error) {
+	return enumerateMachOFilesContext(context.Background(), appPath)
+}
+
+func enumerateMachOFilesContext(ctx context.Context, appPath string) ([]string, error) {
 	var result []string
 	err := filepath.WalkDir(appPath, func(candidate string, entry os.DirEntry, walkErr error) error {
+		if err := contextError(ctx); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -488,10 +511,16 @@ func entitlementList(value any) ([]any, bool) {
 	}
 }
 
-func materializeMainApp(destination *os.Root, members []*zip.File, appDir string) error {
+func materializeMainAppContext(ctx context.Context, destination *os.Root, members []*zip.File, appDir string) error {
 	prefix := appDir + "/"
 	var total int64
 	for _, member := range members {
+		if duringMaterializationForTest != nil {
+			duringMaterializationForTest(member.Name)
+		}
+		if err := contextError(ctx); err != nil {
+			return err
+		}
 		if !strings.HasPrefix(member.Name, prefix) {
 			continue
 		}
@@ -512,7 +541,7 @@ func materializeMainApp(destination *os.Root, members []*zip.File, appDir string
 		if err := destination.MkdirAll(path.Dir(relative), 0o700); err != nil {
 			return err
 		}
-		if err := copyZipMemberToNewFile(destination, relative, member, int64(member.UncompressedSize64)); err != nil {
+		if err := copyZipMemberToNewFileContext(ctx, destination, relative, member, int64(member.UncompressedSize64)); err != nil {
 			return err
 		}
 	}
@@ -596,7 +625,7 @@ func validateArchitecture(value string) error {
 	return nil
 }
 
-func copyZipMemberToNewFile(root *os.Root, name string, member *zip.File, limit int64) error {
+func copyZipMemberToNewFileContext(ctx context.Context, root *os.Root, name string, member *zip.File, limit int64) error {
 	reader, err := member.Open()
 	if err != nil {
 		return err
@@ -606,7 +635,7 @@ func copyZipMemberToNewFile(root *os.Root, name string, member *zip.File, limit 
 	if err != nil {
 		return err
 	}
-	written, copyErr := io.Copy(file, io.LimitReader(reader, limit+1))
+	written, copyErr := copyWithContext(ctx, file, io.LimitReader(reader, limit+1), duringMaterializedCopyForTest)
 	closeErr := file.Close()
 	if copyErr != nil {
 		return copyErr
@@ -621,12 +650,18 @@ func copyZipMemberToNewFile(root *os.Root, name string, member *zip.File, limit 
 }
 
 func runCodeSignInvocation(parent context.Context, name string, args ...string) ([]byte, error) {
+	if err := contextError(parent); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(parent, codeSignInvocationTimeout)
 	defer cancel()
 	return runCodeSignTool(ctx, name, args...)
 }
 
 func runBoundedTool(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	command := exec.CommandContext(ctx, name, args...)
 	pipe, err := command.StdoutPipe()
 	if err != nil {
@@ -636,8 +671,13 @@ func runBoundedTool(ctx context.Context, name string, args ...string) ([]byte, e
 	if err := command.Start(); err != nil {
 		return nil, err
 	}
-	output, readErr := io.ReadAll(io.LimitReader(pipe, maxToolOutputBytes+1))
+	var outputBuffer bytes.Buffer
+	_, readErr := copyWithContext(ctx, &outputBuffer, io.LimitReader(pipe, maxToolOutputBytes+1), nil)
 	waitErr := command.Wait()
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	output := outputBuffer.Bytes()
 	if len(output) > maxToolOutputBytes {
 		return nil, fmt.Errorf("tool output exceeded %d bytes", maxToolOutputBytes)
 	}

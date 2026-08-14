@@ -1,6 +1,7 @@
 package distribution
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -10,13 +11,20 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
-var afterIPASnapshotForTest func()
+var (
+	afterIPASnapshotForTest  func()
+	duringIPASnapshotForTest func()
+	snapshotCreatedForTest   func(string)
+)
 
 // snapshotIPA copies the already-open input exactly once into a private,
 // immutable-for-this-process file. Metadata parsing, hashing, and publishing
 // all consume this snapshot so concurrent writes to the source cannot produce
 // a descriptor assembled from different byte generations.
-func snapshotIPA(source *os.File, size int64) (*os.File, string, func(), error) {
+func snapshotIPAContext(ctx context.Context, source *os.File, size int64) (*os.File, string, func(), error) {
+	if err := contextError(ctx); err != nil {
+		return nil, "", nil, err
+	}
 	if source == nil {
 		return nil, "", nil, fmt.Errorf("IPA file is nil")
 	}
@@ -41,6 +49,9 @@ func snapshotIPA(source *os.File, size int64) (*os.File, string, func(), error) 
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("create private IPA snapshot directory: %w", err)
 	}
+	if snapshotCreatedForTest != nil {
+		snapshotCreatedForTest(directory)
+	}
 	cleanupDirectory := func() { _ = os.Remove(directory) }
 	root, err := os.OpenRoot(directory)
 	if err != nil {
@@ -54,7 +65,7 @@ func snapshotIPA(source *os.File, size int64) (*os.File, string, func(), error) 
 		return nil, "", nil, fmt.Errorf("create private IPA snapshot: %w", err)
 	}
 	hash := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(snapshot, hash), io.NewSectionReader(source, 0, size))
+	written, copyErr := copyWithContext(ctx, io.MultiWriter(snapshot, hash), io.NewSectionReader(source, 0, size), duringIPASnapshotForTest)
 	if copyErr == nil && written != size {
 		copyErr = fmt.Errorf("copied %d of %d bytes", written, size)
 	}
@@ -85,4 +96,47 @@ func snapshotIPA(source *os.File, size int64) (*os.File, string, func(), error) 
 		cleanupDirectory()
 	}
 	return snapshot, hex.EncodeToString(hash.Sum(nil)), cleanup, nil
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
+}
+
+func copyWithContext(ctx context.Context, destination io.Writer, source io.Reader, hook func()) (int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	buffer := make([]byte, 64<<10)
+	var written int64
+	for {
+		if hook != nil {
+			hook()
+		}
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		read, readErr := source.Read(buffer)
+		if read > 0 {
+			if err := ctx.Err(); err != nil {
+				return written, err
+			}
+			count, writeErr := destination.Write(buffer[:read])
+			written += int64(count)
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if count != read {
+				return written, io.ErrShortWrite
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return written, nil
+			}
+			return written, readErr
+		}
+	}
 }

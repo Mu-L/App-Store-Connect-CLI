@@ -379,6 +379,63 @@ func TestValidateSignedMainAppEntitlementsRejectsUnsafeProfilePrefix(t *testing.
 	}
 }
 
+func TestVerifyMainExecutableEntitlementsStopsBetweenArchitecturesOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls []string
+	runCodeSignTool = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if name == "/usr/bin/lipo" {
+			return []byte("arm64 x86_64 arm64e\n"), nil
+		}
+		cancel()
+		return nil, context.Canceled
+	}
+	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
+	_, err := verifyMainExecutableEntitlements(ctx, "/tmp/Demo", "com.example.demo", parsedProfile{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("verifyMainExecutableEntitlements() error = %v, want context.Canceled", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("tool calls = %#v, want lipo and one architecture only", calls)
+	}
+}
+
+func TestMaterializeMainAppContextCancellationStopsBeforeLaterFiles(t *testing.T) {
+	path := writeOrderedIPA(t, []orderedZipEntry{
+		{Name: "Payload/Demo.app/Demo", Data: fakeMachO("main")},
+		{Name: "Payload/Demo.app/Frameworks/Later.dylib", Data: fakeMachO("later")},
+	})
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.NewReader(file, info.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	duringMaterializedCopyForTest = cancel
+	t.Cleanup(func() { duringMaterializedCopyForTest = nil })
+	err = materializeMainAppContext(ctx, root, reader.File, "Payload/Demo.app")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("materializeMainAppContext() error = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "Frameworks", "Later.dylib")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("later nested code stat error = %v, want not found", err)
+	}
+}
+
 func TestRunCodeSignInvocationUsesIndependentDeadlines(t *testing.T) {
 	var deadlines []time.Time
 	runCodeSignTool = func(ctx context.Context, _ string, _ ...string) ([]byte, error) {

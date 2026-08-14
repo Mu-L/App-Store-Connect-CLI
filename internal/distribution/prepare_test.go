@@ -2,6 +2,7 @@ package distribution
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -367,6 +368,51 @@ func TestSafePathComponentIsCollisionSafeAndContained(t *testing.T) {
 			t.Fatalf("collision for %q: %q", value, got)
 		}
 		seen[got] = true
+	}
+}
+
+func TestPrepareIPAContextAlreadyCanceledHasNoFilesystemSideEffects(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "not-created")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := PrepareIPAContext(ctx, nil, 0, PrepareOptions{Root: root}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("PrepareIPAContext() error = %v, want context.Canceled", err)
+	}
+	if _, err := os.Lstat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("output root stat error = %v, want not found", err)
+	}
+}
+
+func TestPrepareIPAContextCancellationDuringPublicationDoesNotPublish(t *testing.T) {
+	installVerifiedPreparationForTest(t)
+	path := validIPA(t, []string{"one"}, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), false)
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	duringPublicationCopyForTest = cancel
+	t.Cleanup(func() { duringPublicationCopyForTest = nil })
+	if _, err := PrepareIPAContext(ctx, file, info.Size(), PrepareOptions{Root: root}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("PrepareIPAContext() error = %v, want context.Canceled", err)
+	}
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && (entry.Name() == "bundle.json" || entry.Name() == "app.ipa") {
+			t.Errorf("canceled preparation left publication file %q", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

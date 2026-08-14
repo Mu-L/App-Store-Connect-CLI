@@ -65,6 +65,9 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if len(args) != 0 {
 				return shared.UsageError("distribute inspect does not accept positional arguments")
 			}
@@ -79,9 +82,12 @@ Examples:
 				return fmt.Errorf("distribute inspect: %w", err)
 			}
 			defer file.Close()
-			result, err := distribution.InspectIPA(file, size, distribution.InspectOptions{IncludeDevices: *includeDevices})
+			result, err := distribution.InspectIPAContext(ctx, file, size, distribution.InspectOptions{IncludeDevices: *includeDevices})
 			if err != nil {
 				return fmt.Errorf("distribute inspect: %w", err)
+			}
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 			return printInspection(result, *output.Output, *output.Pretty)
 		},
@@ -120,6 +126,9 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if len(args) != 0 {
 				return shared.UsageError("distribute prepare does not accept positional arguments")
 			}
@@ -146,9 +155,12 @@ Examples:
 			defer file.Close()
 			prepareOptions.Root = root
 			prepareOptions.OutputDir = relativeOutput
-			result, err := distribution.PrepareIPA(file, size, prepareOptions)
+			result, err := distribution.PrepareIPAContext(ctx, file, size, prepareOptions)
 			if err != nil {
 				return fmt.Errorf("distribute prepare: %w", err)
+			}
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 			return printPrepareResult(result, *output.Output, *output.Pretty)
 		},
@@ -164,6 +176,7 @@ func openIPA(pathValue string) (*os.File, int64, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("open IPA root: %w", err)
 	}
+	defer root.Close()
 	file, err := root.OpenFile(filepath.Base(absolute))
 	if err != nil {
 		return nil, 0, fmt.Errorf("open IPA: %w", err)
