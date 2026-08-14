@@ -226,16 +226,20 @@ func (c *Client) requestForVersion(ctx context.Context, version APIVersion, meth
 		return nil, err
 	}
 	retrySafe = version == APIVersionPlatformV1 && retrySafe
+	var retryOptions asc.RetryOptions
+	if retrySafe {
+		retryOptions = asc.ResolveRetryOptions()
+	}
 	request := func() (RawResponse, error) {
-		return c.requestOnce(ctx, version, method, requestURL, body, contextHeader, retrySafe)
+		return c.requestOnce(ctx, version, method, requestURL, body, contextHeader, retrySafe, retryOptions.MaxDelay)
 	}
 	if retrySafe {
-		return asc.WithRetry(ctx, request, asc.ResolveRetryOptions())
+		return asc.WithRetry(ctx, request, retryOptions)
 	}
 	return request()
 }
 
-func (c *Client) requestOnce(ctx context.Context, version APIVersion, method, requestURL string, body json.RawMessage, contextHeader string, retrySafe bool) (RawResponse, error) {
+func (c *Client) requestOnce(ctx context.Context, version APIVersion, method, requestURL string, body json.RawMessage, contextHeader string, retrySafe bool, maxRetryDelay time.Duration) (RawResponse, error) {
 	token, err := c.bearerToken(ctx)
 	if err != nil {
 		return nil, err
@@ -283,9 +287,10 @@ func (c *Client) requestOnce(ctx context.Context, version APIVersion, method, re
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		apiErr := parseErrorForVersion(respBody, resp.StatusCode, resp.Header, version)
 		if retrySafe && isRetryableAdsStatus(resp.StatusCode) {
+			retryAfter := adsRetryDelay(resp.Header, c.now(), maxRetryDelay)
 			return nil, &asc.RetryableError{
 				Err:        apiErr,
-				RetryAfter: adsRetryDelay(resp.Header, c.now()),
+				RetryAfter: retryAfter,
 			}
 		}
 		return nil, apiErr
@@ -315,21 +320,30 @@ func validateVersionContext(version APIVersion, kind ContextKind) error {
 	return fmt.Errorf("version %q does not support Apple Ads context kind %d", version, kind)
 }
 
-func adsRetryDelay(headers http.Header, now time.Time) time.Duration {
+func adsRetryDelay(headers http.Header, now time.Time, maxDelay time.Duration) time.Duration {
+	var delay time.Duration
 	if value := strings.TrimSpace(headerValue(headers, "Retry-After")); value != "" {
 		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
-			return time.Duration(seconds) * time.Second
-		}
-		if deadline, err := http.ParseTime(value); err == nil {
+			delay = time.Duration(seconds) * time.Second
+		} else if deadline, err := http.ParseTime(value); err == nil {
 			if delay := deadline.Sub(now); delay > 0 {
-				return delay
+				return capAdsRetryDelay(delay, maxDelay)
 			}
 		}
 	}
-	if seconds, err := strconv.ParseInt(strings.TrimSpace(headerValue(headers, "RateLimit-Reset")), 10, 64); err == nil && seconds > 0 {
-		return time.Duration(seconds) * time.Second
+	if delay == 0 {
+		if seconds, err := strconv.ParseInt(strings.TrimSpace(headerValue(headers, "RateLimit-Reset")), 10, 64); err == nil && seconds > 0 {
+			delay = time.Duration(seconds) * time.Second
+		}
 	}
-	return 0
+	return capAdsRetryDelay(delay, maxDelay)
+}
+
+func capAdsRetryDelay(delay, maxDelay time.Duration) time.Duration {
+	if delay > 0 && maxDelay > 0 && delay > maxDelay {
+		return maxDelay
+	}
+	return delay
 }
 
 func headerValue(headers http.Header, name string) string {

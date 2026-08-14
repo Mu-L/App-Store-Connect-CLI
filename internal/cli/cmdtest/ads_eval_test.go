@@ -119,6 +119,7 @@ func TestAdsAgentReadOnlyEvalWorkflow(t *testing.T) {
 }
 
 func TestAdsAuthDiscoverSummarizesMeAndAcls(t *testing.T) {
+	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_ORG_ID", "987654")
 	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "111")
@@ -127,15 +128,18 @@ func TestAdsAuthDiscoverSummarizesMeAndAcls(t *testing.T) {
 	log := newRequestLog(2)
 	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		assertAdsEvalBearer(t, req)
+		if req.URL.Host != "api.searchads.apple.com" {
+			t.Fatalf("unexpected auth discovery host %q", req.URL.Host)
+		}
 		assertAdsEvalNoOrg(t, req)
 		assertAdsEvalNoBody(t, req)
 		log.Add(req.Method + " " + req.URL.RequestURI())
 
 		switch req.URL.Path {
-		case "/v1/me":
-			return adsJSONResponse(200, `{"result":{"userId":1001,"orgId":987654}}`), nil
-		case "/v1/acls":
-			return adsJSONResponse(200, `{"result":{"acls":[{"adAccount":{"id":111,"name":"Example Account","orgId":987654},"roles":["Admin"]},{"adAccount":{"id":222,"name":"Other Account","orgId":123456},"roles":["ReadOnly"]}]}}`), nil
+		case "/api/v5/me":
+			return adsJSONResponse(200, `{"data":{"id":"user-1","name":"Ada Example"}}`), nil
+		case "/api/v5/acls":
+			return adsJSONResponse(200, `{"data":[{"orgId":987654,"orgName":"Example Org","roleNames":["Admin"]},{"orgId":123456,"name":"Other Org","roles":["ReadOnly"]}]}`), nil
 		default:
 			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
 			return nil, nil
@@ -154,22 +158,19 @@ func TestAdsAuthDiscoverSummarizesMeAndAcls(t *testing.T) {
 	}
 
 	var result struct {
-		AuthSource  string `json:"auth_source"`
-		OrgID       string `json:"org_id"`
-		OrgIDSource string `json:"org_id_source"`
-		AdAccountID string `json:"ad_account_id"`
-		Me          struct {
-			ID     string `json:"id"`
-			Name   string `json:"name"`
-			UserID string `json:"userId"`
-			OrgID  string `json:"orgId"`
+		AuthSource        string `json:"auth_source"`
+		OrgID             string `json:"org_id"`
+		OrgIDSource       string `json:"org_id_source"`
+		AdAccountID       string `json:"ad_account_id"`
+		AdAccountIDSource string `json:"ad_account_id_source"`
+		Me                struct {
+			ID string `json:"id"`
 		} `json:"me"`
 		Accounts []struct {
-			AdAccountID string   `json:"ad_account_id"`
-			OrgID       string   `json:"org_id"`
-			Name        string   `json:"name"`
-			Roles       []string `json:"roles"`
-			Active      bool     `json:"active"`
+			OrgID  string   `json:"org_id"`
+			Name   string   `json:"name"`
+			Roles  []string `json:"roles"`
+			Active bool     `json:"active"`
 		} `json:"accounts"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
@@ -178,18 +179,18 @@ func TestAdsAuthDiscoverSummarizesMeAndAcls(t *testing.T) {
 	if result.AuthSource != "ASC_ADS_ACCESS_TOKEN" || result.OrgID != "987654" || result.OrgIDSource != "ASC_ADS_ORG_ID" {
 		t.Fatalf("discovery context = %+v, want env token/org", result)
 	}
-	if result.AdAccountID != "111" || result.Me.ID != "1001" || result.Me.Name != "" || result.Me.UserID != "1001" || result.Me.OrgID != "987654" {
-		t.Fatalf("ad account/me = %+v, want stable id/name plus additive v1 fields", result)
+	if result.AdAccountID != "111" || result.AdAccountIDSource != "ASC_ADS_AD_ACCOUNT_ID" || result.Me.ID != "user-1" {
+		t.Fatalf("ad account/me = %+v, want selected account and stable v5 me", result)
 	}
-	if len(result.Accounts) != 2 || result.Accounts[0].AdAccountID != "111" || result.Accounts[0].OrgID != "987654" || result.Accounts[0].Name != "Example Account" || !result.Accounts[0].Active {
-		t.Fatalf("accounts = %+v, want active Example Account first", result.Accounts)
+	if len(result.Accounts) != 2 || result.Accounts[0].OrgID != "987654" || result.Accounts[0].Name != "Example Org" || !result.Accounts[0].Active {
+		t.Fatalf("accounts = %+v, want active Example Org first", result.Accounts)
 	}
 	if got := strings.Join(result.Accounts[0].Roles, ","); got != "Admin" {
 		t.Fatalf("roles = %q, want Admin", got)
 	}
 
 	requests := strings.Join(log.Snapshot(), "\n")
-	for _, want := range []string{"GET /v1/me", "GET /v1/acls"} {
+	for _, want := range []string{"GET /api/v5/me", "GET /api/v5/acls"} {
 		if !strings.Contains(requests, want) {
 			t.Fatalf("requests = %q, missing %q", requests, want)
 		}
@@ -222,6 +223,7 @@ func TestAdsPlatformAdAccountViewUsesOneValueForPathAndContext(t *testing.T) {
 }
 
 func TestAdsAuthDiscoverTableShowsUserAndAccounts(t *testing.T) {
+	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_ORG_ID", "987654")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
@@ -229,15 +231,18 @@ func TestAdsAuthDiscoverTableShowsUserAndAccounts(t *testing.T) {
 	log := newRequestLog(2)
 	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		assertAdsEvalBearer(t, req)
+		if req.URL.Host != "api.searchads.apple.com" {
+			t.Fatalf("unexpected auth discovery host %q", req.URL.Host)
+		}
 		assertAdsEvalNoOrg(t, req)
 		assertAdsEvalNoBody(t, req)
 		log.Add(req.Method + " " + req.URL.RequestURI())
 
 		switch req.URL.Path {
-		case "/v1/me":
-			return adsJSONResponse(200, `{"result":{"userId":1001,"orgId":987654}}`), nil
-		case "/v1/acls":
-			return adsJSONResponse(200, `{"result":{"acls":[{"adAccount":{"id":111,"name":"Example Account","orgId":987654},"roles":["Admin"]}]}}`), nil
+		case "/api/v5/me":
+			return adsJSONResponse(200, `{"data":{"id":"user-1","name":"Ada Example"}}`), nil
+		case "/api/v5/acls":
+			return adsJSONResponse(200, `{"data":[{"orgId":987654,"orgName":"Example Org","roleNames":["Admin"]}]}`), nil
 		default:
 			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
 			return nil, nil
@@ -253,35 +258,39 @@ func TestAdsAuthDiscoverTableShowsUserAndAccounts(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Auth source: ASC_ADS_ACCESS_TOKEN",
-		"User: 1001",
+		"User: Ada Example (user-1)",
 		"Selected org: 987654 (ASC_ADS_ORG_ID)",
-		"111 - Example Account (active)",
+		"987654 - Example Org (active)",
 		"Roles: Admin",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("discover table stdout = %q, missing %q", stdout, want)
 		}
 	}
-	if requests := strings.Join(log.Snapshot(), "\n"); !strings.Contains(requests, "GET /v1/me") || !strings.Contains(requests, "GET /v1/acls") {
+	if requests := strings.Join(log.Snapshot(), "\n"); !strings.Contains(requests, "GET /api/v5/me") || !strings.Contains(requests, "GET /api/v5/acls") {
 		t.Fatalf("requests = %q, want me and acls lookups", requests)
 	}
 }
 
 func TestAdsAuthDiscoverAcceptsRealMeFieldsAndSingletonACL(t *testing.T) {
+	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_ORG_ID", "987654")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
 
 	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		assertAdsEvalBearer(t, req)
+		if req.URL.Host != "api.searchads.apple.com" {
+			t.Fatalf("unexpected auth discovery host %q", req.URL.Host)
+		}
 		assertAdsEvalNoOrg(t, req)
 		assertAdsEvalNoBody(t, req)
 
 		switch req.URL.Path {
-		case "/v1/me":
-			return adsJSONResponse(200, `{"result":{"userId":1001,"orgId":987654}}`), nil
-		case "/v1/acls":
-			return adsJSONResponse(200, `{"result":{"acls":[{"adAccount":{"id":111,"name":"Example Account","orgId":987654},"roles":["Admin"]}]}}`), nil
+		case "/api/v5/me":
+			return adsJSONResponse(200, `{"data":{"userId":"user-1","parentOrgId":987654}}`), nil
+		case "/api/v5/acls":
+			return adsJSONResponse(200, `{"data":{"orgId":987654,"orgName":"Example Org","roleNames":["Admin"]}}`), nil
 		default:
 			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
 			return nil, nil
@@ -296,8 +305,8 @@ func TestAdsAuthDiscoverAcceptsRealMeFieldsAndSingletonACL(t *testing.T) {
 		t.Fatalf("discover table stderr = %q, want empty", stderr)
 	}
 	for _, want := range []string{
-		"User: 1001",
-		"111 - Example Account (active)",
+		"User: user-1",
+		"987654 - Example Org (active)",
 		"Roles: Admin",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -335,31 +344,35 @@ func TestAdsAuthDiscoverRejectsMalformedDiscoveryResponses(t *testing.T) {
 	}{
 		{
 			name:    "me",
-			meBody:  `{"result":`,
-			aclBody: `{"result":{"acls":[]}}`,
+			meBody:  `{"data":`,
+			aclBody: `{"data":[]}`,
 			wantErr: "me response parse failed",
 		},
 		{
 			name:    "acls",
-			meBody:  `{"result":{"userId":1001}}`,
-			aclBody: `{"result":`,
+			meBody:  `{"data":{"id":"user-1"}}`,
+			aclBody: `{"data":`,
 			wantErr: "acl response parse failed",
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			isolateAdsGuideEnv(t)
 			t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
 			installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 				assertAdsEvalBearer(t, req)
+				if req.URL.Host != "api.searchads.apple.com" {
+					t.Fatalf("unexpected auth discovery host %q", req.URL.Host)
+				}
 				assertAdsEvalNoOrg(t, req)
 				assertAdsEvalNoBody(t, req)
 
 				switch req.URL.Path {
-				case "/v1/me":
+				case "/api/v5/me":
 					return adsJSONResponse(200, test.meBody), nil
-				case "/v1/acls":
+				case "/api/v5/acls":
 					return adsJSONResponse(200, test.aclBody), nil
 				default:
 					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
@@ -379,20 +392,24 @@ func TestAdsAuthDiscoverRejectsMalformedDiscoveryResponses(t *testing.T) {
 }
 
 func TestAdsAuthDiscoverContinuesWhenOptionalOrgConfigIsInvalid(t *testing.T) {
+	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	configPath := writeAdsEvalPayload(t, "config.json", `{"ads":`)
 	t.Setenv("ASC_CONFIG_PATH", configPath)
 
 	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		assertAdsEvalBearer(t, req)
+		if req.URL.Host != "api.searchads.apple.com" {
+			t.Fatalf("unexpected auth discovery host %q", req.URL.Host)
+		}
 		assertAdsEvalNoOrg(t, req)
 		assertAdsEvalNoBody(t, req)
 
 		switch req.URL.Path {
-		case "/v1/me":
-			return adsJSONResponse(200, `{"result":{"userId":1001,"orgId":987654}}`), nil
-		case "/v1/acls":
-			return adsJSONResponse(200, `{"result":{"acls":[{"adAccount":{"id":111,"name":"Example Account","orgId":987654},"roles":[]}]}}`), nil
+		case "/api/v5/me":
+			return adsJSONResponse(200, `{"data":{"id":"user-1","name":"Ada Example"}}`), nil
+		case "/api/v5/acls":
+			return adsJSONResponse(200, `{"data":[{"orgId":987654,"orgName":"Example Org"}]}`), nil
 		default:
 			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
 			return nil, nil

@@ -200,6 +200,12 @@ func TestPlatformGeoSearchSerializesFixtureQueryNames(t *testing.T) {
 	if got, want := query.Encode(), "countrycode=US&eligible=true&entity=Locality&offset=20&pageSize=50&query=San+Francisco&supplySource=APPSTORE"; got != want {
 		t.Fatalf("geo query = %q, want %q", got, want)
 	}
+	if err := fs.Set("page-size", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collectQuery(spec, flags); err == nil || !strings.Contains(err.Error(), "--page-size must be greater than 0") {
+		t.Fatalf("zero page size error = %v, want pre-network validation", err)
+	}
 	_, flags = bindEndpointFlags(spec, "test")
 	*flags.queryStrings["supplySource"] = "MAPS"
 	*flags.queryStrings["query"] = "x"
@@ -499,24 +505,18 @@ func TestAdsAuthDiscoveryPreservesInt64Identifiers(t *testing.T) {
 		t.Fatalf("discoveryUserSummary() = %q, want %q", got, largeID)
 	}
 
-	accounts, err := summarizePlatformACLAccounts(
-		appleads.RawResponse(`{"result":{"acls":[{"adAccount":{"id":`+largeID+`,"orgId":`+largeID+`,"name":"Large"},"roles":["Admin"]}]}}`),
-		largeID,
+	accounts, err := summarizeACLAccounts(
+		appleads.RawResponse(`{"data":[{"orgId":`+largeID+`,"orgName":"Large","roleNames":["Admin"]}]}`),
 		largeID,
 	)
 	if err != nil {
-		t.Fatalf("summarizePlatformACLAccounts() error: %v", err)
+		t.Fatalf("summarizeACLAccounts() error: %v", err)
 	}
-	if len(accounts) != 1 || accounts[0].AdAccountID != largeID || accounts[0].OrgID != largeID || !accounts[0].Active {
+	if len(accounts) != 1 || accounts[0].OrgID != largeID || accounts[0].Name != "Large" || !accounts[0].Active {
 		t.Fatalf("accounts = %+v, want exact active int64 identifiers", accounts)
 	}
-
-	me, err := normalizePlatformDiscoveryMe(json.RawMessage(`{"userId":` + largeID + `,"orgId":` + largeID + `}`))
-	if err != nil {
-		t.Fatalf("normalizePlatformDiscoveryMe() error: %v", err)
-	}
-	if got := string(me); !strings.Contains(got, `"id":"`+largeID+`"`) || !strings.Contains(got, `"userId":"`+largeID+`"`) || !strings.Contains(got, `"orgId":"`+largeID+`"`) {
-		t.Fatalf("normalizePlatformDiscoveryMe() = %s, want exact string identifiers", got)
+	if got := strings.Join(accounts[0].Roles, ","); got != "Admin" {
+		t.Fatalf("roles = %q, want Admin", got)
 	}
 }
 
@@ -717,7 +717,7 @@ func TestPlatformOptimizationHelpUsesOperatorFriendlyVerbs(t *testing.T) {
 	}{
 		{path: []string{"platform", "recommendations", "target-cpas", "apply"}, want: "Apply target cpa recommendations."},
 		{path: []string{"platform", "recommendations", "daily-budgets", "dismiss"}, want: "Dismiss daily budget recommendations."},
-		{path: []string{"platform", "suggestions", "keywords", "find"}, want: "Query keyword suggestions."},
+		{path: []string{"platform", "suggestions", "keywords", "find"}, want: "Find keyword suggestions."},
 	}
 	for _, test := range tests {
 		cmd := findCommand(root, test.path...)

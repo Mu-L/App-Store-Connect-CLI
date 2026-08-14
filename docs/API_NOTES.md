@@ -2,6 +2,11 @@
 
 Quirks and tips for specific App Store Connect API endpoints.
 
+## Apple Ads Profile Context Isolation
+
+- Apple Ads named profiles no longer inherit `ads.org_id` or `ads.ad_account_id` from another default profile. This prevents a selected profile from silently sending a request in the wrong organization or ad account.
+- Existing named profiles that relied on the old root organization fallback must store their own `org_id` with `asc ads auth login --name ... --org ...` or pass `--org` explicitly. Profile-less access-token and environment authentication can still use the matching root context.
+
 ## Analytics & Sales Reports
 
 - Although Apple's current Sales Reports documentation describes `YYYY-MM-DD` for non-daily dates, the live endpoint requires `YYYY-MM` for monthly reports and `YYYY` for yearly reports. The CLI accepts either form and reduces full monthly or yearly dates to those live period identifiers before the request.

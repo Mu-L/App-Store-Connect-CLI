@@ -287,12 +287,19 @@ Org ID resolution is independent from token resolution:
 3. selected Ads profile `org_id`
 4. `ads.org_id` in config when authentication does not select a named profile
 
-Persist the org ID both on the selected credential and in `ads.org_id` when Ads
-login receives an org ID. This lets
-`ASC_ADS_ACCESS_TOKEN` users reuse a configured default org without storing Ads
+Platform v1 ad account resolution follows the matching order:
+
+1. `--ad-account`
+2. `ASC_ADS_AD_ACCOUNT_ID`
+3. selected Ads profile `ad_account_id`
+4. `ads.ad_account_id` in config when authentication does not select a named profile
+
+Persist each supplied context both on the selected credential and in its
+matching root field (`ads.org_id` or `ads.ad_account_id`). This lets
+profile-less access-token users reuse configured contexts without putting
 private key material in the active environment. A named profile never inherits
-the root context from another profile; switching or removing the default clears
-root context fields that the new default does not define.
+root context from another profile. Switching or removing the default clears any
+root context field that the new default does not define.
 
 ## HTTP Client Contract
 
