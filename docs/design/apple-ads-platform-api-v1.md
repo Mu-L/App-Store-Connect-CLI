@@ -40,7 +40,7 @@ Add an optional ad account ID beside the existing legacy organization ID:
 - environment: `ASC_ADS_AD_ACCOUNT_ID`
 - config/profile field: `ad_account_id`
 
-Resolution keeps the existing profile and strict-auth rules. A v1 ad-account-scoped command resolves the explicit flag first, then the environment, then the selected profile. The root Ads config is used only when authentication does not select a named profile, so one profile cannot inherit another profile's ad account. Legacy v5 commands continue to resolve `--org`, `ASC_ADS_ORG_ID`, and `org_id`.
+Resolution keeps the existing profile and strict-auth rules. A v1 ad-account-scoped command resolves the explicit flag first, then the environment, then the selected profile. The root Ads config is used only when authentication does not select a named profile, so one profile cannot inherit another profile's ad account. Legacy v5 commands apply the same isolation to `--org`, `ASC_ADS_ORG_ID`, and `org_id`; profile-less access-token or environment authentication can still use the root `ads.org_id`.
 
 ## Endpoint coverage
 

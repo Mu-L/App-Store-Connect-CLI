@@ -156,7 +156,10 @@ func TestAdsAuthDiscoverSummarizesMeAndAcls(t *testing.T) {
 		OrgIDSource string `json:"org_id_source"`
 		AdAccountID string `json:"ad_account_id"`
 		Me          struct {
-			UserID int `json:"userId"`
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			UserID string `json:"userId"`
+			OrgID  string `json:"orgId"`
 		} `json:"me"`
 		Accounts []struct {
 			AdAccountID string   `json:"ad_account_id"`
@@ -172,8 +175,8 @@ func TestAdsAuthDiscoverSummarizesMeAndAcls(t *testing.T) {
 	if result.AuthSource != "ASC_ADS_ACCESS_TOKEN" || result.OrgID != "987654" || result.OrgIDSource != "ASC_ADS_ORG_ID" {
 		t.Fatalf("discovery context = %+v, want env token/org", result)
 	}
-	if result.AdAccountID != "111" || result.Me.UserID != 1001 {
-		t.Fatalf("ad account/me = %+v, want account 111 user 1001", result)
+	if result.AdAccountID != "111" || result.Me.ID != "1001" || result.Me.Name != "" || result.Me.UserID != "1001" || result.Me.OrgID != "987654" {
+		t.Fatalf("ad account/me = %+v, want stable id/name plus additive v1 fields", result)
 	}
 	if len(result.Accounts) != 2 || result.Accounts[0].AdAccountID != "111" || result.Accounts[0].OrgID != "987654" || result.Accounts[0].Name != "Example Account" || !result.Accounts[0].Active {
 		t.Fatalf("accounts = %+v, want active Example Account first", result.Accounts)

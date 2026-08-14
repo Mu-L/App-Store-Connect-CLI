@@ -21,6 +21,13 @@ type campaignStatusWorkflowFlags struct {
 	parent   *endpointFlagValues
 }
 
+type platformCampaignStatusWorkflowFlags struct {
+	common   commonFlags
+	output   shared.OutputFlags
+	campaign *string
+	confirm  *bool
+}
+
 func workflowSubcommands(path []string, parent *endpointFlagValues) []*ffcli.Command {
 	if len(path) == 1 && path[0] == "campaigns" {
 		return []*ffcli.Command{
@@ -29,6 +36,84 @@ func workflowSubcommands(path []string, parent *endpointFlagValues) []*ffcli.Com
 		}
 	}
 	return nil
+}
+
+func platformWorkflowSubcommands(path []string) []*ffcli.Command {
+	if len(path) != 1 || path[0] != "campaigns" {
+		return nil
+	}
+	return []*ffcli.Command{
+		platformCampaignStatusWorkflowCommand("pause", "PAUSED", "Pause a Platform API campaign."),
+		platformCampaignStatusWorkflowCommand("resume", "ENABLED", "Resume a Platform API campaign."),
+	}
+}
+
+func platformCampaignStatusWorkflowCommand(name, status, shortHelp string) *ffcli.Command {
+	fs := flag.NewFlagSet("platform campaigns "+name, flag.ExitOnError)
+	flags := platformCampaignStatusWorkflowFlags{
+		common: commonFlags{
+			AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
+			AdAccount:  fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID env)"),
+		},
+		output:   shared.BindOutputFlags(fs),
+		campaign: fs.String("campaign", "", "Apple Ads Platform campaign ID (required)"),
+		confirm:  fs.Bool("confirm", false, "Confirm this Apple Ads Platform campaign status change"),
+	}
+	return &ffcli.Command{
+		Name:       name,
+		ShortUsage: "asc ads platform campaigns " + name + " [flags]",
+		ShortHelp:  shortHelp,
+		LongHelp: fmt.Sprintf(`%s
+
+Endpoint: PUT v1/campaigns/{id}
+Payload: {"status":"%s"}
+
+Examples:
+  asc ads platform campaigns %s --campaign CAMPAIGN_ID --confirm --ad-account AD_ACCOUNT_ID`, shortHelp, status, name),
+		FlagSet:   fs,
+		UsageFunc: shared.DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			if err := rejectUnexpectedArgs(args); err != nil {
+				return err
+			}
+			return executePlatformCampaignStatusWorkflow(ctx, name, status, flags)
+		},
+	}
+}
+
+func executePlatformCampaignStatusWorkflow(ctx context.Context, commandName, status string, flags platformCampaignStatusWorkflowFlags) error {
+	campaignID := value(flags.campaign)
+	if campaignID == "" {
+		return shared.UsageError("--campaign is required")
+	}
+	if flags.confirm == nil || !*flags.confirm {
+		return shared.UsageError("--confirm is required")
+	}
+
+	spec, ok := appleads.PlatformEndpointByCommandPath("campaigns", "update")
+	if !ok {
+		return fmt.Errorf("ads platform campaigns status workflow: missing campaigns update endpoint")
+	}
+	outputFormat, err := shared.ValidateOutputFormat(*flags.output.Output, *flags.output.Pretty)
+	if err != nil {
+		return shared.UsageError(err.Error())
+	}
+	client, err := resolvePlatformClient(ctx, flags.common, spec.Context)
+	if err != nil {
+		return fmt.Errorf("ads platform campaigns %s: %w", commandName, err)
+	}
+
+	body, err := json.Marshal(map[string]string{"status": status})
+	if err != nil {
+		return err
+	}
+	requestCtx, cancel := requestContext(ctx)
+	defer cancel()
+	result, err := client.Do(requestCtx, spec, map[string]string{"id": campaignID}, nil, body)
+	if err != nil {
+		return fmt.Errorf("ads platform campaigns %s: %w", commandName, err)
+	}
+	return shared.PrintOutput(result, outputFormat, *flags.output.Pretty)
 }
 
 func campaignStatusWorkflowCommand(name, status, shortHelp string, parent *endpointFlagValues) *ffcli.Command {

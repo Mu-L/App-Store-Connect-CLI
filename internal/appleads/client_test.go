@@ -243,6 +243,19 @@ func TestRequestForVersionRoutesPlatformAPIAndAdAccountContext(t *testing.T) {
 	}
 }
 
+func TestWithBlankPlatformBaseURLFallsBackToDefault(t *testing.T) {
+	client, err := NewClient(
+		Credentials{AccessToken: "ACCESS"},
+		WithPlatformBaseURL("   "),
+	)
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+	if client.platformBaseURL != PlatformBaseURL {
+		t.Fatalf("platformBaseURL = %q, want default %q", client.platformBaseURL, PlatformBaseURL)
+	}
+}
+
 func TestRequestForVersionRejectsCrossVersionTargetsBeforeHTTP(t *testing.T) {
 	requests := 0
 	client, err := NewClient(Credentials{AccessToken: "ACCESS", AdAccountID: "AD_ACCOUNT"}, WithHTTPClient(&http.Client{
