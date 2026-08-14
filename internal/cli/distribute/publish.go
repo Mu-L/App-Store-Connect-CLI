@@ -510,8 +510,7 @@ func probeConfiguredArtifactAlias(paths artifactPaths) (err error) {
 		return err
 	}
 	created = true
-	probeInfo, err := probe.Stat()
-	if err != nil {
+	if _, err = probe.Stat(); err != nil {
 		return err
 	}
 	if err := probe.Close(); err != nil {
@@ -522,17 +521,14 @@ func probeConfiguredArtifactAlias(paths artifactPaths) (err error) {
 	probeClosed = true
 	probe = nil
 
-	aliasInfo, aliasErr := paths.lstatExisting(paths.link)
+	_, aliasErr := paths.lstatExisting(paths.link)
 	if os.IsNotExist(aliasErr) {
 		return nil
 	}
 	if aliasErr != nil {
 		return aliasErr
 	}
-	if os.SameFile(probeInfo, aliasInfo) {
-		return fmt.Errorf("--receipt and --link-path resolve to the same physical destination")
-	}
-	return nil
+	return fmt.Errorf("--receipt and --link-path resolve to the same physical destination or a destination appeared during preflight")
 }
 
 func pathContains(parent, child string) bool {

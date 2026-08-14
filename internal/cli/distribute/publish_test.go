@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -902,6 +903,127 @@ func TestArtifactPairAliasProbeHandlesMissingNestedParents(t *testing.T) {
 		return nil
 	}
 	if err := visit(stateDir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArtifactPairAliasProbeRejectsParentChildAliases(t *testing.T) {
+	tests := []struct {
+		name             string
+		receipt          func(string) string
+		link             func(string) string
+		aliasFirst       func(string) string
+		aliasSecond      func(string) string
+		retainAliasFirst bool
+	}{
+		{
+			name:             "case-insensitive parent then child",
+			receipt:          func(base string) string { return filepath.Join(base, "state", "Result", "receipt.json") },
+			link:             func(base string) string { return filepath.Join(base, "STATE", "result") },
+			aliasFirst:       func(base string) string { return filepath.Join(base, "state") },
+			aliasSecond:      func(base string) string { return filepath.Join(base, "STATE") },
+			retainAliasFirst: true,
+		},
+		{
+			name:             "case-insensitive child then parent",
+			receipt:          func(base string) string { return filepath.Join(base, "state", "result") },
+			link:             func(base string) string { return filepath.Join(base, "STATE", "Result", "receipt.json") },
+			aliasFirst:       func(base string) string { return filepath.Join(base, "state") },
+			aliasSecond:      func(base string) string { return filepath.Join(base, "STATE") },
+			retainAliasFirst: true,
+		},
+		{
+			name:        "normalization-insensitive parent then child",
+			receipt:     func(base string) string { return filepath.Join(base, "state", "Re\u0301sult", "receipt.json") },
+			link:        func(base string) string { return filepath.Join(base, "state", "Résult") },
+			aliasFirst:  func(base string) string { return filepath.Join(base, "state", "Re\u0301sult") },
+			aliasSecond: func(base string) string { return filepath.Join(base, "state", "Résult") },
+		},
+		{
+			name:        "normalization-insensitive child then parent",
+			receipt:     func(base string) string { return filepath.Join(base, "state", "Résult") },
+			link:        func(base string) string { return filepath.Join(base, "state", "Re\u0301sult", "receipt.json") },
+			aliasFirst:  func(base string) string { return filepath.Join(base, "state", "Re\u0301sult") },
+			aliasSecond: func(base string) string { return filepath.Join(base, "state", "Résult") },
+		},
+		{
+			name:        "case-and-normalization-insensitive parent then child",
+			receipt:     func(base string) string { return filepath.Join(base, "state", "É", "receipt.json") },
+			link:        func(base string) string { return filepath.Join(base, "state", "e\u0301") },
+			aliasFirst:  func(base string) string { return filepath.Join(base, "state", "É") },
+			aliasSecond: func(base string) string { return filepath.Join(base, "state", "e\u0301") },
+		},
+		{
+			name:        "case-and-normalization-insensitive child then parent",
+			receipt:     func(base string) string { return filepath.Join(base, "state", "e\u0301") },
+			link:        func(base string) string { return filepath.Join(base, "state", "É", "receipt.json") },
+			aliasFirst:  func(base string) string { return filepath.Join(base, "state", "É") },
+			aliasSecond: func(base string) string { return filepath.Join(base, "state", "e\u0301") },
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			stateDir := filepath.Join(base, "state")
+			if err := os.Mkdir(stateDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if !test.retainAliasFirst {
+				if err := os.MkdirAll(filepath.Dir(test.aliasFirst(base)), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(test.aliasFirst(base), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			firstInfo, err := os.Stat(test.aliasFirst(base))
+			if err != nil {
+				t.Fatal(err)
+			}
+			secondInfo, err := os.Stat(test.aliasSecond(base))
+			if err != nil || !os.SameFile(firstInfo, secondInfo) {
+				if !test.retainAliasFirst {
+					_ = os.Remove(test.aliasFirst(base))
+				}
+				t.Skip("test volume does not alias the requested parent names")
+			}
+			if !test.retainAliasFirst {
+				if err := os.Remove(test.aliasFirst(base)); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			paths, err := preflightArtifactPaths(test.receipt(base), test.link(base))
+			if err == nil {
+				paths.close()
+				t.Fatal("preflight accepted a parent-child alias")
+			}
+			assertNoNonDirectoryArtifacts(t, base)
+		})
+	}
+}
+
+func assertNoNonDirectoryArtifacts(t *testing.T, root string) {
+	t.Helper()
+	var visit func(string) error
+	visit = func(directory string) error {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			path := filepath.Join(directory, entry.Name())
+			if !entry.IsDir() {
+				return fmt.Errorf("non-directory artifact remains at %s", path)
+			}
+			if err := visit(path); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := visit(root); err != nil {
 		t.Fatal(err)
 	}
 }
