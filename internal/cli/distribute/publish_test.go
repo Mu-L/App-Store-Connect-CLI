@@ -760,6 +760,42 @@ func TestArtifactPairRejectsCaseFoldAliasOnCaseInsensitiveVolume(t *testing.T) {
 	}
 }
 
+func TestArtifactPairRejectsNormalizationAliasOnNormalizationInsensitiveVolume(t *testing.T) {
+	stateDir := t.TempDir()
+	composedPath := filepath.Join(stateDir, "é.json")
+	decomposedPath := filepath.Join(stateDir, "e\u0301.json")
+	if err := os.WriteFile(composedPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	composedInfo, err := os.Stat(composedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decomposedInfo, err := os.Stat(decomposedPath)
+	if err != nil || !os.SameFile(composedInfo, decomposedInfo) {
+		t.Skip("test volume keeps composed and decomposed names distinct")
+	}
+	if err := os.Remove(composedPath); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := preflightArtifactPaths(composedPath, decomposedPath)
+	if err == nil {
+		paths.close()
+		t.Fatal("preflight accepted normalization-equivalent destination paths")
+	}
+	if !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightArtifactPaths() error = %v, want normalization-equivalent destination rejection", err)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("normalization-equivalent destination contains artifacts after rejection: %v", entries)
+	}
+}
+
 func TestArtifactPairDistinctParentsFailWithoutPartialArtifacts(t *testing.T) {
 	receiptDir, err := os.MkdirTemp(t.TempDir(), "asc-publish-receipt-*")
 	if err != nil {

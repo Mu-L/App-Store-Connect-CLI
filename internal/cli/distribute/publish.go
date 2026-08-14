@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
@@ -309,6 +310,11 @@ type artifactPaths struct {
 	linkExists    bool
 }
 
+type artifactRootNameEquivalence struct {
+	caseInsensitive          bool
+	normalizationInsensitive bool
+}
+
 func preflightArtifactPaths(receiptPath, linkPath string) (artifactPaths, error) {
 	paths, err := anchorArtifactPaths(receiptPath, linkPath)
 	if err != nil {
@@ -380,28 +386,27 @@ func (paths artifactPaths) openParent(target artifactPath) (*os.Root, string, er
 }
 
 func (paths *artifactPaths) preflight() error {
-	caseInsensitive, err := paths.caseInsensitiveDestinationAlias()
+	equivalence, err := paths.destinationNameEquivalence()
 	if err != nil {
 		return err
 	}
-	return paths.preflightWithCaseSensitivity(caseInsensitive)
+	return paths.preflightWithNameEquivalence(equivalence)
 }
 
-func (paths artifactPaths) caseInsensitiveDestinationAlias() (bool, error) {
+func (paths artifactPaths) destinationNameEquivalence() (artifactRootNameEquivalence, error) {
 	if !os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) ||
-		sameArtifactRelativePath(paths.receipt.relative, paths.link.relative, false) ||
-		!strings.EqualFold(filepath.Clean(paths.receipt.relative), filepath.Clean(paths.link.relative)) {
-		return false, nil
+		sameArtifactRelativePath(paths.receipt.relative, paths.link.relative, false) {
+		return artifactRootNameEquivalence{}, nil
 	}
-	caseInsensitive, err := artifactRootIsCaseInsensitive(paths.receipt.root)
+	equivalence, err := artifactRootNameEquivalenceForPreflight(paths.receipt.root)
 	if err != nil {
-		return false, fmt.Errorf("inspect artifact parent case sensitivity: %w", err)
+		return artifactRootNameEquivalence{}, fmt.Errorf("inspect artifact parent name equivalence: %w", err)
 	}
-	return caseInsensitive, nil
+	return equivalence, nil
 }
 
-func (paths *artifactPaths) preflightWithCaseSensitivity(caseInsensitive bool) error {
-	if os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) && sameArtifactRelativePath(paths.receipt.relative, paths.link.relative, caseInsensitive) {
+func (paths *artifactPaths) preflightWithNameEquivalence(equivalence artifactRootNameEquivalence) error {
+	if os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) && sameArtifactRelativePathWithEquivalence(paths.receipt.relative, paths.link.relative, equivalence) {
 		return fmt.Errorf("--receipt and --link-path resolve to the same physical destination")
 	}
 
@@ -442,12 +447,40 @@ func (paths *artifactPaths) preflightWithCaseSensitivity(caseInsensitive bool) e
 }
 
 func sameArtifactRelativePath(left, right string, caseInsensitive bool) bool {
-	left = filepath.Clean(left)
-	right = filepath.Clean(right)
-	return left == right || (caseInsensitive && strings.EqualFold(left, right))
+	return sameArtifactRelativePathWithEquivalence(left, right, artifactRootNameEquivalence{caseInsensitive: caseInsensitive})
 }
 
-var artifactRootIsCaseInsensitive = detectArtifactRootIsCaseInsensitive
+func sameArtifactRelativePathWithEquivalence(left, right string, equivalence artifactRootNameEquivalence) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if left == right {
+		return true
+	}
+	if equivalence.normalizationInsensitive && norm.NFC.String(left) == norm.NFC.String(right) {
+		return true
+	}
+	return equivalence.caseInsensitive && strings.EqualFold(left, right)
+}
+
+var (
+	artifactRootIsCaseInsensitive           = detectArtifactRootIsCaseInsensitive
+	artifactRootNameEquivalenceForPreflight = detectArtifactRootNameEquivalence
+)
+
+func detectArtifactRootNameEquivalence(root *os.Root) (artifactRootNameEquivalence, error) {
+	caseInsensitive, err := artifactRootIsCaseInsensitive(root)
+	if err != nil {
+		return artifactRootNameEquivalence{}, err
+	}
+	normalizationInsensitive, err := detectArtifactRootIsNormalizationInsensitive(root)
+	if err != nil {
+		return artifactRootNameEquivalence{}, err
+	}
+	return artifactRootNameEquivalence{
+		caseInsensitive:          caseInsensitive,
+		normalizationInsensitive: normalizationInsensitive,
+	}, nil
+}
 
 func detectArtifactRootIsCaseInsensitive(root *os.Root) (bool, error) {
 	probe, name, err := secureopen.CreateTempNoFollowInRoot(root, ".", ".asc-case-probe-a-*", 0o600)
@@ -477,6 +510,52 @@ func detectArtifactRootIsCaseInsensitive(root *os.Root) (bool, error) {
 		return false, aliasErr
 	}
 	return os.SameFile(info, aliasInfo), nil
+}
+
+func detectArtifactRootIsNormalizationInsensitive(root *os.Root) (bool, error) {
+	seed, seedName, err := secureopen.CreateTempNoFollowInRoot(root, ".", ".asc-normalization-probe-*", 0o600)
+	if err != nil {
+		return false, err
+	}
+	closeErr := seed.Close()
+	removeSeedErr := root.Remove(seedName)
+	if closeErr != nil {
+		return false, closeErr
+	}
+	if removeSeedErr != nil {
+		return false, removeSeedErr
+	}
+
+	suffix := strings.TrimPrefix(seedName, ".asc-normalization-probe-")
+	composed := ".asc-normalization-probe-é-" + suffix
+	decomposed := ".asc-normalization-probe-e\u0301-" + suffix
+	probe, err := secureopen.OpenNewFileNoFollowInRoot(root, composed, 0o600)
+	if err != nil {
+		return false, err
+	}
+	probeInfo, statErr := probe.Stat()
+	if statErr != nil {
+		_ = probe.Close()
+		_ = root.Remove(composed)
+		return false, statErr
+	}
+	closeErr = probe.Close()
+	if closeErr != nil {
+		_ = root.Remove(composed)
+		return false, closeErr
+	}
+	aliasInfo, aliasErr := root.Lstat(decomposed)
+	removeErr := root.Remove(composed)
+	if removeErr != nil {
+		return false, removeErr
+	}
+	if os.IsNotExist(aliasErr) {
+		return false, nil
+	}
+	if aliasErr != nil {
+		return false, aliasErr
+	}
+	return os.SameFile(probeInfo, aliasInfo), nil
 }
 
 func pathContains(parent, child string) bool {
