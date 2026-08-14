@@ -387,9 +387,7 @@ func storeInConfigAt(name string, payload credentialPayload, path string) error 
 		cfg.Ads.Keys = append(cfg.Ads.Keys, replacement)
 	}
 	cfg.Ads.DefaultKeyName = name
-	if payload.OrgID != "" {
-		cfg.Ads.OrgID = payload.OrgID
-	}
+	cfg.Ads.OrgID = payload.OrgID
 	cfg.Ads.AdAccountID = payload.AdAccountID
 	return config.SaveAt(path, cfg)
 }
@@ -418,6 +416,7 @@ func removeFromConfigIfPresent(name string) error {
 	cfg.Ads.Keys = filtered
 	if cfg.Ads.DefaultKeyName == name {
 		cfg.Ads.DefaultKeyName = ""
+		cfg.Ads.OrgID = ""
 		cfg.Ads.AdAccountID = ""
 	}
 	return config.SaveAt(path, cfg)
@@ -456,9 +455,7 @@ func saveDefaultName(name, orgID, adAccountID string) error {
 		cfg = &config.Config{}
 	}
 	cfg.Ads.DefaultKeyName = strings.TrimSpace(name)
-	if strings.TrimSpace(orgID) != "" {
-		cfg.Ads.OrgID = strings.TrimSpace(orgID)
-	}
+	cfg.Ads.OrgID = strings.TrimSpace(orgID)
 	cfg.Ads.AdAccountID = strings.TrimSpace(adAccountID)
 	return config.SaveAt(path, cfg)
 }
@@ -477,6 +474,7 @@ func clearDefaultNameIf(name string) error {
 	}
 	if cfg.Ads.DefaultKeyName == name {
 		cfg.Ads.DefaultKeyName = ""
+		cfg.Ads.OrgID = ""
 		cfg.Ads.AdAccountID = ""
 		return config.SaveAt(path, cfg)
 	}
@@ -530,17 +528,29 @@ func findDefaultCredentialInActiveConfig() (StoredCredential, bool, error) {
 func storedCredentialsFromConfig(cfg *config.Config, path string) []StoredCredential {
 	credentials := make([]StoredCredential, 0, len(cfg.Ads.Keys))
 	for _, cred := range cfg.Ads.Keys {
+		orgID := cred.OrgID
+		if configCredentialUsesRootContext(cfg, cred.Name) {
+			orgID = firstNonEmpty(orgID, cfg.Ads.OrgID)
+		}
 		payload := credentialPayload{
 			ClientID:       cred.ClientID,
 			TeamID:         cred.TeamID,
 			KeyID:          cred.KeyID,
 			PrivateKeyPath: cred.PrivateKeyPath,
-			OrgID:          firstNonEmpty(cred.OrgID, cfg.Ads.OrgID),
+			OrgID:          orgID,
 			AdAccountID:    cred.AdAccountID,
 		}
 		credentials = append(credentials, storedFromPayload(cred.Name, payload, "config", path))
 	}
 	return credentials
+}
+
+func configCredentialUsesRootContext(cfg *config.Config, name string) bool {
+	defaultName := strings.TrimSpace(cfg.Ads.DefaultKeyName)
+	if defaultName != "" {
+		return strings.TrimSpace(name) == defaultName
+	}
+	return len(cfg.Ads.Keys) == 1
 }
 
 func getCredentialFromConfig(profile string) (StoredCredential, error) {

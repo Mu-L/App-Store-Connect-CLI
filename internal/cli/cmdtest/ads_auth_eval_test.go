@@ -369,6 +369,54 @@ func TestAdsAuthStatusKeepsAuthSourceWhenOptionalOrgConfigIsInvalid(t *testing.T
 	}
 }
 
+func TestAdsAuthStatusKeepsResolvedOrgWhenAdAccountConfigIsInvalid(t *testing.T) {
+	configPath := writeAdsEvalPayload(t, "config.json", `{"ads":`)
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_ADS_ORG_ID", "ORG_FROM_ENV")
+
+	stdout, stderr, err := runAdsEvalCommand(t, "ads", "auth", "status", "--output", "json")
+	if err != nil {
+		t.Fatalf("status error: %v\nstderr: %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("status stderr = %q, want empty", stderr)
+	}
+	var status struct {
+		Active struct {
+			Source         string `json:"source"`
+			OrgID          string `json:"org_id"`
+			OrgIDSource    string `json:"org_id_source"`
+			Error          string `json:"error"`
+			AdAccountError string `json:"ad_account_error"`
+		} `json:"active"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		t.Fatalf("status stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if status.Active.Source != "ASC_ADS_ACCESS_TOKEN" || status.Active.OrgID != "ORG_FROM_ENV" || status.Active.OrgIDSource != "ASC_ADS_ORG_ID" || status.Active.Error != "" || !strings.Contains(status.Active.AdAccountError, "failed to parse config") {
+		t.Fatalf("active context = %+v, want resolved org and separate ad-account error", status.Active)
+	}
+
+	stdout, stderr, err = runAdsEvalCommand(t, "ads", "auth", "status")
+	if err != nil {
+		t.Fatalf("table status error: %v\nstderr: %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("table status stderr = %q, want empty", stderr)
+	}
+	for _, want := range []string{
+		"Org ID: ORG_FROM_ENV (ASC_ADS_ORG_ID)",
+		"Ad account ID: unavailable (",
+		"failed to parse config",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("table status = %q, missing %q", stdout, want)
+		}
+	}
+}
+
 func TestAdsAuthEvalValidatesUsageErrors(t *testing.T) {
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
 	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
