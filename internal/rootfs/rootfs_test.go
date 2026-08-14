@@ -3,6 +3,7 @@ package rootfs
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -1201,6 +1202,200 @@ func TestOpenRootPreservesSelectedSymlinkedParentLayout(t *testing.T) {
 	}
 	if got := mustRead(t, filepath.Join(directory, "sentinel")); got != "selected" {
 		t.Fatalf("pinned symlinked parent content = %q", got)
+	}
+}
+
+func TestMissingNestedRootResolvesNearestSymlinkedAncestor(t *testing.T) {
+	requireSymlinks(t)
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	physical := filepath.Join(parent, "physical")
+	if err := os.Mkdir(physical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(physical, link); err != nil {
+		t.Fatal(err)
+	}
+	root := mustRoot(t, filepath.Join(link, "one", "two", "root"))
+	defer root.Close()
+	if err := root.MkdirAll(".", 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := root.WriteFile("sentinel", []byte("selected"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(physical, "one", "two", "root", "sentinel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "selected" {
+		t.Fatalf("sentinel = %q", data)
+	}
+}
+
+func TestMissingRootResolvesNestedSymlinkPrefix(t *testing.T) {
+	requireSymlinks(t)
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(parent, "first")
+	target := filepath.Join(parent, "target")
+	if err := os.Mkdir(first, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(first, filepath.Join(parent, "outer")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(first, "inner")); err != nil {
+		t.Fatal(err)
+	}
+	root := mustRoot(t, filepath.Join(parent, "outer", "inner", "new", "root"))
+	defer root.Close()
+	if err := root.MkdirAll(".", 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(target, "new", "root")); err != nil || !info.IsDir() {
+		t.Fatalf("physical nested root stat = %#v, %v", info, err)
+	}
+}
+
+func TestNewRejectsInvalidExistingAncestorWithoutCreating(t *testing.T) {
+	requireSymlinks(t)
+	parent := t.TempDir()
+	t.Run("dangling symlink", func(t *testing.T) {
+		link := filepath.Join(parent, "dangling")
+		if err := os.Symlink(filepath.Join(parent, "absent"), link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(filepath.Join(link, "new", "root")); err == nil {
+			t.Fatal("New() accepted a dangling symlink ancestor")
+		}
+		if _, err := os.Stat(filepath.Join(parent, "absent")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("New() created through dangling symlink: %v", err)
+		}
+	})
+	t.Run("symlink loop", func(t *testing.T) {
+		loop := filepath.Join(parent, "loop")
+		if err := os.Symlink("loop", loop); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(filepath.Join(loop, "new", "root")); err == nil {
+			t.Fatal("New() accepted a symlink loop ancestor")
+		}
+	})
+	t.Run("regular file", func(t *testing.T) {
+		file := filepath.Join(parent, "file")
+		if err := os.WriteFile(file, []byte("file"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(filepath.Join(file, "new", "root")); err == nil {
+			t.Fatal("New() accepted a non-directory ancestor")
+		}
+		if data, err := os.ReadFile(file); err != nil || string(data) != "file" {
+			t.Fatalf("ancestor file changed: %q, %v", data, err)
+		}
+	})
+}
+
+func TestMissingRootRejectsAncestorReplacementBeforeCreation(t *testing.T) {
+	requireSymlinks(t)
+	for _, test := range []struct {
+		name    string
+		symlink bool
+	}{
+		{name: "ordinary ancestor"},
+		{name: "symlinked ancestor", symlink: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parent, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := filepath.Join(parent, "original")
+			replacement := filepath.Join(parent, "replacement")
+			if err := os.Mkdir(original, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(replacement, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			selectedBase := original
+			if test.symlink {
+				selectedBase = filepath.Join(parent, "selected")
+				if err := os.Symlink(original, selectedBase); err != nil {
+					t.Fatal(err)
+				}
+			}
+			root := mustRoot(t, filepath.Join(selectedBase, "new", "root"))
+			defer root.Close()
+			root.beforeCreateRootForTest = func() {
+				if test.symlink {
+					if err := os.Rename(selectedBase, selectedBase+"-original"); err != nil {
+						t.Fatalf("rename selected symlink: %v", err)
+					}
+					if err := os.Symlink(replacement, selectedBase); err != nil {
+						t.Fatalf("replace selected symlink: %v", err)
+					}
+					return
+				}
+				if err := os.Rename(original, original+"-original"); err != nil {
+					t.Fatalf("rename selected ancestor: %v", err)
+				}
+				if err := os.Rename(replacement, original); err != nil {
+					t.Fatalf("replace selected ancestor: %v", err)
+				}
+			}
+			if err := root.MkdirAll(".", 0o755); !errors.Is(err, ErrSymlink) {
+				t.Fatalf("MkdirAll() error = %v, want ErrSymlink", err)
+			}
+			for _, directory := range []string{original, original + "-original", replacement} {
+				if _, err := os.Stat(filepath.Join(directory, "new")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("partial root created beneath %q: %v", directory, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateMissingRootComponent(t *testing.T) {
+	for _, component := range []string{"", ".", "..", string([]byte{'b', 'a', 'd', 0})} {
+		if err := validateMissingRootComponent(component); !errors.Is(err, ErrEscapesRoot) {
+			t.Fatalf("validateMissingRootComponent(%q) error = %v, want ErrEscapesRoot", component, err)
+		}
+	}
+	for _, component := range []string{"root", "legacy-name", "a.b"} {
+		if err := validateMissingRootComponent(component); err != nil {
+			t.Fatalf("validateMissingRootComponent(%q) error = %v", component, err)
+		}
+	}
+}
+
+func TestCloseReleasesPendingRootAncestorDescriptors(t *testing.T) {
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := openDescriptorCount(t)
+	const rootCount = 64
+	roots := make([]Root, 0, rootCount)
+	for index := 0; index < rootCount; index++ {
+		roots = append(roots, mustRoot(t, filepath.Join(parent, fmt.Sprintf("missing-%d", index), "root")))
+	}
+	for _, root := range roots {
+		if err := root.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}
+	after := openDescriptorCount(t)
+	if after > before+4 {
+		t.Fatalf("open descriptors after pending-root Close = %d, baseline %d", after, before)
 	}
 }
 
