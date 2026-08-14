@@ -1119,7 +1119,10 @@ func (v *HTTPVerifier) Verify(ctx context.Context, verification VerifyRequest) e
 		}
 		digest := sha256.New()
 		written, err := io.Copy(digest, io.LimitReader(response.Body, verification.SizeBytes+1))
-		if err != nil || written != verification.SizeBytes {
+		if err != nil {
+			return fmt.Errorf("GET %s failed while reading IPA body", safeURLForError(verification.URL))
+		}
+		if written != verification.SizeBytes {
 			return fmt.Errorf("%w: GET %s returned unexpected IPA length", ErrObjectVerificationMismatch, safeURLForError(verification.URL))
 		}
 		if !strings.EqualFold(hex.EncodeToString(digest.Sum(nil)), verification.SHA256) {

@@ -934,6 +934,34 @@ func TestHTTPVerifierClassifiesDeterministicIPAMismatch(t *testing.T) {
 	}
 }
 
+func TestHTTPVerifierDoesNotClassifyIPAReadFailureAsMismatch(t *testing.T) {
+	readErr := errors.New("connection reset")
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, ContentLength: 3,
+			Header:  http.Header{"Content-Type": []string{ContentTypeIPA}},
+			Body:    io.NopCloser(io.MultiReader(strings.NewReader("i"), &fixedReadError{err: readErr})),
+			Request: request,
+		}, nil
+	})}
+	err := NewHTTPVerifier(client, time.Second).Verify(context.Background(), VerifyRequest{
+		URL: "https://example.com/app.ipa", Kind: VerifyIPA, ContentType: ContentTypeIPA,
+		SizeBytes: 3, SHA256: sha256Hex([]byte("ipa")),
+	})
+	if err == nil {
+		t.Fatal("Verify() unexpectedly accepted an interrupted IPA response")
+	}
+	if errors.Is(err, ErrObjectVerificationMismatch) {
+		t.Fatalf("Verify() error = %v, must not classify a read failure as deterministic corruption", err)
+	}
+}
+
+type fixedReadError struct{ err error }
+
+func (reader *fixedReadError) Read([]byte) (int, error) {
+	return 0, reader.err
+}
+
 type fakeObjectStore struct {
 	objects      map[string]StoredObject
 	bodies       map[string][]byte
