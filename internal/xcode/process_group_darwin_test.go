@@ -5,16 +5,22 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"syscall"
 	"testing"
 )
 
 func TestRunXcodeCommandWithProcessGroupCleanupPreservesWaitAndCleanupFailures(t *testing.T) {
 	wantCleanupErr := errors.New("forced process-group cleanup failure")
 	originalTerminate := terminateXcodeProcessGroupFn
+	cleanupPID := 0
 	terminateXcodeProcessGroupFn = func(pid int) error {
 		if pid <= 0 {
 			t.Fatalf("cleanup PID = %d, want positive child PID", pid)
 		}
+		if err := syscall.Kill(pid, 0); err != nil {
+			t.Fatalf("process-group anchor was not live during cleanup: %v", err)
+		}
+		cleanupPID = pid
 		return wantCleanupErr
 	}
 	t.Cleanup(func() { terminateXcodeProcessGroupFn = originalTerminate })
@@ -31,6 +37,9 @@ func TestRunXcodeCommandWithProcessGroupCleanupPreservesWaitAndCleanupFailures(t
 	}
 	if got := exitErr.ExitCode(); got != 23 {
 		t.Fatalf("exit code = %d, want 23", got)
+	}
+	if cleanupPID == cmd.Process.Pid {
+		t.Fatalf("cleanup reused reaped command PID %d instead of durable anchor", cleanupPID)
 	}
 }
 
