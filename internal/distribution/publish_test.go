@@ -410,6 +410,36 @@ func TestPublishRejectsPublicProfileThatExpiresDuringVerification(t *testing.T) 
 	}
 }
 
+func TestReverifyRejectsPublicProfileThatExpiresDuringVerification(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	profileExpiry := now.Add(2 * time.Minute)
+	receipt := PublishReceipt{
+		SchemaVersion: "1", Access: AccessPublic, PublicBaseURL: "https://downloads.example.com",
+		Artifact: StoredObject{Key: "prefix/app.ipa", SHA256: "a", SizeBytes: 1, ContentType: ContentTypeIPA},
+		Manifest: StoredObject{Key: "prefix/manifest.plist"},
+		Page:     StoredObject{Key: "prefix/index.html"},
+		App:      PreparedApp{BundleID: "com.example.app", Title: "Example", Version: "1", BuildNumber: "1"},
+		Signing:  ReceiptSigning{ProfileExpiresAt: profileExpiry.Format(time.RFC3339)},
+		Verified: true,
+	}
+	links := SensitiveLinks{
+		SchemaVersion: "1",
+		ArtifactURL:   "https://downloads.example.com/prefix/app.ipa",
+		ManifestURL:   "https://downloads.example.com/prefix/manifest.plist",
+		InstallURL:    "https://downloads.example.com/prefix/index.html",
+	}
+	links.DirectInstallURL = "itms-services://?action=download-manifest&url=" + url.QueryEscape(links.ManifestURL)
+	receipt.InstallURL = links.InstallURL
+	receipt.DirectInstallURL = redactDirectInstallURL(links.DirectInstallURL)
+	bindGeneratedRecoveryObjects(t, &receipt, links)
+	verifier := &advancingVerifier{now: &now, advance: 30 * time.Second}
+
+	err := reverifyWithClock(context.Background(), verifier, receipt, links, now, func() time.Time { return now })
+	if err == nil || !strings.Contains(err.Error(), "profile is expired or expires too soon") {
+		t.Fatalf("Reverify() error = %v, want post-verification profile expiry rejection", err)
+	}
+}
+
 func TestPublishRejectsUnsafeBucketBeforeWriting(t *testing.T) {
 	store := &fakeObjectStore{}
 	_, _, err := Publish(context.Background(), bytes.NewReader([]byte("ipa")), minimalDescriptor([]byte("ipa")), PublishOptions{
@@ -439,6 +469,38 @@ func TestPresignedLifetimesShrinkAsPublicationWorkElapses(t *testing.T) {
 	want := []time.Duration{70 * time.Minute, 69 * time.Minute, 48 * time.Minute}
 	if !reflect.DeepEqual(store.ttls, want) {
 		t.Fatalf("presigned TTLs = %v, want %v", store.ttls, want)
+	}
+}
+
+func TestResolveObjectURLRetriesSignerTimestampPastDeadlineBudget(t *testing.T) {
+	now := time.Date(2026, time.August, 14, 10, 0, 0, 0, time.UTC)
+	deadline := now.Add(time.Hour)
+	for _, test := range []struct {
+		name           string
+		deadlineOffset time.Duration
+		signedAt       []time.Time
+		wantCalls      int
+		wantError      bool
+	}{
+		{name: "exact signer timestamp", signedAt: []time.Time{now}, wantCalls: 1},
+		{name: "fractional deadline overshoot", deadlineOffset: 500 * time.Millisecond, signedAt: []time.Time{now, now}, wantCalls: 2},
+		{name: "one-second delayed signer timestamp", signedAt: []time.Time{now.Add(time.Second), now.Add(time.Second)}, wantCalls: 2},
+		{name: "persistent signer delay", signedAt: []time.Time{now.Add(time.Second), now.Add(2 * time.Second)}, wantCalls: 2, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fixedSignatureStore{signedAt: test.signedAt}
+			_, err := resolveObjectURL(context.Background(), PublishOptions{Store: store, Access: AccessPrivate}, "prefix/app.ipa", deadline.Add(test.deadlineOffset), func() time.Time { return now })
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "signed expiry does not match") {
+					t.Fatalf("resolveObjectURL() error = %v, want deadline mismatch", err)
+				}
+			} else if err != nil {
+				t.Fatalf("resolveObjectURL() error = %v", err)
+			}
+			if store.calls != test.wantCalls {
+				t.Fatalf("PresignGet() calls = %d, want %d", store.calls, test.wantCalls)
+			}
+		})
 	}
 }
 
@@ -952,6 +1014,24 @@ type advancingVerifier struct {
 func (verifier *advancingVerifier) Verify(context.Context, VerifyRequest) error {
 	*verifier.now = verifier.now.Add(verifier.advance)
 	return nil
+}
+
+type fixedSignatureStore struct {
+	signedAt []time.Time
+	calls    int
+}
+
+func (store *fixedSignatureStore) Ensure(context.Context, PutObject) (StoredObject, error) {
+	return StoredObject{}, nil
+}
+
+func (store *fixedSignatureStore) PresignGet(_ context.Context, key string, ttl time.Duration) (string, error) {
+	index := store.calls
+	store.calls++
+	if index >= len(store.signedAt) {
+		index = len(store.signedAt) - 1
+	}
+	return privateSignatureFixture("/"+key, store.signedAt[index], ttl), nil
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

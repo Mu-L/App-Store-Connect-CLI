@@ -621,6 +621,10 @@ func Publish(ctx context.Context, ipa io.ReadSeeker, descriptor PreparedDescript
 }
 
 func Reverify(ctx context.Context, verifier Verifier, receipt PublishReceipt, links SensitiveLinks, now time.Time) error {
+	return reverifyWithClock(ctx, verifier, receipt, links, now, func() time.Time { return time.Now().UTC() })
+}
+
+func reverifyWithClock(ctx context.Context, verifier Verifier, receipt PublishReceipt, links SensitiveLinks, now time.Time, clock func() time.Time) error {
 	if verifier == nil || receipt.SchemaVersion != "1" || links.SchemaVersion != "1" || !receipt.Verified {
 		return fmt.Errorf("invalid recovery verification input")
 	}
@@ -695,34 +699,44 @@ func Reverify(ctx context.Context, verifier Verifier, receipt PublishReceipt, li
 			return err
 		}
 	}
+	if receipt.Access == AccessPublic && !profileExpiry.After(clock().Add(time.Minute)) {
+		return fmt.Errorf("saved publication signing profile is expired or expires too soon")
+	}
 	return nil
 }
 
 func privateSignatureWithinDeadline(rawURL string, deadline time.Time) error {
-	parsed, err := url.Parse(rawURL)
+	signedExpiry, err := privateSignatureExpiry(rawURL)
 	if err != nil {
-		return fmt.Errorf("has invalid AWS Signature V4 expiry")
+		return err
 	}
-	query := parsed.Query()
-	dates, dateFound := query["X-Amz-Date"]
-	lifetimes, lifetimeFound := query["X-Amz-Expires"]
-	if !dateFound || len(dates) != 1 || dates[0] == "" || !lifetimeFound || len(lifetimes) != 1 || lifetimes[0] == "" {
-		return fmt.Errorf("has invalid AWS Signature V4 expiry")
-	}
-	signedAt, err := time.Parse("20060102T150405Z", dates[0])
-	if err != nil {
-		return fmt.Errorf("has invalid AWS Signature V4 expiry")
-	}
-	lifetimeSeconds, err := strconv.ParseInt(lifetimes[0], 10, 64)
-	if err != nil || lifetimeSeconds <= 0 || lifetimeSeconds > int64(maxLinkLifetime/time.Second) || strconv.FormatInt(lifetimeSeconds, 10) != lifetimes[0] {
-		return fmt.Errorf("has invalid AWS Signature V4 expiry")
-	}
-	signedExpiry := signedAt.Add(time.Duration(lifetimeSeconds) * time.Second)
 	delta := signedExpiry.Sub(deadline)
 	if delta <= -time.Second || delta >= time.Second {
 		return fmt.Errorf("signed expiry does not match saved publication deadline")
 	}
 	return nil
+}
+
+func privateSignatureExpiry(rawURL string) (time.Time, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("has invalid AWS Signature V4 expiry")
+	}
+	query := parsed.Query()
+	dates, dateFound := query["X-Amz-Date"]
+	lifetimes, lifetimeFound := query["X-Amz-Expires"]
+	if !dateFound || len(dates) != 1 || dates[0] == "" || !lifetimeFound || len(lifetimes) != 1 || lifetimes[0] == "" {
+		return time.Time{}, fmt.Errorf("has invalid AWS Signature V4 expiry")
+	}
+	signedAt, err := time.Parse("20060102T150405Z", dates[0])
+	if err != nil {
+		return time.Time{}, fmt.Errorf("has invalid AWS Signature V4 expiry")
+	}
+	lifetimeSeconds, err := strconv.ParseInt(lifetimes[0], 10, 64)
+	if err != nil || lifetimeSeconds <= 0 || lifetimeSeconds > int64(maxLinkLifetime/time.Second) || strconv.FormatInt(lifetimeSeconds, 10) != lifetimes[0] {
+		return time.Time{}, fmt.Errorf("has invalid AWS Signature V4 expiry")
+	}
+	return signedAt.Add(time.Duration(lifetimeSeconds) * time.Second), nil
 }
 
 func objectMatchesBytes(object StoredObject, body []byte, contentType string) bool {
@@ -821,7 +835,41 @@ func resolveObjectURL(ctx context.Context, options PublishOptions, key string, d
 		// precision. Round the remaining lifetime up so flooring both fields
 		// cannot produce a signature one second earlier than the receipt.
 		ttl = (ttl + time.Second - 1).Truncate(time.Second)
-		return options.Store.PresignGet(ctx, key, ttl)
+		for attempt := 0; attempt < 2; attempt++ {
+			rawURL, err := options.Store.PresignGet(ctx, key, ttl)
+			if err != nil {
+				return "", err
+			}
+			parsed, parseErr := url.Parse(rawURL)
+			if parseErr != nil {
+				return "", fmt.Errorf("presigned URL has invalid AWS Signature V4 expiry")
+			}
+			query := parsed.Query()
+			if !query.Has("X-Amz-Date") && !query.Has("X-Amz-Expires") {
+				return rawURL, nil
+			}
+			signedExpiry, expiryErr := privateSignatureExpiry(rawURL)
+			if expiryErr != nil {
+				return "", fmt.Errorf("presigned URL: %w", expiryErr)
+			}
+			delta := signedExpiry.Sub(deadline)
+			if delta <= 0 && delta > -time.Second {
+				return rawURL, nil
+			}
+			if attempt == 0 && delta > 0 && delta < ttl {
+				adjustment := delta.Truncate(time.Second)
+				if delta%time.Second != 0 {
+					adjustment += time.Second
+				}
+				if adjustment >= ttl {
+					return "", fmt.Errorf("presigned URL: signed expiry does not match saved publication deadline")
+				}
+				ttl -= adjustment
+				continue
+			}
+			return "", fmt.Errorf("presigned URL: signed expiry does not match saved publication deadline")
+		}
+		return "", fmt.Errorf("presigned URL: signed expiry does not match saved publication deadline")
 	}
 	return PublicObjectURL(options.PublicBaseURL, key)
 }

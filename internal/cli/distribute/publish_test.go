@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"io"
 	"os"
 	"path/filepath"
@@ -126,8 +127,12 @@ func TestPublishCommandRejectsOverflowingLifetimeBeforeSideEffects(t *testing.T)
 		"--bucket", "bucket", "--prefix", "app", "--receipt", filepath.Join(stateDir, "receipt.json"),
 		"--link-path", filepath.Join(stateDir, "link.json"), "--url-ttl", "2562047h", "--download-grace", "100h",
 	})
-	if err == nil || !strings.Contains(err.Error(), "--url-ttl must not exceed 7d") {
-		t.Fatalf("ParseAndRun() error = %v, want overflow rejection", err)
+	const wantError = "--url-ttl must not exceed 7d"
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("ParseAndRun() error = %v, want flag.ErrHelp usage classification", err)
+	}
+	if err.Error() != wantError {
+		t.Fatalf("ParseAndRun() error = %q, want %q", err.Error(), wantError)
 	}
 	if loadCalled || storeCalled {
 		t.Fatalf("side effects before lifetime validation: load=%t store=%t", loadCalled, storeCalled)
