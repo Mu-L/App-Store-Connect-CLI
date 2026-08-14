@@ -63,18 +63,21 @@ type adsReportPresetPagination struct {
 }
 
 type adsReportLevelSpec struct {
-	commandPath []string
+	commandPath        []string
+	platformReportPath []string
 }
 
 var adsReportLevels = map[string]adsReportLevelSpec{
-	"campaigns":             {commandPath: []string{"reports", "campaigns"}},
-	"ad-groups":             {commandPath: []string{"reports", "ad-groups"}},
-	"keywords":              {commandPath: []string{"reports", "keywords"}},
-	"search-terms":          {commandPath: []string{"reports", "search-terms"}},
-	"ads":                   {commandPath: []string{"reports", "ads"}},
-	"ad-group-keywords":     {commandPath: []string{"reports", "ad-group-keywords"}},
-	"ad-group-search-terms": {commandPath: []string{"reports", "ad-group-search-terms"}},
+	"campaigns":             {commandPath: []string{"reports", "campaigns"}, platformReportPath: []string{"platform", "reports", "apps", "campaigns"}},
+	"ad-groups":             {commandPath: []string{"reports", "ad-groups"}, platformReportPath: []string{"platform", "reports", "apps", "ad-groups"}},
+	"keywords":              {commandPath: []string{"reports", "keywords"}, platformReportPath: []string{"platform", "reports", "apps", "keywords"}},
+	"search-terms":          {commandPath: []string{"reports", "search-terms"}, platformReportPath: []string{"platform", "reports", "apps", "search-terms"}},
+	"ads":                   {commandPath: []string{"reports", "ads"}, platformReportPath: []string{"platform", "reports", "apps", "ads"}},
+	"ad-group-keywords":     {commandPath: []string{"reports", "ad-group-keywords"}, platformReportPath: []string{"platform", "reports", "apps", "keywords"}},
+	"ad-group-search-terms": {commandPath: []string{"reports", "ad-group-search-terms"}, platformReportPath: []string{"platform", "reports", "apps", "search-terms"}},
 }
+
+const reportsPresetMigrationHelp = "Use the matching `asc ads platform reports apps` command for the selected `--level`; ad-group keyword and search-term levels map to the consolidated `keywords` and `search-terms` reports."
 
 // ReportsPresetCommand returns an operator-friendly Apple Ads reporting helper.
 func ReportsPresetCommand() *ffcli.Command {
@@ -139,10 +142,17 @@ Examples:
 			return executeReportsPreset(ctx, flags)
 		},
 	}
-	return markAdsLegacyCommandDeprecated(command, []string{"reports", "preset"}, adsLegacyMigration{
-		kind:        adsLegacyBreaking,
-		replacement: []string{"platform", "reports", "apps", "campaigns"},
+	return markAdsLegacyCommandDeprecatedWithGuidance(command, []string{"reports", "preset"}, reportsPresetMigrationHelp, func() string {
+		return reportsPresetMigrationGuidance(strings.TrimSpace(*flags.level))
 	})
+}
+
+func reportsPresetMigrationGuidance(level string) string {
+	levelSpec, ok := adsReportLevels[level]
+	if !ok {
+		return reportsPresetMigrationHelp
+	}
+	return "Use `asc ads " + strings.Join(levelSpec.platformReportPath, " ") + "`."
 }
 
 func executeReportsPreset(ctx context.Context, flags adsReportPresetFlags) error {

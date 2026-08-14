@@ -785,7 +785,7 @@ func TestEndpointHelpUsesOperatorFriendlyAuthDiscoveryNames(t *testing.T) {
 			t.Fatalf("missing command asc ads %s", strings.Join(test.path, " "))
 		}
 		if !strings.HasPrefix(cmd.ShortHelp, "DEPRECATED:") || !strings.Contains(cmd.LongHelp, test.want) {
-			t.Fatalf("asc ads %s ShortHelp = %q, want %q", strings.Join(test.path, " "), cmd.ShortHelp, test.want)
+			t.Fatalf("asc ads %s help mismatch: ShortHelp = %q, want DEPRECATED prefix; LongHelp = %q, want content %q", strings.Join(test.path, " "), cmd.ShortHelp, cmd.LongHelp, test.want)
 		}
 	}
 }

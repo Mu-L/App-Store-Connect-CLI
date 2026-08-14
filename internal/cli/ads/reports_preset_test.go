@@ -1,10 +1,41 @@
 package ads
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestReportsPresetDeprecationWarningMatchesSelectedLevel(t *testing.T) {
+	tests := map[string]string{
+		"campaigns":             "platform reports apps campaigns",
+		"ad-groups":             "platform reports apps ad-groups",
+		"keywords":              "platform reports apps keywords",
+		"search-terms":          "platform reports apps search-terms",
+		"ads":                   "platform reports apps ads",
+		"ad-group-keywords":     "platform reports apps keywords",
+		"ad-group-search-terms": "platform reports apps search-terms",
+	}
+	for level, replacement := range tests {
+		t.Run(level, func(t *testing.T) {
+			command := ReportsPresetCommand()
+			if err := command.FlagSet.Parse([]string{"--level", level}); err != nil {
+				t.Fatal(err)
+			}
+			_, stderr := captureAdsDeprecationStreams(t, func() {
+				_ = command.Exec(context.Background(), nil)
+			})
+			want := "Warning: `asc ads reports preset` is deprecated and retires on January 26, 2027. Use `asc ads " + replacement + "`.\n"
+			if !strings.HasPrefix(stderr, want) {
+				t.Fatalf("stderr = %q, want warning prefix %q", stderr, want)
+			}
+			if got := strings.Count(stderr, "Warning:"); got != 1 {
+				t.Fatalf("stderr contains %d warnings, want 1: %q", got, stderr)
+			}
+		})
+	}
+}
 
 func TestReportPresetDateRangeLastDays(t *testing.T) {
 	start, end, err := reportPresetDateRange("", "", 7, time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC), "UTC")

@@ -133,7 +133,7 @@ var adsLegacyMigrations = map[string]adsLegacyMigration{
 	"get-keyword-level-reports":                     {kind: adsLegacyBreaking, replacement: []string{"platform", "reports", "apps", "keywords"}},
 	"get-search-term-level-reports":                 {kind: adsLegacyBreaking, replacement: []string{"platform", "reports", "apps", "search-terms"}},
 	"get-ad-level-reports":                          {kind: adsLegacyBreaking, replacement: []string{"platform", "reports", "apps", "ads"}},
-	"get-keyword-level-within-ad-group-reports":     {kind: adsLegacyBreaking, replacement: []string{"platform", "reports", "apps", "ad-groups"}},
+	"get-keyword-level-within-ad-group-reports":     {kind: adsLegacyBreaking, replacement: []string{"platform", "reports", "apps", "keywords"}},
 	"get-search-term-level-within-ad-group-reports": {kind: adsLegacyBreaking, replacement: []string{"platform", "reports", "apps", "search-terms"}},
 
 	"get-all-impression-share-reports": {
@@ -165,12 +165,16 @@ func adsLegacyGuidance(migration adsLegacyMigration) string {
 }
 
 func markAdsLegacyCommandDeprecated(cmd *ffcli.Command, oldPath []string, migration adsLegacyMigration) *ffcli.Command {
+	guidance := adsLegacyGuidance(migration)
+	return markAdsLegacyCommandDeprecatedWithGuidance(cmd, oldPath, guidance, nil)
+}
+
+func markAdsLegacyCommandDeprecatedWithGuidance(cmd *ffcli.Command, oldPath []string, helpGuidance string, runtimeGuidance func() string) *ffcli.Command {
 	if cmd == nil {
 		return nil
 	}
 	oldCommand := "asc ads " + strings.Join(oldPath, " ")
-	guidance := adsLegacyGuidance(migration)
-	help := adsLegacyRetirementNotice + " " + guidance
+	help := adsLegacyRetirementNotice + " " + helpGuidance
 	shortHelp := strings.TrimSpace(cmd.ShortHelp)
 	if strings.HasPrefix(shortHelp, "[experimental]") {
 		help = "[experimental] " + help
@@ -184,6 +188,12 @@ func markAdsLegacyCommandDeprecated(cmd *ffcli.Command, oldPath []string, migrat
 
 	originalExec := cmd.Exec
 	cmd.Exec = func(ctx context.Context, args []string) error {
+		guidance := helpGuidance
+		if runtimeGuidance != nil {
+			if selected := strings.TrimSpace(runtimeGuidance()); selected != "" {
+				guidance = selected
+			}
+		}
 		fmt.Fprintf(os.Stderr, "Warning: `%s` is deprecated and retires on January 26, 2027. %s\n", oldCommand, guidance)
 		if originalExec == nil {
 			return nil

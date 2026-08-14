@@ -23,8 +23,8 @@ Apple Ads credentials are separate from App Store Connect API credentials.
 Examples:
   asc ads auth login --name "Ads" --client-id "SEARCHADS..." --team-id "SEARCHADS..." --key-id "KEY_ID" --private-key ./private-key.pem --org "123456"
   asc ads auth discover --output json
-  asc ads campaigns list --org "123456" --limit 10
-  asc ads reports campaigns --org "123456" --file report.json
+  asc ads platform campaigns find --ad-account "123456" --file query.json
+  asc ads platform reports apps campaigns --ad-account "123456" --file report.json
   asc ads platform api request --method GET --path v1/me`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,

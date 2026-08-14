@@ -65,12 +65,15 @@ func TestAdsLegacyCommandWarningIsEmittedOnceBeforeExistingExecution(t *testing.
 	if command == nil || command.Exec == nil {
 		t.Fatal("missing campaigns legacy alias")
 	}
-	_, stderr := captureAdsDeprecationStreams(t, func() {
+	stdout, stderr := captureAdsDeprecationStreams(t, func() {
 		err := command.Exec(context.Background(), nil)
 		if err == nil {
 			t.Fatal("campaigns alias unexpectedly succeeded without credentials")
 		}
 	})
+	if stdout != "" {
+		t.Fatalf("campaigns alias stdout = %q, want empty output", stdout)
+	}
 	want := "Warning: `asc ads campaigns` is deprecated and retires on January 26, 2027. Use `asc ads platform campaigns find`.\n"
 	if stderr != want {
 		t.Fatalf("campaigns alias warning = %q, want %q", stderr, want)

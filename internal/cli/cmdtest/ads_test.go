@@ -205,7 +205,7 @@ func TestAdsReportsPresetBuildsScopedKeywordRequest(t *testing.T) {
 			t.Fatalf("run error: %v", err)
 		}
 	})
-	if got, want := stderr, adsV5ReplacementWarning("reports preset", "platform reports apps campaigns"); got != want {
+	if got, want := stderr, adsV5ReplacementWarning("reports preset", "platform reports apps keywords"); got != want {
 		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 	var parsed map[string]any
@@ -259,7 +259,7 @@ func TestAdsReportsPresetBuildsAdLevelRequestWithSort(t *testing.T) {
 			t.Fatalf("run error: %v", err)
 		}
 	})
-	if got, want := stderr, adsV5ReplacementWarning("reports preset", "platform reports apps campaigns"); got != want {
+	if got, want := stderr, adsV5ReplacementWarning("reports preset", "platform reports apps ads"); got != want {
 		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 	var parsed map[string]any
