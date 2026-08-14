@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -54,8 +55,15 @@ func TestInspectIPAAdHocOmitsDevicesByDefault(t *testing.T) {
 	if !got.Preparation.MetadataEligible || len(got.Preparation.Issues) != 0 {
 		t.Fatalf("unexpected eligibility: %#v", got.Preparation)
 	}
-	if got.Signing.CodeSignatureVerification.Status != CodeSignatureInvalid {
+	wantCodeSignatureStatus := CodeSignatureInvalid
+	if runtime.GOOS != "darwin" {
+		wantCodeSignatureStatus = CodeSignatureNotVerified
+	}
+	if got.Signing.CodeSignatureVerification.Status != wantCodeSignatureStatus {
 		t.Fatalf("unexpected code signature verification: %#v", got.Signing.CodeSignatureVerification)
+	}
+	if runtime.GOOS != "darwin" && got.Signing.CodeSignatureVerification.Reason != "complete main-app code-signature verification is available only on macOS" {
+		t.Fatalf("unexpected portable code signature reason: %#v", got.Signing.CodeSignatureVerification)
 	}
 	if got.Signing.ProfileIntegrityVerification.Status != CodeSignatureVerified || got.Signing.ProfileTrustVerification.Status != CodeSignatureInvalid {
 		t.Fatalf("unexpected profile verification: %#v", got.Signing)

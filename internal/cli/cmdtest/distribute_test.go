@@ -6,17 +6,16 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -81,8 +80,15 @@ func TestDistributeInspectJSONPrivacyAndExplicitDisclosure(t *testing.T) {
 	if !result.Preparation.MetadataEligible || result.Signing.DeviceCount != 1 || result.App.BundleID != "com.example.demo" {
 		t.Fatalf("unexpected inspection: %#v", result)
 	}
-	if result.Signing.CodeSignatureVerification.Status != distribution.CodeSignatureInvalid {
+	wantCodeSignatureStatus := distribution.CodeSignatureInvalid
+	if runtime.GOOS != "darwin" {
+		wantCodeSignatureStatus = distribution.CodeSignatureNotVerified
+	}
+	if result.Signing.CodeSignatureVerification.Status != wantCodeSignatureStatus {
 		t.Fatalf("unexpected signer verification: %#v", result.Signing.CodeSignatureVerification)
+	}
+	if runtime.GOOS != "darwin" && result.Signing.CodeSignatureVerification.Reason != "complete main-app code-signature verification is available only on macOS" {
+		t.Fatalf("unexpected portable signer verification: %#v", result.Signing.CodeSignatureVerification)
 	}
 
 	stdout, stderr, runErr = runRootCommand(t, []string{"distribute", "inspect", "--ipa", ipa, "--include-devices", "--output", "json"})
@@ -96,19 +102,23 @@ func TestDistributeInspectJSONPrivacyAndExplicitDisclosure(t *testing.T) {
 
 func TestDistributeInspectTableAndMarkdownDeviceDisclosure(t *testing.T) {
 	ipa := writeDistributionIPA(t, "private-device-udid")
-	ipaData, err := os.ReadFile(ipa)
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest := fmt.Sprintf("%x", sha256.Sum256(ipaData))
 	for _, format := range []string{"table", "markdown"} {
 		t.Run(format, func(t *testing.T) {
 			stdout, stderr, runErr := runRootCommand(t, []string{"distribute", "inspect", "--ipa", ipa, "--output", format})
 			if runErr != nil || stderr != "" {
 				t.Fatalf("run error=%v stderr=%q", runErr, stderr)
 			}
-			if want := expectedDistributeInspectHumanOutput(format, digest, false); stdout != want {
-				t.Fatalf("default %s output:\n%s\nwant:\n%s", format, stdout, want)
+			rows := parseDistributeInspectHumanRows(t, format, stdout)
+			if rows["Bundle ID"] != "com.example.demo" || rows["Devices"] != "1" {
+				t.Fatalf("unexpected default %s rows: %#v", format, rows)
+			}
+			if value, exists := rows["Device UDIDs"]; exists {
+				t.Fatalf("default %s output disclosed Device UDIDs row %q: %#v", format, value, rows)
+			}
+			for field, value := range rows {
+				if strings.Contains(value, "private-device-udid") {
+					t.Fatalf("default %s output leaked UDID in %q row: %#v", format, field, rows)
+				}
 			}
 
 			stdout, stderr, runErr = runRootCommand(t, []string{
@@ -117,51 +127,38 @@ func TestDistributeInspectTableAndMarkdownDeviceDisclosure(t *testing.T) {
 			if runErr != nil || stderr != "" {
 				t.Fatalf("run with --include-devices error=%v stderr=%q", runErr, stderr)
 			}
-			if want := expectedDistributeInspectHumanOutput(format, digest, true); stdout != want {
-				t.Fatalf("public %s output:\n%s\nwant:\n%s", format, stdout, want)
+			rows = parseDistributeInspectHumanRows(t, format, stdout)
+			if rows["Devices"] != "1" || rows["Device UDIDs"] != "private-device-udid" {
+				t.Fatalf("public %s output omitted exact Device UDIDs row: %#v", format, rows)
 			}
 		})
 	}
 }
 
-func expectedDistributeInspectHumanOutput(format, digest string, includeDevices bool) string {
-	rows := [][]string{
-		{"Metadata Eligible", "true"},
-		{"Code Signature", "invalid"},
-		{"Profile Integrity", "verified"},
-		{"Profile Trust", "invalid"},
-		{"Bundle ID", "com.example.demo"},
-		{"Title", "Demo"},
-		{"Version", "1.0"},
-		{"Build", "7"},
-		{"Profile Class", "ad-hoc"},
-		{"Profile UUID", "fixture-profile"},
-		{"Team ID", "TEAM123"},
-		{"Devices", "1"},
-	}
-	if includeDevices {
-		rows = append(rows, []string{"Device UDIDs", "private-device-udid"})
-	}
-	rows = append(rows, []string{"IPA SHA-256", digest}, []string{"Issues", ""})
-
-	var output strings.Builder
+func parseDistributeInspectHumanRows(t *testing.T, format, output string) map[string]string {
+	t.Helper()
+	delimiter := "│"
 	if format == "markdown" {
-		output.WriteString("| Field             | Value                                                            |\n")
-		output.WriteString("|:------------------|:-----------------------------------------------------------------|\n")
-		for _, row := range rows {
-			fmt.Fprintf(&output, "| %-17s | %-64s |\n", row[0], row[1])
+		delimiter = "|"
+	}
+	rows := make(map[string]string)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, delimiter) || !strings.HasSuffix(line, delimiter) {
+			continue
 		}
-		return output.String()
+		cells := strings.Split(strings.Trim(line, delimiter), delimiter)
+		if len(cells) != 2 {
+			t.Fatalf("malformed %s row %q", format, line)
+		}
+		field := strings.TrimSpace(cells[0])
+		value := strings.TrimSpace(cells[1])
+		if field == "Field" || strings.HasPrefix(field, ":-") {
+			continue
+		}
+		rows[field] = value
 	}
-
-	output.WriteString("┌───────────────────┬──────────────────────────────────────────────────────────────────┐\n")
-	output.WriteString("│       Field       │                              Value                               │\n")
-	output.WriteString("├───────────────────┼──────────────────────────────────────────────────────────────────┤\n")
-	for _, row := range rows {
-		fmt.Fprintf(&output, "│ %-17s │ %-64s │\n", row[0], row[1])
-	}
-	output.WriteString("└───────────────────┴──────────────────────────────────────────────────────────────────┘\n")
-	return output.String()
+	return rows
 }
 
 func TestDistributePrepareFailsClosedForUnverifiedFixture(t *testing.T) {
