@@ -38,6 +38,7 @@ func inspectSigningArchive(archivePath string) (signingArchiveRequirements, erro
 	if err != nil {
 		return signingArchiveRequirements{}, fmt.Errorf("open archive: %w", err)
 	}
+	defer root.Close()
 
 	archiveInfo, err := readSigningPlist(root, "Info.plist")
 	if err != nil {

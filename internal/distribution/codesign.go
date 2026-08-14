@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -32,14 +33,20 @@ const (
 	maxMainAppExpandedBytes   int64 = 4 << 30
 	maxToolOutputBytes              = 1 << 20
 	codeSignInvocationTimeout       = 30 * time.Second
-	mainCodeSignatureScope          = "complete-main-app-code-resources-entitlements-and-profile-certificate-binding"
+	// CodeSignatureScopeCompleteMainApp is the exact verification scope required
+	// before a prepared bundle may be published.
+	CodeSignatureScopeCompleteMainApp = "complete-main-app-code-resources-entitlements-and-profile-certificate-binding"
+	mainCodeSignatureScope            = CodeSignatureScopeCompleteMainApp
 )
 
 var (
-	runCodeSignTool               = runBoundedTool
-	duringMaterializationForTest  func(string)
-	duringMaterializedCopyForTest func()
+	runCodeSignTool                   = runBoundedTool
+	duringMaterializationForTest      func(string)
+	duringMaterializedCopyForTest     func()
+	materializeMainAppForVerification func(*os.Root, []*zip.File, string) error
 )
+
+var errCodeVerificationInfrastructure = errors.New("code-signature verification infrastructure failure")
 
 func verifyMainAppCodeSignatureContext(ctx context.Context, members []*zip.File, appDir, executable, bundleID string, profile parsedProfile) CodeSignatureVerification {
 	result := CodeSignatureVerification{Status: CodeSignatureNotVerified, Scope: mainCodeSignatureScope}
@@ -86,14 +93,24 @@ func verifyMainAppCodeSignatureContext(ctx context.Context, members []*zip.File,
 		return result
 	}
 	defer app.Close()
-	if err := materializeMainAppContext(ctx, app, members, appDir); err != nil {
+	materialize := func() error {
+		if materializeMainAppForVerification != nil {
+			return materializeMainAppForVerification(app, members, appDir)
+		}
+		return materializeMainAppContext(ctx, app, members, appDir)
+	}
+	if err := materialize(); err != nil {
+		if isRetryableCodeVerificationError(err) {
+			result.Reason = "temporary code-signature verification workspace failure"
+			return result
+		}
 		result.Status, result.Reason = CodeSignatureInvalid, "could not safely materialize the complete bounded main app: "+err.Error()
 		return result
 	}
 	appPath := path.Join(directory, "Verify.app")
 	if _, err := runCodeSignInvocation(ctx, "/usr/bin/codesign", "--verify", "--deep", "--strict", "--all-architectures", "--verbose=4", appPath); err != nil {
-		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
-			result.Reason = "codesign is unavailable"
+		if isRetryableCodeVerificationError(err) {
+			result.Reason = "codesign verification is temporarily unavailable"
 			return result
 		}
 		result.Status, result.Reason = CodeSignatureInvalid, "codesign rejected the complete main app"
@@ -102,6 +119,10 @@ func verifyMainAppCodeSignatureContext(ctx context.Context, members []*zip.File,
 	mainExecutablePath := filepath.Join(appPath, executable)
 	codePaths, err := enumerateMachOFilesContext(ctx, appPath)
 	if err != nil {
+		if isRetryableCodeVerificationError(err) {
+			result.Reason = "temporary code-signature verification workspace failure"
+			return result
+		}
 		result.Status, result.Reason = CodeSignatureInvalid, "could not enumerate nested signed code: "+err.Error()
 		return result
 	}
@@ -111,7 +132,7 @@ func verifyMainAppCodeSignatureContext(ctx context.Context, members []*zip.File,
 	}
 	mainArchitectures, err := verifyMainExecutableEntitlements(ctx, mainExecutablePath, bundleID, profile)
 	if err != nil {
-		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+		if isRetryableCodeVerificationError(err) {
 			result.Status, result.Reason = codeVerificationFailure(err, "main executable")
 		} else {
 			result.Status, result.Reason = CodeSignatureInvalid, err.Error()
@@ -138,6 +159,10 @@ func verifyMainAppCodeSignatureContext(ctx context.Context, members []*zip.File,
 			return result
 		}
 		if _, err := runCodeSignInvocation(ctx, "/usr/bin/codesign", "--verify", "--strict", "--all-architectures", "-R="+teamRequirement, codePath); err != nil {
+			if isRetryableCodeVerificationError(err) {
+				result.Reason = "nested code-signature verification is temporarily unavailable"
+				return result
+			}
 			result.Status, result.Reason = CodeSignatureInvalid, "nested signed code does not satisfy the main app signing-team requirement"
 			return result
 		}
@@ -438,10 +463,43 @@ func codeObjectFingerprintsForArchitectures(ctx context.Context, directory strin
 }
 
 func codeVerificationFailure(err error, subject string) (CodeSignatureVerificationStatus, string) {
-	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
-		return CodeSignatureNotVerified, "required code-signature tooling is unavailable"
+	if isRetryableCodeVerificationError(err) {
+		return CodeSignatureNotVerified, "required code-signature verification is temporarily unavailable"
 	}
 	return CodeSignatureInvalid, "could not verify " + subject + " architectures and signer certificates"
+}
+
+func isRetryableCodeVerificationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) {
+		return exitError.ProcessState == nil || !exitError.Exited()
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrClosed) ||
+		errors.Is(err, errCodeVerificationInfrastructure) {
+		return true
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case syscall.EAGAIN, syscall.EINTR, syscall.EIO, syscall.ENOSPC,
+			syscall.EDQUOT, syscall.EMFILE, syscall.ENFILE, syscall.EBUSY,
+			syscall.ETIMEDOUT, syscall.ENOMEM, syscall.ESTALE:
+			return true
+		default:
+			return false
+		}
+	}
+	var pathError *os.PathError
+	if errors.As(err, &pathError) {
+		return true
+	}
+	var linkError *os.LinkError
+	return errors.As(err, &linkError)
 }
 
 func stringSet(values []string) map[string]struct{} {
@@ -660,11 +718,14 @@ func runBoundedTool(ctx context.Context, name string, args ...string) ([]byte, e
 	command := exec.CommandContext(ctx, name, args...)
 	pipe, err := command.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: open tool stdout: %w", errCodeVerificationInfrastructure, err)
 	}
 	command.Stderr = io.Discard
 	if err := command.Start(); err != nil {
-		return nil, err
+		if isRetryableCodeVerificationError(err) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: start tool: %w", errCodeVerificationInfrastructure, err)
 	}
 	var outputBuffer bytes.Buffer
 	_, readErr := copyWithContext(ctx, &outputBuffer, io.LimitReader(pipe, maxToolOutputBytes+1), nil)
@@ -674,13 +735,23 @@ func runBoundedTool(ctx context.Context, name string, args ...string) ([]byte, e
 	}
 	output := outputBuffer.Bytes()
 	if len(output) > maxToolOutputBytes {
-		return nil, fmt.Errorf("tool output exceeded %d bytes", maxToolOutputBytes)
+		return nil, fmt.Errorf("%w: tool output exceeded %d bytes", errCodeVerificationInfrastructure, maxToolOutputBytes)
 	}
 	if readErr != nil {
-		return nil, readErr
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: read tool output: %w", errCodeVerificationInfrastructure, readErr)
 	}
 	if waitErr != nil {
-		return nil, waitErr
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var exitError *exec.ExitError
+		if errors.As(waitErr, &exitError) {
+			return nil, waitErr
+		}
+		return nil, fmt.Errorf("%w: wait for tool: %w", errCodeVerificationInfrastructure, waitErr)
 	}
 	return output, nil
 }
