@@ -16,6 +16,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 func TestPublishCommandRequiresFlagsBeforeSideEffects(t *testing.T) {
@@ -1001,6 +1002,47 @@ func TestArtifactPairAliasProbeRejectsParentChildAliases(t *testing.T) {
 			}
 			assertNoNonDirectoryArtifacts(t, base)
 		})
+	}
+}
+
+func TestRemoveArtifactAliasProbePreservesReplacement(t *testing.T) {
+	rootPath := t.TempDir()
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+
+	const name = "receipt.json"
+	probe, err := secureopen.OpenNewFileNoFollowInRoot(root, name, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeInfo, err := probe.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Remove(name); err != nil {
+		t.Fatal(err)
+	}
+	const replacement = "operator data"
+	if err := os.WriteFile(filepath.Join(rootPath, name), []byte(replacement), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = removeArtifactAliasProbe(root, name, probeInfo)
+	if err == nil || !strings.Contains(err.Error(), "probe changed during cleanup") {
+		t.Fatalf("removeArtifactAliasProbe() error = %v, want replacement error", err)
+	}
+	got, readErr := os.ReadFile(filepath.Join(rootPath, name))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != replacement {
+		t.Fatalf("replacement = %q, want %q", got, replacement)
 	}
 }
 

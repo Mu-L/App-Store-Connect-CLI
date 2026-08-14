@@ -481,6 +481,7 @@ func probeConfiguredArtifactAlias(paths artifactPaths) (err error) {
 	}
 	var (
 		probe       *os.File
+		probeInfo   os.FileInfo
 		probeClosed bool
 		created     bool
 		cleanupErr  error
@@ -490,7 +491,7 @@ func probeConfiguredArtifactAlias(paths artifactPaths) (err error) {
 			cleanupErr = errors.Join(cleanupErr, probe.Close())
 		}
 		if created {
-			if removeErr := parent.Remove(name); removeErr != nil && !os.IsNotExist(removeErr) {
+			if removeErr := removeArtifactAliasProbe(parent, name, probeInfo); removeErr != nil {
 				cleanupErr = errors.Join(cleanupErr, removeErr)
 			}
 		}
@@ -510,7 +511,8 @@ func probeConfiguredArtifactAlias(paths artifactPaths) (err error) {
 		return err
 	}
 	created = true
-	if _, err = probe.Stat(); err != nil {
+	probeInfo, err = probe.Stat()
+	if err != nil {
 		return err
 	}
 	if err := probe.Close(); err != nil {
@@ -529,6 +531,20 @@ func probeConfiguredArtifactAlias(paths artifactPaths) (err error) {
 		return aliasErr
 	}
 	return fmt.Errorf("--receipt and --link-path resolve to the same physical destination or a destination appeared during preflight")
+}
+
+func removeArtifactAliasProbe(parent *os.Root, name string, probeInfo os.FileInfo) error {
+	currentInfo, err := parent.Lstat(name)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if probeInfo == nil || !os.SameFile(probeInfo, currentInfo) {
+		return fmt.Errorf("artifact alias probe changed during cleanup")
+	}
+	return parent.Remove(name)
 }
 
 func pathContains(parent, child string) bool {
