@@ -383,16 +383,16 @@ func TestS3ReplaceCorruptReconcilesAmbiguousConditionalPut(t *testing.T) {
 	old := StoredObject{SHA256: sha256Hex(body), SizeBytes: int64(len(body)), ContentType: ContentTypeIPA, entityTag: `"old"`}
 	replacement := StoredObject{SHA256: sha256Hex(body), SizeBytes: int64(len(body)), ContentType: " Application/Octet-Stream ", entityTag: `"replacement"`}
 	for _, test := range []struct {
-		name         string
-		putErr       error
-		after        StoredObject
-		headErr      error
-		cancelParent bool
-		wantSuccess  bool
-		wantConflict bool
+		name           string
+		putErr         error
+		after          StoredObject
+		headErr        error
+		deadlineParent bool
+		wantSuccess    bool
+		wantConflict   bool
 	}{
 		{name: "accepted then response lost", putErr: errors.New("connection reset"), after: replacement, wantSuccess: true},
-		{name: "accepted then parent deadline", putErr: context.DeadlineExceeded, after: replacement, cancelParent: true, wantSuccess: true},
+		{name: "accepted then parent deadline", putErr: context.DeadlineExceeded, after: replacement, deadlineParent: true, wantSuccess: true},
 		{name: "old generation unchanged", putErr: errors.New("connection reset"), after: old},
 		{name: "competing replacement", putErr: errors.New("connection reset"), after: StoredObject{SHA256: "different", SizeBytes: old.SizeBytes, ContentType: old.ContentType, entityTag: `"competitor"`}, wantConflict: true},
 		{name: "reconcile HEAD failure", putErr: errors.New("connection reset"), headErr: errors.New("HEAD failed")},
@@ -401,10 +401,14 @@ func TestS3ReplaceCorruptReconcilesAmbiguousConditionalPut(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			parent, cancel := context.WithCancel(context.Background())
+			if test.deadlineParent {
+				cancel()
+				parent, cancel = context.WithTimeout(context.Background(), 10*time.Millisecond)
+			}
 			defer cancel()
 			client := &ambiguousReplaceClient{before: old, after: test.after, headErr: test.headErr, putErr: test.putErr}
-			if test.cancelParent {
-				client.afterPut = cancel
+			if test.deadlineParent {
+				client.afterPut = func() { <-parent.Done() }
 			}
 			store := &S3Store{client: client, bucket: "bucket"}
 			replaced, err := store.ReplaceCorrupt(parent, PutObject{
@@ -425,6 +429,9 @@ func TestS3ReplaceCorruptReconcilesAmbiguousConditionalPut(t *testing.T) {
 			}
 			if client.putCalls != 1 || client.headCalls != 2 {
 				t.Fatalf("PutObject calls=%d HeadObject calls=%d, want 1 and 2", client.putCalls, client.headCalls)
+			}
+			if test.deadlineParent && !errors.Is(parent.Err(), context.DeadlineExceeded) {
+				t.Fatalf("parent error = %v, want deadline exceeded", parent.Err())
 			}
 		})
 	}

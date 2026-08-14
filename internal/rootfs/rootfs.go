@@ -400,11 +400,7 @@ func (r Root) ContainsPath(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	relative, err := filepath.Rel(r.openPath, physical)
-	if err != nil || filepath.IsAbs(relative) {
-		return false, err
-	}
-	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
+	return pathWithinRootIdentity(r.selectedIdentity, physical)
 }
 
 // ContainsAnchoredPath reports whether an already-open directory is within this
@@ -454,11 +450,26 @@ func (r Root) ContainsAnchoredPath(path string, anchored *os.Root) (bool, error)
 	if !os.SameFile(anchoredInfo, currentInfo) {
 		return false, symlinkError(path)
 	}
-	relative, err := filepath.Rel(r.openPath, physical)
-	if err != nil || filepath.IsAbs(relative) {
-		return false, err
+	return pathWithinRootIdentity(r.selectedIdentity, physical)
+}
+
+func pathWithinRootIdentity(identity *rootIdentity, physical string) (bool, error) {
+	current := filepath.Clean(physical)
+	for {
+		info, err := os.Stat(current)
+		if err == nil {
+			if identity.matches(info) {
+				return true, nil
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false, nil
+		}
+		current = parent
 	}
-	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
 }
 
 func resolveProspectivePhysicalPath(absolute string) (string, error) {

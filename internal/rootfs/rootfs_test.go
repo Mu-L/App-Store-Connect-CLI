@@ -1153,6 +1153,37 @@ func TestContainsAnchoredPathRejectsPathSubstitution(t *testing.T) {
 	}
 }
 
+func TestContainmentUsesIdentityOnCaseInsensitiveVolume(t *testing.T) {
+	parent := t.TempDir()
+	selected := filepath.Join(parent, "PreparedBundle")
+	if err := os.Mkdir(selected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	caseAlias := filepath.Join(parent, "preparedbundle")
+	selectedInfo, err := os.Stat(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasInfo, err := os.Stat(caseAlias)
+	if err != nil || !os.SameFile(selectedInfo, aliasInfo) {
+		t.Skip("test volume is case-sensitive")
+	}
+	root := mustRoot(t, selected)
+	contained, err := root.ContainsPath(filepath.Join(caseAlias, "state", "receipt.json"))
+	if err != nil || !contained {
+		t.Fatalf("ContainsPath() = %t, %v, want identity-based containment", contained, err)
+	}
+	anchored, err := os.OpenRoot(caseAlias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer anchored.Close()
+	contained, err = root.ContainsAnchoredPath(caseAlias, anchored)
+	if err != nil || !contained {
+		t.Fatalf("ContainsAnchoredPath() = %t, %v, want identity-based containment", contained, err)
+	}
+}
+
 func TestRootCloseReleasesSharedPinnedIdentity(t *testing.T) {
 	root := mustRoot(t, t.TempDir())
 	copy := root
