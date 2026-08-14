@@ -257,6 +257,9 @@ def assert_optimized_workflow_text(path: Path, workflow: str, test_job: str) -> 
         command = f"CGO_ENABLED=1 GOOS=darwin GOARCH={arch} go build"
         assert command in build_platforms, f"{path}: missing cgo-enabled Darwin {arch} build"
         assert f"asc_dev_macos_{arch}" in build_platforms
+    for os_name, arch in (("linux", "amd64"), ("linux", "arm64"), ("windows", "amd64")):
+        command = f"CGO_ENABLED=0 GOOS={os_name} GOARCH={arch} go build"
+        assert command in build_platforms, f"{path}: missing cgo-disabled {os_name} {arch} build"
 
     ordinary_build = job_block(workflow, "ordinary-build")
     assert "needs.changes.outputs.scope == 'telemetry'" in ordinary_build
@@ -289,6 +292,9 @@ def assert_optimized_workflow_rejects_weakened_checks() -> None:
             "ASC_BYPASS_KEYCHAIN=1",
             "CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build",
             "CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build",
+            "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build",
+            "CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build",
+            "CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build",
         ):
             assert command in workflow, f"{path}: expected to find {command!r}"
             weakened = workflow.replace(command, "true")
