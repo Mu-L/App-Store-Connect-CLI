@@ -197,9 +197,9 @@ func validateSignedMainAppEntitlements(entitlementsData []byte, bundleID string,
 	if err := validateTeamIdentifier(teamID); err != nil {
 		return err
 	}
-	applicationIdentifierPrefix := onlyTrimmed(profile.ApplicationIdentifierPrefix)
-	if applicationIdentifierPrefix == "" {
-		return fmt.Errorf("embedded profile application identifier prefix is not a single value")
+	applicationIdentifierPrefix := declaredSingle(profile.ApplicationIdentifierPrefix)
+	if err := validateApplicationIdentifierPrefix(applicationIdentifierPrefix); err != nil {
+		return err
 	}
 	bundleID = strings.TrimSpace(bundleID)
 	if bundleID == "" {
@@ -541,6 +541,18 @@ func validateTeamIdentifier(value string) error {
 	for _, r := range value {
 		if (r < '0' || r > '9') && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
 			return fmt.Errorf("embedded profile team identifier contains unsupported characters")
+		}
+	}
+	return nil
+}
+
+func validateApplicationIdentifierPrefix(value string) error {
+	if value == "" || len(value) > 32 {
+		return fmt.Errorf("embedded profile application identifier prefix is not a single safe value")
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+			return fmt.Errorf("embedded profile application identifier prefix contains unsupported characters")
 		}
 	}
 	return nil

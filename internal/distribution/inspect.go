@@ -440,6 +440,12 @@ func readProfile(member *zip.File, now time.Time) (parsedProfile, error) {
 	if teamID == "" || prefix == "" {
 		return parsedProfile{}, fmt.Errorf("embedded provisioning profile must declare exactly one team and application identifier prefix")
 	}
+	if err := validateTeamIdentifier(teamID); err != nil {
+		return parsedProfile{}, err
+	}
+	if err := validateApplicationIdentifierPrefix(prefix); err != nil {
+		return parsedProfile{}, err
+	}
 	entitlementTeam, _ := profile.Entitlements["com.apple.developer.team-identifier"].(string)
 	if strings.TrimSpace(entitlementTeam) != teamID {
 		return parsedProfile{}, fmt.Errorf("embedded provisioning profile team identifier does not match its entitlement")

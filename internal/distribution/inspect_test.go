@@ -110,6 +110,53 @@ func TestInspectIPAClassifiesProfiles(t *testing.T) {
 	}
 }
 
+func TestInspectIPAValidatesApplicationIdentifierPrefixDeclaration(t *testing.T) {
+	t.Run("legacy prefix differs from team", func(t *testing.T) {
+		path := writeIPA(t, map[string][]byte{
+			"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"),
+			"Payload/Demo.app/embedded.mobileprovision": signedProfile(t, profileFixture{
+				BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+				ApplicationIdentifierPrefixes: []string{"LEGACY123"},
+			}),
+		})
+		got := inspectPath(t, path, false)
+		if got.Signing.TeamID != "TEAM123" || !got.Preparation.MetadataEligible {
+			t.Fatalf("legacy profile inspection = %#v", got)
+		}
+	})
+
+	for _, test := range []struct {
+		name     string
+		prefixes []string
+	}{
+		{name: "missing", prefixes: []string{}},
+		{name: "ambiguous", prefixes: []string{"LEGACY123", "OTHER123"}},
+		{name: "malformed", prefixes: []string{`LEGACY"123`}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeIPA(t, map[string][]byte{
+				"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"),
+				"Payload/Demo.app/embedded.mobileprovision": signedProfile(t, profileFixture{
+					BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+					ApplicationIdentifierPrefixes: test.prefixes,
+				}),
+			})
+			file, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			info, err := file.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err == nil || !strings.Contains(err.Error(), "application identifier prefix") {
+				t.Fatalf("InspectIPA() error = %v, want prefix declaration rejection", err)
+			}
+		})
+	}
+}
+
 func TestInspectIPARejectsUnsafeAndAmbiguousArchives(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -463,11 +510,12 @@ func clonePlistMap(value map[string]any) map[string]any {
 }
 
 type profileFixture struct {
-	BundleID   string
-	Devices    []string
-	Expires    time.Time
-	Debuggable bool
-	Enterprise bool
+	BundleID                      string
+	Devices                       []string
+	Expires                       time.Time
+	Debuggable                    bool
+	Enterprise                    bool
+	ApplicationIdentifierPrefixes []string
 }
 
 func signedProfile(t *testing.T, fixture profileFixture) []byte {
@@ -486,9 +534,17 @@ func signedProfile(t *testing.T, fixture profileFixture) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entitlements := map[string]any{"application-identifier": "TEAM123." + fixture.BundleID, "com.apple.developer.team-identifier": "TEAM123", "get-task-allow": fixture.Debuggable}
+	prefixes := fixture.ApplicationIdentifierPrefixes
+	if prefixes == nil {
+		prefixes = []string{"TEAM123"}
+	}
+	applicationIdentifierPrefix := "TEAM123"
+	if len(prefixes) > 0 {
+		applicationIdentifierPrefix = prefixes[0]
+	}
+	entitlements := map[string]any{"application-identifier": applicationIdentifierPrefix + "." + fixture.BundleID, "com.apple.developer.team-identifier": "TEAM123", "get-task-allow": fixture.Debuggable}
 	payload := map[string]any{
-		"UUID": "profile-uuid", "Name": "Test Profile", "TeamIdentifier": []string{"TEAM123"}, "ApplicationIdentifierPrefix": []string{"TEAM123"},
+		"UUID": "profile-uuid", "Name": "Test Profile", "TeamIdentifier": []string{"TEAM123"}, "ApplicationIdentifierPrefix": prefixes,
 		"Platform":           []string{"iOS"},
 		"ProvisionedDevices": fixture.Devices, "ProvisionsAllDevices": fixture.Enterprise,
 		"ExpirationDate": fixture.Expires, "Entitlements": entitlements, "DeveloperCertificates": [][]byte{der},

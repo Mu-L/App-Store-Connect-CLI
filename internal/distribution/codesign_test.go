@@ -134,6 +134,8 @@ func TestInspectIPARejectsEntitlementMismatchInSecondaryArchitecture(t *testing.
 
 func TestVerifyMainExecutableEntitlementsQueriesEveryArchitectureOnce(t *testing.T) {
 	profile := entitlementTestProfile()
+	profile.ApplicationIdentifierPrefix = []string{"LEGACY123"}
+	profile.Entitlements["application-identifier"] = "LEGACY123.com.example.*"
 	queries := make(map[string]int)
 	runCodeSignTool = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		if name == "/usr/bin/lipo" {
@@ -142,8 +144,9 @@ func TestVerifyMainExecutableEntitlementsQueriesEveryArchitectureOnce(t *testing
 		architecture := requireEntitlementDisplayArgs(t, args, "/tmp/Demo")
 		queries[architecture]++
 		entitlements := validMainEntitlements()
+		entitlements["application-identifier"] = "LEGACY123.com.example.demo"
 		if architecture == "x86_64" {
-			entitlements["application-identifier"] = "TEAM123.com.example.other"
+			entitlements["application-identifier"] = "LEGACY123.com.example.other"
 		}
 		return plist.Marshal(entitlements, plist.XMLFormat)
 	}
@@ -276,6 +279,14 @@ func TestValidateSignedMainAppEntitlementsBindsExactBundleIdentifier(t *testing.
 			signedTeamID:                "TEAM123",
 		},
 		{
+			name:                        "legacy signed identifier incorrectly uses team",
+			applicationIdentifierPrefix: "LEGACY123",
+			profileApplicationID:        "LEGACY123.com.example.*",
+			signedApplicationID:         "TEAM123.com.example.demo",
+			signedTeamID:                "TEAM123",
+			wantError:                   true,
+		},
+		{
 			name:                 "wildcard profile and matching signed identifier",
 			profileApplicationID: "TEAM123.com.example.*",
 			signedApplicationID:  "TEAM123.com.example.demo",
@@ -309,6 +320,13 @@ func TestValidateSignedMainAppEntitlementsBindsExactBundleIdentifier(t *testing.
 			signedTeamID:         "TEAM123",
 			wantError:            true,
 		},
+		{
+			name:                 "wrong signed team entitlement",
+			profileApplicationID: "TEAM123.com.example.demo",
+			signedApplicationID:  "TEAM123.com.example.demo",
+			signedTeamID:         "OTHERTEAM",
+			wantError:            true,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			profile := entitlementTestProfile()
@@ -329,6 +347,32 @@ func TestValidateSignedMainAppEntitlementsBindsExactBundleIdentifier(t *testing.
 			err = validateSignedMainAppEntitlements(data, "com.example.demo", profile)
 			if (err != nil) != test.wantError {
 				t.Fatalf("validateSignedMainAppEntitlements() error = %v, wantError=%t", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestValidateSignedMainAppEntitlementsRejectsUnsafeProfilePrefix(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		prefixes []string
+	}{
+		{name: "missing", prefixes: []string{}},
+		{name: "ambiguous", prefixes: []string{"TEAM123", "LEGACY123"}},
+		{name: "duplicate declarations", prefixes: []string{"TEAM123", "TEAM123"}},
+		{name: "unsupported characters", prefixes: []string{`TEAM"123`}},
+		{name: "excessive length", prefixes: []string{strings.Repeat("A", 33)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			profile := entitlementTestProfile()
+			profile.ApplicationIdentifierPrefix = test.prefixes
+			data, err := plist.Marshal(validMainEntitlements(), plist.XMLFormat)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = validateSignedMainAppEntitlements(data, "com.example.demo", profile)
+			if err == nil || !strings.Contains(err.Error(), "application identifier prefix") {
+				t.Fatalf("validateSignedMainAppEntitlements() error = %v, want safe single prefix rejection", err)
 			}
 		})
 	}
