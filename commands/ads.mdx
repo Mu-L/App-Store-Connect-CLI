@@ -474,7 +474,9 @@ asc ads platform api request \
 
 It accepts only `v1/...` paths or `https://api.ads.apple.com/v1/...` URLs.
 `GET` requests may retry transient v1 failures; mutation requests are never
-replayed automatically. Empty successful v1 responses print `{}`.
+replayed automatically. `DELETE` requests, recommendation apply/dismiss
+mutations, and ad-account `PUT` requests whose payload contains `delegations`
+require `--confirm`. Empty successful v1 responses print `{}`.
 
 ## Agent Checklist
 

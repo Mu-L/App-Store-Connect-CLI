@@ -7,6 +7,7 @@ import (
 	"flag"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -803,6 +804,81 @@ func TestAdsPlatformAPIRequestRejectsAdAccountForContextFreeEndpoint(t *testing.
 		runErr = root.Run(context.Background())
 	})
 	if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, "--ad-account is not supported") {
+		t.Fatalf("run error = %v stderr = %q", runErr, stderr)
+	}
+}
+
+func TestAdsPlatformAPIRequestRequiresConfirmForKnownDestructiveMutations(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "daily budget apply",
+			args: []string{"ads", "platform", "api", "request", "--method", "POST", "--path", "v1/recommendations/daily-budgets/apply", "--ad-account", "AD_ACCOUNT"},
+		},
+		{
+			name: "target CPA dismiss",
+			args: []string{"ads", "platform", "api", "request", "--method", "POST", "--path", "v1/recommendations/target-cpas/dismiss", "--ad-account", "AD_ACCOUNT"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateAdsGuideEnv(t)
+			t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+			t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+			installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatalf("unexpected network request: %s %s", req.Method, req.URL.String())
+				return nil, nil
+			}))
+
+			root := RootCommand("dev")
+			if err := root.Parse(tt.args); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			var runErr error
+			_, stderr := captureOutput(t, func() {
+				runErr = root.Run(context.Background())
+			})
+			if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, "--confirm is required") {
+				t.Fatalf("run error = %v stderr = %q", runErr, stderr)
+			}
+		})
+	}
+}
+
+func TestAdsPlatformAPIRequestRequiresConfirmForDelegationReplacement(t *testing.T) {
+	tempDir := t.TempDir()
+	payloadPath := filepath.Join(tempDir, "delegations.json")
+	if err := os.WriteFile(payloadPath, []byte(`{"delegations":[{"resourceId":"RESOURCE","resourceType":"CONTENT_PROVIDER"}]}`), 0o600); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected network request: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	}))
+
+	root := RootCommand("dev")
+	if err := root.Parse([]string{
+		"ads", "platform", "api", "request",
+		"--method", "PUT",
+		"--path", "v1/ad-accounts/AD_ACCOUNT",
+		"--file", payloadPath,
+		"--ad-account", "AD_ACCOUNT",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	_, stderr := captureOutput(t, func() {
+		runErr = root.Run(context.Background())
+	})
+	if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, "--confirm is required") {
 		t.Fatalf("run error = %v stderr = %q", runErr, stderr)
 	}
 }
