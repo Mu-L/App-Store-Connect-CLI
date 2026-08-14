@@ -28,6 +28,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"go.mozilla.org/pkcs7"
 	"howett.net/plist"
 )
@@ -212,6 +213,80 @@ func TestSigningCapabilitiesRecognizesLiveIncreasedMemoryLimit(t *testing.T) {
 	})
 	if len(unverified) != 0 || !reflect.DeepEqual(capabilities, []string{"INCREASED_MEMORY_LIMIT"}) {
 		t.Fatalf("capabilities=%#v unverified=%#v", capabilities, unverified)
+	}
+}
+
+func TestPlanSigningTargetBlocksMismatchedBundleSeedID(t *testing.T) {
+	client := newSigningFetchTestClient(t, func(request *http.Request) *http.Response {
+		switch request.URL.Path {
+		case "/v1/bundleIds":
+			return signingFetchJSONResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bundle-1","attributes":{"identifier":"com.example.app","platform":"IOS","seedId":"OTHERTEAM"}}]}`)
+		case "/v1/bundleIds/bundle-1/bundleIdCapabilities", "/v1/bundleIds/bundle-1/profiles":
+			return signingFetchJSONResponse(http.StatusOK, `{"data":[]}`)
+		default:
+			return signingFetchJSONResponse(http.StatusInternalServerError, `{}`)
+		}
+	})
+
+	_, _, blockers, err := planSigningTarget(
+		context.Background(),
+		client,
+		signingTarget{
+			BundleID:    "com.example.app",
+			AppIDPrefix: "TEAM1",
+			Entitlements: map[string]any{
+				"com.apple.developer.team-identifier": "TEAM1",
+			},
+		},
+		[]signingDesiredDevice{{ResourceID: "device-1"}},
+		&signingCertificateRef{ID: "cert-1"},
+		7,
+	)
+	if err != nil {
+		t.Fatalf("planSigningTarget() error = %v", err)
+	}
+	if !strings.Contains(strings.Join(blockers, "\n"), "seed ID OTHERTEAM does not match archive App ID prefix TEAM1") {
+		t.Fatalf("blockers = %#v, want seed ID mismatch", blockers)
+	}
+}
+
+func TestPlanSigningTargetBlocksUnverifiableCapabilityValues(t *testing.T) {
+	client := newSigningFetchTestClient(t, func(request *http.Request) *http.Response {
+		switch request.URL.Path {
+		case "/v1/bundleIds":
+			return signingFetchJSONResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bundle-1","attributes":{"identifier":"com.example.app","platform":"IOS","seedId":"TEAM1"}}]}`)
+		case "/v1/bundleIds/bundle-1/bundleIdCapabilities":
+			return signingFetchJSONResponse(http.StatusOK, `{"data":[{"type":"bundleIdCapabilities","id":"cap-1","attributes":{"capabilityType":"APP_GROUPS"}}]}`)
+		case "/v1/bundleIds/bundle-1/profiles":
+			return signingFetchJSONResponse(http.StatusOK, `{"data":[]}`)
+		default:
+			return signingFetchJSONResponse(http.StatusInternalServerError, `{}`)
+		}
+	})
+
+	_, _, blockers, err := planSigningTarget(
+		context.Background(),
+		client,
+		signingTarget{
+			BundleID:    "com.example.app",
+			AppIDPrefix: "TEAM1",
+			Entitlements: map[string]any{
+				"com.apple.developer.team-identifier": "TEAM1",
+				"com.apple.security.application-groups": []string{
+					"group.com.example.shared",
+				},
+			},
+		},
+		[]signingDesiredDevice{{ResourceID: "device-1"}},
+		&signingCertificateRef{ID: "cert-1"},
+		7,
+	)
+	if err != nil {
+		t.Fatalf("planSigningTarget() error = %v", err)
+	}
+	got := strings.Join(blockers, "\n")
+	if !strings.Contains(got, "com.apple.security.application-groups") || !strings.Contains(got, "cannot be verified safely") {
+		t.Fatalf("blockers = %#v, want unverifiable capability values", blockers)
 	}
 }
 
@@ -722,6 +797,51 @@ func TestSigningReconcileApplyRequiresConfirmBeforeReadingPlan(t *testing.T) {
 	}
 }
 
+func TestSigningReconcilePlanClassifiesInvalidDevicesFileAsUsageErrorBeforeSideEffects(t *testing.T) {
+	devicesPath := filepath.Join(t.TempDir(), "devices.json")
+	if err := os.WriteFile(devicesPath, []byte(`{"schemaVersion":1,"devices":[`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(t.TempDir(), "signing-state")
+	originalArchiveReader := readSigningArchiveRequirements
+	readSigningArchiveRequirements = func(string) (signingArchiveRequirements, error) {
+		t.Fatal("archive must not be read for an invalid devices file")
+		return signingArchiveRequirements{}, nil
+	}
+	t.Cleanup(func() { readSigningArchiveRequirements = originalArchiveReader })
+	originalFactory := sharedASCClient
+	sharedASCClient = func() (*asc.Client, error) {
+		t.Fatal("ASC client must not be created for an invalid devices file")
+		return nil, nil
+	}
+	t.Cleanup(func() { sharedASCClient = originalFactory })
+
+	cmd := SigningReconcilePlanCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.Parse([]string{
+		"--archive-path", "App.xcarchive",
+		"--devices-file", devicesPath,
+		"--state-dir", stateDir,
+	}); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	stdout, stderr := captureOutput(t, func() {
+		err := cmd.Run(context.Background())
+		if !errors.Is(err, flag.ErrHelp) {
+			t.Fatalf("Run() error = %v, want usage error", err)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "decode devices file") {
+		t.Fatalf("stderr = %q, want devices validation error", stderr)
+	}
+	if _, err := os.Stat(stateDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("state directory exists after invalid input: %v", err)
+	}
+}
+
 func TestDecodeSigningDevicesFileStrict(t *testing.T) {
 	tests := []struct {
 		name string
@@ -771,6 +891,35 @@ func TestReadProtectedFileRequiresPrivateBoundedInput(t *testing.T) {
 	}
 	if _, err := readProtectedFile(path); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("readProtectedFile(oversized) error = %v", err)
+	}
+}
+
+func TestProtectedDevicesAndPlanInputsRejectSymlinkedParents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges")
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"devices.json", "plan.json"} {
+		if err := os.WriteFile(filepath.Join(realDir, name), []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(realDir, filepath.Join(dir, "linked")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readProtectedFile(filepath.Join(dir, "linked", "devices.json")); !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("readProtectedFile() error = %v, want rootfs.ErrSymlink", err)
+	}
+	if _, err := readSigningPlanArtifact(filepath.Join(dir, "linked", "plan.json")); !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("readSigningPlanArtifact() error = %v, want rootfs.ErrSymlink", err)
 	}
 }
 

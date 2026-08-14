@@ -64,6 +64,50 @@ func New(path string) (Root, error) {
 	return Root{path: filepath.Clean(absolute)}, nil
 }
 
+// OpenFile opens an existing regular file through a rooted traversal. Paths
+// below the current working directory or OS temporary directory use that
+// trusted anchor; other paths use their filesystem root. Unlike a
+// final-component O_NOFOLLOW open, this rejects symlinks in parent components
+// below the selected root.
+func OpenFile(path string) (*os.File, error) {
+	if path == "" {
+		return nil, fmt.Errorf("%w: path is empty", ErrEscapesRoot)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve path %q: %w", path, err)
+	}
+	volumeRoot := filepath.VolumeName(absolute) + string(filepath.Separator)
+	rootPath := volumeRoot
+	for _, candidate := range []string{workingDirectory(), os.TempDir()} {
+		candidate, err = filepath.Abs(candidate)
+		if err != nil {
+			continue
+		}
+		candidate = filepath.Clean(candidate)
+		if _, err := relativeWithinRoot(candidate, absolute); err == nil && len(candidate) > len(rootPath) {
+			rootPath = candidate
+		}
+	}
+	root, err := New(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	relative, err := filepath.Rel(root.Path(), absolute)
+	if err != nil {
+		return nil, fmt.Errorf("%w: resolve %q below %q: %w", ErrEscapesRoot, path, root.Path(), err)
+	}
+	return root.OpenFile(relative)
+}
+
+func workingDirectory() string {
+	path, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
 // Path returns the absolute trusted root path.
 func (r Root) Path() string {
 	return r.path

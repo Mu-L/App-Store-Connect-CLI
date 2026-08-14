@@ -177,6 +177,24 @@ func TestReadFileRefusesSymlinkedParentComponent(t *testing.T) {
 	}
 }
 
+func TestOpenFileRefusesSymlinkedParentComponent(t *testing.T) {
+	requireSymlinks(t)
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks(temp dir) error = %v", err)
+	}
+	realDir := filepath.Join(dir, "real")
+	mustWrite(t, filepath.Join(realDir, "devices.json"), `{"schemaVersion":1}`)
+	if err := os.Symlink(realDir, filepath.Join(dir, "linked")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	if _, err := OpenFile(filepath.Join(dir, "linked", "devices.json")); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("OpenFile() error = %v, want ErrSymlink", err)
+	}
+}
+
 func TestReadFileReadsOrdinaryFile(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "keywords.txt"), "one,two")

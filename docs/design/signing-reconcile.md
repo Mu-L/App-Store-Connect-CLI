@@ -77,6 +77,12 @@ one team. Missing explicit App IDs may be planned only for baseline entitlement
 sets; a target requiring a capability that has not already been registered is a
 blocker because this command does not mutate capabilities.
 
+For an existing App ID, `seedId` must exactly match the archive target's
+`AppIDPrefix`. Capability presence alone is insufficient for entitlements with
+value-specific settings. The public capability response schema does not expose
+settings such as `APP_GROUP_IDENTIFIERS`, so those entitlements remain blocked
+as unverifiable rather than risking creation of an unusable profile.
+
 Certificate selection considers only active, unexpired iOS distribution
 certificates. More than one eligible certificate is a blocker unless
 `--certificate` selects one. An explicit certificate that is absent or

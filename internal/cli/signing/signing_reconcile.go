@@ -321,7 +321,7 @@ func readProtectedFile(path string) ([]byte, error) {
 }
 
 func readProtectedFileBounded(path string, limit int64) ([]byte, error) {
-	file, err := shared.OpenExistingNoFollow(path)
+	file, err := rootfs.OpenFile(path)
 	if err != nil {
 		return nil, err
 	}

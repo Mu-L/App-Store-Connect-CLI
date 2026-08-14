@@ -27,7 +27,7 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	}
 	devicesFile, err := decodeSigningDevicesFile(deviceBytes)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, err
+		return signingReconcilePlanArtifact{}, shared.UsageErrorf("invalid devices file: %v", err)
 	}
 	archive, err := readSigningArchiveRequirements(paths.ArchivePath)
 	if err != nil {
@@ -310,6 +310,15 @@ func planSigningTarget(ctx context.Context, client *asc.Client, target signingTa
 		observed.Platform = string(bundle.Attributes.Platform)
 		if bundle.Attributes.Platform != asc.BundleIDPlatformIOS && bundle.Attributes.Platform != asc.BundleIDPlatformUniversal {
 			blockers = append(blockers, fmt.Sprintf("bundle ID %s has incompatible platform %s", target.BundleID, bundle.Attributes.Platform))
+		}
+		appIDPrefix := strings.TrimSpace(target.AppIDPrefix)
+		seedID := strings.TrimSpace(bundle.Attributes.SeedID)
+		if appIDPrefix != "" && seedID != appIDPrefix {
+			if seedID == "" {
+				blockers = append(blockers, fmt.Sprintf("bundle ID %s does not expose a seed ID matching archive App ID prefix %s", target.BundleID, appIDPrefix))
+			} else {
+				blockers = append(blockers, fmt.Sprintf("bundle ID %s seed ID %s does not match archive App ID prefix %s", target.BundleID, seedID, appIDPrefix))
+			}
 		}
 		capabilities, capabilityErr := getAllBundleIDCapabilities(ctx, client, bundle.ID)
 		if capabilityErr != nil {
@@ -710,7 +719,7 @@ func signingCapabilitiesForEntitlements(entitlements map[string]any) ([]string, 
 	}
 	var capabilities []string
 	var unverified []string
-	for key := range entitlements {
+	for key, value := range entitlements {
 		if _, ok := baseline[key]; ok {
 			continue
 		}
@@ -719,7 +728,11 @@ func signingCapabilitiesForEntitlements(entitlements map[string]any) ([]string, 
 			continue
 		}
 		if capability := capabilityByEntitlement[key]; capability != "" {
-			capabilities = append(capabilities, capability)
+			if _, presenceOnly := value.(bool); presenceOnly {
+				capabilities = append(capabilities, capability)
+			} else {
+				unverified = append(unverified, key+" (capability settings)")
+			}
 		} else {
 			unverified = append(unverified, key)
 		}
