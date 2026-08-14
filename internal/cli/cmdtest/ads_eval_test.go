@@ -391,6 +391,7 @@ func TestAdsAuthDiscoverRejectsMalformedDiscoveryResponses(t *testing.T) {
 func TestAdsAuthDiscoverContinuesWhenOptionalOrgConfigIsInvalid(t *testing.T) {
 	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "111")
 	configPath := writeAdsEvalPayload(t, "config.json", `{"ads":`)
 	t.Setenv("ASC_CONFIG_PATH", configPath)
 
@@ -435,6 +436,22 @@ func TestAdsAuthDiscoverContinuesWhenOptionalOrgConfigIsInvalid(t *testing.T) {
 	}
 	if len(result.Accounts) != 1 || result.Accounts[0].OrgID != "987654" {
 		t.Fatalf("accounts = %+v, want discovered account despite invalid config", result.Accounts)
+	}
+}
+
+func TestAdsAuthDiscoverReportsAdAccountResolutionError(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_ADS_ORG_ID", "987654")
+	configPath := writeAdsEvalPayload(t, "config.json", `{"ads":`)
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+
+	stdout, stderr, err := runAdsEvalCommand(t, "ads", "auth", "discover", "--output", "json")
+	if err == nil || !strings.Contains(err.Error(), "ads auth discover: ad account resolution failed") || !strings.Contains(err.Error(), "failed to parse config") {
+		t.Fatalf("discover error = %v, want ad-account resolution context", err)
+	}
+	if stdout != "" || stderr != "" {
+		t.Fatalf("stdout = %q stderr = %q, want empty output on resolution failure", stdout, stderr)
 	}
 }
 

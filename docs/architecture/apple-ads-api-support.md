@@ -2,14 +2,19 @@
 
 Status: Implemented
 Research date: May 31, 2026
-Target API: Apple Ads Campaign Management API 5.5
+Release target: 4.4.0
+Current API addition: Apple Ads Platform API v1
+Legacy API reference: Apple Ads Campaign Management API 5.5
 Target command root: `asc ads`
 
 ## Goal
 
-Add first-class Apple Ads support to `asc` for the documented Campaign
-Management API v5 surface. Users should not need a raw HTTP client for
-supported Apple Ads campaign, targeting, creative, and reporting workflows.
+This note records the existing Campaign Management API v5 surface and the
+4.4.0 addition of the Apple Ads Platform API v1 surface. Platform commands live
+under `asc ads platform` because v1 has different hosts, contexts, payloads,
+and response envelopes. Existing direct `asc ads` resource commands continue
+to use v5 during the deprecation window; they are not silently retargeted.
+Users should not need a raw HTTP client for supported Apple Ads workflows.
 
 This PR must preserve the local CLI style:
 
@@ -32,11 +37,10 @@ Canonical Apple sources:
 - API functionality: https://developer.apple.com/documentation/apple_ads/using-apple-search-ads-api-functionality
 - API 5 changelog: https://developer.apple.com/documentation/apple_ads/apple-search-ads-campaign-management-api-5
 
-The Apple docs currently state that API 5 is the current Campaign Management
-API, API 5.5 was released in February 2026, and the Campaign Management API is
-scheduled to sunset on January 26, 2027. The unreleased/new Apple Ads Platform
-API is not part of this PR because it is not the current documented Campaign
-Management API surface.
+The Apple docs state that API 5.5 is the current Campaign Management API and
+that Campaign Management API v5 is scheduled to sunset on January 26, 2027.
+The newly available Apple Ads Platform API v1 is implemented separately in
+4.4.0. The two APIs must not share a command path or request contract.
 
 Deprecated `Creative Sets` are not included as commands because Apple's current
 documentation marks the collection as deprecated and exposes no active v5
@@ -45,6 +49,37 @@ on `GET /v5/creatives/{creativeId}` is included.
 
 AdServices Attribution API is out of scope. It is not part of the Apple Ads
 Campaign Management API command surface and has different caller requirements.
+
+## Platform API v1 in 4.4.0
+
+The Platform API v1 implementation adds the 99 documented operations under
+`asc ads platform`. Ad-account context is carried in
+`X-AP-Context: adAccountId=<ad-account-id>;` for account-scoped requests. The
+`--ad-account` flag, `ASC_ADS_AD_ACCOUNT_ID`, and the selected profile's
+`ad_account_id` are independent of the legacy v5 `--org`/`org_id` context.
+
+The `/v1/ad-accounts` collection is method-dependent:
+
+| Operation | Context behavior |
+| --- | --- |
+| `POST /v1/ad-accounts` | Creates an account without `X-AP-Context`; the account context does not exist until the response supplies its ID. |
+| `GET /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
+| `PUT /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
+
+Authentication commands intentionally use more than one transport while v5 is
+being retired:
+
+| Command | Validation/discovery request |
+| --- | --- |
+| `asc ads auth login --network` | OAuth token exchange, then Campaign Management API v5 `GET /v5/me`. |
+| `asc ads auth status --validate` | For each stored credential, OAuth token exchange, then Campaign Management API v5 `GET /v5/me`. |
+| `asc ads auth discover` | Legacy Campaign Management API v5 `GET /v5/me` and `GET /v5/acls`; this remains the compatibility discovery path in 4.4.0. |
+
+All three commands avoid an ad-account context for these requests. The token
+exchange remains `POST https://appleid.apple.com/auth/oauth2/token` with the
+`searchadsorg` scope; a supplied access token skips that exchange. Platform API
+v1 users should call `asc ads platform me view` and `asc ads platform acls list`
+when they need the v1 user or ACL resources.
 
 ## Command Placement
 
@@ -163,9 +198,9 @@ OAuth facts from Apple:
 Implement this command group:
 
 ```text
-asc ads auth login --name NAME --client-id CLIENT_ID --team-id TEAM_ID --key-id KEY_ID --private-key PATH [--org ORG_ID] [--network] [--skip-validation] [--bypass-keychain] [--local]
+asc ads auth login --name NAME --client-id CLIENT_ID --team-id TEAM_ID --key-id KEY_ID --private-key PATH [--org ORG_ID] [--ad-account AD_ACCOUNT_ID] [--network] [--skip-validation] [--bypass-keychain] [--local]
 asc ads auth status [--verbose] [--validate] [--output table|json]
-asc ads auth discover [--ads-profile NAME] [--org ORG_ID] [--output table|json]
+asc ads auth discover [--ads-profile NAME] [--org ORG_ID] [--ad-account AD_ACCOUNT_ID] [--output table|json]
 asc ads auth switch --name NAME
 asc ads auth token --confirm [--output text|json]
 asc ads auth doctor [--output text|json]
@@ -179,16 +214,25 @@ Mirror the existing `asc auth` behavior:
 - `--client-id` is Apple Ads OAuth `client_id`.
 - `--team-id` is the JWT issuer (`iss`).
 - `--org` stores a default Apple Ads org ID for API calls.
+- `--ad-account` stores a default Platform API v1 ad-account ID and, on
+  `auth discover`, marks that account as active in the output. It is separate
+  from `--org`.
 - `--private-key` accepts the EC P-256 PEM Apple documents for Ads. Reuse the
   existing private-key parsing helpers because they already support ES256 keys.
-- `--network` requests an access token and calls `GET /v5/me`.
+- `--network` requests an access token and calls Campaign Management API v5 `GET /v5/me`.
 - `--skip-validation` skips JWT and network validation.
 - `--network` and `--skip-validation` are mutually exclusive.
 - `--local` requires keychain bypass, exactly like `asc auth login`.
 - Keychain is preferred; config fallback is allowed when bypassing keychain.
 - `auth status` supports `--verbose` and `--validate`, matching `asc auth status`.
-- `auth discover` calls `/v5/me` and `/v5/acls` to show the active Ads user and
-  available organizations without printing access tokens.
+- `auth status --validate` validates each stored credential through Campaign
+  Management API v5 `GET /v5/me` and reports failures after rendering the
+  status output.
+- `auth discover` calls legacy `/v5/me` and `/v5/acls` to show the active Ads
+  user and available organizations without printing access tokens. This
+  compatibility path remains stable in 4.4.0 while v5 is deprecated.
+- Platform API v1 user and ACL discovery is explicit: use `asc ads platform me
+  view` and `asc ads platform acls list`.
 - `auth logout` supports `--all` and `--name`. It requires one of those flags
   so bare `asc ads auth logout` does not clear every stored Ads profile, and
   `--all` requires `--confirm`.
@@ -203,6 +247,7 @@ type AdsCredential struct {
 	KeyID          string `json:"key_id"`
 	PrivateKeyPath string `json:"private_key_path"`
 	OrgID          string `json:"org_id,omitempty"`
+	AdAccountID    string `json:"ad_account_id,omitempty"`
 }
 
 type AdsKeychainMetadata struct {
@@ -211,6 +256,7 @@ type AdsKeychainMetadata struct {
 	TeamID     string `json:"team_id"`
 	KeyID      string `json:"key_id"`
 	OrgID      string `json:"org_id,omitempty"`
+	AdAccountID string `json:"ad_account_id,omitempty"`
 	ModifiedAt string `json:"modified_at,omitempty"`
 }
 
@@ -219,6 +265,7 @@ type AdsConfig struct {
 	Keys             []AdsCredential       `json:"keys,omitempty"`
 	KeychainMetadata []AdsKeychainMetadata `json:"keychain_metadata,omitempty"`
 	OrgID            string                `json:"org_id,omitempty"`
+	AdAccountID      string                `json:"ad_account_id,omitempty"`
 }
 
 type Config struct {
@@ -248,6 +295,7 @@ ASC_ADS_PRIVATE_KEY_PATH
 ASC_ADS_PRIVATE_KEY
 ASC_ADS_PRIVATE_KEY_B64
 ASC_ADS_ORG_ID
+ASC_ADS_AD_ACCOUNT_ID
 ASC_ADS_PROFILE
 ASC_ADS_STRICT_AUTH
 ASC_ADS_BYPASS_KEYCHAIN
@@ -274,14 +322,29 @@ Org ID resolution is independent from token resolution:
 1. `--org`
 2. `ASC_ADS_ORG_ID`
 3. selected Ads profile `org_id`
-4. `ads.org_id` in config when authentication does not select a named profile
+4. `ads.org_id` in config, including the legacy fallback for a named profile
+   whose own credential omits `org_id`
 
 Persist the org ID both on the selected credential and in `ads.org_id` when Ads
 login receives an org ID. This lets
 `ASC_ADS_ACCESS_TOKEN` users reuse a configured default org without storing Ads
-private key material in the active environment. A named profile never inherits
-the root context from another profile; switching or removing the default clears
-root context fields that the new default does not define.
+private key material in the active environment. Existing named profiles retain
+the legacy `ads.org_id` root fallback when their own profile omits `org_id`.
+The Platform API v1 `ads.ad_account_id` root value is intentionally never
+inherited by a named profile; switching or removing the default clears the
+root ad-account context, while the legacy root organization fallback remains
+available for profiles that omit their own organization ID.
+
+Platform API v1 ad-account resolution is independent from org resolution:
+
+1. `--ad-account`
+2. `ASC_ADS_AD_ACCOUNT_ID`
+3. selected Ads profile `ad_account_id`
+4. `ads.ad_account_id` in config when authentication does not select a named profile
+
+Persist an ad-account ID supplied to Ads login alongside the selected profile
+and root config. A named profile never inherits the root ad-account ID from
+another profile.
 
 ## HTTP Client Contract
 
