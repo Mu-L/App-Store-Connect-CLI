@@ -38,3 +38,9 @@ func validateProtectedPublishArtifactPlatform(file *os.File, _ os.FileInfo) erro
 	}
 	return nil
 }
+
+func syncPublishArtifactDirectory(_ *os.Root) error {
+	// Windows directory handles cannot be portably flushed through os.Root.
+	// The staged file itself is flushed before the atomic no-replace rename.
+	return nil
+}

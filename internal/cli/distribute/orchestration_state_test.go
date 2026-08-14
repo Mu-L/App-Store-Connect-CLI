@@ -80,6 +80,23 @@ func TestReadDistributionConfigStrictPrivateS3(t *testing.T) {
 	}
 }
 
+func TestReadProtectedDistributionFileRejectsInPlaceMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "protected.json")
+	if err := os.WriteFile(path, []byte(`{"state":"before"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	distributionAfterProtectedReadForTest = func() {
+		if err := os.WriteFile(path, []byte(`{"state":"replacement-with-different-size"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { distributionAfterProtectedReadForTest = nil })
+
+	if _, err := readProtectedDistributionFile(path, distributionStateMaxBytes); err == nil || !strings.Contains(err.Error(), "changed while reading") {
+		t.Fatalf("readProtectedDistributionFile() error = %v, want in-place mutation rejection", err)
+	}
+}
+
 func TestReadDistributionConfigAllowsEmptyPKCS12Password(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")

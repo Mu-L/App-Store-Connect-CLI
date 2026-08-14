@@ -567,6 +567,7 @@ func reconcileProfileView(plan signingReconcilePlanArtifact, action signingActio
 	if err != nil {
 		return ReconcileProfileView{}, err
 	}
+	defer root.Close()
 	file, err := root.OpenFile(relative)
 	if err != nil {
 		return ReconcileProfileView{}, fmt.Errorf("open verified profile: %w", err)

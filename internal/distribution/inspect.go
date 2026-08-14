@@ -28,9 +28,10 @@ import (
 )
 
 const (
-	maxArchiveEntries       = 20_000
-	maxArchiveMemberNameLen = 4096
-	maxProfileBytes         = 16 << 20
+	maxArchiveEntries              = 20_000
+	maxArchiveMemberNameLen        = 4096
+	maxArchiveExpandedBytes uint64 = 16 << 30
+	maxProfileBytes                = 16 << 20
 	// MaxIPABytes bounds synchronous inspection, hashing, and preparation work.
 	MaxIPABytes int64 = 8 << 30
 )
@@ -116,14 +117,25 @@ type InspectOptions struct {
 	Now            time.Time
 }
 
+func hashSet(values []string) string {
+	return deviceset.Digest(values).SHA256
+}
+
+var (
+	duringZIPValidationForTest func(string)
+	duringZIPStreamReadForTest func()
+)
+
 type infoPlistPayload struct {
-	BundleID    string `plist:"CFBundleIdentifier"`
-	Executable  string `plist:"CFBundleExecutable"`
-	DisplayName string `plist:"CFBundleDisplayName"`
-	Name        string `plist:"CFBundleName"`
-	Version     string `plist:"CFBundleShortVersionString"`
-	Build       string `plist:"CFBundleVersion"`
-	MinimumOS   string `plist:"MinimumOSVersion"`
+	BundleID           string   `plist:"CFBundleIdentifier"`
+	Executable         string   `plist:"CFBundleExecutable"`
+	DisplayName        string   `plist:"CFBundleDisplayName"`
+	Name               string   `plist:"CFBundleName"`
+	Version            string   `plist:"CFBundleShortVersionString"`
+	Build              string   `plist:"CFBundleVersion"`
+	MinimumOS          string   `plist:"MinimumOSVersion"`
+	PlatformName       string   `plist:"DTPlatformName"`
+	SupportedPlatforms []string `plist:"CFBundleSupportedPlatforms"`
 }
 
 type embeddedProfile struct {
@@ -158,11 +170,9 @@ func InspectIPA(file *os.File, size int64, options InspectOptions) (Inspection, 
 	return InspectIPAContext(context.Background(), file, size, options)
 }
 
-// InspectIPAContext validates and reads deterministic metadata while
-// propagating caller cancellation through snapshotting and inspection.
 func InspectIPAContext(ctx context.Context, file *os.File, size int64, options InspectOptions) (Inspection, error) {
-	if ctx == nil {
-		return Inspection{}, fmt.Errorf("context is nil")
+	if err := contextError(ctx); err != nil {
+		return Inspection{}, err
 	}
 	if file == nil {
 		return Inspection{}, fmt.Errorf("IPA file is nil")
@@ -185,10 +195,7 @@ func InspectIPAContext(ctx context.Context, file *os.File, size int64, options I
 }
 
 func inspectSnapshotContext(ctx context.Context, file *os.File, size int64, digest string, options InspectOptions) (Inspection, error) {
-	if ctx == nil {
-		return Inspection{}, fmt.Errorf("context is nil")
-	}
-	if err := ctx.Err(); err != nil {
+	if err := contextError(ctx); err != nil {
 		return Inspection{}, err
 	}
 	reader, err := zip.NewReader(file, size)
@@ -199,22 +206,81 @@ func inspectSnapshotContext(ctx context.Context, file *os.File, size int64, dige
 		return Inspection{}, fmt.Errorf("IPA contains %d entries; limit is %d", len(reader.File), maxArchiveEntries)
 	}
 
-	seen := make(map[string]struct{}, len(reader.File))
+	seen := make(map[string]bool, len(reader.File))
+	hasDescendants := make(map[string]struct{}, len(reader.File))
 	var infoFiles []*zip.File
 	var embeddedTargets []string
+	var declaredExpandedBytes uint64
 	for _, member := range reader.File {
 		if err := validateArchiveMember(member); err != nil {
 			return Inspection{}, err
 		}
+		if member.UncompressedSize64 > maxArchiveExpandedBytes-declaredExpandedBytes {
+			return Inspection{}, fmt.Errorf("IPA declared expansion exceeds %d bytes", maxArchiveExpandedBytes)
+		}
+		declaredExpandedBytes += member.UncompressedSize64
 		key := strings.ToLower(strings.TrimSuffix(member.Name, "/"))
 		if _, exists := seen[key]; exists {
 			return Inspection{}, fmt.Errorf("IPA contains duplicate path %q", member.Name)
 		}
-		seen[key] = struct{}{}
+		isDirectory := member.FileInfo().IsDir()
+		for ancestor := path.Dir(key); ancestor != "."; ancestor = path.Dir(ancestor) {
+			if ancestorIsDirectory, exists := seen[ancestor]; exists && !ancestorIsDirectory {
+				return Inspection{}, fmt.Errorf("IPA contains file/directory path collision involving %q", member.Name)
+			}
+		}
+		if !isDirectory {
+			if _, exists := hasDescendants[key]; exists {
+				return Inspection{}, fmt.Errorf("IPA contains file/directory path collision involving %q", member.Name)
+			}
+		}
+		seen[key] = isDirectory
+		for ancestor := path.Dir(key); ancestor != "."; ancestor = path.Dir(ancestor) {
+			hasDescendants[ancestor] = struct{}{}
+		}
 		if isMainAppMember(member.Name, "Info.plist") && !member.FileInfo().IsDir() {
 			infoFiles = append(infoFiles, member)
 		} else if isEmbeddedTargetInfoPlist(member.Name) && !member.FileInfo().IsDir() {
 			embeddedTargets = append(embeddedTargets, member.Name)
+		}
+	}
+	var expandedBytes uint64
+	for _, member := range reader.File {
+		if duringZIPValidationForTest != nil {
+			duringZIPValidationForTest(member.Name)
+		}
+		if err := contextError(ctx); err != nil {
+			return Inspection{}, err
+		}
+		remaining := maxArchiveExpandedBytes - expandedBytes
+		streamMember := member
+		if member.FileInfo().IsDir() {
+			regular := *member
+			regular.Name = strings.TrimSuffix(regular.Name, "/")
+			regular.SetMode(0o600)
+			streamMember = &regular
+		}
+		opened, err := streamMember.Open()
+		if err != nil {
+			return Inspection{}, fmt.Errorf("open IPA member %q: %w", member.Name, err)
+		}
+		written, readErr := copyWithContext(ctx, io.Discard, io.LimitReader(opened, int64(remaining)+1), duringZIPStreamReadForTest)
+		closeErr := opened.Close()
+		if written < 0 || uint64(written) > remaining {
+			return Inspection{}, fmt.Errorf("IPA expanded contents exceed %d bytes", maxArchiveExpandedBytes)
+		}
+		expandedBytes += uint64(written)
+		if readErr != nil {
+			return Inspection{}, fmt.Errorf("validate IPA member %q compressed data: %w", member.Name, readErr)
+		}
+		if closeErr != nil {
+			return Inspection{}, fmt.Errorf("close IPA member %q: %w", member.Name, closeErr)
+		}
+		if uint64(written) != member.UncompressedSize64 {
+			return Inspection{}, fmt.Errorf("IPA member %q expanded size does not match its declaration", member.Name)
+		}
+		if member.FileInfo().IsDir() && written != 0 {
+			return Inspection{}, fmt.Errorf("IPA directory member %q contains data", member.Name)
 		}
 	}
 	if len(infoFiles) == 0 {
@@ -224,8 +290,11 @@ func inspectSnapshotContext(ctx context.Context, file *os.File, size int64, dige
 		return Inspection{}, fmt.Errorf("IPA contains %d main apps; expected exactly one", len(infoFiles))
 	}
 
-	info, err := readInfoPlist(infoFiles[0])
+	info, err := readInfoPlistContext(ctx, infoFiles[0])
 	if err != nil {
+		return Inspection{}, err
+	}
+	if err := validateIOSPlatform(info); err != nil {
 		return Inspection{}, err
 	}
 	app := App{
@@ -277,7 +346,7 @@ func inspectSnapshotContext(ctx context.Context, file *os.File, size int64, dige
 	if profileFile == nil {
 		result.Preparation.Issues = append(result.Preparation.Issues, "embedded provisioning profile is missing")
 	} else {
-		profile, err := readProfile(profileFile, effectiveNow(options.Now))
+		profile, err := readProfileContext(ctx, profileFile, effectiveNow(options.Now))
 		if err != nil {
 			return Inspection{}, err
 		}
@@ -310,10 +379,11 @@ func inspectSnapshotContext(ctx context.Context, file *os.File, size int64, dige
 			result.Signing.Devices = devices
 		}
 		result.Preparation.Issues = preparationIssues(result, profile, effectiveNow(options.Now))
-		result.Signing.CodeSignatureVerification = verifyMainAppCodeSignature(ctx, reader.File, appDir, infoFiles[0], info.Executable, profile)
-		if err := ctx.Err(); err != nil {
+		verification := verifyMainAppCodeSignatureContext(ctx, reader.File, appDir, info.Executable, app.BundleID, profile)
+		if err := contextError(ctx); err != nil {
 			return Inspection{}, err
 		}
+		result.Signing.CodeSignatureVerification = verification
 	}
 	result.Preparation.MetadataEligible = len(result.Preparation.Issues) == 0
 	return result, nil
@@ -346,6 +416,9 @@ func validateArchiveMember(member *zip.File) error {
 }
 
 func validateAppMetadata(app App) error {
+	if err := validateBundleIdentifier(app.BundleID); err != nil {
+		return err
+	}
 	for _, field := range []struct {
 		name  string
 		value string
@@ -364,6 +437,49 @@ func validateAppMetadata(app App) error {
 			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.In(r, unicode.Bidi_Control) {
 				return fmt.Errorf("invalid %s: control or formatting characters are not allowed", field.name)
 			}
+		}
+	}
+	if err := validateBundleIdentifier(app.BundleID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateBundleIdentifier(value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 255 {
+		return fmt.Errorf("invalid CFBundleIdentifier: must be at most 255 bytes")
+	}
+	for _, component := range strings.Split(value, ".") {
+		if component == "" {
+			return fmt.Errorf("invalid CFBundleIdentifier: components must not be empty")
+		}
+		for index := 0; index < len(component); index++ {
+			character := component[index]
+			if (character < 'a' || character > 'z') &&
+				(character < 'A' || character > 'Z') &&
+				(character < '0' || character > '9') &&
+				character != '-' {
+				return fmt.Errorf("invalid CFBundleIdentifier: only ASCII alphanumeric characters, hyphens, and periods are allowed")
+			}
+		}
+	}
+	return nil
+}
+
+func validateIOSPlatform(info infoPlistPayload) error {
+	platformName := strings.ToLower(strings.TrimSpace(info.PlatformName))
+	if platformName == "" && len(info.SupportedPlatforms) == 0 {
+		return fmt.Errorf("main app iOS platform metadata is missing")
+	}
+	if platformName != "" && platformName != "iphoneos" {
+		return fmt.Errorf("main app iOS platform metadata has unsupported DTPlatformName")
+	}
+	for _, platform := range info.SupportedPlatforms {
+		if strings.ToLower(strings.TrimSpace(platform)) != "iphoneos" {
+			return fmt.Errorf("main app iOS platform metadata contains an unsupported CFBundleSupportedPlatforms value")
 		}
 	}
 	return nil
@@ -388,11 +504,11 @@ func isEmbeddedTargetInfoPlist(name string) bool {
 	return len(strings.Split(dir, "/")) > 2
 }
 
-func readInfoPlist(member *zip.File) (infoPlistPayload, error) {
+func readInfoPlistContext(ctx context.Context, member *zip.File) (infoPlistPayload, error) {
 	if err := infoplist.CheckDeclaredSize(member.UncompressedSize64); err != nil {
 		return infoPlistPayload{}, fmt.Errorf("read main app Info.plist: %w", err)
 	}
-	data, err := readZipMemberBounded(member, infoplist.MaxBytes)
+	data, err := readZipMemberBoundedContext(ctx, member, infoplist.MaxBytes)
 	if err != nil {
 		return infoPlistPayload{}, fmt.Errorf("read main app Info.plist: %w", err)
 	}
@@ -406,11 +522,11 @@ func readInfoPlist(member *zip.File) (infoPlistPayload, error) {
 	return result, nil
 }
 
-func readProfile(member *zip.File, now time.Time) (parsedProfile, error) {
+func readProfileContext(ctx context.Context, member *zip.File, now time.Time) (parsedProfile, error) {
 	if member.UncompressedSize64 > maxProfileBytes {
 		return parsedProfile{}, fmt.Errorf("embedded provisioning profile declared size exceeds %d bytes", maxProfileBytes)
 	}
-	data, err := readZipMemberBounded(member, maxProfileBytes)
+	data, err := readZipMemberBoundedContext(ctx, member, maxProfileBytes)
 	if err != nil {
 		return parsedProfile{}, fmt.Errorf("read embedded provisioning profile: %w", err)
 	}
@@ -437,6 +553,12 @@ func readProfile(member *zip.File, now time.Time) (parsedProfile, error) {
 	prefix := declaredSingle(profile.ApplicationIdentifierPrefix)
 	if teamID == "" || prefix == "" {
 		return parsedProfile{}, fmt.Errorf("embedded provisioning profile must declare exactly one team and application identifier prefix")
+	}
+	if err := validateTeamIdentifier(teamID); err != nil {
+		return parsedProfile{}, err
+	}
+	if err := validateApplicationIdentifierPrefix(prefix); err != nil {
+		return parsedProfile{}, err
 	}
 	entitlementTeam, _ := profile.Entitlements["com.apple.developer.team-identifier"].(string)
 	if strings.TrimSpace(entitlementTeam) != teamID {
@@ -506,16 +628,21 @@ func verifyAppleProfileTrust(profile *pkcs7.PKCS7, now time.Time, allowedRoots m
 	return CodeSignatureVerification{Status: CodeSignatureVerified, Reason: "Apple provisioning signer identity and chain verified to a pinned Apple root"}
 }
 
-func readZipMemberBounded(member *zip.File, limit int64) ([]byte, error) {
+func readZipMemberBoundedContext(ctx context.Context, member *zip.File, limit int64) ([]byte, error) {
 	reader, err := member.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer reader.Close()
-	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	var destination bytes.Buffer
+	if limit < 1<<20 {
+		destination.Grow(int(limit))
+	}
+	_, err = copyWithContext(ctx, &destination, io.LimitReader(reader, limit+1), nil)
 	if err != nil {
 		return nil, err
 	}
+	data := destination.Bytes()
 	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("expanded contents exceed %d bytes", limit)
 	}
@@ -569,6 +696,9 @@ func bundleMatches(profileBundleID, appBundleID string) bool {
 	profileBundleID = strings.TrimSpace(profileBundleID)
 	appBundleID = strings.TrimSpace(appBundleID)
 	if profileBundleID == appBundleID {
+		return appBundleID != ""
+	}
+	if profileBundleID == "*" {
 		return appBundleID != ""
 	}
 	if strings.HasSuffix(profileBundleID, ".*") {

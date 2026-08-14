@@ -126,6 +126,7 @@ type signingRunDeps struct {
 	DeleteKeychain            func(context.Context, string) error
 	InstallProfile            func(string, []byte, string, func(signingRunProfileInstall) error) (signingRunProfileInstall, error)
 	RemoveProfile             func(signingRunProfileInstall) error
+	RunChild                  func(context.Context, []string) error
 }
 
 type signingRunJournal struct {
@@ -438,9 +439,43 @@ func executeSigningOperation(ctx context.Context, options signingRunOptions, ope
 
 		runCtx, stopSignals := platformSigningRunContext(ctx)
 		defer stopSignals()
-		receipt, runErr := signingRunEnvironmentFn(runCtx, deps, options, profileData, inspection, operation)
-		return finishSigningRunReceipt(deps.Stderr, options.ReceiptPath, receipt, runErr)
+		return withSigningRunReceipt(deps.Stderr, options.ReceiptPath, func() (signingRunReceipt, error) {
+			return signingRunEnvironmentFn(runCtx, deps, options, profileData, inspection, operation)
+		})
 	})
+}
+
+func withSigningRunReceipt(
+	stderr io.Writer,
+	path string,
+	run func() (signingRunReceipt, error),
+) error {
+	if err := preflightSigningRunReceipt(path); err != nil {
+		return fmt.Errorf("signing run: preflight receipt: %w", err)
+	}
+	receipt, runErr := run()
+	return finishSigningRunReceipt(stderr, path, receipt, runErr)
+}
+
+func preflightSigningRunReceipt(path string) error {
+	if path == "" {
+		return nil
+	}
+	preflightComplete := errors.New("receipt preflight complete")
+	_, err := shared.SafeWriteFileNoSymlink(
+		path,
+		0o600,
+		false,
+		".asc-signing-run-receipt-*",
+		".asc-signing-run-receipt-backup-*",
+		func(*os.File) (int64, error) {
+			return 0, preflightComplete
+		},
+	)
+	if errors.Is(err, preflightComplete) {
+		return nil
+	}
+	return err
 }
 
 func validateSigningRunExpectedDigests(options signingRunOptions, inspection *signingRunInspection) error {
@@ -564,8 +599,20 @@ func runSigningEnvironment(
 	options signingRunOptions,
 	profileData []byte,
 	inspection *signingRunInspection,
-	operation func(context.Context) error,
+	operations ...func(context.Context) error,
 ) (receipt signingRunReceipt, resultErr error) {
+	var operation func(context.Context) error
+	if deps.RunChild != nil {
+		operation = func(runCtx context.Context) error {
+			return deps.RunChild(runCtx, options.Child)
+		}
+	}
+	if len(operations) > 0 {
+		operation = operations[0]
+	}
+	if operation == nil {
+		return signingRunReceipt{}, fmt.Errorf("signing run operation is required")
+	}
 	if deps.Stderr == nil {
 		deps.Stderr = io.Discard
 	}

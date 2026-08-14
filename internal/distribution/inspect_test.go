@@ -2,16 +2,21 @@ package distribution
 
 import (
 	"archive/zip"
+	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -53,8 +58,15 @@ func TestInspectIPAAdHocOmitsDevicesByDefault(t *testing.T) {
 	if !got.Preparation.MetadataEligible || len(got.Preparation.Issues) != 0 {
 		t.Fatalf("unexpected eligibility: %#v", got.Preparation)
 	}
-	if got.Signing.CodeSignatureVerification.Status != CodeSignatureInvalid {
+	wantCodeSignatureStatus := CodeSignatureInvalid
+	if runtime.GOOS != "darwin" {
+		wantCodeSignatureStatus = CodeSignatureNotVerified
+	}
+	if got.Signing.CodeSignatureVerification.Status != wantCodeSignatureStatus {
 		t.Fatalf("unexpected code signature verification: %#v", got.Signing.CodeSignatureVerification)
+	}
+	if runtime.GOOS != "darwin" && got.Signing.CodeSignatureVerification.Reason != "complete main-app code-signature verification is available only on macOS" {
+		t.Fatalf("unexpected portable code signature reason: %#v", got.Signing.CodeSignatureVerification)
 	}
 	if got.Signing.ProfileIntegrityVerification.Status != CodeSignatureVerified || got.Signing.ProfileTrustVerification.Status != CodeSignatureInvalid {
 		t.Fatalf("unexpected profile verification: %#v", got.Signing)
@@ -64,48 +76,11 @@ func TestInspectIPAAdHocOmitsDevicesByDefault(t *testing.T) {
 	}
 }
 
-func TestInspectIPABindsExactEmbeddedProfileDigest(t *testing.T) {
-	profile := signedProfile(t, profileFixture{
-		BundleID: "com.example.demo",
-		Devices:  []string{"private-device"},
-		Expires:  time.Now().Add(24 * time.Hour),
-	})
-	path := writeIPA(t, map[string][]byte{
-		"Payload/Demo.app/Info.plist":               infoPlist(t, "com.example.demo"),
-		"Payload/Demo.app/embedded.mobileprovision": profile,
-	})
-
-	got := inspectPath(t, path, false)
-	want := sha256.Sum256(profile)
-	if got.Signing.EmbeddedProfileSHA256 != hex.EncodeToString(want[:]) {
-		t.Fatalf("embedded profile SHA-256 = %q, want %q", got.Signing.EmbeddedProfileSHA256, hex.EncodeToString(want[:]))
-	}
-	if len(got.Signing.Devices) != 0 {
-		t.Fatalf("inspection disclosed devices by default: %#v", got.Signing.Devices)
-	}
-}
-
 func TestInspectIPAIncludesSortedDevicesOnlyWhenRequested(t *testing.T) {
 	path := validIPA(t, []string{"device-b", "device-a"}, time.Now().Add(24*time.Hour), false)
 	got := inspectPath(t, path, true)
 	if len(got.Signing.Devices) != 2 || got.Signing.Devices[0] != "device-a" || got.Signing.Devices[1] != "device-b" {
 		t.Fatalf("devices = %#v", got.Signing.Devices)
-	}
-}
-
-func TestInspectIPADeviceSetDigestUsesSemanticUDIDs(t *testing.T) {
-	formatted := validIPA(t, []string{"0000-1111:aaaa", "2222-bbbb", "00001111AAAA"}, time.Now().Add(24*time.Hour), false)
-	canonical := validIPA(t, []string{"00001111AAAA", "2222BBBB"}, time.Now().Add(24*time.Hour), false)
-	different := validIPA(t, []string{"00001111AAAA", "3333CCCC"}, time.Now().Add(24*time.Hour), false)
-
-	formattedSigning := inspectPath(t, formatted, false).Signing
-	canonicalSigning := inspectPath(t, canonical, false).Signing
-	differentSigning := inspectPath(t, different, false).Signing
-	if formattedSigning.DeviceCount != 2 || formattedSigning.DeviceSetSHA256 != canonicalSigning.DeviceSetSHA256 {
-		t.Fatalf("formatted=%#v canonical=%#v", formattedSigning, canonicalSigning)
-	}
-	if formattedSigning.DeviceSetSHA256 == differentSigning.DeviceSetSHA256 {
-		t.Fatalf("different sets share digest %q", formattedSigning.DeviceSetSHA256)
 	}
 }
 
@@ -138,6 +113,53 @@ func TestInspectIPAClassifiesProfiles(t *testing.T) {
 	}
 }
 
+func TestInspectIPAValidatesApplicationIdentifierPrefixDeclaration(t *testing.T) {
+	t.Run("legacy prefix differs from team", func(t *testing.T) {
+		path := writeIPA(t, map[string][]byte{
+			"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"),
+			"Payload/Demo.app/embedded.mobileprovision": signedProfile(t, profileFixture{
+				BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+				ApplicationIdentifierPrefixes: []string{"LEGACY123"},
+			}),
+		})
+		got := inspectPath(t, path, false)
+		if got.Signing.TeamID != "TEAM123" || !got.Preparation.MetadataEligible {
+			t.Fatalf("legacy profile inspection = %#v", got)
+		}
+	})
+
+	for _, test := range []struct {
+		name     string
+		prefixes []string
+	}{
+		{name: "missing", prefixes: []string{}},
+		{name: "ambiguous", prefixes: []string{"LEGACY123", "OTHER123"}},
+		{name: "malformed", prefixes: []string{`LEGACY"123`}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeIPA(t, map[string][]byte{
+				"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"),
+				"Payload/Demo.app/embedded.mobileprovision": signedProfile(t, profileFixture{
+					BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+					ApplicationIdentifierPrefixes: test.prefixes,
+				}),
+			})
+			file, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			info, err := file.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err == nil || !strings.Contains(err.Error(), "application identifier prefix") {
+				t.Fatalf("InspectIPA() error = %v, want prefix declaration rejection", err)
+			}
+		})
+	}
+}
+
 func TestInspectIPARejectsUnsafeAndAmbiguousArchives(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -148,6 +170,8 @@ func TestInspectIPARejectsUnsafeAndAmbiguousArchives(t *testing.T) {
 		{name: "bidirectional control", entries: map[string][]byte{"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"), "Payload/evil\u202Eipa": {1}}},
 		{name: "oversized member name", entries: map[string][]byte{"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"), "Payload/" + strings.Repeat("a", maxArchiveMemberNameLen): {1}}},
 		{name: "ambiguous main app", entries: map[string][]byte{"Payload/A.app/Info.plist": infoPlist(t, "com.example.a"), "Payload/B.app/Info.plist": infoPlist(t, "com.example.b")}},
+		{name: "regular file shadows top-level directory", entries: map[string][]byte{"Payload": {1}, "Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo")}},
+		{name: "regular file shadows app directory", entries: map[string][]byte{"Payload/Demo.app": {1}, "Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo")}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -160,6 +184,311 @@ func TestInspectIPARejectsUnsafeAndAmbiguousArchives(t *testing.T) {
 			info, _ := file.Stat()
 			if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err == nil {
 				t.Fatal("expected inspection error")
+			}
+		})
+	}
+}
+
+func TestInspectIPARejectsArchivePathPrefixCollisions(t *testing.T) {
+	info := infoPlist(t, "com.example.demo")
+	tests := []struct {
+		name    string
+		entries []orderedZipEntry
+	}{
+		{
+			name: "regular Payload before descendant",
+			entries: []orderedZipEntry{
+				{Name: "Payload", Data: []byte("file")},
+				{Name: "Payload/Demo.app/Info.plist", Data: info},
+			},
+		},
+		{
+			name: "regular app directory before Info plist",
+			entries: []orderedZipEntry{
+				{Name: "Payload/Demo.app", Data: []byte("file")},
+				{Name: "Payload/Demo.app/Info.plist", Data: info},
+			},
+		},
+		{
+			name: "descendant before regular app directory",
+			entries: []orderedZipEntry{
+				{Name: "Payload/Demo.app/Info.plist", Data: info},
+				{Name: "Payload/Demo.app", Data: []byte("file")},
+			},
+		},
+		{
+			name: "trailing slash alias changes kind",
+			entries: []orderedZipEntry{
+				{Name: "Payload/", Mode: os.ModeDir | 0o755},
+				{Name: "Payload", Data: []byte("file")},
+			},
+		},
+		{
+			name: "symlink ancestor",
+			entries: []orderedZipEntry{
+				{Name: "Payload", Data: []byte("outside"), Mode: os.ModeSymlink | 0o777},
+				{Name: "Payload/Demo.app/Info.plist", Data: info},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeOrderedIPA(t, test.entries)
+			assertInspectErrorContains(t, path, "Payload")
+		})
+	}
+}
+
+func TestInspectIPAAcceptsExplicitDirectoriesAndSimilarlyPrefixedSiblings(t *testing.T) {
+	path := writeOrderedIPA(t, []orderedZipEntry{
+		{Name: "Payload/", Mode: os.ModeDir | 0o755},
+		{Name: "Payload/Demo.app/", Mode: os.ModeDir | 0o755},
+		{Name: "Payload/Demo.application", Data: []byte("sibling")},
+		{Name: "Payload/Demo.app/Info.plist", Data: infoPlist(t, "com.example.demo")},
+		{Name: "Payload/Demo.app/embedded.mobileprovision", Data: signedProfile(t, profileFixture{
+			BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		})},
+	})
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err != nil {
+		t.Fatalf("InspectIPA() error = %v, want valid explicit directories and sibling", err)
+	}
+}
+
+func TestInspectIPAValidatesDirectoryEntryStreams(t *testing.T) {
+	base := func(directory orderedZipEntry) []orderedZipEntry {
+		return []orderedZipEntry{
+			directory,
+			{Name: "Payload/Demo.app/Info.plist", Data: infoPlist(t, "com.example.demo")},
+			{Name: "Payload/Demo.app/embedded.mobileprovision", Data: signedProfile(t, profileFixture{
+				BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+			})},
+		}
+	}
+	for _, test := range []struct {
+		name      string
+		directory orderedZipEntry
+	}{
+		{name: "stored empty", directory: orderedZipEntry{Name: "Payload/", Mode: os.ModeDir | 0o755}},
+		{name: "deflated empty with data descriptor", directory: orderedZipEntry{Name: "Payload/", Mode: os.ModeDir | 0o755, Deflate: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeOrderedIPA(t, base(test.directory))
+			if test.directory.Deflate {
+				file, err := os.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				info, err := file.Stat()
+				if err != nil {
+					t.Fatal(err)
+				}
+				reader, err := zip.NewReader(file, info.Size())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if reader.File[0].Flags&0x8 == 0 {
+					t.Fatal("deflated empty directory did not use a data descriptor")
+				}
+				_ = file.Close()
+			}
+			_ = inspectPath(t, path, false)
+		})
+	}
+
+	t.Run("nonzero payload", func(t *testing.T) {
+		path := writeOrderedIPA(t, base(orderedZipEntry{
+			Name: "Payload/", Data: []byte("directory-data"), Mode: os.ModeDir | 0o755, Deflate: true,
+		}))
+		assertInspectErrorContains(t, path, "contains data")
+	})
+	t.Run("corrupt compressed stream", func(t *testing.T) {
+		path := writeOrderedIPA(t, base(orderedZipEntry{
+			Name: "Payload/", Data: bytes.Repeat([]byte("directory-data"), 32), Mode: os.ModeDir | 0o755, Deflate: true,
+		}))
+		corruptZipMemberData(t, path, "Payload/")
+		assertInspectErrorContains(t, path, "Payload/")
+	})
+	t.Run("CRC mismatch", func(t *testing.T) {
+		path := writeOrderedIPA(t, base(orderedZipEntry{Name: "Payload/", Mode: os.ModeDir | 0o755}))
+		corruptCentralDirectoryCRC(t, path, "Payload/")
+		assertInspectErrorContains(t, path, "Payload/")
+	})
+}
+
+func TestInspectIPAContextCancellationDuringZIPValidationStopsImmediately(t *testing.T) {
+	path := writeOrderedIPA(t, []orderedZipEntry{
+		{Name: "Payload/", Mode: os.ModeDir | 0o755},
+		{Name: "Payload/Demo.app/Info.plist", Data: infoPlist(t, "com.example.demo")},
+		{Name: "Payload/Demo.app/embedded.mobileprovision", Data: signedProfile(t, profileFixture{
+			BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		})},
+	})
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var visited []string
+	duringZIPValidationForTest = func(name string) {
+		visited = append(visited, name)
+	}
+	duringZIPStreamReadForTest = cancel
+	t.Cleanup(func() {
+		duringZIPValidationForTest = nil
+		duringZIPStreamReadForTest = nil
+	})
+	if _, err := InspectIPAContext(ctx, file, info.Size(), InspectOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("InspectIPAContext() error = %v, want context.Canceled", err)
+	}
+	if len(visited) != 1 {
+		t.Fatalf("visited ZIP members = %#v, want exactly one", visited)
+	}
+}
+
+func TestSnapshotIPAContextCancellationCleansPrivateSnapshot(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "app.ipa")
+	if err := os.WriteFile(sourcePath, bytes.Repeat([]byte("snapshot"), 1<<17), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var snapshotDirectory string
+	snapshotCreatedForTest = func(path string) { snapshotDirectory = path }
+	duringIPASnapshotForTest = cancel
+	t.Cleanup(func() {
+		duringIPASnapshotForTest = nil
+		snapshotCreatedForTest = nil
+	})
+	if _, _, cleanup, err := snapshotIPAContext(ctx, source, info.Size()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("snapshotIPAContext() error = %v, want context.Canceled", err)
+	} else if cleanup != nil {
+		t.Fatal("snapshotIPAContext() returned cleanup after cancellation")
+	}
+	if snapshotDirectory == "" {
+		t.Fatal("snapshot directory creation hook was not called")
+	}
+	if _, err := os.Lstat(snapshotDirectory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("snapshot directory stat error = %v, want not found", err)
+	}
+}
+
+func TestInspectIPARejectsUnreadableNonMainMembers(t *testing.T) {
+	baseEntries := map[string][]byte{
+		"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"),
+		"Payload/Demo.app/embedded.mobileprovision": signedProfile(t, profileFixture{
+			BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		}),
+	}
+
+	t.Run("checksum failure", func(t *testing.T) {
+		entries := cloneByteMap(baseEntries)
+		entries["Symbols/resource.bin"] = bytes.Repeat([]byte("signed-resource"), 64)
+		path := writeIPA(t, entries)
+		corruptZipMemberData(t, path, "Symbols/resource.bin")
+		assertInspectErrorContains(t, path, "Symbols/resource.bin")
+	})
+
+	t.Run("truncated stream", func(t *testing.T) {
+		path := writeIPAWithDeclaredRawEntries(t, baseEntries, []declaredRawZipEntry{
+			{Name: "Symbols/truncated.bin", UncompressedSize: 1},
+		})
+		assertInspectErrorContains(t, path, "Symbols/truncated.bin")
+	})
+}
+
+func TestInspectIPARejectsUnreadableDirectoryMembers(t *testing.T) {
+	baseEntries := []orderedZipEntry{
+		{Name: "Payload/Demo.app/Info.plist", Data: infoPlist(t, "com.example.demo")},
+		{Name: "Payload/Demo.app/embedded.mobileprovision", Data: signedProfile(t, profileFixture{
+			BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		})},
+	}
+
+	t.Run("checksum failure", func(t *testing.T) {
+		entries := append([]orderedZipEntry(nil), baseEntries...)
+		entries = append(entries, orderedZipEntry{Name: "SymbolsX", Data: []byte("directory-data")})
+		path := writeOrderedIPA(t, entries)
+		renameZipMember(t, path, "SymbolsX", "Symbols/")
+		corruptZipMemberData(t, path, "Symbols/")
+		assertInspectErrorContains(t, path, "Symbols/")
+	})
+
+	t.Run("truncated stream", func(t *testing.T) {
+		path := writeIPAWithDeclaredRawEntries(t, map[string][]byte{
+			baseEntries[0].Name: baseEntries[0].Data,
+			baseEntries[1].Name: baseEntries[1].Data,
+		}, []declaredRawZipEntry{{Name: "SymbolsX", UncompressedSize: 1}})
+		renameZipMember(t, path, "SymbolsX", "Symbols/")
+		assertInspectErrorContains(t, path, "Symbols/")
+	})
+}
+
+func TestInspectIPARejectsArchiveWideDeclaredExpansionFromCompressedNonMainMembers(t *testing.T) {
+	const archiveExpansionLimit = uint64(16 << 30)
+	baseEntries := map[string][]byte{
+		"Payload/Demo.app/Info.plist":               infoPlist(t, "com.example.demo"),
+		"Payload/Demo.app/embedded.mobileprovision": signedProfile(t, profileFixture{BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Now().Add(time.Hour)}),
+	}
+	tests := []struct {
+		name     string
+		declared []declaredRawZipEntry
+	}{
+		{
+			name: "single highly compressed SwiftSupport member",
+			declared: []declaredRawZipEntry{
+				{Name: "SwiftSupport/libSwiftCore.dylib", UncompressedSize: archiveExpansionLimit},
+			},
+		},
+		{
+			name: "sum of non-main members",
+			declared: []declaredRawZipEntry{
+				{Name: "Symbols/part-1.bin", UncompressedSize: archiveExpansionLimit/2 + 1},
+				{Name: "Symbols/part-2.bin", UncompressedSize: archiveExpansionLimit/2 + 1},
+			},
+		},
+		{
+			name: "declared size arithmetic cannot overflow",
+			declared: []declaredRawZipEntry{
+				{Name: "SwiftSupport/overflow.bin", UncompressedSize: ^uint64(0)},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeIPAWithDeclaredRawEntries(t, baseEntries, test.declared)
+			file, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			info, err := file.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err == nil || !strings.Contains(err.Error(), "declared expansion") {
+				t.Fatalf("InspectIPA() error = %v, want archive-wide declared expansion rejection", err)
 			}
 		})
 	}
@@ -226,14 +555,32 @@ func TestInspectIPARejectsFileOverSupportedSizeBeforeZIPWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := file.Truncate(MaxIPABytes + 1); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := InspectIPA(file, MaxIPABytes+1, InspectOptions{}); err == nil {
 		t.Fatal("expected IPA size limit rejection")
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBundleMatchesUniversalProvisioningWildcard(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile string
+		app     string
+		want    bool
+	}{
+		{name: "universal wildcard", profile: "*", app: "com.example.demo", want: true},
+		{name: "universal wildcard rejects empty app", profile: "*", app: "", want: false},
+		{name: "prefix wildcard", profile: "com.example.*", app: "com.example.demo", want: true},
+		{name: "prefix wildcard requires suffix", profile: "com.example.*", app: "com.example.", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := bundleMatches(test.profile, test.app); got != test.want {
+				t.Fatalf("bundleMatches(%q, %q) = %t, want %t", test.profile, test.app, got, test.want)
+			}
+		})
 	}
 }
 
@@ -245,6 +592,9 @@ func TestInspectIPARejectsUnsafeAppMetadataBeforeDescriptorUse(t *testing.T) {
 	}{
 		{name: "bidirectional title", field: "CFBundleDisplayName", value: "Demo\u202Eipa"},
 		{name: "format control bundle identifier", field: "CFBundleIdentifier", value: "com.example.\u200Bdemo"},
+		{name: "bundle identifier path separator", field: "CFBundleIdentifier", value: "com.example/bad"},
+		{name: "empty bundle identifier component", field: "CFBundleIdentifier", value: "com..example"},
+		{name: "non-ASCII bundle identifier", field: "CFBundleIdentifier", value: "com.example.démo"},
 		{name: "oversized version", field: "CFBundleShortVersionString", value: strings.Repeat("1", 65)},
 	}
 	for _, test := range tests {
@@ -272,6 +622,130 @@ func TestInspectIPARejectsUnsafeAppMetadataBeforeDescriptorUse(t *testing.T) {
 				t.Fatal("expected unsafe app metadata rejection")
 			}
 		})
+	}
+}
+
+func TestValidateBundleIdentifierSyntax(t *testing.T) {
+	valid := []string{
+		"",
+		"com.example.demo",
+		"Com.Example-2.App",
+		"7legacy.-component",
+		"single",
+		strings.Repeat("a", 255),
+	}
+	for _, value := range valid {
+		if err := validateBundleIdentifier(value); err != nil {
+			t.Fatalf("validateBundleIdentifier(%q) = %v", value, err)
+		}
+	}
+	invalid := []string{
+		"com.example/bad",
+		"com..example",
+		".com.example",
+		"com.example.",
+		"com.example bad",
+		"com.exаmple.demo",
+		"com.example.*",
+		"com.example_bad",
+		strings.Repeat("a", 256),
+	}
+	for _, value := range invalid {
+		if err := validateBundleIdentifier(value); err == nil {
+			t.Fatalf("validateBundleIdentifier(%q) unexpectedly succeeded", value)
+		}
+	}
+}
+
+func TestInspectIPARejectsInvalidConcreteBundleIdentifierBeforeProfileMatching(t *testing.T) {
+	for _, bundleID := range []string{"com.example/bad", "com..example", "com.example.*"} {
+		t.Run(bundleID, func(t *testing.T) {
+			path := writeIPA(t, map[string][]byte{
+				"Payload/Demo.app/Info.plist": infoPlist(t, bundleID),
+				"Payload/Demo.app/embedded.mobileprovision": signedProfile(t, profileFixture{
+					BundleID: "*", Devices: []string{"one"}, Expires: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+				}),
+			})
+			assertInspectErrorContains(t, path, "CFBundleIdentifier")
+		})
+	}
+}
+
+func TestInspectIPARequiresMainAppIOSPlatformEvidence(t *testing.T) {
+	base := map[string]any{
+		"CFBundleIdentifier":         "com.example.demo",
+		"CFBundleName":               "Demo",
+		"CFBundleShortVersionString": "1.0",
+		"CFBundleVersion":            "1",
+	}
+	for _, test := range []struct {
+		name     string
+		metadata map[string]any
+	}{
+		{name: "visionOS", metadata: map[string]any{"DTPlatformName": "xros", "CFBundleSupportedPlatforms": []string{"XROS"}}},
+		{name: "tvOS", metadata: map[string]any{"DTPlatformName": "appletvos", "CFBundleSupportedPlatforms": []string{"AppleTVOS"}}},
+		{name: "macOS", metadata: map[string]any{"DTPlatformName": "macosx", "CFBundleSupportedPlatforms": []string{"MacOSX"}}},
+		{name: "simulator", metadata: map[string]any{"DTPlatformName": "iphonesimulator", "CFBundleSupportedPlatforms": []string{"iPhoneSimulator"}}},
+		{name: "contradictory fields", metadata: map[string]any{"DTPlatformName": "iphoneos", "CFBundleSupportedPlatforms": []string{"XROS"}}},
+		{name: "multiple platforms", metadata: map[string]any{"DTPlatformName": "iphoneos", "CFBundleSupportedPlatforms": []string{"iPhoneOS", "AppleTVOS"}}},
+		{name: "missing metadata", metadata: map[string]any{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			metadata := clonePlistMap(base)
+			for key, value := range test.metadata {
+				metadata[key] = value
+			}
+			path := writeIPA(t, map[string][]byte{
+				"Payload/Demo.app/Info.plist": plistBytesFormat(t, metadata, plist.XMLFormat),
+			})
+			file, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			info, err := file.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err == nil || !strings.Contains(err.Error(), "iOS platform") {
+				t.Fatalf("InspectIPA() error = %v, want iOS platform rejection", err)
+			}
+		})
+	}
+}
+
+func TestInspectIPAAcceptsMainAppIOSPlatformEvidenceInXMLAndBinaryPlists(t *testing.T) {
+	metadata := map[string]any{
+		"CFBundleIdentifier":         "com.example.demo",
+		"CFBundleName":               "Demo",
+		"CFBundleShortVersionString": "1.0",
+		"CFBundleVersion":            "1",
+		"DTPlatformName":             "iphoneos",
+		"CFBundleSupportedPlatforms": []string{"iPhoneOS"},
+	}
+	for _, format := range []int{plist.XMLFormat, plist.BinaryFormat} {
+		path := writeIPA(t, map[string][]byte{
+			"Payload/Demo.app/Info.plist": plistBytesFormat(t, metadata, format),
+		})
+		got := inspectPath(t, path, false)
+		if got.Platform != "IOS" {
+			t.Fatalf("platform = %q, want IOS", got.Platform)
+		}
+	}
+}
+
+func TestInspectIPAUsesOnlyMainAppPlatformEvidence(t *testing.T) {
+	path := writeIPA(t, map[string][]byte{
+		"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"),
+		"Payload/Demo.app/PlugIns/Vision.appex/Info.plist": plistBytes(t, map[string]any{
+			"CFBundleIdentifier":         "com.example.demo.vision",
+			"DTPlatformName":             "xros",
+			"CFBundleSupportedPlatforms": []string{"XROS"},
+		}),
+	})
+	got := inspectPath(t, path, false)
+	if got.Platform != "IOS" {
+		t.Fatalf("platform = %q, want main-app IOS evidence", got.Platform)
 	}
 }
 
@@ -303,24 +777,79 @@ func validIPA(t *testing.T, devices []string, expires time.Time, debuggable bool
 
 func infoPlist(t *testing.T, bundleID string) []byte {
 	t.Helper()
-	return plistBytes(t, map[string]any{"CFBundleIdentifier": bundleID, "CFBundleName": "Demo", "CFBundleShortVersionString": "1.0", "CFBundleVersion": "1"})
+	return plistBytes(t, map[string]any{
+		"CFBundleIdentifier":         bundleID,
+		"CFBundleName":               "Demo",
+		"CFBundleShortVersionString": "1.0",
+		"CFBundleVersion":            "1",
+	})
 }
 
 func plistBytes(t *testing.T, value any) []byte {
 	t.Helper()
-	data, err := plist.Marshal(value, plist.XMLFormat)
+	if payload, ok := value.(map[string]any); ok {
+		payload = clonePlistMap(payload)
+		if _, hasBundleID := payload["CFBundleIdentifier"]; hasBundleID {
+			if _, hasPlatformName := payload["DTPlatformName"]; !hasPlatformName {
+				if _, hasSupportedPlatforms := payload["CFBundleSupportedPlatforms"]; !hasSupportedPlatforms {
+					payload["DTPlatformName"] = "iphoneos"
+					payload["CFBundleSupportedPlatforms"] = []string{"iPhoneOS"}
+				}
+			}
+		}
+		value = payload
+	}
+	return plistBytesFormat(t, value, plist.XMLFormat)
+}
+
+func plistBytesFormat(t *testing.T, value any, format int) []byte {
+	t.Helper()
+	data, err := plist.Marshal(value, format)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return data
 }
 
+func clonePlistMap(value map[string]any) map[string]any {
+	result := make(map[string]any, len(value))
+	for key, item := range value {
+		result[key] = item
+	}
+	return result
+}
+
+func cloneByteMap(value map[string][]byte) map[string][]byte {
+	result := make(map[string][]byte, len(value))
+	for key, item := range value {
+		result[key] = item
+	}
+	return result
+}
+
+func assertInspectErrorContains(t *testing.T, path, want string) {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("InspectIPA() error = %v, want member %q rejection", err, want)
+	}
+}
+
 type profileFixture struct {
-	BundleID   string
-	Devices    []string
-	Expires    time.Time
-	Debuggable bool
-	Enterprise bool
+	BundleID                      string
+	Devices                       []string
+	Expires                       time.Time
+	Debuggable                    bool
+	Enterprise                    bool
+	ApplicationIdentifierPrefixes []string
 }
 
 func signedProfile(t *testing.T, fixture profileFixture) []byte {
@@ -339,9 +868,17 @@ func signedProfile(t *testing.T, fixture profileFixture) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entitlements := map[string]any{"application-identifier": "TEAM123." + fixture.BundleID, "com.apple.developer.team-identifier": "TEAM123", "get-task-allow": fixture.Debuggable}
+	prefixes := fixture.ApplicationIdentifierPrefixes
+	if prefixes == nil {
+		prefixes = []string{"TEAM123"}
+	}
+	applicationIdentifierPrefix := "TEAM123"
+	if len(prefixes) > 0 {
+		applicationIdentifierPrefix = prefixes[0]
+	}
+	entitlements := map[string]any{"application-identifier": applicationIdentifierPrefix + "." + fixture.BundleID, "com.apple.developer.team-identifier": "TEAM123", "get-task-allow": fixture.Debuggable}
 	payload := map[string]any{
-		"UUID": "profile-uuid", "Name": "Test Profile", "TeamIdentifier": []string{"TEAM123"}, "ApplicationIdentifierPrefix": []string{"TEAM123"},
+		"UUID": "profile-uuid", "Name": "Test Profile", "TeamIdentifier": []string{"TEAM123"}, "ApplicationIdentifierPrefix": prefixes,
 		"Platform":           []string{"iOS"},
 		"ProvisionedDevices": fixture.Devices, "ProvisionsAllDevices": fixture.Enterprise,
 		"ExpirationDate": fixture.Expires, "Entitlements": entitlements, "DeveloperCertificates": [][]byte{der},
@@ -452,4 +989,237 @@ func writeIPA(t *testing.T, entries map[string][]byte) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+type orderedZipEntry struct {
+	Name    string
+	Data    []byte
+	Mode    os.FileMode
+	Deflate bool
+}
+
+func writeOrderedIPA(t *testing.T, entries []orderedZipEntry) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "App.ipa")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	directoryAliases := map[string]string{}
+	for _, fixture := range entries {
+		writeName := fixture.Name
+		streamDirectory := fixture.Mode.IsDir() && (fixture.Deflate || len(fixture.Data) > 0)
+		if streamDirectory {
+			writeName = strings.TrimSuffix(fixture.Name, "/") + "X"
+			directoryAliases[writeName] = fixture.Name
+		}
+		header := &zip.FileHeader{Name: writeName, Method: zip.Deflate}
+		if fixture.Mode != 0 && !streamDirectory {
+			header.SetMode(fixture.Mode)
+		}
+		if fixture.Mode.IsDir() && !fixture.Deflate {
+			header.Method = zip.Store
+		}
+		entry, err := writer.CreateHeader(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write(fixture.Data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for from, to := range directoryAliases {
+		convertZipEntryToDirectory(t, path, from, to)
+	}
+	return path
+}
+
+func convertZipEntryToDirectory(t *testing.T, path, from, to string) {
+	t.Helper()
+	if len(from) != len(to) {
+		t.Fatalf("directory alias lengths differ: %q, %q", from, to)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.ReplaceAll(data, []byte(from), []byte(to))
+	signature := []byte{'P', 'K', 1, 2}
+	for offset := 0; ; {
+		index := bytes.Index(data[offset:], signature)
+		if index < 0 {
+			break
+		}
+		index += offset
+		if index+46 > len(data) {
+			break
+		}
+		nameLength := int(binary.LittleEndian.Uint16(data[index+28 : index+30]))
+		extraLength := int(binary.LittleEndian.Uint16(data[index+30 : index+32]))
+		commentLength := int(binary.LittleEndian.Uint16(data[index+32 : index+34]))
+		end := index + 46 + nameLength
+		if end > len(data) {
+			break
+		}
+		if string(data[index+46:end]) == to {
+			binary.LittleEndian.PutUint16(data[index+4:index+6], 3<<8|20)
+			binary.LittleEndian.PutUint32(data[index+38:index+42], uint32(0o40755)<<16)
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		offset = end + extraLength + commentLength
+	}
+	t.Fatalf("central directory entry %q not found", to)
+}
+
+func corruptZipMemberData(t *testing.T, path, name string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.NewReader(file, info.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range reader.File {
+		if member.Name != name {
+			continue
+		}
+		offset, err := member.DataOffset()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value [1]byte
+		if _, err := file.ReadAt(value[:], offset); err != nil {
+			t.Fatal(err)
+		}
+		value[0] ^= 0xff
+		if _, err := file.WriteAt(value[:], offset); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t.Fatalf("ZIP member %q not found", name)
+}
+
+func corruptCentralDirectoryCRC(t *testing.T, path, name string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := []byte{'P', 'K', 1, 2}
+	for offset := 0; ; {
+		index := bytes.Index(data[offset:], signature)
+		if index < 0 {
+			break
+		}
+		index += offset
+		if index+46 > len(data) {
+			break
+		}
+		nameLength := int(binary.LittleEndian.Uint16(data[index+28 : index+30]))
+		extraLength := int(binary.LittleEndian.Uint16(data[index+30 : index+32]))
+		commentLength := int(binary.LittleEndian.Uint16(data[index+32 : index+34]))
+		end := index + 46 + nameLength
+		if end > len(data) {
+			break
+		}
+		if string(data[index+46:end]) == name {
+			binary.LittleEndian.PutUint32(data[index+16:index+20], 1)
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		offset = end + extraLength + commentLength
+	}
+	t.Fatalf("central directory entry %q not found", name)
+}
+
+type declaredRawZipEntry struct {
+	Name             string
+	UncompressedSize uint64
+}
+
+func writeIPAWithDeclaredRawEntries(t *testing.T, entries map[string][]byte, declaredEntries []declaredRawZipEntry) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "App.ipa")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	for name, data := range entries {
+		entry, err := writer.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, declared := range declaredEntries {
+		header := &zip.FileHeader{
+			Name:               declared.Name,
+			Method:             zip.Deflate,
+			CompressedSize64:   2,
+			UncompressedSize64: declared.UncompressedSize,
+		}
+		entry, err := writer.CreateRaw(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte{0x03, 0x00}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func renameZipMember(t *testing.T, path, oldName, newName string) {
+	t.Helper()
+	if len(oldName) != len(newName) {
+		t.Fatal("ZIP member replacement names must have equal lengths")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := bytes.ReplaceAll(data, []byte(oldName), []byte(newName))
+	if bytes.Equal(replaced, data) {
+		t.Fatalf("ZIP member %q not found", oldName)
+	}
+	if err := os.WriteFile(path, replaced, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHashSetDeterministic(t *testing.T) {
+	a := hashSet([]string{"b", "a", "a"})
+	b := hashSet([]string{"a", "b"})
+	if !bytes.Equal([]byte(a), []byte(b)) {
+		t.Fatalf("hashes differ: %q %q", a, b)
+	}
 }

@@ -26,6 +26,25 @@ import (
 	"howett.net/plist"
 )
 
+var (
+	// ErrPrivatePublishLinkExpired means an immutable private install lease can
+	// no longer be verified and must be replaced by a newly authorized run.
+	ErrPrivatePublishLinkExpired = errors.New("private publication link expired")
+	// ErrPrivatePublishProfileExpired means the signed payload is no longer
+	// usable for publication and must be rebuilt under a new plan.
+	ErrPrivatePublishProfileExpired = errors.New("private publication profile expired")
+	// ErrPrivatePublishConflict means exact immutable local or remote evidence
+	// conflicts with the saved publication intent. Retrying cannot repair it.
+	ErrPrivatePublishConflict = errors.New("private publication intent conflict")
+	// ErrImmutableObjectConflict means an existing object at an exact key does
+	// not match the expected immutable content identity.
+	ErrImmutableObjectConflict = errors.New("immutable object conflict")
+	// ErrVerificationContentConflict means a successful fetch returned bytes or
+	// representation metadata that conflict with the immutable expected object.
+	// Retrying cannot make that exact destination safe to reuse.
+	ErrVerificationContentConflict = errors.New("published object content conflict")
+)
+
 const (
 	ContentTypeIPA      = "application/octet-stream"
 	ContentTypeManifest = "application/xml"
@@ -161,10 +180,19 @@ func LoadPreparedBundleContext(ctx context.Context, root rootfs.Root) (*Prepared
 		_ = descriptorFile.Close()
 		return nil, fmt.Errorf("bundle.json exceeds %d bytes", maxDescriptorBytes)
 	}
+	if !descriptorInfo.Mode().IsRegular() {
+		_ = descriptorFile.Close()
+		return nil, fmt.Errorf("bundle.json is not a regular file")
+	}
 	descriptorBytes, err := io.ReadAll(io.LimitReader(descriptorFile, maxDescriptorBytes+1))
-	_ = descriptorFile.Close()
 	if err != nil || len(descriptorBytes) > maxDescriptorBytes {
+		_ = descriptorFile.Close()
 		return nil, fmt.Errorf("read bounded bundle.json")
+	}
+	descriptorAfterRead, err := descriptorFile.Stat()
+	_ = descriptorFile.Close()
+	if err != nil || !stablePreparedFile(descriptorInfo, descriptorAfterRead) || int64(len(descriptorBytes)) != descriptorInfo.Size() {
+		return nil, fmt.Errorf("bundle.json changed while it was read")
 	}
 	descriptorDigest := sha256.Sum256(descriptorBytes)
 	descriptorSHA := hex.EncodeToString(descriptorDigest[:])
@@ -213,6 +241,10 @@ func LoadPreparedBundleContext(ctx context.Context, root rootfs.Root) (*Prepared
 	}
 	if written != info.Size() {
 		return nil, fmt.Errorf("payload/app.ipa size changed while hashing: read %d of %d bytes", written, info.Size())
+	}
+	infoAfterHash, err := ipa.Stat()
+	if err != nil || !stablePreparedFile(info, infoAfterHash) {
+		return nil, fmt.Errorf("payload/app.ipa changed while it was hashed")
 	}
 	actualSHA := hex.EncodeToString(digest.Sum(nil))
 	if actualSHA != strings.ToLower(descriptor.Artifact.SHA256) {
@@ -268,8 +300,8 @@ func validateDescriptor(descriptor PreparedDescriptor) error {
 	if strings.TrimSpace(descriptor.Signing.ProfileUUID) == "" || strings.TrimSpace(descriptor.Signing.TeamID) == "" || strings.TrimSpace(descriptor.Signing.ExpiresAt) == "" {
 		return fmt.Errorf("bundle.json signing requires profileUuid, teamId, and expiresAt")
 	}
-	if descriptor.Signing.DeviceCount <= 0 || !isCanonicalSHA256(descriptor.Signing.DeviceSetSHA256) || len(descriptor.Signing.ProfileCertificateSHA256Fingerprints) == 0 {
-		return fmt.Errorf("bundle.json signing requires a non-empty device set and profile certificate fingerprints")
+	if descriptor.Signing.DeviceCount <= 0 || !isCanonicalSHA256(descriptor.Signing.DeviceSetSHA256) || !isCanonicalSHA256(descriptor.Signing.EmbeddedProfileSHA256) || len(descriptor.Signing.ProfileCertificateSHA256Fingerprints) == 0 {
+		return fmt.Errorf("bundle.json signing requires a non-empty device set, embedded profile digest, and profile certificate fingerprints")
 	}
 	if descriptor.Signing.CodeSignatureVerification.Status != "verified" {
 		return fmt.Errorf("bundle.json signing.codeSignatureVerification.status must be verified")
@@ -640,10 +672,10 @@ func reverifyWithClock(ctx context.Context, verifier Verifier, receipt PublishRe
 	}
 	profileExpiry, err := time.Parse(time.RFC3339, receipt.Signing.ProfileExpiresAt)
 	if err != nil || !profileExpiry.After(now.Add(time.Minute)) {
-		return fmt.Errorf("saved publication signing profile is expired or expires too soon")
+		return fmt.Errorf("%w: saved signing profile is expired or expires too soon", ErrPrivatePublishProfileExpired)
 	}
 	if receipt.Access == AccessPrivate && (links.ExpiresAt == nil || !links.ExpiresAt.After(now)) {
-		return fmt.Errorf("saved install link is expired")
+		return fmt.Errorf("%w: saved install link is expired", ErrPrivatePublishLinkExpired)
 	}
 	if links.ExpiresAt != nil && !profileExpiry.After(links.ExpiresAt.Add(time.Minute)) {
 		return fmt.Errorf("saved install link exceeds the signing profile expiry")
@@ -719,6 +751,9 @@ func reverifyWithClock(ctx context.Context, verifier Verifier, receipt PublishRe
 			return err
 		}
 		if err := verifier.Verify(ctx, check); err != nil {
+			if errors.Is(err, ErrVerificationContentConflict) {
+				return fmt.Errorf("%w: recovered object fetch conflicts with saved receipt: %w", ErrPrivatePublishConflict, err)
+			}
 			return err
 		}
 	}
@@ -964,7 +999,7 @@ func NormalizePrefix(raw string) (string, error) {
 	if strings.Contains(trimmed, "\\") || strings.ContainsAny(trimmed, "\r\n\x00") {
 		return "", fmt.Errorf("prefix contains unsafe characters")
 	}
-	if len([]byte(trimmed)) > 1024 || containsUnsafeText(trimmed) {
+	if len([]byte(trimmed)) > 1024 || containsUnsafeText(trimmed) || containsUnsafeIdentifierText(trimmed) {
 		return "", fmt.Errorf("prefix is too long or contains control or bidi characters")
 	}
 	parts := strings.Split(trimmed, "/")
@@ -977,7 +1012,11 @@ func NormalizePrefix(raw string) (string, error) {
 }
 
 func ValidateEndpoint(raw string) (*url.URL, error) {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
+	trimmed := strings.TrimSpace(raw)
+	if containsUnsafeIdentifierText(trimmed) {
+		return nil, fmt.Errorf("endpoint contains whitespace, control, or format characters")
+	}
+	parsed, err := url.Parse(trimmed)
 	if err != nil {
 		return nil, fmt.Errorf("invalid endpoint: %w", err)
 	}
@@ -989,6 +1028,15 @@ func ValidateEndpoint(raw string) (*url.URL, error) {
 	}
 	parsed.Path = ""
 	return parsed, nil
+}
+
+func containsUnsafeIdentifierText(value string) bool {
+	for _, character := range value {
+		if unicode.IsSpace(character) || unicode.IsControl(character) || unicode.In(character, unicode.Cf) {
+			return true
+		}
+	}
+	return false
 }
 
 func ValidatePublicBaseURL(raw string) (*url.URL, error) {
@@ -1117,15 +1165,15 @@ func (v *HTTPVerifier) Verify(ctx context.Context, verification VerifyRequest) e
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
 		return fmt.Errorf("GET %s returned redirect status %d", safeURLForError(verification.URL), response.StatusCode)
 	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s returned status %d", safeURLForError(verification.URL), response.StatusCode)
+	}
 	if !equivalentContentType(response.Header.Get("Content-Type"), verification.ContentType) {
-		return fmt.Errorf("GET %s returned an unexpected content type", safeURLForError(verification.URL))
+		return fmt.Errorf("%w: %w: GET %s returned an unexpected content type", ErrObjectVerificationMismatch, ErrVerificationContentConflict, safeURLForError(verification.URL))
 	}
 	if verification.Kind == VerifyIPA {
-		if response.StatusCode != http.StatusOK {
-			return fmt.Errorf("GET %s returned status %d", safeURLForError(verification.URL), response.StatusCode)
-		}
 		if response.ContentLength >= 0 && response.ContentLength != verification.SizeBytes {
-			return fmt.Errorf("%w: GET %s returned content length %d, expected %d", ErrObjectVerificationMismatch, safeURLForError(verification.URL), response.ContentLength, verification.SizeBytes)
+			return fmt.Errorf("%w: %w: GET %s returned content length %d, expected %d", ErrObjectVerificationMismatch, ErrVerificationContentConflict, safeURLForError(verification.URL), response.ContentLength, verification.SizeBytes)
 		}
 		digest := sha256.New()
 		written, err := io.Copy(digest, io.LimitReader(response.Body, verification.SizeBytes+1))
@@ -1133,23 +1181,23 @@ func (v *HTTPVerifier) Verify(ctx context.Context, verification VerifyRequest) e
 			return fmt.Errorf("GET %s failed while reading IPA body", safeURLForError(verification.URL))
 		}
 		if written != verification.SizeBytes {
-			return fmt.Errorf("%w: GET %s returned unexpected IPA length", ErrObjectVerificationMismatch, safeURLForError(verification.URL))
+			return fmt.Errorf("%w: %w: GET %s returned unexpected IPA length", ErrObjectVerificationMismatch, ErrVerificationContentConflict, safeURLForError(verification.URL))
 		}
 		if !strings.EqualFold(hex.EncodeToString(digest.Sum(nil)), verification.SHA256) {
-			return fmt.Errorf("%w: GET %s returned an unexpected IPA SHA-256", ErrObjectVerificationMismatch, safeURLForError(verification.URL))
+			return fmt.Errorf("%w: %w: GET %s returned an unexpected IPA SHA-256", ErrObjectVerificationMismatch, ErrVerificationContentConflict, safeURLForError(verification.URL))
 		}
 		return nil
 	}
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s returned status %d", safeURLForError(verification.URL), response.StatusCode)
-	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, verification.SizeBytes+1))
-	if err != nil || int64(len(body)) != verification.SizeBytes {
-		return fmt.Errorf("GET %s returned unexpected body length", safeURLForError(verification.URL))
+	if err != nil {
+		return fmt.Errorf("GET %s response body failed", safeURLForError(verification.URL))
+	}
+	if int64(len(body)) != verification.SizeBytes {
+		return fmt.Errorf("%w: GET %s returned unexpected body length", ErrVerificationContentConflict, safeURLForError(verification.URL))
 	}
 	digest := sha256.Sum256(body)
 	if !strings.EqualFold(hex.EncodeToString(digest[:]), verification.SHA256) {
-		return fmt.Errorf("GET %s returned an unexpected SHA-256", safeURLForError(verification.URL))
+		return fmt.Errorf("%w: GET %s returned an unexpected SHA-256", ErrVerificationContentConflict, safeURLForError(verification.URL))
 	}
 	return nil
 }

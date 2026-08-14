@@ -325,7 +325,10 @@ func validatePrivatePublishIntentRequest(request privatePublishIntentRequest) er
 	if request.AddressingStyle != "path" && request.AddressingStyle != "virtual" {
 		return shared.UsageError("--addressing-style must be path or virtual")
 	}
-	if request.URLTTL <= 0 || request.DownloadGrace < 0 || request.URLTTL+request.DownloadGrace > 7*24*time.Hour {
+	const maximumPrivateLifetime = 7 * 24 * time.Hour
+	if request.URLTTL <= 0 || request.DownloadGrace < 0 ||
+		request.URLTTL > maximumPrivateLifetime ||
+		request.DownloadGrace > maximumPrivateLifetime-request.URLTTL {
 		return shared.UsageError("private link lifetimes must be positive, non-negative, and at most 7d combined")
 	}
 	if request.VerifyTimeout <= 0 {

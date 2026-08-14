@@ -12,6 +12,7 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	core "github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 type publicationStore struct {
@@ -381,6 +382,25 @@ func openExistingArtifactPaths(receiptPath, linkPath string) (artifactPaths, err
 		root: root, receipt: receiptRelative, link: linkRelative, receiptPath: receiptAbsolute, linkPath: linkAbsolute,
 		receiptExists: true, linkExists: true,
 	}, nil
+}
+
+func inspectExistingProtectedPublishArtifact(root *os.Root, name, label string) (bool, error) {
+	file, err := secureopen.OpenExistingNoFollowInRoot(root, name)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	if err := validateProtectedPublishArtifact(file, info, label); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func validateStoredPrivateState(state publishState, bundle *core.PreparedBundle, receiptPath, linkPath string) error {

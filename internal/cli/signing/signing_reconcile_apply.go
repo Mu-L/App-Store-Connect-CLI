@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"math/big"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -54,11 +56,15 @@ func executeSigningReconcileApplyPlanWithUsage(ctx context.Context, plan signing
 	if plan.MutationCount > plan.MaxMutations {
 		return signingReconcileReceipt{}, newReconcilePlanDrift(usageError("signing reconcile plan exceeds its mutation ceiling"))
 	}
-	if err := verifySigningLocalInputs(plan); err != nil {
+	devicesFile, err := verifySigningLocalInputs(plan)
+	if err != nil {
 		return signingReconcileReceipt{}, newReconcilePlanDrift(usageError(fmt.Sprintf("local inputs changed: %v; rerun asc signing reconcile plan", err)))
 	}
+	if err := prepareReconcileProfileOutput(plan.Paths.StateDir); err != nil {
+		return signingReconcileReceipt{}, usageError(fmt.Sprintf("invalid profile output directory: %v", err))
+	}
 
-	receipt, err := loadOrStartSigningReceipt(plan, usageError)
+	receipt, err := loadOrStartSigningReceiptWithUsage(plan, usageError)
 	if err != nil {
 		return signingReconcileReceipt{}, err
 	}
@@ -66,7 +72,7 @@ func executeSigningReconcileApplyPlanWithUsage(ctx context.Context, plan signing
 	if err != nil {
 		return receipt, err
 	}
-	requestCtx, cancel := shared.ContextWithTimeout(ctx)
+	requestCtx, cancel := signingRequestContext(ctx)
 	defer cancel()
 	if err := verifyCurrentReconcileCertificate(requestCtx, client, plan); err != nil {
 		failure := usageError(fmt.Sprintf("%v; rerun asc signing reconcile plan", err))
@@ -75,16 +81,7 @@ func executeSigningReconcileApplyPlanWithUsage(ctx context.Context, plan signing
 		}
 		return receipt, failure
 	}
-
-	deviceData, err := readProtectedFile(plan.Paths.DevicesFile)
-	if err != nil {
-		return receipt, err
-	}
-	devicesFile, err := decodeSigningDevicesFile(deviceData)
-	if err != nil {
-		return receipt, err
-	}
-	if err := preflightSigningApply(requestCtx, client, plan, devicesFile); err != nil {
+	if err := preflightSigningApplySanitized(requestCtx, client, plan, devicesFile); err != nil {
 		failure := usageError(fmt.Sprintf("remote signing state changed: %v; rerun asc signing reconcile plan", err))
 		if !isRetryableReconcileFailure(err) {
 			failure = newReconcilePlanDrift(failure)
@@ -196,6 +193,10 @@ func preflightSigningApply(ctx context.Context, client *asc.Client, plan signing
 	return nil
 }
 
+func preflightSigningApplySanitized(ctx context.Context, client *asc.Client, plan signingReconcilePlanArtifact, devicesFile signingDevicesFile) error {
+	return sanitizeReconcileError(preflightSigningApply(ctx, client, plan, devicesFile), devicesFile)
+}
+
 func validateSigningApplyPlan(plan signingReconcilePlanArtifact) error {
 	if plan.Certificate == nil || strings.TrimSpace(plan.Certificate.ID) == "" {
 		return fmt.Errorf("selected certificate is missing")
@@ -268,45 +269,156 @@ func planContainsDevice(plan signingReconcilePlanArtifact, fingerprint string) b
 	return false
 }
 
-func verifySigningLocalInputs(plan signingReconcilePlanArtifact) error {
-	return verifySigningLocalInputsAtArchive(plan, "")
+func verifySigningLocalInputs(plan signingReconcilePlanArtifact) (signingDevicesFile, error) {
+	return verifySigningLocalInputsAtArchiveWithDevices(plan, "")
 }
 
 func verifySigningLocalInputsAtArchive(plan signingReconcilePlanArtifact, archivePath string) error {
+	_, err := verifySigningLocalInputsAtArchiveWithDevices(plan, archivePath)
+	return err
+}
+
+func verifySigningLocalInputsAtArchiveWithDevices(plan signingReconcilePlanArtifact, archivePath string) (signingDevicesFile, error) {
+	data, err := readProtectedFile(plan.Paths.DevicesFile)
+	if err != nil {
+		return signingDevicesFile{}, fmt.Errorf("invalid devices file: %s", protectedInputDiagnostic(err))
+	}
+	devices, err := decodeSigningDevicesFile(data)
+	if err != nil {
+		return signingDevicesFile{}, fmt.Errorf("invalid devices file: %s", invalidDevicesFileDiagnostic(err))
+	}
 	if archivePath == "" {
 		archivePath = plan.Paths.ArchivePath
 	}
 	archive, err := readSigningArchiveRequirements(archivePath)
 	if err != nil {
-		return fmt.Errorf("inspect archive: %w", err)
+		return signingDevicesFile{}, fmt.Errorf("inspect archive: %w", sanitizeReconcileError(err, devices))
 	}
-	if archive.TeamID != plan.TeamID || !reflect.DeepEqual(archive.Targets, plan.Targets) {
-		return fmt.Errorf("archive signing requirements differ from plan")
-	}
-	data, err := readProtectedFile(plan.Paths.DevicesFile)
-	if err != nil {
-		return fmt.Errorf("read devices file: %w", err)
-	}
-	devices, err := decodeSigningDevicesFile(data)
-	if err != nil {
-		return err
+	if archive.TeamID != plan.TeamID || !signingTargetsEqual(archive.Targets, plan.Targets) {
+		return signingDevicesFile{}, fmt.Errorf("archive signing requirements differ from plan")
 	}
 	if digestSigningDeviceInputs(devices.Devices).SHA256 != plan.DeviceSetSHA256 {
-		return fmt.Errorf("desired device set digest differs from plan")
+		return signingDevicesFile{}, fmt.Errorf("desired device set digest differs from plan")
 	}
 	if len(devices.Devices) != len(plan.Devices) {
-		return fmt.Errorf("desired device count differs from plan")
+		return signingDevicesFile{}, fmt.Errorf("desired device count differs from plan")
 	}
 	for index, device := range devices.Devices {
 		planned := plan.Devices[index]
 		if fingerprintReconcileName(device.Name) != planned.NameSHA256 || device.Platform != planned.Platform || device.Fingerprint != planned.Fingerprint {
-			return fmt.Errorf("desired device %s differs from plan", device.Fingerprint)
+			return signingDevicesFile{}, fmt.Errorf("desired device %s differs from plan", device.Fingerprint)
 		}
 	}
-	return nil
+	return devices, nil
 }
 
-func loadOrStartSigningReceipt(plan signingReconcilePlanArtifact, usageError func(string) error) (signingReconcileReceipt, error) {
+func signingTargetsEqual(left, right []signingTarget) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		leftTarget := left[index]
+		rightTarget := right[index]
+		leftEntitlements := leftTarget.Entitlements
+		rightEntitlements := rightTarget.Entitlements
+		leftTarget.Entitlements = nil
+		rightTarget.Entitlements = nil
+		if !reflect.DeepEqual(leftTarget, rightTarget) || !signingValuesEqual(leftEntitlements, rightEntitlements) {
+			return false
+		}
+	}
+	return true
+}
+
+func signingValuesEqual(left, right any) bool {
+	leftNumber, leftIsNumber := exactSigningNumber(left)
+	rightNumber, rightIsNumber := exactSigningNumber(right)
+	if leftIsNumber || rightIsNumber {
+		return leftIsNumber && rightIsNumber && leftNumber.Cmp(rightNumber) == 0
+	}
+
+	switch leftValue := left.(type) {
+	case map[string]any:
+		rightValue, ok := right.(map[string]any)
+		if !ok || len(leftValue) != len(rightValue) {
+			return false
+		}
+		for key, value := range leftValue {
+			other, exists := rightValue[key]
+			if !exists || !signingValuesEqual(value, other) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		rightValue, ok := right.([]any)
+		if !ok || len(leftValue) != len(rightValue) {
+			return false
+		}
+		for index := range leftValue {
+			if !signingValuesEqual(leftValue[index], rightValue[index]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(left, right)
+	}
+}
+
+func exactSigningNumber(value any) (*big.Rat, bool) {
+	integer := new(big.Int)
+	switch typed := value.(type) {
+	case json.Number:
+		number, ok := new(big.Rat).SetString(string(typed))
+		return number, ok
+	case int:
+		return new(big.Rat).SetInt64(int64(typed)), true
+	case int8:
+		return new(big.Rat).SetInt64(int64(typed)), true
+	case int16:
+		return new(big.Rat).SetInt64(int64(typed)), true
+	case int32:
+		return new(big.Rat).SetInt64(int64(typed)), true
+	case int64:
+		return new(big.Rat).SetInt64(typed), true
+	case uint:
+		integer.SetUint64(uint64(typed))
+	case uint8:
+		integer.SetUint64(uint64(typed))
+	case uint16:
+		integer.SetUint64(uint64(typed))
+	case uint32:
+		integer.SetUint64(uint64(typed))
+	case uint64:
+		integer.SetUint64(typed)
+	case float32:
+		return exactSigningFloat(float64(typed))
+	case float64:
+		return exactSigningFloat(typed)
+	default:
+		return nil, false
+	}
+	return new(big.Rat).SetInt(integer), true
+}
+
+func exactSigningFloat(value float64) (*big.Rat, bool) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil, false
+	}
+	const maximumSafeJSONInteger = float64(1<<53 - 1)
+	if math.Trunc(value) == value && math.Abs(value) > maximumSafeJSONInteger {
+		return nil, false
+	}
+	number := new(big.Rat).SetFloat64(value)
+	return number, number != nil
+}
+
+func loadOrStartSigningReceipt(plan signingReconcilePlanArtifact) (signingReconcileReceipt, error) {
+	return loadOrStartSigningReceiptWithUsage(plan, shared.UsageError)
+}
+
+func loadOrStartSigningReceiptWithUsage(plan signingReconcilePlanArtifact, usageError func(string) error) (signingReconcileReceipt, error) {
 	if usageError == nil {
 		return signingReconcileReceipt{}, errors.New("signing reconcile usage error handler is required")
 	}
@@ -317,10 +429,10 @@ func loadOrStartSigningReceipt(plan signingReconcilePlanArtifact, usageError fun
 		decoder := json.NewDecoder(bytes.NewReader(data))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&receipt); err != nil {
-			return receipt, newReconcilePlanDrift(fmt.Errorf("decode receipt: %w", err))
+			return receipt, newReconcilePlanDrift(usageError("existing signing receipt contains invalid JSON"))
 		}
 		if err := ensureJSONEOF(decoder); err != nil {
-			return receipt, newReconcilePlanDrift(fmt.Errorf("decode receipt: %w", err))
+			return receipt, newReconcilePlanDrift(usageError("existing signing receipt contains invalid JSON"))
 		}
 		if receipt.SchemaVersion != signingReconcileSchemaV1 || receipt.PlanHash != plan.PlanHash ||
 			filepath.Clean(receipt.StateDir) != filepath.Clean(plan.Paths.StateDir) ||
@@ -332,10 +444,12 @@ func loadOrStartSigningReceipt(plan signingReconcilePlanArtifact, usageError fun
 		// remote drift and missing/corrupt local profiles are repaired or blocked.
 		receipt.Actions = nil
 		receipt.Complete = false
+		receipt.StateDir = plan.Paths.StateDir
+		receipt.ReceiptPath = receiptPath
 		return receipt, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		return signingReconcileReceipt{}, newReconcilePlanDrift(err)
+		return signingReconcileReceipt{}, newReconcilePlanDrift(usageError("existing signing receipt could not be read safely"))
 	}
 	now := nowRFC3339()
 	return signingReconcileReceipt{
@@ -510,6 +624,7 @@ func sanitizeReconcileError(err error, devices signingDevicesFile) error {
 			url.PathEscape(device.UDID),
 			device.Name,
 			url.QueryEscape(device.Name),
+			url.PathEscape(device.Name),
 		}
 		for _, secret := range uniqueSortedStrings(secrets) {
 			if secret != "" {
@@ -517,8 +632,19 @@ func sanitizeReconcileError(err error, devices signingDevicesFile) error {
 			}
 		}
 	}
-	return errors.New(message)
+	if message == err.Error() {
+		return err
+	}
+	return sanitizedReconcileError{message: message, cause: err}
 }
+
+type sanitizedReconcileError struct {
+	message string
+	cause   error
+}
+
+func (e sanitizedReconcileError) Error() string { return e.message }
+func (e sanitizedReconcileError) Unwrap() error { return e.cause }
 
 var writeReconcileVerifiedProfile = writeVerifiedProfile
 
@@ -559,6 +685,13 @@ func applySigningAction(ctx context.Context, client *asc.Client, plan signingRec
 	case actionCreateBundleID:
 		bundle, err := ensureReconcileBundleID(ctx, client, action.BundleID)
 		if err != nil {
+			return "", "", err
+		}
+		target, ok := targetByBundleID(plan.Targets, action.BundleID)
+		if !ok {
+			return "", "", fmt.Errorf("target is missing from plan")
+		}
+		if err := validateReconcileBundleSeed(*bundle, target); err != nil {
 			return "", "", err
 		}
 		return bundle.ID, "", nil
@@ -674,6 +807,9 @@ func ensureReconcileProfile(ctx context.Context, client *asc.Client, plan signin
 	}
 	if bundle.Attributes.Platform != asc.BundleIDPlatformIOS && bundle.Attributes.Platform != asc.BundleIDPlatformUniversal {
 		return nil, nil, fmt.Errorf("bundle ID has incompatible platform %s", bundle.Attributes.Platform)
+	}
+	if err := validateReconcileBundleSeed(*bundle, target); err != nil {
+		return nil, nil, err
 	}
 	if err := verifyReconcileBundleCapabilities(ctx, client, bundle.ID, target.Entitlements); err != nil {
 		return nil, nil, err
@@ -897,6 +1033,17 @@ func writeVerifiedProfile(stateDir string, content []byte) (string, error) {
 		return "", err
 	}
 	return filepath.Join(stateDir, filepath.FromSlash(relative)), nil
+}
+
+func prepareReconcileProfileOutput(stateDir string) error {
+	root, err := rootfs.New(stateDir)
+	if err != nil {
+		return err
+	}
+	if err := root.MkdirAll("profiles", 0o700); err != nil {
+		return err
+	}
+	return root.CheckDirectoryWritable("profiles", 0o600)
 }
 
 func readOptionalBoundedRootFile(root rootfs.Root, relative string, limit int64) ([]byte, bool, error) {

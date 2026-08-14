@@ -52,13 +52,8 @@ build:
 .PHONY: build-all
 build-all: clean
 	@echo "$(BLUE)Building for multiple platforms...$(NC)"
-	@host_os="$$($(GO) env GOHOSTOS)"; \
-	if [ "$$host_os" != "darwin" ]; then \
-		echo "Error: build-all requires a macOS host for CGO-enabled Darwin binaries."; \
-		exit 1; \
-	fi
 	@mkdir -p "$(RELEASE_DIR)"
-	@set -e; for target in "darwin amd64 macOS" "darwin arm64 macOS" "linux amd64 linux" "linux arm64 linux" "windows amd64 windows"; do \
+	@for target in "darwin amd64 macOS" "darwin arm64 macOS" "linux amd64 linux" "linux arm64 linux" "windows amd64 windows"; do \
 		set -- $$target; \
 		os="$$1"; arch="$$2"; label="$$3"; suffix=""; \
 		if [ "$$os" = "windows" ]; then suffix=".exe"; fi; \

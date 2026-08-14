@@ -2,6 +2,7 @@ package distribution
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -159,9 +160,9 @@ func (store *S3Store) Ensure(ctx context.Context, input PutObject) (StoredObject
 	if !errors.Is(err, os.ErrNotExist) {
 		return StoredObject{}, err
 	}
-	checksum, err := objectChecksumSHA256(input.SHA256)
-	if err != nil {
-		return StoredObject{}, err
+	digest, decodeErr := hex.DecodeString(input.SHA256)
+	if decodeErr != nil || len(digest) != sha256.Size {
+		return StoredObject{}, fmt.Errorf("put object identity has invalid SHA-256")
 	}
 	putCtx, putCancel := store.boundedRequestContext(ctx)
 	_, err = store.client.PutObject(putCtx, &s3.PutObjectInput{
@@ -170,7 +171,7 @@ func (store *S3Store) Ensure(ctx context.Context, input PutObject) (StoredObject
 		Body:           input.Body,
 		ContentLength:  aws.Int64(input.SizeBytes),
 		ContentType:    aws.String(input.ContentType),
-		ChecksumSHA256: aws.String(checksum),
+		ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(digest)),
 		IfNoneMatch:    aws.String("*"),
 		Metadata:       map[string]string{objectSHA256MetadataKey: input.SHA256},
 	})
@@ -217,20 +218,15 @@ func (store *S3Store) ReplaceCorrupt(ctx context.Context, input PutObject) (Stor
 	if err := ctx.Err(); err != nil {
 		return StoredObject{}, fmt.Errorf("conditionally replace corrupt object %q: %w", input.Key, err)
 	}
-	checksum, err := objectChecksumSHA256(input.SHA256)
-	if err != nil {
-		return StoredObject{}, err
-	}
 	putCtx, putCancel := store.boundedRequestContext(ctx)
 	_, err = store.client.PutObject(putCtx, &s3.PutObjectInput{
-		Bucket:         aws.String(store.bucket),
-		Key:            aws.String(input.Key),
-		Body:           input.Body,
-		ContentLength:  aws.Int64(input.SizeBytes),
-		ContentType:    aws.String(input.ContentType),
-		ChecksumSHA256: aws.String(checksum),
-		IfMatch:        aws.String(existing.entityTag),
-		Metadata:       map[string]string{objectSHA256MetadataKey: input.SHA256},
+		Bucket:        aws.String(store.bucket),
+		Key:           aws.String(input.Key),
+		Body:          input.Body,
+		ContentLength: aws.Int64(input.SizeBytes),
+		ContentType:   aws.String(input.ContentType),
+		IfMatch:       aws.String(existing.entityTag),
+		Metadata:      map[string]string{objectSHA256MetadataKey: input.SHA256},
 	})
 	putCancel()
 	if err != nil {
@@ -254,14 +250,6 @@ func (store *S3Store) ReplaceCorrupt(ctx context.Context, input PutObject) (Stor
 		return reconciled, nil
 	}
 	return StoredObject{Key: input.Key, SHA256: input.SHA256, SizeBytes: input.SizeBytes, ContentType: input.ContentType, Status: "replaced"}, nil
-}
-
-func objectChecksumSHA256(value string) (string, error) {
-	digest, err := hex.DecodeString(value)
-	if err != nil || len(digest) != 32 {
-		return "", fmt.Errorf("put object identity has invalid SHA-256")
-	}
-	return base64.StdEncoding.EncodeToString(digest), nil
 }
 
 func (store *S3Store) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
@@ -312,7 +300,7 @@ func (store *S3Store) head(ctx context.Context, key string) (StoredObject, error
 
 func reconcileStoredObject(input PutObject, existing StoredObject) (StoredObject, error) {
 	if !strings.EqualFold(existing.SHA256, input.SHA256) || existing.SizeBytes != input.SizeBytes || !equivalentContentType(existing.ContentType, input.ContentType) {
-		return StoredObject{}, fmt.Errorf("immutable object conflict at %q: existing metadata does not match expected SHA-256, size, and content type", input.Key)
+		return StoredObject{}, fmt.Errorf("%w at %q: existing metadata does not match expected SHA-256, size, and content type", ErrImmutableObjectConflict, input.Key)
 	}
 	existing.Status = "reused"
 	return existing, nil

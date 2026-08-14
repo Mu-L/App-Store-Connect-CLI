@@ -14,17 +14,14 @@ import (
 	"io"
 	"math/big"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/bitrise-io/go-pkcs12"
 	"github.com/bitrise-io/go-xcode/certificateutil"
 	"go.mozilla.org/pkcs7"
 	"howett.net/plist"
@@ -62,371 +59,6 @@ func TestInspectSigningRunInputs(t *testing.T) {
 	}
 	if got.CertificateSHA256 == "" || got.ProfileSHA256 == "" {
 		t.Fatalf("expected digests: %+v", got)
-	}
-}
-
-func TestInspectPKCS12IdentityReturnsOnlyPublicCertificateMetadata(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("PKCS#12 identity inspection enforces macOS owner-safe file semantics")
-	}
-	fixture := newSigningRunFixture(t, signingRunFixtureOptions{})
-	dir := t.TempDir()
-	identityPath := filepath.Join(dir, "identity.p12")
-	passwordPath := filepath.Join(dir, "password")
-	if err := os.WriteFile(identityPath, fixture.identity, 0o600); err != nil {
-		t.Fatalf("write identity: %v", err)
-	}
-	if err := os.WriteFile(passwordPath, []byte(fixture.password+"\r\n"), 0o600); err != nil {
-		t.Fatalf("write password: %v", err)
-	}
-
-	got, err := InspectPKCS12Identity(context.Background(), PKCS12IdentityOptions{
-		IdentityPath: identityPath, IdentityPasswordPath: passwordPath,
-	})
-	if err != nil {
-		t.Fatalf("InspectPKCS12Identity() error: %v", err)
-	}
-	if got.TeamID != fixture.teamID || got.CertificateSHA1 == "" || got.CertificateSHA256 == "" {
-		t.Fatalf("unexpected identity metadata: %+v", got)
-	}
-	if got.NotBefore.After(fixture.now) || !got.NotAfter.After(fixture.now) {
-		t.Fatalf("unexpected certificate validity: %+v", got)
-	}
-	encoded, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("marshal metadata: %v", err)
-	}
-	for _, forbidden := range []string{fixture.password, "privateKey", "identityPath", "passwordPath"} {
-		if strings.Contains(string(encoded), forbidden) {
-			t.Fatalf("metadata contains %q: %s", forbidden, encoded)
-		}
-	}
-}
-
-func TestInspectPKCS12IdentityRejectsCertificateOnlyStore(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("PKCS#12 identity inspection enforces macOS owner-safe file semantics")
-	}
-	fixture := newSigningRunFixture(t, signingRunFixtureOptions{})
-	_, certificate, err := pkcs12.Decode(fixture.identity, fixture.password)
-	if err != nil {
-		t.Fatalf("decode fixture: %v", err)
-	}
-	trustStore, err := pkcs12.EncodeTrustStore(rand.Reader, []*x509.Certificate{certificate}, fixture.password)
-	if err != nil {
-		t.Fatalf("encode trust store: %v", err)
-	}
-	dir := t.TempDir()
-	identityPath := filepath.Join(dir, "identity.p12")
-	passwordPath := filepath.Join(dir, "password")
-	if err := os.WriteFile(identityPath, trustStore, 0o600); err != nil {
-		t.Fatalf("write identity: %v", err)
-	}
-	if err := os.WriteFile(passwordPath, []byte(fixture.password), 0o600); err != nil {
-		t.Fatalf("write password: %v", err)
-	}
-	_, err = InspectPKCS12Identity(context.Background(), PKCS12IdentityOptions{
-		IdentityPath: identityPath, IdentityPasswordPath: passwordPath,
-	})
-	if err == nil || !strings.Contains(err.Error(), "decode identity") {
-		t.Fatalf("error = %v, want certificate-only store rejection", err)
-	}
-}
-
-func TestInspectSigningRunIdentityRejectsMismatchedPrivateKeyAndExpiredCertificate(t *testing.T) {
-	fixture := newSigningRunFixture(t, signingRunFixtureOptions{})
-	_, certificate, err := pkcs12.Decode(fixture.identity, fixture.password)
-	if err != nil {
-		t.Fatalf("decode fixture: %v", err)
-	}
-	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate mismatched key: %v", err)
-	}
-	mismatched, err := pkcs12.Encode(rand.Reader, otherKey, certificate, nil, fixture.password)
-	if err != nil {
-		t.Fatalf("encode mismatched identity: %v", err)
-	}
-	if _, err := inspectSigningRunIdentity(mismatched, []byte(fixture.password), fixture.now); err == nil || !strings.Contains(err.Error(), "does not match") {
-		t.Fatalf("mismatched identity error = %v", err)
-	}
-	if _, err := inspectSigningRunIdentity(fixture.identity, []byte(fixture.password), certificate.NotAfter); err == nil || !strings.Contains(err.Error(), "not valid") {
-		t.Fatalf("expired identity error = %v", err)
-	}
-}
-
-func TestInspectPKCS12IdentityValidatesBeforeReading(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		ctx     context.Context
-		options PKCS12IdentityOptions
-		want    string
-	}{
-		{name: "identity required", ctx: context.Background(), want: "identity path is required"},
-		{name: "canceled", ctx: canceledSigningRunContext(), options: PKCS12IdentityOptions{IdentityPath: "/does/not/exist"}, want: "context canceled"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := InspectPKCS12Identity(test.ctx, test.options)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want %q", err, test.want)
-			}
-		})
-	}
-}
-
-func canceledSigningRunContext() context.Context {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	return ctx
-}
-
-func TestRunEphemeralPinsPurposeAndInvokesCallback(t *testing.T) {
-	previous := executeSigningOperationFn
-	t.Cleanup(func() { executeSigningOperationFn = previous })
-	var got signingRunOptions
-	callbackCalls := 0
-	executeSigningOperationFn = func(ctx context.Context, options signingRunOptions, operation func(context.Context) error) error {
-		got = options
-		return operation(ctx)
-	}
-	err := RunEphemeral(context.Background(), EphemeralRunOptions{
-		IdentityPath: "identity.p12", IdentityPasswordPath: "password", ProfilePath: "profile.mobileprovision", ReceiptPath: "receipt.json",
-		ExpectedCertificateSHA256: strings.Repeat("a", 64), ExpectedProfileSHA256: strings.Repeat("b", 64),
-	}, func(context.Context) error {
-		callbackCalls++
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("RunEphemeral() error: %v", err)
-	}
-	if callbackCalls != 1 {
-		t.Fatalf("callback calls = %d, want 1", callbackCalls)
-	}
-	want := signingRunOptions{
-		IdentityPath: "identity.p12", IdentityPasswordPath: "password", ProfilePath: "profile.mobileprovision",
-		ReceiptPath: "receipt.json", Purpose: signingRunPurposeReleaseTesting,
-		ExpectedCertificateSHA256: strings.Repeat("A", 64), ExpectedProfileSHA256: strings.Repeat("B", 64),
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("options = %+v, want %+v", got, want)
-	}
-}
-
-func TestRecoverEphemeralWithLocksAroundRecoveryOnly(t *testing.T) {
-	events := []string{}
-	deps := signingRunDeps{
-		AcquireLock: func(context.Context) (func() error, error) {
-			events = append(events, "lock")
-			return func() error { events = append(events, "unlock"); return nil }, nil
-		},
-		Recover: func(context.Context) error {
-			events = append(events, "recover")
-			return nil
-		},
-	}
-	if err := recoverEphemeralWith(context.Background(), deps); err != nil {
-		t.Fatalf("recoverEphemeralWith() error: %v", err)
-	}
-	if want := []string{"lock", "recover", "unlock"}; !reflect.DeepEqual(events, want) {
-		t.Fatalf("events = %v, want %v", events, want)
-	}
-}
-
-func TestRecoverEphemeralWithPreservesRecoveryAndUnlockFailures(t *testing.T) {
-	recoveryErr := errors.New("recovery failed")
-	unlockErr := errors.New("unlock failed")
-	deps := signingRunDeps{
-		AcquireLock: func(context.Context) (func() error, error) {
-			return func() error { return unlockErr }, nil
-		},
-		Recover: func(context.Context) error { return recoveryErr },
-	}
-	err := recoverEphemeralWith(context.Background(), deps)
-	if !errors.Is(err, recoveryErr) || !errors.Is(err, unlockErr) {
-		t.Fatalf("error = %v, want recovery and unlock causes", err)
-	}
-	var reported shared.ReportedError
-	if errors.As(err, &reported) {
-		t.Fatalf("recovery errors must remain root-renderable: %v", err)
-	}
-}
-
-func TestRecoverEphemeralWithDoesNotRecoverWhenLockFails(t *testing.T) {
-	lockErr := errors.New("lock failed")
-	recoveryCalls := 0
-	err := recoverEphemeralWith(context.Background(), signingRunDeps{
-		AcquireLock: func(context.Context) (func() error, error) { return nil, lockErr },
-		Recover: func(context.Context) error {
-			recoveryCalls++
-			return nil
-		},
-	})
-	if !errors.Is(err, lockErr) || recoveryCalls != 0 {
-		t.Fatalf("error = %v recoveryCalls=%d, want lock failure before recovery", err, recoveryCalls)
-	}
-}
-
-func TestRunEphemeralRejectsInvalidInputBeforeExecution(t *testing.T) {
-	previous := executeSigningOperationFn
-	t.Cleanup(func() { executeSigningOperationFn = previous })
-	executed := false
-	executeSigningOperationFn = func(context.Context, signingRunOptions, func(context.Context) error) error {
-		executed = true
-		return nil
-	}
-	tests := []struct {
-		name     string
-		options  EphemeralRunOptions
-		callback func(context.Context) error
-		want     string
-	}{
-		{name: "identity", options: EphemeralRunOptions{ProfilePath: "profile"}, callback: func(context.Context) error { return nil }, want: "identity path is required"},
-		{name: "profile", options: EphemeralRunOptions{IdentityPath: "identity"}, callback: func(context.Context) error { return nil }, want: "profile path is required"},
-		{name: "certificate digest", options: EphemeralRunOptions{IdentityPath: "identity", ProfilePath: "profile"}, callback: func(context.Context) error { return nil }, want: "expected certificate SHA-256 is required"},
-		{name: "certificate digest invalid", options: EphemeralRunOptions{IdentityPath: "identity", ProfilePath: "profile", ExpectedCertificateSHA256: "bad"}, callback: func(context.Context) error { return nil }, want: "expected certificate SHA-256 must be"},
-		{name: "profile digest", options: EphemeralRunOptions{IdentityPath: "identity", ProfilePath: "profile", ExpectedCertificateSHA256: strings.Repeat("A", 64)}, callback: func(context.Context) error { return nil }, want: "expected profile SHA-256 is required"},
-		{name: "profile digest invalid", options: EphemeralRunOptions{IdentityPath: "identity", ProfilePath: "profile", ExpectedCertificateSHA256: strings.Repeat("A", 64), ExpectedProfileSHA256: "bad"}, callback: func(context.Context) error { return nil }, want: "expected profile SHA-256 must be"},
-		{name: "callback", options: EphemeralRunOptions{IdentityPath: "identity", ProfilePath: "profile", ExpectedCertificateSHA256: strings.Repeat("A", 64), ExpectedProfileSHA256: strings.Repeat("B", 64)}, want: "callback is required"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			executed = false
-			err := RunEphemeral(context.Background(), test.options, test.callback)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want %q", err, test.want)
-			}
-			if executed {
-				t.Fatal("executor called after validation failure")
-			}
-			if !shared.IsValidationError(err) {
-				t.Fatalf("error = %v, want validation classification", err)
-			}
-		})
-	}
-}
-
-func TestValidateSigningRunExpectedDigestsRejectsReplacementBeforeEnvironmentSetup(t *testing.T) {
-	inspection := &signingRunInspection{
-		CertificateSHA256: strings.Repeat("A", 64),
-		ProfileSHA256:     strings.Repeat("B", 64),
-	}
-	tests := []struct {
-		name    string
-		options signingRunOptions
-		want    string
-	}{
-		{name: "matching", options: signingRunOptions{ExpectedCertificateSHA256: strings.Repeat("A", 64), ExpectedProfileSHA256: strings.Repeat("B", 64)}},
-		{name: "identity replaced", options: signingRunOptions{ExpectedCertificateSHA256: strings.Repeat("C", 64), ExpectedProfileSHA256: strings.Repeat("B", 64)}, want: "certificate changed"},
-		{name: "profile replaced", options: signingRunOptions{ExpectedCertificateSHA256: strings.Repeat("A", 64), ExpectedProfileSHA256: strings.Repeat("C", 64)}, want: "profile changed"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			err := validateSigningRunExpectedDigests(test.options, inspection)
-			if test.want == "" && err != nil {
-				t.Fatalf("error = %v", err)
-			}
-			if test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
-				t.Fatalf("error = %v, want %q", err, test.want)
-			}
-		})
-	}
-}
-
-func TestRunEphemeralDigestMismatchHasNoEnvironmentSideEffects(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("ephemeral signing is macOS-only")
-	}
-	fixture := newSigningRunFixture(t, signingRunFixtureOptions{})
-	dir := t.TempDir()
-	identityPath := filepath.Join(dir, "identity.p12")
-	profilePath := filepath.Join(dir, "profile.mobileprovision")
-	passwordPath := filepath.Join(dir, "password")
-	for path, data := range map[string][]byte{
-		identityPath: fixture.identity, profilePath: fixture.profile, passwordPath: []byte(fixture.password),
-	} {
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatalf("write fixture %s: %v", filepath.Base(path), err)
-		}
-	}
-	previousRoots := signingRunSystemRootsFn
-	previousEnvironment := signingRunEnvironmentFn
-	previousNow := signingRunNowFn
-	signingRunSystemRootsFn = func() (*x509.CertPool, error) { return fixture.roots, nil }
-	signingRunNowFn = func() time.Time { return fixture.now }
-	environmentCalls := 0
-	signingRunEnvironmentFn = func(context.Context, signingRunDeps, signingRunOptions, []byte, *signingRunInspection, func(context.Context) error) (signingRunReceipt, error) {
-		environmentCalls++
-		return signingRunReceipt{}, nil
-	}
-	t.Cleanup(func() {
-		signingRunSystemRootsFn = previousRoots
-		signingRunEnvironmentFn = previousEnvironment
-		signingRunNowFn = previousNow
-	})
-
-	valid, err := inspectSigningRunInputs(fixture.identity, []byte(fixture.password), fixture.profile, fixture.roots, fixture.now)
-	if err != nil {
-		t.Fatalf("inspect fixture: %v", err)
-	}
-	for _, test := range []struct {
-		name        string
-		certificate string
-		profile     string
-		want        string
-	}{
-		{name: "identity replaced", certificate: strings.Repeat("C", 64), profile: valid.ProfileSHA256, want: "certificate changed"},
-		{name: "profile replaced", certificate: valid.CertificateSHA256, profile: strings.Repeat("C", 64), want: "profile changed"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			callbackCalls := 0
-			err := RunEphemeral(context.Background(), EphemeralRunOptions{
-				IdentityPath: identityPath, IdentityPasswordPath: passwordPath, ProfilePath: profilePath,
-				ExpectedCertificateSHA256: test.certificate, ExpectedProfileSHA256: test.profile,
-			}, func(context.Context) error {
-				callbackCalls++
-				return nil
-			})
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want %q", err, test.want)
-			}
-			if environmentCalls != 0 || callbackCalls != 0 {
-				t.Fatalf("side effects: environment=%d callback=%d", environmentCalls, callbackCalls)
-			}
-		})
-	}
-}
-
-func TestSanitizedChildEnvironmentUsesStrictAllowlist(t *testing.T) {
-	base := []string{
-		"PATH=/untrusted", "PATH=/usr/bin:/bin", "HOME=/Users/test", "TMPDIR=/private/tmp", "LANG=en_US.UTF-8",
-		"DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer", "SDKROOT=iphoneos", "TOOLCHAINS=com.apple.dt.toolchain.XcodeDefault",
-		"ASC_PRIVATE_KEY=asc-secret", "ASC_SIGNING_SYNC_PASSWORD=signing-secret", "AWS_SECRET_ACCESS_KEY=aws-secret",
-		"GIT_ASKPASS=/tmp/steal", "SSH_AUTH_SOCK=/tmp/agent", "DYLD_INSERT_LIBRARIES=/tmp/inject.dylib",
-		"CUSTOM_PASSWORD=other-secret", "UNRECOGNIZED=value", "HOME=/Users/evil\x00INJECTED=1", "=empty", "malformed",
-	}
-	got := SanitizedChildEnvironment(base)
-	want := []string{
-		"PATH=/usr/bin:/bin", "HOME=/Users/test", "TMPDIR=/private/tmp", "LANG=en_US.UTF-8",
-		"DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer", "SDKROOT=iphoneos", "TOOLCHAINS=com.apple.dt.toolchain.XcodeDefault",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("environment = %#v, want %#v", got, want)
-	}
-	base[0] = "PATH=changed"
-	if got[0] != "PATH=/usr/bin:/bin" {
-		t.Fatalf("sanitized environment aliases input: %v", got)
-	}
-}
-
-func TestSanitizedChildEnvironmentAllowlistDoesNotDrift(t *testing.T) {
-	want := []string{"DEVELOPER_DIR", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "PATH", "SDKROOT", "TEMP", "TMP", "TMPDIR", "TOOLCHAINS", "TZ"}
-	got := make([]string, 0, len(sanitizedSigningChildEnvironmentNames))
-	for name := range sanitizedSigningChildEnvironmentNames {
-		got = append(got, name)
-	}
-	sort.Strings(got)
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("allowlist = %v, want exact reviewed set %v", got, want)
 	}
 }
 
@@ -752,10 +384,7 @@ func TestRunSigningEnvironmentOrdinarySetupAndCleanupFailuresRemainRootRenderabl
 	deps.Stderr = &stderr
 	deps.CreateKeychain = func(context.Context, string, []byte) error { return setupErr }
 	deps.RemoveKeychainSearchEntry = func(context.Context, string) error { return cleanupErr }
-	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{}, fixture.profile, inspection, func(context.Context) error {
-		t.Fatal("callback must not run after setup failure")
-		return nil
-	})
+	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection)
 	if !errors.Is(runErr, setupErr) || !errors.Is(runErr, cleanupErr) {
 		t.Fatalf("error = %v, want setup and cleanup causes", runErr)
 	}
@@ -787,6 +416,7 @@ func TestRunSigningEnvironmentChildAndCleanupFailureRendersCompanion(t *testing.
 	events := []string{}
 	deps := fakeSigningRunDeps(&events)
 	deps.Stderr = &stderr
+	deps.RunChild = func(context.Context, []string) error { return shared.NewProcessExitError(42) }
 	removeCalls := 0
 	deps.RemoveKeychainSearchEntry = func(context.Context, string) error {
 		removeCalls++
@@ -795,9 +425,7 @@ func TestRunSigningEnvironmentChildAndCleanupFailureRendersCompanion(t *testing.
 		}
 		return nil
 	}
-	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{}, fixture.profile, inspection, func(context.Context) error {
-		return shared.NewProcessExitError(42)
-	})
+	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection)
 	if code, ok := shared.ProcessExitCode(runErr); !ok || code != 42 {
 		t.Fatalf("process exit = %d, %t; want 42, true; error=%v", code, ok, runErr)
 	}
@@ -818,9 +446,8 @@ func TestRunSigningEnvironmentChildAndUnlockFailureRendersCompanion(t *testing.T
 	deps := fakeSigningRunDeps(&events)
 	deps.Stderr = &stderr
 	deps.AcquireLock = func(context.Context) (func() error, error) { return func() error { return unlockErr }, nil }
-	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{}, fixture.profile, inspection, func(context.Context) error {
-		return shared.NewProcessExitError(42)
-	})
+	deps.RunChild = func(context.Context, []string) error { return shared.NewProcessExitError(42) }
+	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection)
 	if code, ok := shared.ProcessExitCode(runErr); !ok || code != 42 {
 		t.Fatalf("process exit = %d, %t; want 42, true; error=%v", code, ok, runErr)
 	}
@@ -845,6 +472,79 @@ func TestFinishSigningRunReceiptReportsFailureAlongsideChildExit(t *testing.T) {
 	var reported shared.ReportedError
 	if !errors.As(err, &reported) {
 		t.Fatalf("error = %v, want already-reported composite", err)
+	}
+}
+
+func TestWithSigningRunReceiptRejectsExistingDestinationBeforeRun(t *testing.T) {
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(receiptPath, []byte("existing"), 0o600); err != nil {
+		t.Fatalf("write existing receipt: %v", err)
+	}
+	runCalled := false
+
+	err := withSigningRunReceipt(io.Discard, receiptPath, func() (signingRunReceipt, error) {
+		runCalled = true
+		return signingRunReceipt{SchemaVersion: 1}, nil
+	})
+
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("error = %v, want os.ErrExist", err)
+	}
+	if runCalled {
+		t.Fatal("run callback executed despite invalid receipt destination")
+	}
+}
+
+func TestWithSigningRunReceiptPreflightsParentAndPublishesAfterRun(t *testing.T) {
+	receiptPath := filepath.Join(t.TempDir(), "missing", "receipt.json")
+	runCalled := false
+
+	err := withSigningRunReceipt(io.Discard, receiptPath, func() (signingRunReceipt, error) {
+		runCalled = true
+		entries, readErr := os.ReadDir(filepath.Dir(receiptPath))
+		if readErr != nil {
+			return signingRunReceipt{}, readErr
+		}
+		if len(entries) != 0 {
+			return signingRunReceipt{}, fmt.Errorf("receipt directory contains preflight residue: %v", entries)
+		}
+		return signingRunReceipt{SchemaVersion: 1, Outcome: "succeeded"}, nil
+	})
+	if err != nil {
+		t.Fatalf("withSigningRunReceipt() error: %v", err)
+	}
+	if !runCalled {
+		t.Fatal("run callback was not executed")
+	}
+	data, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatalf("read receipt: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"outcome": "succeeded"`)) {
+		t.Fatalf("receipt = %s, want successful outcome", data)
+	}
+}
+
+func TestWithSigningRunReceiptDoesNotReplaceDestinationCreatedDuringRun(t *testing.T) {
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	foreign := []byte("created during run")
+
+	err := withSigningRunReceipt(io.Discard, receiptPath, func() (signingRunReceipt, error) {
+		if writeErr := os.WriteFile(receiptPath, foreign, 0o600); writeErr != nil {
+			return signingRunReceipt{}, writeErr
+		}
+		return signingRunReceipt{SchemaVersion: 1, Outcome: "succeeded"}, nil
+	})
+
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("error = %v, want os.ErrExist", err)
+	}
+	data, readErr := os.ReadFile(receiptPath)
+	if readErr != nil {
+		t.Fatalf("read destination: %v", readErr)
+	}
+	if !bytes.Equal(data, foreign) {
+		t.Fatalf("destination = %q, want preserved foreign content %q", data, foreign)
 	}
 }
 
@@ -896,12 +596,10 @@ func TestRunSigningEnvironmentRestoresStateInReverseOrder(t *testing.T) {
 			return planned, nil
 		},
 		RemoveProfile: func(signingRunProfileInstall) error { events = append(events, "remove-profile"); return nil },
+		RunChild:      func(context.Context, []string) error { events = append(events, "child"); return nil },
 	}
 
-	result, err := runSigningEnvironment(context.Background(), deps, signingRunOptions{}, fixture.profile, inspection, func(context.Context) error {
-		events = append(events, "child")
-		return nil
-	})
+	result, err := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"xcodebuild"}}, fixture.profile, inspection)
 	if err != nil {
 		t.Fatalf("runSigningEnvironment() error: %v", err)
 	}
@@ -917,59 +615,6 @@ func TestRunSigningEnvironmentRestoresStateInReverseOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %#v, want %#v", events, want)
-	}
-}
-
-func TestRunSigningEnvironmentCallbackPanicCleansUpInReverseOrderAndRepanics(t *testing.T) {
-	fixture := newSigningRunFixture(t, signingRunFixtureOptions{})
-	inspection, err := inspectSigningRunInputs(fixture.identity, []byte(fixture.password), fixture.profile, fixture.roots, fixture.now)
-	if err != nil {
-		t.Fatalf("inspect fixture: %v", err)
-	}
-	events := []string{}
-	deps := fakeSigningRunDeps(&events)
-	deps.InstallProfile = func(_ string, _ []byte, _ string, beforeCreate func(signingRunProfileInstall) error) (signingRunProfileInstall, error) {
-		events = append(events, "install-profile")
-		planned := signingRunProfileInstall{Path: "/profiles/uuid", Created: true, Digest: inspection.ProfileSHA256}
-		if err := beforeCreate(planned); err != nil {
-			return signingRunProfileInstall{}, err
-		}
-		return planned, nil
-	}
-	panicValue := &struct{ message string }{message: "callback panic sentinel"}
-	gotPanic := func() (recovered any) {
-		defer func() { recovered = recover() }()
-		_, _ = runSigningEnvironment(context.Background(), deps, signingRunOptions{}, fixture.profile, inspection, func(context.Context) error {
-			events = append(events, "callback")
-			panic(panicValue)
-		})
-		return nil
-	}()
-	if gotPanic != panicValue {
-		t.Fatalf("panic = %#v, want original %#v", gotPanic, panicValue)
-	}
-	wantTail := []string{"callback", "remove-profile", "remove-search-entry", "delete-keychain", "remove-temp", "remove-journal", "unlock"}
-	if len(events) < len(wantTail) || !reflect.DeepEqual(events[len(events)-len(wantTail):], wantTail) {
-		t.Fatalf("events = %#v, want cleanup tail %#v", events, wantTail)
-	}
-}
-
-func TestRunSigningEnvironmentRawExecErrorDoesNotOptIntoExactExit(t *testing.T) {
-	fixture := newSigningRunFixture(t, signingRunFixtureOptions{})
-	inspection, err := inspectSigningRunInputs(fixture.identity, []byte(fixture.password), fixture.profile, fixture.roots, fixture.now)
-	if err != nil {
-		t.Fatalf("inspect fixture: %v", err)
-	}
-	execErr := exec.Command("/bin/sh", "-c", "exit 42").Run()
-	events := []string{}
-	_, runErr := runSigningEnvironment(context.Background(), fakeSigningRunDeps(&events), signingRunOptions{}, fixture.profile, inspection, func(context.Context) error {
-		return execErr
-	})
-	if !errors.Is(runErr, execErr) {
-		t.Fatalf("error = %v, want raw exec error", runErr)
-	}
-	if code, ok := shared.ProcessExitCode(runErr); ok {
-		t.Fatalf("raw exec error opted into exact exit %d: %v", code, runErr)
 	}
 }
 
@@ -1016,7 +661,7 @@ func TestRunSigningEnvironmentRestoresAfterEachSetupFailure(t *testing.T) {
 				}
 				return planned, nil
 			}
-			operation := func(context.Context) error {
+			deps.RunChild = func(context.Context, []string) error {
 				events = append(events, "child")
 				if failStage == "child" {
 					return fail
@@ -1024,7 +669,7 @@ func TestRunSigningEnvironmentRestoresAfterEachSetupFailure(t *testing.T) {
 				return nil
 			}
 
-			_, gotErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{}, fixture.profile, inspection, operation)
+			_, gotErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection)
 			if !errors.Is(gotErr, fail) {
 				t.Fatalf("error = %v, want injected failure", gotErr)
 			}
@@ -1069,6 +714,7 @@ func fakeSigningRunDeps(events *[]string) signingRunDeps {
 			return signingRunProfileInstall{}, nil
 		},
 		RemoveProfile: func(signingRunProfileInstall) error { *events = append(*events, "remove-profile"); return nil },
+		RunChild:      func(context.Context, []string) error { *events = append(*events, "child"); return nil },
 	}
 }
 

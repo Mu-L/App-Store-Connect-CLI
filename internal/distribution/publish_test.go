@@ -29,7 +29,7 @@ func TestLoadPreparedBundleValidatesArtifact(t *testing.T) {
 	ipa := []byte("ipa bytes")
 	digest := sha256.Sum256(ipa)
 	certificateFingerprint := strings.Repeat("a", 64)
-	descriptor := `{"schemaVersion":"1","platform":"IOS","distributionMethod":"release-testing","app":{"bundleId":"com.example.app","title":"Example","version":"1.2","buildNumber":"3"},"artifact":{"relativePath":"payload/app.ipa","sha256":"` + hex.EncodeToString(digest[:]) + `","sizeBytes":9},"signing":{"profileClass":"ad-hoc","profileUuid":"uuid","teamId":"TEAM","expiresAt":"2035-01-01T00:00:00Z","deviceCount":1,"deviceSetSha256":"` + strings.Repeat("b", 64) + `","profileCertificateSha256Fingerprints":["` + certificateFingerprint + `"],"profileIntegrityVerification":{"status":"verified"},"profileTrustVerification":{"status":"verified"},"codeSignatureVerification":{"status":"verified","scope":"complete-main-app-code-resources-entitlements-and-profile-certificate-binding","signerCertificateSha256Fingerprints":["` + certificateFingerprint + `"]}}}`
+	descriptor := `{"schemaVersion":"1","platform":"IOS","distributionMethod":"release-testing","app":{"bundleId":"com.example.app","title":"Example","version":"1.2","buildNumber":"3"},"artifact":{"relativePath":"payload/app.ipa","sha256":"` + hex.EncodeToString(digest[:]) + `","sizeBytes":9},"signing":{"profileClass":"ad-hoc","profileUuid":"uuid","embeddedProfileSha256":"` + strings.Repeat("c", 64) + `","teamId":"TEAM","expiresAt":"2035-01-01T00:00:00Z","deviceCount":1,"deviceSetSha256":"` + strings.Repeat("b", 64) + `","profileCertificateSha256Fingerprints":["` + certificateFingerprint + `"],"profileIntegrityVerification":{"status":"verified"},"profileTrustVerification":{"status":"verified"},"codeSignatureVerification":{"status":"verified","scope":"complete-main-app-code-resources-entitlements-and-profile-certificate-binding","signerCertificateSha256Fingerprints":["` + certificateFingerprint + `"]}}}`
 	if err := os.WriteFile(filepath.Join(dir, "bundle.json"), []byte(descriptor), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1152,8 +1152,9 @@ func minimalDescriptor(ipa []byte) PreparedDescriptor {
 		Artifact: PreparedArtifact{RelativePath: "payload/app.ipa", SHA256: sha256Hex(ipa), SizeBytes: int64(len(ipa))},
 		Signing: PreparedSigning{
 			ProfileClass: "ad-hoc", ProfileUUID: "uuid", TeamID: "TEAM", ExpiresAt: "2035-01-01T00:00:00Z", DeviceCount: 1,
-			DeviceSetSHA256: strings.Repeat("b", 64), ProfileCertificateSHA256Fingerprints: []string{strings.Repeat("a", 64)},
-			ProfileIntegrityVerification: PreparedCodeSignatureVerification{Status: "verified"}, ProfileTrustVerification: PreparedCodeSignatureVerification{Status: "verified"},
+			DeviceSetSHA256: strings.Repeat("b", 64), EmbeddedProfileSHA256: strings.Repeat("c", 64),
+			ProfileCertificateSHA256Fingerprints: []string{strings.Repeat("a", 64)},
+			ProfileIntegrityVerification:         PreparedCodeSignatureVerification{Status: "verified"}, ProfileTrustVerification: PreparedCodeSignatureVerification{Status: "verified"},
 			CodeSignatureVerification: PreparedCodeSignatureVerification{Status: "verified", Scope: "complete-main-app-code-resources-entitlements-and-profile-certificate-binding", SignerCertificateSHA256Fingerprints: []string{strings.Repeat("a", 64)}},
 		},
 	}

@@ -29,6 +29,7 @@ func finalizeExactExportedIPA(sourcePath, destinationPath string) (bundleInfo, e
 	if err != nil {
 		return bundleInfo{}, fmt.Errorf("open exported IPA root: %w", err)
 	}
+	defer sourceRoot.Close()
 	source, err := sourceRoot.OpenFile(filepath.Base(sourcePath))
 	if err != nil {
 		return bundleInfo{}, fmt.Errorf("open exported IPA without following links: %w", err)
@@ -46,6 +47,7 @@ func finalizeExactExportedIPA(sourcePath, destinationPath string) (bundleInfo, e
 	if err != nil {
 		return bundleInfo{}, fmt.Errorf("open IPA destination root: %w", err)
 	}
+	defer destinationRoot.Close()
 	openedDestinationRoot, err := destinationRoot.OpenRoot()
 	if err != nil {
 		return bundleInfo{}, fmt.Errorf("open IPA destination directory: %w", err)

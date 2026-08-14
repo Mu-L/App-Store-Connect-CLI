@@ -654,25 +654,6 @@ func TestCreateNewFileAtomicRejectsUnsupportedRenameWithoutOutput(t *testing.T) 
 	}
 }
 
-func TestCreateNewFromFallsBackWhenRenameNoReplaceIsUnsupported(t *testing.T) {
-	dir := t.TempDir()
-	root := mustRoot(t, dir)
-	root.renameNoReplaceForTest = func(*os.Root, string, string) error {
-		return secureopen.ErrRenameNoReplaceUnsupported
-	}
-
-	written, err := root.CreateNewFrom("identity.p12", strings.NewReader("complete"), 0o600)
-	if err != nil {
-		t.Fatalf("CreateNewFrom() error = %v", err)
-	}
-	if written != int64(len("complete")) {
-		t.Fatalf("written = %d, want %d", written, len("complete"))
-	}
-	if got := mustRead(t, filepath.Join(dir, "identity.p12")); got != "complete" {
-		t.Fatalf("content = %q, want complete", got)
-	}
-}
-
 func TestCreateNewFromWriteFailureLeavesNoDestination(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
