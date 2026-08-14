@@ -63,6 +63,9 @@ type Root struct {
 	// renameNoReplaceForTest makes unsupported-filesystem regressions
 	// deterministic. It is intentionally unexported and unset outside tests.
 	renameNoReplaceForTest func(root *os.Root, oldName, newName string) error
+	// requireNativeNoReplace preserves CreateNewFileAtomic's strict contract
+	// while CreateNewFrom may use the atomic hard-link fallback.
+	requireNativeNoReplace bool
 }
 
 type rootCreation struct {
@@ -1154,6 +1157,7 @@ func (r Root) CreateNewFile(name string, data []byte, perm os.FileMode) error {
 // the root. It returns ErrRenameNoReplaceUnsupported instead of falling back
 // when the filesystem cannot provide atomic no-replace rename semantics.
 func (r Root) CreateNewFileAtomic(name string, data []byte, perm os.FileMode) error {
+	r.requireNativeNoReplace = true
 	_, err := r.CreateNewFrom(name, bytes.NewReader(data), perm)
 	return err
 }
@@ -1270,7 +1274,20 @@ func (r Root) CreateNewFrom(name string, reader io.Reader, perm os.FileMode) (in
 		renameNoReplace = r.renameNoReplaceForTest
 	}
 	if err := renameNoReplace(parent, temporaryName, base); err != nil {
-		return written, err
+		if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
+			return written, err
+		}
+		if r.requireNativeNoReplace {
+			return written, err
+		}
+		// A hard link atomically publishes the complete staged inode without
+		// replacing an existing destination.
+		if linkErr := parent.Link(temporaryName, base); linkErr != nil {
+			return written, linkErr
+		}
+		if removeErr := parent.Remove(temporaryName); removeErr != nil {
+			return written, fmt.Errorf("publish succeeded but remove staged file: %w", removeErr)
+		}
 	}
 	published = true
 	directory, err := parent.Open(".")

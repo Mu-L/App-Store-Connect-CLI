@@ -434,9 +434,10 @@ func TestExecuteSigningReconcileApplyCreatesAndVerifiesWithoutPatchOrDelete(t *t
 	plan := signingReconcilePlanArtifact{
 		SchemaVersion: signingReconcileSchemaV1, GeneratedAt: "2026-01-01T00:00:00Z", Command: "signing reconcile plan", Ready: true,
 		TeamID: "TEAM1", MinimumValidityDays: 7, MaxMutations: 32, MutationCount: 3,
-		Paths:       signingReconcilePaths{ArchivePath: "App.xcarchive", DevicesFile: devicesPath, StateDir: stateDir, PlanPath: filepath.Join(stateDir, "plan.json"), ReceiptPath: filepath.Join(stateDir, "receipt.json"), ProfilesDir: filepath.Join(stateDir, "profiles")},
-		Certificate: &signingCertificateRef{ID: "cert-1", CertificateType: "IOS_DISTRIBUTION", SerialNumber: "123", ExpirationDate: "2100-01-01T00:00:00Z", SHA256: certificateFingerprint, TeamID: "TEAM1"},
-		Targets:     []signingTarget{target}, Devices: []signingDesiredDevice{{Platform: "IOS", Fingerprint: devices.Devices[0].Fingerprint, NameSHA256: fingerprintReconcileName("Phone")}},
+		DeviceSetSHA256: digestSigningDeviceInputs(devices.Devices).SHA256,
+		Paths:           signingReconcilePaths{ArchivePath: "App.xcarchive", DevicesFile: devicesPath, StateDir: stateDir, PlanPath: filepath.Join(stateDir, "plan.json"), ReceiptPath: filepath.Join(stateDir, "receipt.json"), ProfilesDir: filepath.Join(stateDir, "profiles")},
+		Certificate:     &signingCertificateRef{ID: "cert-1", CertificateType: "IOS_DISTRIBUTION", SerialNumber: "123", ExpirationDate: "2100-01-01T00:00:00Z", SHA256: certificateFingerprint, TeamID: "TEAM1"},
+		Targets:         []signingTarget{target}, Devices: []signingDesiredDevice{{Platform: "IOS", Fingerprint: devices.Devices[0].Fingerprint, NameSHA256: fingerprintReconcileName("Phone")}},
 		Actions: []signingAction{
 			{ID: "device:" + devices.Devices[0].Fingerprint, Kind: actionRegisterDevice, DeviceFingerprint: devices.Devices[0].Fingerprint, Platform: "IOS"},
 			{ID: "bundle:com.example.app", Kind: actionCreateBundleID, BundleID: "com.example.app", Platform: "IOS"},
@@ -1370,7 +1371,7 @@ func TestReadSigningPlanPreservesLargeEntitlementInteger(t *testing.T) {
 	}
 }
 
-func TestLoadSigningReceiptRebindsPlanPathsBeforePersistence(t *testing.T) {
+func TestLoadSigningReceiptRejectsPathsOutsidePlan(t *testing.T) {
 	stateDir := t.TempDir()
 	outsideDir := t.TempDir()
 	outsideReceipt := filepath.Join(outsideDir, "receipt.json")
@@ -1400,15 +1401,8 @@ func TestLoadSigningReceiptRebindsPlanPathsBeforePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	receipt, err := loadOrStartSigningReceipt(plan)
-	if err != nil {
-		t.Fatalf("loadOrStartSigningReceipt() error = %v", err)
-	}
-	if receipt.StateDir != stateDir || receipt.ReceiptPath != plan.Paths.ReceiptPath {
-		t.Fatalf("receipt paths = (%q, %q), want plan paths", receipt.StateDir, receipt.ReceiptPath)
-	}
-	if err := persistSigningReceipt(&receipt); err != nil {
-		t.Fatalf("persistSigningReceipt() error = %v", err)
+	if _, err := loadOrStartSigningReceipt(plan); err == nil {
+		t.Fatal("loadOrStartSigningReceipt() error = nil, want path-binding rejection")
 	}
 	outside, err := os.ReadFile(outsideReceipt)
 	if err != nil {
@@ -1487,6 +1481,19 @@ func TestWriteSigningStateJSONUses0600AndOverwriteGate(t *testing.T) {
 	}
 	if got, err := os.ReadFile(outside); err != nil || string(got) != "sentinel" {
 		t.Fatalf("outside=%q err=%v", got, err)
+	}
+}
+
+func TestValidateSigningApplyPlanRejectsMismatchedReceiptPath(t *testing.T) {
+	stateDir := t.TempDir()
+	err := validateSigningApplyPlan(signingReconcilePlanArtifact{
+		Paths: signingReconcilePaths{
+			StateDir:    stateDir,
+			ReceiptPath: filepath.Join(stateDir, "alternate-receipt.json"),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "receipt path") {
+		t.Fatalf("mismatched receipt path error = %v", err)
 	}
 }
 

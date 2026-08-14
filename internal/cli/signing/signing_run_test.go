@@ -384,7 +384,7 @@ func TestRunSigningEnvironmentOrdinarySetupAndCleanupFailuresRemainRootRenderabl
 	deps.Stderr = &stderr
 	deps.CreateKeychain = func(context.Context, string, []byte) error { return setupErr }
 	deps.RemoveKeychainSearchEntry = func(context.Context, string) error { return cleanupErr }
-	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection)
+	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection, nil)
 	if !errors.Is(runErr, setupErr) || !errors.Is(runErr, cleanupErr) {
 		t.Fatalf("error = %v, want setup and cleanup causes", runErr)
 	}
@@ -402,6 +402,25 @@ func TestRunSigningEnvironmentOrdinarySetupAndCleanupFailuresRemainRootRenderabl
 		if !strings.Contains(runErr.Error(), text) {
 			t.Fatalf("error = %q, want %q", runErr, text)
 		}
+	}
+}
+
+func TestRunSigningEnvironmentRejectsMissingLockReleaseFunction(t *testing.T) {
+	fixture := newSigningRunFixture(t, signingRunFixtureOptions{})
+	inspection, err := inspectSigningRunInputs(fixture.identity, []byte(fixture.password), fixture.profile, fixture.roots, fixture.now)
+	if err != nil {
+		t.Fatalf("inspect fixture: %v", err)
+	}
+	events := []string{}
+	deps := fakeSigningRunDeps(&events)
+	deps.AcquireLock = func(context.Context) (func() error, error) { return nil, nil }
+
+	_, err = runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection, nil)
+	if err == nil || !strings.Contains(err.Error(), "lock returned no release function") {
+		t.Fatalf("missing lock release error = %v", err)
+	}
+	if slices.Contains(events, "recover") {
+		t.Fatalf("recovery ran after invalid lock result: %v", events)
 	}
 }
 
@@ -425,7 +444,7 @@ func TestRunSigningEnvironmentChildAndCleanupFailureRendersCompanion(t *testing.
 		}
 		return nil
 	}
-	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection)
+	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection, nil)
 	if code, ok := shared.ProcessExitCode(runErr); !ok || code != 42 {
 		t.Fatalf("process exit = %d, %t; want 42, true; error=%v", code, ok, runErr)
 	}
@@ -447,7 +466,7 @@ func TestRunSigningEnvironmentChildAndUnlockFailureRendersCompanion(t *testing.T
 	deps.Stderr = &stderr
 	deps.AcquireLock = func(context.Context) (func() error, error) { return func() error { return unlockErr }, nil }
 	deps.RunChild = func(context.Context, []string) error { return shared.NewProcessExitError(42) }
-	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection)
+	_, runErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection, nil)
 	if code, ok := shared.ProcessExitCode(runErr); !ok || code != 42 {
 		t.Fatalf("process exit = %d, %t; want 42, true; error=%v", code, ok, runErr)
 	}
@@ -599,7 +618,7 @@ func TestRunSigningEnvironmentRestoresStateInReverseOrder(t *testing.T) {
 		RunChild:      func(context.Context, []string) error { events = append(events, "child"); return nil },
 	}
 
-	result, err := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"xcodebuild"}}, fixture.profile, inspection)
+	result, err := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"xcodebuild"}}, fixture.profile, inspection, nil)
 	if err != nil {
 		t.Fatalf("runSigningEnvironment() error: %v", err)
 	}
@@ -669,7 +688,7 @@ func TestRunSigningEnvironmentRestoresAfterEachSetupFailure(t *testing.T) {
 				return nil
 			}
 
-			_, gotErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection)
+			_, gotErr := runSigningEnvironment(context.Background(), deps, signingRunOptions{Child: []string{"tool"}}, fixture.profile, inspection, nil)
 			if !errors.Is(gotErr, fail) {
 				t.Fatalf("error = %v, want injected failure", gotErr)
 			}
