@@ -115,7 +115,7 @@ func PlatformEndpointSpecs() []EndpointSpec {
 			specs[i].ConfirmBodyField = "delegations"
 		}
 	}
-	return specs
+	return append(specs, platformReportsOptimizationEndpointSpecs()...)
 }
 
 // PlatformEndpointByCommandPath returns a Platform API v1 spec by command path.

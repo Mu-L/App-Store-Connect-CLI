@@ -243,6 +243,9 @@ func sentenceFromEndpointName(name string) string {
 		{"delete a ", "Delete a "},
 		{"delete an ", "Delete an "},
 		{"delete ", "Delete "},
+		{"apply ", "Apply "},
+		{"dismiss ", "Dismiss "},
+		{"query ", "Query "},
 		{"impression share report", "Create impression share report"},
 	}
 	for _, replacement := range replacements {

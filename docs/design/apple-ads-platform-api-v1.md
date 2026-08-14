@@ -54,6 +54,30 @@ Apple documents 99 v1 endpoints in 24 collections. The implementation is split b
 
 The endpoint specs drive command registration. A separate checked-in contract fixture records method, path, parameters, SDK body optionality, response type, context requirement, confirmation, command path, and Apple source URL for all 99 operations. Tests compare the implementation with that fixture and assert exact count and uniqueness.
 
+### Reports and optimization
+
+Reporting requests keep Apple's pagination and selector fields in the JSON payload. The CLI does not expose `--paginate` for these commands because query-string pagination cannot safely advance the reporting response. Successful result and pagination envelopes are printed unchanged; API errors continue through the CLI's structured stderr formatter.
+
+```bash
+# App and business-brand reports
+asc ads platform reports apps campaigns --ad-account "AD_ACCOUNT_ID" --file report.json --output json
+asc ads platform reports brands search-terms --ad-account "AD_ACCOUNT_ID" --file report.json --output json
+
+# Read-only insights, recommendations, suggestions, and audit queries
+asc ads platform insights impression-share find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads platform recommendations daily-budgets find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads platform suggestions keywords find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads platform change-history find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads platform change-history view --ad-account "AD_ACCOUNT_ID" --detail-id "Campaign.444555666.txn_abc123def456" --limit 100 --offset 0 --output json
+```
+
+Recommendation apply and dismiss operations accept an array payload and require explicit confirmation before the CLI reads the payload or resolves credentials:
+
+```bash
+asc ads platform recommendations target-cpas apply --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
+asc ads platform recommendations daily-budgets dismiss --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
+```
+
 ## Compatibility and deprecation
 
 The v1 host, context identifier, paths, payloads, response envelopes, pagination, reporting, and creative model are incompatible with v5. Reusing an existing command path would make a stable command change meaning based on a flag or release, so this design uses a separate `platform` namespace.
