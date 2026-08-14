@@ -169,6 +169,16 @@ func TestPrepareIPARejectsOutputParentSwappedToSymlink(t *testing.T) {
 }
 
 func TestPrepareIPARejectsIneligibleAndCredentialURLBeforeWriting(t *testing.T) {
+	unsupportedPlatformIPA := writeIPA(t, map[string][]byte{
+		"Payload/Demo.app/Info.plist": plistBytes(t, map[string]any{
+			"CFBundleIdentifier":         "com.example.demo",
+			"CFBundleName":               "Demo",
+			"CFBundleShortVersionString": "1.0",
+			"CFBundleVersion":            "1",
+			"DTPlatformName":             "xros",
+			"CFBundleSupportedPlatforms": []string{"XROS"},
+		}),
+	})
 	tests := []struct {
 		name string
 		path string
@@ -177,6 +187,7 @@ func TestPrepareIPARejectsIneligibleAndCredentialURLBeforeWriting(t *testing.T) 
 		{name: "development", path: validIPA(t, []string{"one"}, time.Now().Add(time.Hour), true), opts: PrepareOptions{}},
 		{name: "expired", path: validIPA(t, []string{"one"}, time.Now().Add(-time.Hour), false), opts: PrepareOptions{}},
 		{name: "credential URL", path: validIPA(t, []string{"one"}, time.Now().Add(time.Hour), false), opts: PrepareOptions{SourceURL: "https://token@example.com/revision"}},
+		{name: "unsupported archive platform", path: unsupportedPlatformIPA, opts: PrepareOptions{}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

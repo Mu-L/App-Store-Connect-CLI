@@ -115,13 +115,15 @@ type InspectOptions struct {
 }
 
 type infoPlistPayload struct {
-	BundleID    string `plist:"CFBundleIdentifier"`
-	Executable  string `plist:"CFBundleExecutable"`
-	DisplayName string `plist:"CFBundleDisplayName"`
-	Name        string `plist:"CFBundleName"`
-	Version     string `plist:"CFBundleShortVersionString"`
-	Build       string `plist:"CFBundleVersion"`
-	MinimumOS   string `plist:"MinimumOSVersion"`
+	BundleID           string   `plist:"CFBundleIdentifier"`
+	Executable         string   `plist:"CFBundleExecutable"`
+	DisplayName        string   `plist:"CFBundleDisplayName"`
+	Name               string   `plist:"CFBundleName"`
+	Version            string   `plist:"CFBundleShortVersionString"`
+	Build              string   `plist:"CFBundleVersion"`
+	MinimumOS          string   `plist:"MinimumOSVersion"`
+	PlatformName       string   `plist:"DTPlatformName"`
+	SupportedPlatforms []string `plist:"CFBundleSupportedPlatforms"`
 }
 
 type embeddedProfile struct {
@@ -215,6 +217,9 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 	if err != nil {
 		return Inspection{}, err
 	}
+	if err := validateIOSPlatform(info); err != nil {
+		return Inspection{}, err
+	}
 	app := App{
 		BundleID:         strings.TrimSpace(info.BundleID),
 		Title:            firstNonempty(info.DisplayName, info.Name),
@@ -295,7 +300,7 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 			result.Signing.Devices = devices
 		}
 		result.Preparation.Issues = preparationIssues(result, profile, effectiveNow(options.Now))
-		result.Signing.CodeSignatureVerification = verifyMainAppCodeSignature(reader.File, appDir, infoFiles[0], info.Executable, profile)
+		result.Signing.CodeSignatureVerification = verifyMainAppCodeSignature(reader.File, appDir, info.Executable, app.BundleID, profile)
 	}
 	result.Preparation.MetadataEligible = len(result.Preparation.Issues) == 0
 	return result, nil
@@ -346,6 +351,22 @@ func validateAppMetadata(app App) error {
 			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.In(r, unicode.Bidi_Control) {
 				return fmt.Errorf("invalid %s: control or formatting characters are not allowed", field.name)
 			}
+		}
+	}
+	return nil
+}
+
+func validateIOSPlatform(info infoPlistPayload) error {
+	platformName := strings.ToLower(strings.TrimSpace(info.PlatformName))
+	if platformName == "" && len(info.SupportedPlatforms) == 0 {
+		return fmt.Errorf("main app iOS platform metadata is missing")
+	}
+	if platformName != "" && platformName != "iphoneos" {
+		return fmt.Errorf("main app iOS platform metadata has unsupported DTPlatformName")
+	}
+	for _, platform := range info.SupportedPlatforms {
+		if strings.ToLower(strings.TrimSpace(platform)) != "iphoneos" {
+			return fmt.Errorf("main app iOS platform metadata contains an unsupported CFBundleSupportedPlatforms value")
 		}
 	}
 	return nil

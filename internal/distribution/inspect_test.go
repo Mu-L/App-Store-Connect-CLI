@@ -314,6 +314,84 @@ func TestInspectIPARejectsUnsafeAppMetadataBeforeDescriptorUse(t *testing.T) {
 	}
 }
 
+func TestInspectIPARequiresMainAppIOSPlatformEvidence(t *testing.T) {
+	base := map[string]any{
+		"CFBundleIdentifier":         "com.example.demo",
+		"CFBundleName":               "Demo",
+		"CFBundleShortVersionString": "1.0",
+		"CFBundleVersion":            "1",
+	}
+	for _, test := range []struct {
+		name     string
+		metadata map[string]any
+	}{
+		{name: "visionOS", metadata: map[string]any{"DTPlatformName": "xros", "CFBundleSupportedPlatforms": []string{"XROS"}}},
+		{name: "tvOS", metadata: map[string]any{"DTPlatformName": "appletvos", "CFBundleSupportedPlatforms": []string{"AppleTVOS"}}},
+		{name: "macOS", metadata: map[string]any{"DTPlatformName": "macosx", "CFBundleSupportedPlatforms": []string{"MacOSX"}}},
+		{name: "simulator", metadata: map[string]any{"DTPlatformName": "iphonesimulator", "CFBundleSupportedPlatforms": []string{"iPhoneSimulator"}}},
+		{name: "contradictory fields", metadata: map[string]any{"DTPlatformName": "iphoneos", "CFBundleSupportedPlatforms": []string{"XROS"}}},
+		{name: "multiple platforms", metadata: map[string]any{"DTPlatformName": "iphoneos", "CFBundleSupportedPlatforms": []string{"iPhoneOS", "AppleTVOS"}}},
+		{name: "missing metadata", metadata: map[string]any{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			metadata := clonePlistMap(base)
+			for key, value := range test.metadata {
+				metadata[key] = value
+			}
+			path := writeIPA(t, map[string][]byte{
+				"Payload/Demo.app/Info.plist": plistBytesFormat(t, metadata, plist.XMLFormat),
+			})
+			file, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			info, err := file.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err == nil || !strings.Contains(err.Error(), "iOS platform") {
+				t.Fatalf("InspectIPA() error = %v, want iOS platform rejection", err)
+			}
+		})
+	}
+}
+
+func TestInspectIPAAcceptsMainAppIOSPlatformEvidenceInXMLAndBinaryPlists(t *testing.T) {
+	metadata := map[string]any{
+		"CFBundleIdentifier":         "com.example.demo",
+		"CFBundleName":               "Demo",
+		"CFBundleShortVersionString": "1.0",
+		"CFBundleVersion":            "1",
+		"DTPlatformName":             "iphoneos",
+		"CFBundleSupportedPlatforms": []string{"iPhoneOS"},
+	}
+	for _, format := range []int{plist.XMLFormat, plist.BinaryFormat} {
+		path := writeIPA(t, map[string][]byte{
+			"Payload/Demo.app/Info.plist": plistBytesFormat(t, metadata, format),
+		})
+		got := inspectPath(t, path, false)
+		if got.Platform != "IOS" {
+			t.Fatalf("platform = %q, want IOS", got.Platform)
+		}
+	}
+}
+
+func TestInspectIPAUsesOnlyMainAppPlatformEvidence(t *testing.T) {
+	path := writeIPA(t, map[string][]byte{
+		"Payload/Demo.app/Info.plist": infoPlist(t, "com.example.demo"),
+		"Payload/Demo.app/PlugIns/Vision.appex/Info.plist": plistBytes(t, map[string]any{
+			"CFBundleIdentifier":         "com.example.demo.vision",
+			"DTPlatformName":             "xros",
+			"CFBundleSupportedPlatforms": []string{"XROS"},
+		}),
+	})
+	got := inspectPath(t, path, false)
+	if got.Platform != "IOS" {
+		t.Fatalf("platform = %q, want main-app IOS evidence", got.Platform)
+	}
+}
+
 func inspectPath(t *testing.T, path string, devices bool) Inspection {
 	t.Helper()
 	file, err := os.Open(path)
@@ -342,16 +420,46 @@ func validIPA(t *testing.T, devices []string, expires time.Time, debuggable bool
 
 func infoPlist(t *testing.T, bundleID string) []byte {
 	t.Helper()
-	return plistBytes(t, map[string]any{"CFBundleIdentifier": bundleID, "CFBundleName": "Demo", "CFBundleShortVersionString": "1.0", "CFBundleVersion": "1"})
+	return plistBytes(t, map[string]any{
+		"CFBundleIdentifier":         bundleID,
+		"CFBundleName":               "Demo",
+		"CFBundleShortVersionString": "1.0",
+		"CFBundleVersion":            "1",
+	})
 }
 
 func plistBytes(t *testing.T, value any) []byte {
 	t.Helper()
-	data, err := plist.Marshal(value, plist.XMLFormat)
+	if payload, ok := value.(map[string]any); ok {
+		payload = clonePlistMap(payload)
+		if _, hasBundleID := payload["CFBundleIdentifier"]; hasBundleID {
+			if _, hasPlatformName := payload["DTPlatformName"]; !hasPlatformName {
+				if _, hasSupportedPlatforms := payload["CFBundleSupportedPlatforms"]; !hasSupportedPlatforms {
+					payload["DTPlatformName"] = "iphoneos"
+					payload["CFBundleSupportedPlatforms"] = []string{"iPhoneOS"}
+				}
+			}
+		}
+		value = payload
+	}
+	return plistBytesFormat(t, value, plist.XMLFormat)
+}
+
+func plistBytesFormat(t *testing.T, value any, format int) []byte {
+	t.Helper()
+	data, err := plist.Marshal(value, format)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func clonePlistMap(value map[string]any) map[string]any {
+	result := make(map[string]any, len(value))
+	for key, item := range value {
+		result[key] = item
+	}
+	return result
 }
 
 type profileFixture struct {

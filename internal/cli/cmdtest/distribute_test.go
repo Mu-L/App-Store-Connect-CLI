@@ -250,6 +250,7 @@ func writeDistributionIPA(t *testing.T, device string) string {
 	}
 	infoPlist, err := plist.Marshal(map[string]any{
 		"CFBundleIdentifier": "com.example.demo", "CFBundleDisplayName": "Demo", "CFBundleShortVersionString": "1.0", "CFBundleVersion": "7", "MinimumOSVersion": "17.0",
+		"DTPlatformName": "iphoneos", "CFBundleSupportedPlatforms": []string{"iPhoneOS"},
 	}, plist.XMLFormat)
 	if err != nil {
 		t.Fatal(err)

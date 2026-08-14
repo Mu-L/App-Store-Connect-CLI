@@ -143,14 +143,14 @@ func TestVerifyMainExecutableEntitlementsQueriesEveryArchitectureOnce(t *testing
 		queries[architecture]++
 		entitlements := validMainEntitlements()
 		if architecture == "x86_64" {
-			entitlements["get-task-allow"] = true
+			entitlements["application-identifier"] = "TEAM123.com.example.other"
 		}
 		return plist.Marshal(entitlements, plist.XMLFormat)
 	}
 	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
 
-	_, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", profile)
-	if err == nil || !strings.Contains(err.Error(), "get-task-allow") {
+	_, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", "com.example.demo", profile)
+	if err == nil || !strings.Contains(err.Error(), "CFBundleIdentifier") {
 		t.Fatalf("verifyMainExecutableEntitlements() error = %v, want secondary-architecture mismatch", err)
 	}
 	if queries["arm64"] != 1 || queries["x86_64"] != 1 || len(queries) != 2 {
@@ -199,7 +199,7 @@ func TestVerifyMainExecutableEntitlementsFailsClosedPerSlice(t *testing.T) {
 			}
 			t.Cleanup(func() { runCodeSignTool = runBoundedTool })
 
-			_, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", entitlementTestProfile())
+			_, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", "com.example.demo", entitlementTestProfile())
 			if err == nil || !strings.Contains(err.Error(), test.wantReason) {
 				t.Fatalf("verifyMainExecutableEntitlements() error = %v, want %q", err, test.wantReason)
 			}
@@ -221,7 +221,7 @@ func TestVerifyMainExecutableEntitlementsPreservesThinBinaryBehavior(t *testing.
 	}
 	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
 
-	architectures, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", entitlementTestProfile())
+	architectures, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", "com.example.demo", entitlementTestProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,11 +243,81 @@ func TestVerifyMainExecutableEntitlementsRejectsInvalidLipoOutput(t *testing.T) 
 			}
 			t.Cleanup(func() { runCodeSignTool = runBoundedTool })
 
-			if _, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", entitlementTestProfile()); err == nil {
+			if _, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", "com.example.demo", entitlementTestProfile()); err == nil {
 				t.Fatal("verifyMainExecutableEntitlements() error = nil, want invalid architecture rejection")
 			}
 			if codesignCalled {
 				t.Fatal("codesign was called with unvalidated lipo output")
+			}
+		})
+	}
+}
+
+func TestValidateSignedMainAppEntitlementsBindsExactBundleIdentifier(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		profileApplicationID string
+		signedApplicationID  any
+		signedTeamID         string
+		wantError            bool
+	}{
+		{
+			name:                 "exact profile and matching signed identifier",
+			profileApplicationID: "TEAM123.com.example.demo",
+			signedApplicationID:  "TEAM123.com.example.demo",
+			signedTeamID:         "TEAM123",
+		},
+		{
+			name:                 "wildcard profile and matching signed identifier",
+			profileApplicationID: "TEAM123.com.example.*",
+			signedApplicationID:  "TEAM123.com.example.demo",
+			signedTeamID:         "TEAM123",
+		},
+		{
+			name:                 "wildcard profile different suffix",
+			profileApplicationID: "TEAM123.com.example.*",
+			signedApplicationID:  "TEAM123.com.example.other",
+			signedTeamID:         "TEAM123",
+			wantError:            true,
+		},
+		{
+			name:                 "team prefix ambiguity",
+			profileApplicationID: "TEAM123.*",
+			signedApplicationID:  "TEAM1234.com.example.demo",
+			signedTeamID:         "TEAM123",
+			wantError:            true,
+		},
+		{
+			name:                 "application identifier injection",
+			profileApplicationID: "TEAM123.*",
+			signedApplicationID:  `TEAM123.com.example.demo" or true`,
+			signedTeamID:         "TEAM123",
+			wantError:            true,
+		},
+		{
+			name:                 "missing signed identifier",
+			profileApplicationID: "TEAM123.*",
+			signedApplicationID:  nil,
+			signedTeamID:         "TEAM123",
+			wantError:            true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			profile := entitlementTestProfile()
+			profile.Entitlements["application-identifier"] = test.profileApplicationID
+			entitlements := map[string]any{
+				"com.apple.developer.team-identifier": test.signedTeamID,
+			}
+			if test.signedApplicationID != nil {
+				entitlements["application-identifier"] = test.signedApplicationID
+			}
+			data, err := plist.Marshal(entitlements, plist.XMLFormat)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = validateSignedMainAppEntitlements(data, "com.example.demo", profile)
+			if (err != nil) != test.wantError {
+				t.Fatalf("validateSignedMainAppEntitlements() error = %v, wantError=%t", err, test.wantError)
 			}
 		})
 	}
@@ -434,7 +504,7 @@ func TestVerifyMainAppCodeSignatureRejectsUnsafeTeamBeforeTools(t *testing.T) {
 	}
 	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
 
-	got := verifyMainAppCodeSignature(nil, "Payload/Demo.app", nil, "Demo", parsedProfile{
+	got := verifyMainAppCodeSignature(nil, "Payload/Demo.app", "Demo", "com.example.demo", parsedProfile{
 		embeddedProfile: embeddedProfile{TeamIdentifier: []string{`TEAM" or true`}},
 	})
 	if got.Status != CodeSignatureInvalid || !strings.Contains(got.Reason, "unsupported characters") || called {
@@ -453,7 +523,7 @@ func TestVerifyMainAppCodeSignatureRejectsExpandedExecutableBeforeTools(t *testi
 		return nil, errors.New("unexpected")
 	}
 	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
-	got := verifyMainAppCodeSignature([]*zip.File{member}, "Payload/Demo.app", nil, "Demo", parsedProfile{})
+	got := verifyMainAppCodeSignature([]*zip.File{member}, "Payload/Demo.app", "Demo", "com.example.demo", parsedProfile{})
 	if got.Status != CodeSignatureInvalid || called {
 		t.Fatalf("verification=%#v called=%t", got, called)
 	}

@@ -36,7 +36,7 @@ const (
 
 var runCodeSignTool = runBoundedTool
 
-func verifyMainAppCodeSignature(members []*zip.File, appDir string, _ *zip.File, executable string, profile parsedProfile) CodeSignatureVerification {
+func verifyMainAppCodeSignature(members []*zip.File, appDir, executable, bundleID string, profile parsedProfile) CodeSignatureVerification {
 	result := CodeSignatureVerification{Status: CodeSignatureNotVerified, Scope: mainCodeSignatureScope}
 	if runtime.GOOS != "darwin" {
 		result.Reason = "complete main-app code-signature verification is available only on macOS"
@@ -101,7 +101,7 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir string, _ *zip.File,
 		result.Status, result.Reason = CodeSignatureInvalid, "CFBundleExecutable is not a Mach-O file in the main app"
 		return result
 	}
-	mainArchitectures, err := verifyMainExecutableEntitlements(ctx, mainExecutablePath, profile)
+	mainArchitectures, err := verifyMainExecutableEntitlements(ctx, mainExecutablePath, bundleID, profile)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 			result.Status, result.Reason = codeVerificationFailure(err, "main executable")
@@ -154,7 +154,7 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir string, _ *zip.File,
 	return result
 }
 
-func verifyMainExecutableEntitlements(ctx context.Context, codePath string, profile parsedProfile) ([]string, error) {
+func verifyMainExecutableEntitlements(ctx context.Context, codePath, bundleID string, profile parsedProfile) ([]string, error) {
 	architectures, err := codeObjectArchitectures(ctx, codePath)
 	if err != nil {
 		return nil, err
@@ -173,14 +173,14 @@ func verifyMainExecutableEntitlements(ctx context.Context, codePath string, prof
 		if err != nil {
 			return nil, fmt.Errorf("could not extract signed main-app entitlements for architecture %s: %w", architecture, err)
 		}
-		if err := validateSignedMainAppEntitlements(entitlementsData, profile); err != nil {
+		if err := validateSignedMainAppEntitlements(entitlementsData, bundleID, profile); err != nil {
 			return nil, err
 		}
 	}
 	return architectures, nil
 }
 
-func validateSignedMainAppEntitlements(entitlementsData []byte, profile parsedProfile) error {
+func validateSignedMainAppEntitlements(entitlementsData []byte, bundleID string, profile parsedProfile) error {
 	var entitlements map[string]any
 	if err := decodeBoundedPlist(entitlementsData, &entitlements); err != nil {
 		return fmt.Errorf("signed main-app entitlements are invalid")
@@ -193,9 +193,20 @@ func validateSignedMainAppEntitlements(entitlementsData []byte, profile parsedPr
 	if !ok || strings.TrimSpace(teamIdentifier) == "" {
 		return fmt.Errorf("signed main-app team identifier is missing")
 	}
+	teamID := onlyTrimmed(profile.TeamIdentifier)
+	if err := validateTeamIdentifier(teamID); err != nil {
+		return err
+	}
+	bundleID = strings.TrimSpace(bundleID)
+	if bundleID == "" {
+		return fmt.Errorf("inspected CFBundleIdentifier is missing")
+	}
 	profileApplicationID, _ := profile.Entitlements["application-identifier"].(string)
-	if strings.TrimSpace(teamIdentifier) != onlyTrimmed(profile.TeamIdentifier) || !entitlementValuePermits(profileApplicationID, appIdentifier) {
+	if strings.TrimSpace(teamIdentifier) != teamID || !entitlementValuePermits(profileApplicationID, appIdentifier) {
 		return fmt.Errorf("signed main-app entitlements do not match the embedded profile team and application identifier")
+	}
+	if appIdentifier != teamID+"."+bundleID {
+		return fmt.Errorf("signed main-app application identifier does not match inspected CFBundleIdentifier")
 	}
 	if profileDebug, ok := profile.Entitlements["get-task-allow"].(bool); !ok {
 		return fmt.Errorf("embedded profile get-task-allow entitlement is missing or invalid")
