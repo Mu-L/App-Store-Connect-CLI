@@ -181,7 +181,7 @@ func executePublish(ctx context.Context, request publishRequest) (publishExecuti
 	if err := rejectBundleContainedArtifacts(bundleRoot, resolvedReceiptPath, resolvedLinkPath); err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
-	artifacts, err := preflightArtifactPaths(resolvedReceiptPath, resolvedLinkPath)
+	artifacts, err := inspectArtifactPaths(resolvedReceiptPath, resolvedLinkPath)
 	if err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
@@ -195,6 +195,11 @@ func executePublish(ctx context.Context, request publishRequest) (publishExecuti
 	}
 	if artifacts.receiptExists && !stateFound {
 		return publishExecutionResult{}, fmt.Errorf("distribute publish: receipt exists without its sensitive link recovery artifact")
+	}
+	if !stateFound {
+		if err := artifacts.preflightNew(); err != nil {
+			return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
+		}
 	}
 	bundle, err := loadPreparedBundle(ctx, bundleRoot)
 	if err != nil {

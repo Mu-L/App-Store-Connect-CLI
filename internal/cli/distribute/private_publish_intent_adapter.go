@@ -116,7 +116,7 @@ func executePrivatePublishIntent(ctx context.Context, request privatePublishInte
 	if err := rejectBundleContainedArtifacts(bundleRoot, receiptPath, intentPath); err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
-	artifacts, err := preflightArtifactPaths(receiptPath, intentPath)
+	artifacts, err := inspectArtifactPaths(receiptPath, intentPath)
 	if err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
@@ -143,6 +143,11 @@ func executePrivatePublishIntent(ctx context.Context, request privatePublishInte
 	}
 	if artifacts.receiptExists && !found {
 		return publishExecutionResult{}, fmt.Errorf("%w: receipt exists without protected intent", errPrivatePublishIntentConflict)
+	}
+	if !found {
+		if err := artifacts.preflightNew(); err != nil {
+			return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
+		}
 	}
 	if found {
 		if err := validatePrivatePublishIntentState(state, binding, bundle); err != nil {
@@ -446,8 +451,11 @@ func validatePrivateIntentDestinationURL(raw, key string, binding privatePublish
 }
 
 func loadPrivatePublishIntentState(paths artifactPaths) (privatePublishIntentState, bool, error) {
-	parent, name, err := paths.openParent(paths.link)
+	parent, name, err := paths.openExistingParent(paths.link)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return privatePublishIntentState{}, false, nil
+		}
 		return privatePublishIntentState{}, false, err
 	}
 	defer parent.Close()
@@ -499,7 +507,7 @@ func publishPrivatePublishIntentState(paths artifactPaths, state privatePublishI
 }
 
 func readPrivatePublishIntentReceipt(paths artifactPaths) (core.PublishReceipt, error) {
-	parent, name, err := paths.openParent(paths.receipt)
+	parent, name, err := paths.openExistingParent(paths.receipt)
 	if err != nil {
 		return core.PublishReceipt{}, err
 	}

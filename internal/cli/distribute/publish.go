@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
-	"golang.org/x/text/unicode/norm"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
@@ -194,15 +194,12 @@ Examples:
 				return fmt.Errorf("distribute publish: open prepared bundle: %w", err)
 			}
 			defer bundleRoot.Close()
-			artifacts, err := anchorArtifactPaths(resolvedReceiptPath, resolvedLinkPath)
+			artifacts, err := inspectArtifactPaths(resolvedReceiptPath, resolvedLinkPath)
 			if err != nil {
 				return shared.UsageErrorf("publish artifacts: %v", err)
 			}
 			defer artifacts.close()
 			if err := rejectAnchoredBundleContainedArtifacts(bundleRoot, artifacts); err != nil {
-				return shared.UsageErrorf("publish artifacts: %v", err)
-			}
-			if err := artifacts.preflight(); err != nil {
 				return shared.UsageErrorf("publish artifacts: %v", err)
 			}
 			resolvedReceiptPath = artifacts.receiptPath
@@ -214,6 +211,11 @@ Examples:
 			}
 			if artifacts.receiptExists && !stateFound {
 				return fmt.Errorf("distribute publish: receipt exists without its sensitive link recovery artifact")
+			}
+			if !stateFound {
+				if err := artifacts.preflightNew(); err != nil {
+					return shared.UsageErrorf("publish artifacts: %v", err)
+				}
 			}
 			bundle, err := loadPreparedBundle(ctx, bundleRoot)
 			if err != nil {
@@ -310,17 +312,24 @@ type artifactPaths struct {
 	linkExists    bool
 }
 
-type artifactRootNameEquivalence struct {
-	caseInsensitive          bool
-	normalizationInsensitive bool
+func preflightArtifactPaths(receiptPath, linkPath string) (artifactPaths, error) {
+	paths, err := inspectArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		return artifactPaths{}, err
+	}
+	if err := paths.preflightNew(); err != nil {
+		paths.close()
+		return artifactPaths{}, err
+	}
+	return paths, nil
 }
 
-func preflightArtifactPaths(receiptPath, linkPath string) (artifactPaths, error) {
+func inspectArtifactPaths(receiptPath, linkPath string) (artifactPaths, error) {
 	paths, err := anchorArtifactPaths(receiptPath, linkPath)
 	if err != nil {
 		return artifactPaths{}, err
 	}
-	if err := paths.preflight(); err != nil {
+	if err := paths.inspectExisting(); err != nil {
 		paths.close()
 		return artifactPaths{}, err
 	}
@@ -385,28 +394,32 @@ func (paths artifactPaths) openParent(target artifactPath) (*os.Root, string, er
 	return openAnchoredParent(target.root, target.relative)
 }
 
-func (paths *artifactPaths) preflight() error {
-	equivalence, err := paths.destinationNameEquivalence()
-	if err != nil {
-		return err
+func (paths artifactPaths) openExistingParent(target artifactPath) (*os.Root, string, error) {
+	if !os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) {
+		current, err := os.Lstat(target.rootPath)
+		if err != nil || current.Mode()&os.ModeSymlink != 0 || !current.IsDir() || !os.SameFile(target.rootInfo, current) {
+			return nil, "", fmt.Errorf("artifact parent changed after anchoring")
+		}
 	}
-	return paths.preflightWithNameEquivalence(equivalence)
+	parent, err := openExistingAnchoredDirectory(target.root, filepath.Dir(target.relative))
+	if err != nil {
+		return nil, "", err
+	}
+	return parent, filepath.Base(target.relative), nil
 }
 
-func (paths artifactPaths) destinationNameEquivalence() (artifactRootNameEquivalence, error) {
-	if !os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) ||
-		sameArtifactRelativePath(paths.receipt.relative, paths.link.relative, false) {
-		return artifactRootNameEquivalence{}, nil
-	}
-	equivalence, err := artifactRootNameEquivalenceForPreflight(paths.receipt.root)
+func (paths artifactPaths) lstatExisting(target artifactPath) (os.FileInfo, error) {
+	parent, name, err := paths.openExistingParent(target)
 	if err != nil {
-		return artifactRootNameEquivalence{}, fmt.Errorf("inspect artifact parent name equivalence: %w", err)
+		return nil, err
 	}
-	return equivalence, nil
+	defer parent.Close()
+	return parent.Lstat(name)
 }
 
-func (paths *artifactPaths) preflightWithNameEquivalence(equivalence artifactRootNameEquivalence) error {
-	if os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) && sameArtifactRelativePathWithEquivalence(paths.receipt.relative, paths.link.relative, equivalence) {
+func (paths *artifactPaths) inspectExisting() error {
+	if os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) &&
+		filepath.Clean(paths.receipt.relative) == filepath.Clean(paths.link.relative) {
 		return fmt.Errorf("--receipt and --link-path resolve to the same physical destination")
 	}
 
@@ -418,7 +431,10 @@ func (paths *artifactPaths) preflightWithNameEquivalence(equivalence artifactRoo
 		{path: paths.receipt, exists: &paths.receiptExists},
 		{path: paths.link, exists: &paths.linkExists},
 	} {
-		parent, base, err := paths.openParent(target.path)
+		parent, base, err := paths.openExistingParent(target.path)
+		if os.IsNotExist(err) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -446,117 +462,77 @@ func (paths *artifactPaths) preflightWithNameEquivalence(equivalence artifactRoo
 	return nil
 }
 
-func sameArtifactRelativePath(left, right string, caseInsensitive bool) bool {
-	return sameArtifactRelativePathWithEquivalence(left, right, artifactRootNameEquivalence{caseInsensitive: caseInsensitive})
+func (paths *artifactPaths) preflightNew() error {
+	if paths.receiptExists || paths.linkExists || !os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) {
+		return nil
+	}
+	// This is called only after the caller has read-only inspected both
+	// destinations and determined that this is a new publication. Recovery and
+	// reverify paths use openExistingParent and never reach this probe.
+	return probeConfiguredArtifactAliasForPreflight(*paths)
 }
 
-func sameArtifactRelativePathWithEquivalence(left, right string, equivalence artifactRootNameEquivalence) bool {
-	left = filepath.Clean(left)
-	right = filepath.Clean(right)
-	if left == right {
-		return true
-	}
-	if equivalence.normalizationInsensitive {
-		left = norm.NFC.String(left)
-		right = norm.NFC.String(right)
-	}
-	return left == right || (equivalence.caseInsensitive && strings.EqualFold(left, right))
-}
+var probeConfiguredArtifactAliasForPreflight = probeConfiguredArtifactAlias
 
-var (
-	artifactRootIsCaseInsensitive           = detectArtifactRootIsCaseInsensitive
-	artifactRootNameEquivalenceForPreflight = detectArtifactRootNameEquivalence
-)
+func probeConfiguredArtifactAlias(paths artifactPaths) (err error) {
+	parent, name, err := paths.openParent(paths.receipt)
+	if err != nil {
+		return err
+	}
+	var (
+		probe       *os.File
+		probeClosed bool
+		created     bool
+		cleanupErr  error
+	)
+	defer func() {
+		if probe != nil && !probeClosed {
+			cleanupErr = errors.Join(cleanupErr, probe.Close())
+		}
+		if created {
+			if removeErr := parent.Remove(name); removeErr != nil && !os.IsNotExist(removeErr) {
+				cleanupErr = errors.Join(cleanupErr, removeErr)
+			}
+		}
+		cleanupErr = errors.Join(cleanupErr, parent.Close())
+		if cleanupErr != nil {
+			cleanupErr = fmt.Errorf("cleanup artifact alias probe: %w", cleanupErr)
+			if err == nil {
+				err = cleanupErr
+			} else {
+				err = errors.Join(err, cleanupErr)
+			}
+		}
+	}()
 
-func detectArtifactRootNameEquivalence(root *os.Root) (artifactRootNameEquivalence, error) {
-	caseInsensitive, err := artifactRootIsCaseInsensitive(root)
+	probe, err = secureopen.OpenNewFileNoFollowInRoot(parent, name, 0o600)
 	if err != nil {
-		return artifactRootNameEquivalence{}, err
+		return err
 	}
-	normalizationInsensitive, err := detectArtifactRootIsNormalizationInsensitive(root)
+	created = true
+	probeInfo, err := probe.Stat()
 	if err != nil {
-		return artifactRootNameEquivalence{}, err
+		return err
 	}
-	return artifactRootNameEquivalence{
-		caseInsensitive:          caseInsensitive,
-		normalizationInsensitive: normalizationInsensitive,
-	}, nil
-}
+	if err := probe.Close(); err != nil {
+		probeClosed = true
+		probe = nil
+		return err
+	}
+	probeClosed = true
+	probe = nil
 
-func detectArtifactRootIsCaseInsensitive(root *os.Root) (bool, error) {
-	probe, name, err := secureopen.CreateTempNoFollowInRoot(root, ".", ".asc-case-probe-a-*", 0o600)
-	if err != nil {
-		return false, err
-	}
-	info, statErr := probe.Stat()
-	closeErr := probe.Close()
-	if statErr != nil {
-		_ = root.Remove(name)
-		return false, statErr
-	}
-	if closeErr != nil {
-		_ = root.Remove(name)
-		return false, closeErr
-	}
-	alias := ".Asc-case-probe-a-" + strings.TrimPrefix(name, ".asc-case-probe-a-")
-	aliasInfo, aliasErr := root.Lstat(alias)
-	removeErr := root.Remove(name)
-	if removeErr != nil {
-		return false, removeErr
-	}
+	aliasInfo, aliasErr := paths.lstatExisting(paths.link)
 	if os.IsNotExist(aliasErr) {
-		return false, nil
+		return nil
 	}
 	if aliasErr != nil {
-		return false, aliasErr
+		return aliasErr
 	}
-	return os.SameFile(info, aliasInfo), nil
-}
-
-func detectArtifactRootIsNormalizationInsensitive(root *os.Root) (bool, error) {
-	seed, seedName, err := secureopen.CreateTempNoFollowInRoot(root, ".", ".asc-normalization-probe-*", 0o600)
-	if err != nil {
-		return false, err
+	if os.SameFile(probeInfo, aliasInfo) {
+		return fmt.Errorf("--receipt and --link-path resolve to the same physical destination")
 	}
-	closeErr := seed.Close()
-	removeSeedErr := root.Remove(seedName)
-	if closeErr != nil {
-		return false, closeErr
-	}
-	if removeSeedErr != nil {
-		return false, removeSeedErr
-	}
-
-	suffix := strings.TrimPrefix(seedName, ".asc-normalization-probe-")
-	composed := ".asc-normalization-probe-é-" + suffix
-	decomposed := ".asc-normalization-probe-e\u0301-" + suffix
-	probe, err := secureopen.OpenNewFileNoFollowInRoot(root, composed, 0o600)
-	if err != nil {
-		return false, err
-	}
-	probeInfo, statErr := probe.Stat()
-	if statErr != nil {
-		_ = probe.Close()
-		_ = root.Remove(composed)
-		return false, statErr
-	}
-	closeErr = probe.Close()
-	if closeErr != nil {
-		_ = root.Remove(composed)
-		return false, closeErr
-	}
-	aliasInfo, aliasErr := root.Lstat(decomposed)
-	removeErr := root.Remove(composed)
-	if removeErr != nil {
-		return false, removeErr
-	}
-	if os.IsNotExist(aliasErr) {
-		return false, nil
-	}
-	if aliasErr != nil {
-		return false, aliasErr
-	}
-	return os.SameFile(probeInfo, aliasInfo), nil
+	return nil
 }
 
 func pathContains(parent, child string) bool {
@@ -657,8 +633,11 @@ type publishState struct {
 }
 
 func (paths artifactPaths) loadState() (publishState, bool, error) {
-	parent, name, err := paths.openParent(paths.link)
+	parent, name, err := paths.openExistingParent(paths.link)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return publishState{}, false, nil
+		}
 		return publishState{}, false, err
 	}
 	defer parent.Close()
@@ -756,7 +735,7 @@ func (paths artifactPaths) verifyExactReceipt(receipt core.PublishReceipt) error
 	if err != nil {
 		return err
 	}
-	parent, name, err := paths.openParent(paths.receipt)
+	parent, name, err := paths.openExistingParent(paths.receipt)
 	if err != nil {
 		return err
 	}
@@ -958,6 +937,52 @@ func openOrCreateAnchoredDirectory(root *os.Root, relative string) (*os.Root, er
 			_ = next.Close()
 			_ = current.Close()
 			return nil, fmt.Errorf("artifact parent changed during rooted creation")
+		}
+		_ = current.Close()
+		current = next
+	}
+	return current, nil
+}
+
+func openExistingAnchoredDirectory(root *os.Root, relative string) (*os.Root, error) {
+	if root == nil {
+		return nil, fmt.Errorf("artifact root is unavailable")
+	}
+	relative = filepath.Clean(relative)
+	if filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("artifact parent escapes its anchored root")
+	}
+	current, err := root.OpenRoot(".")
+	if err != nil {
+		return nil, err
+	}
+	if relative == "." {
+		return current, nil
+	}
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." || component == ".." {
+			_ = current.Close()
+			return nil, fmt.Errorf("artifact parent contains an unsafe path component")
+		}
+		info, err := current.Lstat(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			_ = current.Close()
+			return nil, fmt.Errorf("artifact parent component %q is not a trusted directory", component)
+		}
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		openedInfo, err := next.Stat(".")
+		if err != nil || !os.SameFile(info, openedInfo) {
+			_ = next.Close()
+			_ = current.Close()
+			return nil, fmt.Errorf("artifact parent changed during rooted inspection")
 		}
 		_ = current.Close()
 		current = next

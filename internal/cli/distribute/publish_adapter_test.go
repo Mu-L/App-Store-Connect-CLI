@@ -18,10 +18,17 @@ import (
 
 func TestExecutePrivatePublishUsesSharedPrivatePathAndReturnsRedactedResult(t *testing.T) {
 	originalLoad, originalStore, originalPublish, originalReverify := loadPreparedBundle, newObjectStore, runPublish, reverifyPublication
+	originalAliasProbe := probeConfiguredArtifactAliasForPreflight
 	t.Cleanup(func() {
 		loadPreparedBundle, newObjectStore, runPublish = originalLoad, originalStore, originalPublish
 		reverifyPublication = originalReverify
+		probeConfiguredArtifactAliasForPreflight = originalAliasProbe
 	})
+	probeCalls := 0
+	probeConfiguredArtifactAliasForPreflight = func(paths artifactPaths) error {
+		probeCalls++
+		return originalAliasProbe(paths)
+	}
 
 	bundleDir, bundle := privatePublishTestBundle(t)
 	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
@@ -87,8 +94,8 @@ func TestExecutePrivatePublishUsesSharedPrivatePathAndReturnsRedactedResult(t *t
 	if err != nil {
 		t.Fatalf("executePrivatePublish() recovery error = %v", err)
 	}
-	if !recovered.Recovered || storeCalls != 1 || publishCalls != 1 {
-		t.Fatalf("recovered=%t storeCalls=%d publishCalls=%d", recovered.Recovered, storeCalls, publishCalls)
+	if !recovered.Recovered || storeCalls != 1 || publishCalls != 1 || probeCalls != 1 {
+		t.Fatalf("recovered=%t storeCalls=%d publishCalls=%d probeCalls=%d", recovered.Recovered, storeCalls, publishCalls, probeCalls)
 	}
 }
 
@@ -363,11 +370,11 @@ func TestReverifyPrivatePublishIsReadOnly(t *testing.T) {
 }
 
 func TestReverifyPrivatePublishReadsCaseDistinctArtifactsFromReadOnlyDirectory(t *testing.T) {
-	originalCaseProbe := artifactRootIsCaseInsensitive
-	t.Cleanup(func() { artifactRootIsCaseInsensitive = originalCaseProbe })
-	artifactRootIsCaseInsensitive = func(*os.Root) (bool, error) {
-		t.Fatal("read-only verification attempted a case-sensitivity probe")
-		return false, nil
+	originalAliasProbe := probeConfiguredArtifactAliasForPreflight
+	t.Cleanup(func() { probeConfiguredArtifactAliasForPreflight = originalAliasProbe })
+	probeConfiguredArtifactAliasForPreflight = func(artifactPaths) error {
+		t.Fatal("read-only verification attempted an artifact alias probe")
+		return nil
 	}
 
 	stateDir := t.TempDir()
@@ -425,12 +432,12 @@ func TestReverifyPrivatePublishReadsCaseDistinctArtifactsFromReadOnlyDirectory(t
 	}
 }
 
-func TestOpenExistingArtifactPathsChecksExistingFilesBeforeCaseProbe(t *testing.T) {
-	originalCaseProbe := artifactRootIsCaseInsensitive
-	t.Cleanup(func() { artifactRootIsCaseInsensitive = originalCaseProbe })
-	artifactRootIsCaseInsensitive = func(*os.Root) (bool, error) {
-		t.Fatal("existing-artifact verification attempted a case-sensitivity probe")
-		return false, nil
+func TestOpenExistingArtifactPathsChecksExistingFilesBeforeAliasProbe(t *testing.T) {
+	originalAliasProbe := probeConfiguredArtifactAliasForPreflight
+	t.Cleanup(func() { probeConfiguredArtifactAliasForPreflight = originalAliasProbe })
+	probeConfiguredArtifactAliasForPreflight = func(artifactPaths) error {
+		t.Fatal("existing-artifact verification attempted an artifact alias probe")
+		return nil
 	}
 
 	stateDir := t.TempDir()
@@ -440,6 +447,23 @@ func TestOpenExistingArtifactPathsChecksExistingFilesBeforeCaseProbe(t *testing.
 	)
 	if err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("openExistingArtifactPaths() error = %v, want missing-artifact error", err)
+	}
+}
+
+func TestLoadPublishStateMissingDoesNotCreateArtifactParent(t *testing.T) {
+	stateDir := t.TempDir()
+	receiptPath := filepath.Join(stateDir, "missing", "receipt.json")
+	linkPath := filepath.Join(stateDir, "missing", "link.json")
+	artifacts, err := inspectArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifacts.close()
+	if _, found, err := artifacts.loadState(); err != nil || found {
+		t.Fatalf("loadState() = found:%t err:%v, want missing state without error", found, err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "missing")); !os.IsNotExist(err) {
+		t.Fatalf("loadState() created missing artifact parent: %v", err)
 	}
 }
 

@@ -72,6 +72,23 @@ func TestLoadPrivatePublishIntentStateRejectsDuplicateJSONKeys(t *testing.T) {
 	}
 }
 
+func TestLoadPrivatePublishIntentStateMissingDoesNotCreateArtifactParent(t *testing.T) {
+	stateDir := t.TempDir()
+	receiptPath := filepath.Join(stateDir, "missing", "receipt.json")
+	intentPath := filepath.Join(stateDir, "missing", "intent.json")
+	artifacts, err := inspectArtifactPaths(receiptPath, intentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifacts.close()
+	if _, found, err := loadPrivatePublishIntentState(artifacts); err != nil || found {
+		t.Fatalf("loadPrivatePublishIntentState() = found:%t err:%v, want missing state without error", found, err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "missing")); !os.IsNotExist(err) {
+		t.Fatalf("loadPrivatePublishIntentState() created missing artifact parent: %v", err)
+	}
+}
+
 func TestPrivatePublishIntentArtifactsSupportDistinctTopLevelParents(t *testing.T) {
 	receiptDir, err := os.MkdirTemp(t.TempDir(), "asc-private-intent-receipt-*")
 	if err != nil {
@@ -176,12 +193,19 @@ func TestExecutePrivatePublishIntentPersistsBeforeExecutionAndRecoversWithoutPre
 	originalLoad, originalStore := loadPreparedBundle, newObjectStore
 	originalPrepare, originalExecute := preparePrivatePublicationIntent, executePrivatePublicationIntent
 	originalVerifier, originalAfterPersist, originalAfterExecute := newPrivatePublicationVerifier, afterPrivatePublicationIntentPersisted, afterPrivatePublicationIntentExecuted
+	originalAliasProbe := probeConfiguredArtifactAliasForPreflight
 	t.Cleanup(func() {
 		loadPreparedBundle, newObjectStore = originalLoad, originalStore
 		preparePrivatePublicationIntent, executePrivatePublicationIntent = originalPrepare, originalExecute
 		newPrivatePublicationVerifier, afterPrivatePublicationIntentPersisted = originalVerifier, originalAfterPersist
 		afterPrivatePublicationIntentExecuted = originalAfterExecute
+		probeConfiguredArtifactAliasForPreflight = originalAliasProbe
 	})
+	probeCalls := 0
+	probeConfiguredArtifactAliasForPreflight = func(paths artifactPaths) error {
+		probeCalls++
+		return originalAliasProbe(paths)
+	}
 
 	bundleDir, bundle := privatePublishIntentTestBundle(t)
 	loadPreparedBundle = func(context.Context, rootfs.Root) (*core.PreparedBundle, error) { return bundle(), nil }
@@ -265,8 +289,8 @@ func TestExecutePrivatePublishIntentPersistsBeforeExecutionAndRecoversWithoutPre
 	if err != nil {
 		t.Fatalf("recovery error = %v", err)
 	}
-	if !result.Recovered || prepareCalls != 1 || executeCalls != 2 || storeCalls != 3 {
-		t.Fatalf("result=%+v prepare=%d execute=%d stores=%d", result, prepareCalls, executeCalls, storeCalls)
+	if !result.Recovered || prepareCalls != 1 || executeCalls != 2 || storeCalls != 3 || probeCalls != 1 {
+		t.Fatalf("result=%+v prepare=%d execute=%d stores=%d probes=%d", result, prepareCalls, executeCalls, storeCalls, probeCalls)
 	}
 	encoded, _ := encodeJSON(result)
 	if strings.Contains(string(encoded), "saved-secret-canary") {

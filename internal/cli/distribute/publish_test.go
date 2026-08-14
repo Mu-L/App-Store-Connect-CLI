@@ -222,10 +222,17 @@ func TestPublishCommandAcceptsExactlySevenDayPrivateLifetime(t *testing.T) {
 
 func TestPublishCommandWritesSensitiveLink0600AndRedactedReceipt(t *testing.T) {
 	originalLoad, originalStore, originalPublish, originalReverify := loadPreparedBundle, newObjectStore, runPublish, reverifyPublication
+	originalAliasProbe := probeConfiguredArtifactAliasForPreflight
 	t.Cleanup(func() {
 		loadPreparedBundle, newObjectStore, runPublish = originalLoad, originalStore, originalPublish
 		reverifyPublication = originalReverify
+		probeConfiguredArtifactAliasForPreflight = originalAliasProbe
 	})
+	probeCalls := 0
+	probeConfiguredArtifactAliasForPreflight = func(paths artifactPaths) error {
+		probeCalls++
+		return originalAliasProbe(paths)
+	}
 	dir := t.TempDir()
 	ipaPath := filepath.Join(dir, "app.ipa")
 	if err := os.WriteFile(ipaPath, []byte("ipa"), 0o600); err != nil {
@@ -303,8 +310,8 @@ func TestPublishCommandWritesSensitiveLink0600AndRedactedReceipt(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("idempotent recovery error = %v", err)
 	}
-	if storeCalls != 1 {
-		t.Fatalf("object store calls = %d, want 1 after recovery", storeCalls)
+	if storeCalls != 1 || probeCalls != 1 {
+		t.Fatalf("object store calls = %d, probe calls = %d, want 1 each after recovery", storeCalls, probeCalls)
 	}
 	for _, changed := range [][]string{
 		{"--download-endpoint", "https://different.example.com"},
@@ -525,7 +532,7 @@ func TestPublishArtifactsRejectRetargetedChildForBothPaths(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := paths.preflight(); err == nil {
+			if err := paths.inspectExisting(); err == nil {
 				t.Fatalf("preflight accepted retargeted %s parent", target)
 			}
 			for _, name := range []string{"receipt.json", "link.json"} {
@@ -701,27 +708,6 @@ func TestArtifactPairRejectsExistingHardlinkDestinations(t *testing.T) {
 	}
 }
 
-func TestSameArtifactRelativePathHonorsCaseSensitivity(t *testing.T) {
-	for _, test := range []struct {
-		name            string
-		left            string
-		right           string
-		caseInsensitive bool
-		want            bool
-	}{
-		{name: "exact", left: "state/publish.json", right: "state/publish.json", want: true},
-		{name: "Windows case-fold alias", left: "state/Publish.JSON", right: "STATE/publish.json", caseInsensitive: true, want: true},
-		{name: "case-sensitive destinations", left: "state/Publish.JSON", right: "STATE/publish.json", want: false},
-		{name: "distinct", left: "state/receipt.json", right: "state/link.json", caseInsensitive: true, want: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := sameArtifactRelativePath(test.left, test.right, test.caseInsensitive); got != test.want {
-				t.Fatalf("sameArtifactRelativePath(%q, %q, %t) = %t, want %t", test.left, test.right, test.caseInsensitive, got, test.want)
-			}
-		})
-	}
-}
-
 func TestArtifactPairRejectsCaseFoldAliasOnCaseInsensitiveVolume(t *testing.T) {
 	stateDir := t.TempDir()
 	probe := filepath.Join(stateDir, "CaseProbe")
@@ -739,16 +725,12 @@ func TestArtifactPairRejectsCaseFoldAliasOnCaseInsensitiveVolume(t *testing.T) {
 	if err := os.Remove(probe); err != nil {
 		t.Fatal(err)
 	}
-	paths, err := anchorArtifactPaths(
+	paths, err := preflightArtifactPaths(
 		filepath.Join(stateDir, "Publish.JSON"),
 		filepath.Join(stateDir, "publish.json"),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer paths.close()
-
-	if err := paths.preflight(); err == nil || !strings.Contains(err.Error(), "same physical destination") {
+	if err == nil {
+		paths.close()
 		t.Fatalf("preflight() error = %v, want case-fold destination rejection", err)
 	}
 	entries, err := os.ReadDir(stateDir)
@@ -829,6 +811,98 @@ func TestArtifactPairRejectsCombinedCaseAndNormalizationAliasOnInsensitiveVolume
 	}
 	if len(entries) != 0 {
 		t.Fatalf("combined alias destination contains artifacts after rejection: %v", entries)
+	}
+}
+
+func TestArtifactPairRejectsSharpSAliasOnCaseInsensitiveVolume(t *testing.T) {
+	stateDir := t.TempDir()
+	lowerPath := filepath.Join(stateDir, "straße.json")
+	upperPath := filepath.Join(stateDir, "STRASSE.json")
+	if err := os.WriteFile(lowerPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lowerInfo, err := os.Stat(lowerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upperInfo, err := os.Stat(upperPath)
+	if err != nil || !os.SameFile(lowerInfo, upperInfo) {
+		t.Skip("test volume does not case-fold sharp-s to SS")
+	}
+	if err := os.Remove(lowerPath); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := preflightArtifactPaths(lowerPath, upperPath)
+	if err == nil {
+		paths.close()
+		t.Fatal("preflight accepted a sharp-s case-fold alias")
+	}
+	if !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightArtifactPaths() error = %v, want sharp-s alias rejection", err)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("sharp-s alias destination contains artifacts after rejection: %v", entries)
+	}
+}
+
+func TestArtifactPairAliasProbeHandlesMissingNestedParents(t *testing.T) {
+	stateDir := t.TempDir()
+	receiptPath := filepath.Join(stateDir, "nested", "Receipt", "straße.json")
+	linkPath := filepath.Join(stateDir, "NESTED", "RECEIPT", "STRASSE.json")
+	if err := os.MkdirAll(filepath.Dir(receiptPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receiptPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receiptInfo, err := os.Stat(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkInfo, err := os.Stat(linkPath)
+	if err != nil || !os.SameFile(receiptInfo, linkInfo) {
+		t.Skip("test volume does not alias the requested nested paths")
+	}
+	if err := os.RemoveAll(filepath.Join(stateDir, "nested")); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := preflightArtifactPaths(receiptPath, linkPath)
+	if err == nil {
+		paths.close()
+		t.Fatal("preflight accepted an aliased nested destination")
+	}
+	if !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightArtifactPaths() error = %v, want nested alias rejection", err)
+	}
+	var visit func(string) error
+	visit = func(directory string) error {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			path := filepath.Join(directory, entry.Name())
+			if strings.Contains(entry.Name(), ".asc-artifact-alias-probe-") {
+				t.Fatalf("alias probe directory remains: %s", path)
+			}
+			if entry.IsDir() {
+				if err := visit(path); err != nil {
+					return err
+				}
+			} else {
+				t.Fatalf("probe left non-directory artifact: %s", path)
+			}
+		}
+		return nil
+	}
+	if err := visit(stateDir); err != nil {
+		t.Fatal(err)
 	}
 }
 
