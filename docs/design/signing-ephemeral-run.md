@@ -65,18 +65,20 @@ operating system are immutable or outside ASC's direct control.
 The profile is installed at Xcode's version-appropriate provisioning profile
 path only if no file exists for that UUID. An identical pre-existing profile is
 reused and left untouched; a different file at that path is a hard conflict.
-A profile created by this command is removed only when its path still identifies
-the exact inode and digest the command wrote. User files are never overwritten
-or deleted.
+A profile created by this command is atomically moved to a same-directory
+quarantine name and its inode and digest are reverified before unlinking. A file
+replaced during cleanup is restored rather than deleted. User files are never
+overwritten or deleted.
 
 A mode-0600 crash journal contains only cleanup coordinates, never credentials.
 It is written before keychain creation and before publishing a staged profile.
 After acquiring the per-user lock, the next run validates journal ownership,
 permissions, hard-link count, containment, schema, digests, and file identities
-before attempting bounded recovery. Recovery also recognizes only the exact
-regular `codesign-probe` file that can remain if the process is killed during
-the signer proof; arbitrary residue still fails closed. Incomplete cleanup
-retains the journal and private temporary directory for the next run.
+before attempting bounded recovery. Recovery removes regular files contained by
+the validated mode-0700 temporary directory, including keychain lock sidecars,
+while rejecting nested directories, symlinks, and other non-regular entries.
+Incomplete cleanup retains the journal and private temporary directory for the
+next run.
 
 The optional receipt is a mode-0600, no-overwrite JSON file. It records only
 purpose, outcome, child exit code, certificate and profile SHA-256 digests,

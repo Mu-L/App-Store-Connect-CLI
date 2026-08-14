@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func TestRunSigningRunChildPreservesExitCode(t *testing.T) {
 	}
 }
 
-func TestRunSigningRunChildInterruptsProcessGroup(t *testing.T) {
+func TestRunSigningRunChildRejectsPreCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	started := time.Now()
@@ -47,6 +48,47 @@ func TestRunSigningRunChildInterruptsProcessGroup(t *testing.T) {
 	}
 	if time.Since(started) > time.Second {
 		t.Fatalf("pre-canceled child did not return promptly")
+	}
+}
+
+func TestRunSigningRunChildDoesNotSignalProcessGroupAfterWait(t *testing.T) {
+	previous := signingRunKillProcessGroupFn
+	var signals []syscall.Signal
+	signingRunKillProcessGroupFn = func(_ int, signal syscall.Signal) error {
+		if signal == 0 {
+			return syscall.ESRCH
+		}
+		signals = append(signals, signal)
+		return nil
+	}
+	t.Cleanup(func() { signingRunKillProcessGroupFn = previous })
+
+	if err := runSigningRunChild(context.Background(), []string{"/bin/sh", "-c", "exit 0"}); err != nil {
+		t.Fatalf("runSigningRunChild() error: %v", err)
+	}
+	if len(signals) != 0 {
+		t.Fatalf("signals after child wait = %v, want none", signals)
+	}
+}
+
+func TestRunSigningRunChildSignalsProcessGroupBeforeWaitOnCancellation(t *testing.T) {
+	previous := signingRunKillProcessGroupFn
+	var signals []syscall.Signal
+	signingRunKillProcessGroupFn = func(pid int, signal syscall.Signal) error {
+		signals = append(signals, signal)
+		return previous(pid, signal)
+	}
+	t.Cleanup(func() { signingRunKillProcessGroupFn = previous })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(50*time.Millisecond, cancel)
+	defer timer.Stop()
+	err := runSigningRunChild(ctx, []string{"/bin/sleep", "30"})
+	if code, ok := shared.ProcessExitCode(err); !ok || code != 130 {
+		t.Fatalf("error = %v, want signal exit code 130", err)
+	}
+	if !reflect.DeepEqual(signals, []syscall.Signal{syscall.SIGINT}) {
+		t.Fatalf("cancellation signals = %v, want SIGINT before wait only", signals)
 	}
 }
 
@@ -93,6 +135,48 @@ func TestRemoveSigningRunTempDirRejectsBroadOrForeignPaths(t *testing.T) {
 		if err := removeSigningRunTempDir(path); err == nil {
 			t.Fatalf("removeSigningRunTempDir(%q) unexpectedly succeeded", path)
 		}
+	}
+}
+
+func TestRemoveSigningRunTempDirRemovesRegularSidecarFiles(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "asc-signing-run.")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+	if err := os.WriteFile(filepath.Join(tempDir, ".fl12345678"), []byte("lock"), 0o600); err != nil {
+		t.Fatalf("write keychain sidecar: %v", err)
+	}
+
+	if err := removeSigningRunTempDir(tempDir); err != nil {
+		t.Fatalf("removeSigningRunTempDir() error: %v", err)
+	}
+	if _, err := os.Stat(tempDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp dir stat error = %v, want not exist", err)
+	}
+}
+
+func TestRemoveSigningRunTempDirRejectsNestedAndSymlinkEntries(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		create func(string) error
+	}{
+		{name: "directory", create: func(dir string) error { return os.Mkdir(filepath.Join(dir, "nested"), 0o700) }},
+		{name: "symlink", create: func(dir string) error { return os.Symlink("/tmp", filepath.Join(dir, "link")) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tempDir, err := os.MkdirTemp("", "asc-signing-run.")
+			if err != nil {
+				t.Fatalf("create temp dir: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+			if err := test.create(tempDir); err != nil {
+				t.Fatalf("create unsafe entry: %v", err)
+			}
+			if err := removeSigningRunTempDir(tempDir); err == nil {
+				t.Fatal("expected unsafe entry rejection")
+			}
+		})
 	}
 }
 
@@ -277,6 +361,67 @@ func TestRemoveSigningRunProfileRefusesReplacement(t *testing.T) {
 	}
 	if err := removeSigningRunProfile(installed); err == nil || !strings.Contains(err.Error(), "file identity changed") {
 		t.Fatalf("error = %v, want file identity refusal", err)
+	}
+}
+
+func TestRemoveSigningRunProfilePreservesReplacementDuringCleanup(t *testing.T) {
+	installDir := t.TempDir()
+	previous := signingRunProfileInstallDirFn
+	signingRunProfileInstallDirFn = func(context.Context) (string, error) { return installDir, nil }
+	t.Cleanup(func() { signingRunProfileInstallDirFn = previous })
+	const uuid = "A7EFEF21-3432-404F-A488-083800B570FF"
+	data := []byte("signed-profile")
+	replacement := []byte("replacement")
+	digestBytes := sha256.Sum256(data)
+	digest := strings.ToUpper(hex.EncodeToString(digestBytes[:]))
+	installed, err := installSigningRunProfile(uuid, data, digest, func(signingRunProfileInstall) error { return nil })
+	if err != nil {
+		t.Fatalf("installSigningRunProfile: %v", err)
+	}
+
+	err = removeSigningRunProfileWithHook(installed, func() error {
+		if err := os.Remove(installed.Path); err != nil {
+			return err
+		}
+		return os.WriteFile(installed.Path, replacement, 0o600)
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed during cleanup") {
+		t.Fatalf("error = %v, want concurrent replacement refusal", err)
+	}
+	got, readErr := os.ReadFile(installed.Path)
+	if readErr != nil {
+		t.Fatalf("read preserved replacement: %v", readErr)
+	}
+	if !bytes.Equal(got, replacement) {
+		t.Fatalf("profile content = %q, want replacement %q", got, replacement)
+	}
+}
+
+func TestRemoveSigningRunProfileRecoversQuarantinedProfile(t *testing.T) {
+	installDir := t.TempDir()
+	previous := signingRunProfileInstallDirFn
+	signingRunProfileInstallDirFn = func(context.Context) (string, error) { return installDir, nil }
+	t.Cleanup(func() { signingRunProfileInstallDirFn = previous })
+	const uuid = "A7EFEF21-3432-404F-A488-083800B570FF"
+	data := []byte("signed-profile")
+	digestBytes := sha256.Sum256(data)
+	digest := strings.ToUpper(hex.EncodeToString(digestBytes[:]))
+	installed, err := installSigningRunProfile(uuid, data, digest, func(signingRunProfileInstall) error { return nil })
+	if err != nil {
+		t.Fatalf("installSigningRunProfile: %v", err)
+	}
+	quarantinePath := filepath.Join(installDir, ".asc-signing-run-profile-remove-"+filepath.Base(installed.Path))
+	if err := os.Rename(installed.Path, quarantinePath); err != nil {
+		t.Fatalf("simulate interrupted quarantine: %v", err)
+	}
+
+	if err := removeSigningRunProfile(installed); err != nil {
+		t.Fatalf("recover quarantined profile: %v", err)
+	}
+	for _, path := range []string{installed.Path, quarantinePath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s stat error = %v, want not exist", path, err)
+		}
 	}
 }
 

@@ -33,7 +33,6 @@ import (
 const (
 	signingRunDiagnosticLimit  = 64 << 10
 	signingRunChildWaitDelay   = 5 * time.Second
-	signingRunDescendantGrace  = time.Second
 	signingRunLockPollInterval = 50 * time.Millisecond
 )
 
@@ -43,6 +42,9 @@ var (
 	signingRunStateDirFn                  = signingRunStateDir
 	signingRunRecoveryRemoveSearchEntryFn = removeKeychainSearchEntry
 	signingRunRecoveryDeleteKeychainFn    = deleteSigningRunKeychain
+	signingRunKillProcessGroupFn          = func(pid int, signal syscall.Signal) error {
+		return syscall.Kill(-pid, signal)
+	}
 )
 
 func platformSigningRunDeps() signingRunDeps {
@@ -123,14 +125,17 @@ func removeSigningRunTempDir(path string) error {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || (entry.Type()&os.ModeSymlink) != 0 {
+		info, err := entry.Info()
+		if err != nil {
 			_ = rooted.Close()
-			return fmt.Errorf("refusing to remove unexpected nested entry %q", entry.Name())
+			return err
 		}
-		if entry.Name() != "identity.p12" && entry.Name() != "signing.keychain-db" && entry.Name() != "codesign-probe" {
+		if !info.Mode().IsRegular() {
 			_ = rooted.Close()
-			return fmt.Errorf("refusing to remove unexpected signing file %q", entry.Name())
+			return fmt.Errorf("refusing to remove unexpected non-regular entry %q", entry.Name())
 		}
+	}
+	for _, entry := range entries {
 		if err := rooted.Remove(entry.Name()); err != nil && !errors.Is(err, os.ErrNotExist) {
 			_ = rooted.Close()
 			return err
@@ -619,17 +624,55 @@ func installSigningRunProfile(uuid string, data []byte, digest string, beforeCre
 }
 
 func removeSigningRunProfile(install signingRunProfileInstall) error {
+	return removeSigningRunProfileWithHook(install, nil)
+}
+
+func removeSigningRunProfileWithHook(install signingRunProfileInstall, afterVerify func() error) error {
 	if !install.Created {
 		return nil
 	}
-	installRoot, err := rootfs.New(filepath.Dir(install.Path))
+	rooted, err := os.OpenRoot(filepath.Dir(install.Path))
 	if err != nil {
 		return err
 	}
-	file, err := installRoot.OpenFile(filepath.Base(install.Path))
+	defer rooted.Close()
+	name := filepath.Base(install.Path)
+	quarantineName := ".asc-signing-run-profile-remove-" + name
+
+	err = verifySigningRunProfileEntry(rooted, name, install)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		err = verifySigningRunProfileEntry(rooted, quarantineName, install)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("refusing to remove quarantined profile: %w", err)
+		}
+		return rooted.Remove(quarantineName)
 	}
+	if err != nil {
+		return err
+	}
+	if afterVerify != nil {
+		if err := afterVerify(); err != nil {
+			return err
+		}
+	}
+	if err := secureopen.RenameNoReplaceInRoot(rooted, name, quarantineName); err != nil {
+		return fmt.Errorf("quarantine installed profile: %w", err)
+	}
+	if err := verifySigningRunProfileEntry(rooted, quarantineName, install); err != nil {
+		verificationErr := fmt.Errorf("refusing to remove profile because it changed during cleanup: %w", err)
+		if restoreErr := secureopen.RenameNoReplaceInRoot(rooted, quarantineName, name); restoreErr != nil {
+			return errors.Join(verificationErr, fmt.Errorf("restore changed profile: %w", restoreErr))
+		}
+		return verificationErr
+	}
+	return rooted.Remove(quarantineName)
+}
+
+func verifySigningRunProfileEntry(rooted *os.Root, name string, install signingRunProfileInstall) error {
+	file, err := secureopen.OpenExistingNoFollowInRoot(rooted, name)
 	if err != nil {
 		return err
 	}
@@ -638,6 +681,9 @@ func removeSigningRunProfile(install signingRunProfileInstall) error {
 	closeErr := file.Close()
 	if statErr != nil || readErr != nil || closeErr != nil {
 		return errors.Join(statErr, readErr, closeErr)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to remove profile because it is not a regular file")
 	}
 	if len(data) > signingRunInputLimit {
 		return fmt.Errorf("refusing to remove profile because it exceeds the size limit")
@@ -652,12 +698,7 @@ func removeSigningRunProfile(install signingRunProfileInstall) error {
 			return fmt.Errorf("refusing to remove profile because its file identity changed")
 		}
 	}
-	rooted, err := os.OpenRoot(filepath.Dir(install.Path))
-	if err != nil {
-		return err
-	}
-	defer rooted.Close()
-	return rooted.Remove(filepath.Base(install.Path))
+	return nil
 }
 
 func removeSigningRunStagedProfile(path string, device, inode uint64) error {
@@ -722,18 +763,16 @@ func runSigningRunChild(ctx context.Context, argv []string) error {
 	var err error
 	select {
 	case err = <-done:
-		_ = terminateSigningRunProcessGroup(pid, syscall.SIGTERM, signingRunDescendantGrace)
 	case <-ctx.Done():
-		_ = syscall.Kill(-pid, syscall.SIGINT)
+		_ = signingRunKillProcessGroupFn(pid, syscall.SIGINT)
 		timer := time.NewTimer(signingRunChildWaitDelay)
 		select {
 		case err = <-done:
 			timer.Stop()
 		case <-timer.C:
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = signingRunKillProcessGroupFn(pid, syscall.SIGKILL)
 			err = <-done
 		}
-		_ = terminateSigningRunProcessGroup(pid, syscall.SIGKILL, 0)
 	}
 	if err == nil {
 		return nil
@@ -746,31 +785,6 @@ func runSigningRunChild(ctx context.Context, argv []string) error {
 		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 			return shared.NewProcessExitError(128 + int(status.Signal()))
 		}
-	}
-	return err
-}
-
-func terminateSigningRunProcessGroup(pid int, signal syscall.Signal, grace time.Duration) error {
-	err := syscall.Kill(-pid, signal)
-	if errors.Is(err, syscall.ESRCH) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if grace <= 0 || signal == syscall.SIGKILL {
-		return nil
-	}
-	deadline := time.Now().Add(grace)
-	for time.Now().Before(deadline) {
-		if err := syscall.Kill(-pid, 0); errors.Is(err, syscall.ESRCH) {
-			return nil
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	err = syscall.Kill(-pid, syscall.SIGKILL)
-	if errors.Is(err, syscall.ESRCH) {
-		return nil
 	}
 	return err
 }
