@@ -116,6 +116,34 @@ func TestNamedConfigProfileDoesNotInheritGlobalAdAccountID(t *testing.T) {
 	}
 }
 
+func TestNamedConfigProfileKeepsLegacyRootOrgButNotRootAdAccount(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "active-config.json")
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv(adsBypassKeychainEnvVar, "1")
+	if err := config.SaveAt(configPath, &config.Config{Ads: config.AdsConfig{
+		DefaultKeyName: "profile-a",
+		OrgID:          "ROOT_ORG",
+		AdAccountID:    "ROOT_ACCOUNT",
+		Keys: []config.AdsCredential{
+			{Name: "profile-a", ClientID: "A", TeamID: "T", KeyID: "K", PrivateKeyPath: "a.pem"},
+			{Name: "profile-b", ClientID: "B", TeamID: "T", KeyID: "K", PrivateKeyPath: "b.pem"},
+		},
+	}}); err != nil {
+		t.Fatalf("SaveAt() error: %v", err)
+	}
+
+	loaded, _, err := GetCredentialsWithSource("profile-b")
+	if err != nil {
+		t.Fatalf("GetCredentialsWithSource() error: %v", err)
+	}
+	if loaded.OrgID != "ROOT_ORG" {
+		t.Fatalf("OrgID = %q, want legacy root org %q", loaded.OrgID, "ROOT_ORG")
+	}
+	if loaded.AdAccountID != "" {
+		t.Fatalf("AdAccountID = %q, must not inherit root ad account", loaded.AdAccountID)
+	}
+}
+
 func TestNamedConfigProfileDoesNotInheritPreviousDefaultContexts(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
@@ -155,7 +183,7 @@ func TestNamedConfigProfileDoesNotInheritPreviousDefaultContexts(t *testing.T) {
 	}
 }
 
-func TestSwitchingDefaultToContextFreeProfileClearsRootContexts(t *testing.T) {
+func TestSwitchingDefaultToProfileWithoutOrgKeepsLegacyRootOrg(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
 	t.Setenv(adsBypassKeychainEnvVar, "1")
@@ -184,8 +212,8 @@ func TestSwitchingDefaultToContextFreeProfileClearsRootContexts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAt() error: %v", err)
 	}
-	if cfg.Ads.DefaultKeyName != "profile-b" || cfg.Ads.OrgID != "" || cfg.Ads.AdAccountID != "" {
-		t.Fatalf("switched default contexts = %+v, want profile-b with empty contexts", cfg.Ads)
+	if cfg.Ads.DefaultKeyName != "profile-b" || cfg.Ads.OrgID != "ORG_A" || cfg.Ads.AdAccountID != "" {
+		t.Fatalf("switched default contexts = %+v, want profile-b with legacy root org and empty ad-account context", cfg.Ads)
 	}
 }
 

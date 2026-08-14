@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
@@ -16,18 +17,20 @@ func TestPaginateAllPlatformGeoUsesPageSizeAndAggregates(t *testing.T) {
 		t.Fatal("missing geo search endpoint")
 	}
 	requests := []url.Values{}
-	client, err := NewClient(Credentials{AccessToken: "ACCESS", AdAccountID: "account"}, WithHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		requests = append(requests, req.URL.Query())
 		switch req.URL.Query().Get("offset") {
 		case "5":
-			return jsonResponse(http.StatusOK, `{"result":[{"id":"geo-6"},{"id":"geo-7"}],"pagination":{"totalCount":9,"offset":5,"pageSize":2}}`), nil
+			_, _ = w.Write([]byte(`{"result":[{"id":"geo-6"},{"id":"geo-7"}],"pagination":{"totalCount":9,"offset":5,"pageSize":2}}`))
 		case "7":
-			return jsonResponse(http.StatusOK, `{"result":[{"id":"geo-8"},{"id":"geo-9"}],"pagination":{"totalCount":9,"offset":7,"pageSize":2}}`), nil
+			_, _ = w.Write([]byte(`{"result":[{"id":"geo-8"},{"id":"geo-9"}],"pagination":{"totalCount":9,"offset":7,"pageSize":2}}`))
 		default:
-			t.Fatalf("unexpected offset %q", req.URL.Query().Get("offset"))
-			return nil, nil
+			t.Errorf("unexpected offset %q", req.URL.Query().Get("offset"))
+			http.Error(w, "unexpected offset", http.StatusBadRequest)
 		}
-	})}))
+	}))
+	defer server.Close()
+	client, err := NewClient(Credentials{AccessToken: "ACCESS", AdAccountID: "account"}, WithPlatformBaseURL(server.URL+"/v1/"))
 	if err != nil {
 		t.Fatalf("NewClient() error: %v", err)
 	}
@@ -71,19 +74,21 @@ func TestPaginateAllPlatformGeoStopsOnEmptyPageWithoutTotalCount(t *testing.T) {
 		t.Fatal("missing geo search endpoint")
 	}
 	offsets := []string{}
-	client, err := NewClient(Credentials{AccessToken: "ACCESS", AdAccountID: "account"}, WithHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		offset := req.URL.Query().Get("offset")
 		offsets = append(offsets, offset)
 		switch offset {
 		case "0":
-			return jsonResponse(http.StatusOK, `{"result":[{"id":"geo-1"},{"id":"geo-2"}],"pagination":{"offset":0,"pageSize":2}}`), nil
+			_, _ = w.Write([]byte(`{"result":[{"id":"geo-1"},{"id":"geo-2"}],"pagination":{"offset":0,"pageSize":2}}`))
 		case "2":
-			return jsonResponse(http.StatusOK, `{"result":[],"pagination":{"offset":2,"pageSize":2}}`), nil
+			_, _ = w.Write([]byte(`{"result":[],"pagination":{"offset":2,"pageSize":2}}`))
 		default:
-			t.Fatalf("unexpected offset %q", offset)
-			return nil, nil
+			t.Errorf("unexpected offset %q", offset)
+			http.Error(w, "unexpected offset", http.StatusBadRequest)
 		}
-	})}))
+	}))
+	defer server.Close()
+	client, err := NewClient(Credentials{AccessToken: "ACCESS", AdAccountID: "account"}, WithPlatformBaseURL(server.URL+"/v1/"))
 	if err != nil {
 		t.Fatalf("NewClient() error: %v", err)
 	}
@@ -113,10 +118,12 @@ func TestPaginateAllPlatformGETCapsUnboundedPages(t *testing.T) {
 		t.Fatal("missing geo search endpoint")
 	}
 	requests := 0
-	client, err := NewClient(Credentials{AccessToken: "ACCESS", AdAccountID: "account"}, WithHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		requests++
-		return jsonResponse(http.StatusOK, `{"result":[{"id":"geo"}],"pagination":{"offset":`+req.URL.Query().Get("offset")+`,"pageSize":1}}`), nil
-	})}))
+		_, _ = w.Write([]byte(`{"result":[{"id":"geo"}],"pagination":{"offset":` + req.URL.Query().Get("offset") + `,"pageSize":1}}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(Credentials{AccessToken: "ACCESS", AdAccountID: "account"}, WithPlatformBaseURL(server.URL+"/v1/"))
 	if err != nil {
 		t.Fatalf("NewClient() error: %v", err)
 	}

@@ -324,7 +324,7 @@ func adsRetryDelay(headers http.Header, now time.Time, maxDelay time.Duration) t
 	var delay time.Duration
 	if value := strings.TrimSpace(headerValue(headers, "Retry-After")); value != "" {
 		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
-			delay = time.Duration(seconds) * time.Second
+			delay = adsRetryDelayFromSeconds(seconds, maxDelay)
 		} else if deadline, err := http.ParseTime(value); err == nil {
 			if delay := deadline.Sub(now); delay > 0 {
 				return capAdsRetryDelay(delay, maxDelay)
@@ -333,10 +333,25 @@ func adsRetryDelay(headers http.Header, now time.Time, maxDelay time.Duration) t
 	}
 	if delay == 0 {
 		if seconds, err := strconv.ParseInt(strings.TrimSpace(headerValue(headers, "RateLimit-Reset")), 10, 64); err == nil && seconds > 0 {
-			delay = time.Duration(seconds) * time.Second
+			delay = adsRetryDelayFromSeconds(seconds, maxDelay)
 		}
 	}
 	return capAdsRetryDelay(delay, maxDelay)
+}
+
+func adsRetryDelayFromSeconds(seconds int64, maxDelay time.Duration) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	if maxDelay > 0 && seconds > int64(maxDelay/time.Second) {
+		return maxDelay
+	}
+
+	const maxDuration = time.Duration(1<<63 - 1)
+	if seconds > int64(maxDuration/time.Second) {
+		return maxDuration
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func capAdsRetryDelay(delay, maxDelay time.Duration) time.Duration {
