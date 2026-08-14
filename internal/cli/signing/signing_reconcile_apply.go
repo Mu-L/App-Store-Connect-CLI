@@ -37,7 +37,8 @@ func executeSigningReconcileApply(ctx context.Context, planPath string) (signing
 	if plan.MutationCount > plan.MaxMutations {
 		return signingReconcileReceipt{}, shared.UsageError("signing reconcile plan exceeds its mutation ceiling")
 	}
-	if err := verifySigningLocalInputs(plan); err != nil {
+	devicesFile, err := verifySigningLocalInputs(plan)
+	if err != nil {
 		return signingReconcileReceipt{}, shared.UsageErrorf("local inputs changed: %v; rerun asc signing reconcile plan", err)
 	}
 	if err := prepareReconcileProfileOutput(plan.Paths.StateDir); err != nil {
@@ -63,14 +64,6 @@ func executeSigningReconcileApply(ctx context.Context, planPath string) (signing
 		return receipt, shared.UsageError("selected certificate changed or is no longer eligible; rerun asc signing reconcile plan")
 	}
 
-	deviceData, err := readProtectedFile(plan.Paths.DevicesFile)
-	if err != nil {
-		return receipt, shared.UsageErrorf("invalid devices file: %v", err)
-	}
-	devicesFile, err := decodeSigningDevicesFile(deviceData)
-	if err != nil {
-		return receipt, shared.UsageErrorf("invalid devices file: %v", err)
-	}
 	if err := preflightSigningApply(requestCtx, client, plan, devicesFile); err != nil {
 		return receipt, shared.UsageErrorf("remote signing state changed: %v; rerun asc signing reconcile plan", sanitizeReconcileError(err, devicesFile))
 	}
@@ -230,40 +223,40 @@ func planContainsDevice(plan signingReconcilePlanArtifact, fingerprint string) b
 	return false
 }
 
-func verifySigningLocalInputs(plan signingReconcilePlanArtifact) error {
+func verifySigningLocalInputs(plan signingReconcilePlanArtifact) (signingDevicesFile, error) {
 	archive, err := readSigningArchiveRequirements(plan.Paths.ArchivePath)
 	if err != nil {
-		return fmt.Errorf("inspect archive: %w", err)
+		return signingDevicesFile{}, fmt.Errorf("inspect archive: %w", err)
 	}
 	archiveTargets, err := json.Marshal(archive.Targets)
 	if err != nil {
-		return fmt.Errorf("normalize archive signing requirements: %w", err)
+		return signingDevicesFile{}, fmt.Errorf("normalize archive signing requirements: %w", err)
 	}
 	planTargets, err := json.Marshal(plan.Targets)
 	if err != nil {
-		return fmt.Errorf("normalize planned signing requirements: %w", err)
+		return signingDevicesFile{}, fmt.Errorf("normalize planned signing requirements: %w", err)
 	}
 	if archive.TeamID != plan.TeamID || !bytes.Equal(archiveTargets, planTargets) {
-		return fmt.Errorf("archive signing requirements differ from plan")
+		return signingDevicesFile{}, fmt.Errorf("archive signing requirements differ from plan")
 	}
 	data, err := readProtectedFile(plan.Paths.DevicesFile)
 	if err != nil {
-		return fmt.Errorf("read devices file: %w", err)
+		return signingDevicesFile{}, fmt.Errorf("read devices file: %w", err)
 	}
 	devices, err := decodeSigningDevicesFile(data)
 	if err != nil {
-		return err
+		return signingDevicesFile{}, err
 	}
 	if len(devices.Devices) != len(plan.Devices) {
-		return fmt.Errorf("desired device count differs from plan")
+		return signingDevicesFile{}, fmt.Errorf("desired device count differs from plan")
 	}
 	for index, device := range devices.Devices {
 		planned := plan.Devices[index]
 		if fingerprintReconcileName(device.Name) != planned.NameSHA256 || device.Platform != planned.Platform || device.Fingerprint != planned.Fingerprint {
-			return fmt.Errorf("desired device %s differs from plan", device.Fingerprint)
+			return signingDevicesFile{}, fmt.Errorf("desired device %s differs from plan", device.Fingerprint)
 		}
 	}
-	return nil
+	return devices, nil
 }
 
 func loadOrStartSigningReceipt(plan signingReconcilePlanArtifact) (signingReconcileReceipt, error) {

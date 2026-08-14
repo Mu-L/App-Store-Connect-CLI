@@ -741,6 +741,13 @@ func signingCapabilitiesForEntitlements(entitlements map[string]any) ([]string, 
 			}
 			continue
 		}
+		if key == "beta-reports-active" {
+			active, ok := value.(bool)
+			if !ok || active {
+				unverified = append(unverified, key+" (must be false for ad hoc distribution)")
+			}
+			continue
+		}
 		if key == "aps-environment" {
 			environment, ok := value.(string)
 			if !ok || environment != "production" {

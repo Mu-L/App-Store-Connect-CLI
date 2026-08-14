@@ -267,6 +267,21 @@ func TestSigningCapabilitiesRejectsDevelopmentPushEnvironment(t *testing.T) {
 	}
 }
 
+func TestSigningCapabilitiesRejectsTestFlightEntitlement(t *testing.T) {
+	capabilities, unverified := signingCapabilitiesForEntitlements(map[string]any{
+		"beta-reports-active": true,
+	})
+	if len(capabilities) != 0 || len(unverified) != 1 || !strings.Contains(unverified[0], "beta-reports-active") {
+		t.Fatalf("capabilities=%#v unverified=%#v, want TestFlight entitlement blocker", capabilities, unverified)
+	}
+	capabilities, unverified = signingCapabilitiesForEntitlements(map[string]any{
+		"beta-reports-active": false,
+	})
+	if len(capabilities) != 0 || len(unverified) != 0 {
+		t.Fatalf("false beta reports capabilities=%#v unverified=%#v", capabilities, unverified)
+	}
+}
+
 func TestSigningReconcileRequestContextUsesWorkflowTimeout(t *testing.T) {
 	t.Setenv("ASC_TIMEOUT", "")
 	ctx, cancel := signingRequestContext(context.Background())
@@ -1211,8 +1226,18 @@ func TestVerifySigningLocalInputsNormalizesNumericEntitlements(t *testing.T) {
 			NameSHA256: fingerprintReconcileName(devices.Devices[0].Name),
 		}},
 	}
-	if err := verifySigningLocalInputs(plan); err != nil {
+	verifiedDevices, err := verifySigningLocalInputs(plan)
+	if err != nil {
 		t.Fatalf("verifySigningLocalInputs() error = %v", err)
+	}
+	if verifiedDevices.Devices[0].Name != "Phone" {
+		t.Fatalf("verified device name = %q, want Phone", verifiedDevices.Devices[0].Name)
+	}
+	if err := os.WriteFile(devicesPath, []byte(`{"schemaVersion":1,"devices":[{"name":"Changed","udid":"SECRET-UDID","platform":"IOS"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if verifiedDevices.Devices[0].Name != "Phone" {
+		t.Fatalf("retained verified device name = %q after file replacement", verifiedDevices.Devices[0].Name)
 	}
 }
 
