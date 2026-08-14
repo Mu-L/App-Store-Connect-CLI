@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +70,44 @@ func TestLoadPrivatePublishIntentStateRejectsDuplicateJSONKeys(t *testing.T) {
 	}
 	if _, _, err := loadPrivatePublishIntentState(paths); err == nil || !strings.Contains(err.Error(), "duplicate JSON field") {
 		t.Fatalf("duplicate-key error = %v", err)
+	}
+}
+
+func TestPrivatePublishIntentArtifactsSupportDistinctTopLevelParents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test host does not provide two writable Windows volumes")
+	}
+	receiptDir, err := os.MkdirTemp("/tmp", "asc-private-intent-receipt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(receiptDir) })
+	intentDir, err := os.MkdirTemp("/var/tmp", "asc-private-intent-state-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(intentDir) })
+
+	paths, err := preflightArtifactPaths(filepath.Join(receiptDir, "receipt.json"), filepath.Join(intentDir, "intent.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+	state := privatePublishIntentState{SchemaVersion: privatePublishIntentStateSchemaVersion}
+	if err := publishPrivatePublishIntentState(paths, state); err != nil {
+		t.Fatal(err)
+	}
+	receipt := core.PublishReceipt{SchemaVersion: "1"}
+	if err := paths.publishReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	loaded, found, err := loadPrivatePublishIntentState(paths)
+	if err != nil || !found || loaded.SchemaVersion != state.SchemaVersion {
+		t.Fatalf("loadPrivatePublishIntentState() = %#v, %t, %v", loaded, found, err)
+	}
+	loadedReceipt, err := readPrivatePublishIntentReceipt(paths)
+	if err != nil || loadedReceipt.SchemaVersion != receipt.SchemaVersion {
+		t.Fatalf("readPrivatePublishIntentReceipt() = %#v, %v", loadedReceipt, err)
 	}
 }
 

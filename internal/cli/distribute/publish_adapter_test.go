@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -195,6 +196,40 @@ func TestLoadPublishStateRejectsInPlaceMutation(t *testing.T) {
 	_, _, err = artifacts.loadState()
 	if err == nil || !strings.Contains(err.Error(), "changed while reading") {
 		t.Fatalf("mutated sensitive state error = %v", err)
+	}
+}
+
+func TestOpenExistingArtifactPathsSupportsDistinctTopLevelParents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test host does not provide two writable Windows volumes")
+	}
+	receiptDir, err := os.MkdirTemp("/tmp", "asc-existing-receipt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(receiptDir) })
+	linkDir, err := os.MkdirTemp("/var/tmp", "asc-existing-link-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(linkDir) })
+
+	receiptPath := filepath.Join(receiptDir, "receipt.json")
+	linkPath := filepath.Join(linkDir, "link.json")
+	writePrivatePublishTestState(
+		t,
+		receiptPath,
+		linkPath,
+		privatePublishTestReceipt(),
+		distribution.SensitiveLinks{SchemaVersion: "1", InstallURL: "https://objects.example.com/install?secret"},
+	)
+	paths, err := openExistingArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+	if !paths.receiptExists || !paths.linkExists {
+		t.Fatalf("artifact existence = receipt:%t link:%t, want both true", paths.receiptExists, paths.linkExists)
 	}
 }
 

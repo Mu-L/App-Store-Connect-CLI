@@ -137,8 +137,12 @@ func TestPublishCommandRejectsPhysicalArtifactAliasBeforeSideEffects(t *testing.
 		"--bundle-dir", t.TempDir(), "--endpoint", "https://objects.example.com", "--region", "auto", "--bucket", "bucket", "--prefix", "app",
 		"--receipt", filepath.Join(base, "left", "state", destination), "--link-path", filepath.Join(base, "right", "state", destination),
 	})
-	if err == nil || !strings.Contains(err.Error(), "same physical destination") {
-		t.Fatalf("ParseAndRun() error = %v, want physical destination rejection", err)
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("ParseAndRun() error = %v, want flag.ErrHelp", err)
+	}
+	const wantError = "publish artifacts: --receipt and --link-path resolve to the same physical destination"
+	if err.Error() != wantError {
+		t.Fatalf("ParseAndRun() error = %q, want %q", err.Error(), wantError)
 	}
 	if loadCalled || storeCalled {
 		t.Fatalf("side effects before physical alias rejection: load=%t store=%t", loadCalled, storeCalled)
@@ -724,8 +728,23 @@ func TestSameArtifactRelativePathHonorsCaseSensitivity(t *testing.T) {
 	}
 }
 
-func TestArtifactPairRejectsCaseFoldAliasOnCaseInsensitivePlatform(t *testing.T) {
+func TestArtifactPairRejectsCaseFoldAliasOnCaseInsensitiveVolume(t *testing.T) {
 	stateDir := t.TempDir()
+	probe := filepath.Join(stateDir, "CaseProbe")
+	if err := os.Mkdir(probe, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	probeInfo, err := os.Stat(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasInfo, err := os.Stat(filepath.Join(stateDir, "caseprobe"))
+	if err != nil || !os.SameFile(probeInfo, aliasInfo) {
+		t.Skip("test volume is case-sensitive")
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
 	paths, err := anchorArtifactPaths(
 		filepath.Join(stateDir, "Publish.JSON"),
 		filepath.Join(stateDir, "publish.json"),
@@ -735,8 +754,8 @@ func TestArtifactPairRejectsCaseFoldAliasOnCaseInsensitivePlatform(t *testing.T)
 	}
 	defer paths.close()
 
-	if err := paths.preflightWithCaseSensitivity(true); err == nil || !strings.Contains(err.Error(), "same physical destination") {
-		t.Fatalf("preflightWithCaseSensitivity() error = %v, want case-fold destination rejection", err)
+	if err := paths.preflight(); err == nil || !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflight() error = %v, want case-fold destination rejection", err)
 	}
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {

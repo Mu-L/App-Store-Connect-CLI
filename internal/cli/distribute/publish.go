@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -381,7 +380,24 @@ func (paths artifactPaths) openParent(target artifactPath) (*os.Root, string, er
 }
 
 func (paths *artifactPaths) preflight() error {
-	return paths.preflightWithCaseSensitivity(runtime.GOOS == "windows")
+	caseInsensitive, err := paths.caseInsensitiveDestinationAlias()
+	if err != nil {
+		return err
+	}
+	return paths.preflightWithCaseSensitivity(caseInsensitive)
+}
+
+func (paths artifactPaths) caseInsensitiveDestinationAlias() (bool, error) {
+	if !os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) ||
+		sameArtifactRelativePath(paths.receipt.relative, paths.link.relative, false) ||
+		!strings.EqualFold(filepath.Clean(paths.receipt.relative), filepath.Clean(paths.link.relative)) {
+		return false, nil
+	}
+	caseInsensitive, err := artifactRootIsCaseInsensitive(paths.receipt.root)
+	if err != nil {
+		return false, fmt.Errorf("inspect artifact parent case sensitivity: %w", err)
+	}
+	return caseInsensitive, nil
 }
 
 func (paths *artifactPaths) preflightWithCaseSensitivity(caseInsensitive bool) error {
@@ -429,6 +445,36 @@ func sameArtifactRelativePath(left, right string, caseInsensitive bool) bool {
 	left = filepath.Clean(left)
 	right = filepath.Clean(right)
 	return left == right || (caseInsensitive && strings.EqualFold(left, right))
+}
+
+func artifactRootIsCaseInsensitive(root *os.Root) (bool, error) {
+	probe, name, err := secureopen.CreateTempNoFollowInRoot(root, ".", ".asc-case-probe-a-*", 0o600)
+	if err != nil {
+		return false, err
+	}
+	info, statErr := probe.Stat()
+	closeErr := probe.Close()
+	if statErr != nil {
+		_ = root.Remove(name)
+		return false, statErr
+	}
+	if closeErr != nil {
+		_ = root.Remove(name)
+		return false, closeErr
+	}
+	alias := ".Asc-case-probe-a-" + strings.TrimPrefix(name, ".asc-case-probe-a-")
+	aliasInfo, aliasErr := root.Lstat(alias)
+	removeErr := root.Remove(name)
+	if removeErr != nil {
+		return false, removeErr
+	}
+	if os.IsNotExist(aliasErr) {
+		return false, nil
+	}
+	if aliasErr != nil {
+		return false, aliasErr
+	}
+	return os.SameFile(info, aliasInfo), nil
 }
 
 func pathContains(parent, child string) bool {
