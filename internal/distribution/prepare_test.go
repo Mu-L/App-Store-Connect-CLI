@@ -2,6 +2,7 @@ package distribution
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 func TestPrepareIPAWritesDeterministicPrivateBundle(t *testing.T) {
@@ -130,6 +133,48 @@ func TestPrepareIPAPublishesFromStableSnapshot(t *testing.T) {
 	}
 }
 
+func TestPrepareIPAPinsOutputRootBeforeInspection(t *testing.T) {
+	installVerifiedPreparationForTest(t)
+	ipaPath := validIPA(t, []string{"one"}, time.Now().Add(time.Hour), false)
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(parent, "output-root")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	afterIPASnapshotForTest = func() {
+		if err := os.Rename(root, root+"-original"); err != nil {
+			t.Fatalf("rename selected output root: %v", err)
+		}
+		if err := os.Mkdir(root, 0o755); err != nil {
+			t.Fatalf("replace selected output root: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterIPASnapshotForTest = nil })
+
+	file, err := os.Open(ipaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareIPA(file, info.Size(), PrepareOptions{Root: root}); !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("PrepareIPA() error = %v, want ErrSymlink", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("PrepareIPA() wrote to replacement root: %#v", entries)
+	}
+}
+
 func TestPrepareIPARejectsOutputParentSwappedToSymlink(t *testing.T) {
 	installVerifiedPreparationForTest(t)
 	ipaPath := validIPA(t, []string{"one"}, time.Now().Add(time.Hour), false)
@@ -168,7 +213,57 @@ func TestPrepareIPARejectsOutputParentSwappedToSymlink(t *testing.T) {
 	}
 }
 
+func TestPrepareIPACreatesEmptyOutputRootBeforeInspection(t *testing.T) {
+	ipaPath := writeIPA(t, map[string][]byte{
+		"Payload/Demo.app/Info.plist": plistBytes(t, map[string]any{
+			"CFBundleIdentifier":         "com.example.demo",
+			"CFBundleName":               "Demo",
+			"CFBundleShortVersionString": "1.0",
+			"CFBundleVersion":            "1",
+			"DTPlatformName":             "xros",
+			"CFBundleSupportedPlatforms": []string{"XROS"},
+		}),
+	})
+	rootPath := filepath.Join(t.TempDir(), "missing")
+	inspected := false
+	afterIPASnapshotForTest = func() { inspected = true }
+	t.Cleanup(func() { afterIPASnapshotForTest = nil })
+
+	file, err := os.Open(ipaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareIPA(file, info.Size(), PrepareOptions{Root: rootPath}); err == nil {
+		t.Fatal("PrepareIPA() accepted unsupported archive platform")
+	}
+	if !inspected {
+		t.Fatal("PrepareIPA() did not create and pin the output root before inspection")
+	}
+	entries, err := os.ReadDir(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("PrepareIPA() published output after inspection failure: %#v", entries)
+	}
+}
+
 func TestPrepareIPARejectsIneligibleAndCredentialURLBeforeWriting(t *testing.T) {
+	unsupportedPlatformIPA := writeIPA(t, map[string][]byte{
+		"Payload/Demo.app/Info.plist": plistBytes(t, map[string]any{
+			"CFBundleIdentifier":         "com.example.demo",
+			"CFBundleName":               "Demo",
+			"CFBundleShortVersionString": "1.0",
+			"CFBundleVersion":            "1",
+			"DTPlatformName":             "xros",
+			"CFBundleSupportedPlatforms": []string{"XROS"},
+		}),
+	})
 	tests := []struct {
 		name string
 		path string
@@ -177,6 +272,7 @@ func TestPrepareIPARejectsIneligibleAndCredentialURLBeforeWriting(t *testing.T) 
 		{name: "development", path: validIPA(t, []string{"one"}, time.Now().Add(time.Hour), true), opts: PrepareOptions{}},
 		{name: "expired", path: validIPA(t, []string{"one"}, time.Now().Add(-time.Hour), false), opts: PrepareOptions{}},
 		{name: "credential URL", path: validIPA(t, []string{"one"}, time.Now().Add(time.Hour), false), opts: PrepareOptions{SourceURL: "https://token@example.com/revision"}},
+		{name: "unsupported archive platform", path: unsupportedPlatformIPA, opts: PrepareOptions{}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -249,6 +345,12 @@ func TestValidatePrepareOptionsRejectsControlMetadata(t *testing.T) {
 	if err := ValidatePrepareOptions(PrepareOptions{Channel: "safe\u202Esecret"}); err == nil {
 		t.Fatal("expected bidi format control rejection")
 	}
+	if err := ValidatePrepareOptions(PrepareOptions{SourceURL: "https://example.com/safe\u202Esecret"}); err == nil {
+		t.Fatal("expected source URL bidi format control rejection")
+	}
+	if err := ValidatePrepareOptions(PrepareOptions{SourceURL: "https://:443/path"}); err == nil {
+		t.Fatal("expected empty source URL hostname rejection")
+	}
 }
 
 func TestSafePathComponentIsCollisionSafeAndContained(t *testing.T) {
@@ -266,6 +368,51 @@ func TestSafePathComponentIsCollisionSafeAndContained(t *testing.T) {
 			t.Fatalf("collision for %q: %q", value, got)
 		}
 		seen[got] = true
+	}
+}
+
+func TestPrepareIPAContextAlreadyCanceledHasNoFilesystemSideEffects(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "not-created")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := PrepareIPAContext(ctx, nil, 0, PrepareOptions{Root: root}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("PrepareIPAContext() error = %v, want context.Canceled", err)
+	}
+	if _, err := os.Lstat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("output root stat error = %v, want not found", err)
+	}
+}
+
+func TestPrepareIPAContextCancellationDuringPublicationDoesNotPublish(t *testing.T) {
+	installVerifiedPreparationForTest(t)
+	path := validIPA(t, []string{"one"}, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), false)
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	duringPublicationCopyForTest = cancel
+	t.Cleanup(func() { duringPublicationCopyForTest = nil })
+	if _, err := PrepareIPAContext(ctx, file, info.Size(), PrepareOptions{Root: root}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("PrepareIPAContext() error = %v, want context.Canceled", err)
+	}
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && (entry.Name() == "bundle.json" || entry.Name() == "app.ipa") {
+			t.Errorf("canceled preparation left publication file %q", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

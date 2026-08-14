@@ -1,6 +1,8 @@
 package distribution
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,6 +27,7 @@ var (
 
 	afterOutputParentsCreatedForTest func()
 	verifyCompleteSigningForTest     func(*Inspection)
+	duringPublicationCopyForTest     func()
 )
 
 type Descriptor struct {
@@ -54,11 +57,37 @@ type PrepareResult struct {
 
 // PrepareIPA validates an already-open IPA and publishes an immutable local
 // bundle without replacing an existing destination.
-func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResult, error) {
+func PrepareIPA(file *os.File, size int64, options PrepareOptions) (result PrepareResult, resultErr error) {
+	return PrepareIPAContext(context.Background(), file, size, options)
+}
+
+func PrepareIPAContext(ctx context.Context, file *os.File, size int64, options PrepareOptions) (result PrepareResult, resultErr error) {
+	if err := contextError(ctx); err != nil {
+		return PrepareResult{}, err
+	}
 	if err := ValidatePrepareOptions(options); err != nil {
 		return PrepareResult{}, err
 	}
-	snapshot, digest, cleanup, err := snapshotIPA(file, size)
+	rootPath := strings.TrimSpace(options.Root)
+	if rootPath == "" {
+		rootPath = "."
+	}
+	root, err := rootfs.New(rootPath)
+	if err != nil {
+		return PrepareResult{}, fmt.Errorf("prepare output root: %w", err)
+	}
+	defer func() {
+		if err := root.Close(); resultErr == nil && err != nil {
+			result = PrepareResult{}
+			resultErr = fmt.Errorf("close distribution output root: %w", err)
+		}
+	}()
+	// Select and retain the output root before the potentially long snapshot,
+	// archive validation, and code-signing work.
+	if err := root.MkdirAll(".", 0o755); err != nil {
+		return PrepareResult{}, fmt.Errorf("pin distribution output root: %w", err)
+	}
+	snapshot, digest, cleanup, err := snapshotIPAContext(ctx, file, size)
 	if err != nil {
 		return PrepareResult{}, err
 	}
@@ -66,12 +95,15 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	if afterIPASnapshotForTest != nil {
 		afterIPASnapshotForTest()
 	}
-	inspection, err := inspectSnapshot(snapshot, size, digest, InspectOptions{})
+	inspection, err := inspectSnapshotContext(ctx, snapshot, size, digest, InspectOptions{})
 	if err != nil {
 		return PrepareResult{}, err
 	}
 	if verifyCompleteSigningForTest != nil {
 		verifyCompleteSigningForTest(&inspection)
+	}
+	if err := contextError(ctx); err != nil {
+		return PrepareResult{}, err
 	}
 	if title := strings.TrimSpace(options.Title); title != "" {
 		inspection.App.Title = title
@@ -110,14 +142,6 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	}
 	descriptorData = append(descriptorData, '\n')
 
-	rootPath := strings.TrimSpace(options.Root)
-	if rootPath == "" {
-		rootPath = "."
-	}
-	root, err := rootfs.New(rootPath)
-	if err != nil {
-		return PrepareResult{}, fmt.Errorf("prepare output root: %w", err)
-	}
 	relativeOutput, err := prepareOutputPath(inspection, options.OutputDir)
 	if err != nil {
 		return PrepareResult{}, err
@@ -128,6 +152,9 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	}
 	defer rooted.Close()
 	parentRelative := filepath.Dir(relativeOutput)
+	if err := contextError(ctx); err != nil {
+		return PrepareResult{}, err
+	}
 	if err := rooted.MkdirAll(parentRelative, 0o755); err != nil {
 		return PrepareResult{}, fmt.Errorf("create distribution output parent: %w", err)
 	}
@@ -141,8 +168,8 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	defer parent.Close()
 	bundlePath := filepath.Join(root.Path(), relativeOutput)
 	finalName := filepath.Base(relativeOutput)
-	result := PrepareResult{BundlePath: bundlePath, Descriptor: descriptor}
-	if reused, exists, err := exactBundleExists(parent, finalName, descriptorData, descriptor.Artifact); err != nil {
+	result = PrepareResult{BundlePath: bundlePath, Descriptor: descriptor}
+	if reused, exists, err := exactBundleExistsContext(ctx, parent, finalName, descriptorData, descriptor.Artifact); err != nil {
 		return PrepareResult{}, err
 	} else if exists {
 		if !reused {
@@ -171,7 +198,7 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	if err != nil {
 		return PrepareResult{}, fmt.Errorf("open staged payload: %w", err)
 	}
-	if err := copySectionToNewFile(payloadRoot, "app.ipa", snapshot, size, descriptor.Artifact.SHA256, 0o644); err != nil {
+	if err := copySectionToNewFileContext(ctx, payloadRoot, "app.ipa", snapshot, size, descriptor.Artifact.SHA256, 0o644); err != nil {
 		_ = payloadRoot.Close()
 		return PrepareResult{}, fmt.Errorf("copy IPA into staged bundle: %w", err)
 	}
@@ -180,6 +207,9 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	}
 	// Write the descriptor last so even the private staging directory never
 	// advertises a payload that has not finished copying.
+	if err := contextError(ctx); err != nil {
+		return PrepareResult{}, err
+	}
 	if err := writeNewRootedFile(stage, "bundle.json", descriptorData, 0o644); err != nil {
 		return PrepareResult{}, fmt.Errorf("write staged bundle descriptor: %w", err)
 	}
@@ -188,9 +218,12 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	}
 	stageOpen = false
 
+	if err := contextError(ctx); err != nil {
+		return PrepareResult{}, err
+	}
 	if err := secureopen.RenameNoReplaceInRoot(parent, stageName, finalName); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			if reused, exists, reuseErr := exactBundleExists(parent, finalName, descriptorData, descriptor.Artifact); reuseErr == nil && exists && reused {
+			if reused, exists, reuseErr := exactBundleExistsContext(ctx, parent, finalName, descriptorData, descriptor.Artifact); reuseErr == nil && exists && reused {
 				result.Reused = true
 				return result, nil
 			}
@@ -260,6 +293,9 @@ func ValidatePrepareOptions(options PrepareOptions) error {
 			return err
 		}
 	}
+	if err := validateDescriptorText("--source-url", options.SourceURL, 2048); err != nil {
+		return err
+	}
 	return validateSourceURL(options.SourceURL)
 }
 
@@ -293,7 +329,7 @@ func validateSourceURL(raw string) error {
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return fmt.Errorf("invalid --source-url: query and fragment are not allowed")
 	}
-	if parsed.Scheme != "https" || parsed.Host == "" {
+	if parsed.Scheme != "https" || parsed.Hostname() == "" {
 		return fmt.Errorf("invalid --source-url: must be an absolute HTTPS URL")
 	}
 	return nil
@@ -356,13 +392,13 @@ func writeNewRootedFile(root *os.Root, name string, data []byte, mode os.FileMod
 	return file.Close()
 }
 
-func copySectionToNewFile(root *os.Root, name string, source *os.File, size int64, expectedSHA256 string, mode os.FileMode) error {
+func copySectionToNewFileContext(ctx context.Context, root *os.Root, name string, source *os.File, size int64, expectedSHA256 string, mode os.FileMode) error {
 	destination, err := secureopen.OpenNewFileNoFollowInRoot(root, name, mode)
 	if err != nil {
 		return err
 	}
 	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(destination, hash), io.NewSectionReader(source, 0, size))
+	written, err := copyWithContext(ctx, io.MultiWriter(destination, hash), io.NewSectionReader(source, 0, size), duringPublicationCopyForTest)
 	if err != nil {
 		_ = destination.Close()
 		return err
@@ -378,7 +414,10 @@ func copySectionToNewFile(root *os.Root, name string, source *os.File, size int6
 	return destination.Close()
 }
 
-func exactBundleExists(parent *os.Root, name string, wantDescriptor []byte, artifact Artifact) (bool, bool, error) {
+func exactBundleExistsContext(ctx context.Context, parent *os.Root, name string, wantDescriptor []byte, artifact Artifact) (bool, bool, error) {
+	if err := contextError(ctx); err != nil {
+		return false, false, err
+	}
 	info, err := parent.Lstat(name)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, false, nil
@@ -411,9 +450,10 @@ func exactBundleExists(parent *os.Root, name string, wantDescriptor []byte, arti
 	if err != nil {
 		return false, true, nil
 	}
-	gotDescriptor, readErr := io.ReadAll(io.LimitReader(descriptor, int64(len(wantDescriptor))+1))
+	var descriptorData bytes.Buffer
+	_, readErr := copyWithContext(ctx, &descriptorData, io.LimitReader(descriptor, int64(len(wantDescriptor))+1), nil)
 	closeErr := descriptor.Close()
-	if readErr != nil || closeErr != nil || string(gotDescriptor) != string(wantDescriptor) {
+	if readErr != nil || closeErr != nil || descriptorData.String() != string(wantDescriptor) {
 		return false, true, nil
 	}
 	ipa, err := secureopen.OpenExistingNoFollowInRoot(payload, "app.ipa")
@@ -426,7 +466,7 @@ func exactBundleExists(parent *os.Root, name string, wantDescriptor []byte, arti
 		return false, true, nil
 	}
 	hash := sha256.New()
-	_, hashErr := io.Copy(hash, ipa)
+	_, hashErr := copyWithContext(ctx, hash, ipa, nil)
 	closeErr = ipa.Close()
 	if hashErr != nil || closeErr != nil || hex.EncodeToString(hash.Sum(nil)) != artifact.SHA256 {
 		return false, true, nil
