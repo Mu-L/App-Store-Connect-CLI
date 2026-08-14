@@ -328,6 +328,13 @@ func TestValidateSignedMainAppEntitlementsBindsExactBundleIdentifier(t *testing.
 			signedTeamID:         "OTHERTEAM",
 			wantError:            true,
 		},
+		{
+			name:                 "signed team entitlement has trailing whitespace",
+			profileApplicationID: "TEAM123.com.example.demo",
+			signedApplicationID:  "TEAM123.com.example.demo",
+			signedTeamID:         "TEAM123 ",
+			wantError:            true,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			profile := entitlementTestProfile()
@@ -804,7 +811,13 @@ func TestEntitlementValuePermitsExactWildcardAndSubsetOnly(t *testing.T) {
 		{name: "terminal wildcard", profile: "TEAM.com.example.*", signed: "TEAM.com.example.app", want: true},
 		{name: "wildcard needs suffix", profile: "TEAM.com.example.*", signed: "TEAM.com.example.", want: false},
 		{name: "mismatched prefix", profile: "TEAM.com.example.*", signed: "OTHER.com.example.app", want: false},
+		{name: "signed exact leading whitespace", profile: "TEAM.com.example.app", signed: " TEAM.com.example.app", want: false},
+		{name: "signed exact trailing whitespace", profile: "TEAM.com.example.app", signed: "TEAM.com.example.app ", want: false},
+		{name: "signed wildcard leading whitespace", profile: "TEAM.com.example.*", signed: " TEAM.com.example.app", want: false},
+		{name: "profile exact whitespace is not normalized", profile: " TEAM.com.example.app", signed: "TEAM.com.example.app", want: false},
+		{name: "profile wildcard whitespace is not normalized", profile: " TEAM.com.example.*", signed: "TEAM.com.example.app", want: false},
 		{name: "list subset", profile: []any{"group.one", "group.two"}, signed: []any{"group.two"}, want: true},
+		{name: "list signed whitespace", profile: []any{"group.one"}, signed: []any{" group.one"}, want: false},
 		{name: "list extra", profile: []any{"group.one"}, signed: []any{"group.two"}, want: false},
 		{name: "bool mismatch", profile: false, signed: true, want: false},
 	}
