@@ -231,7 +231,7 @@ func renderInspection(result distribution.Inspection, markdown bool) error {
 	if markdown {
 		render = asc.RenderMarkdown
 	}
-	render([]string{"Field", "Value"}, [][]string{
+	rows := [][]string{
 		{"Metadata Eligible", fmt.Sprintf("%t", result.Preparation.MetadataEligible)},
 		{"Code Signature", string(result.Signing.CodeSignatureVerification.Status)},
 		{"Profile Integrity", string(result.Signing.ProfileIntegrityVerification.Status)},
@@ -244,9 +244,16 @@ func renderInspection(result distribution.Inspection, markdown bool) error {
 		{"Profile UUID", result.Signing.ProfileUUID},
 		{"Team ID", result.Signing.TeamID},
 		{"Devices", fmt.Sprintf("%d", result.Signing.DeviceCount)},
-		{"IPA SHA-256", result.Artifact.SHA256},
-		{"Issues", strings.Join(result.Preparation.Issues, "; ")},
-	})
+	}
+	if len(result.Signing.Devices) > 0 {
+		rows = append(rows, []string{"Device UDIDs", strings.Join(result.Signing.Devices, ", ")})
+	}
+	rows = append(
+		rows,
+		[]string{"IPA SHA-256", result.Artifact.SHA256},
+		[]string{"Issues", strings.Join(result.Preparation.Issues, "; ")},
+	)
+	render([]string{"Field", "Value"}, rows)
 	return nil
 }
 

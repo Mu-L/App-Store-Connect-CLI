@@ -93,7 +93,7 @@ func TestDistributeInspectJSONPrivacyAndExplicitDisclosure(t *testing.T) {
 }
 
 func TestDistributeInspectTableAndMarkdown(t *testing.T) {
-	ipa := writeDistributionIPA(t, "device")
+	ipa := writeDistributionIPA(t, "private-device-udid")
 	for _, format := range []string{"table", "markdown"} {
 		t.Run(format, func(t *testing.T) {
 			stdout, stderr, runErr := runRootCommand(t, []string{"distribute", "inspect", "--ipa", ipa, "--output", format})
@@ -102,6 +102,19 @@ func TestDistributeInspectTableAndMarkdown(t *testing.T) {
 			}
 			if !strings.Contains(stdout, "Bundle ID") || !strings.Contains(stdout, "com.example.demo") {
 				t.Fatalf("unexpected %s: %s", format, stdout)
+			}
+			if strings.Contains(stdout, "private-device-udid") {
+				t.Fatalf("default %s inspect leaked UDID: %s", format, stdout)
+			}
+
+			stdout, stderr, runErr = runRootCommand(t, []string{
+				"distribute", "inspect", "--ipa", ipa, "--include-devices", "--output", format,
+			})
+			if runErr != nil || stderr != "" {
+				t.Fatalf("include devices run error=%v stderr=%q", runErr, stderr)
+			}
+			if !strings.Contains(stdout, "private-device-udid") {
+				t.Fatalf("explicit %s inspect omitted UDID: %s", format, stdout)
 			}
 		})
 	}
