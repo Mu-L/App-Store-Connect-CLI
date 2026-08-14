@@ -129,6 +129,55 @@ func TestInspectIPARejectsUnsafeAndAmbiguousArchives(t *testing.T) {
 	}
 }
 
+func TestInspectIPARejectsArchiveWideDeclaredExpansionFromCompressedNonMainMembers(t *testing.T) {
+	const archiveExpansionLimit = uint64(16 << 30)
+	baseEntries := map[string][]byte{
+		"Payload/Demo.app/Info.plist":               infoPlist(t, "com.example.demo"),
+		"Payload/Demo.app/embedded.mobileprovision": signedProfile(t, profileFixture{BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Now().Add(time.Hour)}),
+	}
+	tests := []struct {
+		name     string
+		declared []declaredRawZipEntry
+	}{
+		{
+			name: "single highly compressed SwiftSupport member",
+			declared: []declaredRawZipEntry{
+				{Name: "SwiftSupport/libSwiftCore.dylib", UncompressedSize: archiveExpansionLimit},
+			},
+		},
+		{
+			name: "sum of non-main members",
+			declared: []declaredRawZipEntry{
+				{Name: "Symbols/part-1.bin", UncompressedSize: archiveExpansionLimit/2 + 1},
+				{Name: "Symbols/part-2.bin", UncompressedSize: archiveExpansionLimit/2 + 1},
+			},
+		},
+		{
+			name: "declared size arithmetic cannot overflow",
+			declared: []declaredRawZipEntry{
+				{Name: "SwiftSupport/overflow.bin", UncompressedSize: ^uint64(0)},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeIPAWithDeclaredRawEntries(t, baseEntries, test.declared)
+			file, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			info, err := file.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := InspectIPA(file, info.Size(), InspectOptions{}); err == nil || !strings.Contains(err.Error(), "declared expansion") {
+				t.Fatalf("InspectIPA() error = %v, want archive-wide declared expansion rejection", err)
+			}
+		})
+	}
+}
+
 func TestInspectIPATamperedProfileFailsCMSVerification(t *testing.T) {
 	profile := signedProfile(t, profileFixture{BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Now().Add(time.Hour)})
 	profile[len(profile)/2] ^= 1
@@ -406,6 +455,52 @@ func writeIPA(t *testing.T, entries map[string][]byte) string {
 			t.Fatal(err)
 		}
 		if _, err := entry.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+type declaredRawZipEntry struct {
+	Name             string
+	UncompressedSize uint64
+}
+
+func writeIPAWithDeclaredRawEntries(t *testing.T, entries map[string][]byte, declaredEntries []declaredRawZipEntry) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "App.ipa")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	for name, data := range entries {
+		entry, err := writer.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, declared := range declaredEntries {
+		header := &zip.FileHeader{
+			Name:               declared.Name,
+			Method:             zip.Deflate,
+			CompressedSize64:   2,
+			UncompressedSize64: declared.UncompressedSize,
+		}
+		entry, err := writer.CreateRaw(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte{0x03, 0x00}); err != nil {
 			t.Fatal(err)
 		}
 	}

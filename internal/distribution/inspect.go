@@ -26,9 +26,10 @@ import (
 )
 
 const (
-	maxArchiveEntries       = 20_000
-	maxArchiveMemberNameLen = 4096
-	maxProfileBytes         = 16 << 20
+	maxArchiveEntries              = 20_000
+	maxArchiveMemberNameLen        = 4096
+	maxArchiveExpandedBytes uint64 = 16 << 30
+	maxProfileBytes                = 16 << 20
 	// MaxIPABytes bounds synchronous inspection, hashing, and preparation work.
 	MaxIPABytes int64 = 8 << 30
 )
@@ -183,10 +184,15 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 	seen := make(map[string]struct{}, len(reader.File))
 	var infoFiles []*zip.File
 	var embeddedTargets []string
+	var declaredExpandedBytes uint64
 	for _, member := range reader.File {
 		if err := validateArchiveMember(member); err != nil {
 			return Inspection{}, err
 		}
+		if member.UncompressedSize64 > maxArchiveExpandedBytes-declaredExpandedBytes {
+			return Inspection{}, fmt.Errorf("IPA declared expansion exceeds %d bytes", maxArchiveExpandedBytes)
+		}
+		declaredExpandedBytes += member.UncompressedSize64
 		key := strings.ToLower(strings.TrimSuffix(member.Name, "/"))
 		if _, exists := seen[key]; exists {
 			return Inspection{}, fmt.Errorf("IPA contains duplicate path %q", member.Name)
