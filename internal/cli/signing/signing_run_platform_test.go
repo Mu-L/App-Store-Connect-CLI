@@ -80,15 +80,37 @@ func TestRunSigningRunChildSignalsProcessGroupBeforeWaitOnCancellation(t *testin
 	}
 	t.Cleanup(func() { signingRunKillProcessGroupFn = previous })
 
-	ctx, cancel := context.WithCancel(context.Background())
-	timer := time.AfterFunc(50*time.Millisecond, cancel)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	timer := time.AfterFunc(50*time.Millisecond, func() {
+		cancel(&signingRunSignalCause{signal: syscall.SIGTERM})
+	})
 	defer timer.Stop()
 	err := runSigningRunChild(ctx, []string{"/bin/sleep", "30"})
-	if code, ok := shared.ProcessExitCode(err); !ok || code != 130 {
-		t.Fatalf("error = %v, want signal exit code 130", err)
+	if code, ok := shared.ProcessExitCode(err); !ok || code != 143 {
+		t.Fatalf("error = %v, want signal exit code 143", err)
 	}
-	if !reflect.DeepEqual(signals, []syscall.Signal{syscall.SIGINT}) {
-		t.Fatalf("cancellation signals = %v, want SIGINT before wait only", signals)
+	if !reflect.DeepEqual(signals, []syscall.Signal{syscall.SIGTERM}) {
+		t.Fatalf("cancellation signals = %v, want SIGTERM before wait only", signals)
+	}
+}
+
+func TestSigningRunContextPreservesTriggeringSignal(t *testing.T) {
+	for _, want := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP} {
+		t.Run(want.String(), func(t *testing.T) {
+			signals := make(chan os.Signal, 1)
+			ctx, stop := contextWithSigningRunSignals(context.Background(), signals, func() {})
+			t.Cleanup(stop)
+
+			signals <- want
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+				t.Fatal("signal did not cancel signing context")
+			}
+			if got := signingRunCancellationSignal(ctx); got != want {
+				t.Fatalf("cancellation signal = %v, want %v", got, want)
+			}
+		})
 	}
 }
 

@@ -95,12 +95,14 @@ stream. Setup and cleanup failures are diagnostics on stderr. Usage failures
 exit 2. The wrapped child's normal exit code and signal-derived shell exit code
 are preserved exactly after best-effort cleanup through a private ASC-only error
 marker, so ordinary subprocess failures elsewhere retain the existing generic
-ASC mapping. Receipt write failure is a command failure when the child
-succeeded; a child failure remains authoritative and the receipt failure is
-rendered separately before root handling suppresses the already-inherited child
-diagnostic. The same render-before-join rule applies to cleanup and lock-release
-failures accompanying a child exit. Setup failures and their cleanup failures
-remain unreported until the root renders their complete joined diagnostic once.
+ASC mapping. `SIGINT`, `SIGTERM`, and `SIGHUP` received by the wrapper are
+forwarded unchanged to the running child process group before waiting for it.
+Receipt write failure is a command failure when the child succeeded; a child
+failure remains authoritative and the receipt failure is rendered separately
+before root handling suppresses the already-inherited child diagnostic. The same
+render-before-join rule applies to cleanup and lock-release failures accompanying
+a child exit. Setup failures and their cleanup failures remain unreported until
+the root renders their complete joined diagnostic once.
 
 The change is additive and macOS-only. Other platforms return a validation
 error before reading or changing host signing state. No current signing command

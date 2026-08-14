@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -764,7 +765,7 @@ func runSigningRunChild(ctx context.Context, argv []string) error {
 	select {
 	case err = <-done:
 	case <-ctx.Done():
-		_ = signingRunKillProcessGroupFn(pid, syscall.SIGINT)
+		_ = signingRunKillProcessGroupFn(pid, signingRunCancellationSignal(ctx))
 		timer := time.NewTimer(signingRunChildWaitDelay)
 		select {
 		case err = <-done:
@@ -837,5 +838,53 @@ func validateSigningRunInputPermissions(path string, info os.FileInfo, private b
 }
 
 func platformSigningRunContext(ctx context.Context) (context.Context, func()) {
-	return signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	return contextWithSigningRunSignals(ctx, signals, func() {
+		signal.Stop(signals)
+	})
+}
+
+type signingRunSignalCause struct {
+	signal syscall.Signal
+}
+
+func (cause *signingRunSignalCause) Error() string {
+	return fmt.Sprintf("received signal %s", cause.signal)
+}
+
+func contextWithSigningRunSignals(
+	parent context.Context,
+	signals <-chan os.Signal,
+	stopSignals func(),
+) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(parent)
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			stopSignals()
+			cancel(context.Canceled)
+		})
+	}
+	go func() {
+		select {
+		case received := <-signals:
+			sig, ok := received.(syscall.Signal)
+			if !ok {
+				cancel(fmt.Errorf("received unsupported signal %v", received))
+				return
+			}
+			cancel(&signingRunSignalCause{signal: sig})
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, stop
+}
+
+func signingRunCancellationSignal(ctx context.Context) syscall.Signal {
+	var cause *signingRunSignalCause
+	if errors.As(context.Cause(ctx), &cause) {
+		return cause.signal
+	}
+	return syscall.SIGINT
 }
