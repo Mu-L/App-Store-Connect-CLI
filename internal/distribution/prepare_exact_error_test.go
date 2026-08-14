@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -125,6 +126,20 @@ func TestPrepareIPAPathExactKeepsToolUnavailableRetryable(t *testing.T) {
 	}
 	if errors.Is(err, ErrNotEligible) {
 		t.Fatalf("PrepareIPAPathExact() error = %v, tool unavailability must remain retryable", err)
+	}
+}
+
+func TestCodeVerificationFailureClassifiesPermanentPathErrorsAsInvalid(t *testing.T) {
+	permanent := &os.PathError{Op: "mkdir", Path: strings.Repeat("x", 256), Err: syscall.ENAMETOOLONG}
+	status, _ := codeVerificationFailure(permanent, "main app")
+	if status != CodeSignatureInvalid {
+		t.Fatalf("ENAMETOOLONG status = %q, want %q", status, CodeSignatureInvalid)
+	}
+
+	transient := &os.PathError{Op: "write", Path: "Verify.app/Demo", Err: syscall.EIO}
+	status, _ = codeVerificationFailure(transient, "main app")
+	if status != CodeSignatureNotVerified {
+		t.Fatalf("EIO status = %q, want %q", status, CodeSignatureNotVerified)
 	}
 }
 

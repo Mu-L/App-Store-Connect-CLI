@@ -731,8 +731,9 @@ archive, a local PKCS#12 identity, a reconciled ad hoc profile, and private
 S3-compatible publication. The private OTA link was opened on a registered
 physical iPhone, installation completed, and SmolLens launched successfully.
 This establishes the real install-and-launch promotion gate for the composed
-path. The PR 6 state machine still requires its own local crash/recovery and
-private-object-store integration smoke before merge.
+path. State-machine crash/recovery and private-object-store integration smoke
+remain separate handoff evidence when matching signing inputs and storage
+configuration are available.
 
 The sanitized Xcode environment and process-group cleanup are isolation and
 recovery controls, not a sandbox. Trusted project build scripts still execute
@@ -848,6 +849,9 @@ revision that passed its focused tests and repository validation gates. A
 downstream slice must not be folded into the same commit merely because it uses
 the preceding command. Review handoff must record the tested Xcode versions,
 the exact commit, live verification performed, and any gate that remains.
+When matching signing inputs or private storage are unavailable, the handoff
+must explicitly record missing state-machine crash/recovery or object-store
+integration smoke as an unresolved verification risk.
 
 `--method` remains experimental until the complete workflow has exported a real
 archive, published a fetch-verified HTTPS manifest and IPA, and installed the

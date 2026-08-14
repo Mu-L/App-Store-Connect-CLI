@@ -483,16 +483,23 @@ func isRetryableCodeVerificationError(err error) bool {
 		errors.Is(err, errCodeVerificationInfrastructure) {
 		return true
 	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case syscall.EAGAIN, syscall.EINTR, syscall.EIO, syscall.ENOSPC,
+			syscall.EDQUOT, syscall.EMFILE, syscall.ENFILE, syscall.EBUSY,
+			syscall.ETIMEDOUT, syscall.ENOMEM, syscall.ESTALE:
+			return true
+		default:
+			return false
+		}
+	}
 	var pathError *os.PathError
 	if errors.As(err, &pathError) {
 		return true
 	}
 	var linkError *os.LinkError
-	if errors.As(err, &linkError) {
-		return true
-	}
-	var errno syscall.Errno
-	return errors.As(err, &errno)
+	return errors.As(err, &linkError)
 }
 
 func stringSet(values []string) map[string]struct{} {
