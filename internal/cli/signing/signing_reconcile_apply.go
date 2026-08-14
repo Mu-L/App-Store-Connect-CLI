@@ -198,6 +198,9 @@ func preflightSigningApplySanitized(ctx context.Context, client *asc.Client, pla
 }
 
 func validateSigningApplyPlan(plan signingReconcilePlanArtifact) error {
+	if plan.Paths.ReceiptPath != filepath.Join(plan.Paths.StateDir, "receipt.json") {
+		return fmt.Errorf("receipt path must be the state directory receipt.json")
+	}
 	if plan.Certificate == nil || strings.TrimSpace(plan.Certificate.ID) == "" {
 		return fmt.Errorf("selected certificate is missing")
 	}

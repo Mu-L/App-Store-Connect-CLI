@@ -1484,6 +1484,19 @@ func TestWriteSigningStateJSONUses0600AndOverwriteGate(t *testing.T) {
 	}
 }
 
+func TestValidateSigningApplyPlanRejectsMismatchedReceiptPath(t *testing.T) {
+	stateDir := t.TempDir()
+	err := validateSigningApplyPlan(signingReconcilePlanArtifact{
+		Paths: signingReconcilePaths{
+			StateDir:    stateDir,
+			ReceiptPath: filepath.Join(stateDir, "alternate-receipt.json"),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "receipt path") {
+		t.Fatalf("mismatched receipt path error = %v", err)
+	}
+}
+
 func TestWriteSigningStateJSONRejectsPlanLargerThanApplyCanRead(t *testing.T) {
 	dir := t.TempDir()
 	value := map[string]string{"padding": string(bytes.Repeat([]byte("x"), reconcilePlanFileMaxBytes))}

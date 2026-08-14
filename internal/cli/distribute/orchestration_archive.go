@@ -14,7 +14,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"unicode"
@@ -432,7 +431,11 @@ func (s *archiveTreeScanner) recordFile(
 	if err := s.ctx.Err(); err != nil {
 		return err
 	}
-	if archiveHasMultipleHardLinks(before) {
+	multipleLinks, linkCountSupported := archiveHasMultipleHardLinks(before)
+	if !linkCountSupported {
+		return fmt.Errorf("archive entry %q hard-link validation is unsupported on this platform", relative)
+	}
+	if multipleLinks {
 		return fmt.Errorf("archive entry %q has multiple hard links", relative)
 	}
 	if before.Size() < 0 || before.Size() > archiveSnapshotMaxSizeBytes-s.sizeBytes {
@@ -447,7 +450,11 @@ func (s *archiveTreeScanner) recordFile(
 	if err != nil {
 		return fmt.Errorf("inspect opened archive file %q: %w", relative, err)
 	}
-	if !openedInfo.Mode().IsRegular() || !os.SameFile(before, openedInfo) || archiveHasMultipleHardLinks(openedInfo) {
+	openedMultipleLinks, openedLinkCountSupported := archiveHasMultipleHardLinks(openedInfo)
+	if !openedLinkCountSupported {
+		return fmt.Errorf("archive file %q hard-link validation is unsupported on this platform", relative)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(before, openedInfo) || openedMultipleLinks {
 		return fmt.Errorf("archive file %q changed or gained a hard link while opening", relative)
 	}
 	if before.Size() != openedInfo.Size() || archiveSnapshotFileMode(before.Mode()) != archiveSnapshotFileMode(openedInfo.Mode()) {
@@ -713,35 +720,6 @@ func archiveSnapshotFileMode(source os.FileMode) os.FileMode {
 	// bits is sufficient for Xcode tools while deliberately dropping setuid,
 	// setgid, sticky, and group/other read-write privileges.
 	return 0o600 | (source.Perm() & 0o111)
-}
-
-func archiveHasMultipleHardLinks(info os.FileInfo) bool {
-	if info == nil || info.Sys() == nil {
-		return false
-	}
-	value := reflect.ValueOf(info.Sys())
-	if value.Kind() == reflect.Pointer {
-		if value.IsNil() {
-			return false
-		}
-		value = value.Elem()
-	}
-	if value.Kind() != reflect.Struct {
-		return false
-	}
-	for _, fieldName := range []string{"Nlink", "NumberOfLinks"} {
-		field := value.FieldByName(fieldName)
-		if !field.IsValid() {
-			continue
-		}
-		switch field.Kind() {
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return field.Uint() > 1
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return field.Int() > 1
-		}
-	}
-	return false
 }
 
 func chmodArchiveSnapshotEntry(root *os.Root, relative string, mode os.FileMode) error {

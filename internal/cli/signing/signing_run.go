@@ -339,7 +339,7 @@ func InspectPKCS12Identity(ctx context.Context, options PKCS12IdentityOptions) (
 	}
 	identityPassword := bytes.TrimSuffix(passwordData, []byte("\n"))
 	identityPassword = bytes.TrimSuffix(identityPassword, []byte("\r"))
-	identity, err := inspectSigningRunIdentity(identityData, identityPassword, time.Now())
+	identity, err := inspectSigningRunIdentity(identityData, identityPassword, signingRunNowFn())
 	if err != nil {
 		return PKCS12IdentityInfo{}, fmt.Errorf("inspect PKCS#12 identity: %w", err)
 	}
@@ -599,16 +599,12 @@ func runSigningEnvironment(
 	options signingRunOptions,
 	profileData []byte,
 	inspection *signingRunInspection,
-	operations ...func(context.Context) error,
+	operation func(context.Context) error,
 ) (receipt signingRunReceipt, resultErr error) {
-	var operation func(context.Context) error
-	if deps.RunChild != nil {
+	if operation == nil && deps.RunChild != nil {
 		operation = func(runCtx context.Context) error {
 			return deps.RunChild(runCtx, options.Child)
 		}
-	}
-	if len(operations) > 0 {
-		operation = operations[0]
 	}
 	if operation == nil {
 		return signingRunReceipt{}, fmt.Errorf("signing run operation is required")
@@ -631,6 +627,9 @@ func runSigningEnvironment(
 	unlock, err := deps.AcquireLock(ctx)
 	if err != nil {
 		return receipt, fmt.Errorf("acquire signing environment lock: %w", err)
+	}
+	if unlock == nil {
+		return receipt, fmt.Errorf("signing environment lock returned no release function")
 	}
 	defer func() {
 		panicValue := recover()

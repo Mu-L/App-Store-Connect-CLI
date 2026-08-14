@@ -3,12 +3,12 @@ package xcode
 import (
 	"archive/zip"
 	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
@@ -165,7 +165,10 @@ func validateExactIPAFileInfo(info os.FileInfo, description string) error {
 	}
 	uid, nlink, ok := exactIPAStatIdentity(info)
 	currentUID, ownerAvailable := currentExactIPAOwner()
-	if !ok || !ownerAvailable || uid != currentUID {
+	if !ok || !ownerAvailable {
+		return fmt.Errorf("%s ownership and hard-link validation is unsupported on this platform", description)
+	}
+	if uid != currentUID {
 		return fmt.Errorf("%s must be owned by the current user", description)
 	}
 	if nlink != 1 {
@@ -180,28 +183,13 @@ func validateStableExactIPA(before, after os.FileInfo, description string) error
 	}
 	beforeUID, beforeLinks, beforeOK := exactIPAStatIdentity(before)
 	afterUID, afterLinks, afterOK := exactIPAStatIdentity(after)
-	if !beforeOK || !afterOK || beforeUID != afterUID || beforeLinks != afterLinks {
+	if !beforeOK || !afterOK {
+		return fmt.Errorf("%s identity validation is unsupported on this platform", description)
+	}
+	if beforeUID != afterUID || beforeLinks != afterLinks {
 		return fmt.Errorf("%s identity changed during verification", description)
 	}
 	return validateExactIPAFileInfo(after, description)
-}
-
-func exactIPAStatIdentity(info os.FileInfo) (uid, nlink uint64, ok bool) {
-	value := reflect.ValueOf(info.Sys())
-	if !value.IsValid() {
-		return 0, 0, false
-	}
-	if value.Kind() == reflect.Pointer {
-		value = value.Elem()
-	}
-	if !value.IsValid() || value.Kind() != reflect.Struct {
-		return 0, 0, false
-	}
-	uidField, nlinkField := value.FieldByName("Uid"), value.FieldByName("Nlink")
-	if !uidField.IsValid() || !nlinkField.IsValid() || !uidField.CanUint() || !nlinkField.CanUint() {
-		return 0, 0, false
-	}
-	return uidField.Uint(), nlinkField.Uint(), true
 }
 
 func hashExactIPAFile(file *os.File) ([]byte, int64, error) {
@@ -217,14 +205,7 @@ func hashExactIPAFile(file *os.File) ([]byte, int64, error) {
 }
 
 func equalDigest(left, right []byte) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	var difference byte
-	for index := range left {
-		difference |= left[index] ^ right[index]
-	}
-	return difference == 0
+	return subtle.ConstantTimeCompare(left, right) == 1
 }
 
 func readIPABundleInfoFromReaderAt(reader io.ReaderAt, size int64) (bundleInfo, error) {

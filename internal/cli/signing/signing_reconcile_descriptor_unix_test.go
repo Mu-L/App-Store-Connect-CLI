@@ -60,6 +60,7 @@ func TestSigningReconcileHelpersCloseRootDescriptors(t *testing.T) {
 
 func assertNoSigningDescriptorLeak(t *testing.T, operation func()) {
 	t.Helper()
+	operation()
 	before := countOpenSigningDescriptors(t)
 	for range 8 {
 		operation()

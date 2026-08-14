@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -157,7 +158,7 @@ func TestObserveInstalledAppOnDeviceUsesExactReadOnlyDevicectlQuery(t *testing.T
 		t.Fatalf("secret environment leaked to devicectl: %q", runner.environment)
 	}
 	for _, disallowed := range []string{"install", "uninstall", "launch", "process"} {
-		if slicesContain(runner.args, disallowed) {
+		if slices.Contains(runner.args, disallowed) {
 			t.Fatalf("read-only devicectl query contains %q: %q", disallowed, runner.args)
 		}
 	}
@@ -356,13 +357,4 @@ func TestObserveInstalledAppOnDeviceRejectsLateHardLink(t *testing.T) {
 	if _, err := observeInstalledAppOnDeviceWithRunner(context.Background(), "darwin", validDeviceObservationRequest(), runner); err == nil || !strings.Contains(err.Error(), "hard link") {
 		t.Fatalf("error = %v, want late hard-link rejection", err)
 	}
-}
-
-func slicesContain(values []string, value string) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
 }
