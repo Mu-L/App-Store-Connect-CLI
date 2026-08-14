@@ -202,9 +202,43 @@ func executeSigningRun(ctx context.Context, options signingRunOptions) error {
 
 		runCtx, stopSignals := platformSigningRunContext(ctx)
 		defer stopSignals()
-		receipt, runErr := runSigningEnvironment(runCtx, deps, options, profileData, inspection)
-		return finishSigningRunReceipt(os.Stderr, options.ReceiptPath, receipt, runErr)
+		return withSigningRunReceipt(os.Stderr, options.ReceiptPath, func() (signingRunReceipt, error) {
+			return runSigningEnvironment(runCtx, deps, options, profileData, inspection)
+		})
 	})
+}
+
+func withSigningRunReceipt(
+	stderr io.Writer,
+	path string,
+	run func() (signingRunReceipt, error),
+) error {
+	if err := preflightSigningRunReceipt(path); err != nil {
+		return fmt.Errorf("signing run: preflight receipt: %w", err)
+	}
+	receipt, runErr := run()
+	return finishSigningRunReceipt(stderr, path, receipt, runErr)
+}
+
+func preflightSigningRunReceipt(path string) error {
+	if path == "" {
+		return nil
+	}
+	preflightComplete := errors.New("receipt preflight complete")
+	_, err := shared.SafeWriteFileNoSymlink(
+		path,
+		0o600,
+		false,
+		".asc-signing-run-receipt-*",
+		".asc-signing-run-receipt-backup-*",
+		func(*os.File) (int64, error) {
+			return 0, preflightComplete
+		},
+	)
+	if errors.Is(err, preflightComplete) {
+		return nil
+	}
+	return err
 }
 
 func withSigningRunInputData(

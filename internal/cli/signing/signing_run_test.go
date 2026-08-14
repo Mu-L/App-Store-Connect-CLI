@@ -475,6 +475,79 @@ func TestFinishSigningRunReceiptReportsFailureAlongsideChildExit(t *testing.T) {
 	}
 }
 
+func TestWithSigningRunReceiptRejectsExistingDestinationBeforeRun(t *testing.T) {
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(receiptPath, []byte("existing"), 0o600); err != nil {
+		t.Fatalf("write existing receipt: %v", err)
+	}
+	runCalled := false
+
+	err := withSigningRunReceipt(io.Discard, receiptPath, func() (signingRunReceipt, error) {
+		runCalled = true
+		return signingRunReceipt{SchemaVersion: 1}, nil
+	})
+
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("error = %v, want os.ErrExist", err)
+	}
+	if runCalled {
+		t.Fatal("run callback executed despite invalid receipt destination")
+	}
+}
+
+func TestWithSigningRunReceiptPreflightsParentAndPublishesAfterRun(t *testing.T) {
+	receiptPath := filepath.Join(t.TempDir(), "missing", "receipt.json")
+	runCalled := false
+
+	err := withSigningRunReceipt(io.Discard, receiptPath, func() (signingRunReceipt, error) {
+		runCalled = true
+		entries, readErr := os.ReadDir(filepath.Dir(receiptPath))
+		if readErr != nil {
+			return signingRunReceipt{}, readErr
+		}
+		if len(entries) != 0 {
+			return signingRunReceipt{}, fmt.Errorf("receipt directory contains preflight residue: %v", entries)
+		}
+		return signingRunReceipt{SchemaVersion: 1, Outcome: "succeeded"}, nil
+	})
+	if err != nil {
+		t.Fatalf("withSigningRunReceipt() error: %v", err)
+	}
+	if !runCalled {
+		t.Fatal("run callback was not executed")
+	}
+	data, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatalf("read receipt: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"outcome": "succeeded"`)) {
+		t.Fatalf("receipt = %s, want successful outcome", data)
+	}
+}
+
+func TestWithSigningRunReceiptDoesNotReplaceDestinationCreatedDuringRun(t *testing.T) {
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	foreign := []byte("created during run")
+
+	err := withSigningRunReceipt(io.Discard, receiptPath, func() (signingRunReceipt, error) {
+		if writeErr := os.WriteFile(receiptPath, foreign, 0o600); writeErr != nil {
+			return signingRunReceipt{}, writeErr
+		}
+		return signingRunReceipt{SchemaVersion: 1, Outcome: "succeeded"}, nil
+	})
+
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("error = %v, want os.ErrExist", err)
+	}
+	data, readErr := os.ReadFile(receiptPath)
+	if readErr != nil {
+		t.Fatalf("read destination: %v", readErr)
+	}
+	if !bytes.Equal(data, foreign) {
+		t.Fatalf("destination = %q, want preserved foreign content %q", data, foreign)
+	}
+}
+
 func TestRunSigningEnvironmentRestoresStateInReverseOrder(t *testing.T) {
 	fixture := newSigningRunFixture(t, signingRunFixtureOptions{})
 	inspection, err := inspectSigningRunInputs(fixture.identity, []byte(fixture.password), fixture.profile, fixture.roots, fixture.now)

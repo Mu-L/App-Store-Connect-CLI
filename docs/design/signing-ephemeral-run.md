@@ -81,7 +81,10 @@ retains the journal and private temporary directory for the next run.
 The optional receipt is a mode-0600, no-overwrite JSON file. It records only
 purpose, outcome, child exit code, certificate and profile SHA-256 digests,
 profile UUID, team and bundle identifiers, and cleanup state. It never records
-passwords, private keys, device identifiers, or child command arguments.
+passwords, private keys, device identifiers, or child command arguments. Its
+destination and parent are preflighted before any signing-environment or child
+side effects; the completed receipt is still published atomically without
+replacing a file created after that preflight.
 
 ## Output, failures, and compatibility
 
