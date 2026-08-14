@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 func TestLoadPreparedBundleValidatesArtifact(t *testing.T) {
@@ -49,6 +51,90 @@ func TestLoadPreparedBundleValidatesArtifact(t *testing.T) {
 	}
 	if _, err := LoadPreparedBundle(dir); err == nil || !strings.Contains(err.Error(), "size") {
 		t.Fatalf("error = %v, want early size mismatch", err)
+	}
+}
+
+func TestLoadPreparedBundleContextPinsSelectedRoot(t *testing.T) {
+	t.Run("symlink retarget keeps original descriptor", func(t *testing.T) {
+		base := t.TempDir()
+		original := filepath.Join(base, "original")
+		replacement := filepath.Join(base, "replacement")
+		alias := filepath.Join(base, "selected")
+		writePreparedBundleFixture(t, original, []byte("original"), "Original")
+		writePreparedBundleFixture(t, replacement, []byte("replacement"), "Replacement")
+		if err := os.Symlink(original, alias); err != nil {
+			t.Fatal(err)
+		}
+		root, err := rootfs.New(alias)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(alias); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(replacement, alias); err != nil {
+			t.Fatal(err)
+		}
+
+		bundle, err := LoadPreparedBundleContext(context.Background(), root)
+		if err != nil {
+			t.Fatalf("LoadPreparedBundleContext() error = %v", err)
+		}
+		if bundle.Descriptor.App.Title != "Original" {
+			t.Fatalf("loaded title = %q, want pinned original", bundle.Descriptor.App.Title)
+		}
+		if err := bundle.IPA.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := root.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if opened, err := root.OpenRoot(); opened != nil || err == nil {
+			if opened != nil {
+				_ = opened.Close()
+			}
+			t.Fatal("pinned descriptor remained usable after Close")
+		}
+	})
+
+	t.Run("ordinary directory replacement fails closed", func(t *testing.T) {
+		base := t.TempDir()
+		selected := filepath.Join(base, "selected")
+		moved := filepath.Join(base, "moved")
+		writePreparedBundleFixture(t, selected, []byte("original"), "Original")
+		root, err := rootfs.New(selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		if err := os.Rename(selected, moved); err != nil {
+			t.Fatal(err)
+		}
+		writePreparedBundleFixture(t, selected, []byte("replacement"), "Replacement")
+
+		if bundle, err := LoadPreparedBundleContext(context.Background(), root); err == nil {
+			_ = bundle.IPA.Close()
+			t.Fatal("LoadPreparedBundleContext() accepted replacement directory")
+		}
+	})
+}
+
+func writePreparedBundleFixture(t *testing.T, dir string, ipa []byte, title string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "payload"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := minimalDescriptor(ipa)
+	descriptor.App.Title = title
+	encoded, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bundle.json"), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "payload", "app.ipa"), ipa, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -161,6 +247,117 @@ func TestPublishOrdersObjectsAndRedactsInstallURL(t *testing.T) {
 	}
 	if len(verifier.urls) != 3 {
 		t.Fatalf("verified %d URLs, want 3", len(verifier.urls))
+	}
+}
+
+func TestPublishUploadsImmutableIPASnapshot(t *testing.T) {
+	source := bytes.NewReader([]byte("ipa"))
+	store := &fakeObjectStore{
+		beforeEnsure: func() {
+			source.Reset([]byte("bad"))
+		},
+	}
+	descriptor := minimalDescriptor([]byte("ipa"))
+
+	if _, _, err := Publish(context.Background(), source, descriptor, PublishOptions{
+		Store: store, Verifier: &recordingVerifier{}, Bucket: "bucket", Prefix: "team/app", Access: AccessPrivate,
+		URLTTL: time.Hour, Now: func() time.Time { return time.Unix(1000, 0).UTC() },
+		RandomID: func() (string, error) { return "link-id", nil },
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	key := "team/app/objects/sha256/" + strings.ToLower(descriptor.Artifact.SHA256) + ".ipa"
+	if got := string(store.bodies[key]); got != "ipa" {
+		t.Fatalf("uploaded IPA = %q, want immutable snapshot", got)
+	}
+}
+
+func TestPublishRejectsMutationDuringSnapshotWithoutUploading(t *testing.T) {
+	original := bytes.Repeat([]byte("a"), 128<<10)
+	source := &mutatingReadSeeker{data: append([]byte(nil), original...)}
+	store := &fakeObjectStore{}
+	snapshotDirectory := ""
+	previousSnapshotHook := snapshotCreatedForTest
+	snapshotCreatedForTest = func(path string) { snapshotDirectory = path }
+	t.Cleanup(func() { snapshotCreatedForTest = previousSnapshotHook })
+
+	_, _, err := Publish(context.Background(), source, minimalDescriptor(original), PublishOptions{
+		Store: store, Verifier: &recordingVerifier{}, Bucket: "bucket", Prefix: "team/app", Access: AccessPrivate,
+		URLTTL: time.Hour, Now: func() time.Time { return time.Unix(1000, 0).UTC() },
+	})
+	if err == nil || !strings.Contains(err.Error(), "snapshot SHA-256") {
+		t.Fatalf("Publish() error = %v, want mutation mismatch", err)
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("store calls = %v, want no upload", store.calls)
+	}
+	if snapshotDirectory == "" {
+		t.Fatal("snapshot directory was not created")
+	}
+	if _, statErr := os.Stat(snapshotDirectory); !os.IsNotExist(statErr) {
+		t.Fatalf("snapshot directory survived failure: %v", statErr)
+	}
+}
+
+func TestPublishSnapshotCancellationCleansBeforeUploading(t *testing.T) {
+	source := bytes.NewReader(bytes.Repeat([]byte("a"), 128<<10))
+	store := &fakeObjectStore{}
+	ctx, cancel := context.WithCancel(context.Background())
+	snapshotDirectory := ""
+	previousCreatedHook := snapshotCreatedForTest
+	previousDuringHook := duringIPASnapshotForTest
+	snapshotCreatedForTest = func(path string) { snapshotDirectory = path }
+	duringIPASnapshotForTest = cancel
+	t.Cleanup(func() {
+		snapshotCreatedForTest = previousCreatedHook
+		duringIPASnapshotForTest = previousDuringHook
+	})
+
+	_, _, err := Publish(ctx, source, minimalDescriptor(bytes.Repeat([]byte("a"), 128<<10)), PublishOptions{
+		Store: store, Verifier: &recordingVerifier{}, Bucket: "bucket", Prefix: "team/app", Access: AccessPrivate,
+		URLTTL: time.Hour, Now: func() time.Time { return time.Unix(1000, 0).UTC() },
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Publish() error = %v, want context.Canceled", err)
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("store calls = %v, want no upload", store.calls)
+	}
+	if snapshotDirectory == "" {
+		t.Fatal("snapshot directory was not created")
+	}
+	if _, statErr := os.Stat(snapshotDirectory); !os.IsNotExist(statErr) {
+		t.Fatalf("snapshot directory survived cancellation: %v", statErr)
+	}
+}
+
+func TestPublishConditionallyRepairsPoisonedReusedIPA(t *testing.T) {
+	ipa := []byte("ipa")
+	key := "team/app/objects/sha256/" + sha256Hex(ipa) + ".ipa"
+	store := &repairingObjectStore{fakeObjectStore: fakeObjectStore{
+		objects: map[string]StoredObject{
+			key: {Key: key, SHA256: sha256Hex(ipa), SizeBytes: int64(len(ipa)), ContentType: ContentTypeIPA},
+		},
+		bodies: map[string][]byte{key: []byte("bad")},
+	}}
+	verifier := &mismatchOnceVerifier{}
+
+	if _, _, err := Publish(context.Background(), bytes.NewReader(ipa), minimalDescriptor(ipa), PublishOptions{
+		Store: store, Verifier: verifier, Bucket: "bucket", Prefix: "team/app", Access: AccessPrivate,
+		URLTTL: time.Hour, Now: func() time.Time { return time.Unix(1000, 0).UTC() },
+		RandomID: func() (string, error) { return "link-id", nil },
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if store.repairs != 1 {
+		t.Fatalf("conditional repairs = %d, want 1", store.repairs)
+	}
+	if got := store.bodies[key]; !bytes.Equal(got, ipa) || sha256Hex(got) != sha256Hex(ipa) {
+		t.Fatalf("replacement body = %q digest=%s", got, sha256Hex(got))
+	}
+	if verifier.ipaChecks != 2 {
+		t.Fatalf("IPA verification calls = %d, want initial mismatch plus repaired verification", verifier.ipaChecks)
 	}
 }
 
@@ -372,49 +569,84 @@ func TestReverifyAcceptsBoundPrivatePathStyleLinks(t *testing.T) {
 	}
 }
 
-func TestReverifyRejectsPrivateSignaturesOutlivingReceiptDeadlines(t *testing.T) {
+func TestReverifyRequiresPrivateSignaturesToMatchReceiptDeadlines(t *testing.T) {
 	signedAt := time.Date(2026, time.August, 14, 10, 0, 0, 0, time.UTC)
 	pageDeadline := signedAt.Add(time.Hour)
 	grace := 10 * time.Minute
 
 	for _, target := range []string{"install", "manifest", "artifact"} {
-		t.Run(target, func(t *testing.T) {
-			receipt := PublishReceipt{
-				SchemaVersion: "1", Access: AccessPrivate, DownloadEndpoint: "https://downloads.example.com", AddressingStyle: "path", Bucket: "bucket",
-				DownloadGrace: grace.String(), ExpiresAt: &pageDeadline, Verified: true,
-				Artifact: StoredObject{Key: "prefix/app.ipa", SHA256: "a", SizeBytes: 1, ContentType: ContentTypeIPA},
-				Manifest: StoredObject{Key: "prefix/manifest.plist", SHA256: "b", SizeBytes: 1, ContentType: ContentTypeManifest},
-				Page:     StoredObject{Key: "prefix/index.html", SHA256: "c", SizeBytes: 1, ContentType: ContentTypeHTML},
-				Signing:  ReceiptSigning{ProfileExpiresAt: pageDeadline.Add(grace + time.Hour).Format(time.RFC3339)},
-			}
-			links := SensitiveLinks{
-				SchemaVersion: "1", ExpiresAt: &pageDeadline,
-				InstallURL:  privateSignatureFixture("/bucket/prefix/index.html", signedAt, time.Hour),
-				ManifestURL: privateSignatureFixture("/bucket/prefix/manifest.plist", signedAt, time.Hour+grace),
-				ArtifactURL: privateSignatureFixture("/bucket/prefix/app.ipa", signedAt, time.Hour+grace),
-			}
-			switch target {
-			case "install":
-				links.InstallURL = privateSignatureFixture("/bucket/prefix/index.html", signedAt, time.Hour+time.Second)
-			case "manifest":
-				links.ManifestURL = privateSignatureFixture("/bucket/prefix/manifest.plist", signedAt, time.Hour+grace+time.Second)
-			case "artifact":
-				links.ArtifactURL = privateSignatureFixture("/bucket/prefix/app.ipa", signedAt, time.Hour+grace+time.Second)
-			}
-			links.DirectInstallURL = "itms-services://?action=download-manifest&url=" + url.QueryEscape(links.ManifestURL)
-			receipt.InstallURL = redactBearerURL(links.InstallURL)
-			receipt.DirectInstallURL = redactDirectInstallURL(links.DirectInstallURL)
-			bindGeneratedRecoveryObjects(t, &receipt, links)
+		for _, test := range []struct {
+			name           string
+			deadlineOffset time.Duration
+			lifetimeOffset time.Duration
+			wantError      bool
+		}{
+			{name: "exact"},
+			{name: "subsecond early", deadlineOffset: 500 * time.Millisecond},
+			{name: "subsecond late", deadlineOffset: -500 * time.Millisecond},
+			{name: "one second early", lifetimeOffset: -time.Second, wantError: true},
+			{name: "one second late", lifetimeOffset: time.Second, wantError: true},
+		} {
+			t.Run(target+"/"+test.name, func(t *testing.T) {
+				recordedPageDeadline := pageDeadline.Add(test.deadlineOffset)
+				receipt := PublishReceipt{
+					SchemaVersion: "1", Access: AccessPrivate, DownloadEndpoint: "https://downloads.example.com", AddressingStyle: "path", Bucket: "bucket",
+					DownloadGrace: grace.String(), ExpiresAt: &recordedPageDeadline, Verified: true,
+					Artifact: StoredObject{Key: "prefix/app.ipa", SHA256: "a", SizeBytes: 1, ContentType: ContentTypeIPA},
+					Manifest: StoredObject{Key: "prefix/manifest.plist", SHA256: "b", SizeBytes: 1, ContentType: ContentTypeManifest},
+					Page:     StoredObject{Key: "prefix/index.html", SHA256: "c", SizeBytes: 1, ContentType: ContentTypeHTML},
+					Signing:  ReceiptSigning{ProfileExpiresAt: pageDeadline.Add(grace + time.Hour).Format(time.RFC3339)},
+				}
+				links := SensitiveLinks{
+					SchemaVersion: "1", ExpiresAt: &recordedPageDeadline,
+					InstallURL:  privateSignatureFixture("/bucket/prefix/index.html", signedAt, time.Hour),
+					ManifestURL: privateSignatureFixture("/bucket/prefix/manifest.plist", signedAt, time.Hour+grace),
+					ArtifactURL: privateSignatureFixture("/bucket/prefix/app.ipa", signedAt, time.Hour+grace),
+				}
+				switch target {
+				case "install":
+					links.InstallURL = privateSignatureFixture("/bucket/prefix/index.html", signedAt, time.Hour+test.lifetimeOffset)
+				case "manifest":
+					links.ManifestURL = privateSignatureFixture("/bucket/prefix/manifest.plist", signedAt, time.Hour+grace+test.lifetimeOffset)
+				case "artifact":
+					links.ArtifactURL = privateSignatureFixture("/bucket/prefix/app.ipa", signedAt, time.Hour+grace+test.lifetimeOffset)
+				}
+				links.DirectInstallURL = "itms-services://?action=download-manifest&url=" + url.QueryEscape(links.ManifestURL)
+				receipt.InstallURL = redactBearerURL(links.InstallURL)
+				receipt.DirectInstallURL = redactDirectInstallURL(links.DirectInstallURL)
+				bindGeneratedRecoveryObjects(t, &receipt, links)
 
-			verifier := &recordingVerifier{}
-			err := Reverify(context.Background(), verifier, receipt, links, signedAt.Add(time.Minute))
-			if err == nil || !strings.Contains(err.Error(), "signed expiry exceeds") {
-				t.Fatalf("Reverify() error = %v, want signed deadline rejection", err)
-			}
-			if len(verifier.urls) != 0 {
-				t.Fatalf("live verifier calls = %d, want none", len(verifier.urls))
-			}
-		})
+				verifier := &recordingVerifier{}
+				err := Reverify(context.Background(), verifier, receipt, links, signedAt.Add(time.Minute))
+				if test.wantError {
+					if err == nil || !strings.Contains(err.Error(), "signed expiry does not match") {
+						t.Fatalf("Reverify() error = %v, want signed deadline mismatch", err)
+					}
+					if len(verifier.urls) != 0 {
+						t.Fatalf("live verifier calls = %d, want none", len(verifier.urls))
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("Reverify() error = %v", err)
+				}
+				if len(verifier.urls) != 3 {
+					t.Fatalf("live verifier calls = %d, want 3", len(verifier.urls))
+				}
+			})
+		}
+	}
+}
+
+func TestPrivateSignatureMustMatchReceiptDeadlineAtSigningPrecision(t *testing.T) {
+	signedAt := time.Date(2026, time.August, 14, 10, 0, 0, 0, time.UTC)
+	deadline := signedAt.Add(time.Hour)
+
+	if err := privateSignatureWithinDeadline(privateSignatureFixture("/bucket/app.ipa", signedAt, time.Hour-time.Second), deadline); err == nil {
+		t.Fatal("privateSignatureWithinDeadline() accepted a signature expiring before the receipt")
+	}
+	if err := privateSignatureWithinDeadline(privateSignatureFixture("/bucket/app.ipa", signedAt, time.Hour), deadline.Add(500*time.Millisecond)); err != nil {
+		t.Fatalf("privateSignatureWithinDeadline() rejected subsecond receipt precision: %v", err)
 	}
 }
 
@@ -498,15 +730,98 @@ func TestVerifierProviderHeadersNeverReachDiagnostic(t *testing.T) {
 }
 
 type fakeObjectStore struct {
-	objects map[string]StoredObject
-	bodies  map[string][]byte
-	calls   []string
+	objects      map[string]StoredObject
+	bodies       map[string][]byte
+	calls        []string
+	beforeEnsure func()
 }
 
 type delayedPresignStore struct {
 	fakeObjectStore
 	now  time.Time
 	ttls []time.Duration
+}
+
+type repairingObjectStore struct {
+	fakeObjectStore
+	repairs int
+}
+
+func (store *repairingObjectStore) ReplaceCorrupt(_ context.Context, input PutObject) (StoredObject, error) {
+	store.repairs++
+	body, err := io.ReadAll(input.Body)
+	if err != nil {
+		return StoredObject{}, err
+	}
+	replacement := StoredObject{
+		Key: input.Key, SHA256: input.SHA256, SizeBytes: input.SizeBytes,
+		ContentType: input.ContentType, Status: "replaced",
+	}
+	store.objects[input.Key] = replacement
+	store.bodies[input.Key] = append([]byte(nil), body...)
+	return replacement, nil
+}
+
+type mismatchOnceVerifier struct {
+	ipaChecks int
+}
+
+type mutatingReadSeeker struct {
+	data    []byte
+	offset  int64
+	mutated bool
+}
+
+func (reader *mutatingReadSeeker) Read(buffer []byte) (int, error) {
+	if reader.offset >= int64(len(reader.data)) {
+		return 0, io.EOF
+	}
+	limit := len(buffer)
+	if limit > 64<<10 {
+		limit = 64 << 10
+	}
+	remaining := len(reader.data) - int(reader.offset)
+	if limit > remaining {
+		limit = remaining
+	}
+	copy(buffer[:limit], reader.data[reader.offset:reader.offset+int64(limit)])
+	reader.offset += int64(limit)
+	if !reader.mutated {
+		reader.mutated = true
+		for index := int(reader.offset); index < len(reader.data); index++ {
+			reader.data[index] = 'b'
+		}
+	}
+	return limit, nil
+}
+
+func (reader *mutatingReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	var next int64
+	switch whence {
+	case io.SeekStart:
+		next = offset
+	case io.SeekCurrent:
+		next = reader.offset + offset
+	case io.SeekEnd:
+		next = int64(len(reader.data)) + offset
+	default:
+		return 0, errors.New("invalid seek")
+	}
+	if next < 0 {
+		return 0, errors.New("negative seek")
+	}
+	reader.offset = next
+	return next, nil
+}
+
+func (verifier *mismatchOnceVerifier) Verify(_ context.Context, request VerifyRequest) error {
+	if request.Kind == VerifyIPA {
+		verifier.ipaChecks++
+		if verifier.ipaChecks == 1 {
+			return ErrObjectVerificationMismatch
+		}
+	}
+	return nil
 }
 
 func (store *delayedPresignStore) PresignGet(_ context.Context, key string, ttl time.Duration) (string, error) {
@@ -519,6 +834,11 @@ func (store *delayedPresignStore) PresignGet(_ context.Context, key string, ttl 
 }
 
 func (f *fakeObjectStore) Ensure(_ context.Context, input PutObject) (StoredObject, error) {
+	if f.beforeEnsure != nil {
+		beforeEnsure := f.beforeEnsure
+		f.beforeEnsure = nil
+		beforeEnsure()
+	}
 	if f.objects == nil {
 		f.objects = map[string]StoredObject{}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -178,6 +179,47 @@ func (store *S3Store) Ensure(ctx context.Context, input PutObject) (StoredObject
 	return StoredObject{Key: input.Key, SHA256: input.SHA256, SizeBytes: input.SizeBytes, ContentType: input.ContentType, Status: "uploaded"}, nil
 }
 
+// ReplaceCorrupt conditionally replaces the exact object generation observed
+// by a fresh HEAD. Matching metadata alone is insufficient after a full GET
+// proved the body corrupt, while If-Match prevents overwriting a concurrent
+// legitimate replacement.
+func (store *S3Store) ReplaceCorrupt(ctx context.Context, input PutObject) (StoredObject, error) {
+	headCtx, headCancel := store.boundedRequestContext(ctx)
+	existing, err := store.head(headCtx, input.Key)
+	headCancel()
+	if err != nil {
+		return StoredObject{}, err
+	}
+	if _, err := reconcileStoredObject(input, existing); err != nil {
+		return StoredObject{}, fmt.Errorf("refuse corrupt object replacement: %w", err)
+	}
+	if existing.entityTag == "" {
+		return StoredObject{}, fmt.Errorf("refuse corrupt object replacement at %q without an entity tag", input.Key)
+	}
+	seeker, ok := input.Body.(io.Seeker)
+	if !ok {
+		return StoredObject{}, fmt.Errorf("corrupt object replacement body must be seekable")
+	}
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+		return StoredObject{}, fmt.Errorf("rewind corrupt object replacement: %w", err)
+	}
+	putCtx, putCancel := store.boundedRequestContext(ctx)
+	_, err = store.client.PutObject(putCtx, &s3.PutObjectInput{
+		Bucket:        aws.String(store.bucket),
+		Key:           aws.String(input.Key),
+		Body:          input.Body,
+		ContentLength: aws.Int64(input.SizeBytes),
+		ContentType:   aws.String(input.ContentType),
+		IfMatch:       aws.String(existing.entityTag),
+		Metadata:      map[string]string{objectSHA256MetadataKey: input.SHA256},
+	})
+	putCancel()
+	if err != nil {
+		return StoredObject{}, sanitizedStorageError("conditionally replace corrupt object", input.Key, err)
+	}
+	return StoredObject{Key: input.Key, SHA256: input.SHA256, SizeBytes: input.SizeBytes, ContentType: input.ContentType, Status: "replaced"}, nil
+}
+
 func (store *S3Store) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	requestCtx, cancel := store.boundedRequestContext(ctx)
 	defer cancel()
@@ -209,7 +251,10 @@ func (store *S3Store) head(ctx context.Context, key string) (StoredObject, error
 	if sha == "" {
 		sha = response.Metadata[strings.ToLower(objectSHA256MetadataKey)]
 	}
-	return StoredObject{Key: key, SHA256: strings.ToLower(sha), SizeBytes: aws.ToInt64(response.ContentLength), ContentType: aws.ToString(response.ContentType)}, nil
+	return StoredObject{
+		Key: key, SHA256: strings.ToLower(sha), SizeBytes: aws.ToInt64(response.ContentLength),
+		ContentType: aws.ToString(response.ContentType), entityTag: aws.ToString(response.ETag),
+	}, nil
 }
 
 func reconcileStoredObject(input PutObject, existing StoredObject) (StoredObject, error) {

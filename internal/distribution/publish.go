@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -32,6 +33,8 @@ const (
 	maxLinkLifetime     = 7 * 24 * time.Hour
 	maxDescriptorBytes  = 1 << 20
 )
+
+var ErrObjectVerificationMismatch = errors.New("published object verification mismatch")
 
 type Access string
 
@@ -131,6 +134,17 @@ func LoadPreparedBundle(bundleDir string) (*PreparedBundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open prepared bundle: %w", err)
 	}
+	defer root.Close()
+	return LoadPreparedBundleContext(context.Background(), root)
+}
+
+// LoadPreparedBundleContext reads a prepared bundle through an already-pinned
+// root. The caller owns root and must retain it for the complete publication
+// workflow so a lexical path replacement cannot select a different bundle.
+func LoadPreparedBundleContext(ctx context.Context, root rootfs.Root) (*PreparedBundle, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	descriptorFile, err := root.OpenFile("bundle.json")
 	if err != nil {
 		return nil, fmt.Errorf("read bundle.json: %w", err)
@@ -188,7 +202,7 @@ func LoadPreparedBundle(bundleDir string) (*PreparedBundle, error) {
 		return nil, fmt.Errorf("payload/app.ipa exceeds %d bytes", MaxIPABytes)
 	}
 	digest := sha256.New()
-	if written, err := io.Copy(digest, io.LimitReader(ipa, MaxIPABytes+1)); err != nil || written != info.Size() {
+	if written, err := copyWithContext(ctx, digest, io.LimitReader(ipa, MaxIPABytes+1), nil); err != nil || written != info.Size() {
 		return nil, fmt.Errorf("hash payload/app.ipa: %w", err)
 	}
 	actualSHA := hex.EncodeToString(digest.Sum(nil))
@@ -310,11 +324,16 @@ type StoredObject struct {
 	SizeBytes   int64  `json:"sizeBytes"`
 	ContentType string `json:"contentType"`
 	Status      string `json:"status"`
+	entityTag   string
 }
 
 type ObjectStore interface {
 	Ensure(context.Context, PutObject) (StoredObject, error)
 	PresignGet(context.Context, string, time.Duration) (string, error)
+}
+
+type CorruptObjectReplacer interface {
+	ReplaceCorrupt(context.Context, PutObject) (StoredObject, error)
 }
 
 type VerifyKind int
@@ -464,6 +483,21 @@ func Publish(ctx context.Context, ipa io.ReadSeeker, descriptor PreparedDescript
 	if !profileExpiry.After(now.Add(requiredProfileValidity)) {
 		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("signing profile expires too soon for the requested link lifetime and safety margin")
 	}
+	if ipa == nil {
+		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("IPA is required")
+	}
+	if _, err := ipa.Seek(0, io.SeekStart); err != nil {
+		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("rewind IPA for snapshot: %w", err)
+	}
+	ipaSnapshot, ipaDigest, cleanupSnapshot, err := snapshotReaderContext(ctx, io.LimitReader(ipa, descriptor.Artifact.SizeBytes+1), descriptor.Artifact.SizeBytes)
+	if err != nil {
+		return PublishReceipt{}, SensitiveLinks{}, err
+	}
+	defer cleanupSnapshot()
+	if ipaDigest != strings.ToLower(descriptor.Artifact.SHA256) {
+		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("IPA snapshot SHA-256 %s does not match bundle.json %s", ipaDigest, descriptor.Artifact.SHA256)
+	}
+	ipa = ipaSnapshot
 	randomID := randomLinkID
 	if options.RandomID != nil {
 		randomID = options.RandomID
@@ -487,8 +521,33 @@ func Publish(ctx context.Context, ipa io.ReadSeeker, descriptor PreparedDescript
 	if err != nil {
 		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("create IPA URL: %w", err)
 	}
-	if err := options.Verifier.Verify(ctx, VerifyRequest{URL: ipaURL, Kind: VerifyIPA, SHA256: ipaObject.SHA256, SizeBytes: ipaObject.SizeBytes, ContentType: ipaObject.ContentType}); err != nil {
-		return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("verify IPA: %w", err)
+	ipaVerification := VerifyRequest{URL: ipaURL, Kind: VerifyIPA, SHA256: ipaObject.SHA256, SizeBytes: ipaObject.SizeBytes, ContentType: ipaObject.ContentType}
+	if verifyErr := options.Verifier.Verify(ctx, ipaVerification); verifyErr != nil {
+		replacer, canReplace := options.Store.(CorruptObjectReplacer)
+		if !canReplace || !errors.Is(verifyErr, ErrObjectVerificationMismatch) {
+			return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("verify IPA: %w", verifyErr)
+		}
+		if _, err := ipa.Seek(0, io.SeekStart); err != nil {
+			return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("rewind IPA for conditional replacement: %w", err)
+		}
+		ipaObject, err = replacer.ReplaceCorrupt(ctx, PutObject{
+			Key: ipaKey, Body: ipa, SHA256: strings.ToLower(descriptor.Artifact.SHA256),
+			SizeBytes: descriptor.Artifact.SizeBytes, ContentType: ContentTypeIPA,
+		})
+		if err != nil {
+			return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("replace corrupt IPA after verification mismatch: %w", err)
+		}
+		ipaURL, err = resolveObjectURL(ctx, options, ipaKey, downloadDeadline, clock)
+		if err != nil {
+			return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("create replacement IPA URL: %w", err)
+		}
+		ipaVerification.URL = ipaURL
+		ipaVerification.SHA256 = ipaObject.SHA256
+		ipaVerification.SizeBytes = ipaObject.SizeBytes
+		ipaVerification.ContentType = ipaObject.ContentType
+		if err := options.Verifier.Verify(ctx, ipaVerification); err != nil {
+			return PublishReceipt{}, SensitiveLinks{}, fmt.Errorf("verify replaced IPA: %w", err)
+		}
 	}
 
 	if err := requireHTTPSURL(ipaURL); err != nil {
@@ -655,8 +714,9 @@ func privateSignatureWithinDeadline(rawURL string, deadline time.Time) error {
 		return fmt.Errorf("has invalid AWS Signature V4 expiry")
 	}
 	signedExpiry := signedAt.Add(time.Duration(lifetimeSeconds) * time.Second)
-	if signedExpiry.After(deadline) {
-		return fmt.Errorf("signed expiry exceeds saved publication deadline")
+	delta := signedExpiry.Sub(deadline)
+	if delta <= -time.Second || delta >= time.Second {
+		return fmt.Errorf("signed expiry does not match saved publication deadline")
 	}
 	return nil
 }
@@ -746,6 +806,10 @@ func resolveObjectURL(ctx context.Context, options PublishOptions, key string, d
 		if ttl <= 0 {
 			return "", fmt.Errorf("credential-safe URL lifetime elapsed before presigning")
 		}
+		// SigV4 records X-Amz-Date and X-Amz-Expires at whole-second
+		// precision. Round the remaining lifetime up so flooring both fields
+		// cannot produce a signature one second earlier than the receipt.
+		ttl = (ttl + time.Second - 1).Truncate(time.Second)
 		return options.Store.PresignGet(ctx, key, ttl)
 	}
 	return PublicObjectURL(options.PublicBaseURL, key)
@@ -979,15 +1043,15 @@ func (v *HTTPVerifier) Verify(ctx context.Context, verification VerifyRequest) e
 			return fmt.Errorf("GET %s returned status %d", safeURLForError(verification.URL), response.StatusCode)
 		}
 		if response.ContentLength >= 0 && response.ContentLength != verification.SizeBytes {
-			return fmt.Errorf("GET %s returned content length %d, expected %d", safeURLForError(verification.URL), response.ContentLength, verification.SizeBytes)
+			return fmt.Errorf("%w: GET %s returned content length %d, expected %d", ErrObjectVerificationMismatch, safeURLForError(verification.URL), response.ContentLength, verification.SizeBytes)
 		}
 		digest := sha256.New()
 		written, err := io.Copy(digest, io.LimitReader(response.Body, verification.SizeBytes+1))
 		if err != nil || written != verification.SizeBytes {
-			return fmt.Errorf("GET %s returned unexpected IPA length", safeURLForError(verification.URL))
+			return fmt.Errorf("%w: GET %s returned unexpected IPA length", ErrObjectVerificationMismatch, safeURLForError(verification.URL))
 		}
 		if !strings.EqualFold(hex.EncodeToString(digest.Sum(nil)), verification.SHA256) {
-			return fmt.Errorf("GET %s returned an unexpected IPA SHA-256", safeURLForError(verification.URL))
+			return fmt.Errorf("%w: GET %s returned an unexpected IPA SHA-256", ErrObjectVerificationMismatch, safeURLForError(verification.URL))
 		}
 		return nil
 	}

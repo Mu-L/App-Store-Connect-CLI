@@ -374,6 +374,65 @@ func (r Root) OpenRoot() (*os.Root, error) {
 	return opened, nil
 }
 
+// ContainsPath reports whether path resolves within the directory identity
+// selected by New. It verifies that the retained root is still reachable at
+// its selected physical path before comparing prospective paths, so replacing
+// the root after selection fails closed.
+func (r Root) ContainsPath(path string) (bool, error) {
+	if path == "" {
+		return false, fmt.Errorf("%w: path is empty", ErrEscapesRoot)
+	}
+	if strings.ContainsRune(path, 0) {
+		return false, fmt.Errorf("%w: path contains a NUL byte", ErrEscapesRoot)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return false, fmt.Errorf("resolve path %q: %w", path, err)
+	}
+	opened, err := r.OpenRoot()
+	if err != nil {
+		return false, fmt.Errorf("verify selected root %q: %w", r.path, err)
+	}
+	if err := opened.Close(); err != nil {
+		return false, err
+	}
+	physical, err := resolveProspectivePhysicalPath(filepath.Clean(absolute))
+	if err != nil {
+		return false, err
+	}
+	relative, err := filepath.Rel(r.openPath, physical)
+	if err != nil || filepath.IsAbs(relative) {
+		return false, err
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
+}
+
+func resolveProspectivePhysicalPath(absolute string) (string, error) {
+	candidate := absolute
+	reversedSuffix := make([]string, 0)
+	for {
+		if _, err := os.Lstat(candidate); err == nil {
+			physical, err := filepath.EvalSymlinks(candidate)
+			if err != nil {
+				return "", fmt.Errorf("resolve existing path %q: %w", candidate, err)
+			}
+			suffix := make([]string, len(reversedSuffix))
+			for index := range reversedSuffix {
+				suffix[len(reversedSuffix)-1-index] = reversedSuffix[index]
+			}
+			return filepath.Join(append([]string{physical}, suffix...)...), nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("inspect path %q: %w", candidate, err)
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return "", fmt.Errorf("no existing ancestor for path %q", absolute)
+		}
+		reversedSuffix = append(reversedSuffix, filepath.Base(candidate))
+		candidate = parent
+	}
+}
+
 func openAbsoluteRootNoFollow(absolute string) (*os.Root, error) {
 	absolute = filepath.Clean(absolute)
 	volume := filepath.VolumeName(absolute)

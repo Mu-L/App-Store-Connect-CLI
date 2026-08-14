@@ -1090,6 +1090,41 @@ func TestOpenRootPinsOriginalDirectoryAcrossPathReplacement(t *testing.T) {
 	}
 }
 
+func TestContainsPathUsesPinnedRootIdentity(t *testing.T) {
+	requireSymlinks(t)
+	parent := t.TempDir()
+	selected := filepath.Join(parent, "selected")
+	inside := filepath.Join(selected, "state", "receipt.json")
+	outside := filepath.Join(parent, "outside", "receipt.json")
+	if err := os.MkdirAll(filepath.Dir(inside), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outside), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := mustRoot(t, selected)
+
+	for path, want := range map[string]bool{inside: true, outside: false} {
+		got, err := root.ContainsPath(path)
+		if err != nil {
+			t.Fatalf("ContainsPath(%q) error = %v", path, err)
+		}
+		if got != want {
+			t.Fatalf("ContainsPath(%q) = %t, want %t", path, got, want)
+		}
+	}
+
+	if err := os.Rename(selected, selected+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(selected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.ContainsPath(filepath.Join(selected, "receipt.json")); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("ContainsPath() after root replacement error = %v, want ErrSymlink", err)
+	}
+}
+
 func TestRootCloseReleasesSharedPinnedIdentity(t *testing.T) {
 	root := mustRoot(t, t.TempDir())
 	copy := root

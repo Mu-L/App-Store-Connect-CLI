@@ -12,13 +12,14 @@ import (
 	"time"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 func TestPublishCommandRequiresFlagsBeforeSideEffects(t *testing.T) {
 	originalLoad := loadPreparedBundle
 	t.Cleanup(func() { loadPreparedBundle = originalLoad })
 	called := false
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) {
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
 		called = true
 		return nil, nil
 	}
@@ -59,7 +60,7 @@ func TestPublishCommandValidatesOutputBeforeLocalOrRemoteSideEffects(t *testing.
 	originalLoad, originalStore := loadPreparedBundle, newObjectStore
 	t.Cleanup(func() { loadPreparedBundle, newObjectStore = originalLoad, originalStore })
 	loadCalled, storeCalled := false, false
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) {
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
 		loadCalled = true
 		return nil, nil
 	}
@@ -87,7 +88,7 @@ func TestPublishCommandRejectsUnsafeBucketBeforeSideEffects(t *testing.T) {
 	originalLoad := loadPreparedBundle
 	t.Cleanup(func() { loadPreparedBundle = originalLoad })
 	loadCalled := false
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) {
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
 		loadCalled = true
 		return nil, errors.New("unexpected bundle load")
 	}
@@ -115,7 +116,7 @@ func TestPublishCommandWritesSensitiveLink0600AndRedactedReceipt(t *testing.T) {
 	if err := os.WriteFile(ipaPath, []byte("ipa"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) {
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
 		file, err := os.Open(ipaPath)
 		return &distribution.PreparedBundle{IPA: file, IPASHA256: "sha", IPASize: 3, Descriptor: distribution.PreparedDescriptor{App: distribution.PreparedApp{BundleID: "com.example", Version: "1", BuildNumber: "2"}}}, err
 	}
@@ -234,7 +235,7 @@ func TestPublishCommandPreflightsArtifactCollisionBeforeObjectStore(t *testing.T
 		t.Fatal(err)
 	}
 	loadCalled, storeCalled := false, false
-	loadPreparedBundle = func(string) (*distribution.PreparedBundle, error) {
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
 		loadCalled = true
 		return nil, nil
 	}
@@ -256,7 +257,12 @@ func TestPublishCommandPreflightsArtifactCollisionBeforeObjectStore(t *testing.T
 
 func TestPublishArtifactsMustRemainOutsidePreparedBundle(t *testing.T) {
 	bundle := t.TempDir()
-	err := rejectBundleContainedArtifacts(bundle, filepath.Join(bundle, "receipt.json"), filepath.Join(t.TempDir(), "link.json"))
+	bundleRoot, err := rootfs.New(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundleRoot.Close()
+	err = rejectBundleContainedArtifacts(bundleRoot, filepath.Join(bundle, "receipt.json"), filepath.Join(t.TempDir(), "link.json"))
 	if err == nil || !strings.Contains(err.Error(), "outside") {
 		t.Fatalf("error = %v", err)
 	}
@@ -268,7 +274,12 @@ func TestPublishArtifactsCannotEnterPreparedBundleThroughSymlinkAlias(t *testing
 	if err := os.Symlink(realBundle, alias); err != nil {
 		t.Fatal(err)
 	}
-	err := rejectBundleContainedArtifacts(alias, filepath.Join(realBundle, "state", "receipt.json"), filepath.Join(realBundle, "state", "link.json"))
+	bundleRoot, err := rootfs.New(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundleRoot.Close()
+	err = rejectBundleContainedArtifacts(bundleRoot, filepath.Join(realBundle, "state", "receipt.json"), filepath.Join(realBundle, "state", "link.json"))
 	if err == nil || !strings.Contains(err.Error(), "outside") {
 		t.Fatalf("error = %v, want physical containment rejection", err)
 	}

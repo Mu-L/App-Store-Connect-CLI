@@ -268,6 +268,56 @@ func TestS3EnsureReconcilesAfterPutContextExpires(t *testing.T) {
 	}
 }
 
+func TestS3ReplaceCorruptUsesFreshHeadAndConditionalPut(t *testing.T) {
+	body := []byte("expected")
+	client := &conditionalReplaceClient{
+		object: StoredObject{
+			Key: "objects/app.ipa", SHA256: sha256Hex(body), SizeBytes: int64(len(body)),
+			ContentType: ContentTypeIPA, entityTag: `"poisoned-generation"`,
+		},
+	}
+	store := &S3Store{client: client, bucket: "bucket"}
+
+	replaced, err := store.ReplaceCorrupt(context.Background(), PutObject{
+		Key: "objects/app.ipa", Body: bytes.NewReader(body), SHA256: sha256Hex(body),
+		SizeBytes: int64(len(body)), ContentType: ContentTypeIPA,
+	})
+	if err != nil {
+		t.Fatalf("ReplaceCorrupt() error = %v", err)
+	}
+	if client.ifMatch != `"poisoned-generation"` {
+		t.Fatalf("conditional If-Match = %q", client.ifMatch)
+	}
+	if !bytes.Equal(client.body, body) || replaced.Status != "replaced" {
+		t.Fatalf("replacement body=%q object=%#v", client.body, replaced)
+	}
+}
+
+type conditionalReplaceClient struct {
+	object  StoredObject
+	ifMatch string
+	body    []byte
+}
+
+func (client *conditionalReplaceClient) HeadObject(context.Context, *awss3.HeadObjectInput, ...func(*awss3.Options)) (*awss3.HeadObjectOutput, error) {
+	return &awss3.HeadObjectOutput{
+		ContentLength: aws.Int64(client.object.SizeBytes),
+		ContentType:   aws.String(client.object.ContentType),
+		ETag:          aws.String(client.object.entityTag),
+		Metadata:      map[string]string{objectSHA256MetadataKey: client.object.SHA256},
+	}, nil
+}
+
+func (client *conditionalReplaceClient) PutObject(_ context.Context, input *awss3.PutObjectInput, _ ...func(*awss3.Options)) (*awss3.PutObjectOutput, error) {
+	client.ifMatch = aws.ToString(input.IfMatch)
+	body, err := io.ReadAll(input.Body)
+	if err != nil {
+		return nil, err
+	}
+	client.body = body
+	return &awss3.PutObjectOutput{}, nil
+}
+
 type ambiguousPutClient struct{ headCalls int }
 
 func (client *ambiguousPutClient) HeadObject(context.Context, *awss3.HeadObjectInput, ...func(*awss3.Options)) (*awss3.HeadObjectOutput, error) {

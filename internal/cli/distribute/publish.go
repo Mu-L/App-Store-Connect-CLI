@@ -18,11 +18,12 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	core "github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 var (
-	loadPreparedBundle = core.LoadPreparedBundle
+	loadPreparedBundle = core.LoadPreparedBundleContext
 	newObjectStore     = func(ctx context.Context, config core.S3StoreConfig) (core.ObjectStore, time.Time, error) {
 		return core.NewS3Store(ctx, config)
 	}
@@ -173,7 +174,12 @@ Examples:
 			if resolvedReceiptPath == "" || resolvedLinkPath == "" {
 				return shared.UsageErrorf("--receipt and --link-path are required and must be outside --bundle-dir")
 			}
-			if err := rejectBundleContainedArtifacts(*bundleDir, resolvedReceiptPath, resolvedLinkPath); err != nil {
+			bundleRoot, err := rootfs.New(strings.TrimSpace(*bundleDir))
+			if err != nil {
+				return fmt.Errorf("distribute publish: open prepared bundle: %w", err)
+			}
+			defer bundleRoot.Close()
+			if err := rejectBundleContainedArtifacts(bundleRoot, resolvedReceiptPath, resolvedLinkPath); err != nil {
 				return shared.UsageErrorf("publish artifacts: %v", err)
 			}
 			artifacts, err := preflightArtifactPaths(resolvedReceiptPath, resolvedLinkPath)
@@ -191,7 +197,7 @@ Examples:
 			if artifacts.receiptExists && !stateFound {
 				return fmt.Errorf("distribute publish: receipt exists without its sensitive link recovery artifact")
 			}
-			bundle, err := loadPreparedBundle(*bundleDir)
+			bundle, err := loadPreparedBundle(ctx, bundleRoot)
 			if err != nil {
 				return fmt.Errorf("distribute publish: %w", err)
 			}
@@ -670,61 +676,17 @@ func normalizedPublicBase(raw string) string {
 	return parsed.String()
 }
 
-func rejectBundleContainedArtifacts(bundleDir, receiptPath, linkPath string) error {
-	bundleAbsolute, err := filepath.Abs(bundleDir)
-	if err != nil {
-		return err
-	}
-	bundlePhysical, err := filepath.EvalSymlinks(bundleAbsolute)
-	if err != nil {
-		return fmt.Errorf("resolve prepared bundle: %w", err)
-	}
+func rejectBundleContainedArtifacts(bundleRoot rootfs.Root, receiptPath, linkPath string) error {
 	for _, candidate := range []string{receiptPath, linkPath} {
-		absolute, err := filepath.Abs(candidate)
+		contained, err := bundleRoot.ContainsPath(candidate)
 		if err != nil {
 			return err
 		}
-		physical, err := prospectivePhysicalPath(absolute)
-		if err != nil {
-			return err
-		}
-		relative, err := filepath.Rel(bundlePhysical, physical)
-		if err != nil {
-			return err
-		}
-		if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		if contained {
 			return fmt.Errorf("receipt and link paths must be outside the immutable prepared bundle")
 		}
 	}
 	return nil
-}
-
-func prospectivePhysicalPath(target string) (string, error) {
-	existing := filepath.Clean(target)
-	var suffix []string
-	for {
-		_, err := os.Lstat(existing)
-		if err == nil {
-			break
-		}
-		if !os.IsNotExist(err) {
-			return "", err
-		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			return "", fmt.Errorf("no existing path ancestor for %s", target)
-		}
-		suffix = append(suffix, filepath.Base(existing))
-		existing = parent
-	}
-	physical, err := filepath.EvalSymlinks(existing)
-	if err != nil {
-		return "", err
-	}
-	for index := len(suffix) - 1; index >= 0; index-- {
-		physical = filepath.Join(physical, suffix[index])
-	}
-	return physical, nil
 }
 
 func flagWasSet(fs *flag.FlagSet, name string) bool {
