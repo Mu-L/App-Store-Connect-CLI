@@ -289,15 +289,18 @@ func reverifyPrivatePublish(ctx context.Context, request privatePublishVerificat
 	if request.VerifyTimeout <= 0 {
 		return publishExecutionResult{}, shared.UsageError("verify timeout must be positive")
 	}
-	bundleRoot, err := rootfs.New(strings.TrimSpace(request.BundleDir))
+	bundleDir := strings.TrimSpace(request.BundleDir)
+	receiptPath := strings.TrimSpace(request.ReceiptPath)
+	linkPath := strings.TrimSpace(request.LinkPath)
+	bundleRoot, err := rootfs.New(bundleDir)
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("open prepared bundle: %w", err)
 	}
 	defer bundleRoot.Close()
-	if err := rejectBundleContainedArtifacts(bundleRoot, request.ReceiptPath, request.LinkPath); err != nil {
+	if err := rejectBundleContainedArtifacts(bundleRoot, receiptPath, linkPath); err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
-	artifacts, err := openExistingArtifactPaths(request.ReceiptPath, request.LinkPath)
+	artifacts, err := openExistingArtifactPaths(receiptPath, linkPath)
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("open publication artifacts: %w", err)
 	}
@@ -334,15 +337,6 @@ func openExistingArtifactPaths(receiptPath, linkPath string) (artifactPaths, err
 	paths, err := anchorArtifactPaths(strings.TrimSpace(receiptPath), strings.TrimSpace(linkPath))
 	if err != nil {
 		return artifactPaths{}, err
-	}
-	caseInsensitive, err := paths.caseInsensitiveDestinationAlias()
-	if err != nil {
-		paths.close()
-		return artifactPaths{}, err
-	}
-	if os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) && sameArtifactRelativePath(paths.receipt.relative, paths.link.relative, caseInsensitive) {
-		paths.close()
-		return artifactPaths{}, fmt.Errorf("receipt and link paths resolve to the same physical destination")
 	}
 
 	var infos [2]os.FileInfo

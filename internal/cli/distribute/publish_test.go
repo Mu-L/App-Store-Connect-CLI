@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -617,19 +616,14 @@ func TestArtifactPairUsesRootHandleRetainedFromPreflight(t *testing.T) {
 }
 
 func TestArtifactPairSupportsDistinctTopLevelParents(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the test host does not provide two writable Windows volumes")
-	}
-	receiptDir, err := os.MkdirTemp("/tmp", "asc-publish-receipt-*")
+	receiptDir, err := os.MkdirTemp(t.TempDir(), "asc-publish-receipt-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(receiptDir) })
-	linkDir, err := os.MkdirTemp("/var/tmp", "asc-publish-link-*")
+	linkDir, err := os.MkdirTemp(t.TempDir(), "asc-publish-link-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(linkDir) })
 
 	receiptPath := filepath.Join(receiptDir, "receipt.json")
 	linkPath := filepath.Join(linkDir, "link.json")
@@ -767,19 +761,14 @@ func TestArtifactPairRejectsCaseFoldAliasOnCaseInsensitiveVolume(t *testing.T) {
 }
 
 func TestArtifactPairDistinctParentsFailWithoutPartialArtifacts(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the test host does not provide two writable Windows volumes")
-	}
-	receiptDir, err := os.MkdirTemp("/tmp", "asc-publish-receipt-*")
+	receiptDir, err := os.MkdirTemp(t.TempDir(), "asc-publish-receipt-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(receiptDir) })
-	linkDir, err := os.MkdirTemp("/var/tmp", "asc-publish-link-*")
+	linkDir, err := os.MkdirTemp(t.TempDir(), "asc-publish-link-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(linkDir) })
 
 	receiptPath := filepath.Join(receiptDir, "receipt.json")
 	linkPath := filepath.Join(linkDir, "link.json")
@@ -846,6 +835,9 @@ func TestArtifactPairRejectsDistinctParentSymlinkSwap(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(unintendedDir, "receipt.json")); !os.IsNotExist(err) {
 		t.Fatalf("unintended receipt exists or stat error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(linkDir, "link.json")); !os.IsNotExist(err) {
+		t.Fatalf("link artifact exists or stat error = %v", err)
 	}
 }
 

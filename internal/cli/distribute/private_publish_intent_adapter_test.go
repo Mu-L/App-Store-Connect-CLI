@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -74,19 +73,14 @@ func TestLoadPrivatePublishIntentStateRejectsDuplicateJSONKeys(t *testing.T) {
 }
 
 func TestPrivatePublishIntentArtifactsSupportDistinctTopLevelParents(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the test host does not provide two writable Windows volumes")
-	}
-	receiptDir, err := os.MkdirTemp("/tmp", "asc-private-intent-receipt-*")
+	receiptDir, err := os.MkdirTemp(t.TempDir(), "asc-private-intent-receipt-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(receiptDir) })
-	intentDir, err := os.MkdirTemp("/var/tmp", "asc-private-intent-state-*")
+	intentDir, err := os.MkdirTemp(t.TempDir(), "asc-private-intent-state-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(intentDir) })
 
 	paths, err := preflightArtifactPaths(filepath.Join(receiptDir, "receipt.json"), filepath.Join(intentDir, "intent.json"))
 	if err != nil {

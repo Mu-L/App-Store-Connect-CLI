@@ -447,7 +447,9 @@ func sameArtifactRelativePath(left, right string, caseInsensitive bool) bool {
 	return left == right || (caseInsensitive && strings.EqualFold(left, right))
 }
 
-func artifactRootIsCaseInsensitive(root *os.Root) (bool, error) {
+var artifactRootIsCaseInsensitive = detectArtifactRootIsCaseInsensitive
+
+func detectArtifactRootIsCaseInsensitive(root *os.Root) (bool, error) {
 	probe, name, err := secureopen.CreateTempNoFollowInRoot(root, ".", ".asc-case-probe-a-*", 0o600)
 	if err != nil {
 		return false, err

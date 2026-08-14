@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -200,19 +199,14 @@ func TestLoadPublishStateRejectsInPlaceMutation(t *testing.T) {
 }
 
 func TestOpenExistingArtifactPathsSupportsDistinctTopLevelParents(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the test host does not provide two writable Windows volumes")
-	}
-	receiptDir, err := os.MkdirTemp("/tmp", "asc-existing-receipt-*")
+	receiptDir, err := os.MkdirTemp(t.TempDir(), "asc-existing-receipt-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(receiptDir) })
-	linkDir, err := os.MkdirTemp("/var/tmp", "asc-existing-link-*")
+	linkDir, err := os.MkdirTemp(t.TempDir(), "asc-existing-link-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(linkDir) })
 
 	receiptPath := filepath.Join(receiptDir, "receipt.json")
 	linkPath := filepath.Join(linkDir, "link.json")
@@ -365,6 +359,124 @@ func TestReverifyPrivatePublishIsReadOnly(t *testing.T) {
 		beforeLinkInfo.Mode() != afterLinkInfo.Mode() || !beforeLinkInfo.ModTime().Equal(afterLinkInfo.ModTime()) ||
 		!reflect.DeepEqual(directoryEntryNames(beforeEntries), directoryEntryNames(afterEntries)) {
 		t.Fatal("read-only verification changed artifact metadata or directory entries")
+	}
+}
+
+func TestReverifyPrivatePublishReadsCaseDistinctArtifactsFromReadOnlyDirectory(t *testing.T) {
+	originalCaseProbe := artifactRootIsCaseInsensitive
+	t.Cleanup(func() { artifactRootIsCaseInsensitive = originalCaseProbe })
+	artifactRootIsCaseInsensitive = func(*os.Root) (bool, error) {
+		t.Fatal("read-only verification attempted a case-sensitivity probe")
+		return false, nil
+	}
+
+	stateDir := t.TempDir()
+	probe := filepath.Join(stateDir, "CaseSensitiveProbe")
+	if err := os.WriteFile(probe, []byte("probe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := os.Stat(filepath.Join(stateDir, "casesensitiveprobe"))
+	if err == nil {
+		t.Skip("test volume is case-insensitive")
+	}
+	if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+
+	originalLoad, originalReverify := loadPreparedBundle, reverifyPublication
+	t.Cleanup(func() { loadPreparedBundle, reverifyPublication = originalLoad, originalReverify })
+	bundleDir, bundle := privatePublishTestBundle(t)
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
+	reverifyPublication = func(context.Context, distribution.Verifier, distribution.PublishReceipt, distribution.SensitiveLinks, time.Time) error {
+		return nil
+	}
+
+	receiptPath := filepath.Join(stateDir, "Publish.JSON")
+	linkPath := filepath.Join(stateDir, "publish.json")
+	receipt := privatePublishTestReceipt()
+	receipt.Endpoint = "https://objects.example.com"
+	receipt.DownloadEndpoint = "https://objects.example.com"
+	receipt.Region = "auto"
+	receipt.AddressingStyle = "path"
+	receipt.URLTTL = "24h0m0s"
+	receipt.DownloadGrace = "1h0m0s"
+	receipt.ReceiptPath = receiptPath
+	receipt.LinkPath = linkPath
+	writePrivatePublishTestState(t, receiptPath, linkPath, receipt, distribution.SensitiveLinks{
+		SchemaVersion: "1",
+		InstallURL:    "https://objects.example.com/bucket/app/page?X-Amz-Signature=read-only-secret-canary",
+	})
+	if err := os.Chmod(stateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) })
+
+	result, err := reverifyPrivatePublish(context.Background(), privatePublishVerificationRequest{
+		BundleDir: bundleDir, ReceiptPath: receiptPath, LinkPath: linkPath, VerifyTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("reverifyPrivatePublish() error = %v", err)
+	}
+	if !result.Recovered {
+		t.Fatal("case-distinct artifacts were not reported as recovered")
+	}
+}
+
+func TestOpenExistingArtifactPathsChecksExistingFilesBeforeCaseProbe(t *testing.T) {
+	originalCaseProbe := artifactRootIsCaseInsensitive
+	t.Cleanup(func() { artifactRootIsCaseInsensitive = originalCaseProbe })
+	artifactRootIsCaseInsensitive = func(*os.Root) (bool, error) {
+		t.Fatal("existing-artifact verification attempted a case-sensitivity probe")
+		return false, nil
+	}
+
+	stateDir := t.TempDir()
+	_, err := openExistingArtifactPaths(
+		filepath.Join(stateDir, "Publish.JSON"),
+		filepath.Join(stateDir, "publish.json"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("openExistingArtifactPaths() error = %v, want missing-artifact error", err)
+	}
+}
+
+func TestReverifyPrivatePublishTrimsArtifactPathsBeforeContainmentCheck(t *testing.T) {
+	originalLoad, originalReverify := loadPreparedBundle, reverifyPublication
+	t.Cleanup(func() { loadPreparedBundle, reverifyPublication = originalLoad, originalReverify })
+	bundleDir, bundle := privatePublishTestBundle(t)
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
+	reverifyPublication = func(context.Context, distribution.Verifier, distribution.PublishReceipt, distribution.SensitiveLinks, time.Time) error {
+		return nil
+	}
+
+	stateDir := filepath.Join(bundleDir, "state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(stateDir, "receipt.json")
+	linkPath := filepath.Join(stateDir, "link.json")
+	receipt := privatePublishTestReceipt()
+	receipt.Endpoint = "https://objects.example.com"
+	receipt.DownloadEndpoint = "https://objects.example.com"
+	receipt.Region = "auto"
+	receipt.AddressingStyle = "path"
+	receipt.URLTTL = "24h0m0s"
+	receipt.DownloadGrace = "1h0m0s"
+	receipt.ReceiptPath = receiptPath
+	receipt.LinkPath = linkPath
+	writePrivatePublishTestState(t, receiptPath, linkPath, receipt, distribution.SensitiveLinks{
+		SchemaVersion: "1",
+		InstallURL:    "https://objects.example.com/bucket/app/page?X-Amz-Signature=containment-canary",
+	})
+
+	_, err := reverifyPrivatePublish(context.Background(), privatePublishVerificationRequest{
+		BundleDir: bundleDir, ReceiptPath: " " + receiptPath + " ", LinkPath: " " + linkPath + " ", VerifyTimeout: time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "outside the immutable prepared bundle") {
+		t.Fatalf("reverifyPrivatePublish() error = %v, want bundle-containment rejection", err)
 	}
 }
 
