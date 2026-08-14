@@ -1555,6 +1555,7 @@ func snapshotDistributionArchive(ctx context.Context, archivePath, stateDir, run
 	if err != nil {
 		return archiveTreeSnapshot{}, err
 	}
+	defer root.Close()
 	if info, statErr := os.Lstat(filepath.Join(runDir, distributionArchiveRelative)); statErr == nil && info.IsDir() {
 		actual, digestErr := digestXCArchive(ctx, filepath.Join(runDir, distributionArchiveRelative))
 		if digestErr != nil {
@@ -1577,6 +1578,7 @@ func createDistributionRunScaffold(stateDir, runID string) error {
 	if err != nil {
 		return err
 	}
+	defer runRoot.Close()
 	for _, relative := range distributionRunScaffoldDirectories() {
 		if err := runRoot.MkdirAll(relative, 0o700); err != nil {
 			return fmt.Errorf("create distribution run directory %s: %w", relative, err)
@@ -1624,6 +1626,7 @@ func revalidateDistributionArchive(ctx context.Context, stateDir, runID string, 
 	if err != nil {
 		return err
 	}
+	defer root.Close()
 	return revalidateXCArchiveSnapshot(ctx, root, archiveTreeSnapshot(snapshot))
 }
 
@@ -1636,6 +1639,7 @@ func copyDistributionArtifact(source, stateDir, runID, relative string, limit in
 	if err != nil {
 		return distributionSizedFileArtifact{}, err
 	}
+	defer runRoot.Close()
 	if parent := filepath.Dir(relative); parent != "." {
 		if err := runRoot.MkdirAll(parent, 0o700); err != nil {
 			return distributionSizedFileArtifact{}, err
@@ -1658,7 +1662,9 @@ func preflightDistributionPublication(ctx context.Context, config distributionPu
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_, credentialLimit, err := newObjectStore(ctx, core.S3StoreConfig{Endpoint: config.Endpoint, DownloadEndpoint: config.DownloadEndpoint, Region: config.Region, Bucket: config.Bucket, AddressingStyle: config.AddressingStyle})
+	credentialCtx, cancel := shared.ContextWithTimeout(ctx)
+	defer cancel()
+	_, credentialLimit, err := newObjectStore(credentialCtx, core.S3StoreConfig{Endpoint: config.Endpoint, DownloadEndpoint: config.DownloadEndpoint, Region: config.Region, Bucket: config.Bucket, AddressingStyle: config.AddressingStyle})
 	if err != nil {
 		return err
 	}
@@ -1701,6 +1707,7 @@ func hashDistributionFile(path string) (distributionSizedFileArtifact, error) {
 	if err != nil {
 		return distributionSizedFileArtifact{}, err
 	}
+	defer anchored.Close()
 	file, err := anchored.OpenFile(filepath.Base(path))
 	if err != nil {
 		return distributionSizedFileArtifact{}, err
@@ -1737,6 +1744,7 @@ func distributionPathExists(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	defer anchored.Close()
 	file, err := anchored.OpenFile(filepath.Base(path))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1776,6 +1784,7 @@ func prepareDistributionIPA(ctx context.Context, request distributionPrepareRequ
 	if err != nil {
 		return core.PrepareResult{}, err
 	}
+	defer root.Close()
 	return core.PrepareIPAPathExact(ctx, root, request.IPARelativePath, core.ExpectedIPA{SHA256: request.ExpectedSHA256, SizeBytes: request.ExpectedSize}, core.PrepareOptions{Root: runDir, OutputDir: distributionBundleRelative, Title: request.Metadata.Title, Channel: request.Metadata.Channel, SourceRevision: request.Metadata.SourceRevision, SourceURL: request.Metadata.SourceURL})
 }
 

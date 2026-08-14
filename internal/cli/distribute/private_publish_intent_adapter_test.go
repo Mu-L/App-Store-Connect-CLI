@@ -86,6 +86,23 @@ func TestPrivatePublishIntentRequestRejectsDiagnosticInjectionInBucket(t *testin
 	}
 }
 
+func TestPrivatePublishIntentRequestRejectsLifetimeOverflow(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	err := validatePrivatePublishIntentRequest(privatePublishIntentRequest{
+		BundleDir: "/bundle", Endpoint: "https://objects.example.com", Region: "auto", Bucket: "bucket", Prefix: "app", AddressingStyle: "path",
+		URLTTL: time.Duration(1 << 62), DownloadGrace: time.Duration(1 << 62), VerifyTimeout: time.Second,
+		ReceiptPath: "/state/receipt", IntentPath: "/state/intent",
+		ExpectedBundle: privatePublishBundleAuthorization{
+			DescriptorSHA256: digest, DescriptorSize: 1, IPASHA256: digest, IPASize: 1,
+			ProfileUUID: "profile", ProfileSHA256: digest, TeamID: "TEAM", DeviceSetSHA256: digest,
+			DeviceCount: 1, CertificateSHA256: digest,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "lifetimes") {
+		t.Fatalf("overflowing private publication lifetime error = %v", err)
+	}
+}
+
 func TestPrivatePublishIntentRequestRejectsDiagnosticInjectionInPrefixAndEndpoint(t *testing.T) {
 	for name, mutate := range map[string]func(*privatePublishIntentRequest){
 		"prefix zero width": func(got *privatePublishIntentRequest) { got.Prefix = "app\u200bhidden" },

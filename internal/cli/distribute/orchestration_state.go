@@ -36,8 +36,9 @@ var (
 	distributionCodePattern   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 	distributionPlanIDPattern = regexp.MustCompile(`^dplan_[0-9a-f]{32}$`)
 	// Tests use this to replace a pathname after its directory handle is pinned.
-	distributionAfterParentOpenForTest func()
-	distributionSyncDirectoryForTest   = syncDistributionDirectory
+	distributionAfterParentOpenForTest    func()
+	distributionAfterProtectedReadForTest func()
+	distributionSyncDirectoryForTest      = syncDistributionDirectory
 )
 
 // distributionConfig is deliberately narrower than the standalone commands:
@@ -1649,6 +1650,19 @@ func readProtectedDistributionFileInRoot(rooted *os.Root, name string, limit int
 	}
 	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("protected file exceeds %d bytes", limit)
+	}
+	if distributionAfterProtectedReadForTest != nil {
+		distributionAfterProtectedReadForTest()
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePrivateDistributionFileInfo(after); err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, after) || info.Mode() != after.Mode() || info.Size() != after.Size() || !info.ModTime().Equal(after.ModTime()) || int64(len(data)) != info.Size() {
+		return nil, fmt.Errorf("protected file changed while reading")
 	}
 	return data, nil
 }

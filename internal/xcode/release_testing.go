@@ -69,6 +69,7 @@ func WriteManualReleaseTestingExportOptions(ctx context.Context, opts ManualRele
 	if err != nil {
 		return nil, fmt.Errorf("open export options root: %w", err)
 	}
+	defer root.Close()
 	if err := root.CreateNewFileAtomic(filepath.Base(opts.OutputPath), data, 0o600); err != nil {
 		return nil, fmt.Errorf("write release-testing export options: %w", err)
 	}
@@ -97,6 +98,7 @@ func ValidateManualReleaseTestingExportOptions(ctx context.Context, opts ManualR
 	if err != nil {
 		return nil, fmt.Errorf("open export options root: %w", err)
 	}
+	defer root.Close()
 	file, err := root.OpenFile(filepath.Base(opts.OutputPath))
 	if err != nil {
 		return nil, fmt.Errorf("open release-testing export options: %w", err)
@@ -186,6 +188,7 @@ func ExportReleaseTesting(ctx context.Context, opts ReleaseTestingExportOptions)
 	if err != nil {
 		return nil, fmt.Errorf("open release-testing export options root: %w", err)
 	}
+	defer optionsRoot.Close()
 	data, err := optionsRoot.ReadFileLimited(filepath.Base(opts.ExportOptionsPath), releaseTestingExportOptionsSizeLimit)
 	if err != nil {
 		return nil, fmt.Errorf("read release-testing export options: %w", err)
@@ -214,6 +217,7 @@ func ExportReleaseTesting(ctx context.Context, opts ReleaseTestingExportOptions)
 	if err != nil {
 		return nil, fmt.Errorf("open private export options root: %w", err)
 	}
+	defer stagingRoot.Close()
 	const snapshotName = "ExportOptions.plist"
 	if err := stagingRoot.CreateNewFileAtomic(snapshotName, data, 0o600); err != nil {
 		return nil, fmt.Errorf("snapshot verified release-testing export options: %w", err)

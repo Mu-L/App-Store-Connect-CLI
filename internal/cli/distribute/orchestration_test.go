@@ -653,6 +653,65 @@ func TestExecuteDistributionApplyOrdersPreflightAndBindsEverySigningStage(t *tes
 	assertBefore(t, calls, "preflight_publish", "snapshot_archive", "hash_devices", "reconcile_apply", "signing_start", "export", "signing_cleanup", "prepare", "publish", "write_receipt", "unlock")
 }
 
+func TestExecuteDistributionApplyBoundsCredentialPreflightBeforeSideEffects(t *testing.T) {
+	plan := validPersistedDistributionPlan(t)
+	deps := validApplyDistributionOrchestrationDependencies(t, plan)
+	deps.preflightPublish = preflightDistributionPublication
+	deps.snapshotArchive = func(context.Context, string, string, string) (archiveTreeSnapshot, error) {
+		t.Fatal("archive snapshot ran after credential preflight failed")
+		return archiveTreeSnapshot{}, nil
+	}
+	deps.reconcileApply = func(context.Context, signing.ReconcileApplyOptions) (signing.ReconcileReceiptView, error) {
+		t.Fatal("ASC reconciliation ran after credential preflight failed")
+		return signing.ReconcileReceiptView{}, nil
+	}
+	deps.publish = func(context.Context, privatePublishIntentRequest) (publishExecutionResult, error) {
+		t.Fatal("storage publication ran after credential preflight failed")
+		return publishExecutionResult{}, nil
+	}
+	installDistributionOrchestrationDependencies(t, deps)
+
+	originalStore := newObjectStore
+	t.Cleanup(func() { newObjectStore = originalStore })
+	sawDeadline := false
+	newObjectStore = func(ctx context.Context, _ core.S3StoreConfig) (core.ObjectStore, time.Time, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			return nil, time.Time{}, errors.New("credential lookup context has no deadline")
+		}
+		sawDeadline = true
+		return nil, time.Time{}, context.DeadlineExceeded
+	}
+
+	state, err := executeDistributionApply(context.Background(), distributionApplyRequest{
+		PlanPath: "/plans/plan.json", Confirmation: plan.PlanHash,
+	})
+	if err == nil || !strings.Contains(err.Error(), "storage_preflight_failed") {
+		t.Fatalf("apply error = %v, want safe credential preflight failure", err)
+	}
+	if !sawDeadline {
+		t.Fatal("credential retrieval did not receive a deadline")
+	}
+	if state == nil || state.Stage != "preflight" || state.Status != "recoverable" || !state.Recoverable || state.LastFailureCode != "storage_preflight_failed" {
+		t.Fatalf("credential preflight failure state = %#v", state)
+	}
+}
+
+func TestPreflightDistributionPublicationPropagatesCancellation(t *testing.T) {
+	originalStore := newObjectStore
+	t.Cleanup(func() { newObjectStore = originalStore })
+	newObjectStore = func(ctx context.Context, _ core.S3StoreConfig) (core.ObjectStore, time.Time, error) {
+		<-ctx.Done()
+		return nil, time.Time{}, ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := preflightDistributionPublication(ctx, validDistributionOrchestrationConfig().Publication)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("preflight error = %v, want context cancellation", err)
+	}
+}
+
 func TestExecuteDistributionApplyStopsBeforePublishOnPreparedEvidenceMismatch(t *testing.T) {
 	plan := validPersistedDistributionPlan(t)
 	deps := validApplyDistributionOrchestrationDependencies(t, plan)
