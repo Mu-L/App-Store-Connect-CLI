@@ -242,7 +242,7 @@ func sentenceFromEndpointName(name string) string {
 		{"gets a ", "View a "},
 		{"search for ", "Search for "},
 		{"search ", "Search "},
-		{"query ", "Query "},
+		{"query ", "Find "},
 		{"find ", "Find "},
 		{"create a ", "Create a "},
 		{"create an ", "Create an "},
