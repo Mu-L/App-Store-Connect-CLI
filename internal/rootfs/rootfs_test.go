@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 type errorReader struct {
@@ -571,6 +573,25 @@ func TestCreateNewFileAtomicWritesExactMode(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("mode = %o, want 600", got)
+	}
+}
+
+func TestCreateNewFromFallsBackWhenRenameNoReplaceIsUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	root.renameNoReplaceForTest = func(*os.Root, string, string) error {
+		return secureopen.ErrRenameNoReplaceUnsupported
+	}
+
+	written, err := root.CreateNewFrom("identity.p12", strings.NewReader("complete"), 0o600)
+	if err != nil {
+		t.Fatalf("CreateNewFrom() error = %v", err)
+	}
+	if written != int64(len("complete")) {
+		t.Fatalf("written = %d, want %d", written, len("complete"))
+	}
+	if got := mustRead(t, filepath.Join(dir, "identity.p12")); got != "complete" {
+		t.Fatalf("content = %q, want complete", got)
 	}
 }
 

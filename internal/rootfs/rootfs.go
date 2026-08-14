@@ -50,6 +50,9 @@ type Root struct {
 	// afterValidationForTest makes path-swap regressions deterministic. It is
 	// intentionally unexported and unset outside package tests.
 	afterValidationForTest func()
+	// renameNoReplaceForTest makes unsupported-filesystem regressions
+	// deterministic. It is intentionally unexported and unset outside tests.
+	renameNoReplaceForTest func(*os.Root, string, string) error
 }
 
 // New returns a Root anchored at path. The root itself is operator-selected and
@@ -740,11 +743,33 @@ func (r Root) CreateNewFrom(name string, reader io.Reader, perm os.FileMode) (in
 	if err := file.Close(); err != nil {
 		return written, err
 	}
-	if err := secureopen.RenameNoReplaceInRoot(parent, temporaryName, base); err != nil {
+	if err := r.publishNoReplace(parent, temporaryName, base); err != nil {
 		return written, err
 	}
 	published = true
 	return written, nil
+}
+
+func (r Root) publishNoReplace(parent *os.Root, temporaryName, base string) error {
+	rename := secureopen.RenameNoReplaceInRoot
+	if r.renameNoReplaceForTest != nil {
+		rename = r.renameNoReplaceForTest
+	}
+	if err := rename(parent, temporaryName, base); err != nil {
+		if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
+			return err
+		}
+		// A hard link is an atomic no-replace publish on filesystems without a
+		// native no-replace rename. It either exposes the complete staged inode
+		// or leaves an existing destination untouched.
+		if linkErr := parent.Link(temporaryName, base); linkErr != nil {
+			return linkErr
+		}
+		if removeErr := parent.Remove(temporaryName); removeErr != nil {
+			return fmt.Errorf("publish succeeded but remove staged file: %w", removeErr)
+		}
+	}
+	return nil
 }
 
 // CreateNewFileAtomic atomically writes data to a new file beneath the root
@@ -798,19 +823,8 @@ func (r Root) CreateNewFileAtomic(name string, data []byte, perm os.FileMode) er
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	if err := secureopen.RenameNoReplaceInRoot(parent, temporaryName, base); err != nil {
-		if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
-			return err
-		}
-		// A hard link is an atomic no-replace publish on filesystems without a
-		// native no-replace rename. It either exposes the complete staged inode
-		// or leaves an existing destination untouched.
-		if linkErr := parent.Link(temporaryName, base); linkErr != nil {
-			return linkErr
-		}
-		if removeErr := parent.Remove(temporaryName); removeErr != nil {
-			return fmt.Errorf("publish succeeded but remove staged file: %w", removeErr)
-		}
+	if err := r.publishNoReplace(parent, temporaryName, base); err != nil {
+		return err
 	}
 	directory, err := parent.Open(".")
 	if err != nil {

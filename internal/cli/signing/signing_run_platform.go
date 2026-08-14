@@ -808,10 +808,12 @@ func runSigningRunChild(ctx context.Context, argv []string) error {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	var err error
+	var cancellationErr error
 	select {
 	case err = <-done:
 		_ = terminateSigningRunProcessGroup(pid, syscall.SIGTERM, signingRunDescendantGrace)
 	case <-ctx.Done():
+		cancellationErr = ctx.Err()
 		_ = syscall.Kill(-pid, syscall.SIGINT)
 		timer := time.NewTimer(signingRunChildWaitDelay)
 		select {
@@ -822,6 +824,9 @@ func runSigningRunChild(ctx context.Context, argv []string) error {
 			err = <-done
 		}
 		_ = terminateSigningRunProcessGroup(pid, syscall.SIGKILL, 0)
+	}
+	if cancellationErr != nil {
+		return cancellationErr
 	}
 	if err == nil {
 		return nil

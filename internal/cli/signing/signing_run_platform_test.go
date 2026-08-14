@@ -97,6 +97,16 @@ func TestRunSigningRunChildInterruptsProcessGroup(t *testing.T) {
 	}
 }
 
+func TestRunSigningRunChildReturnsCancellationWhenChildHandlesInterrupt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := runSigningRunChild(ctx, []string{"/bin/sh", "-c", `trap 'exit 0' INT; sleep 30`})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
+	}
+}
+
 func TestParseSigningRunCertificateFingerprints(t *testing.T) {
 	const fingerprint = "F05FBB6DC3E25BCCE5BB96697F633D1FC9CBBFD0"
 	got := parseSigningRunCertificateFingerprints([]byte("SHA-256 hash: 0123456789\nSHA-1 hash: " + fingerprint + "\n"))
