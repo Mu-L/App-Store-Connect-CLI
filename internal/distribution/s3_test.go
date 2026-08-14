@@ -241,6 +241,33 @@ func TestS3EnsureReconcilesAmbiguousPutFailure(t *testing.T) {
 	}
 }
 
+func TestS3EnsureReconcilesAfterPutContextExpires(t *testing.T) {
+	client := &expiredPutClient{}
+	contextCalls := 0
+	store := &S3Store{
+		client: client,
+		bucket: "bucket",
+		requestContext: func(parent context.Context) (context.Context, context.CancelFunc) {
+			contextCalls++
+			requestCtx, cancel := context.WithCancel(parent)
+			if contextCalls == 2 {
+				cancel()
+				return requestCtx, func() {}
+			}
+			return requestCtx, cancel
+		},
+	}
+	input := PutObject{Key: "app.ipa", Body: strings.NewReader("ipa"), SHA256: sha256Hex([]byte("ipa")), SizeBytes: 3, ContentType: ContentTypeIPA}
+
+	got, err := store.Ensure(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if got.Status != "reused" || client.headCalls != 2 || contextCalls != 3 {
+		t.Fatalf("object=%#v headCalls=%d contextCalls=%d", got, client.headCalls, contextCalls)
+	}
+}
+
 type ambiguousPutClient struct{ headCalls int }
 
 func (client *ambiguousPutClient) HeadObject(context.Context, *awss3.HeadObjectInput, ...func(*awss3.Options)) (*awss3.HeadObjectOutput, error) {
@@ -253,6 +280,26 @@ func (client *ambiguousPutClient) HeadObject(context.Context, *awss3.HeadObjectI
 
 func (*ambiguousPutClient) PutObject(context.Context, *awss3.PutObjectInput, ...func(*awss3.Options)) (*awss3.PutObjectOutput, error) {
 	return nil, errors.New("connection reset after server accepted object")
+}
+
+type expiredPutClient struct{ headCalls int }
+
+func (client *expiredPutClient) HeadObject(ctx context.Context, _ *awss3.HeadObjectInput, _ ...func(*awss3.Options)) (*awss3.HeadObjectOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	client.headCalls++
+	if client.headCalls == 1 {
+		return nil, &notFoundAPIError{}
+	}
+	return &awss3.HeadObjectOutput{ContentLength: aws.Int64(3), ContentType: aws.String(ContentTypeIPA), Metadata: map[string]string{objectSHA256MetadataKey: sha256Hex([]byte("ipa"))}}, nil
+}
+
+func (*expiredPutClient) PutObject(ctx context.Context, _ *awss3.PutObjectInput, _ ...func(*awss3.Options)) (*awss3.PutObjectOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, errors.New("expected canceled PUT context")
 }
 
 type notFoundAPIError struct{}

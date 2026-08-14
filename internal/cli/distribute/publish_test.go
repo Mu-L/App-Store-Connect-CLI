@@ -120,10 +120,13 @@ func TestPublishCommandWritesSensitiveLink0600AndRedactedReceipt(t *testing.T) {
 		return &distribution.PreparedBundle{IPA: file, IPASHA256: "sha", IPASize: 3, Descriptor: distribution.PreparedDescriptor{App: distribution.PreparedApp{BundleID: "com.example", Version: "1", BuildNumber: "2"}}}, err
 	}
 	storeCalls := 0
-	newObjectStore = func(ctx context.Context, _ distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
+	newObjectStore = func(ctx context.Context, config distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
 		storeCalls++
 		if _, ok := ctx.Deadline(); !ok {
 			return nil, time.Time{}, errors.New("object-store setup context has no deadline")
+		}
+		if config.RequestTimeout <= 0 {
+			return nil, time.Time{}, errors.New("object-store request timeout is not bounded")
 		}
 		return noOpStore{}, time.Time{}, nil
 	}
@@ -419,17 +422,11 @@ func TestPreflightRejectsWorldReadableSensitiveLink(t *testing.T) {
 
 type noOpStore struct{}
 
-func (noOpStore) Ensure(ctx context.Context, _ distribution.PutObject) (distribution.StoredObject, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		return distribution.StoredObject{}, errors.New("store request context has no deadline")
-	}
+func (noOpStore) Ensure(context.Context, distribution.PutObject) (distribution.StoredObject, error) {
 	return distribution.StoredObject{}, nil
 }
 
-func (noOpStore) PresignGet(ctx context.Context, _ string, _ time.Duration) (string, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		return "", errors.New("presign request context has no deadline")
-	}
+func (noOpStore) PresignGet(context.Context, string, time.Duration) (string, error) {
 	return "", nil
 }
 

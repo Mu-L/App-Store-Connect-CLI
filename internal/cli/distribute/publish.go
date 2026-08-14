@@ -37,22 +37,6 @@ type publicationVerifier struct {
 	documentTimeout time.Duration
 }
 
-type publicationStore struct {
-	delegate core.ObjectStore
-}
-
-func (store publicationStore) Ensure(ctx context.Context, object core.PutObject) (core.StoredObject, error) {
-	requestCtx, cancel := shared.ContextWithUploadTimeout(ctx)
-	defer cancel()
-	return store.delegate.Ensure(requestCtx, object)
-}
-
-func (store publicationStore) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	requestCtx, cancel := shared.ContextWithUploadTimeout(ctx)
-	defer cancel()
-	return store.delegate.PresignGet(requestCtx, key, ttl)
-}
-
 func newPublicationVerifier(documentTimeout time.Duration) (*publicationVerifier, error) {
 	delegate, err := core.NewHTTPVerifierWithEnvironmentTrust(0)
 	if err != nil {
@@ -242,7 +226,7 @@ Examples:
 			setupCtx, setupCancel := shared.ContextWithUploadTimeout(ctx)
 			store, credentialLimit, err := newObjectStore(setupCtx, core.S3StoreConfig{
 				Endpoint: *endpoint, DownloadEndpoint: *downloadEndpoint, Region: *region, Bucket: *bucket,
-				AddressingStyle: *addressingStyle,
+				AddressingStyle: *addressingStyle, RequestTimeout: asc.ResolveUploadTimeout(),
 			})
 			setupCancel()
 			if err != nil {
@@ -258,7 +242,7 @@ Examples:
 				return fmt.Errorf("configure publication verifier: %w", err)
 			}
 			receipt, links, err := runPublish(ctx, bundle.IPA, bundle.Descriptor, core.PublishOptions{
-				Store: publicationStore{delegate: store}, Verifier: verifier, Bucket: *bucket, Prefix: *prefix, Access: accessMode,
+				Store: store, Verifier: verifier, Bucket: *bucket, Prefix: *prefix, Access: accessMode,
 				PublicBaseURL: *publicBaseURL, URLTTL: *urlTTL, DownloadGrace: *downloadGrace, CredentialLimit: credentialLimit,
 			})
 			if err != nil {

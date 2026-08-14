@@ -28,6 +28,7 @@ type S3StoreConfig struct {
 	Bucket           string
 	AddressingStyle  string
 	HTTPClient       *http.Client
+	RequestTimeout   time.Duration
 }
 
 type s3API interface {
@@ -44,6 +45,7 @@ type S3Store struct {
 	presigner        s3Presigner
 	bucket           string
 	credentialSource string
+	requestContext   func(context.Context) (context.Context, context.CancelFunc)
 }
 
 func NewS3Store(ctx context.Context, options S3StoreConfig) (*S3Store, time.Time, error) {
@@ -125,20 +127,33 @@ func NewS3Store(ctx context.Context, options S3StoreConfig) (*S3Store, time.Time
 	} else {
 		credentialSource = categorizeCredentialSource(resolvedCredentials.Source)
 	}
-	return &S3Store{client: uploadClient, presigner: s3.NewPresignClient(downloadClient), bucket: strings.TrimSpace(options.Bucket), credentialSource: credentialSource}, credentialLimit, nil
+	requestContext := func(parent context.Context) (context.Context, context.CancelFunc) {
+		if options.RequestTimeout <= 0 {
+			return parent, func() {}
+		}
+		return context.WithTimeout(parent, options.RequestTimeout)
+	}
+	return &S3Store{
+		client: uploadClient, presigner: s3.NewPresignClient(downloadClient),
+		bucket: strings.TrimSpace(options.Bucket), credentialSource: credentialSource,
+		requestContext: requestContext,
+	}, credentialLimit, nil
 }
 
 func (store *S3Store) CredentialSource() string { return store.credentialSource }
 
 func (store *S3Store) Ensure(ctx context.Context, input PutObject) (StoredObject, error) {
-	existing, err := store.head(ctx, input.Key)
+	headCtx, headCancel := store.boundedRequestContext(ctx)
+	existing, err := store.head(headCtx, input.Key)
+	headCancel()
 	if err == nil {
 		return reconcileStoredObject(input, existing)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return StoredObject{}, err
 	}
-	_, err = store.client.PutObject(ctx, &s3.PutObjectInput{
+	putCtx, putCancel := store.boundedRequestContext(ctx)
+	_, err = store.client.PutObject(putCtx, &s3.PutObjectInput{
 		Bucket:        aws.String(store.bucket),
 		Key:           aws.String(input.Key),
 		Body:          input.Body,
@@ -147,8 +162,11 @@ func (store *S3Store) Ensure(ctx context.Context, input PutObject) (StoredObject
 		IfNoneMatch:   aws.String("*"),
 		Metadata:      map[string]string{objectSHA256MetadataKey: input.SHA256},
 	})
+	putCancel()
 	if err != nil {
-		existing, headErr := store.head(ctx, input.Key)
+		reconcileCtx, reconcileCancel := store.boundedRequestContext(ctx)
+		existing, headErr := store.head(reconcileCtx, input.Key)
+		reconcileCancel()
 		if headErr == nil {
 			return reconcileStoredObject(input, existing)
 		}
@@ -161,13 +179,22 @@ func (store *S3Store) Ensure(ctx context.Context, input PutObject) (StoredObject
 }
 
 func (store *S3Store) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	request, err := store.presigner.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(store.bucket), Key: aws.String(key)}, func(options *s3.PresignOptions) {
+	requestCtx, cancel := store.boundedRequestContext(ctx)
+	defer cancel()
+	request, err := store.presigner.PresignGetObject(requestCtx, &s3.GetObjectInput{Bucket: aws.String(store.bucket), Key: aws.String(key)}, func(options *s3.PresignOptions) {
 		options.Expires = ttl
 	})
 	if err != nil {
 		return "", sanitizedStorageError("presign object", key, err)
 	}
 	return request.URL, nil
+}
+
+func (store *S3Store) boundedRequestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if store.requestContext == nil {
+		return ctx, func() {}
+	}
+	return store.requestContext(ctx)
 }
 
 func (store *S3Store) head(ctx context.Context, key string) (StoredObject, error) {
