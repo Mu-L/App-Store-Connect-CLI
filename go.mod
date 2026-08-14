@@ -25,7 +25,7 @@ require (
 	github.com/tidwall/jsonc v0.3.3
 	go.mozilla.org/pkcs7 v0.10.0
 	golang.org/x/crypto v0.54.0
-	golang.org/x/mod v0.39.0
+	golang.org/x/mod v0.40.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	golang.org/x/text v0.41.0
