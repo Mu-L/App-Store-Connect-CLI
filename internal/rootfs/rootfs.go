@@ -62,30 +62,59 @@ type Root struct {
 }
 
 type rootIdentity struct {
-	mu   sync.RWMutex
-	info os.FileInfo
+	mu     sync.RWMutex
+	pinned *os.Root
 }
 
-func (identity *rootIdentity) load() os.FileInfo {
+func (identity *rootIdentity) isPinned() bool {
 	if identity == nil {
-		return nil
+		return false
 	}
 	identity.mu.RLock()
 	defer identity.mu.RUnlock()
-	return identity.info
+	return identity.pinned != nil
 }
 
-func (identity *rootIdentity) pin(info os.FileInfo) bool {
-	if identity == nil || info == nil {
+// pin retains one descriptor for the selected directory. Keeping that
+// descriptor open prevents the original inode or file ID from being recycled
+// while Root values still refer to it. The cleanup is attached to the shared
+// identity rather than a Root copy so the descriptor is closed exactly once.
+func (identity *rootIdentity) pin(candidate *os.Root) bool {
+	if candidate == nil {
+		return false
+	}
+	if identity == nil {
+		_ = candidate.Close()
 		return false
 	}
 	identity.mu.Lock()
 	defer identity.mu.Unlock()
-	if identity.info == nil {
-		identity.info = info
+	if identity.pinned == nil {
+		identity.pinned = candidate
+		runtime.AddCleanup(identity, closePinnedRoot, candidate)
 		return true
 	}
-	return os.SameFile(identity.info, info)
+	selectedInfo, selectedErr := identity.pinned.Stat(".")
+	candidateInfo, candidateErr := candidate.Stat(".")
+	_ = candidate.Close()
+	return selectedErr == nil && candidateErr == nil && os.SameFile(selectedInfo, candidateInfo)
+}
+
+func (identity *rootIdentity) matches(candidate os.FileInfo) bool {
+	if identity == nil || candidate == nil {
+		return false
+	}
+	identity.mu.RLock()
+	defer identity.mu.RUnlock()
+	if identity.pinned == nil {
+		return false
+	}
+	selected, err := identity.pinned.Stat(".")
+	return err == nil && os.SameFile(selected, candidate)
+}
+
+func closePinnedRoot(root *os.Root) {
+	_ = root.Close()
 }
 
 // New returns a Root anchored at path. The root itself is operator-selected and
@@ -118,21 +147,22 @@ func New(path string) (Root, error) {
 		return Root{}, fmt.Errorf("open trusted root %q: %w", path, err)
 	}
 	identity, statErr := selected.Stat(".")
-	closeErr := selected.Close()
 	if statErr != nil {
+		_ = selected.Close()
 		return Root{}, fmt.Errorf("stat trusted root %q: %w", path, statErr)
-	}
-	if closeErr != nil {
-		return Root{}, fmt.Errorf("close trusted root %q: %w", path, closeErr)
 	}
 	selectedAtPath, err := os.Stat(absolute)
 	if err != nil {
+		_ = selected.Close()
 		return Root{}, fmt.Errorf("stat selected root %q: %w", path, err)
 	}
 	if !os.SameFile(identity, selectedAtPath) {
+		_ = selected.Close()
 		return Root{}, symlinkError(absolute)
 	}
-	root.selectedIdentity.pin(identity)
+	if !root.selectedIdentity.pin(selected) {
+		return Root{}, symlinkError(absolute)
+	}
 	return root, nil
 }
 
@@ -150,8 +180,7 @@ func (r Root) OpenRoot() (*os.Root, error) {
 	if r.beforeOpenRootForTest != nil {
 		r.beforeOpenRootForTest()
 	}
-	selectedIdentity := r.selectedIdentity.load()
-	if selectedIdentity == nil {
+	if !r.selectedIdentity.isPinned() {
 		return nil, symlinkError(r.path)
 	}
 	opened, err := openAbsoluteRootNoFollow(r.openPath)
@@ -159,7 +188,7 @@ func (r Root) OpenRoot() (*os.Root, error) {
 		return nil, err
 	}
 	identity, err := opened.Stat(".")
-	if err != nil || !os.SameFile(selectedIdentity, identity) {
+	if err != nil || !r.selectedIdentity.matches(identity) {
 		_ = opened.Close()
 		if err != nil {
 			return nil, err
@@ -959,13 +988,13 @@ func (r Root) ensureRootDir(perm os.FileMode) error {
 		if !info.IsDir() {
 			return fmt.Errorf("trusted root %q is not a directory", r.path)
 		}
-		if r.selectedIdentity.load() != nil {
+		if r.selectedIdentity.isPinned() {
 			return nil
 		}
 	case !errors.Is(err, os.ErrNotExist):
 		return err
 	}
-	if r.selectedIdentity.load() != nil {
+	if r.selectedIdentity.isPinned() {
 		return symlinkError(r.path)
 	}
 	if err := os.MkdirAll(r.path, perm); err != nil {
@@ -975,15 +1004,7 @@ func (r Root) ensureRootDir(perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	identity, statErr := opened.Stat(".")
-	closeErr := opened.Close()
-	if statErr != nil {
-		return statErr
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	if !r.selectedIdentity.pin(identity) {
+	if !r.selectedIdentity.pin(opened) {
 		return symlinkError(r.path)
 	}
 	return nil
