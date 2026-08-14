@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -49,6 +50,9 @@ type Root struct {
 	// afterValidationForTest makes path-swap regressions deterministic. It is
 	// intentionally unexported and unset outside package tests.
 	afterValidationForTest func()
+	// renameNoReplaceForTest makes unsupported-filesystem regressions
+	// deterministic. It is intentionally unexported and unset outside tests.
+	renameNoReplaceForTest func(root *os.Root, oldName, newName string) error
 }
 
 // New returns a Root anchored at path. The root itself is operator-selected and
@@ -381,6 +385,30 @@ func (r Root) ReadFile(name string) ([]byte, error) {
 	return io.ReadAll(file)
 }
 
+// ReadFileLimited reads at most limit bytes from a regular file beneath the
+// root. It rejects, rather than truncates, files that exceed the limit.
+func (r Root) ReadFileLimited(name string, limit int64) ([]byte, error) {
+	if limit < 0 {
+		return nil, fmt.Errorf("read limit must not be negative")
+	}
+	file, err := r.OpenFile(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	if limit == math.MaxInt64 {
+		return io.ReadAll(file)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%q exceeds the %d-byte size limit", name, limit)
+	}
+	return data, nil
+}
+
 // ReadFileOptional reads a regular file beneath the root and reports whether it
 // exists. A missing file is not an error; a symlinked path still is.
 func (r Root) ReadFileOptional(name string) ([]byte, bool, error) {
@@ -599,9 +627,67 @@ func (r Root) CheckWriteFilePreservingMode(name string) error {
 	return nil
 }
 
+// CheckCreateNewFile performs the non-mutating checks required before
+// CreateNewFile publishes a destination. Missing parents are accepted because
+// the eventual rooted write creates them; existing files and symlinks are not.
+func (r Root) CheckCreateNewFile(name string) error {
+	resolved, err := r.Resolve(name)
+	if err != nil {
+		return err
+	}
+	if resolved == r.path {
+		return fmt.Errorf("%w: %q is the trusted root itself", ErrEscapesRoot, name)
+	}
+	if err := r.checkParentComponents(resolved); err != nil {
+		return err
+	}
+	info, err := os.Lstat(resolved)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return symlinkError(resolved)
+	}
+	return fmt.Errorf("%q already exists: %w", resolved, os.ErrExist)
+}
+
+// CheckFileParent validates a future file path and all existing parent
+// components without requiring the final destination name to be absent.
+func (r Root) CheckFileParent(name string) error {
+	resolved, err := r.Resolve(name)
+	if err != nil {
+		return err
+	}
+	if resolved == r.path {
+		return fmt.Errorf("%w: %q is the trusted root itself", ErrEscapesRoot, name)
+	}
+	return r.checkParentComponents(resolved)
+}
+
 // CreateNewFile writes data to a new file beneath the root and fails when the
-// destination already exists.
+// destination already exists. It prefers atomic no-replace publication, then
+// falls back to rooted, no-follow O_EXCL creation when the filesystem does not
+// support atomic no-replace rename.
 func (r Root) CreateNewFile(name string, data []byte, perm os.FileMode) error {
+	_, err := r.CreateNewFrom(name, bytes.NewReader(data), perm)
+	if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
+		return err
+	}
+	return r.createNewFileExclusive(name, data, perm)
+}
+
+// CreateNewFileAtomic atomically publishes complete data as a new file beneath
+// the root. It returns ErrRenameNoReplaceUnsupported instead of falling back
+// when the filesystem cannot provide atomic no-replace rename semantics.
+func (r Root) CreateNewFileAtomic(name string, data []byte, perm os.FileMode) error {
+	_, err := r.CreateNewFrom(name, bytes.NewReader(data), perm)
+	return err
+}
+
+func (r Root) createNewFileExclusive(name string, data []byte, perm os.FileMode) error {
 	resolved, err := r.prepareWrite(name)
 	if err != nil {
 		return err
@@ -612,42 +698,61 @@ func (r Root) CreateNewFile(name string, data []byte, perm os.FileMode) error {
 	}
 	defer parent.Close()
 
-	info, err := parent.Lstat(base)
-	switch {
-	case err == nil:
-		if info.Mode()&os.ModeSymlink != 0 {
-			return symlinkError(resolved)
-		}
-		return fmt.Errorf("%q already exists: %w", resolved, os.ErrExist)
-	case !errors.Is(err, os.ErrNotExist):
-		return err
-	}
 	if r.afterValidationForTest != nil {
 		r.afterValidationForTest()
 	}
-
 	file, err := secureopen.OpenNewFileNoFollowInRoot(parent, base, perm)
 	if err != nil {
 		return err
 	}
-	if _, writeErr := file.Write(data); writeErr != nil {
+	createdInfo, statErr := file.Stat()
+	if statErr != nil {
 		_ = file.Close()
-		return writeErr
+		return statErr
 	}
-	return file.Close()
-}
-
-// CreateNewFileAtomic atomically writes data to a new file beneath the root
-// and fails when the destination already exists. The temporary file and final
-// rename remain anchored to the already-open parent directory.
-func (r Root) CreateNewFileAtomic(name string, data []byte, perm os.FileMode) error {
-	resolved, err := r.prepareWrite(name)
+	complete := false
+	defer func() {
+		_ = file.Close()
+		if complete {
+			return
+		}
+		currentInfo, currentErr := parent.Lstat(base)
+		if currentErr == nil && os.SameFile(createdInfo, currentInfo) {
+			_ = parent.Remove(base)
+		}
+	}()
+	if err := file.Chmod(perm); err != nil {
+		return err
+	}
+	written, err := file.Write(data)
 	if err != nil {
 		return err
+	}
+	if written != len(data) {
+		return io.ErrShortWrite
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	complete = true
+	return nil
+}
+
+// CreateNewFrom atomically publishes reader's complete contents as a new file
+// beneath the root. It stages an unpredictable no-follow file in the same
+// directory, syncs and closes it, then uses an atomic no-replace rename. A read,
+// write, sync, close, or publish failure leaves an existing destination intact.
+func (r Root) CreateNewFrom(name string, reader io.Reader, perm os.FileMode) (int64, error) {
+	resolved, err := r.prepareWrite(name)
+	if err != nil {
+		return 0, err
 	}
 	parent, base, err := r.openParentRooted(resolved)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer parent.Close()
 
@@ -655,66 +760,60 @@ func (r Root) CreateNewFileAtomic(name string, data []byte, perm os.FileMode) er
 	switch {
 	case err == nil:
 		if info.Mode()&os.ModeSymlink != 0 {
-			return symlinkError(resolved)
+			return 0, symlinkError(resolved)
 		}
-		return fmt.Errorf("%q already exists: %w", resolved, os.ErrExist)
+		return 0, fmt.Errorf("%q already exists: %w", resolved, os.ErrExist)
 	case !errors.Is(err, os.ErrNotExist):
-		return err
+		return 0, err
 	}
 	if r.afterValidationForTest != nil {
 		r.afterValidationForTest()
 	}
 
-	temporary, temporaryName, err := secureopen.CreateTempNoFollowInRoot(parent, ".", temporaryFilePattern, perm)
+	file, temporaryName, err := secureopen.CreateTempNoFollowInRoot(parent, ".", temporaryFilePattern, perm)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	success := false
+	published := false
 	defer func() {
-		_ = temporary.Close()
-		if !success {
+		_ = file.Close()
+		if !published {
 			_ = parent.Remove(temporaryName)
 		}
 	}()
-	if err := temporary.Chmod(perm); err != nil {
-		return err
+	if err := file.Chmod(perm); err != nil {
+		return 0, err
 	}
-	if _, err := temporary.Write(data); err != nil {
-		return err
+	written, err := io.Copy(file, reader)
+	if err != nil {
+		return written, err
 	}
-	if err := temporary.Sync(); err != nil {
-		return err
+	if err := file.Sync(); err != nil {
+		return written, err
 	}
-	if err := temporary.Close(); err != nil {
-		return err
+	if err := file.Close(); err != nil {
+		return written, err
 	}
-	if err := secureopen.RenameNoReplaceInRoot(parent, temporaryName, base); err != nil {
-		if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
-			return err
-		}
-		// A hard link is an atomic no-replace publish on filesystems without a
-		// native no-replace rename. It either exposes the complete staged inode
-		// or leaves an existing destination untouched.
-		if linkErr := parent.Link(temporaryName, base); linkErr != nil {
-			return linkErr
-		}
-		if removeErr := parent.Remove(temporaryName); removeErr != nil {
-			return fmt.Errorf("publish succeeded but remove staged file: %w", removeErr)
-		}
+	renameNoReplace := secureopen.RenameNoReplaceInRoot
+	if r.renameNoReplaceForTest != nil {
+		renameNoReplace = r.renameNoReplaceForTest
 	}
+	if err := renameNoReplace(parent, temporaryName, base); err != nil {
+		return written, err
+	}
+	published = true
 	directory, err := parent.Open(".")
 	if err != nil {
-		return fmt.Errorf("open parent directory for durability sync: %w", err)
+		return written, fmt.Errorf("open parent directory for durability sync: %w", err)
 	}
 	if err := directory.Sync(); err != nil && !unsupportedDirectorySyncError(err) {
 		_ = directory.Close()
-		return fmt.Errorf("sync parent directory after publish: %w", err)
+		return written, fmt.Errorf("sync parent directory after publish: %w", err)
 	}
 	if err := directory.Close(); err != nil {
-		return fmt.Errorf("close parent directory after durability sync: %w", err)
+		return written, fmt.Errorf("close parent directory after durability sync: %w", err)
 	}
-	success = true
-	return nil
+	return written, nil
 }
 
 // AppendFile appends data to a file beneath the root, creating it when missing,
