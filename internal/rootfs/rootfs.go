@@ -204,8 +204,8 @@ func (r Root) Path() string {
 	return r.path
 }
 
-// Close releases the descriptor that pins the selected root. Root copies share
-// that descriptor, so closing any copy closes the shared root identity.
+// Close releases the selected directory descriptor shared by this Root and all
+// of its copies. Close is idempotent; no copied Root may be used afterward.
 func (r Root) Close() error {
 	return r.selectedIdentity.close()
 }
