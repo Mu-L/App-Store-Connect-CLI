@@ -108,6 +108,50 @@ func TestPublishCommandRejectsUnsafeBucketBeforeSideEffects(t *testing.T) {
 	}
 }
 
+func TestPublishCommandRejectsPhysicalArtifactAliasBeforeSideEffects(t *testing.T) {
+	originalLoad, originalStore := loadPreparedBundle, newObjectStore
+	t.Cleanup(func() { loadPreparedBundle, newObjectStore = originalLoad, originalStore })
+	loadCalled, storeCalled := false, false
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
+		loadCalled = true
+		return nil, errors.New("unexpected bundle load")
+	}
+	newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
+		storeCalled = true
+		return noOpStore{}, time.Time{}, nil
+	}
+
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	stateDir := filepath.Join(realDir, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range []string{"left", "right"} {
+		if err := os.Symlink(realDir, filepath.Join(base, alias)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	destination := "publish.json"
+	err := PublishCommand().ParseAndRun(context.Background(), []string{
+		"--bundle-dir", t.TempDir(), "--endpoint", "https://objects.example.com", "--region", "auto", "--bucket", "bucket", "--prefix", "app",
+		"--receipt", filepath.Join(base, "left", "state", destination), "--link-path", filepath.Join(base, "right", "state", destination),
+	})
+	if err == nil || !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("ParseAndRun() error = %v, want physical destination rejection", err)
+	}
+	if loadCalled || storeCalled {
+		t.Fatalf("side effects before physical alias rejection: load=%t store=%t", loadCalled, storeCalled)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("physical destination contains artifacts after rejection: %v", entries)
+	}
+}
+
 func TestPublishCommandRejectsOverflowingLifetimeBeforeSideEffects(t *testing.T) {
 	originalLoad, originalStore := loadPreparedBundle, newObjectStore
 	t.Cleanup(func() { loadPreparedBundle, newObjectStore = originalLoad, originalStore })
@@ -607,6 +651,99 @@ func TestArtifactPairSupportsDistinctTopLevelParents(t *testing.T) {
 		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s mode = %v, want mode-0600 regular file", target, info.Mode())
 		}
+	}
+}
+
+func TestArtifactPairRejectsAliasedPhysicalDestination(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	stateDir := filepath.Join(realDir, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range []string{"left", "right"} {
+		if err := os.Symlink(realDir, filepath.Join(base, alias)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	destination := "publish.json"
+	paths, err := preflightArtifactPaths(
+		filepath.Join(base, "left", "state", destination),
+		filepath.Join(base, "right", "state", destination),
+	)
+	paths.close()
+	if err == nil || !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightArtifactPaths() error = %v, want physical destination rejection", err)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("physical destination contains artifacts after rejection: %v", entries)
+	}
+}
+
+func TestArtifactPairRejectsExistingHardlinkDestinations(t *testing.T) {
+	base := t.TempDir()
+	receiptPath := filepath.Join(base, "receipt.json")
+	linkPath := filepath.Join(base, "link.json")
+	if err := os.WriteFile(receiptPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(receiptPath, linkPath); err != nil {
+		t.Skipf("hard links are unavailable on this filesystem: %v", err)
+	}
+
+	paths, err := preflightArtifactPaths(receiptPath, linkPath)
+	paths.close()
+	if err == nil || !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightArtifactPaths() error = %v, want hardlink destination rejection", err)
+	}
+}
+
+func TestSameArtifactRelativePathHonorsCaseSensitivity(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		left            string
+		right           string
+		caseInsensitive bool
+		want            bool
+	}{
+		{name: "exact", left: "state/publish.json", right: "state/publish.json", want: true},
+		{name: "Windows case-fold alias", left: "state/Publish.JSON", right: "STATE/publish.json", caseInsensitive: true, want: true},
+		{name: "case-sensitive destinations", left: "state/Publish.JSON", right: "STATE/publish.json", want: false},
+		{name: "distinct", left: "state/receipt.json", right: "state/link.json", caseInsensitive: true, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sameArtifactRelativePath(test.left, test.right, test.caseInsensitive); got != test.want {
+				t.Fatalf("sameArtifactRelativePath(%q, %q, %t) = %t, want %t", test.left, test.right, test.caseInsensitive, got, test.want)
+			}
+		})
+	}
+}
+
+func TestArtifactPairRejectsCaseFoldAliasOnCaseInsensitivePlatform(t *testing.T) {
+	stateDir := t.TempDir()
+	paths, err := anchorArtifactPaths(
+		filepath.Join(stateDir, "Publish.JSON"),
+		filepath.Join(stateDir, "publish.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+
+	if err := paths.preflightWithCaseSensitivity(true); err == nil || !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightWithCaseSensitivity() error = %v, want case-fold destination rejection", err)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("case-fold destination contains artifacts after rejection: %v", entries)
 	}
 }
 

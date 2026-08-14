@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -379,7 +380,16 @@ func (paths artifactPaths) openParent(target artifactPath) (*os.Root, string, er
 }
 
 func (paths *artifactPaths) preflight() error {
-	for _, target := range []struct {
+	return paths.preflightWithCaseSensitivity(runtime.GOOS == "windows")
+}
+
+func (paths *artifactPaths) preflightWithCaseSensitivity(caseInsensitive bool) error {
+	if os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) && sameArtifactRelativePath(paths.receipt.relative, paths.link.relative, caseInsensitive) {
+		return fmt.Errorf("--receipt and --link-path resolve to the same physical destination")
+	}
+
+	var infos [2]os.FileInfo
+	for index, target := range []struct {
 		path   artifactPath
 		exists *bool
 	}{
@@ -393,6 +403,7 @@ func (paths *artifactPaths) preflight() error {
 		info, statErr := parent.Lstat(base)
 		closeErr := parent.Close()
 		if statErr == nil {
+			infos[index] = info
 			if !info.Mode().IsRegular() {
 				return fmt.Errorf("%s is not a regular file", filepath.Join(target.path.rootPath, target.path.relative))
 			}
@@ -407,7 +418,16 @@ func (paths *artifactPaths) preflight() error {
 			return closeErr
 		}
 	}
+	if paths.receiptExists && paths.linkExists && os.SameFile(infos[0], infos[1]) {
+		return fmt.Errorf("--receipt and --link-path resolve to the same physical destination")
+	}
 	return nil
+}
+
+func sameArtifactRelativePath(left, right string, caseInsensitive bool) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	return left == right || (caseInsensitive && strings.EqualFold(left, right))
 }
 
 func pathContains(parent, child string) bool {
