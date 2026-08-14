@@ -37,6 +37,22 @@ type publicationVerifier struct {
 	documentTimeout time.Duration
 }
 
+type publicationStore struct {
+	delegate core.ObjectStore
+}
+
+func (store publicationStore) Ensure(ctx context.Context, object core.PutObject) (core.StoredObject, error) {
+	requestCtx, cancel := shared.ContextWithUploadTimeout(ctx)
+	defer cancel()
+	return store.delegate.Ensure(requestCtx, object)
+}
+
+func (store publicationStore) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	requestCtx, cancel := shared.ContextWithUploadTimeout(ctx)
+	defer cancel()
+	return store.delegate.PresignGet(requestCtx, key, ttl)
+}
+
 func newPublicationVerifier(documentTimeout time.Duration) (*publicationVerifier, error) {
 	delegate, err := core.NewHTTPVerifierWithEnvironmentTrust(0)
 	if err != nil {
@@ -46,14 +62,12 @@ func newPublicationVerifier(documentTimeout time.Duration) (*publicationVerifier
 }
 
 func (verifier *publicationVerifier) Verify(ctx context.Context, request core.VerifyRequest) error {
-	verifyParent := ctx
 	var verifyCtx context.Context
 	var cancel context.CancelFunc
 	if request.Kind == core.VerifyIPA {
-		verifyParent = shared.ContextWithoutTimeout(ctx)
-		verifyCtx, cancel = shared.ContextWithUploadTimeout(verifyParent)
+		verifyCtx, cancel = shared.ContextWithUploadTimeout(ctx)
 	} else {
-		verifyCtx, cancel = context.WithTimeout(verifyParent, verifier.documentTimeout)
+		verifyCtx, cancel = context.WithTimeout(ctx, verifier.documentTimeout)
 	}
 	defer cancel()
 	return verifier.delegate.Verify(verifyCtx, request)
@@ -207,9 +221,7 @@ Examples:
 				if err != nil {
 					return fmt.Errorf("configure publication verifier: %w", err)
 				}
-				verifyCtx, cancel := shared.ContextWithUploadTimeout(ctx)
-				defer cancel()
-				if err := reverifyPublication(verifyCtx, verifier, recoveredState.Receipt, recoveredState.Links, time.Now().UTC()); err != nil {
+				if err := reverifyPublication(ctx, verifier, recoveredState.Receipt, recoveredState.Links, time.Now().UTC()); err != nil {
 					return fmt.Errorf("reverify recovered publication: %w", err)
 				}
 				if artifacts.receiptExists {
@@ -227,12 +239,12 @@ Examples:
 			}
 			defer staged.cleanup()
 
-			uploadCtx, cancel := shared.ContextWithUploadTimeout(ctx)
-			defer cancel()
-			store, credentialLimit, err := newObjectStore(uploadCtx, core.S3StoreConfig{
+			setupCtx, setupCancel := shared.ContextWithUploadTimeout(ctx)
+			store, credentialLimit, err := newObjectStore(setupCtx, core.S3StoreConfig{
 				Endpoint: *endpoint, DownloadEndpoint: *downloadEndpoint, Region: *region, Bucket: *bucket,
 				AddressingStyle: *addressingStyle,
 			})
+			setupCancel()
 			if err != nil {
 				return fmt.Errorf("distribute publish: %w", err)
 			}
@@ -245,8 +257,8 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("configure publication verifier: %w", err)
 			}
-			receipt, links, err := runPublish(uploadCtx, bundle.IPA, bundle.Descriptor, core.PublishOptions{
-				Store: store, Verifier: verifier, Bucket: *bucket, Prefix: *prefix, Access: accessMode,
+			receipt, links, err := runPublish(ctx, bundle.IPA, bundle.Descriptor, core.PublishOptions{
+				Store: publicationStore{delegate: store}, Verifier: verifier, Bucket: *bucket, Prefix: *prefix, Access: accessMode,
 				PublicBaseURL: *publicBaseURL, URLTTL: *urlTTL, DownloadGrace: *downloadGrace, CredentialLimit: credentialLimit,
 			})
 			if err != nil {

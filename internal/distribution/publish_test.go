@@ -181,6 +181,26 @@ func TestPublishRejectsProfileExpiringBeforePrivateLinkWithoutWriting(t *testing
 	}
 }
 
+func TestPublishRejectsPublicProfileThatExpiresDuringVerification(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	descriptor := minimalDescriptor([]byte("ipa"))
+	descriptor.Signing.ExpiresAt = now.Add(2 * time.Minute).Format(time.RFC3339)
+	store := &fakeObjectStore{}
+	verifier := &advancingVerifier{now: &now, advance: 30 * time.Second}
+
+	_, _, err := Publish(context.Background(), bytes.NewReader([]byte("ipa")), descriptor, PublishOptions{
+		Store: store, Verifier: verifier, Bucket: "bucket", Prefix: "app", Access: AccessPublic,
+		PublicBaseURL: "https://downloads.example.com", Now: func() time.Time { return now },
+		RandomID: func() (string, error) { return "id", nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "profile expires too soon") {
+		t.Fatalf("Publish() error = %v, want post-verification profile expiry rejection", err)
+	}
+	if len(store.calls) == 0 {
+		t.Fatal("expected publication work before final profile validity check")
+	}
+}
+
 func TestPublishRejectsUnsafeBucketBeforeWriting(t *testing.T) {
 	store := &fakeObjectStore{}
 	_, _, err := Publish(context.Background(), bytes.NewReader([]byte("ipa")), minimalDescriptor([]byte("ipa")), PublishOptions{
@@ -534,6 +554,16 @@ type recordingVerifier struct{ urls []string }
 
 func (v *recordingVerifier) Verify(_ context.Context, request VerifyRequest) error {
 	v.urls = append(v.urls, request.URL)
+	return nil
+}
+
+type advancingVerifier struct {
+	now     *time.Time
+	advance time.Duration
+}
+
+func (verifier *advancingVerifier) Verify(context.Context, VerifyRequest) error {
+	*verifier.now = verifier.now.Add(verifier.advance)
 	return nil
 }
 
