@@ -41,7 +41,7 @@ func TestAdsPlatformAppCampaignReportRequest(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "platform", "reports", "apps", "campaigns", "--file", payloadPath, "--output", "json"}); err != nil {
+	if err := root.Parse([]string{"ads", "reports", "apps", "campaigns", "--file", payloadPath, "--output", "json"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	stdout, stderr := captureOutput(t, func() {
@@ -82,7 +82,7 @@ func TestAdsPlatformChangeHistoryDetailRequest(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "platform", "change-history", "view", "--detail-id", "Campaign.444555666.txn_abc123def456", "--limit", "25", "--offset", "10", "--output", "json"}); err != nil {
+	if err := root.Parse([]string{"ads", "change-history", "view", "--detail-id", "Campaign.444555666.txn_abc123def456", "--limit", "25", "--offset", "10", "--output", "json"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	_, stderr := captureOutput(t, func() {
@@ -107,7 +107,7 @@ func TestAdsPlatformRecommendationApplyRequiresConfirmBeforeFileAuthOrNetwork(t 
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "platform", "recommendations", "daily-budgets", "apply", "--file", filepath.Join(t.TempDir(), "missing.json")}); err != nil {
+	if err := root.Parse([]string{"ads", "recommendations", "daily-budgets", "apply", "--file", filepath.Join(t.TempDir(), "missing.json")}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -131,7 +131,7 @@ func TestAdsPlatformReportRequiresFileBeforeAuthOrNetwork(t *testing.T) {
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "platform", "insights", "impression-share", "find"}); err != nil {
+	if err := root.Parse([]string{"ads", "insights", "impression-share", "find"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error

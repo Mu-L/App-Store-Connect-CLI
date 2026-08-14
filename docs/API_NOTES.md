@@ -72,14 +72,14 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - V1 query and report requests use Platform API JSON schemas and preserve
   Apple's response envelopes. Report pagination belongs in the request body;
   the v1 report commands do not use the legacy `--paginate` flag.
-- The v5 command tree remains runnable in CLI 4.4.0 with a deprecation warning.
+- The v5 command tree remains runnable under `asc ads v5` in CLI 4.4.0 with a deprecation warning.
   Apple retires Campaign Management API v5 on January 26, 2027. The legacy raw
-  `asc ads api request` command stays a v5 request and is not rewritten; raw v1
-  requests use `asc ads platform api request`.
+  `asc ads v5 api request` command stays a v5 request and is not rewritten; raw v1
+  requests use `asc ads api request`.
 - The version-neutral `asc ads auth discover` command temporarily retains its
   v5 organization-level response contract so existing JSON consumers do not
-  receive ad-account rows under the old `accounts` field. Use `asc ads platform
-  me view` and `asc ads platform acls list` for v1 discovery. A versioned output
+  receive ad-account rows under the old `accounts` field. Use `asc ads me view`
+  and `asc ads acls list` for v1 discovery. A versioned output
   transition is still required before v5 retirement.
 - Platform v1 has one negative-keywords resource for campaign and ad-group
   scope, and does not provide a bulk-delete operation. Product-page countries,
@@ -148,9 +148,9 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 
 ## Apple Ads Platform API v1
 
-- Release 4.4.0 adds the Platform API v1 command namespace under `asc ads platform`. It is a separate contract from the existing direct `asc ads` Campaign Management API v5 commands: the host, request payloads, response envelopes, pagination, and context header differ.
-- Apple scheduled Campaign Management API v5 retirement for January 26, 2027. In 4.4.0, every runnable v5 leaf remains available, emits a deprecation warning on invocation, and keeps its existing endpoint and output behavior. Use the documented v1 replacement where one exists; the seven v5 leaves without a one-command replacement retain explicit migration guidance.
+- Release 4.4.0 makes Platform API v1 the direct `asc ads` resource surface. Its host, request payloads, response envelopes, pagination, and ad-account context differ from Campaign Management API v5. The intermediate nested prototype is intentionally removed before release.
+- Apple scheduled Campaign Management API v5 retirement for January 26, 2027. Every runnable v5 leaf moves under `asc ads v5`, emits a deprecation warning on invocation, and keeps its existing endpoint and output behavior. Use the direct v1 replacement where one exists; the seven v5 leaves without a one-command replacement retain explicit migration guidance.
 - Platform account-scoped requests use `X-AP-Context: adAccountId=<AD_ACCOUNT_ID>;`. Resolve the account independently from the legacy organization context with `--ad-account`, `ASC_ADS_AD_ACCOUNT_ID`, the selected profile's `ad_account_id`, or root `ads.ad_account_id` when no named profile is selected. `ASC_ADS_ORG_ID` and `--org` are not fallbacks for an ad-account ID.
 - `/v1/ad-accounts` is method-dependent: `POST /v1/ad-accounts` creates an account without `X-AP-Context`; `GET /v1/ad-accounts/{id}` and `PUT /v1/ad-accounts/{id}` require `X-AP-Context: adAccountId=<id>;`, and the header account must match the path ID.
-- Authentication validation intentionally uses the stable transports in the implementation. `asc ads auth login --network` and `asc ads auth status --validate` exchange an OAuth client-credentials token when needed and call Campaign Management API v5 `GET /v5/me` without an organization context. `asc ads auth discover` remains the compatibility discovery command and calls legacy `GET /v5/me` and `GET /v5/acls` without an organization context. Platform API v1 users should call `asc ads platform me view` and `asc ads platform acls list`; a supplied `ASC_ADS_ACCESS_TOKEN` skips token exchange.
-- The deprecated `asc ads reports preset` warning follows `--level`: campaigns, ad groups, ads, keywords, and search terms point to their matching `asc ads platform reports apps` command; the two ad-group-specific keyword levels point to v1's consolidated `keywords` or `search-terms` report.
+- Authentication validation intentionally uses the stable transports in the implementation. `asc ads auth login --network` and `asc ads auth status --validate` exchange an OAuth client-credentials token when needed and call Campaign Management API v5 `GET /v5/me` without an organization context. `asc ads auth discover` remains the compatibility discovery command and calls legacy `GET /v5/me` and `GET /v5/acls` without an organization context. Platform API v1 users should call `asc ads me view` and `asc ads acls list`; a supplied `ASC_ADS_ACCESS_TOKEN` skips token exchange.
+- The deprecated `asc ads v5 reports preset` warning follows `--level`: campaigns, ad groups, ads, keywords, and search terms point to their matching `asc ads reports apps` command; the two ad-group-specific keyword levels point to v1's consolidated `keywords` or `search-terms` report.

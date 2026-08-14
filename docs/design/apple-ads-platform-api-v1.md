@@ -2,22 +2,22 @@
 
 ## Goal
 
-Add the complete Apple Ads Platform API v1 surface without changing the behavior of the existing Campaign Management API v5 commands during their deprecation window. Apple will retire v5 on January 26, 2027.
+Add the complete Apple Ads Platform API v1 surface as the default Ads resource tree. Preserve the behavior of Campaign Management API v5 commands under an explicit deprecated namespace until Apple retires v5 on January 26, 2027.
 
 ## Command placement
 
-Platform API v1 commands live under `asc ads platform`. Existing direct resource commands under `asc ads` continue to call v5 until a later removal release.
+Platform API v1 commands live directly under `asc ads`. Existing Campaign Management API v5 commands move to `asc ads v5`.
 
 Examples:
 
 ```bash
-asc ads platform acls list --output json
-asc ads platform campaigns find --ad-account "AD_ACCOUNT_ID" --file query.json
-asc ads platform assets upload --ad-account "AD_ACCOUNT_ID" --file creative.png --brand "BRAND_ID"
-asc ads platform api request --method GET --path v1/me
+asc ads acls list --output json
+asc ads campaigns find --ad-account "AD_ACCOUNT_ID" --file query.json
+asc ads assets upload --ad-account "AD_ACCOUNT_ID" --file creative.png --brand "BRAND_ID"
+asc ads api request --method GET --path v1/me
 ```
 
-This keeps the incompatible request and response schemas explicit. It also gives every legacy command a precise replacement path instead of silently changing its API contract.
+This makes the long-lived API the shortest path while keeping the incompatible v5 request and response schemas explicit under a versioned legacy tree.
 
 ## API contract
 
@@ -61,27 +61,27 @@ Reporting requests keep Apple's pagination and selector fields in the JSON paylo
 
 ```bash
 # App and business-brand reports
-asc ads platform reports apps campaigns --ad-account "AD_ACCOUNT_ID" --file report.json --output json
-asc ads platform reports brands search-terms --ad-account "AD_ACCOUNT_ID" --file report.json --output json
+asc ads reports apps campaigns --ad-account "AD_ACCOUNT_ID" --file report.json --output json
+asc ads reports brands search-terms --ad-account "AD_ACCOUNT_ID" --file report.json --output json
 
 # Read-only insights, recommendations, suggestions, and audit queries
-asc ads platform insights impression-share find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
-asc ads platform recommendations daily-budgets find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
-asc ads platform suggestions keywords find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
-asc ads platform change-history find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
-asc ads platform change-history view --ad-account "AD_ACCOUNT_ID" --detail-id "Campaign.444555666.txn_abc123def456" --limit 100 --offset 0 --output json
+asc ads insights impression-share find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads recommendations daily-budgets find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads suggestions keywords find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads change-history find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads change-history view --ad-account "AD_ACCOUNT_ID" --detail-id "Campaign.444555666.txn_abc123def456" --limit 100 --offset 0 --output json
 ```
 
 Recommendation apply and dismiss operations accept an array payload and require explicit confirmation before the CLI reads the payload or resolves credentials:
 
 ```bash
-asc ads platform recommendations target-cpas apply --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
-asc ads platform recommendations daily-budgets dismiss --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
+asc ads recommendations target-cpas apply --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
+asc ads recommendations daily-budgets dismiss --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
 ```
 
 ## Compatibility and deprecation
 
-The v1 host, context identifier, paths, payloads, response envelopes, pagination, reporting, and creative model are incompatible with v5. Reusing an existing command path would make a stable command change meaning based on a flag or release, so this design uses a separate `platform` namespace.
+The v1 host, context identifier, paths, payloads, response envelopes, pagination, reporting, and creative model are incompatible with v5. Because Apple Ads is an auxiliary surface in this App Store Connect-focused CLI, 4.4.0 takes the breaking command-tree change now: direct resource paths use v1 and v5 moves under `asc ads v5`.
 
 Every runnable v5 leaf remains available but gains:
 
@@ -90,7 +90,9 @@ Every runnable v5 leaf remains available but gains:
 - a v1 replacement command or an explicit statement when no one-command replacement exists;
 - migration guidance in the Apple Ads command documentation.
 
-No v5 command is removed in 4.4.0.
+No v5 operation is removed in 4.4.0; only its command prefix changes. The
+intermediate nested prototype is removed before merge and does not
+become a compatibility alias.
 
 ### Migration contract
 
@@ -139,4 +141,4 @@ the repository or test fixtures.
 
 ## Alternatives considered
 
-An `--api-version` flag on the existing command tree would mix incompatible leaves and payload schemas in one help surface. Changing existing commands directly to v1 would break stable automation before the announced v5 retirement. A separate `platform` namespace is explicit today and leaves room to promote it after the deprecation window.
+An `--api-version` flag would mix incompatible leaves and payload schemas in one help surface. Keeping v1 permanently under `platform` would make the future default API more verbose forever. The selected breaking tree gives v1 the idiomatic direct paths and moves the retiring surface under the exact `v5` version label.

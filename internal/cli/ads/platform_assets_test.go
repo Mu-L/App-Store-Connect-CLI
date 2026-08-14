@@ -14,7 +14,7 @@ import (
 )
 
 func TestPlatformAssetsUploadIsOneCustomCommand(t *testing.T) {
-	assets := findCommand(AdsCommand(), "platform", "assets")
+	assets := findCommand(AdsCommand(), "assets")
 	if assets == nil {
 		t.Fatal("missing assets group")
 	}
@@ -22,6 +22,12 @@ func TestPlatformAssetsUploadIsOneCustomCommand(t *testing.T) {
 	for _, command := range assets.Subcommands {
 		if command.Name == "upload" {
 			count++
+			if command.ShortUsage != "asc ads assets upload --file IMAGE --brand ID --ad-account ID" {
+				t.Fatalf("assets upload usage = %q", command.ShortUsage)
+			}
+			if !strings.Contains(command.LongHelp, `Poll "asc ads assets view"`) {
+				t.Fatalf("assets upload help does not point to direct assets view: %q", command.LongHelp)
+			}
 			for _, flagName := range []string{"file", "brand", "ad-account", "ads-profile", "output"} {
 				if command.FlagSet.Lookup(flagName) == nil {
 					t.Fatalf("assets upload missing --%s", flagName)

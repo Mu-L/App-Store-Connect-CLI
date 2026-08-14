@@ -6,6 +6,10 @@ Use these playbooks when you are operating Apple Ads from `asc` in a terminal,
 CI job, or agent run. The goal is to start read-only, confirm the org context,
 and only mutate resources after the target IDs and payload files are reviewed.
 
+These org-scoped examples use the deprecated Campaign Management API v5 tree
+under `asc ads v5`. New automation should use the direct Platform API v1
+resource commands under `asc ads` with `--ad-account`.
+
 ## Setup and Credential Safety
 
 Apple Ads credentials are separate from App Store Connect API credentials.
@@ -34,7 +38,7 @@ export ASC_ADS_PRIVATE_KEY_PATH="$HOME/.asc/apple-ads-private-key.pem"
 export ASC_ADS_ORG_ID="123456"
 export ASC_ADS_BYPASS_KEYCHAIN=1
 
-asc ads campaigns list --org "$ASC_ADS_ORG_ID" --limit 1 --output json
+asc ads v5 campaigns list --org "$ASC_ADS_ORG_ID" --limit 1 --output json
 ```
 
 Use a read-only API command for CI validation so the run resolves the exported
@@ -49,15 +53,15 @@ where another trusted system already minted a short-lived token.
 For new automation, start with the Apple Ads Platform API v1 command tree:
 
 ```bash  theme={null}
-asc ads platform me view --output json
-asc ads platform acls list --output json
-asc ads platform apps search \
+asc ads me view --output json
+asc ads acls list --output json
+asc ads apps search \
   --ad-account "987654" \
   --query "Example" \
   --output json
 ```
 
-The legacy Campaign Management API v5 commands under `asc ads` still run in
+The legacy Campaign Management API v5 commands under `asc ads v5` still run in
 4.4.0 and print a deprecation warning on stderr. Apple retires v5 on January
 26, 2027. A v5 command keeps its existing `--org` context; a v1 command uses
 the separate `--ad-account` context. Do not pass an organization ID where a v1
@@ -70,7 +74,7 @@ in the request JSON, so do not add the legacy `--paginate` flag to a v1 report
 command:
 
 ```bash  theme={null}
-asc ads platform reports apps campaigns \
+asc ads reports apps campaigns \
   --ad-account "987654" \
   --file report.json \
   --output json
@@ -79,7 +83,7 @@ asc ads platform reports apps campaigns \
 Platform v1 exposes one `negative-keywords` resource for both campaign and ad
 group scope. Move the scope into the v1 query or mutation body rather than
 looking for separate campaign-negative-keywords and ad-group-negative-keywords
-commands. The v5 `asc ads reports preset` helper remains a warning-producing
+commands. The v5 `asc ads v5 reports preset` helper remains a warning-producing
 compatibility path; replace it with an explicit v1 report leaf and reviewed
 request file.
 
@@ -91,16 +95,16 @@ replacements for those contracts. In particular, `geo search` is not the v5
 country/device mapping, `insights impression-share` is not the custom report
 list/view API, and v1 has no bulk-delete operation.
 
-For raw calls, keep `asc ads api request` for v5 paths and its `--org` context.
+For raw calls, keep `asc ads v5 api request` for v5 paths and its `--org` context.
 It remains runnable with a warning and is not rewritten. Use
-`asc ads platform api request --path v1/... --ad-account ...` for a raw v1 call.
+`asc ads api request --path v1/... --ad-account ...` for a raw v1 call.
 
 ## Org Access Inspection
 
 Start outside an org context. These commands do not require `--org`:
 
 ```bash  theme={null}
-asc ads acls list --output json
+asc ads v5 acls list --output json
 ```
 
 Use the ACL response to confirm the account and choose the org ID, then pin it
@@ -108,14 +112,14 @@ explicitly for the rest of the session:
 
 ```bash  theme={null}
 export ASC_ADS_ORG_ID="123456"
-asc ads campaigns list --org "$ASC_ADS_ORG_ID" --limit 1 --output json
+asc ads v5 campaigns list --org "$ASC_ADS_ORG_ID" --limit 1 --output json
 ```
 
 When operating multiple Apple Ads accounts, avoid relying on the ambient
 default. Pass both profile and org:
 
 ```bash  theme={null}
-asc ads campaigns list \
+asc ads v5 campaigns list \
   --ads-profile "Marketing" \
   --org "123456" \
   --limit 10 \
@@ -127,8 +131,8 @@ asc ads campaigns list \
 Use this sequence before an automation run or after rotating credentials:
 
 ```bash  theme={null}
-asc ads acls list --output json
-asc ads campaigns list --org "123456" --limit 1 --output json
+asc ads v5 acls list --output json
+asc ads v5 campaigns list --org "123456" --limit 1 --output json
 ```
 
 Expected result: every command exits successfully, and the campaign list returns
@@ -147,12 +151,12 @@ asc ads auth status --validate --output json
 List campaigns first, then inspect ad groups under one confirmed campaign ID:
 
 ```bash  theme={null}
-asc ads campaigns list \
+asc ads v5 campaigns list \
   --org "123456" \
   --limit 100 \
   --output table
 
-asc ads ad-groups list \
+asc ads v5 ad-groups list \
   --org "123456" \
   --campaign 987654321 \
   --limit 100 \
@@ -162,8 +166,8 @@ asc ads ad-groups list \
 For full exports from query-parameter list endpoints, use pagination:
 
 ```bash  theme={null}
-asc ads campaigns list --org "123456" --paginate --output json
-asc ads ad-groups list --org "123456" --campaign 987654321 --paginate --output json
+asc ads v5 campaigns list --org "123456" --paginate --output json
+asc ads v5 ad-groups list --org "123456" --campaign 987654321 --paginate --output json
 ```
 
 Do not use report payloads as inventory replacements. Reports answer
@@ -198,26 +202,26 @@ Keep reporting requests in files so they can be reviewed and reused:
 Run the campaign report with an explicit org and output format:
 
 ```bash  theme={null}
-asc ads reports campaigns \
+asc ads v5 reports campaigns \
   --org "123456" \
   --file reporting-request.json \
   --output json
 ```
 
 For ad-group, keyword, search-term, or ad-level reports, first verify the parent
-campaign ID with `asc ads campaigns list`. Report pagination lives inside the
+campaign ID with `asc ads v5 campaigns list`. Report pagination lives inside the
 Apple Ads request body, so update the file's selector pagination rather than
 adding `--paginate`.
 
 ## Raw API Safety
 
-Use `asc ads api request` for debugging, newly added Apple fields, or support
+Use `asc ads v5 api request` for debugging, newly added Apple fields, or support
 captures. Prefer first-class commands for routine work.
 
 Read-only raw request:
 
 ```bash  theme={null}
-asc ads api request \
+asc ads v5 api request \
   --method GET \
   --path v5/campaigns \
   --org "123456" \
@@ -227,7 +231,7 @@ asc ads api request \
 Selector request with a reviewed JSON file:
 
 ```bash  theme={null}
-asc ads api request \
+asc ads v5 api request \
   --method POST \
   --path v5/campaigns/find \
   --org "123456" \
@@ -244,9 +248,9 @@ the exact target path you intend to delete.
 Before running create, update, delete, or bulk commands:
 
 1. Run the matching `--help` command and confirm required flags.
-2. Resolve account and org access with `asc ads acls list --output json`.
+2. Resolve account and org access with `asc ads v5 acls list --output json`.
 3. Run a read-only resource check:
-   `asc ads campaigns list --org "123456" --limit 1 --output json`.
+   `asc ads v5 campaigns list --org "123456" --limit 1 --output json`.
 4. Pass `--ads-profile` and `--org` explicitly when more than one account or org is possible.
 5. Store request bodies in reviewed JSON files; avoid shell-escaped inline JSON.
 6. Create paused or clearly named test resources when validating workflow shape.
@@ -256,8 +260,8 @@ Before running create, update, delete, or bulk commands:
 Example guarded delete:
 
 ```bash  theme={null}
-asc ads campaigns view --org "123456" --campaign 987654321 --output json
-asc ads campaigns delete --org "123456" --campaign 987654321 --confirm
+asc ads v5 campaigns view --org "123456" --campaign 987654321 --output json
+asc ads v5 campaigns delete --org "123456" --campaign 987654321 --confirm
 ```
 
 ## Troubleshooting Auth and Source Precedence

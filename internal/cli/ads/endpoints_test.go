@@ -17,49 +17,58 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
 )
 
-func TestAdsCommandRegistersEveryEndpointSpec(t *testing.T) {
+func TestAdsV5CommandRegistersEveryLegacyEndpointSpec(t *testing.T) {
 	root := AdsCommand()
 	for _, spec := range appleads.EndpointSpecs() {
-		cmd := findCommand(root, spec.CommandPath...)
+		path := append([]string{"v5"}, spec.CommandPath...)
+		cmd := findCommand(root, path...)
 		if cmd == nil {
-			t.Fatalf("missing command asc ads %s", strings.Join(spec.CommandPath, " "))
+			t.Fatalf("missing command asc ads %s", strings.Join(path, " "))
 		}
 		if cmd.Exec == nil {
-			t.Fatalf("command asc ads %s has no Exec", strings.Join(spec.CommandPath, " "))
+			t.Fatalf("command asc ads %s has no Exec", strings.Join(path, " "))
 		}
 		assertSpecFlags(t, cmd, spec)
 
 		if spec.DefaultListAlias {
-			alias := findCommand(root, spec.CommandPath[0])
+			alias := findCommand(root, "v5", spec.CommandPath[0])
 			if alias == nil {
-				t.Fatalf("missing default list alias asc ads %s", spec.CommandPath[0])
+				t.Fatalf("missing default list alias asc ads v5 %s", spec.CommandPath[0])
 			}
 			if alias.Exec == nil {
-				t.Fatalf("default list alias asc ads %s has no Exec", spec.CommandPath[0])
+				t.Fatalf("default list alias asc ads v5 %s has no Exec", spec.CommandPath[0])
 			}
 			assertSpecFlags(t, alias, spec)
 		}
 	}
 }
 
-func TestPlatformCommandRegistersAccountAndAppEndpointSpecs(t *testing.T) {
+func TestAdsRootRegistersPlatformV1AsDefault(t *testing.T) {
 	root := AdsCommand()
+	if findCommand(root, "platform") != nil {
+		t.Fatal("nested Platform compatibility namespace must not exist before release")
+	}
 	for _, spec := range appleads.PlatformEndpointSpecs() {
-		path := append([]string{"platform"}, spec.CommandPath...)
-		cmd := findCommand(root, path...)
+		cmd := findCommand(root, spec.CommandPath...)
 		if cmd == nil || cmd.Exec == nil {
-			t.Fatalf("missing executable command asc ads %s", strings.Join(path, " "))
+			t.Fatalf("missing executable command asc ads %s", strings.Join(spec.CommandPath, " "))
 		}
 		assertSpecFlags(t, cmd, spec)
 		if spec.Context == appleads.ContextAdAccount && cmd.FlagSet.Lookup("ad-account") == nil {
-			t.Fatalf("asc ads %s missing --ad-account", strings.Join(path, " "))
+			t.Fatalf("asc ads %s missing --ad-account", strings.Join(spec.CommandPath, " "))
 		}
 		if cmd.FlagSet.Lookup("org") != nil {
-			t.Fatalf("asc ads %s must not expose legacy --org", strings.Join(path, " "))
+			t.Fatalf("asc ads %s must not expose legacy --org", strings.Join(spec.CommandPath, " "))
 		}
 		if (strings.Join(spec.CommandPath, " ") == "ad-accounts view" || strings.Join(spec.CommandPath, " ") == "ad-accounts update") && cmd.FlagSet.Lookup("id") != nil {
-			t.Fatalf("asc ads %s must use --ad-account for both the path and context", strings.Join(path, " "))
+			t.Fatalf("asc ads %s must use --ad-account for both the path and context", strings.Join(spec.CommandPath, " "))
 		}
+	}
+	if findCommand(root, "api", "request") == nil {
+		t.Fatal("missing root Platform v1 raw request command")
+	}
+	if findCommand(root, "v5", "api", "request") == nil {
+		t.Fatal("missing deprecated v5 raw request command")
 	}
 }
 
@@ -269,40 +278,40 @@ func TestPlatformCampaignPauseResumeWorkflowsUseStringIDsAndConfirm(t *testing.T
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
 	root := AdsCommand()
 	for _, name := range []string{"pause", "resume"} {
-		command := findCommand(root, "platform", "campaigns", name)
+		command := findCommand(root, "campaigns", name)
 		if command == nil || command.Exec == nil {
-			t.Fatalf("missing executable platform campaigns %s", name)
+			t.Fatalf("missing executable direct v1 campaigns %s", name)
 		}
 		if command.FlagSet.Lookup("ad-account") == nil || command.FlagSet.Lookup("org") != nil {
-			t.Fatalf("platform campaigns %s context flags are incorrect", name)
+			t.Fatalf("direct v1 campaigns %s context flags are incorrect", name)
 		}
 		if err := command.FlagSet.Set("campaign", "campaign_external_01"); err != nil {
 			t.Fatal(err)
 		}
 		err := command.Exec(context.Background(), nil)
 		if !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), "--confirm is required") {
-			t.Fatalf("platform campaigns %s unconfirmed error = %v", name, err)
+			t.Fatalf("direct v1 campaigns %s unconfirmed error = %v", name, err)
 		}
 		if !strings.Contains(command.LongHelp, `{"status":"`) || !strings.Contains(command.LongHelp, "PUT v1/campaigns/{id}") {
-			t.Fatalf("platform campaigns %s help must document its direct v1 status payload: %q", name, command.LongHelp)
+			t.Fatalf("direct v1 campaigns %s help must document its status payload: %q", name, command.LongHelp)
 		}
 	}
 }
 
 func TestAdsCampaignsHelpReadsAsManagementSurface(t *testing.T) {
 	root := AdsCommand()
-	campaigns := findCommand(root, "campaigns")
+	campaigns := findCommand(root, "v5", "campaigns")
 	if campaigns == nil {
 		t.Fatal("missing campaigns command")
 	}
-	if !strings.HasPrefix(campaigns.ShortHelp, "DEPRECATED:") || !strings.Contains(campaigns.ShortHelp, "platform campaigns find") {
+	if !strings.HasPrefix(campaigns.ShortHelp, "DEPRECATED:") || !strings.Contains(campaigns.ShortHelp, "asc ads campaigns find") {
 		t.Fatalf("campaigns ShortHelp = %q, want deprecated management surface", campaigns.ShortHelp)
 	}
 	if campaigns.FlagSet.Lookup("campaign") != nil {
 		t.Fatal("campaigns list alias should not expose workflow-only --campaign flag")
 	}
 
-	resume := findCommand(root, "campaigns", "resume")
+	resume := findCommand(root, "v5", "campaigns", "resume")
 	if resume == nil {
 		t.Fatal("missing campaigns resume command")
 	}
@@ -320,7 +329,7 @@ func TestAdsCampaignsHelpReadsAsManagementSurface(t *testing.T) {
 
 func TestAdsCampaignUpdateHelpDocumentsRequiredEnvelope(t *testing.T) {
 	root := AdsCommand()
-	update := findCommand(root, "campaigns", "update")
+	update := findCommand(root, "v5", "campaigns", "update")
 	if update == nil {
 		t.Fatal("missing campaigns update command")
 	}
@@ -337,9 +346,9 @@ func TestAdsCampaignUpdateHelpDocumentsRequiredEnvelope(t *testing.T) {
 
 func TestPlatformConditionalConfirmationAppearsOnceInHelp(t *testing.T) {
 	root := AdsCommand()
-	update := findCommand(root, "platform", "ad-accounts", "update")
+	update := findCommand(root, "ad-accounts", "update")
 	if update == nil {
-		t.Fatal("missing platform ad-account update command")
+		t.Fatal("missing direct v1 ad-account update command")
 	}
 
 	if got := strings.Count(update.LongHelp, "--confirm"); got != 1 {
@@ -788,8 +797,17 @@ func TestEndpointHelpUsesOperatorFriendlyAuthDiscoveryNames(t *testing.T) {
 		if cmd == nil {
 			t.Fatalf("missing command asc ads %s", strings.Join(test.path, " "))
 		}
-		if !strings.HasPrefix(cmd.ShortHelp, "DEPRECATED:") || !strings.Contains(cmd.LongHelp, test.want) {
-			t.Fatalf("asc ads %s help mismatch: ShortHelp = %q, want DEPRECATED prefix; LongHelp = %q, want content %q", strings.Join(test.path, " "), cmd.ShortHelp, cmd.LongHelp, test.want)
+		if cmd.ShortHelp != test.want || !strings.Contains(cmd.LongHelp, test.want) {
+			t.Fatalf("asc ads %s help mismatch: ShortHelp = %q; LongHelp = %q, want content %q", strings.Join(test.path, " "), cmd.ShortHelp, cmd.LongHelp, test.want)
+		}
+
+		legacyPath := append([]string{"v5"}, test.path...)
+		legacy := findCommand(root, legacyPath...)
+		if legacy == nil {
+			t.Fatalf("missing command asc ads %s", strings.Join(legacyPath, " "))
+		}
+		if !strings.HasPrefix(legacy.ShortHelp, "DEPRECATED:") || !strings.Contains(legacy.LongHelp, test.want) {
+			t.Fatalf("asc ads %s help mismatch: ShortHelp = %q, want DEPRECATED prefix; LongHelp = %q, want content %q", strings.Join(legacyPath, " "), legacy.ShortHelp, legacy.LongHelp, test.want)
 		}
 	}
 }
@@ -800,9 +818,9 @@ func TestPlatformOptimizationHelpUsesOperatorFriendlyVerbs(t *testing.T) {
 		path []string
 		want string
 	}{
-		{path: []string{"platform", "recommendations", "target-cpas", "apply"}, want: "Apply target cpa recommendations."},
-		{path: []string{"platform", "recommendations", "daily-budgets", "dismiss"}, want: "Dismiss daily budget recommendations."},
-		{path: []string{"platform", "suggestions", "keywords", "find"}, want: "Find keyword suggestions."},
+		{path: []string{"recommendations", "target-cpas", "apply"}, want: "Apply target cpa recommendations."},
+		{path: []string{"recommendations", "daily-budgets", "dismiss"}, want: "Dismiss daily budget recommendations."},
+		{path: []string{"suggestions", "keywords", "find"}, want: "Find keyword suggestions."},
 	}
 	for _, test := range tests {
 		cmd := findCommand(root, test.path...)

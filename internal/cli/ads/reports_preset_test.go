@@ -9,13 +9,13 @@ import (
 
 func TestReportsPresetDeprecationWarningMatchesSelectedLevel(t *testing.T) {
 	tests := map[string]string{
-		"campaigns":             "platform reports apps campaigns",
-		"ad-groups":             "platform reports apps ad-groups",
-		"keywords":              "platform reports apps keywords",
-		"search-terms":          "platform reports apps search-terms",
-		"ads":                   "platform reports apps ads",
-		"ad-group-keywords":     "platform reports apps keywords",
-		"ad-group-search-terms": "platform reports apps search-terms",
+		"campaigns":             "reports apps campaigns",
+		"ad-groups":             "reports apps ad-groups",
+		"keywords":              "reports apps keywords",
+		"search-terms":          "reports apps search-terms",
+		"ads":                   "reports apps ads",
+		"ad-group-keywords":     "reports apps keywords",
+		"ad-group-search-terms": "reports apps search-terms",
 	}
 	for level, replacement := range tests {
 		t.Run(level, func(t *testing.T) {
@@ -26,7 +26,7 @@ func TestReportsPresetDeprecationWarningMatchesSelectedLevel(t *testing.T) {
 			_, stderr := captureAdsDeprecationStreams(t, func() {
 				_ = command.Exec(context.Background(), nil)
 			})
-			want := "Warning: `asc ads reports preset` is deprecated and retires on January 26, 2027. Use `asc ads " + replacement + "`.\n"
+			want := "Warning: `asc ads v5 reports preset` is deprecated and retires on January 26, 2027. Use `asc ads " + replacement + "`.\n"
 			if !strings.HasPrefix(stderr, want) {
 				t.Fatalf("stderr = %q, want warning prefix %q", stderr, want)
 			}
@@ -61,8 +61,8 @@ func TestReportsPresetCommandHelpShowsOperatorGuidance(t *testing.T) {
 		"campaign, ad-group, and keyword report levels",
 		"Search-term report levels cannot",
 		"request row totals",
-		"asc ads reports preset --level campaigns --from 2026-05-01 --to 2026-05-31 --fields campaignName,impressions,taps,localSpend --sort -impressions",
-		"asc ads reports preset --level ads --campaign 12345 --from 2026-05-01 --to 2026-05-31 --sort -impressions",
+		"asc ads v5 reports preset --level campaigns --from 2026-05-01 --to 2026-05-31 --fields campaignName,impressions,taps,localSpend --sort -impressions",
+		"asc ads v5 reports preset --level ads --campaign 12345 --from 2026-05-01 --to 2026-05-31 --sort -impressions",
 	} {
 		if !strings.Contains(cmd.LongHelp, want) {
 			t.Fatalf("LongHelp missing %q\n%s", want, cmd.LongHelp)

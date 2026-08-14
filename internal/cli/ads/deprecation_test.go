@@ -61,7 +61,7 @@ func TestAdsLegacyMigrationLedgerMatchesAllV5EndpointSpecs(t *testing.T) {
 }
 
 func TestAdsLegacyCommandWarningIsEmittedOnceBeforeExistingExecution(t *testing.T) {
-	command := findCommand(AdsCommand(), "campaigns")
+	command := findCommand(AdsCommand(), "v5", "campaigns")
 	if command == nil || command.Exec == nil {
 		t.Fatal("missing campaigns legacy alias")
 	}
@@ -74,7 +74,7 @@ func TestAdsLegacyCommandWarningIsEmittedOnceBeforeExistingExecution(t *testing.
 	if stdout != "" {
 		t.Fatalf("campaigns alias stdout = %q, want empty output", stdout)
 	}
-	want := "Warning: `asc ads campaigns` is deprecated and retires on January 26, 2027. Use `asc ads platform campaigns find`.\n"
+	want := "Warning: `asc ads v5 campaigns` is deprecated and retires on January 26, 2027. Use `asc ads campaigns find`.\n"
 	if stderr != want {
 		t.Fatalf("campaigns alias warning = %q, want %q", stderr, want)
 	}
@@ -85,7 +85,7 @@ func TestAdsLegacyCommandWarningIsEmittedOnceBeforeExistingExecution(t *testing.
 
 func TestAdsLegacyWarningsDoNotWrapPlatformOrAuthGroups(t *testing.T) {
 	root := AdsCommand()
-	for _, path := range [][]string{{"auth", "discover"}, {"platform", "campaigns", "find"}, {"platform", "api", "request"}} {
+	for _, path := range [][]string{{"auth", "discover"}, {"campaigns", "find"}, {"api", "request"}} {
 		command := findCommand(root, path...)
 		if command == nil {
 			t.Fatalf("missing command asc ads %s", strings.Join(path, " "))
@@ -108,8 +108,8 @@ func TestAdsLegacyCommandInventoryIncludesEndpointLeavesAliasesAndWorkflows(t *t
 		}
 	}
 	visit(AdsCommand())
-	if got, want := count, 89; got != want {
-		t.Fatalf("deprecated Apple Ads command count = %d, want %d (73 endpoints + 12 aliases + 4 workflows)", got, want)
+	if got, want := count, 90; got != want {
+		t.Fatalf("deprecated Apple Ads command count = %d, want %d (73 endpoints + 12 aliases + 4 workflows + v5 group)", got, want)
 	}
 }
 

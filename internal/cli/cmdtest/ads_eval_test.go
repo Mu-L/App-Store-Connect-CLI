@@ -85,12 +85,12 @@ func TestAdsAgentReadOnlyEvalWorkflow(t *testing.T) {
 		args    []string
 		warning string
 	}{
-		{args: []string{"ads", "me", "--output", "json"}, warning: adsV5ReplacementWarning("me", "platform me view")},
-		{args: []string{"ads", "me", "view", "--output", "json"}, warning: adsV5ReplacementWarning("me view", "platform me view")},
-		{args: []string{"ads", "acls", "--output", "json"}, warning: adsV5ReplacementWarning("acls", "platform acls list")},
-		{args: []string{"ads", "campaigns", "--limit", "1", "--output", "json"}, warning: adsV5ReplacementWarning("campaigns", "platform campaigns find")},
-		{args: []string{"ads", "reports", "campaigns", "--file", reportPayload, "--output", "json"}, warning: adsV5ReplacementWarning("reports campaigns", "platform reports apps campaigns")},
-		{args: []string{"ads", "api", "request", "--method", "GET", "--path", "v5/me", "--output", "json"}, warning: adsV5ReplacementWarning("api request", "platform api request")},
+		{args: []string{"ads", "v5", "me", "--output", "json"}, warning: adsV5ReplacementWarning("v5 me", "me view")},
+		{args: []string{"ads", "v5", "me", "view", "--output", "json"}, warning: adsV5ReplacementWarning("v5 me view", "me view")},
+		{args: []string{"ads", "v5", "acls", "--output", "json"}, warning: adsV5ReplacementWarning("v5 acls", "acls list")},
+		{args: []string{"ads", "v5", "campaigns", "--limit", "1", "--output", "json"}, warning: adsV5ReplacementWarning("v5 campaigns", "campaigns find")},
+		{args: []string{"ads", "v5", "reports", "campaigns", "--file", reportPayload, "--output", "json"}, warning: adsV5ReplacementWarning("v5 reports campaigns", "reports apps campaigns")},
+		{args: []string{"ads", "v5", "api", "request", "--method", "GET", "--path", "v5/me", "--output", "json"}, warning: adsV5ReplacementWarning("v5 api request", "api request")},
 	} {
 		stdout, stderr, err := runAdsEvalCommand(t, tc.args...)
 		if err != nil {
@@ -209,8 +209,8 @@ func TestAdsPlatformAdAccountViewUsesOneValueForPathAndContext(t *testing.T) {
 	}))
 
 	for _, args := range [][]string{
-		{"ads", "platform", "ad-accounts", "view", "--output", "json"},
-		{"ads", "platform", "ad-accounts", "view", "--ad-account", "456", "--output", "json"},
+		{"ads", "ad-accounts", "view", "--output", "json"},
+		{"ads", "ad-accounts", "view", "--ad-account", "456", "--output", "json"},
 	} {
 		stdout, stderr, err := runAdsEvalCommand(t, args...)
 		if err != nil || stderr != "" || !json.Valid([]byte(stdout)) {
@@ -509,7 +509,7 @@ func TestAdsCampaignUpdateSendsRequiredEnvelope(t *testing.T) {
 
 	stdout, stderr, err := runAdsEvalCommand(
 		t,
-		"ads", "campaigns", "update",
+		"ads", "v5", "campaigns", "update",
 		"--campaign", "1001",
 		"--file", campaignUpdate,
 		"--output", "json",
@@ -517,7 +517,7 @@ func TestAdsCampaignUpdateSendsRequiredEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("campaign update error: %v\nstderr: %s", err, stderr)
 	}
-	if got, want := stderr, adsV5ReplacementWarning("campaigns update", "platform campaigns update"); got != want {
+	if got, want := stderr, adsV5ReplacementWarning("v5 campaigns update", "campaigns update"); got != want {
 		t.Fatalf("campaign update stderr = %q, want %q", got, want)
 	}
 	if got := requests.Snapshot(); len(got) != 1 || got[0] != "PUT /api/v5/campaigns/1001" {
@@ -578,11 +578,11 @@ func TestAdsAgentMutationEvalWorkflow(t *testing.T) {
 		args    []string
 		warning string
 	}{
-		{args: []string{"ads", "campaigns", "create", "--file", campaignCreate, "--output", "json"}, warning: adsV5ReplacementWarning("campaigns create", "platform campaigns create")},
-		{args: []string{"ads", "campaigns", "update", "--campaign", "1001", "--file", campaignUpdate, "--output", "json"}, warning: adsV5ReplacementWarning("campaigns update", "platform campaigns update")},
-		{args: []string{"ads", "targeting-keywords", "create-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywords, "--output", "json"}, warning: adsV5ReplacementWarning("targeting-keywords create-bulk", "platform targeting-keywords create-bulk")},
-		{args: []string{"ads", "targeting-keywords", "delete-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywordIDs, "--confirm", "--output", "json"}, warning: adsV5NoReplacementWarning("targeting-keywords delete-bulk", "No one-command replacement exists. Query matching keywords with `asc ads platform targeting-keywords find`, then delete each ID with `asc ads platform targeting-keywords delete --confirm`.")},
-		{args: []string{"ads", "campaigns", "delete", "--campaign", "1001", "--confirm", "--output", "json"}, warning: adsV5ReplacementWarning("campaigns delete", "platform campaigns delete")},
+		{args: []string{"ads", "v5", "campaigns", "create", "--file", campaignCreate, "--output", "json"}, warning: adsV5ReplacementWarning("v5 campaigns create", "campaigns create")},
+		{args: []string{"ads", "v5", "campaigns", "update", "--campaign", "1001", "--file", campaignUpdate, "--output", "json"}, warning: adsV5ReplacementWarning("v5 campaigns update", "campaigns update")},
+		{args: []string{"ads", "v5", "targeting-keywords", "create-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywords, "--output", "json"}, warning: adsV5ReplacementWarning("v5 targeting-keywords create-bulk", "targeting-keywords create-bulk")},
+		{args: []string{"ads", "v5", "targeting-keywords", "delete-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywordIDs, "--confirm", "--output", "json"}, warning: adsV5NoReplacementWarning("v5 targeting-keywords delete-bulk", "No one-command replacement exists. Query matching keywords with `asc ads targeting-keywords find`, then delete each ID with `asc ads targeting-keywords delete --confirm`.")},
+		{args: []string{"ads", "v5", "campaigns", "delete", "--campaign", "1001", "--confirm", "--output", "json"}, warning: adsV5ReplacementWarning("v5 campaigns delete", "campaigns delete")},
 	} {
 		stdout, stderr, err := runAdsEvalCommand(t, tc.args...)
 		if err != nil {
@@ -623,7 +623,7 @@ func TestAdsAgentEvalRejectsArrayPayloadMistakesBeforeNetwork(t *testing.T) {
 	objectPayload := writeAdsEvalPayload(t, "keyword-object.json", `{"text":"not an array"}`)
 	_, _, err := runAdsEvalCommand(
 		t,
-		"ads", "targeting-keywords", "create-bulk",
+		"ads", "v5", "targeting-keywords", "create-bulk",
 		"--campaign", "1001",
 		"--ad-group", "2002",
 		"--file", objectPayload,
@@ -653,11 +653,11 @@ func TestAdsAgentRawAPIEvalRequiresConfirmAndAcceptsAppleURL(t *testing.T) {
 		assertAdsEvalNoBody(t, req)
 		return adsJSONResponse(204, ``), nil
 	}))
-	warning := adsV5ReplacementWarning("api request", "platform api request")
+	warning := adsV5ReplacementWarning("v5 api request", "api request")
 
 	_, stderr, err := runAdsEvalCommand(
 		t,
-		"ads", "api", "request",
+		"ads", "v5", "api", "request",
 		"--method", "DELETE",
 		"--path", "https://api.searchads.apple.com/api/v5/campaigns/1001?audit=true",
 		"--output", "json",
@@ -674,7 +674,7 @@ func TestAdsAgentRawAPIEvalRequiresConfirmAndAcceptsAppleURL(t *testing.T) {
 
 	stdout, stderr, err := runAdsEvalCommand(
 		t,
-		"ads", "api", "request",
+		"ads", "v5", "api", "request",
 		"--method", "DELETE",
 		"--path", "https://api.searchads.apple.com/api/v5/campaigns/1001?audit=true",
 		"--confirm",
