@@ -238,9 +238,6 @@ func verifySigningLocalInputs(plan signingReconcilePlanArtifact) (signingDevices
 	if err != nil {
 		return signingDevicesFile{}, fmt.Errorf("invalid devices file: %s", invalidDevicesFileDiagnostic(err))
 	}
-	if err := requireSigningReconcilePlatform(); err != nil {
-		return signingDevicesFile{}, err
-	}
 	archive, err := readSigningArchiveRequirements(plan.Paths.ArchivePath)
 	if err != nil {
 		return signingDevicesFile{}, fmt.Errorf("inspect archive: %w", sanitizeReconcileError(err, devices))

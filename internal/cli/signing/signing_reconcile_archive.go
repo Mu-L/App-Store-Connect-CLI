@@ -23,6 +23,9 @@ type signingArchiveRequirements struct {
 var readSigningArchiveRequirements = inspectSigningArchive
 
 func inspectSigningArchive(archivePath string) (signingArchiveRequirements, error) {
+	if err := requireSigningReconcilePlatform(); err != nil {
+		return signingArchiveRequirements{}, err
+	}
 	archivePath = filepath.Clean(strings.TrimSpace(archivePath))
 	info, err := os.Lstat(archivePath)
 	if err != nil {
