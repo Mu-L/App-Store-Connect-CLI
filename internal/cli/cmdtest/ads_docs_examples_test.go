@@ -72,6 +72,21 @@ func TestAdsGuideExamplesDispatchRepresentativeCommands(t *testing.T) {
 		}
 	}))
 
+	expectedWarnings := map[string]string{
+		`asc ads campaigns --limit 10 --output json`:                                      adsV5ReplacementWarning("campaigns", "platform campaigns find"),
+		`asc ads acls --output json`:                                                      adsV5ReplacementWarning("acls", "platform acls list"),
+		`asc ads campaigns list --org "123456" --output json`:                             adsV5ReplacementWarning("campaigns list", "platform campaigns find"),
+		`asc ads me view`:                                                                 adsV5ReplacementWarning("me view", "platform me view"),
+		`asc ads campaigns delete --org "123456" --campaign 987654321 --confirm`:          adsV5ReplacementWarning("campaigns delete", "platform campaigns delete"),
+		`asc ads apps search --org "123456" --query "My App" --limit 10 --output json`:    adsV5ReplacementWarning("apps search", "platform apps search"),
+		`asc ads product-pages list --org "123456" --adam-id 1234567890 --states VISIBLE`: adsV5ReplacementWarning("product-pages list", "platform product-pages find"),
+		`asc ads targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json`:              adsV5ReplacementWarning("targeting-keywords create-bulk", "platform targeting-keywords create-bulk"),
+		`asc ads targeting-keywords delete-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keyword-ids.json --confirm`: adsV5NoReplacementWarning("targeting-keywords delete-bulk", "No one-command replacement exists. Query matching keywords with `asc ads platform targeting-keywords find`, then delete each ID with `asc ads platform targeting-keywords delete --confirm`."),
+		`asc ads reports campaigns --org "123456" --file reporting-request.json --output json`:                                              adsV5ReplacementWarning("reports campaigns", "platform reports apps campaigns"),
+		`asc ads impression-share-reports --org "123456" --limit 50 --output json`:                                                          adsV5NoReplacementWarning("impression-share-reports", "No one-command replacement exists. Use `asc ads platform insights impression-share find` with an equivalent query payload."),
+		`asc ads api request --method POST --path v5/campaigns/find --org "123456" --file selector.json --output json`:                      adsV5ReplacementWarning("api request", "platform api request"),
+	}
+
 	for _, commandLine := range []string{
 		`asc ads auth login --name "Marketing" --client-id "SEARCHADS_CLIENT_ID" --team-id "SEARCHADS_TEAM_ID" --key-id "KEY_ID" --private-key ./apple-ads-private-key.pem --org "123456"`,
 		"asc ads auth status --validate",
@@ -96,8 +111,8 @@ func TestAdsGuideExamplesDispatchRepresentativeCommands(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run %q: %v\nstderr: %s", commandLine, err, stderr)
 			}
-			if stderr != "" {
-				t.Fatalf("stderr = %q, want empty", stderr)
+			if got, want := stderr, expectedWarnings[commandLine]; got != want {
+				t.Fatalf("stderr = %q, want %q", got, want)
 			}
 			if strings.Contains(commandLine, "--output json") || strings.Contains(commandLine, " auth token ") {
 				var parsed any

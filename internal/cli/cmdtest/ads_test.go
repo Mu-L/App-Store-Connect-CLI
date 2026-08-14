@@ -56,8 +56,8 @@ func TestAdsCampaignsAliasPaginatesWithOrgContext(t *testing.T) {
 			t.Fatalf("run error: %v", err)
 		}
 	})
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty", stderr)
+	if got, want := stderr, adsV5ReplacementWarning("campaigns", "platform campaigns find"); got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 	var parsed struct {
 		Data []map[string]int `json:"data"`
@@ -154,8 +154,8 @@ func TestAdsReportsPresetBuildsCampaignRequest(t *testing.T) {
 			t.Fatalf("run error: %v", err)
 		}
 	})
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty", stderr)
+	if got, want := stderr, adsV5ReplacementWarning("reports preset", "platform reports apps campaigns"); got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
@@ -204,8 +204,8 @@ func TestAdsReportsPresetBuildsScopedKeywordRequest(t *testing.T) {
 			t.Fatalf("run error: %v", err)
 		}
 	})
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty", stderr)
+	if got, want := stderr, adsV5ReplacementWarning("reports preset", "platform reports apps campaigns"); got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
@@ -258,8 +258,8 @@ func TestAdsReportsPresetBuildsAdLevelRequestWithSort(t *testing.T) {
 			t.Fatalf("run error: %v", err)
 		}
 	})
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty", stderr)
+	if got, want := stderr, adsV5ReplacementWarning("reports preset", "platform reports apps campaigns"); got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
@@ -499,8 +499,9 @@ func TestAdsCampaignPauseAndResumeUseCuratedStatusPayloads(t *testing.T) {
 				t.Fatalf("run %s: %v", strings.Join(args, " "), err)
 			}
 		})
-		if stderr != "" {
-			t.Fatalf("stderr = %q, want empty", stderr)
+		wantWarning := adsV5ReplacementWarning("campaigns "+args[2], "platform campaigns "+args[2])
+		if got, want := stderr, wantWarning; got != want {
+			t.Fatalf("stderr = %q, want %q", got, want)
 		}
 		var parsed struct {
 			Data struct {
@@ -545,8 +546,8 @@ func TestAdsCampaignPauseHonorsParentFlagsBeforeWorkflowSubcommand(t *testing.T)
 			t.Fatalf("run error: %v", err)
 		}
 	})
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty", stderr)
+	if got, want := stderr, adsV5ReplacementWarning("campaigns pause", "platform campaigns pause"); got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 	if !strings.Contains(stdout, `"status":"PAUSED"`) {
 		t.Fatalf("stdout = %q, want paused response", stdout)
@@ -627,8 +628,8 @@ func TestAdsCampaignResumeReportsCommandNameOnAuthFailure(t *testing.T) {
 	if runErr == nil || !strings.Contains(runErr.Error(), "ads campaigns resume:") {
 		t.Fatalf("run error = %v, want resume command name", runErr)
 	}
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty", stderr)
+	if got, want := stderr, adsV5ReplacementWarning("campaigns resume", "platform campaigns resume"); got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 }
 

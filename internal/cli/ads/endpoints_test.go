@@ -258,8 +258,8 @@ func TestAdsCampaignsHelpReadsAsManagementSurface(t *testing.T) {
 	if campaigns == nil {
 		t.Fatal("missing campaigns command")
 	}
-	if campaigns.ShortHelp != "Manage Apple Ads campaigns." {
-		t.Fatalf("campaigns ShortHelp = %q, want management surface", campaigns.ShortHelp)
+	if !strings.HasPrefix(campaigns.ShortHelp, "DEPRECATED:") || !strings.Contains(campaigns.ShortHelp, "platform campaigns find") {
+		t.Fatalf("campaigns ShortHelp = %q, want deprecated management surface", campaigns.ShortHelp)
 	}
 	if campaigns.FlagSet.Lookup("campaign") != nil {
 		t.Fatal("campaigns list alias should not expose workflow-only --campaign flag")
@@ -703,7 +703,7 @@ func TestEndpointHelpUsesOperatorFriendlyAuthDiscoveryNames(t *testing.T) {
 		if cmd == nil {
 			t.Fatalf("missing command asc ads %s", strings.Join(test.path, " "))
 		}
-		if cmd.ShortHelp != test.want {
+		if !strings.HasPrefix(cmd.ShortHelp, "DEPRECATED:") || !strings.Contains(cmd.LongHelp, test.want) {
 			t.Fatalf("asc ads %s ShortHelp = %q, want %q", strings.Join(test.path, " "), cmd.ShortHelp, test.want)
 		}
 	}

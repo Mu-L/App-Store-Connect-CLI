@@ -126,6 +126,9 @@ func buildNodeCommand(node *commandNode, parentPath, commandPrefix []string) *ff
 			}
 			return executeEndpoint(ctx, spec, flags)
 		}
+		if migration, ok := adsLegacyMigrationForSpec(spec); ok {
+			command = markAdsLegacyCommandDeprecated(command, displayPath, migration)
+		}
 	}
 	return command
 }
@@ -239,7 +242,7 @@ func sentenceFromEndpointName(name string) string {
 		{"gets a ", "View a "},
 		{"search for ", "Search for "},
 		{"search ", "Search "},
-		{"query ", "Find "},
+		{"query ", "Query "},
 		{"find ", "Find "},
 		{"create a ", "Create a "},
 		{"create an ", "Create an "},
@@ -252,7 +255,6 @@ func sentenceFromEndpointName(name string) string {
 		{"delete ", "Delete "},
 		{"apply ", "Apply "},
 		{"dismiss ", "Dismiss "},
-		{"query ", "Query "},
 		{"impression share report", "Create impression share report"},
 	}
 	for _, replacement := range replacements {

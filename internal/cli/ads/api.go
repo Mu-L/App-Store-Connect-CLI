@@ -48,7 +48,7 @@ func APIRequestCommand() *ffcli.Command {
 		Org:        fs.String("org", "", "Apple Ads organization ID (or ASC_ADS_ORG_ID env)"),
 	}
 	output := shared.BindOutputFlags(fs)
-	return &ffcli.Command{
+	command := &ffcli.Command{
 		Name:       "request",
 		ShortUsage: "asc ads api request --method METHOD --path v5/... [flags]",
 		ShortHelp:  "Make a raw Apple Ads API request.",
@@ -101,6 +101,10 @@ Examples:
 			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
 		},
 	}
+	return markAdsLegacyCommandDeprecated(command, []string{"api", "request"}, adsLegacyMigration{
+		kind:        adsLegacyBreaking,
+		replacement: []string{"platform", "api", "request"},
+	})
 }
 
 func rawRequestRequiresOrg(pathValue string) (bool, error) {

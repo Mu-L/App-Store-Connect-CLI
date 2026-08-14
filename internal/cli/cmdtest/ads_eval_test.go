@@ -81,24 +81,27 @@ func TestAdsAgentReadOnlyEvalWorkflow(t *testing.T) {
 		}
 	}))
 
-	for _, args := range [][]string{
-		{"ads", "me", "--output", "json"},
-		{"ads", "me", "view", "--output", "json"},
-		{"ads", "acls", "--output", "json"},
-		{"ads", "campaigns", "--limit", "1", "--output", "json"},
-		{"ads", "reports", "campaigns", "--file", reportPayload, "--output", "json"},
-		{"ads", "api", "request", "--method", "GET", "--path", "v5/me", "--output", "json"},
+	for _, tc := range []struct {
+		args    []string
+		warning string
+	}{
+		{args: []string{"ads", "me", "--output", "json"}, warning: adsV5ReplacementWarning("me", "platform me view")},
+		{args: []string{"ads", "me", "view", "--output", "json"}, warning: adsV5ReplacementWarning("me view", "platform me view")},
+		{args: []string{"ads", "acls", "--output", "json"}, warning: adsV5ReplacementWarning("acls", "platform acls list")},
+		{args: []string{"ads", "campaigns", "--limit", "1", "--output", "json"}, warning: adsV5ReplacementWarning("campaigns", "platform campaigns find")},
+		{args: []string{"ads", "reports", "campaigns", "--file", reportPayload, "--output", "json"}, warning: adsV5ReplacementWarning("reports campaigns", "platform reports apps campaigns")},
+		{args: []string{"ads", "api", "request", "--method", "GET", "--path", "v5/me", "--output", "json"}, warning: adsV5ReplacementWarning("api request", "platform api request")},
 	} {
-		stdout, stderr, err := runAdsEvalCommand(t, args...)
+		stdout, stderr, err := runAdsEvalCommand(t, tc.args...)
 		if err != nil {
-			t.Fatalf("asc %s error: %v\nstderr: %s", strings.Join(args, " "), err, stderr)
+			t.Fatalf("asc %s error: %v\nstderr: %s", strings.Join(tc.args, " "), err, stderr)
 		}
-		if stderr != "" {
-			t.Fatalf("asc %s stderr = %q, want empty", strings.Join(args, " "), stderr)
+		if stderr != tc.warning {
+			t.Fatalf("asc %s stderr = %q, want %q", strings.Join(tc.args, " "), stderr, tc.warning)
 		}
 		var parsed map[string]any
 		if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
-			t.Fatalf("asc %s stdout is not JSON: %v\n%s", strings.Join(args, " "), err, stdout)
+			t.Fatalf("asc %s stdout is not JSON: %v\n%s", strings.Join(tc.args, " "), err, stdout)
 		}
 	}
 
@@ -480,8 +483,8 @@ func TestAdsCampaignUpdateSendsRequiredEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("campaign update error: %v\nstderr: %s", err, stderr)
 	}
-	if stderr != "" {
-		t.Fatalf("campaign update stderr = %q, want empty", stderr)
+	if got, want := stderr, adsV5ReplacementWarning("campaigns update", "platform campaigns update"); got != want {
+		t.Fatalf("campaign update stderr = %q, want %q", got, want)
 	}
 	if got := requests.Snapshot(); len(got) != 1 || got[0] != "PUT /api/v5/campaigns/1001" {
 		t.Fatalf("requests = %q, want one campaign update", got)
@@ -537,23 +540,26 @@ func TestAdsAgentMutationEvalWorkflow(t *testing.T) {
 		}
 	}))
 
-	for _, args := range [][]string{
-		{"ads", "campaigns", "create", "--file", campaignCreate, "--output", "json"},
-		{"ads", "campaigns", "update", "--campaign", "1001", "--file", campaignUpdate, "--output", "json"},
-		{"ads", "targeting-keywords", "create-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywords, "--output", "json"},
-		{"ads", "targeting-keywords", "delete-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywordIDs, "--confirm", "--output", "json"},
-		{"ads", "campaigns", "delete", "--campaign", "1001", "--confirm", "--output", "json"},
+	for _, tc := range []struct {
+		args    []string
+		warning string
+	}{
+		{args: []string{"ads", "campaigns", "create", "--file", campaignCreate, "--output", "json"}, warning: adsV5ReplacementWarning("campaigns create", "platform campaigns create")},
+		{args: []string{"ads", "campaigns", "update", "--campaign", "1001", "--file", campaignUpdate, "--output", "json"}, warning: adsV5ReplacementWarning("campaigns update", "platform campaigns update")},
+		{args: []string{"ads", "targeting-keywords", "create-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywords, "--output", "json"}, warning: adsV5ReplacementWarning("targeting-keywords create-bulk", "platform targeting-keywords create-bulk")},
+		{args: []string{"ads", "targeting-keywords", "delete-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywordIDs, "--confirm", "--output", "json"}, warning: adsV5NoReplacementWarning("targeting-keywords delete-bulk", "No one-command replacement exists. Query matching keywords with `asc ads platform targeting-keywords find`, then delete each ID with `asc ads platform targeting-keywords delete --confirm`.")},
+		{args: []string{"ads", "campaigns", "delete", "--campaign", "1001", "--confirm", "--output", "json"}, warning: adsV5ReplacementWarning("campaigns delete", "platform campaigns delete")},
 	} {
-		stdout, stderr, err := runAdsEvalCommand(t, args...)
+		stdout, stderr, err := runAdsEvalCommand(t, tc.args...)
 		if err != nil {
-			t.Fatalf("asc %s error: %v\nstderr: %s", strings.Join(args, " "), err, stderr)
+			t.Fatalf("asc %s error: %v\nstderr: %s", strings.Join(tc.args, " "), err, stderr)
 		}
-		if stderr != "" {
-			t.Fatalf("asc %s stderr = %q, want empty", strings.Join(args, " "), stderr)
+		if stderr != tc.warning {
+			t.Fatalf("asc %s stderr = %q, want %q", strings.Join(tc.args, " "), stderr, tc.warning)
 		}
 		var parsed map[string]any
 		if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
-			t.Fatalf("asc %s stdout is not JSON: %v\n%s", strings.Join(args, " "), err, stdout)
+			t.Fatalf("asc %s stdout is not JSON: %v\n%s", strings.Join(tc.args, " "), err, stdout)
 		}
 	}
 
@@ -613,6 +619,7 @@ func TestAdsAgentRawAPIEvalRequiresConfirmAndAcceptsAppleURL(t *testing.T) {
 		assertAdsEvalNoBody(t, req)
 		return adsJSONResponse(204, ``), nil
 	}))
+	warning := adsV5ReplacementWarning("api request", "platform api request")
 
 	_, stderr, err := runAdsEvalCommand(
 		t,
@@ -623,6 +630,9 @@ func TestAdsAgentRawAPIEvalRequiresConfirmAndAcceptsAppleURL(t *testing.T) {
 	)
 	if !errors.Is(err, flag.ErrHelp) || !strings.Contains(stderr, "--confirm is required") {
 		t.Fatalf("error = %v stderr = %q, want confirm usage error", err, stderr)
+	}
+	if got := strings.Count(stderr, warning); got != 1 {
+		t.Fatalf("stderr = %q, want exactly one %q warning", stderr, warning)
 	}
 	if got := len(log.Snapshot()); got != 0 {
 		t.Fatalf("requests before confirm = %d, want 0", got)
@@ -639,8 +649,8 @@ func TestAdsAgentRawAPIEvalRequiresConfirmAndAcceptsAppleURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("confirmed raw delete error: %v\nstderr: %s", err, stderr)
 	}
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty", stderr)
+	if got, want := stderr, warning; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 	var parsed struct {
 		Data any `json:"data"`

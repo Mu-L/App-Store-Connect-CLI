@@ -58,6 +58,24 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - App Store Connect exposes a group's challenge relationships as read-only. `asc game-center groups challenges set` remains registered during a deprecation window and returns migration guidance without making an HTTP request; create a group-owned challenge with `asc game-center challenges create --group-id` instead.
 - `asc game-center details list` is backed by the app's single Game Center detail. Its legacy `--limit`, `--next`, and `--paginate` flags remain registered during a deprecation window but return precise guidance to omit the unsupported flag.
 
+## Apple Ads Platform API v1
+
+- Platform API v1 uses `https://api.ads.apple.com/v1/` and sends
+  `X-AP-Context: adAccountId=<id>;` for ad-account-scoped calls. Its
+  `--ad-account` value is independent from the Campaign Management API v5
+  `--org` value.
+- V1 query and report requests use Platform API JSON schemas and preserve
+  Apple's response envelopes. Report pagination belongs in the request body;
+  the v1 report commands do not use the legacy `--paginate` flag.
+- The v5 command tree remains runnable in CLI 4.4.0 with a deprecation warning.
+  Apple retires Campaign Management API v5 on January 26, 2027. The legacy raw
+  `asc ads api request` command stays a v5 request and is not rewritten; raw v1
+  requests use `asc ads platform api request`.
+- Platform v1 has one negative-keywords resource for campaign and ad-group
+  scope, and does not provide a bulk-delete operation. Product-page countries,
+  product-page devices, and custom impression-share report list/view likewise
+  have no one-command v1 replacement in 4.4.0.
+
 ## Authentication & Rate Limiting
 
 - JWTs issued for App Store Connect are valid for 10 minutes (handled internally).

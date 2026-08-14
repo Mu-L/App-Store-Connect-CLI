@@ -100,7 +100,7 @@ func ReportsPresetCommand() *ffcli.Command {
 		returnRowTotals: fs.Bool("return-row-totals", false, "Request row totals in the report response"),
 	}
 
-	return &ffcli.Command{
+	command := &ffcli.Command{
 		Name:       "preset",
 		ShortUsage: "asc ads reports preset --level campaigns --from YYYY-MM-DD --to YYYY-MM-DD [flags]",
 		ShortHelp:  "Build and run Apple Ads report presets without JSON payloads.",
@@ -139,6 +139,10 @@ Examples:
 			return executeReportsPreset(ctx, flags)
 		},
 	}
+	return markAdsLegacyCommandDeprecated(command, []string{"reports", "preset"}, adsLegacyMigration{
+		kind:        adsLegacyBreaking,
+		replacement: []string{"platform", "reports", "apps", "campaigns"},
+	})
 }
 
 func executeReportsPreset(ctx context.Context, flags adsReportPresetFlags) error {

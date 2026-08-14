@@ -44,6 +44,57 @@ Use `ASC_ADS_PRIVATE_KEY_B64` when your CI secret store handles single-line
 values more reliably than PEM blocks. Keep `ASC_ADS_ACCESS_TOKEN` for cases
 where another trusted system already minted a short-lived token.
 
+## Platform API v1 migration
+
+For new automation, start with the Apple Ads Platform API v1 command tree:
+
+```bash  theme={null}
+asc ads platform me view --output json
+asc ads platform acls list --output json
+asc ads platform apps search \
+  --ad-account "987654" \
+  --query "Example" \
+  --output json
+```
+
+The legacy Campaign Management API v5 commands under `asc ads` still run in
+4.4.0 and print a deprecation warning on stderr. Apple retires v5 on January
+26, 2027. A v5 command keeps its existing `--org` context; a v1 command uses
+the separate `--ad-account` context. Do not pass an organization ID where a v1
+ad account ID is required, or assume that the two IDs identify the same thing.
+
+V1 query, report, and mutation bodies use the Platform API schemas. Put the
+appropriate v1 object in `--file`; the CLI does not convert a v5 selector,
+reporting request, numeric ID, or response envelope. V1 report pagination stays
+in the request JSON, so do not add the legacy `--paginate` flag to a v1 report
+command:
+
+```bash  theme={null}
+asc ads platform reports apps campaigns \
+  --ad-account "987654" \
+  --file report.json \
+  --output json
+```
+
+Platform v1 exposes one `negative-keywords` resource for both campaign and ad
+group scope. Move the scope into the v1 query or mutation body rather than
+looking for separate campaign-negative-keywords and ad-group-negative-keywords
+commands. The v5 `asc ads reports preset` helper remains a warning-producing
+compatibility path; replace it with an explicit v1 report leaf and reviewed
+request file.
+
+Seven v5 leaves have no one-command v1 replacement in 4.4.0: product-page
+countries, product-page devices, targeting-keyword bulk delete, campaign
+negative-keyword bulk delete, ad-group negative-keyword bulk delete, and
+impression-share report list and view. Related v1 commands are not drop-in
+replacements for those contracts. In particular, `geo search` is not the v5
+country/device mapping, `insights impression-share` is not the custom report
+list/view API, and v1 has no bulk-delete operation.
+
+For raw calls, keep `asc ads api request` for v5 paths and its `--org` context.
+It remains runnable with a warning and is not rewritten. Use
+`asc ads platform api request --path v1/... --ad-account ...` for a raw v1 call.
+
 ## Org Access Inspection
 
 Start outside an org context. These commands do not require `--org`:

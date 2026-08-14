@@ -18,7 +18,7 @@ func TestReportPresetDateRangeLastDays(t *testing.T) {
 
 func TestReportsPresetCommandHelpShowsOperatorGuidance(t *testing.T) {
 	cmd := ReportsPresetCommand()
-	if !strings.Contains(cmd.ShortHelp, "Build and run Apple Ads report presets without JSON payloads.") {
+	if !strings.HasPrefix(cmd.ShortHelp, "DEPRECATED:") || !strings.Contains(cmd.LongHelp, "Build and run Apple Ads report presets without JSON payloads.") {
 		t.Fatalf("ShortHelp = %q, want preset workflow wording", cmd.ShortHelp)
 	}
 	for _, want := range []string{

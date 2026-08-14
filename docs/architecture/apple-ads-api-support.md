@@ -1,17 +1,21 @@
-# Apple Ads API Support PR Scope
+# Apple Ads Campaign Management API v5 Support (Historical Scope)
 
-Status: Implemented
+Status: Implemented; retained as the v5 compatibility reference
 Research date: May 31, 2026
-Target API: Apple Ads Campaign Management API 5.5
-Target command root: `asc ads`
+Original target API: Apple Ads Campaign Management API 5.5
+Historical command root: `asc ads`
+Preferred API in CLI 4.4.0: Apple Ads Platform API v1 under `asc ads platform`
 
-## Goal
+## Historical goal
 
-Add first-class Apple Ads support to `asc` for the documented Campaign
-Management API v5 surface. Users should not need a raw HTTP client for
-supported Apple Ads campaign, targeting, creative, and reporting workflows.
+This document records the original implementation of first-class Campaign
+Management API v5 support. It remains useful as the compatibility inventory
+for existing `asc ads` scripts, but it is not the design for the preferred API
+surface in 4.4.0. New automation should use `asc ads platform`; v5 commands
+remain runnable with deprecation warnings until Apple retires the API on
+January 26, 2027.
 
-This PR must preserve the local CLI style:
+The original implementation preserved the local CLI style:
 
 - `ffcli` commands with `shared.DefaultUsageFunc`
 - explicit long flags
@@ -22,33 +26,35 @@ This PR must preserve the local CLI style:
 - JSON output that preserves Apple response envelopes for agents
 - no new third-party dependencies
 
-## Source Facts
+## Historical v5 sources
 
-Canonical Apple sources:
+Apple sources used for the May 2026 v5 implementation:
 
 - Apple Ads root: https://developer.apple.com/documentation/apple_ads
+- Platform API v1: https://developer.apple.com/documentation/apple-ads-platform-api
 - OAuth: https://developer.apple.com/documentation/apple_ads/implementing-oauth-for-the-apple-search-ads-api
 - Calling the API: https://developer.apple.com/documentation/apple_ads/calling-the-apple-search-ads-api
 - API functionality: https://developer.apple.com/documentation/apple_ads/using-apple-search-ads-api-functionality
 - API 5 changelog: https://developer.apple.com/documentation/apple_ads/apple-search-ads-campaign-management-api-5
 
-The Apple docs currently state that API 5 is the current Campaign Management
-API, API 5.5 was released in February 2026, and the Campaign Management API is
-scheduled to sunset on January 26, 2027. The unreleased/new Apple Ads Platform
-API is not part of this PR because it is not the current documented Campaign
-Management API surface.
+At the original research date, API 5 was Apple's current Campaign Management
+API and API 5.5 had been released in February 2026. Apple later made Platform
+API v1 available. CLI 4.4.0 implements that API under `asc ads platform` and
+keeps the original v5 commands as warning-producing compatibility paths until
+Apple's January 26, 2027 retirement date.
 
-Deprecated `Creative Sets` are not included as commands because Apple's current
-documentation marks the collection as deprecated and exposes no active v5
-endpoint under that page. The `includeDeletedCreativeSetAssets` query parameter
-on `GET /v5/creatives/{creativeId}` is included.
+At the research date, deprecated `Creative Sets` were not included as commands
+because Apple's v5 documentation marked the collection as deprecated and
+exposed no active v5 endpoint under that page. The
+`includeDeletedCreativeSetAssets` query parameter on
+`GET /v5/creatives/{creativeId}` was included.
 
 AdServices Attribution API is out of scope. It is not part of the Apple Ads
 Campaign Management API command surface and has different caller requirements.
 
-## Command Placement
+## Historical v5 command placement
 
-Add a top-level command:
+The original implementation added this command root:
 
 ```text
 asc ads <subcommand> [flags]
@@ -66,6 +72,11 @@ Common endpoint flags:
 - Resource groups with a natural list endpoint execute list by default:
   `asc ads campaigns`, `asc ads budget-orders`, `asc ads ad-groups`,
   `asc ads creatives`, and `asc ads impression-share-reports`.
+
+These rules describe the deprecated v5 tree. Platform v1 commands live under
+`asc ads platform`, use `--ad-account` instead of `--org`, and follow the v1
+payload and response contracts documented in
+`docs/design/apple-ads-platform-api-v1.md`.
 
 Root help placement:
 
@@ -444,10 +455,11 @@ renderers in this PR.
 Represent successful Apple Ads responses as `json.RawMessage` or a dedicated
 raw envelope type that is not registered with the output registry.
 
-## Endpoint-to-Command Matrix
+## Historical v5 endpoint-to-command matrix
 
-This matrix is the required 100% current v5 coverage. Every row needs a named
-CLI command and an HTTP client method.
+This matrix records the 100% v5 coverage implemented from Apple's May 2026
+documentation. Every row remains a runnable deprecated compatibility command;
+it is not the preferred Platform v1 command inventory.
 
 | CLI command | HTTP endpoint | Body | Notes |
 | --- | --- | --- | --- |
@@ -525,8 +537,8 @@ CLI command and an HTTP client method.
 | `asc ads impression-share-reports create --file custom-report-request.json` | `POST v5/custom-reports` | `CustomReportRequest` object |  |
 | `asc ads impression-share-reports view --report REPORT_ID` | `GET v5/custom-reports/{reportId}` | none |  |
 
-The `EndpointSpec` query parameter metadata must match Apple's current docs for
-every row. Required query parameters:
+The `EndpointSpec` query parameter metadata matched Apple's v5 documentation at
+the research date for every row. Required query parameters were:
 
 | HTTP endpoint | Query flags |
 | --- | --- |
@@ -546,10 +558,11 @@ every row. Required query parameters:
 | `GET v5/countries-or-regions` | `--countries-or-regions` |
 | `GET v5/creatives/{creativeId}` | `--include-deleted-creative-set-assets` |
 
-Apple's general partial-fetch `fields` query parameter is not exposed in this
-first PR because the current endpoint pages do not list endpoint-specific
-`fields[...]` query parameters. Add it only if the implementation extracts a
-documented endpoint-specific query parameter from Apple docs.
+Apple's general partial-fetch `fields` query parameter was not exposed in the
+original v5 implementation because those endpoint pages did not list
+endpoint-specific `fields[...]` query parameters. Add it only if the
+compatibility implementation extracts a documented endpoint-specific query
+parameter from Apple docs.
 
 Add this debug/forward-compatibility command after the named endpoints:
 
@@ -783,7 +796,7 @@ command strategy, test requirements, and live-smoke limits.
 
 ## Definition of Done
 
-- All 73 current v5 endpoints in the matrix have named commands.
+- All 73 v5 endpoints documented at the May 2026 research date have named commands.
 - `asc ads api request` exists for debugging and newly added Apple fields.
 - Apple Ads OAuth login/status/token/doctor/logout are implemented.
 - All org-scoped commands require/respect `--org`.

@@ -289,6 +289,104 @@ asc ads platform budget-orders view --budget-order "budget-id"
 asc ads platform budget-orders delete --budget-order "budget-id" --confirm
 ```
 
+## Migrating from Campaign Management API v5
+
+Apple Ads Platform API v1 is the preferred surface in 4.4.0. Apple will retire
+the Campaign Management API v5 on January 26, 2027. The existing `asc ads`
+resource commands remain runnable during this release, but each v5 invocation
+prints a deprecation warning on stderr. They continue to use the v5 host,
+payloads, IDs, and response shapes; 4.4.0 does not silently rewrite them to
+v1.
+
+Use `asc ads platform ...` for new scripts and migrate v5 scripts one command
+at a time. Run `asc ads platform --help` and the relevant nested `--help`
+command when choosing a v1 leaf.
+
+### Context and request shape
+
+`--org` is the Campaign Management API v5 organization context. `--ad-account`
+is the Platform API v1 ad account context. They are different identifiers and
+the CLI never substitutes one for the other. Keep `--org` on a legacy v5
+command and use `--ad-account` on a v1 command; store them independently with
+`ASC_ADS_ORG_ID` and `ASC_ADS_AD_ACCOUNT_ID` when using environment auth.
+
+The API contracts also differ. v5 payloads can use numeric resource IDs and
+v5 envelopes; v1 resource IDs are strings and each v1 command documents its
+own create, update, or query schema. A v1 `find` or report command commonly
+expects a JSON query object in `--file`; the CLI passes that object through and
+does not translate a v5 `Selector` or `ReportingRequest` for you.
+
+V1 reports are explicit query commands such as:
+
+```bash  theme={null}
+asc ads platform reports apps campaigns \
+  --ad-account "987654" \
+  --file report.json \
+  --output json
+```
+
+Keep report pagination in `report.json` (or the relevant query file). V1
+report and optimization commands do not expose the legacy `--paginate` flow,
+and successful response and pagination envelopes are preserved as Apple
+returns them. The old `asc ads reports preset` helper remains a v5 compatibility
+path with a warning; migrate it to the exact v1 report command and a reviewed
+request file.
+
+### Common command migrations
+
+These are direct resource migrations, but the request file and response schema
+still need to be updated for v1:
+
+| v5 command | Platform API v1 command |
+| --- | --- |
+| `asc ads apps localized-details` | `asc ads platform apps locales find` |
+| `asc ads apps assets find` | `asc ads platform assets find` |
+| `asc ads product-pages list` | `asc ads platform product-pages find` |
+| `asc ads product-pages locales list` | `asc ads platform product-pages locales find` |
+| `asc ads reports campaigns` and other v5 report leaves | `asc ads platform reports apps ...` or `asc ads platform reports brands ...` |
+| `asc ads campaigns pause` / `resume` | `asc ads platform campaigns pause` / `resume` |
+| `asc ads targeting-keywords create-bulk` / `update-bulk` | `asc ads platform targeting-keywords create-bulk` / `update-bulk` |
+| v5 campaign- or ad-group-negative-keywords `list`, `find`, `view`, `create-bulk`, or `update-bulk` | `asc ads platform negative-keywords find`, `view`, `create-bulk`, or `update-bulk` (scope moves into the v1 body) |
+
+Platform v1 uses one `negative-keywords` resource for both campaign and ad
+group negative keywords. Preserve the scope and filters in the v1 request
+body; there are no separate v1 campaign-negative-keywords or
+ad-group-negative-keywords command groups.
+
+### Seven v5 leaves without a one-command v1 replacement
+
+The following seven legacy leaves remain available with warnings, but Platform
+API v1 has no equivalent single command in 4.4.0:
+
+- `asc ads product-pages countries list`
+- `asc ads product-pages devices list`
+- `asc ads targeting-keywords delete-bulk`
+- `asc ads campaign-negative-keywords delete-bulk`
+- `asc ads ad-group-negative-keywords delete-bulk`
+- `asc ads impression-share-reports list`
+- `asc ads impression-share-reports view`
+
+Do not replace the countries or devices mappings with `geo search`, or replace
+custom impression-share report list/view with `insights impression-share`
+without checking the different data contract. V1 has single-resource keyword
+deletes, but no bulk-delete endpoint; a script can query and explicitly delete
+individual IDs if that workflow is appropriate.
+
+### Raw requests
+
+`asc ads api request` remains a v5 raw request command. Its `v5/...` paths and
+`--org` context are not rewritten, and its deprecation warning does not change
+the request. Use the separate v1 command for Platform API paths:
+
+```bash  theme={null}
+asc ads platform api request \
+  --method POST \
+  --path v1/campaigns/query \
+  --ad-account "987654" \
+  --file query.json \
+  --output json
+```
+
 ## Campaigns
 
 List campaigns. The short form aliases `list`:
