@@ -1185,6 +1185,52 @@ func TestOpenRootPreservesSelectedSymlinkedParentLayout(t *testing.T) {
 	}
 }
 
+func TestCloseReleasesPinnedDescriptorAcrossRootCopies(t *testing.T) {
+	root := mustRoot(t, t.TempDir())
+	copyOfRoot := root
+
+	if err := root.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if opened, err := copyOfRoot.OpenRoot(); err == nil {
+		_ = opened.Close()
+		t.Fatal("copied Root remained usable after shared Close")
+	}
+	if err := copyOfRoot.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+}
+
+func TestCloseReleasesPinnedDescriptorsDeterministically(t *testing.T) {
+	before := openDescriptorCount(t)
+	const rootCount = 128
+	roots := make([]Root, 0, rootCount)
+	for range rootCount {
+		roots = append(roots, mustRoot(t, t.TempDir()))
+	}
+	for _, root := range roots {
+		if err := root.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}
+	after := openDescriptorCount(t)
+	if after > before+4 {
+		t.Fatalf("open descriptors after Close = %d, baseline %d", after, before)
+	}
+}
+
+func openDescriptorCount(t *testing.T) int {
+	t.Helper()
+	for _, directory := range []string{"/dev/fd", "/proc/self/fd"} {
+		entries, err := os.ReadDir(directory)
+		if err == nil {
+			return len(entries)
+		}
+	}
+	t.Skip("open descriptor enumeration is unavailable")
+	return 0
+}
+
 func mustRoot(t *testing.T, path string) Root {
 	t.Helper()
 	root, err := New(path)

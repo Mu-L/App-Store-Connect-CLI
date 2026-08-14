@@ -149,6 +149,38 @@ func TestGitStoreReadEncryptedFileWithMetadataRejectsOversizedArtifact(t *testin
 	}
 }
 
+func TestGitStoreReusesAndClosesRootAcrossEncryptedFileSizing(t *testing.T) {
+	store := &GitStore{LocalDir: t.TempDir()}
+	const relPath = "artifact"
+	if err := os.WriteFile(filepath.Join(store.LocalDir, relPath+".enc"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 256 {
+		size, err := store.EncryptedFileSize(relPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if size != 4 {
+			t.Fatalf("EncryptedFileSize() = %d, want 4", size)
+		}
+	}
+	if store.root == nil {
+		t.Fatal("GitStore did not retain a shared root")
+	}
+	pinned := *store.root
+	if err := store.Cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if store.root != nil {
+		t.Fatal("Cleanup() retained the shared root")
+	}
+	if opened, err := pinned.OpenRoot(); err == nil {
+		_ = opened.Close()
+		t.Fatal("Cleanup() left a copied shared root usable")
+	}
+}
+
 func TestGitStoreReadEncryptedFileWithMetadataCanonicalizesCrossPlatformPath(t *testing.T) {
 	store := &GitStore{LocalDir: t.TempDir()}
 	localPath := filepath.Join("identities", "distribution", "ABC.p12")

@@ -66,6 +66,7 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (PrepareResul
 	if err != nil {
 		return PrepareResult{}, fmt.Errorf("prepare output root: %w", err)
 	}
+	defer root.Close()
 	// Select and retain the output root before the potentially long snapshot,
 	// archive validation, and code-signing work.
 	if err := root.MkdirAll(".", 0o755); err != nil {
