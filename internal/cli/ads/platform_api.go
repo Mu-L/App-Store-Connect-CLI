@@ -16,37 +16,12 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
-// PlatformCommand returns the Apple Ads Platform API v1 command group.
-func PlatformCommand() *ffcli.Command {
-	fs := flag.NewFlagSet("ads platform", flag.ExitOnError)
-	return &ffcli.Command{
-		Name:       "platform",
-		ShortUsage: "asc ads platform <subcommand> [flags]",
-		ShortHelp:  "Manage Apple Ads Platform API v1 resources.",
-		LongHelp: `Manage Apple Ads Platform API v1 resources.
-
-The Platform API uses ad account IDs, not legacy Campaign Management API
-organization IDs.
-
-Examples:
-  asc ads platform api request --method GET --path v1/me
-  asc ads platform apps search --ad-account "123" --query "Example"
-  asc ads platform ad-accounts view --ad-account "123"`,
-		FlagSet:     fs,
-		UsageFunc:   shared.DefaultUsageFunc,
-		Subcommands: append([]*ffcli.Command{PlatformAPICommand()}, platformEndpointCommands()...),
-		Exec: func(ctx context.Context, args []string) error {
-			return flag.ErrHelp
-		},
-	}
-}
-
 // PlatformAPICommand returns the raw Apple Ads Platform API command group.
 func PlatformAPICommand() *ffcli.Command {
-	fs := flag.NewFlagSet("ads platform api", flag.ExitOnError)
+	fs := flag.NewFlagSet("ads api", flag.ExitOnError)
 	return &ffcli.Command{
 		Name:        "api",
-		ShortUsage:  "asc ads platform api <subcommand> [flags]",
+		ShortUsage:  "asc ads api <subcommand> [flags]",
 		ShortHelp:   "Make raw Apple Ads Platform API v1 requests.",
 		LongHelp:    "Make raw Apple Ads Platform API v1 requests.",
 		FlagSet:     fs,
@@ -60,7 +35,7 @@ func PlatformAPICommand() *ffcli.Command {
 
 // PlatformAPIRequestCommand returns the raw Apple Ads Platform API request command.
 func PlatformAPIRequestCommand() *ffcli.Command {
-	fs := flag.NewFlagSet("ads platform api request", flag.ExitOnError)
+	fs := flag.NewFlagSet("ads api request", flag.ExitOnError)
 	method := fs.String("method", "GET", "HTTP method: GET, POST, PUT, DELETE")
 	path := fs.String("path", "", "Relative v1 path or Apple Ads Platform API URL")
 	file := fs.String("file", "", "Path to JSON request payload")
@@ -72,13 +47,13 @@ func PlatformAPIRequestCommand() *ffcli.Command {
 	output := shared.BindOutputFlags(fs)
 	return &ffcli.Command{
 		Name:       "request",
-		ShortUsage: "asc ads platform api request --method METHOD --path v1/... [flags]",
+		ShortUsage: "asc ads api request --method METHOD --path v1/... [flags]",
 		ShortHelp:  "Make a raw Apple Ads Platform API v1 request.",
 		LongHelp: `Make a raw Apple Ads Platform API v1 request.
 
 Examples:
-  asc ads platform api request --method GET --path v1/me
-  asc ads platform api request --method POST --path v1/campaigns/query --file query.json --ad-account "123"`,
+  asc ads api request --method GET --path v1/me
+  asc ads api request --method POST --path v1/campaigns/query --file query.json --ad-account "123"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -117,7 +92,7 @@ Examples:
 			if strings.TrimSpace(*file) != "" {
 				payload, err = shared.ReadJSONFilePayloadKind(*file, shared.JSONPayloadAny)
 				if err != nil {
-					return fmt.Errorf("ads platform api request: %w", err)
+					return fmt.Errorf("ads api request: %w", err)
 				}
 			}
 			if rawPlatformRequestRequiresConfirm(methodValue, pathOnly, payload) && !*confirm {
@@ -125,13 +100,13 @@ Examples:
 			}
 			client, err := resolvePlatformClient(ctx, common, contextKind)
 			if err != nil {
-				return fmt.Errorf("ads platform api request: %w", err)
+				return fmt.Errorf("ads api request: %w", err)
 			}
 			requestCtx, cancel := requestContext(ctx)
 			defer cancel()
 			resp, err := client.RequestForVersion(requestCtx, appleads.APIVersionPlatformV1, methodValue, pathValue, nil, payload, contextKind)
 			if err != nil {
-				return fmt.Errorf("ads platform api request: %w", err)
+				return fmt.Errorf("ads api request: %w", err)
 			}
 			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
 		},

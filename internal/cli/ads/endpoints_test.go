@@ -17,49 +17,58 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
 )
 
-func TestAdsCommandRegistersEveryEndpointSpec(t *testing.T) {
+func TestAdsV5CommandRegistersEveryLegacyEndpointSpec(t *testing.T) {
 	root := AdsCommand()
 	for _, spec := range appleads.EndpointSpecs() {
-		cmd := findCommand(root, spec.CommandPath...)
+		path := append([]string{"v5"}, spec.CommandPath...)
+		cmd := findCommand(root, path...)
 		if cmd == nil {
-			t.Fatalf("missing command asc ads %s", strings.Join(spec.CommandPath, " "))
+			t.Fatalf("missing command asc ads %s", strings.Join(path, " "))
 		}
 		if cmd.Exec == nil {
-			t.Fatalf("command asc ads %s has no Exec", strings.Join(spec.CommandPath, " "))
+			t.Fatalf("command asc ads %s has no Exec", strings.Join(path, " "))
 		}
 		assertSpecFlags(t, cmd, spec)
 
 		if spec.DefaultListAlias {
-			alias := findCommand(root, spec.CommandPath[0])
+			alias := findCommand(root, "v5", spec.CommandPath[0])
 			if alias == nil {
-				t.Fatalf("missing default list alias asc ads %s", spec.CommandPath[0])
+				t.Fatalf("missing default list alias asc ads v5 %s", spec.CommandPath[0])
 			}
 			if alias.Exec == nil {
-				t.Fatalf("default list alias asc ads %s has no Exec", spec.CommandPath[0])
+				t.Fatalf("default list alias asc ads v5 %s has no Exec", spec.CommandPath[0])
 			}
 			assertSpecFlags(t, alias, spec)
 		}
 	}
 }
 
-func TestPlatformCommandRegistersAccountAndAppEndpointSpecs(t *testing.T) {
+func TestAdsRootRegistersPlatformV1AsDefault(t *testing.T) {
 	root := AdsCommand()
+	if findCommand(root, "platform") != nil {
+		t.Fatal("nested Platform compatibility namespace must not exist before release")
+	}
 	for _, spec := range appleads.PlatformEndpointSpecs() {
-		path := append([]string{"platform"}, spec.CommandPath...)
-		cmd := findCommand(root, path...)
+		cmd := findCommand(root, spec.CommandPath...)
 		if cmd == nil || cmd.Exec == nil {
-			t.Fatalf("missing executable command asc ads %s", strings.Join(path, " "))
+			t.Fatalf("missing executable command asc ads %s", strings.Join(spec.CommandPath, " "))
 		}
 		assertSpecFlags(t, cmd, spec)
 		if spec.Context == appleads.ContextAdAccount && cmd.FlagSet.Lookup("ad-account") == nil {
-			t.Fatalf("asc ads %s missing --ad-account", strings.Join(path, " "))
+			t.Fatalf("asc ads %s missing --ad-account", strings.Join(spec.CommandPath, " "))
 		}
 		if cmd.FlagSet.Lookup("org") != nil {
-			t.Fatalf("asc ads %s must not expose legacy --org", strings.Join(path, " "))
+			t.Fatalf("asc ads %s must not expose legacy --org", strings.Join(spec.CommandPath, " "))
 		}
 		if (strings.Join(spec.CommandPath, " ") == "ad-accounts view" || strings.Join(spec.CommandPath, " ") == "ad-accounts update") && cmd.FlagSet.Lookup("id") != nil {
-			t.Fatalf("asc ads %s must use --ad-account for both the path and context", strings.Join(path, " "))
+			t.Fatalf("asc ads %s must use --ad-account for both the path and context", strings.Join(spec.CommandPath, " "))
 		}
+	}
+	if findCommand(root, "api", "request") == nil {
+		t.Fatal("missing root Platform v1 raw request command")
+	}
+	if findCommand(root, "v5", "api", "request") == nil {
+		t.Fatal("missing deprecated v5 raw request command")
 	}
 }
 
@@ -158,7 +167,7 @@ func TestPlatformAdAccountCreateRequiresOneProductFeature(t *testing.T) {
 
 func TestAdsCampaignsHelpReadsAsManagementSurface(t *testing.T) {
 	root := AdsCommand()
-	campaigns := findCommand(root, "campaigns")
+	campaigns := findCommand(root, "v5", "campaigns")
 	if campaigns == nil {
 		t.Fatal("missing campaigns command")
 	}
@@ -169,7 +178,7 @@ func TestAdsCampaignsHelpReadsAsManagementSurface(t *testing.T) {
 		t.Fatal("campaigns list alias should not expose workflow-only --campaign flag")
 	}
 
-	resume := findCommand(root, "campaigns", "resume")
+	resume := findCommand(root, "v5", "campaigns", "resume")
 	if resume == nil {
 		t.Fatal("missing campaigns resume command")
 	}
@@ -187,7 +196,7 @@ func TestAdsCampaignsHelpReadsAsManagementSurface(t *testing.T) {
 
 func TestAdsCampaignUpdateHelpDocumentsRequiredEnvelope(t *testing.T) {
 	root := AdsCommand()
-	update := findCommand(root, "campaigns", "update")
+	update := findCommand(root, "v5", "campaigns", "update")
 	if update == nil {
 		t.Fatal("missing campaigns update command")
 	}
@@ -204,7 +213,7 @@ func TestAdsCampaignUpdateHelpDocumentsRequiredEnvelope(t *testing.T) {
 
 func TestPlatformConditionalConfirmationAppearsOnceInHelp(t *testing.T) {
 	root := AdsCommand()
-	update := findCommand(root, "platform", "ad-accounts", "update")
+	update := findCommand(root, "ad-accounts", "update")
 	if update == nil {
 		t.Fatal("missing platform ad-account update command")
 	}

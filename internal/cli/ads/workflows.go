@@ -32,7 +32,7 @@ func workflowSubcommands(path []string, parent *endpointFlagValues) []*ffcli.Com
 }
 
 func campaignStatusWorkflowCommand(name, status, shortHelp string, parent *endpointFlagValues) *ffcli.Command {
-	fs := flag.NewFlagSet("campaigns "+name, flag.ExitOnError)
+	fs := flag.NewFlagSet("v5 campaigns "+name, flag.ExitOnError)
 	flags := campaignStatusWorkflowFlags{
 		common: commonFlags{
 			AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
@@ -46,14 +46,14 @@ func campaignStatusWorkflowCommand(name, status, shortHelp string, parent *endpo
 	}
 	return &ffcli.Command{
 		Name:       name,
-		ShortUsage: "asc ads campaigns " + name + " [flags]",
+		ShortUsage: "asc ads v5 campaigns " + name + " [flags]",
 		ShortHelp:  shortHelp,
 		LongHelp: fmt.Sprintf(`%s
 
 Endpoint: PUT v5/campaigns/{campaignId}
 
 Examples:
-  asc ads campaigns %s --campaign CAMPAIGN_ID --confirm --org ORG_ID`, shortHelp, name),
+  asc ads v5 campaigns %s --campaign CAMPAIGN_ID --confirm --org ORG_ID`, shortHelp, name),
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -79,7 +79,7 @@ func executeCampaignStatusWorkflow(ctx context.Context, commandName, status stri
 
 	spec, ok := appleads.EndpointByCommandPath("campaigns", "update")
 	if !ok {
-		return fmt.Errorf("ads campaigns status workflow: missing campaigns update endpoint")
+		return fmt.Errorf("ads v5 campaigns status workflow: missing campaigns update endpoint")
 	}
 
 	common, output := effectiveCampaignStatusWorkflowFlags(flags)
@@ -90,7 +90,7 @@ func executeCampaignStatusWorkflow(ctx context.Context, commandName, status stri
 
 	client, err := resolveClient(ctx, common, spec.RequiresOrg)
 	if err != nil {
-		return fmt.Errorf("ads campaigns %s: %w", commandName, err)
+		return fmt.Errorf("ads v5 campaigns %s: %w", commandName, err)
 	}
 
 	requestCtx, cancel := requestContext(ctx)
@@ -104,7 +104,7 @@ func executeCampaignStatusWorkflow(ctx context.Context, commandName, status stri
 	}
 	result, err := client.Do(requestCtx, spec, map[string]string{"campaignId": campaignID}, nil, body)
 	if err != nil {
-		return fmt.Errorf("ads campaigns %s: %w", commandName, err)
+		return fmt.Errorf("ads v5 campaigns %s: %w", commandName, err)
 	}
 	return shared.PrintOutput(result, outputFormat, *output.Pretty)
 }
