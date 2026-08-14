@@ -485,7 +485,14 @@ func isRetryableCodeVerificationError(err error) bool {
 	}
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
-		return errno.Temporary()
+		switch errno {
+		case syscall.EAGAIN, syscall.EINTR, syscall.EIO, syscall.ENOSPC,
+			syscall.EDQUOT, syscall.EMFILE, syscall.ENFILE, syscall.EBUSY,
+			syscall.ETIMEDOUT, syscall.ENOMEM, syscall.ESTALE:
+			return true
+		default:
+			return false
+		}
 	}
 	var pathError *os.PathError
 	if errors.As(err, &pathError) {
