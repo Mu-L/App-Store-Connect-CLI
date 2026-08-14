@@ -255,17 +255,25 @@ func TestVerifyMainExecutableEntitlementsRejectsInvalidLipoOutput(t *testing.T) 
 
 func TestValidateSignedMainAppEntitlementsBindsExactBundleIdentifier(t *testing.T) {
 	for _, test := range []struct {
-		name                 string
-		profileApplicationID string
-		signedApplicationID  any
-		signedTeamID         string
-		wantError            bool
+		name                        string
+		applicationIdentifierPrefix string
+		profileApplicationID        string
+		signedApplicationID         any
+		signedTeamID                string
+		wantError                   bool
 	}{
 		{
 			name:                 "exact profile and matching signed identifier",
 			profileApplicationID: "TEAM123.com.example.demo",
 			signedApplicationID:  "TEAM123.com.example.demo",
 			signedTeamID:         "TEAM123",
+		},
+		{
+			name:                        "legacy application prefix differs from team",
+			applicationIdentifierPrefix: "LEGACY123",
+			profileApplicationID:        "LEGACY123.com.example.demo",
+			signedApplicationID:         "LEGACY123.com.example.demo",
+			signedTeamID:                "TEAM123",
 		},
 		{
 			name:                 "wildcard profile and matching signed identifier",
@@ -304,6 +312,9 @@ func TestValidateSignedMainAppEntitlementsBindsExactBundleIdentifier(t *testing.
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			profile := entitlementTestProfile()
+			if test.applicationIdentifierPrefix != "" {
+				profile.ApplicationIdentifierPrefix = []string{test.applicationIdentifierPrefix}
+			}
 			profile.Entitlements["application-identifier"] = test.profileApplicationID
 			entitlements := map[string]any{
 				"com.apple.developer.team-identifier": test.signedTeamID,
@@ -545,7 +556,8 @@ func validExecutableIPA(t *testing.T) string {
 
 func entitlementTestProfile() parsedProfile {
 	return parsedProfile{embeddedProfile: embeddedProfile{
-		TeamIdentifier: []string{"TEAM123"},
+		TeamIdentifier:              []string{"TEAM123"},
+		ApplicationIdentifierPrefix: []string{"TEAM123"},
 		Entitlements: map[string]any{
 			"application-identifier":              "TEAM123.com.example.*",
 			"com.apple.developer.team-identifier": "TEAM123",

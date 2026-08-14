@@ -197,6 +197,10 @@ func validateSignedMainAppEntitlements(entitlementsData []byte, bundleID string,
 	if err := validateTeamIdentifier(teamID); err != nil {
 		return err
 	}
+	applicationIdentifierPrefix := onlyTrimmed(profile.ApplicationIdentifierPrefix)
+	if applicationIdentifierPrefix == "" {
+		return fmt.Errorf("embedded profile application identifier prefix is not a single value")
+	}
 	bundleID = strings.TrimSpace(bundleID)
 	if bundleID == "" {
 		return fmt.Errorf("inspected CFBundleIdentifier is missing")
@@ -205,7 +209,7 @@ func validateSignedMainAppEntitlements(entitlementsData []byte, bundleID string,
 	if strings.TrimSpace(teamIdentifier) != teamID || !entitlementValuePermits(profileApplicationID, appIdentifier) {
 		return fmt.Errorf("signed main-app entitlements do not match the embedded profile team and application identifier")
 	}
-	if appIdentifier != teamID+"."+bundleID {
+	if appIdentifier != applicationIdentifierPrefix+"."+bundleID {
 		return fmt.Errorf("signed main-app application identifier does not match inspected CFBundleIdentifier")
 	}
 	if profileDebug, ok := profile.Entitlements["get-task-allow"].(bool); !ok {
