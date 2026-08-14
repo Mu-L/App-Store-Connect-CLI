@@ -32,6 +32,33 @@ var (
 
 var regionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 
+type publicationVerifier struct {
+	delegate        core.Verifier
+	documentTimeout time.Duration
+}
+
+func newPublicationVerifier(documentTimeout time.Duration) (*publicationVerifier, error) {
+	delegate, err := core.NewHTTPVerifierWithEnvironmentTrust(0)
+	if err != nil {
+		return nil, err
+	}
+	return &publicationVerifier{delegate: delegate, documentTimeout: documentTimeout}, nil
+}
+
+func (verifier *publicationVerifier) Verify(ctx context.Context, request core.VerifyRequest) error {
+	verifyParent := ctx
+	var verifyCtx context.Context
+	var cancel context.CancelFunc
+	if request.Kind == core.VerifyIPA {
+		verifyParent = shared.ContextWithoutTimeout(ctx)
+		verifyCtx, cancel = shared.ContextWithUploadTimeout(verifyParent)
+	} else {
+		verifyCtx, cancel = context.WithTimeout(verifyParent, verifier.documentTimeout)
+	}
+	defer cancel()
+	return verifier.delegate.Verify(verifyCtx, request)
+}
+
 // PublishCommand returns the provider-neutral S3-compatible publisher.
 func PublishCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("distribute publish", flag.ExitOnError)
@@ -46,7 +73,7 @@ func PublishCommand() *ffcli.Command {
 	publicBaseURL := fs.String("public-base-url", "", "Preconfigured anonymous HTTPS base URL (required with --access public)")
 	urlTTL := fs.Duration("url-ttl", 24*time.Hour, "Private install-page lifetime (maximum combined lifetime 7d)")
 	downloadGrace := fs.Duration("download-grace", time.Hour, "Additional private manifest and IPA download lifetime")
-	verifyTimeout := fs.Duration("verify-timeout", 30*time.Second, "Timeout for each published-object verification request")
+	verifyTimeout := fs.Duration("verify-timeout", 30*time.Second, "Timeout for manifest and install-page verification; IPA verification uses ASC_UPLOAD_TIMEOUT")
 	receiptPath := fs.String("receipt", "", "Redacted JSON receipt path outside the prepared bundle (required)")
 	linkPath := fs.String("link-path", "", "Mode-0600 sensitive link path (required)")
 	output := shared.BindOutputFlags(fs)
@@ -176,7 +203,7 @@ Examples:
 				if err := validateRecoveredState(recoveredState, bundle, validatedEndpoint.String(), effectiveDownloadEndpoint(*endpoint, *downloadEndpoint), normalizedPublicBase(*publicBaseURL), *region, *addressingStyle, *bucket, *prefix, accessMode, *urlTTL, *downloadGrace, resolvedReceiptPath, resolvedLinkPath); err != nil {
 					return fmt.Errorf("distribute publish: %w", err)
 				}
-				verifier, err := core.NewHTTPVerifierWithEnvironmentTrust(*verifyTimeout)
+				verifier, err := newPublicationVerifier(*verifyTimeout)
 				if err != nil {
 					return fmt.Errorf("configure publication verifier: %w", err)
 				}
@@ -214,7 +241,7 @@ Examples:
 				credentialSource = provider.CredentialSource()
 			}
 			fmt.Fprintf(os.Stderr, "Publishing to endpoint=%s download-endpoint=%s bucket=%s region=%s addressing=%s prefix=%s access=%s credentials=%s\n", endpointOrigin(*endpoint), effectiveDownloadEndpoint(*endpoint, *downloadEndpoint), *bucket, *region, *addressingStyle, *prefix, accessMode, credentialSource)
-			verifier, err := core.NewHTTPVerifierWithEnvironmentTrust(*verifyTimeout)
+			verifier, err := newPublicationVerifier(*verifyTimeout)
 			if err != nil {
 				return fmt.Errorf("configure publication verifier: %w", err)
 			}

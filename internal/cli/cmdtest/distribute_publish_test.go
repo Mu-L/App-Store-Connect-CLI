@@ -23,6 +23,9 @@ func TestDistributePublishCommandSurfaceIsAgentDiscoverable(t *testing.T) {
 			t.Errorf("missing --%s", name)
 		}
 	}
+	if usage := publish.FlagSet.Lookup("verify-timeout").Usage; !strings.Contains(usage, "ASC_UPLOAD_TIMEOUT") {
+		t.Fatalf("--verify-timeout usage = %q, want IPA upload-timeout guidance", usage)
+	}
 }
 
 func TestDistributePublishInvalidValueIsUsageExit(t *testing.T) {

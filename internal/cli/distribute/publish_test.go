@@ -32,6 +32,29 @@ func TestPublishCommandRequiresFlagsBeforeSideEffects(t *testing.T) {
 	}
 }
 
+func TestPublicationVerifierUsesUploadTimeoutForIPA(t *testing.T) {
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	t.Setenv("ASC_UPLOAD_TIMEOUT", "5m")
+	t.Setenv("ASC_UPLOAD_TIMEOUT_SECONDS", "")
+
+	recorder := &deadlineRecordingVerifier{}
+	verifier := publicationVerifier{delegate: recorder, documentTimeout: 30 * time.Second}
+
+	if err := verifier.Verify(context.Background(), distribution.VerifyRequest{Kind: distribution.VerifyIPA}); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifier.Verify(context.Background(), distribution.VerifyRequest{Kind: distribution.VerifyDocument}); err != nil {
+		t.Fatal(err)
+	}
+
+	if recorder.ipaBudget < 4*time.Minute {
+		t.Fatalf("IPA verification budget = %s, want upload-sized timeout", recorder.ipaBudget)
+	}
+	if recorder.documentBudget <= 0 || recorder.documentBudget > 30*time.Second {
+		t.Fatalf("document verification budget = %s, want at most 30s", recorder.documentBudget)
+	}
+}
+
 func TestPublishCommandValidatesOutputBeforeLocalOrRemoteSideEffects(t *testing.T) {
 	originalLoad, originalStore := loadPreparedBundle, newObjectStore
 	t.Cleanup(func() { loadPreparedBundle, newObjectStore = originalLoad, originalStore })
@@ -357,4 +380,24 @@ func (noOpStore) Ensure(context.Context, distribution.PutObject) (distribution.S
 
 func (noOpStore) PresignGet(context.Context, string, time.Duration) (string, error) {
 	return "", nil
+}
+
+type deadlineRecordingVerifier struct {
+	ipaBudget      time.Duration
+	documentBudget time.Duration
+}
+
+func (verifier *deadlineRecordingVerifier) Verify(ctx context.Context, request distribution.VerifyRequest) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return errors.New("verification context has no deadline")
+	}
+	budget := time.Until(deadline)
+	switch request.Kind {
+	case distribution.VerifyIPA:
+		verifier.ipaBudget = budget
+	default:
+		verifier.documentBudget = budget
+	}
+	return nil
 }
