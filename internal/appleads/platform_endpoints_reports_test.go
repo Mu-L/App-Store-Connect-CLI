@@ -58,8 +58,9 @@ func TestPlatformReportsOptimizationEndpointSpecs(t *testing.T) {
 		if spec.Version != APIVersionPlatformV1 || spec.Context != ContextAdAccount {
 			t.Fatalf("%s version/context = %q/%v", key, spec.Version, spec.Context)
 		}
-		if spec.BodyKind != BodyNone && spec.BodyOptional {
-			t.Fatalf("%s body must be required", key)
+		isQuery := spec.Method == "POST" && strings.HasSuffix(spec.Path, "/query")
+		if spec.BodyKind != BodyNone && spec.BodyOptional && !isQuery {
+			t.Fatalf("%s body optional is only supported for POST /query endpoints", key)
 		}
 		if spec.RequiresConfirm != want.confirm {
 			t.Fatalf("%s confirmation = %t, want %t", key, spec.RequiresConfirm, want.confirm)
@@ -130,8 +131,13 @@ func TestPlatformReportsOptimizationMatchesIndependentFixture(t *testing.T) {
 		if spec.BodyKind != wantBodyKind || spec.BodyType != fixtureNone(record[7]) {
 			t.Fatalf("%s body = %q/%q, fixture = %q/%q", command, spec.BodyKind, spec.BodyType, wantBodyKind, record[7])
 		}
-		if spec.BodyKind != BodyNone && spec.BodyOptional != (record[8] != "yes") {
-			t.Fatalf("%s body optional = %t, SDK body required = %q", command, spec.BodyOptional, record[8])
+		isQuery := spec.Method == "POST" && strings.HasSuffix(spec.Path, "/query")
+		wantOptional := isQuery && record[8] != "yes"
+		if spec.BodyKind == BodyNone {
+			wantOptional = false
+		}
+		if spec.BodyOptional != wantOptional {
+			t.Fatalf("%s body optional = %t, want %t (SDK body required = %q)", command, spec.BodyOptional, wantOptional, record[8])
 		}
 		if spec.ResponseType != strings.TrimPrefix(record[9], "200 ") {
 			t.Fatalf("%s response = %q, fixture = %q", command, spec.ResponseType, record[9])

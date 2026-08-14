@@ -92,6 +92,8 @@ func TestAdsPlatformChangeHistoryDetailRequest(t *testing.T) {
 }
 
 func TestAdsPlatformRecommendationApplyRequiresConfirmBeforeFileAuthOrNetwork(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "")
 	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
@@ -114,6 +116,8 @@ func TestAdsPlatformRecommendationApplyRequiresConfirmBeforeFileAuthOrNetwork(t 
 }
 
 func TestAdsPlatformReportRequiresFileBeforeAuthOrNetwork(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "")
 	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
