@@ -15,7 +15,7 @@ import (
 
 func TestPreparePrivatePublishIntentHasNoRemoteWritesAndExecutionUsesSavedIdentity(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	store := &intentTestStore{}
+	store := &intentTestStore{now: func() time.Time { return now }}
 	descriptor := minimalDescriptor([]byte("ipa"))
 	descriptor.Signing.ExpiresAt = now.Add(48 * time.Hour).Format(time.RFC3339)
 	options := PublishOptions{
@@ -86,7 +86,7 @@ func TestPreparePrivatePublishIntentTypesPermanentProfileExpiryBeforeStorage(t *
 	now := time.Now().UTC().Truncate(time.Second)
 	descriptor := minimalDescriptor([]byte("ipa"))
 	descriptor.Signing.ExpiresAt = now.Add(30 * time.Minute).Format(time.RFC3339)
-	store := &intentTestStore{}
+	store := &intentTestStore{now: func() time.Time { return now }}
 	_, err := PreparePrivatePublishIntent(context.Background(), descriptor, PublishOptions{
 		Store: store, Verifier: &recordingVerifier{}, Bucket: "bucket", Prefix: "app", Access: AccessPrivate,
 		URLTTL: time.Hour, DownloadGrace: time.Minute, Now: func() time.Time { return now },
@@ -103,7 +103,7 @@ func TestExecutePrivatePublishIntentRecoversEveryAmbiguousBoundaryWithoutNewIden
 	for failAfter := 1; failAfter <= 3; failAfter++ {
 		t.Run(intentStageName(failAfter), func(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Second)
-			store := &intentTestStore{}
+			store := &intentTestStore{now: func() time.Time { return now }}
 			descriptor := minimalDescriptor([]byte("ipa"))
 			descriptor.Signing.ExpiresAt = now.Add(48 * time.Hour).Format(time.RFC3339)
 			options := PublishOptions{
@@ -136,7 +136,7 @@ func TestExecutePrivatePublishIntentRecoversEveryAmbiguousBoundaryWithoutNewIden
 
 func TestExecutePrivatePublishIntentTypesImmutableObjectConflict(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	store := &intentTestStore{}
+	store := &intentTestStore{now: func() time.Time { return now }}
 	descriptor := minimalDescriptor([]byte("ipa"))
 	descriptor.Signing.ExpiresAt = now.Add(48 * time.Hour).Format(time.RFC3339)
 	options := PublishOptions{
@@ -156,7 +156,7 @@ func TestExecutePrivatePublishIntentTypesImmutableObjectConflict(t *testing.T) {
 
 func TestExecutePrivatePublishIntentTreatsCorruptReusedBodyAsPermanentConflict(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	store := &intentTestStore{}
+	store := &intentTestStore{now: func() time.Time { return now }}
 	descriptor := minimalDescriptor([]byte("ipa"))
 	descriptor.Signing.ExpiresAt = now.Add(48 * time.Hour).Format(time.RFC3339)
 	options := PublishOptions{
@@ -198,7 +198,7 @@ func TestExecutePrivatePublishIntentRejectsTamperAndExpiryBeforeWrite(t *testing
 	now := time.Now().UTC().Truncate(time.Second)
 	descriptor := minimalDescriptor([]byte("ipa"))
 	descriptor.Signing.ExpiresAt = now.Add(48 * time.Hour).Format(time.RFC3339)
-	baseStore := &intentTestStore{}
+	baseStore := &intentTestStore{now: func() time.Time { return now }}
 	options := PublishOptions{
 		Store: baseStore, Verifier: &recordingVerifier{}, Bucket: "bucket", Prefix: "team/app", Access: AccessPrivate,
 		URLTTL: time.Hour, DownloadGrace: time.Minute, CredentialLimit: now.Add(24 * time.Hour),
@@ -253,7 +253,7 @@ func TestExecutePrivatePublishIntentRejectsSignatureBeyondSavedDeadlineBeforeWri
 	now := time.Now().UTC().Truncate(time.Second)
 	descriptor := minimalDescriptor([]byte("ipa"))
 	descriptor.Signing.ExpiresAt = now.Add(48 * time.Hour).Format(time.RFC3339)
-	initialStore := &intentTestStore{}
+	initialStore := &intentTestStore{now: func() time.Time { return now }}
 	options := PublishOptions{
 		Store: initialStore, Verifier: &recordingVerifier{}, Bucket: "bucket", Prefix: "team/app", Access: AccessPrivate,
 		URLTTL: time.Hour, DownloadGrace: time.Minute, Now: func() time.Time { return now },
@@ -291,6 +291,7 @@ func intentStageName(index int) string {
 }
 
 type intentTestStore struct {
+	now             func() time.Time
 	presignKeys     []string
 	ensureKeys      []string
 	objectBodies    map[string][]byte
@@ -300,7 +301,11 @@ type intentTestStore struct {
 
 func (store *intentTestStore) PresignGet(_ context.Context, key string, ttl time.Duration) (string, error) {
 	store.presignKeys = append(store.presignKeys, key)
-	return privateSignatureFixture("/bucket/"+key, time.Now().UTC().Truncate(time.Second), ttl), nil
+	issued := time.Now().UTC().Truncate(time.Second)
+	if store.now != nil {
+		issued = store.now().UTC()
+	}
+	return privateSignatureFixture("/bucket/"+key, issued, ttl), nil
 }
 
 func (store *intentTestStore) Ensure(_ context.Context, input PutObject) (StoredObject, error) {

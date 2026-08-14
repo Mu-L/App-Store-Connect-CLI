@@ -43,6 +43,12 @@ func TestSelectReconcileCertificateWithSHA256(t *testing.T) {
 	if selected == nil || selected.ID != "cert-2" || selected.SHA256 != secondSHA || len(blockers) != 0 {
 		t.Fatalf("selected=%#v blockers=%#v", selected, blockers)
 	}
+	malformed := resource("cert-malformed", first.Raw)
+	malformed.Attributes.CertificateContent = "not-base64"
+	selected, blockers = selectReconcileCertificateWithFingerprint(append(resources, malformed), "", secondSHA, time.Now(), 7)
+	if selected == nil || selected.ID != "cert-2" || len(blockers) != 0 {
+		t.Fatalf("selection with unrelated malformed certificate: selected=%#v blockers=%#v", selected, blockers)
+	}
 
 	selected, blockers = selectReconcileCertificateWithFingerprint(resources, "cert-1", secondSHA, time.Now(), 7)
 	if selected != nil || !strings.Contains(strings.Join(blockers, "\n"), "does not match") {
@@ -164,7 +170,7 @@ func TestExecuteReconcilePlanCollapsesOperationalCanaryWithoutOutput(t *testing.
 			ArchivePath: "App.xcarchive", DevicesFile: devicesPath, CertificateSHA256: strings.Repeat("a", 64),
 			MinimumValidityDays: 7, MaxMutations: 32, StateDir: stateDir,
 		})
-		if err == nil || ClassifyReconcileExecutionError(err) != ReconcileExecutionErrorRetryable {
+		if err == nil || ClassifyReconcileExecutionError(err) != ReconcileExecutionErrorPlanInvalid {
 			t.Fatalf("planning adapter error = %v", err)
 		}
 		for _, secret := range secrets {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	core "github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 func TestReadDistributionConfigStrictPrivateS3(t *testing.T) {
@@ -67,6 +68,7 @@ func TestReadDistributionConfigStrictPrivateS3(t *testing.T) {
 		"public config":     strings.Replace(body, `"prefix":"ios/pr-42"`, `"prefix":"ios/pr-42","publicBaseUrl":"https://public.example.com"`, 1),
 		"bidi source URL":   strings.Replace(body, "https://example.com/commit/abc123", "https://example.com/commit/abc\u202e123", 1),
 		"format source URL": strings.Replace(body, "https://example.com/commit/abc123", "https://example.com/commit/abc\u200b123", 1),
+		"bare source URL":   strings.Replace(body, "https://example.com/commit/abc123", "https://example.com", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(dir, strings.ReplaceAll(name, " ", "-")+".json")
@@ -624,6 +626,34 @@ func TestDistributionPersistenceReportsDirectorySyncFailure(t *testing.T) {
 	err := writePersistedDistributionPlan(filepath.Join(t.TempDir(), "private", "plan.json"), plan)
 	if err == nil || !strings.Contains(err.Error(), "fsync canary") {
 		t.Fatalf("directory sync error = %v", err)
+	}
+}
+
+func TestDistributionCreateOnlyFallbackRollsBackPublishedLinkWhenTemporaryRemovalFails(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	previousRename := distributionRenameNoReplaceForTest
+	previousRemove := distributionRemoveTemporaryForTest
+	distributionRenameNoReplaceForTest = func(*os.Root, string, string) error {
+		return secureopen.ErrRenameNoReplaceUnsupported
+	}
+	distributionRemoveTemporaryForTest = func(*os.Root, string) error {
+		return errors.New("remove temporary canary")
+	}
+	t.Cleanup(func() {
+		distributionRenameNoReplaceForTest = previousRename
+		distributionRemoveTemporaryForTest = previousRemove
+	})
+
+	err = writeProtectedDistributionFileInRoot(root, "receipt.json", []byte(`{"ok":true}`), true)
+	if err == nil || !strings.Contains(err.Error(), "remove temporary canary") {
+		t.Fatalf("write error = %v", err)
+	}
+	if _, statErr := root.Lstat("receipt.json"); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("published link survived failed fallback cleanup: %v", statErr)
 	}
 }
 

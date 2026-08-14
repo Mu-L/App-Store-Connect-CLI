@@ -78,9 +78,10 @@ func TestPrivatePublishIntentRequestRejectsDiagnosticInjectionInBucket(t *testin
 			err := validatePrivatePublishIntentRequest(privatePublishIntentRequest{
 				BundleDir: "/bundle", Endpoint: "https://objects.example.com", Region: "auto", Bucket: bucket, Prefix: "app", AddressingStyle: "path",
 				URLTTL: time.Hour, DownloadGrace: time.Minute, VerifyTimeout: time.Second, ReceiptPath: "/state/receipt", IntentPath: "/state/intent",
+				ExpectedBundle: validPrivatePublishTestAuthorization(),
 			})
-			if err == nil {
-				t.Fatalf("bucket %q passed validation", bucket)
+			if err == nil || !strings.Contains(err.Error(), "bucket") {
+				t.Fatalf("bucket %q validation error = %v", bucket, err)
 			}
 		})
 	}
@@ -104,27 +105,40 @@ func TestPrivatePublishIntentRequestRejectsLifetimeOverflow(t *testing.T) {
 }
 
 func TestPrivatePublishIntentRequestRejectsDiagnosticInjectionInPrefixAndEndpoint(t *testing.T) {
-	for name, mutate := range map[string]func(*privatePublishIntentRequest){
-		"prefix zero width": func(got *privatePublishIntentRequest) { got.Prefix = "app\u200bhidden" },
-		"prefix bidi":       func(got *privatePublishIntentRequest) { got.Prefix = "app\u202ehidden" },
-		"endpoint zero width": func(got *privatePublishIntentRequest) {
+	for name, test := range map[string]struct {
+		field  string
+		mutate func(*privatePublishIntentRequest)
+	}{
+		"prefix zero width": {field: "prefix", mutate: func(got *privatePublishIntentRequest) { got.Prefix = "app\u200bhidden" }},
+		"prefix bidi":       {field: "prefix", mutate: func(got *privatePublishIntentRequest) { got.Prefix = "app\u202ehidden" }},
+		"endpoint zero width": {field: "endpoint", mutate: func(got *privatePublishIntentRequest) {
 			got.Endpoint = "https://objects.example.com\u200b"
-		},
-		"endpoint bidi": func(got *privatePublishIntentRequest) { got.Endpoint = "https://objects.example.com\u202e" },
-		"download endpoint control": func(got *privatePublishIntentRequest) {
+		}},
+		"endpoint bidi": {field: "endpoint", mutate: func(got *privatePublishIntentRequest) { got.Endpoint = "https://objects.example.com\u202e" }},
+		"download endpoint control": {field: "download-endpoint", mutate: func(got *privatePublishIntentRequest) {
 			got.DownloadEndpoint = "https://downloads.example.com\x1b[31m"
-		},
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			request := privatePublishIntentRequest{
 				BundleDir: "/bundle", Endpoint: "https://objects.example.com", Region: "auto", Bucket: "bucket", Prefix: "app", AddressingStyle: "path",
 				URLTTL: time.Hour, DownloadGrace: time.Minute, VerifyTimeout: time.Second, ReceiptPath: "/state/receipt", IntentPath: "/state/intent",
+				ExpectedBundle: validPrivatePublishTestAuthorization(),
 			}
-			mutate(&request)
-			if err := validatePrivatePublishIntentRequest(request); err == nil {
-				t.Fatal("diagnostic-injection input passed validation")
+			test.mutate(&request)
+			if err := validatePrivatePublishIntentRequest(request); err == nil || !strings.Contains(err.Error(), test.field) {
+				t.Fatalf("%s validation error = %v", test.field, err)
 			}
 		})
+	}
+}
+
+func validPrivatePublishTestAuthorization() privatePublishBundleAuthorization {
+	digest := strings.Repeat("a", 64)
+	return privatePublishBundleAuthorization{
+		DescriptorSHA256: digest, DescriptorSize: 1, IPASHA256: digest, IPASize: 1,
+		ProfileUUID: "profile", ProfileSHA256: digest, TeamID: "TEAM", DeviceSetSHA256: digest,
+		DeviceCount: 1, CertificateSHA256: digest,
 	}
 }
 

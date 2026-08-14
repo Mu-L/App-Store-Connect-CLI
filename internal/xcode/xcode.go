@@ -1956,7 +1956,6 @@ func moveExportedIPA(sourcePath, destinationPath string, overwrite bool) error {
 		}
 		// Publication is the commit point. The source lives in Export's owned
 		// temporary directory, whose deferred cleanup handles best-effort removal.
-		_ = source.Close()
 		return nil
 	}
 	// Export runs only on macOS, where rename replaces an existing regular file

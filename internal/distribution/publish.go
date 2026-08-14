@@ -977,8 +977,8 @@ func containsUnsafeText(value string) bool {
 }
 
 func ValidateBucket(raw string) error {
-	if raw == "" || len([]byte(raw)) > 255 || strings.TrimSpace(raw) != raw || containsUnsafeText(raw) {
-		return fmt.Errorf("bucket must be a bounded name without surrounding whitespace, control, or formatting characters")
+	if raw == "" || len([]byte(raw)) > 255 || strings.IndexFunc(raw, unicode.IsSpace) >= 0 || containsUnsafeText(raw) {
+		return fmt.Errorf("bucket must be a bounded name without whitespace, control, or formatting characters")
 	}
 	return nil
 }

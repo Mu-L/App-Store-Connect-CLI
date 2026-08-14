@@ -109,7 +109,6 @@ func executePublish(ctx context.Context, request publishRequest) (publishExecuti
 	}
 	for _, item := range required {
 		if strings.TrimSpace(item.value) == "" {
-			fmt.Fprintf(diagnostic, "Error: --%s is required\n", item.name)
 			return publishExecutionResult{}, shared.MissingRequiredUsageError()
 		}
 	}

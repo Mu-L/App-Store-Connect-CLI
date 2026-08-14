@@ -39,6 +39,8 @@ var (
 	distributionAfterParentOpenForTest    func()
 	distributionAfterProtectedReadForTest func()
 	distributionSyncDirectoryForTest      = syncDistributionDirectory
+	distributionRenameNoReplaceForTest    = secureopen.RenameNoReplaceInRoot
+	distributionRemoveTemporaryForTest    = func(root *os.Root, name string) error { return root.Remove(name) }
 )
 
 // distributionConfig is deliberately narrower than the standalone commands:
@@ -396,12 +398,11 @@ func validateDistributionSourceURL(raw string) error {
 		return fmt.Errorf("metadata.sourceUrl must be an HTTPS URL without credentials, query, or fragment")
 	}
 	parsed, err := core.ValidatePublicBaseURL(raw)
-	if err != nil || parsed.Path == "" {
-		// ValidatePublicBaseURL intentionally permits a path; the non-empty-path
-		// check only keeps source provenance meaningful.
-		if err != nil {
-			return fmt.Errorf("metadata.sourceUrl: %w", err)
-		}
+	if err != nil {
+		return fmt.Errorf("metadata.sourceUrl: %w", err)
+	}
+	if parsed.Path == "" || parsed.Path == "/" {
+		return fmt.Errorf("metadata.sourceUrl must reference a specific source path")
 	}
 	return nil
 }
@@ -1539,7 +1540,7 @@ func writeProtectedDistributionFileInRoot(rooted *os.Root, name string, data []b
 	}
 	createdViaLink := false
 	if createOnly {
-		if err := secureopen.RenameNoReplaceInRoot(rooted, temporaryName, name); err != nil {
+		if err := distributionRenameNoReplaceForTest(rooted, temporaryName, name); err != nil {
 			if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
 				return err
 			}
@@ -1547,7 +1548,9 @@ func writeProtectedDistributionFileInRoot(rooted *os.Root, name string, data []b
 				return err
 			}
 			createdViaLink = true
-			if err := rooted.Remove(temporaryName); err != nil {
+			if err := distributionRemoveTemporaryForTest(rooted, temporaryName); err != nil {
+				_ = rooted.Remove(name)
+				_ = distributionSyncDirectoryForTest(rooted)
 				return err
 			}
 		}

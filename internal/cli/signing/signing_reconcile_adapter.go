@@ -217,7 +217,11 @@ func ExecuteReconcilePlan(ctx context.Context, options ReconcilePlanOptions) (Re
 		StateDir: options.StateDir, Overwrite: options.Overwrite,
 	})
 	if err != nil {
-		return ReconcilePlanView{}, redactedReconcileExecutionError(ReconcileExecutionErrorRetryable)
+		kind := ReconcileExecutionErrorPlanInvalid
+		if isRetryableReconcileFailure(err) {
+			kind = ReconcileExecutionErrorRetryable
+		}
+		return ReconcilePlanView{}, redactedReconcileExecutionError(kind)
 	}
 	return newReconcilePlanView(plan), nil
 }

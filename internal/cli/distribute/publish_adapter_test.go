@@ -272,8 +272,14 @@ func TestReverifyPrivatePublishIsReadOnly(t *testing.T) {
 	writePrivatePublishTestState(t, receiptPath, linkPath, receipt, links)
 	beforeReceipt, _ := os.ReadFile(receiptPath)
 	beforeLink, _ := os.ReadFile(linkPath)
-	beforeReceiptInfo, _ := os.Stat(receiptPath)
-	beforeLinkInfo, _ := os.Stat(linkPath)
+	beforeReceiptInfo, err := os.Stat(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeLinkInfo, err := os.Stat(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	beforeEntries, _ := os.ReadDir(stateDir)
 
 	result, err := reverifyPrivatePublish(context.Background(), privatePublishVerificationRequest{
@@ -293,8 +299,14 @@ func TestReverifyPrivatePublishIsReadOnly(t *testing.T) {
 	if string(afterReceipt) != string(beforeReceipt) || string(afterLink) != string(beforeLink) {
 		t.Fatal("read-only verification changed publication artifacts")
 	}
-	afterReceiptInfo, _ := os.Stat(receiptPath)
-	afterLinkInfo, _ := os.Stat(linkPath)
+	afterReceiptInfo, err := os.Stat(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterLinkInfo, err := os.Stat(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	afterEntries, _ := os.ReadDir(stateDir)
 	if beforeReceiptInfo.Mode() != afterReceiptInfo.Mode() || !beforeReceiptInfo.ModTime().Equal(afterReceiptInfo.ModTime()) ||
 		beforeLinkInfo.Mode() != afterLinkInfo.Mode() || !beforeLinkInfo.ModTime().Equal(afterLinkInfo.ModTime()) ||

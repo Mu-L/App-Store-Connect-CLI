@@ -264,17 +264,19 @@ func selectReconcileCertificateWithFingerprint(certificates []asc.Resource[asc.C
 			return nil, []string{"certificate SHA-256 must be exactly 64 hexadecimal characters"}
 		}
 		var matches []*signingCertificateRef
+		var parseBlockers []string
 		for _, certificate := range eligible {
 			candidate, err := certificatePlanRef(certificate)
 			if err != nil {
-				return nil, []string{fmt.Sprintf("certificate %s content is missing or invalid: %v", certificate.ID, err)}
+				parseBlockers = append(parseBlockers, fmt.Sprintf("certificate %s content is missing or invalid: %v", certificate.ID, err))
+				continue
 			}
 			if candidate.SHA256 == explicitSHA256 {
 				matches = append(matches, candidate)
 			}
 		}
 		if len(matches) == 0 {
-			return nil, []string{"no eligible iOS distribution certificate matches the requested SHA-256"}
+			return nil, append(parseBlockers, "no eligible iOS distribution certificate matches the requested SHA-256")
 		}
 		if len(matches) > 1 {
 			return nil, []string{"multiple eligible iOS distribution certificates match the requested SHA-256"}
