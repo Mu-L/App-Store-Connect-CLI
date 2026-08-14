@@ -91,64 +91,27 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir string, _ *zip.File,
 		result.Status, result.Reason = CodeSignatureInvalid, "codesign rejected the complete main app"
 		return result
 	}
-	entitlementsData, err := runCodeSignTool(ctx, "/usr/bin/codesign", "-d", "--entitlements", ":-", appPath)
-	if err != nil {
-		result.Status, result.Reason = CodeSignatureInvalid, "could not extract signed main-app entitlements"
-		return result
-	}
-	var entitlements map[string]any
-	if err := decodeBoundedPlist(entitlementsData, &entitlements); err != nil {
-		result.Status, result.Reason = CodeSignatureInvalid, "signed main-app entitlements are invalid"
-		return result
-	}
-	appIdentifier, ok := entitlements["application-identifier"].(string)
-	if !ok || strings.TrimSpace(appIdentifier) == "" {
-		result.Status, result.Reason = CodeSignatureInvalid, "signed main-app application identifier is missing"
-		return result
-	}
-	teamIdentifier, ok := entitlements["com.apple.developer.team-identifier"].(string)
-	if !ok || strings.TrimSpace(teamIdentifier) == "" {
-		result.Status, result.Reason = CodeSignatureInvalid, "signed main-app team identifier is missing"
-		return result
-	}
-	profileApplicationID, _ := profile.Entitlements["application-identifier"].(string)
-	if strings.TrimSpace(teamIdentifier) != onlyTrimmed(profile.TeamIdentifier) || !entitlementValuePermits(profileApplicationID, appIdentifier) {
-		result.Status, result.Reason = CodeSignatureInvalid, "signed main-app entitlements do not match the embedded profile team and application identifier"
-		return result
-	}
-	if profileDebug, ok := profile.Entitlements["get-task-allow"].(bool); !ok {
-		result.Status, result.Reason = CodeSignatureInvalid, "embedded profile get-task-allow entitlement is missing or invalid"
-		return result
-	} else if signedDebug, exists := entitlements["get-task-allow"]; exists {
-		debug, ok := signedDebug.(bool)
-		if !ok || debug != profileDebug {
-			result.Status, result.Reason = CodeSignatureInvalid, "signed get-task-allow entitlement is not permitted by the embedded profile"
-			return result
-		}
-	} else if profileDebug {
-		result.Status, result.Reason = CodeSignatureInvalid, "signed get-task-allow entitlement is missing for a development profile"
-		return result
-	}
-	for key, signedValue := range entitlements {
-		profileValue, exists := profile.Entitlements[key]
-		if !exists || !entitlementValuePermits(profileValue, signedValue) {
-			result.Status, result.Reason = CodeSignatureInvalid, "signed main-app entitlement is not permitted by the embedded profile: "+key
-			return result
-		}
-	}
-
+	mainExecutablePath := filepath.Join(appPath, executable)
 	codePaths, err := enumerateMachOFiles(appPath)
 	if err != nil {
 		result.Status, result.Reason = CodeSignatureInvalid, "could not enumerate nested signed code: "+err.Error()
 		return result
 	}
-	mainExecutablePath := filepath.Join(appPath, executable)
 	if !containsPath(codePaths, mainExecutablePath) {
 		result.Status, result.Reason = CodeSignatureInvalid, "CFBundleExecutable is not a Mach-O file in the main app"
 		return result
 	}
+	mainArchitectures, err := verifyMainExecutableEntitlements(ctx, mainExecutablePath, profile)
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+			result.Status, result.Reason = codeVerificationFailure(err, "main executable")
+		} else {
+			result.Status, result.Reason = CodeSignatureInvalid, err.Error()
+		}
+		return result
+	}
 	allowed := certificateFingerprintSet(profile.DeveloperCertificates)
-	mainFingerprints, err := codeObjectFingerprints(ctx, directory, 0, mainExecutablePath)
+	mainFingerprints, err := codeObjectFingerprintsForArchitectures(ctx, directory, 0, mainExecutablePath, mainArchitectures)
 	if err != nil {
 		result.Status, result.Reason = codeVerificationFailure(err, "main executable")
 		return result
@@ -189,6 +152,68 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir string, _ *zip.File,
 	result.Reason = "complete main app, every nested Mach-O code object, signed entitlements, and profile certificate binding verified"
 	result.SignerCertificateSHA256Fingerprints = canonicalSet(mainFingerprints)
 	return result
+}
+
+func verifyMainExecutableEntitlements(ctx context.Context, codePath string, profile parsedProfile) ([]string, error) {
+	architectures, err := codeObjectArchitectures(ctx, codePath)
+	if err != nil {
+		return nil, err
+	}
+	for _, architecture := range architectures {
+		entitlementsData, err := runCodeSignTool(
+			ctx,
+			"/usr/bin/codesign",
+			"-d",
+			"-a",
+			architecture,
+			"--entitlements",
+			":-",
+			codePath,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("could not extract signed main-app entitlements for architecture %s: %w", architecture, err)
+		}
+		if err := validateSignedMainAppEntitlements(entitlementsData, profile); err != nil {
+			return nil, err
+		}
+	}
+	return architectures, nil
+}
+
+func validateSignedMainAppEntitlements(entitlementsData []byte, profile parsedProfile) error {
+	var entitlements map[string]any
+	if err := decodeBoundedPlist(entitlementsData, &entitlements); err != nil {
+		return fmt.Errorf("signed main-app entitlements are invalid")
+	}
+	appIdentifier, ok := entitlements["application-identifier"].(string)
+	if !ok || strings.TrimSpace(appIdentifier) == "" {
+		return fmt.Errorf("signed main-app application identifier is missing")
+	}
+	teamIdentifier, ok := entitlements["com.apple.developer.team-identifier"].(string)
+	if !ok || strings.TrimSpace(teamIdentifier) == "" {
+		return fmt.Errorf("signed main-app team identifier is missing")
+	}
+	profileApplicationID, _ := profile.Entitlements["application-identifier"].(string)
+	if strings.TrimSpace(teamIdentifier) != onlyTrimmed(profile.TeamIdentifier) || !entitlementValuePermits(profileApplicationID, appIdentifier) {
+		return fmt.Errorf("signed main-app entitlements do not match the embedded profile team and application identifier")
+	}
+	if profileDebug, ok := profile.Entitlements["get-task-allow"].(bool); !ok {
+		return fmt.Errorf("embedded profile get-task-allow entitlement is missing or invalid")
+	} else if signedDebug, exists := entitlements["get-task-allow"]; exists {
+		debug, ok := signedDebug.(bool)
+		if !ok || debug != profileDebug {
+			return fmt.Errorf("signed get-task-allow entitlement is not permitted by the embedded profile")
+		}
+	} else if profileDebug {
+		return fmt.Errorf("signed get-task-allow entitlement is missing for a development profile")
+	}
+	for key, signedValue := range entitlements {
+		profileValue, exists := profile.Entitlements[key]
+		if !exists || !entitlementValuePermits(profileValue, signedValue) {
+			return fmt.Errorf("signed main-app entitlement is not permitted by the embedded profile: %s", key)
+		}
+	}
+	return nil
 }
 
 func enumerateMachOFiles(appPath string) ([]string, error) {
@@ -295,6 +320,14 @@ func isValidFatMachO(file *os.File, fileSize int64, order binary.ByteOrder, arch
 }
 
 func codeObjectFingerprints(ctx context.Context, directory string, objectIndex int, codePath string) ([]string, error) {
+	architectures, err := codeObjectArchitectures(ctx, codePath)
+	if err != nil {
+		return nil, err
+	}
+	return codeObjectFingerprintsForArchitectures(ctx, directory, objectIndex, codePath, architectures)
+}
+
+func codeObjectArchitectures(ctx context.Context, codePath string) ([]string, error) {
 	archOutput, err := runCodeSignTool(ctx, "/usr/bin/lipo", "-archs", codePath)
 	if err != nil {
 		return nil, err
@@ -303,11 +336,22 @@ func codeObjectFingerprints(ctx context.Context, directory string, objectIndex i
 	if len(architectures) == 0 || len(architectures) > 64 {
 		return nil, fmt.Errorf("invalid architecture list")
 	}
-	var fingerprints []string
-	for architectureIndex, architecture := range architectures {
+	seen := make(map[string]struct{}, len(architectures))
+	for _, architecture := range architectures {
 		if err := validateArchitecture(architecture); err != nil {
 			return nil, err
 		}
+		if _, exists := seen[architecture]; exists {
+			return nil, fmt.Errorf("duplicate architecture")
+		}
+		seen[architecture] = struct{}{}
+	}
+	return architectures, nil
+}
+
+func codeObjectFingerprintsForArchitectures(ctx context.Context, directory string, objectIndex int, codePath string, architectures []string) ([]string, error) {
+	var fingerprints []string
+	for architectureIndex, architecture := range architectures {
 		prefix := path.Join(directory, fmt.Sprintf("certificate-%d-%d-", objectIndex, architectureIndex))
 		if _, err := runCodeSignTool(ctx, "/usr/bin/codesign", "-d", "-a", architecture, "--extract-certificates="+prefix, codePath); err != nil {
 			return nil, err

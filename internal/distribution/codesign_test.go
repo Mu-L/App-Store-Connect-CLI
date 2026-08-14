@@ -44,7 +44,7 @@ func TestInspectIPAVerifiesEveryMainExecutableArchitectureAgainstProfile(t *test
 				}
 				verified = true
 			}
-			if len(args) > 0 && args[0] == "-d" && len(args) > 3 && args[1] == "--entitlements" && args[2] == ":-" {
+			if len(args) == 6 && args[0] == "-d" && args[1] == "-a" && args[3] == "--entitlements" && args[4] == ":-" {
 				return plist.Marshal(map[string]any{
 					"application-identifier":              "TEAM123.com.example.demo",
 					"com.apple.developer.team-identifier": "TEAM123",
@@ -84,6 +84,175 @@ func TestInspectIPAVerifiesEveryMainExecutableArchitectureAgainstProfile(t *test
 	}
 }
 
+func TestInspectIPARejectsEntitlementMismatchInSecondaryArchitecture(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("codesign verification is macOS-only")
+	}
+	profile := signedProfile(t, profileFixture{BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Now().Add(time.Hour)})
+	message, err := pkcs7.Parse(profile)
+	if err != nil || len(message.Certificates) == 0 {
+		t.Fatalf("parse fixture profile: %v", err)
+	}
+	leaf := message.Certificates[0].Raw
+	runCodeSignTool = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "/usr/bin/lipo" {
+			return []byte("arm64 x86_64\n"), nil
+		}
+		if len(args) == 6 && args[0] == "-d" && args[1] == "-a" && args[3] == "--entitlements" && args[4] == ":-" {
+			entitlements := map[string]any{
+				"application-identifier":              "TEAM123.com.example.demo",
+				"com.apple.developer.team-identifier": "TEAM123",
+			}
+			for index, argument := range args {
+				if argument == "-a" && index+1 < len(args) && args[index+1] == "x86_64" {
+					entitlements["get-task-allow"] = true
+				}
+			}
+			return plist.Marshal(entitlements, plist.XMLFormat)
+		}
+		for _, argument := range args {
+			if strings.HasPrefix(argument, "--extract-certificates=") {
+				return nil, os.WriteFile(strings.TrimPrefix(argument, "--extract-certificates=")+"0", leaf, 0o600)
+			}
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
+	path := writeIPA(t, map[string][]byte{
+		"Payload/Demo.app/Info.plist": plistBytes(t, map[string]any{
+			"CFBundleIdentifier": "com.example.demo", "CFBundleName": "Demo",
+			"CFBundleShortVersionString": "1.0", "CFBundleVersion": "1", "CFBundleExecutable": "Demo",
+		}),
+		"Payload/Demo.app/Demo":                     fakeMachO("main"),
+		"Payload/Demo.app/embedded.mobileprovision": profile,
+	})
+	got := inspectPath(t, path, false)
+	if got.Signing.CodeSignatureVerification.Status != CodeSignatureInvalid || !strings.Contains(got.Signing.CodeSignatureVerification.Reason, "get-task-allow") {
+		t.Fatalf("verification=%#v", got.Signing.CodeSignatureVerification)
+	}
+}
+
+func TestVerifyMainExecutableEntitlementsQueriesEveryArchitectureOnce(t *testing.T) {
+	profile := entitlementTestProfile()
+	queries := make(map[string]int)
+	runCodeSignTool = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "/usr/bin/lipo" {
+			return []byte("arm64 x86_64\n"), nil
+		}
+		architecture := requireEntitlementDisplayArgs(t, args, "/tmp/Demo")
+		queries[architecture]++
+		entitlements := validMainEntitlements()
+		if architecture == "x86_64" {
+			entitlements["get-task-allow"] = true
+		}
+		return plist.Marshal(entitlements, plist.XMLFormat)
+	}
+	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
+
+	_, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", profile)
+	if err == nil || !strings.Contains(err.Error(), "get-task-allow") {
+		t.Fatalf("verifyMainExecutableEntitlements() error = %v, want secondary-architecture mismatch", err)
+	}
+	if queries["arm64"] != 1 || queries["x86_64"] != 1 || len(queries) != 2 {
+		t.Fatalf("entitlement architecture queries = %#v, want each architecture exactly once", queries)
+	}
+}
+
+func TestVerifyMainExecutableEntitlementsFailsClosedPerSlice(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		secondary  func() ([]byte, error)
+		wantReason string
+	}{
+		{
+			name:       "extraction failure",
+			secondary:  func() ([]byte, error) { return nil, errors.New("codesign failed") },
+			wantReason: "could not extract signed main-app entitlements for architecture x86_64",
+		},
+		{
+			name:       "malformed plist",
+			secondary:  func() ([]byte, error) { return []byte("not a plist"), nil },
+			wantReason: "signed main-app entitlements are invalid",
+		},
+		{
+			name: "missing required entitlement",
+			secondary: func() ([]byte, error) {
+				return plist.Marshal(map[string]any{
+					"com.apple.developer.team-identifier": "TEAM123",
+				}, plist.XMLFormat)
+			},
+			wantReason: "signed main-app application identifier is missing",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var queried []string
+			runCodeSignTool = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "/usr/bin/lipo" {
+					return []byte("arm64 x86_64\n"), nil
+				}
+				architecture := requireEntitlementDisplayArgs(t, args, "/tmp/Demo")
+				queried = append(queried, architecture)
+				if architecture == "x86_64" {
+					return test.secondary()
+				}
+				return plist.Marshal(validMainEntitlements(), plist.XMLFormat)
+			}
+			t.Cleanup(func() { runCodeSignTool = runBoundedTool })
+
+			_, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", entitlementTestProfile())
+			if err == nil || !strings.Contains(err.Error(), test.wantReason) {
+				t.Fatalf("verifyMainExecutableEntitlements() error = %v, want %q", err, test.wantReason)
+			}
+			if strings.Join(queried, ",") != "arm64,x86_64" {
+				t.Fatalf("queried architectures = %#v, want both slices once", queried)
+			}
+		})
+	}
+}
+
+func TestVerifyMainExecutableEntitlementsPreservesThinBinaryBehavior(t *testing.T) {
+	var queried []string
+	runCodeSignTool = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "/usr/bin/lipo" {
+			return []byte("arm64\n"), nil
+		}
+		queried = append(queried, requireEntitlementDisplayArgs(t, args, "/tmp/Demo"))
+		return plist.Marshal(validMainEntitlements(), plist.XMLFormat)
+	}
+	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
+
+	architectures, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", entitlementTestProfile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(architectures, ",") != "arm64" || strings.Join(queried, ",") != "arm64" {
+		t.Fatalf("architectures=%#v queried=%#v, want one arm64 slice", architectures, queried)
+	}
+}
+
+func TestVerifyMainExecutableEntitlementsRejectsInvalidLipoOutput(t *testing.T) {
+	for _, output := range []string{"arm64 bad;architecture\n", "arm64 arm64\n"} {
+		t.Run(strings.TrimSpace(output), func(t *testing.T) {
+			codesignCalled := false
+			runCodeSignTool = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				if name == "/usr/bin/lipo" {
+					return []byte(output), nil
+				}
+				codesignCalled = true
+				return nil, nil
+			}
+			t.Cleanup(func() { runCodeSignTool = runBoundedTool })
+
+			if _, err := verifyMainExecutableEntitlements(context.Background(), "/tmp/Demo", entitlementTestProfile()); err == nil {
+				t.Fatal("verifyMainExecutableEntitlements() error = nil, want invalid architecture rejection")
+			}
+			if codesignCalled {
+				t.Fatal("codesign was called with unvalidated lipo output")
+			}
+		})
+	}
+}
+
 func TestInspectIPARejectsNestedCodeSignedByDifferentLeafEvenWhenDeepVerifyPasses(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("codesign verification is macOS-only")
@@ -104,7 +273,7 @@ func TestInspectIPARejectsNestedCodeSignedByDifferentLeafEvenWhenDeepVerifyPasse
 		if name == "/usr/bin/lipo" {
 			return []byte("arm64\n"), nil
 		}
-		if len(args) > 3 && args[1] == "--entitlements" && args[2] == ":-" {
+		if len(args) == 6 && args[0] == "-d" && args[1] == "-a" && args[3] == "--entitlements" && args[4] == ":-" {
 			return plist.Marshal(map[string]any{
 				"application-identifier":              "TEAM123.com.example.demo",
 				"com.apple.developer.team-identifier": "TEAM123",
@@ -169,7 +338,7 @@ func TestInspectIPARejectsSignerOutsideEmbeddedProfile(t *testing.T) {
 				return nil, os.WriteFile(strings.TrimPrefix(argument, "--extract-certificates=")+"0", otherLeaf, 0o600)
 			}
 		}
-		if len(args) > 3 && args[1] == "--entitlements" && args[2] == ":-" {
+		if len(args) == 6 && args[0] == "-d" && args[1] == "-a" && args[3] == "--entitlements" && args[4] == ":-" {
 			return plist.Marshal(map[string]any{
 				"application-identifier":              "TEAM123.com.example.demo",
 				"com.apple.developer.team-identifier": "TEAM123",
@@ -274,6 +443,40 @@ func validExecutableIPA(t *testing.T) string {
 			BundleID: "com.example.demo", Devices: []string{"one"}, Expires: time.Now().Add(time.Hour),
 		}),
 	})
+}
+
+func entitlementTestProfile() parsedProfile {
+	return parsedProfile{embeddedProfile: embeddedProfile{
+		TeamIdentifier: []string{"TEAM123"},
+		Entitlements: map[string]any{
+			"application-identifier":              "TEAM123.com.example.*",
+			"com.apple.developer.team-identifier": "TEAM123",
+			"get-task-allow":                      false,
+		},
+	}}
+}
+
+func validMainEntitlements() map[string]any {
+	return map[string]any{
+		"application-identifier":              "TEAM123.com.example.demo",
+		"com.apple.developer.team-identifier": "TEAM123",
+	}
+}
+
+func requireEntitlementDisplayArgs(t *testing.T, args []string, codePath string) string {
+	t.Helper()
+	if len(args) != 6 ||
+		args[0] != "-d" ||
+		args[1] != "-a" ||
+		args[3] != "--entitlements" ||
+		args[4] != ":-" ||
+		args[5] != codePath {
+		t.Fatalf("unexpected codesign entitlement args: %#v", args)
+	}
+	if err := validateArchitecture(args[2]); err != nil {
+		t.Fatalf("unvalidated architecture argument %q: %v", args[2], err)
+	}
+	return args[2]
 }
 
 func fakeMachO(payload string) []byte {

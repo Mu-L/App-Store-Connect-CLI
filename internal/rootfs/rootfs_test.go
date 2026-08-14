@@ -841,7 +841,10 @@ func TestErrorMessagesIdentifyRejectedPath(t *testing.T) {
 }
 
 func TestOpenRootPinsOriginalDirectoryAcrossPathReplacement(t *testing.T) {
-	parent := t.TempDir()
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	directory := filepath.Join(parent, "root")
 	if err := os.Mkdir(directory, 0o755); err != nil {
 		t.Fatal(err)
@@ -863,6 +866,94 @@ func TestOpenRootPinsOriginalDirectoryAcrossPathReplacement(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(directory+"-original", "sentinel")); err != nil {
 		t.Fatalf("pinned root did not address original directory: %v", err)
+	}
+}
+
+func TestOpenRootRejectsSelectedPathSwappedBeforeOpen(t *testing.T) {
+	requireSymlinks(t)
+	for _, test := range []struct {
+		name         string
+		rootRelative string
+		swapRelative string
+		outsideRoot  string
+	}{
+		{name: "final root", rootRelative: "root", swapRelative: "root"},
+		{name: "intermediate directory", rootRelative: filepath.Join("selected", "root"), swapRelative: "selected", outsideRoot: "root"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parent, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			directory := filepath.Join(parent, test.rootRelative)
+			if err := os.MkdirAll(directory, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			swapPath := filepath.Join(parent, test.swapRelative)
+			outside, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.outsideRoot != "" {
+				if err := os.Mkdir(filepath.Join(outside, test.outsideRoot), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			root := mustRoot(t, directory)
+			root.beforeOpenRootForTest = func() {
+				if err := os.Rename(swapPath, swapPath+"-original"); err != nil {
+					t.Fatalf("rename selected path: %v", err)
+				}
+				if err := os.Symlink(outside, swapPath); err != nil {
+					t.Fatalf("replace selected path with symlink: %v", err)
+				}
+			}
+
+			opened, openErr := root.OpenRoot()
+			if opened != nil {
+				if openErr == nil {
+					_ = opened.WriteFile("escaped", []byte("unsafe"), 0o600)
+				}
+				_ = opened.Close()
+			}
+			if !errors.Is(openErr, ErrSymlink) {
+				t.Fatalf("OpenRoot() error = %v, want ErrSymlink", openErr)
+			}
+			if _, err := os.Lstat(filepath.Join(outside, test.outsideRoot, "escaped")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("OpenRoot() wrote through substituted path: %v", err)
+			}
+		})
+	}
+}
+
+func TestOpenRootPreservesSelectedSymlinkedParentLayout(t *testing.T) {
+	requireSymlinks(t)
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	physicalParent := filepath.Join(parent, "physical")
+	directory := filepath.Join(physicalParent, "root")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symlinkedParent := filepath.Join(parent, "selected")
+	if err := os.Symlink(physicalParent, symlinkedParent); err != nil {
+		t.Fatal(err)
+	}
+
+	root := mustRoot(t, filepath.Join(symlinkedParent, "root"))
+	opened, err := root.OpenRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	if err := opened.WriteFile("sentinel", []byte("selected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, filepath.Join(directory, "sentinel")); got != "selected" {
+		t.Fatalf("pinned symlinked parent content = %q", got)
 	}
 }
 

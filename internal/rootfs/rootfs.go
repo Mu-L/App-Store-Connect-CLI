@@ -42,13 +42,17 @@ const (
 
 // Root is a trusted directory anchor for rooted filesystem operations.
 type Root struct {
-	path string
+	path     string
+	openPath string
 	// internalSymlinks tolerates symlinked components below the root when they
 	// resolve back inside the root.
 	internalSymlinks bool
 	// afterValidationForTest makes path-swap regressions deterministic. It is
 	// intentionally unexported and unset outside package tests.
 	afterValidationForTest func()
+	// beforeOpenRootForTest makes trusted-root path-swap regressions
+	// deterministic. It is intentionally unexported and unset outside tests.
+	beforeOpenRootForTest func()
 }
 
 // New returns a Root anchored at path. The root itself is operator-selected and
@@ -61,7 +65,14 @@ func New(path string) (Root, error) {
 	if err != nil {
 		return Root{}, fmt.Errorf("resolve trusted root %q: %w", path, err)
 	}
-	return Root{path: filepath.Clean(absolute)}, nil
+	absolute = filepath.Clean(absolute)
+	openPath := absolute
+	if physicalParent, err := filepath.EvalSymlinks(filepath.Dir(absolute)); err == nil {
+		openPath = filepath.Join(physicalParent, filepath.Base(absolute))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Root{}, fmt.Errorf("resolve trusted root parent %q: %w", path, err)
+	}
+	return Root{path: absolute, openPath: openPath}, nil
 }
 
 // Path returns the absolute trusted root path.
@@ -69,15 +80,16 @@ func (r Root) Path() string {
 	return r.path
 }
 
-// OpenRoot opens the trusted root without following a symlink substituted for
-// the root path. Each existing path component is pinned and compared with the
-// directory handle opened from its parent before the next component is used.
+// OpenRoot opens the trusted root without following symlinks introduced after
+// New selected it. New preserves pre-existing symlinked parent layouts by
+// recording their physical parent, while the final root itself must be a
+// directory rather than a symlink. Every physical component and the final root
+// are pinned from parent directory handles.
 func (r Root) OpenRoot() (*os.Root, error) {
-	physical, err := filepath.EvalSymlinks(r.path)
-	if err != nil {
-		return nil, err
+	if r.beforeOpenRootForTest != nil {
+		r.beforeOpenRootForTest()
 	}
-	return openAbsoluteRootNoFollow(physical)
+	return openAbsoluteRootNoFollow(r.openPath)
 }
 
 func openAbsoluteRootNoFollow(absolute string) (*os.Root, error) {
