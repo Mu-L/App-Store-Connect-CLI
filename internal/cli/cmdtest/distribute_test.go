@@ -6,11 +6,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"math/big"
 	"os"
@@ -92,19 +94,74 @@ func TestDistributeInspectJSONPrivacyAndExplicitDisclosure(t *testing.T) {
 	}
 }
 
-func TestDistributeInspectTableAndMarkdown(t *testing.T) {
-	ipa := writeDistributionIPA(t, "device")
+func TestDistributeInspectTableAndMarkdownDeviceDisclosure(t *testing.T) {
+	ipa := writeDistributionIPA(t, "private-device-udid")
+	ipaData, err := os.ReadFile(ipa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(ipaData))
 	for _, format := range []string{"table", "markdown"} {
 		t.Run(format, func(t *testing.T) {
 			stdout, stderr, runErr := runRootCommand(t, []string{"distribute", "inspect", "--ipa", ipa, "--output", format})
 			if runErr != nil || stderr != "" {
 				t.Fatalf("run error=%v stderr=%q", runErr, stderr)
 			}
-			if !strings.Contains(stdout, "Bundle ID") || !strings.Contains(stdout, "com.example.demo") {
-				t.Fatalf("unexpected %s: %s", format, stdout)
+			if want := expectedDistributeInspectHumanOutput(format, digest, false); stdout != want {
+				t.Fatalf("default %s output:\n%s\nwant:\n%s", format, stdout, want)
+			}
+
+			stdout, stderr, runErr = runRootCommand(t, []string{
+				"distribute", "inspect", "--ipa", ipa, "--include-devices", "--output", format,
+			})
+			if runErr != nil || stderr != "" {
+				t.Fatalf("run with --include-devices error=%v stderr=%q", runErr, stderr)
+			}
+			if want := expectedDistributeInspectHumanOutput(format, digest, true); stdout != want {
+				t.Fatalf("public %s output:\n%s\nwant:\n%s", format, stdout, want)
 			}
 		})
 	}
+}
+
+func expectedDistributeInspectHumanOutput(format, digest string, includeDevices bool) string {
+	rows := [][]string{
+		{"Metadata Eligible", "true"},
+		{"Code Signature", "invalid"},
+		{"Profile Integrity", "verified"},
+		{"Profile Trust", "invalid"},
+		{"Bundle ID", "com.example.demo"},
+		{"Title", "Demo"},
+		{"Version", "1.0"},
+		{"Build", "7"},
+		{"Profile Class", "ad-hoc"},
+		{"Profile UUID", "fixture-profile"},
+		{"Team ID", "TEAM123"},
+		{"Devices", "1"},
+	}
+	if includeDevices {
+		rows = append(rows, []string{"Device UDIDs", "private-device-udid"})
+	}
+	rows = append(rows, []string{"IPA SHA-256", digest}, []string{"Issues", ""})
+
+	var output strings.Builder
+	if format == "markdown" {
+		output.WriteString("| Field             | Value                                                            |\n")
+		output.WriteString("|:------------------|:-----------------------------------------------------------------|\n")
+		for _, row := range rows {
+			fmt.Fprintf(&output, "| %-17s | %-64s |\n", row[0], row[1])
+		}
+		return output.String()
+	}
+
+	output.WriteString("┌───────────────────┬──────────────────────────────────────────────────────────────────┐\n")
+	output.WriteString("│       Field       │                              Value                               │\n")
+	output.WriteString("├───────────────────┼──────────────────────────────────────────────────────────────────┤\n")
+	for _, row := range rows {
+		fmt.Fprintf(&output, "│ %-17s │ %-64s │\n", row[0], row[1])
+	}
+	output.WriteString("└───────────────────┴──────────────────────────────────────────────────────────────────┘\n")
+	return output.String()
 }
 
 func TestDistributePrepareFailsClosedForUnverifiedFixture(t *testing.T) {
