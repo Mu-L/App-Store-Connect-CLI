@@ -136,7 +136,7 @@ func (c *Client) CreateDeveloperAppGroup(ctx context.Context, request DeveloperA
 	if request.Name == "" {
 		return nil, fmt.Errorf("name is required")
 	}
-	if err := validateDeveloperAppGroupIdentifier(request.Identifier); err != nil {
+	if err := ValidateDeveloperAppGroupIdentifier(request.Identifier); err != nil {
 		return nil, err
 	}
 	if err := c.ensureDeveloperPortalSession(ctx); err != nil {
@@ -253,16 +253,28 @@ func decodeDeveloperAppGroup(payload developerAppGroupPayload) (DeveloperAppGrou
 	return group, nil
 }
 
-func validateDeveloperAppGroupIdentifier(identifier string) error {
+// ValidateDeveloperAppGroupIdentifier validates an App Group identifier before
+// any Developer Portal request is attempted.
+func ValidateDeveloperAppGroupIdentifier(identifier string) error {
 	identifier = strings.TrimSpace(identifier)
 	if identifier == "" {
 		return fmt.Errorf("identifier is required")
 	}
 	if !strings.HasPrefix(identifier, "group.") {
-		return fmt.Errorf("app group identifier must use the group. prefix")
+		return fmt.Errorf("identifier must start with \"group.\"")
 	}
-	if strings.ContainsAny(identifier, " \t\r\n") {
-		return fmt.Errorf("app group identifier must not contain whitespace")
+	suffix := strings.TrimPrefix(identifier, "group.")
+	if suffix == "" {
+		return fmt.Errorf("identifier must include a name after \"group.\"")
+	}
+	for _, character := range suffix {
+		if character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			character == '-' || character == '.' {
+			continue
+		}
+		return fmt.Errorf("identifier may contain only letters, numbers, hyphens, and periods")
 	}
 	return nil
 }

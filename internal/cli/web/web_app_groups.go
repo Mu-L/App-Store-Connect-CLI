@@ -128,16 +128,16 @@ Example:
 			}
 			resolvedName := strings.TrimSpace(*name)
 			resolvedIdentifier := strings.TrimSpace(*identifier)
-			switch {
-			case resolvedName == "":
+			if resolvedName == "" {
 				return shared.UsageError("--name is required")
-			case resolvedIdentifier == "":
+			}
+			if resolvedIdentifier == "" {
 				return shared.UsageError("--identifier is required")
-			case !strings.HasPrefix(resolvedIdentifier, "group."):
-				return shared.UsageError("--identifier must start with group.")
-			case strings.ContainsAny(resolvedIdentifier, " \t\r\n"):
-				return shared.UsageError("--identifier must not contain whitespace")
-			case !*confirm:
+			}
+			if err := webcore.ValidateDeveloperAppGroupIdentifier(resolvedIdentifier); err != nil {
+				return shared.UsageError("--" + err.Error())
+			}
+			if !*confirm {
 				return shared.UsageError("--confirm is required")
 			}
 
@@ -171,7 +171,7 @@ func WebAppGroupsAssignCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web app-groups assign", flag.ExitOnError)
 	groupID := fs.String("group", "", "Opaque App Group resource ID from app-groups list")
 	bundleID := fs.String("bundle-id", "", "Opaque Developer Portal Bundle ID resource ID")
-	confirm := fs.Bool("confirm", false, "Confirm assigning this App Group")
+	confirm := fs.Bool("confirm", false, "Confirm assignment; a changed App ID invalidates existing provisioning profiles")
 	authFlags := bindWebSessionFlags(fs)
 	output := shared.BindOutputFlags(fs)
 	return &ffcli.Command{
@@ -181,6 +181,9 @@ func WebAppGroupsAssignCommand() *ffcli.Command {
 		LongHelp: `Assign an existing App Group to a Bundle ID while preserving every current
 Bundle ID capability and relationship. The operation also enables APP_GROUPS
 when needed and is idempotent when the association already exists.
+
+When this command changes the App ID, it invalidates existing provisioning profiles
+that contain that App ID. Regenerate affected profiles before the next signed build.
 
 Use opaque resource IDs returned by "asc web app-groups list" and
 "asc bundle-ids list".
