@@ -20,7 +20,7 @@ import (
 // command. Unlike the generated mutation commands, this sends multipart image
 // data rather than a JSON payload.
 func PlatformAssetUploadCommand() *ffcli.Command {
-	fs := flag.NewFlagSet("ads platform assets upload", flag.ExitOnError)
+	fs := flag.NewFlagSet("ads assets upload", flag.ExitOnError)
 	filePath := fs.String("file", "", "Path to image file (PNG, JPEG, or HEIC) (required)")
 	brandID := fs.String("brand", "", "Apple Ads business brand ID (required)")
 	common := commonFlags{
@@ -30,17 +30,17 @@ func PlatformAssetUploadCommand() *ffcli.Command {
 	output := shared.BindOutputFlags(fs)
 	return &ffcli.Command{
 		Name:       "upload",
-		ShortUsage: "asc ads platform assets upload --file IMAGE --brand ID --ad-account ID",
+		ShortUsage: "asc ads assets upload --file IMAGE --brand ID --ad-account ID",
 		ShortHelp:  "Upload an Apple Ads brand image asset.",
 		LongHelp: `Upload an Apple Ads brand image asset.
 
 The image is sent as multipart/form-data with the promoted object type
 BUSINESS_BRAND. Supported filename extensions are .png, .jpg, .jpeg, and .heic.
-Apple processes the asset after upload. Poll "asc ads platform assets view"
+Apple processes the asset after upload. Poll "asc ads assets view"
 until eligibility.status is ready before using the asset in a creative.
 
 Example:
-  asc ads platform assets upload --file ./brand.png --brand "BRAND_ID" --ad-account "AD_ACCOUNT_ID"`,
+  asc ads assets upload --file ./brand.png --brand "BRAND_ID" --ad-account "AD_ACCOUNT_ID"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -60,19 +60,19 @@ Example:
 
 			file, size, fileName, contentType, err := openPlatformAssetUploadFile(fileValue)
 			if err != nil {
-				return fmt.Errorf("ads platform assets upload: %w", err)
+				return fmt.Errorf("ads assets upload: %w", err)
 			}
 			defer file.Close()
 
 			client, err := resolvePlatformClient(ctx, common, appleads.ContextAdAccount)
 			if err != nil {
-				return fmt.Errorf("ads platform assets upload: %w", err)
+				return fmt.Errorf("ads assets upload: %w", err)
 			}
 			uploadCtx, cancel := shared.ContextWithUploadTimeout(ctx)
 			defer cancel()
 			response, err := client.UploadPlatformAsset(uploadCtx, file, size, fileName, contentType, brandValue)
 			if err != nil {
-				return fmt.Errorf("ads platform assets upload: %w", err)
+				return fmt.Errorf("ads assets upload: %w", err)
 			}
 			return shared.PrintOutput(response, *output.Output, *output.Pretty)
 		},
