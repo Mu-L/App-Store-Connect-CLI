@@ -223,9 +223,6 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 	}
 	var expandedBytes uint64
 	for _, member := range reader.File {
-		if member.FileInfo().IsDir() {
-			continue
-		}
 		remaining := maxArchiveExpandedBytes - expandedBytes
 		opened, err := member.Open()
 		if err != nil {
