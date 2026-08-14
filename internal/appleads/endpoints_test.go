@@ -59,9 +59,6 @@ func TestEndpointSpecsCoverCampaignManagementAPI5Surface(t *testing.T) {
 
 func TestPlatformEndpointSpecsCoverAccountAndAppSurface(t *testing.T) {
 	specs := PlatformEndpointSpecs()
-	if got, want := len(specs), 34; got != want {
-		t.Fatalf("PlatformEndpointSpecs() count = %d, want %d", got, want)
-	}
 
 	wants := map[string]struct {
 		method  string

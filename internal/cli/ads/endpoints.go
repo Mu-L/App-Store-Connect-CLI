@@ -105,6 +105,9 @@ func buildNodeCommand(node *commandNode, parentPath, commandPrefix []string) *ff
 	if len(commandPrefix) == 0 {
 		subcommands = append(subcommands, workflowSubcommands(path, &flags)...)
 	}
+	if slices.Equal(commandPrefix, []string{"platform"}) {
+		subcommands = append(subcommands, platformWorkflowSubcommands(path)...)
+	}
 
 	command := &ffcli.Command{
 		Name:        node.name,
@@ -236,7 +239,7 @@ func sentenceFromEndpointName(name string) string {
 		{"gets a ", "View a "},
 		{"search for ", "Search for "},
 		{"search ", "Search "},
-		{"query ", "Query "},
+		{"query ", "Find "},
 		{"find ", "Find "},
 		{"create a ", "Create a "},
 		{"create an ", "Create an "},
@@ -444,6 +447,9 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 			}
 		default:
 			raw := value(flags.queryStrings[param.Name])
+			if spec.Name == "platform-search-geo-locations" && (param.Name == "supplySource" || param.Name == "countrycode") {
+				raw = strings.ToUpper(raw)
+			}
 			if raw == "" {
 				if param.Required {
 					return nil, fmt.Errorf("--%s is required", param.Flag)
@@ -477,6 +483,11 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 			return nil, err
 		}
 	}
+	if spec.Name == "platform-search-geo-locations" {
+		if err := validatePlatformGeoSearch(query); err != nil {
+			return nil, err
+		}
+	}
 	return query, nil
 }
 
@@ -503,6 +514,18 @@ func validatePlatformAppSearch(query url.Values) error {
 	}
 	if utf8.RuneCountInString(text) < minimum {
 		return fmt.Errorf("--query must contain at least %d characters", minimum)
+	}
+	return nil
+}
+
+func validatePlatformGeoSearch(query url.Values) error {
+	text := strings.TrimSpace(query.Get("query"))
+	if text != "" && text != "*" && utf8.RuneCountInString(text) < 2 {
+		return fmt.Errorf("--query must contain at least 2 characters")
+	}
+	countryCode := query.Get("countrycode")
+	if countryCode != "" && (len(countryCode) != 2 || !isASCIIAlpha(countryCode[0]) || !isASCIIAlpha(countryCode[1])) {
+		return fmt.Errorf("--country-code must be an ISO 3166-1 alpha-2 country or region code")
 	}
 	return nil
 }

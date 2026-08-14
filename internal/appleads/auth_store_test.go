@@ -32,6 +32,7 @@ func TestStoreCredentialsConfigUsesActiveConfigPath(t *testing.T) {
 func TestStoreCredentialsConfigRoundTripsIndependentAdAccountID(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv(adsBypassKeychainEnvVar, "1")
 	credentials := testAdsCredentials()
 	credentials.AdAccountID = "AD_ACCOUNT"
 
@@ -58,6 +59,7 @@ func TestStoreCredentialsConfigRoundTripsIndependentAdAccountID(t *testing.T) {
 func TestStoreCredentialsConfigCanClearDefaultAdAccountID(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv(adsBypassKeychainEnvVar, "1")
 	credentials := testAdsCredentials()
 	credentials.AdAccountID = "AD_ACCOUNT"
 	if err := StoreCredentialsConfig("ads", credentials); err != nil {
@@ -87,6 +89,7 @@ func TestStoreCredentialsConfigCanClearDefaultAdAccountID(t *testing.T) {
 func TestNamedConfigProfileDoesNotInheritGlobalAdAccountID(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv(adsBypassKeychainEnvVar, "1")
 	credentialsA := testAdsCredentials()
 	credentialsA.AdAccountID = "ACCOUNT_A"
 	credentialsB := testAdsCredentials()
@@ -113,6 +116,78 @@ func TestNamedConfigProfileDoesNotInheritGlobalAdAccountID(t *testing.T) {
 	}
 }
 
+func TestNamedConfigProfileDoesNotInheritPreviousDefaultContexts(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "active-config.json")
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+
+	profileA := testAdsCredentials()
+	profileA.OrgID = "ORG_A"
+	profileA.AdAccountID = "ACCOUNT_A"
+	if err := StoreCredentialsConfig("profile-a", profileA); err != nil {
+		t.Fatalf("StoreCredentialsConfig(profile-a) error: %v", err)
+	}
+
+	profileB := testAdsCredentials()
+	profileB.ClientID = "CLIENT_B"
+	profileB.OrgID = ""
+	profileB.AdAccountID = ""
+	if err := StoreCredentialsConfig("profile-b", profileB); err != nil {
+		t.Fatalf("StoreCredentialsConfig(profile-b) error: %v", err)
+	}
+
+	for _, profile := range []string{"profile-b", ""} {
+		loaded, _, err := GetCredentialsWithSource(profile)
+		if err != nil {
+			t.Fatalf("GetCredentialsWithSource(%q) error: %v", profile, err)
+		}
+		if loaded.OrgID != "" || loaded.AdAccountID != "" {
+			t.Fatalf("GetCredentialsWithSource(%q) contexts = org %q ad account %q, want empty", profile, loaded.OrgID, loaded.AdAccountID)
+		}
+	}
+
+	cfg, err := config.LoadAt(configPath)
+	if err != nil {
+		t.Fatalf("LoadAt() error: %v", err)
+	}
+	if cfg.Ads.DefaultKeyName != "profile-b" || cfg.Ads.OrgID != "" || cfg.Ads.AdAccountID != "" {
+		t.Fatalf("default profile contexts = %+v, want profile-b with empty contexts", cfg.Ads)
+	}
+}
+
+func TestSwitchingDefaultToContextFreeProfileClearsRootContexts(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "active-config.json")
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv(adsBypassKeychainEnvVar, "1")
+
+	profileA := testAdsCredentials()
+	profileA.OrgID = "ORG_A"
+	profileA.AdAccountID = "ACCOUNT_A"
+	if err := StoreCredentialsConfig("profile-a", profileA); err != nil {
+		t.Fatalf("StoreCredentialsConfig(profile-a) error: %v", err)
+	}
+	profileB := testAdsCredentials()
+	profileB.ClientID = "CLIENT_B"
+	profileB.OrgID = ""
+	profileB.AdAccountID = ""
+	if err := StoreCredentialsConfig("profile-b", profileB); err != nil {
+		t.Fatalf("StoreCredentialsConfig(profile-b) error: %v", err)
+	}
+	if err := SetDefaultCredentials("profile-a"); err != nil {
+		t.Fatalf("SetDefaultCredentials(profile-a) error: %v", err)
+	}
+	if err := SetDefaultCredentials("profile-b"); err != nil {
+		t.Fatalf("SetDefaultCredentials(profile-b) error: %v", err)
+	}
+
+	cfg, err := config.LoadAt(configPath)
+	if err != nil {
+		t.Fatalf("LoadAt() error: %v", err)
+	}
+	if cfg.Ads.DefaultKeyName != "profile-b" || cfg.Ads.OrgID != "" || cfg.Ads.AdAccountID != "" {
+		t.Fatalf("switched default contexts = %+v, want profile-b with empty contexts", cfg.Ads)
+	}
+}
+
 func TestRemoveDefaultConfigProfileClearsAdAccountContext(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
@@ -130,7 +205,7 @@ func TestRemoveDefaultConfigProfileClearsAdAccountContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAt() error: %v", err)
 	}
-	if cfg.Ads.DefaultKeyName != "" || cfg.Ads.AdAccountID != "" {
+	if cfg.Ads.DefaultKeyName != "" || cfg.Ads.OrgID != "" || cfg.Ads.AdAccountID != "" {
 		t.Fatalf("removed default left context behind: %+v", cfg.Ads)
 	}
 }

@@ -82,22 +82,20 @@ func PlatformEndpointSpecs() []EndpointSpec {
 			searchLimit,
 		}),
 		platformEndpoint("platform-get-app", "GET", "v1/apps/{adamId}", []string{"apps", "view"}, ContextAdAccount, BodyNone, false, "", "AppDetailsResponse", []ParamSpec{adamIDParam}, nil),
-		platformEndpoint("platform-query-supported-app-languages", "POST", "v1/metadata/apps/supported-languages/query", []string{"apps", "supported-languages", "find"}, ContextAdAccount, BodyObject, true, "QueryRequest", "AppSupportedLanguagesQueryResponse", nil, nil),
-		platformEndpoint("platform-find-app-eligibilities", "POST", "v1/eligibilities/apps/query", []string{"apps", "eligibility", "find"}, ContextAdAccount, BodyObject, true, "EligibilityQueryRequest", "EligibilityQueryResponse", nil, nil),
-		platformEndpoint("platform-find-app-rejection-reasons", "POST", "v1/rejection-reasons/apps/query", []string{"rejection-reasons", "apps", "find"}, ContextAdAccount, BodyObject, true, "CreativeRejectionReasonQueryRequest", "CreativeRejectionReasonQueryResponse", nil, nil),
+		retrySafePlatformEndpoint(platformEndpoint("platform-query-supported-app-languages", "POST", "v1/metadata/apps/supported-languages/query", []string{"apps", "supported-languages", "find"}, ContextAdAccount, BodyObject, true, "QueryRequest", "AppSupportedLanguagesQueryResponse", nil, nil)),
+		retrySafePlatformEndpoint(platformEndpoint("platform-find-app-eligibilities", "POST", "v1/eligibilities/apps/query", []string{"apps", "eligibility", "find"}, ContextAdAccount, BodyObject, true, "EligibilityQueryRequest", "EligibilityQueryResponse", nil, nil)),
+		retrySafePlatformEndpoint(platformEndpoint("platform-find-app-rejection-reasons", "POST", "v1/rejection-reasons/apps/query", []string{"rejection-reasons", "apps", "find"}, ContextAdAccount, BodyObject, true, "CreativeRejectionReasonQueryRequest", "CreativeRejectionReasonQueryResponse", nil, nil)),
 		platformEndpoint("platform-get-app-rejection-reason", "GET", "v1/rejection-reasons/apps/{rejectionReasonId}", []string{"rejection-reasons", "apps", "view"}, ContextAdAccount, BodyNone, false, "", "RejectionReasonResponse", []ParamSpec{rejectionReasonID}, nil),
 	}
 	specs = append(specs, platformMapsEndpointSpecs()...)
+	specs = append(specs, platformCampaignEndpointSpecs()...)
 
 	for i := range specs {
-		if specs[i].Method == "POST" && strings.HasSuffix(specs[i].Path, "/query") {
-			specs[i].RetrySafe = true
-		}
-		if specs[i].Method == "DELETE" {
-			specs[i].RequiresConfirm = true
-		}
 		if specs[i].Name == "platform-search-apps" {
 			specs[i].SupportsPaginate = true
+		}
+		if specs[i].Name == "platform-resolve-geo-locations" {
+			specs[i].RetrySafe = true
 		}
 		if specs[i].Name == "platform-update-ad-account" {
 			specs[i].ConfirmBodyField = "delegations"
@@ -121,6 +119,11 @@ func platformEndpoint(name, method, path string, commandPath []string, context C
 		PathParams:   append([]ParamSpec(nil), pathParams...),
 		QueryParams:  append([]ParamSpec(nil), queryParams...),
 	}
+}
+
+func retrySafePlatformEndpoint(spec EndpointSpec) EndpointSpec {
+	spec.RetrySafe = true
+	return spec
 }
 
 // PlatformEndpointByCommandPath returns a Platform API v1 spec by command path.
