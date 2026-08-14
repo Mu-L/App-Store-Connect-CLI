@@ -61,22 +61,22 @@ Reporting requests keep Apple's pagination and selector fields in the JSON paylo
 
 ```bash
 # App and business-brand reports
-asc ads platform reports apps campaigns --ad-account "AD_ACCOUNT_ID" --file report.json --output json
-asc ads platform reports brands search-terms --ad-account "AD_ACCOUNT_ID" --file report.json --output json
+asc ads reports apps campaigns --ad-account "AD_ACCOUNT_ID" --file report.json --output json
+asc ads reports brands search-terms --ad-account "AD_ACCOUNT_ID" --file report.json --output json
 
 # Read-only insights, recommendations, suggestions, and audit queries
-asc ads platform insights impression-share find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
-asc ads platform recommendations daily-budgets find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
-asc ads platform suggestions keywords find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
-asc ads platform change-history find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
-asc ads platform change-history view --ad-account "AD_ACCOUNT_ID" --detail-id "Campaign.444555666.txn_abc123def456" --limit 100 --offset 0 --output json
+asc ads insights impression-share find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads recommendations daily-budgets find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads suggestions keywords find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads change-history find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads change-history view --ad-account "AD_ACCOUNT_ID" --detail-id "Campaign.444555666.txn_abc123def456" --limit 100 --offset 0 --output json
 ```
 
 Recommendation apply and dismiss operations accept an array payload and require explicit confirmation before the CLI reads the payload or resolves credentials:
 
 ```bash
-asc ads platform recommendations target-cpas apply --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
-asc ads platform recommendations daily-budgets dismiss --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
+asc ads recommendations target-cpas apply --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
+asc ads recommendations daily-budgets dismiss --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
 ```
 
 ## Compatibility and deprecation

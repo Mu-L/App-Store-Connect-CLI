@@ -23,26 +23,21 @@ func TestPlatformCommandInventoryMatchesIndependentFixture(t *testing.T) {
 		"campaigns resume": {},
 	}
 
-	platform := findCommand(AdsCommand(), "platform")
-	if platform == nil {
-		t.Fatal("missing asc ads platform command")
-	}
-
-	leaves := collectPlatformCommandLeaves(platform)
+	leaves := collectDirectPlatformCommandLeaves(AdsCommand())
 	for path, count := range leaves {
 		if count != 1 {
-			t.Errorf("asc ads platform %s is registered %d times, want exactly once", path, count)
+			t.Errorf("asc ads %s is registered %d times, want exactly once", path, count)
 		}
 	}
 
 	for path := range want {
 		if count := leaves[path]; count != 1 {
-			t.Errorf("fixture command asc ads platform %s is registered %d times, want exactly once", path, count)
+			t.Errorf("fixture command asc ads %s is registered %d times, want exactly once", path, count)
 		}
 	}
 	for path := range knownNonEndpointLeaves {
 		if count := leaves[path]; count != 1 {
-			t.Errorf("known non-endpoint command asc ads platform %s is registered %d times, want exactly once", path, count)
+			t.Errorf("known non-endpoint command asc ads %s is registered %d times, want exactly once", path, count)
 		}
 	}
 
@@ -53,7 +48,7 @@ func TestPlatformCommandInventoryMatchesIndependentFixture(t *testing.T) {
 		if _, ok := knownNonEndpointLeaves[path]; ok {
 			continue
 		}
-		t.Errorf("unexpected executable leaf asc ads platform %s", path)
+		t.Errorf("unexpected executable leaf asc ads %s", path)
 	}
 
 	if got, expected := len(leaves), len(want)+len(knownNonEndpointLeaves); got != expected {
@@ -62,9 +57,9 @@ func TestPlatformCommandInventoryMatchesIndependentFixture(t *testing.T) {
 
 	// Upload is represented by a dedicated multipart command rather than the
 	// generated JSON endpoint command, but it must still occupy the fixture leaf.
-	upload := findCommand(AdsCommand(), "platform", "assets", "upload")
+	upload := findCommand(AdsCommand(), "assets", "upload")
 	if upload == nil || upload.Exec == nil {
-		t.Fatal("missing executable asc ads platform assets upload command")
+		t.Fatal("missing executable asc ads assets upload command")
 	}
 }
 
@@ -116,7 +111,7 @@ func platformFixtureCommandPaths(t *testing.T) map[string]struct{} {
 	return paths
 }
 
-func collectPlatformCommandLeaves(root *ffcli.Command) map[string]int {
+func collectDirectPlatformCommandLeaves(root *ffcli.Command) map[string]int {
 	leaves := map[string]int{}
 	var walk func(*ffcli.Command, []string)
 	walk = func(command *ffcli.Command, path []string) {
@@ -130,6 +125,11 @@ func collectPlatformCommandLeaves(root *ffcli.Command) map[string]int {
 			walk(subcommand, append(append([]string(nil), path...), subcommand.Name))
 		}
 	}
-	walk(root, nil)
+	for _, subcommand := range root.Subcommands {
+		if subcommand.Name == "auth" || subcommand.Name == "v5" {
+			continue
+		}
+		walk(subcommand, []string{subcommand.Name})
+	}
 	return leaves
 }
