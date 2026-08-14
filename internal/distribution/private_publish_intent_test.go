@@ -236,7 +236,7 @@ func TestExecutePrivatePublishIntentRejectsTamperAndExpiryBeforeWrite(t *testing
 			candidate := intent.Clone()
 			candidateDescriptor := descriptor
 			candidateOptions := options
-			store := &intentTestStore{}
+			store := &intentTestStore{now: func() time.Time { return now }}
 			candidateOptions.Store = store
 			mutate(&candidate, &candidateDescriptor, &candidateOptions)
 			if _, _, err := ExecutePrivatePublishIntent(context.Background(), bytes.NewReader([]byte("ipa")), candidateDescriptor, candidateOptions, candidate); err == nil {
@@ -275,7 +275,7 @@ func TestExecutePrivatePublishIntentRejectsSignatureBeyondSavedDeadlineBeforeWri
 	}
 	intent.Manifest = privatePublishDocument(intent.Manifest.Key, manifestBody, ContentTypeManifest)
 
-	executionStore := &intentTestStore{}
+	executionStore := &intentTestStore{now: func() time.Time { return now }}
 	options.Store = executionStore
 	_, _, err = ExecutePrivatePublishIntent(context.Background(), bytes.NewReader([]byte("ipa")), descriptor, options, intent)
 	if err == nil || !strings.Contains(err.Error(), "signed expiry does not match") {
@@ -291,21 +291,21 @@ func intentStageName(index int) string {
 }
 
 type intentTestStore struct {
-	now             func() time.Time
 	presignKeys     []string
 	ensureKeys      []string
 	objectBodies    map[string][]byte
 	failAfterEnsure int
 	failed          bool
+	now             func() time.Time
 }
 
 func (store *intentTestStore) PresignGet(_ context.Context, key string, ttl time.Duration) (string, error) {
 	store.presignKeys = append(store.presignKeys, key)
-	issued := time.Now().UTC().Truncate(time.Second)
+	now := time.Now
 	if store.now != nil {
-		issued = store.now().UTC()
+		now = store.now
 	}
-	return privateSignatureFixture("/bucket/"+key, issued, ttl), nil
+	return privateSignatureFixture("/bucket/"+key, now().UTC().Truncate(time.Second), ttl), nil
 }
 
 func (store *intentTestStore) Ensure(_ context.Context, input PutObject) (StoredObject, error) {

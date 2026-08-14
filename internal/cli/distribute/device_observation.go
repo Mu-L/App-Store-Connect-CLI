@@ -234,9 +234,6 @@ func observeInstalledAppOnDeviceWithRunner(
 	}
 
 	toolTimeout := request.Timeout - deviceObservationTimeoutHeadroom
-	if toolTimeout < time.Second {
-		toolTimeout = time.Second
-	}
 	timeoutSeconds := int64((toolTimeout + time.Second - 1) / time.Second)
 	args := []string{
 		"--quiet",

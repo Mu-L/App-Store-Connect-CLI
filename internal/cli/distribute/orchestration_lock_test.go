@@ -77,28 +77,22 @@ func TestDistributionRunLockRejectsPathReplacementWhileWaiterContends(t *testing
 
 	opened := make(chan struct{})
 	continueAcquire := make(chan struct{})
-	acquireDone := make(chan struct{})
-	continued := false
 	distributionRunLockAfterOpenForTest = func() {
 		close(opened)
 		<-continueAcquire
 	}
-	defer func() {
-		if !continued {
-			close(continueAcquire)
-		}
-		if !firstReleased {
-			_ = releaseFirst()
-			firstReleased = true
-		}
-		<-acquireDone
-		distributionRunLockAfterOpenForTest = nil
-	}()
 	errCh := make(chan error, 1)
 	go func() {
-		defer close(acquireDone)
 		_, lockErr := acquireDistributionRunLock(context.Background(), stateDir, runID)
 		errCh <- lockErr
+	}()
+	waiterReleased := false
+	defer func() {
+		if !waiterReleased {
+			close(continueAcquire)
+			<-errCh
+		}
+		distributionRunLockAfterOpenForTest = nil
 	}()
 
 	select {
@@ -118,7 +112,7 @@ func TestDistributionRunLockRejectsPathReplacementWhileWaiterContends(t *testing
 		t.Fatalf("chmod replacement lock inode: %v", err)
 	}
 	close(continueAcquire)
-	continued = true
+	waiterReleased = true
 	if err := releaseFirst(); err != nil {
 		t.Fatalf("release first lock: %v", err)
 	}

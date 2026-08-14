@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,10 +36,10 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	}
 	archive, err := readSigningArchiveRequirements(paths.ArchivePath)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("inspect archive: %w", sanitizeReconcileError(err, devicesFile))
+		return signingReconcilePlanArtifact{}, newReconcilePlanInvalid(fmt.Errorf("inspect archive: %w", sanitizeReconcileError(err, devicesFile)))
 	}
 	if len(archive.Targets) == 0 {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("archive contains no signing targets")
+		return signingReconcilePlanArtifact{}, newReconcilePlanInvalid(fmt.Errorf("archive contains no signing targets"))
 	}
 
 	client, err := sharedASCClient()
@@ -104,9 +105,12 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	plan.Ready = len(plan.Blockers) == 0
 	plan.PlanHash, err = hashSigningReconcilePlan(plan)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, fmt.Errorf("hash plan: %w", err)
+		return signingReconcilePlanArtifact{}, newReconcilePlanInvalid(fmt.Errorf("hash plan: %w", err))
 	}
 	if err := writeSigningStateJSON(plan.Paths.StateDir, "plan.json", plan, options.Overwrite); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return signingReconcilePlanArtifact{}, newReconcilePlanInvalid(fmt.Errorf("write %s: %w", plan.Paths.PlanPath, err))
+		}
 		return signingReconcilePlanArtifact{}, fmt.Errorf("write %s: %w", plan.Paths.PlanPath, err)
 	}
 	return plan, nil
@@ -264,11 +268,9 @@ func selectReconcileCertificateWithFingerprint(certificates []asc.Resource[asc.C
 			return nil, []string{"certificate SHA-256 must be exactly 64 hexadecimal characters"}
 		}
 		var matches []*signingCertificateRef
-		var parseBlockers []string
 		for _, certificate := range eligible {
 			candidate, err := certificatePlanRef(certificate)
 			if err != nil {
-				parseBlockers = append(parseBlockers, fmt.Sprintf("certificate %s content is missing or invalid: %v", certificate.ID, err))
 				continue
 			}
 			if candidate.SHA256 == explicitSHA256 {
@@ -276,7 +278,7 @@ func selectReconcileCertificateWithFingerprint(certificates []asc.Resource[asc.C
 			}
 		}
 		if len(matches) == 0 {
-			return nil, append(parseBlockers, "no eligible iOS distribution certificate matches the requested SHA-256")
+			return nil, []string{"no eligible iOS distribution certificate matches the requested SHA-256"}
 		}
 		if len(matches) > 1 {
 			return nil, []string{"multiple eligible iOS distribution certificates match the requested SHA-256"}

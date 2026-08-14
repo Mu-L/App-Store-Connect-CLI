@@ -76,9 +76,9 @@ func countOpenSigningDescriptors(t *testing.T) int {
 	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
 		t.Fatal(err)
 	}
-	maximum := int(limit.Cur)
-	if maximum > 4096 {
-		maximum = 4096
+	maximum := 4096
+	if limit.Cur < uint64(maximum) {
+		maximum = int(limit.Cur)
 	}
 	count := 0
 	for descriptor := range maximum {

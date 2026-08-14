@@ -232,7 +232,7 @@ func TestExportReleaseTestingUsesExactCallerEnvironmentAndCreateOnlyDestination(
 		t.Fatalf("environment log = %q, want version and export entries", data)
 	}
 	for _, line := range lines {
-		if !strings.Contains(line, "ASC_ONLY=ephemeral") || strings.Contains(line, "host-secret") {
+		if !strings.Contains(line, "ASC_ONLY=ephemeral") || !strings.Contains(line, "ASC_SHOULD_NOT_LEAK=") || strings.Contains(line, "host-secret") {
 			t.Fatalf("caller environment not exact: %q", line)
 		}
 	}
