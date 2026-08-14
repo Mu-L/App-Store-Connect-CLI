@@ -100,6 +100,34 @@ func TestCreateDeveloperAppGroupUsesPortalFormEndpoint(t *testing.T) {
 	}
 }
 
+func TestValidateDeveloperAppGroupIdentifier(t *testing.T) {
+	tests := []struct {
+		name       string
+		identifier string
+		wantErr    string
+	}{
+		{name: "valid", identifier: "group.com.example-shared"},
+		{name: "missing prefix", identifier: "com.example.shared", wantErr: "must start with \"group.\""},
+		{name: "empty suffix", identifier: "group.", wantErr: "must include a name after \"group.\""},
+		{name: "invalid character", identifier: "group.com/example", wantErr: "may contain only letters, numbers, hyphens, and periods"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateDeveloperAppGroupIdentifier(test.identifier)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateDeveloperAppGroupIdentifier() error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("ValidateDeveloperAppGroupIdentifier() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestListDeveloperAppGroupsPaginates(t *testing.T) {
 	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
 		switch requestNumber {

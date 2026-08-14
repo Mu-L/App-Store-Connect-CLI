@@ -38,7 +38,7 @@ func TestWebAppGroupsValidationErrors(t *testing.T) {
 	}{
 		{name: "list positional", command: WebAppGroupsListCommand, args: []string{"extra"}, wantErr: "does not accept positional arguments"},
 		{name: "create missing name", command: WebAppGroupsCreateCommand, args: []string{"--identifier", "group.com.example", "--confirm"}, wantErr: "--name is required"},
-		{name: "create invalid identifier", command: WebAppGroupsCreateCommand, args: []string{"--name", "Example", "--identifier", "com.example", "--confirm"}, wantErr: "must start with group."},
+		{name: "create invalid identifier", command: WebAppGroupsCreateCommand, args: []string{"--name", "Example", "--identifier", "com.example", "--confirm"}, wantErr: "must start with \"group.\""},
 		{name: "create missing confirm", command: WebAppGroupsCreateCommand, args: []string{"--name", "Example", "--identifier", "group.com.example"}, wantErr: "--confirm is required"},
 		{name: "assign missing group", command: WebAppGroupsAssignCommand, args: []string{"--bundle-id", "bundle-1", "--confirm"}, wantErr: "--group is required"},
 		{name: "assign missing bundle", command: WebAppGroupsAssignCommand, args: []string{"--group", "group-1", "--confirm"}, wantErr: "--bundle-id is required"},
@@ -61,6 +61,62 @@ func TestWebAppGroupsValidationErrors(t *testing.T) {
 				t.Fatalf("stderr %q does not contain %q", stderr, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestWebAppGroupsCreateRejectsInvalidIdentifiersBeforeSessionResolution(t *testing.T) {
+	restore, cleanup := stubWebAppGroupsDependencies(t)
+	defer cleanup()
+	defer restore()
+
+	resolveCalls := 0
+	restoreResolver := SetResolveWebSession(func(context.Context, string, string, string, string) (*webcore.AuthSession, string, error) {
+		resolveCalls++
+		return &webcore.AuthSession{}, "cache", nil
+	})
+	defer restoreResolver()
+
+	tests := []struct {
+		name       string
+		identifier string
+		wantErr    string
+	}{
+		{name: "empty suffix", identifier: "group.", wantErr: "--identifier must include a name after \"group.\""},
+		{name: "invalid character", identifier: "group.com/example", wantErr: "--identifier may contain only letters, numbers, hyphens, and periods"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := WebAppGroupsCreateCommand()
+			if err := command.FlagSet.Parse([]string{"--name", "Example", "--identifier", test.identifier, "--confirm"}); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			_, stderr := captureWebCommandOutput(t, func() {
+				err := command.Exec(context.Background(), command.FlagSet.Args())
+				if !errors.Is(err, flag.ErrHelp) {
+					t.Fatalf("expected usage error, got %v", err)
+				}
+			})
+			if !strings.Contains(stderr, test.wantErr) {
+				t.Fatalf("stderr %q does not contain %q", stderr, test.wantErr)
+			}
+		})
+	}
+	if resolveCalls != 0 {
+		t.Fatalf("web session resolver calls = %d, want 0", resolveCalls)
+	}
+}
+
+func TestWebAppGroupsAssignWarnsAboutProvisioningProfileInvalidation(t *testing.T) {
+	command := WebAppGroupsAssignCommand()
+	for _, expected := range []string{"invalidates existing provisioning profiles", "Regenerate affected profiles"} {
+		if !strings.Contains(command.LongHelp, expected) {
+			t.Fatalf("LongHelp does not contain %q: %q", expected, command.LongHelp)
+		}
+	}
+	confirm := command.FlagSet.Lookup("confirm")
+	if confirm == nil || !strings.Contains(confirm.Usage, "invalidates existing provisioning profiles") {
+		t.Fatalf("--confirm usage does not warn about provisioning profile invalidation: %+v", confirm)
 	}
 }
 
