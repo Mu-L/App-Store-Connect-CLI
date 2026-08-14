@@ -1,9 +1,10 @@
 package ads
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/appleads"
 )
 
 func TestAuthPlatformEndpointSpecReportsMissingCommand(t *testing.T) {
@@ -21,34 +22,34 @@ func TestAuthPlatformEndpointSpecResolvesAuthEndpoints(t *testing.T) {
 	}
 }
 
-func TestAuthDiscoverHelpUsesUserAndAdAccountWording(t *testing.T) {
-	if got := AuthDiscoverCommand().ShortHelp; got != "Discover Apple Ads user and ad account access." {
-		t.Fatalf("AuthDiscoverCommand().ShortHelp = %q, want user/ad-account wording", got)
+func TestAuthLegacyEndpointSpecReportsMissingCommand(t *testing.T) {
+	_, err := authLegacyEndpointSpec("missing", "view")
+	if err == nil || !strings.Contains(err.Error(), "internal error: missing Apple Ads Campaign Management endpoint spec for command \"missing view\"") {
+		t.Fatalf("authLegacyEndpointSpec() error = %v, want a clear missing-endpoint programming error", err)
 	}
 }
 
-func TestNormalizePlatformDiscoveryMePreservesSourceNameAndStableShape(t *testing.T) {
-	withName, err := normalizePlatformDiscoveryMe(json.RawMessage(`{"userId":1001,"name":"Marketing User","orgId":987654}`))
-	if err != nil {
-		t.Fatalf("normalizePlatformDiscoveryMe() with name error: %v", err)
+func TestAuthLegacyEndpointSpecResolvesDiscoveryEndpoints(t *testing.T) {
+	for _, path := range [][]string{{"me", "view"}, {"acls", "list"}} {
+		spec, err := authLegacyEndpointSpec(path...)
+		if err != nil {
+			t.Fatalf("authLegacyEndpointSpec(%q) error: %v", strings.Join(path, " "), err)
+		}
+		if spec.Version == appleads.APIVersionPlatformV1 {
+			t.Fatalf("authLegacyEndpointSpec(%q) selected Platform API v1", strings.Join(path, " "))
+		}
 	}
-	var named map[string]any
-	if err := json.Unmarshal(withName, &named); err != nil {
-		t.Fatalf("named normalized me is not JSON: %v", err)
-	}
-	if got, ok := named["name"].(string); !ok || got != "Marketing User" {
-		t.Fatalf("normalized name = %#v, want source name", named["name"])
-	}
+}
 
-	withoutName, err := normalizePlatformDiscoveryMe(json.RawMessage(`{"userId":1001,"orgId":987654}`))
-	if err != nil {
-		t.Fatalf("normalizePlatformDiscoveryMe() without name error: %v", err)
+func TestAuthDiscoverHelpDocumentsVersionNeutralLegacyTransport(t *testing.T) {
+	command := AuthDiscoverCommand()
+	if command.ShortHelp != "Discover Apple Ads user and organization access." {
+		t.Fatalf("AuthDiscoverCommand().ShortHelp = %q, want organization wording", command.ShortHelp)
 	}
-	var unnamed map[string]any
-	if err := json.Unmarshal(withoutName, &unnamed); err != nil {
-		t.Fatalf("unnamed normalized me is not JSON: %v", err)
+	if !strings.Contains(command.LongHelp, "GET v5/me") || !strings.Contains(command.LongHelp, "GET v5/acls") {
+		t.Fatalf("AuthDiscoverCommand().LongHelp = %q, want legacy v5 endpoints", command.LongHelp)
 	}
-	if got, ok := unnamed["name"].(string); !ok || got != "" {
-		t.Fatalf("normalized absent name = %#v, want stable empty name field", unnamed["name"])
+	if strings.Contains(command.LongHelp, "GET v1/") {
+		t.Fatalf("AuthDiscoverCommand().LongHelp = %q, must not claim Platform v1 transport", command.LongHelp)
 	}
 }

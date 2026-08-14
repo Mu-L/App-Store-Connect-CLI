@@ -64,7 +64,7 @@ func PlatformAPIRequestCommand() *ffcli.Command {
 	method := fs.String("method", "GET", "HTTP method: GET, POST, PUT, DELETE")
 	path := fs.String("path", "", "Relative v1 path or Apple Ads Platform API URL")
 	file := fs.String("file", "", "Path to JSON request payload")
-	confirm := fs.Bool("confirm", false, "Confirm destructive DELETE requests")
+	confirm := fs.Bool("confirm", false, "Confirm destructive Apple Ads Platform requests")
 	common := commonFlags{
 		AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 		AdAccount:  fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID env)"),
@@ -106,12 +106,22 @@ Examples:
 			if contextKind == appleads.ContextNone && value(common.AdAccount) != "" {
 				return shared.UsageError("--ad-account is not supported for this context-free endpoint")
 			}
+			pathOnly, err := platformPathOnly(pathValue)
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
+			if rawPlatformRequestRequiresConfirm(methodValue, pathOnly, nil) && !*confirm {
+				return shared.UsageError("--confirm is required")
+			}
 			var payload json.RawMessage
 			if strings.TrimSpace(*file) != "" {
 				payload, err = shared.ReadJSONFilePayloadKind(*file, shared.JSONPayloadAny)
 				if err != nil {
 					return fmt.Errorf("ads platform api request: %w", err)
 				}
+			}
+			if rawPlatformRequestRequiresConfirm(methodValue, pathOnly, payload) && !*confirm {
+				return shared.UsageError("--confirm is required")
 			}
 			client, err := resolvePlatformClient(ctx, common, contextKind)
 			if err != nil {
@@ -126,6 +136,31 @@ Examples:
 			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+func rawPlatformRequestRequiresConfirm(method, pathOnly string, payload json.RawMessage) bool {
+	if method == http.MethodDelete {
+		return true
+	}
+
+	resourcePath := strings.TrimPrefix(pathOnly, "v1/")
+	switch {
+	case method == http.MethodPost:
+		switch resourcePath {
+		case "recommendations/daily-budgets/apply",
+			"recommendations/daily-budgets/dismiss",
+			"recommendations/target-cpas/apply",
+			"recommendations/target-cpas/dismiss":
+			return true
+		}
+	case method == http.MethodPut && isSingleChildPath(resourcePath, "ad-accounts"):
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &object); err == nil {
+			_, hasDelegations := object["delegations"]
+			return hasDelegations
+		}
+	}
+	return false
 }
 
 func rawPlatformRequestRequiresAdAccount(method, pathValue string) (bool, error) {

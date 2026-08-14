@@ -505,24 +505,18 @@ func TestAdsAuthDiscoveryPreservesInt64Identifiers(t *testing.T) {
 		t.Fatalf("discoveryUserSummary() = %q, want %q", got, largeID)
 	}
 
-	accounts, err := summarizePlatformACLAccounts(
-		appleads.RawResponse(`{"result":{"acls":[{"adAccount":{"id":`+largeID+`,"orgId":`+largeID+`,"name":"Large"},"roles":["Admin"]}]}}`),
-		largeID,
+	accounts, err := summarizeACLAccounts(
+		appleads.RawResponse(`{"data":[{"orgId":`+largeID+`,"orgName":"Large","roleNames":["Admin"]}]}`),
 		largeID,
 	)
 	if err != nil {
-		t.Fatalf("summarizePlatformACLAccounts() error: %v", err)
+		t.Fatalf("summarizeACLAccounts() error: %v", err)
 	}
-	if len(accounts) != 1 || accounts[0].AdAccountID != largeID || accounts[0].OrgID != largeID || !accounts[0].Active {
+	if len(accounts) != 1 || accounts[0].OrgID != largeID || accounts[0].Name != "Large" || !accounts[0].Active {
 		t.Fatalf("accounts = %+v, want exact active int64 identifiers", accounts)
 	}
-
-	me, err := normalizePlatformDiscoveryMe(json.RawMessage(`{"userId":` + largeID + `,"orgId":` + largeID + `}`))
-	if err != nil {
-		t.Fatalf("normalizePlatformDiscoveryMe() error: %v", err)
-	}
-	if got := string(me); !strings.Contains(got, `"id":"`+largeID+`"`) || !strings.Contains(got, `"userId":"`+largeID+`"`) || !strings.Contains(got, `"orgId":"`+largeID+`"`) {
-		t.Fatalf("normalizePlatformDiscoveryMe() = %s, want exact string identifiers", got)
+	if got := strings.Join(accounts[0].Roles, ","); got != "Admin" {
+		t.Fatalf("roles = %q, want Admin", got)
 	}
 }
 

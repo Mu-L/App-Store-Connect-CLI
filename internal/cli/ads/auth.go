@@ -443,10 +443,13 @@ func AuthDiscoverCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "discover",
 		ShortUsage: "asc ads auth discover [flags]",
-		ShortHelp:  "Discover Apple Ads user and ad account access.",
-		LongHelp: `Discover Apple Ads user and ad account access.
+		ShortHelp:  "Discover Apple Ads user and organization access.",
+		LongHelp: `Discover Apple Ads user and organization access.
 
-This read-only command calls GET v1/me and GET v1/acls. It does not print access tokens.
+This read-only command currently calls the legacy Campaign Management API v5
+endpoints GET v5/me and GET v5/acls. The auth discovery contract remains
+version-neutral until a versioned Platform API transition is available. It
+does not print access tokens.
 
 Examples:
   asc ads auth discover
@@ -467,7 +470,10 @@ Examples:
 				return fmt.Errorf("ads auth discover: %w", err)
 			}
 			orgID, orgSource := discoverOrgIDWithSource(common, credentials)
-			adAccountID, adAccountSource := discoverAdAccountIDWithSource(common, credentials)
+			adAccountID, adAccountSource := "", ""
+			if resolvedID, resolvedSource, resolveErr := resolveAdAccountIDWithSource(common, credentials); resolveErr == nil {
+				adAccountID, adAccountSource = resolvedID, resolvedSource
+			}
 			client, err := appleads.NewClient(credentials)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: %w", err)
@@ -475,7 +481,7 @@ Examples:
 			requestCtx, cancel := requestContext(ctx)
 			defer cancel()
 
-			meSpec, err := authPlatformEndpointSpec("me", "view")
+			meSpec, err := authLegacyEndpointSpec("me", "view")
 			if err != nil {
 				return fmt.Errorf("ads auth discover: %w", err)
 			}
@@ -483,7 +489,7 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("ads auth discover: me lookup failed: %w", err)
 			}
-			aclsSpec, err := authPlatformEndpointSpec("acls", "list")
+			aclsSpec, err := authLegacyEndpointSpec("acls", "list")
 			if err != nil {
 				return fmt.Errorf("ads auth discover: %w", err)
 			}
@@ -492,15 +498,11 @@ Examples:
 				return fmt.Errorf("ads auth discover: acl lookup failed: %w", err)
 			}
 
-			me, err := platformEnvelopeResult(meRaw)
+			me, err := envelopeData(meRaw)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: me response parse failed: %w", err)
 			}
-			me, err = normalizePlatformDiscoveryMe(me)
-			if err != nil {
-				return fmt.Errorf("ads auth discover: me response parse failed: %w", err)
-			}
-			accounts, err := summarizePlatformACLAccounts(aclsRaw, orgID, adAccountID)
+			accounts, err := summarizeACLAccounts(aclsRaw, orgID)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: acl response parse failed: %w", err)
 			}
@@ -524,18 +526,18 @@ Examples:
 	}
 }
 
-func discoverAdAccountIDWithSource(flags commonFlags, credentials appleads.Credentials) (string, string) {
-	adAccountID, source, err := resolveAdAccountIDWithSource(flags, credentials)
-	if err != nil {
-		return "", ""
-	}
-	return adAccountID, source
-}
-
 func authPlatformEndpointSpec(path ...string) (appleads.EndpointSpec, error) {
 	spec, ok := appleads.PlatformEndpointByCommandPath(path...)
 	if !ok {
 		return appleads.EndpointSpec{}, fmt.Errorf("internal error: missing Apple Ads Platform endpoint spec for command %q", strings.Join(path, " "))
+	}
+	return spec, nil
+}
+
+func authLegacyEndpointSpec(path ...string) (appleads.EndpointSpec, error) {
+	spec, ok := appleads.EndpointByCommandPath(path...)
+	if !ok {
+		return appleads.EndpointSpec{}, fmt.Errorf("internal error: missing Apple Ads Campaign Management endpoint spec for command %q", strings.Join(path, " "))
 	}
 	return spec, nil
 }
@@ -560,11 +562,10 @@ type adsAuthDiscoveryOutput struct {
 }
 
 type adsAuthAccountSummary struct {
-	AdAccountID string   `json:"ad_account_id,omitempty"`
-	OrgID       string   `json:"org_id,omitempty"`
-	Name        string   `json:"name,omitempty"`
-	Roles       []string `json:"roles,omitempty"`
-	Active      bool     `json:"active"`
+	OrgID  string   `json:"org_id,omitempty"`
+	Name   string   `json:"name,omitempty"`
+	Roles  []string `json:"roles,omitempty"`
+	Active bool     `json:"active"`
 }
 
 func printDiscoveryTable(result adsAuthDiscoveryOutput) {
@@ -603,10 +604,7 @@ func printDiscoveryTable(result adsAuthDiscoveryOutput) {
 		if account.Active {
 			marker = " (active)"
 		}
-		label := account.AdAccountID
-		if label == "" {
-			label = account.OrgID
-		}
+		label := account.OrgID
 		if account.Name != "" {
 			label += " - " + account.Name
 		}
@@ -639,68 +637,61 @@ func discoveryUserSummary(me json.RawMessage) string {
 	}
 }
 
-func platformEnvelopeResult(raw appleads.RawResponse) (json.RawMessage, error) {
+func envelopeData(raw appleads.RawResponse) (json.RawMessage, error) {
 	var envelope struct {
-		Result json.RawMessage `json:"result"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, err
 	}
-	if len(envelope.Result) == 0 {
+	if len(envelope.Data) == 0 {
 		return json.RawMessage("null"), nil
 	}
-	return envelope.Result, nil
+	return envelope.Data, nil
 }
 
-func normalizePlatformDiscoveryMe(raw json.RawMessage) (json.RawMessage, error) {
-	var value map[string]any
-	if err := unmarshalJSONPreservingNumbers(raw, &value); err != nil {
-		return nil, err
-	}
-	userID := jsonScalarString(firstMapValue(value, "userId", "id"))
-	name := jsonScalarString(firstMapValue(value, "name"))
-	orgID := jsonScalarString(firstMapValue(value, "orgId", "parentOrgId"))
-	return json.Marshal(struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		UserID      string `json:"userId,omitempty"`
-		ParentOrgID string `json:"parentOrgId,omitempty"`
-		OrgID       string `json:"orgId,omitempty"`
-	}{
-		ID:          userID,
-		Name:        name,
-		UserID:      userID,
-		ParentOrgID: orgID,
-		OrgID:       orgID,
-	})
-}
-
-func summarizePlatformACLAccounts(raw appleads.RawResponse, activeOrgID, activeAdAccountID string) ([]adsAuthAccountSummary, error) {
+func summarizeACLAccounts(raw appleads.RawResponse, activeOrgID string) ([]adsAuthAccountSummary, error) {
 	var envelope struct {
-		Result struct {
-			ACLs []struct {
-				AdAccount map[string]any `json:"adAccount"`
-				Roles     []string       `json:"roles"`
-			} `json:"acls"`
-		} `json:"result"`
+		Data json.RawMessage `json:"data"`
 	}
-	if err := unmarshalJSONPreservingNumbers(raw, &envelope); err != nil {
+	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, err
 	}
-	accounts := make([]adsAuthAccountSummary, 0, len(envelope.Result.ACLs))
-	for _, item := range envelope.Result.ACLs {
-		adAccountID := jsonScalarString(firstMapValue(item.AdAccount, "id"))
-		orgID := jsonScalarString(firstMapValue(item.AdAccount, "orgId", "orgID", "organizationId"))
+	items, err := aclDataItems(envelope.Data)
+	if err != nil {
+		return nil, err
+	}
+	accounts := make([]adsAuthAccountSummary, 0, len(items))
+	for _, item := range items {
+		orgID := jsonScalarString(firstMapValue(item, "orgId", "orgID", "organizationId", "id"))
 		account := adsAuthAccountSummary{
-			AdAccountID: adAccountID,
-			OrgID:       orgID,
-			Name:        jsonScalarString(firstMapValue(item.AdAccount, "name")),
-			Roles:       append([]string(nil), item.Roles...),
-			Active:      (adAccountID != "" && activeAdAccountID != "" && adAccountID == activeAdAccountID) || (activeAdAccountID == "" && orgID != "" && activeOrgID != "" && orgID == activeOrgID),
+			OrgID:  orgID,
+			Name:   jsonScalarString(firstMapValue(item, "orgName", "organizationName", "name")),
+			Roles:  jsonStringList(firstMapValue(item, "roleNames", "roles")),
+			Active: orgID != "" && activeOrgID != "" && orgID == activeOrgID,
 		}
 		accounts = append(accounts, account)
 	}
 	return accounts, nil
+}
+
+func aclDataItems(data json.RawMessage) ([]map[string]any, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	if trimmed[0] == '[' {
+		var items []map[string]any
+		if err := unmarshalJSONPreservingNumbers(trimmed, &items); err != nil {
+			return nil, err
+		}
+		return items, nil
+	}
+	var item map[string]any
+	if err := unmarshalJSONPreservingNumbers(trimmed, &item); err != nil {
+		return nil, err
+	}
+	return []map[string]any{item}, nil
 }
 
 func unmarshalJSONPreservingNumbers(data []byte, target any) error {
@@ -729,6 +720,20 @@ func jsonScalarString(value any) string {
 	default:
 		return ""
 	}
+}
+
+func jsonStringList(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if text := jsonScalarString(item); text != "" {
+			result = append(result, text)
+		}
+	}
+	return result
 }
 
 func AuthSwitchCommand() *ffcli.Command {
