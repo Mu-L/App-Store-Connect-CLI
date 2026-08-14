@@ -3,6 +3,8 @@ package distribute
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -408,15 +410,6 @@ func (paths artifactPaths) openExistingParent(target artifactPath) (*os.Root, st
 	return parent, filepath.Base(target.relative), nil
 }
 
-func (paths artifactPaths) lstatExisting(target artifactPath) (os.FileInfo, error) {
-	parent, name, err := paths.openExistingParent(target)
-	if err != nil {
-		return nil, err
-	}
-	defer parent.Close()
-	return parent.Lstat(name)
-}
-
 func (paths *artifactPaths) inspectExisting() error {
 	if os.SameFile(paths.receipt.rootInfo, paths.link.rootInfo) &&
 		filepath.Clean(paths.receipt.relative) == filepath.Clean(paths.link.relative) {
@@ -475,26 +468,69 @@ func (paths *artifactPaths) preflightNew() error {
 var probeConfiguredArtifactAliasForPreflight = probeConfiguredArtifactAlias
 
 func probeConfiguredArtifactAlias(paths artifactPaths) (err error) {
-	parent, name, err := paths.openParent(paths.receipt)
+	receiptParent, receiptName, err := paths.openParent(paths.receipt)
 	if err != nil {
 		return err
 	}
-	var (
-		probe      *os.File
-		probeInfo  os.FileInfo
-		created    bool
-		cleanupErr error
-	)
+	defer receiptParent.Close()
+	linkParent, linkName, err := paths.openParent(paths.link)
+	if err != nil {
+		return err
+	}
+	defer linkParent.Close()
+
+	for _, target := range []struct {
+		parent *os.Root
+		name   string
+	}{
+		{parent: receiptParent, name: receiptName},
+		{parent: linkParent, name: linkName},
+	} {
+		_, statErr := target.parent.Lstat(target.name)
+		if statErr == nil {
+			return fmt.Errorf("--receipt and --link-path resolve to the same physical destination or a destination appeared during preflight")
+		}
+		if !os.IsNotExist(statErr) {
+			return statErr
+		}
+	}
+
+	receiptParentInfo, err := receiptParent.Stat(".")
+	if err != nil {
+		return err
+	}
+	linkParentInfo, err := linkParent.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(receiptParentInfo, linkParentInfo) {
+		return nil
+	}
+
+	probeRoot, probeRootName, err := createArtifactAliasProbeRoot(receiptParent)
+	if err != nil {
+		return err
+	}
+	var probe *os.File
 	defer func() {
-		if created {
-			if removeErr := removeArtifactAliasProbe(parent, name, probeInfo); removeErr != nil {
+		var cleanupErr error
+		if probe != nil {
+			if removeErr := probeRoot.Remove(receiptName); removeErr != nil && !os.IsNotExist(removeErr) {
 				cleanupErr = errors.Join(cleanupErr, removeErr)
 			}
-		}
-		if probe != nil {
 			cleanupErr = errors.Join(cleanupErr, probe.Close())
 		}
-		cleanupErr = errors.Join(cleanupErr, parent.Close())
+		probeRootInfo, statErr := probeRoot.Stat(".")
+		cleanupErr = errors.Join(cleanupErr, statErr)
+		cleanupErr = errors.Join(cleanupErr, probeRoot.Close())
+		currentInfo, currentErr := receiptParent.Lstat(probeRootName)
+		if currentErr == nil && probeRootInfo != nil && os.SameFile(probeRootInfo, currentInfo) {
+			cleanupErr = errors.Join(cleanupErr, receiptParent.Remove(probeRootName))
+		} else if currentErr != nil && !os.IsNotExist(currentErr) {
+			cleanupErr = errors.Join(cleanupErr, currentErr)
+		} else if currentErr == nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("artifact alias probe directory changed during cleanup"))
+		}
 		if cleanupErr != nil {
 			cleanupErr = fmt.Errorf("cleanup artifact alias probe: %w", cleanupErr)
 			if err == nil {
@@ -505,37 +541,48 @@ func probeConfiguredArtifactAlias(paths artifactPaths) (err error) {
 		}
 	}()
 
-	probe, err = secureopen.OpenNewFileNoFollowInRoot(parent, name, 0o600)
+	probe, err = secureopen.OpenNewFileNoFollowInRoot(probeRoot, receiptName, 0o600)
 	if err != nil {
 		return err
 	}
-	created = true
-	probeInfo, err = probe.Stat()
+	probeInfo, err := probe.Stat()
 	if err != nil {
 		return err
 	}
-	_, aliasErr := paths.lstatExisting(paths.link)
+	aliasInfo, aliasErr := probeRoot.Lstat(linkName)
 	if os.IsNotExist(aliasErr) {
 		return nil
 	}
 	if aliasErr != nil {
 		return aliasErr
 	}
+	if !os.SameFile(probeInfo, aliasInfo) {
+		return fmt.Errorf("artifact alias probe destination appeared during preflight")
+	}
 	return fmt.Errorf("--receipt and --link-path resolve to the same physical destination or a destination appeared during preflight")
 }
 
-func removeArtifactAliasProbe(parent *os.Root, name string, probeInfo os.FileInfo) error {
-	currentInfo, err := parent.Lstat(name)
-	if os.IsNotExist(err) {
-		return nil
+func createArtifactAliasProbeRoot(parent *os.Root) (*os.Root, string, error) {
+	for range 32 {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return nil, "", err
+		}
+		name := ".asc-artifact-alias-probe-" + hex.EncodeToString(token[:])
+		if err := parent.Mkdir(name, 0o700); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return nil, "", err
+		}
+		root, err := parent.OpenRoot(name)
+		if err != nil {
+			_ = parent.Remove(name)
+			return nil, "", err
+		}
+		return root, name, nil
 	}
-	if err != nil {
-		return err
-	}
-	if probeInfo == nil || !os.SameFile(probeInfo, currentInfo) {
-		return fmt.Errorf("artifact alias probe changed during cleanup")
-	}
-	return parent.Remove(name)
+	return nil, "", fmt.Errorf("create unique artifact alias probe directory")
 }
 
 func pathContains(parent, child string) bool {
