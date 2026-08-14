@@ -483,6 +483,25 @@ func TestParsePlatformErrorAcceptsDirectEnvelopeAndStructuredInfo(t *testing.T) 
 	}
 }
 
+func TestParsePlatformErrorSurfacesDetailsOnlyEnvelope(t *testing.T) {
+	err := parseErrorForVersion(
+		[]byte(`{"details":[{"code":"BAD_FILTER","message":"Invalid filter"}]}`),
+		400,
+		nil,
+		APIVersionPlatformV1,
+	)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %v, want *APIError", err)
+	}
+	if apiErr.Field != "BAD_FILTER" || apiErr.Detail != "Invalid filter" {
+		t.Fatalf("APIError = %+v, want first detail surfaced", apiErr)
+	}
+	if got := apiErr.Error(); !strings.Contains(got, "BAD_FILTER") || !strings.Contains(got, "Invalid filter") {
+		t.Fatalf("APIError.Error() = %q, want structured detail", got)
+	}
+}
+
 func TestEmptySuccessBodyIsVersionSpecific(t *testing.T) {
 	client, err := NewClient(Credentials{AccessToken: "ACCESS"}, WithHTTPClient(&http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
