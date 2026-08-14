@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -183,6 +184,67 @@ func TestInspectIPARejectsSignerOutsideEmbeddedProfile(t *testing.T) {
 	}
 }
 
+func TestEnumerateMachOFilesIgnoresJavaClassMagicCollision(t *testing.T) {
+	appPath := t.TempDir()
+	mainPath := filepath.Join(appPath, "Demo")
+	fatPath := filepath.Join(appPath, "Universal")
+	classPath := filepath.Join(appPath, "Resource.class")
+	malformedFatPath := filepath.Join(appPath, "MalformedUniversal")
+	if err := os.WriteFile(mainPath, fakeMachO("main"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fatPath, validFatMachO(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(classPath, []byte{0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x3d}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(malformedFatPath, []byte{0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := enumerateMachOFiles(appPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{mainPath, fatPath}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("enumerateMachOFiles() = %#v, want %#v", got, want)
+	}
+}
+
+func TestValidateTeamIdentifierRejectsRequirementInjection(t *testing.T) {
+	for _, value := range []string{"TEAM123", "abc123", strings.Repeat("A", 32)} {
+		if err := validateTeamIdentifier(value); err != nil {
+			t.Fatalf("validateTeamIdentifier(%q) = %v", value, err)
+		}
+	}
+	for _, value := range []string{"", `TEAM" or true`, "TEAM 123", "TÉAM123", strings.Repeat("A", 33)} {
+		if err := validateTeamIdentifier(value); err == nil {
+			t.Fatalf("validateTeamIdentifier(%q) unexpectedly succeeded", value)
+		}
+	}
+}
+
+func TestVerifyMainAppCodeSignatureRejectsUnsafeTeamBeforeTools(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("codesign verification is macOS-only")
+	}
+	called := false
+	runCodeSignTool = func(context.Context, string, ...string) ([]byte, error) {
+		called = true
+		return nil, errors.New("unexpected")
+	}
+	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
+
+	got := verifyMainAppCodeSignature(nil, "Payload/Demo.app", nil, "Demo", parsedProfile{
+		embeddedProfile: embeddedProfile{TeamIdentifier: []string{`TEAM" or true`}},
+	})
+	if got.Status != CodeSignatureInvalid || !strings.Contains(got.Reason, "unsupported characters") || called {
+		t.Fatalf("verification=%#v called=%t", got, called)
+	}
+}
+
 func TestVerifyMainAppCodeSignatureRejectsExpandedExecutableBeforeTools(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("codesign verification is macOS-only")
@@ -216,6 +278,26 @@ func validExecutableIPA(t *testing.T) string {
 
 func fakeMachO(payload string) []byte {
 	return append([]byte{0xcf, 0xfa, 0xed, 0xfe}, []byte(payload)...)
+}
+
+func validFatMachO() []byte {
+	return []byte{
+		0xca, 0xfe, 0xba, 0xbe, // FAT_MAGIC
+		0x00, 0x00, 0x00, 0x01, // one architecture
+		0x01, 0x00, 0x00, 0x0c, // CPU_TYPE_ARM64
+		0x00, 0x00, 0x00, 0x00, // CPU subtype
+		0x00, 0x00, 0x00, 0x1c, // slice offset
+		0x00, 0x00, 0x00, 0x20, // slice size
+		0x00, 0x00, 0x00, 0x02, // alignment
+		0xcf, 0xfa, 0xed, 0xfe, // MH_MAGIC_64
+		0x0c, 0x00, 0x00, 0x01, // CPU_TYPE_ARM64
+		0x00, 0x00, 0x00, 0x00, // CPU subtype
+		0x02, 0x00, 0x00, 0x00, // MH_EXECUTE
+		0x00, 0x00, 0x00, 0x00, // no load commands
+		0x00, 0x00, 0x00, 0x00, // load command size
+		0x00, 0x00, 0x00, 0x00, // flags
+		0x00, 0x00, 0x00, 0x00, // reserved
+	}
 }
 
 func TestValidateExecutableNameRejectsTraversalAndFormatting(t *testing.T) {

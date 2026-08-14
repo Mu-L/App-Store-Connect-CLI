@@ -296,7 +296,7 @@ func validateSourceURL(raw string) error {
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return fmt.Errorf("invalid --source-url: query and fragment are not allowed")
 	}
-	if parsed.Scheme != "https" || parsed.Host == "" {
+	if parsed.Scheme != "https" || parsed.Hostname() == "" {
 		return fmt.Errorf("invalid --source-url: must be an absolute HTTPS URL")
 	}
 	return nil

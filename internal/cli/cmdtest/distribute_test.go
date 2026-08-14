@@ -58,6 +58,9 @@ func TestDistributePrepareRejectsCredentialSourceURLBeforeFilesystemAccess(t *te
 	assertUsageExit(t, []string{
 		"distribute", "prepare", "--ipa", "missing.ipa", "--source-url", "https://example.com/revision?token=secret",
 	}, "query and fragment are not allowed")
+	assertUsageExit(t, []string{
+		"distribute", "prepare", "--ipa", "missing.ipa", "--source-url", "https://:443/path",
+	}, "must be an absolute HTTPS URL")
 	assertUsageExit(t, []string{"distribute", "prepare", "unexpected", "--ipa", "missing.ipa"}, "does not accept positional arguments")
 }
 
@@ -80,10 +83,7 @@ func TestDistributeInspectJSONPrivacyAndExplicitDisclosure(t *testing.T) {
 	if !result.Preparation.MetadataEligible || result.Signing.DeviceCount != 1 || result.App.BundleID != "com.example.demo" {
 		t.Fatalf("unexpected inspection: %#v", result)
 	}
-	wantCodeSignatureStatus := distribution.CodeSignatureInvalid
-	if runtime.GOOS != "darwin" {
-		wantCodeSignatureStatus = distribution.CodeSignatureNotVerified
-	}
+	wantCodeSignatureStatus := expectedDistributionFixtureCodeSignatureStatus()
 	if result.Signing.CodeSignatureVerification.Status != wantCodeSignatureStatus {
 		t.Fatalf("unexpected signer verification: %#v", result.Signing.CodeSignatureVerification)
 	}
@@ -109,7 +109,9 @@ func TestDistributeInspectTableAndMarkdownDeviceDisclosure(t *testing.T) {
 				t.Fatalf("run error=%v stderr=%q", runErr, stderr)
 			}
 			rows := parseDistributeInspectHumanRows(t, format, stdout)
-			if rows["Bundle ID"] != "com.example.demo" || rows["Devices"] != "1" {
+			if rows["Bundle ID"] != "com.example.demo" ||
+				rows["Code Signature"] != string(expectedDistributionFixtureCodeSignatureStatus()) ||
+				rows["Devices"] != "1" {
 				t.Fatalf("unexpected default %s rows: %#v", format, rows)
 			}
 			if value, exists := rows["Device UDIDs"]; exists {
@@ -133,6 +135,13 @@ func TestDistributeInspectTableAndMarkdownDeviceDisclosure(t *testing.T) {
 			}
 		})
 	}
+}
+
+func expectedDistributionFixtureCodeSignatureStatus() distribution.CodeSignatureVerificationStatus {
+	if runtime.GOOS == "darwin" {
+		return distribution.CodeSignatureInvalid
+	}
+	return distribution.CodeSignatureNotVerified
 }
 
 func parseDistributeInspectHumanRows(t *testing.T, format, output string) map[string]string {

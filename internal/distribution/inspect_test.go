@@ -247,14 +247,32 @@ func TestInspectIPARejectsFileOverSupportedSizeBeforeZIPWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := file.Truncate(MaxIPABytes + 1); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := InspectIPA(file, MaxIPABytes+1, InspectOptions{}); err == nil {
 		t.Fatal("expected IPA size limit rejection")
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBundleMatchesUniversalProvisioningWildcard(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile string
+		app     string
+		want    bool
+	}{
+		{name: "universal wildcard", profile: "*", app: "com.example.demo", want: true},
+		{name: "universal wildcard rejects empty app", profile: "*", app: "", want: false},
+		{name: "prefix wildcard", profile: "com.example.*", app: "com.example.demo", want: true},
+		{name: "prefix wildcard requires suffix", profile: "com.example.*", app: "com.example.", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := bundleMatches(test.profile, test.app); got != test.want {
+				t.Fatalf("bundleMatches(%q, %q) = %t, want %t", test.profile, test.app, got, test.want)
+			}
+		})
 	}
 }
 

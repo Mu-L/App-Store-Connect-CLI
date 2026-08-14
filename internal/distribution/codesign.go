@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
+	"debug/macho"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -40,6 +42,11 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir string, _ *zip.File,
 		return result
 	}
 	if err := validateExecutableName(strings.TrimSpace(executable)); err != nil {
+		result.Status, result.Reason = CodeSignatureInvalid, err.Error()
+		return result
+	}
+	teamID := onlyTrimmed(profile.TeamIdentifier)
+	if err := validateTeamIdentifier(teamID); err != nil {
 		result.Status, result.Reason = CodeSignatureInvalid, err.Error()
 		return result
 	}
@@ -153,7 +160,7 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir string, _ *zip.File,
 		}
 	}
 	mainFingerprintSet := stringSet(mainFingerprints)
-	teamRequirement := `anchor apple generic and certificate leaf[subject.OU] = "` + onlyTrimmed(profile.TeamIdentifier) + `"`
+	teamRequirement := `anchor apple generic and certificate leaf[subject.OU] = "` + teamID + `"`
 	for index, codePath := range codePaths {
 		if _, err := runCodeSignTool(ctx, "/usr/bin/codesign", "--verify", "--strict", "--all-architectures", "-R="+teamRequirement, codePath); err != nil {
 			result.Status, result.Reason = CodeSignatureInvalid, "nested signed code does not satisfy the main app signing-team requirement"
@@ -209,6 +216,10 @@ func enumerateMachOFiles(appPath string) ([]string, error) {
 		}
 		var magic [4]byte
 		_, readErr := io.ReadFull(file, magic[:])
+		isMachO := false
+		if readErr == nil {
+			isMachO = isMachOFile(file, magic, info.Size())
+		}
 		closeErr := file.Close()
 		if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
 			return readErr
@@ -216,7 +227,7 @@ func enumerateMachOFiles(appPath string) ([]string, error) {
 		if closeErr != nil {
 			return closeErr
 		}
-		if isMachOMagic(magic) {
+		if isMachO {
 			result = append(result, candidate)
 		}
 		return nil
@@ -228,16 +239,59 @@ func enumerateMachOFiles(appPath string) ([]string, error) {
 	return result, nil
 }
 
-func isMachOMagic(magic [4]byte) bool {
+func isMachOFile(file *os.File, magic [4]byte, fileSize int64) bool {
 	switch magic {
 	case [4]byte{0xfe, 0xed, 0xfa, 0xce}, [4]byte{0xce, 0xfa, 0xed, 0xfe},
-		[4]byte{0xfe, 0xed, 0xfa, 0xcf}, [4]byte{0xcf, 0xfa, 0xed, 0xfe},
-		[4]byte{0xca, 0xfe, 0xba, 0xbe}, [4]byte{0xbe, 0xba, 0xfe, 0xca},
-		[4]byte{0xca, 0xfe, 0xba, 0xbf}, [4]byte{0xbf, 0xba, 0xfe, 0xca}:
+		[4]byte{0xfe, 0xed, 0xfa, 0xcf}, [4]byte{0xcf, 0xfa, 0xed, 0xfe}:
 		return true
+	case [4]byte{0xca, 0xfe, 0xba, 0xbe}:
+		return isValidFatMachO(file, fileSize, binary.BigEndian, 20)
+	case [4]byte{0xbe, 0xba, 0xfe, 0xca}:
+		return isValidFatMachO(file, fileSize, binary.LittleEndian, 20)
+	case [4]byte{0xca, 0xfe, 0xba, 0xbf}:
+		return isValidFatMachO(file, fileSize, binary.BigEndian, 32)
+	case [4]byte{0xbf, 0xba, 0xfe, 0xca}:
+		return isValidFatMachO(file, fileSize, binary.LittleEndian, 32)
 	default:
 		return false
 	}
+}
+
+func isValidFatMachO(file *os.File, fileSize int64, order binary.ByteOrder, archHeaderSize int64) bool {
+	var countBytes [4]byte
+	if _, err := file.ReadAt(countBytes[:], 4); err != nil {
+		return false
+	}
+	architectureCount := order.Uint32(countBytes[:])
+	if architectureCount == 0 || architectureCount > 64 {
+		return false
+	}
+	tableEnd := int64(8) + int64(architectureCount)*archHeaderSize
+	if tableEnd > fileSize {
+		return false
+	}
+	header := make([]byte, archHeaderSize)
+	for index := uint32(0); index < architectureCount; index++ {
+		if _, err := file.ReadAt(header, int64(8)+int64(index)*archHeaderSize); err != nil {
+			return false
+		}
+		var offset, size uint64
+		if archHeaderSize == 20 {
+			offset = uint64(order.Uint32(header[8:12]))
+			size = uint64(order.Uint32(header[12:16]))
+		} else {
+			offset = order.Uint64(header[8:16])
+			size = order.Uint64(header[16:24])
+		}
+		if offset < uint64(tableEnd) || size == 0 || offset > uint64(fileSize) || size > uint64(fileSize)-offset {
+			return false
+		}
+		slice, err := macho.NewFile(io.NewSectionReader(file, int64(offset), int64(size)))
+		if err != nil || uint32(slice.Cpu) != order.Uint32(header[:4]) {
+			return false
+		}
+	}
+	return true
 }
 
 func codeObjectFingerprints(ctx context.Context, directory string, objectIndex int, codePath string) ([]string, error) {
@@ -408,6 +462,18 @@ func validateExecutableName(value string) error {
 	for _, r := range value {
 		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.In(r, unicode.Bidi_Control) {
 			return fmt.Errorf("CFBundleExecutable contains control or formatting characters")
+		}
+	}
+	return nil
+}
+
+func validateTeamIdentifier(value string) error {
+	if value == "" || len(value) > 32 {
+		return fmt.Errorf("embedded profile team identifier is not a single safe value")
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+			return fmt.Errorf("embedded profile team identifier contains unsupported characters")
 		}
 	}
 	return nil

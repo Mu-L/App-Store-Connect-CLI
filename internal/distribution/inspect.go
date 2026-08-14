@@ -549,6 +549,9 @@ func bundleMatches(profileBundleID, appBundleID string) bool {
 	if profileBundleID == appBundleID {
 		return appBundleID != ""
 	}
+	if profileBundleID == "*" {
+		return appBundleID != ""
+	}
 	if strings.HasSuffix(profileBundleID, ".*") {
 		prefix := strings.TrimSuffix(profileBundleID, "*")
 		return strings.HasPrefix(appBundleID, prefix) && len(appBundleID) > len(prefix)

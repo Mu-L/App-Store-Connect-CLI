@@ -252,6 +252,9 @@ func TestValidatePrepareOptionsRejectsControlMetadata(t *testing.T) {
 	if err := ValidatePrepareOptions(PrepareOptions{SourceURL: "https://example.com/safe\u202Esecret"}); err == nil {
 		t.Fatal("expected source URL bidi format control rejection")
 	}
+	if err := ValidatePrepareOptions(PrepareOptions{SourceURL: "https://:443/path"}); err == nil {
+		t.Fatal("expected empty source URL hostname rejection")
+	}
 }
 
 func TestSafePathComponentIsCollisionSafeAndContained(t *testing.T) {
