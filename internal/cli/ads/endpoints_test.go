@@ -200,6 +200,12 @@ func TestPlatformGeoSearchSerializesFixtureQueryNames(t *testing.T) {
 	if got, want := query.Encode(), "countrycode=US&eligible=true&entity=Locality&offset=20&pageSize=50&query=San+Francisco&supplySource=APPSTORE"; got != want {
 		t.Fatalf("geo query = %q, want %q", got, want)
 	}
+	if err := fs.Set("page-size", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collectQuery(spec, flags); err == nil || !strings.Contains(err.Error(), "--page-size must be greater than 0") {
+		t.Fatalf("zero page size error = %v, want pre-network validation", err)
+	}
 	_, flags = bindEndpointFlags(spec, "test")
 	*flags.queryStrings["supplySource"] = "MAPS"
 	*flags.queryStrings["query"] = "x"
