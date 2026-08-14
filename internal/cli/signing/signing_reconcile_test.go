@@ -252,6 +252,34 @@ func TestSigningCapabilitiesRejectsDevelopmentTaskEntitlement(t *testing.T) {
 	}
 }
 
+func TestSigningCapabilitiesRejectsDevelopmentPushEnvironment(t *testing.T) {
+	capabilities, unverified := signingCapabilitiesForEntitlements(map[string]any{
+		"aps-environment": "development",
+	})
+	if len(capabilities) != 0 || len(unverified) != 1 || !strings.Contains(unverified[0], "aps-environment") {
+		t.Fatalf("capabilities=%#v unverified=%#v, want development push blocker", capabilities, unverified)
+	}
+	capabilities, unverified = signingCapabilitiesForEntitlements(map[string]any{
+		"aps-environment": "production",
+	})
+	if !reflect.DeepEqual(capabilities, []string{"PUSH_NOTIFICATIONS"}) || len(unverified) != 0 {
+		t.Fatalf("production push capabilities=%#v unverified=%#v", capabilities, unverified)
+	}
+}
+
+func TestSigningReconcileRequestContextUsesWorkflowTimeout(t *testing.T) {
+	t.Setenv("ASC_TIMEOUT", "")
+	ctx, cancel := signingRequestContext(context.Background())
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("signingRequestContext() has no deadline")
+	}
+	if remaining := time.Until(deadline); remaining < 10*time.Minute {
+		t.Fatalf("signingRequestContext() remaining timeout = %v, want workflow-sized timeout", remaining)
+	}
+}
+
 func TestPlanSigningTargetBlocksMismatchedAppIDSeedBeforeProfileCreation(t *testing.T) {
 	client := newSigningFetchTestClient(t, func(request *http.Request) *http.Response {
 		switch request.URL.Path {
