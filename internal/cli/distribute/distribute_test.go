@@ -1,12 +1,32 @@
 package distribute
 
 import (
+	"context"
+	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
 )
+
+func TestInspectCommandPropagatesCancellation(t *testing.T) {
+	ipaPath := filepath.Join(t.TempDir(), "App.ipa")
+	if err := os.WriteFile(ipaPath, []byte("not a zip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := inspectCommand()
+	if err := command.Parse([]string{"--ipa", ipaPath, "--output", "json"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := command.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("inspect command error = %v, want context.Canceled", err)
+	}
+}
 
 func TestRenderInspectionDeviceDisclosure(t *testing.T) {
 	result := distribution.Inspection{

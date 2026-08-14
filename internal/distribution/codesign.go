@@ -36,8 +36,12 @@ const (
 
 var runCodeSignTool = runBoundedTool
 
-func verifyMainAppCodeSignature(members []*zip.File, appDir, executable, bundleID string, profile parsedProfile) CodeSignatureVerification {
+func verifyMainAppCodeSignature(ctx context.Context, members []*zip.File, appDir, executable, bundleID string, profile parsedProfile) CodeSignatureVerification {
 	result := CodeSignatureVerification{Status: CodeSignatureNotVerified, Scope: mainCodeSignatureScope}
+	if err := ctx.Err(); err != nil {
+		result.Reason = err.Error()
+		return result
+	}
 	if runtime.GOOS != "darwin" {
 		result.Reason = "complete main-app code-signature verification is available only on macOS"
 		return result
@@ -77,12 +81,11 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir, executable, bundleI
 		return result
 	}
 	defer app.Close()
-	if err := materializeMainApp(app, members, appDir); err != nil {
+	if err := materializeMainApp(ctx, app, members, appDir); err != nil {
 		result.Status, result.Reason = CodeSignatureInvalid, "could not safely materialize the complete bounded main app: "+err.Error()
 		return result
 	}
 	appPath := path.Join(directory, "Verify.app")
-	ctx := context.Background()
 	if _, err := runCodeSignInvocation(ctx, "/usr/bin/codesign", "--verify", "--deep", "--strict", "--all-architectures", "--verbose=4", appPath); err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 			result.Reason = "codesign is unavailable"
@@ -92,7 +95,7 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir, executable, bundleI
 		return result
 	}
 	mainExecutablePath := filepath.Join(appPath, executable)
-	codePaths, err := enumerateMachOFiles(appPath)
+	codePaths, err := enumerateMachOFiles(ctx, appPath)
 	if err != nil {
 		result.Status, result.Reason = CodeSignatureInvalid, "could not enumerate nested signed code: "+err.Error()
 		return result
@@ -125,6 +128,10 @@ func verifyMainAppCodeSignature(members []*zip.File, appDir, executable, bundleI
 	mainFingerprintSet := stringSet(mainFingerprints)
 	teamRequirement := `anchor apple generic and certificate leaf[subject.OU] = "` + teamID + `"`
 	for index, codePath := range codePaths {
+		if err := ctx.Err(); err != nil {
+			result.Reason = err.Error()
+			return result
+		}
 		if _, err := runCodeSignInvocation(ctx, "/usr/bin/codesign", "--verify", "--strict", "--all-architectures", "-R="+teamRequirement, codePath); err != nil {
 			result.Status, result.Reason = CodeSignatureInvalid, "nested signed code does not satisfy the main app signing-team requirement"
 			return result
@@ -231,9 +238,12 @@ func validateSignedMainAppEntitlements(entitlementsData []byte, bundleID string,
 	return nil
 }
 
-func enumerateMachOFiles(appPath string) ([]string, error) {
+func enumerateMachOFiles(ctx context.Context, appPath string) ([]string, error) {
 	var result []string
 	err := filepath.WalkDir(appPath, func(candidate string, entry os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -488,10 +498,13 @@ func entitlementList(value any) ([]any, bool) {
 	}
 }
 
-func materializeMainApp(destination *os.Root, members []*zip.File, appDir string) error {
+func materializeMainApp(ctx context.Context, destination *os.Root, members []*zip.File, appDir string) error {
 	prefix := appDir + "/"
 	var total int64
 	for _, member := range members {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !strings.HasPrefix(member.Name, prefix) {
 			continue
 		}
@@ -512,7 +525,7 @@ func materializeMainApp(destination *os.Root, members []*zip.File, appDir string
 		if err := destination.MkdirAll(path.Dir(relative), 0o700); err != nil {
 			return err
 		}
-		if err := copyZipMemberToNewFile(destination, relative, member, int64(member.UncompressedSize64)); err != nil {
+		if err := copyZipMemberToNewFile(ctx, destination, relative, member, int64(member.UncompressedSize64)); err != nil {
 			return err
 		}
 	}
@@ -596,7 +609,7 @@ func validateArchitecture(value string) error {
 	return nil
 }
 
-func copyZipMemberToNewFile(root *os.Root, name string, member *zip.File, limit int64) error {
+func copyZipMemberToNewFile(ctx context.Context, root *os.Root, name string, member *zip.File, limit int64) error {
 	reader, err := member.Open()
 	if err != nil {
 		return err
@@ -606,7 +619,7 @@ func copyZipMemberToNewFile(root *os.Root, name string, member *zip.File, limit 
 	if err != nil {
 		return err
 	}
-	written, copyErr := io.Copy(file, io.LimitReader(reader, limit+1))
+	written, copyErr := copyWithContext(ctx, file, io.LimitReader(reader, limit+1))
 	closeErr := file.Close()
 	if copyErr != nil {
 		return copyErr

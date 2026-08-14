@@ -1,6 +1,7 @@
 package distribution
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -55,7 +56,16 @@ type PrepareResult struct {
 // PrepareIPA validates an already-open IPA and publishes an immutable local
 // bundle without replacing an existing destination.
 func PrepareIPA(file *os.File, size int64, options PrepareOptions) (result PrepareResult, resultErr error) {
+	return PrepareIPAContext(context.Background(), file, size, options)
+}
+
+// PrepareIPAContext validates an already-open IPA and publishes an immutable
+// local bundle, stopping promptly when ctx is canceled.
+func PrepareIPAContext(ctx context.Context, file *os.File, size int64, options PrepareOptions) (result PrepareResult, resultErr error) {
 	if err := ValidatePrepareOptions(options); err != nil {
+		return PrepareResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return PrepareResult{}, err
 	}
 	rootPath := strings.TrimSpace(options.Root)
@@ -77,7 +87,7 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (result Prepa
 	if err := root.MkdirAll(".", 0o755); err != nil {
 		return PrepareResult{}, fmt.Errorf("pin distribution output root: %w", err)
 	}
-	snapshot, digest, cleanup, err := snapshotIPA(file, size)
+	snapshot, digest, cleanup, err := snapshotIPA(ctx, file, size)
 	if err != nil {
 		return PrepareResult{}, err
 	}
@@ -85,7 +95,7 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (result Prepa
 	if afterIPASnapshotForTest != nil {
 		afterIPASnapshotForTest()
 	}
-	inspection, err := inspectSnapshot(snapshot, size, digest, InspectOptions{})
+	inspection, err := inspectSnapshot(ctx, snapshot, size, digest, InspectOptions{})
 	if err != nil {
 		return PrepareResult{}, err
 	}
@@ -153,7 +163,7 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (result Prepa
 	bundlePath := filepath.Join(root.Path(), relativeOutput)
 	finalName := filepath.Base(relativeOutput)
 	result = PrepareResult{BundlePath: bundlePath, Descriptor: descriptor}
-	if reused, exists, err := exactBundleExists(parent, finalName, descriptorData, descriptor.Artifact); err != nil {
+	if reused, exists, err := exactBundleExists(ctx, parent, finalName, descriptorData, descriptor.Artifact); err != nil {
 		return PrepareResult{}, err
 	} else if exists {
 		if !reused {
@@ -182,7 +192,7 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (result Prepa
 	if err != nil {
 		return PrepareResult{}, fmt.Errorf("open staged payload: %w", err)
 	}
-	if err := copySectionToNewFile(payloadRoot, "app.ipa", snapshot, size, descriptor.Artifact.SHA256, 0o644); err != nil {
+	if err := copySectionToNewFile(ctx, payloadRoot, "app.ipa", snapshot, size, descriptor.Artifact.SHA256, 0o644); err != nil {
 		_ = payloadRoot.Close()
 		return PrepareResult{}, fmt.Errorf("copy IPA into staged bundle: %w", err)
 	}
@@ -199,9 +209,16 @@ func PrepareIPA(file *os.File, size int64, options PrepareOptions) (result Prepa
 	}
 	stageOpen = false
 
+	if err := ctx.Err(); err != nil {
+		return PrepareResult{}, err
+	}
 	if err := secureopen.RenameNoReplaceInRoot(parent, stageName, finalName); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			if reused, exists, reuseErr := exactBundleExists(parent, finalName, descriptorData, descriptor.Artifact); reuseErr == nil && exists && reused {
+			reused, exists, reuseErr := exactBundleExists(ctx, parent, finalName, descriptorData, descriptor.Artifact)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return PrepareResult{}, ctxErr
+			}
+			if reuseErr == nil && exists && reused {
 				result.Reused = true
 				return result, nil
 			}
@@ -370,13 +387,13 @@ func writeNewRootedFile(root *os.Root, name string, data []byte, mode os.FileMod
 	return file.Close()
 }
 
-func copySectionToNewFile(root *os.Root, name string, source *os.File, size int64, expectedSHA256 string, mode os.FileMode) error {
+func copySectionToNewFile(ctx context.Context, root *os.Root, name string, source *os.File, size int64, expectedSHA256 string, mode os.FileMode) error {
 	destination, err := secureopen.OpenNewFileNoFollowInRoot(root, name, mode)
 	if err != nil {
 		return err
 	}
 	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(destination, hash), io.NewSectionReader(source, 0, size))
+	written, err := copyWithContext(ctx, io.MultiWriter(destination, hash), io.NewSectionReader(source, 0, size))
 	if err != nil {
 		_ = destination.Close()
 		return err
@@ -392,7 +409,10 @@ func copySectionToNewFile(root *os.Root, name string, source *os.File, size int6
 	return destination.Close()
 }
 
-func exactBundleExists(parent *os.Root, name string, wantDescriptor []byte, artifact Artifact) (bool, bool, error) {
+func exactBundleExists(ctx context.Context, parent *os.Root, name string, wantDescriptor []byte, artifact Artifact) (bool, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, false, err
+	}
 	info, err := parent.Lstat(name)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, false, nil
@@ -440,8 +460,11 @@ func exactBundleExists(parent *os.Root, name string, wantDescriptor []byte, arti
 		return false, true, nil
 	}
 	hash := sha256.New()
-	_, hashErr := io.Copy(hash, ipa)
+	_, hashErr := copyWithContext(ctx, hash, ipa)
 	closeErr = ipa.Close()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, true, ctxErr
+	}
 	if hashErr != nil || closeErr != nil || hex.EncodeToString(hash.Sum(nil)) != artifact.SHA256 {
 		return false, true, nil
 	}

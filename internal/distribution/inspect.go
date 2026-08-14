@@ -6,6 +6,7 @@ package distribution
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -154,6 +155,12 @@ var appleProfileRootFingerprints = map[string]struct{}{
 // InspectIPA validates and reads deterministic metadata from an already-open
 // regular IPA file. The file must remain open for the duration of the call.
 func InspectIPA(file *os.File, size int64, options InspectOptions) (Inspection, error) {
+	return InspectIPAContext(context.Background(), file, size, options)
+}
+
+// InspectIPAContext validates and reads deterministic metadata from an
+// already-open regular IPA file, stopping promptly when ctx is canceled.
+func InspectIPAContext(ctx context.Context, file *os.File, size int64, options InspectOptions) (Inspection, error) {
 	if file == nil {
 		return Inspection{}, fmt.Errorf("IPA file is nil")
 	}
@@ -163,7 +170,7 @@ func InspectIPA(file *os.File, size int64, options InspectOptions) (Inspection, 
 	if size > MaxIPABytes {
 		return Inspection{}, fmt.Errorf("IPA size %d bytes exceeds supported limit of %d bytes", size, MaxIPABytes)
 	}
-	snapshot, digest, cleanup, err := snapshotIPA(file, size)
+	snapshot, digest, cleanup, err := snapshotIPA(ctx, file, size)
 	if err != nil {
 		return Inspection{}, err
 	}
@@ -171,10 +178,13 @@ func InspectIPA(file *os.File, size int64, options InspectOptions) (Inspection, 
 	if afterIPASnapshotForTest != nil {
 		afterIPASnapshotForTest()
 	}
-	return inspectSnapshot(snapshot, size, digest, options)
+	return inspectSnapshot(ctx, snapshot, size, digest, options)
 }
 
-func inspectSnapshot(file *os.File, size int64, digest string, options InspectOptions) (Inspection, error) {
+func inspectSnapshot(ctx context.Context, file *os.File, size int64, digest string, options InspectOptions) (Inspection, error) {
+	if err := ctx.Err(); err != nil {
+		return Inspection{}, err
+	}
 	reader, err := zip.NewReader(file, size)
 	if err != nil {
 		return Inspection{}, fmt.Errorf("open IPA ZIP: %w", err)
@@ -189,6 +199,9 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 	var embeddedTargets []string
 	var declaredExpandedBytes uint64
 	for _, member := range reader.File {
+		if err := ctx.Err(); err != nil {
+			return Inspection{}, err
+		}
 		if err := validateArchiveMember(member); err != nil {
 			return Inspection{}, err
 		}
@@ -228,7 +241,7 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 		if err != nil {
 			return Inspection{}, fmt.Errorf("open IPA member %q: %w", member.Name, err)
 		}
-		written, readErr := io.Copy(io.Discard, io.LimitReader(opened, int64(remaining)+1))
+		written, readErr := copyWithContext(ctx, io.Discard, io.LimitReader(opened, int64(remaining)+1))
 		closeErr := opened.Close()
 		if written < 0 || uint64(written) > remaining {
 			return Inspection{}, fmt.Errorf("IPA expanded contents exceed %d bytes", maxArchiveExpandedBytes)
@@ -338,7 +351,10 @@ func inspectSnapshot(file *os.File, size int64, digest string, options InspectOp
 			result.Signing.Devices = devices
 		}
 		result.Preparation.Issues = preparationIssues(result, profile, effectiveNow(options.Now))
-		result.Signing.CodeSignatureVerification = verifyMainAppCodeSignature(reader.File, appDir, info.Executable, app.BundleID, profile)
+		result.Signing.CodeSignatureVerification = verifyMainAppCodeSignature(ctx, reader.File, appDir, info.Executable, app.BundleID, profile)
+		if err := ctx.Err(); err != nil {
+			return Inspection{}, err
+		}
 	}
 	result.Preparation.MetadataEligible = len(result.Preparation.Issues) == 0
 	return result, nil

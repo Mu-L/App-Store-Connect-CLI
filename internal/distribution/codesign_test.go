@@ -403,6 +403,22 @@ func TestRunCodeSignInvocationUsesIndependentDeadlines(t *testing.T) {
 	}
 }
 
+func TestRunCodeSignInvocationPropagatesParentCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runCodeSignTool = func(toolCtx context.Context, _ string, _ ...string) ([]byte, error) {
+		if !errors.Is(toolCtx.Err(), context.Canceled) {
+			t.Fatalf("tool context error = %v, want context.Canceled", toolCtx.Err())
+		}
+		return nil, toolCtx.Err()
+	}
+	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
+
+	if _, err := runCodeSignInvocation(ctx, "codesign", "--verify"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("runCodeSignInvocation() error = %v, want context.Canceled", err)
+	}
+}
+
 func TestInspectIPARejectsNestedCodeSignedByDifferentLeafEvenWhenDeepVerifyPasses(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("codesign verification is macOS-only")
@@ -526,7 +542,7 @@ func TestEnumerateMachOFilesIgnoresJavaClassMagicCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := enumerateMachOFiles(appPath)
+	got, err := enumerateMachOFiles(context.Background(), appPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +563,7 @@ func TestEnumerateMachOFilesIgnoresNonLoadableObjectFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := enumerateMachOFiles(appPath)
+	got, err := enumerateMachOFiles(context.Background(), appPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +592,7 @@ func TestEnumerateMachOFilesIncludesOnlyLoadableThinImageTypes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := enumerateMachOFiles(appPath)
+	got, err := enumerateMachOFiles(context.Background(), appPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +611,7 @@ func TestEnumerateMachOFilesClassifiesFatImageTypesSafely(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(appPath, "Resource.o"), fatMachOWithTypes(1), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		got, err := enumerateMachOFiles(appPath)
+		got, err := enumerateMachOFiles(context.Background(), appPath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -609,7 +625,7 @@ func TestEnumerateMachOFilesClassifiesFatImageTypesSafely(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(appPath, "Mixed"), fatMachOWithTypes(2, 1), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := enumerateMachOFiles(appPath); err == nil || !strings.Contains(err.Error(), "mixes loadable and non-loadable") {
+		if _, err := enumerateMachOFiles(context.Background(), appPath); err == nil || !strings.Contains(err.Error(), "mixes loadable and non-loadable") {
 			t.Fatalf("enumerateMachOFiles() error = %v, want mixed-type rejection", err)
 		}
 	})
@@ -622,7 +638,7 @@ func TestEnumerateMachOFilesClassifiesFatImageTypesSafely(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(appPath, "Malformed"), data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := enumerateMachOFiles(appPath); err == nil || !strings.Contains(err.Error(), "malformed architecture slice") {
+		if _, err := enumerateMachOFiles(context.Background(), appPath); err == nil || !strings.Contains(err.Error(), "malformed architecture slice") {
 			t.Fatalf("enumerateMachOFiles() error = %v, want malformed-slice rejection", err)
 		}
 	})
@@ -652,7 +668,7 @@ func TestVerifyMainAppCodeSignatureRejectsUnsafeTeamBeforeTools(t *testing.T) {
 	}
 	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
 
-	got := verifyMainAppCodeSignature(nil, "Payload/Demo.app", "Demo", "com.example.demo", parsedProfile{
+	got := verifyMainAppCodeSignature(context.Background(), nil, "Payload/Demo.app", "Demo", "com.example.demo", parsedProfile{
 		embeddedProfile: embeddedProfile{TeamIdentifier: []string{`TEAM" or true`}},
 	})
 	if got.Status != CodeSignatureInvalid || !strings.Contains(got.Reason, "unsupported characters") || called {
@@ -671,7 +687,7 @@ func TestVerifyMainAppCodeSignatureRejectsExpandedExecutableBeforeTools(t *testi
 		return nil, errors.New("unexpected")
 	}
 	t.Cleanup(func() { runCodeSignTool = runBoundedTool })
-	got := verifyMainAppCodeSignature([]*zip.File{member}, "Payload/Demo.app", "Demo", "com.example.demo", parsedProfile{})
+	got := verifyMainAppCodeSignature(context.Background(), []*zip.File{member}, "Payload/Demo.app", "Demo", "com.example.demo", parsedProfile{})
 	if got.Status != CodeSignatureInvalid || called {
 		t.Fatalf("verification=%#v called=%t", got, called)
 	}

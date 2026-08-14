@@ -79,7 +79,7 @@ Examples:
 				return fmt.Errorf("distribute inspect: %w", err)
 			}
 			defer file.Close()
-			result, err := distribution.InspectIPA(file, size, distribution.InspectOptions{IncludeDevices: *includeDevices})
+			result, err := distribution.InspectIPAContext(ctx, file, size, distribution.InspectOptions{IncludeDevices: *includeDevices})
 			if err != nil {
 				return fmt.Errorf("distribute inspect: %w", err)
 			}
@@ -146,7 +146,7 @@ Examples:
 			defer file.Close()
 			prepareOptions.Root = root
 			prepareOptions.OutputDir = relativeOutput
-			result, err := distribution.PrepareIPA(file, size, prepareOptions)
+			result, err := distribution.PrepareIPAContext(ctx, file, size, prepareOptions)
 			if err != nil {
 				return fmt.Errorf("distribute prepare: %w", err)
 			}

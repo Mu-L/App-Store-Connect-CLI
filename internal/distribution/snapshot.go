@@ -1,6 +1,7 @@
 package distribution
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -16,7 +17,10 @@ var afterIPASnapshotForTest func()
 // immutable-for-this-process file. Metadata parsing, hashing, and publishing
 // all consume this snapshot so concurrent writes to the source cannot produce
 // a descriptor assembled from different byte generations.
-func snapshotIPA(source *os.File, size int64) (*os.File, string, func(), error) {
+func snapshotIPA(ctx context.Context, source *os.File, size int64) (*os.File, string, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", nil, err
+	}
 	if source == nil {
 		return nil, "", nil, fmt.Errorf("IPA file is nil")
 	}
@@ -54,7 +58,7 @@ func snapshotIPA(source *os.File, size int64) (*os.File, string, func(), error) 
 		return nil, "", nil, fmt.Errorf("create private IPA snapshot: %w", err)
 	}
 	hash := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(snapshot, hash), io.NewSectionReader(source, 0, size))
+	written, copyErr := copyWithContext(ctx, io.MultiWriter(snapshot, hash), io.NewSectionReader(source, 0, size))
 	if copyErr == nil && written != size {
 		copyErr = fmt.Errorf("copied %d of %d bytes", written, size)
 	}
@@ -85,4 +89,34 @@ func snapshotIPA(source *os.File, size int64) (*os.File, string, func(), error) 
 		cleanupDirectory()
 	}
 	return snapshot, hex.EncodeToString(hash.Sum(nil)), cleanup, nil
+}
+
+func copyWithContext(ctx context.Context, destination io.Writer, source io.Reader) (int64, error) {
+	var written int64
+	buffer := make([]byte, 32<<10)
+	for {
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		count, readErr := source.Read(buffer)
+		if count > 0 {
+			wrote, writeErr := destination.Write(buffer[:count])
+			written += int64(wrote)
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if wrote != count {
+				return written, io.ErrShortWrite
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return written, nil
+			}
+			return written, readErr
+		}
+	}
 }
