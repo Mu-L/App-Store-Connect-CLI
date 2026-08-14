@@ -28,8 +28,9 @@ var (
 	newObjectStore     = func(ctx context.Context, config core.S3StoreConfig) (core.ObjectStore, time.Time, error) {
 		return core.NewS3Store(ctx, config)
 	}
-	runPublish          = core.Publish
-	reverifyPublication = core.Reverify
+	runPublish                       = core.Publish
+	reverifyPublication              = core.Reverify
+	publishAfterProtectedReadForTest func(string)
 )
 
 var regionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
@@ -545,13 +546,13 @@ func (paths artifactPaths) loadState() (publishState, bool, error) {
 	if err != nil {
 		return publishState{}, true, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return publishState{}, true, fmt.Errorf("sensitive link artifact must remain a mode-0600 regular file")
+	if err := validateProtectedPublishArtifact(file, info, "sensitive link artifact"); err != nil {
+		return publishState{}, true, err
 	}
 	if info.Size() > maxPublishStateBytes {
 		return publishState{}, true, fmt.Errorf("sensitive link artifact exceeds 2 MiB")
 	}
-	data, err := readBoundedPublishState(file)
+	data, err := readStableProtectedPublishArtifact(parent, name, file, info, "sensitive link artifact")
 	if err != nil {
 		return publishState{}, true, err
 	}
@@ -576,6 +577,52 @@ func readBoundedPublishState(reader io.Reader) ([]byte, error) {
 	return data, nil
 }
 
+func readStableProtectedPublishArtifact(root *os.Root, name string, file *os.File, info os.FileInfo, label string) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(file, maxPublishStateBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxPublishStateBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", label, maxPublishStateBytes)
+	}
+	if publishAfterProtectedReadForTest != nil {
+		publishAfterProtectedReadForTest(label)
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if err := validateProtectedPublishArtifact(file, after, label); err != nil {
+		return nil, err
+	}
+	pathAfter, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) != info.Size() ||
+		!os.SameFile(info, after) ||
+		info.Mode() != after.Mode() ||
+		info.Size() != after.Size() ||
+		!info.ModTime().Equal(after.ModTime()) ||
+		!os.SameFile(after, pathAfter) ||
+		after.Mode() != pathAfter.Mode() ||
+		after.Size() != pathAfter.Size() ||
+		!after.ModTime().Equal(pathAfter.ModTime()) {
+		return nil, fmt.Errorf("%s changed while reading", label)
+	}
+	return data, nil
+}
+
+func validateProtectedPublishArtifact(file *os.File, info os.FileInfo, label string) error {
+	if file == nil || info == nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%s must remain a mode-0600 regular file", label)
+	}
+	if err := validateProtectedPublishArtifactPlatform(file, info); err != nil {
+		return fmt.Errorf("%s is not a protected local file: %w", label, err)
+	}
+	return nil
+}
+
 func (paths artifactPaths) verifyExactReceipt(receipt core.PublishReceipt) error {
 	want, err := encodeJSON(receipt)
 	if err != nil {
@@ -595,10 +642,13 @@ func (paths artifactPaths) verifyExactReceipt(receipt core.PublishReceipt) error
 	if err != nil {
 		return err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 2<<20 {
+	if err := validateProtectedPublishArtifact(file, info, "receipt"); err != nil {
+		return err
+	}
+	if info.Size() > 2<<20 {
 		return fmt.Errorf("receipt must remain a bounded owner-private regular file")
 	}
-	got, err := io.ReadAll(io.LimitReader(file, 2<<20))
+	got, err := readStableProtectedPublishArtifact(parent, name, file, info, "receipt")
 	if err != nil {
 		return err
 	}
@@ -707,6 +757,9 @@ func (file *stagedFile) publish(data []byte) error {
 		return err
 	}
 	file.tempName = ""
+	if err := syncPublishArtifactDirectory(file.parent); err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -17,7 +17,7 @@ var (
 	snapshotCreatedForTest   func(string)
 )
 
-// snapshotIPA copies the already-open input exactly once into a private,
+// snapshotIPAContext copies the already-open input exactly once into a private,
 // immutable-for-this-process file. Metadata parsing, hashing, and publishing
 // all consume this snapshot so concurrent writes to the source cannot produce
 // a descriptor assembled from different byte generations.
