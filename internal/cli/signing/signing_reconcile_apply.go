@@ -66,7 +66,7 @@ func executeSigningReconcileApply(ctx context.Context, planPath string) (signing
 	}
 	devicesFile, err := decodeSigningDevicesFile(deviceData)
 	if err != nil {
-		return receipt, err
+		return receipt, shared.UsageErrorf("invalid devices file: %v", err)
 	}
 	if err := preflightSigningApply(requestCtx, client, plan, devicesFile); err != nil {
 		return receipt, shared.UsageErrorf("remote signing state changed: %v; rerun asc signing reconcile plan", err)

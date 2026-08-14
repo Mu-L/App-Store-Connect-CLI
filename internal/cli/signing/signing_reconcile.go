@@ -321,7 +321,16 @@ func readProtectedFile(path string) ([]byte, error) {
 }
 
 func readProtectedFileBounded(path string, limit int64) ([]byte, error) {
-	file, err := shared.OpenExistingNoFollow(path)
+	absolute, err := protectedInputAbsolutePath(path)
+	if err != nil {
+		return nil, err
+	}
+	volumeRoot := filepath.VolumeName(absolute) + string(filepath.Separator)
+	root, err := rootfs.New(volumeRoot)
+	if err != nil {
+		return nil, err
+	}
+	file, err := root.OpenFile(absolute)
 	if err != nil {
 		return nil, err
 	}
@@ -347,6 +356,36 @@ func readProtectedFileBounded(path string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("protected input exceeds %d bytes", limit)
 	}
 	return data, nil
+}
+
+func protectedInputAbsolutePath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	volumeRoot := filepath.VolumeName(absolute) + string(filepath.Separator)
+	relative, err := filepath.Rel(volumeRoot, absolute)
+	if err != nil {
+		return "", err
+	}
+	components := strings.Split(relative, string(filepath.Separator))
+	if len(components) < 2 || components[0] == "." {
+		return absolute, nil
+	}
+
+	// macOS exposes root-owned aliases such as /var -> /private/var. Resolve
+	// only that trusted top-level component; rootfs still validates every
+	// caller-controlled component below it without following symlinks.
+	topLevel := filepath.Join(volumeRoot, components[0])
+	info, err := os.Lstat(topLevel)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return absolute, nil
+	}
+	resolvedTopLevel, err := filepath.EvalSymlinks(topLevel)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(append([]string{resolvedTopLevel}, components[1:]...)...), nil
 }
 
 func decodeSigningDevicesFile(data []byte) (signingDevicesFile, error) {

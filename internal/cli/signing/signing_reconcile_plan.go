@@ -27,7 +27,7 @@ func executeSigningReconcilePlan(ctx context.Context, options signingReconcilePl
 	}
 	devicesFile, err := decodeSigningDevicesFile(deviceBytes)
 	if err != nil {
-		return signingReconcilePlanArtifact{}, err
+		return signingReconcilePlanArtifact{}, shared.UsageErrorf("invalid devices file: %v", err)
 	}
 	archive, err := readSigningArchiveRequirements(paths.ArchivePath)
 	if err != nil {
@@ -291,6 +291,7 @@ func planSigningTarget(ctx context.Context, client *asc.Client, target signingTa
 	}
 	var actions []signingAction
 	var blockers []string
+	canCreateProfile := true
 	requiredCapabilities, unverifiedEntitlements := signingCapabilitiesForEntitlements(target.Entitlements)
 	if bundle == nil {
 		if target.AppIDPrefix != "" && target.AppIDPrefix != plistString(target.Entitlements["com.apple.developer.team-identifier"]) {
@@ -308,6 +309,16 @@ func planSigningTarget(ctx context.Context, client *asc.Client, target signingTa
 	} else {
 		observed.ResourceID = bundle.ID
 		observed.Platform = string(bundle.Attributes.Platform)
+		targetPrefix := strings.TrimSpace(target.AppIDPrefix)
+		bundleSeedID := strings.TrimSpace(bundle.Attributes.SeedID)
+		if targetPrefix != "" && bundleSeedID != targetPrefix {
+			displaySeedID := bundleSeedID
+			if displaySeedID == "" {
+				displaySeedID = "<missing>"
+			}
+			blockers = append(blockers, fmt.Sprintf("bundle ID %s has seed ID %s, but target requires App ID prefix %s; refusing profile creation", target.BundleID, displaySeedID, targetPrefix))
+			canCreateProfile = false
+		}
 		if bundle.Attributes.Platform != asc.BundleIDPlatformIOS && bundle.Attributes.Platform != asc.BundleIDPlatformUniversal {
 			blockers = append(blockers, fmt.Sprintf("bundle ID %s has incompatible platform %s", target.BundleID, bundle.Attributes.Platform))
 		}
@@ -367,6 +378,9 @@ func planSigningTarget(ctx context.Context, client *asc.Client, target signingTa
 		return observed, actions, blockers, nil
 	}
 
+	if !canCreateProfile {
+		return observed, actions, blockers, nil
+	}
 	actions = append(actions, signingAction{
 		ID: "profile:" + target.BundleID, Kind: actionCreateProfile,
 		BundleID: target.BundleID, ResourceID: observed.ResourceID,
@@ -694,19 +708,21 @@ func signingCapabilitiesForEntitlements(entitlements map[string]any) ([]string, 
 	capabilityByEntitlement := map[string]string{
 		"aps-environment":                                   "PUSH_NOTIFICATIONS",
 		"com.apple.developer.associated-domains":            "ASSOCIATED_DOMAINS",
-		"com.apple.security.application-groups":             "APP_GROUPS",
-		"com.apple.developer.in-app-payments":               "APPLE_PAY",
-		"com.apple.developer.networking.networkextension":   "NETWORK_EXTENSIONS",
 		"com.apple.developer.healthkit":                     "HEALTHKIT",
 		"com.apple.developer.homekit":                       "HOMEKIT",
 		"com.apple.developer.siri":                          "SIRIKIT",
 		"com.apple.developer.nfc.readersession.formats":     "NFC_TAG_READING",
 		"com.apple.developer.default-data-protection":       "DATA_PROTECTION",
 		"com.apple.developer.applesignin":                   "APPLE_ID_AUTH",
-		"com.apple.developer.pass-type-identifiers":         "WALLET",
 		"com.apple.developer.networking.wifi-info":          "ACCESS_WIFI_INFORMATION",
 		"com.apple.developer.networking.multipath":          "MULTIPATH",
 		"com.apple.developer.kernel.increased-memory-limit": "INCREASED_MEMORY_LIMIT",
+	}
+	settingConstrainedEntitlements := map[string]struct{}{
+		"com.apple.security.application-groups":           {},
+		"com.apple.developer.in-app-payments":             {},
+		"com.apple.developer.networking.networkextension": {},
+		"com.apple.developer.pass-type-identifiers":       {},
 	}
 	var capabilities []string
 	var unverified []string
@@ -714,7 +730,8 @@ func signingCapabilitiesForEntitlements(entitlements map[string]any) ([]string, 
 		if _, ok := baseline[key]; ok {
 			continue
 		}
-		if strings.HasPrefix(key, "com.apple.developer.icloud-") || key == "com.apple.developer.ubiquity-container-identifiers" || key == "com.apple.developer.ubiquity-kvstore-identifier" || key == "com.apple.developer.default-data-protection" || key == "com.apple.developer.applesignin" {
+		_, hasEntitlementSpecificSettings := settingConstrainedEntitlements[key]
+		if hasEntitlementSpecificSettings || strings.HasPrefix(key, "com.apple.developer.icloud-") || key == "com.apple.developer.ubiquity-container-identifiers" || key == "com.apple.developer.ubiquity-kvstore-identifier" || key == "com.apple.developer.default-data-protection" || key == "com.apple.developer.applesignin" {
 			unverified = append(unverified, key+" (capability settings)")
 			continue
 		}
