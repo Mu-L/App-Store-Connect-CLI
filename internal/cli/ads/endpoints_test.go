@@ -331,6 +331,21 @@ func TestAdsCampaignUpdateHelpDocumentsRequiredEnvelope(t *testing.T) {
 	}
 }
 
+func TestPlatformConditionalConfirmationAppearsOnceInHelp(t *testing.T) {
+	root := AdsCommand()
+	update := findCommand(root, "platform", "ad-accounts", "update")
+	if update == nil {
+		t.Fatal("missing platform ad-account update command")
+	}
+
+	if got := strings.Count(update.LongHelp, "--confirm"); got != 1 {
+		t.Fatalf("ad-accounts update LongHelp contains --confirm %d times, want once: %q", got, update.LongHelp)
+	}
+	if !strings.Contains(update.LongHelp, "[--confirm]") {
+		t.Fatalf("ad-accounts update LongHelp = %q, want optional --confirm example", update.LongHelp)
+	}
+}
+
 func TestCollectQueryValidatesEndpointSpecificLimitsAndEnums(t *testing.T) {
 	customReports, _ := appleads.EndpointByCommandPath("impression-share-reports", "list")
 	fs, flags := bindEndpointFlags(customReports, "test")
@@ -576,6 +591,45 @@ func TestPlatformOptionalBodyAndUnboundedLimit(t *testing.T) {
 	}
 	if got := appleads.MaxPageLimit(spec); got != 0 {
 		t.Fatalf("MaxPageLimit() = %d, want no v5 cap", got)
+	}
+}
+
+func TestCollectQueryHonorsGenericIntegerMax(t *testing.T) {
+	spec := appleads.EndpointSpec{
+		Name:    "platform-page-size",
+		Method:  "GET",
+		Path:    "v1/resources",
+		Version: appleads.APIVersionPlatformV1,
+		QueryParams: []appleads.ParamSpec{{
+			Name: "pageSize",
+			Flag: "page-size",
+			Type: appleads.ParamInt,
+			Max:  50,
+		}},
+	}
+	_, flags := bindEndpointFlags(spec, "platform page-size")
+	*flags.queryInts["pageSize"] = 50
+	query, err := collectQuery(spec, flags)
+	if err != nil {
+		t.Fatalf("collectQuery(max) error: %v", err)
+	}
+	if got := query.Get("pageSize"); got != "50" {
+		t.Fatalf("pageSize at max = %q, want 50", got)
+	}
+
+	*flags.queryInts["pageSize"] = 51
+	if _, err := collectQuery(spec, flags); err == nil || !strings.Contains(err.Error(), "--page-size must be at most 50") {
+		t.Fatalf("collectQuery(max+1) error = %v, want max validation", err)
+	}
+
+	spec.QueryParams[0].Max = 0
+	*flags.queryInts["pageSize"] = 50000
+	query, err = collectQuery(spec, flags)
+	if err != nil {
+		t.Fatalf("collectQuery(unbounded) error: %v", err)
+	}
+	if got := query.Get("pageSize"); got != "50000" {
+		t.Fatalf("unbounded pageSize = %q, want 50000", got)
 	}
 }
 

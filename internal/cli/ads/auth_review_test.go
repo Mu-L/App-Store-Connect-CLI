@@ -7,21 +7,6 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/appleads"
 )
 
-func TestAuthPlatformEndpointSpecReportsMissingCommand(t *testing.T) {
-	_, err := authPlatformEndpointSpec("missing", "view")
-	if err == nil || !strings.Contains(err.Error(), "internal error: missing Apple Ads Platform endpoint spec for command \"missing view\"") {
-		t.Fatalf("authPlatformEndpointSpec() error = %v, want a clear missing-endpoint programming error", err)
-	}
-}
-
-func TestAuthPlatformEndpointSpecResolvesAuthEndpoints(t *testing.T) {
-	for _, path := range [][]string{{"me", "view"}, {"acls", "list"}} {
-		if _, err := authPlatformEndpointSpec(path...); err != nil {
-			t.Fatalf("authPlatformEndpointSpec(%q) error: %v", strings.Join(path, " "), err)
-		}
-	}
-}
-
 func TestAuthLegacyEndpointSpecReportsMissingCommand(t *testing.T) {
 	_, err := authLegacyEndpointSpec("missing", "view")
 	if err == nil || !strings.Contains(err.Error(), "internal error: missing Apple Ads Campaign Management endpoint spec for command \"missing view\"") {
@@ -38,6 +23,16 @@ func TestAuthLegacyEndpointSpecResolvesDiscoveryEndpoints(t *testing.T) {
 		if spec.Version == appleads.APIVersionPlatformV1 {
 			t.Fatalf("authLegacyEndpointSpec(%q) selected Platform API v1", strings.Join(path, " "))
 		}
+	}
+}
+
+func TestAuthValidationUsesLegacyEndpointSpec(t *testing.T) {
+	spec, err := authLegacyEndpointSpec("me", "view")
+	if err != nil {
+		t.Fatalf("authLegacyEndpointSpec(me view) error: %v", err)
+	}
+	if spec.Version == appleads.APIVersionPlatformV1 || spec.Path != "v5/me" {
+		t.Fatalf("auth validation spec = version %q path %q, want legacy Campaign Management v5 path", spec.Version, spec.Path)
 	}
 }
 

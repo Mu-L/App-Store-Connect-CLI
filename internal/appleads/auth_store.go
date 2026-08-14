@@ -528,29 +528,20 @@ func findDefaultCredentialInActiveConfig() (StoredCredential, bool, error) {
 func storedCredentialsFromConfig(cfg *config.Config, path string) []StoredCredential {
 	credentials := make([]StoredCredential, 0, len(cfg.Ads.Keys))
 	for _, cred := range cfg.Ads.Keys {
-		orgID := cred.OrgID
-		if configCredentialUsesRootContext(cfg, cred.Name) {
-			orgID = firstNonEmpty(orgID, cfg.Ads.OrgID)
-		}
 		payload := credentialPayload{
 			ClientID:       cred.ClientID,
 			TeamID:         cred.TeamID,
 			KeyID:          cred.KeyID,
 			PrivateKeyPath: cred.PrivateKeyPath,
-			OrgID:          orgID,
-			AdAccountID:    cred.AdAccountID,
+			// Preserve the legacy root organization fallback for every named
+			// profile. Do not copy the root ad-account context: Platform v1
+			// ad-account selection must remain profile-specific.
+			OrgID:       firstNonEmpty(cred.OrgID, cfg.Ads.OrgID),
+			AdAccountID: cred.AdAccountID,
 		}
 		credentials = append(credentials, storedFromPayload(cred.Name, payload, "config", path))
 	}
 	return credentials
-}
-
-func configCredentialUsesRootContext(cfg *config.Config, name string) bool {
-	defaultName := strings.TrimSpace(cfg.Ads.DefaultKeyName)
-	if defaultName != "" {
-		return strings.TrimSpace(name) == defaultName
-	}
-	return len(cfg.Ads.Keys) == 1
 }
 
 func getCredentialFromConfig(profile string) (StoredCredential, error) {

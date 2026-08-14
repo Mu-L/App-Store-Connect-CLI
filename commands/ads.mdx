@@ -60,7 +60,8 @@ asc ads auth login \
 ```
 
 Add `--network` during login when you want `asc` to request a token and call
-`GET /v1/me` before storing the profile:
+the stable Campaign Management API v5 `GET /v5/me` endpoint before storing the
+profile:
 
 ```bash  theme={null}
 asc ads auth login \
@@ -151,8 +152,9 @@ including `GET /v1/me`, `GET /v1/acls`, `GET /v1/orgs/{id}`,
 `--ad-account` explicitly to one of those endpoints is rejected instead of
 silently ignored.
 
-Authentication discovery and validation also use the v1 `me` and `acls`
-endpoints, so these public auth commands do not depend on the retiring v5 API:
+Authentication discovery and validation use the stable Campaign Management API
+v5 `me` and `acls` endpoints. Platform API v1 remains explicit under the
+`ads platform` namespace:
 
 ```bash  theme={null}
 asc ads auth status --validate

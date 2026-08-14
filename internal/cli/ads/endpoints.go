@@ -201,8 +201,11 @@ func endpointLongHelp(node *commandNode, path []string) string {
 			examples[0] += " --file payload.json"
 		}
 	}
-	if node.spec.RequiresConfirm {
+	switch {
+	case node.spec.RequiresConfirm:
 		examples[0] += " --confirm"
+	case node.spec.ConfirmBodyField != "":
+		examples[0] += " [--confirm]"
 	}
 	if node.spec.RequiresOrg {
 		examples[0] += " --org ORG_ID"
@@ -459,6 +462,9 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 			}
 			if raw < 0 {
 				return nil, fmt.Errorf("--%s must be >= 0", param.Flag)
+			}
+			if param.Max > 0 && param.Name != "limit" && raw > param.Max {
+				return nil, fmt.Errorf("--%s must be at most %d", param.Flag, param.Max)
 			}
 			if param.Name == "limit" {
 				maxLimit := appleads.MaxPageLimit(spec)
