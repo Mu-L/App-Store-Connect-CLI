@@ -68,6 +68,50 @@ func New(path string) (Root, error) {
 	return Root{path: filepath.Clean(absolute)}, nil
 }
 
+// OpenFile opens an existing regular file through a rooted traversal. Paths
+// below the current working directory or OS temporary directory use that
+// trusted anchor; other paths use their filesystem root. Unlike a
+// final-component O_NOFOLLOW open, this rejects symlinks in parent components
+// below the selected root.
+func OpenFile(path string) (*os.File, error) {
+	if path == "" {
+		return nil, fmt.Errorf("%w: path is empty", ErrEscapesRoot)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve path %q: %w", path, err)
+	}
+	volumeRoot := filepath.VolumeName(absolute) + string(filepath.Separator)
+	rootPath := volumeRoot
+	for _, candidate := range []string{workingDirectory(), os.TempDir()} {
+		candidate, err = filepath.Abs(candidate)
+		if err != nil {
+			continue
+		}
+		candidate = filepath.Clean(candidate)
+		if _, err := relativeWithinRoot(candidate, absolute); err == nil && len(candidate) > len(rootPath) {
+			rootPath = candidate
+		}
+	}
+	root, err := New(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	relative, err := filepath.Rel(root.Path(), absolute)
+	if err != nil {
+		return nil, fmt.Errorf("%w: resolve %q below %q: %w", ErrEscapesRoot, path, root.Path(), err)
+	}
+	return root.OpenFile(relative)
+}
+
+func workingDirectory() string {
+	path, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
 // Path returns the absolute trusted root path.
 func (r Root) Path() string {
 	return r.path
@@ -286,6 +330,47 @@ func (r Root) OpenFile(name string) (*os.File, error) {
 	if !openedInfo.Mode().IsRegular() {
 		_ = file.Close()
 		return nil, fmt.Errorf("%q is not a regular file", resolved)
+	}
+	return file, nil
+}
+
+// OpenDir opens an existing directory beneath the root without following
+// symlinks in the final component or in any component below the root.
+func (r Root) OpenDir(name string) (*os.File, error) {
+	resolved, err := r.Resolve(name)
+	if err != nil {
+		return nil, err
+	}
+	parent, base, err := r.openParentRooted(resolved)
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	if err := r.checkParentComponents(resolved); err != nil {
+		return nil, err
+	}
+	info, err := parent.Lstat(base)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, symlinkError(resolved)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%q is not a directory", resolved)
+	}
+	file, err := secureopen.OpenExistingNoFollowInRoot(parent, base)
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !openedInfo.IsDir() {
+		_ = file.Close()
+		return nil, fmt.Errorf("%q is not a directory", resolved)
 	}
 	return file, nil
 }
@@ -582,6 +667,47 @@ func (r Root) CheckFileParent(name string) error {
 	return r.checkParentComponents(resolved)
 }
 
+// CheckDirectoryWritable verifies that a temporary regular file can be created
+// and removed within an existing directory beneath the root.
+func (r Root) CheckDirectoryWritable(name string, perm os.FileMode) error {
+	resolved, err := r.Resolve(name)
+	if err != nil {
+		return err
+	}
+	if err := r.validateExistingDir(resolved); err != nil {
+		return err
+	}
+	rooted, relative, err := r.openRooted(resolved, false)
+	if err != nil {
+		return err
+	}
+	directory, err := rooted.OpenRoot(relative)
+	_ = rooted.Close()
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+
+	probe, probeName, err := secureopen.CreateTempNoFollowInRoot(directory, ".", ".asc-write-probe-*", perm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = probe.Close()
+		_ = directory.Remove(probeName)
+	}()
+	if err := probe.Chmod(perm); err != nil {
+		return err
+	}
+	if err := probe.Close(); err != nil {
+		return err
+	}
+	if err := directory.Remove(probeName); err != nil {
+		return err
+	}
+	return nil
+}
+
 // CreateNewFile writes data to a new file beneath the root and fails when the
 // destination already exists. It prefers atomic no-replace publication, then
 // falls back to rooted, no-follow O_EXCL creation when the filesystem does not
@@ -717,6 +843,17 @@ func (r Root) CreateNewFrom(name string, reader io.Reader, perm os.FileMode) (in
 		return written, err
 	}
 	published = true
+	directory, err := parent.Open(".")
+	if err != nil {
+		return written, fmt.Errorf("open parent directory for durability sync: %w", err)
+	}
+	if err := directory.Sync(); err != nil && !unsupportedDirectorySyncError(err) {
+		_ = directory.Close()
+		return written, fmt.Errorf("sync parent directory after publish: %w", err)
+	}
+	if err := directory.Close(); err != nil {
+		return written, fmt.Errorf("close parent directory after durability sync: %w", err)
+	}
 	return written, nil
 }
 

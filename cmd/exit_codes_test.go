@@ -556,6 +556,111 @@ func TestBuildsListMissingAppExitCode(t *testing.T) {
 	}
 }
 
+func TestSigningReconcileInvalidDevicesFileExitsTwoWithoutSideEffects(t *testing.T) {
+	binaryPath := buildASCBlackboxBinary(t)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "malformed JSON", body: `{"schemaVersion":1,"devices":[`},
+		{name: "unknown field", body: `{"schemaVersion":1,"devices":[{"name":"Phone","udid":"ABCD1234","platform":"IOS","SECRET-UDID-Rudrank-Phone":true}]}`},
+		{name: "invalid UDID", body: `{"schemaVersion":1,"devices":[{"name":"Phone","udid":"ABC/DEF?123","platform":"IOS"}]}`},
+		{name: "duplicate device", body: `{"schemaVersion":1,"devices":[{"name":"One","udid":"00-aa-11-bb","platform":"IOS"},{"name":"Two","udid":"00aa11bb","platform":"IOS"}]}`},
+		{name: "unsupported platform", body: `{"schemaVersion":1,"devices":[{"name":"Phone","udid":"ABCD1234","platform":"MAC_OS"}]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			devicesPath := filepath.Join(tmpDir, "devices.json")
+			if err := os.WriteFile(devicesPath, []byte(test.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stateDir := filepath.Join(tmpDir, "signing-state")
+
+			runCmd := exec.Command(
+				binaryPath,
+				"signing", "reconcile", "plan",
+				"--archive-path", filepath.Join(tmpDir, "App.xcarchive"),
+				"--devices-file", devicesPath,
+				"--state-dir", stateDir,
+			)
+			runCmd.Env = isolatedCLITestEnv(filepath.Join(tmpDir, "config.json"))
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			runCmd.Stdout = &stdout
+			runCmd.Stderr = &stderr
+			err := runCmd.Run()
+			if err == nil {
+				t.Fatal("expected invalid devices file to fail")
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("expected *exec.ExitError, got %T (%v)", err, err)
+			}
+			if exitErr.ExitCode() != ExitUsage {
+				t.Fatalf("exit code = %d, want %d; stderr=%q", exitErr.ExitCode(), ExitUsage, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want empty", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), "invalid devices file") {
+				t.Fatalf("stderr = %q, want devices validation error", stderr.String())
+			}
+			if strings.Contains(stderr.String(), "SECRET-UDID-Rudrank-Phone") {
+				t.Fatalf("stderr leaked untrusted devices content: %q", stderr.String())
+			}
+			if _, statErr := os.Stat(stateDir); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("state directory exists after invalid input: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestSigningReconcileProtectedDevicesFileExitsTwoWithoutLeakingPath(t *testing.T) {
+	binaryPath := buildASCBlackboxBinary(t)
+	tmpDir := t.TempDir()
+	const secret = "SECRET-UDID-Rudrank-Phone"
+	devicesPath := filepath.Join(tmpDir, secret, "devices.json")
+	stateDir := filepath.Join(tmpDir, "signing-state")
+
+	runCmd := exec.Command(
+		binaryPath,
+		"signing", "reconcile", "plan",
+		"--archive-path", filepath.Join(tmpDir, "App.xcarchive"),
+		"--devices-file", devicesPath,
+		"--state-dir", stateDir,
+	)
+	runCmd.Env = isolatedCLITestEnv(filepath.Join(tmpDir, "config.json"))
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	runCmd.Stdout = &stdout
+	runCmd.Stderr = &stderr
+	err := runCmd.Run()
+	if err == nil {
+		t.Fatal("expected missing protected devices file to fail")
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected *exec.ExitError, got %T (%v)", err, err)
+	}
+	if exitErr.ExitCode() != ExitUsage {
+		t.Fatalf("exit code = %d, want %d; stderr=%q", exitErr.ExitCode(), ExitUsage, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "invalid devices file") {
+		t.Fatalf("stderr = %q, want protected input diagnostic", stderr.String())
+	}
+	if strings.Contains(stderr.String(), secret) || strings.Contains(stderr.String(), devicesPath) {
+		t.Fatalf("stderr leaked protected input path: %q", stderr.String())
+	}
+	if _, statErr := os.Stat(stateDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("state directory exists after invalid input: %v", statErr)
+	}
+}
+
 func TestAnalyticsViewInvalidGranularityExitCode(t *testing.T) {
 	binaryPath := buildASCBlackboxBinary(t)
 
