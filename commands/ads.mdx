@@ -180,14 +180,16 @@ an ad account use the same `--ad-account` value for both the URL ID and the
 `X-AP-Context` header:
 
 ```bash  theme={null}
-asc ads ad-accounts create --file ad-account-create.json
+asc ads ad-accounts create --file ad-account-create.json --confirm
 asc ads ad-accounts view --ad-account "987654"
 asc ads ad-accounts update --ad-account "987654" --file ad-account-update.json
 ```
 
 `productFeatures` is immutable and rejected by `ad-accounts update`. Because
 `delegations` replaces the complete delegation list, updates containing that
-field also require `--confirm`; name-only updates do not.
+field also require `--confirm`; name-only updates do not. Account creation also
+requires `--confirm` because the account family is immutable and the API does
+not provide an ad-account delete operation.
 
 Search apps by text, content-provider IDs, owned apps, or a combination. Store
 fronts are passed as comma-separated ISO alpha-2 codes and sent as repeated v1
@@ -670,7 +672,7 @@ Use the direct Platform API command for v1 paths:
 ```bash  theme={null}
 asc ads api request \
   --method POST \
-  --path v1/campaigns/query \
+  --path v1/metadata/apps/supported-languages/query \
   --ad-account "987654" \
   --file query.json \
   --output json
