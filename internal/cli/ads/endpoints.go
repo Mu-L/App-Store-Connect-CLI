@@ -29,6 +29,7 @@ type endpointFlagValues struct {
 	paginate *bool
 
 	pathStrings   map[string]*string
+	pathAliases   map[string][]*shared.DeprecatedStringFlagAlias
 	queryStrings  map[string]*string
 	queryRepeated map[string]*repeatedFlagValue
 	queryInts     map[string]*int
@@ -192,16 +193,22 @@ func endpointLongHelp(node *commandNode, path []string) string {
 		examples[0] += fmt.Sprintf(" --%s %s", param.Flag, strings.ToUpper(strings.ReplaceAll(param.Flag, "-", "_")))
 	}
 	if node.spec.BodyKind != appleads.BodyNone {
-		if node.spec.BodyOptional {
-			examples[0] += " [--file payload.json]"
+		bodyFile := node.spec.BodyFileExample
+		if bodyFile == "" {
+			bodyFile = "payload.json"
+		}
+		if node.spec.BodyOptional && !node.spec.CLIRequiresBody {
+			examples[0] += " [--file " + bodyFile + "]"
 		} else {
-			examples[0] += " --file payload.json"
+			examples[0] += " --file " + bodyFile
 		}
 	}
 	switch {
 	case node.spec.RequiresConfirm:
 		examples[0] += " --confirm"
-	case node.spec.ConfirmBodyField != "":
+	case node.spec.RiskConfirm && node.spec.RiskConfirmBodyField == "":
+		examples[0] += " --confirm"
+	case node.spec.ConfirmBodyField != "" || node.spec.RiskConfirm:
 		examples[0] += " [--confirm]"
 	}
 	if node.spec.RequiresOrg {
@@ -239,10 +246,16 @@ Search modes:
 
 func endpointBodyHelp(spec appleads.EndpointSpec) string {
 	required := "yes"
-	if spec.BodyOptional {
+	if spec.BodyOptional && !spec.CLIRequiresBody {
 		required = "no"
 	}
-	return fmt.Sprintf("\n\nRequest body:\n  Schema: %s\n  Shape: %s\n  Required: %s", spec.BodyType, endpointBodyShape(spec.BodyKind), required)
+	help := fmt.Sprintf("\n\nRequest body:\n  Schema: %s\n  Shape: %s\n  Required: %s", spec.BodyType, endpointBodyShape(spec.BodyKind), required)
+	if strings.TrimSpace(spec.BodyHint) != "" {
+		hint := strings.TrimSpace(spec.BodyHint)
+		hint = strings.ReplaceAll(hint, "\n", "\n  ")
+		help += "\n  Guidance: " + hint
+	}
+	return help
 }
 
 func endpointBodyShape(kind appleads.BodyKind) string {
@@ -328,6 +341,7 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 		output:        shared.BindOutputFlags(fs),
 		flagSet:       fs,
 		pathStrings:   map[string]*string{},
+		pathAliases:   map[string][]*shared.DeprecatedStringFlagAlias{},
 		queryStrings:  map[string]*string{},
 		queryRepeated: map[string]*repeatedFlagValue{},
 		queryInts:     map[string]*int{},
@@ -344,6 +358,9 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 			continue
 		}
 		values.pathStrings[param.Name] = fs.String(param.Flag, "", flagUsage(param))
+		for _, alias := range param.Aliases {
+			values.pathAliases[param.Name] = append(values.pathAliases[param.Name], shared.BindDeprecatedStringFlagAlias(fs, alias, param.Flag))
+		}
 	}
 	for _, param := range spec.QueryParams {
 		switch param.Type {
@@ -364,8 +381,8 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 	if spec.BodyKind != appleads.BodyNone {
 		values.file = fs.String("file", "", "Path to Apple Ads JSON payload")
 	}
-	if spec.RequiresConfirm {
-		values.confirm = fs.Bool("confirm", false, "Confirm this destructive Apple Ads operation")
+	if spec.RequiresConfirm || spec.RiskConfirm {
+		values.confirm = fs.Bool("confirm", false, confirmFlagUsage(spec))
 	}
 	if spec.ConfirmBodyField != "" && values.confirm == nil {
 		values.confirm = fs.Bool("confirm", false, "Confirm an Apple Ads update that replaces delegations")
@@ -393,6 +410,19 @@ func flagUsage(param appleads.ParamSpec) string {
 	return usage
 }
 
+func confirmFlagUsage(spec appleads.EndpointSpec) string {
+	switch {
+	case spec.RiskConfirm:
+		return "Acknowledge potential Apple Ads spend or billing impact"
+	case spec.RequiresConfirm:
+		return "Confirm deletion of this Apple Ads resource"
+	case spec.ConfirmBodyField != "":
+		return "Confirm an Apple Ads update that replaces delegations"
+	default:
+		return "Confirm this Apple Ads operation"
+	}
+}
+
 func intParamDefault(param appleads.ParamSpec) int {
 	return param.Default
 }
@@ -408,6 +438,9 @@ func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endp
 	query, err := collectQuery(spec, flags)
 	if err != nil {
 		return shared.UsageError(err.Error())
+	}
+	if spec.RiskConfirm && spec.RiskConfirmBodyField == "" && flags.confirm != nil && !*flags.confirm {
+		return shared.UsageError("--confirm is required to acknowledge potential Apple Ads spend or billing impact")
 	}
 	body, err := readBody(spec, flags)
 	if err != nil {
@@ -466,6 +499,11 @@ func collectPathParams(spec appleads.EndpointSpec, flags endpointFlagValues) (ma
 			continue
 		}
 		ptr := flags.pathStrings[param.Name]
+		for _, alias := range flags.pathAliases[param.Name] {
+			if err := alias.Apply(ptr); err != nil {
+				return nil, err
+			}
+		}
 		value := value(ptr)
 		if param.Required && value == "" {
 			return nil, fmt.Errorf("--%s is required", param.Flag)
@@ -660,7 +698,7 @@ func readBody(spec appleads.EndpointSpec, flags endpointFlagValues) (json.RawMes
 	}
 	fileValue := value(flags.file)
 	if fileValue == "" {
-		if spec.BodyOptional {
+		if spec.BodyOptional && !spec.CLIRequiresBody {
 			return nil, nil
 		}
 		fmt.Fprintln(os.Stderr, "Error: --file is required")
@@ -680,6 +718,12 @@ func readBody(spec appleads.EndpointSpec, flags endpointFlagValues) (json.RawMes
 func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, confirmed bool) error {
 	if len(body) == 0 || spec.Version != appleads.APIVersionPlatformV1 {
 		return nil
+	}
+	if spec.RiskConfirm && !confirmed && riskConfirmationRequired(spec, body) {
+		if spec.RiskConfirmBodyField != "" {
+			return fmt.Errorf("--confirm is required unless %s is explicitly %q", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue)
+		}
+		return fmt.Errorf("--confirm is required to acknowledge potential Apple Ads spend or billing impact")
 	}
 	if spec.Name != "platform-create-ad-account" && spec.Name != "platform-update-ad-account" {
 		return nil
@@ -721,6 +765,28 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 		}
 	}
 	return nil
+}
+
+func riskConfirmationRequired(spec appleads.EndpointSpec, body json.RawMessage) bool {
+	if !spec.RiskConfirm {
+		return false
+	}
+	if spec.RiskConfirmBodyField == "" {
+		return true
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return true
+	}
+	rawValue, ok := payload[spec.RiskConfirmBodyField]
+	if !ok {
+		return true
+	}
+	var value string
+	if err := json.Unmarshal(rawValue, &value); err != nil {
+		return true
+	}
+	return value != spec.RiskConfirmBodyValue
 }
 
 func requireNonEmptyJSONString(payload map[string]json.RawMessage, field string) error {

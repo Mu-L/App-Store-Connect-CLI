@@ -25,6 +25,7 @@ const (
 type ParamSpec struct {
 	Name         string
 	Flag         string
+	Aliases      []string
 	Type         ParamType
 	Required     bool
 	Repeated     bool
@@ -38,24 +39,37 @@ type ParamSpec struct {
 // EndpointSpec is the single source of truth for the Apple Ads command and
 // client surface.
 type EndpointSpec struct {
-	Name             string
-	Method           string
-	Path             string
-	Version          APIVersion
-	Context          ContextKind
-	CommandPath      []string
-	BodyKind         BodyKind
-	BodyOptional     bool
+	Name         string
+	Method       string
+	Path         string
+	Version      APIVersion
+	Context      ContextKind
+	CommandPath  []string
+	BodyKind     BodyKind
+	BodyOptional bool
+	// CLIRequiresBody records a client-side requirement that is stricter than
+	// the SDK/OpenAPI request contract. Apple accepts an empty selector body on
+	// some query endpoints, but the Platform API requires a selector filter for
+	// the keyword queries exposed by asc.
+	CLIRequiresBody  bool
 	BodyType         string
+	BodyHint         string
+	BodyFileExample  string
 	ResponseType     string
 	RequiresOrg      bool
 	RequiresConfirm  bool
 	ConfirmBodyField string
-	RetrySafe        bool
-	PathParams       []ParamSpec
-	QueryParams      []ParamSpec
-	SupportsPaginate bool
-	DefaultListAlias bool
+	// RiskConfirm separates spend or billing acknowledgement from destructive
+	// confirmation. RiskConfirmBodyField and RiskConfirmBodyValue optionally
+	// describe a safe payload value that does not need acknowledgement.
+	RiskConfirm          bool
+	RiskConfirmBodyField string
+	RiskConfirmBodyValue string
+	RetrySafe            bool
+	PathParams           []ParamSpec
+	QueryParams          []ParamSpec
+	SupportsPaginate     bool
+	DefaultListAlias     bool
 }
 
 // PlatformEndpointSpecs returns the implemented Apple Ads Platform API v1
@@ -164,16 +178,17 @@ func PlatformEndpointByCommandPath(path ...string) (EndpointSpec, bool) {
 const maxAppleAdsPageLimit = 1000
 
 var (
-	adamIDParam      = ParamSpec{Name: "adamId", Flag: "adam-id", Type: ParamInt, Required: true}
-	adGroupParam     = ParamSpec{Name: "adgroupId", Flag: "ad-group", Type: ParamInt, Required: true}
-	adParam          = ParamSpec{Name: "adId", Flag: "ad", Type: ParamInt, Required: true}
-	budgetOrderParam = ParamSpec{Name: "boId", Flag: "budget-order", Type: ParamInt, Required: true}
-	campaignParam    = ParamSpec{Name: "campaignId", Flag: "campaign", Type: ParamInt, Required: true}
-	creativeParam    = ParamSpec{Name: "creativeId", Flag: "creative", Type: ParamInt, Required: true}
-	keywordParam     = ParamSpec{Name: "keywordId", Flag: "keyword", Type: ParamInt, Required: true}
-	productPageParam = ParamSpec{Name: "productPageId", Flag: "product-page", Type: ParamString, Required: true}
-	reasonParam      = ParamSpec{Name: "productPageReasonId", Flag: "reason", Type: ParamInt, Required: true}
-	reportParam      = ParamSpec{Name: "reportId", Flag: "report", Type: ParamInt, Required: true}
+	adamIDParam          = ParamSpec{Name: "adamId", Flag: "adam-id", Type: ParamInt, Required: true}
+	adGroupParam         = ParamSpec{Name: "adgroupId", Flag: "ad-group", Type: ParamInt, Required: true}
+	adParam              = ParamSpec{Name: "adId", Flag: "ad", Type: ParamInt, Required: true}
+	budgetOrderParam     = ParamSpec{Name: "boId", Flag: "budget-order", Type: ParamInt, Required: true}
+	campaignParam        = ParamSpec{Name: "campaignId", Flag: "campaign", Type: ParamInt, Required: true}
+	creativeParam        = ParamSpec{Name: "creativeId", Flag: "creative", Type: ParamInt, Required: true}
+	keywordParam         = ParamSpec{Name: "keywordId", Flag: "keyword", Type: ParamInt, Required: true}
+	negativeKeywordParam = ParamSpec{Name: "keywordId", Flag: "negative-keyword", Aliases: []string{"keyword"}, Type: ParamInt, Required: true}
+	productPageParam     = ParamSpec{Name: "productPageId", Flag: "product-page", Type: ParamString, Required: true}
+	reasonParam          = ParamSpec{Name: "productPageReasonId", Flag: "reason", Type: ParamInt, Required: true}
+	reportParam          = ParamSpec{Name: "reportId", Flag: "report", Type: ParamInt, Required: true}
 
 	limitParam  = ParamSpec{Name: "limit", Flag: "limit", Type: ParamInt, Max: maxAppleAdsPageLimit}
 	offsetParam = ParamSpec{Name: "offset", Flag: "offset", Type: ParamInt}
@@ -262,14 +277,14 @@ func EndpointSpecs() []EndpointSpec {
 
 		endpoint("get-all-campaign-negative-keywords", "GET", "v5/campaigns/{campaignId}/negativekeywords", []string{"campaign-negative-keywords", "list"}, BodyNone, "", "NegativeKeywordListResponse", []ParamSpec{campaignParam}, qLimitOffset()),
 		endpoint("find-campaign-negative-keywords", "POST", "v5/campaigns/{campaignId}/negativekeywords/find", []string{"campaign-negative-keywords", "find"}, BodyObject, "Selector", "NegativeKeywordListResponse", []ParamSpec{campaignParam}, nil),
-		endpoint("get-a-campaign-negative-keyword", "GET", "v5/campaigns/{campaignId}/negativekeywords/{keywordId}", []string{"campaign-negative-keywords", "view"}, BodyNone, "", "NegativeKeywordResponse", []ParamSpec{campaignParam, keywordParam}, nil),
+		endpoint("get-a-campaign-negative-keyword", "GET", "v5/campaigns/{campaignId}/negativekeywords/{keywordId}", []string{"campaign-negative-keywords", "view"}, BodyNone, "", "NegativeKeywordResponse", []ParamSpec{campaignParam, negativeKeywordParam}, nil),
 		endpoint("create-campaign-negative-keywords", "POST", "v5/campaigns/{campaignId}/negativekeywords/bulk", []string{"campaign-negative-keywords", "create-bulk"}, BodyArray, "[NegativeKeyword]", "NegativeKeywordListResponse", []ParamSpec{campaignParam}, nil),
 		endpoint("update-campaign-negative-keywords", "PUT", "v5/campaigns/{campaignId}/negativekeywords/bulk", []string{"campaign-negative-keywords", "update-bulk"}, BodyArray, "[NegativeKeyword]", "NegativeKeywordListResponse", []ParamSpec{campaignParam}, nil),
 		endpoint("delete-campaign-negative-keywords", "POST", "v5/campaigns/{campaignId}/negativekeywords/delete/bulk", []string{"campaign-negative-keywords", "delete-bulk"}, BodyArray, "[int64]", "IntegerResponse", []ParamSpec{campaignParam}, nil),
 
 		endpoint("get-all-ad-group-negative-keywords", "GET", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords", []string{"ad-group-negative-keywords", "list"}, BodyNone, "", "NegativeKeywordListResponse", []ParamSpec{campaignParam, adGroupParam}, qLimitOffset()),
 		endpoint("find-ad-group-negative-keywords", "POST", "v5/campaigns/{campaignId}/adgroups/negativekeywords/find", []string{"ad-group-negative-keywords", "find"}, BodyObject, "Selector", "NegativeKeywordListResponse", []ParamSpec{campaignParam}, nil),
-		endpoint("get-an-ad-group-negative-keyword", "GET", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/{keywordId}", []string{"ad-group-negative-keywords", "view"}, BodyNone, "", "NegativeKeywordResponse", []ParamSpec{campaignParam, adGroupParam, keywordParam}, nil),
+		endpoint("get-an-ad-group-negative-keyword", "GET", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/{keywordId}", []string{"ad-group-negative-keywords", "view"}, BodyNone, "", "NegativeKeywordResponse", []ParamSpec{campaignParam, adGroupParam, negativeKeywordParam}, nil),
 		endpoint("create-ad-group-negative-keywords", "POST", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk", []string{"ad-group-negative-keywords", "create-bulk"}, BodyArray, "[NegativeKeyword]", "NegativeKeywordListResponse", []ParamSpec{campaignParam, adGroupParam}, nil),
 		endpoint("update-ad-group-negative-keywords", "PUT", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk", []string{"ad-group-negative-keywords", "update-bulk"}, BodyArray, "[NegativeKeyword]", "NegativeKeywordListResponse", []ParamSpec{campaignParam, adGroupParam}, nil),
 		endpoint("delete-ad-group-negative-keywords", "POST", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/delete/bulk", []string{"ad-group-negative-keywords", "delete-bulk"}, BodyArray, "[int64]", "IntegerResponse", []ParamSpec{campaignParam, adGroupParam}, nil),

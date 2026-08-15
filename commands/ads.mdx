@@ -205,9 +205,12 @@ sorting, or pagination are needed.
 ## Platform API v1 campaign resources
 
 Platform v1 campaign resources use string identifiers and an ad account
-context. Create, update, and bulk commands require a JSON object file. The
-read-only `find` commands accept an optional `QueryRequest` file; omit it to
-send no request body.
+context. Create, update, and bulk commands require a JSON object file. Keyword
+and negative-keyword `find` commands require a `QueryRequest` selector file;
+Apple requires at least one `id`, `adGroupId`, or `campaignId` filter for
+targeting keywords. Negative-keyword queries require `id` or `adGroupId`; for
+a campaign-level query, combine `campaignId` with an `adGroupId` `IS_NULL`
+filter.
 
 ```bash  theme={null}
 asc ads campaigns create --ad-account "987654" --file campaign.json
@@ -215,14 +218,41 @@ asc ads campaigns find --ad-account "987654" --file query.json
 asc ads ad-groups view --ad-account "987654" --ad-group "adgroup-id"
 asc ads ads update --ad-account "987654" --ad "ad-id" --file ad.json
 asc ads targeting-keywords create-bulk --ad-account "987654" --file keywords.json
-asc ads negative-keywords find --ad-account "987654"
+asc ads targeting-keywords find --ad-account "987654" --file query.json
+asc ads negative-keywords find --ad-account "987654" --file query.json
+asc ads negative-keywords view --ad-account "987654" --negative-keyword "negative-keyword-id"
+asc ads negative-keywords update --ad-account "987654" --negative-keyword "negative-keyword-id" --file negative-keyword.json
 ```
+
+Campaign creation can affect spend as soon as Apple enables delivery. For an
+agent-safe test or staged rollout, make the payload explicitly paused:
+
+```json campaign.json
+{
+  "name": "Agent validation campaign",
+  "status": "PAUSED",
+  "adAccountId": 987654,
+  "promotedObjectType": "APPSTORE_APP",
+  "promotedObjectId": "123456789",
+  "billingEvent": "TAPS",
+  "dailyBudget": {"value": {"amount": "1", "currency": "USD"}},
+  "startTime": "2030-01-01T00:00:00.000",
+  "endTime": "2030-01-02T00:00:00.000",
+  "targeting": {"countryOrRegion": {"include": ["US"]}},
+  "bidStrategy": {"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"}
+}
+```
+
+Without an explicit top-level `"status": "PAUSED"`, campaign creation
+requires `--confirm` to acknowledge potential spend. The CLI validates this
+before authentication or network access.
 
 Delete commands require `--confirm`. Platform v1 has no bulk-delete operation:
 
 ```bash  theme={null}
 asc ads campaigns delete --ad-account "987654" --campaign "campaign-id" --confirm
 asc ads targeting-keywords delete --ad-account "987654" --keyword "keyword-id" --confirm
+asc ads negative-keywords delete --ad-account "987654" --negative-keyword "negative-keyword-id" --confirm
 ```
 
 Pause and resume use the v1 campaign update endpoint with direct
@@ -245,9 +275,11 @@ asc ads product-pages locales find --ad-account "987654" --file query.json
 
 Shared budgets retain the `budget-orders` command name. Create, update, and
 delete are context-free; view and find accept an optional `--ad-account`.
+Budget-order creation is a billing operation: pass `--confirm`, and ensure the
+ad account has an Apple Ads line of credit (LOC) configured first.
 
 ```bash  theme={null}
-asc ads budget-orders create --file shared-budget.json
+asc ads budget-orders create --file shared-budget.json --confirm
 asc ads budget-orders find --ad-account "987654"
 asc ads budget-orders view --budget-order "budget-id"
 asc ads budget-orders delete --budget-order "budget-id" --confirm
@@ -415,6 +447,10 @@ Campaign negative keywords belong to a campaign. Ad group negative keywords add
 asc ads v5 campaign-negative-keywords create-bulk --org "123456" --campaign 987654321 --file negative-keywords.json
 asc ads v5 ad-group-negative-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file negative-keywords.json
 ```
+
+When addressing one negative keyword in the deprecated v5 namespace, use the
+semantic `--negative-keyword` identifier flag. The old `--keyword` spelling is
+accepted only as a hidden compatibility alias and prints a migration warning.
 
 ```json negative-keywords.json
 [
