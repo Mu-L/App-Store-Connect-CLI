@@ -77,6 +77,9 @@ type Client struct {
 
 // NewClient constructs an Apple Ads API client.
 func NewClient(credentials Credentials, opts ...ClientOption) (*Client, error) {
+	if err := ValidateOrgID(credentials.OrgID); err != nil {
+		return nil, err
+	}
 	if err := ValidateAdAccountID(credentials.AdAccountID); err != nil {
 		return nil, err
 	}
@@ -120,6 +123,18 @@ func ValidateAdAccountID(value string) error {
 	}
 	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
 		return fmt.Errorf("invalid ad account ID: control characters are not allowed")
+	}
+	return nil
+}
+
+// ValidateOrgID rejects values that cannot safely be placed in the legacy
+// Apple Ads organization context header.
+func ValidateOrgID(value string) error {
+	if strings.ContainsRune(value, ';') {
+		return fmt.Errorf("invalid organization ID: semicolons are not allowed")
+	}
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return fmt.Errorf("invalid organization ID: control characters are not allowed")
 	}
 	return nil
 }
@@ -418,6 +433,9 @@ func (c *Client) contextHeader(kind ContextKind) (string, error) {
 		orgID := strings.TrimSpace(c.credentials.OrgID)
 		if orgID == "" {
 			return "", fmt.Errorf("org ID is required")
+		}
+		if err := ValidateOrgID(orgID); err != nil {
+			return "", err
 		}
 		return "orgId=" + orgID, nil
 	case ContextAdAccount, ContextAdAccountOptional:

@@ -284,6 +284,18 @@ func TestPlatformReportAndOptimizationHelpIncludesPayloadRules(t *testing.T) {
 	}
 }
 
+func TestPlatformAppSearchHelpDocumentsMinimumQueryLength(t *testing.T) {
+	command := findCommand(AdsCommand(), "apps", "search")
+	if command == nil {
+		t.Fatal("missing asc ads apps search")
+	}
+	for _, want := range []string{"at least 3 alphanumeric characters", "2 for CJK", "punctuation-only"} {
+		if !strings.Contains(command.LongHelp, want) {
+			t.Fatalf("asc ads apps search help = %q, want %q", command.LongHelp, want)
+		}
+	}
+}
+
 func TestPlatformNegativeKeywordResourceFlagsAreSemantic(t *testing.T) {
 	root := AdsCommand()
 	for _, action := range []string{"view", "update", "delete"} {
@@ -1080,6 +1092,21 @@ func TestRawPlatformRequestRequiresAdAccount(t *testing.T) {
 				t.Fatalf("requires = %t, want %t", requires, tt.requires)
 			}
 		})
+	}
+}
+
+func TestRawPlatformRequestRejectsMultipartEndpoints(t *testing.T) {
+	if got := rawPlatformRequestMultipartMessage("POST", "v1/assets/upload"); got == "" {
+		t.Fatal("rawPlatformRequestMultipartMessage() = empty, want dedicated multipart guidance")
+	} else {
+		for _, want := range []string{"multipart", "asc ads assets upload"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("rawPlatformRequestMultipartMessage() = %q, want %q", got, want)
+			}
+		}
+	}
+	if got := rawPlatformRequestMultipartMessage("POST", "v1/campaigns"); got != "" {
+		t.Fatalf("rawPlatformRequestMultipartMessage() for JSON endpoint = %q, want empty", got)
 	}
 }
 

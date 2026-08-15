@@ -936,6 +936,28 @@ func TestAdsPlatformAPIRequestRejectsInvalidOutputBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestAdsPlatformAPIRequestRejectsMultipartUploadBeforeAuthOrNetwork(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
+	t.Setenv("ASC_ADS_ORG_ID", "")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected token/network request: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	}))
+
+	stdout, stderr, err := runAdsEvalCommand(t, "ads", "api", "request", "--method", "POST", "--path", "v1/assets/upload", "--file", filepath.Join(t.TempDir(), "payload.json"))
+	if !errors.Is(err, flag.ErrHelp) || stdout != "" {
+		t.Fatalf("stdout=%q stderr=%q error=%v, want preflight usage error", stdout, stderr, err)
+	}
+	for _, want := range []string{"multipart/form-data", "asc ads assets upload"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr=%q, want %q", stderr, want)
+		}
+	}
+}
+
 func TestAdsEndpointRejectsInvalidOutputBeforeReadingBody(t *testing.T) {
 	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")

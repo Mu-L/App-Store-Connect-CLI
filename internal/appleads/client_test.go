@@ -260,6 +260,45 @@ func TestNewClientRejectsUnsafeAdAccountIDs(t *testing.T) {
 	}
 }
 
+func TestNewClientRejectsUnsafeOrgIDs(t *testing.T) {
+	for _, value := range []string{
+		"123;adAccountId=999",
+		"123\n456",
+		"123\r456",
+		"123\t456",
+		"\n123",
+	} {
+		t.Run(value, func(t *testing.T) {
+			_, err := NewClient(Credentials{AccessToken: "ACCESS", OrgID: value})
+			if err == nil || !strings.Contains(err.Error(), "invalid organization ID") {
+				t.Fatalf("NewClient() error = %v, want invalid organization ID", err)
+			}
+		})
+	}
+}
+
+func TestContextHeaderRejectsUnsafeOrgIDBeforeHTTP(t *testing.T) {
+	requests := 0
+	client, err := NewClient(Credentials{AccessToken: "ACCESS"}, WithHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requests++
+			return jsonResponse(http.StatusOK, `{}`), nil
+		}),
+	}))
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+	client.credentials.OrgID = "123;adAccountId=999"
+
+	_, err = client.Request(context.Background(), http.MethodGet, "v5/campaigns", nil, nil, true)
+	if err == nil || !strings.Contains(err.Error(), "invalid organization ID") {
+		t.Fatalf("Request() error = %v, want invalid organization ID", err)
+	}
+	if requests != 0 {
+		t.Fatalf("HTTP requests = %d, want 0", requests)
+	}
+}
+
 func TestContextHeaderRejectsUnsafeAdAccountIDBeforeHTTP(t *testing.T) {
 	requests := 0
 	client, err := NewClient(Credentials{AccessToken: "ACCESS"}, WithHTTPClient(&http.Client{
