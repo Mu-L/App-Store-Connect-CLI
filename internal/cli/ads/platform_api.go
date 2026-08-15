@@ -53,7 +53,7 @@ func PlatformAPIRequestCommand() *ffcli.Command {
 
 Examples:
   asc ads api request --method GET --path v1/me
-  asc ads api request --method POST --path v1/campaigns/query --file query.json --ad-account "123"`,
+  asc ads api request --method POST --path v1/metadata/apps/supported-languages/query --file query.json --ad-account "123"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {

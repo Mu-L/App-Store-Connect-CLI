@@ -357,6 +357,24 @@ func TestAdsAuthDiscoverRejectsInvalidExplicitAdAccountBeforeNetwork(t *testing.
 	}
 }
 
+func TestAdsAuthDiscoverRejectsControlOnlyExplicitAdAccountBeforeNetwork(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected network request: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	}))
+
+	stdout, stderr, err := runAdsEvalCommand(t, "ads", "auth", "discover", "--ad-account", "\n", "--output", "json")
+	if rootcmd.ExitCodeFromError(err) != rootcmd.ExitUsage {
+		t.Fatalf("exit code = %d, want %d (err=%v)", rootcmd.ExitCodeFromError(err), rootcmd.ExitUsage, err)
+	}
+	if stdout != "" || !strings.Contains(stderr, "control characters") {
+		t.Fatalf("stdout = %q stderr = %q, want control-character usage error", stdout, stderr)
+	}
+}
+
 func TestAdsAuthDiscoverRejectsMalformedDiscoveryResponses(t *testing.T) {
 	tests := []struct {
 		name    string

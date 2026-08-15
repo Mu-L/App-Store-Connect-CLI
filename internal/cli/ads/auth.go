@@ -526,9 +526,9 @@ func discoverAdAccountIDWithSource(flags commonFlags, credentials appleads.Crede
 	// configuration is unreadable. Explicit account selectors must never be
 	// discarded, though: doing so would make a malformed user choice look as if
 	// no account was selected.
-	if strings.TrimSpace(value(flags.AdAccount)) != "" ||
-		strings.TrimSpace(os.Getenv("ASC_ADS_AD_ACCOUNT_ID")) != "" ||
-		strings.TrimSpace(credentials.AdAccountID) != "" {
+	if flags.AdAccount != nil && *flags.AdAccount != "" ||
+		os.Getenv("ASC_ADS_AD_ACCOUNT_ID") != "" ||
+		credentials.AdAccountID != "" {
 		return "", "", err
 	}
 	return "", "", nil
