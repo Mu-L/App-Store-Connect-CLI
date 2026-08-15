@@ -40,11 +40,12 @@ Add an optional ad account ID beside the existing legacy organization ID:
 - environment: `ASC_ADS_AD_ACCOUNT_ID`
 - config/profile field: `ad_account_id`
 
-Resolution keeps the existing profile and strict-auth rules. A v1 ad-account-scoped command resolves the explicit flag first, then the environment, then the selected profile. The root Ads config is used only when authentication does not select a named profile, so one profile cannot inherit another profile's ad account. Legacy v5 commands apply the same isolation to `--org`, `ASC_ADS_ORG_ID`, and `org_id`; profile-less access-token or environment authentication can still use the root `ads.org_id`.
+Resolution keeps the existing profile and strict-auth rules. A scoped command resolves the explicit flag first, then the environment, then the selected profile. A named profile never inherits root `ads.org_id` or `ads.ad_account_id`; store both values on the profile or pass the corresponding flags. Profile-less access-token or environment authentication can still use matching root context.
 
 ## Endpoint coverage
 
-Apple documents 99 v1 endpoints in 24 collections. The implementation is split by dependency and operator workflow:
+Apple documents 99 v1 endpoints in 24 collections. The completed 4.4.0 stack is
+split by dependency and operator workflow:
 
 1. Foundation, account management, app search, and app eligibility.
 2. Campaigns, ad groups, geo targeting, keywords, negative keywords, ads, product pages, bulk operations, and budget orders.

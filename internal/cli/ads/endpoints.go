@@ -28,10 +28,31 @@ type endpointFlagValues struct {
 	confirm  *bool
 	paginate *bool
 
-	pathStrings  map[string]*string
-	queryStrings map[string]*string
-	queryInts    map[string]*int
-	queryBools   map[string]*bool
+	pathStrings   map[string]*string
+	pathAliases   map[string][]*shared.DeprecatedStringFlagAlias
+	queryStrings  map[string]*string
+	queryRepeated map[string]*repeatedFlagValue
+	queryInts     map[string]*int
+	queryBools    map[string]*bool
+}
+
+// repeatedFlagValue preserves each occurrence of a repeated CLI flag. A
+// single occurrence may still contain comma-separated values for compatibility
+// with the API's existing examples.
+type repeatedFlagValue struct {
+	values []string
+}
+
+func (v *repeatedFlagValue) String() string {
+	if v == nil {
+		return ""
+	}
+	return strings.Join(v.values, ",")
+}
+
+func (v *repeatedFlagValue) Set(value string) error {
+	v.values = append(v.values, value)
+	return nil
 }
 
 type commandNode struct {
@@ -102,6 +123,9 @@ func buildNodeCommand(node *commandNode, parentPath, commandPrefix []string) *ff
 	if slices.Equal(commandPrefix, []string{"v5"}) {
 		subcommands = append(subcommands, workflowSubcommands(path, &flags)...)
 	}
+	if len(commandPrefix) == 0 {
+		subcommands = append(subcommands, platformWorkflowSubcommands(path)...)
+	}
 
 	command := &ffcli.Command{
 		Name:        node.name,
@@ -169,10 +193,14 @@ func endpointLongHelp(node *commandNode, path []string) string {
 		examples[0] += fmt.Sprintf(" --%s %s", param.Flag, strings.ToUpper(strings.ReplaceAll(param.Flag, "-", "_")))
 	}
 	if node.spec.BodyKind != appleads.BodyNone {
-		if node.spec.BodyOptional {
-			examples[0] += " [--file payload.json]"
+		bodyFile := node.spec.BodyFileExample
+		if bodyFile == "" {
+			bodyFile = "payload.json"
+		}
+		if node.spec.BodyOptional && !node.spec.CLIRequiresBody {
+			examples[0] += " [--file " + bodyFile + "]"
 		} else {
-			examples[0] += " --file payload.json"
+			examples[0] += " --file " + bodyFile
 		}
 	}
 	switch {
@@ -220,10 +248,16 @@ Search modes:
 
 func endpointBodyHelp(spec appleads.EndpointSpec) string {
 	required := "yes"
-	if spec.BodyOptional {
+	if spec.BodyOptional && !spec.CLIRequiresBody {
 		required = "no"
 	}
-	return fmt.Sprintf("\n\nRequest body:\n  Schema: %s\n  Shape: %s\n  Required: %s", spec.BodyType, endpointBodyShape(spec.BodyKind), required)
+	help := fmt.Sprintf("\n\nRequest body:\n  Schema: %s\n  Shape: %s\n  Required: %s", spec.BodyType, endpointBodyShape(spec.BodyKind), required)
+	if strings.TrimSpace(spec.BodyHint) != "" {
+		hint := strings.TrimSpace(spec.BodyHint)
+		hint = strings.ReplaceAll(hint, "\n", "\n  ")
+		help += "\n  Guidance: " + hint
+	}
+	return help
 }
 
 func endpointBodyShape(kind appleads.BodyKind) string {
@@ -275,6 +309,7 @@ func sentenceFromEndpointName(name string) string {
 		{"gets a ", "View a "},
 		{"search for ", "Search for "},
 		{"search ", "Search "},
+		{"query ", "Find "},
 		{"find ", "Find "},
 		{"create a ", "Create a "},
 		{"create an ", "Create an "},
@@ -305,12 +340,14 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 		common: commonFlags{
 			AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 		},
-		output:       shared.BindOutputFlags(fs),
-		flagSet:      fs,
-		pathStrings:  map[string]*string{},
-		queryStrings: map[string]*string{},
-		queryInts:    map[string]*int{},
-		queryBools:   map[string]*bool{},
+		output:        shared.BindOutputFlags(fs),
+		flagSet:       fs,
+		pathStrings:   map[string]*string{},
+		pathAliases:   map[string][]*shared.DeprecatedStringFlagAlias{},
+		queryStrings:  map[string]*string{},
+		queryRepeated: map[string]*repeatedFlagValue{},
+		queryInts:     map[string]*int{},
+		queryBools:    map[string]*bool{},
 	}
 	if spec.RequiresOrg {
 		values.common.Org = fs.String("org", "", "Apple Ads organization ID (or ASC_ADS_ORG_ID env)")
@@ -323,6 +360,9 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 			continue
 		}
 		values.pathStrings[param.Name] = fs.String(param.Flag, "", flagUsage(param))
+		for _, alias := range param.Aliases {
+			values.pathAliases[param.Name] = append(values.pathAliases[param.Name], shared.BindDeprecatedStringFlagAlias(fs, alias, param.Flag))
+		}
 	}
 	for _, param := range spec.QueryParams {
 		switch param.Type {
@@ -331,6 +371,12 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 		case appleads.ParamBool:
 			values.queryBools[param.Name] = fs.Bool(param.Flag, false, flagUsage(param))
 		default:
+			if param.Repeated {
+				repeated := &repeatedFlagValue{}
+				values.queryRepeated[param.Name] = repeated
+				fs.Var(repeated, param.Flag, flagUsage(param))
+				continue
+			}
 			values.queryStrings[param.Name] = fs.String(param.Flag, "", flagUsage(param))
 		}
 	}
@@ -439,6 +485,11 @@ func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endp
 	if flags.paginate != nil && *flags.paginate {
 		startOffset := intValue(flags.queryInts["offset"])
 		pageSize := intValue(flags.queryInts["limit"])
+		if pageSize == 0 {
+			// Geo search uses the Platform API's pageSize spelling instead of
+			// the limit used by apps and the legacy API.
+			pageSize = intValue(flags.queryInts["pageSize"])
+		}
 		result, err = client.PaginateAll(requestCtx, spec, pathParams, query, startOffset, pageSize, body)
 	} else {
 		result, err = client.Do(requestCtx, spec, pathParams, query, body)
@@ -456,6 +507,11 @@ func collectPathParams(spec appleads.EndpointSpec, flags endpointFlagValues) (ma
 			continue
 		}
 		ptr := flags.pathStrings[param.Name]
+		for _, alias := range flags.pathAliases[param.Name] {
+			if err := alias.Apply(ptr); err != nil {
+				return nil, err
+			}
+		}
 		value := value(ptr)
 		if param.Required && value == "" {
 			return nil, fmt.Errorf("--%s is required", param.Flag)
@@ -483,12 +539,12 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 				if param.Required {
 					return nil, fmt.Errorf("--%s is required", param.Flag)
 				}
-				if provided && param.Name == "limit" {
+				if provided && (param.Name == "limit" || param.Name == "pageSize") {
 					maxLimit := appleads.MaxPageLimit(spec)
 					if maxLimit > 0 {
-						return nil, fmt.Errorf("--limit must be between 1 and %d", maxLimit)
+						return nil, fmt.Errorf("--%s must be between 1 and %d", param.Flag, maxLimit)
 					}
-					return nil, fmt.Errorf("--limit must be greater than 0")
+					return nil, fmt.Errorf("--%s must be greater than 0", param.Flag)
 				}
 				continue
 			}
@@ -514,6 +570,42 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 			}
 		default:
 			raw := value(flags.queryStrings[param.Name])
+			if spec.Name == "platform-search-geo-locations" && (param.Name == "supplySource" || param.Name == "countrycode") {
+				raw = strings.ToUpper(raw)
+			}
+			if param.Repeated {
+				rawValues := []string(nil)
+				if repeated := flags.queryRepeated[param.Name]; repeated != nil {
+					rawValues = repeated.values
+				} else if raw != "" {
+					rawValues = []string{raw}
+				}
+				if len(rawValues) == 0 {
+					if param.Required {
+						return nil, fmt.Errorf("--%s is required", param.Flag)
+					}
+					continue
+				}
+				for _, occurrence := range rawValues {
+					for _, part := range strings.Split(occurrence, ",") {
+						part = strings.TrimSpace(part)
+						if part == "" {
+							return nil, fmt.Errorf("--%s must not contain empty values", param.Flag)
+						}
+						if err := validateAllowed(param, part); err != nil {
+							return nil, err
+						}
+						if param.Name == "storeFronts" {
+							if len(part) != 2 || !isASCIIAlpha(part[0]) || !isASCIIAlpha(part[1]) {
+								return nil, fmt.Errorf("--%s values must be ISO 3166-1 alpha-2 country or region codes", param.Flag)
+							}
+							part = strings.ToUpper(part)
+						}
+						query.Add(param.Name, part)
+					}
+				}
+				continue
+			}
 			if raw == "" {
 				if param.Required {
 					return nil, fmt.Errorf("--%s is required", param.Flag)
@@ -523,27 +615,16 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 			if err := validateAllowed(param, raw); err != nil {
 				return nil, err
 			}
-			if param.Repeated {
-				for _, part := range strings.Split(raw, ",") {
-					part = strings.TrimSpace(part)
-					if part == "" {
-						return nil, fmt.Errorf("--%s must not contain empty values", param.Flag)
-					}
-					if param.Name == "storeFronts" {
-						if len(part) != 2 || !isASCIIAlpha(part[0]) || !isASCIIAlpha(part[1]) {
-							return nil, fmt.Errorf("--%s values must be ISO 3166-1 alpha-2 country or region codes", param.Flag)
-						}
-						part = strings.ToUpper(part)
-					}
-					query.Add(param.Name, part)
-				}
-			} else {
-				query.Set(param.Name, raw)
-			}
+			query.Set(param.Name, raw)
 		}
 	}
 	if spec.Name == "platform-search-apps" {
 		if err := validatePlatformAppSearch(query); err != nil {
+			return nil, err
+		}
+	}
+	if spec.Name == "platform-search-geo-locations" {
+		if err := validatePlatformGeoSearch(query); err != nil {
 			return nil, err
 		}
 	}
@@ -573,6 +654,18 @@ func validatePlatformAppSearch(query url.Values) error {
 	}
 	if utf8.RuneCountInString(text) < minimum {
 		return fmt.Errorf("--query must contain at least %d characters", minimum)
+	}
+	return nil
+}
+
+func validatePlatformGeoSearch(query url.Values) error {
+	text := strings.TrimSpace(query.Get("query"))
+	if text != "" && text != "*" && utf8.RuneCountInString(text) < 2 {
+		return fmt.Errorf("--query must contain at least 2 characters")
+	}
+	countryCode := query.Get("countrycode")
+	if countryCode != "" && (len(countryCode) != 2 || !isASCIIAlpha(countryCode[0]) || !isASCIIAlpha(countryCode[1])) {
+		return fmt.Errorf("--country-code must be an ISO 3166-1 alpha-2 country or region code")
 	}
 	return nil
 }
@@ -613,7 +706,7 @@ func readBody(spec appleads.EndpointSpec, flags endpointFlagValues) (json.RawMes
 	}
 	fileValue := value(flags.file)
 	if fileValue == "" {
-		if spec.BodyOptional {
+		if spec.BodyOptional && !spec.CLIRequiresBody {
 			return nil, nil
 		}
 		fmt.Fprintln(os.Stderr, "Error: --file is required")
@@ -636,9 +729,18 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 	}
 	if spec.RiskConfirm && !confirmed && riskConfirmationRequired(spec, body) {
 		if spec.RiskConfirmBodyField != "" {
+			if spec.Name == "platform-update-campaign" {
+				return fmt.Errorf("--confirm is required unless status is %q and only non-spend fields are changed", spec.RiskConfirmBodyValue)
+			}
 			return fmt.Errorf("--confirm is required unless %s is explicitly %q; otherwise acknowledge %s", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue, riskConfirmationImpact)
 		}
 		return fmt.Errorf("--confirm is required to acknowledge %s", riskConfirmationImpact)
+	}
+	switch spec.Name {
+	case "platform-query-keywords", "platform-query-negative-keywords":
+		if err := validateKeywordQuerySelector(spec.Name, body); err != nil {
+			return err
+		}
 	}
 	if spec.Name != "platform-create-ad-account" && spec.Name != "platform-update-ad-account" {
 		return nil
@@ -682,6 +784,51 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 	return nil
 }
 
+type querySelectorCondition struct {
+	Field    string `json:"field"`
+	Operator string `json:"operator"`
+}
+
+func validateKeywordQuerySelector(specName string, body json.RawMessage) error {
+	var payload struct {
+		Conditions []querySelectorCondition `json:"conditions"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return fmt.Errorf("invalid QueryRequest selector conditions: %w", err)
+	}
+
+	switch specName {
+	case "platform-query-keywords":
+		for _, condition := range payload.Conditions {
+			switch condition.Field {
+			case "id", "adGroupId", "campaignId":
+				return nil
+			}
+		}
+		return fmt.Errorf("targeting-keywords find requires at least one condition field id, adGroupId, or campaignId")
+	case "platform-query-negative-keywords":
+		var hasID, hasAdGroup, hasCampaign, hasAdGroupIsNull bool
+		for _, condition := range payload.Conditions {
+			switch condition.Field {
+			case "id":
+				hasID = true
+			case "adGroupId":
+				hasAdGroup = true
+				if condition.Operator == "IS_NULL" {
+					hasAdGroupIsNull = true
+				}
+			case "campaignId":
+				hasCampaign = true
+			}
+		}
+		if hasID || (hasAdGroup && !hasAdGroupIsNull) || (hasCampaign && hasAdGroupIsNull) {
+			return nil
+		}
+		return fmt.Errorf("negative-keywords find requires a condition for id or adGroupId; campaign-level queries require campaignId plus an adGroupId condition with operator IS_NULL")
+	}
+	return nil
+}
+
 func riskConfirmationRequired(spec appleads.EndpointSpec, body json.RawMessage) bool {
 	if !spec.RiskConfirm {
 		return false
@@ -693,7 +840,22 @@ func riskConfirmationRequired(spec appleads.EndpointSpec, body json.RawMessage) 
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return true
 	}
-	rawValue, ok := payload[spec.RiskConfirmBodyField]
+	checkPayload, field, ok := nestedRiskConfirmationPayload(payload, spec.RiskConfirmBodyField)
+	if !ok {
+		return true
+	}
+	if len(spec.RiskConfirmAllowedBodyFields) > 0 {
+		allowed := make(map[string]struct{}, len(spec.RiskConfirmAllowedBodyFields))
+		for _, field := range spec.RiskConfirmAllowedBodyFields {
+			allowed[field] = struct{}{}
+		}
+		for field := range checkPayload {
+			if _, ok := allowed[field]; !ok {
+				return true
+			}
+		}
+	}
+	rawValue, ok := checkPayload[field]
 	if !ok {
 		return true
 	}
@@ -702,6 +864,26 @@ func riskConfirmationRequired(spec appleads.EndpointSpec, body json.RawMessage) 
 		return true
 	}
 	return value != spec.RiskConfirmBodyValue
+}
+
+func nestedRiskConfirmationPayload(payload map[string]json.RawMessage, fieldPath string) (map[string]json.RawMessage, string, bool) {
+	parts := strings.Split(fieldPath, ".")
+	if len(parts) == 0 {
+		return nil, "", false
+	}
+	current := payload
+	for _, part := range parts[:len(parts)-1] {
+		raw, ok := current[part]
+		if !ok {
+			return nil, "", false
+		}
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &nested); err != nil {
+			return nil, "", false
+		}
+		current = nested
+	}
+	return current, parts[len(parts)-1], true
 }
 
 func requireNonEmptyJSONString(payload map[string]json.RawMessage, field string) error {

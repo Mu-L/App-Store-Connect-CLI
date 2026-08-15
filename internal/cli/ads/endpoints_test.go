@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,12 +94,15 @@ func TestPlatformAppSearchValidationAndRepeatedStoreFronts(t *testing.T) {
 	if err := fs.Set("store-fronts", "us, gB"); err != nil {
 		t.Fatal(err)
 	}
+	if err := fs.Set("store-fronts", "ca"); err != nil {
+		t.Fatal(err)
+	}
 	query, err := collectQuery(spec, flags)
 	if err != nil {
 		t.Fatalf("collectQuery() error: %v", err)
 	}
-	if got := query["storeFronts"]; len(got) != 2 || got[0] != "US" || got[1] != "GB" {
-		t.Fatalf("storeFronts = %#v, want repeated US and GB", got)
+	if got := query["storeFronts"]; len(got) != 3 || got[0] != "US" || got[1] != "GB" || got[2] != "CA" {
+		t.Fatalf("storeFronts = %#v, want repeated US, GB, and CA", got)
 	}
 }
 
@@ -106,13 +110,37 @@ func TestPlatformAppSearchRejectsInvalidStoreFronts(t *testing.T) {
 	spec, _ := appleads.PlatformEndpointByCommandPath("apps", "search")
 	for _, storefronts := range []string{"US,,GB", "USA", "U1"} {
 		t.Run(storefronts, func(t *testing.T) {
-			_, flags := bindEndpointFlags(spec, "test")
-			*flags.queryStrings["query"] = "test"
-			*flags.queryStrings["storeFronts"] = storefronts
+			fs, flags := bindEndpointFlags(spec, "test")
+			if err := fs.Set("query", "test"); err != nil {
+				t.Fatal(err)
+			}
+			if err := fs.Set("store-fronts", storefronts); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := collectQuery(spec, flags); err == nil {
 				t.Fatalf("storefronts %q unexpectedly accepted", storefronts)
 			}
 		})
+	}
+}
+
+func TestPlatformAppSearchRejectsInvalidRepeatedStoreFrontOccurrence(t *testing.T) {
+	spec, ok := appleads.PlatformEndpointByCommandPath("apps", "search")
+	if !ok {
+		t.Fatal("missing platform apps search")
+	}
+	fs, flags := bindEndpointFlags(spec, "test")
+	if err := fs.Set("query", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Set("store-fronts", "US"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Set("store-fronts", "CA,USA"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collectQuery(spec, flags); err == nil {
+		t.Fatal("invalid storefront in a later repeated occurrence unexpectedly accepted")
 	}
 }
 
@@ -177,6 +205,465 @@ func TestEndpointHelpKeepsArraySchemaReadable(t *testing.T) {
 	}
 }
 
+func TestPlatformEndpointHelpIncludesAgentPayloadGuidance(t *testing.T) {
+	root := AdsCommand()
+	tests := []struct {
+		path []string
+		want []string
+	}{
+		{
+			path: []string{"campaigns", "create"},
+			want: []string{
+				"Required fields:",
+				"adAccountId",
+				"promotedObjectType",
+				"promotedObjectId",
+				`{"status":"PAUSED"}`,
+				"--confirm",
+			},
+		},
+		{
+			path: []string{"targeting-keywords", "find"},
+			want: []string{
+				"--file query.json",
+				"id, adGroupId, or campaignId",
+			},
+		},
+		{
+			path: []string{"negative-keywords", "find"},
+			want: []string{
+				"--file query.json",
+				"campaignId with an adGroupId IS_NULL filter",
+			},
+		},
+		{
+			path: []string{"budget-orders", "create"},
+			want: []string{
+				"--confirm",
+				"line of credit (LOC)",
+			},
+		},
+	}
+	for _, test := range tests {
+		cmd := findCommand(root, test.path...)
+		if cmd == nil {
+			t.Fatalf("missing command asc ads %s", strings.Join(test.path, " "))
+		}
+		for _, want := range test.want {
+			if !strings.Contains(cmd.LongHelp, want) {
+				t.Errorf("asc ads %s LongHelp = %q, want %q", strings.Join(test.path, " "), cmd.LongHelp, want)
+			}
+		}
+		if test.path[len(test.path)-1] == "find" && strings.Contains(cmd.LongHelp, "[--file query.json]") {
+			t.Errorf("asc ads %s LongHelp = %q, selector file must be shown as required", strings.Join(test.path, " "), cmd.LongHelp)
+		}
+	}
+}
+
+func TestPlatformNegativeKeywordResourceFlagsAreSemantic(t *testing.T) {
+	root := AdsCommand()
+	for _, action := range []string{"view", "update", "delete"} {
+		cmd := findCommand(root, "negative-keywords", action)
+		if cmd == nil {
+			t.Fatalf("missing direct v1 negative-keywords %s command", action)
+		}
+		if cmd.FlagSet.Lookup("negative-keyword") == nil {
+			t.Fatalf("negative-keywords %s missing --negative-keyword", action)
+		}
+		if cmd.FlagSet.Lookup("keyword") != nil {
+			t.Fatalf("negative-keywords %s must not expose the targeting --keyword flag", action)
+		}
+	}
+
+	legacy := findCommand(root, "v5", "campaign-negative-keywords", "view")
+	if legacy == nil {
+		t.Fatal("missing deprecated v5 campaign-negative-keywords view command")
+	}
+	if legacy.FlagSet.Lookup("negative-keyword") == nil || legacy.FlagSet.Lookup("keyword") == nil {
+		t.Fatal("deprecated v5 negative keyword command must keep --keyword as a compatibility alias")
+	}
+}
+
+func TestPlatformKeywordQueriesRequireSelectorBodyBeforeAuth(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+	root := AdsCommand()
+	for _, path := range [][]string{
+		{"targeting-keywords", "find"},
+		{"negative-keywords", "find"},
+	} {
+		spec, ok := appleads.PlatformEndpointByCommandPath(path...)
+		if !ok {
+			t.Fatalf("missing platform endpoint %q", strings.Join(path, " "))
+		}
+		if !spec.CLIRequiresBody {
+			t.Fatalf("%q must require a selector body at the CLI boundary", strings.Join(path, " "))
+		}
+		cmd := findCommand(root, path...)
+		if cmd == nil || cmd.FlagSet.Lookup("file") == nil {
+			t.Fatalf("asc ads %s must expose --file", strings.Join(path, " "))
+		}
+		_, flags := bindEndpointFlags(spec, strings.Join(path, " "))
+		err := executeEndpoint(context.Background(), spec, flags)
+		if !errors.Is(err, flag.ErrHelp) {
+			t.Errorf("%q missing body error = %v, want pre-auth --file usage error", strings.Join(path, " "), err)
+		}
+		if got, want := err.Error(), flag.ErrHelp.Error(); got != want {
+			t.Errorf("%q missing body error = %q, want exact %q", strings.Join(path, " "), got, want)
+		}
+	}
+}
+
+func TestPlatformKeywordQuerySelectorValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    []string
+		body    string
+		wantErr string
+	}{
+		{
+			name:    "targeting empty conditions",
+			path:    []string{"targeting-keywords", "find"},
+			body:    `{"conditions":[]}`,
+			wantErr: "id, adGroupId, or campaignId",
+		},
+		{
+			name:    "targeting irrelevant condition",
+			path:    []string{"targeting-keywords", "find"},
+			body:    `{"conditions":[{"field":"name","operator":"EQUALS","values":["ignored"]}]}`,
+			wantErr: "id, adGroupId, or campaignId",
+		},
+		{
+			name: "targeting id",
+			path: []string{"targeting-keywords", "find"},
+			body: `{"conditions":[{"field":"id","operator":"EQUALS","values":["keyword-1"]}]}`,
+		},
+		{
+			name: "targeting ad group",
+			path: []string{"targeting-keywords", "find"},
+			body: `{"conditions":[{"field":"adGroupId","operator":"EQUALS","values":["ad-group-1"]}]}`,
+		},
+		{
+			name: "targeting campaign",
+			path: []string{"targeting-keywords", "find"},
+			body: `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]}]}`,
+		},
+		{
+			name:    "negative empty conditions",
+			path:    []string{"negative-keywords", "find"},
+			body:    `{"conditions":[]}`,
+			wantErr: "id or adGroupId",
+		},
+		{
+			name:    "negative irrelevant condition",
+			path:    []string{"negative-keywords", "find"},
+			body:    `{"conditions":[{"field":"name","operator":"EQUALS","values":["ignored"]}]}`,
+			wantErr: "id or adGroupId",
+		},
+		{
+			name: "negative id",
+			path: []string{"negative-keywords", "find"},
+			body: `{"conditions":[{"field":"id","operator":"EQUALS","values":["negative-keyword-1"]}]}`,
+		},
+		{
+			name: "negative ad group",
+			path: []string{"negative-keywords", "find"},
+			body: `{"conditions":[{"field":"adGroupId","operator":"EQUALS","values":["ad-group-1"]}]}`,
+		},
+		{
+			name:    "negative campaign without null ad group",
+			path:    []string{"negative-keywords", "find"},
+			body:    `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]}]}`,
+			wantErr: "campaignId plus an adGroupId condition with operator IS_NULL",
+		},
+		{
+			name:    "negative null ad group without campaign",
+			path:    []string{"negative-keywords", "find"},
+			body:    `{"conditions":[{"field":"adGroupId","operator":"IS_NULL"}]}`,
+			wantErr: "campaignId plus an adGroupId condition with operator IS_NULL",
+		},
+		{
+			name: "negative campaign",
+			path: []string{"negative-keywords", "find"},
+			body: `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]},{"field":"adGroupId","operator":"IS_NULL"}]}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spec, ok := appleads.PlatformEndpointByCommandPath(test.path...)
+			if !ok {
+				t.Fatalf("missing platform endpoint %q", strings.Join(test.path, " "))
+			}
+			err := validateEndpointBody(spec, json.RawMessage(test.body), false)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateEndpointBody() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("validateEndpointBody() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestPlatformKeywordQuerySelectorValidationPrecedesAuth(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+	for _, path := range [][]string{
+		{"targeting-keywords", "find"},
+		{"negative-keywords", "find"},
+	} {
+		t.Run(strings.Join(path, "-"), func(t *testing.T) {
+			spec, ok := appleads.PlatformEndpointByCommandPath(path...)
+			if !ok {
+				t.Fatalf("missing platform endpoint %q", strings.Join(path, " "))
+			}
+			file := filepath.Join(t.TempDir(), "query.json")
+			if err := os.WriteFile(file, []byte(`{"conditions":[{"field":"name","operator":"EQUALS","values":["ignored"]}]}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fs, flags := bindEndpointFlags(spec, strings.Join(path, " "))
+			if err := fs.Set("file", file); err != nil {
+				t.Fatal(err)
+			}
+			err := executeEndpoint(context.Background(), spec, flags)
+			if err == nil || !strings.Contains(err.Error(), "id") || strings.Contains(err.Error(), "configuration not found") {
+				t.Fatalf("executeEndpoint() error = %v, want selector validation before auth", err)
+			}
+		})
+	}
+}
+
+func TestPlatformCampaignAndBudgetRiskConfirmationPrecedesAuth(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+
+	campaign, ok := appleads.PlatformEndpointByCommandPath("campaigns", "create")
+	if !ok {
+		t.Fatal("missing platform campaign create")
+	}
+	if !campaign.RiskConfirm || campaign.RiskConfirmBodyField != "status" || campaign.RiskConfirmBodyValue != "PAUSED" {
+		t.Fatalf("campaign risk metadata = %+v, want paused exception", campaign)
+	}
+	for _, test := range []struct {
+		name    string
+		payload string
+		confirm bool
+		want    string
+	}{
+		{name: "missing status", payload: `{ "name": "agent-test" }`, want: `--confirm is required unless status is explicitly "PAUSED"; otherwise acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact`},
+		{name: "enabled", payload: `{ "status": "ENABLED" }`, want: `--confirm is required unless status is explicitly "PAUSED"; otherwise acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact`},
+		{name: "paused", payload: `{ "status": "PAUSED" }`, want: "ads: configuration not found"},
+		{name: "enabled confirmed", payload: `{ "status": "ENABLED" }`, confirm: true, want: "ads: configuration not found"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "campaign.json")
+			if err := os.WriteFile(file, []byte(test.payload), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, flags := bindEndpointFlags(campaign, "campaigns create")
+			*flags.file = file
+			if flags.confirm != nil {
+				*flags.confirm = test.confirm
+			}
+			err := executeEndpoint(context.Background(), campaign, flags)
+			if err == nil {
+				t.Fatalf("campaign create unexpectedly succeeded, want %q", test.want)
+			}
+			if !errors.Is(err, flag.ErrHelp) && strings.HasPrefix(test.want, "--confirm") {
+				t.Fatalf("campaign create error = %v, want usage error", err)
+			}
+			if got := err.Error(); got != test.want {
+				t.Fatalf("campaign create error = %q, want exact %q", got, test.want)
+			}
+		})
+	}
+
+	budget, ok := appleads.PlatformEndpointByCommandPath("budget-orders", "create")
+	if !ok {
+		t.Fatal("missing platform shared-budget create")
+	}
+	if !budget.RiskConfirm || budget.RiskConfirmBodyField != "" {
+		t.Fatalf("budget risk metadata = %+v, want unconditional confirmation", budget)
+	}
+	file := filepath.Join(t.TempDir(), "budget.json")
+	if err := os.WriteFile(file, []byte(`{"name":"agent-test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, flags := bindEndpointFlags(budget, "budget-orders create")
+	*flags.file = file
+	err := executeEndpoint(context.Background(), budget, flags)
+	if !errors.Is(err, flag.ErrHelp) || err.Error() != "--confirm is required to acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact" {
+		t.Fatalf("budget create error = %v, want exact pre-auth confirmation usage error", err)
+	}
+}
+
+func TestPlatformCampaignUpdateAndBudgetUpdateConfirmBeforeAuth(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+
+	campaign, ok := appleads.PlatformEndpointByCommandPath("campaigns", "update")
+	if !ok {
+		t.Fatal("missing platform campaigns update")
+	}
+	if !campaign.RiskConfirm {
+		t.Fatal("campaigns update must carry spend-risk confirmation metadata")
+	}
+	cmd := findCommand(AdsCommand(), "campaigns", "update")
+	if cmd == nil {
+		t.Fatal("missing direct v1 campaigns update command")
+	}
+	for _, want := range []string{
+		"only name and status=PAUSED",
+		"dailyBudget",
+		"budgetOrder",
+		"targeting",
+		"bid",
+		"start",
+		"resume",
+		"enabled",
+		"--confirm",
+	} {
+		if !strings.Contains(cmd.LongHelp, want) {
+			t.Fatalf("campaigns update LongHelp = %q, missing %q", cmd.LongHelp, want)
+		}
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		confirm bool
+		want    string
+	}{
+		{name: "paused name-only update is safe", payload: `{"name":"paused-name","status":"PAUSED"}`, want: "ads: configuration not found"},
+		{name: "missing status", payload: `{"name":"name-only"}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
+		{name: "enabled status", payload: `{"status":"ENABLED"}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
+		{name: "daily budget", payload: `{"status":"PAUSED","dailyBudget":1}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
+		{name: "budget order", payload: `{"status":"PAUSED","budgetOrder":"b1"}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
+		{name: "targeting", payload: `{"status":"PAUSED","targeting":{}}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
+		{name: "bid", payload: `{"status":"PAUSED","bid":1}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
+		{name: "start", payload: `{"status":"PAUSED","start":"2026-08-15"}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
+		{name: "resume", payload: `{"status":"PAUSED","resume":true}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
+		{name: "enabled field", payload: `{"status":"PAUSED","enabled":true}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
+		{name: "confirmed spend update", payload: `{"status":"ENABLED","dailyBudget":1}`, confirm: true, want: "ads: configuration not found"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "campaign-update.json")
+			if err := os.WriteFile(file, []byte(test.payload), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, flags := bindEndpointFlags(campaign, "campaigns update")
+			if err := flags.flagSet.Set("campaign", "c1"); err != nil {
+				t.Fatal(err)
+			}
+			*flags.file = file
+			if flags.confirm != nil {
+				*flags.confirm = test.confirm
+			}
+			err := executeEndpoint(context.Background(), campaign, flags)
+			if err == nil {
+				t.Fatalf("campaign update unexpectedly succeeded, want %q", test.want)
+			}
+			if got := err.Error(); got != test.want {
+				t.Fatalf("campaign update error = %q, want exact %q", got, test.want)
+			}
+			if strings.HasPrefix(test.want, "--confirm") && !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("campaign update error = %v, want usage classification", err)
+			}
+		})
+	}
+
+	budget, ok := appleads.PlatformEndpointByCommandPath("budget-orders", "update")
+	if !ok {
+		t.Fatal("missing platform budget-orders update")
+	}
+	if !budget.RiskConfirm || budget.RiskConfirmBodyField != "" {
+		t.Fatalf("budget update risk metadata = %+v, want unconditional confirmation", budget)
+	}
+	_, budgetFlags := bindEndpointFlags(budget, "budget-orders update")
+	if err := budgetFlags.flagSet.Set("budget-order", "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeEndpoint(context.Background(), budget, budgetFlags); !errors.Is(err, flag.ErrHelp) || err.Error() != "--confirm is required to acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact" {
+		t.Fatalf("budget update error = %v, want exact pre-auth confirmation usage error", err)
+	}
+}
+
+func TestPlatformSpendRiskMutationsRequireConfirmationBeforeAuth(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+	for _, command := range []string{
+		"ad-accounts create",
+		"ad-groups create",
+		"ad-groups update",
+		"ads create",
+		"ads update",
+		"budget-orders create",
+		"budget-orders update",
+		"targeting-keywords create",
+		"targeting-keywords update",
+		"targeting-keywords create-bulk",
+		"targeting-keywords update-bulk",
+		"negative-keywords create",
+		"negative-keywords update",
+		"negative-keywords create-bulk",
+		"negative-keywords update-bulk",
+	} {
+		t.Run(command, func(t *testing.T) {
+			spec, ok := appleads.PlatformEndpointByCommandPath(strings.Fields(command)...)
+			if !ok {
+				t.Fatalf("missing %q", command)
+			}
+			if !spec.RiskConfirm || spec.RiskConfirmBodyField != "" {
+				t.Fatalf("%q risk metadata = %+v, want unconditional confirmation", command, spec)
+			}
+			_, flags := bindEndpointFlags(spec, command)
+			for _, param := range spec.PathParams {
+				if param.Required && !param.ContextValue {
+					if err := flags.flagSet.Set(param.Flag, "resource-id"); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			err := executeEndpoint(context.Background(), spec, flags)
+			if !errors.Is(err, flag.ErrHelp) || err.Error() != "--confirm is required to acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact" {
+				t.Fatalf("%q error = %v, want exact pre-auth confirmation usage error", command, err)
+			}
+		})
+	}
+}
+
+func TestPlatformConfirmationHelpDistinguishesSpendFromDeletion(t *testing.T) {
+	root := AdsCommand()
+	for _, test := range []struct {
+		path []string
+		want string
+	}{
+		{path: []string{"campaigns", "create"}, want: "spend, billing"},
+		{path: []string{"budget-orders", "create"}, want: "spend, billing"},
+		{path: []string{"campaigns", "delete"}, want: "Confirm deletion"},
+	} {
+		cmd := findCommand(root, test.path...)
+		if cmd == nil {
+			t.Fatalf("missing command asc ads %s", strings.Join(test.path, " "))
+		}
+		confirm := cmd.FlagSet.Lookup("confirm")
+		if confirm == nil || !strings.Contains(confirm.Usage, test.want) {
+			t.Fatalf("asc ads %s --confirm usage = %q, want %q", strings.Join(test.path, " "), valueFlagUsage(confirm), test.want)
+		}
+	}
+}
+
+func valueFlagUsage(f *flag.Flag) string {
+	if f == nil {
+		return ""
+	}
+	return f.Usage
+}
+
 func TestPlatformAppsSearchHelpExplainsModesAndDefaults(t *testing.T) {
 	root := AdsCommand()
 	search := findCommand(root, "apps", "search")
@@ -232,7 +719,7 @@ func bodyShape(kind appleads.BodyKind) string {
 }
 
 func bodyRequired(spec appleads.EndpointSpec) string {
-	if spec.BodyOptional {
+	if spec.BodyOptional && !spec.CLIRequiresBody {
 		return "no"
 	}
 	return "yes"
@@ -300,6 +787,24 @@ func TestRawPlatformRequestUsesEndpointRiskMetadata(t *testing.T) {
 	if !rawPlatformRequestRequiresConfirm("POST", "v1/unknown-mutation", nil) {
 		t.Fatal("unknown POST must fail closed behind confirmation")
 	}
+	if !rawPlatformRequestRequiresConfirm("POST", "v1/campaigns", nil) {
+		t.Fatal("campaign create without a body must require confirmation")
+	}
+	if rawPlatformRequestRequiresConfirm("POST", "v1/campaigns", json.RawMessage(`{"status":"PAUSED"}`)) {
+		t.Fatal("paused campaign create must use the safe body exception")
+	}
+	if rawPlatformRequestRequiresConfirm("POST", "v1/campaigns/query", nil) {
+		t.Fatal("known read-only campaign query must not require confirmation")
+	}
+	if rawPlatformRequestRequiresConfirm("PUT", "v1/campaigns/campaign-1", json.RawMessage(`{"name":"Paused","status":"PAUSED"}`)) {
+		t.Fatal("paused name-only campaign update must use the safe body exception")
+	}
+	if !rawPlatformRequestRequiresConfirm("PUT", "v1/campaigns/campaign-1", json.RawMessage(`{"status":"PAUSED","dailyBudget":1}`)) {
+		t.Fatal("campaign budget update must require confirmation")
+	}
+	if got, want := rawPlatformRequestConfirmMessage("PUT", "v1/campaigns/campaign-1", json.RawMessage(`{"status":"PAUSED","dailyBudget":1}`)), `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`; got != want {
+		t.Fatalf("campaign update confirmation message = %q, want %q", got, want)
+	}
 	if rawPlatformRequestRequiresConfirm("POST", "v1/metadata/apps/supported-languages/query", nil) {
 		t.Fatal("known read-only POST query must not require confirmation")
 	}
@@ -356,6 +861,124 @@ func TestConfirmHelpExplainsRiskImpact(t *testing.T) {
 	}
 }
 
+func TestPlatformCampaignDeleteCommandsRequireConfirmationFirst(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+	for _, command := range [][]string{
+		{"campaigns", "delete"},
+		{"ad-groups", "delete"},
+		{"ads", "delete"},
+		{"targeting-keywords", "delete"},
+		{"negative-keywords", "delete"},
+		{"budget-orders", "delete"},
+	} {
+		spec, ok := appleads.PlatformEndpointByCommandPath(command...)
+		if !ok {
+			t.Fatalf("missing %q", strings.Join(command, " "))
+		}
+		_, flags := bindEndpointFlags(spec, "test")
+		if err := executeEndpoint(context.Background(), spec, flags); !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), "--confirm is required") {
+			t.Errorf("%q unconfirmed error = %v, want confirmation usage error", strings.Join(command, " "), err)
+		}
+	}
+}
+
+func TestPlatformGeoSearchSerializesFixtureQueryNames(t *testing.T) {
+	spec, ok := appleads.PlatformEndpointByCommandPath("geo", "search")
+	if !ok {
+		t.Fatal("missing geo search")
+	}
+	fs, flags := bindEndpointFlags(spec, "test")
+	if err := fs.Parse([]string{
+		"--supply-source", "appstore",
+		"--query", "San Francisco",
+		"--entity", "Locality",
+		"--country-code", "us",
+		"--eligible",
+		"--offset", "20",
+		"--page-size", "50",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	query, err := collectQuery(spec, flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := query.Encode(), "countrycode=US&eligible=true&entity=Locality&offset=20&pageSize=50&query=San+Francisco&supplySource=APPSTORE"; got != want {
+		t.Fatalf("geo query = %q, want %q", got, want)
+	}
+	if err := fs.Set("page-size", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collectQuery(spec, flags); err == nil || !strings.Contains(err.Error(), "--page-size must be greater than 0") {
+		t.Fatalf("zero page size error = %v, want pre-network validation", err)
+	}
+	_, flags = bindEndpointFlags(spec, "test")
+	*flags.queryStrings["supplySource"] = "MAPS"
+	*flags.queryStrings["query"] = "x"
+	if _, err := collectQuery(spec, flags); err == nil || !strings.Contains(err.Error(), "at least 2 characters") {
+		t.Fatalf("short geo query error = %v", err)
+	}
+}
+
+func TestPlatformCampaignPathIDsAreStringsButAdamIDIsNumeric(t *testing.T) {
+	campaign, _ := appleads.PlatformEndpointByCommandPath("campaigns", "view")
+	fs, flags := bindEndpointFlags(campaign, "test")
+	if err := fs.Set("campaign", "campaign_external_01"); err != nil {
+		t.Fatal(err)
+	}
+	params, err := collectPathParams(campaign, flags)
+	if err != nil || params["id"] != "campaign_external_01" {
+		t.Fatalf("campaign path params = %#v, error = %v", params, err)
+	}
+
+	locales, _ := appleads.PlatformEndpointByCommandPath("apps", "locales", "find")
+	fs, flags = bindEndpointFlags(locales, "test")
+	if err := fs.Set("adam-id", "not-a-number"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collectPathParams(locales, flags); err == nil || !strings.Contains(err.Error(), "--adam-id must be an integer") {
+		t.Fatalf("adam ID error = %v", err)
+	}
+}
+
+func TestPlatformCampaignPauseResumeWorkflowsUseStringIDsAndSafeConfirmation(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+	root := AdsCommand()
+	for _, test := range []struct {
+		name         string
+		needsConfirm bool
+		wantHelp     string
+	}{
+		{name: "pause", wantHelp: "does not require --confirm"},
+		{name: "resume", needsConfirm: true, wantHelp: "requires --confirm"},
+	} {
+		name := test.name
+		command := findCommand(root, "campaigns", name)
+		if command == nil || command.Exec == nil {
+			t.Fatalf("missing executable direct v1 campaigns %s", name)
+		}
+		if command.FlagSet.Lookup("ad-account") == nil || command.FlagSet.Lookup("org") != nil {
+			t.Fatalf("direct v1 campaigns %s context flags are incorrect", name)
+		}
+		if err := command.FlagSet.Set("campaign", "campaign_external_01"); err != nil {
+			t.Fatal(err)
+		}
+		err := command.Exec(context.Background(), nil)
+		if test.needsConfirm {
+			if !errors.Is(err, flag.ErrHelp) || err.Error() != "--confirm is required" {
+				t.Fatalf("direct v1 campaigns %s unconfirmed error = %v, want confirmation usage error", name, err)
+			}
+		} else if errors.Is(err, flag.ErrHelp) && strings.Contains(err.Error(), "--confirm") {
+			t.Fatalf("direct v1 campaigns %s unexpectedly requires confirmation: %v", name, err)
+		}
+		if !strings.Contains(command.LongHelp, `{"status":"`) || !strings.Contains(command.LongHelp, "PUT v1/campaigns/{id}") || !strings.Contains(command.LongHelp, test.wantHelp) {
+			t.Fatalf("direct v1 campaigns %s help must document its status payload: %q", name, command.LongHelp)
+		}
+	}
+}
+
 func TestAdsCampaignsHelpReadsAsManagementSurface(t *testing.T) {
 	root := AdsCommand()
 	campaigns := findCommand(root, "v5", "campaigns")
@@ -406,7 +1029,7 @@ func TestPlatformConditionalConfirmationAppearsOnceInHelp(t *testing.T) {
 	root := AdsCommand()
 	update := findCommand(root, "ad-accounts", "update")
 	if update == nil {
-		t.Fatal("missing platform ad-account update command")
+		t.Fatal("missing direct v1 ad-account update command")
 	}
 
 	if got := strings.Count(update.LongHelp, "--confirm"); got != 1 {
@@ -588,7 +1211,7 @@ func TestResolveAdAccountIDPrecedenceDoesNotUseLegacyOrg(t *testing.T) {
 func TestNamedAdsProfileWithoutAdAccountDoesNotInheritAnotherProfileDefault(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
-	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
+	setAdsResolverTestEnv(t)
 	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "")
 	if err := config.SaveAt(configPath, &config.Config{Ads: config.AdsConfig{
 		DefaultKeyName: "profile-a",
@@ -619,13 +1242,13 @@ func TestAdsAuthDiscoveryPreservesInt64Identifiers(t *testing.T) {
 	}
 
 	accounts, err := summarizePlatformACLAccounts(
-		appleads.RawResponse(`{"result":{"acls":[{"adAccount":{"id":`+largeID+`,"orgId":987654,"name":"Large"},"roles":["Admin"]}]}}`),
+		appleads.RawResponse(`{"result":{"acls":[{"adAccount":{"id":`+largeID+`,"orgId":`+largeID+`,"name":"Large"},"roles":["Admin"]}]}}`),
 		largeID,
 	)
 	if err != nil {
 		t.Fatalf("summarizePlatformACLAccounts() error: %v", err)
 	}
-	if len(accounts) != 1 || accounts[0].AdAccountID != largeID || accounts[0].Name != "Large" || !accounts[0].Active {
+	if len(accounts) != 1 || accounts[0].AdAccountID != largeID || accounts[0].OrgID != largeID || accounts[0].Name != "Large" || !accounts[0].Active {
 		t.Fatalf("accounts = %+v, want exact active int64 identifiers", accounts)
 	}
 	if got := strings.Join(accounts[0].Roles, ","); got != "Admin" {
@@ -902,8 +1525,11 @@ func assertSpecFlags(t *testing.T, cmd *ffcli.Command, spec appleads.EndpointSpe
 	if spec.BodyKind != appleads.BodyNone && cmd.FlagSet.Lookup("file") == nil {
 		t.Fatalf("asc ads %s missing --file", strings.Join(spec.CommandPath, " "))
 	}
-	if (spec.RequiresConfirm || spec.RiskConfirm) && cmd.FlagSet.Lookup("confirm") == nil {
+	if spec.RequiresConfirm && cmd.FlagSet.Lookup("confirm") == nil {
 		t.Fatalf("asc ads %s missing --confirm", strings.Join(spec.CommandPath, " "))
+	}
+	if spec.RiskConfirm && cmd.FlagSet.Lookup("confirm") == nil {
+		t.Fatalf("asc ads %s missing spend-risk --confirm", strings.Join(spec.CommandPath, " "))
 	}
 	if spec.SupportsPaginate && cmd.FlagSet.Lookup("paginate") == nil {
 		t.Fatalf("asc ads %s missing --paginate", strings.Join(spec.CommandPath, " "))

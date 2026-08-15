@@ -595,13 +595,13 @@ CLI command and an HTTP client method.
 | `asc ads v5 targeting-keywords delete-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file keyword-ids.json --confirm` | `POST v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords/delete/bulk` | `[int64]` array | Require `--confirm`. |
 | `asc ads v5 campaign-negative-keywords list --campaign CAMPAIGN_ID [--limit N --offset N --paginate]` | `GET v5/campaigns/{campaignId}/negativekeywords` | none |  |
 | `asc ads v5 campaign-negative-keywords find --campaign CAMPAIGN_ID --file selector.json` | `POST v5/campaigns/{campaignId}/negativekeywords/find` | `Selector` object |  |
-| `asc ads v5 campaign-negative-keywords view --campaign CAMPAIGN_ID --keyword KEYWORD_ID` | `GET v5/campaigns/{campaignId}/negativekeywords/{keywordId}` | none |  |
+| `asc ads v5 campaign-negative-keywords view --campaign CAMPAIGN_ID --negative-keyword KEYWORD_ID` | `GET v5/campaigns/{campaignId}/negativekeywords/{keywordId}` | none |  |
 | `asc ads v5 campaign-negative-keywords create-bulk --campaign CAMPAIGN_ID --file negative-keywords.json` | `POST v5/campaigns/{campaignId}/negativekeywords/bulk` | `[NegativeKeyword]` array |  |
 | `asc ads v5 campaign-negative-keywords update-bulk --campaign CAMPAIGN_ID --file negative-keywords.json` | `PUT v5/campaigns/{campaignId}/negativekeywords/bulk` | `[NegativeKeyword]` array |  |
 | `asc ads v5 campaign-negative-keywords delete-bulk --campaign CAMPAIGN_ID --file keyword-ids.json --confirm` | `POST v5/campaigns/{campaignId}/negativekeywords/delete/bulk` | `[int64]` array | Require `--confirm`. |
 | `asc ads v5 ad-group-negative-keywords list --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID [--limit N --offset N --paginate]` | `GET v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords` | none |  |
 | `asc ads v5 ad-group-negative-keywords find --campaign CAMPAIGN_ID --file selector.json` | `POST v5/campaigns/{campaignId}/adgroups/negativekeywords/find` | `Selector` object | Campaign-level find across ad groups. |
-| `asc ads v5 ad-group-negative-keywords view --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --keyword KEYWORD_ID` | `GET v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/{keywordId}` | none |  |
+| `asc ads v5 ad-group-negative-keywords view --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --negative-keyword KEYWORD_ID` | `GET v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/{keywordId}` | none |  |
 | `asc ads v5 ad-group-negative-keywords create-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file negative-keywords.json` | `POST v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk` | `[NegativeKeyword]` array |  |
 | `asc ads v5 ad-group-negative-keywords update-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file negative-keywords.json` | `PUT v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk` | `[NegativeKeyword]` array |  |
 | `asc ads v5 ad-group-negative-keywords delete-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file keyword-ids.json --confirm` | `POST v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/delete/bulk` | `[int64]` array | Require `--confirm`. |
@@ -827,10 +827,10 @@ Black-box verification:
 
 ```bash
 go build -o /tmp/asc .
-/tmp/asc ads --help
-/tmp/asc ads v5 campaigns list --org 123 --output json
-/tmp/asc ads v5 campaigns delete --campaign 1 --org 123
-/tmp/asc ads v5 campaigns delete --campaign 1 --org 123 --confirm
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads --help
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads v5 campaigns list --org 123 --output json
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads v5 campaigns delete --campaign 1 --org 123
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads v5 campaigns delete --campaign 1 --org 123 --confirm
 ```
 
 Repository checks before PR:
@@ -847,9 +847,9 @@ credentials are unavailable. When Ads credentials are configured locally, run
 only these read-only smoke tests:
 
 ```bash
-asc ads v5 me view --output json
-asc ads v5 acls list --output json
-asc ads v5 campaigns list --org "$ASC_ADS_ORG_ID" --limit 1 --output json
+ASC_BYPASS_KEYCHAIN=1 asc ads v5 me view --output json
+ASC_BYPASS_KEYCHAIN=1 asc ads v5 acls list --output json
+ASC_BYPASS_KEYCHAIN=1 asc ads v5 campaigns list --org "$ASC_ADS_ORG_ID" --limit 1 --output json
 ```
 
 Do not create spend-bearing Apple Ads campaigns in live smoke tests unless the

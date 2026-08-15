@@ -133,7 +133,10 @@ func rawPlatformRequestRequiresConfirm(method, pathOnly string, payload json.Raw
 				return true
 			}
 			if len(payload) == 0 {
-				return false
+				// A body-scoped exception is safe only when the caller supplied
+				// the body that proves the exception. Missing or malformed bodies
+				// must not turn a mutation into a confirmation-free request.
+				return true
 			}
 			return riskConfirmationRequired(spec, payload)
 		}
@@ -187,6 +190,9 @@ func rawPlatformRequestConfirmMessage(method, pathOnly string, payload json.RawM
 	}
 	if spec, ok := platformEndpointSpecForRequest(method, pathOnly); ok && spec.RiskConfirm && riskConfirmationRequired(spec, payload) {
 		if spec.RiskConfirmBodyField != "" {
+			if spec.Name == "platform-update-campaign" {
+				return fmt.Sprintf("--confirm is required unless status is %q and only non-spend fields are changed", spec.RiskConfirmBodyValue)
+			}
 			return fmt.Sprintf("--confirm is required unless %s is explicitly %q; otherwise acknowledge %s", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue, riskConfirmationImpact)
 		}
 		return "--confirm is required to acknowledge " + riskConfirmationImpact
