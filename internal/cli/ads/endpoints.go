@@ -421,7 +421,7 @@ func flagUsage(param appleads.ParamSpec) string {
 func confirmFlagUsage(spec appleads.EndpointSpec) string {
 	switch {
 	case spec.RiskConfirm:
-		return "Acknowledge potential Apple Ads spend or billing impact"
+		return "Acknowledge potential Apple Ads spend or operational impact"
 	case spec.RequiresConfirm:
 		return "Confirm deletion of this Apple Ads resource"
 	case spec.ConfirmBodyField != "":
@@ -448,7 +448,7 @@ func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endp
 		return shared.UsageError(err.Error())
 	}
 	if spec.RiskConfirm && spec.RiskConfirmBodyField == "" && flags.confirm != nil && !*flags.confirm {
-		return shared.UsageError("--confirm is required to acknowledge potential Apple Ads spend or billing impact")
+		return shared.UsageError("--confirm is required to acknowledge potential Apple Ads spend or operational impact")
 	}
 	body, err := readBody(spec, flags)
 	if err != nil {
@@ -731,7 +731,7 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 		if spec.RiskConfirmBodyField != "" {
 			return fmt.Errorf("--confirm is required unless %s is explicitly %q", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue)
 		}
-		return fmt.Errorf("--confirm is required to acknowledge potential Apple Ads spend or billing impact")
+		return fmt.Errorf("--confirm is required to acknowledge potential Apple Ads spend or operational impact")
 	}
 	if spec.Name != "platform-create-ad-account" && spec.Name != "platform-update-ad-account" {
 		return nil

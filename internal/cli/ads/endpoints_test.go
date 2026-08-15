@@ -393,14 +393,15 @@ func TestPlatformCampaignAndBudgetRiskConfirmationPrecedesAuth(t *testing.T) {
 	}
 }
 
-func TestPlatformConfirmationHelpDistinguishesSpendFromDeletion(t *testing.T) {
+func TestConfirmationHelpDistinguishesOperationalRiskFromDeletion(t *testing.T) {
 	root := AdsCommand()
 	for _, test := range []struct {
 		path []string
 		want string
 	}{
-		{path: []string{"campaigns", "create"}, want: "spend or billing impact"},
-		{path: []string{"budget-orders", "create"}, want: "spend or billing impact"},
+		{path: []string{"campaigns", "create"}, want: "spend or operational impact"},
+		{path: []string{"budget-orders", "create"}, want: "spend or operational impact"},
+		{path: []string{"v5", "targeting-keywords", "create-bulk"}, want: "spend or operational impact"},
 		{path: []string{"campaigns", "delete"}, want: "Confirm deletion"},
 	} {
 		cmd := findCommand(root, test.path...)

@@ -543,47 +543,47 @@ it is not the preferred Platform v1 command inventory.
 | `asc ads v5 product-pages countries list [--countries-or-regions VALUE]` | `GET v5/countries-or-regions` | none |  |
 | `asc ads v5 product-pages devices list` | `GET v5/creativeappmappings/devices` | none |  |
 | `asc ads v5 budget-orders list [--limit N --offset N --paginate]` | `GET v5/budgetorders` | none |  |
-| `asc ads v5 budget-orders create --file budget-order-create.json` | `POST v5/budgetorders` | `BudgetOrderCreate` object |  |
+| `asc ads v5 budget-orders create --file budget-order-create.json --confirm` | `POST v5/budgetorders` | `BudgetOrderCreate` object | Require `--confirm`. |
 | `asc ads v5 budget-orders view --budget-order BUDGET_ORDER_ID` | `GET v5/budgetorders/{boId}` | none |  |
-| `asc ads v5 budget-orders update --budget-order BUDGET_ORDER_ID --file budget-order-update.json` | `PUT v5/budgetorders/{boId}` | `BudgetOrderUpdate` object |  |
+| `asc ads v5 budget-orders update --budget-order BUDGET_ORDER_ID --file budget-order-update.json --confirm` | `PUT v5/budgetorders/{boId}` | `BudgetOrderUpdate` object | Require `--confirm`. |
 | `asc ads v5 campaigns list [--limit N --offset N --paginate]` | `GET v5/campaigns` | none | `asc ads v5 campaigns` aliases list. |
 | `asc ads v5 campaigns find --file selector.json` | `POST v5/campaigns/find` | `Selector` object |  |
 | `asc ads v5 campaigns view --campaign CAMPAIGN_ID` | `GET v5/campaigns/{campaignId}` | none |  |
-| `asc ads v5 campaigns create --file campaign.json` | `POST v5/campaigns` | `Campaign` object |  |
-| `asc ads v5 campaigns update --campaign CAMPAIGN_ID --file campaign-update.json` | `PUT v5/campaigns/{campaignId}` | `UpdateCampaignRequest` object | Campaign update uses Apple's campaign envelope. |
+| `asc ads v5 campaigns create --file campaign.json --confirm` | `POST v5/campaigns` | `Campaign` object | Require `--confirm`. |
+| `asc ads v5 campaigns update --campaign CAMPAIGN_ID --file campaign-update.json --confirm` | `PUT v5/campaigns/{campaignId}` | `UpdateCampaignRequest` object | Require `--confirm`; campaign update uses Apple's campaign envelope. |
 | `asc ads v5 campaigns delete --campaign CAMPAIGN_ID --confirm` | `DELETE v5/campaigns/{campaignId}` | none | Require `--confirm`. |
 | `asc ads v5 ad-groups list --campaign CAMPAIGN_ID [--limit N --offset N --paginate]` | `GET v5/campaigns/{campaignId}/adgroups` | none | `asc ads v5 ad-groups` aliases list. |
 | `asc ads v5 ad-groups find --campaign CAMPAIGN_ID --file selector.json` | `POST v5/campaigns/{campaignId}/adgroups/find` | `Selector` object |  |
 | `asc ads v5 ad-groups find-org --file selector.json` | `POST v5/adgroups/find` | `Selector` object | Org-level find. |
 | `asc ads v5 ad-groups view --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID` | `GET v5/campaigns/{campaignId}/adgroups/{adgroupId}` | none |  |
-| `asc ads v5 ad-groups create --campaign CAMPAIGN_ID --file ad-group.json` | `POST v5/campaigns/{campaignId}/adgroups` | `AdGroup` object |  |
-| `asc ads v5 ad-groups update --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file ad-group-update.json` | `PUT v5/campaigns/{campaignId}/adgroups/{adgroupId}` | `AdGroupUpdate` object |  |
+| `asc ads v5 ad-groups create --campaign CAMPAIGN_ID --file ad-group.json --confirm` | `POST v5/campaigns/{campaignId}/adgroups` | `AdGroup` object | Require `--confirm`. |
+| `asc ads v5 ad-groups update --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file ad-group-update.json --confirm` | `PUT v5/campaigns/{campaignId}/adgroups/{adgroupId}` | `AdGroupUpdate` object | Require `--confirm`. |
 | `asc ads v5 ad-groups delete --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --confirm` | `DELETE v5/campaigns/{campaignId}/adgroups/{adgroupId}` | none | Require `--confirm`. |
 | `asc ads v5 ads list --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID` | `GET v5/campaigns/{campaignId}/adgroups/{adgroupId}/ads` | none |  |
 | `asc ads v5 ads find --campaign CAMPAIGN_ID --file selector.json` | `POST v5/campaigns/{campaignId}/ads/find` | `Selector` object | Campaign-level find. |
 | `asc ads v5 ads find-org --file selector.json` | `POST v5/ads/find` | `Selector` object | Org-level find. |
 | `asc ads v5 ads view --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --ad AD_ID` | `GET v5/campaigns/{campaignId}/adgroups/{adgroupId}/ads/{adId}` | none |  |
-| `asc ads v5 ads create --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file ad-create.json` | `POST v5/campaigns/{campaignId}/adgroups/{adgroupId}/ads` | `AdCreate` object |  |
-| `asc ads v5 ads update --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --ad AD_ID --file ad-update.json` | `PUT v5/campaigns/{campaignId}/adgroups/{adgroupId}/ads/{adId}` | `AdUpdate` object |  |
+| `asc ads v5 ads create --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file ad-create.json --confirm` | `POST v5/campaigns/{campaignId}/adgroups/{adgroupId}/ads` | `AdCreate` object | Require `--confirm`. |
+| `asc ads v5 ads update --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --ad AD_ID --file ad-update.json --confirm` | `PUT v5/campaigns/{campaignId}/adgroups/{adgroupId}/ads/{adId}` | `AdUpdate` object | Require `--confirm`. |
 | `asc ads v5 ads delete --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --ad AD_ID --confirm` | `DELETE v5/campaigns/{campaignId}/adgroups/{adgroupId}/ads/{adId}` | none | Require `--confirm`. |
 | `asc ads v5 targeting-keywords list --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID [--limit N --offset N --paginate]` | `GET v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords` | none |  |
 | `asc ads v5 targeting-keywords find --campaign CAMPAIGN_ID --file selector.json` | `POST v5/campaigns/{campaignId}/adgroups/targetingkeywords/find` | `Selector` object | Campaign-level find across ad groups. |
 | `asc ads v5 targeting-keywords view --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --keyword KEYWORD_ID` | `GET v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords/{keywordId}` | none |  |
-| `asc ads v5 targeting-keywords create-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file keywords.json` | `POST v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords/bulk` | `[Keyword]` array |  |
-| `asc ads v5 targeting-keywords update-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file keywords-update.json` | `PUT v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords/bulk` | `[KeywordUpdateRequest]` array |  |
+| `asc ads v5 targeting-keywords create-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file keywords.json --confirm` | `POST v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords/bulk` | `[Keyword]` array | Require `--confirm`. |
+| `asc ads v5 targeting-keywords update-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file keywords-update.json --confirm` | `PUT v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords/bulk` | `[KeywordUpdateRequest]` array | Require `--confirm`. |
 | `asc ads v5 targeting-keywords delete --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --keyword KEYWORD_ID --confirm` | `DELETE v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords/{keywordId}` | none | Require `--confirm`. |
 | `asc ads v5 targeting-keywords delete-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file keyword-ids.json --confirm` | `POST v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords/delete/bulk` | `[int64]` array | Require `--confirm`. |
 | `asc ads v5 campaign-negative-keywords list --campaign CAMPAIGN_ID [--limit N --offset N --paginate]` | `GET v5/campaigns/{campaignId}/negativekeywords` | none |  |
 | `asc ads v5 campaign-negative-keywords find --campaign CAMPAIGN_ID --file selector.json` | `POST v5/campaigns/{campaignId}/negativekeywords/find` | `Selector` object |  |
 | `asc ads v5 campaign-negative-keywords view --campaign CAMPAIGN_ID --negative-keyword KEYWORD_ID` | `GET v5/campaigns/{campaignId}/negativekeywords/{keywordId}` | none |  |
-| `asc ads v5 campaign-negative-keywords create-bulk --campaign CAMPAIGN_ID --file negative-keywords.json` | `POST v5/campaigns/{campaignId}/negativekeywords/bulk` | `[NegativeKeyword]` array |  |
-| `asc ads v5 campaign-negative-keywords update-bulk --campaign CAMPAIGN_ID --file negative-keywords.json` | `PUT v5/campaigns/{campaignId}/negativekeywords/bulk` | `[NegativeKeyword]` array |  |
+| `asc ads v5 campaign-negative-keywords create-bulk --campaign CAMPAIGN_ID --file negative-keywords.json --confirm` | `POST v5/campaigns/{campaignId}/negativekeywords/bulk` | `[NegativeKeyword]` array | Require `--confirm`. |
+| `asc ads v5 campaign-negative-keywords update-bulk --campaign CAMPAIGN_ID --file negative-keywords.json --confirm` | `PUT v5/campaigns/{campaignId}/negativekeywords/bulk` | `[NegativeKeyword]` array | Require `--confirm`. |
 | `asc ads v5 campaign-negative-keywords delete-bulk --campaign CAMPAIGN_ID --file keyword-ids.json --confirm` | `POST v5/campaigns/{campaignId}/negativekeywords/delete/bulk` | `[int64]` array | Require `--confirm`. |
 | `asc ads v5 ad-group-negative-keywords list --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID [--limit N --offset N --paginate]` | `GET v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords` | none |  |
 | `asc ads v5 ad-group-negative-keywords find --campaign CAMPAIGN_ID --file selector.json` | `POST v5/campaigns/{campaignId}/adgroups/negativekeywords/find` | `Selector` object | Campaign-level find across ad groups. |
 | `asc ads v5 ad-group-negative-keywords view --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --negative-keyword KEYWORD_ID` | `GET v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/{keywordId}` | none |  |
-| `asc ads v5 ad-group-negative-keywords create-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file negative-keywords.json` | `POST v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk` | `[NegativeKeyword]` array |  |
-| `asc ads v5 ad-group-negative-keywords update-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file negative-keywords.json` | `PUT v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk` | `[NegativeKeyword]` array |  |
+| `asc ads v5 ad-group-negative-keywords create-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file negative-keywords.json --confirm` | `POST v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk` | `[NegativeKeyword]` array | Require `--confirm`. |
+| `asc ads v5 ad-group-negative-keywords update-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file negative-keywords.json --confirm` | `PUT v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk` | `[NegativeKeyword]` array | Require `--confirm`. |
 | `asc ads v5 ad-group-negative-keywords delete-bulk --campaign CAMPAIGN_ID --ad-group AD_GROUP_ID --file keyword-ids.json --confirm` | `POST v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/delete/bulk` | `[int64]` array | Require `--confirm`. |
 | `asc ads v5 geo search [--country-code CC --entity ENTITY --query QUERY --limit N --offset N --paginate]` | `GET v5/search/geo` | none | API default query is `*:*`. |
 | `asc ads v5 geo resolve --file geo-requests.json [--limit N --offset N --paginate]` | `POST v5/search/geo` | `[GeoRequest]` array |  |

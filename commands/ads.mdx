@@ -504,11 +504,12 @@ wrapped object such as:
 ```
 
 ```bash  theme={null}
-asc ads v5 campaigns create --org "123456" --file campaign.json
-asc ads v5 campaigns update --org "123456" --campaign 987654321 --file campaign-update.json
+asc ads v5 campaigns create --org "123456" --file campaign.json --confirm
+asc ads v5 campaigns update --org "123456" --campaign 987654321 --file campaign-update.json --confirm
 ```
 
-Delete commands always require `--confirm`:
+Campaign, ad group, ad, keyword, negative-keyword, and budget-order mutations
+require `--confirm`. Delete commands require it as well:
 
 ```bash  theme={null}
 asc ads v5 campaigns delete --org "123456" --campaign 987654321 --confirm
@@ -521,9 +522,9 @@ ad resource, so ad-resource commands read as `asc ads v5 ads ...`:
 
 ```bash  theme={null}
 asc ads v5 ad-groups list --org "123456" --campaign 987654321 --output json
-asc ads v5 ad-groups create --org "123456" --campaign 987654321 --file ad-group.json
+asc ads v5 ad-groups create --org "123456" --campaign 987654321 --file ad-group.json --confirm
 asc ads v5 ads list --org "123456" --campaign 987654321 --ad-group 123456789 --output json
-asc ads v5 ads create --org "123456" --campaign 987654321 --ad-group 123456789 --file ad.json
+asc ads v5 ads create --org "123456" --campaign 987654321 --ad-group 123456789 --file ad.json --confirm
 ```
 
 Find endpoints use Apple selector payloads:
@@ -588,7 +589,8 @@ asc ads v5 targeting-keywords create-bulk \
   --org "123456" \
   --campaign 987654321 \
   --ad-group 123456789 \
-  --file keywords.json
+  --file keywords.json \
+  --confirm
 ```
 
 ```json keywords.json
@@ -626,7 +628,7 @@ Targeting keywords belong to an ad group:
 
 ```bash  theme={null}
 asc ads v5 targeting-keywords list --org "123456" --campaign 987654321 --ad-group 123456789
-asc ads v5 targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json
+asc ads v5 targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json --confirm
 asc ads v5 targeting-keywords delete --org "123456" --campaign 987654321 --ad-group 123456789 --keyword 111111111 --confirm
 ```
 
@@ -634,8 +636,8 @@ Campaign negative keywords belong to a campaign. Ad group negative keywords add
 `--ad-group`:
 
 ```bash  theme={null}
-asc ads v5 campaign-negative-keywords create-bulk --org "123456" --campaign 987654321 --file negative-keywords.json
-asc ads v5 ad-group-negative-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file negative-keywords.json
+asc ads v5 campaign-negative-keywords create-bulk --org "123456" --campaign 987654321 --file negative-keywords.json --confirm
+asc ads v5 ad-group-negative-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file negative-keywords.json --confirm
 ```
 
 When addressing one negative keyword in the deprecated v5 namespace, use the

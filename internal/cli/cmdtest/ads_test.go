@@ -461,6 +461,162 @@ func TestAdsDeleteRequiresConfirmBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestAdsV5RiskMutationsRequireConfirmBeforeFileAuthOrNetwork(t *testing.T) {
+	missingPayload := filepath.Join(t.TempDir(), "missing.json")
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "budget create", args: []string{"ads", "v5", "budget-orders", "create", "--file", missingPayload}},
+		{name: "budget update", args: []string{"ads", "v5", "budget-orders", "update", "--budget-order", "1", "--file", missingPayload}},
+		{name: "campaign create", args: []string{"ads", "v5", "campaigns", "create", "--file", missingPayload}},
+		{name: "campaign update", args: []string{"ads", "v5", "campaigns", "update", "--campaign", "1", "--file", missingPayload}},
+		{name: "ad group create", args: []string{"ads", "v5", "ad-groups", "create", "--campaign", "1", "--file", missingPayload}},
+		{name: "ad group update", args: []string{"ads", "v5", "ad-groups", "update", "--campaign", "1", "--ad-group", "2", "--file", missingPayload}},
+		{name: "ad create", args: []string{"ads", "v5", "ads", "create", "--campaign", "1", "--ad-group", "2", "--file", missingPayload}},
+		{name: "ad update", args: []string{"ads", "v5", "ads", "update", "--campaign", "1", "--ad-group", "2", "--ad", "3", "--file", missingPayload}},
+		{name: "targeting keyword create", args: []string{"ads", "v5", "targeting-keywords", "create-bulk", "--campaign", "1", "--ad-group", "2", "--file", missingPayload}},
+		{name: "targeting keyword update", args: []string{"ads", "v5", "targeting-keywords", "update-bulk", "--campaign", "1", "--ad-group", "2", "--file", missingPayload}},
+		{name: "campaign negative keyword create", args: []string{"ads", "v5", "campaign-negative-keywords", "create-bulk", "--campaign", "1", "--file", missingPayload}},
+		{name: "campaign negative keyword update", args: []string{"ads", "v5", "campaign-negative-keywords", "update-bulk", "--campaign", "1", "--file", missingPayload}},
+		{name: "ad group negative keyword create", args: []string{"ads", "v5", "ad-group-negative-keywords", "create-bulk", "--campaign", "1", "--ad-group", "2", "--file", missingPayload}},
+		{name: "ad group negative keyword update", args: []string{"ads", "v5", "ad-group-negative-keywords", "update-bulk", "--campaign", "1", "--ad-group", "2", "--file", missingPayload}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			isolateAdsGuideEnv(t)
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+			installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatalf("unexpected network request before confirmation: %s %s", req.Method, req.URL.String())
+				return nil, nil
+			}))
+
+			root := RootCommand("dev")
+			if err := root.Parse(test.args); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			var runErr error
+			stdout, stderr := captureOutput(t, func() {
+				runErr = root.Run(context.Background())
+			})
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, "--confirm is required") {
+				t.Fatalf("run error = %v stderr = %q, want pre-auth confirmation error", runErr, stderr)
+			}
+			if strings.Contains(stderr, "configuration not found") || strings.Contains(stderr, "missing.json") {
+				t.Fatalf("stderr = %q, confirmation must precede file and auth resolution", stderr)
+			}
+		})
+	}
+}
+
+func TestAdsV5RawRequestSafetyGuardsPrecedeAuthAndNetwork(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "known spend mutation",
+			args:    []string{"ads", "v5", "api", "request", "--method", "POST", "--path", "v5/campaigns"},
+			wantErr: "--confirm is required",
+		},
+		{
+			name:    "known bulk delete",
+			args:    []string{"ads", "v5", "api", "request", "--method", "POST", "--path", "v5/campaigns/1/negativekeywords/delete/bulk"},
+			wantErr: "--confirm is required",
+		},
+		{
+			name:    "unknown POST fails closed",
+			args:    []string{"ads", "v5", "api", "request", "--method", "POST", "--path", "v5/future-resource/query"},
+			wantErr: "--confirm is required",
+		},
+		{
+			name:    "unknown PUT fails closed",
+			args:    []string{"ads", "v5", "api", "request", "--method", "PUT", "--path", "v5/future-resource/1"},
+			wantErr: "--confirm is required",
+		},
+		{
+			name:    "invalid output",
+			args:    []string{"ads", "v5", "api", "request", "--method", "GET", "--path", "v5/campaigns", "--output", "yaml"},
+			wantErr: "unsupported format: yaml",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			isolateAdsGuideEnv(t)
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+			installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatalf("unexpected network request before safety validation: %s %s", req.Method, req.URL.String())
+				return nil, nil
+			}))
+
+			root := RootCommand("dev")
+			if err := root.Parse(test.args); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			var runErr error
+			stdout, stderr := captureOutput(t, func() {
+				runErr = root.Run(context.Background())
+			})
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, test.wantErr) {
+				t.Fatalf("run error = %v stderr = %q, want %q before auth", runErr, stderr, test.wantErr)
+			}
+			if strings.Contains(stderr, "configuration not found") {
+				t.Fatalf("stderr = %q, safety validation must precede auth resolution", stderr)
+			}
+		})
+	}
+}
+
+func TestAdsV5RawKnownReadLikePostDoesNotRequireConfirm(t *testing.T) {
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_ADS_ORG_ID", "123456")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+
+	requestCount := 0
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		if req.Method != http.MethodPost || req.URL.Path != "/api/v5/campaigns/find" {
+			t.Fatalf("request = %s %s, want POST /api/v5/campaigns/find", req.Method, req.URL.String())
+		}
+		return adsJSONResponse(http.StatusOK, `{"data":[]}`), nil
+	}))
+
+	root := RootCommand("dev")
+	if err := root.Parse([]string{
+		"ads", "v5", "api", "request",
+		"--method", "POST",
+		"--path", "v5/campaigns/find",
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureOutput(t, func() {
+		runErr = root.Run(context.Background())
+	})
+	if runErr != nil {
+		t.Fatalf("run error = %v stderr = %q", runErr, stderr)
+	}
+	if requestCount != 1 {
+		t.Fatalf("request count = %d, want 1", requestCount)
+	}
+	if !strings.Contains(stdout, `"data":[]`) {
+		t.Fatalf("stdout = %q, want raw API response", stdout)
+	}
+	if got, want := stderr, adsV5ReplacementWarning("v5 api request", "api request"); got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+}
+
 func TestAdsCampaignPauseAndResumeUseCuratedStatusPayloads(t *testing.T) {
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_ORG_ID", "123456")

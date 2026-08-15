@@ -512,6 +512,7 @@ func TestAdsCampaignUpdateSendsRequiredEnvelope(t *testing.T) {
 		"ads", "v5", "campaigns", "update",
 		"--campaign", "1001",
 		"--file", campaignUpdate,
+		"--confirm",
 		"--output", "json",
 	)
 	if err != nil {
@@ -578,9 +579,9 @@ func TestAdsAgentMutationEvalWorkflow(t *testing.T) {
 		args    []string
 		warning string
 	}{
-		{args: []string{"ads", "v5", "campaigns", "create", "--file", campaignCreate, "--output", "json"}, warning: adsV5ReplacementWarning("v5 campaigns create", "campaigns create")},
-		{args: []string{"ads", "v5", "campaigns", "update", "--campaign", "1001", "--file", campaignUpdate, "--output", "json"}, warning: adsV5ReplacementWarning("v5 campaigns update", "campaigns update")},
-		{args: []string{"ads", "v5", "targeting-keywords", "create-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywords, "--output", "json"}, warning: adsV5ReplacementWarning("v5 targeting-keywords create-bulk", "targeting-keywords create-bulk")},
+		{args: []string{"ads", "v5", "campaigns", "create", "--file", campaignCreate, "--confirm", "--output", "json"}, warning: adsV5ReplacementWarning("v5 campaigns create", "campaigns create")},
+		{args: []string{"ads", "v5", "campaigns", "update", "--campaign", "1001", "--file", campaignUpdate, "--confirm", "--output", "json"}, warning: adsV5ReplacementWarning("v5 campaigns update", "campaigns update")},
+		{args: []string{"ads", "v5", "targeting-keywords", "create-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywords, "--confirm", "--output", "json"}, warning: adsV5ReplacementWarning("v5 targeting-keywords create-bulk", "targeting-keywords create-bulk")},
 		{args: []string{"ads", "v5", "targeting-keywords", "delete-bulk", "--campaign", "1001", "--ad-group", "2002", "--file", keywordIDs, "--confirm", "--output", "json"}, warning: adsV5NoReplacementWarning("v5 targeting-keywords delete-bulk", "No one-command replacement exists. Query matching keywords with `asc ads targeting-keywords find`, then delete each ID with `asc ads targeting-keywords delete --confirm`.")},
 		{args: []string{"ads", "v5", "campaigns", "delete", "--campaign", "1001", "--confirm", "--output", "json"}, warning: adsV5ReplacementWarning("v5 campaigns delete", "campaigns delete")},
 	} {
@@ -627,6 +628,7 @@ func TestAdsAgentEvalRejectsArrayPayloadMistakesBeforeNetwork(t *testing.T) {
 		"--campaign", "1001",
 		"--ad-group", "2002",
 		"--file", objectPayload,
+		"--confirm",
 		"--output", "json",
 	)
 	if err == nil || !strings.Contains(err.Error(), "payload must be a JSON array") {
