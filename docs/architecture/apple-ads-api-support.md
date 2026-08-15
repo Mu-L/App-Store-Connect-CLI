@@ -793,10 +793,10 @@ Black-box verification:
 
 ```bash
 go build -o /tmp/asc .
-/tmp/asc ads --help
-/tmp/asc ads v5 campaigns list --org 123 --output json
-/tmp/asc ads v5 campaigns delete --campaign 1 --org 123
-/tmp/asc ads v5 campaigns delete --campaign 1 --org 123 --confirm
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads --help
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads v5 campaigns list --org 123 --output json
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads v5 campaigns delete --campaign 1 --org 123
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads v5 campaigns delete --campaign 1 --org 123 --confirm
 ```
 
 Repository checks before PR:
@@ -813,9 +813,9 @@ credentials are unavailable. When Ads credentials are configured locally, run
 only these read-only smoke tests:
 
 ```bash
-asc ads v5 me view --output json
-asc ads v5 acls list --output json
-asc ads v5 campaigns list --org "$ASC_ADS_ORG_ID" --limit 1 --output json
+ASC_BYPASS_KEYCHAIN=1 asc ads v5 me view --output json
+ASC_BYPASS_KEYCHAIN=1 asc ads v5 acls list --output json
+ASC_BYPASS_KEYCHAIN=1 asc ads v5 campaigns list --org "$ASC_ADS_ORG_ID" --limit 1 --output json
 ```
 
 Do not create spend-bearing Apple Ads campaigns in live smoke tests unless the

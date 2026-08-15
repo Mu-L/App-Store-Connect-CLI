@@ -63,15 +63,9 @@ func platformCampaignStatusWorkflowCommand(name, status, shortHelp string) *ffcl
 		Name:       name,
 		ShortUsage: "asc ads campaigns " + name + " [flags]",
 		ShortHelp:  shortHelp,
-		LongHelp: fmt.Sprintf(`%s
-
-Endpoint: PUT v1/campaigns/{id}
-Payload: {"status":"%s"}
-
-Examples:
-  asc ads campaigns %s --campaign CAMPAIGN_ID --confirm --ad-account AD_ACCOUNT_ID`, shortHelp, status, name),
-		FlagSet:   fs,
-		UsageFunc: shared.DefaultUsageFunc,
+		LongHelp:   platformCampaignStatusWorkflowHelp(name, status, shortHelp),
+		FlagSet:    fs,
+		UsageFunc:  shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err
@@ -86,7 +80,7 @@ func executePlatformCampaignStatusWorkflow(ctx context.Context, commandName, sta
 	if campaignID == "" {
 		return shared.UsageError("--campaign is required")
 	}
-	if flags.confirm == nil || !*flags.confirm {
+	if status != "PAUSED" && (flags.confirm == nil || !*flags.confirm) {
 		return shared.UsageError("--confirm is required")
 	}
 
@@ -114,6 +108,23 @@ func executePlatformCampaignStatusWorkflow(ctx context.Context, commandName, sta
 		return fmt.Errorf("ads campaigns %s: %w", commandName, err)
 	}
 	return shared.PrintOutput(result, outputFormat, *flags.output.Pretty)
+}
+
+func platformCampaignStatusWorkflowHelp(name, status, shortHelp string) string {
+	confirm := ""
+	if status != "PAUSED" {
+		confirm = " --confirm"
+	}
+	return fmt.Sprintf(`%s
+
+Endpoint: PUT v1/campaigns/{id}
+Payload: {"status":"%s"}
+
+Pausing is a spend-reducing safety operation and does not require --confirm;
+resuming requires --confirm.
+
+Examples:
+  asc ads campaigns %s --campaign CAMPAIGN_ID%s --ad-account AD_ACCOUNT_ID`, shortHelp, status, name, confirm)
 }
 
 func campaignStatusWorkflowCommand(name, status, shortHelp string, parent *endpointFlagValues) *ffcli.Command {

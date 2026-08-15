@@ -3,6 +3,7 @@ package ads
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/url"
@@ -720,10 +721,7 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 		return nil
 	}
 	if spec.RiskConfirm && !confirmed && riskConfirmationRequired(spec, body) {
-		if spec.RiskConfirmBodyField != "" {
-			return fmt.Errorf("--confirm is required unless %s is explicitly %q", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue)
-		}
-		return fmt.Errorf("--confirm is required to acknowledge potential Apple Ads spend or billing impact")
+		return errors.New(riskConfirmationMessage(spec))
 	}
 	if spec.Name != "platform-create-ad-account" && spec.Name != "platform-update-ad-account" {
 		return nil
@@ -778,7 +776,22 @@ func riskConfirmationRequired(spec appleads.EndpointSpec, body json.RawMessage) 
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return true
 	}
-	rawValue, ok := payload[spec.RiskConfirmBodyField]
+	checkPayload, field, ok := nestedRiskConfirmationPayload(payload, spec.RiskConfirmBodyField)
+	if !ok {
+		return true
+	}
+	if len(spec.RiskConfirmAllowedBodyFields) > 0 {
+		allowed := make(map[string]struct{}, len(spec.RiskConfirmAllowedBodyFields))
+		for _, field := range spec.RiskConfirmAllowedBodyFields {
+			allowed[field] = struct{}{}
+		}
+		for field := range checkPayload {
+			if _, ok := allowed[field]; !ok {
+				return true
+			}
+		}
+	}
+	rawValue, ok := checkPayload[field]
 	if !ok {
 		return true
 	}
@@ -787,6 +800,36 @@ func riskConfirmationRequired(spec appleads.EndpointSpec, body json.RawMessage) 
 		return true
 	}
 	return value != spec.RiskConfirmBodyValue
+}
+
+func nestedRiskConfirmationPayload(payload map[string]json.RawMessage, fieldPath string) (map[string]json.RawMessage, string, bool) {
+	parts := strings.Split(fieldPath, ".")
+	if len(parts) == 0 {
+		return nil, "", false
+	}
+	current := payload
+	for _, part := range parts[:len(parts)-1] {
+		raw, ok := current[part]
+		if !ok {
+			return nil, "", false
+		}
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &nested); err != nil {
+			return nil, "", false
+		}
+		current = nested
+	}
+	return current, parts[len(parts)-1], true
+}
+
+func riskConfirmationMessage(spec appleads.EndpointSpec) string {
+	if spec.Name == "platform-update-campaign" {
+		return `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`
+	}
+	if spec.RiskConfirmBodyField != "" {
+		return fmt.Sprintf("--confirm is required unless %s is explicitly %q", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue)
+	}
+	return "--confirm is required to acknowledge potential Apple Ads spend or billing impact"
 }
 
 func requireNonEmptyJSONString(payload map[string]json.RawMessage, field string) error {
