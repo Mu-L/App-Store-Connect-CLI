@@ -61,6 +61,11 @@ func TestAdsGuideExamplesDispatchRepresentativeCommands(t *testing.T) {
 				return adsJSONResponse(http.StatusOK, `{"data":[{"id":123456789}],"pagination":{"itemsPerPage":1,"startIndex":0,"totalResults":1}}`), nil
 			}
 			return adsJSONResponse(http.StatusOK, `{"data":{"id":123456789}}`), nil
+		case "api.ads.apple.com":
+			if req.URL.Path != "/v1/me" {
+				t.Fatalf("unexpected Platform API request %s %s", req.Method, req.URL.String())
+			}
+			return adsJSONResponse(http.StatusOK, `{"result":{"userId":123456789,"orgId":123456}}`), nil
 		default:
 			t.Fatalf("unexpected host %s for %s %s", req.URL.Host, req.Method, req.URL.String())
 			return nil, nil
@@ -72,18 +77,18 @@ func TestAdsGuideExamplesDispatchRepresentativeCommands(t *testing.T) {
 		"asc ads auth status --validate",
 		"asc ads auth doctor",
 		"asc ads auth token --confirm --output json",
-		"asc ads campaigns --limit 10 --output json",
-		`asc ads acls --output json`,
-		`asc ads campaigns list --org "123456" --output json`,
+		"asc ads v5 campaigns --limit 10 --output json",
+		`asc ads v5 acls --output json`,
+		`asc ads v5 campaigns list --org "123456" --output json`,
 		`asc ads me view`,
-		`asc ads campaigns delete --org "123456" --campaign 987654321 --confirm`,
-		`asc ads apps search --org "123456" --query "My App" --limit 10 --output json`,
-		`asc ads product-pages list --org "123456" --adam-id 1234567890 --states VISIBLE`,
-		`asc ads targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json`,
-		`asc ads targeting-keywords delete-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keyword-ids.json --confirm`,
-		`asc ads reports campaigns --org "123456" --file reporting-request.json --output json`,
-		`asc ads impression-share-reports --org "123456" --limit 50 --output json`,
-		`asc ads api request --method POST --path v5/campaigns/find --org "123456" --file selector.json --output json`,
+		`asc ads v5 campaigns delete --org "123456" --campaign 987654321 --confirm`,
+		`asc ads v5 apps search --org "123456" --query "My App" --limit 10 --output json`,
+		`asc ads v5 product-pages list --org "123456" --adam-id 1234567890 --states VISIBLE`,
+		`asc ads v5 targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json`,
+		`asc ads v5 targeting-keywords delete-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keyword-ids.json --confirm`,
+		`asc ads v5 reports campaigns --org "123456" --file reporting-request.json --output json`,
+		`asc ads v5 impression-share-reports --org "123456" --limit 50 --output json`,
+		`asc ads v5 api request --method POST --path v5/campaigns/find --org "123456" --file selector.json --output json`,
 	} {
 		t.Run(commandLine, func(t *testing.T) {
 			args := adsGuideArgs(t, commandLine, keyPath, payloads)
@@ -141,6 +146,7 @@ func isolateAdsGuideEnv(t *testing.T) {
 		"ASC_ADS_PRIVATE_KEY",
 		"ASC_ADS_PRIVATE_KEY_B64",
 		"ASC_ADS_ORG_ID",
+		"ASC_ADS_AD_ACCOUNT_ID",
 		"ASC_ADS_PROFILE",
 		"ASC_ADS_BYPASS_KEYCHAIN",
 		"ASC_ADS_STRICT_AUTH",

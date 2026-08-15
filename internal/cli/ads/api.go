@@ -17,15 +17,15 @@ import (
 
 // APICommand returns the raw Apple Ads API request command.
 func APICommand() *ffcli.Command {
-	fs := flag.NewFlagSet("ads api", flag.ExitOnError)
+	fs := flag.NewFlagSet("ads v5 api", flag.ExitOnError)
 	return &ffcli.Command{
 		Name:       "api",
-		ShortUsage: "asc ads api <subcommand> [flags]",
-		ShortHelp:  "Make raw Apple Ads API requests.",
-		LongHelp: `Make raw Apple Ads API requests.
+		ShortUsage: "asc ads v5 api <subcommand> [flags]",
+		ShortHelp:  "Make raw Campaign Management API v5 requests.",
+		LongHelp: `Make raw Campaign Management API v5 requests.
 
 Examples:
-  asc ads api request --method GET --path v5/campaigns --org "123456"`,
+  asc ads v5 api request --method GET --path v5/campaigns --org "123456"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
@@ -38,7 +38,7 @@ Examples:
 }
 
 func APIRequestCommand() *ffcli.Command {
-	fs := flag.NewFlagSet("ads api request", flag.ExitOnError)
+	fs := flag.NewFlagSet("ads v5 api request", flag.ExitOnError)
 	method := fs.String("method", "GET", "HTTP method: GET, POST, PUT, DELETE")
 	path := fs.String("path", "", "Relative v5 path or Apple Ads API URL")
 	file := fs.String("file", "", "Path to JSON request payload")
@@ -50,18 +50,22 @@ func APIRequestCommand() *ffcli.Command {
 	output := shared.BindOutputFlags(fs)
 	return &ffcli.Command{
 		Name:       "request",
-		ShortUsage: "asc ads api request --method METHOD --path v5/... [flags]",
-		ShortHelp:  "Make a raw Apple Ads API request.",
-		LongHelp: `Make a raw Apple Ads API request.
+		ShortUsage: "asc ads v5 api request --method METHOD --path v5/... [flags]",
+		ShortHelp:  "Make a raw Campaign Management API v5 request.",
+		LongHelp: `Make a raw Campaign Management API v5 request.
 
 Examples:
-  asc ads api request --method GET --path v5/campaigns --org "123456"
-  asc ads api request --method POST --path v5/campaigns/find --file selector.json --org "123456"`,
+  asc ads v5 api request --method GET --path v5/campaigns --org "123456"
+  asc ads v5 api request --method POST --path v5/campaigns/find --file selector.json --org "123456"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err
+			}
+			outputFormat, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
+			if err != nil {
+				return shared.UsageError(err.Error())
 			}
 			methodValue := strings.ToUpper(strings.TrimSpace(*method))
 			switch methodValue {
@@ -85,20 +89,20 @@ Examples:
 			if strings.TrimSpace(*file) != "" {
 				payload, err = shared.ReadJSONFilePayloadKind(*file, shared.JSONPayloadAny)
 				if err != nil {
-					return fmt.Errorf("ads api request: %w", err)
+					return fmt.Errorf("ads v5 api request: %w", err)
 				}
 			}
 			client, err := resolveClient(ctx, common, requiresOrg)
 			if err != nil {
-				return fmt.Errorf("ads api request: %w", err)
+				return fmt.Errorf("ads v5 api request: %w", err)
 			}
 			requestCtx, cancel := requestContext(ctx)
 			defer cancel()
 			resp, err := client.Request(requestCtx, methodValue, pathValue, nil, payload, requiresOrg)
 			if err != nil {
-				return fmt.Errorf("ads api request: %w", err)
+				return fmt.Errorf("ads v5 api request: %w", err)
 			}
-			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
+			return shared.PrintOutput(resp, outputFormat, *output.Pretty)
 		},
 	}
 }

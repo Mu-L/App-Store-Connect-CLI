@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
@@ -38,14 +40,22 @@ type commandNode struct {
 	spec     *appleads.EndpointSpec
 }
 
-func endpointCommands() []*ffcli.Command {
+func legacyEndpointCommands() []*ffcli.Command {
+	return commandsForEndpointSpecs(appleads.EndpointSpecs(), []string{"v5"})
+}
+
+func platformEndpointCommands() []*ffcli.Command {
+	return commandsForEndpointSpecs(appleads.PlatformEndpointSpecs(), nil)
+}
+
+func commandsForEndpointSpecs(specs []appleads.EndpointSpec, commandPrefix []string) []*ffcli.Command {
 	root := &commandNode{children: map[string]*commandNode{}}
-	for _, spec := range appleads.EndpointSpecs() {
+	for _, spec := range specs {
 		addSpec(root, spec)
 	}
 	commands := make([]*ffcli.Command, 0, len(root.children))
 	for _, name := range sortedChildNames(root) {
-		commands = append(commands, buildNodeCommand(root.children[name], nil))
+		commands = append(commands, buildNodeCommand(root.children[name], nil, commandPrefix))
 	}
 	return commands
 }
@@ -71,8 +81,9 @@ func addSpec(root *commandNode, spec appleads.EndpointSpec) {
 	current.spec = &specCopy
 }
 
-func buildNodeCommand(node *commandNode, parentPath []string) *ffcli.Command {
+func buildNodeCommand(node *commandNode, parentPath, commandPrefix []string) *ffcli.Command {
 	path := append(append([]string(nil), parentPath...), node.name)
+	displayPath := append(append([]string(nil), commandPrefix...), path...)
 	var flags endpointFlagValues
 	var fs *flag.FlagSet
 	if node.spec != nil {
@@ -83,18 +94,20 @@ func buildNodeCommand(node *commandNode, parentPath []string) *ffcli.Command {
 
 	subcommands := []*ffcli.Command{}
 	for _, name := range sortedChildNames(node) {
-		subcommands = append(subcommands, buildNodeCommand(node.children[name], path))
+		subcommands = append(subcommands, buildNodeCommand(node.children[name], path, commandPrefix))
 	}
-	if len(path) == 1 && path[0] == "reports" {
+	if slices.Equal(commandPrefix, []string{"v5"}) && len(path) == 1 && path[0] == "reports" {
 		subcommands = append(subcommands, ReportsPresetCommand())
 	}
-	subcommands = append(subcommands, workflowSubcommands(path, &flags)...)
+	if slices.Equal(commandPrefix, []string{"v5"}) {
+		subcommands = append(subcommands, workflowSubcommands(path, &flags)...)
+	}
 
 	command := &ffcli.Command{
 		Name:        node.name,
-		ShortUsage:  "asc ads " + strings.Join(path, " ") + " [flags]",
+		ShortUsage:  "asc ads " + strings.Join(displayPath, " ") + " [flags]",
 		ShortHelp:   endpointShortHelp(node),
-		LongHelp:    endpointLongHelp(node, path),
+		LongHelp:    endpointLongHelp(node, displayPath),
 		FlagSet:     fs,
 		UsageFunc:   shared.DefaultUsageFunc,
 		Subcommands: subcommands,
@@ -140,28 +153,102 @@ func endpointLongHelp(node *commandNode, path []string) string {
 	}
 	examples := []string{"  asc ads " + strings.Join(path, " ")}
 	for _, param := range node.spec.PathParams {
+		if param.ContextValue {
+			continue
+		}
 		examples[0] += fmt.Sprintf(" --%s %s", param.Flag, strings.ToUpper(param.Flag))
 	}
-	if node.spec.BodyKind != appleads.BodyNone {
-		examples[0] += " --file payload.json"
+	for _, param := range node.spec.QueryParams {
+		if !param.Required {
+			continue
+		}
+		if param.Type == appleads.ParamBool {
+			examples[0] += fmt.Sprintf(" --%s", param.Flag)
+			continue
+		}
+		examples[0] += fmt.Sprintf(" --%s %s", param.Flag, strings.ToUpper(strings.ReplaceAll(param.Flag, "-", "_")))
 	}
-	if node.spec.RequiresConfirm {
-		examples[0] += " --confirm"
+	if node.spec.BodyKind != appleads.BodyNone {
+		if node.spec.BodyOptional {
+			examples[0] += " [--file payload.json]"
+		} else {
+			examples[0] += " --file payload.json"
+		}
+	}
+	switch {
+	case node.spec.RequiresConfirm || node.spec.RiskConfirm:
+		if node.spec.RiskConfirm && node.spec.RiskConfirmBodyField != "" && !node.spec.RequiresConfirm {
+			examples[0] += " [--confirm]"
+		} else {
+			examples[0] += " --confirm"
+		}
+	case node.spec.ConfirmBodyField != "":
+		examples[0] += " [--confirm]"
 	}
 	if node.spec.RequiresOrg {
 		examples[0] += " --org ORG_ID"
+	}
+	switch node.spec.Context {
+	case appleads.ContextAdAccount:
+		examples[0] += " --ad-account AD_ACCOUNT_ID"
+	case appleads.ContextAdAccountOptional:
+		examples[0] += " [--ad-account AD_ACCOUNT_ID]"
 	}
 	help := fmt.Sprintf("%s\n\nEndpoint: %s %s", endpointShortHelp(node), node.spec.Method, node.spec.Path)
 	if node.spec.BodyType == "UpdateCampaignRequest" {
 		help += "\n\nPayload:\n  Apple requires a \"campaign\" envelope for campaign updates.\n  Example: {\"campaign\":{\"status\":\"PAUSED\"}}"
 	}
+	if node.spec.Name == "platform-search-apps" {
+		examples = []string{
+			`  asc ads apps search --ad-account AD_ACCOUNT_ID --query "Example"`,
+			`  asc ads apps search --ad-account AD_ACCOUNT_ID --cpids "123456,789012"`,
+			"  asc ads apps search --ad-account AD_ACCOUNT_ID --return-owned-apps",
+		}
+		help += `
+
+Search modes:
+  At least one of --query, --cpids, or --return-owned-apps is required.
+  These selectors can be combined. --query searches app and developer names;
+  --cpids scopes results to content providers; --return-owned-apps returns
+  apps owned by the current organization.`
+	}
+	if node.spec.BodyKind != appleads.BodyNone {
+		help += endpointBodyHelp(*node.spec)
+	}
 	return help + "\n\nExamples:\n" + strings.Join(examples, "\n")
+}
+
+func endpointBodyHelp(spec appleads.EndpointSpec) string {
+	required := "yes"
+	if spec.BodyOptional {
+		required = "no"
+	}
+	return fmt.Sprintf("\n\nRequest body:\n  Schema: %s\n  Shape: %s\n  Required: %s", spec.BodyType, endpointBodyShape(spec.BodyKind), required)
+}
+
+func endpointBodyShape(kind appleads.BodyKind) string {
+	switch kind {
+	case appleads.BodyObject:
+		return "JSON object"
+	case appleads.BodyArray:
+		return "JSON array"
+	case appleads.BodyMultipart:
+		return "multipart/form-data"
+	default:
+		return string(kind)
+	}
 }
 
 func endpointGroupHelp(name string) string {
 	switch name {
+	case "acls":
+		return "List Apple Ads account ACLs."
+	case "advertiser-resources":
+		return "List Apple Ads advertiser resources."
 	case "me":
 		return "View the current Apple Ads user."
+	case "orgs":
+		return "View Apple Ads organizations."
 	case "geo":
 		return "Manage Apple Ads geographic targeting resources."
 	default:
@@ -171,12 +258,12 @@ func endpointGroupHelp(name string) string {
 
 func sentenceFromEndpointName(name string) string {
 	switch name {
-	case "get-me-details":
+	case "get-me-details", "platform-get-me-details":
 		return "View the current Apple Ads user."
-	case "get-user-acl":
+	case "get-user-acl", "platform-get-user-acls":
 		return "List Apple Ads account ACLs."
 	}
-	text := strings.ReplaceAll(strings.TrimSpace(name), "-", " ")
+	text := strings.ReplaceAll(strings.TrimPrefix(strings.TrimSpace(name), "platform-"), "-", " ")
 	replacements := []struct {
 		old string
 		new string
@@ -187,6 +274,7 @@ func sentenceFromEndpointName(name string) string {
 		{"get ", "View "},
 		{"gets a ", "View a "},
 		{"search for ", "Search for "},
+		{"search ", "Search "},
 		{"find ", "Find "},
 		{"create a ", "Create a "},
 		{"create an ", "Create an "},
@@ -227,13 +315,19 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 	if spec.RequiresOrg {
 		values.common.Org = fs.String("org", "", "Apple Ads organization ID (or ASC_ADS_ORG_ID env)")
 	}
+	if spec.Context == appleads.ContextAdAccount || spec.Context == appleads.ContextAdAccountOptional {
+		values.common.AdAccount = fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID env)")
+	}
 	for _, param := range spec.PathParams {
+		if param.ContextValue {
+			continue
+		}
 		values.pathStrings[param.Name] = fs.String(param.Flag, "", flagUsage(param))
 	}
 	for _, param := range spec.QueryParams {
 		switch param.Type {
 		case appleads.ParamInt:
-			values.queryInts[param.Name] = fs.Int(param.Flag, 0, flagUsage(param))
+			values.queryInts[param.Name] = fs.Int(param.Flag, intParamDefault(param), flagUsage(param))
 		case appleads.ParamBool:
 			values.queryBools[param.Name] = fs.Bool(param.Flag, false, flagUsage(param))
 		default:
@@ -243,8 +337,11 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 	if spec.BodyKind != appleads.BodyNone {
 		values.file = fs.String("file", "", "Path to Apple Ads JSON payload")
 	}
-	if spec.RequiresConfirm {
-		values.confirm = fs.Bool("confirm", false, "Confirm this destructive Apple Ads operation")
+	if spec.RequiresConfirm || spec.RiskConfirm {
+		values.confirm = fs.Bool("confirm", false, confirmFlagUsage(spec))
+	}
+	if spec.ConfirmBodyField != "" && values.confirm == nil {
+		values.confirm = fs.Bool("confirm", false, "Confirm an Apple Ads update that replaces delegations")
 	}
 	if spec.SupportsPaginate {
 		values.paginate = fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
@@ -253,7 +350,10 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 }
 
 func flagUsage(param appleads.ParamSpec) string {
-	usage := strings.ReplaceAll(param.Name, "-", " ")
+	usage := param.Description
+	if usage == "" {
+		usage = strings.ReplaceAll(param.Flag, "-", " ")
+	}
 	if param.Required {
 		usage += " (required)"
 	}
@@ -266,8 +366,31 @@ func flagUsage(param appleads.ParamSpec) string {
 	return usage
 }
 
+const riskConfirmationImpact = "potential Apple Ads spend, billing, delivery, targeting, or access impact"
+
+func confirmFlagUsage(spec appleads.EndpointSpec) string {
+	switch {
+	case spec.RiskConfirm:
+		return "Acknowledge " + riskConfirmationImpact
+	case spec.RequiresConfirm:
+		return "Confirm deletion of this Apple Ads resource"
+	case spec.ConfirmBodyField != "":
+		return "Confirm an Apple Ads update that replaces delegations"
+	default:
+		return "Confirm this Apple Ads operation"
+	}
+}
+
+func intParamDefault(param appleads.ParamSpec) int {
+	return param.Default
+}
+
 func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endpointFlagValues) error {
-	if flags.confirm != nil && !*flags.confirm {
+	outputFormat, err := shared.ValidateOutputFormat(*flags.output.Output, *flags.output.Pretty)
+	if err != nil {
+		return shared.UsageError(err.Error())
+	}
+	if spec.RequiresConfirm && flags.confirm != nil && !*flags.confirm {
 		return shared.UsageError("--confirm is required")
 	}
 	pathParams, err := collectPathParams(spec, flags)
@@ -278,12 +401,33 @@ func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endp
 	if err != nil {
 		return shared.UsageError(err.Error())
 	}
+	if spec.RiskConfirm && spec.RiskConfirmBodyField == "" && flags.confirm != nil && !*flags.confirm {
+		return shared.UsageError("--confirm is required to acknowledge " + riskConfirmationImpact)
+	}
 	body, err := readBody(spec, flags)
 	if err != nil {
 		return err
 	}
+	if err := validateEndpointBody(spec, body, flags.confirm != nil && *flags.confirm); err != nil {
+		return shared.UsageError(err.Error())
+	}
 
-	client, err := resolveClient(ctx, flags.common, spec.RequiresOrg)
+	var client *appleads.Client
+	if spec.Version == appleads.APIVersionPlatformV1 {
+		var adAccountID string
+		client, adAccountID, err = resolvePlatformClientAndAdAccountID(ctx, flags.common, spec.Context)
+		if err != nil {
+			return fmt.Errorf("ads: %w", err)
+		}
+		for _, param := range spec.PathParams {
+			if param.ContextValue {
+				pathParams[param.Name] = adAccountID
+			}
+		}
+	}
+	if spec.Version != appleads.APIVersionPlatformV1 {
+		client, err = resolveClient(ctx, flags.common, spec.RequiresOrg)
+	}
 	if err != nil {
 		return fmt.Errorf("ads: %w", err)
 	}
@@ -302,12 +446,15 @@ func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endp
 	if err != nil {
 		return fmt.Errorf("ads %s: %w", strings.Join(spec.CommandPath, " "), err)
 	}
-	return shared.PrintOutput(result, *flags.output.Output, *flags.output.Pretty)
+	return shared.PrintOutput(result, outputFormat, *flags.output.Pretty)
 }
 
 func collectPathParams(spec appleads.EndpointSpec, flags endpointFlagValues) (map[string]string, error) {
 	params := map[string]string{}
 	for _, param := range spec.PathParams {
+		if param.ContextValue {
+			continue
+		}
 		ptr := flags.pathStrings[param.Name]
 		value := value(ptr)
 		if param.Required && value == "" {
@@ -337,16 +484,26 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 					return nil, fmt.Errorf("--%s is required", param.Flag)
 				}
 				if provided && param.Name == "limit" {
-					return nil, fmt.Errorf("--limit must be between 1 and %d", appleads.MaxPageLimit(spec))
+					maxLimit := appleads.MaxPageLimit(spec)
+					if maxLimit > 0 {
+						return nil, fmt.Errorf("--limit must be between 1 and %d", maxLimit)
+					}
+					return nil, fmt.Errorf("--limit must be greater than 0")
 				}
 				continue
 			}
 			if raw < 0 {
 				return nil, fmt.Errorf("--%s must be >= 0", param.Flag)
 			}
+			if param.Max > 0 && param.Name != "limit" && raw > param.Max {
+				return nil, fmt.Errorf("--%s must be at most %d", param.Flag, param.Max)
+			}
 			if param.Name == "limit" {
 				maxLimit := appleads.MaxPageLimit(spec)
-				if raw < 1 || raw > maxLimit {
+				if raw < 1 || (maxLimit > 0 && raw > maxLimit) {
+					if maxLimit == 0 {
+						return nil, fmt.Errorf("--limit must be greater than 0")
+					}
 					return nil, fmt.Errorf("--limit must be between 1 and %d", maxLimit)
 				}
 			}
@@ -366,10 +523,58 @@ func collectQuery(spec appleads.EndpointSpec, flags endpointFlagValues) (url.Val
 			if err := validateAllowed(param, raw); err != nil {
 				return nil, err
 			}
-			query.Set(param.Name, raw)
+			if param.Repeated {
+				for _, part := range strings.Split(raw, ",") {
+					part = strings.TrimSpace(part)
+					if part == "" {
+						return nil, fmt.Errorf("--%s must not contain empty values", param.Flag)
+					}
+					if param.Name == "storeFronts" {
+						if len(part) != 2 || !isASCIIAlpha(part[0]) || !isASCIIAlpha(part[1]) {
+							return nil, fmt.Errorf("--%s values must be ISO 3166-1 alpha-2 country or region codes", param.Flag)
+						}
+						part = strings.ToUpper(part)
+					}
+					query.Add(param.Name, part)
+				}
+			} else {
+				query.Set(param.Name, raw)
+			}
+		}
+	}
+	if spec.Name == "platform-search-apps" {
+		if err := validatePlatformAppSearch(query); err != nil {
+			return nil, err
 		}
 	}
 	return query, nil
+}
+
+func isASCIIAlpha(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
+}
+
+func validatePlatformAppSearch(query url.Values) error {
+	text := strings.TrimSpace(query.Get("query"))
+	if text == "" && strings.TrimSpace(query.Get("cpids")) == "" && query.Get("returnOwnedApps") != "true" {
+		return fmt.Errorf("at least one of --query, --cpids, or --return-owned-apps is required")
+	}
+	if text == "" {
+		return nil
+	}
+	if !strings.ContainsFunc(text, unicode.IsLetter) && !strings.ContainsFunc(text, unicode.IsDigit) {
+		return fmt.Errorf("--query must contain at least one alphanumeric character")
+	}
+	minimum := 3
+	if strings.ContainsFunc(text, func(r rune) bool {
+		return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
+	}) {
+		minimum = 2
+	}
+	if utf8.RuneCountInString(text) < minimum {
+		return fmt.Errorf("--query must contain at least %d characters", minimum)
+	}
+	return nil
 }
 
 func flagProvided(fs *flag.FlagSet, name string) bool {
@@ -408,6 +613,9 @@ func readBody(spec appleads.EndpointSpec, flags endpointFlagValues) (json.RawMes
 	}
 	fileValue := value(flags.file)
 	if fileValue == "" {
+		if spec.BodyOptional {
+			return nil, nil
+		}
 		fmt.Fprintln(os.Stderr, "Error: --file is required")
 		return nil, shared.MissingRequiredUsageError()
 	}
@@ -420,6 +628,126 @@ func readBody(spec appleads.EndpointSpec, flags endpointFlagValues) (json.RawMes
 		return nil, fmt.Errorf("ads %s: %w", strings.Join(spec.CommandPath, " "), err)
 	}
 	return payload, nil
+}
+
+func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, confirmed bool) error {
+	if len(body) == 0 || spec.Version != appleads.APIVersionPlatformV1 {
+		return nil
+	}
+	if spec.RiskConfirm && !confirmed && riskConfirmationRequired(spec, body) {
+		if spec.RiskConfirmBodyField != "" {
+			return fmt.Errorf("--confirm is required unless %s is explicitly %q; otherwise acknowledge %s", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue, riskConfirmationImpact)
+		}
+		return fmt.Errorf("--confirm is required to acknowledge %s", riskConfirmationImpact)
+	}
+	if spec.Name != "platform-create-ad-account" && spec.Name != "platform-update-ad-account" {
+		return nil
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return fmt.Errorf("invalid JSON object: %w", err)
+	}
+	if spec.Name == "platform-create-ad-account" {
+		if err := requireNonEmptyJSONString(payload, "name"); err != nil {
+			return err
+		}
+		features, ok := payload["productFeatures"]
+		if !ok {
+			return fmt.Errorf("productFeatures is required")
+		}
+		if err := validateProductFeatures(features); err != nil {
+			return err
+		}
+	}
+	if spec.Name == "platform-update-ad-account" {
+		if _, present := payload["productFeatures"]; present {
+			return fmt.Errorf("productFeatures is immutable and is not supported by ad-account update")
+		}
+		if rawName, present := payload["name"]; present {
+			var name string
+			if err := json.Unmarshal(rawName, &name); err != nil || strings.TrimSpace(name) == "" {
+				return fmt.Errorf("name must be a non-empty string")
+			}
+		}
+	}
+	if delegations, present := payload["delegations"]; present {
+		if spec.ConfirmBodyField == "delegations" && !confirmed {
+			return fmt.Errorf("--confirm is required when replacing delegations")
+		}
+		if err := validateDelegations(delegations); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func riskConfirmationRequired(spec appleads.EndpointSpec, body json.RawMessage) bool {
+	if !spec.RiskConfirm {
+		return false
+	}
+	if spec.RiskConfirmBodyField == "" {
+		return true
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return true
+	}
+	rawValue, ok := payload[spec.RiskConfirmBodyField]
+	if !ok {
+		return true
+	}
+	var value string
+	if err := json.Unmarshal(rawValue, &value); err != nil {
+		return true
+	}
+	return value != spec.RiskConfirmBodyValue
+}
+
+func requireNonEmptyJSONString(payload map[string]json.RawMessage, field string) error {
+	raw, ok := payload[field]
+	if !ok {
+		return fmt.Errorf("%s is required", field)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil || strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s must be a non-empty string", field)
+	}
+	return nil
+}
+
+func validateProductFeatures(raw json.RawMessage) error {
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil || len(values) != 1 {
+		return fmt.Errorf("productFeatures must contain exactly one value")
+	}
+	for _, value := range values {
+		if value != "APPSTORE_APP_MANUAL" && value != "BUSINESS_BRAND_MANUAL" {
+			return fmt.Errorf("productFeatures values must be APPSTORE_APP_MANUAL or BUSINESS_BRAND_MANUAL")
+		}
+	}
+	return nil
+}
+
+func validateDelegations(raw json.RawMessage) error {
+	var values []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return fmt.Errorf("delegations must be an array")
+	}
+	for index, delegation := range values {
+		if err := requireNonEmptyJSONString(delegation, "resourceId"); err != nil {
+			return fmt.Errorf("delegations[%d]: %w", index, err)
+		}
+		rawType, ok := delegation["resourceType"]
+		if !ok {
+			return fmt.Errorf("delegations[%d].resourceType is required", index)
+		}
+		var resourceType string
+		if err := json.Unmarshal(rawType, &resourceType); err != nil || (resourceType != "CONTENT_PROVIDER" && resourceType != "BUSINESS_BRAND") {
+			return fmt.Errorf("delegations[%d].resourceType must be CONTENT_PROVIDER or BUSINESS_BRAND", index)
+		}
+	}
+	return nil
 }
 
 func intValue(ptr *int) int {

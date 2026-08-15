@@ -102,7 +102,7 @@ func ReportsPresetCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "preset",
-		ShortUsage: "asc ads reports preset --level campaigns --from YYYY-MM-DD --to YYYY-MM-DD [flags]",
+		ShortUsage: "asc ads v5 reports preset --level campaigns --from YYYY-MM-DD --to YYYY-MM-DD [flags]",
 		ShortHelp:  "Build and run Apple Ads report presets without JSON payloads.",
 		LongHelp: `Build and run Apple Ads report presets without JSON payloads.
 
@@ -120,9 +120,9 @@ requires selector.orderBy. HOURLY granularity is available for
 	request row totals.
 
 Examples:
-  asc ads reports preset --level campaigns --from 2026-05-01 --to 2026-05-31 --fields campaignName,impressions,taps,localSpend --sort -impressions --org "123456"
-  asc ads reports preset --level keywords --campaign 12345 --last-days 7 --fields keyword,impressions,taps --org "123456"
-  asc ads reports preset --level ads --campaign 12345 --from 2026-05-01 --to 2026-05-31 --sort -impressions --org "123456"`,
+  asc ads v5 reports preset --level campaigns --from 2026-05-01 --to 2026-05-31 --fields campaignName,impressions,taps,localSpend --sort -impressions --org "123456"
+  asc ads v5 reports preset --level keywords --campaign 12345 --last-days 7 --fields keyword,impressions,taps --org "123456"
+  asc ads v5 reports preset --level ads --campaign 12345 --from 2026-05-01 --to 2026-05-31 --sort -impressions --org "123456"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -142,6 +142,10 @@ Examples:
 }
 
 func executeReportsPreset(ctx context.Context, flags adsReportPresetFlags) error {
+	outputFormat, err := shared.ValidateOutputFormat(*flags.output.Output, *flags.output.Pretty)
+	if err != nil {
+		return shared.UsageError(err.Error())
+	}
 	level := strings.TrimSpace(*flags.level)
 	levelSpec, ok := adsReportLevels[level]
 	if !ok {
@@ -149,7 +153,7 @@ func executeReportsPreset(ctx context.Context, flags adsReportPresetFlags) error
 	}
 	spec, ok := appleads.EndpointByCommandPath(levelSpec.commandPath...)
 	if !ok {
-		return fmt.Errorf("ads reports preset: endpoint for level %q is not registered", level)
+		return fmt.Errorf("ads v5 reports preset: endpoint for level %q is not registered", level)
 	}
 	pathParams, err := reportPresetPathParams(spec, flags)
 	if err != nil {
@@ -161,7 +165,7 @@ func executeReportsPreset(ctx context.Context, flags adsReportPresetFlags) error
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("ads reports preset: marshal request: %w", err)
+		return fmt.Errorf("ads v5 reports preset: marshal request: %w", err)
 	}
 
 	client, err := resolveClient(ctx, flags.common, spec.RequiresOrg)
@@ -174,9 +178,9 @@ func executeReportsPreset(ctx context.Context, flags adsReportPresetFlags) error
 
 	result, err := client.Do(requestCtx, spec, pathParams, url.Values{}, body)
 	if err != nil {
-		return fmt.Errorf("ads reports preset: %w", err)
+		return fmt.Errorf("ads v5 reports preset: %w", err)
 	}
-	return shared.PrintOutput(result, *flags.output.Output, *flags.output.Pretty)
+	return shared.PrintOutput(result, outputFormat, *flags.output.Pretty)
 }
 
 func reportPresetPathParams(spec appleads.EndpointSpec, flags adsReportPresetFlags) (map[string]string, error) {

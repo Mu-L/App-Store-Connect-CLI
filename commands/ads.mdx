@@ -1,17 +1,19 @@
 # Apple Ads
 
-> Manage Apple Ads Campaign Management API resources from asc
+> Manage Apple Ads API resources from asc
 
-The `ads` command group talks to the Apple Ads Campaign Management API v5. It
-uses Apple Ads OAuth credentials, not App Store Connect API keys.
+Direct resource commands under `ads` use Apple Ads Platform API v1. Deprecated
+Campaign Management API v5 commands live under `ads v5`. Raw v1 requests use
+`ads api request`; raw v5 requests use `ads v5 api request`. Both APIs use Apple
+Ads OAuth credentials, not App Store Connect API keys.
 
 Use `--help` before scripting a new command. Apple Ads has many nested
 resources, and the CLI exposes the documented path parameters as flags:
 
 ```bash  theme={null}
 asc ads --help
-asc ads campaigns --help
-asc ads campaigns create --help
+asc ads apps --help
+asc ads apps search --help
 ```
 
 For operator workflows, see [Apple Ads Operator Playbooks](/guides/apple-ads-playbooks).
@@ -23,8 +25,8 @@ Apple Ads credentials are separate from App Store Connect credentials.
 
 For automation, configure an Ads profile with `asc ads auth login` or provide
 Ads credentials through `ASC_ADS_*` variables. `ASC_ADS_ACCESS_TOKEN` skips
-token exchange and still needs `--org`, `ASC_ADS_ORG_ID`, or a stored default
-org.
+token exchange. Scoped v5 calls still need an organization ID; scoped v1 calls
+need a separate ad account ID.
 
 ## Authenticate
 
@@ -47,11 +49,12 @@ asc ads auth login \
   --team-id "SEARCHADS_TEAM_ID" \
   --key-id "KEY_ID" \
   --private-key ./apple-ads-private-key.pem \
-  --org "123456"
+  --org "123456" \
+  --ad-account "987654"
 ```
 
 Add `--network` during login when you want `asc` to request a token and call
-`GET /v5/me` before storing the profile:
+the Platform API v1 `GET /v1/me` endpoint before storing the profile:
 
 ```bash  theme={null}
 asc ads auth login \
@@ -86,8 +89,9 @@ export ASC_ADS_TEAM_ID="SEARCHADS_TEAM_ID"
 export ASC_ADS_KEY_ID="KEY_ID"
 export ASC_ADS_PRIVATE_KEY_PATH="$HOME/.asc/apple-ads-private-key.pem"
 export ASC_ADS_ORG_ID="123456"
+export ASC_ADS_AD_ACCOUNT_ID="987654"
 
-asc ads campaigns --output json
+asc ads v5 campaigns --output json
 ```
 
 `ASC_ADS_PRIVATE_KEY` and `ASC_ADS_PRIVATE_KEY_B64` also work when a CI system
@@ -100,10 +104,10 @@ If another system already minted a short-lived token, pass it directly:
 export ASC_ADS_ACCESS_TOKEN="ACCESS_TOKEN"
 export ASC_ADS_ORG_ID="123456"
 
-asc ads campaigns --limit 10 --output json
+asc ads v5 campaigns --limit 10 --output json
 ```
 
-## Organization context
+## Legacy v5 organization context
 
 Most Apple Ads endpoints require an organization context. Provide it with
 `--org`, store it during login with `--org`, or set `ASC_ADS_ORG_ID`. If you do
@@ -113,27 +117,100 @@ not know the org ID yet, discover the active Ads user and available accounts:
 asc ads auth discover --output json
 ```
 
-Then pass an `accounts[].org_id` returned by Apple:
+Then pass an `accounts[].org_id` returned by Apple to a legacy v5 command:
 
 ```bash  theme={null}
-asc ads campaigns list --org "123456" --output json
+asc ads v5 campaigns list --org "123456" --output json
 ```
 
 These endpoints do not send the `X-AP-Context` organization header because
 Apple defines them outside an org context:
 
 ```bash  theme={null}
-asc ads me view
-asc ads acls list
+asc ads v5 me view
+asc ads v5 acls list
 ```
 
-## Campaigns
+## Platform API ad account context
+
+Apple Ads Platform API v1 uses an ad account ID in
+`X-AP-Context: adAccountId=<id>;`. This is not the legacy organization ID, and
+the CLI never substitutes one for the other. Provide the v1 value with
+`--ad-account`, store it during login with `--ad-account`, or set
+`ASC_ADS_AD_ACCOUNT_ID`.
+
+The raw v1 command omits context for endpoints Apple documents as unscoped,
+including `GET /v1/me`, `GET /v1/acls`, `GET /v1/orgs/{id}`,
+`GET /v1/advertiser-resources`, and `POST /v1/ad-accounts`. Passing
+`--ad-account` explicitly to one of those endpoints is rejected instead of
+silently ignored.
+
+Authentication discovery and validation use Platform API v1 `me` and `acls`
+endpoints. Direct resource commands use the same Platform API v1 transport;
+the legacy Campaign Management API v5 commands remain under `ads v5`:
+
+```bash  theme={null}
+asc ads auth status --validate
+asc ads auth discover --output json
+```
+
+## Platform account and app commands
+
+View identity and account access without an ad account context:
+
+```bash  theme={null}
+asc ads me view --output json
+asc ads acls list --output json
+asc ads orgs view --org-id "123456" --output json
+asc ads advertiser-resources list --resource-type CONTENT_PROVIDER
+```
+
+Create an ad account with an `AdAccountCreate` JSON object. Viewing and updating
+an ad account use the same `--ad-account` value for both the URL ID and the
+`X-AP-Context` header:
+
+```bash  theme={null}
+asc ads ad-accounts create --file ad-account-create.json --confirm
+asc ads ad-accounts view --ad-account "987654"
+asc ads ad-accounts update --ad-account "987654" --file ad-account-update.json
+```
+
+`productFeatures` is immutable and rejected by `ad-accounts update`. Because
+`delegations` replaces the complete delegation list, updates containing that
+field also require `--confirm`; name-only updates do not. Account creation also
+requires `--confirm` because the account family is immutable and the API does
+not provide an ad-account delete operation.
+
+Search apps by text, content-provider IDs, owned apps, or a combination. Store
+fronts are passed as comma-separated ISO alpha-2 codes and sent as repeated v1
+query parameters:
+
+```bash  theme={null}
+asc ads apps search --ad-account "987654" --query "Example" --store-fronts "US,GB" --paginate
+asc ads apps view --ad-account "987654" --adam-id "123456789"
+asc ads apps supported-languages find --ad-account "987654" --file query.json
+asc ads apps eligibility find --ad-account "987654" --file query.json
+asc ads rejection-reasons apps find --ad-account "987654" --file query.json
+asc ads rejection-reasons apps view --ad-account "987654" --reason "42"
+```
+
+The three `find` commands above accept an omitted `--file` and then send no
+request body. Use a `QueryRequest` or eligibility query file when filters,
+sorting, or pagination are needed.
+
+## Campaign Management API v5 commands
+
+The legacy examples below retain their v5 request and response contracts under
+the deprecated `asc ads v5` namespace while automation migrates to direct v1
+resource commands.
+
+### Campaigns
 
 List campaigns. The short form aliases `list`:
 
 ```bash  theme={null}
-asc ads campaigns --org "123456" --limit 100 --output table
-asc ads campaigns list --org "123456" --paginate --output json
+asc ads v5 campaigns --org "123456" --limit 100 --output table
+asc ads v5 campaigns list --org "123456" --paginate --output json
 ```
 
 Create or update resources with JSON payload files. The CLI sends the file body
@@ -150,34 +227,34 @@ wrapped object such as:
 ```
 
 ```bash  theme={null}
-asc ads campaigns create --org "123456" --file campaign.json
-asc ads campaigns update --org "123456" --campaign 987654321 --file campaign-update.json
+asc ads v5 campaigns create --org "123456" --file campaign.json
+asc ads v5 campaigns update --org "123456" --campaign 987654321 --file campaign-update.json
 ```
 
 Delete commands always require `--confirm`:
 
 ```bash  theme={null}
-asc ads campaigns delete --org "123456" --campaign 987654321 --confirm
+asc ads v5 campaigns delete --org "123456" --campaign 987654321 --confirm
 ```
 
-## Ad Groups and Ads
+### Ad Groups and Ads
 
 Ad groups sit under campaigns. The nested `ads` command group is the Apple Ads
-ad resource, so ad-resource commands read as `asc ads ads ...`:
+ad resource, so ad-resource commands read as `asc ads v5 ads ...`:
 
 ```bash  theme={null}
-asc ads ad-groups list --org "123456" --campaign 987654321 --output json
-asc ads ad-groups create --org "123456" --campaign 987654321 --file ad-group.json
-asc ads ads list --org "123456" --campaign 987654321 --ad-group 123456789 --output json
-asc ads ads create --org "123456" --campaign 987654321 --ad-group 123456789 --file ad.json
+asc ads v5 ad-groups list --org "123456" --campaign 987654321 --output json
+asc ads v5 ad-groups create --org "123456" --campaign 987654321 --file ad-group.json
+asc ads v5 ads list --org "123456" --campaign 987654321 --ad-group 123456789 --output json
+asc ads v5 ads create --org "123456" --campaign 987654321 --ad-group 123456789 --file ad.json
 ```
 
 Find endpoints use Apple selector payloads:
 
 ```bash  theme={null}
-asc ads campaigns find --org "123456" --file selector.json --output json
-asc ads ad-groups find --org "123456" --campaign 987654321 --file selector.json
-asc ads ads find-org --org "123456" --file selector.json
+asc ads v5 campaigns find --org "123456" --file selector.json --output json
+asc ads v5 ad-groups find --org "123456" --campaign 987654321 --file selector.json
+asc ads v5 ads find-org --org "123456" --file selector.json
 ```
 
 ```json selector.json
@@ -202,7 +279,7 @@ asc ads ads find-org --org "123456" --file selector.json
 }
 ```
 
-## Payloads
+### Payloads
 
 Apple Ads request bodies are passed through as JSON. Object endpoints require a
 JSON object. Bulk endpoints that accept arrays require a JSON array.
@@ -230,7 +307,7 @@ them after verification. Do not use production campaigns for command-shape
 testing.
 
 ```bash  theme={null}
-asc ads targeting-keywords create-bulk \
+asc ads v5 targeting-keywords create-bulk \
   --org "123456" \
   --campaign 987654321 \
   --ad-group 123456789 \
@@ -254,7 +331,7 @@ asc ads targeting-keywords create-bulk \
 Bulk delete endpoints accept arrays of IDs:
 
 ```bash  theme={null}
-asc ads targeting-keywords delete-bulk \
+asc ads v5 targeting-keywords delete-bulk \
   --org "123456" \
   --campaign 987654321 \
   --ad-group 123456789 \
@@ -266,22 +343,22 @@ asc ads targeting-keywords delete-bulk \
 [111111111, 222222222]
 ```
 
-## Keywords and Negative Keywords
+### Keywords and Negative Keywords
 
 Targeting keywords belong to an ad group:
 
 ```bash  theme={null}
-asc ads targeting-keywords list --org "123456" --campaign 987654321 --ad-group 123456789
-asc ads targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json
-asc ads targeting-keywords delete --org "123456" --campaign 987654321 --ad-group 123456789 --keyword 111111111 --confirm
+asc ads v5 targeting-keywords list --org "123456" --campaign 987654321 --ad-group 123456789
+asc ads v5 targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json
+asc ads v5 targeting-keywords delete --org "123456" --campaign 987654321 --ad-group 123456789 --keyword 111111111 --confirm
 ```
 
 Campaign negative keywords belong to a campaign. Ad group negative keywords add
 `--ad-group`:
 
 ```bash  theme={null}
-asc ads campaign-negative-keywords create-bulk --org "123456" --campaign 987654321 --file negative-keywords.json
-asc ads ad-group-negative-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file negative-keywords.json
+asc ads v5 campaign-negative-keywords create-bulk --org "123456" --campaign 987654321 --file negative-keywords.json
+asc ads v5 ad-group-negative-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file negative-keywords.json
 ```
 
 ```json negative-keywords.json
@@ -294,18 +371,18 @@ asc ads ad-group-negative-keywords create-bulk --org "123456" --campaign 9876543
 ]
 ```
 
-## Apps, Product Pages, Geo, and Creatives
+### Apps, Product Pages, Geo, and Creatives
 
 These commands help you discover valid IDs before creating campaigns or ads:
 
 ```bash  theme={null}
-asc ads apps search --org "123456" --query "My App" --limit 10 --output json
-asc ads apps view --org "123456" --adam-id 1234567890 --output json
-asc ads product-pages list --org "123456" --adam-id 1234567890 --states VISIBLE
-asc ads product-pages locales list --org "123456" --adam-id 1234567890 --product-page "DEFAULT_PRODUCT_PAGE"
-asc ads geo search --org "123456" --query "San Francisco" --country-code US --limit 10
-asc ads creatives list --org "123456" --limit 100
-asc ads rejection-reasons find --org "123456" --file selector.json
+asc ads v5 apps search --org "123456" --query "My App" --limit 10 --output json
+asc ads v5 apps view --org "123456" --adam-id 1234567890 --output json
+asc ads v5 product-pages list --org "123456" --adam-id 1234567890 --states VISIBLE
+asc ads v5 product-pages locales list --org "123456" --adam-id 1234567890 --product-page "DEFAULT_PRODUCT_PAGE"
+asc ads v5 geo search --org "123456" --query "San Francisco" --country-code US --limit 10
+asc ads v5 creatives list --org "123456" --limit 100
+asc ads v5 rejection-reasons find --org "123456" --file selector.json
 ```
 
 Apple does not allow every ad or creative to be deleted directly. For example,
@@ -313,13 +390,13 @@ Apple can reject direct deletes for default product page creative ads. In test
 runs, clean those up by deleting the parent ad group or campaign when Apple
 allows it.
 
-## Reporting
+### Reporting
 
 Reporting endpoints accept Apple Ads `ReportingRequest` payloads:
 
 ```bash  theme={null}
-asc ads reports campaigns --org "123456" --file reporting-request.json --output json
-asc ads reports keywords --org "123456" --campaign 987654321 --file reporting-request.json
+asc ads v5 reports campaigns --org "123456" --file reporting-request.json --output json
+asc ads v5 reports keywords --org "123456" --campaign 987654321 --file reporting-request.json
 ```
 
 ```json reporting-request.json
@@ -347,17 +424,17 @@ asc ads reports keywords --org "123456" --campaign 987654321 --file reporting-re
 Reporting and selector-body endpoints keep pagination inside the request body
 exactly as supplied in `--file`.
 
-## Impression Share Reports
+### Impression Share Reports
 
 ```bash  theme={null}
-asc ads impression-share-reports --org "123456" --limit 50 --output json
-asc ads impression-share-reports create --org "123456" --file custom-report-request.json
-asc ads impression-share-reports view --org "123456" --report 123456789
+asc ads v5 impression-share-reports --org "123456" --limit 50 --output json
+asc ads v5 impression-share-reports create --org "123456" --file custom-report-request.json
+asc ads v5 impression-share-reports view --org "123456" --report 123456789
 ```
 
 Apple Ads limits impression share report list pages to 50 rows.
 
-## Endpoint Groups
+### Endpoint Groups
 
 `asc ads` includes commands for:
 
@@ -376,11 +453,10 @@ endpoint also supports `--org`. List-style endpoints that expose Apple
 
 ## Raw API Requests
 
-Use `ads api request` when Apple adds a new field before the first-class command
-surface is updated, or when you need to debug an API response:
+Use `ads v5 api request` to debug a legacy Campaign Management API response:
 
 ```bash  theme={null}
-asc ads api request \
+asc ads v5 api request \
   --method POST \
   --path v5/campaigns/find \
   --org "123456" \
@@ -392,12 +468,29 @@ The raw request command only accepts Apple Ads v5 paths or
 `https://api.searchads.apple.com/api/v5/...` URLs. `DELETE` requests require
 `--confirm`.
 
+Use the direct Platform API command for v1 paths:
+
+```bash  theme={null}
+asc ads api request \
+  --method POST \
+  --path v1/metadata/apps/supported-languages/query \
+  --ad-account "987654" \
+  --file query.json \
+  --output json
+```
+
+It accepts only `v1/...` paths or `https://api.ads.apple.com/v1/...` URLs.
+`GET` requests may retry transient v1 failures; mutation requests are never
+replayed automatically. `DELETE` requests, recommendation apply/dismiss
+mutations, and ad-account `PUT` requests whose payload contains `delegations`
+require `--confirm`. Empty successful v1 responses print `{}`.
+
 ## Agent Checklist
 
 When you automate Apple Ads with a coding agent:
 
 1. Run `asc ads <group> --help` before choosing flags.
-2. Resolve the user and org with `asc ads auth discover --output json` unless `ASC_ADS_ORG_ID` is already known.
+2. Resolve the user and available ad accounts with `asc ads auth discover --output json`; use `accounts[].ad_account_id` for Platform v1 and `accounts[].org_id` for legacy v5.
 3. Use `--output json` for machine parsing.
 4. Put request bodies in checked-in templates or temporary JSON files, not shell-escaped inline JSON.
 5. Pass `--confirm` only after you have printed the target ID and cleanup plan.
