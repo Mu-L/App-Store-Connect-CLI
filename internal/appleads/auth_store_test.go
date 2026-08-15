@@ -29,6 +29,17 @@ func TestStoreCredentialsConfigUsesActiveConfigPath(t *testing.T) {
 	}
 }
 
+func TestStoreCredentialsConfigRejectsUnsafeAdAccountID(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "active-config.json")
+	credentials := testAdsCredentials()
+	credentials.AdAccountID = "123;orgId=999"
+
+	err := StoreCredentialsConfigAt("ads", credentials, configPath)
+	if err == nil || !strings.Contains(err.Error(), "invalid ad account ID") {
+		t.Fatalf("StoreCredentialsConfigAt() error = %v, want invalid ad account ID", err)
+	}
+}
+
 func TestStoreCredentialsConfigRoundTripsIndependentAdAccountID(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
@@ -116,7 +127,7 @@ func TestNamedConfigProfileDoesNotInheritGlobalAdAccountID(t *testing.T) {
 	}
 }
 
-func TestNamedConfigProfileKeepsLegacyRootOrgButNotRootAdAccount(t *testing.T) {
+func TestNamedConfigProfileDoesNotInheritRootContexts(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
 	t.Setenv(adsBypassKeychainEnvVar, "1")
@@ -136,8 +147,8 @@ func TestNamedConfigProfileKeepsLegacyRootOrgButNotRootAdAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCredentialsWithSource() error: %v", err)
 	}
-	if loaded.OrgID != "ROOT_ORG" {
-		t.Fatalf("OrgID = %q, want legacy root org %q", loaded.OrgID, "ROOT_ORG")
+	if loaded.OrgID != "" {
+		t.Fatalf("OrgID = %q, must not inherit root org", loaded.OrgID)
 	}
 	if loaded.AdAccountID != "" {
 		t.Fatalf("AdAccountID = %q, must not inherit root ad account", loaded.AdAccountID)
@@ -183,7 +194,7 @@ func TestNamedConfigProfileDoesNotInheritPreviousDefaultContexts(t *testing.T) {
 	}
 }
 
-func TestSwitchingDefaultToProfileWithoutOrgKeepsLegacyRootOrg(t *testing.T) {
+func TestSwitchingDefaultToProfileWithoutOrgClearsRootContexts(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
 	t.Setenv(adsBypassKeychainEnvVar, "1")
@@ -212,8 +223,8 @@ func TestSwitchingDefaultToProfileWithoutOrgKeepsLegacyRootOrg(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAt() error: %v", err)
 	}
-	if cfg.Ads.DefaultKeyName != "profile-b" || cfg.Ads.OrgID != "ORG_A" || cfg.Ads.AdAccountID != "" {
-		t.Fatalf("switched default contexts = %+v, want profile-b with legacy root org and empty ad-account context", cfg.Ads)
+	if cfg.Ads.DefaultKeyName != "profile-b" || cfg.Ads.OrgID != "" || cfg.Ads.AdAccountID != "" {
+		t.Fatalf("switched default contexts = %+v, want profile-b with empty contexts", cfg.Ads)
 	}
 }
 

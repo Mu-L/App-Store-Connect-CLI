@@ -39,7 +39,7 @@ func PlatformAPIRequestCommand() *ffcli.Command {
 	method := fs.String("method", "GET", "HTTP method: GET, POST, PUT, DELETE")
 	path := fs.String("path", "", "Relative v1 path or Apple Ads Platform API URL")
 	file := fs.String("file", "", "Path to JSON request payload")
-	confirm := fs.Bool("confirm", false, "Confirm destructive Apple Ads Platform requests")
+	confirm := fs.Bool("confirm", false, confirmFlagUsage(appleads.EndpointSpec{RiskConfirm: true}))
 	common := commonFlags{
 		AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 		AdAccount:  fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID env)"),
@@ -59,6 +59,10 @@ Examples:
 		Exec: func(ctx context.Context, args []string) error {
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err
+			}
+			outputFormat, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
+			if err != nil {
+				return shared.UsageError(err.Error())
 			}
 			methodValue := strings.ToUpper(strings.TrimSpace(*method))
 			switch methodValue {
@@ -85,8 +89,8 @@ Examples:
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}
-			if rawPlatformRequestRequiresConfirm(methodValue, pathOnly, nil) && !*confirm {
-				return shared.UsageError("--confirm is required")
+			if message := rawPlatformRequestConfirmMessage(methodValue, pathOnly, nil); message != "" && !*confirm {
+				return shared.UsageError(message)
 			}
 			var payload json.RawMessage
 			if strings.TrimSpace(*file) != "" {
@@ -95,12 +99,15 @@ Examples:
 					return fmt.Errorf("ads api request: %w", err)
 				}
 			}
-			if rawPlatformRequestRequiresConfirm(methodValue, pathOnly, payload) && !*confirm {
-				return shared.UsageError("--confirm is required")
+			if message := rawPlatformRequestConfirmMessage(methodValue, pathOnly, payload); message != "" && !*confirm {
+				return shared.UsageError(message)
 			}
-			client, err := resolvePlatformClient(ctx, common, contextKind)
+			client, effectiveAdAccountID, err := resolvePlatformClientAndAdAccountID(ctx, common, contextKind)
 			if err != nil {
 				return fmt.Errorf("ads api request: %w", err)
+			}
+			if err := validateRawPlatformAdAccountPathID(methodValue, pathOnly, effectiveAdAccountID); err != nil {
+				return err
 			}
 			requestCtx, cancel := requestContext(ctx)
 			defer cancel()
@@ -108,14 +115,36 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("ads api request: %w", err)
 			}
-			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
+			return shared.PrintOutput(resp, outputFormat, *output.Pretty)
 		},
 	}
 }
 
 func rawPlatformRequestRequiresConfirm(method, pathOnly string, payload json.RawMessage) bool {
-	if method == http.MethodDelete {
-		return true
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if spec, ok := platformEndpointSpecForRequest(method, pathOnly); ok {
+		if spec.RequiresConfirm {
+			return true
+		}
+		if spec.RiskConfirm {
+			if spec.RiskConfirmBodyField == "" {
+				return true
+			}
+			if len(payload) == 0 {
+				// A body-scoped exception is safe only when the caller supplied
+				// the body that proves the exception. Missing or malformed bodies
+				// must not turn a mutation into a confirmation-free request.
+				return true
+			}
+			return riskConfirmationRequired(spec, payload)
+		}
+		if spec.ConfirmBodyField != "" && len(payload) > 0 {
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal(payload, &object); err == nil {
+				_, present := object[spec.ConfirmBodyField]
+				return present
+			}
+		}
 	}
 
 	resourcePath := strings.TrimPrefix(pathOnly, "v1/")
@@ -135,7 +164,74 @@ func rawPlatformRequestRequiresConfirm(method, pathOnly string, payload json.Raw
 			return hasDelegations
 		}
 	}
-	return false
+	// Unknown mutations are conservatively treated as destructive. Known
+	// endpoints should declare their metadata in PlatformEndpointSpecs so raw
+	// requests and generated commands share the same safety contract.
+	return method == http.MethodDelete || method == http.MethodPost || method == http.MethodPut
+}
+
+func rawPlatformRequestConfirmMessage(method, pathOnly string, payload json.RawMessage) string {
+	if !rawPlatformRequestRequiresConfirm(method, pathOnly, payload) {
+		return ""
+	}
+	if spec, ok := platformEndpointSpecForRequest(method, pathOnly); ok && spec.RiskConfirm && riskConfirmationRequired(spec, payload) {
+		if spec.RiskConfirmBodyField != "" {
+			if spec.Name == "platform-update-campaign" {
+				return fmt.Sprintf("--confirm is required unless status is %q and only non-spend fields are changed", spec.RiskConfirmBodyValue)
+			}
+			return fmt.Sprintf("--confirm is required unless %s is explicitly %q; otherwise acknowledge %s", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue, riskConfirmationImpact)
+		}
+		return "--confirm is required to acknowledge " + riskConfirmationImpact
+	}
+	return "--confirm is required"
+}
+
+func platformEndpointSpecForRequest(method, pathOnly string) (appleads.EndpointSpec, bool) {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	for _, spec := range appleads.PlatformEndpointSpecs() {
+		if strings.ToUpper(spec.Method) != method || !platformEndpointPathMatches(spec.Path, pathOnly) {
+			continue
+		}
+		return spec, true
+	}
+	return appleads.EndpointSpec{}, false
+}
+
+func platformEndpointPathMatches(pattern, path string) bool {
+	patternParts := strings.Split(strings.Trim(strings.TrimSpace(pattern), "/"), "/")
+	pathParts := strings.Split(strings.Trim(strings.TrimSpace(path), "/"), "/")
+	if len(patternParts) != len(pathParts) {
+		return false
+	}
+	for index, patternPart := range patternParts {
+		if strings.HasPrefix(patternPart, "{") && strings.HasSuffix(patternPart, "}") {
+			if pathParts[index] == "" {
+				return false
+			}
+			continue
+		}
+		if patternPart != pathParts[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func validateRawPlatformAdAccountPathID(method, pathOnly, effectiveAdAccountID string) error {
+	if method != http.MethodGet && method != http.MethodPut && method != http.MethodDelete {
+		return nil
+	}
+	parts := strings.Split(strings.Trim(pathOnly, "/"), "/")
+	if len(parts) != 3 || parts[0] != "v1" || parts[1] != "ad-accounts" || strings.TrimSpace(parts[2]) == "" {
+		return nil
+	}
+	if effectiveAdAccountID == "" {
+		return shared.UsageError("--ad-account is required for v1/ad-accounts/{id} and must match the path ID")
+	}
+	if effectiveAdAccountID != parts[2] {
+		return shared.UsageError(fmt.Sprintf("--ad-account %q must match the v1/ad-accounts path ID %q", effectiveAdAccountID, parts[2]))
+	}
+	return nil
 }
 
 func rawPlatformRequestRequiresAdAccount(method, pathValue string) (bool, error) {
