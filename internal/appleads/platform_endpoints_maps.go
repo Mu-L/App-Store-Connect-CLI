@@ -14,7 +14,10 @@ func platformMapsEndpointSpecs() []EndpointSpec {
 	}
 	assetQuery := query("platform-query-assets", "v1/assets/query", []string{"assets", "find"}, true, "QueryRequest", "AssetQueryResponse")
 	assetQuery.BodyFileExample = "query.json"
-	assetQuery.BodyHint = "Omit --file to return all non-deleted assets. Supported filters: promotedObjectId, promotedObjectType, providerAssetId, and assetType (IMAGE)."
+	assetQuery.BodyHint = "Omit --file to return the default page of non-deleted assets in the selected ad account. For narrower results, use promotedObjectId, promotedObjectType, providerAssetId, or assetType (IMAGE)."
+	locationGroupUpdate := platformEndpoint("platform-update-location-group", "PUT", "v1/location-groups/{id}", []string{"location-groups", "update"}, ContextAdAccount, BodyObject, false, "LocationGroupUpdate", "LocationGroupResponse", id("location-group"), nil)
+	locationGroupUpdate.BodyHint = "Updating a location group can immediately change targeting for linked campaigns and requires --confirm."
+	locationGroupUpdate.RiskConfirm = true
 
 	specs := []EndpointSpec{
 		assetQuery,
@@ -38,7 +41,7 @@ func platformMapsEndpointSpecs() []EndpointSpec {
 		query("platform-query-location-groups", "v1/location-groups/query", []string{"location-groups", "find"}, false, "QueryRequest", "LocationGroupQueryResponse"),
 		platformEndpoint("platform-delete-location-group", "DELETE", "v1/location-groups/{id}", []string{"location-groups", "delete"}, ContextAdAccount, BodyNone, false, "", "LocationGroupResponse", id("location-group"), nil),
 		platformEndpoint("platform-get-location-group", "GET", "v1/location-groups/{id}", []string{"location-groups", "view"}, ContextAdAccount, BodyNone, false, "", "LocationGroupResponse", id("location-group"), nil),
-		platformEndpoint("platform-update-location-group", "PUT", "v1/location-groups/{id}", []string{"location-groups", "update"}, ContextAdAccount, BodyObject, false, "LocationGroupUpdate", "LocationGroupResponse", id("location-group"), nil),
+		locationGroupUpdate,
 
 		query("platform-query-locations", "v1/locations/query", []string{"locations", "find"}, false, "QueryRequest", "LocationQueryResponse"),
 		platformEndpoint("platform-get-location", "GET", "v1/locations/{id}", []string{"locations", "view"}, ContextAdAccount, BodyNone, false, "", "LocationResponse", id("location"), nil),
