@@ -400,6 +400,106 @@ func TestPlatformKeywordQueriesRequireSelectorBodyBeforeAuth(t *testing.T) {
 	}
 }
 
+func TestPlatformQueryMigrationValidation(t *testing.T) {
+	var querySpecs []appleads.EndpointSpec
+	for _, spec := range appleads.PlatformEndpointSpecs() {
+		if spec.Method == "POST" && strings.HasSuffix(spec.Path, "/query") {
+			querySpecs = append(querySpecs, spec)
+		}
+	}
+	if got, want := len(querySpecs), 38; got != want {
+		t.Fatalf("Platform query endpoint count = %d, want %d", got, want)
+	}
+
+	validV1 := json.RawMessage(`{"filters":[{"field":"id","operator":"EQUALS","value":"123"}],"sorting":[{"field":"id","order":"DESC"}],"pagination":{"offset":0,"pageSize":5}}`)
+	legacyConditions := json.RawMessage(`{"conditions":null}`)
+	for _, spec := range querySpecs {
+		t.Run(strings.Join(spec.CommandPath, "-"), func(t *testing.T) {
+			if err := validateEndpointBody(spec, validV1, false); err != nil {
+				t.Fatalf("valid Platform v1 query rejected: %v", err)
+			}
+			err := validateEndpointBody(spec, legacyConditions, false)
+			if err == nil || !strings.Contains(err.Error(), `"conditions" -> "filters"`) {
+				t.Fatalf("legacy conditions error = %v, want migration hint", err)
+			}
+		})
+	}
+
+	campaigns, ok := appleads.PlatformEndpointByCommandPath("campaigns", "find")
+	if !ok {
+		t.Fatal("missing campaigns find")
+	}
+	for _, test := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "filter values", body: `{"filters":[{"field":"id","operator":"IN","values":null}]}`, want: `"values" -> "value"`},
+		{name: "order by", body: `{"orderBy":null}`, want: `"orderBy" -> "sorting"`},
+		{name: "sort order", body: `{"sorting":[{"field":"id","sortOrder":null}]}`, want: `"sortOrder" -> "order"`},
+		{name: "pagination limit", body: `{"pagination":{"limit":null}}`, want: `"pagination.limit" -> "pagination.pageSize"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateEndpointBody(campaigns, json.RawMessage(test.body), false)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateEndpointBody() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	report, ok := appleads.PlatformEndpointByCommandPath("reports", "apps", "campaigns")
+	if !ok {
+		t.Fatal("missing app campaign report")
+	}
+	reportErr := validateEndpointBody(report, json.RawMessage(`{"selector":{"conditions":[{"field":"id","operator":"EQUALS","values":null}],"orderBy":[{"field":"id","sortOrder":null}],"pagination":{"limit":null}}}`), false)
+	for _, want := range []string{
+		`"selector"`,
+		`"conditions" -> "filters"`,
+		`"values" -> "value"`,
+		`"orderBy" -> "sorting"`,
+		`"sortOrder" -> "order"`,
+		`"pagination.limit" -> "pagination.pageSize"`,
+	} {
+		if reportErr == nil || !strings.Contains(reportErr.Error(), want) {
+			t.Fatalf("legacy report selector error = %v, want complete migration hint containing %q", reportErr, want)
+		}
+	}
+
+	createAd, ok := appleads.PlatformEndpointByCommandPath("ads", "create")
+	if !ok {
+		t.Fatal("missing ads create")
+	}
+	if err := validateEndpointBody(createAd, json.RawMessage(`{"conditions":null,"values":null,"orderBy":null}`), true); err != nil {
+		t.Fatalf("non-query body must not use the query migration guard: %v", err)
+	}
+
+	legacyQuery := appleads.EndpointSpec{Version: appleads.APIVersionCampaignV5, Method: "POST", Path: "v5/campaigns/query"}
+	if err := validateEndpointBody(legacyQuery, json.RawMessage(`{"conditions":null,"orderBy":null}`), false); err != nil {
+		t.Fatalf("legacy v5 query body must not use the Platform API migration guard: %v", err)
+	}
+}
+
+func TestPlatformQueryMigrationValidationPrecedesAuth(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+	spec, ok := appleads.PlatformEndpointByCommandPath("campaigns", "find")
+	if !ok {
+		t.Fatal("missing campaigns find")
+	}
+	file := filepath.Join(t.TempDir(), "query.json")
+	if err := os.WriteFile(file, []byte(`{"conditions":[{"field":"id","operator":"EQUALS","values":["123"]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fs, flags := bindEndpointFlags(spec, "campaigns find")
+	if err := fs.Set("file", file); err != nil {
+		t.Fatal(err)
+	}
+	err := executeEndpoint(context.Background(), spec, flags)
+	if err == nil || !strings.Contains(err.Error(), `"conditions" -> "filters"`) || strings.Contains(err.Error(), "configuration not found") {
+		t.Fatalf("executeEndpoint() error = %v, want migration validation before auth", err)
+	}
+}
+
 func TestPlatformKeywordQuerySelectorValidation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -417,37 +517,37 @@ func TestPlatformKeywordQuerySelectorValidation(t *testing.T) {
 			name:    "targeting legacy v5 conditions selector",
 			path:    []string{"targeting-keywords", "find"},
 			body:    `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]}]}`,
-			wantErr: `rename the selector array and each entry's "values" to the singular "value"`,
+			wantErr: `"conditions" -> "filters"`,
 		},
 		{
 			name:    "negative legacy v5 conditions selector",
 			path:    []string{"negative-keywords", "find"},
 			body:    `{"conditions":[{"field":"adGroupId","operator":"EQUALS","values":["ad-group-1"]}]}`,
-			wantErr: `rename the selector array and each entry's "values" to the singular "value"`,
+			wantErr: `"conditions" -> "filters"`,
 		},
 		{
 			name:    "targeting null legacy conditions key",
 			path:    []string{"targeting-keywords", "find"},
 			body:    `{"filters":[{"field":"campaignId","operator":"EQUALS","value":"campaign-1"}],"conditions":null}`,
-			wantErr: `uses "filters", not "conditions"`,
+			wantErr: `"conditions" -> "filters"`,
 		},
 		{
 			name:    "targeting null legacy values key in filter",
 			path:    []string{"targeting-keywords", "find"},
 			body:    `{"filters":[{"field":"campaignId","operator":"EQUALS","value":"campaign-1","values":null}]}`,
-			wantErr: `singular "value", not "values"`,
+			wantErr: `"values" -> "value"`,
 		},
 		{
 			name:    "targeting legacy v5 values in filter",
 			path:    []string{"targeting-keywords", "find"},
 			body:    `{"filters":[{"field":"campaignId","operator":"IN","values":["campaign-1"]}]}`,
-			wantErr: `singular "value", not "values"`,
+			wantErr: `"values" -> "value"`,
 		},
 		{
 			name:    "negative legacy v5 values in filter",
 			path:    []string{"negative-keywords", "find"},
 			body:    `{"filters":[{"field":"adGroupId","operator":"IN","values":["ad-group-1"]}]}`,
-			wantErr: `singular "value", not "values"`,
+			wantErr: `"values" -> "value"`,
 		},
 		{
 			name:    "targeting irrelevant filter",

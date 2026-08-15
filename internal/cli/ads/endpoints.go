@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
@@ -746,6 +747,11 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 		}
 		return fmt.Errorf("--confirm is required to acknowledge %s", riskConfirmationImpact)
 	}
+	if spec.Method == http.MethodPost && strings.HasPrefix(spec.Path, "v1/") && strings.HasSuffix(spec.Path, "/query") {
+		if err := validatePlatformQueryMigration(body); err != nil {
+			return err
+		}
+	}
 	switch spec.Name {
 	case "platform-query-keywords", "platform-query-negative-keywords":
 		if err := validateKeywordQuerySelector(spec.Name, body); err != nil {
@@ -797,32 +803,103 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 type querySelectorFilter struct {
 	Field    string `json:"field"`
 	Operator string `json:"operator"`
-	// Legacy v5 selector conditions used "values"; Platform API filters use
-	// the singular "value". Tracked here so a renamed-but-not-migrated
-	// selector still fails pre-auth with a hint instead of a live 400.
-	Values json.RawMessage `json:"values"`
+}
+
+type legacyPlatformQueryMembers struct {
+	selector   bool
+	conditions bool
+	values     bool
+	orderBy    bool
+	sortOrder  bool
+	limit      bool
+}
+
+func validatePlatformQueryMigration(body json.RawMessage) error {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return fmt.Errorf("invalid Platform API query body: %w", err)
+	}
+
+	legacy := legacyPlatformQueryMembers{}
+	inspectLegacyPlatformQueryObject(payload, &legacy)
+	if rawSelector, present := payload["selector"]; present {
+		legacy.selector = true
+		var selector map[string]json.RawMessage
+		if json.Unmarshal(rawSelector, &selector) == nil {
+			inspectLegacyPlatformQueryObject(selector, &legacy)
+		}
+	}
+
+	var migrations []string
+	if legacy.selector {
+		migrations = append(migrations, `remove the v5 "selector" wrapper and move its members to the top-level query object`)
+	}
+	if legacy.conditions {
+		migrations = append(migrations, `"conditions" -> "filters"`)
+	}
+	if legacy.values {
+		migrations = append(migrations, `filter "values" -> "value"`)
+	}
+	if legacy.orderBy {
+		migrations = append(migrations, `"orderBy" -> "sorting"`)
+	}
+	if legacy.sortOrder {
+		migrations = append(migrations, `sorting "sortOrder" -> "order"`)
+	}
+	if legacy.limit {
+		migrations = append(migrations, `"pagination.limit" -> "pagination.pageSize"`)
+	}
+	if len(migrations) > 0 {
+		return fmt.Errorf("platform API v1 query payload uses legacy v5 selector members: %s", strings.Join(migrations, "; "))
+	}
+	return nil
+}
+
+func inspectLegacyPlatformQueryObject(payload map[string]json.RawMessage, legacy *legacyPlatformQueryMembers) {
+	if _, present := payload["conditions"]; present {
+		legacy.conditions = true
+	}
+	if _, present := payload["orderBy"]; present {
+		legacy.orderBy = true
+	}
+	for _, key := range []string{"filters", "conditions"} {
+		if jsonArrayEntriesContainKey(payload[key], "values") {
+			legacy.values = true
+		}
+	}
+	for _, key := range []string{"sorting", "orderBy"} {
+		if jsonArrayEntriesContainKey(payload[key], "sortOrder") {
+			legacy.sortOrder = true
+		}
+	}
+	var pagination map[string]json.RawMessage
+	if json.Unmarshal(payload["pagination"], &pagination) == nil {
+		if _, present := pagination["limit"]; present {
+			legacy.limit = true
+		}
+	}
+}
+
+func jsonArrayEntriesContainKey(raw json.RawMessage, key string) bool {
+	var entries []map[string]json.RawMessage
+	if json.Unmarshal(raw, &entries) != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if _, present := entry[key]; present {
+			return true
+		}
+	}
+	return false
 }
 
 func validateKeywordQuerySelector(specName string, body json.RawMessage) error {
 	var payload struct {
 		Filters []querySelectorFilter `json:"filters"`
-		// Legacy Campaign Management API v5 selectors used "conditions"; the
-		// Platform API rejects that field, so catch it before auth with a
-		// migration hint instead of letting the request 400.
-		Conditions json.RawMessage `json:"conditions"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return fmt.Errorf("invalid QueryRequest selector filters: %w", err)
 	}
-	if len(payload.Conditions) > 0 {
-		return fmt.Errorf("QueryRequest uses \"filters\", not \"conditions\"; rename the selector array and each entry's \"values\" to the singular \"value\" (Campaign Management API v5 selector fields are rejected by the Platform API)")
-	}
-	for _, filter := range payload.Filters {
-		if len(filter.Values) > 0 {
-			return fmt.Errorf("QueryRequest filters use the singular \"value\", not \"values\"; rename it in each filter (Campaign Management API v5 selector fields are rejected by the Platform API)")
-		}
-	}
-
 	switch specName {
 	case "platform-query-keywords":
 		for _, filter := range payload.Filters {
