@@ -174,3 +174,32 @@ func TestPlatformChangeHistoryDetailParameters(t *testing.T) {
 		t.Fatalf("detail query params = %+v", spec.QueryParams)
 	}
 }
+
+func TestPlatformReportsOptimizationPayloadGuidance(t *testing.T) {
+	tests := []struct {
+		path        []string
+		fileExample string
+		want        []string
+	}{
+		{path: []string{"reports", "apps", "campaigns"}, fileExample: "report.json", want: []string{"nested timeRange", "{offset,pageSize}", "EMPTY_METRICS", "filters"}},
+		{path: []string{"insights", "impression-share", "find"}, fileExample: "query.json", want: []string{"promotedObjectId", "UTC", "maximum 30 days", "FIRST_SLOT", "pageSize max 5000"}},
+		{path: []string{"insights", "search-term-popularity", "find"}, fileExample: "query.json", want: []string{"timeRange", "WEEKLY_SUN_SAT", "MONTHLY", "2 sort fields"}},
+		{path: []string{"suggestions", "phrases", "find"}, fileExample: "query.json", want: []string{"queryType SUGGESTION", "queryType SEARCH", "promotedObjectType", "exception"}},
+		{path: []string{"suggestions", "keywords", "find"}, fileExample: "query.json", want: []string{"promotedObjectId", "promotedObjectType", "pageSize max 1000"}},
+		{path: []string{"recommendations", "daily-budgets", "apply"}, fileExample: "recommendations.json", want: []string{"non-empty array", "require --confirm"}},
+	}
+	for _, test := range tests {
+		spec, ok := PlatformEndpointByCommandPath(test.path...)
+		if !ok {
+			t.Fatalf("missing %q", strings.Join(test.path, " "))
+		}
+		if spec.BodyFileExample != test.fileExample {
+			t.Errorf("%s body file example = %q, want %q", strings.Join(test.path, " "), spec.BodyFileExample, test.fileExample)
+		}
+		for _, want := range test.want {
+			if !strings.Contains(spec.BodyHint, want) {
+				t.Errorf("%s body hint = %q, want %q", strings.Join(test.path, " "), spec.BodyHint, want)
+			}
+		}
+	}
+}

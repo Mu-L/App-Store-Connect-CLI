@@ -247,9 +247,12 @@ asc ads assets delete --asset "ASSET_UUID" --ad-account "987654" --confirm
 ## Platform API v1 campaign resources
 
 Platform v1 campaign resources use string identifiers and an ad account
-context. Create, update, and bulk commands require a JSON object file. The
-read-only `find` commands accept an optional `QueryRequest` file; omit it to
-send no request body.
+context. Create, update, and bulk commands require a JSON object file. Keyword
+and negative-keyword `find` commands require a `QueryRequest` selector file;
+Apple requires at least one `id`, `adGroupId`, or `campaignId` filter for
+targeting keywords. Negative-keyword queries require `id` or `adGroupId`; for
+a campaign-level query, combine `campaignId` with an `adGroupId` `IS_NULL`
+filter.
 
 ```bash  theme={null}
 asc ads campaigns create --ad-account "987654" --file campaign.json
@@ -257,14 +260,41 @@ asc ads campaigns find --ad-account "987654" --file query.json
 asc ads ad-groups view --ad-account "987654" --ad-group "adgroup-id"
 asc ads ads update --ad-account "987654" --ad "ad-id" --file ad.json
 asc ads targeting-keywords create-bulk --ad-account "987654" --file keywords.json
-asc ads negative-keywords find --ad-account "987654"
+asc ads targeting-keywords find --ad-account "987654" --file query.json
+asc ads negative-keywords find --ad-account "987654" --file query.json
+asc ads negative-keywords view --ad-account "987654" --negative-keyword "negative-keyword-id"
+asc ads negative-keywords update --ad-account "987654" --negative-keyword "negative-keyword-id" --file negative-keyword.json
 ```
+
+Campaign creation can affect spend as soon as Apple enables delivery. For an
+agent-safe test or staged rollout, make the payload explicitly paused:
+
+```json campaign.json
+{
+  "name": "Agent validation campaign",
+  "status": "PAUSED",
+  "adAccountId": 987654,
+  "promotedObjectType": "APPSTORE_APP",
+  "promotedObjectId": "123456789",
+  "billingEvent": "TAPS",
+  "dailyBudget": {"value": {"amount": "1", "currency": "USD"}},
+  "startTime": "2030-01-01T00:00:00.000",
+  "endTime": "2030-01-02T00:00:00.000",
+  "targeting": {"countryOrRegion": {"include": ["US"]}},
+  "bidStrategy": {"bidStrategyType": "MANUAL_CPT", "bidStrategyGoal": "TAP"}
+}
+```
+
+Without an explicit top-level `"status": "PAUSED"`, campaign creation
+requires `--confirm` to acknowledge potential spend. The CLI validates this
+before authentication or network access.
 
 Delete commands require `--confirm`. Platform v1 has no bulk-delete operation:
 
 ```bash  theme={null}
 asc ads campaigns delete --ad-account "987654" --campaign "campaign-id" --confirm
 asc ads targeting-keywords delete --ad-account "987654" --keyword "keyword-id" --confirm
+asc ads negative-keywords delete --ad-account "987654" --negative-keyword "negative-keyword-id" --confirm
 ```
 
 Pause and resume use the v1 campaign update endpoint with direct
@@ -287,13 +317,59 @@ asc ads product-pages locales find --ad-account "987654" --file query.json
 
 Shared budgets retain the `budget-orders` command name. Create, update, and
 delete are context-free; view and find accept an optional `--ad-account`.
+Budget-order creation is a billing operation: pass `--confirm`, and ensure the
+ad account has an Apple Ads line of credit (LOC) configured first.
 
 ```bash  theme={null}
-asc ads budget-orders create --file shared-budget.json
+asc ads budget-orders create --file shared-budget.json --confirm
 asc ads budget-orders find --ad-account "987654"
 asc ads budget-orders view --budget-order "budget-id"
 asc ads budget-orders delete --budget-order "budget-id" --confirm
 ```
+
+## Platform API v1 reports and insights
+
+Platform reports use a required JSON body. Dates belong in the nested
+`timeRange` object, and page controls use `pageSize` rather than the v5
+selector's `limit`. Campaign and ad-group IDs move into `filters`:
+
+```json report.json
+{
+  "pagination": {"offset": 0, "pageSize": 20},
+  "filters": [
+    {"field": "campaignId", "operator": "EQUALS", "value": ["444555666"]}
+  ],
+  "groupBy": ["countryOrRegion"],
+  "timeRange": {
+    "start": "2025-01-01",
+    "end": "2025-01-31",
+    "timeZone": "ORTZ",
+    "granularity": "DAILY"
+  }
+}
+```
+
+```bash  theme={null}
+asc ads reports apps campaigns --ad-account "987654" --file report.json --output json
+asc ads reports apps keywords --ad-account "987654" --file report.json --output json
+```
+
+Report pagination stays inside the request body; these commands preserve
+Apple's raw `result` and `pagination` envelope and do not expose `--paginate`.
+Run the exact leaf command with `--help` before creating a payload because
+valid `groupBy` and report options differ by entity. `EMPTY_METRICS` cannot be
+combined with `groupBy`, and brand reports support only `GRAND_TOTAL`.
+
+Insights also require body files. Impression share needs a
+`promotedObjectId` filter and a complete UTC `timeRange`; search-term
+popularity needs a UTC `timeRange`. The command help lists the granularity and
+date-window limits Apple publishes for each endpoint.
+
+Suggestion requests have two routes that Apple documents inconsistently.
+`queryType: "SUGGESTION"` uses `promotedObjectId` and
+`promotedObjectType`; `queryType: "SEARCH"` uses the phrase or category
+filter described on the endpoint page. The CLI sends the reviewed body
+unchanged instead of rejecting the documented SEARCH form.
 
 ## Migrating from Campaign Management API v5
 
@@ -561,6 +637,10 @@ Campaign negative keywords belong to a campaign. Ad group negative keywords add
 asc ads v5 campaign-negative-keywords create-bulk --org "123456" --campaign 987654321 --file negative-keywords.json
 asc ads v5 ad-group-negative-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file negative-keywords.json
 ```
+
+When addressing one negative keyword in the deprecated v5 namespace, use the
+semantic `--negative-keyword` identifier flag. The old `--keyword` spelling is
+accepted only as a hidden compatibility alias and prints a migration warning.
 
 ```json negative-keywords.json
 [

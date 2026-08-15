@@ -188,4 +188,13 @@ func TestPlatformMapsEndpointIdentifierTypesAndUploadInventory(t *testing.T) {
 	if !ok || upload.Method != "POST" || upload.Path != "v1/assets/upload" || upload.BodyKind != BodyMultipart {
 		t.Fatalf("assets upload inventory = %+v", upload)
 	}
+	assets, ok := PlatformEndpointByCommandPath("assets", "find")
+	if !ok || !assets.BodyOptional || assets.BodyFileExample != "query.json" {
+		t.Fatalf("assets find query metadata = %+v", assets)
+	}
+	for _, want := range []string{"all non-deleted assets", "promotedObjectId", "providerAssetId", "assetType (IMAGE)"} {
+		if !strings.Contains(assets.BodyHint, want) {
+			t.Fatalf("assets find body hint = %q, want %q", assets.BodyHint, want)
+		}
+	}
 }
