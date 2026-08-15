@@ -181,7 +181,7 @@ func executePublish(ctx context.Context, request publishRequest) (publishExecuti
 	if err := rejectBundleContainedArtifacts(bundleRoot, resolvedReceiptPath, resolvedLinkPath); err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
-	artifacts, err := preflightArtifactPaths(resolvedReceiptPath, resolvedLinkPath)
+	artifacts, err := inspectArtifactPaths(resolvedReceiptPath, resolvedLinkPath)
 	if err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
@@ -195,6 +195,11 @@ func executePublish(ctx context.Context, request publishRequest) (publishExecuti
 	}
 	if artifacts.receiptExists && !stateFound {
 		return publishExecutionResult{}, fmt.Errorf("distribute publish: receipt exists without its sensitive link recovery artifact")
+	}
+	if !stateFound {
+		if err := artifacts.preflightNew(); err != nil {
+			return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
+		}
 	}
 	bundle, err := loadPreparedBundle(ctx, bundleRoot)
 	if err != nil {
@@ -289,15 +294,18 @@ func reverifyPrivatePublish(ctx context.Context, request privatePublishVerificat
 	if request.VerifyTimeout <= 0 {
 		return publishExecutionResult{}, shared.UsageError("verify timeout must be positive")
 	}
-	bundleRoot, err := rootfs.New(strings.TrimSpace(request.BundleDir))
+	bundleDir := strings.TrimSpace(request.BundleDir)
+	receiptPath := strings.TrimSpace(request.ReceiptPath)
+	linkPath := strings.TrimSpace(request.LinkPath)
+	bundleRoot, err := rootfs.New(bundleDir)
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("open prepared bundle: %w", err)
 	}
 	defer bundleRoot.Close()
-	if err := rejectBundleContainedArtifacts(bundleRoot, request.ReceiptPath, request.LinkPath); err != nil {
+	if err := rejectBundleContainedArtifacts(bundleRoot, receiptPath, linkPath); err != nil {
 		return publishExecutionResult{}, shared.UsageErrorf("publish artifacts: %v", err)
 	}
-	artifacts, err := openExistingArtifactPaths(request.ReceiptPath, request.LinkPath)
+	artifacts, err := openExistingArtifactPaths(receiptPath, linkPath)
 	if err != nil {
 		return publishExecutionResult{}, fmt.Errorf("open publication artifacts: %w", err)
 	}
@@ -331,75 +339,53 @@ func reverifyPrivatePublish(ctx context.Context, request privatePublishVerificat
 }
 
 func openExistingArtifactPaths(receiptPath, linkPath string) (artifactPaths, error) {
-	receiptAbsolute, err := filepath.Abs(strings.TrimSpace(receiptPath))
+	paths, err := anchorArtifactPaths(strings.TrimSpace(receiptPath), strings.TrimSpace(linkPath))
 	if err != nil {
 		return artifactPaths{}, err
 	}
-	linkAbsolute, err := filepath.Abs(strings.TrimSpace(linkPath))
-	if err != nil {
-		return artifactPaths{}, err
-	}
-	if receiptAbsolute == linkAbsolute {
-		return artifactPaths{}, fmt.Errorf("receipt and link paths must be distinct")
-	}
-	common, err := commonPathRoot(filepath.Dir(receiptAbsolute), filepath.Dir(linkAbsolute))
-	if err != nil {
-		return artifactPaths{}, err
-	}
-	commonInfo, err := os.Lstat(common)
-	if err != nil {
-		return artifactPaths{}, err
-	}
-	if commonInfo.Mode()&os.ModeSymlink != 0 || !commonInfo.IsDir() {
-		return artifactPaths{}, fmt.Errorf("artifact parent %s is not a trusted directory", common)
-	}
-	root, err := os.OpenRoot(common)
-	if err != nil {
-		return artifactPaths{}, err
-	}
-	openedInfo, err := root.Stat(".")
-	if err != nil || !os.SameFile(commonInfo, openedInfo) {
-		_ = root.Close()
-		return artifactPaths{}, fmt.Errorf("artifact parent changed while opening")
-	}
-	receiptRelative, _ := filepath.Rel(common, receiptAbsolute)
-	linkRelative, _ := filepath.Rel(common, linkAbsolute)
-	for _, item := range []struct {
-		name, label string
-	}{{receiptRelative, "receipt"}, {linkRelative, "sensitive link artifact"}} {
-		found, err := inspectExistingProtectedPublishArtifact(root, item.name, item.label)
+
+	var infos [2]os.FileInfo
+	for index, item := range []struct {
+		path  artifactPath
+		label string
+	}{{paths.receipt, "receipt"}, {paths.link, "sensitive link artifact"}} {
+		info, found, err := inspectExistingProtectedPublishArtifact(item.path.root, item.path.relative, item.label)
 		if err != nil {
-			_ = root.Close()
+			paths.close()
 			return artifactPaths{}, err
 		}
 		if !found {
-			_ = root.Close()
-			return artifactPaths{}, fmt.Errorf("%s does not exist", filepath.Join(common, item.name))
+			paths.close()
+			return artifactPaths{}, fmt.Errorf("%s does not exist", filepath.Join(item.path.rootPath, item.path.relative))
 		}
+		infos[index] = info
 	}
-	return artifactPaths{
-		root: root, receipt: receiptRelative, link: linkRelative, receiptPath: receiptAbsolute, linkPath: linkAbsolute,
-		receiptExists: true, linkExists: true,
-	}, nil
+	if os.SameFile(infos[0], infos[1]) {
+		paths.close()
+		return artifactPaths{}, fmt.Errorf("receipt and link paths resolve to the same physical destination")
+	}
+	paths.receiptExists = true
+	paths.linkExists = true
+	return paths, nil
 }
 
-func inspectExistingProtectedPublishArtifact(root *os.Root, name, label string) (bool, error) {
+func inspectExistingProtectedPublishArtifact(root *os.Root, name, label string) (os.FileInfo, bool, error) {
 	file, err := secureopen.OpenExistingNoFollowInRoot(root, name)
 	if os.IsNotExist(err) {
-		return false, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if err := validateProtectedPublishArtifact(file, info, label); err != nil {
-		return false, err
+		return nil, false, err
 	}
-	return true, nil
+	return info, true, nil
 }
 
 func validateStoredPrivateState(state publishState, bundle *core.PreparedBundle, receiptPath, linkPath string) error {

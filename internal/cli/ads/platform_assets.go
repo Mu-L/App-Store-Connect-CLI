@@ -20,6 +20,10 @@ import (
 // command. Unlike the generated mutation commands, this sends multipart image
 // data rather than a JSON payload.
 func PlatformAssetUploadCommand() *ffcli.Command {
+	uploadSpec, ok := appleads.PlatformEndpointByCommandPath("assets", "upload")
+	if !ok {
+		panic("missing Apple Ads asset upload endpoint metadata")
+	}
 	fs := flag.NewFlagSet("ads assets upload", flag.ExitOnError)
 	filePath := fs.String("file", "", "Path to image file (PNG, JPEG, or HEIC) (required)")
 	brandID := fs.String("brand", "", "Apple Ads business brand ID (required)")
@@ -28,21 +32,24 @@ func PlatformAssetUploadCommand() *ffcli.Command {
 		AdAccount:  fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID env)"),
 	}
 	output := shared.BindOutputFlags(fs)
-	return &ffcli.Command{
-		Name:       "upload",
-		ShortUsage: "asc ads assets upload --file IMAGE --brand ID --ad-account ID",
-		ShortHelp:  "Upload an Apple Ads brand image asset.",
-		LongHelp: `Upload an Apple Ads brand image asset.
+	longHelp := `Upload an Apple Ads brand image asset.
 
 The image is sent as multipart/form-data with the promoted object type
 BUSINESS_BRAND. Supported filename extensions are .png, .jpg, .jpeg, and .heic.
 Apple processes the asset after upload. Poll "asc ads assets view"
-until eligibility.status is ready before using the asset in a creative.
+until eligibility.status is ready before using the asset in a creative.`
+	longHelp += endpointBodyHelp(uploadSpec)
+	longHelp += `
 
 Example:
-  asc ads assets upload --file ./brand.png --brand "BRAND_ID" --ad-account "AD_ACCOUNT_ID"`,
-		FlagSet:   fs,
-		UsageFunc: shared.DefaultUsageFunc,
+  asc ads assets upload --file ./brand.png --brand "BRAND_ID" --ad-account "AD_ACCOUNT_ID"`
+	return &ffcli.Command{
+		Name:       "upload",
+		ShortUsage: "asc ads assets upload --file IMAGE --brand ID --ad-account ID",
+		ShortHelp:  "Upload an Apple Ads brand image asset.",
+		LongHelp:   longHelp,
+		FlagSet:    fs,
+		UsageFunc:  shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err

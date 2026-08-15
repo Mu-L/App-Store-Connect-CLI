@@ -138,6 +138,46 @@ func TestPlatformCampaignIdentifiersAndSharedBudgetContexts(t *testing.T) {
 	}
 }
 
+func TestPlatformCampaignCLIOverridesPreserveSDKFixtureContracts(t *testing.T) {
+	for _, command := range []string{"targeting-keywords find", "negative-keywords find"} {
+		spec, ok := PlatformEndpointByCommandPath(strings.Fields(command)...)
+		if !ok {
+			t.Fatalf("missing %q", command)
+		}
+		if !spec.BodyOptional {
+			t.Fatalf("%q BodyOptional = false, want the independent SDK fixture contract", command)
+		}
+		if !spec.CLIRequiresBody {
+			t.Fatalf("%q CLIRequiresBody = false, want the documented CLI selector requirement", command)
+		}
+		if spec.BodyFileExample != "query.json" {
+			t.Fatalf("%q BodyFileExample = %q, want query.json", command, spec.BodyFileExample)
+		}
+	}
+
+	campaign, ok := PlatformEndpointByCommandPath("campaigns", "create")
+	if !ok {
+		t.Fatal("missing campaigns create")
+	}
+	if campaign.RequiresConfirm {
+		t.Fatal("campaign creation must remain non-destructive in fixture confirmation metadata")
+	}
+	if !campaign.RiskConfirm || campaign.RiskConfirmBodyField != "status" || campaign.RiskConfirmBodyValue != "PAUSED" {
+		t.Fatalf("campaign risk metadata = %+v, want separate paused spend acknowledgement", campaign)
+	}
+
+	budget, ok := PlatformEndpointByCommandPath("budget-orders", "create")
+	if !ok {
+		t.Fatal("missing budget-orders create")
+	}
+	if budget.RequiresConfirm {
+		t.Fatal("budget creation must remain non-destructive in fixture confirmation metadata")
+	}
+	if !budget.RiskConfirm || budget.RiskConfirmBodyField != "" {
+		t.Fatalf("budget risk metadata = %+v, want unconditional spend acknowledgement", budget)
+	}
+}
+
 func TestPlatformGeoSearchSupportsPagePagination(t *testing.T) {
 	spec, ok := PlatformEndpointByCommandPath("geo", "search")
 	if !ok {
