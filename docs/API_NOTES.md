@@ -4,8 +4,8 @@ Quirks and tips for specific App Store Connect API endpoints.
 
 ## Apple Ads Profile Context Isolation
 
-- Apple Ads named profiles keep `ad_account_id` profile-scoped and do not inherit the root `ads.ad_account_id`.
-- For Campaign Management API v5 compatibility, a named profile with no stored `org_id` may still use the root `ads.org_id`; profile-less access-token and environment authentication can also use the matching root context. Store an explicit profile `org_id` when you need to remove that legacy fallback.
+- Apple Ads named profiles no longer inherit `ads.org_id` or `ads.ad_account_id` from another default profile. This prevents a selected profile from silently sending a request in the wrong organization or ad account.
+- Existing named profiles that relied on the old root organization fallback must store their own `org_id` with `asc ads auth login --name ... --org ...` or pass `--org` explicitly. Profile-less access-token and environment authentication can still use the matching root context.
 
 ## Analytics & Sales Reports
 

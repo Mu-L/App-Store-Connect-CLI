@@ -393,6 +393,33 @@ func TestPlatformCampaignAndBudgetRiskConfirmationPrecedesAuth(t *testing.T) {
 	}
 }
 
+func TestPlatformRecommendationRiskConfirmationPrecedesAuth(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+
+	for _, path := range [][]string{
+		{"recommendations", "daily-budgets", "apply"},
+		{"recommendations", "daily-budgets", "dismiss"},
+		{"recommendations", "target-cpas", "apply"},
+		{"recommendations", "target-cpas", "dismiss"},
+	} {
+		t.Run(strings.Join(path, "-"), func(t *testing.T) {
+			spec, ok := appleads.PlatformEndpointByCommandPath(path...)
+			if !ok {
+				t.Fatalf("missing platform endpoint %q", strings.Join(path, " "))
+			}
+			if spec.RequiresConfirm || !spec.RiskConfirm {
+				t.Fatalf("%q confirmation metadata = requires=%t risk=%t", strings.Join(path, " "), spec.RequiresConfirm, spec.RiskConfirm)
+			}
+			_, flags := bindEndpointFlags(spec, strings.Join(path, " "))
+			err := executeEndpoint(context.Background(), spec, flags)
+			if !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), "spend or billing impact") {
+				t.Fatalf("%q error = %v, want pre-auth spend-risk confirmation", strings.Join(path, " "), err)
+			}
+		})
+	}
+}
+
 func TestPlatformConfirmationHelpDistinguishesSpendFromDeletion(t *testing.T) {
 	root := AdsCommand()
 	for _, test := range []struct {
@@ -402,6 +429,11 @@ func TestPlatformConfirmationHelpDistinguishesSpendFromDeletion(t *testing.T) {
 		{path: []string{"campaigns", "create"}, want: "spend or billing impact"},
 		{path: []string{"budget-orders", "create"}, want: "spend or billing impact"},
 		{path: []string{"campaigns", "delete"}, want: "Confirm deletion"},
+		{path: []string{"recommendations", "daily-budgets", "apply"}, want: "spend or billing impact"},
+		{path: []string{"recommendations", "daily-budgets", "dismiss"}, want: "spend or billing impact"},
+		{path: []string{"recommendations", "target-cpas", "apply"}, want: "spend or billing impact"},
+		{path: []string{"recommendations", "target-cpas", "dismiss"}, want: "spend or billing impact"},
+		{path: []string{"api", "request"}, want: "spend or billing impact"},
 	} {
 		cmd := findCommand(root, test.path...)
 		if cmd == nil {

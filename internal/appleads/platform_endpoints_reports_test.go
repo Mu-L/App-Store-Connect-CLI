@@ -28,11 +28,11 @@ func TestPlatformReportsOptimizationEndpointSpecs(t *testing.T) {
 		"reports brands search-terms":           {"POST", "v1/reports/business-brands/searchterms/query", BodyObject, "BrandsReportingRequest", "BrandsSearchTermReportResponse", false},
 		"insights impression-share find":        {"POST", "v1/insights/apps/impression-share/query", BodyObject, "ImpressionShareQueryRequest", "ImpressionShareQueryResponse", false},
 		"insights search-term-popularity find":  {"POST", "v1/insights/apps/search-term-popularity/query", BodyObject, "SearchTermPopularityQueryRequest", "SearchTermPopularityQueryResponse", false},
-		"recommendations daily-budgets apply":   {"POST", "v1/recommendations/daily-budgets/apply", BodyArray, "[ApplyDailyCapRecommendation]", "RecommendationApplyDailyBudgetResponse", true},
-		"recommendations daily-budgets dismiss": {"POST", "v1/recommendations/daily-budgets/dismiss", BodyArray, "[ApplyDailyCapRecommendation]", "RecommendationDismissDailyBudgetResponse", true},
+		"recommendations daily-budgets apply":   {"POST", "v1/recommendations/daily-budgets/apply", BodyArray, "[ApplyDailyCapRecommendation]", "RecommendationApplyDailyBudgetResponse", false},
+		"recommendations daily-budgets dismiss": {"POST", "v1/recommendations/daily-budgets/dismiss", BodyArray, "[ApplyDailyCapRecommendation]", "RecommendationDismissDailyBudgetResponse", false},
 		"recommendations daily-budgets find":    {"POST", "v1/recommendations/daily-budgets/query", BodyObject, "RecommendationQueryRequest", "RecommendationQueryDailyBudgetResponse", false},
-		"recommendations target-cpas apply":     {"POST", "v1/recommendations/target-cpas/apply", BodyArray, "[ApplyTargetCpaRecommendation]", "RecommendationApplyTargetCpaResponse", true},
-		"recommendations target-cpas dismiss":   {"POST", "v1/recommendations/target-cpas/dismiss", BodyArray, "[ApplyTargetCpaRecommendation]", "RecommendationDismissTargetCpaResponse", true},
+		"recommendations target-cpas apply":     {"POST", "v1/recommendations/target-cpas/apply", BodyArray, "[ApplyTargetCpaRecommendation]", "RecommendationApplyTargetCpaResponse", false},
+		"recommendations target-cpas dismiss":   {"POST", "v1/recommendations/target-cpas/dismiss", BodyArray, "[ApplyTargetCpaRecommendation]", "RecommendationDismissTargetCpaResponse", false},
 		"recommendations target-cpas find":      {"POST", "v1/recommendations/target-cpas/query", BodyObject, "RecommendationQueryRequest", "RecommendationQueryTargetCpaResponse", false},
 		"suggestions categories find":           {"POST", "v1/suggestions/categories/query", BodyObject, "RecommendationQueryRequest", "RecommendationQueryCategorySuggestionResponse", false},
 		"suggestions keywords find":             {"POST", "v1/suggestions/keywords/query", BodyObject, "RecommendationQueryRequest", "RecommendationQueryKeywordSuggestionResponse", false},
@@ -64,6 +64,10 @@ func TestPlatformReportsOptimizationEndpointSpecs(t *testing.T) {
 		}
 		if spec.RequiresConfirm != want.confirm {
 			t.Fatalf("%s confirmation = %t, want %t", key, spec.RequiresConfirm, want.confirm)
+		}
+		wantRiskConfirm := strings.HasPrefix(spec.Path, "v1/recommendations/") && (strings.HasSuffix(spec.Path, "/apply") || strings.HasSuffix(spec.Path, "/dismiss"))
+		if spec.RiskConfirm != wantRiskConfirm {
+			t.Fatalf("%s risk confirmation = %t, want %t", key, spec.RiskConfirm, wantRiskConfirm)
 		}
 		if spec.Method == "POST" && strings.HasSuffix(spec.Path, "/query") && !spec.RetrySafe {
 			t.Fatalf("%s must be retry-safe", key)

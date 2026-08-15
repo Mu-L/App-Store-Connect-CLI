@@ -815,7 +815,7 @@ func TestAdsPlatformAPIRequestRejectsAdAccountForContextFreeEndpoint(t *testing.
 	}
 }
 
-func TestAdsPlatformAPIRequestRequiresConfirmForKnownDestructiveMutations(t *testing.T) {
+func TestAdsPlatformAPIRequestRequiresConfirmForKnownImpactMutations(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string

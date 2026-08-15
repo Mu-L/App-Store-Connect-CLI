@@ -39,7 +39,7 @@ func PlatformAPIRequestCommand() *ffcli.Command {
 	method := fs.String("method", "GET", "HTTP method: GET, POST, PUT, DELETE")
 	path := fs.String("path", "", "Relative v1 path or Apple Ads Platform API URL")
 	file := fs.String("file", "", "Path to JSON request payload")
-	confirm := fs.Bool("confirm", false, "Confirm destructive Apple Ads Platform requests")
+	confirm := fs.Bool("confirm", false, "Acknowledge potential Apple Ads spend or billing impact, or confirm destructive requests")
 	common := commonFlags{
 		AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 		AdAccount:  fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID env)"),

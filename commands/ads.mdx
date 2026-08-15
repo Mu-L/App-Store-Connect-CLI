@@ -28,11 +28,10 @@ Ads credentials through `ASC_ADS_*` variables. `ASC_ADS_ACCESS_TOKEN` skips
 token exchange. Scoped v5 calls still need an organization ID; scoped v1 calls
 need a separate ad account ID.
 
-Named profiles keep their `ad_account_id` profile-scoped and do not inherit the
-root `ads.ad_account_id`. For v5 compatibility, a named profile with no stored
-`org_id` may still use the root `ads.org_id`; this is a legacy fallback. Save
-the profile's own organization with `asc ads auth login --name ... --org ...`
-or pass `--org` explicitly when you want to remove that ambiguity.
+Named profiles use only the context stored on that profile. They do not inherit
+`ads.org_id` or `ads.ad_account_id` from a different default profile. If an
+older profile relied on the root organization fallback, save its `org_id`
+again with `asc ads auth login --name ... --org ...` or pass `--org` explicitly.
 
 ## Authenticate
 
