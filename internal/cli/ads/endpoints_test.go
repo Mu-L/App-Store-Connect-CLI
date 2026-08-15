@@ -668,6 +668,12 @@ func TestRawPlatformRequestUsesEndpointRiskMetadata(t *testing.T) {
 	if !rawPlatformRequestRequiresConfirm("POST", "v1/campaigns", nil) {
 		t.Fatal("campaign create without a body must require confirmation")
 	}
+	if rawPlatformRequestRequiresConfirm("POST", "v1/campaigns", json.RawMessage(`{"status":"PAUSED"}`)) {
+		t.Fatal("paused campaign create must use the safe body exception")
+	}
+	if rawPlatformRequestRequiresConfirm("POST", "v1/campaigns/query", nil) {
+		t.Fatal("known read-only campaign query must not require confirmation")
+	}
 	if rawPlatformRequestRequiresConfirm("PUT", "v1/campaigns/campaign-1", json.RawMessage(`{"name":"Paused","status":"PAUSED"}`)) {
 		t.Fatal("paused name-only campaign update must use the safe body exception")
 	}
