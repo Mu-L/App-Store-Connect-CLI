@@ -204,6 +204,54 @@ The three `find` commands above accept an omitted `--file` and then send no
 request body. Use a `QueryRequest` or eligibility query file when filters,
 sorting, or pagination are needed.
 
+## Platform API v1 brands, locations, creatives, and assets
+
+Brand and Apple Maps discovery uses ad-account context. Query operations accept
+Apple's JSON query types through `--file`; the asset, creative, and brand
+rejection-reason queries may omit the file when no selector is needed.
+Without `--file`, `assets find` returns the default page of non-deleted assets
+in the selected ad account. Use a query file with `promotedObjectId` to scope
+the result to one promoted object, such as a brand or app.
+
+```bash  theme={null}
+asc ads brands find --ad-account "987654" --file query.json
+asc ads brands view --ad-account "987654" --brand "BRAND_ID"
+asc ads business-categories find --ad-account "987654" --file query.json
+asc ads business-categories view --ad-account "987654" --category "CATEGORY_ID"
+asc ads locations find --ad-account "987654" --file query.json
+asc ads locations view --ad-account "987654" --location "LOCATION_ID"
+asc ads rejection-reasons brands find --ad-account "987654"
+```
+
+Location-group and creative create/update commands require JSON files. Updating
+a location group also requires `--confirm` because it can immediately change
+targeting for linked campaigns. Their delete commands, and asset deletion,
+require explicit confirmation before the CLI reads credentials or sends a
+request.
+
+```bash  theme={null}
+asc ads location-groups create --ad-account "987654" --file location-group.json
+asc ads location-groups update --ad-account "987654" --location-group "GROUP_ID" --file update.json --confirm
+asc ads location-groups delete --ad-account "987654" --location-group "GROUP_ID" --confirm
+asc ads creatives create --ad-account "987654" --file creative.json
+asc ads creatives update --ad-account "987654" --creative "CREATIVE_ID" --file update.json
+asc ads creatives delete --ad-account "987654" --creative "CREATIVE_ID" --confirm
+```
+
+Upload a PNG, JPEG, or HEIC asset with the dedicated multipart command. The CLI
+uses the basename in the multipart filename and sends the selected brand as a
+`BUSINESS_BRAND` promoted object. Apple processes the asset asynchronously;
+poll `assets view` until `eligibility.status` is `ELIGIBLE` before using the
+asset in a creative. A `LIMITED` asset requires checking `allowedGroups`;
+`PENDING` and `INELIGIBLE` assets must not be used.
+
+```bash  theme={null}
+asc ads assets find --ad-account "987654"
+asc ads assets upload --file ./brand.jpeg --brand "BRAND_ID" --ad-account "987654"
+asc ads assets view --asset "ASSET_UUID" --ad-account "987654"
+asc ads assets delete --asset "ASSET_UUID" --ad-account "987654" --confirm
+```
+
 ## Platform API v1 campaign resources
 
 Platform v1 campaign resources use string identifiers and an ad account

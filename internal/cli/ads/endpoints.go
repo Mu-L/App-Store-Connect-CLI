@@ -105,6 +105,9 @@ func addSpec(root *commandNode, spec appleads.EndpointSpec) {
 func buildNodeCommand(node *commandNode, parentPath, commandPrefix []string) *ffcli.Command {
 	path := append(append([]string(nil), parentPath...), node.name)
 	displayPath := append(append([]string(nil), commandPrefix...), path...)
+	if node.spec != nil && node.spec.Name == "platform-upload-asset" {
+		return PlatformAssetUploadCommand()
+	}
 	var flags endpointFlagValues
 	var fs *flag.FlagSet
 	if node.spec != nil {
