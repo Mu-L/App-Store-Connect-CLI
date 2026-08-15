@@ -336,6 +336,27 @@ func TestAdsAuthDiscoverRejectsInvalidOutput(t *testing.T) {
 	}
 }
 
+func TestAdsAuthDiscoverRejectsInvalidExplicitAdAccountBeforeNetwork(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected network request: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	}))
+
+	stdout, stderr, err := runAdsEvalCommand(t, "ads", "auth", "discover", "--ad-account", "123;orgId=456", "--output", "json")
+	if rootcmd.ExitCodeFromError(err) != rootcmd.ExitUsage {
+		t.Fatalf("exit code = %d, want %d (err=%v)", rootcmd.ExitCodeFromError(err), rootcmd.ExitUsage, err)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "--ad-account") || !strings.Contains(stderr, "semicolon") {
+		t.Fatalf("stderr = %q, want invalid --ad-account usage error", stderr)
+	}
+}
+
 func TestAdsAuthDiscoverRejectsMalformedDiscoveryResponses(t *testing.T) {
 	tests := []struct {
 		name    string
