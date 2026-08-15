@@ -309,6 +309,13 @@ func TestRawPlatformRequestUsesEndpointRiskMetadata(t *testing.T) {
 	}
 }
 
+func TestValidateRawPlatformAdAccountPathIDRejectsDeleteMismatch(t *testing.T) {
+	err := validateRawPlatformAdAccountPathID("DELETE", "v1/ad-accounts/PATH_ACCOUNT", "CONTEXT_ACCOUNT")
+	if err == nil || !strings.Contains(err.Error(), "must match the v1/ad-accounts path ID") {
+		t.Fatalf("validateRawPlatformAdAccountPathID() error = %v, want path/context mismatch", err)
+	}
+}
+
 func TestRiskConfirmationHonorsExplicitSafeBodyValue(t *testing.T) {
 	spec := appleads.EndpointSpec{
 		RiskConfirm:          true,

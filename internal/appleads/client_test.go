@@ -243,6 +243,45 @@ func TestRequestForVersionRoutesPlatformAPIAndAdAccountContext(t *testing.T) {
 	}
 }
 
+func TestNewClientRejectsUnsafeAdAccountIDs(t *testing.T) {
+	for _, value := range []string{
+		"123;orgId=999",
+		"123\n456",
+		"123\r456",
+		"123\t456",
+		"\n123",
+	} {
+		t.Run(value, func(t *testing.T) {
+			_, err := NewClient(Credentials{AccessToken: "ACCESS", AdAccountID: value})
+			if err == nil || !strings.Contains(err.Error(), "invalid ad account ID") {
+				t.Fatalf("NewClient() error = %v, want invalid ad account ID", err)
+			}
+		})
+	}
+}
+
+func TestContextHeaderRejectsUnsafeAdAccountIDBeforeHTTP(t *testing.T) {
+	requests := 0
+	client, err := NewClient(Credentials{AccessToken: "ACCESS"}, WithHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requests++
+			return jsonResponse(http.StatusOK, `{}`), nil
+		}),
+	}))
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+	client.credentials.AdAccountID = "123;orgId=999"
+
+	_, err = client.RequestForVersion(context.Background(), APIVersionPlatformV1, http.MethodGet, "v1/campaigns", nil, nil, ContextAdAccount)
+	if err == nil || !strings.Contains(err.Error(), "invalid ad account ID") {
+		t.Fatalf("RequestForVersion() error = %v, want invalid ad account ID", err)
+	}
+	if requests != 0 {
+		t.Fatalf("HTTP requests = %d, want 0", requests)
+	}
+}
+
 func TestWithBlankPlatformBaseURLFallsBackToDefault(t *testing.T) {
 	client, err := NewClient(
 		Credentials{AccessToken: "ACCESS"},

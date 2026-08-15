@@ -212,7 +212,7 @@ func platformEndpointPathMatches(pattern, path string) bool {
 }
 
 func validateRawPlatformAdAccountPathID(method, pathOnly, effectiveAdAccountID string) error {
-	if method != http.MethodGet && method != http.MethodPut {
+	if method != http.MethodGet && method != http.MethodPut && method != http.MethodDelete {
 		return nil
 	}
 	parts := strings.Split(strings.Trim(pathOnly, "/"), "/")
