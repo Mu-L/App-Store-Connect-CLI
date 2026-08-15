@@ -303,6 +303,10 @@ func TestRawPlatformRequestUsesEndpointRiskMetadata(t *testing.T) {
 	if rawPlatformRequestRequiresConfirm("GET", "v1/unknown-read", nil) {
 		t.Fatal("unknown GET must remain confirmation-free")
 	}
+	want := "--confirm is required to acknowledge " + riskConfirmationImpact
+	if got := rawPlatformRequestConfirmMessage("POST", "v1/ad-accounts", nil); got != want {
+		t.Fatalf("ad-account create confirmation message = %q, want %q", got, want)
+	}
 }
 
 func TestRiskConfirmationHonorsExplicitSafeBodyValue(t *testing.T) {

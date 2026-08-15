@@ -89,8 +89,8 @@ Examples:
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}
-			if rawPlatformRequestRequiresConfirm(methodValue, pathOnly, nil) && !*confirm {
-				return shared.UsageError("--confirm is required")
+			if message := rawPlatformRequestConfirmMessage(methodValue, pathOnly, nil); message != "" && !*confirm {
+				return shared.UsageError(message)
 			}
 			var payload json.RawMessage
 			if strings.TrimSpace(*file) != "" {
@@ -99,8 +99,8 @@ Examples:
 					return fmt.Errorf("ads api request: %w", err)
 				}
 			}
-			if rawPlatformRequestRequiresConfirm(methodValue, pathOnly, payload) && !*confirm {
-				return shared.UsageError("--confirm is required")
+			if message := rawPlatformRequestConfirmMessage(methodValue, pathOnly, payload); message != "" && !*confirm {
+				return shared.UsageError(message)
 			}
 			client, effectiveAdAccountID, err := resolvePlatformClientAndAdAccountID(ctx, common, contextKind)
 			if err != nil {
@@ -165,6 +165,19 @@ func rawPlatformRequestRequiresConfirm(method, pathOnly string, payload json.Raw
 	// endpoints should declare their metadata in PlatformEndpointSpecs so raw
 	// requests and generated commands share the same safety contract.
 	return method == http.MethodDelete || method == http.MethodPost || method == http.MethodPut
+}
+
+func rawPlatformRequestConfirmMessage(method, pathOnly string, payload json.RawMessage) string {
+	if !rawPlatformRequestRequiresConfirm(method, pathOnly, payload) {
+		return ""
+	}
+	if spec, ok := platformEndpointSpecForRequest(method, pathOnly); ok && spec.RiskConfirm && riskConfirmationRequired(spec, payload) {
+		if spec.RiskConfirmBodyField != "" {
+			return fmt.Sprintf("--confirm is required unless %s is explicitly %q; otherwise acknowledge %s", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue, riskConfirmationImpact)
+		}
+		return "--confirm is required to acknowledge " + riskConfirmationImpact
+	}
+	return "--confirm is required"
 }
 
 func platformEndpointSpecForRequest(method, pathOnly string) (appleads.EndpointSpec, bool) {

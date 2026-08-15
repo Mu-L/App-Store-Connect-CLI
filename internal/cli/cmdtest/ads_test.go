@@ -966,7 +966,7 @@ func TestAdsPlatformAdAccountCreateRequiresRiskConfirmationBeforeNetwork(t *test
 	_, stderr := captureOutput(t, func() {
 		runErr = root.Run(context.Background())
 	})
-	if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, "--confirm is required") {
+	if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, "--confirm is required to acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact") {
 		t.Fatalf("run error = %v stderr = %q, want risk confirmation", runErr, stderr)
 	}
 }
