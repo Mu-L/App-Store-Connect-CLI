@@ -84,7 +84,7 @@ func ReportsPresetCommand() *ffcli.Command {
 			AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 			Org:        fs.String("org", "", "Apple Ads organization ID (or ASC_ADS_ORG_ID env)"),
 		},
-		output:          shared.BindOutputFlags(fs),
+		output:          bindAdsRawOutputFlags(fs),
 		level:           fs.String("level", "campaigns", "Report level: campaigns, ad-groups, keywords, search-terms, ads, ad-group-keywords, ad-group-search-terms"),
 		campaign:        fs.String("campaign", "", "Campaign ID for campaign-scoped report levels"),
 		adGroup:         fs.String("ad-group", "", "Ad group ID for ad-group-scoped report levels"),
@@ -142,7 +142,7 @@ Examples:
 }
 
 func executeReportsPreset(ctx context.Context, flags adsReportPresetFlags) error {
-	outputFormat, err := shared.ValidateOutputFormat(*flags.output.Output, *flags.output.Pretty)
+	outputFormat, err := validateAdsRawOutput(flags.output)
 	if err != nil {
 		return shared.UsageError(err.Error())
 	}

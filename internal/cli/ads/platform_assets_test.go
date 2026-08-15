@@ -243,7 +243,7 @@ func TestPlatformAssetUploadValidatesOutputBeforeMutation(t *testing.T) {
 		{
 			name: "pretty table",
 			args: []string{"--file", asset, "--brand", "BRAND", "--ad-account", "ACCOUNT", "--output", "table", "--pretty"},
-			want: "--pretty is only valid with JSON output",
+			want: "unsupported format: table",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

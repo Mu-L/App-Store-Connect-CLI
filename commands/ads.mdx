@@ -7,6 +7,12 @@ Campaign Management API v5 commands live under `ads v5`. Raw v1 requests use
 `ads api request`; raw v5 requests use `ads v5 api request`. Both APIs use Apple
 Ads OAuth credentials, not App Store Connect API keys.
 
+Resource, workflow, upload, report, and raw-request commands preserve Apple's
+heterogeneous response envelopes losslessly as JSON. They intentionally do not
+accept `--output table` or `--output markdown`; use `jq` when an agent needs a
+projection. Authentication status and discovery commands retain their explicit
+human-readable output modes.
+
 Use `--help` before scripting a new command. Apple Ads has many nested
 resources, and the CLI exposes the documented path parameters as flags:
 
@@ -404,7 +410,7 @@ resource commands.
 List campaigns. The short form aliases `list`:
 
 ```bash  theme={null}
-asc ads v5 campaigns --org "123456" --limit 100 --output table
+asc ads v5 campaigns --org "123456" --limit 100 --output json
 asc ads v5 campaigns list --org "123456" --paginate --output json
 ```
 

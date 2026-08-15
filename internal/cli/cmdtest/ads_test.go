@@ -586,12 +586,12 @@ func TestAdsCampaignPauseValidatesBeforeNetwork(t *testing.T) {
 		{
 			name:    "parent output conflicts with child pretty",
 			args:    []string{"ads", "v5", "campaigns", "--output", "table", "pause", "--campaign", "123", "--confirm", "--pretty"},
-			wantErr: "--pretty is only valid with JSON output",
+			wantErr: "unsupported format: table",
 		},
 		{
 			name:    "parent pretty conflicts with child output",
 			args:    []string{"ads", "v5", "campaigns", "--pretty", "resume", "--campaign", "123", "--confirm", "--output", "table"},
-			wantErr: "--pretty is only valid with JSON output",
+			wantErr: "unsupported format: table",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/appleads"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
 )
 
@@ -70,6 +71,55 @@ func TestAdsRootRegistersPlatformV1AsDefault(t *testing.T) {
 	}
 	if findCommand(root, "v5", "api", "request") == nil {
 		t.Fatal("missing deprecated v5 raw request command")
+	}
+}
+
+func TestAdsRawResponseCommandsExposeJSONOnlyOutput(t *testing.T) {
+	tests := []struct {
+		path []string
+		args []string
+	}{
+		{path: []string{"campaigns", "find"}},
+		{path: []string{"reports", "apps", "campaigns"}},
+		{path: []string{"api", "request"}},
+		{path: []string{"assets", "upload"}},
+		{path: []string{"campaigns", "pause"}, args: []string{"--campaign", "1"}},
+		{path: []string{"v5", "campaigns", "list"}},
+		{path: []string{"v5", "campaigns", "pause"}, args: []string{"--campaign", "1", "--confirm"}},
+		{path: []string{"v5", "reports", "preset"}},
+		{path: []string{"v5", "api", "request"}},
+	}
+	for _, test := range tests {
+		t.Run(strings.Join(test.path, " "), func(t *testing.T) {
+			root := AdsCommand()
+			path := test.path
+			cmd := findCommand(root, path...)
+			if cmd == nil {
+				t.Fatalf("missing command asc ads %s", strings.Join(path, " "))
+			}
+			output := cmd.FlagSet.Lookup("output")
+			if output == nil {
+				t.Fatalf("asc ads %s missing --output", strings.Join(path, " "))
+			}
+			if output.DefValue != "json" {
+				t.Fatalf("asc ads %s --output default = %q, want json", strings.Join(path, " "), output.DefValue)
+			}
+			args := append(append([]string(nil), test.args...), "--output", "table")
+			if err := cmd.Parse(args); err != nil {
+				t.Fatalf("asc ads %s parse error: %v", strings.Join(path, " "), err)
+			}
+			if err := cmd.Exec(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "unsupported format: table") {
+				t.Fatalf("asc ads %s accepted --output table for a raw response: %v", strings.Join(path, " "), err)
+			}
+		})
+	}
+
+	for _, format := range []string{"table", "markdown"} {
+		output := format
+		pretty := false
+		if _, err := validateAdsRawOutput(shared.OutputFlags{Output: &output, Pretty: &pretty}); err == nil || !strings.Contains(err.Error(), "unsupported format: "+format) {
+			t.Fatalf("validateAdsRawOutput(%q) error = %v", format, err)
+		}
 	}
 }
 

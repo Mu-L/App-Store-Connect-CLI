@@ -72,7 +72,7 @@ asc ads v5 campaigns list \
   --ads-profile "Marketing" \
   --org "123456" \
   --limit 10 \
-  --output table
+  --output json
 ```
 
 ## Safe Read-Only Smoke Test
@@ -103,7 +103,7 @@ List campaigns first, then inspect ad groups under one confirmed campaign ID:
 asc ads v5 campaigns list \
   --org "123456" \
   --limit 100 \
-  --output table
+  --output json
 
 asc ads v5 ad-groups list \
   --org "123456" \
