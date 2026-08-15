@@ -117,13 +117,14 @@ asc ads v5 campaigns --limit 10 --output json
 
 Most Apple Ads endpoints require an organization context. Provide it with
 `--org`, store it during login with `--org`, or set `ASC_ADS_ORG_ID`. If you do
-not know the org ID yet, discover the active Ads user and available accounts:
+not know the available account access yet, inspect the Platform API v1 user and
+ACL responses:
 
 ```bash  theme={null}
 asc ads auth discover --output json
 ```
 
-Then pass an `accounts[].org_id` returned by Apple:
+For a v5 command, pass its organization ID explicitly:
 
 ```bash  theme={null}
 asc ads v5 campaigns list --org "123456" --output json
@@ -151,9 +152,9 @@ including `GET /v1/me`, `GET /v1/acls`, `GET /v1/orgs/{id}`,
 `--ad-account` explicitly to one of those endpoints is rejected instead of
 silently ignored.
 
-Authentication discovery and validation remain stable compatibility commands
-and use Campaign Management API v5 `me` and `acls` endpoints. Direct resource
-commands use Platform API v1:
+`asc ads auth discover` calls Platform API v1 `GET /v1/me` and `GET /v1/acls`.
+Credential checks from `auth login --network` and `auth status --validate`
+continue to use the context-free v5 `GET /v5/me` endpoint:
 
 ```bash  theme={null}
 asc ads auth status --validate
@@ -383,11 +384,10 @@ Use the direct `asc ads ...` resource commands for new scripts and migrate v5
 scripts one command at a time. Run `asc ads --help` and the relevant nested
 `--help` command when choosing a v1 leaf.
 
-`asc ads auth discover` is a compatibility exception in 4.4.0. It keeps its
-existing organization-level JSON and table contract by calling v5 `me` and
-`acls`; it does not print a legacy warning because the public auth command is
-version-neutral. Use `asc ads me view` and `asc ads acls list` when you need
-the v1 user and ad-account ACL responses.
+`asc ads auth discover` uses v1 `me` and `acls`; it does not print a legacy
+warning because the public auth command is version-neutral. The direct
+`asc ads me view` and `asc ads acls list` commands expose the same v1 resources
+when a script needs one response at a time.
 
 ### Context and request shape
 
@@ -771,7 +771,7 @@ require `--confirm`. Empty successful v1 responses print `{}`.
 When you automate Apple Ads with a coding agent:
 
 1. Run `asc ads <group> --help` before choosing flags.
-2. Resolve the user and org with `asc ads auth discover --output json` unless `ASC_ADS_ORG_ID` is already known.
+2. Inspect v1 user and account access with `asc ads auth discover --output json`, then pin the required `--org` or `--ad-account` explicitly.
 3. Use `--output json` for machine parsing.
 4. Put request bodies in checked-in templates or temporary JSON files, not shell-escaped inline JSON.
 5. Pass `--confirm` only after you have printed the target ID and cleanup plan.

@@ -83,7 +83,7 @@ being retired:
 | --- | --- |
 | `asc ads auth login --network` | OAuth token exchange, then Campaign Management API v5 `GET /v5/me`. |
 | `asc ads auth status --validate` | For each stored credential, OAuth token exchange, then Campaign Management API v5 `GET /v5/me`. |
-| `asc ads auth discover` | Legacy Campaign Management API v5 `GET /v5/me` and `GET /v5/acls`; this remains the compatibility discovery path in 4.4.0. |
+| `asc ads auth discover` | Platform API v1 `GET /v1/me` and `GET /v1/acls`. |
 
 All three commands avoid an ad-account context for these requests. The token
 exchange remains `POST https://appleid.apple.com/auth/oauth2/token` with the
@@ -244,14 +244,10 @@ Mirror the existing `asc auth` behavior:
 - `auth status --validate` validates each stored credential through Campaign
   Management API v5 `GET /v5/me` and reports failures after rendering the
   status output.
-- `auth discover` calls legacy `/v5/me` and `/v5/acls` to show the active Ads
-  user and available organizations without printing access tokens. This
-  compatibility path remains stable in 4.4.0 while v5 is deprecated.
-- Platform API v1 user and ACL discovery is explicit: use `asc ads me
-  view` and `asc ads acls list`.
-  The version-neutral discovery command needs an explicit output transition
-  before the v5 retirement date; 4.4.0 does not silently change the meaning of
-  its existing `accounts` field.
+- `auth discover` calls Platform API v1 `/v1/me` and `/v1/acls` to show the
+  active Ads user and available account access without printing access tokens.
+  Use `asc ads me view` and `asc ads acls list` when a script needs one of those
+  v1 responses directly.
 - `auth logout` supports `--all` and `--name`. It requires one of those flags
   so bare `asc ads auth logout` does not clear every stored Ads profile, and
   `--all` requires `--confirm`.

@@ -76,11 +76,9 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
   Apple retires Campaign Management API v5 on January 26, 2027. The legacy raw
   `asc ads v5 api request` command stays a v5 request and is not rewritten; raw v1
   requests use `asc ads api request`.
-- The version-neutral `asc ads auth discover` command temporarily retains its
-  v5 organization-level response contract so existing JSON consumers do not
-  receive ad-account rows under the old `accounts` field. Use `asc ads me view`
-  and `asc ads acls list` for v1 discovery. A versioned output
-  transition is still required before v5 retirement.
+- The version-neutral `asc ads auth discover` command calls Platform API v1
+  `GET /v1/me` and `GET /v1/acls`. The direct `asc ads me view` and
+  `asc ads acls list` commands expose those resources separately.
 - Platform v1 has one negative-keywords resource for campaign and ad-group
   scope, and does not provide a bulk-delete operation. Product-page countries,
   product-page devices, and custom impression-share report list/view likewise
@@ -146,11 +144,11 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - The 33 exported `internal/asc.Client` methods that target these legacy resources remain callable and are marked with Go `Deprecated:` documentation naming their version-scoped or review-item replacement.
 - Nullable v2 localization updates distinguish omitted, value, and JSON `null`; use the corresponding `--clear-*` flag for explicit clears.
 
-## Apple Ads Platform API v1
+## Apple Ads Platform API v1 in 4.4.0
 
 - Release 4.4.0 makes Platform API v1 the direct `asc ads` resource surface. Its host, request payloads, response envelopes, pagination, and ad-account context differ from Campaign Management API v5. The intermediate nested prototype is intentionally removed before release.
 - Apple scheduled Campaign Management API v5 retirement for January 26, 2027. Every runnable v5 leaf moves under `asc ads v5`, emits a deprecation warning on invocation, and keeps its existing endpoint and output behavior. Use the direct v1 replacement where one exists; the seven v5 leaves without a one-command replacement retain explicit migration guidance.
 - Platform account-scoped requests use `X-AP-Context: adAccountId=<AD_ACCOUNT_ID>;`. Resolve the account independently from the legacy organization context with `--ad-account`, `ASC_ADS_AD_ACCOUNT_ID`, the selected profile's `ad_account_id`, or root `ads.ad_account_id` when no named profile is selected. `ASC_ADS_ORG_ID` and `--org` are not fallbacks for an ad-account ID.
 - `/v1/ad-accounts` is method-dependent: `POST /v1/ad-accounts` creates an account without `X-AP-Context`; `GET /v1/ad-accounts/{id}` and `PUT /v1/ad-accounts/{id}` require `X-AP-Context: adAccountId=<id>;`, and the header account must match the path ID.
-- Authentication validation intentionally uses the stable transports in the implementation. `asc ads auth login --network` and `asc ads auth status --validate` exchange an OAuth client-credentials token when needed and call Campaign Management API v5 `GET /v5/me` without an organization context. `asc ads auth discover` remains the compatibility discovery command and calls legacy `GET /v5/me` and `GET /v5/acls` without an organization context. Platform API v1 users should call `asc ads me view` and `asc ads acls list`; a supplied `ASC_ADS_ACCESS_TOKEN` skips token exchange.
+- Authentication commands use the endpoint that matches their purpose. `asc ads auth login --network` and `asc ads auth status --validate` exchange an OAuth client-credentials token when needed and call Campaign Management API v5 `GET /v5/me` without an organization context. `asc ads auth discover` calls Platform API v1 `GET /v1/me` and `GET /v1/acls`; a supplied `ASC_ADS_ACCESS_TOKEN` skips token exchange.
 - The deprecated `asc ads v5 reports preset` warning follows `--level`: campaigns, ad groups, ads, keywords, and search terms point to their matching `asc ads reports apps` command; the two ad-group-specific keyword levels point to v1's consolidated `keywords` or `search-terms` report.

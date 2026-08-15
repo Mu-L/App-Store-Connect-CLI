@@ -125,8 +125,8 @@ var adsLegacyMigrations = map[string]adsLegacyMigration{
 	"find-creatives":    {kind: adsLegacyBreaking, replacement: []string{"creatives", "find"}},
 	"get-a-creative":    {kind: adsLegacyBreaking, replacement: []string{"creatives", "view"}},
 
-	"find-ad-creative-rejection-reasons": {kind: adsLegacyBreaking, replacement: []string{"rejection-reasons", "brands", "find"}},
-	"gets-a-product-page-reason":         {kind: adsLegacyBreaking, replacement: []string{"rejection-reasons", "brands", "find"}},
+	"find-ad-creative-rejection-reasons": {kind: adsLegacyBreaking, replacement: []string{"rejection-reasons", "apps", "find"}},
+	"gets-a-product-page-reason":         {kind: adsLegacyBreaking, replacement: []string{"rejection-reasons", "apps", "view"}},
 
 	"get-campaign-level-reports":                    {kind: adsLegacyBreaking, replacement: []string{"reports", "apps", "campaigns"}},
 	"get-ad-group-level-reports":                    {kind: adsLegacyBreaking, replacement: []string{"reports", "apps", "ad-groups"}},

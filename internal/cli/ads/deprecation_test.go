@@ -60,6 +60,25 @@ func TestAdsLegacyMigrationLedgerMatchesAllV5EndpointSpecs(t *testing.T) {
 	}
 }
 
+func TestAdsLegacyProductPageRejectionMigrationsUseAppEndpoints(t *testing.T) {
+	tests := map[string]string{
+		"find-ad-creative-rejection-reasons": "rejection-reasons apps find",
+		"gets-a-product-page-reason":         "rejection-reasons apps view",
+	}
+	for name, want := range tests {
+		migration, ok := adsLegacyMigrations[name]
+		if !ok {
+			t.Fatalf("missing migration for %q", name)
+		}
+		if migration.kind != adsLegacyBreaking {
+			t.Errorf("%q migration kind = %q, want %q", name, migration.kind, adsLegacyBreaking)
+		}
+		if got := strings.Join(migration.replacement, " "); got != want {
+			t.Errorf("%q replacement = %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestAdsLegacyCommandWarningIsEmittedOnceBeforeExistingExecution(t *testing.T) {
 	command := findCommand(AdsCommand(), "v5", "campaigns")
 	if command == nil || command.Exec == nil {
