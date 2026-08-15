@@ -51,11 +51,18 @@ type EndpointSpec struct {
 	RequiresOrg      bool
 	RequiresConfirm  bool
 	ConfirmBodyField string
-	RetrySafe        bool
-	PathParams       []ParamSpec
-	QueryParams      []ParamSpec
-	SupportsPaginate bool
-	DefaultListAlias bool
+	// RiskConfirm separates potential spend, billing, delivery, targeting, or
+	// access impact acknowledgement from destructive confirmation. A body
+	// field/value pair can exempt a documented safe payload from the
+	// acknowledgement.
+	RiskConfirm          bool
+	RiskConfirmBodyField string
+	RiskConfirmBodyValue string
+	RetrySafe            bool
+	PathParams           []ParamSpec
+	QueryParams          []ParamSpec
+	SupportsPaginate     bool
+	DefaultListAlias     bool
 }
 
 // PlatformEndpointSpecs returns the implemented Apple Ads Platform API v1
@@ -141,6 +148,9 @@ func PlatformEndpointSpecs() []EndpointSpec {
 		}
 		if specs[i].Name == "platform-update-ad-account" {
 			specs[i].ConfirmBodyField = "delegations"
+		}
+		if specs[i].Name == "platform-create-ad-account" {
+			specs[i].RiskConfirm = true
 		}
 	}
 	return specs

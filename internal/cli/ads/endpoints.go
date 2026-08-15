@@ -176,8 +176,12 @@ func endpointLongHelp(node *commandNode, path []string) string {
 		}
 	}
 	switch {
-	case node.spec.RequiresConfirm:
-		examples[0] += " --confirm"
+	case node.spec.RequiresConfirm || node.spec.RiskConfirm:
+		if node.spec.RiskConfirm && node.spec.RiskConfirmBodyField != "" && !node.spec.RequiresConfirm {
+			examples[0] += " [--confirm]"
+		} else {
+			examples[0] += " --confirm"
+		}
 	case node.spec.ConfirmBodyField != "":
 		examples[0] += " [--confirm]"
 	}
@@ -333,8 +337,8 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 	if spec.BodyKind != appleads.BodyNone {
 		values.file = fs.String("file", "", "Path to Apple Ads JSON payload")
 	}
-	if spec.RequiresConfirm {
-		values.confirm = fs.Bool("confirm", false, "Confirm this destructive Apple Ads operation")
+	if spec.RequiresConfirm || spec.RiskConfirm {
+		values.confirm = fs.Bool("confirm", false, confirmFlagUsage(spec))
 	}
 	if spec.ConfirmBodyField != "" && values.confirm == nil {
 		values.confirm = fs.Bool("confirm", false, "Confirm an Apple Ads update that replaces delegations")
@@ -362,11 +366,30 @@ func flagUsage(param appleads.ParamSpec) string {
 	return usage
 }
 
+const riskConfirmationImpact = "potential Apple Ads spend, billing, delivery, targeting, or access impact"
+
+func confirmFlagUsage(spec appleads.EndpointSpec) string {
+	switch {
+	case spec.RiskConfirm:
+		return "Acknowledge " + riskConfirmationImpact
+	case spec.RequiresConfirm:
+		return "Confirm deletion of this Apple Ads resource"
+	case spec.ConfirmBodyField != "":
+		return "Confirm an Apple Ads update that replaces delegations"
+	default:
+		return "Confirm this Apple Ads operation"
+	}
+}
+
 func intParamDefault(param appleads.ParamSpec) int {
 	return param.Default
 }
 
 func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endpointFlagValues) error {
+	outputFormat, err := shared.ValidateOutputFormat(*flags.output.Output, *flags.output.Pretty)
+	if err != nil {
+		return shared.UsageError(err.Error())
+	}
 	if spec.RequiresConfirm && flags.confirm != nil && !*flags.confirm {
 		return shared.UsageError("--confirm is required")
 	}
@@ -377,6 +400,9 @@ func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endp
 	query, err := collectQuery(spec, flags)
 	if err != nil {
 		return shared.UsageError(err.Error())
+	}
+	if spec.RiskConfirm && spec.RiskConfirmBodyField == "" && flags.confirm != nil && !*flags.confirm {
+		return shared.UsageError("--confirm is required to acknowledge " + riskConfirmationImpact)
 	}
 	body, err := readBody(spec, flags)
 	if err != nil {
@@ -420,7 +446,7 @@ func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endp
 	if err != nil {
 		return fmt.Errorf("ads %s: %w", strings.Join(spec.CommandPath, " "), err)
 	}
-	return shared.PrintOutput(result, *flags.output.Output, *flags.output.Pretty)
+	return shared.PrintOutput(result, outputFormat, *flags.output.Pretty)
 }
 
 func collectPathParams(spec appleads.EndpointSpec, flags endpointFlagValues) (map[string]string, error) {
@@ -608,6 +634,12 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 	if len(body) == 0 || spec.Version != appleads.APIVersionPlatformV1 {
 		return nil
 	}
+	if spec.RiskConfirm && !confirmed && riskConfirmationRequired(spec, body) {
+		if spec.RiskConfirmBodyField != "" {
+			return fmt.Errorf("--confirm is required unless %s is explicitly %q; otherwise acknowledge %s", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue, riskConfirmationImpact)
+		}
+		return fmt.Errorf("--confirm is required to acknowledge %s", riskConfirmationImpact)
+	}
 	if spec.Name != "platform-create-ad-account" && spec.Name != "platform-update-ad-account" {
 		return nil
 	}
@@ -648,6 +680,28 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 		}
 	}
 	return nil
+}
+
+func riskConfirmationRequired(spec appleads.EndpointSpec, body json.RawMessage) bool {
+	if !spec.RiskConfirm {
+		return false
+	}
+	if spec.RiskConfirmBodyField == "" {
+		return true
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return true
+	}
+	rawValue, ok := payload[spec.RiskConfirmBodyField]
+	if !ok {
+		return true
+	}
+	var value string
+	if err := json.Unmarshal(rawValue, &value); err != nil {
+		return true
+	}
+	return value != spec.RiskConfirmBodyValue
 }
 
 func requireNonEmptyJSONString(payload map[string]json.RawMessage, field string) error {

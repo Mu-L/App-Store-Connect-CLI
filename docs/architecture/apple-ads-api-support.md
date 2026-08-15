@@ -68,14 +68,13 @@ The `/v1/ad-accounts` collection is method-dependent:
 | `GET /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
 | `PUT /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
 
-Authentication commands intentionally use more than one transport while v5 is
-being retired:
+Authentication commands use the Platform API v1 transport:
 
 | Command | Validation/discovery request |
 | --- | --- |
-| `asc ads auth login --network` | OAuth token exchange, then Campaign Management API v5 `GET /v5/me`. |
-| `asc ads auth status --validate` | For each stored credential, OAuth token exchange, then Campaign Management API v5 `GET /v5/me`. |
-| `asc ads auth discover` | Legacy Campaign Management API v5 `GET /v5/me` and `GET /v5/acls`; this remains the compatibility discovery path in 4.4.0. |
+| `asc ads auth login --network` | OAuth token exchange, then Platform API v1 `GET /v1/me`. |
+| `asc ads auth status --validate` | For each stored credential, OAuth token exchange, then Platform API v1 `GET /v1/me`. |
+| `asc ads auth discover` | Platform API v1 `GET /v1/me` and `GET /v1/acls`, returning user and ad-account access. |
 
 All three commands avoid an ad-account context for these requests. The token
 exchange remains `POST https://appleid.apple.com/auth/oauth2/token` with the
@@ -221,20 +220,20 @@ Mirror the existing `asc auth` behavior:
   from `--org`.
 - `--private-key` accepts the EC P-256 PEM Apple documents for Ads. Reuse the
   existing private-key parsing helpers because they already support ES256 keys.
-- `--network` requests an access token and calls Campaign Management API v5 `GET /v5/me`.
+- `--network` requests an access token and calls Platform API v1 `GET /v1/me`.
 - `--skip-validation` skips JWT and network validation.
 - `--network` and `--skip-validation` are mutually exclusive.
 - `--local` requires keychain bypass, exactly like `asc auth login`.
 - Keychain is preferred; config fallback is allowed when bypassing keychain.
 - `auth status` supports `--verbose` and `--validate`, matching `asc auth status`.
-- `auth status --validate` validates each stored credential through Campaign
-  Management API v5 `GET /v5/me` and reports failures after rendering the
-  status output.
-- `auth discover` calls legacy `/v5/me` and `/v5/acls` to show the active Ads
-  user and available organizations without printing access tokens. This
-  compatibility path remains stable in 4.4.0 while v5 is deprecated.
-- Platform API v1 user and ACL discovery is explicit: use `asc ads me
-  view` and `asc ads acls list`.
+- `auth status --validate` validates each stored credential through Platform
+  API v1 `GET /v1/me` and reports failures after rendering the status output.
+- `auth discover` calls Platform API v1 `/v1/me` and `/v1/acls` to show the
+  active Ads user and available ad accounts without printing access tokens.
+  Each ACL row includes its honest `ad_account_id`; `--ad-account` controls
+  which row is marked active.
+- Platform API v1 user and ACL discovery is also available directly through
+  `asc ads me view` and `asc ads acls list`.
 - `auth logout` supports `--all` and `--name`. It requires one of those flags
   so bare `asc ads auth logout` does not clear every stored Ads profile, and
   `--all` requires `--confirm`.
@@ -324,18 +323,15 @@ Org ID resolution is independent from token resolution:
 1. `--org`
 2. `ASC_ADS_ORG_ID`
 3. selected Ads profile `org_id`
-4. `ads.org_id` in config, including the legacy fallback for a named profile
-   whose own credential omits `org_id`
+4. `ads.org_id` in config only when authentication is profile-less
 
 Persist the org ID both on the selected credential and in `ads.org_id` when Ads
 login receives an org ID. This lets
 `ASC_ADS_ACCESS_TOKEN` users reuse a configured default org without storing Ads
-private key material in the active environment. Existing named profiles retain
-the legacy `ads.org_id` root fallback when their own profile omits `org_id`.
-The Platform API v1 `ads.ad_account_id` root value is intentionally never
-inherited by a named profile; switching or removing the default clears the
-root ad-account context, while the legacy root organization fallback remains
-available for profiles that omit their own organization ID.
+private key material in the active environment. A named profile never inherits
+either root Ads context when its own profile omits the value. Switching or
+removing the default clears both root context values. Profile-less access-token
+or environment authentication can still use the standalone root values.
 
 Platform API v1 ad-account resolution is independent from org resolution:
 

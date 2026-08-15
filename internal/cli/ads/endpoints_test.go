@@ -279,11 +279,57 @@ func TestPlatformAdAccountCreateRequiresOneProductFeature(t *testing.T) {
 		{name: "brand", body: `{"name":"Account","productFeatures":["BUSINESS_BRAND_MANUAL"]}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateEndpointBody(spec, json.RawMessage(test.body), false)
+			err := validateEndpointBody(spec, json.RawMessage(test.body), true)
 			if (err != nil) != test.wantErr {
 				t.Fatalf("error = %v, wantErr %t", err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestRawPlatformRequestUsesEndpointRiskMetadata(t *testing.T) {
+	if !rawPlatformRequestRequiresConfirm("POST", "v1/ad-accounts", nil) {
+		t.Fatal("ad-account create must require confirmation before payload/auth work")
+	}
+	if rawPlatformRequestRequiresConfirm("PUT", "v1/ad-accounts/123", json.RawMessage(`{"name":"Renamed"}`)) {
+		t.Fatal("name-only ad-account update must not require confirmation")
+	}
+	if !rawPlatformRequestRequiresConfirm("PUT", "v1/ad-accounts/123", json.RawMessage(`{"delegations":[]}`)) {
+		t.Fatal("delegation replacement must require confirmation")
+	}
+	if !rawPlatformRequestRequiresConfirm("POST", "v1/unknown-mutation", nil) {
+		t.Fatal("unknown POST must fail closed behind confirmation")
+	}
+	if rawPlatformRequestRequiresConfirm("GET", "v1/unknown-read", nil) {
+		t.Fatal("unknown GET must remain confirmation-free")
+	}
+}
+
+func TestRiskConfirmationHonorsExplicitSafeBodyValue(t *testing.T) {
+	spec := appleads.EndpointSpec{
+		RiskConfirm:          true,
+		RiskConfirmBodyField: "status",
+		RiskConfirmBodyValue: "PAUSED",
+	}
+	if riskConfirmationRequired(spec, json.RawMessage(`{"status":"PAUSED"}`)) {
+		t.Fatal("explicitly paused payload must not require spend confirmation")
+	}
+	for _, body := range []string{`{"status":"ENABLED"}`, `{}`, `{"status":123}`, `not-json`} {
+		if !riskConfirmationRequired(spec, json.RawMessage(body)) {
+			t.Fatalf("payload %s unexpectedly bypassed spend confirmation", body)
+		}
+	}
+}
+
+func TestConfirmHelpExplainsRiskImpact(t *testing.T) {
+	want := "Acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact"
+	spec := appleads.EndpointSpec{RiskConfirm: true}
+	if got := confirmFlagUsage(spec); got != want {
+		t.Fatalf("confirmFlagUsage() = %q, want %q", got, want)
+	}
+	command := PlatformAPIRequestCommand()
+	if got := command.FlagSet.Lookup("confirm").Usage; got != want {
+		t.Fatalf("raw Platform --confirm usage = %q, want %q", got, want)
 	}
 }
 
@@ -549,14 +595,14 @@ func TestAdsAuthDiscoveryPreservesInt64Identifiers(t *testing.T) {
 		t.Fatalf("discoveryUserSummary() = %q, want %q", got, largeID)
 	}
 
-	accounts, err := summarizeACLAccounts(
-		appleads.RawResponse(`{"data":[{"orgId":`+largeID+`,"orgName":"Large","roleNames":["Admin"]}]}`),
+	accounts, err := summarizePlatformACLAccounts(
+		appleads.RawResponse(`{"result":{"acls":[{"adAccount":{"id":`+largeID+`,"orgId":987654,"name":"Large"},"roles":["Admin"]}]}}`),
 		largeID,
 	)
 	if err != nil {
-		t.Fatalf("summarizeACLAccounts() error: %v", err)
+		t.Fatalf("summarizePlatformACLAccounts() error: %v", err)
 	}
-	if len(accounts) != 1 || accounts[0].OrgID != largeID || accounts[0].Name != "Large" || !accounts[0].Active {
+	if len(accounts) != 1 || accounts[0].AdAccountID != largeID || accounts[0].Name != "Large" || !accounts[0].Active {
 		t.Fatalf("accounts = %+v, want exact active int64 identifiers", accounts)
 	}
 	if got := strings.Join(accounts[0].Roles, ","); got != "Admin" {
@@ -833,7 +879,7 @@ func assertSpecFlags(t *testing.T, cmd *ffcli.Command, spec appleads.EndpointSpe
 	if spec.BodyKind != appleads.BodyNone && cmd.FlagSet.Lookup("file") == nil {
 		t.Fatalf("asc ads %s missing --file", strings.Join(spec.CommandPath, " "))
 	}
-	if spec.RequiresConfirm && cmd.FlagSet.Lookup("confirm") == nil {
+	if (spec.RequiresConfirm || spec.RiskConfirm) && cmd.FlagSet.Lookup("confirm") == nil {
 		t.Fatalf("asc ads %s missing --confirm", strings.Join(spec.CommandPath, " "))
 	}
 	if spec.SupportsPaginate && cmd.FlagSet.Lookup("paginate") == nil {

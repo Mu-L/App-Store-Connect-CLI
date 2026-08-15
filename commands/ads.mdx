@@ -54,8 +54,7 @@ asc ads auth login \
 ```
 
 Add `--network` during login when you want `asc` to request a token and call
-the stable Campaign Management API v5 `GET /v5/me` endpoint before storing the
-profile:
+the Platform API v1 `GET /v1/me` endpoint before storing the profile:
 
 ```bash  theme={null}
 asc ads auth login \
@@ -118,7 +117,7 @@ not know the org ID yet, discover the active Ads user and available accounts:
 asc ads auth discover --output json
 ```
 
-Then pass an `accounts[].org_id` returned by Apple:
+Then pass an `accounts[].org_id` returned by Apple to a legacy v5 command:
 
 ```bash  theme={null}
 asc ads v5 campaigns list --org "123456" --output json
@@ -489,7 +488,7 @@ require `--confirm`. Empty successful v1 responses print `{}`.
 When you automate Apple Ads with a coding agent:
 
 1. Run `asc ads <group> --help` before choosing flags.
-2. Resolve the user and org with `asc ads auth discover --output json` unless `ASC_ADS_ORG_ID` is already known.
+2. Resolve the user and available ad accounts with `asc ads auth discover --output json`; use `accounts[].ad_account_id` for Platform v1 and `accounts[].org_id` for legacy v5.
 3. Use `--output json` for machine parsing.
 4. Put request bodies in checked-in templates or temporary JSON files, not shell-escaped inline JSON.
 5. Pass `--confirm` only after you have printed the target ID and cleanup plan.

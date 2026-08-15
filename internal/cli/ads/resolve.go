@@ -38,11 +38,6 @@ func resolveClient(ctx context.Context, flags commonFlags, requiresOrg bool) (*a
 	return appleads.NewClient(credentials)
 }
 
-func resolvePlatformClient(ctx context.Context, flags commonFlags, contextKind appleads.ContextKind) (*appleads.Client, error) {
-	client, _, err := resolvePlatformClientAndAdAccountID(ctx, flags, contextKind)
-	return client, err
-}
-
 func resolvePlatformClientAndAdAccountID(ctx context.Context, flags commonFlags, contextKind appleads.ContextKind) (*appleads.Client, string, error) {
 	credentials, err := resolveCredentials(flags)
 	if err != nil {
@@ -208,6 +203,9 @@ func resolveOrgIDWithSource(flags commonFlags, credentials appleads.Credentials)
 			return orgID, "Ads profile org_id", nil
 		}
 		return orgID, "credential org_id", nil
+	}
+	if strings.TrimSpace(credentials.Profile) != "" {
+		return "", "", nil
 	}
 	cfg, err := config.Load()
 	if err != nil {
