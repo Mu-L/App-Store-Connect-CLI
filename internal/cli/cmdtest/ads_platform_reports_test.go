@@ -93,30 +93,53 @@ func TestAdsPlatformChangeHistoryDetailRequest(t *testing.T) {
 	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
 
+	requests := 0
 	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
 		if req.Method != http.MethodGet || req.URL.Path != "/v1/change-history/Campaign.444555666.txn_abc123def456" {
 			t.Fatalf("request = %s %s", req.Method, req.URL.String())
 		}
-		if got := req.URL.Query().Get("limit"); got != "25" {
+		if got := req.URL.Query().Get("limit"); got != "2" {
 			t.Fatalf("limit = %q", got)
 		}
-		if got := req.URL.Query().Get("offset"); got != "10" {
+		switch got := req.URL.Query().Get("offset"); got {
+		case "0":
+			return adsJSONResponse(200, `{"dataType":"ChangeDetail","pagination":{"totalCount":3,"offset":0,"pageSize":2},"result":[{"detailId":"Campaign.444555666.txn_abc123def456","details":[{"transactionId":"txn_abc123def456","changes":[{"field":"name"},{"field":"status"}]}]}]}`), nil
+		case "2":
+			return adsJSONResponse(200, `{"dataType":"ChangeDetail","pagination":{"totalCount":3,"offset":2,"pageSize":2},"result":[{"detailId":"Campaign.444555666.txn_abc123def456","details":[{"transactionId":"txn_abc123def456","changes":[{"field":"dailyBudget"}]}]}]}`), nil
+		default:
 			t.Fatalf("offset = %q", got)
 		}
-		return adsJSONResponse(200, `{"result":{"detailId":"Campaign.444555666.txn_abc123def456","changes":[]}}`), nil
+		return nil, nil
 	}))
 
 	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "change-history", "view", "--detail-id", "Campaign.444555666.txn_abc123def456", "--limit", "25", "--offset", "10", "--output", "json"}); err != nil {
+	if err := root.Parse([]string{"ads", "change-history", "view", "--detail-id", "Campaign.444555666.txn_abc123def456", "--limit", "2", "--paginate", "--output", "json"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
-	_, stderr := captureOutput(t, func() {
+	stdout, stderr := captureOutput(t, func() {
 		if err := root.Run(context.Background()); err != nil {
 			t.Fatalf("run error: %v", err)
 		}
 	})
 	if stderr != "" {
 		t.Fatalf("stderr = %q", stderr)
+	}
+	if requests != 2 {
+		t.Fatalf("request count = %d, want 2", requests)
+	}
+	var response struct {
+		Result []struct {
+			Details []struct {
+				Changes []json.RawMessage `json:"changes"`
+			} `json:"details"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if len(response.Result) != 1 || len(response.Result[0].Details) != 1 || len(response.Result[0].Details[0].Changes) != 3 {
+		t.Fatalf("stdout did not aggregate nested changes: %s", stdout)
 	}
 }
 
