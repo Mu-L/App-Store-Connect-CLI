@@ -143,6 +143,128 @@ func TestPlatformAppSearchRejectsInvalidRepeatedStoreFrontOccurrence(t *testing.
 	}
 }
 
+func TestEndpointHelpDocumentsJSONBodyMetadata(t *testing.T) {
+	root := AdsCommand()
+	specs := []struct {
+		prefix []string
+		specs  []appleads.EndpointSpec
+	}{
+		{prefix: nil, specs: appleads.PlatformEndpointSpecs()},
+		{prefix: []string{"v5"}, specs: appleads.EndpointSpecs()},
+	}
+	for _, group := range specs {
+		for _, spec := range group.specs {
+			if spec.BodyKind == appleads.BodyNone {
+				continue
+			}
+			path := append(append([]string(nil), group.prefix...), spec.CommandPath...)
+			cmd := findCommand(root, path...)
+			if cmd == nil {
+				t.Fatalf("missing command asc ads %s", strings.Join(path, " "))
+			}
+			for _, want := range []string{
+				"Schema: " + spec.BodyType,
+				"Shape: " + bodyShape(spec.BodyKind),
+				"Required: " + bodyRequired(spec),
+			} {
+				if !strings.Contains(cmd.LongHelp, want) {
+					t.Fatalf("asc ads %s LongHelp = %q, want %q", strings.Join(path, " "), cmd.LongHelp, want)
+				}
+			}
+		}
+	}
+}
+
+func TestEndpointHelpUsesMultipartShapeWithoutJSONPrefix(t *testing.T) {
+	help := endpointBodyHelp(appleads.EndpointSpec{
+		BodyKind: appleads.BodyMultipart,
+		BodyType: "UploadAsset",
+	})
+	if !strings.Contains(help, "Schema: UploadAsset") {
+		t.Fatalf("multipart help = %q, want schema", help)
+	}
+	if !strings.Contains(help, "Shape: multipart/form-data") {
+		t.Fatalf("multipart help = %q, want multipart/form-data shape", help)
+	}
+	if strings.Contains(help, "JSON multipart") {
+		t.Fatalf("multipart help = %q, must not call multipart JSON", help)
+	}
+}
+
+func TestEndpointHelpKeepsArraySchemaReadable(t *testing.T) {
+	root := AdsCommand()
+	cmd := findCommand(root, "v5", "targeting-keywords", "create-bulk")
+	if cmd == nil {
+		t.Fatal("missing targeting-keywords create-bulk")
+	}
+	for _, want := range []string{"Schema: [Keyword]", "Shape: JSON array", "Required: yes"} {
+		if !strings.Contains(cmd.LongHelp, want) {
+			t.Fatalf("targeting-keywords create-bulk LongHelp = %q, want %q", cmd.LongHelp, want)
+		}
+	}
+}
+
+func TestPlatformAppsSearchHelpExplainsModesAndDefaults(t *testing.T) {
+	root := AdsCommand()
+	search := findCommand(root, "apps", "search")
+	if search == nil {
+		t.Fatal("missing asc ads apps search")
+	}
+	for _, want := range []string{
+		"At least one of --query, --cpids, or --return-owned-apps is required",
+		`--query "Example"`,
+		`--cpids "123456,789012"`,
+		"--return-owned-apps",
+	} {
+		if !strings.Contains(search.LongHelp, want) {
+			t.Fatalf("apps search LongHelp = %q, want %q", search.LongHelp, want)
+		}
+	}
+
+	for _, test := range []struct {
+		name string
+		want string
+	}{
+		{name: "query", want: "Free-text app name or developer-name search"},
+		{name: "cpids", want: "Comma-separated iTunes content provider IDs"},
+		{name: "store-fronts", want: "ISO 3166-1 alpha-2 storefront codes"},
+		{name: "return-owned-apps", want: "Return apps owned by this organization"},
+		{name: "limit", want: "Maximum results to return"},
+		{name: "offset", want: "Zero-based result offset for pagination"},
+	} {
+		flag := search.FlagSet.Lookup(test.name)
+		if flag == nil {
+			t.Fatalf("apps search missing --%s", test.name)
+		}
+		if !strings.Contains(flag.Usage, test.want) {
+			t.Fatalf("--%s usage = %q, want %q", test.name, flag.Usage, test.want)
+		}
+	}
+	if got := search.FlagSet.Lookup("limit").DefValue; got != "20" {
+		t.Fatalf("apps search --limit default = %q, want 20", got)
+	}
+}
+
+func bodyShape(kind appleads.BodyKind) string {
+	switch kind {
+	case appleads.BodyObject:
+		return "JSON object"
+	case appleads.BodyArray:
+		return "JSON array"
+	case appleads.BodyMultipart:
+		return "multipart/form-data"
+	default:
+		return string(kind)
+	}
+}
+
+func bodyRequired(spec appleads.EndpointSpec) string {
+	if spec.BodyOptional {
+		return "no"
+	}
+	return "yes"
+}
+
 func TestPlatformAdAccountUpdateBodySafeguards(t *testing.T) {
 	spec, ok := appleads.PlatformEndpointByCommandPath("ad-accounts", "update")
 	if !ok {
