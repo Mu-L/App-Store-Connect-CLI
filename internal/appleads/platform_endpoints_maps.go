@@ -12,9 +12,12 @@ func platformMapsEndpointSpecs() []EndpointSpec {
 	query := func(name, path string, commandPath []string, optional bool, bodyType, responseType string) EndpointSpec {
 		return platformEndpoint(name, "POST", path, commandPath, ContextAdAccount, BodyObject, optional, bodyType, responseType, nil, nil)
 	}
+	assetQuery := query("platform-query-assets", "v1/assets/query", []string{"assets", "find"}, true, "QueryRequest", "AssetQueryResponse")
+	assetQuery.BodyFileExample = "query.json"
+	assetQuery.BodyHint = "Omit --file to return all non-deleted assets. Supported filters: promotedObjectId, promotedObjectType, providerAssetId, and assetType (IMAGE)."
 
 	specs := []EndpointSpec{
-		query("platform-query-assets", "v1/assets/query", []string{"assets", "find"}, true, "QueryRequest", "AssetQueryResponse"),
+		assetQuery,
 		platformEndpoint("platform-upload-asset", "POST", "v1/assets/upload", []string{"assets", "upload"}, ContextAdAccount, BodyMultipart, false, "form-data: file (binary; required), promotedObjectId (string; required), promotedObjectType (string; required; allowed=BUSINESS_BRAND)", "AssetResponse", nil, nil),
 		platformEndpoint("platform-delete-asset", "DELETE", "v1/assets/{id}", []string{"assets", "delete"}, ContextAdAccount, BodyNone, false, "", "Response", id("asset"), nil),
 		platformEndpoint("platform-get-asset", "GET", "v1/assets/{id}", []string{"assets", "view"}, ContextAdAccount, BodyNone, false, "", "AssetResponse", id("asset"), nil),
