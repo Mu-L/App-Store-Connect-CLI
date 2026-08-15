@@ -858,7 +858,7 @@ func TestAdsAPIRequestRejectsUnexpectedArgsBeforeNetwork(t *testing.T) {
 func TestAdsPlatformAPIRequestUsesV1HostAndAdAccountContext(t *testing.T) {
 	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
-	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "123")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
 	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.Method != http.MethodGet || req.URL.Host != "api.ads.apple.com" || req.URL.Path != "/v1/ad-accounts/123" {
@@ -867,7 +867,7 @@ func TestAdsPlatformAPIRequestUsesV1HostAndAdAccountContext(t *testing.T) {
 		if got := req.Header.Get("Authorization"); got != "Bearer ACCESS" {
 			t.Fatalf("Authorization = %q", got)
 		}
-		if got := req.Header.Get("X-AP-Context"); got != "adAccountId=AD_ACCOUNT;" {
+		if got := req.Header.Get("X-AP-Context"); got != "adAccountId=123;" {
 			t.Fatalf("X-AP-Context = %q", got)
 		}
 		return adsJSONResponse(200, `{"result":{"id":"123"}}`), nil
@@ -895,6 +895,59 @@ func TestAdsPlatformAPIRequestUsesV1HostAndAdAccountContext(t *testing.T) {
 	}
 	if output.Result.ID != "123" {
 		t.Fatalf("result = %+v, want preserved v1 result envelope with id 123", output.Result)
+	}
+}
+
+func TestAdsPlatformAPIRequestRejectsAdAccountPathMismatchBeforeNetwork(t *testing.T) {
+	for _, path := range []string{"v1/ad-accounts/PATH_ACCOUNT", "https://api.ads.apple.com/v1/ad-accounts/PATH_ACCOUNT"} {
+		t.Run(path, func(t *testing.T) {
+			isolateAdsGuideEnv(t)
+			t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+			t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "CONTEXT_ACCOUNT")
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+			installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatalf("unexpected token/network request: %s %s", req.Method, req.URL.String())
+				return nil, nil
+			}))
+
+			stdout, stderr, err := runAdsEvalCommand(t, "ads", "api", "request", "--method", "GET", "--path", path, "--output", "json")
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("error = %v, want usage error", err)
+			}
+			if stdout != "" || !strings.Contains(stderr, "must match the v1/ad-accounts path ID") {
+				t.Fatalf("stdout=%q stderr=%q error=%v, want path/context mismatch before network", stdout, stderr, err)
+			}
+		})
+	}
+}
+
+func TestAdsPlatformAPIRequestRejectsInvalidOutputBeforeNetwork(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected network request: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	}))
+
+	stdout, stderr, err := runAdsEvalCommand(t, "ads", "api", "request", "--path", "v1/me", "--output", "invalid")
+	if !errors.Is(err, flag.ErrHelp) || stdout != "" || !strings.Contains(stderr, "unsupported format: invalid") {
+		t.Fatalf("stdout=%q stderr=%q error=%v, want preflight output error", stdout, stderr, err)
+	}
+}
+
+func TestAdsEndpointRejectsInvalidOutputBeforeReadingBody(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected network request: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	}))
+
+	stdout, stderr, err := runAdsEvalCommand(t, "ads", "ad-accounts", "create", "--file", filepath.Join(t.TempDir(), "does-not-exist.json"), "--output", "invalid")
+	if !errors.Is(err, flag.ErrHelp) || stdout != "" || !strings.Contains(stderr, "unsupported format: invalid") {
+		t.Fatalf("stdout=%q stderr=%q error=%v, want output preflight before body read", stdout, stderr, err)
 	}
 }
 
@@ -972,7 +1025,7 @@ func TestAdsPlatformAPIRequestRejectsAdAccountForContextFreeEndpoint(t *testing.
 	}
 }
 
-func TestAdsPlatformAPIRequestRequiresConfirmForKnownDestructiveMutations(t *testing.T) {
+func TestAdsPlatformAPIRequestRequiresConfirmForKnownImpactMutations(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
@@ -1013,7 +1066,8 @@ func TestAdsPlatformAPIRequestRequiresConfirmForKnownDestructiveMutations(t *tes
 			_, stderr := captureOutput(t, func() {
 				runErr = root.Run(context.Background())
 			})
-			if !errors.Is(runErr, flag.ErrHelp) || runErr.Error() != "--confirm is required" || !strings.Contains(stderr, "--confirm is required") {
+			want := "--confirm is required to acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact"
+			if !errors.Is(runErr, flag.ErrHelp) || runErr.Error() != want || !strings.Contains(stderr, want) {
 				t.Fatalf("run error = %v stderr = %q", runErr, stderr)
 			}
 		})
@@ -1052,6 +1106,33 @@ func TestAdsPlatformAPIRequestRequiresConfirmForDelegationReplacement(t *testing
 	})
 	if !errors.Is(runErr, flag.ErrHelp) || runErr.Error() != "--confirm is required" || !strings.Contains(stderr, "--confirm is required") {
 		t.Fatalf("run error = %v stderr = %q", runErr, stderr)
+	}
+}
+
+func TestAdsPlatformAdAccountCreateRequiresRiskConfirmationBeforeNetwork(t *testing.T) {
+	payloadPath := filepath.Join(t.TempDir(), "ad-account.json")
+	if err := os.WriteFile(payloadPath, []byte(`{"name":"Disposable","productFeatures":["APPSTORE_APP_MANUAL"]}`), 0o600); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected token/network request: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	}))
+
+	root := RootCommand("dev")
+	if err := root.Parse([]string{"ads", "ad-accounts", "create", "--file", payloadPath}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	_, stderr := captureOutput(t, func() {
+		runErr = root.Run(context.Background())
+	})
+	if !errors.Is(runErr, flag.ErrHelp) || !strings.Contains(stderr, "--confirm is required to acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact") {
+		t.Fatalf("run error = %v stderr = %q, want risk confirmation", runErr, stderr)
 	}
 }
 

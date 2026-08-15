@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -175,6 +176,58 @@ func TestPlatformCampaignCLIOverridesPreserveSDKFixtureContracts(t *testing.T) {
 	}
 	if !budget.RiskConfirm || budget.RiskConfirmBodyField != "" {
 		t.Fatalf("budget risk metadata = %+v, want unconditional spend acknowledgement", budget)
+	}
+}
+
+func TestPlatformCampaignUpdateAndBudgetUpdateCarryRiskMetadata(t *testing.T) {
+	campaign, ok := PlatformEndpointByCommandPath("campaigns", "update")
+	if !ok {
+		t.Fatal("missing campaigns update")
+	}
+	if !campaign.RiskConfirm || campaign.RiskConfirmBodyField != "status" || campaign.RiskConfirmBodyValue != "PAUSED" {
+		t.Fatalf("campaign update risk metadata = %+v, want paused-only safe update", campaign)
+	}
+	if got, want := campaign.RiskConfirmAllowedBodyFields, []string{"name", "status"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("campaign update safe fields = %v, want %v", got, want)
+	}
+
+	budget, ok := PlatformEndpointByCommandPath("budget-orders", "update")
+	if !ok {
+		t.Fatal("missing budget-orders update")
+	}
+	if !budget.RiskConfirm || budget.RiskConfirmBodyField != "" {
+		t.Fatalf("budget update risk metadata = %+v, want unconditional spend acknowledgement", budget)
+	}
+}
+
+func TestPlatformSpendRiskMutationMetadata(t *testing.T) {
+	wants := []string{
+		"ad-groups create",
+		"ad-groups update",
+		"ads create",
+		"ads update",
+		"budget-orders create",
+		"budget-orders update",
+		"campaigns create",
+		"campaigns update",
+		"targeting-keywords create",
+		"targeting-keywords update",
+		"targeting-keywords create-bulk",
+		"targeting-keywords update-bulk",
+		"negative-keywords create",
+		"negative-keywords update",
+		"negative-keywords create-bulk",
+		"negative-keywords update-bulk",
+		"ad-accounts create",
+	}
+	for _, command := range wants {
+		spec, ok := PlatformEndpointByCommandPath(strings.Fields(command)...)
+		if !ok {
+			t.Fatalf("missing %q", command)
+		}
+		if !spec.RiskConfirm {
+			t.Errorf("%q RiskConfirm = false, want spend-risk confirmation", command)
+		}
 	}
 }
 

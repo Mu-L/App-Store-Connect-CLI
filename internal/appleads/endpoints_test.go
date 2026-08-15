@@ -161,6 +161,12 @@ func TestPlatformEndpointSpecsCoverAccountAndAppSurface(t *testing.T) {
 	if update.ConfirmBodyField != "delegations" {
 		t.Fatalf("ad-account update confirm field = %q, want delegations", update.ConfirmBodyField)
 	}
+	if !create.RiskConfirm {
+		t.Fatal("ad-account create must require risk confirmation")
+	}
+	if create.RiskConfirmBodyField != "" || create.RiskConfirmBodyValue != "" {
+		t.Fatalf("ad-account create risk exemption = %q=%q, want unconditional confirmation", create.RiskConfirmBodyField, create.RiskConfirmBodyValue)
+	}
 
 	for _, path := range [][]string{{"apps", "supported-languages", "find"}, {"apps", "eligibility", "find"}, {"rejection-reasons", "apps", "find"}} {
 		spec, ok := PlatformEndpointByCommandPath(path...)

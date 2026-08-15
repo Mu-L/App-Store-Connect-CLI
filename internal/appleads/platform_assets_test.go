@@ -8,6 +8,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
@@ -32,71 +33,79 @@ func TestUploadPlatformAssetStreamsExactMultipartRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client, err := NewClient(Credentials{AccessToken: "ACCESS", AdAccountID: "ACCOUNT"}, WithHTTPClient(&http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.Method != http.MethodPost || req.URL.String() != "https://api.ads.apple.com/v1/assets/upload" {
-				t.Fatalf("request = %s %s", req.Method, req.URL)
-			}
-			if got := req.Header.Get("X-AP-Context"); got != "adAccountId=ACCOUNT;" {
-				t.Fatalf("X-AP-Context = %q", got)
-			}
-			if got := req.Header.Get("Accept"); got != "application/json" {
-				t.Fatalf("Accept = %q", got)
-			}
-			if req.ContentLength <= int64(len(contents)) {
-				t.Fatalf("ContentLength = %d", req.ContentLength)
-			}
-			if got := req.Header.Get("Content-Length"); got != strconv.FormatInt(req.ContentLength, 10) {
-				t.Fatalf("Content-Length header = %q, want %d", got, req.ContentLength)
-			}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost || req.URL.Path != "/v1/assets/upload" {
+			t.Fatalf("request = %s %s", req.Method, req.URL)
+		}
+		if got := req.Header.Get("X-AP-Context"); got != "adAccountId=ACCOUNT;" {
+			t.Fatalf("X-AP-Context = %q", got)
+		}
+		if got := req.Header.Get("Accept"); got != "application/json" {
+			t.Fatalf("Accept = %q", got)
+		}
+		if len(req.TransferEncoding) != 0 {
+			t.Fatalf("Transfer-Encoding = %v, want none", req.TransferEncoding)
+		}
+		if req.ContentLength <= int64(len(contents)) {
+			t.Fatalf("ContentLength = %d", req.ContentLength)
+		}
+		if got := req.Header.Get("Content-Length"); got != strconv.FormatInt(req.ContentLength, 10) {
+			t.Fatalf("Content-Length header = %q, want %d", got, req.ContentLength)
+		}
 
-			mediaType, params, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
-			if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
-				t.Fatalf("Content-Type = %q error=%v", req.Header.Get("Content-Type"), err)
+		mediaType, params, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+		if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
+			t.Fatalf("Content-Type = %q error=%v", req.Header.Get("Content-Type"), err)
+		}
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if int64(len(body)) != req.ContentLength {
+			t.Fatalf("body length = %d, want %d", len(body), req.ContentLength)
+		}
+
+		reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+		type part struct {
+			name, filename, contentType string
+			body                        []byte
+		}
+		var parts []part
+		for {
+			item, err := reader.NextPart()
+			if errors.Is(err, io.EOF) {
+				break
 			}
-			body, err := io.ReadAll(req.Body)
 			if err != nil {
-				t.Fatalf("read body: %v", err)
+				t.Fatalf("next part: %v", err)
 			}
-			if int64(len(body)) != req.ContentLength {
-				t.Fatalf("body length = %d, want %d", len(body), req.ContentLength)
+			data, err := io.ReadAll(item)
+			if err != nil {
+				t.Fatalf("read part: %v", err)
 			}
-
-			reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
-			type part struct {
-				name, filename, contentType string
-				body                        []byte
-			}
-			var parts []part
-			for {
-				item, err := reader.NextPart()
-				if errors.Is(err, io.EOF) {
-					break
-				}
-				if err != nil {
-					t.Fatalf("next part: %v", err)
-				}
-				data, err := io.ReadAll(item)
-				if err != nil {
-					t.Fatalf("read part: %v", err)
-				}
-				parts = append(parts, part{item.FormName(), item.FileName(), item.Header.Get("Content-Type"), data})
-			}
-			if len(parts) != 3 {
-				t.Fatalf("multipart parts = %+v", parts)
-			}
-			if parts[0].name != "file" || parts[0].filename != "photo.jpeg" || parts[0].contentType != "image/jpeg" || !bytes.Equal(parts[0].body, contents) {
-				t.Fatalf("file part = %+v", parts[0])
-			}
-			if parts[1].name != "promotedObjectId" || string(parts[1].body) != "BRAND" {
-				t.Fatalf("brand part = %+v", parts[1])
-			}
-			if parts[2].name != "promotedObjectType" || string(parts[2].body) != "BUSINESS_BRAND" {
-				t.Fatalf("type part = %+v", parts[2])
-			}
-			return jsonResponse(200, `{"data":{"id":"asset"}}`), nil
-		}),
+			parts = append(parts, part{item.FormName(), item.FileName(), item.Header.Get("Content-Type"), data})
+		}
+		if len(parts) != 3 {
+			t.Fatalf("multipart parts = %+v", parts)
+		}
+		if parts[0].name != "file" || parts[0].filename != "photo.jpeg" || parts[0].contentType != "image/jpeg" || !bytes.Equal(parts[0].body, contents) {
+			t.Fatalf("file part = %+v", parts[0])
+		}
+		if parts[1].name != "promotedObjectId" || string(parts[1].body) != "BRAND" {
+			t.Fatalf("brand part = %+v", parts[1])
+		}
+		if parts[2].name != "promotedObjectType" || string(parts[2].body) != "BUSINESS_BRAND" {
+			t.Fatalf("type part = %+v", parts[2])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"id":"asset"}}`))
 	}))
+	defer server.Close()
+
+	client, err := NewClient(
+		Credentials{AccessToken: "ACCESS", AdAccountID: "ACCOUNT"},
+		WithPlatformBaseURL(server.URL+"/v1/"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

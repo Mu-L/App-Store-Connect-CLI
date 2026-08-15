@@ -156,6 +156,10 @@ func reportsPresetMigrationGuidance(level string) string {
 }
 
 func executeReportsPreset(ctx context.Context, flags adsReportPresetFlags) error {
+	outputFormat, err := shared.ValidateOutputFormat(*flags.output.Output, *flags.output.Pretty)
+	if err != nil {
+		return shared.UsageError(err.Error())
+	}
 	level := strings.TrimSpace(*flags.level)
 	levelSpec, ok := adsReportLevels[level]
 	if !ok {
@@ -190,7 +194,7 @@ func executeReportsPreset(ctx context.Context, flags adsReportPresetFlags) error
 	if err != nil {
 		return fmt.Errorf("ads v5 reports preset: %w", err)
 	}
-	return shared.PrintOutput(result, *flags.output.Output, *flags.output.Pretty)
+	return shared.PrintOutput(result, outputFormat, *flags.output.Pretty)
 }
 
 func reportPresetPathParams(spec appleads.EndpointSpec, flags adsReportPresetFlags) (map[string]string, error) {

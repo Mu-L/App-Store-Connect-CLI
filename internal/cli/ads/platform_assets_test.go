@@ -28,6 +28,11 @@ func TestPlatformAssetsUploadIsOneCustomCommand(t *testing.T) {
 			if !strings.Contains(command.LongHelp, `Poll "asc ads assets view"`) {
 				t.Fatalf("assets upload help does not point to direct assets view: %q", command.LongHelp)
 			}
+			for _, status := range []string{"ELIGIBLE", "LIMITED", "PENDING", "INELIGIBLE"} {
+				if !strings.Contains(command.LongHelp, status) {
+					t.Fatalf("assets upload help = %q, want eligibility status %q", command.LongHelp, status)
+				}
+			}
 			for _, want := range []string{"Schema: form-data:", "Shape: multipart/form-data", "Required: yes"} {
 				if !strings.Contains(command.LongHelp, want) {
 					t.Fatalf("assets upload help = %q, want %q", command.LongHelp, want)
@@ -53,7 +58,7 @@ func TestPlatformAssetsFindHelpExplainsOptionalQuery(t *testing.T) {
 	if command == nil {
 		t.Fatal("missing assets find command")
 	}
-	for _, want := range []string{"[--file query.json]", "Required: no", "all non-deleted assets", "promotedObjectId", "providerAssetId", "assetType (IMAGE)"} {
+	for _, want := range []string{"[--file query.json]", "Required: no", "default page", "non-deleted assets", "selected ad account", "promotedObjectId", "providerAssetId", "assetType (IMAGE)"} {
 		if !strings.Contains(command.LongHelp, want) {
 			t.Fatalf("assets find help = %q, want %q", command.LongHelp, want)
 		}
@@ -75,6 +80,56 @@ func TestPlatformMapDeleteCommandsRequireConfirmationBeforeOtherWork(t *testing.
 				t.Fatalf("error = %v", err)
 			}
 		})
+	}
+}
+
+func TestPlatformLocationGroupUpdateRequiresRiskConfirmationBeforeOtherWork(t *testing.T) {
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+	setAdsResolverTestEnv(t)
+
+	spec, ok := appleads.PlatformEndpointByCommandPath("location-groups", "update")
+	if !ok {
+		t.Fatal("missing location-groups update spec")
+	}
+	if !spec.RiskConfirm || spec.RiskConfirmBodyField != "" {
+		t.Fatalf("location-groups update risk metadata = %+v, want unconditional confirmation", spec)
+	}
+	command := findCommand(AdsCommand(), "location-groups", "update")
+	if command == nil {
+		t.Fatal("missing location-groups update command")
+	}
+	confirm := command.FlagSet.Lookup("confirm")
+	if confirm == nil || !strings.Contains(confirm.Usage, "spend") || !strings.Contains(confirm.Usage, "targeting") {
+		t.Fatalf("location-groups update --confirm usage = %q", valueFlagUsage(confirm))
+	}
+	if !strings.Contains(command.LongHelp, "--confirm") || !strings.Contains(command.LongHelp, "immediately change targeting") {
+		t.Fatalf("location-groups update help = %q", command.LongHelp)
+	}
+
+	_, flags := bindEndpointFlags(spec, "location-groups update")
+	*flags.pathStrings["id"] = "GROUP"
+	err := executeEndpoint(context.Background(), spec, flags)
+	if !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), "--confirm is required") {
+		t.Fatalf("location-groups update error = %v, want pre-auth confirmation usage error", err)
+	}
+
+	for _, path := range [][]string{
+		{"location-groups", "create"},
+		{"creatives", "create"},
+		{"creatives", "update"},
+		{"assets", "upload"},
+	} {
+		other, ok := appleads.PlatformEndpointByCommandPath(path...)
+		if !ok {
+			t.Fatalf("missing %s spec", strings.Join(path, " "))
+		}
+		if other.RiskConfirm || other.RequiresConfirm {
+			t.Fatalf("%s confirmation metadata = %+v, want confirmation-free", strings.Join(path, " "), other)
+		}
+		otherCommand := findCommand(AdsCommand(), path...)
+		if otherCommand == nil || otherCommand.FlagSet.Lookup("confirm") != nil {
+			t.Fatalf("%s must remain confirmation-free", strings.Join(path, " "))
+		}
 	}
 }
 
@@ -164,6 +219,43 @@ func TestPlatformAssetUploadMissingFlagsFailBeforeAuth(t *testing.T) {
 	err := command.Exec(context.Background(), command.FlagSet.Args())
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("error = %v, want usage error", err)
+	}
+}
+
+func TestPlatformAssetUploadValidatesOutputBeforeMutation(t *testing.T) {
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+	setAdsResolverTestEnv(t)
+	asset := filepath.Join(t.TempDir(), "asset.png")
+	if err := os.WriteFile(asset, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "unsupported format",
+			args: []string{"--file", asset, "--brand", "BRAND", "--ad-account", "ACCOUNT", "--output", "yaml"},
+			want: "unsupported format: yaml",
+		},
+		{
+			name: "pretty table",
+			args: []string{"--file", asset, "--brand", "BRAND", "--ad-account", "ACCOUNT", "--output", "table", "--pretty"},
+			want: "--pretty is only valid with JSON output",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := PlatformAssetUploadCommand()
+			if err := command.FlagSet.Parse(test.args); err != nil {
+				t.Fatal(err)
+			}
+			err := command.Exec(context.Background(), command.FlagSet.Args())
+			if !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want usage error containing %q", err, test.want)
+			}
+		})
 	}
 }
 

@@ -64,6 +64,10 @@ Examples:
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err
 			}
+			outputFormat, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
 			methodValue := strings.ToUpper(strings.TrimSpace(*method))
 			switch methodValue {
 			case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete:
@@ -74,10 +78,6 @@ Examples:
 			if pathValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --path is required")
 				return shared.MissingRequiredUsageError()
-			}
-			outputFormat, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
-			if err != nil {
-				return shared.UsageError(err.Error())
 			}
 			requiresOrg, err := rawRequestRequiresOrg(pathValue)
 			if err != nil {

@@ -86,6 +86,9 @@ func StoreCredentialsConfigAt(name string, credentials Credentials, path string)
 }
 
 func payloadFromCredentials(credentials Credentials, includePEM bool) (credentialPayload, error) {
+	if err := ValidateAdAccountID(credentials.AdAccountID); err != nil {
+		return credentialPayload{}, err
+	}
 	payload := credentialPayload{
 		ClientID:       strings.TrimSpace(credentials.ClientID),
 		TeamID:         strings.TrimSpace(credentials.TeamID),
@@ -533,10 +536,9 @@ func storedCredentialsFromConfig(cfg *config.Config, path string) []StoredCreden
 			TeamID:         cred.TeamID,
 			KeyID:          cred.KeyID,
 			PrivateKeyPath: cred.PrivateKeyPath,
-			// Preserve the legacy root organization fallback for every named
-			// profile. Do not copy the root ad-account context: Platform v1
-			// ad-account selection must remain profile-specific.
-			OrgID:       firstNonEmpty(cred.OrgID, cfg.Ads.OrgID),
+			// A named profile owns its context. Root Ads context is only a
+			// standalone fallback for profile-less authentication.
+			OrgID:       cred.OrgID,
 			AdAccountID: cred.AdAccountID,
 		}
 		credentials = append(credentials, storedFromPayload(cred.Name, payload, "config", path))
@@ -663,13 +665,4 @@ func mergeCredentials(primary, secondary []StoredCredential) []StoredCredential 
 		}
 	}
 	return merged
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
 }

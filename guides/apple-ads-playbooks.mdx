@@ -131,8 +131,8 @@ asc ads v5 campaigns list \
 Use this sequence before an automation run or after rotating credentials:
 
 ```bash  theme={null}
-asc ads v5 acls list --output json
-asc ads v5 campaigns list --org "123456" --limit 1 --output json
+ASC_BYPASS_KEYCHAIN=1 asc ads v5 acls list --output json
+ASC_BYPASS_KEYCHAIN=1 asc ads v5 campaigns list --org "123456" --limit 1 --output json
 ```
 
 Expected result: every command exits successfully, and the campaign list returns
