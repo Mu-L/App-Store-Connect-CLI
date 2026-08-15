@@ -300,6 +300,18 @@ func TestRawPlatformRequestUsesEndpointRiskMetadata(t *testing.T) {
 	if !rawPlatformRequestRequiresConfirm("POST", "v1/unknown-mutation", nil) {
 		t.Fatal("unknown POST must fail closed behind confirmation")
 	}
+	if rawPlatformRequestRequiresConfirm("POST", "v1/metadata/apps/supported-languages/query", nil) {
+		t.Fatal("known read-only POST query must not require confirmation")
+	}
+	if rawPlatformRequestRequiresPrePayloadConfirmation("PUT", "v1/ad-accounts/123") {
+		t.Fatal("body-scoped ad-account update confirmation must wait for the payload")
+	}
+	if rawPlatformRequestRequiresPrePayloadConfirmation("POST", "v1/metadata/apps/supported-languages/query") {
+		t.Fatal("known read-only POST query must remain confirmation-free before the payload")
+	}
+	if !rawPlatformRequestRequiresPrePayloadConfirmation("POST", "v1/unknown-mutation") {
+		t.Fatal("unknown POST must fail closed before payload work")
+	}
 	if rawPlatformRequestRequiresConfirm("GET", "v1/unknown-read", nil) {
 		t.Fatal("unknown GET must remain confirmation-free")
 	}
