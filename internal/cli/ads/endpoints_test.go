@@ -417,18 +417,18 @@ func TestPlatformKeywordQuerySelectorValidation(t *testing.T) {
 			name:    "targeting legacy v5 conditions selector",
 			path:    []string{"targeting-keywords", "find"},
 			body:    `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]}]}`,
-			wantErr: `uses "filters", not "conditions"`,
+			wantErr: `uses "filters" entries with "value"`,
 		},
 		{
 			name:    "negative legacy v5 conditions selector",
 			path:    []string{"negative-keywords", "find"},
 			body:    `{"conditions":[{"field":"adGroupId","operator":"EQUALS","values":["ad-group-1"]}]}`,
-			wantErr: `uses "filters", not "conditions"`,
+			wantErr: `legacy "conditions" entries with "values"`,
 		},
 		{
 			name:    "targeting irrelevant filter",
 			path:    []string{"targeting-keywords", "find"},
-			body:    `{"filters":[{"field":"name","operator":"EQUALS","value":["ignored"]}]}`,
+			body:    `{"filters":[{"field":"name","operator":"EQUALS","value":"ignored"}]}`,
 			wantErr: "id, adGroupId, or campaignId",
 		},
 		{
@@ -455,7 +455,7 @@ func TestPlatformKeywordQuerySelectorValidation(t *testing.T) {
 		{
 			name:    "negative irrelevant filter",
 			path:    []string{"negative-keywords", "find"},
-			body:    `{"filters":[{"field":"name","operator":"EQUALS","value":["ignored"]}]}`,
+			body:    `{"filters":[{"field":"name","operator":"EQUALS","value":"ignored"}]}`,
 			wantErr: "id or adGroupId",
 		},
 		{
@@ -519,7 +519,7 @@ func TestPlatformKeywordQuerySelectorValidationPrecedesAuth(t *testing.T) {
 				t.Fatalf("missing platform endpoint %q", strings.Join(path, " "))
 			}
 			file := filepath.Join(t.TempDir(), "query.json")
-			if err := os.WriteFile(file, []byte(`{"filters":[{"field":"name","operator":"EQUALS","value":["ignored"]}]}`), 0o600); err != nil {
+			if err := os.WriteFile(file, []byte(`{"filters":[{"field":"name","operator":"EQUALS","value":"ignored"}]}`), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			fs, flags := bindEndpointFlags(spec, strings.Join(path, " "))

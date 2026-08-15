@@ -811,7 +811,7 @@ func validateKeywordQuerySelector(specName string, body json.RawMessage) error {
 		return fmt.Errorf("invalid QueryRequest selector filters: %w", err)
 	}
 	if len(payload.Conditions) > 0 && string(payload.Conditions) != "null" {
-		return fmt.Errorf("QueryRequest uses \"filters\", not \"conditions\"; rename the selector array (Campaign Management API v5 selectors used \"conditions\", the Platform API rejects it)")
+		return fmt.Errorf("QueryRequest uses \"filters\" entries with \"value\", not legacy \"conditions\" entries with \"values\"; rename both fields before retrying (the Platform API rejects the v5 selector shape)")
 	}
 
 	switch specName {
