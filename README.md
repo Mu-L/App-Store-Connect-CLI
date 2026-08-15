@@ -386,10 +386,10 @@ asc xcode-cloud build-runs get --id "BUILD_RUN_ID"
 Apple Ads uses separate OAuth credentials from App Store Connect:
 
 ```bash
-asc ads auth login --name "Marketing" --client-id "SEARCHADS_CLIENT_ID" --team-id "SEARCHADS_TEAM_ID" --key-id "KEY_ID" --private-key ./ads-key.pem --org "123456"
+asc ads auth login --name "Marketing" --client-id "SEARCHADS_CLIENT_ID" --team-id "SEARCHADS_TEAM_ID" --key-id "KEY_ID" --private-key ./ads-key.pem --ad-account "987654"
 asc ads auth discover --output json
-asc ads v5 campaigns --org "123456" --limit 100 --output json
-asc ads v5 reports campaigns --org "123456" --file reporting-request.json --output json
+asc ads campaigns find --ad-account "987654" --file query.json --output json
+asc ads reports apps campaigns --ad-account "987654" --file report.json --output json
 ```
 
 See [guides/apple-ads-playbooks.mdx](guides/apple-ads-playbooks.mdx) for

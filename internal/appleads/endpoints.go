@@ -321,9 +321,26 @@ func EndpointSpecs() []EndpointSpec {
 		endpoint("impression-share-report", "POST", "v5/custom-reports", []string{"impression-share-reports", "create"}, BodyObject, "CustomReportRequest", "CustomReportResponseBody", nil, nil),
 		endpoint("get-a-single-impression-share-report", "GET", "v5/custom-reports/{reportId}", []string{"impression-share-reports", "view"}, BodyNone, "", "CustomReportResponseBody", []ParamSpec{reportParam}, nil),
 	}
+	riskConfirmNames := map[string]struct{}{
+		"create-a-budget-order":             {},
+		"update-a-budget-order":             {},
+		"create-a-campaign":                 {},
+		"update-a-campaign":                 {},
+		"create-an-ad-group":                {},
+		"update-an-ad-group":                {},
+		"create-an-ad":                      {},
+		"update-an-ad":                      {},
+		"create-targeting-keywords":         {},
+		"update-targeting-keywords":         {},
+		"create-campaign-negative-keywords": {},
+		"update-campaign-negative-keywords": {},
+		"create-ad-group-negative-keywords": {},
+		"update-ad-group-negative-keywords": {},
+	}
 
 	for i := range specs {
 		specs[i].RequiresConfirm = specs[i].Method == "DELETE" || strings.Contains(specs[i].Path, "/delete/bulk")
+		_, specs[i].RiskConfirm = riskConfirmNames[specs[i].Name]
 		specs[i].SupportsPaginate = hasLimitOffset(specs[i].QueryParams)
 		specs[i].DefaultListAlias = len(specs[i].CommandPath) == 2 && (specs[i].CommandPath[1] == "list" || specs[i].Name == "get-me-details")
 		if specs[i].Name == "get-user-acl" || specs[i].Name == "get-me-details" {

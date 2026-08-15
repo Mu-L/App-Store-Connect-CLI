@@ -86,6 +86,9 @@ func StoreCredentialsConfigAt(name string, credentials Credentials, path string)
 }
 
 func payloadFromCredentials(credentials Credentials, includePEM bool) (credentialPayload, error) {
+	if err := ValidateOrgID(credentials.OrgID); err != nil {
+		return credentialPayload{}, err
+	}
 	if err := ValidateAdAccountID(credentials.AdAccountID); err != nil {
 		return credentialPayload{}, err
 	}

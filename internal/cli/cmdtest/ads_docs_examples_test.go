@@ -72,6 +72,21 @@ func TestAdsGuideExamplesDispatchRepresentativeCommands(t *testing.T) {
 		}
 	}))
 
+	expectedWarnings := map[string]string{
+		`asc ads v5 campaigns --limit 10 --output json`:                                      adsV5ReplacementWarning("v5 campaigns", "campaigns find"),
+		`asc ads v5 acls --output json`:                                                      adsV5ReplacementWarning("v5 acls", "acls list"),
+		`asc ads v5 campaigns list --org "123456" --output json`:                             adsV5ReplacementWarning("v5 campaigns list", "campaigns find"),
+		`asc ads v5 me view`:                                                                 adsV5ReplacementWarning("v5 me view", "me view"),
+		`asc ads v5 campaigns delete --org "123456" --campaign 987654321 --confirm`:          adsV5ReplacementWarning("v5 campaigns delete", "campaigns delete"),
+		`asc ads v5 apps search --org "123456" --query "My App" --limit 10 --output json`:    adsV5ReplacementWarning("v5 apps search", "apps search"),
+		`asc ads v5 product-pages list --org "123456" --adam-id 1234567890 --states VISIBLE`: adsV5ReplacementWarning("v5 product-pages list", "product-pages find"),
+		`asc ads v5 targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json --confirm`:    adsV5ReplacementWarning("v5 targeting-keywords create-bulk", "targeting-keywords create-bulk"),
+		`asc ads v5 targeting-keywords delete-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keyword-ids.json --confirm`: adsV5NoReplacementWarning("v5 targeting-keywords delete-bulk", "No one-command replacement exists. Query matching keywords with `asc ads targeting-keywords find`, then delete each ID with `asc ads targeting-keywords delete --confirm`."),
+		`asc ads v5 reports campaigns --org "123456" --file reporting-request.json --output json`:                                              adsV5ReplacementWarning("v5 reports campaigns", "reports apps campaigns"),
+		`asc ads v5 impression-share-reports --org "123456" --limit 50 --output json`:                                                          adsV5NoReplacementWarning("v5 impression-share-reports", "No one-command replacement exists. Use `asc ads insights impression-share find` with an equivalent query payload."),
+		`asc ads v5 api request --method POST --path v5/campaigns/find --org "123456" --file selector.json --output json`:                      adsV5ReplacementWarning("v5 api request", "api request"),
+	}
+
 	for _, commandLine := range []string{
 		`asc ads auth login --name "Marketing" --client-id "SEARCHADS_CLIENT_ID" --team-id "SEARCHADS_TEAM_ID" --key-id "KEY_ID" --private-key ./apple-ads-private-key.pem --org "123456"`,
 		"asc ads auth status --validate",
@@ -80,11 +95,11 @@ func TestAdsGuideExamplesDispatchRepresentativeCommands(t *testing.T) {
 		"asc ads v5 campaigns --limit 10 --output json",
 		`asc ads v5 acls --output json`,
 		`asc ads v5 campaigns list --org "123456" --output json`,
-		`asc ads me view`,
+		`asc ads v5 me view`,
 		`asc ads v5 campaigns delete --org "123456" --campaign 987654321 --confirm`,
 		`asc ads v5 apps search --org "123456" --query "My App" --limit 10 --output json`,
 		`asc ads v5 product-pages list --org "123456" --adam-id 1234567890 --states VISIBLE`,
-		`asc ads v5 targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json`,
+		`asc ads v5 targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json --confirm`,
 		`asc ads v5 targeting-keywords delete-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keyword-ids.json --confirm`,
 		`asc ads v5 reports campaigns --org "123456" --file reporting-request.json --output json`,
 		`asc ads v5 impression-share-reports --org "123456" --limit 50 --output json`,
@@ -96,8 +111,8 @@ func TestAdsGuideExamplesDispatchRepresentativeCommands(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run %q: %v\nstderr: %s", commandLine, err, stderr)
 			}
-			if stderr != "" {
-				t.Fatalf("stderr = %q, want empty", stderr)
+			if got, want := stderr, expectedWarnings[commandLine]; got != want {
+				t.Fatalf("stderr = %q, want %q", got, want)
 			}
 			if strings.Contains(commandLine, "--output json") || strings.Contains(commandLine, " auth token ") {
 				var parsed any

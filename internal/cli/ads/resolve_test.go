@@ -114,6 +114,57 @@ func TestResolveAdAccountIDRejectsUnsafeValuesFromEverySource(t *testing.T) {
 	}
 }
 
+func TestResolveOrgIDRejectsUnsafeValuesFromEverySource(t *testing.T) {
+	tests := []struct {
+		name        string
+		org         string
+		credentials appleads.Credentials
+		configure   func(*testing.T)
+	}{
+		{
+			name: "flag",
+			org:  "123;adAccountId=999",
+		},
+		{
+			name: "environment",
+			configure: func(t *testing.T) {
+				t.Setenv("ASC_ADS_ORG_ID", "123\n456")
+			},
+		},
+		{
+			name:        "profile",
+			credentials: appleads.Credentials{Profile: "named", OrgID: "123\t456"},
+		},
+		{
+			name: "config",
+			configure: func(t *testing.T) {
+				configPath := filepath.Join(t.TempDir(), "config.json")
+				t.Setenv("ASC_CONFIG_PATH", configPath)
+				if err := config.SaveAt(configPath, &config.Config{Ads: config.AdsConfig{OrgID: "123\r456"}}); err != nil {
+					t.Fatalf("SaveAt() error: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setAdsResolverTestEnv(t)
+			if tt.configure != nil {
+				tt.configure(t)
+			}
+			flags := commonFlags{}
+			if tt.org != "" {
+				flags.Org = &tt.org
+			}
+			_, _, err := resolveOrgIDWithSource(flags, tt.credentials)
+			if err == nil || !strings.Contains(err.Error(), "invalid organization ID") {
+				t.Fatalf("resolveOrgIDWithSource() error = %v, want invalid organization ID", err)
+			}
+		})
+	}
+}
+
 func setAdsResolverTestEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{

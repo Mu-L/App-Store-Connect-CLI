@@ -147,6 +147,9 @@ func buildNodeCommand(node *commandNode, parentPath, commandPrefix []string) *ff
 			}
 			return executeEndpoint(ctx, spec, flags)
 		}
+		if migration, ok := adsLegacyMigrationForSpec(spec); ok {
+			command = markAdsLegacyCommandDeprecated(command, displayPath, migration)
+		}
 	}
 	return command
 }
@@ -239,6 +242,8 @@ func endpointLongHelp(node *commandNode, path []string) string {
 
 Search modes:
   At least one of --query, --cpids, or --return-owned-apps is required.
+  --query must contain at least 3 alphanumeric characters (2 for CJK text);
+  punctuation-only and shorter values are rejected before authentication.
   These selectors can be combined. --query searches app and developer names;
   --cpids scopes results to content providers; --return-owned-apps returns
   apps owned by the current organization.`
@@ -325,7 +330,6 @@ func sentenceFromEndpointName(name string) string {
 		{"delete ", "Delete "},
 		{"apply ", "Apply "},
 		{"dismiss ", "Dismiss "},
-		{"query ", "Query "},
 		{"impression share report", "Create impression share report"},
 	}
 	for _, replacement := range replacements {

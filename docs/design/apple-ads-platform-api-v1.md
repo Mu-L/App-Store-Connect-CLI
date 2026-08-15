@@ -94,6 +94,27 @@ No v5 operation is removed in 4.4.0; only its command prefix changes. The
 intermediate nested prototype is removed before merge and does not
 become a compatibility alias.
 
+### Migration contract
+
+Teach Platform API v1 first in user-facing examples. `--org` remains the v5
+organization context; `--ad-account` is the separate v1 ad-account context.
+V1 IDs, payloads, query objects, report requests, and response envelopes are
+not converted from v5 shapes by the CLI. V1 report pagination stays in the
+request body, and the legacy `--paginate` behavior does not apply to v1
+reports. The v5 `asc ads v5 reports preset` helper, campaign pause/resume
+workflows, and v5 raw request command remain runnable compatibility paths with
+warnings; the raw v5 command continues to send v5 paths and is never silently
+rewritten.
+
+Platform v1 unifies campaign and ad-group negative keywords under
+`negative-keywords`, but it has no bulk-delete endpoint. These seven v5 leaves
+have no one-command v1 replacement in 4.4.0: `product-pages countries list`,
+`product-pages devices list`, `targeting-keywords delete-bulk`,
+`campaign-negative-keywords delete-bulk`, `ad-group-negative-keywords
+delete-bulk`, and `impression-share-reports list` and `view`. Documentation
+must not present geo search, impression-share insights, or single-keyword
+delete as drop-in replacements for those contracts.
+
 ## Tests
 
 RED-GREEN coverage includes:

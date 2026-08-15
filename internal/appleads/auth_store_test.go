@@ -40,6 +40,17 @@ func TestStoreCredentialsConfigRejectsUnsafeAdAccountID(t *testing.T) {
 	}
 }
 
+func TestStoreCredentialsConfigRejectsUnsafeOrgID(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "active-config.json")
+	credentials := testAdsCredentials()
+	credentials.OrgID = "123;adAccountId=999"
+
+	err := StoreCredentialsConfigAt("ads", credentials, configPath)
+	if err == nil || !strings.Contains(err.Error(), "invalid organization ID") {
+		t.Fatalf("StoreCredentialsConfigAt() error = %v, want invalid organization ID", err)
+	}
+}
+
 func TestStoreCredentialsConfigRoundTripsIndependentAdAccountID(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active-config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)

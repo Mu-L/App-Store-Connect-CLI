@@ -140,7 +140,7 @@ func campaignStatusWorkflowCommand(name, status, shortHelp string, parent *endpo
 		confirm:  fs.Bool("confirm", false, "Confirm this Apple Ads campaign status change"),
 		parent:   parent,
 	}
-	return &ffcli.Command{
+	command := &ffcli.Command{
 		Name:       name,
 		ShortUsage: "asc ads v5 campaigns " + name + " [flags]",
 		ShortHelp:  shortHelp,
@@ -159,6 +159,10 @@ Examples:
 			return executeCampaignStatusWorkflow(ctx, name, status, flags)
 		},
 	}
+	return markAdsLegacyCommandDeprecated(command, []string{"v5", "campaigns", name}, adsLegacyMigration{
+		kind:        adsLegacyBreaking,
+		replacement: []string{"campaigns", name},
+	})
 }
 
 func executeCampaignStatusWorkflow(ctx context.Context, commandName, status string, flags campaignStatusWorkflowFlags) error {

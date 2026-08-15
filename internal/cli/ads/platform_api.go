@@ -89,6 +89,9 @@ Examples:
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}
+			if message := rawPlatformRequestMultipartMessage(methodValue, pathOnly); message != "" {
+				return shared.UsageError(message)
+			}
 			if rawPlatformRequestRequiresPrePayloadConfirmation(methodValue, pathOnly) && !*confirm {
 				if message := rawPlatformRequestConfirmMessage(methodValue, pathOnly, nil); message != "" {
 					return shared.UsageError(message)
@@ -120,6 +123,18 @@ Examples:
 			return shared.PrintOutput(resp, outputFormat, *output.Pretty)
 		},
 	}
+}
+
+func rawPlatformRequestMultipartMessage(method, pathOnly string) string {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method != http.MethodPost {
+		return ""
+	}
+	spec, ok := platformEndpointSpecForRequest(method, pathOnly)
+	if !ok || spec.BodyKind != appleads.BodyMultipart {
+		return ""
+	}
+	return "v1/assets/upload requires multipart/form-data; use `asc ads assets upload --file IMAGE --brand BRAND_ID --ad-account AD_ACCOUNT_ID` instead of the JSON raw request command"
 }
 
 func rawPlatformRequestRequiresConfirm(method, pathOnly string, payload json.RawMessage) bool {

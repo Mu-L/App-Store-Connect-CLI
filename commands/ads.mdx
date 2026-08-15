@@ -123,7 +123,8 @@ asc ads v5 campaigns --limit 10 --output json
 
 Most Apple Ads endpoints require an organization context. Provide it with
 `--org`, store it during login with `--org`, or set `ASC_ADS_ORG_ID`. If you do
-not know the org ID yet, discover the active Ads user and available accounts:
+not know the available account access yet, inspect the Platform API v1 user and
+ACL responses:
 
 ```bash  theme={null}
 asc ads auth discover --output json
@@ -209,6 +210,10 @@ asc ads apps eligibility find --ad-account "987654" --file query.json
 asc ads rejection-reasons apps find --ad-account "987654" --file query.json
 asc ads rejection-reasons apps view --ad-account "987654" --reason "42"
 ```
+
+`--query` must contain at least three characters and at least one letter or
+number (two characters is accepted for CJK text). Punctuation-only and shorter
+queries fail locally before credentials or network access are used.
 
 The three `find` commands above accept an omitted `--file` and then send no
 request body. Use a `QueryRequest` or eligibility query file when filters,
@@ -399,6 +404,139 @@ Suggestion requests have two routes that Apple documents inconsistently.
 filter described on the endpoint page. The CLI sends the reviewed body
 unchanged instead of rejecting the documented SEARCH form.
 
+## Complete Platform API v1 command inventory
+
+The direct v1 surface is organized by resource family. The less frequently
+used families are still first-class commands, so agents can discover them from
+the group help instead of falling back to raw requests:
+
+```bash
+asc ads change-history find --ad-account "987654" --file query.json
+asc ads change-history view --ad-account "987654" --detail-id "Campaign.123.txn_abc"
+asc ads suggestions categories find --ad-account "987654" --file query.json
+asc ads suggestions keywords find --ad-account "987654" --file query.json
+asc ads suggestions phrases find --ad-account "987654" --file query.json
+asc ads suggestions target-cpas find --ad-account "987654" --file query.json
+asc ads recommendations daily-budgets find --ad-account "987654" --file query.json
+asc ads recommendations target-cpas find --ad-account "987654" --file query.json
+asc ads recommendations daily-budgets apply --ad-account "987654" --file recommendations.json --confirm
+asc ads recommendations target-cpas dismiss --ad-account "987654" --file recommendations.json --confirm
+```
+
+The full family map is: identity and access (`me`, `acls`, `orgs`), account
+discovery (`advertiser-resources`, `apps`, app eligibility and rejection
+reasons), maps and creatives (`brands`, `business-categories`, `locations`,
+`location-groups`, `assets`, `creatives`), campaign delivery (`campaigns`,
+`ad-groups`, `ads`, `targeting-keywords`, `negative-keywords`,
+`budget-orders`, `geo`), metadata (`product-pages`, app locales), reporting
+(`reports apps`, `reports brands`), insights (`insights`), recommendations,
+suggestions, and change history. Run `asc ads <family> --help` and the leaf
+`--help` before constructing a payload; each leaf prints its endpoint, body
+schema, context, pagination, and confirmation contract.
+
+## Migrating from Campaign Management API v5
+
+Apple Ads Platform API v1 is the preferred surface in 4.4.0. Apple will retire
+the Campaign Management API v5 on January 26, 2027. Every legacy invocation
+under `asc ads v5` prints a deprecation warning on stderr and keeps its v5
+host, payloads, IDs, and response shapes; 4.4.0 does not silently rewrite
+legacy requests to v1.
+
+Use the direct `asc ads ...` resource commands for new scripts and migrate v5
+scripts one command at a time. Run `asc ads --help` and the relevant nested
+`--help` command when choosing a v1 leaf.
+
+`asc ads auth discover` uses v1 `me` and `acls`; it does not print a legacy
+warning because the public auth command is version-neutral. The direct
+`asc ads me view` and `asc ads acls list` commands expose the same v1 resources
+when a script needs one response at a time.
+
+### Context and request shape
+
+`--org` is the Campaign Management API v5 organization context. `--ad-account`
+is the Platform API v1 ad account context. They are different identifiers and
+the CLI never substitutes one for the other. Keep `--org` on a legacy `asc ads
+v5 ...` command and use `--ad-account` on a direct v1 command; store them
+independently with `ASC_ADS_ORG_ID` and `ASC_ADS_AD_ACCOUNT_ID` when using
+environment auth.
+
+The API contracts also differ. v5 payloads can use numeric resource IDs and
+v5 envelopes; v1 resource IDs are strings and each v1 command documents its
+own create, update, or query schema. A v1 `find` or report command commonly
+expects a JSON query object in `--file`; the CLI passes that object through and
+does not translate a v5 `Selector` or `ReportingRequest` for you.
+
+V1 reports are explicit query commands such as:
+
+```bash  theme={null}
+asc ads reports apps campaigns \
+  --ad-account "987654" \
+  --file report.json \
+  --output json
+```
+
+Keep report pagination in `report.json` (or the relevant query file). V1
+report and optimization commands do not expose the legacy `--paginate` flow,
+and successful response and pagination envelopes are preserved as Apple
+returns them. The deprecated `asc ads v5 reports preset` helper remains a
+compatibility path with a warning; migrate it to the exact v1 report command
+and a reviewed request file.
+
+### Common command migrations
+
+These are direct resource migrations, but the request file and response schema
+still need to be updated for v1:
+
+| v5 command | Platform API v1 command |
+| --- | --- |
+| `asc ads v5 apps localized-details` | `asc ads apps locales find` |
+| `asc ads v5 apps assets find` | `asc ads assets find` |
+| `asc ads v5 product-pages list` | `asc ads product-pages find` |
+| `asc ads v5 product-pages locales list` | `asc ads product-pages locales find` |
+| `asc ads v5 reports campaigns` and other v5 report leaves | `asc ads reports apps ...` or `asc ads reports brands ...` |
+| `asc ads v5 campaigns pause` / `resume` | `asc ads campaigns pause` / `resume` |
+| `asc ads v5 targeting-keywords create-bulk` / `update-bulk` | `asc ads targeting-keywords create-bulk` / `update-bulk` |
+| v5 campaign- or ad-group-negative-keywords `list`, `find`, `view`, `create-bulk`, or `update-bulk` | `asc ads negative-keywords find`, `view`, `create-bulk`, or `update-bulk` (scope moves into the v1 body) |
+
+Platform v1 uses one `negative-keywords` resource for both campaign and ad
+group negative keywords. Preserve the scope and filters in the v1 request
+body; there are no separate v1 campaign-negative-keywords or
+ad-group-negative-keywords command groups.
+
+### Seven v5 leaves without a one-command v1 replacement
+
+The following seven legacy leaves remain available with warnings, but Platform
+API v1 has no equivalent single command in 4.4.0:
+
+- `asc ads v5 product-pages countries list`
+- `asc ads v5 product-pages devices list`
+- `asc ads v5 targeting-keywords delete-bulk`
+- `asc ads v5 campaign-negative-keywords delete-bulk`
+- `asc ads v5 ad-group-negative-keywords delete-bulk`
+- `asc ads v5 impression-share-reports list`
+- `asc ads v5 impression-share-reports view`
+
+Do not replace the countries or devices mappings with `geo search`, or replace
+custom impression-share report list/view with `insights impression-share`
+without checking the different data contract. V1 has single-resource keyword
+deletes, but no bulk-delete endpoint; a script can query and explicitly delete
+individual IDs if that workflow is appropriate.
+
+### Raw requests
+
+`asc ads v5 api request` remains a v5 raw request command. Its `v5/...` paths
+and `--org` context are not rewritten, and its deprecation warning does not
+change the request. Use the direct v1 command for Platform API paths:
+
+```bash  theme={null}
+asc ads api request \
+  --method POST \
+  --path v1/campaigns/query \
+  --ad-account "987654" \
+  --file query.json \
+  --output json
+```
+
 ## Campaign Management API v5 commands
 
 The legacy examples below retain their v5 request and response contracts under
@@ -428,11 +566,12 @@ wrapped object such as:
 ```
 
 ```bash  theme={null}
-asc ads v5 campaigns create --org "123456" --file campaign.json
-asc ads v5 campaigns update --org "123456" --campaign 987654321 --file campaign-update.json
+asc ads v5 campaigns create --org "123456" --file campaign.json --confirm
+asc ads v5 campaigns update --org "123456" --campaign 987654321 --file campaign-update.json --confirm
 ```
 
-Delete commands always require `--confirm`:
+Campaign, ad group, ad, keyword, negative-keyword, and budget-order mutations
+require `--confirm`. Delete commands require it as well:
 
 ```bash  theme={null}
 asc ads v5 campaigns delete --org "123456" --campaign 987654321 --confirm
@@ -445,9 +584,9 @@ ad resource, so ad-resource commands read as `asc ads v5 ads ...`:
 
 ```bash  theme={null}
 asc ads v5 ad-groups list --org "123456" --campaign 987654321 --output json
-asc ads v5 ad-groups create --org "123456" --campaign 987654321 --file ad-group.json
+asc ads v5 ad-groups create --org "123456" --campaign 987654321 --file ad-group.json --confirm
 asc ads v5 ads list --org "123456" --campaign 987654321 --ad-group 123456789 --output json
-asc ads v5 ads create --org "123456" --campaign 987654321 --ad-group 123456789 --file ad.json
+asc ads v5 ads create --org "123456" --campaign 987654321 --ad-group 123456789 --file ad.json --confirm
 ```
 
 Find endpoints use Apple selector payloads:
@@ -512,7 +651,8 @@ asc ads v5 targeting-keywords create-bulk \
   --org "123456" \
   --campaign 987654321 \
   --ad-group 123456789 \
-  --file keywords.json
+  --file keywords.json \
+  --confirm
 ```
 
 ```json keywords.json
@@ -550,7 +690,7 @@ Targeting keywords belong to an ad group:
 
 ```bash  theme={null}
 asc ads v5 targeting-keywords list --org "123456" --campaign 987654321 --ad-group 123456789
-asc ads v5 targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json
+asc ads v5 targeting-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file keywords.json --confirm
 asc ads v5 targeting-keywords delete --org "123456" --campaign 987654321 --ad-group 123456789 --keyword 111111111 --confirm
 ```
 
@@ -558,8 +698,8 @@ Campaign negative keywords belong to a campaign. Ad group negative keywords add
 `--ad-group`:
 
 ```bash  theme={null}
-asc ads v5 campaign-negative-keywords create-bulk --org "123456" --campaign 987654321 --file negative-keywords.json
-asc ads v5 ad-group-negative-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file negative-keywords.json
+asc ads v5 campaign-negative-keywords create-bulk --org "123456" --campaign 987654321 --file negative-keywords.json --confirm
+asc ads v5 ad-group-negative-keywords create-bulk --org "123456" --campaign 987654321 --ad-group 123456789 --file negative-keywords.json --confirm
 ```
 
 When addressing one negative keyword in the deprecated v5 namespace, use the

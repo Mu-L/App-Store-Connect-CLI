@@ -334,6 +334,18 @@ func TestPlatformReportAndOptimizationHelpIncludesPayloadRules(t *testing.T) {
 	}
 }
 
+func TestPlatformAppSearchHelpDocumentsMinimumQueryLength(t *testing.T) {
+	command := findCommand(AdsCommand(), "apps", "search")
+	if command == nil {
+		t.Fatal("missing asc ads apps search")
+	}
+	for _, want := range []string{"at least 3 alphanumeric characters", "2 for CJK", "punctuation-only"} {
+		if !strings.Contains(command.LongHelp, want) {
+			t.Fatalf("asc ads apps search help = %q, want %q", command.LongHelp, want)
+		}
+	}
+}
+
 func TestPlatformNegativeKeywordResourceFlagsAreSemantic(t *testing.T) {
 	root := AdsCommand()
 	for _, action := range []string{"view", "update", "delete"} {
@@ -737,7 +749,7 @@ func TestPlatformRecommendationRiskConfirmationPrecedesAuth(t *testing.T) {
 	}
 }
 
-func TestPlatformConfirmationHelpDistinguishesSpendFromDeletion(t *testing.T) {
+func TestConfirmationHelpDistinguishesOperationalRiskFromDeletion(t *testing.T) {
 	root := AdsCommand()
 	for _, test := range []struct {
 		path []string
@@ -745,6 +757,7 @@ func TestPlatformConfirmationHelpDistinguishesSpendFromDeletion(t *testing.T) {
 	}{
 		{path: []string{"campaigns", "create"}, want: "spend, billing"},
 		{path: []string{"budget-orders", "create"}, want: "spend, billing"},
+		{path: []string{"v5", "targeting-keywords", "create-bulk"}, want: "spend, billing"},
 		{path: []string{"campaigns", "delete"}, want: "Confirm deletion"},
 		{path: []string{"recommendations", "daily-budgets", "apply"}, want: "spend, billing"},
 		{path: []string{"recommendations", "daily-budgets", "dismiss"}, want: "spend, billing"},
@@ -1091,8 +1104,8 @@ func TestAdsCampaignsHelpReadsAsManagementSurface(t *testing.T) {
 	if campaigns == nil {
 		t.Fatal("missing campaigns command")
 	}
-	if campaigns.ShortHelp != "Manage Apple Ads campaigns." {
-		t.Fatalf("campaigns ShortHelp = %q, want management surface", campaigns.ShortHelp)
+	if !strings.HasPrefix(campaigns.ShortHelp, "DEPRECATED:") || !strings.Contains(campaigns.ShortHelp, "asc ads campaigns find") {
+		t.Fatalf("campaigns ShortHelp = %q, want deprecated management surface", campaigns.ShortHelp)
 	}
 	if campaigns.FlagSet.Lookup("campaign") != nil {
 		t.Fatal("campaigns list alias should not expose workflow-only --campaign flag")
@@ -1269,6 +1282,21 @@ func TestRawPlatformRequestRequiresAdAccount(t *testing.T) {
 				t.Fatalf("requires = %t, want %t", requires, tt.requires)
 			}
 		})
+	}
+}
+
+func TestRawPlatformRequestRejectsMultipartEndpoints(t *testing.T) {
+	if got := rawPlatformRequestMultipartMessage("POST", "v1/assets/upload"); got == "" {
+		t.Fatal("rawPlatformRequestMultipartMessage() = empty, want dedicated multipart guidance")
+	} else {
+		for _, want := range []string{"multipart", "asc ads assets upload"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("rawPlatformRequestMultipartMessage() = %q, want %q", got, want)
+			}
+		}
+	}
+	if got := rawPlatformRequestMultipartMessage("POST", "v1/campaigns"); got != "" {
+		t.Fatalf("rawPlatformRequestMultipartMessage() for JSON endpoint = %q, want empty", got)
 	}
 }
 
@@ -1584,8 +1612,17 @@ func TestEndpointHelpUsesOperatorFriendlyAuthDiscoveryNames(t *testing.T) {
 		if cmd == nil {
 			t.Fatalf("missing command asc ads %s", strings.Join(test.path, " "))
 		}
-		if cmd.ShortHelp != test.want {
-			t.Fatalf("asc ads %s ShortHelp = %q, want %q", strings.Join(test.path, " "), cmd.ShortHelp, test.want)
+		if cmd.ShortHelp != test.want || !strings.Contains(cmd.LongHelp, test.want) {
+			t.Fatalf("asc ads %s help mismatch: ShortHelp = %q; LongHelp = %q, want content %q", strings.Join(test.path, " "), cmd.ShortHelp, cmd.LongHelp, test.want)
+		}
+
+		legacyPath := append([]string{"v5"}, test.path...)
+		legacy := findCommand(root, legacyPath...)
+		if legacy == nil {
+			t.Fatalf("missing command asc ads %s", strings.Join(legacyPath, " "))
+		}
+		if !strings.HasPrefix(legacy.ShortHelp, "DEPRECATED:") || !strings.Contains(legacy.LongHelp, test.want) {
+			t.Fatalf("asc ads %s help mismatch: ShortHelp = %q, want DEPRECATED prefix; LongHelp = %q, want content %q", strings.Join(legacyPath, " "), legacy.ShortHelp, legacy.LongHelp, test.want)
 		}
 	}
 }

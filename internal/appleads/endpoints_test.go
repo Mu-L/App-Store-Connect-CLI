@@ -57,6 +57,64 @@ func TestEndpointSpecsCoverCampaignManagementAPI5Surface(t *testing.T) {
 	}
 }
 
+func TestEndpointSpecsMarkOnlyOperationalV5MutationsForRiskConfirmation(t *testing.T) {
+	wants := map[string]struct {
+		method string
+		path   string
+	}{
+		"budget-orders create":                   {"POST", "v5/budgetorders"},
+		"budget-orders update":                   {"PUT", "v5/budgetorders/{boId}"},
+		"campaigns create":                       {"POST", "v5/campaigns"},
+		"campaigns update":                       {"PUT", "v5/campaigns/{campaignId}"},
+		"ad-groups create":                       {"POST", "v5/campaigns/{campaignId}/adgroups"},
+		"ad-groups update":                       {"PUT", "v5/campaigns/{campaignId}/adgroups/{adgroupId}"},
+		"ads create":                             {"POST", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/ads"},
+		"ads update":                             {"PUT", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/ads/{adId}"},
+		"targeting-keywords create-bulk":         {"POST", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords/bulk"},
+		"targeting-keywords update-bulk":         {"PUT", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/targetingkeywords/bulk"},
+		"campaign-negative-keywords create-bulk": {"POST", "v5/campaigns/{campaignId}/negativekeywords/bulk"},
+		"campaign-negative-keywords update-bulk": {"PUT", "v5/campaigns/{campaignId}/negativekeywords/bulk"},
+		"ad-group-negative-keywords create-bulk": {"POST", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk"},
+		"ad-group-negative-keywords update-bulk": {"PUT", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk"},
+	}
+
+	got := map[string]EndpointSpec{}
+	for _, spec := range EndpointSpecs() {
+		if spec.RiskConfirm {
+			got[strings.Join(spec.CommandPath, " ")] = spec
+		}
+	}
+	if len(got) != len(wants) {
+		t.Fatalf("risk-confirm v5 endpoints = %d, want %d: %+v", len(got), len(wants), got)
+	}
+	for command, want := range wants {
+		spec, ok := got[command]
+		if !ok {
+			t.Errorf("missing risk confirmation for %q", command)
+			continue
+		}
+		if spec.Method != want.method || spec.Path != want.path {
+			t.Errorf("%q risk contract = %s %s, want %s %s", command, spec.Method, spec.Path, want.method, want.path)
+		}
+		if spec.RiskConfirmBodyField != "" || spec.RiskConfirmBodyValue != "" {
+			t.Errorf("%q risk confirmation must be unconditional: %+v", command, spec)
+		}
+	}
+
+	for _, command := range [][]string{
+		{"campaigns", "find"},
+		{"reports", "campaigns"},
+		{"geo", "resolve"},
+		{"creatives", "create"},
+		{"impression-share-reports", "create"},
+	} {
+		spec, ok := EndpointByCommandPath(command...)
+		if !ok || spec.RiskConfirm {
+			t.Errorf("read-like or benign v5 command %q must not require risk confirmation: %+v", strings.Join(command, " "), spec)
+		}
+	}
+}
+
 func TestPlatformEndpointSpecsCoverAccountAndAppSurface(t *testing.T) {
 	specs := PlatformEndpointSpecs()
 
