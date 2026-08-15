@@ -814,11 +814,11 @@ func validateKeywordQuerySelector(specName string, body json.RawMessage) error {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return fmt.Errorf("invalid QueryRequest selector filters: %w", err)
 	}
-	if len(payload.Conditions) > 0 && string(payload.Conditions) != "null" {
+	if len(payload.Conditions) > 0 {
 		return fmt.Errorf("QueryRequest uses \"filters\", not \"conditions\"; rename the selector array and each entry's \"values\" to the singular \"value\" (Campaign Management API v5 selector fields are rejected by the Platform API)")
 	}
 	for _, filter := range payload.Filters {
-		if len(filter.Values) > 0 && string(filter.Values) != "null" {
+		if len(filter.Values) > 0 {
 			return fmt.Errorf("QueryRequest filters use the singular \"value\", not \"values\"; rename it in each filter (Campaign Management API v5 selector fields are rejected by the Platform API)")
 		}
 	}

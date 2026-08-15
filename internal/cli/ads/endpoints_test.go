@@ -426,6 +426,18 @@ func TestPlatformKeywordQuerySelectorValidation(t *testing.T) {
 			wantErr: `uses "filters", not "conditions"`,
 		},
 		{
+			name:    "targeting null legacy conditions key",
+			path:    []string{"targeting-keywords", "find"},
+			body:    `{"filters":[{"field":"campaignId","operator":"EQUALS","value":"campaign-1"}],"conditions":null}`,
+			wantErr: `uses "filters", not "conditions"`,
+		},
+		{
+			name:    "targeting null legacy values key in filter",
+			path:    []string{"targeting-keywords", "find"},
+			body:    `{"filters":[{"field":"campaignId","operator":"EQUALS","value":"campaign-1","values":null}]}`,
+			wantErr: `singular "value", not "values"`,
+		},
+		{
 			name:    "targeting legacy v5 values in filter",
 			path:    []string{"targeting-keywords", "find"},
 			body:    `{"filters":[{"field":"campaignId","operator":"IN","values":["campaign-1"]}]}`,
