@@ -28,6 +28,11 @@ func TestPlatformAssetsUploadIsOneCustomCommand(t *testing.T) {
 			if !strings.Contains(command.LongHelp, `Poll "asc ads assets view"`) {
 				t.Fatalf("assets upload help does not point to direct assets view: %q", command.LongHelp)
 			}
+			for _, want := range []string{"Schema: form-data:", "Shape: multipart/form-data", "Required: yes"} {
+				if !strings.Contains(command.LongHelp, want) {
+					t.Fatalf("assets upload help = %q, want %q", command.LongHelp, want)
+				}
+			}
 			for _, flagName := range []string{"file", "brand", "ad-account", "ads-profile", "output"} {
 				if command.FlagSet.Lookup(flagName) == nil {
 					t.Fatalf("assets upload missing --%s", flagName)
@@ -40,6 +45,18 @@ func TestPlatformAssetsUploadIsOneCustomCommand(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("assets upload command count = %d, want 1", count)
+	}
+}
+
+func TestPlatformAssetsFindHelpExplainsOptionalQuery(t *testing.T) {
+	command := findCommand(AdsCommand(), "assets", "find")
+	if command == nil {
+		t.Fatal("missing assets find command")
+	}
+	for _, want := range []string{"[--file query.json]", "Required: no", "all non-deleted assets", "promotedObjectId", "providerAssetId", "assetType (IMAGE)"} {
+		if !strings.Contains(command.LongHelp, want) {
+			t.Fatalf("assets find help = %q, want %q", command.LongHelp, want)
+		}
 	}
 }
 
