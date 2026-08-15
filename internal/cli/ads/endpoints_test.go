@@ -260,6 +260,30 @@ func TestPlatformEndpointHelpIncludesAgentPayloadGuidance(t *testing.T) {
 	}
 }
 
+func TestPlatformReportAndOptimizationHelpIncludesPayloadRules(t *testing.T) {
+	root := AdsCommand()
+	tests := []struct {
+		path []string
+		want []string
+	}{
+		{path: []string{"reports", "apps", "campaigns"}, want: []string{"--file report.json", "Schema: AppsReportingRequest", "nested timeRange", "{offset,pageSize}"}},
+		{path: []string{"insights", "impression-share", "find"}, want: []string{"--file query.json", "promotedObjectId", "FIRST_SLOT", "maximum 30 days"}},
+		{path: []string{"suggestions", "phrases", "find"}, want: []string{"queryType SUGGESTION", "queryType SEARCH", "Apple's generic request schema"}},
+		{path: []string{"recommendations", "daily-budgets", "apply"}, want: []string{"--file recommendations.json", "non-empty array", "--confirm"}},
+	}
+	for _, test := range tests {
+		command := findCommand(root, test.path...)
+		if command == nil {
+			t.Fatalf("missing asc ads %s", strings.Join(test.path, " "))
+		}
+		for _, want := range test.want {
+			if !strings.Contains(command.LongHelp, want) {
+				t.Errorf("asc ads %s help = %q, want %q", strings.Join(test.path, " "), command.LongHelp, want)
+			}
+		}
+	}
+}
+
 func TestPlatformNegativeKeywordResourceFlagsAreSemantic(t *testing.T) {
 	root := AdsCommand()
 	for _, action := range []string{"view", "update", "delete"} {

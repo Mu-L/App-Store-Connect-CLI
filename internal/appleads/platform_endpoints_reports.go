@@ -55,6 +55,32 @@ func platformReportsOptimizationEndpointSpecs() []EndpointSpec {
 		platform("platform-query-change-history", "v1/change-history/query", []string{"change-history", "find"}, BodyObject, "AuditQuery", "AuditSummaryResponse", false),
 	}
 
+	for index := range specs {
+		spec := &specs[index]
+		switch {
+		case strings.HasPrefix(spec.Path, "v1/reports/"):
+			spec.BodyFileExample = "report.json"
+			spec.BodyHint = "Use nested timeRange {start,end,timeZone,granularity}; pagination is {offset,pageSize}. Put campaign and ad-group selectors in filters. EMPTY_METRICS cannot be combined with groupBy; brand reports support only GRAND_TOTAL."
+		case spec.Name == "platform-query-app-impression-share-data":
+			spec.BodyFileExample = "query.json"
+			spec.BodyHint = "Required: filters must include promotedObjectId, plus a complete timeRange. Use UTC and DAILY (maximum 30 days) or WEEKLY_SUN_SAT (maximum 4 weeks, starting Sunday). impressionShareReportType is FIRST_SLOT or ALL_SLOTS; pageSize max 5000; at most 2 sort fields."
+		case spec.Name == "platform-query-app-search-term-popularity-data":
+			spec.BodyFileExample = "query.json"
+			spec.BodyHint = "Required: timeRange. Use UTC and WEEKLY_SUN_SAT or MONTHLY; pageSize max 5000; at most 2 sort fields."
+		case strings.HasPrefix(spec.Path, "v1/suggestions/categories/") || strings.HasPrefix(spec.Path, "v1/suggestions/phrases/"):
+			spec.BodyFileExample = "query.json"
+			spec.BodyHint = "For queryType SUGGESTION, filter by promotedObjectId and promotedObjectType. For queryType SEARCH, use the phrase or category filter documented by Apple; Apple's generic request schema does not describe this exception."
+		case strings.HasPrefix(spec.Path, "v1/suggestions/") || (strings.HasPrefix(spec.Path, "v1/recommendations/") && strings.HasSuffix(spec.Path, "/query")):
+			spec.BodyFileExample = "query.json"
+			spec.BodyHint = "filters must include promotedObjectId and promotedObjectType. Pagination defaults to offset 0 and pageSize 20, with pageSize max 1000."
+		case spec.RequiresConfirm:
+			spec.BodyFileExample = "recommendations.json"
+			spec.BodyHint = "Pass a non-empty array built from a recommendation query response. Apply and dismiss operations require --confirm."
+		case spec.BodyKind != BodyNone:
+			spec.BodyFileExample = "query.json"
+		}
+	}
+
 	specs = append(specs, EndpointSpec{
 		Name:         "platform-get-change-history-detail",
 		Method:       "GET",

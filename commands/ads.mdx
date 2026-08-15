@@ -327,6 +327,50 @@ asc ads budget-orders view --budget-order "budget-id"
 asc ads budget-orders delete --budget-order "budget-id" --confirm
 ```
 
+## Platform API v1 reports and insights
+
+Platform reports use a required JSON body. Dates belong in the nested
+`timeRange` object, and page controls use `pageSize` rather than the v5
+selector's `limit`. Campaign and ad-group IDs move into `filters`:
+
+```json report.json
+{
+  "pagination": {"offset": 0, "pageSize": 20},
+  "filters": [
+    {"field": "campaignId", "operator": "EQUALS", "value": ["444555666"]}
+  ],
+  "groupBy": ["countryOrRegion"],
+  "timeRange": {
+    "start": "2025-01-01",
+    "end": "2025-01-31",
+    "timeZone": "ORTZ",
+    "granularity": "DAILY"
+  }
+}
+```
+
+```bash  theme={null}
+asc ads reports apps campaigns --ad-account "987654" --file report.json --output json
+asc ads reports apps keywords --ad-account "987654" --file report.json --output json
+```
+
+Report pagination stays inside the request body; these commands preserve
+Apple's raw `result` and `pagination` envelope and do not expose `--paginate`.
+Run the exact leaf command with `--help` before creating a payload because
+valid `groupBy` and report options differ by entity. `EMPTY_METRICS` cannot be
+combined with `groupBy`, and brand reports support only `GRAND_TOTAL`.
+
+Insights also require body files. Impression share needs a
+`promotedObjectId` filter and a complete UTC `timeRange`; search-term
+popularity needs a UTC `timeRange`. The command help lists the granularity and
+date-window limits Apple publishes for each endpoint.
+
+Suggestion requests have two routes that Apple documents inconsistently.
+`queryType: "SUGGESTION"` uses `promotedObjectId` and
+`promotedObjectType`; `queryType: "SEARCH"` uses the phrase or category
+filter described on the endpoint page. The CLI sends the reviewed body
+unchanged instead of rejecting the documented SEARCH form.
+
 ## Campaign Management API v5 commands
 
 The legacy examples below retain their v5 request and response contracts under

@@ -8,56 +8,81 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestAdsPlatformAppCampaignReportRequest(t *testing.T) {
-	isolateAdsGuideEnv(t)
-	t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
-	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
-	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
-	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
-	payloadPath := filepath.Join(t.TempDir(), "report.json")
-	if err := os.WriteFile(payloadPath, []byte(`{"startTime":"2026-08-01","endTime":"2026-08-14"}`), 0o600); err != nil {
+	requestJSON := `{
+  "pagination": {"offset": 0, "pageSize": 20},
+  "filters": [{"field": "campaignId", "operator": "EQUALS", "value": ["444555666"]}],
+  "groupBy": ["countryOrRegion"],
+  "timeRange": {"start": "2025-01-01", "end": "2025-01-31", "timeZone": "ORTZ", "granularity": "DAILY"}
+}`
+	var expectedBody map[string]any
+	if err := json.Unmarshal([]byte(requestJSON), &expectedBody); err != nil {
 		t.Fatal(err)
 	}
+	tests := []struct {
+		command string
+		path    string
+	}{
+		{command: "ad-groups", path: "/v1/reports/apps/adgroups/query"},
+		{command: "ads", path: "/v1/reports/apps/ads/query"},
+		{command: "campaigns", path: "/v1/reports/apps/campaigns/query"},
+		{command: "keywords", path: "/v1/reports/apps/keywords/query"},
+		{command: "search-terms", path: "/v1/reports/apps/searchterms/query"},
+	}
+	for _, test := range tests {
+		t.Run(test.command, func(t *testing.T) {
+			isolateAdsGuideEnv(t)
+			t.Setenv("ASC_ADS_BYPASS_KEYCHAIN", "1")
+			t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+			t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+			payloadPath := filepath.Join(t.TempDir(), "report.json")
+			if err := os.WriteFile(payloadPath, []byte(requestJSON), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.Method != http.MethodPost || req.URL.Host != "api.ads.apple.com" || req.URL.Path != "/v1/reports/apps/campaigns/query" || req.URL.RawQuery != "" {
-			t.Fatalf("request = %s %s", req.Method, req.URL.String())
-		}
-		if got := req.Header.Get("X-AP-Context"); got != "adAccountId=AD_ACCOUNT;" {
-			t.Fatalf("X-AP-Context = %q", got)
-		}
-		var body map[string]string
-		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		if body["startTime"] != "2026-08-01" || body["endTime"] != "2026-08-14" {
-			t.Fatalf("request body = %+v", body)
-		}
-		return adsJSONResponse(200, `{"result":{"row":[{"campaignId":"123"}]},"pagination":{"totalResults":1}}`), nil
-	}))
+			installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != http.MethodPost || req.URL.Host != "api.ads.apple.com" || req.URL.Path != test.path || req.URL.RawQuery != "" {
+					t.Fatalf("request = %s %s", req.Method, req.URL.String())
+				}
+				if got := req.Header.Get("X-AP-Context"); got != "adAccountId=AD_ACCOUNT;" {
+					t.Fatalf("X-AP-Context = %q", got)
+				}
+				var body map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				if !reflect.DeepEqual(body, expectedBody) {
+					t.Fatalf("request body = %#v, want %#v", body, expectedBody)
+				}
+				return adsJSONResponse(200, `{"result":{"row":[{"campaignId":"123"}]},"pagination":{"totalResults":1}}`), nil
+			}))
 
-	root := RootCommand("dev")
-	if err := root.Parse([]string{"ads", "reports", "apps", "campaigns", "--file", payloadPath, "--output", "json"}); err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-	stdout, stderr := captureOutput(t, func() {
-		if err := root.Run(context.Background()); err != nil {
-			t.Fatalf("run error: %v", err)
-		}
-	})
-	if stderr != "" {
-		t.Fatalf("stderr = %q", stderr)
-	}
-	var output map[string]any
-	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
-		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
-	}
-	if _, ok := output["pagination"]; !ok {
-		t.Fatalf("stdout omitted raw pagination envelope: %s", stdout)
+			root := RootCommand("dev")
+			if err := root.Parse([]string{"ads", "reports", "apps", test.command, "--file", payloadPath, "--output", "json"}); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			stdout, stderr := captureOutput(t, func() {
+				if err := root.Run(context.Background()); err != nil {
+					t.Fatalf("run error: %v", err)
+				}
+			})
+			if stderr != "" {
+				t.Fatalf("stderr = %q", stderr)
+			}
+			var output map[string]any
+			if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+				t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+			}
+			if _, ok := output["pagination"]; !ok {
+				t.Fatalf("stdout omitted raw pagination envelope: %s", stdout)
+			}
+		})
 	}
 }
 
