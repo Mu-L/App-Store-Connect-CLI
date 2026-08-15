@@ -577,6 +577,7 @@ func TestAdsV5RawRequestSafetyGuardsPrecedeAuthAndNetwork(t *testing.T) {
 }
 
 func TestAdsV5RawKnownReadLikePostDoesNotRequireConfirm(t *testing.T) {
+	isolateAdsGuideEnv(t)
 	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
 	t.Setenv("ASC_ADS_ORG_ID", "123456")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
