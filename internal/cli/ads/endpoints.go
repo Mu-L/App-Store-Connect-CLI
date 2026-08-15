@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
@@ -746,6 +747,11 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 		}
 		return fmt.Errorf("--confirm is required to acknowledge %s", riskConfirmationImpact)
 	}
+	if spec.Method == http.MethodPost && strings.HasPrefix(spec.Path, "v1/") && strings.HasSuffix(spec.Path, "/query") {
+		if err := validatePlatformQueryMigration(spec, body); err != nil {
+			return err
+		}
+	}
 	switch spec.Name {
 	case "platform-query-keywords", "platform-query-negative-keywords":
 		if err := validateKeywordQuerySelector(spec.Name, body); err != nil {
@@ -797,32 +803,225 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 type querySelectorFilter struct {
 	Field    string `json:"field"`
 	Operator string `json:"operator"`
-	// Legacy v5 selector conditions used "values"; Platform API filters use
-	// the singular "value". Tracked here so a renamed-but-not-migrated
-	// selector still fails pre-auth with a hint instead of a live 400.
-	Values json.RawMessage `json:"values"`
+}
+
+type legacyPlatformQueryMembers struct {
+	selector                   bool
+	conditions                 bool
+	values                     bool
+	orderBy                    bool
+	sortOrder                  bool
+	limit                      bool
+	selectorFields             bool
+	topLevelFields             bool
+	legacyOperator             bool
+	legacyOrder                bool
+	startTime                  bool
+	endTime                    bool
+	timeZone                   bool
+	granularity                bool
+	returnRecordsWithNoMetrics bool
+	returnRowTotals            bool
+	returnGrandTotals          bool
+	name                       bool
+	dateRange                  bool
+}
+
+func validatePlatformQueryMigration(spec appleads.EndpointSpec, body json.RawMessage) error {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return fmt.Errorf("invalid Platform API query body: %w", err)
+	}
+
+	legacy := legacyPlatformQueryMembers{}
+	inspectLegacyPlatformQueryObject(payload, &legacy, false)
+	if rawSelector, present := payload["selector"]; present {
+		legacy.selector = true
+		var selector map[string]json.RawMessage
+		if json.Unmarshal(rawSelector, &selector) == nil {
+			inspectLegacyPlatformQueryObject(selector, &legacy, true)
+		}
+	}
+
+	var migrations []string
+	if legacy.selector {
+		migrations = append(migrations, `remove the v5 "selector" wrapper; v1 query members are top level`)
+	}
+	if legacy.conditions {
+		migrations = append(migrations, `"conditions" -> "filters"`)
+	}
+	if legacy.values {
+		migrations = append(migrations, `filter "values" -> "value"`)
+	}
+	if legacy.orderBy {
+		migrations = append(migrations, `"orderBy" -> "sorting"`)
+	}
+	if legacy.sortOrder {
+		migrations = append(migrations, `sorting "sortOrder" -> "order"`)
+	}
+	if legacy.limit {
+		migrations = append(migrations, `"pagination.limit" -> "pagination.pageSize"`)
+	}
+	if legacy.legacyOperator {
+		migrations = append(migrations, `filter operator "STARTSWITH"/"ENDSWITH" -> "STARTS_WITH"/"ENDS_WITH"`)
+	}
+	if legacy.legacyOrder {
+		migrations = append(migrations, `sort order "ASCENDING"/"DESCENDING" -> "ASC"/"DESC"`)
+	}
+	if legacy.selectorFields {
+		if platformQuerySupportsFields(spec.BodyType) {
+			migrations = append(migrations, `"selector.fields" -> top-level "fields"`)
+		} else {
+			migrations = append(migrations, fmt.Sprintf(`remove "selector.fields"; %s has no field-projection member`, spec.BodyType))
+		}
+	}
+	if legacy.topLevelFields && !platformQuerySupportsFields(spec.BodyType) {
+		migrations = append(migrations, fmt.Sprintf(`remove top-level "fields"; %s has no field-projection member`, spec.BodyType))
+	}
+	if platformQuerySupportsTimeRange(spec.BodyType) {
+		if legacy.startTime {
+			migrations = append(migrations, `"startTime" -> "timeRange.start"`)
+		}
+		if legacy.endTime {
+			migrations = append(migrations, `"endTime" -> "timeRange.end"`)
+		}
+		if legacy.timeZone {
+			migrations = append(migrations, `"timeZone" -> "timeRange.timeZone"`)
+		}
+		if legacy.granularity {
+			migrations = append(migrations, `"granularity" -> "timeRange.granularity"`)
+		}
+	}
+	if platformQueryIsReport(spec.BodyType) {
+		if legacy.returnRecordsWithNoMetrics {
+			if spec.BodyType == "AppsReportingRequest" {
+				migrations = append(migrations, `"returnRecordsWithNoMetrics": true -> add "EMPTY_METRICS" to "options.includeRows"; false -> omit`)
+			} else {
+				migrations = append(migrations, `remove "returnRecordsWithNoMetrics"; BrandsOptions doesn't support EMPTY_METRICS`)
+			}
+		}
+		if legacy.returnRowTotals {
+			migrations = append(migrations, `remove "returnRowTotals"; no v1 report request field exists`)
+		}
+		if legacy.returnGrandTotals {
+			migrations = append(migrations, `"returnGrandTotals": true -> add "GRAND_TOTAL" to "options.includeRows"; false -> omit`)
+		}
+	}
+	if spec.BodyType == "ImpressionShareQueryRequest" {
+		if legacy.dateRange {
+			migrations = append(migrations, `"dateRange" -> explicit "timeRange.start" and "timeRange.end"`)
+		}
+		if legacy.name {
+			migrations = append(migrations, `remove "name"; ImpressionShareQueryRequest has no saved-report name`)
+		}
+	}
+	if len(migrations) > 0 {
+		return fmt.Errorf("platform API v1 query payload uses legacy v5 fields: %s", strings.Join(migrations, "; "))
+	}
+	return nil
+}
+
+func inspectLegacyPlatformQueryObject(payload map[string]json.RawMessage, legacy *legacyPlatformQueryMembers, selector bool) {
+	if _, present := payload["conditions"]; present {
+		legacy.conditions = true
+	}
+	if _, present := payload["orderBy"]; present {
+		legacy.orderBy = true
+	}
+	if _, present := payload["fields"]; present {
+		if selector {
+			legacy.selectorFields = true
+		} else {
+			legacy.topLevelFields = true
+		}
+	}
+	for _, key := range []string{"filters", "conditions"} {
+		inspectLegacyPlatformFilters(payload[key], legacy)
+	}
+	for _, key := range []string{"sorting", "orderBy"} {
+		inspectLegacyPlatformSorting(payload[key], legacy)
+	}
+	var pagination map[string]json.RawMessage
+	if json.Unmarshal(payload["pagination"], &pagination) == nil {
+		if _, present := pagination["limit"]; present {
+			legacy.limit = true
+		}
+	}
+	for key, target := range map[string]*bool{
+		"startTime":                  &legacy.startTime,
+		"endTime":                    &legacy.endTime,
+		"timeZone":                   &legacy.timeZone,
+		"granularity":                &legacy.granularity,
+		"returnRecordsWithNoMetrics": &legacy.returnRecordsWithNoMetrics,
+		"returnRowTotals":            &legacy.returnRowTotals,
+		"returnGrandTotals":          &legacy.returnGrandTotals,
+		"name":                       &legacy.name,
+		"dateRange":                  &legacy.dateRange,
+	} {
+		if _, present := payload[key]; present {
+			*target = true
+		}
+	}
+}
+
+func inspectLegacyPlatformFilters(raw json.RawMessage, legacy *legacyPlatformQueryMembers) {
+	var entries []map[string]json.RawMessage
+	if json.Unmarshal(raw, &entries) != nil {
+		return
+	}
+	for _, entry := range entries {
+		if _, present := entry["values"]; present {
+			legacy.values = true
+		}
+		var operator string
+		if json.Unmarshal(entry["operator"], &operator) == nil && (operator == "STARTSWITH" || operator == "ENDSWITH") {
+			legacy.legacyOperator = true
+		}
+	}
+}
+
+func inspectLegacyPlatformSorting(raw json.RawMessage, legacy *legacyPlatformQueryMembers) {
+	var entries []map[string]json.RawMessage
+	if json.Unmarshal(raw, &entries) != nil {
+		return
+	}
+	for _, entry := range entries {
+		if _, present := entry["sortOrder"]; present {
+			legacy.sortOrder = true
+		}
+		for _, key := range []string{"order", "sortOrder"} {
+			var order string
+			if json.Unmarshal(entry[key], &order) == nil && (order == "ASCENDING" || order == "DESCENDING") {
+				legacy.legacyOrder = true
+			}
+		}
+	}
+}
+
+func platformQuerySupportsFields(bodySchema string) bool {
+	return bodySchema == "AppsReportingRequest" || bodySchema == "BrandsReportingRequest"
+}
+
+func platformQuerySupportsTimeRange(bodySchema string) bool {
+	switch bodySchema {
+	case "AppsReportingRequest", "BrandsReportingRequest", "ImpressionShareQueryRequest", "SearchTermPopularityQueryRequest":
+		return true
+	default:
+		return false
+	}
+}
+
+func platformQueryIsReport(bodySchema string) bool {
+	return bodySchema == "AppsReportingRequest" || bodySchema == "BrandsReportingRequest"
 }
 
 func validateKeywordQuerySelector(specName string, body json.RawMessage) error {
 	var payload struct {
 		Filters []querySelectorFilter `json:"filters"`
-		// Legacy Campaign Management API v5 selectors used "conditions"; the
-		// Platform API rejects that field, so catch it before auth with a
-		// migration hint instead of letting the request 400.
-		Conditions json.RawMessage `json:"conditions"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return fmt.Errorf("invalid QueryRequest selector filters: %w", err)
 	}
-	if len(payload.Conditions) > 0 {
-		return fmt.Errorf("QueryRequest uses \"filters\", not \"conditions\"; rename the selector array and each entry's \"values\" to the singular \"value\" (Campaign Management API v5 selector fields are rejected by the Platform API)")
-	}
-	for _, filter := range payload.Filters {
-		if len(filter.Values) > 0 {
-			return fmt.Errorf("QueryRequest filters use the singular \"value\", not \"values\"; rename it in each filter (Campaign Management API v5 selector fields are rejected by the Platform API)")
-		}
-	}
-
 	switch specName {
 	case "platform-query-keywords":
 		for _, filter := range payload.Filters {

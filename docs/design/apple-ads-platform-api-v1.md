@@ -106,6 +106,31 @@ workflows, and v5 raw request command remain runnable compatibility paths with
 warnings; the raw v5 command continues to send v5 paths and is never silently
 rewritten.
 
+All named v1 query commands reject legacy v5 selector members before resolving
+credentials or sending a request. The shared migration guard covers the
+standard `QueryRequest` plus reporting, insights, recommendations, policy,
+and audit query bodies. It reports the direct member replacements:
+`conditions` to `filters`, `values` to `value`, `orderBy` to `sorting`,
+`sortOrder` to `order`, and `pagination.limit` to `pagination.pageSize`.
+It also catches the renamed operator and sort values (`STARTSWITH` and
+`ENDSWITH` to `STARTS_WITH` and `ENDS_WITH`; `ASCENDING` and `DESCENDING`
+to `ASC` and `DESC`).
+
+The schema-aware part of the guard handles members that do not have one
+universal replacement. Only `AppsReportingRequest` and
+`BrandsReportingRequest` accept top-level `fields`; other query bodies reject
+the legacy projection member. Reporting dates, time zone, and granularity move
+under `timeRange`, while grand totals and empty app-metric rows move to
+`options.includeRows`. `returnRowTotals` has no v1 request field, and brand
+reports do not support `EMPTY_METRICS`. The v5 custom impression-share
+`name` and relative `dateRange` members are also rejected with their specific
+v1 migration paths.
+
+Explicit `null` legacy members are rejected because the Platform API rejects
+the property itself. The CLI does not rewrite payloads automatically: value
+cardinality and accepted fields vary by endpoint, so silent conversion could
+change query semantics.
+
 Platform v1 unifies campaign and ad-group negative keywords under
 `negative-keywords`, but it has no bulk-delete endpoint. These seven v5 leaves
 have no one-command v1 replacement in 4.4.0: `product-pages countries list`,
@@ -126,6 +151,8 @@ RED-GREEN coverage includes:
 - raw v1 URL guardrails and context-free endpoint exceptions;
 - multipart upload fields, content type, rootfs reads, file failures, and API failures;
 - exact legacy warning text and direct-help migration paths;
+- pre-auth rejection of legacy v5 selector members across every v1 query body
+  type, while preserving valid v1 payloads and raw API pass-through behavior;
 - generated command docs and built-binary smoke tests.
 
 The local repository gate is `make format`, `make check-docs`, `make lint`, and `ASC_BYPASS_KEYCHAIN=1 make test`.
@@ -144,3 +171,10 @@ Never place those credentials in the repository or test fixtures.
 ## Alternatives considered
 
 An `--api-version` flag would mix incompatible leaves and payload schemas in one help surface. Keeping v1 permanently under `platform` would make the future default API more verbose forever. The selected breaking tree gives v1 the idiomatic direct paths and moves the retiring surface under the exact `v5` version label.
+
+For query migration, automatic v5-to-v1 payload conversion was rejected
+because `value` may be scalar or array depending on the schema and operator,
+and report bodies require a larger structural rewrite. Leaving validation to
+Apple was also rejected: it spends a live request on a deterministic local
+error and produces one-field-at-a-time 400 responses instead of a complete
+migration hint.
