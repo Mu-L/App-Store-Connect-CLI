@@ -794,37 +794,44 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 	return nil
 }
 
-type querySelectorCondition struct {
+type querySelectorFilter struct {
 	Field    string `json:"field"`
 	Operator string `json:"operator"`
 }
 
 func validateKeywordQuerySelector(specName string, body json.RawMessage) error {
 	var payload struct {
-		Conditions []querySelectorCondition `json:"conditions"`
+		Filters []querySelectorFilter `json:"filters"`
+		// Legacy Campaign Management API v5 selectors used "conditions"; the
+		// Platform API rejects that field, so catch it before auth with a
+		// migration hint instead of letting the request 400.
+		Conditions json.RawMessage `json:"conditions"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return fmt.Errorf("invalid QueryRequest selector conditions: %w", err)
+		return fmt.Errorf("invalid QueryRequest selector filters: %w", err)
+	}
+	if len(payload.Conditions) > 0 && string(payload.Conditions) != "null" {
+		return fmt.Errorf("QueryRequest uses \"filters\", not \"conditions\"; rename the selector array (Campaign Management API v5 selectors used \"conditions\", the Platform API rejects it)")
 	}
 
 	switch specName {
 	case "platform-query-keywords":
-		for _, condition := range payload.Conditions {
-			switch condition.Field {
+		for _, filter := range payload.Filters {
+			switch filter.Field {
 			case "id", "adGroupId", "campaignId":
 				return nil
 			}
 		}
-		return fmt.Errorf("targeting-keywords find requires at least one condition field id, adGroupId, or campaignId")
+		return fmt.Errorf("targeting-keywords find requires at least one filter field id, adGroupId, or campaignId")
 	case "platform-query-negative-keywords":
 		var hasID, hasAdGroup, hasCampaign, hasAdGroupIsNull bool
-		for _, condition := range payload.Conditions {
-			switch condition.Field {
+		for _, filter := range payload.Filters {
+			switch filter.Field {
 			case "id":
 				hasID = true
 			case "adGroupId":
 				hasAdGroup = true
-				if condition.Operator == "IS_NULL" {
+				if filter.Operator == "IS_NULL" {
 					hasAdGroupIsNull = true
 				}
 			case "campaignId":
@@ -834,7 +841,7 @@ func validateKeywordQuerySelector(specName string, body json.RawMessage) error {
 		if hasID || (hasAdGroup && !hasAdGroupIsNull) || (hasCampaign && hasAdGroupIsNull) {
 			return nil
 		}
-		return fmt.Errorf("negative-keywords find requires a condition for id or adGroupId; campaign-level queries require campaignId plus an adGroupId condition with operator IS_NULL")
+		return fmt.Errorf("negative-keywords find requires a filter for id or adGroupId; campaign-level queries require campaignId plus an adGroupId filter with operator IS_NULL")
 	}
 	return nil
 }
