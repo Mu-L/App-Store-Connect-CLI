@@ -115,8 +115,10 @@ Before any commit or push, run the full local repository gate above and keep
 the endpoint fixture, generated command docs, and migration tests synchronized.
 Live-account behavior remains the principal unverified risk: an operator with
 real Apple Ads credentials must validate read-only Platform calls first, then
-explicitly authorize any mutation testing. Never place those credentials in
-the repository or test fixtures.
+explicitly authorize any mutation testing. If mutation testing is necessary,
+use only disposable app `6759231657`, clean up every temporary resource after
+the test, and never mutate a non-disposable app without explicit approval.
+Never place those credentials in the repository or test fixtures.
 
 ## Alternatives considered
 
