@@ -739,6 +739,12 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 		}
 		return fmt.Errorf("--confirm is required to acknowledge %s", riskConfirmationImpact)
 	}
+	switch spec.Name {
+	case "platform-query-keywords", "platform-query-negative-keywords":
+		if err := validateKeywordQuerySelector(spec.Name, body); err != nil {
+			return err
+		}
+	}
 	if spec.Name != "platform-create-ad-account" && spec.Name != "platform-update-ad-account" {
 		return nil
 	}
@@ -777,6 +783,51 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 		if err := validateDelegations(delegations); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+type querySelectorCondition struct {
+	Field    string `json:"field"`
+	Operator string `json:"operator"`
+}
+
+func validateKeywordQuerySelector(specName string, body json.RawMessage) error {
+	var payload struct {
+		Conditions []querySelectorCondition `json:"conditions"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return fmt.Errorf("invalid QueryRequest selector conditions: %w", err)
+	}
+
+	switch specName {
+	case "platform-query-keywords":
+		for _, condition := range payload.Conditions {
+			switch condition.Field {
+			case "id", "adGroupId", "campaignId":
+				return nil
+			}
+		}
+		return fmt.Errorf("targeting-keywords find requires at least one condition field id, adGroupId, or campaignId")
+	case "platform-query-negative-keywords":
+		var hasID, hasAdGroup, hasCampaign, hasAdGroupIsNull bool
+		for _, condition := range payload.Conditions {
+			switch condition.Field {
+			case "id":
+				hasID = true
+			case "adGroupId":
+				hasAdGroup = true
+				if condition.Operator == "IS_NULL" {
+					hasAdGroupIsNull = true
+				}
+			case "campaignId":
+				hasCampaign = true
+			}
+		}
+		if hasID || (hasAdGroup && !hasAdGroupIsNull) || (hasCampaign && hasAdGroupIsNull) {
+			return nil
+		}
+		return fmt.Errorf("negative-keywords find requires a condition for id or adGroupId; campaign-level queries require campaignId plus an adGroupId condition with operator IS_NULL")
 	}
 	return nil
 }

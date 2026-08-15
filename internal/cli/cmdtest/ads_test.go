@@ -951,6 +951,116 @@ func TestAdsPlatformAPIRequestRequiresConfirmForDelegationReplacement(t *testing
 	}
 }
 
+func TestAdsPlatformAPIRequestDefersBodyDependentConfirmationUntilAfterPayload(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		wantMethod string
+		wantPath   string
+	}{
+		{
+			name:       "paused campaign create",
+			method:     http.MethodPost,
+			path:       "v1/campaigns",
+			body:       `{"status":"PAUSED"}`,
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/campaigns",
+		},
+		{
+			name:       "name-only ad-account update",
+			method:     http.MethodPut,
+			path:       "v1/ad-accounts/AD_ACCOUNT",
+			body:       `{"name":"Renamed"}`,
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/ad-accounts/AD_ACCOUNT",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payloadPath := writeAdsEvalPayload(t, "payload.json", test.body)
+			isolateAdsGuideEnv(t)
+			t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+			t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+			installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != test.wantMethod || req.URL.Path != test.wantPath {
+					t.Fatalf("request = %s %s, want %s %s", req.Method, req.URL.Path, test.wantMethod, test.wantPath)
+				}
+				return adsJSONResponse(200, `{"data":{"id":"1"}}`), nil
+			}))
+
+			stdout, stderr, err := runAdsEvalCommand(
+				t,
+				"ads", "api", "request",
+				"--method", test.method,
+				"--path", test.path,
+				"--file", payloadPath,
+				"--ad-account", "AD_ACCOUNT",
+				"--output", "json",
+			)
+			if err != nil {
+				t.Fatalf("run error = %v, want body-dependent confirmation after payload read", err)
+			}
+			if stderr != "" || !strings.Contains(stdout, `"data"`) {
+				t.Fatalf("stdout=%q stderr=%q, want successful raw response", stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestAdsPlatformAPIRequestAllowsKnownReadOnlyPostWithoutConfirmation(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "AD_ACCOUNT")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPost || req.URL.Path != "/v1/campaigns/query" {
+			t.Fatalf("request = %s %s, want POST /v1/campaigns/query", req.Method, req.URL.Path)
+		}
+		return adsJSONResponse(200, `{"data":[]}`), nil
+	}))
+
+	stdout, stderr, err := runAdsEvalCommand(
+		t,
+		"ads", "api", "request",
+		"--method", http.MethodPost,
+		"--path", "v1/campaigns/query",
+		"--ad-account", "AD_ACCOUNT",
+		"--output", "json",
+	)
+	if err != nil {
+		t.Fatalf("run error = %v, want known read-only POST to remain confirmation-free", err)
+	}
+	if stderr != "" || !strings.Contains(stdout, `"data"`) {
+		t.Fatalf("stdout=%q stderr=%q, want successful raw response", stdout, stderr)
+	}
+}
+
+func TestAdsPlatformAPIRequestKeepsUnconditionalConfirmationBeforePayloadRead(t *testing.T) {
+	isolateAdsGuideEnv(t)
+	t.Setenv("ASC_ADS_ACCESS_TOKEN", "ACCESS")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	installDefaultTransport(t, adsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected network request: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	}))
+
+	missingPayload := filepath.Join(t.TempDir(), "missing.json")
+	stdout, stderr, err := runAdsEvalCommand(
+		t,
+		"ads", "api", "request",
+		"--method", http.MethodPost,
+		"--path", "v1/ad-accounts",
+		"--file", missingPayload,
+		"--output", "json",
+	)
+	if !errors.Is(err, flag.ErrHelp) || !strings.Contains(stderr, "--confirm is required to acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact") {
+		t.Fatalf("stdout=%q stderr=%q error=%v, want unconditional confirmation before payload read", stdout, stderr, err)
+	}
+}
+
 func TestAdsPlatformAdAccountCreateRequiresRiskConfirmationBeforeNetwork(t *testing.T) {
 	payloadPath := filepath.Join(t.TempDir(), "ad-account.json")
 	if err := os.WriteFile(payloadPath, []byte(`{"name":"Disposable","productFeatures":["APPSTORE_APP_MANUAL"]}`), 0o600); err != nil {
