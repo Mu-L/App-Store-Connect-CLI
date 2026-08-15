@@ -99,7 +99,7 @@ func TestPlatformLocationGroupUpdateRequiresRiskConfirmationBeforeOtherWork(t *t
 		t.Fatal("missing location-groups update command")
 	}
 	confirm := command.FlagSet.Lookup("confirm")
-	if confirm == nil || !strings.Contains(confirm.Usage, "spend or billing impact") {
+	if confirm == nil || !strings.Contains(confirm.Usage, "spend") || !strings.Contains(confirm.Usage, "targeting") {
 		t.Fatalf("location-groups update --confirm usage = %q", valueFlagUsage(confirm))
 	}
 	if !strings.Contains(command.LongHelp, "--confirm") || !strings.Contains(command.LongHelp, "immediately change targeting") {

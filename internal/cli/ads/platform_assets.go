@@ -77,7 +77,7 @@ Example:
 			}
 			defer file.Close()
 
-			client, err := resolvePlatformClient(ctx, common, appleads.ContextAdAccount)
+			client, _, err := resolvePlatformClientAndAdAccountID(ctx, common, appleads.ContextAdAccount)
 			if err != nil {
 				return fmt.Errorf("ads assets upload: %w", err)
 			}
