@@ -92,7 +92,7 @@ func executePlatformCampaignStatusWorkflow(ctx context.Context, commandName, sta
 	if err != nil {
 		return shared.UsageError(err.Error())
 	}
-	client, err := resolvePlatformClient(ctx, flags.common, spec.Context)
+	client, _, err := resolvePlatformClientAndAdAccountID(ctx, flags.common, spec.Context)
 	if err != nil {
 		return fmt.Errorf("ads campaigns %s: %w", commandName, err)
 	}

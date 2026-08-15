@@ -63,6 +63,10 @@ Examples:
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err
 			}
+			outputFormat, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
 			methodValue := strings.ToUpper(strings.TrimSpace(*method))
 			switch methodValue {
 			case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete:
@@ -98,7 +102,7 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("ads v5 api request: %w", err)
 			}
-			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
+			return shared.PrintOutput(resp, outputFormat, *output.Pretty)
 		},
 	}
 }

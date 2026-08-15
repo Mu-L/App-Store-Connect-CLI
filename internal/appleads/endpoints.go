@@ -59,11 +59,12 @@ type EndpointSpec struct {
 	RequiresOrg      bool
 	RequiresConfirm  bool
 	ConfirmBodyField string
-	// RiskConfirm separates spend or billing acknowledgement from destructive
-	// confirmation. RiskConfirmBodyField and RiskConfirmBodyValue optionally
-	// describe a safe payload value that does not need acknowledgement. When
-	// RiskConfirmAllowedBodyFields is set, every field in the safe payload
-	// object must be listed before the acknowledgement can be skipped.
+	// RiskConfirm separates potential spend, billing, delivery, targeting, or
+	// access impact acknowledgement from destructive confirmation. A body
+	// field/value pair can exempt a documented safe payload from the
+	// acknowledgement. When RiskConfirmAllowedBodyFields is set, every field
+	// in the safe payload object must be listed before acknowledgement can be
+	// skipped.
 	RiskConfirm                  bool
 	RiskConfirmBodyField         string
 	RiskConfirmBodyValue         string

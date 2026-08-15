@@ -3,7 +3,6 @@ package ads
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"net/url"
@@ -205,11 +204,13 @@ func endpointLongHelp(node *commandNode, path []string) string {
 		}
 	}
 	switch {
-	case node.spec.RequiresConfirm:
-		examples[0] += " --confirm"
-	case node.spec.RiskConfirm && node.spec.RiskConfirmBodyField == "":
-		examples[0] += " --confirm"
-	case node.spec.ConfirmBodyField != "" || node.spec.RiskConfirm:
+	case node.spec.RequiresConfirm || node.spec.RiskConfirm:
+		if node.spec.RiskConfirm && node.spec.RiskConfirmBodyField != "" && !node.spec.RequiresConfirm {
+			examples[0] += " [--confirm]"
+		} else {
+			examples[0] += " --confirm"
+		}
+	case node.spec.ConfirmBodyField != "":
 		examples[0] += " [--confirm]"
 	}
 	if node.spec.RequiresOrg {
@@ -411,10 +412,12 @@ func flagUsage(param appleads.ParamSpec) string {
 	return usage
 }
 
+const riskConfirmationImpact = "potential Apple Ads spend, billing, delivery, targeting, or access impact"
+
 func confirmFlagUsage(spec appleads.EndpointSpec) string {
 	switch {
 	case spec.RiskConfirm:
-		return "Acknowledge potential Apple Ads spend or billing impact"
+		return "Acknowledge " + riskConfirmationImpact
 	case spec.RequiresConfirm:
 		return "Confirm deletion of this Apple Ads resource"
 	case spec.ConfirmBodyField != "":
@@ -429,6 +432,10 @@ func intParamDefault(param appleads.ParamSpec) int {
 }
 
 func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endpointFlagValues) error {
+	outputFormat, err := shared.ValidateOutputFormat(*flags.output.Output, *flags.output.Pretty)
+	if err != nil {
+		return shared.UsageError(err.Error())
+	}
 	if spec.RequiresConfirm && flags.confirm != nil && !*flags.confirm {
 		return shared.UsageError("--confirm is required")
 	}
@@ -441,7 +448,7 @@ func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endp
 		return shared.UsageError(err.Error())
 	}
 	if spec.RiskConfirm && spec.RiskConfirmBodyField == "" && flags.confirm != nil && !*flags.confirm {
-		return shared.UsageError("--confirm is required to acknowledge potential Apple Ads spend or billing impact")
+		return shared.UsageError("--confirm is required to acknowledge " + riskConfirmationImpact)
 	}
 	body, err := readBody(spec, flags)
 	if err != nil {
@@ -490,7 +497,7 @@ func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endp
 	if err != nil {
 		return fmt.Errorf("ads %s: %w", strings.Join(spec.CommandPath, " "), err)
 	}
-	return shared.PrintOutput(result, *flags.output.Output, *flags.output.Pretty)
+	return shared.PrintOutput(result, outputFormat, *flags.output.Pretty)
 }
 
 func collectPathParams(spec appleads.EndpointSpec, flags endpointFlagValues) (map[string]string, error) {
@@ -721,7 +728,13 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 		return nil
 	}
 	if spec.RiskConfirm && !confirmed && riskConfirmationRequired(spec, body) {
-		return errors.New(riskConfirmationMessage(spec))
+		if spec.RiskConfirmBodyField != "" {
+			if spec.Name == "platform-update-campaign" {
+				return fmt.Errorf("--confirm is required unless status is %q and only non-spend fields are changed", spec.RiskConfirmBodyValue)
+			}
+			return fmt.Errorf("--confirm is required unless %s is explicitly %q; otherwise acknowledge %s", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue, riskConfirmationImpact)
+		}
+		return fmt.Errorf("--confirm is required to acknowledge %s", riskConfirmationImpact)
 	}
 	if spec.Name != "platform-create-ad-account" && spec.Name != "platform-update-ad-account" {
 		return nil
@@ -820,16 +833,6 @@ func nestedRiskConfirmationPayload(payload map[string]json.RawMessage, fieldPath
 		current = nested
 	}
 	return current, parts[len(parts)-1], true
-}
-
-func riskConfirmationMessage(spec appleads.EndpointSpec) string {
-	if spec.Name == "platform-update-campaign" {
-		return `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`
-	}
-	if spec.RiskConfirmBodyField != "" {
-		return fmt.Sprintf("--confirm is required unless %s is explicitly %q", spec.RiskConfirmBodyField, spec.RiskConfirmBodyValue)
-	}
-	return "--confirm is required to acknowledge potential Apple Ads spend or billing impact"
 }
 
 func requireNonEmptyJSONString(payload map[string]json.RawMessage, field string) error {
