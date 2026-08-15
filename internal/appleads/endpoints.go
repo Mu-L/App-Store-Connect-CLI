@@ -6,9 +6,10 @@ import "strings"
 type BodyKind string
 
 const (
-	BodyNone   BodyKind = ""
-	BodyObject BodyKind = "object"
-	BodyArray  BodyKind = "array"
+	BodyNone      BodyKind = ""
+	BodyObject    BodyKind = "object"
+	BodyArray     BodyKind = "array"
+	BodyMultipart BodyKind = "multipart"
 )
 
 // ParamType describes the primitive type of a path or query parameter.
@@ -30,6 +31,8 @@ type ParamSpec struct {
 	ContextValue bool
 	Max          int
 	Allowed      []string
+	Description  string
+	Default      int
 }
 
 // EndpointSpec is the single source of truth for the Apple Ads command and
@@ -82,8 +85,32 @@ func PlatformEndpointSpecs() []EndpointSpec {
 	id := ParamSpec{Name: "id", Flag: "ad-account", Type: ParamString, Required: true, ContextValue: true}
 	orgID := ParamSpec{Name: "id", Flag: "org-id", Type: ParamString, Required: true}
 	rejectionReasonID := ParamSpec{Name: "rejectionReasonId", Flag: "reason", Type: ParamInt, Required: true}
-	searchLimit := ParamSpec{Name: "limit", Flag: "limit", Type: ParamInt}
-	searchOffset := ParamSpec{Name: "offset", Flag: "offset", Type: ParamInt}
+	searchLimit := ParamSpec{
+		Name:        "limit",
+		Flag:        "limit",
+		Type:        ParamInt,
+		Description: "Maximum results to return",
+		Default:     20,
+	}
+	searchOffset := ParamSpec{
+		Name:        "offset",
+		Flag:        "offset",
+		Type:        ParamInt,
+		Description: "Zero-based result offset for pagination",
+	}
+	searchQuery := q("query", "query", ParamString, false)
+	searchQuery.Description = "Free-text app name or developer-name search"
+	searchCPIDs := q("cpids", "cpids", ParamString, false)
+	searchCPIDs.Description = "Comma-separated iTunes content provider IDs"
+	searchOwned := q("returnOwnedApps", "return-owned-apps", ParamBool, false)
+	searchOwned.Description = "Return apps owned by this organization"
+	searchStorefronts := ParamSpec{
+		Name:        "storeFronts",
+		Flag:        "store-fronts",
+		Type:        ParamString,
+		Repeated:    true,
+		Description: "Comma-separated ISO 3166-1 alpha-2 storefront codes",
+	}
 
 	specs := []EndpointSpec{
 		platform("platform-get-me-details", "GET", "v1/me", []string{"me", "view"}, ContextNone, BodyNone, false, "", "MeResponse", nil, nil),
@@ -94,10 +121,10 @@ func PlatformEndpointSpecs() []EndpointSpec {
 		platform("platform-update-ad-account", "PUT", "v1/ad-accounts/{id}", []string{"ad-accounts", "update"}, ContextAdAccount, BodyObject, false, "AdAccountUpdate", "AdAccountResponse", []ParamSpec{id}, nil),
 		platform("platform-get-advertiser-resources", "GET", "v1/advertiser-resources", []string{"advertiser-resources", "list"}, ContextNone, BodyNone, false, "", "AdvertiserResourceListResponse", nil, []ParamSpec{{Name: "resourceType", Flag: "resource-type", Type: ParamString, Required: true, Allowed: []string{"CONTENT_PROVIDER", "BUSINESS_BRAND"}}}),
 		platform("platform-search-apps", "GET", "v1/search/apps", []string{"apps", "search"}, ContextAdAccount, BodyNone, false, "", "AppsSearchResponse", nil, []ParamSpec{
-			q("query", "query", ParamString, false),
-			q("returnOwnedApps", "return-owned-apps", ParamBool, false),
-			q("cpids", "cpids", ParamString, false),
-			{Name: "storeFronts", Flag: "store-fronts", Type: ParamString, Repeated: true},
+			searchQuery,
+			searchOwned,
+			searchCPIDs,
+			searchStorefronts,
 			searchOffset,
 			searchLimit,
 		}),

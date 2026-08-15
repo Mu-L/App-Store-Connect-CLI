@@ -168,9 +168,6 @@ func endpointLongHelp(node *commandNode, path []string) string {
 		}
 		examples[0] += fmt.Sprintf(" --%s %s", param.Flag, strings.ToUpper(strings.ReplaceAll(param.Flag, "-", "_")))
 	}
-	if node.spec.Name == "platform-search-apps" {
-		examples[0] += " --query EXAMPLE"
-	}
 	if node.spec.BodyKind != appleads.BodyNone {
 		if node.spec.BodyOptional {
 			examples[0] += " [--file payload.json]"
@@ -197,7 +194,45 @@ func endpointLongHelp(node *commandNode, path []string) string {
 	if node.spec.BodyType == "UpdateCampaignRequest" {
 		help += "\n\nPayload:\n  Apple requires a \"campaign\" envelope for campaign updates.\n  Example: {\"campaign\":{\"status\":\"PAUSED\"}}"
 	}
+	if node.spec.Name == "platform-search-apps" {
+		examples = []string{
+			`  asc ads apps search --ad-account AD_ACCOUNT_ID --query "Example"`,
+			`  asc ads apps search --ad-account AD_ACCOUNT_ID --cpids "123456,789012"`,
+			"  asc ads apps search --ad-account AD_ACCOUNT_ID --return-owned-apps",
+		}
+		help += `
+
+Search modes:
+  At least one of --query, --cpids, or --return-owned-apps is required.
+  These selectors can be combined. --query searches app and developer names;
+  --cpids scopes results to content providers; --return-owned-apps returns
+  apps owned by the current organization.`
+	}
+	if node.spec.BodyKind != appleads.BodyNone {
+		help += endpointBodyHelp(*node.spec)
+	}
 	return help + "\n\nExamples:\n" + strings.Join(examples, "\n")
+}
+
+func endpointBodyHelp(spec appleads.EndpointSpec) string {
+	required := "yes"
+	if spec.BodyOptional {
+		required = "no"
+	}
+	return fmt.Sprintf("\n\nRequest body:\n  Schema: %s\n  Shape: %s\n  Required: %s", spec.BodyType, endpointBodyShape(spec.BodyKind), required)
+}
+
+func endpointBodyShape(kind appleads.BodyKind) string {
+	switch kind {
+	case appleads.BodyObject:
+		return "JSON object"
+	case appleads.BodyArray:
+		return "JSON array"
+	case appleads.BodyMultipart:
+		return "multipart/form-data"
+	default:
+		return string(kind)
+	}
 }
 
 func endpointGroupHelp(name string) string {
@@ -288,7 +323,7 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 	for _, param := range spec.QueryParams {
 		switch param.Type {
 		case appleads.ParamInt:
-			values.queryInts[param.Name] = fs.Int(param.Flag, 0, flagUsage(param))
+			values.queryInts[param.Name] = fs.Int(param.Flag, intParamDefault(param), flagUsage(param))
 		case appleads.ParamBool:
 			values.queryBools[param.Name] = fs.Bool(param.Flag, false, flagUsage(param))
 		default:
@@ -311,7 +346,10 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 }
 
 func flagUsage(param appleads.ParamSpec) string {
-	usage := strings.ReplaceAll(param.Flag, "-", " ")
+	usage := param.Description
+	if usage == "" {
+		usage = strings.ReplaceAll(param.Flag, "-", " ")
+	}
 	if param.Required {
 		usage += " (required)"
 	}
@@ -322,6 +360,10 @@ func flagUsage(param appleads.ParamSpec) string {
 		usage += " (" + strings.Join(param.Allowed, ", ") + ")"
 	}
 	return usage
+}
+
+func intParamDefault(param appleads.ParamSpec) int {
+	return param.Default
 }
 
 func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endpointFlagValues) error {
