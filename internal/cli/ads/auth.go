@@ -635,10 +635,11 @@ func platformEnvelopeResult(raw appleads.RawResponse) (json.RawMessage, error) {
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, err
 	}
-	if len(envelope.Result) == 0 {
-		return json.RawMessage("null"), nil
+	result := bytes.TrimSpace(envelope.Result)
+	if len(result) == 0 || bytes.Equal(result, []byte("null")) {
+		return nil, fmt.Errorf("response is missing a non-null result")
 	}
-	return envelope.Result, nil
+	return json.RawMessage(result), nil
 }
 
 func normalizePlatformDiscoveryMe(raw json.RawMessage) (json.RawMessage, error) {
@@ -665,19 +666,21 @@ func normalizePlatformDiscoveryMe(raw json.RawMessage) (json.RawMessage, error) 
 }
 
 func summarizePlatformACLAccounts(raw appleads.RawResponse, activeAdAccountID string) ([]adsAuthAccountSummary, error) {
-	var envelope struct {
-		Result struct {
-			ACLs []struct {
-				AdAccount map[string]any `json:"adAccount"`
-				Roles     []string       `json:"roles"`
-			} `json:"acls"`
-		} `json:"result"`
-	}
-	if err := unmarshalJSONPreservingNumbers(raw, &envelope); err != nil {
+	result, err := platformEnvelopeResult(raw)
+	if err != nil {
 		return nil, err
 	}
-	accounts := make([]adsAuthAccountSummary, 0, len(envelope.Result.ACLs))
-	for _, item := range envelope.Result.ACLs {
+	var payload struct {
+		ACLs []struct {
+			AdAccount map[string]any `json:"adAccount"`
+			Roles     []string       `json:"roles"`
+		} `json:"acls"`
+	}
+	if err := unmarshalJSONPreservingNumbers(result, &payload); err != nil {
+		return nil, err
+	}
+	accounts := make([]adsAuthAccountSummary, 0, len(payload.ACLs))
+	for _, item := range payload.ACLs {
 		adAccountID := jsonScalarString(firstMapValue(item.AdAccount, "id"))
 		orgID := jsonScalarString(firstMapValue(item.AdAccount, "orgId", "orgID", "organizationId"))
 		account := adsAuthAccountSummary{
