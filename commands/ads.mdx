@@ -203,6 +203,10 @@ asc ads rejection-reasons apps find --ad-account "987654" --file query.json
 asc ads rejection-reasons apps view --ad-account "987654" --reason "42"
 ```
 
+`--query` must contain at least three characters and at least one letter or
+number (two characters is accepted for CJK text). Punctuation-only and shorter
+queries fail locally before credentials or network access are used.
+
 The three `find` commands above accept an omitted `--file` and then send no
 request body. Use a `QueryRequest` or eligibility query file when filters,
 sorting, or pagination are needed.
@@ -391,6 +395,36 @@ Suggestion requests have two routes that Apple documents inconsistently.
 `promotedObjectType`; `queryType: "SEARCH"` uses the phrase or category
 filter described on the endpoint page. The CLI sends the reviewed body
 unchanged instead of rejecting the documented SEARCH form.
+
+## Complete Platform API v1 command inventory
+
+The direct v1 surface is organized by resource family. The less frequently
+used families are still first-class commands, so agents can discover them from
+the group help instead of falling back to raw requests:
+
+```bash
+asc ads change-history find --ad-account "987654" --file query.json
+asc ads change-history view --ad-account "987654" --detail-id "Campaign.123.txn_abc"
+asc ads suggestions categories find --ad-account "987654" --file query.json
+asc ads suggestions keywords find --ad-account "987654" --file query.json
+asc ads suggestions phrases find --ad-account "987654" --file query.json
+asc ads suggestions target-cpas find --ad-account "987654" --file query.json
+asc ads recommendations daily-budgets find --ad-account "987654" --file query.json
+asc ads recommendations target-cpas find --ad-account "987654" --file query.json
+asc ads recommendations daily-budgets apply --ad-account "987654" --file recommendations.json --confirm
+asc ads recommendations target-cpas dismiss --ad-account "987654" --file recommendations.json --confirm
+```
+
+The full family map is: identity and access (`me`, `acls`, `orgs`), account
+discovery (`advertiser-resources`, `apps`, app eligibility and rejection
+reasons), maps and creatives (`brands`, `business-categories`, `locations`,
+`location-groups`, `assets`, `creatives`), campaign delivery (`campaigns`,
+`ad-groups`, `ads`, `targeting-keywords`, `negative-keywords`,
+`budget-orders`, `geo`), metadata (`product-pages`, app locales), reporting
+(`reports apps`, `reports brands`), insights (`insights`), recommendations,
+suggestions, and change history. Run `asc ads <family> --help` and the leaf
+`--help` before constructing a payload; each leaf prints its endpoint, body
+schema, context, pagination, and confirmation contract.
 
 ## Migrating from Campaign Management API v5
 

@@ -77,7 +77,6 @@ The `/v1/ad-accounts` collection is method-dependent:
 | `POST /v1/ad-accounts` | Creates an account without `X-AP-Context`; the account context does not exist until the response supplies its ID. |
 | `GET /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
 | `PUT /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
-| `DELETE /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
 
 Authentication commands use the Platform API v1 transport:
 
@@ -445,8 +444,8 @@ work so an ID cannot inject additional context fields.
 
 The following requests are context-free: `GET /v1/me`, `GET /v1/acls`,
 `GET /v1/orgs/{id}`, `GET /v1/advertiser-resources`, and
-`POST /v1/ad-accounts`. For `GET`, `PUT`, and `DELETE
-/v1/ad-accounts/{id}`, the context account must match the path ID. Other
+`POST /v1/ad-accounts`. For `GET` and `PUT /v1/ad-accounts/{id}`, the context
+account must match the path ID. Other
 endpoint context requirements are declared by the v1 endpoint metadata.
 
 Platform API v1 retains the shared timeout, retry, rate-limit, pagination, and
