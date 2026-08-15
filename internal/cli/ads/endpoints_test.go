@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -402,13 +403,44 @@ func TestPlatformKeywordQueriesRequireSelectorBodyBeforeAuth(t *testing.T) {
 
 func TestPlatformQueryMigrationValidation(t *testing.T) {
 	var querySpecs []appleads.EndpointSpec
+	schemaCounts := map[string]int{}
 	for _, spec := range appleads.PlatformEndpointSpecs() {
 		if spec.Method == "POST" && strings.HasSuffix(spec.Path, "/query") {
 			querySpecs = append(querySpecs, spec)
+			schemaCounts[spec.BodyType]++
 		}
 	}
 	if got, want := len(querySpecs), 38; got != want {
 		t.Fatalf("Platform query endpoint count = %d, want %d", got, want)
+	}
+	wantSchemaCounts := map[string]int{
+		"QueryRequest":                        16,
+		"AppsReportingRequest":                5,
+		"BrandsReportingRequest":              5,
+		"RecommendationQueryRequest":          6,
+		"AuditQuery":                          1,
+		"CreativeRejectionReasonQueryRequest": 1,
+		"EligibilityQueryRequest":             1,
+		"ImpressionShareQueryRequest":         1,
+		"PolicyAssignmentQueryRequest":        1,
+		"SearchTermPopularityQueryRequest":    1,
+	}
+	if !reflect.DeepEqual(schemaCounts, wantSchemaCounts) {
+		t.Fatalf("Platform query schemas = %#v, want %#v", schemaCounts, wantSchemaCounts)
+	}
+	for schema := range wantSchemaCounts {
+		wantFields := schema == "AppsReportingRequest" || schema == "BrandsReportingRequest"
+		wantTimeRange := wantFields || schema == "ImpressionShareQueryRequest" || schema == "SearchTermPopularityQueryRequest"
+		wantReport := wantFields
+		if got := platformQuerySupportsFields(schema); got != wantFields {
+			t.Errorf("platformQuerySupportsFields(%q) = %v, want %v", schema, got, wantFields)
+		}
+		if got := platformQuerySupportsTimeRange(schema); got != wantTimeRange {
+			t.Errorf("platformQuerySupportsTimeRange(%q) = %v, want %v", schema, got, wantTimeRange)
+		}
+		if got := platformQueryIsReport(schema); got != wantReport {
+			t.Errorf("platformQueryIsReport(%q) = %v, want %v", schema, got, wantReport)
+		}
 	}
 
 	validV1 := json.RawMessage(`{"filters":[{"field":"id","operator":"EQUALS","value":"123"}],"sorting":[{"field":"id","order":"DESC"}],"pagination":{"offset":0,"pageSize":5}}`)
@@ -417,6 +449,14 @@ func TestPlatformQueryMigrationValidation(t *testing.T) {
 		t.Run(strings.Join(spec.CommandPath, "-"), func(t *testing.T) {
 			if err := validateEndpointBody(spec, validV1, false); err != nil {
 				t.Fatalf("valid Platform v1 query rejected: %v", err)
+			}
+			fieldsErr := validatePlatformQueryMigration(spec, json.RawMessage(`{"fields":null}`))
+			if platformQuerySupportsFields(spec.BodyType) {
+				if fieldsErr != nil {
+					t.Fatalf("%s must accept its documented top-level fields member: %v", spec.BodyType, fieldsErr)
+				}
+			} else if fieldsErr == nil || !strings.Contains(fieldsErr.Error(), `has no field-projection member`) {
+				t.Fatalf("%s fields error = %v, want schema-specific rejection", spec.BodyType, fieldsErr)
 			}
 			err := validateEndpointBody(spec, legacyConditions, false)
 			if err == nil || !strings.Contains(err.Error(), `"conditions" -> "filters"`) {
@@ -429,6 +469,9 @@ func TestPlatformQueryMigrationValidation(t *testing.T) {
 	if !ok {
 		t.Fatal("missing campaigns find")
 	}
+	if err := validateEndpointBody(campaigns, json.RawMessage(`{"filters":[{"field":"name","operator":"STARTS_WITH","value":"x"}],"sorting":[{"field":"id","order":"DESC"}]}`), false); err != nil {
+		t.Fatalf("renamed v1 operator and sort order rejected: %v", err)
+	}
 	for _, test := range []struct {
 		name string
 		body string
@@ -438,6 +481,9 @@ func TestPlatformQueryMigrationValidation(t *testing.T) {
 		{name: "order by", body: `{"orderBy":null}`, want: `"orderBy" -> "sorting"`},
 		{name: "sort order", body: `{"sorting":[{"field":"id","sortOrder":null}]}`, want: `"sortOrder" -> "order"`},
 		{name: "pagination limit", body: `{"pagination":{"limit":null}}`, want: `"pagination.limit" -> "pagination.pageSize"`},
+		{name: "legacy starts with", body: `{"filters":[{"field":"name","operator":"STARTSWITH","value":"x"}]}`, want: `"STARTSWITH"/"ENDSWITH" -> "STARTS_WITH"/"ENDS_WITH"`},
+		{name: "legacy sort direction", body: `{"sorting":[{"field":"id","order":"DESCENDING"}]}`, want: `"ASCENDING"/"DESCENDING" -> "ASC"/"DESC"`},
+		{name: "unsupported field projection", body: `{"fields":null}`, want: `QueryRequest has no field-projection member`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateEndpointBody(campaigns, json.RawMessage(test.body), false)
@@ -451,7 +497,10 @@ func TestPlatformQueryMigrationValidation(t *testing.T) {
 	if !ok {
 		t.Fatal("missing app campaign report")
 	}
-	reportErr := validateEndpointBody(report, json.RawMessage(`{"selector":{"conditions":[{"field":"id","operator":"EQUALS","values":null}],"orderBy":[{"field":"id","sortOrder":null}],"pagination":{"limit":null}}}`), false)
+	if err := validateEndpointBody(report, json.RawMessage(`{"fields":["campaignId"],"timeRange":{"start":"2026-08-01","end":"2026-08-02"},"options":{"includeRows":["GRAND_TOTAL"]}}`), false); err != nil {
+		t.Fatalf("valid v1 report fields rejected: %v", err)
+	}
+	reportErr := validateEndpointBody(report, json.RawMessage(`{"startTime":null,"endTime":null,"timeZone":null,"granularity":null,"returnRecordsWithNoMetrics":null,"returnRowTotals":null,"returnGrandTotals":null,"selector":{"fields":null,"conditions":[{"field":"id","operator":"STARTSWITH","values":null}],"orderBy":[{"field":"id","sortOrder":"DESCENDING"}],"pagination":{"limit":null}}}`), false)
 	for _, want := range []string{
 		`"selector"`,
 		`"conditions" -> "filters"`,
@@ -459,9 +508,38 @@ func TestPlatformQueryMigrationValidation(t *testing.T) {
 		`"orderBy" -> "sorting"`,
 		`"sortOrder" -> "order"`,
 		`"pagination.limit" -> "pagination.pageSize"`,
+		`"STARTSWITH"/"ENDSWITH" -> "STARTS_WITH"/"ENDS_WITH"`,
+		`"ASCENDING"/"DESCENDING" -> "ASC"/"DESC"`,
+		`"selector.fields" -> top-level "fields"`,
+		`"startTime" -> "timeRange.start"`,
+		`"endTime" -> "timeRange.end"`,
+		`"timeZone" -> "timeRange.timeZone"`,
+		`"granularity" -> "timeRange.granularity"`,
+		`"returnRecordsWithNoMetrics": true -> add "EMPTY_METRICS"`,
+		`remove "returnRowTotals"`,
+		`"returnGrandTotals": true -> add "GRAND_TOTAL"`,
 	} {
 		if reportErr == nil || !strings.Contains(reportErr.Error(), want) {
 			t.Fatalf("legacy report selector error = %v, want complete migration hint containing %q", reportErr, want)
+		}
+	}
+
+	brandReport, ok := appleads.PlatformEndpointByCommandPath("reports", "brands", "campaigns")
+	if !ok {
+		t.Fatal("missing brand campaign report")
+	}
+	if err := validateEndpointBody(brandReport, json.RawMessage(`{"returnRecordsWithNoMetrics":null}`), false); err == nil || !strings.Contains(err.Error(), `BrandsOptions doesn't support EMPTY_METRICS`) {
+		t.Fatalf("brand empty-metrics migration error = %v, want unsupported hint", err)
+	}
+
+	impressionShare, ok := appleads.PlatformEndpointByCommandPath("insights", "impression-share", "find")
+	if !ok {
+		t.Fatal("missing impression-share query")
+	}
+	impressionErr := validateEndpointBody(impressionShare, json.RawMessage(`{"name":null,"dateRange":null,"startTime":null}`), false)
+	for _, want := range []string{`remove "name"`, `"dateRange" -> explicit "timeRange.start" and "timeRange.end"`, `"startTime" -> "timeRange.start"`} {
+		if impressionErr == nil || !strings.Contains(impressionErr.Error(), want) {
+			t.Fatalf("impression-share migration error = %v, want %q", impressionErr, want)
 		}
 	}
 

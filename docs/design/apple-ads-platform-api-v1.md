@@ -112,6 +112,20 @@ standard `QueryRequest` plus reporting, insights, recommendations, policy,
 and audit query bodies. It reports the direct member replacements:
 `conditions` to `filters`, `values` to `value`, `orderBy` to `sorting`,
 `sortOrder` to `order`, and `pagination.limit` to `pagination.pageSize`.
+It also catches the renamed operator and sort values (`STARTSWITH` and
+`ENDSWITH` to `STARTS_WITH` and `ENDS_WITH`; `ASCENDING` and `DESCENDING`
+to `ASC` and `DESC`).
+
+The schema-aware part of the guard handles members that do not have one
+universal replacement. Only `AppsReportingRequest` and
+`BrandsReportingRequest` accept top-level `fields`; other query bodies reject
+the legacy projection member. Reporting dates, time zone, and granularity move
+under `timeRange`, while grand totals and empty app-metric rows move to
+`options.includeRows`. `returnRowTotals` has no v1 request field, and brand
+reports do not support `EMPTY_METRICS`. The v5 custom impression-share
+`name` and relative `dateRange` members are also rejected with their specific
+v1 migration paths.
+
 Explicit `null` legacy members are rejected because the Platform API rejects
 the property itself. The CLI does not rewrite payloads automatically: value
 cardinality and accepted fields vary by endpoint, so silent conversion could
