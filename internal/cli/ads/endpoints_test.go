@@ -408,70 +408,106 @@ func TestPlatformKeywordQuerySelectorValidation(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "targeting empty conditions",
+			name:    "targeting empty filters",
 			path:    []string{"targeting-keywords", "find"},
-			body:    `{"conditions":[]}`,
+			body:    `{"filters":[]}`,
 			wantErr: "id, adGroupId, or campaignId",
 		},
 		{
-			name:    "targeting irrelevant condition",
+			name:    "targeting legacy v5 conditions selector",
 			path:    []string{"targeting-keywords", "find"},
-			body:    `{"conditions":[{"field":"name","operator":"EQUALS","values":["ignored"]}]}`,
+			body:    `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]}]}`,
+			wantErr: `rename the selector array and each entry's "values" to the singular "value"`,
+		},
+		{
+			name:    "negative legacy v5 conditions selector",
+			path:    []string{"negative-keywords", "find"},
+			body:    `{"conditions":[{"field":"adGroupId","operator":"EQUALS","values":["ad-group-1"]}]}`,
+			wantErr: `rename the selector array and each entry's "values" to the singular "value"`,
+		},
+		{
+			name:    "targeting null legacy conditions key",
+			path:    []string{"targeting-keywords", "find"},
+			body:    `{"filters":[{"field":"campaignId","operator":"EQUALS","value":"campaign-1"}],"conditions":null}`,
+			wantErr: `uses "filters", not "conditions"`,
+		},
+		{
+			name:    "targeting null legacy values key in filter",
+			path:    []string{"targeting-keywords", "find"},
+			body:    `{"filters":[{"field":"campaignId","operator":"EQUALS","value":"campaign-1","values":null}]}`,
+			wantErr: `singular "value", not "values"`,
+		},
+		{
+			name:    "targeting legacy v5 values in filter",
+			path:    []string{"targeting-keywords", "find"},
+			body:    `{"filters":[{"field":"campaignId","operator":"IN","values":["campaign-1"]}]}`,
+			wantErr: `singular "value", not "values"`,
+		},
+		{
+			name:    "negative legacy v5 values in filter",
+			path:    []string{"negative-keywords", "find"},
+			body:    `{"filters":[{"field":"adGroupId","operator":"IN","values":["ad-group-1"]}]}`,
+			wantErr: `singular "value", not "values"`,
+		},
+		{
+			name:    "targeting irrelevant filter",
+			path:    []string{"targeting-keywords", "find"},
+			body:    `{"filters":[{"field":"name","operator":"EQUALS","value":"ignored"}]}`,
 			wantErr: "id, adGroupId, or campaignId",
 		},
 		{
 			name: "targeting id",
 			path: []string{"targeting-keywords", "find"},
-			body: `{"conditions":[{"field":"id","operator":"EQUALS","values":["keyword-1"]}]}`,
+			body: `{"filters":[{"field":"id","operator":"EQUALS","value":"keyword-1"}]}`,
 		},
 		{
 			name: "targeting ad group",
 			path: []string{"targeting-keywords", "find"},
-			body: `{"conditions":[{"field":"adGroupId","operator":"EQUALS","values":["ad-group-1"]}]}`,
+			body: `{"filters":[{"field":"adGroupId","operator":"EQUALS","value":"ad-group-1"}]}`,
 		},
 		{
 			name: "targeting campaign",
 			path: []string{"targeting-keywords", "find"},
-			body: `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]}]}`,
+			body: `{"filters":[{"field":"campaignId","operator":"EQUALS","value":"campaign-1"}]}`,
 		},
 		{
-			name:    "negative empty conditions",
+			name:    "negative empty filters",
 			path:    []string{"negative-keywords", "find"},
-			body:    `{"conditions":[]}`,
+			body:    `{"filters":[]}`,
 			wantErr: "id or adGroupId",
 		},
 		{
-			name:    "negative irrelevant condition",
+			name:    "negative irrelevant filter",
 			path:    []string{"negative-keywords", "find"},
-			body:    `{"conditions":[{"field":"name","operator":"EQUALS","values":["ignored"]}]}`,
+			body:    `{"filters":[{"field":"name","operator":"EQUALS","value":"ignored"}]}`,
 			wantErr: "id or adGroupId",
 		},
 		{
 			name: "negative id",
 			path: []string{"negative-keywords", "find"},
-			body: `{"conditions":[{"field":"id","operator":"EQUALS","values":["negative-keyword-1"]}]}`,
+			body: `{"filters":[{"field":"id","operator":"EQUALS","value":"negative-keyword-1"}]}`,
 		},
 		{
 			name: "negative ad group",
 			path: []string{"negative-keywords", "find"},
-			body: `{"conditions":[{"field":"adGroupId","operator":"EQUALS","values":["ad-group-1"]}]}`,
+			body: `{"filters":[{"field":"adGroupId","operator":"EQUALS","value":"ad-group-1"}]}`,
 		},
 		{
 			name:    "negative campaign without null ad group",
 			path:    []string{"negative-keywords", "find"},
-			body:    `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]}]}`,
-			wantErr: "campaignId plus an adGroupId condition with operator IS_NULL",
+			body:    `{"filters":[{"field":"campaignId","operator":"EQUALS","value":"campaign-1"}]}`,
+			wantErr: "campaignId plus an adGroupId filter with operator IS_NULL",
 		},
 		{
 			name:    "negative null ad group without campaign",
 			path:    []string{"negative-keywords", "find"},
-			body:    `{"conditions":[{"field":"adGroupId","operator":"IS_NULL"}]}`,
-			wantErr: "campaignId plus an adGroupId condition with operator IS_NULL",
+			body:    `{"filters":[{"field":"adGroupId","operator":"IS_NULL"}]}`,
+			wantErr: "campaignId plus an adGroupId filter with operator IS_NULL",
 		},
 		{
 			name: "negative campaign",
 			path: []string{"negative-keywords", "find"},
-			body: `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]},{"field":"adGroupId","operator":"IS_NULL"}]}`,
+			body: `{"filters":[{"field":"campaignId","operator":"EQUALS","value":"campaign-1"},{"field":"adGroupId","operator":"IS_NULL"}]}`,
 		},
 	}
 	for _, test := range tests {
@@ -507,7 +543,7 @@ func TestPlatformKeywordQuerySelectorValidationPrecedesAuth(t *testing.T) {
 				t.Fatalf("missing platform endpoint %q", strings.Join(path, " "))
 			}
 			file := filepath.Join(t.TempDir(), "query.json")
-			if err := os.WriteFile(file, []byte(`{"conditions":[{"field":"name","operator":"EQUALS","values":["ignored"]}]}`), 0o600); err != nil {
+			if err := os.WriteFile(file, []byte(`{"filters":[{"field":"name","operator":"EQUALS","value":"ignored"}]}`), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			fs, flags := bindEndpointFlags(spec, strings.Join(path, " "))
