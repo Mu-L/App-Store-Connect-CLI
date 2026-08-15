@@ -25,35 +25,51 @@ const (
 type ParamSpec struct {
 	Name         string
 	Flag         string
+	Aliases      []string
 	Type         ParamType
 	Required     bool
 	Repeated     bool
 	ContextValue bool
 	Max          int
 	Allowed      []string
+	Description  string
+	Default      int
 }
 
 // EndpointSpec is the single source of truth for the Apple Ads command and
 // client surface.
 type EndpointSpec struct {
-	Name             string
-	Method           string
-	Path             string
-	Version          APIVersion
-	Context          ContextKind
-	CommandPath      []string
-	BodyKind         BodyKind
-	BodyOptional     bool
+	Name         string
+	Method       string
+	Path         string
+	Version      APIVersion
+	Context      ContextKind
+	CommandPath  []string
+	BodyKind     BodyKind
+	BodyOptional bool
+	// CLIRequiresBody records a client-side requirement that is stricter than
+	// the SDK/OpenAPI request contract. Apple accepts an empty selector body on
+	// some query endpoints, but the Platform API requires a selector filter for
+	// the keyword queries exposed by asc.
+	CLIRequiresBody  bool
 	BodyType         string
+	BodyHint         string
+	BodyFileExample  string
 	ResponseType     string
 	RequiresOrg      bool
 	RequiresConfirm  bool
 	ConfirmBodyField string
-	RetrySafe        bool
-	PathParams       []ParamSpec
-	QueryParams      []ParamSpec
-	SupportsPaginate bool
-	DefaultListAlias bool
+	// RiskConfirm separates spend or billing acknowledgement from destructive
+	// confirmation. RiskConfirmBodyField and RiskConfirmBodyValue optionally
+	// describe a safe payload value that does not need acknowledgement.
+	RiskConfirm          bool
+	RiskConfirmBodyField string
+	RiskConfirmBodyValue string
+	RetrySafe            bool
+	PathParams           []ParamSpec
+	QueryParams          []ParamSpec
+	SupportsPaginate     bool
+	DefaultListAlias     bool
 }
 
 // PlatformEndpointSpecs returns the implemented Apple Ads Platform API v1
@@ -62,8 +78,32 @@ func PlatformEndpointSpecs() []EndpointSpec {
 	id := ParamSpec{Name: "id", Flag: "ad-account", Type: ParamString, Required: true, ContextValue: true}
 	orgID := ParamSpec{Name: "id", Flag: "org-id", Type: ParamString, Required: true}
 	rejectionReasonID := ParamSpec{Name: "rejectionReasonId", Flag: "reason", Type: ParamInt, Required: true}
-	searchLimit := ParamSpec{Name: "limit", Flag: "limit", Type: ParamInt}
-	searchOffset := ParamSpec{Name: "offset", Flag: "offset", Type: ParamInt}
+	searchLimit := ParamSpec{
+		Name:        "limit",
+		Flag:        "limit",
+		Type:        ParamInt,
+		Description: "Maximum results to return",
+		Default:     20,
+	}
+	searchOffset := ParamSpec{
+		Name:        "offset",
+		Flag:        "offset",
+		Type:        ParamInt,
+		Description: "Zero-based result offset for pagination",
+	}
+	searchQuery := q("query", "query", ParamString, false)
+	searchQuery.Description = "Free-text app name or developer-name search"
+	searchCPIDs := q("cpids", "cpids", ParamString, false)
+	searchCPIDs.Description = "Comma-separated iTunes content provider IDs"
+	searchOwned := q("returnOwnedApps", "return-owned-apps", ParamBool, false)
+	searchOwned.Description = "Return apps owned by this organization"
+	searchStorefronts := ParamSpec{
+		Name:        "storeFronts",
+		Flag:        "store-fronts",
+		Type:        ParamString,
+		Repeated:    true,
+		Description: "Comma-separated ISO 3166-1 alpha-2 storefront codes",
+	}
 
 	specs := []EndpointSpec{
 		platformEndpoint("platform-get-me-details", "GET", "v1/me", []string{"me", "view"}, ContextNone, BodyNone, false, "", "MeResponse", nil, nil),
@@ -74,10 +114,10 @@ func PlatformEndpointSpecs() []EndpointSpec {
 		platformEndpoint("platform-update-ad-account", "PUT", "v1/ad-accounts/{id}", []string{"ad-accounts", "update"}, ContextAdAccount, BodyObject, false, "AdAccountUpdate", "AdAccountResponse", []ParamSpec{id}, nil),
 		platformEndpoint("platform-get-advertiser-resources", "GET", "v1/advertiser-resources", []string{"advertiser-resources", "list"}, ContextNone, BodyNone, false, "", "AdvertiserResourceListResponse", nil, []ParamSpec{{Name: "resourceType", Flag: "resource-type", Type: ParamString, Required: true, Allowed: []string{"CONTENT_PROVIDER", "BUSINESS_BRAND"}}}),
 		platformEndpoint("platform-search-apps", "GET", "v1/search/apps", []string{"apps", "search"}, ContextAdAccount, BodyNone, false, "", "AppsSearchResponse", nil, []ParamSpec{
-			q("query", "query", ParamString, false),
-			q("returnOwnedApps", "return-owned-apps", ParamBool, false),
-			q("cpids", "cpids", ParamString, false),
-			{Name: "storeFronts", Flag: "store-fronts", Type: ParamString, Repeated: true},
+			searchQuery,
+			searchOwned,
+			searchCPIDs,
+			searchStorefronts,
 			searchOffset,
 			searchLimit,
 		}),
@@ -140,16 +180,17 @@ func PlatformEndpointByCommandPath(path ...string) (EndpointSpec, bool) {
 const maxAppleAdsPageLimit = 1000
 
 var (
-	adamIDParam      = ParamSpec{Name: "adamId", Flag: "adam-id", Type: ParamInt, Required: true}
-	adGroupParam     = ParamSpec{Name: "adgroupId", Flag: "ad-group", Type: ParamInt, Required: true}
-	adParam          = ParamSpec{Name: "adId", Flag: "ad", Type: ParamInt, Required: true}
-	budgetOrderParam = ParamSpec{Name: "boId", Flag: "budget-order", Type: ParamInt, Required: true}
-	campaignParam    = ParamSpec{Name: "campaignId", Flag: "campaign", Type: ParamInt, Required: true}
-	creativeParam    = ParamSpec{Name: "creativeId", Flag: "creative", Type: ParamInt, Required: true}
-	keywordParam     = ParamSpec{Name: "keywordId", Flag: "keyword", Type: ParamInt, Required: true}
-	productPageParam = ParamSpec{Name: "productPageId", Flag: "product-page", Type: ParamString, Required: true}
-	reasonParam      = ParamSpec{Name: "productPageReasonId", Flag: "reason", Type: ParamInt, Required: true}
-	reportParam      = ParamSpec{Name: "reportId", Flag: "report", Type: ParamInt, Required: true}
+	adamIDParam          = ParamSpec{Name: "adamId", Flag: "adam-id", Type: ParamInt, Required: true}
+	adGroupParam         = ParamSpec{Name: "adgroupId", Flag: "ad-group", Type: ParamInt, Required: true}
+	adParam              = ParamSpec{Name: "adId", Flag: "ad", Type: ParamInt, Required: true}
+	budgetOrderParam     = ParamSpec{Name: "boId", Flag: "budget-order", Type: ParamInt, Required: true}
+	campaignParam        = ParamSpec{Name: "campaignId", Flag: "campaign", Type: ParamInt, Required: true}
+	creativeParam        = ParamSpec{Name: "creativeId", Flag: "creative", Type: ParamInt, Required: true}
+	keywordParam         = ParamSpec{Name: "keywordId", Flag: "keyword", Type: ParamInt, Required: true}
+	negativeKeywordParam = ParamSpec{Name: "keywordId", Flag: "negative-keyword", Aliases: []string{"keyword"}, Type: ParamInt, Required: true}
+	productPageParam     = ParamSpec{Name: "productPageId", Flag: "product-page", Type: ParamString, Required: true}
+	reasonParam          = ParamSpec{Name: "productPageReasonId", Flag: "reason", Type: ParamInt, Required: true}
+	reportParam          = ParamSpec{Name: "reportId", Flag: "report", Type: ParamInt, Required: true}
 
 	limitParam  = ParamSpec{Name: "limit", Flag: "limit", Type: ParamInt, Max: maxAppleAdsPageLimit}
 	offsetParam = ParamSpec{Name: "offset", Flag: "offset", Type: ParamInt}
@@ -238,14 +279,14 @@ func EndpointSpecs() []EndpointSpec {
 
 		endpoint("get-all-campaign-negative-keywords", "GET", "v5/campaigns/{campaignId}/negativekeywords", []string{"campaign-negative-keywords", "list"}, BodyNone, "", "NegativeKeywordListResponse", []ParamSpec{campaignParam}, qLimitOffset()),
 		endpoint("find-campaign-negative-keywords", "POST", "v5/campaigns/{campaignId}/negativekeywords/find", []string{"campaign-negative-keywords", "find"}, BodyObject, "Selector", "NegativeKeywordListResponse", []ParamSpec{campaignParam}, nil),
-		endpoint("get-a-campaign-negative-keyword", "GET", "v5/campaigns/{campaignId}/negativekeywords/{keywordId}", []string{"campaign-negative-keywords", "view"}, BodyNone, "", "NegativeKeywordResponse", []ParamSpec{campaignParam, keywordParam}, nil),
+		endpoint("get-a-campaign-negative-keyword", "GET", "v5/campaigns/{campaignId}/negativekeywords/{keywordId}", []string{"campaign-negative-keywords", "view"}, BodyNone, "", "NegativeKeywordResponse", []ParamSpec{campaignParam, negativeKeywordParam}, nil),
 		endpoint("create-campaign-negative-keywords", "POST", "v5/campaigns/{campaignId}/negativekeywords/bulk", []string{"campaign-negative-keywords", "create-bulk"}, BodyArray, "[NegativeKeyword]", "NegativeKeywordListResponse", []ParamSpec{campaignParam}, nil),
 		endpoint("update-campaign-negative-keywords", "PUT", "v5/campaigns/{campaignId}/negativekeywords/bulk", []string{"campaign-negative-keywords", "update-bulk"}, BodyArray, "[NegativeKeyword]", "NegativeKeywordListResponse", []ParamSpec{campaignParam}, nil),
 		endpoint("delete-campaign-negative-keywords", "POST", "v5/campaigns/{campaignId}/negativekeywords/delete/bulk", []string{"campaign-negative-keywords", "delete-bulk"}, BodyArray, "[int64]", "IntegerResponse", []ParamSpec{campaignParam}, nil),
 
 		endpoint("get-all-ad-group-negative-keywords", "GET", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords", []string{"ad-group-negative-keywords", "list"}, BodyNone, "", "NegativeKeywordListResponse", []ParamSpec{campaignParam, adGroupParam}, qLimitOffset()),
 		endpoint("find-ad-group-negative-keywords", "POST", "v5/campaigns/{campaignId}/adgroups/negativekeywords/find", []string{"ad-group-negative-keywords", "find"}, BodyObject, "Selector", "NegativeKeywordListResponse", []ParamSpec{campaignParam}, nil),
-		endpoint("get-an-ad-group-negative-keyword", "GET", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/{keywordId}", []string{"ad-group-negative-keywords", "view"}, BodyNone, "", "NegativeKeywordResponse", []ParamSpec{campaignParam, adGroupParam, keywordParam}, nil),
+		endpoint("get-an-ad-group-negative-keyword", "GET", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/{keywordId}", []string{"ad-group-negative-keywords", "view"}, BodyNone, "", "NegativeKeywordResponse", []ParamSpec{campaignParam, adGroupParam, negativeKeywordParam}, nil),
 		endpoint("create-ad-group-negative-keywords", "POST", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk", []string{"ad-group-negative-keywords", "create-bulk"}, BodyArray, "[NegativeKeyword]", "NegativeKeywordListResponse", []ParamSpec{campaignParam, adGroupParam}, nil),
 		endpoint("update-ad-group-negative-keywords", "PUT", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/bulk", []string{"ad-group-negative-keywords", "update-bulk"}, BodyArray, "[NegativeKeyword]", "NegativeKeywordListResponse", []ParamSpec{campaignParam, adGroupParam}, nil),
 		endpoint("delete-ad-group-negative-keywords", "POST", "v5/campaigns/{campaignId}/adgroups/{adgroupId}/negativekeywords/delete/bulk", []string{"ad-group-negative-keywords", "delete-bulk"}, BodyArray, "[int64]", "IntegerResponse", []ParamSpec{campaignParam, adGroupParam}, nil),

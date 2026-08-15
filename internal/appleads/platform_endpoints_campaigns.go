@@ -11,6 +11,7 @@ func platformCampaignEndpointSpecs() []EndpointSpec {
 	sharedBudgetID := resourceID("budget-order")
 	campaignID := resourceID("campaign")
 	keywordID := resourceID("keyword")
+	negativeKeywordID := resourceID("negative-keyword")
 
 	platform := func(name, method, path string, commandPath []string, context ContextKind, bodyKind BodyKind, bodyOptional bool, bodyType, responseType string, pathParams, queryParams []ParamSpec) EndpointSpec {
 		return EndpointSpec{
@@ -34,6 +35,26 @@ func platformCampaignEndpointSpecs() []EndpointSpec {
 		spec.RetrySafe = true
 		return spec
 	}
+	requiredSelectorQuery := func(name, path string, commandPath []string, context ContextKind, responseType string, pathParams []ParamSpec, hint string) EndpointSpec {
+		spec := query(name, path, commandPath, context, responseType, pathParams)
+		spec.CLIRequiresBody = true
+		spec.BodyFileExample = "query.json"
+		spec.BodyHint = hint
+		return spec
+	}
+
+	keywordSelectorHint := "Selector filters: include at least one filter for id, adGroupId, or campaignId."
+	negativeKeywordSelectorHint := "Selector filters: include a filter for id or adGroupId. For campaign-level negative keywords, combine campaignId with an adGroupId IS_NULL filter."
+	campaignCreate := platform("platform-create-campaign", http.MethodPost, "v1/campaigns", []string{"campaigns", "create"}, ContextAdAccount, BodyObject, false, "CampaignCreate", "CampaignResponse", nil, nil)
+	campaignCreate.BodyHint = "Required fields: adAccountId, billingEvent, dailyBudget, name, promotedObjectId, promotedObjectType, and targeting. For agent-safe creation, set top-level {\"status\":\"PAUSED\"}; another status or an omitted status requires --confirm."
+	campaignCreate.BodyFileExample = "campaign.json"
+	campaignCreate.RiskConfirm = true
+	campaignCreate.RiskConfirmBodyField = "status"
+	campaignCreate.RiskConfirmBodyValue = "PAUSED"
+	sharedBudgetCreate := platform("platform-create-shared-budget", http.MethodPost, "v1/shared-budgets", []string{"budget-orders", "create"}, ContextNone, BodyObject, false, "SharedBudgetCreate", "SharedBudgetResponse", nil, nil)
+	sharedBudgetCreate.BodyHint = "This creates a billing budget order and requires --confirm. The ad account must have an Apple Ads line of credit (LOC) configured before creation."
+	sharedBudgetCreate.BodyFileExample = "shared-budget.json"
+	sharedBudgetCreate.RiskConfirm = true
 
 	return []EndpointSpec{
 		platform("platform-create-ad-group", http.MethodPost, "v1/adgroups", []string{"ad-groups", "create"}, ContextAdAccount, BodyObject, false, "AdGroupCreate", "AdGroupResponse", nil, nil),
@@ -48,7 +69,7 @@ func platformCampaignEndpointSpecs() []EndpointSpec {
 		platform("platform-get-ad", http.MethodGet, "v1/ads/{id}", []string{"ads", "view"}, ContextAdAccount, BodyNone, false, "", "AdResponse", []ParamSpec{adID}, nil),
 		platform("platform-update-ad", http.MethodPut, "v1/ads/{id}", []string{"ads", "update"}, ContextAdAccount, BodyObject, false, "AdUpdate", "AdResponse", []ParamSpec{adID}, nil),
 
-		platform("platform-create-shared-budget", http.MethodPost, "v1/shared-budgets", []string{"budget-orders", "create"}, ContextNone, BodyObject, false, "SharedBudgetCreate", "SharedBudgetResponse", nil, nil),
+		sharedBudgetCreate,
 		query("platform-query-shared-budgets", "v1/shared-budgets/query", []string{"budget-orders", "find"}, ContextAdAccountOptional, "SharedBudgetQueryResponse", nil),
 		platform("platform-delete-shared-budget", http.MethodDelete, "v1/shared-budgets/{id}", []string{"budget-orders", "delete"}, ContextNone, BodyNone, false, "", "Response", []ParamSpec{sharedBudgetID}, nil),
 		platform("platform-get-shared-budget", http.MethodGet, "v1/shared-budgets/{id}", []string{"budget-orders", "view"}, ContextAdAccountOptional, BodyNone, false, "", "SharedBudgetResponse", []ParamSpec{sharedBudgetID}, nil),
@@ -59,7 +80,7 @@ func platformCampaignEndpointSpecs() []EndpointSpec {
 		platform("platform-bulk-create-negative-keywords", http.MethodPost, "v1/negative-keywords/bulk-create", []string{"negative-keywords", "create-bulk"}, ContextAdAccount, BodyObject, false, "NegativeKeywordCreateBulkRequest", "NegativeKeywordCreateBulkResponse", nil, nil),
 		platform("platform-bulk-update-negative-keywords", http.MethodPost, "v1/negative-keywords/bulk-update", []string{"negative-keywords", "update-bulk"}, ContextAdAccount, BodyObject, false, "NegativeKeywordUpdateBulkRequest", "NegativeKeywordUpdateBulkResponse", nil, nil),
 
-		platform("platform-create-campaign", http.MethodPost, "v1/campaigns", []string{"campaigns", "create"}, ContextAdAccount, BodyObject, false, "CampaignCreate", "CampaignResponse", nil, nil),
+		campaignCreate,
 		query("platform-query-campaigns", "v1/campaigns/query", []string{"campaigns", "find"}, ContextAdAccount, "CampaignQueryResponse", nil),
 		platform("platform-delete-campaign", http.MethodDelete, "v1/campaigns/{id}", []string{"campaigns", "delete"}, ContextAdAccount, BodyNone, false, "", "Response", []ParamSpec{campaignID}, nil),
 		platform("platform-get-campaign", http.MethodGet, "v1/campaigns/{id}", []string{"campaigns", "view"}, ContextAdAccount, BodyNone, false, "", "CampaignResponse", []ParamSpec{campaignID}, nil),
@@ -78,16 +99,16 @@ func platformCampaignEndpointSpecs() []EndpointSpec {
 		platform("platform-resolve-geo-locations", http.MethodPost, "v1/search/geo", []string{"geo", "resolve"}, ContextAdAccount, BodyObject, false, "GeoSearchPostRequest", "GeoSearchResponse", nil, nil),
 
 		platform("platform-create-keyword", http.MethodPost, "v1/keywords", []string{"targeting-keywords", "create"}, ContextAdAccount, BodyObject, false, "KeywordCreate", "KeywordResponse", nil, nil),
-		query("platform-query-keywords", "v1/keywords/query", []string{"targeting-keywords", "find"}, ContextAdAccount, "KeywordQueryResponse", nil),
+		requiredSelectorQuery("platform-query-keywords", "v1/keywords/query", []string{"targeting-keywords", "find"}, ContextAdAccount, "KeywordQueryResponse", nil, keywordSelectorHint),
 		platform("platform-delete-keyword", http.MethodDelete, "v1/keywords/{id}", []string{"targeting-keywords", "delete"}, ContextAdAccount, BodyNone, false, "", "Response", []ParamSpec{keywordID}, nil),
 		platform("platform-get-keyword", http.MethodGet, "v1/keywords/{id}", []string{"targeting-keywords", "view"}, ContextAdAccount, BodyNone, false, "", "KeywordResponse", []ParamSpec{keywordID}, nil),
 		platform("platform-update-keyword", http.MethodPut, "v1/keywords/{id}", []string{"targeting-keywords", "update"}, ContextAdAccount, BodyObject, false, "KeywordUpdate", "KeywordResponse", []ParamSpec{keywordID}, nil),
 
 		platform("platform-create-negative-keyword", http.MethodPost, "v1/negative-keywords", []string{"negative-keywords", "create"}, ContextAdAccount, BodyObject, false, "NegativeKeywordCreate", "NegativeKeywordResponse", nil, nil),
-		query("platform-query-negative-keywords", "v1/negative-keywords/query", []string{"negative-keywords", "find"}, ContextAdAccount, "NegativeKeywordQueryResponse", nil),
-		platform("platform-delete-negative-keyword", http.MethodDelete, "v1/negative-keywords/{id}", []string{"negative-keywords", "delete"}, ContextAdAccount, BodyNone, false, "", "Response", []ParamSpec{keywordID}, nil),
-		platform("platform-get-negative-keyword", http.MethodGet, "v1/negative-keywords/{id}", []string{"negative-keywords", "view"}, ContextAdAccount, BodyNone, false, "", "NegativeKeywordResponse", []ParamSpec{keywordID}, nil),
-		platform("platform-update-negative-keyword", http.MethodPut, "v1/negative-keywords/{id}", []string{"negative-keywords", "update"}, ContextAdAccount, BodyObject, false, "NegativeKeywordUpdate", "NegativeKeywordResponse", []ParamSpec{keywordID}, nil),
+		requiredSelectorQuery("platform-query-negative-keywords", "v1/negative-keywords/query", []string{"negative-keywords", "find"}, ContextAdAccount, "NegativeKeywordQueryResponse", nil, negativeKeywordSelectorHint),
+		platform("platform-delete-negative-keyword", http.MethodDelete, "v1/negative-keywords/{id}", []string{"negative-keywords", "delete"}, ContextAdAccount, BodyNone, false, "", "Response", []ParamSpec{negativeKeywordID}, nil),
+		platform("platform-get-negative-keyword", http.MethodGet, "v1/negative-keywords/{id}", []string{"negative-keywords", "view"}, ContextAdAccount, BodyNone, false, "", "NegativeKeywordResponse", []ParamSpec{negativeKeywordID}, nil),
+		platform("platform-update-negative-keyword", http.MethodPut, "v1/negative-keywords/{id}", []string{"negative-keywords", "update"}, ContextAdAccount, BodyObject, false, "NegativeKeywordUpdate", "NegativeKeywordResponse", []ParamSpec{negativeKeywordID}, nil),
 
 		query("platform-query-app-locales", "v1/apps/{adamId}/locale-details/query", []string{"apps", "locales", "find"}, ContextAdAccount, "AppLocaleDetailsQueryResponse", []ParamSpec{adamIDParam}),
 		query("platform-query-product-page-locales", "v1/product-pages/locale-details/query", []string{"product-pages", "locales", "find"}, ContextAdAccount, "ProductPageLocaleDetailsQueryResponse", nil),

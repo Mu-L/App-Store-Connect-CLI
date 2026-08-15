@@ -18,10 +18,17 @@ import (
 
 func TestExecutePrivatePublishUsesSharedPrivatePathAndReturnsRedactedResult(t *testing.T) {
 	originalLoad, originalStore, originalPublish, originalReverify := loadPreparedBundle, newObjectStore, runPublish, reverifyPublication
+	originalAliasProbe := probeConfiguredArtifactAliasForPreflight
 	t.Cleanup(func() {
 		loadPreparedBundle, newObjectStore, runPublish = originalLoad, originalStore, originalPublish
 		reverifyPublication = originalReverify
+		probeConfiguredArtifactAliasForPreflight = originalAliasProbe
 	})
+	probeCalls := 0
+	probeConfiguredArtifactAliasForPreflight = func(paths artifactPaths) error {
+		probeCalls++
+		return originalAliasProbe(paths)
+	}
 
 	bundleDir, bundle := privatePublishTestBundle(t)
 	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
@@ -87,8 +94,8 @@ func TestExecutePrivatePublishUsesSharedPrivatePathAndReturnsRedactedResult(t *t
 	if err != nil {
 		t.Fatalf("executePrivatePublish() recovery error = %v", err)
 	}
-	if !recovered.Recovered || storeCalls != 1 || publishCalls != 1 {
-		t.Fatalf("recovered=%t storeCalls=%d publishCalls=%d", recovered.Recovered, storeCalls, publishCalls)
+	if !recovered.Recovered || storeCalls != 1 || publishCalls != 1 || probeCalls != 1 {
+		t.Fatalf("recovered=%t storeCalls=%d publishCalls=%d probeCalls=%d", recovered.Recovered, storeCalls, publishCalls, probeCalls)
 	}
 }
 
@@ -195,6 +202,35 @@ func TestLoadPublishStateRejectsInPlaceMutation(t *testing.T) {
 	_, _, err = artifacts.loadState()
 	if err == nil || !strings.Contains(err.Error(), "changed while reading") {
 		t.Fatalf("mutated sensitive state error = %v", err)
+	}
+}
+
+func TestOpenExistingArtifactPathsSupportsDistinctTopLevelParents(t *testing.T) {
+	receiptDir, err := os.MkdirTemp(t.TempDir(), "asc-existing-receipt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkDir, err := os.MkdirTemp(t.TempDir(), "asc-existing-link-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	receiptPath := filepath.Join(receiptDir, "receipt.json")
+	linkPath := filepath.Join(linkDir, "link.json")
+	writePrivatePublishTestState(
+		t,
+		receiptPath,
+		linkPath,
+		privatePublishTestReceipt(),
+		distribution.SensitiveLinks{SchemaVersion: "1", InstallURL: "https://objects.example.com/install?secret"},
+	)
+	paths, err := openExistingArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+	if !paths.receiptExists || !paths.linkExists {
+		t.Fatalf("artifact existence = receipt:%t link:%t, want both true", paths.receiptExists, paths.linkExists)
 	}
 }
 
@@ -330,6 +366,141 @@ func TestReverifyPrivatePublishIsReadOnly(t *testing.T) {
 		beforeLinkInfo.Mode() != afterLinkInfo.Mode() || !beforeLinkInfo.ModTime().Equal(afterLinkInfo.ModTime()) ||
 		!reflect.DeepEqual(directoryEntryNames(beforeEntries), directoryEntryNames(afterEntries)) {
 		t.Fatal("read-only verification changed artifact metadata or directory entries")
+	}
+}
+
+func TestReverifyPrivatePublishReadsCaseDistinctArtifactsFromReadOnlyDirectory(t *testing.T) {
+	originalAliasProbe := probeConfiguredArtifactAliasForPreflight
+	t.Cleanup(func() { probeConfiguredArtifactAliasForPreflight = originalAliasProbe })
+	probeConfiguredArtifactAliasForPreflight = func(artifactPaths) error {
+		t.Fatal("read-only verification attempted an artifact alias probe")
+		return nil
+	}
+
+	stateDir := t.TempDir()
+	probe := filepath.Join(stateDir, "CaseSensitiveProbe")
+	if err := os.WriteFile(probe, []byte("probe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := os.Stat(filepath.Join(stateDir, "casesensitiveprobe"))
+	if err == nil {
+		t.Skip("test volume is case-insensitive")
+	}
+	if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+
+	originalLoad, originalReverify := loadPreparedBundle, reverifyPublication
+	t.Cleanup(func() { loadPreparedBundle, reverifyPublication = originalLoad, originalReverify })
+	bundleDir, bundle := privatePublishTestBundle(t)
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
+	reverifyPublication = func(context.Context, distribution.Verifier, distribution.PublishReceipt, distribution.SensitiveLinks, time.Time) error {
+		return nil
+	}
+
+	receiptPath := filepath.Join(stateDir, "Publish.JSON")
+	linkPath := filepath.Join(stateDir, "publish.json")
+	receipt := privatePublishTestReceipt()
+	receipt.Endpoint = "https://objects.example.com"
+	receipt.DownloadEndpoint = "https://objects.example.com"
+	receipt.Region = "auto"
+	receipt.AddressingStyle = "path"
+	receipt.URLTTL = "24h0m0s"
+	receipt.DownloadGrace = "1h0m0s"
+	receipt.ReceiptPath = receiptPath
+	receipt.LinkPath = linkPath
+	writePrivatePublishTestState(t, receiptPath, linkPath, receipt, distribution.SensitiveLinks{
+		SchemaVersion: "1",
+		InstallURL:    "https://objects.example.com/bucket/app/page?X-Amz-Signature=read-only-secret-canary",
+	})
+	if err := os.Chmod(stateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) })
+
+	result, err := reverifyPrivatePublish(context.Background(), privatePublishVerificationRequest{
+		BundleDir: bundleDir, ReceiptPath: receiptPath, LinkPath: linkPath, VerifyTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("reverifyPrivatePublish() error = %v", err)
+	}
+	if !result.Recovered {
+		t.Fatal("case-distinct artifacts were not reported as recovered")
+	}
+}
+
+func TestOpenExistingArtifactPathsChecksExistingFilesBeforeAliasProbe(t *testing.T) {
+	originalAliasProbe := probeConfiguredArtifactAliasForPreflight
+	t.Cleanup(func() { probeConfiguredArtifactAliasForPreflight = originalAliasProbe })
+	probeConfiguredArtifactAliasForPreflight = func(artifactPaths) error {
+		t.Fatal("existing-artifact verification attempted an artifact alias probe")
+		return nil
+	}
+
+	stateDir := t.TempDir()
+	_, err := openExistingArtifactPaths(
+		filepath.Join(stateDir, "Publish.JSON"),
+		filepath.Join(stateDir, "publish.json"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("openExistingArtifactPaths() error = %v, want missing-artifact error", err)
+	}
+}
+
+func TestLoadPublishStateMissingDoesNotCreateArtifactParent(t *testing.T) {
+	stateDir := t.TempDir()
+	receiptPath := filepath.Join(stateDir, "missing", "receipt.json")
+	linkPath := filepath.Join(stateDir, "missing", "link.json")
+	artifacts, err := inspectArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifacts.close()
+	if _, found, err := artifacts.loadState(); err != nil || found {
+		t.Fatalf("loadState() = found:%t err:%v, want missing state without error", found, err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "missing")); !os.IsNotExist(err) {
+		t.Fatalf("loadState() created missing artifact parent: %v", err)
+	}
+}
+
+func TestReverifyPrivatePublishTrimsArtifactPathsBeforeContainmentCheck(t *testing.T) {
+	originalLoad, originalReverify := loadPreparedBundle, reverifyPublication
+	t.Cleanup(func() { loadPreparedBundle, reverifyPublication = originalLoad, originalReverify })
+	bundleDir, bundle := privatePublishTestBundle(t)
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) { return bundle(), nil }
+	reverifyPublication = func(context.Context, distribution.Verifier, distribution.PublishReceipt, distribution.SensitiveLinks, time.Time) error {
+		return nil
+	}
+
+	stateDir := filepath.Join(bundleDir, "state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(stateDir, "receipt.json")
+	linkPath := filepath.Join(stateDir, "link.json")
+	receipt := privatePublishTestReceipt()
+	receipt.Endpoint = "https://objects.example.com"
+	receipt.DownloadEndpoint = "https://objects.example.com"
+	receipt.Region = "auto"
+	receipt.AddressingStyle = "path"
+	receipt.URLTTL = "24h0m0s"
+	receipt.DownloadGrace = "1h0m0s"
+	receipt.ReceiptPath = receiptPath
+	receipt.LinkPath = linkPath
+	writePrivatePublishTestState(t, receiptPath, linkPath, receipt, distribution.SensitiveLinks{
+		SchemaVersion: "1",
+		InstallURL:    "https://objects.example.com/bucket/app/page?X-Amz-Signature=containment-canary",
+	})
+
+	_, err := reverifyPrivatePublish(context.Background(), privatePublishVerificationRequest{
+		BundleDir: bundleDir, ReceiptPath: " " + receiptPath + " ", LinkPath: " " + linkPath + " ", VerifyTimeout: time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "outside the immutable prepared bundle") {
+		t.Fatalf("reverifyPrivatePublish() error = %v, want bundle-containment rejection", err)
 	}
 }
 
