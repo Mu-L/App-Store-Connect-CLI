@@ -103,7 +103,7 @@ Common endpoint flags:
   flags are materially relevant to the endpoint. The implementation still adds
   them to the command.
 - Resource groups with a natural list endpoint execute list by default:
-  `asc ads v5 campaigns`, `asc ads budget-orders`, `asc ads v5 ad-groups`,
+  `asc ads v5 campaigns`, `asc ads v5 budget-orders`, `asc ads v5 ad-groups`,
   `asc ads v5 creatives`, and `asc ads v5 impression-share-reports`.
 
 Root help placement:
@@ -562,10 +562,10 @@ CLI command and an HTTP client method.
 | `asc ads v5 product-pages locales list --adam-id ADAM_ID --product-page PRODUCT_PAGE_ID [--device-classes VALUE --language-codes VALUE --languages VALUE --expand]` | `GET v5/apps/{adamId}/product-pages/{productPageId}/locale-details` | none | Forward query strings exactly. |
 | `asc ads v5 product-pages countries list [--countries-or-regions VALUE]` | `GET v5/countries-or-regions` | none |  |
 | `asc ads v5 product-pages devices list` | `GET v5/creativeappmappings/devices` | none |  |
-| `asc ads budget-orders list [--limit N --offset N --paginate]` | `GET v5/budgetorders` | none |  |
-| `asc ads budget-orders create --file budget-order-create.json` | `POST v5/budgetorders` | `BudgetOrderCreate` object |  |
-| `asc ads budget-orders view --budget-order BUDGET_ORDER_ID` | `GET v5/budgetorders/{boId}` | none |  |
-| `asc ads budget-orders update --budget-order BUDGET_ORDER_ID --file budget-order-update.json` | `PUT v5/budgetorders/{boId}` | `BudgetOrderUpdate` object |  |
+| `asc ads v5 budget-orders list [--limit N --offset N --paginate]` | `GET v5/budgetorders` | none |  |
+| `asc ads v5 budget-orders create --file budget-order-create.json` | `POST v5/budgetorders` | `BudgetOrderCreate` object |  |
+| `asc ads v5 budget-orders view --budget-order BUDGET_ORDER_ID` | `GET v5/budgetorders/{boId}` | none |  |
+| `asc ads v5 budget-orders update --budget-order BUDGET_ORDER_ID --file budget-order-update.json` | `PUT v5/budgetorders/{boId}` | `BudgetOrderUpdate` object |  |
 | `asc ads v5 campaigns list [--limit N --offset N --paginate]` | `GET v5/campaigns` | none | `asc ads v5 campaigns` aliases list. |
 | `asc ads v5 campaigns find --file selector.json` | `POST v5/campaigns/find` | `Selector` object |  |
 | `asc ads v5 campaigns view --campaign CAMPAIGN_ID` | `GET v5/campaigns/{campaignId}` | none |  |
