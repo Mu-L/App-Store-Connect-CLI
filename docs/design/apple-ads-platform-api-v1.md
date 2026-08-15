@@ -101,7 +101,7 @@ organization context; `--ad-account` is the separate v1 ad-account context.
 V1 IDs, payloads, query objects, report requests, and response envelopes are
 not converted from v5 shapes by the CLI. V1 report pagination stays in the
 request body, and the legacy `--paginate` behavior does not apply to v1
-reports. The v5 `asc ads reports preset` helper, campaign pause/resume
+reports. The v5 `asc ads v5 reports preset` helper, campaign pause/resume
 workflows, and v5 raw request command remain runnable compatibility paths with
 warnings; the raw v5 command continues to send v5 paths and is never silently
 rewritten.
