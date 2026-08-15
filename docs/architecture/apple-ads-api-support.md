@@ -69,6 +69,7 @@ The `/v1/ad-accounts` collection is method-dependent:
 | `POST /v1/ad-accounts` | Creates an account without `X-AP-Context`; the account context does not exist until the response supplies its ID. |
 | `GET /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
 | `PUT /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
+| `DELETE /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
 
 Authentication commands use the Platform API v1 transport:
 
@@ -346,7 +347,11 @@ Persist an ad-account ID supplied to Ads login alongside the selected profile
 and root config. A named profile never inherits the root ad-account ID from
 another profile.
 
-## HTTP Client Contract
+## Campaign Management API v5 HTTP Client Contract
+
+This section applies only to the deprecated Campaign Management API v5
+commands under `asc ads v5`. Platform API v1 has a separate transport contract
+below.
 
 Base URL:
 
@@ -402,6 +407,37 @@ Apple Ads error envelope:
 Add `appleads.APIError` with HTTP status, field, message, and messageCode. If
 the response is not this envelope, sanitize and return the raw detail the same
 way `internal/asc` does.
+
+## Platform API v1 HTTP Client Contract
+
+Base URL:
+
+```text
+https://api.ads.apple.com/v1/
+```
+
+Platform API v1 uses the same bearer authorization and JSON content headers as
+v5. Account-scoped requests add:
+
+```text
+X-AP-Context: adAccountId=<ad-account-id>;
+```
+
+The ad-account ID is resolved independently from the legacy organization ID.
+`--ad-account`, `ASC_ADS_AD_ACCOUNT_ID`, the selected profile's
+`ad_account_id`, and root `ads.ad_account_id` are the supported sources. The
+CLI rejects control characters and semicolons before authentication or network
+work so an ID cannot inject additional context fields.
+
+The following requests are context-free: `GET /v1/me`, `GET /v1/acls`,
+`GET /v1/orgs/{id}`, `GET /v1/advertiser-resources`, and
+`POST /v1/ad-accounts`. For `GET`, `PUT`, and `DELETE
+/v1/ad-accounts/{id}`, the context account must match the path ID. Other
+endpoint context requirements are declared by the v1 endpoint metadata.
+
+Platform API v1 retains the shared timeout, retry, rate-limit, pagination, and
+sanitized error handling behavior of the client, while selecting the v1 base
+URL and endpoint-specific response envelope.
 
 ## Payload Contract
 

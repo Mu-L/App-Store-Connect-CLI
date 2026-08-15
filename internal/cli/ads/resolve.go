@@ -117,6 +117,10 @@ func resolveCredentialsWithSource(flags commonFlags) (appleads.Credentials, stri
 }
 
 func envCredentials() (appleads.Credentials, bool, error) {
+	rawAdAccountID := os.Getenv("ASC_ADS_AD_ACCOUNT_ID")
+	if err := appleads.ValidateAdAccountID(rawAdAccountID); err != nil {
+		return appleads.Credentials{}, false, fmt.Errorf("ASC_ADS_AD_ACCOUNT_ID: %w", err)
+	}
 	credentials := appleads.Credentials{
 		ClientID:       strings.TrimSpace(os.Getenv("ASC_ADS_CLIENT_ID")),
 		TeamID:         strings.TrimSpace(os.Getenv("ASC_ADS_TEAM_ID")),
@@ -124,7 +128,7 @@ func envCredentials() (appleads.Credentials, bool, error) {
 		PrivateKeyPath: strings.TrimSpace(os.Getenv("ASC_ADS_PRIVATE_KEY_PATH")),
 		PrivateKeyPEM:  strings.TrimSpace(os.Getenv("ASC_ADS_PRIVATE_KEY")),
 		OrgID:          strings.TrimSpace(os.Getenv("ASC_ADS_ORG_ID")),
-		AdAccountID:    strings.TrimSpace(os.Getenv("ASC_ADS_AD_ACCOUNT_ID")),
+		AdAccountID:    strings.TrimSpace(rawAdAccountID),
 	}
 	privateKeyB64 := strings.TrimSpace(os.Getenv("ASC_ADS_PRIVATE_KEY_B64"))
 	if privateKeyB64 != "" {
@@ -157,17 +161,21 @@ func resolveAdAccountID(flags commonFlags, credentials appleads.Credentials) (st
 }
 
 func resolveAdAccountIDWithSource(flags commonFlags, credentials appleads.Credentials) (string, string, error) {
-	if adAccountID := value(flags.AdAccount); adAccountID != "" {
-		return adAccountID, "--ad-account", nil
-	}
-	if adAccountID := strings.TrimSpace(os.Getenv("ASC_ADS_AD_ACCOUNT_ID")); adAccountID != "" {
-		return adAccountID, "ASC_ADS_AD_ACCOUNT_ID", nil
-	}
-	if adAccountID := strings.TrimSpace(credentials.AdAccountID); adAccountID != "" {
-		if strings.TrimSpace(credentials.Profile) != "" {
-			return adAccountID, "Ads profile ad_account_id", nil
+	if flags.AdAccount != nil {
+		adAccountID, source, err := normalizeAdAccountIDWithSource(*flags.AdAccount, "--ad-account")
+		if err != nil || adAccountID != "" {
+			return adAccountID, source, err
 		}
-		return adAccountID, "credential ad_account_id", nil
+	}
+	if adAccountID, source, err := normalizeAdAccountIDWithSource(os.Getenv("ASC_ADS_AD_ACCOUNT_ID"), "ASC_ADS_AD_ACCOUNT_ID"); err != nil || adAccountID != "" {
+		return adAccountID, source, err
+	}
+	profileSource := "credential ad_account_id"
+	if strings.TrimSpace(credentials.Profile) != "" {
+		profileSource = "Ads profile ad_account_id"
+	}
+	if adAccountID, source, err := normalizeAdAccountIDWithSource(credentials.AdAccountID, profileSource); err != nil || adAccountID != "" {
+		return adAccountID, source, err
 	}
 	if strings.TrimSpace(credentials.Profile) != "" {
 		return "", "", nil
@@ -179,11 +187,18 @@ func resolveAdAccountIDWithSource(flags commonFlags, credentials appleads.Creden
 		}
 		return "", "", err
 	}
-	adAccountID := strings.TrimSpace(cfg.Ads.AdAccountID)
-	if adAccountID == "" {
+	return normalizeAdAccountIDWithSource(cfg.Ads.AdAccountID, "ads.ad_account_id")
+}
+
+func normalizeAdAccountIDWithSource(raw, source string) (string, string, error) {
+	if err := appleads.ValidateAdAccountID(raw); err != nil {
+		return "", "", fmt.Errorf("%s: %w", source, err)
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
 		return "", "", nil
 	}
-	return adAccountID, "ads.ad_account_id", nil
+	return trimmed, source, nil
 }
 
 func resolveOrgID(flags commonFlags, credentials appleads.Credentials) (string, error) {

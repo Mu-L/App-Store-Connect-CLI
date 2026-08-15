@@ -151,9 +151,9 @@ including `GET /v1/me`, `GET /v1/acls`, `GET /v1/orgs/{id}`,
 `--ad-account` explicitly to one of those endpoints is rejected instead of
 silently ignored.
 
-Authentication discovery and validation remain stable compatibility commands
-and use Campaign Management API v5 `me` and `acls` endpoints. Direct resource
-commands use Platform API v1:
+Authentication discovery and validation use Platform API v1 `me` and `acls`
+endpoints. Direct resource commands use the same Platform API v1 transport;
+the legacy Campaign Management API v5 commands remain under `ads v5`:
 
 ```bash  theme={null}
 asc ads auth status --validate
