@@ -3,6 +3,7 @@ package appleads
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -139,5 +140,35 @@ func TestPaginateAllPlatformGETCapsUnboundedPages(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %q, want it to contain %q", err, want)
 		}
+	}
+}
+
+func TestPaginateAllPlatformGETStopsWhenContextCanceled(t *testing.T) {
+	spec, ok := PlatformEndpointByCommandPath("geo", "search")
+	if !ok {
+		t.Fatal("missing geo search endpoint")
+	}
+	requests := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests++
+		if requests != 1 {
+			t.Errorf("request count = %d, want cancellation before a second request", requests)
+		}
+		_, _ = w.Write([]byte(`{"result":[{"id":"geo"}],"pagination":{"offset":0,"pageSize":1}}`))
+		cancel()
+	}))
+	defer server.Close()
+	client, err := NewClient(Credentials{AccessToken: "ACCESS", AdAccountID: "account"}, WithPlatformBaseURL(server.URL+"/v1/"))
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+
+	_, err = client.PaginateAll(ctx, spec, nil, url.Values{"supplySource": {"APPSTORE"}}, 0, 1, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("PaginateAll() error = %v, want context.Canceled", err)
+	}
+	if requests != 1 {
+		t.Fatalf("request count = %d, want 1", requests)
 	}
 }

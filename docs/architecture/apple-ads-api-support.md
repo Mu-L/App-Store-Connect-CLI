@@ -51,10 +51,12 @@ Campaign Management API command surface and has different caller requirements.
 
 ## Platform API v1 in 4.4.0
 
-The cumulative 4.4.0 implementation stack adds all 99 documented operations
-under direct `asc ads` resource paths: the foundation layer registers 13 operations, the
-campaign layer adds 41, Maps and assets add 21, and reports and optimization add
-24. Each cumulative PR guarantees only the operations present at that layer.
+The cumulative 4.4.0 implementation stack is intended to add all 99 documented
+operations under direct `asc ads` resource paths: this foundation layer registers
+13 operations, the campaign layer adds 41, Maps and assets add 21, and reports
+and optimization add 24. At each intermediate PR, only the operations registered
+by that layer are available; the cumulative stack is what provides the complete
+surface.
 Ad-account context is carried in
 `X-AP-Context: adAccountId=<ad-account-id>;` for account-scoped requests. The
 `--ad-account` flag, `ASC_ADS_AD_ACCOUNT_ID`, and the selected profile's
@@ -67,15 +69,15 @@ The `/v1/ad-accounts` collection is method-dependent:
 | `POST /v1/ad-accounts` | Creates an account without `X-AP-Context`; the account context does not exist until the response supplies its ID. |
 | `GET /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
 | `PUT /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
+| `DELETE /v1/ad-accounts/{id}` | Requires `X-AP-Context: adAccountId=<id>;`; the header account must match the path ID. |
 
-Authentication commands intentionally use more than one transport while v5 is
-being retired:
+Authentication commands use the Platform API v1 transport:
 
 | Command | Validation/discovery request |
 | --- | --- |
-| `asc ads auth login --network` | OAuth token exchange, then Campaign Management API v5 `GET /v5/me`. |
-| `asc ads auth status --validate` | For each stored credential, OAuth token exchange, then Campaign Management API v5 `GET /v5/me`. |
-| `asc ads auth discover` | Legacy Campaign Management API v5 `GET /v5/me` and `GET /v5/acls`; this remains the compatibility discovery path in 4.4.0. |
+| `asc ads auth login --network` | OAuth token exchange, then Platform API v1 `GET /v1/me`. |
+| `asc ads auth status --validate` | For each stored credential, OAuth token exchange, then Platform API v1 `GET /v1/me`. |
+| `asc ads auth discover` | Platform API v1 `GET /v1/me` and `GET /v1/acls`, returning user and ad-account access. |
 
 All three commands avoid an ad-account context for these requests. The token
 exchange remains `POST https://appleid.apple.com/auth/oauth2/token` with the
@@ -221,20 +223,20 @@ Mirror the existing `asc auth` behavior:
   from `--org`.
 - `--private-key` accepts the EC P-256 PEM Apple documents for Ads. Reuse the
   existing private-key parsing helpers because they already support ES256 keys.
-- `--network` requests an access token and calls Campaign Management API v5 `GET /v5/me`.
+- `--network` requests an access token and calls Platform API v1 `GET /v1/me`.
 - `--skip-validation` skips JWT and network validation.
 - `--network` and `--skip-validation` are mutually exclusive.
 - `--local` requires keychain bypass, exactly like `asc auth login`.
 - Keychain is preferred; config fallback is allowed when bypassing keychain.
 - `auth status` supports `--verbose` and `--validate`, matching `asc auth status`.
-- `auth status --validate` validates each stored credential through Campaign
-  Management API v5 `GET /v5/me` and reports failures after rendering the
-  status output.
-- `auth discover` calls legacy `/v5/me` and `/v5/acls` to show the active Ads
-  user and available organizations without printing access tokens. This
-  compatibility path remains stable in 4.4.0 while v5 is deprecated.
-- Platform API v1 user and ACL discovery is explicit: use `asc ads me
-  view` and `asc ads acls list`.
+- `auth status --validate` validates each stored credential through Platform
+  API v1 `GET /v1/me` and reports failures after rendering the status output.
+- `auth discover` calls Platform API v1 `/v1/me` and `/v1/acls` to show the
+  active Ads user and available ad accounts without printing access tokens.
+  Each ACL row includes its honest `ad_account_id`; `--ad-account` controls
+  which row is marked active.
+- Platform API v1 user and ACL discovery is also available directly through
+  `asc ads me view` and `asc ads acls list`.
 - `auth logout` supports `--all` and `--name`. It requires one of those flags
   so bare `asc ads auth logout` does not clear every stored Ads profile, and
   `--all` requires `--confirm`.
@@ -324,18 +326,15 @@ Org ID resolution is independent from token resolution:
 1. `--org`
 2. `ASC_ADS_ORG_ID`
 3. selected Ads profile `org_id`
-4. `ads.org_id` in config, including the legacy fallback for a named profile
-   whose own credential omits `org_id`
+4. `ads.org_id` in config only when authentication is profile-less
 
 Persist the org ID both on the selected credential and in `ads.org_id` when Ads
 login receives an org ID. This lets
 `ASC_ADS_ACCESS_TOKEN` users reuse a configured default org without storing Ads
-private key material in the active environment. Existing named profiles retain
-the legacy `ads.org_id` root fallback when their own profile omits `org_id`.
-The Platform API v1 `ads.ad_account_id` root value is intentionally never
-inherited by a named profile; switching or removing the default clears the
-root ad-account context, while the legacy root organization fallback remains
-available for profiles that omit their own organization ID.
+private key material in the active environment. A named profile never inherits
+either root Ads context when its own profile omits the value. Switching or
+removing the default clears both root context values. Profile-less access-token
+or environment authentication can still use the standalone root values.
 
 Platform API v1 ad-account resolution is independent from org resolution:
 
@@ -348,7 +347,11 @@ Persist an ad-account ID supplied to Ads login alongside the selected profile
 and root config. A named profile never inherits the root ad-account ID from
 another profile.
 
-## HTTP Client Contract
+## Campaign Management API v5 HTTP Client Contract
+
+This section applies only to the deprecated Campaign Management API v5
+commands under `asc ads v5`. Platform API v1 has a separate transport contract
+below.
 
 Base URL:
 
@@ -404,6 +407,37 @@ Apple Ads error envelope:
 Add `appleads.APIError` with HTTP status, field, message, and messageCode. If
 the response is not this envelope, sanitize and return the raw detail the same
 way `internal/asc` does.
+
+## Platform API v1 HTTP Client Contract
+
+Base URL:
+
+```text
+https://api.ads.apple.com/v1/
+```
+
+Platform API v1 uses the same bearer authorization and JSON content headers as
+v5. Account-scoped requests add:
+
+```text
+X-AP-Context: adAccountId=<ad-account-id>;
+```
+
+The ad-account ID is resolved independently from the legacy organization ID.
+`--ad-account`, `ASC_ADS_AD_ACCOUNT_ID`, the selected profile's
+`ad_account_id`, and root `ads.ad_account_id` are the supported sources. The
+CLI rejects control characters and semicolons before authentication or network
+work so an ID cannot inject additional context fields.
+
+The following requests are context-free: `GET /v1/me`, `GET /v1/acls`,
+`GET /v1/orgs/{id}`, `GET /v1/advertiser-resources`, and
+`POST /v1/ad-accounts`. For `GET`, `PUT`, and `DELETE
+/v1/ad-accounts/{id}`, the context account must match the path ID. Other
+endpoint context requirements are declared by the v1 endpoint metadata.
+
+Platform API v1 retains the shared timeout, retry, rate-limit, pagination, and
+sanitized error handling behavior of the client, while selecting the v1 base
+URL and endpoint-specific response envelope.
 
 ## Payload Contract
 
@@ -793,10 +827,10 @@ Black-box verification:
 
 ```bash
 go build -o /tmp/asc .
-/tmp/asc ads --help
-/tmp/asc ads v5 campaigns list --org 123 --output json
-/tmp/asc ads v5 campaigns delete --campaign 1 --org 123
-/tmp/asc ads v5 campaigns delete --campaign 1 --org 123 --confirm
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads --help
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads v5 campaigns list --org 123 --output json
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads v5 campaigns delete --campaign 1 --org 123
+ASC_BYPASS_KEYCHAIN=1 /tmp/asc ads v5 campaigns delete --campaign 1 --org 123 --confirm
 ```
 
 Repository checks before PR:
@@ -813,9 +847,9 @@ credentials are unavailable. When Ads credentials are configured locally, run
 only these read-only smoke tests:
 
 ```bash
-asc ads v5 me view --output json
-asc ads v5 acls list --output json
-asc ads v5 campaigns list --org "$ASC_ADS_ORG_ID" --limit 1 --output json
+ASC_BYPASS_KEYCHAIN=1 asc ads v5 me view --output json
+ASC_BYPASS_KEYCHAIN=1 asc ads v5 acls list --output json
+ASC_BYPASS_KEYCHAIN=1 asc ads v5 campaigns list --org "$ASC_ADS_ORG_ID" --limit 1 --output json
 ```
 
 Do not create spend-bearing Apple Ads campaigns in live smoke tests unless the

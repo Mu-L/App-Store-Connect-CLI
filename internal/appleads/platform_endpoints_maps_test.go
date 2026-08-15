@@ -192,7 +192,7 @@ func TestPlatformMapsEndpointIdentifierTypesAndUploadInventory(t *testing.T) {
 	if !ok || !assets.BodyOptional || assets.BodyFileExample != "query.json" {
 		t.Fatalf("assets find query metadata = %+v", assets)
 	}
-	for _, want := range []string{"all non-deleted assets", "promotedObjectId", "providerAssetId", "assetType (IMAGE)"} {
+	for _, want := range []string{"default page", "non-deleted assets", "selected ad account", "promotedObjectId", "providerAssetId", "assetType (IMAGE)"} {
 		if !strings.Contains(assets.BodyHint, want) {
 			t.Fatalf("assets find body hint = %q, want %q", assets.BodyHint, want)
 		}

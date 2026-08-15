@@ -29,9 +29,10 @@ token exchange. Scoped v5 calls still need an organization ID; scoped v1 calls
 need a separate ad account ID.
 
 Named profiles use only the context stored on that profile. They do not inherit
-`ads.org_id` or `ads.ad_account_id` from a different default profile. If an
-older profile relied on the root organization fallback, save its `org_id`
-again with `asc ads auth login --name ... --org ...` or pass `--org` explicitly.
+`ads.org_id` or `ads.ad_account_id` from root config or another profile. Store
+both IDs with `asc ads auth login --name ... --org ... --ad-account ...`, or pass
+`--org` and `--ad-account` explicitly for a one-off command. Profile-less
+access-token and environment authentication can still use matching root context.
 
 ## Authenticate
 
@@ -59,8 +60,7 @@ asc ads auth login \
 ```
 
 Add `--network` during login when you want `asc` to request a token and call
-the stable Campaign Management API v5 `GET /v5/me` endpoint before storing the
-profile:
+the Platform API v1 `GET /v1/me` endpoint before storing the profile:
 
 ```bash  theme={null}
 asc ads auth login \
@@ -123,7 +123,7 @@ not know the org ID yet, discover the active Ads user and available accounts:
 asc ads auth discover --output json
 ```
 
-Then pass an `accounts[].org_id` returned by Apple:
+Then pass an `accounts[].org_id` returned by Apple to a legacy v5 command:
 
 ```bash  theme={null}
 asc ads v5 campaigns list --org "123456" --output json
@@ -155,9 +155,9 @@ Scoping on `/v1/ad-accounts` depends on the method. `POST /v1/ad-accounts`
 creates an account without context, while `GET /v1/ad-accounts` is scoped and
 requires an ad account ID.
 
-Authentication discovery and validation remain stable compatibility commands
-and use Campaign Management API v5 `me` and `acls` endpoints. Direct resource
-commands use Platform API v1:
+Authentication discovery and validation use Platform API v1 `me` and `acls`
+endpoints. Direct resource commands use the same Platform API v1 transport;
+the legacy Campaign Management API v5 commands remain under `ads v5`:
 
 ```bash  theme={null}
 asc ads auth status --validate
@@ -211,6 +211,9 @@ sorting, or pagination are needed.
 Brand and Apple Maps discovery uses ad-account context. Query operations accept
 Apple's JSON query types through `--file`; the asset, creative, and brand
 rejection-reason queries may omit the file when no selector is needed.
+Without `--file`, `assets find` returns the default page of non-deleted assets
+in the selected ad account. Use a query file with `promotedObjectId` to scope
+the result to one promoted object, such as a brand or app.
 
 ```bash  theme={null}
 asc ads brands find --ad-account "987654" --file query.json
@@ -222,13 +225,15 @@ asc ads locations view --ad-account "987654" --location "LOCATION_ID"
 asc ads rejection-reasons brands find --ad-account "987654"
 ```
 
-Location-group and creative create/update commands require JSON files. Their
-delete commands, and asset deletion, require explicit confirmation before the
-CLI reads credentials or sends a request.
+Location-group and creative create/update commands require JSON files. Updating
+a location group also requires `--confirm` because it can immediately change
+targeting for linked campaigns. Their delete commands, and asset deletion,
+require explicit confirmation before the CLI reads credentials or sends a
+request.
 
 ```bash  theme={null}
 asc ads location-groups create --ad-account "987654" --file location-group.json
-asc ads location-groups update --ad-account "987654" --location-group "GROUP_ID" --file update.json
+asc ads location-groups update --ad-account "987654" --location-group "GROUP_ID" --file update.json --confirm
 asc ads location-groups delete --ad-account "987654" --location-group "GROUP_ID" --confirm
 asc ads creatives create --ad-account "987654" --file creative.json
 asc ads creatives update --ad-account "987654" --creative "CREATIVE_ID" --file update.json
@@ -238,8 +243,9 @@ asc ads creatives delete --ad-account "987654" --creative "CREATIVE_ID" --confir
 Upload a PNG, JPEG, or HEIC asset with the dedicated multipart command. The CLI
 uses the basename in the multipart filename and sends the selected brand as a
 `BUSINESS_BRAND` promoted object. Apple processes the asset asynchronously;
-poll `assets view` until `eligibility.status` is ready before using the asset in
-a creative.
+poll `assets view` until `eligibility.status` is `ELIGIBLE` before using the
+asset in a creative. A `LIMITED` asset requires checking `allowedGroups`;
+`PENDING` and `INELIGIBLE` assets must not be used.
 
 ```bash  theme={null}
 asc ads assets find --ad-account "987654"
@@ -293,6 +299,15 @@ Without an explicit top-level `"status": "PAUSED"`, campaign creation
 requires `--confirm` to acknowledge potential spend. The CLI validates this
 before authentication or network access.
 
+Campaign updates use the flat v1 `CampaignUpdate` object. An update containing
+only `name` and `status` set to `PAUSED` may omit `--confirm`; any budget, budget
+order, targeting, bid, start/resume, enabled, or other non-paused status change
+requires `--confirm` before authentication or network access.
+
+```json campaign-update.json
+{"name":"Paused validation campaign","status":"PAUSED"}
+```
+
 Delete commands require `--confirm`. Platform v1 has no bulk-delete operation:
 
 ```bash  theme={null}
@@ -301,12 +316,12 @@ asc ads targeting-keywords delete --ad-account "987654" --keyword "keyword-id" -
 asc ads negative-keywords delete --ad-account "987654" --negative-keyword "negative-keyword-id" --confirm
 ```
 
-Pause and resume use the v1 campaign update endpoint with direct
-`{"status":"PAUSED"}` or `{"status":"ENABLED"}` payloads and require
-confirmation:
+Pause is a spend-reducing safety operation and does not require confirmation;
+resume uses the v1 campaign update endpoint with a `{"status":"ENABLED"}`
+payload and requires `--confirm`:
 
 ```bash  theme={null}
-asc ads campaigns pause --ad-account "987654" --campaign "campaign-id" --confirm
+asc ads campaigns pause --ad-account "987654" --campaign "campaign-id"
 asc ads campaigns resume --ad-account "987654" --campaign "campaign-id" --confirm
 ```
 
@@ -321,11 +336,12 @@ asc ads product-pages locales find --ad-account "987654" --file query.json
 
 Shared budgets retain the `budget-orders` command name. Create, update, and
 delete are context-free; view and find accept an optional `--ad-account`.
-Budget-order creation is a billing operation: pass `--confirm`, and ensure the
-ad account has an Apple Ads line of credit (LOC) configured first.
+Budget-order creation and update are billing operations: pass `--confirm`, and
+ensure the ad account has an Apple Ads line of credit (LOC) configured first.
 
 ```bash  theme={null}
 asc ads budget-orders create --file shared-budget.json --confirm
+asc ads budget-orders update --budget-order "budget-id" --file shared-budget-update.json --confirm
 asc ads budget-orders find --ad-account "987654"
 asc ads budget-orders view --budget-order "budget-id"
 asc ads budget-orders delete --budget-order "budget-id" --confirm
@@ -671,7 +687,7 @@ require `--confirm`. Empty successful v1 responses print `{}`.
 When you automate Apple Ads with a coding agent:
 
 1. Run `asc ads <group> --help` before choosing flags.
-2. Resolve the user and org with `asc ads auth discover --output json` unless `ASC_ADS_ORG_ID` is already known.
+2. Resolve the user and available ad accounts with `asc ads auth discover --output json`; use `accounts[].ad_account_id` for Platform v1 and `accounts[].org_id` for legacy v5.
 3. Use `--output json` for machine parsing.
 4. Put request bodies in checked-in templates or temporary JSON files, not shell-escaped inline JSON.
 5. Pass `--confirm` only after you have printed the target ID and cleanup plan.

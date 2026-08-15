@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
@@ -76,6 +77,9 @@ type Client struct {
 
 // NewClient constructs an Apple Ads API client.
 func NewClient(credentials Credentials, opts ...ClientOption) (*Client, error) {
+	if err := ValidateAdAccountID(credentials.AdAccountID); err != nil {
+		return nil, err
+	}
 	client := &Client{
 		httpClient:      &http.Client{Timeout: asc.ResolveTimeout()},
 		baseURL:         BaseURL,
@@ -106,6 +110,18 @@ func NewClient(credentials Credentials, opts ...ClientOption) (*Client, error) {
 		return nil, err
 	}
 	return client, nil
+}
+
+// ValidateAdAccountID rejects values that cannot safely be placed in the
+// Apple Ads ad-account context header.
+func ValidateAdAccountID(value string) error {
+	if strings.ContainsRune(value, ';') {
+		return fmt.Errorf("invalid ad account ID: semicolons are not allowed")
+	}
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return fmt.Errorf("invalid ad account ID: control characters are not allowed")
+	}
+	return nil
 }
 
 func normalizeCredentials(credentials Credentials) Credentials {
@@ -405,6 +421,9 @@ func (c *Client) contextHeader(kind ContextKind) (string, error) {
 		}
 		return "orgId=" + orgID, nil
 	case ContextAdAccount, ContextAdAccountOptional:
+		if err := ValidateAdAccountID(c.credentials.AdAccountID); err != nil {
+			return "", err
+		}
 		adAccountID := strings.TrimSpace(c.credentials.AdAccountID)
 		if adAccountID == "" {
 			if kind == ContextAdAccountOptional {

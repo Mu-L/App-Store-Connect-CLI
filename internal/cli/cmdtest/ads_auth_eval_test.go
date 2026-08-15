@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestAdsAuthNetworkValidationUsesCampaignV5(t *testing.T) {
+func TestAdsAuthNetworkValidationUsesPlatformV1(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	keyPath := filepath.Join(t.TempDir(), "apple-ads-private-key.pem")
 	writeECDSAPEM(t, keyPath)
@@ -23,10 +23,10 @@ func TestAdsAuthNetworkValidationUsesCampaignV5(t *testing.T) {
 		switch req.URL.Path {
 		case "/auth/oauth2/token":
 			return adsJSONResponse(200, `{"access_token":"ACCESS","token_type":"Bearer","expires_in":3600}`), nil
-		case "/api/v5/me":
+		case "/v1/me":
 			seenMe++
 			if req.Header.Get("X-AP-Context") != "" {
-				t.Fatalf("v5 me context = %q, want empty", req.Header.Get("X-AP-Context"))
+				t.Fatalf("v1 me context = %q, want empty", req.Header.Get("X-AP-Context"))
 			}
 			return adsJSONResponse(200, `{"result":{"userId":1001,"orgId":987654}}`), nil
 		default:

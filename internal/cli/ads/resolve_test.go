@@ -2,13 +2,14 @@ package ads
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/appleads"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
 )
 
-func TestNamedAdsProfileKeepsLegacyRootOrgFallback(t *testing.T) {
+func TestNamedAdsProfileDoesNotInheritRootOrg(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
 	setAdsResolverTestEnv(t)
@@ -29,12 +30,12 @@ func TestNamedAdsProfileKeepsLegacyRootOrgFallback(t *testing.T) {
 		t.Fatalf("resolveCredentials() error: %v", err)
 	}
 	got, source, err := resolveOrgIDWithSource(commonFlags{}, credentials)
-	if err != nil || got != "ORG_A" || source != "Ads profile org_id" {
-		t.Fatalf("profile-b org = %q source=%q error=%v, want legacy root org", got, source, err)
+	if err != nil || got != "" || source != "" {
+		t.Fatalf("profile-b org = %q source=%q error=%v, want no inherited root org", got, source, err)
 	}
 }
 
-func TestNamedCredentialsCanUseLegacyRootOrgFallback(t *testing.T) {
+func TestNamedCredentialsDoNotUseRootOrgFallback(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
 	setAdsResolverTestEnv(t)
@@ -43,8 +44,8 @@ func TestNamedCredentialsCanUseLegacyRootOrgFallback(t *testing.T) {
 	}
 
 	got, source, err := resolveOrgIDWithSource(commonFlags{}, appleads.Credentials{Profile: "named-profile"})
-	if err != nil || got != "ROOT_ORG" || source != "ads.org_id" {
-		t.Fatalf("named profile org = %q source=%q error=%v, want legacy root org", got, source, err)
+	if err != nil || got != "" || source != "" {
+		t.Fatalf("named profile org = %q source=%q error=%v, want no inherited root org", got, source, err)
 	}
 }
 
@@ -59,6 +60,57 @@ func TestProfilelessCredentialsCanUseRootOrgContext(t *testing.T) {
 	got, source, err := resolveOrgIDWithSource(commonFlags{}, appleads.Credentials{AccessToken: "ACCESS"})
 	if err != nil || got != "ROOT_ORG" || source != "ads.org_id" {
 		t.Fatalf("profileless org = %q source=%q error=%v, want root context", got, source, err)
+	}
+}
+
+func TestResolveAdAccountIDRejectsUnsafeValuesFromEverySource(t *testing.T) {
+	tests := []struct {
+		name        string
+		adAccount   string
+		credentials appleads.Credentials
+		configure   func(*testing.T)
+	}{
+		{
+			name:      "flag",
+			adAccount: "123;orgId=999",
+		},
+		{
+			name: "environment",
+			configure: func(t *testing.T) {
+				t.Setenv("ASC_ADS_AD_ACCOUNT_ID", "123\n456")
+			},
+		},
+		{
+			name:        "profile",
+			credentials: appleads.Credentials{Profile: "named", AdAccountID: "123\t456"},
+		},
+		{
+			name: "config",
+			configure: func(t *testing.T) {
+				configPath := filepath.Join(t.TempDir(), "config.json")
+				t.Setenv("ASC_CONFIG_PATH", configPath)
+				if err := config.SaveAt(configPath, &config.Config{Ads: config.AdsConfig{AdAccountID: "123\r456"}}); err != nil {
+					t.Fatalf("SaveAt() error: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setAdsResolverTestEnv(t)
+			if tt.configure != nil {
+				tt.configure(t)
+			}
+			flags := commonFlags{}
+			if tt.adAccount != "" {
+				flags.AdAccount = &tt.adAccount
+			}
+			_, _, err := resolveAdAccountIDWithSource(flags, tt.credentials)
+			if err == nil || !strings.Contains(err.Error(), "invalid ad account ID") {
+				t.Fatalf("resolveAdAccountIDWithSource() error = %v, want invalid ad account ID", err)
+			}
+		})
 	}
 }
 

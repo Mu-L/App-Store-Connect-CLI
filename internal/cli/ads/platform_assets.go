@@ -37,7 +37,9 @@ func PlatformAssetUploadCommand() *ffcli.Command {
 The image is sent as multipart/form-data with the promoted object type
 BUSINESS_BRAND. Supported filename extensions are .png, .jpg, .jpeg, and .heic.
 Apple processes the asset after upload. Poll "asc ads assets view"
-until eligibility.status is ready before using the asset in a creative.`
+until eligibility.status is ELIGIBLE before using the asset in a creative.
+LIMITED assets require checking allowedGroups; PENDING and INELIGIBLE assets
+must not be used.`
 	longHelp += endpointBodyHelp(uploadSpec)
 	longHelp += `
 
@@ -53,6 +55,10 @@ Example:
 		Exec: func(ctx context.Context, args []string) error {
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err
+			}
+			outputFormat, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
+			if err != nil {
+				return shared.UsageError(err.Error())
 			}
 			fileValue := strings.TrimSpace(*filePath)
 			if fileValue == "" {
@@ -71,7 +77,7 @@ Example:
 			}
 			defer file.Close()
 
-			client, err := resolvePlatformClient(ctx, common, appleads.ContextAdAccount)
+			client, _, err := resolvePlatformClientAndAdAccountID(ctx, common, appleads.ContextAdAccount)
 			if err != nil {
 				return fmt.Errorf("ads assets upload: %w", err)
 			}
@@ -81,7 +87,7 @@ Example:
 			if err != nil {
 				return fmt.Errorf("ads assets upload: %w", err)
 			}
-			return shared.PrintOutput(response, *output.Output, *output.Pretty)
+			return shared.PrintOutput(response, outputFormat, *output.Pretty)
 		},
 	}
 }
