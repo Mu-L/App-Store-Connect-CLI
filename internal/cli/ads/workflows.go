@@ -55,7 +55,7 @@ func platformCampaignStatusWorkflowCommand(name, status, shortHelp string) *ffcl
 			AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 			AdAccount:  fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID env)"),
 		},
-		output:   shared.BindOutputFlags(fs),
+		output:   bindAdsRawOutputFlags(fs),
 		campaign: fs.String("campaign", "", "Apple Ads Platform campaign ID (required)"),
 		confirm:  fs.Bool("confirm", false, "Confirm this Apple Ads Platform campaign status change"),
 	}
@@ -88,7 +88,7 @@ func executePlatformCampaignStatusWorkflow(ctx context.Context, commandName, sta
 	if !ok {
 		return fmt.Errorf("ads campaigns status workflow: missing campaigns update endpoint")
 	}
-	outputFormat, err := shared.ValidateOutputFormat(*flags.output.Output, *flags.output.Pretty)
+	outputFormat, err := validateAdsRawOutput(flags.output)
 	if err != nil {
 		return shared.UsageError(err.Error())
 	}
@@ -134,7 +134,7 @@ func campaignStatusWorkflowCommand(name, status, shortHelp string, parent *endpo
 			AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 			Org:        fs.String("org", "", "Apple Ads organization ID (or ASC_ADS_ORG_ID env)"),
 		},
-		output:   shared.BindOutputFlags(fs),
+		output:   bindAdsRawOutputFlags(fs),
 		flagSet:  fs,
 		campaign: fs.String("campaign", "", "Apple Ads campaign ID (required)"),
 		confirm:  fs.Bool("confirm", false, "Confirm this Apple Ads campaign status change"),
@@ -183,7 +183,7 @@ func executeCampaignStatusWorkflow(ctx context.Context, commandName, status stri
 	}
 
 	common, output := effectiveCampaignStatusWorkflowFlags(flags)
-	outputFormat, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
+	outputFormat, err := validateAdsRawOutput(output)
 	if err != nil {
 		return shared.UsageError(err.Error())
 	}

@@ -72,8 +72,9 @@ func TestPlatformReportsOptimizationEndpointSpecs(t *testing.T) {
 		if spec.Method == "POST" && strings.HasSuffix(spec.Path, "/query") && !spec.RetrySafe {
 			t.Fatalf("%s must be retry-safe", key)
 		}
-		if spec.SupportsPaginate {
-			t.Fatalf("%s must preserve the raw response envelope without --paginate", key)
+		wantPaginate := spec.Name == "platform-get-change-history-detail"
+		if spec.SupportsPaginate != wantPaginate {
+			t.Fatalf("%s pagination support = %t, want %t", key, spec.SupportsPaginate, wantPaginate)
 		}
 		delete(wants, key)
 	}
@@ -176,6 +177,12 @@ func TestPlatformChangeHistoryDetailParameters(t *testing.T) {
 	}
 	if len(spec.QueryParams) != 2 || spec.QueryParams[0].Name != "limit" || spec.QueryParams[0].Flag != "limit" || spec.QueryParams[0].Type != ParamInt || spec.QueryParams[1].Name != "offset" || spec.QueryParams[1].Flag != "offset" || spec.QueryParams[1].Type != ParamInt {
 		t.Fatalf("detail query params = %+v", spec.QueryParams)
+	}
+	if spec.QueryParams[0].Default != 100 {
+		t.Fatalf("detail limit default = %d, want 100", spec.QueryParams[0].Default)
+	}
+	if !spec.SupportsPaginate {
+		t.Fatal("change-history view must support --paginate")
 	}
 }
 

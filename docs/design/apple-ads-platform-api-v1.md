@@ -69,7 +69,7 @@ asc ads insights impression-share find --ad-account "AD_ACCOUNT_ID" --file query
 asc ads recommendations daily-budgets find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
 asc ads suggestions keywords find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
 asc ads change-history find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
-asc ads change-history view --ad-account "AD_ACCOUNT_ID" --detail-id "Campaign.444555666.txn_abc123def456" --limit 100 --offset 0 --output json
+asc ads change-history view --ad-account "AD_ACCOUNT_ID" --detail-id "Campaign.444555666.txn_abc123def456" --limit 100 --paginate --output json
 ```
 
 Recommendation apply and dismiss operations accept an array payload and require explicit confirmation before the CLI reads the payload or resolves credentials:

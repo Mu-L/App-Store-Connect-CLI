@@ -44,7 +44,7 @@ func PlatformAPIRequestCommand() *ffcli.Command {
 		AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 		AdAccount:  fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID env)"),
 	}
-	output := shared.BindOutputFlags(fs)
+	output := bindAdsRawOutputFlags(fs)
 	return &ffcli.Command{
 		Name:       "request",
 		ShortUsage: "asc ads api request --method METHOD --path v1/... [flags]",
@@ -53,14 +53,14 @@ func PlatformAPIRequestCommand() *ffcli.Command {
 
 Examples:
   asc ads api request --method GET --path v1/me
-  asc ads api request --method POST --path v1/campaigns/query --file query.json --ad-account "123"`,
+  asc ads api request --method POST --path v1/metadata/apps/supported-languages/query --file query.json --ad-account "123"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err
 			}
-			outputFormat, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
+			outputFormat, err := validateAdsRawOutput(output)
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}
@@ -92,8 +92,10 @@ Examples:
 			if message := rawPlatformRequestMultipartMessage(methodValue, pathOnly); message != "" {
 				return shared.UsageError(message)
 			}
-			if message := rawPlatformRequestConfirmMessage(methodValue, pathOnly, nil); message != "" && !*confirm {
-				return shared.UsageError(message)
+			if rawPlatformRequestRequiresPrePayloadConfirmation(methodValue, pathOnly) && !*confirm {
+				if message := rawPlatformRequestConfirmMessage(methodValue, pathOnly, nil); message != "" {
+					return shared.UsageError(message)
+				}
 			}
 			var payload json.RawMessage
 			if strings.TrimSpace(*file) != "" {
@@ -160,6 +162,7 @@ func rawPlatformRequestRequiresConfirm(method, pathOnly string, payload json.Raw
 				return present
 			}
 		}
+		return false
 	}
 
 	resourcePath := strings.TrimPrefix(pathOnly, "v1/")
@@ -182,6 +185,17 @@ func rawPlatformRequestRequiresConfirm(method, pathOnly string, payload json.Raw
 	// Unknown mutations are conservatively treated as destructive. Known
 	// endpoints should declare their metadata in PlatformEndpointSpecs so raw
 	// requests and generated commands share the same safety contract.
+	return method == http.MethodDelete || method == http.MethodPost || method == http.MethodPut
+}
+
+func rawPlatformRequestRequiresPrePayloadConfirmation(method, pathOnly string) bool {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if spec, ok := platformEndpointSpecForRequest(method, pathOnly); ok {
+		if spec.RequiresConfirm {
+			return true
+		}
+		return spec.RiskConfirm && spec.RiskConfirmBodyField == ""
+	}
 	return method == http.MethodDelete || method == http.MethodPost || method == http.MethodPut
 }
 

@@ -121,7 +121,7 @@ asc ads apps search \
   --ads-profile "Marketing" \
   --ad-account "987654" \
   --query "Example" \
-  --output table
+  --output json
 ```
 
 ## Safe Read-Only Smoke Test
@@ -152,7 +152,7 @@ Query campaigns first, then inspect ad groups under one confirmed campaign ID:
 asc ads campaigns find \
   --ad-account "987654" \
   --file campaign-query.json \
-  --output table
+  --output json
 
 asc ads ad-groups find \
   --ad-account "987654" \

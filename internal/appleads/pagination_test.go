@@ -172,3 +172,63 @@ func TestPaginateAllPlatformGETStopsWhenContextCanceled(t *testing.T) {
 		t.Fatalf("request count = %d, want 1", requests)
 	}
 }
+
+func TestPaginateAllPlatformChangeHistoryMergesNestedChanges(t *testing.T) {
+	spec, ok := PlatformEndpointByCommandPath("change-history", "view")
+	if !ok {
+		t.Fatal("missing change-history view endpoint")
+	}
+	var requests []url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests = append(requests, req.URL.Query())
+		switch req.URL.Query().Get("offset") {
+		case "0":
+			_, _ = w.Write([]byte(`{"dataType":"ChangeDetail","pagination":{"totalCount":3,"offset":0,"pageSize":2},"result":[{"detailId":"Campaign.1.txn","details":[{"transactionId":"txn","changes":[{"field":"name"},{"field":"status"}]}]}]}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"dataType":"ChangeDetail","pagination":{"totalCount":3,"offset":2,"pageSize":2},"result":[{"detailId":"Campaign.1.txn","details":[{"transactionId":"txn","changes":[{"field":"dailyBudget"}]}]}]}`))
+		default:
+			t.Fatalf("unexpected offset %q", req.URL.Query().Get("offset"))
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(Credentials{AccessToken: "ACCESS", AdAccountID: "account"}, WithPlatformBaseURL(server.URL+"/v1/"))
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+
+	raw, err := client.PaginateAll(context.Background(), spec, map[string]string{"detailId": "Campaign.1.txn"}, nil, 0, 2, nil)
+	if err != nil {
+		t.Fatalf("PaginateAll() error: %v", err)
+	}
+	var got struct {
+		DataType   string             `json:"dataType"`
+		Pagination platformPageDetail `json:"pagination"`
+		Result     []struct {
+			DetailID string `json:"detailId"`
+			Details  []struct {
+				TransactionID string            `json:"transactionId"`
+				Changes       []json.RawMessage `json:"changes"`
+			} `json:"details"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+	if got.DataType != "ChangeDetail" || len(got.Result) != 1 || len(got.Result[0].Details) != 1 || len(got.Result[0].Details[0].Changes) != 3 {
+		t.Fatalf("aggregated response = %+v", got)
+	}
+	if got.Pagination.TotalCount == nil || *got.Pagination.TotalCount != 3 || got.Pagination.Offset != 0 || got.Pagination.PageSize != 2 {
+		t.Fatalf("pagination = %+v", got.Pagination)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	for index, wantOffset := range []string{"0", "2"} {
+		if got := requests[index].Get("offset"); got != wantOffset {
+			t.Errorf("request[%d] offset = %q, want %q", index, got, wantOffset)
+		}
+		if got := requests[index].Get("limit"); got != "2" {
+			t.Errorf("request[%d] limit = %q, want 2", index, got)
+		}
+	}
+}

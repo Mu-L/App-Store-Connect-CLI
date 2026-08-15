@@ -48,7 +48,7 @@ func APIRequestCommand() *ffcli.Command {
 		AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 		Org:        fs.String("org", "", "Apple Ads organization ID (or ASC_ADS_ORG_ID env)"),
 	}
-	output := shared.BindOutputFlags(fs)
+	output := bindAdsRawOutputFlags(fs)
 	command := &ffcli.Command{
 		Name:       "request",
 		ShortUsage: "asc ads v5 api request --method METHOD --path v5/... [flags]",
@@ -64,7 +64,7 @@ Examples:
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err
 			}
-			outputFormat, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
+			outputFormat, err := validateAdsRawOutput(output)
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}

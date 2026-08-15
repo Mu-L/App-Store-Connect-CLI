@@ -96,9 +96,10 @@ func platformReportsOptimizationEndpointSpecs() []EndpointSpec {
 			{Name: "detailId", Flag: "detail-id", Type: ParamString, Required: true},
 		},
 		QueryParams: []ParamSpec{
-			{Name: "limit", Flag: "limit", Type: ParamInt},
-			{Name: "offset", Flag: "offset", Type: ParamInt},
+			{Name: "limit", Flag: "limit", Type: ParamInt, Default: 100, Description: "Maximum field changes per page"},
+			{Name: "offset", Flag: "offset", Type: ParamInt, Description: "Zero-based field-change offset"},
 		},
+		SupportsPaginate: true,
 	})
 	return specs
 }

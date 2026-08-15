@@ -7,6 +7,12 @@ Campaign Management API v5 commands live under `ads v5`. Raw v1 requests use
 `ads api request`; raw v5 requests use `ads v5 api request`. Both APIs use Apple
 Ads OAuth credentials, not App Store Connect API keys.
 
+Resource, workflow, upload, report, and raw-request commands preserve Apple's
+heterogeneous response envelopes losslessly as JSON. They intentionally do not
+accept `--output table` or `--output markdown`; use `jq` when an agent needs a
+projection. Authentication status and discovery commands retain their explicit
+human-readable output modes.
+
 Use `--help` before scripting a new command. Apple Ads has many nested
 resources, and the CLI exposes the documented path parameters as flags:
 
@@ -153,8 +159,8 @@ including `GET /v1/me`, `GET /v1/acls`, `GET /v1/orgs/{id}`,
 silently ignored.
 
 Scoping on `/v1/ad-accounts` depends on the method. `POST /v1/ad-accounts`
-creates an account without context, while `GET /v1/ad-accounts` is scoped and
-requires an ad account ID.
+creates an account without context, while `GET /v1/ad-accounts/{id}` is scoped
+and requires an ad account ID matching the path.
 
 Authentication discovery and validation use Platform API v1 `me` and `acls`
 endpoints. Direct resource commands use the same Platform API v1 transport;
@@ -181,14 +187,16 @@ an ad account use the same `--ad-account` value for both the URL ID and the
 `X-AP-Context` header:
 
 ```bash  theme={null}
-asc ads ad-accounts create --file ad-account-create.json
+asc ads ad-accounts create --file ad-account-create.json --confirm
 asc ads ad-accounts view --ad-account "987654"
 asc ads ad-accounts update --ad-account "987654" --file ad-account-update.json
 ```
 
 `productFeatures` is immutable and rejected by `ad-accounts update`. Because
 `delegations` replaces the complete delegation list, updates containing that
-field also require `--confirm`; name-only updates do not.
+field also require `--confirm`; name-only updates do not. Account creation also
+requires `--confirm` because the account family is immutable and the API does
+not provide an ad-account delete operation.
 
 Search apps by text, content-provider IDs, owned apps, or a combination. Store
 fronts are passed as comma-separated ISO alpha-2 codes and sent as repeated v1
@@ -273,12 +281,12 @@ filter.
 asc ads campaigns create --ad-account "987654" --file campaign.json
 asc ads campaigns find --ad-account "987654" --file query.json
 asc ads ad-groups view --ad-account "987654" --ad-group "adgroup-id"
-asc ads ads update --ad-account "987654" --ad "ad-id" --file ad.json
-asc ads targeting-keywords create-bulk --ad-account "987654" --file keywords.json
+asc ads ads update --ad-account "987654" --ad "ad-id" --file ad.json --confirm
+asc ads targeting-keywords create-bulk --ad-account "987654" --file keywords.json --confirm
 asc ads targeting-keywords find --ad-account "987654" --file query.json
 asc ads negative-keywords find --ad-account "987654" --file query.json
 asc ads negative-keywords view --ad-account "987654" --negative-keyword "negative-keyword-id"
-asc ads negative-keywords update --ad-account "987654" --negative-keyword "negative-keyword-id" --file negative-keyword.json
+asc ads negative-keywords update --ad-account "987654" --negative-keyword "negative-keyword-id" --file negative-keyword.json --confirm
 ```
 
 Campaign creation can affect spend as soon as Apple enables delivery. For an
@@ -540,7 +548,7 @@ resource commands.
 List campaigns. The short form aliases `list`:
 
 ```bash  theme={null}
-asc ads v5 campaigns --org "123456" --limit 100 --output table
+asc ads v5 campaigns --org "123456" --limit 100 --output json
 asc ads v5 campaigns list --org "123456" --paginate --output json
 ```
 
@@ -810,7 +818,7 @@ Use the direct Platform API command for v1 paths:
 ```bash  theme={null}
 asc ads api request \
   --method POST \
-  --path v1/campaigns/query \
+  --path v1/metadata/apps/supported-languages/query \
   --ad-account "987654" \
   --file query.json \
   --output json

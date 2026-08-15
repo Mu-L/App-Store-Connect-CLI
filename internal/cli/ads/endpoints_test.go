@@ -15,6 +15,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/appleads"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
 )
 
@@ -70,6 +71,55 @@ func TestAdsRootRegistersPlatformV1AsDefault(t *testing.T) {
 	}
 	if findCommand(root, "v5", "api", "request") == nil {
 		t.Fatal("missing deprecated v5 raw request command")
+	}
+}
+
+func TestAdsRawResponseCommandsExposeJSONOnlyOutput(t *testing.T) {
+	tests := []struct {
+		path []string
+		args []string
+	}{
+		{path: []string{"campaigns", "find"}},
+		{path: []string{"reports", "apps", "campaigns"}},
+		{path: []string{"api", "request"}},
+		{path: []string{"assets", "upload"}},
+		{path: []string{"campaigns", "pause"}, args: []string{"--campaign", "1"}},
+		{path: []string{"v5", "campaigns", "list"}},
+		{path: []string{"v5", "campaigns", "pause"}, args: []string{"--campaign", "1", "--confirm"}},
+		{path: []string{"v5", "reports", "preset"}},
+		{path: []string{"v5", "api", "request"}},
+	}
+	for _, test := range tests {
+		t.Run(strings.Join(test.path, " "), func(t *testing.T) {
+			root := AdsCommand()
+			path := test.path
+			cmd := findCommand(root, path...)
+			if cmd == nil {
+				t.Fatalf("missing command asc ads %s", strings.Join(path, " "))
+			}
+			output := cmd.FlagSet.Lookup("output")
+			if output == nil {
+				t.Fatalf("asc ads %s missing --output", strings.Join(path, " "))
+			}
+			if output.DefValue != "json" {
+				t.Fatalf("asc ads %s --output default = %q, want json", strings.Join(path, " "), output.DefValue)
+			}
+			args := append(append([]string(nil), test.args...), "--output", "table")
+			if err := cmd.Parse(args); err != nil {
+				t.Fatalf("asc ads %s parse error: %v", strings.Join(path, " "), err)
+			}
+			if err := cmd.Exec(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "unsupported format: table") {
+				t.Fatalf("asc ads %s accepted --output table for a raw response: %v", strings.Join(path, " "), err)
+			}
+		})
+	}
+
+	for _, format := range []string{"table", "markdown"} {
+		output := format
+		pretty := false
+		if _, err := validateAdsRawOutput(shared.OutputFlags{Output: &output, Pretty: &pretty}); err == nil || !strings.Contains(err.Error(), "unsupported format: "+format) {
+			t.Fatalf("validateAdsRawOutput(%q) error = %v", format, err)
+		}
 	}
 }
 
@@ -347,6 +397,128 @@ func TestPlatformKeywordQueriesRequireSelectorBodyBeforeAuth(t *testing.T) {
 		if got, want := err.Error(), flag.ErrHelp.Error(); got != want {
 			t.Errorf("%q missing body error = %q, want exact %q", strings.Join(path, " "), got, want)
 		}
+	}
+}
+
+func TestPlatformKeywordQuerySelectorValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    []string
+		body    string
+		wantErr string
+	}{
+		{
+			name:    "targeting empty conditions",
+			path:    []string{"targeting-keywords", "find"},
+			body:    `{"conditions":[]}`,
+			wantErr: "id, adGroupId, or campaignId",
+		},
+		{
+			name:    "targeting irrelevant condition",
+			path:    []string{"targeting-keywords", "find"},
+			body:    `{"conditions":[{"field":"name","operator":"EQUALS","values":["ignored"]}]}`,
+			wantErr: "id, adGroupId, or campaignId",
+		},
+		{
+			name: "targeting id",
+			path: []string{"targeting-keywords", "find"},
+			body: `{"conditions":[{"field":"id","operator":"EQUALS","values":["keyword-1"]}]}`,
+		},
+		{
+			name: "targeting ad group",
+			path: []string{"targeting-keywords", "find"},
+			body: `{"conditions":[{"field":"adGroupId","operator":"EQUALS","values":["ad-group-1"]}]}`,
+		},
+		{
+			name: "targeting campaign",
+			path: []string{"targeting-keywords", "find"},
+			body: `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]}]}`,
+		},
+		{
+			name:    "negative empty conditions",
+			path:    []string{"negative-keywords", "find"},
+			body:    `{"conditions":[]}`,
+			wantErr: "id or adGroupId",
+		},
+		{
+			name:    "negative irrelevant condition",
+			path:    []string{"negative-keywords", "find"},
+			body:    `{"conditions":[{"field":"name","operator":"EQUALS","values":["ignored"]}]}`,
+			wantErr: "id or adGroupId",
+		},
+		{
+			name: "negative id",
+			path: []string{"negative-keywords", "find"},
+			body: `{"conditions":[{"field":"id","operator":"EQUALS","values":["negative-keyword-1"]}]}`,
+		},
+		{
+			name: "negative ad group",
+			path: []string{"negative-keywords", "find"},
+			body: `{"conditions":[{"field":"adGroupId","operator":"EQUALS","values":["ad-group-1"]}]}`,
+		},
+		{
+			name:    "negative campaign without null ad group",
+			path:    []string{"negative-keywords", "find"},
+			body:    `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]}]}`,
+			wantErr: "campaignId plus an adGroupId condition with operator IS_NULL",
+		},
+		{
+			name:    "negative null ad group without campaign",
+			path:    []string{"negative-keywords", "find"},
+			body:    `{"conditions":[{"field":"adGroupId","operator":"IS_NULL"}]}`,
+			wantErr: "campaignId plus an adGroupId condition with operator IS_NULL",
+		},
+		{
+			name: "negative campaign",
+			path: []string{"negative-keywords", "find"},
+			body: `{"conditions":[{"field":"campaignId","operator":"EQUALS","values":["campaign-1"]},{"field":"adGroupId","operator":"IS_NULL"}]}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spec, ok := appleads.PlatformEndpointByCommandPath(test.path...)
+			if !ok {
+				t.Fatalf("missing platform endpoint %q", strings.Join(test.path, " "))
+			}
+			err := validateEndpointBody(spec, json.RawMessage(test.body), false)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateEndpointBody() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("validateEndpointBody() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestPlatformKeywordQuerySelectorValidationPrecedesAuth(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+	for _, path := range [][]string{
+		{"targeting-keywords", "find"},
+		{"negative-keywords", "find"},
+	} {
+		t.Run(strings.Join(path, "-"), func(t *testing.T) {
+			spec, ok := appleads.PlatformEndpointByCommandPath(path...)
+			if !ok {
+				t.Fatalf("missing platform endpoint %q", strings.Join(path, " "))
+			}
+			file := filepath.Join(t.TempDir(), "query.json")
+			if err := os.WriteFile(file, []byte(`{"conditions":[{"field":"name","operator":"EQUALS","values":["ignored"]}]}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fs, flags := bindEndpointFlags(spec, strings.Join(path, " "))
+			if err := fs.Set("file", file); err != nil {
+				t.Fatal(err)
+			}
+			err := executeEndpoint(context.Background(), spec, flags)
+			if err == nil || !strings.Contains(err.Error(), "id") || strings.Contains(err.Error(), "configuration not found") {
+				t.Fatalf("executeEndpoint() error = %v, want selector validation before auth", err)
+			}
+		})
 	}
 }
 
@@ -737,6 +909,12 @@ func TestRawPlatformRequestUsesEndpointRiskMetadata(t *testing.T) {
 	if !rawPlatformRequestRequiresConfirm("POST", "v1/campaigns", nil) {
 		t.Fatal("campaign create without a body must require confirmation")
 	}
+	if rawPlatformRequestRequiresConfirm("POST", "v1/campaigns", json.RawMessage(`{"status":"PAUSED"}`)) {
+		t.Fatal("paused campaign create must use the safe body exception")
+	}
+	if rawPlatformRequestRequiresConfirm("POST", "v1/campaigns/query", nil) {
+		t.Fatal("known read-only campaign query must not require confirmation")
+	}
 	if rawPlatformRequestRequiresConfirm("PUT", "v1/campaigns/campaign-1", json.RawMessage(`{"name":"Paused","status":"PAUSED"}`)) {
 		t.Fatal("paused name-only campaign update must use the safe body exception")
 	}
@@ -745,6 +923,18 @@ func TestRawPlatformRequestUsesEndpointRiskMetadata(t *testing.T) {
 	}
 	if got, want := rawPlatformRequestConfirmMessage("PUT", "v1/campaigns/campaign-1", json.RawMessage(`{"status":"PAUSED","dailyBudget":1}`)), `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`; got != want {
 		t.Fatalf("campaign update confirmation message = %q, want %q", got, want)
+	}
+	if rawPlatformRequestRequiresConfirm("POST", "v1/metadata/apps/supported-languages/query", nil) {
+		t.Fatal("known read-only POST query must not require confirmation")
+	}
+	if rawPlatformRequestRequiresPrePayloadConfirmation("PUT", "v1/ad-accounts/123") {
+		t.Fatal("body-scoped ad-account update confirmation must wait for the payload")
+	}
+	if rawPlatformRequestRequiresPrePayloadConfirmation("POST", "v1/metadata/apps/supported-languages/query") {
+		t.Fatal("known read-only POST query must remain confirmation-free before the payload")
+	}
+	if !rawPlatformRequestRequiresPrePayloadConfirmation("POST", "v1/unknown-mutation") {
+		t.Fatal("unknown POST must fail closed before payload work")
 	}
 	if rawPlatformRequestRequiresConfirm("GET", "v1/unknown-read", nil) {
 		t.Fatal("unknown GET must remain confirmation-free")
