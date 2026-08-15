@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -107,6 +108,54 @@ func TestPublishCommandRejectsUnsafeBucketBeforeSideEffects(t *testing.T) {
 	}
 }
 
+func TestPublishCommandRejectsPhysicalArtifactAliasBeforeSideEffects(t *testing.T) {
+	originalLoad, originalStore := loadPreparedBundle, newObjectStore
+	t.Cleanup(func() { loadPreparedBundle, newObjectStore = originalLoad, originalStore })
+	loadCalled, storeCalled := false, false
+	loadPreparedBundle = func(context.Context, rootfs.Root) (*distribution.PreparedBundle, error) {
+		loadCalled = true
+		return nil, errors.New("unexpected bundle load")
+	}
+	newObjectStore = func(context.Context, distribution.S3StoreConfig) (distribution.ObjectStore, time.Time, error) {
+		storeCalled = true
+		return noOpStore{}, time.Time{}, nil
+	}
+
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	stateDir := filepath.Join(realDir, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range []string{"left", "right"} {
+		if err := os.Symlink(realDir, filepath.Join(base, alias)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	destination := "publish.json"
+	err := PublishCommand().ParseAndRun(context.Background(), []string{
+		"--bundle-dir", t.TempDir(), "--endpoint", "https://objects.example.com", "--region", "auto", "--bucket", "bucket", "--prefix", "app",
+		"--receipt", filepath.Join(base, "left", "state", destination), "--link-path", filepath.Join(base, "right", "state", destination),
+	})
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("ParseAndRun() error = %v, want flag.ErrHelp", err)
+	}
+	const wantError = "publish artifacts: --receipt and --link-path resolve to the same physical destination"
+	if err.Error() != wantError {
+		t.Fatalf("ParseAndRun() error = %q, want %q", err.Error(), wantError)
+	}
+	if loadCalled || storeCalled {
+		t.Fatalf("side effects before physical alias rejection: load=%t store=%t", loadCalled, storeCalled)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("physical destination contains artifacts after rejection: %v", entries)
+	}
+}
+
 func TestPublishCommandRejectsOverflowingLifetimeBeforeSideEffects(t *testing.T) {
 	originalLoad, originalStore := loadPreparedBundle, newObjectStore
 	t.Cleanup(func() { loadPreparedBundle, newObjectStore = originalLoad, originalStore })
@@ -174,10 +223,17 @@ func TestPublishCommandAcceptsExactlySevenDayPrivateLifetime(t *testing.T) {
 
 func TestPublishCommandWritesSensitiveLink0600AndRedactedReceipt(t *testing.T) {
 	originalLoad, originalStore, originalPublish, originalReverify := loadPreparedBundle, newObjectStore, runPublish, reverifyPublication
+	originalAliasProbe := probeConfiguredArtifactAliasForPreflight
 	t.Cleanup(func() {
 		loadPreparedBundle, newObjectStore, runPublish = originalLoad, originalStore, originalPublish
 		reverifyPublication = originalReverify
+		probeConfiguredArtifactAliasForPreflight = originalAliasProbe
 	})
+	probeCalls := 0
+	probeConfiguredArtifactAliasForPreflight = func(paths artifactPaths) error {
+		probeCalls++
+		return originalAliasProbe(paths)
+	}
 	dir := t.TempDir()
 	ipaPath := filepath.Join(dir, "app.ipa")
 	if err := os.WriteFile(ipaPath, []byte("ipa"), 0o600); err != nil {
@@ -255,8 +311,8 @@ func TestPublishCommandWritesSensitiveLink0600AndRedactedReceipt(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("idempotent recovery error = %v", err)
 	}
-	if storeCalls != 1 {
-		t.Fatalf("object store calls = %d, want 1 after recovery", storeCalls)
+	if storeCalls != 1 || probeCalls != 1 {
+		t.Fatalf("object store calls = %d, probe calls = %d, want 1 each after recovery", storeCalls, probeCalls)
 	}
 	for _, changed := range [][]string{
 		{"--download-endpoint", "https://different.example.com"},
@@ -477,7 +533,7 @@ func TestPublishArtifactsRejectRetargetedChildForBothPaths(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := paths.preflight(); err == nil {
+			if err := paths.inspectExisting(); err == nil {
 				t.Fatalf("preflight accepted retargeted %s parent", target)
 			}
 			for _, name := range []string{"receipt.json", "link.json"} {
@@ -567,6 +623,459 @@ func TestArtifactPairUsesRootHandleRetainedFromPreflight(t *testing.T) {
 	}
 }
 
+func TestArtifactPairSupportsDistinctTopLevelParents(t *testing.T) {
+	receiptDir, err := os.MkdirTemp(t.TempDir(), "asc-publish-receipt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkDir, err := os.MkdirTemp(t.TempDir(), "asc-publish-link-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	receiptPath := filepath.Join(receiptDir, "receipt.json")
+	linkPath := filepath.Join(linkDir, "link.json")
+	paths, err := preflightArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+	staged, err := paths.stagePair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staged.cleanup()
+	receipt := distribution.PublishReceipt{SchemaVersion: "1"}
+	if err := staged.publish(publishState{SchemaVersion: "1", Receipt: receipt}, receipt); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{receiptPath, linkPath} {
+		info, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode = %v, want mode-0600 regular file", target, info.Mode())
+		}
+	}
+}
+
+func TestArtifactPairRejectsAliasedPhysicalDestination(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	stateDir := filepath.Join(realDir, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range []string{"left", "right"} {
+		if err := os.Symlink(realDir, filepath.Join(base, alias)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	destination := "publish.json"
+	paths, err := preflightArtifactPaths(
+		filepath.Join(base, "left", "state", destination),
+		filepath.Join(base, "right", "state", destination),
+	)
+	paths.close()
+	if err == nil || !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightArtifactPaths() error = %v, want physical destination rejection", err)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("physical destination contains artifacts after rejection: %v", entries)
+	}
+}
+
+func TestArtifactPairRejectsExistingHardlinkDestinations(t *testing.T) {
+	base := t.TempDir()
+	receiptPath := filepath.Join(base, "receipt.json")
+	linkPath := filepath.Join(base, "link.json")
+	if err := os.WriteFile(receiptPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(receiptPath, linkPath); err != nil {
+		t.Skipf("hard links are unavailable on this filesystem: %v", err)
+	}
+
+	paths, err := preflightArtifactPaths(receiptPath, linkPath)
+	paths.close()
+	if err == nil || !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightArtifactPaths() error = %v, want hardlink destination rejection", err)
+	}
+}
+
+func TestArtifactPairRejectsCaseFoldAliasOnCaseInsensitiveVolume(t *testing.T) {
+	stateDir := t.TempDir()
+	probe := filepath.Join(stateDir, "CaseProbe")
+	if err := os.Mkdir(probe, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	probeInfo, err := os.Stat(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasInfo, err := os.Stat(filepath.Join(stateDir, "caseprobe"))
+	if err != nil || !os.SameFile(probeInfo, aliasInfo) {
+		t.Skip("test volume is case-sensitive")
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := preflightArtifactPaths(
+		filepath.Join(stateDir, "Publish.JSON"),
+		filepath.Join(stateDir, "publish.json"),
+	)
+	if err == nil {
+		paths.close()
+		t.Fatalf("preflight() error = %v, want case-fold destination rejection", err)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("case-fold destination contains artifacts after rejection: %v", entries)
+	}
+}
+
+func TestArtifactPairRejectsNormalizationAliasOnNormalizationInsensitiveVolume(t *testing.T) {
+	stateDir := t.TempDir()
+	composedPath := filepath.Join(stateDir, "é.json")
+	decomposedPath := filepath.Join(stateDir, "e\u0301.json")
+	if err := os.WriteFile(composedPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	composedInfo, err := os.Stat(composedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decomposedInfo, err := os.Stat(decomposedPath)
+	if err != nil || !os.SameFile(composedInfo, decomposedInfo) {
+		t.Skip("test volume keeps composed and decomposed names distinct")
+	}
+	if err := os.Remove(composedPath); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := preflightArtifactPaths(composedPath, decomposedPath)
+	if err == nil {
+		paths.close()
+		t.Fatal("preflight accepted normalization-equivalent destination paths")
+	}
+	if !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightArtifactPaths() error = %v, want normalization-equivalent destination rejection", err)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("normalization-equivalent destination contains artifacts after rejection: %v", entries)
+	}
+}
+
+func TestArtifactPairRejectsCombinedCaseAndNormalizationAliasOnInsensitiveVolume(t *testing.T) {
+	stateDir := t.TempDir()
+	composedPath := filepath.Join(stateDir, "É.json")
+	decomposedPath := filepath.Join(stateDir, "e\u0301.json")
+	if err := os.WriteFile(composedPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	composedInfo, err := os.Stat(composedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decomposedInfo, err := os.Stat(decomposedPath)
+	if err != nil || !os.SameFile(composedInfo, decomposedInfo) {
+		t.Skip("test volume keeps case and normalization variants distinct")
+	}
+	if err := os.Remove(composedPath); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := preflightArtifactPaths(composedPath, decomposedPath)
+	if err == nil {
+		paths.close()
+		t.Fatal("preflight accepted a combined case-and-normalization alias")
+	}
+	if !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightArtifactPaths() error = %v, want combined alias rejection", err)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("combined alias destination contains artifacts after rejection: %v", entries)
+	}
+}
+
+func TestArtifactPairRejectsSharpSAliasOnCaseInsensitiveVolume(t *testing.T) {
+	stateDir := t.TempDir()
+	lowerPath := filepath.Join(stateDir, "straße.json")
+	upperPath := filepath.Join(stateDir, "STRASSE.json")
+	if err := os.WriteFile(lowerPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lowerInfo, err := os.Stat(lowerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upperInfo, err := os.Stat(upperPath)
+	if err != nil || !os.SameFile(lowerInfo, upperInfo) {
+		t.Skip("test volume does not case-fold sharp-s to SS")
+	}
+	if err := os.Remove(lowerPath); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := preflightArtifactPaths(lowerPath, upperPath)
+	if err == nil {
+		paths.close()
+		t.Fatal("preflight accepted a sharp-s case-fold alias")
+	}
+	if !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightArtifactPaths() error = %v, want sharp-s alias rejection", err)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("sharp-s alias destination contains artifacts after rejection: %v", entries)
+	}
+}
+
+func TestArtifactPairAliasProbeHandlesMissingNestedParents(t *testing.T) {
+	stateDir := t.TempDir()
+	receiptPath := filepath.Join(stateDir, "nested", "Receipt", "straße.json")
+	linkPath := filepath.Join(stateDir, "NESTED", "RECEIPT", "STRASSE.json")
+	if err := os.MkdirAll(filepath.Dir(receiptPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receiptPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receiptInfo, err := os.Stat(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkInfo, err := os.Stat(linkPath)
+	if err != nil || !os.SameFile(receiptInfo, linkInfo) {
+		t.Skip("test volume does not alias the requested nested paths")
+	}
+	if err := os.RemoveAll(filepath.Join(stateDir, "nested")); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := preflightArtifactPaths(receiptPath, linkPath)
+	if err == nil {
+		paths.close()
+		t.Fatal("preflight accepted an aliased nested destination")
+	}
+	if !strings.Contains(err.Error(), "same physical destination") {
+		t.Fatalf("preflightArtifactPaths() error = %v, want nested alias rejection", err)
+	}
+	var visit func(string) error
+	visit = func(directory string) error {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			path := filepath.Join(directory, entry.Name())
+			if strings.Contains(entry.Name(), ".asc-artifact-alias-probe-") {
+				t.Fatalf("alias probe directory remains: %s", path)
+			}
+			if entry.IsDir() {
+				if err := visit(path); err != nil {
+					return err
+				}
+			} else {
+				t.Fatalf("probe left non-directory artifact: %s", path)
+			}
+		}
+		return nil
+	}
+	if err := visit(stateDir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArtifactPairAliasProbeRejectsParentChildAliases(t *testing.T) {
+	tests := []struct {
+		name             string
+		receipt          func(string) string
+		link             func(string) string
+		aliasFirst       func(string) string
+		aliasSecond      func(string) string
+		retainAliasFirst bool
+	}{
+		{
+			name:             "case-insensitive parent then child",
+			receipt:          func(base string) string { return filepath.Join(base, "state", "Result", "receipt.json") },
+			link:             func(base string) string { return filepath.Join(base, "STATE", "result") },
+			aliasFirst:       func(base string) string { return filepath.Join(base, "state") },
+			aliasSecond:      func(base string) string { return filepath.Join(base, "STATE") },
+			retainAliasFirst: true,
+		},
+		{
+			name:             "case-insensitive child then parent",
+			receipt:          func(base string) string { return filepath.Join(base, "state", "result") },
+			link:             func(base string) string { return filepath.Join(base, "STATE", "Result", "receipt.json") },
+			aliasFirst:       func(base string) string { return filepath.Join(base, "state") },
+			aliasSecond:      func(base string) string { return filepath.Join(base, "STATE") },
+			retainAliasFirst: true,
+		},
+		{
+			name:        "normalization-insensitive parent then child",
+			receipt:     func(base string) string { return filepath.Join(base, "state", "Re\u0301sult", "receipt.json") },
+			link:        func(base string) string { return filepath.Join(base, "state", "Résult") },
+			aliasFirst:  func(base string) string { return filepath.Join(base, "state", "Re\u0301sult") },
+			aliasSecond: func(base string) string { return filepath.Join(base, "state", "Résult") },
+		},
+		{
+			name:        "normalization-insensitive child then parent",
+			receipt:     func(base string) string { return filepath.Join(base, "state", "Résult") },
+			link:        func(base string) string { return filepath.Join(base, "state", "Re\u0301sult", "receipt.json") },
+			aliasFirst:  func(base string) string { return filepath.Join(base, "state", "Re\u0301sult") },
+			aliasSecond: func(base string) string { return filepath.Join(base, "state", "Résult") },
+		},
+		{
+			name:        "case-and-normalization-insensitive parent then child",
+			receipt:     func(base string) string { return filepath.Join(base, "state", "É", "receipt.json") },
+			link:        func(base string) string { return filepath.Join(base, "state", "e\u0301") },
+			aliasFirst:  func(base string) string { return filepath.Join(base, "state", "É") },
+			aliasSecond: func(base string) string { return filepath.Join(base, "state", "e\u0301") },
+		},
+		{
+			name:        "case-and-normalization-insensitive child then parent",
+			receipt:     func(base string) string { return filepath.Join(base, "state", "e\u0301") },
+			link:        func(base string) string { return filepath.Join(base, "state", "É", "receipt.json") },
+			aliasFirst:  func(base string) string { return filepath.Join(base, "state", "É") },
+			aliasSecond: func(base string) string { return filepath.Join(base, "state", "e\u0301") },
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			stateDir := filepath.Join(base, "state")
+			if err := os.Mkdir(stateDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if !test.retainAliasFirst {
+				if err := os.MkdirAll(filepath.Dir(test.aliasFirst(base)), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(test.aliasFirst(base), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			firstInfo, err := os.Stat(test.aliasFirst(base))
+			if err != nil {
+				t.Fatal(err)
+			}
+			secondInfo, err := os.Stat(test.aliasSecond(base))
+			if err != nil || !os.SameFile(firstInfo, secondInfo) {
+				if !test.retainAliasFirst {
+					_ = os.Remove(test.aliasFirst(base))
+				}
+				t.Skip("test volume does not alias the requested parent names")
+			}
+			if !test.retainAliasFirst {
+				if err := os.Remove(test.aliasFirst(base)); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			paths, err := preflightArtifactPaths(test.receipt(base), test.link(base))
+			if err == nil {
+				paths.close()
+				t.Fatal("preflight accepted a parent-child alias")
+			}
+			assertNoNonDirectoryArtifacts(t, base)
+		})
+	}
+}
+
+func assertNoNonDirectoryArtifacts(t *testing.T, root string) {
+	t.Helper()
+	var visit func(string) error
+	visit = func(directory string) error {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			path := filepath.Join(directory, entry.Name())
+			if !entry.IsDir() {
+				return fmt.Errorf("non-directory artifact remains at %s", path)
+			}
+			if err := visit(path); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := visit(root); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArtifactPairDistinctParentsFailWithoutPartialArtifacts(t *testing.T) {
+	receiptDir, err := os.MkdirTemp(t.TempDir(), "asc-publish-receipt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkDir, err := os.MkdirTemp(t.TempDir(), "asc-publish-link-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	receiptPath := filepath.Join(receiptDir, "receipt.json")
+	linkPath := filepath.Join(linkDir, "link.json")
+	paths, err := preflightArtifactPaths(receiptPath, linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer paths.close()
+
+	retainedDir := receiptDir + "-retained"
+	if err := os.Rename(receiptDir, retainedDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(retainedDir) })
+	unintendedDir := t.TempDir()
+	if err := os.Symlink(unintendedDir, receiptDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := paths.stagePair(); err == nil {
+		t.Fatal("stagePair() accepted a replaced receipt parent")
+	}
+	for _, dir := range []string{linkDir, retainedDir, unintendedDir} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("%s contains partial artifacts after failure: %v", dir, entries)
+		}
+	}
+	if _, err := os.Lstat(linkPath); !os.IsNotExist(err) {
+		t.Fatalf("link artifact exists after failure: %v", err)
+	}
+	if _, err := os.Lstat(receiptPath); !os.IsNotExist(err) {
+		t.Fatalf("receipt artifact exists after failure: %v", err)
+	}
+}
+
 func TestArtifactPairRejectsDistinctParentSymlinkSwap(t *testing.T) {
 	base := t.TempDir()
 	receiptDir := filepath.Join(base, "receipts")
@@ -594,6 +1103,9 @@ func TestArtifactPairRejectsDistinctParentSymlinkSwap(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(unintendedDir, "receipt.json")); !os.IsNotExist(err) {
 		t.Fatalf("unintended receipt exists or stat error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(linkDir, "link.json")); !os.IsNotExist(err) {
+		t.Fatalf("link artifact exists or stat error = %v", err)
 	}
 }
 
