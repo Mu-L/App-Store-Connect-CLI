@@ -456,7 +456,10 @@ Examples:
 				return fmt.Errorf("ads auth discover: %w", err)
 			}
 			orgID, orgSource := discoverOrgIDWithSource(common, credentials)
-			adAccountID, adAccountSource := discoverAdAccountIDWithSource(common, credentials)
+			adAccountID, adAccountSource, err := discoverAdAccountIDWithSource(common, credentials)
+			if err != nil {
+				return shared.UsageErrorf("ads auth discover: %v", err)
+			}
 			client, err := appleads.NewClient(credentials)
 			if err != nil {
 				return fmt.Errorf("ads auth discover: %w", err)
@@ -513,12 +516,22 @@ Examples:
 	}
 }
 
-func discoverAdAccountIDWithSource(flags commonFlags, credentials appleads.Credentials) (string, string) {
+func discoverAdAccountIDWithSource(flags commonFlags, credentials appleads.Credentials) (string, string, error) {
 	adAccountID, source, err := resolveAdAccountIDWithSource(flags, credentials)
-	if err != nil {
-		return "", ""
+	if err == nil {
+		return adAccountID, source, nil
 	}
-	return adAccountID, source
+
+	// Discovery can proceed without account context when the optional root
+	// configuration is unreadable. Explicit account selectors must never be
+	// discarded, though: doing so would make a malformed user choice look as if
+	// no account was selected.
+	if strings.TrimSpace(value(flags.AdAccount)) != "" ||
+		strings.TrimSpace(os.Getenv("ASC_ADS_AD_ACCOUNT_ID")) != "" ||
+		strings.TrimSpace(credentials.AdAccountID) != "" {
+		return "", "", err
+	}
+	return "", "", nil
 }
 
 func authPlatformEndpointSpec(path ...string) (appleads.EndpointSpec, error) {
