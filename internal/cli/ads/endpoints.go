@@ -797,6 +797,10 @@ func validateEndpointBody(spec appleads.EndpointSpec, body json.RawMessage, conf
 type querySelectorFilter struct {
 	Field    string `json:"field"`
 	Operator string `json:"operator"`
+	// Legacy v5 selector conditions used "values"; Platform API filters use
+	// the singular "value". Tracked here so a renamed-but-not-migrated
+	// selector still fails pre-auth with a hint instead of a live 400.
+	Values json.RawMessage `json:"values"`
 }
 
 func validateKeywordQuerySelector(specName string, body json.RawMessage) error {
@@ -811,7 +815,12 @@ func validateKeywordQuerySelector(specName string, body json.RawMessage) error {
 		return fmt.Errorf("invalid QueryRequest selector filters: %w", err)
 	}
 	if len(payload.Conditions) > 0 && string(payload.Conditions) != "null" {
-		return fmt.Errorf("QueryRequest uses \"filters\", not \"conditions\"; rename the selector array (Campaign Management API v5 selectors used \"conditions\", the Platform API rejects it)")
+		return fmt.Errorf("QueryRequest uses \"filters\", not \"conditions\"; rename the selector array and each entry's \"values\" to the singular \"value\" (Campaign Management API v5 selector fields are rejected by the Platform API)")
+	}
+	for _, filter := range payload.Filters {
+		if len(filter.Values) > 0 && string(filter.Values) != "null" {
+			return fmt.Errorf("QueryRequest filters use the singular \"value\", not \"values\"; rename it in each filter (Campaign Management API v5 selector fields are rejected by the Platform API)")
+		}
 	}
 
 	switch specName {
