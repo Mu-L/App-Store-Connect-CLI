@@ -55,6 +55,30 @@ split by dependency and operator workflow:
 
 The cumulative 4.4.0 stack implements all 99 operations. Its foundation layer registers 13 operations, the campaign layer adds 41, Maps and assets add 21, and reports and optimization add 24. The endpoint specs drive command registration. A separate checked-in contract fixture records method, path, parameters, SDK body optionality, response type, context requirement, confirmation, command path, and Apple source URL for all 99 operations. The final cumulative layer compares the implementation with that fixture and asserts exact count and uniqueness; earlier layers assert their implemented subsets.
 
+### Reports and optimization
+
+Reporting requests keep Apple's pagination and selector fields in the JSON payload. The CLI does not expose `--paginate` for these commands because query-string pagination cannot safely advance the reporting response. Successful result and pagination envelopes are printed unchanged; API errors continue through the CLI's structured stderr formatter.
+
+```bash
+# App and business-brand reports
+asc ads reports apps campaigns --ad-account "AD_ACCOUNT_ID" --file report.json --output json
+asc ads reports brands search-terms --ad-account "AD_ACCOUNT_ID" --file report.json --output json
+
+# Read-only insights, recommendations, suggestions, and audit queries
+asc ads insights impression-share find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads recommendations daily-budgets find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads suggestions keywords find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads change-history find --ad-account "AD_ACCOUNT_ID" --file query.json --output json
+asc ads change-history view --ad-account "AD_ACCOUNT_ID" --detail-id "Campaign.444555666.txn_abc123def456" --limit 100 --paginate --output json
+```
+
+Recommendation apply and dismiss operations accept an array payload and require explicit confirmation before the CLI reads the payload or resolves credentials:
+
+```bash
+asc ads recommendations target-cpas apply --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
+asc ads recommendations daily-budgets dismiss --ad-account "AD_ACCOUNT_ID" --file recommendations.json --confirm --output json
+```
+
 ## Compatibility and deprecation
 
 The v1 host, context identifier, paths, payloads, response envelopes, pagination, reporting, and creative model are incompatible with v5. Because Apple Ads is an auxiliary surface in this App Store Connect-focused CLI, 4.4.0 takes the breaking command-tree change now: direct resource paths use v1 and v5 moves under `asc ads v5`.
@@ -91,8 +115,10 @@ Before any commit or push, run the full local repository gate above and keep
 the endpoint fixture, generated command docs, and migration tests synchronized.
 Live-account behavior remains the principal unverified risk: an operator with
 real Apple Ads credentials must validate read-only Platform calls first, then
-explicitly authorize any mutation testing. Never place those credentials in
-the repository or test fixtures.
+explicitly authorize any mutation testing. If mutation testing is necessary,
+use only disposable app `6759231657`, clean up every temporary resource after
+the test, and never mutate a non-disposable app without explicit approval.
+Never place those credentials in the repository or test fixtures.
 
 ## Alternatives considered
 

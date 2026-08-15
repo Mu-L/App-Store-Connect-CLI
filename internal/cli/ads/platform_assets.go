@@ -31,7 +31,7 @@ func PlatformAssetUploadCommand() *ffcli.Command {
 		AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 		AdAccount:  fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID env)"),
 	}
-	output := shared.BindOutputFlags(fs)
+	output := bindAdsRawOutputFlags(fs)
 	longHelp := `Upload an Apple Ads brand image asset.
 
 The image is sent as multipart/form-data with the promoted object type
@@ -56,7 +56,7 @@ Example:
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err
 			}
-			outputFormat, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
+			outputFormat, err := validateAdsRawOutput(output)
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}

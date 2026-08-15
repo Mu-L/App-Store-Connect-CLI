@@ -7,6 +7,12 @@ Campaign Management API v5 commands live under `ads v5`. Raw v1 requests use
 `ads api request`; raw v5 requests use `ads v5 api request`. Both APIs use Apple
 Ads OAuth credentials, not App Store Connect API keys.
 
+Resource, workflow, upload, report, and raw-request commands preserve Apple's
+heterogeneous response envelopes losslessly as JSON. They intentionally do not
+accept `--output table` or `--output markdown`; use `jq` when an agent needs a
+projection. Authentication status and discovery commands retain their explicit
+human-readable output modes.
+
 Use `--help` before scripting a new command. Apple Ads has many nested
 resources, and the CLI exposes the documented path parameters as flags:
 
@@ -151,6 +157,10 @@ including `GET /v1/me`, `GET /v1/acls`, `GET /v1/orgs/{id}`,
 `--ad-account` explicitly to one of those endpoints is rejected instead of
 silently ignored.
 
+Scoping on `/v1/ad-accounts` depends on the method. `POST /v1/ad-accounts`
+creates an account without context, while `GET /v1/ad-accounts/{id}` is scoped
+and requires an ad account ID matching the path.
+
 Authentication discovery and validation use Platform API v1 `me` and `acls`
 endpoints. Direct resource commands use the same Platform API v1 transport;
 the legacy Campaign Management API v5 commands remain under `ads v5`:
@@ -266,12 +276,12 @@ filter.
 asc ads campaigns create --ad-account "987654" --file campaign.json
 asc ads campaigns find --ad-account "987654" --file query.json
 asc ads ad-groups view --ad-account "987654" --ad-group "adgroup-id"
-asc ads ads update --ad-account "987654" --ad "ad-id" --file ad.json
-asc ads targeting-keywords create-bulk --ad-account "987654" --file keywords.json
+asc ads ads update --ad-account "987654" --ad "ad-id" --file ad.json --confirm
+asc ads targeting-keywords create-bulk --ad-account "987654" --file keywords.json --confirm
 asc ads targeting-keywords find --ad-account "987654" --file query.json
 asc ads negative-keywords find --ad-account "987654" --file query.json
 asc ads negative-keywords view --ad-account "987654" --negative-keyword "negative-keyword-id"
-asc ads negative-keywords update --ad-account "987654" --negative-keyword "negative-keyword-id" --file negative-keyword.json
+asc ads negative-keywords update --ad-account "987654" --negative-keyword "negative-keyword-id" --file negative-keyword.json --confirm
 ```
 
 Campaign creation can affect spend as soon as Apple enables delivery. For an
@@ -345,6 +355,50 @@ asc ads budget-orders view --budget-order "budget-id"
 asc ads budget-orders delete --budget-order "budget-id" --confirm
 ```
 
+## Platform API v1 reports and insights
+
+Platform reports use a required JSON body. Dates belong in the nested
+`timeRange` object, and page controls use `pageSize` rather than the v5
+selector's `limit`. Campaign and ad-group IDs move into `filters`:
+
+```json report.json
+{
+  "pagination": {"offset": 0, "pageSize": 20},
+  "filters": [
+    {"field": "campaignId", "operator": "EQUALS", "value": ["444555666"]}
+  ],
+  "groupBy": ["countryOrRegion"],
+  "timeRange": {
+    "start": "2025-01-01",
+    "end": "2025-01-31",
+    "timeZone": "ORTZ",
+    "granularity": "DAILY"
+  }
+}
+```
+
+```bash  theme={null}
+asc ads reports apps campaigns --ad-account "987654" --file report.json --output json
+asc ads reports apps keywords --ad-account "987654" --file report.json --output json
+```
+
+Report pagination stays inside the request body; these commands preserve
+Apple's raw `result` and `pagination` envelope and do not expose `--paginate`.
+Run the exact leaf command with `--help` before creating a payload because
+valid `groupBy` and report options differ by entity. `EMPTY_METRICS` cannot be
+combined with `groupBy`, and brand reports support only `GRAND_TOTAL`.
+
+Insights also require body files. Impression share needs a
+`promotedObjectId` filter and a complete UTC `timeRange`; search-term
+popularity needs a UTC `timeRange`. The command help lists the granularity and
+date-window limits Apple publishes for each endpoint.
+
+Suggestion requests have two routes that Apple documents inconsistently.
+`queryType: "SUGGESTION"` uses `promotedObjectId` and
+`promotedObjectType`; `queryType: "SEARCH"` uses the phrase or category
+filter described on the endpoint page. The CLI sends the reviewed body
+unchanged instead of rejecting the documented SEARCH form.
+
 ## Campaign Management API v5 commands
 
 The legacy examples below retain their v5 request and response contracts under
@@ -356,7 +410,7 @@ resource commands.
 List campaigns. The short form aliases `list`:
 
 ```bash  theme={null}
-asc ads v5 campaigns --org "123456" --limit 100 --output table
+asc ads v5 campaigns --org "123456" --limit 100 --output json
 asc ads v5 campaigns list --org "123456" --paginate --output json
 ```
 

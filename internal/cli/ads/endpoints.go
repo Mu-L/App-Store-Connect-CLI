@@ -323,6 +323,9 @@ func sentenceFromEndpointName(name string) string {
 		{"delete a ", "Delete a "},
 		{"delete an ", "Delete an "},
 		{"delete ", "Delete "},
+		{"apply ", "Apply "},
+		{"dismiss ", "Dismiss "},
+		{"query ", "Query "},
 		{"impression share report", "Create impression share report"},
 	}
 	for _, replacement := range replacements {
@@ -343,7 +346,7 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 		common: commonFlags{
 			AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 		},
-		output:        shared.BindOutputFlags(fs),
+		output:        bindAdsRawOutputFlags(fs),
 		flagSet:       fs,
 		pathStrings:   map[string]*string{},
 		pathAliases:   map[string][]*shared.DeprecatedStringFlagAlias{},
@@ -435,7 +438,7 @@ func intParamDefault(param appleads.ParamSpec) int {
 }
 
 func executeEndpoint(ctx context.Context, spec appleads.EndpointSpec, flags endpointFlagValues) error {
-	outputFormat, err := shared.ValidateOutputFormat(*flags.output.Output, *flags.output.Pretty)
+	outputFormat, err := validateAdsRawOutput(flags.output)
 	if err != nil {
 		return shared.UsageError(err.Error())
 	}

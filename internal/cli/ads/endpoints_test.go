@@ -15,6 +15,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/appleads"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
 )
 
@@ -70,6 +71,55 @@ func TestAdsRootRegistersPlatformV1AsDefault(t *testing.T) {
 	}
 	if findCommand(root, "v5", "api", "request") == nil {
 		t.Fatal("missing deprecated v5 raw request command")
+	}
+}
+
+func TestAdsRawResponseCommandsExposeJSONOnlyOutput(t *testing.T) {
+	tests := []struct {
+		path []string
+		args []string
+	}{
+		{path: []string{"campaigns", "find"}},
+		{path: []string{"reports", "apps", "campaigns"}},
+		{path: []string{"api", "request"}},
+		{path: []string{"assets", "upload"}},
+		{path: []string{"campaigns", "pause"}, args: []string{"--campaign", "1"}},
+		{path: []string{"v5", "campaigns", "list"}},
+		{path: []string{"v5", "campaigns", "pause"}, args: []string{"--campaign", "1", "--confirm"}},
+		{path: []string{"v5", "reports", "preset"}},
+		{path: []string{"v5", "api", "request"}},
+	}
+	for _, test := range tests {
+		t.Run(strings.Join(test.path, " "), func(t *testing.T) {
+			root := AdsCommand()
+			path := test.path
+			cmd := findCommand(root, path...)
+			if cmd == nil {
+				t.Fatalf("missing command asc ads %s", strings.Join(path, " "))
+			}
+			output := cmd.FlagSet.Lookup("output")
+			if output == nil {
+				t.Fatalf("asc ads %s missing --output", strings.Join(path, " "))
+			}
+			if output.DefValue != "json" {
+				t.Fatalf("asc ads %s --output default = %q, want json", strings.Join(path, " "), output.DefValue)
+			}
+			args := append(append([]string(nil), test.args...), "--output", "table")
+			if err := cmd.Parse(args); err != nil {
+				t.Fatalf("asc ads %s parse error: %v", strings.Join(path, " "), err)
+			}
+			if err := cmd.Exec(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "unsupported format: table") {
+				t.Fatalf("asc ads %s accepted --output table for a raw response: %v", strings.Join(path, " "), err)
+			}
+		})
+	}
+
+	for _, format := range []string{"table", "markdown"} {
+		output := format
+		pretty := false
+		if _, err := validateAdsRawOutput(shared.OutputFlags{Output: &output, Pretty: &pretty}); err == nil || !strings.Contains(err.Error(), "unsupported format: "+format) {
+			t.Fatalf("validateAdsRawOutput(%q) error = %v", format, err)
+		}
 	}
 }
 
@@ -256,6 +306,30 @@ func TestPlatformEndpointHelpIncludesAgentPayloadGuidance(t *testing.T) {
 		}
 		if test.path[len(test.path)-1] == "find" && strings.Contains(cmd.LongHelp, "[--file query.json]") {
 			t.Errorf("asc ads %s LongHelp = %q, selector file must be shown as required", strings.Join(test.path, " "), cmd.LongHelp)
+		}
+	}
+}
+
+func TestPlatformReportAndOptimizationHelpIncludesPayloadRules(t *testing.T) {
+	root := AdsCommand()
+	tests := []struct {
+		path []string
+		want []string
+	}{
+		{path: []string{"reports", "apps", "campaigns"}, want: []string{"--file report.json", "Schema: AppsReportingRequest", "nested timeRange", "{offset,pageSize}"}},
+		{path: []string{"insights", "impression-share", "find"}, want: []string{"--file query.json", "promotedObjectId", "FIRST_SLOT", "maximum 30 days"}},
+		{path: []string{"suggestions", "phrases", "find"}, want: []string{"queryType SUGGESTION", "queryType SEARCH", "Apple's generic request schema"}},
+		{path: []string{"recommendations", "daily-budgets", "apply"}, want: []string{"--file recommendations.json", "non-empty array", "--confirm"}},
+	}
+	for _, test := range tests {
+		command := findCommand(root, test.path...)
+		if command == nil {
+			t.Fatalf("missing asc ads %s", strings.Join(test.path, " "))
+		}
+		for _, want := range test.want {
+			if !strings.Contains(command.LongHelp, want) {
+				t.Errorf("asc ads %s help = %q, want %q", strings.Join(test.path, " "), command.LongHelp, want)
+			}
 		}
 	}
 }
@@ -636,6 +710,33 @@ func TestPlatformSpendRiskMutationsRequireConfirmationBeforeAuth(t *testing.T) {
 	}
 }
 
+func TestPlatformRecommendationRiskConfirmationPrecedesAuth(t *testing.T) {
+	setAdsResolverTestEnv(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+
+	for _, path := range [][]string{
+		{"recommendations", "daily-budgets", "apply"},
+		{"recommendations", "daily-budgets", "dismiss"},
+		{"recommendations", "target-cpas", "apply"},
+		{"recommendations", "target-cpas", "dismiss"},
+	} {
+		t.Run(strings.Join(path, "-"), func(t *testing.T) {
+			spec, ok := appleads.PlatformEndpointByCommandPath(path...)
+			if !ok {
+				t.Fatalf("missing platform endpoint %q", strings.Join(path, " "))
+			}
+			if spec.RequiresConfirm || !spec.RiskConfirm {
+				t.Fatalf("%q confirmation metadata = requires=%t risk=%t", strings.Join(path, " "), spec.RequiresConfirm, spec.RiskConfirm)
+			}
+			_, flags := bindEndpointFlags(spec, strings.Join(path, " "))
+			err := executeEndpoint(context.Background(), spec, flags)
+			if !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), "spend, billing") {
+				t.Fatalf("%q error = %v, want pre-auth spend-risk confirmation", strings.Join(path, " "), err)
+			}
+		})
+	}
+}
+
 func TestPlatformConfirmationHelpDistinguishesSpendFromDeletion(t *testing.T) {
 	root := AdsCommand()
 	for _, test := range []struct {
@@ -645,6 +746,11 @@ func TestPlatformConfirmationHelpDistinguishesSpendFromDeletion(t *testing.T) {
 		{path: []string{"campaigns", "create"}, want: "spend, billing"},
 		{path: []string{"budget-orders", "create"}, want: "spend, billing"},
 		{path: []string{"campaigns", "delete"}, want: "Confirm deletion"},
+		{path: []string{"recommendations", "daily-budgets", "apply"}, want: "spend, billing"},
+		{path: []string{"recommendations", "daily-budgets", "dismiss"}, want: "spend, billing"},
+		{path: []string{"recommendations", "target-cpas", "apply"}, want: "spend, billing"},
+		{path: []string{"recommendations", "target-cpas", "dismiss"}, want: "spend, billing"},
+		{path: []string{"api", "request"}, want: "spend, billing"},
 	} {
 		cmd := findCommand(root, test.path...)
 		if cmd == nil {
@@ -1472,6 +1578,27 @@ func TestEndpointHelpUsesOperatorFriendlyAuthDiscoveryNames(t *testing.T) {
 		{path: []string{"me", "view"}, want: "View the current Apple Ads user."},
 		{path: []string{"acls"}, want: "List Apple Ads account ACLs."},
 		{path: []string{"acls", "list"}, want: "List Apple Ads account ACLs."},
+	}
+	for _, test := range tests {
+		cmd := findCommand(root, test.path...)
+		if cmd == nil {
+			t.Fatalf("missing command asc ads %s", strings.Join(test.path, " "))
+		}
+		if cmd.ShortHelp != test.want {
+			t.Fatalf("asc ads %s ShortHelp = %q, want %q", strings.Join(test.path, " "), cmd.ShortHelp, test.want)
+		}
+	}
+}
+
+func TestPlatformOptimizationHelpUsesOperatorFriendlyVerbs(t *testing.T) {
+	root := AdsCommand()
+	tests := []struct {
+		path []string
+		want string
+	}{
+		{path: []string{"recommendations", "target-cpas", "apply"}, want: "Apply target cpa recommendations."},
+		{path: []string{"recommendations", "daily-budgets", "dismiss"}, want: "Dismiss daily budget recommendations."},
+		{path: []string{"suggestions", "keywords", "find"}, want: "Find keyword suggestions."},
 	}
 	for _, test := range tests {
 		cmd := findCommand(root, test.path...)

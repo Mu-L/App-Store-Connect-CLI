@@ -148,7 +148,7 @@ func PlatformEndpointSpecs() []EndpointSpec {
 			specs[i].RiskConfirm = true
 		}
 	}
-	return specs
+	return append(specs, platformReportsOptimizationEndpointSpecs()...)
 }
 
 func platformEndpoint(name, method, path string, commandPath []string, context ContextKind, bodyKind BodyKind, bodyOptional bool, bodyType, responseType string, pathParams, queryParams []ParamSpec) EndpointSpec {

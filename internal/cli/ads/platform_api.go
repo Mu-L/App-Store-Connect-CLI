@@ -44,7 +44,7 @@ func PlatformAPIRequestCommand() *ffcli.Command {
 		AdsProfile: fs.String("ads-profile", "", "Use named Apple Ads authentication profile"),
 		AdAccount:  fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID env)"),
 	}
-	output := shared.BindOutputFlags(fs)
+	output := bindAdsRawOutputFlags(fs)
 	return &ffcli.Command{
 		Name:       "request",
 		ShortUsage: "asc ads api request --method METHOD --path v1/... [flags]",
@@ -60,7 +60,7 @@ Examples:
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err
 			}
-			outputFormat, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
+			outputFormat, err := validateAdsRawOutput(output)
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}
@@ -113,7 +113,7 @@ Examples:
 			}
 			requestCtx, cancel := requestContext(ctx)
 			defer cancel()
-			resp, err := client.RequestForVersion(requestCtx, appleads.APIVersionPlatformV1, methodValue, pathValue, nil, payload, contextKind)
+			resp, err := requestRawPlatformEndpoint(requestCtx, client, methodValue, pathValue, payload, contextKind)
 			if err != nil {
 				return fmt.Errorf("ads api request: %w", err)
 			}
@@ -209,6 +209,32 @@ func platformEndpointSpecForRequest(method, pathOnly string) (appleads.EndpointS
 		return spec, true
 	}
 	return appleads.EndpointSpec{}, false
+}
+
+func rawPlatformRequestEndpointSpec(method, pathValue string) (appleads.EndpointSpec, bool) {
+	pathOnly, err := platformPathOnly(pathValue)
+	if err != nil {
+		return appleads.EndpointSpec{}, false
+	}
+	spec, ok := platformEndpointSpecForRequest(method, pathOnly)
+	if !ok {
+		return appleads.EndpointSpec{}, false
+	}
+	// Do expands path parameters from the typed command path. A raw request
+	// already supplies the concrete path, so preserve that path while retaining
+	// the matched endpoint's safety metadata and context.
+	spec.Path = pathValue
+	return spec, true
+}
+
+func requestRawPlatformEndpoint(ctx context.Context, client *appleads.Client, method, pathValue string, payload json.RawMessage, contextKind appleads.ContextKind) (appleads.RawResponse, error) {
+	if spec, ok := rawPlatformRequestEndpointSpec(method, pathValue); ok {
+		// Route documented endpoints through Do so the raw escape hatch
+		// preserves endpoint metadata such as RetrySafe. Unknown requests
+		// continue through the conservative versioned transport below.
+		return client.Do(ctx, spec, nil, nil, payload)
+	}
+	return client.RequestForVersion(ctx, appleads.APIVersionPlatformV1, method, pathValue, nil, payload, contextKind)
 }
 
 func platformEndpointPathMatches(pattern, path string) bool {

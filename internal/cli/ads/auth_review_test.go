@@ -54,3 +54,44 @@ func TestSummarizePlatformACLAccountsUsesAdAccountSelection(t *testing.T) {
 		t.Fatalf("second account = %+v, want account 222 active", accounts[1])
 	}
 }
+
+func TestPlatformDiscoveryRejectsMissingOrNullResults(t *testing.T) {
+	for _, raw := range []appleads.RawResponse{
+		appleads.RawResponse(`{}`),
+		appleads.RawResponse(`{"result":null}`),
+	} {
+		if _, err := platformEnvelopeResult(raw); err == nil || !strings.Contains(err.Error(), "missing a non-null result") {
+			t.Fatalf("platformEnvelopeResult(%s) error = %v, want missing-result error", raw, err)
+		}
+		if _, err := summarizePlatformACLAccounts(raw, ""); err == nil || !strings.Contains(err.Error(), "missing a non-null result") {
+			t.Fatalf("summarizePlatformACLAccounts(%s) error = %v, want missing-result error", raw, err)
+		}
+	}
+}
+
+func TestRawPlatformRequestEndpointSpecPreservesOnlyReadOnlyQueryRetrySafety(t *testing.T) {
+	query, ok := rawPlatformRequestEndpointSpec("POST", "v1/eligibilities/apps/query")
+	if !ok {
+		t.Fatal("rawPlatformRequestEndpointSpec() did not resolve known query endpoint")
+	}
+	if !query.RetrySafe {
+		t.Fatal("known read-only query POST must preserve RetrySafe metadata")
+	}
+
+	for _, testCase := range []struct {
+		method string
+		path   string
+	}{
+		{method: "POST", path: "v1/campaigns"},
+		{method: "PUT", path: "v1/campaigns/campaign-1"},
+		{method: "DELETE", path: "v1/campaigns/campaign-1"},
+	} {
+		spec, ok := rawPlatformRequestEndpointSpec(testCase.method, testCase.path)
+		if !ok {
+			t.Fatalf("rawPlatformRequestEndpointSpec(%s %s) did not resolve known mutation", testCase.method, testCase.path)
+		}
+		if spec.RetrySafe {
+			t.Fatalf("mutation %s %s unexpectedly marked retry-safe", testCase.method, testCase.path)
+		}
+	}
+}

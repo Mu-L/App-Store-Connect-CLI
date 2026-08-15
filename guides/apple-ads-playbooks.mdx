@@ -72,7 +72,7 @@ asc ads v5 campaigns list \
   --ads-profile "Marketing" \
   --org "123456" \
   --limit 10 \
-  --output table
+  --output json
 ```
 
 ## Safe Read-Only Smoke Test
@@ -103,7 +103,7 @@ List campaigns first, then inspect ad groups under one confirmed campaign ID:
 asc ads v5 campaigns list \
   --org "123456" \
   --limit 100 \
-  --output table
+  --output json
 
 asc ads v5 ad-groups list \
   --org "123456" \
@@ -125,7 +125,38 @@ questions.
 
 ## Report Workflow
 
-Keep reporting requests in files so they can be reviewed and reused:
+Use Platform API v1 for new report automation. Its body shape differs from v5:
+
+```json platform-report.json
+{
+  "pagination": {"offset": 0, "pageSize": 20},
+  "filters": [
+    {"field": "campaignId", "operator": "EQUALS", "value": ["444555666"]}
+  ],
+  "groupBy": ["countryOrRegion"],
+  "timeRange": {
+    "start": "2025-01-01",
+    "end": "2025-01-31",
+    "timeZone": "ORTZ",
+    "granularity": "DAILY"
+  }
+}
+```
+
+```bash  theme={null}
+asc ads reports apps campaigns \
+  --ad-account "987654" \
+  --file platform-report.json \
+  --output json
+```
+
+The v1 report response keeps Apple's raw `result` and `pagination` fields.
+Change `offset` and `pageSize` in the file to fetch another page. Run
+`asc ads reports apps campaigns --help` for body and option guidance; report
+entities do not all accept the same `groupBy` values.
+
+The request below is the deprecated v5 shape. Keep it only while existing
+automation migrates:
 
 ```json reporting-request.json
 {
