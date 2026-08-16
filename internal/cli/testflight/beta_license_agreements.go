@@ -151,11 +151,11 @@ Examples:
 			}
 			if idValue != "" && strings.TrimSpace(*appID) != "" {
 				fmt.Fprintln(os.Stderr, "Error: --id and --app are mutually exclusive")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "")
 			}
 			if appValue != "" && (strings.TrimSpace(*appFields) != "" || strings.TrimSpace(*include) != "") {
 				fmt.Fprintln(os.Stderr, "Error: --app-fields and --include are only valid with --id")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "")
 			}
 
 			client, err := shared.GetASCClient()

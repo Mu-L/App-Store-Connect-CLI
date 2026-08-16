@@ -83,7 +83,7 @@ Examples:
 			kind, ok := betaTesterRelationshipKinds[relationshipType]
 			if !ok {
 				fmt.Fprintf(os.Stderr, "Error: --type must be one of: %s\n", strings.Join(relationshipTypeList(betaTesterRelationshipKinds), ", "))
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--type")
 			}
 
 			testerValue := strings.TrimSpace(*testerID)
@@ -102,7 +102,7 @@ Examples:
 
 			if kind == relationshipSingle && (nextValue != "" || *paginate || *limit != 0) {
 				fmt.Fprintln(os.Stderr, "Error: --limit, --next, and --paginate are only valid for to-many relationships")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "")
 			}
 
 			client, err := shared.GetASCClient()

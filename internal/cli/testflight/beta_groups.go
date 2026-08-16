@@ -121,7 +121,7 @@ Examples:
 
 			if *internal && *external {
 				fmt.Fprintln(os.Stderr, "Error: --internal and --external are mutually exclusive")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "")
 			}
 			appIDSet := false
 			buildIDSet := false
@@ -138,15 +138,15 @@ Examples:
 			})
 			if buildIDSet && resolvedBuildID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --build-id cannot be empty")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--build-id")
 			}
 			if resolvedBuildID != "" && appIDSet && strings.TrimSpace(*appID) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app cannot be empty when used with --build-id")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--app")
 			}
 			if resolvedBuildID != "" && membershipPageControlSet {
 				fmt.Fprintln(os.Stderr, "Error: --global, --limit, --next, and --paginate cannot be used with --build-id; membership lookup always fetches all required pages")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "")
 			}
 
 			if resolvedBuildID != "" {
@@ -177,7 +177,7 @@ Examples:
 			// Reject --global + --app combination (check explicit flag, not resolved value)
 			if *global && strings.TrimSpace(*appID) != "" {
 				fmt.Fprintln(os.Stderr, "Error: --global and --app are mutually exclusive")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "")
 			}
 
 			// Require one of --app or --global (unless --next is provided)
@@ -567,7 +567,7 @@ Examples:
 
 			if visited["public-link-limit"] && (*publicLinkLimit < 1 || *publicLinkLimit > 10000) {
 				fmt.Fprintln(os.Stderr, "Error: --public-link-limit must be between 1 and 10000")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--public-link-limit")
 			}
 
 			hasUpdates := strings.TrimSpace(*name) != "" ||
