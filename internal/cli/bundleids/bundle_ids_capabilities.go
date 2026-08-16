@@ -76,7 +76,7 @@ Examples:
 			bundleValue := strings.TrimSpace(*bundleID)
 			if bundleValue == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --bundle is required")
-				return shared.MissingRequiredUsageError("")
+				return shared.MissingRequiredUsageError("--bundle")
 			}
 
 			client, err := shared.GetASCClient()
