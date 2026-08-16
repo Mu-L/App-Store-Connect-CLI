@@ -20,7 +20,7 @@ func TestSubscriptionsMissingRequiredInputExposesStructuredDiagnostic(t *testing
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("error = %v, want flag.ErrHelp contract", err)
 	}
-	if got, want := err.Error(), flag.ErrHelp.Error(); got != want {
+	if got, want := err.Error(), "--id"; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
 	}
 	if want := "Error: --id is required\n"; !strings.Contains(stderr, want) {

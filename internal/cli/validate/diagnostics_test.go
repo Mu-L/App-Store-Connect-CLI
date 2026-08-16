@@ -30,7 +30,7 @@ func TestValidationFailuresExposeStructuredDiagnostics(t *testing.T) {
 				return ValidateTestFlightCommand()
 			},
 			args:      []string{"--app", "app-1"},
-			wantError: flag.ErrHelp.Error(),
+			wantError: "--build",
 			wantCode:  shared.DiagnosticRequiredInputMissing,
 			wantParam: "--build",
 		},
