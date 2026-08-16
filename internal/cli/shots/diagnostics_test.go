@@ -166,6 +166,33 @@ func TestShotsValidationDiagnostics(t *testing.T) {
 			wantParameter: "--title",
 		},
 		{
+			name: "frame subtitle with noncanvas device",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return ShotsFrameCommand()
+			},
+			args:          []string{"--input", "/tmp/raw.png", "--subtitle", "Hello"},
+			wantError:     flag.ErrHelp.Error(),
+			wantStderr:    "Error: --title, --subtitle, --bg-color, --title-color, --subtitle-color only apply to canvas devices (e.g. --device mac)\n",
+			wantUsage:     true,
+			wantCode:      shared.DiagnosticConflictingInput,
+			wantParameter: "--subtitle",
+		},
+		{
+			name: "frame multiple canvas flags with noncanvas device",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return ShotsFrameCommand()
+			},
+			args:       []string{"--input", "/tmp/raw.png", "--title", "Hello", "--bg-color", "#000000"},
+			wantError:  flag.ErrHelp.Error(),
+			wantStderr: "Error: --title, --subtitle, --bg-color, --title-color, --subtitle-color only apply to canvas devices (e.g. --device mac)\n",
+			wantUsage:  true,
+			wantCode:   shared.DiagnosticConflictingInput,
+		},
+		{
 			name: "frame name with path separators",
 			command: func() interface {
 				ParseAndRun(context.Context, []string) error

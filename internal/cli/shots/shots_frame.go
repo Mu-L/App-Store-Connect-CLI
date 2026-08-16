@@ -168,18 +168,34 @@ framed screenshots whenever the YAML config or referenced raw assets change.`,
 				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--device")
 			}
 
-			hasCanvasFlags := strings.TrimSpace(*title) != "" ||
-				strings.TrimSpace(*subtitle) != "" ||
-				strings.TrimSpace(*bgColor) != "" ||
-				strings.TrimSpace(*titleColor) != "" ||
-				strings.TrimSpace(*subtitleColor) != ""
+			canvasParameters := make([]string, 0, 5)
+			if strings.TrimSpace(*title) != "" {
+				canvasParameters = append(canvasParameters, "--title")
+			}
+			if strings.TrimSpace(*subtitle) != "" {
+				canvasParameters = append(canvasParameters, "--subtitle")
+			}
+			if strings.TrimSpace(*bgColor) != "" {
+				canvasParameters = append(canvasParameters, "--bg-color")
+			}
+			if strings.TrimSpace(*titleColor) != "" {
+				canvasParameters = append(canvasParameters, "--title-color")
+			}
+			if strings.TrimSpace(*subtitleColor) != "" {
+				canvasParameters = append(canvasParameters, "--subtitle-color")
+			}
+			hasCanvasFlags := len(canvasParameters) > 0
 			if hasCanvasFlags && configVal != "" {
 				fmt.Fprintf(os.Stderr, "Error: --title, --subtitle, --bg-color, --title-color, --subtitle-color cannot be used with --config; set these in the YAML config instead\n")
 				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "--config")
 			}
 			if hasCanvasFlags && !screenshots.IsCanvasDevice(deviceVal) {
 				fmt.Fprintf(os.Stderr, "Error: --title, --subtitle, --bg-color, --title-color, --subtitle-color only apply to canvas devices (e.g. --device mac)\n")
-				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "--title")
+				parameter := ""
+				if len(canvasParameters) == 1 {
+					parameter = canvasParameters[0]
+				}
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, parameter)
 			}
 
 			absInput := ""
