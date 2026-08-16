@@ -54,3 +54,61 @@ func TestNewReportedUsageErrorNormalizesUnknownKind(t *testing.T) {
 		t.Fatalf("ClassifyUsageError() = %q, want %q", got, UsageErrorMissingRequired)
 	}
 }
+
+func TestWithDiagnosticPreservesExistingErrorContract(t *testing.T) {
+	cause := errors.New("credential source")
+	base := NewErrorWithCause(
+		NewReportedUsageError(UsageErrorMissingRequired, "--name is required"),
+		cause,
+	)
+	err := WithDiagnostic(base, DiagnosticRequiredInputMissing, "--name")
+
+	if got, want := err.Error(), "--name is required"; got != want {
+		t.Fatalf("WithDiagnostic().Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("WithDiagnostic() should preserve the cause chain: %v", err)
+	}
+	if !IsReportedUsageError(err) {
+		t.Fatalf("WithDiagnostic() should preserve reported usage classification: %T", err)
+	}
+	if got := ClassifyUsageError(err); got != UsageErrorMissingRequired {
+		t.Fatalf("ClassifyUsageError() = %q, want %q", got, UsageErrorMissingRequired)
+	}
+
+	diagnostic, ok := DiagnosticFromError(err)
+	if !ok {
+		t.Fatal("DiagnosticFromError() did not find structured metadata")
+	}
+	if diagnostic.Code != DiagnosticRequiredInputMissing || diagnostic.Parameter != "--name" {
+		t.Fatalf("DiagnosticFromError() = %+v", diagnostic)
+	}
+}
+
+func TestDiagnosticFromErrorUsesOutermostAnnotation(t *testing.T) {
+	err := WithDiagnostic(
+		WithDiagnostic(errors.New("unchanged"), DiagnosticInvalidInput, "--issuer-id"),
+		DiagnosticConflictingInput,
+		"--key-type",
+	)
+
+	diagnostic, ok := DiagnosticFromError(err)
+	if !ok {
+		t.Fatal("DiagnosticFromError() did not find structured metadata")
+	}
+	if diagnostic.Code != DiagnosticConflictingInput || diagnostic.Parameter != "--key-type" {
+		t.Fatalf("DiagnosticFromError() = %+v", diagnostic)
+	}
+}
+
+func TestWithDiagnosticRejectsUnboundedCode(t *testing.T) {
+	base := errors.New("unchanged")
+	err := WithDiagnostic(base, DiagnosticCode("user-controlled-value"), "--name")
+
+	if !errors.Is(err, base) {
+		t.Fatalf("WithDiagnostic() should preserve an error with an unknown code: %T", err)
+	}
+	if _, ok := DiagnosticFromError(err); ok {
+		t.Fatal("DiagnosticFromError() accepted an unknown code")
+	}
+}

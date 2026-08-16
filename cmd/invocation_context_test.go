@@ -205,6 +205,60 @@ func TestRuntimeFailureContextClassifiesLowCardinalityFailures(t *testing.T) {
 	}
 }
 
+func TestValidationFailureContextPrefersStructuredDiagnostic(t *testing.T) {
+	err := shared.WithDiagnostic(
+		shared.NewReportedUsageError(shared.UsageErrorMissingRequired, "--issuer-id is required"),
+		shared.DiagnosticRequiredInputMissing,
+		"--key-id",
+	)
+
+	got := validationFailureContext(
+		invocationAnalysis{shape: telemetry.InvocationShapeLeaf},
+		err,
+	)
+
+	if got.ErrorKind != telemetry.ErrorKindMissingRequired ||
+		got.FailureStage != telemetry.FailureStageValidation ||
+		got.FailureParameter != "--key-id" ||
+		got.DiagnosticCode != string(shared.DiagnosticRequiredInputMissing) {
+		t.Fatalf("validationFailureContext() = %+v", got)
+	}
+}
+
+func TestValidationFailureContextRetainsLegacyMessageFallback(t *testing.T) {
+	err := shared.NewReportedUsageError(shared.UsageErrorInvalidValue, "invalid value for --territory")
+
+	got := validationFailureContext(
+		invocationAnalysis{shape: telemetry.InvocationShapeLeaf},
+		err,
+	)
+
+	if got.FailureParameter != "--territory" || got.DiagnosticCode != "" {
+		t.Fatalf("validationFailureContext() = %+v", got)
+	}
+}
+
+func TestRuntimeFailureContextCarriesStructuredDiagnostic(t *testing.T) {
+	err := shared.WithDiagnostic(
+		shared.NewValidationError(errors.New("private key could not be loaded")),
+		shared.DiagnosticFileNotFound,
+		"--private-key",
+	)
+
+	got := runtimeFailureContext(
+		invocationAnalysis{shape: telemetry.InvocationShapeLeaf},
+		err,
+		ExitError,
+	)
+
+	if got.FailureStage != telemetry.FailureStageValidation ||
+		got.OutcomeKind != telemetry.OutcomeExpectedNegative ||
+		got.FailureParameter != "--private-key" ||
+		got.DiagnosticCode != string(shared.DiagnosticFileNotFound) {
+		t.Fatalf("runtimeFailureContext() = %+v", got)
+	}
+}
+
 func TestAnalyzeInvocationPreservesRawTokens(t *testing.T) {
 	root := RootCommand("1.0.0")
 
