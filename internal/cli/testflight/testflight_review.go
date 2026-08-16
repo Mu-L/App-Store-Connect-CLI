@@ -68,7 +68,11 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("testflight review view: --limit must be between 1 and 200")
+				return shared.WithDiagnostic(
+					shared.NewValidationError(fmt.Errorf("testflight review view: --limit must be between 1 and 200")),
+					shared.DiagnosticInvalidInput,
+					"--limit",
+				)
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
 				return fmt.Errorf("testflight review view: %w", err)
@@ -387,7 +391,11 @@ Examples:
 				return shared.MissingRequiredUsageError("--build-id")
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("testflight review submissions list: --limit must be between 1 and 200")
+				return shared.WithDiagnostic(
+					shared.NewValidationError(fmt.Errorf("testflight review submissions list: --limit must be between 1 and 200")),
+					shared.DiagnosticInvalidInput,
+					"--limit",
+				)
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
 				return fmt.Errorf("testflight review submissions list: %w", err)
@@ -573,7 +581,11 @@ Examples:
 				return err
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("testflight beta-details view: --limit must be between 1 and 200")
+				return shared.WithDiagnostic(
+					shared.NewValidationError(fmt.Errorf("testflight beta-details view: --limit must be between 1 and 200")),
+					shared.DiagnosticInvalidInput,
+					"--limit",
+				)
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
 				return fmt.Errorf("testflight beta-details view: %w", err)
@@ -852,7 +864,11 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("testflight recruitment options: --limit must be between 1 and 200")
+				return shared.WithDiagnostic(
+					shared.NewValidationError(fmt.Errorf("testflight recruitment options: --limit must be between 1 and 200")),
+					shared.DiagnosticInvalidInput,
+					"--limit",
+				)
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
 				return fmt.Errorf("testflight recruitment options: %w", err)
@@ -932,8 +948,8 @@ Examples:
 			existing, err := client.GetBetaGroupBetaRecruitmentCriteria(requestCtx, trimmedGroupID)
 			if err == nil {
 				criteriaID := strings.TrimSpace(existing.Data.ID)
-				if criteriaID == "" {
-					return fmt.Errorf("testflight recruitment set: criteria id is empty")
+				if validationErr := validateBetaRecruitmentCriteriaID(criteriaID); validationErr != nil {
+					return validationErr
 				}
 				criteria, err := client.UpdateBetaRecruitmentCriteria(requestCtx, criteriaID, filterValues)
 				if err != nil {
@@ -965,10 +981,25 @@ func normalizeBetaRecruitmentCriterionOptionsFields(value string) ([]string, err
 	}
 	for _, field := range fields {
 		if _, ok := allowed[field]; !ok {
-			return nil, fmt.Errorf("--fields must be one of: deviceFamilyOsVersions")
+			return nil, shared.WithDiagnostic(
+				shared.NewValidationError(fmt.Errorf("--fields must be one of: deviceFamilyOsVersions")),
+				shared.DiagnosticInvalidInput,
+				"--fields",
+			)
 		}
 	}
 	return fields, nil
+}
+
+func validateBetaRecruitmentCriteriaID(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return shared.WithDiagnostic(
+			shared.NewValidationError(fmt.Errorf("testflight recruitment set: criteria id is empty")),
+			shared.DiagnosticStateNotReady,
+			"--group",
+		)
+	}
+	return nil
 }
 
 func parseDeviceFamilyOsVersionFilters(value string) ([]asc.DeviceFamilyOsVersionFilter, error) {
@@ -981,12 +1012,20 @@ func parseDeviceFamilyOsVersionFilters(value string) ([]asc.DeviceFamilyOsVersio
 	for _, entry := range entries {
 		parts := strings.SplitN(entry, "=", 2)
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("--os-version-filter must use DEVICE_FAMILY=MIN_OS (e.g., IPHONE=26)")
+			return nil, shared.WithDiagnostic(
+				shared.NewValidationError(fmt.Errorf("--os-version-filter must use DEVICE_FAMILY=MIN_OS (e.g., IPHONE=26)")),
+				shared.DiagnosticInvalidInput,
+				"--os-version-filter",
+			)
 		}
 		familyValue := strings.TrimSpace(parts[0])
 		versionValue := strings.TrimSpace(parts[1])
 		if familyValue == "" || versionValue == "" {
-			return nil, fmt.Errorf("--os-version-filter must use DEVICE_FAMILY=MIN_OS (e.g., IPHONE=26)")
+			return nil, shared.WithDiagnostic(
+				shared.NewValidationError(fmt.Errorf("--os-version-filter must use DEVICE_FAMILY=MIN_OS (e.g., IPHONE=26)")),
+				shared.DiagnosticInvalidInput,
+				"--os-version-filter",
+			)
 		}
 
 		family, err := normalizeBetaRecruitmentDeviceFamily(familyValue)
@@ -1001,7 +1040,11 @@ func parseDeviceFamilyOsVersionFilters(value string) ([]asc.DeviceFamilyOsVersio
 			minVersion = strings.TrimSpace(rangeParts[0])
 			maxVersion = strings.TrimSpace(rangeParts[1])
 			if minVersion == "" || maxVersion == "" {
-				return nil, fmt.Errorf("--os-version-filter must use DEVICE_FAMILY=MIN_OS[..MAX_OS]")
+				return nil, shared.WithDiagnostic(
+					shared.NewValidationError(fmt.Errorf("--os-version-filter must use DEVICE_FAMILY=MIN_OS[..MAX_OS]")),
+					shared.DiagnosticInvalidInput,
+					"--os-version-filter",
+				)
 			}
 		}
 
@@ -1020,7 +1063,11 @@ func normalizeBetaRecruitmentDeviceFamily(value string) (asc.DeviceFamily, error
 	if slices.Contains(betaRecruitmentDeviceFamilyList(), normalized) {
 		return asc.DeviceFamily(normalized), nil
 	}
-	return "", fmt.Errorf("--os-version-filter device family must be one of: %s", strings.Join(betaRecruitmentDeviceFamilyList(), ", "))
+	return "", shared.WithDiagnostic(
+		shared.NewValidationError(fmt.Errorf("--os-version-filter device family must be one of: %s", strings.Join(betaRecruitmentDeviceFamilyList(), ", "))),
+		shared.DiagnosticInvalidInput,
+		"--os-version-filter",
+	)
 }
 
 func betaRecruitmentDeviceFamilyList() []string {
