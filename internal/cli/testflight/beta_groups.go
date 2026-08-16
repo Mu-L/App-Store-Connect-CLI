@@ -183,7 +183,7 @@ Examples:
 			// Require one of --app or --global (unless --next is provided)
 			if !*global && resolvedAppID == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintf(os.Stderr, "Error: --app or --global is required (or set ASC_APP_ID)\n\n")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--app")
 			}
 
 			client, err := shared.GetASCClient()
@@ -364,11 +364,11 @@ func BuildGroupsListCommand(config BuildGroupsListCommandConfig) *ffcli.Command 
 			})
 			if buildIDSet && resolvedBuildID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --build-id cannot be empty")
-				return shared.MissingRequiredUsageError()
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--build-id")
 			}
 			if resolvedBuildID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --build-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--build-id")
 			}
 
 			return runBuildGroupMembershipList(
@@ -452,11 +452,11 @@ Examples:
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if resolvedAppID == "" {
 				fmt.Fprintf(os.Stderr, "Error: --app is required (or set ASC_APP_ID)\n\n")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--app")
 			}
 			if strings.TrimSpace(*name) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --name is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--name")
 			}
 
 			client, err := shared.GetASCClient()
@@ -508,7 +508,7 @@ Examples:
 			}
 			if strings.TrimSpace(*id) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--id")
 			}
 
 			client, err := shared.GetASCClient()
@@ -557,7 +557,7 @@ Examples:
 			trimmedID := strings.TrimSpace(*id)
 			if trimmedID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--id")
 			}
 
 			visited := map[string]bool{}
@@ -577,12 +577,12 @@ Examples:
 				visited["feedback-enabled"]
 			if !hasUpdates {
 				fmt.Fprintln(os.Stderr, "Error: at least one update flag is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("")
 			}
 
 			if visited["public-link-limit-enabled"] && *publicLinkLimitEnabled && !visited["public-link-limit"] {
 				fmt.Fprintln(os.Stderr, "Error: --public-link-limit is required when enabling public link limit")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--public-link-limit")
 			}
 
 			client, err := shared.GetASCClient()
@@ -651,11 +651,11 @@ Examples:
 		Exec: func(ctx context.Context, args []string) error {
 			if strings.TrimSpace(*id) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--id")
 			}
 			if !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required to delete")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 
 			client, err := shared.GetASCClient()
@@ -700,14 +700,14 @@ Examples:
 			groupID := strings.TrimSpace(*group)
 			if groupID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --group is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--group")
 			}
 
 			testerIDs := shared.SplitCSV(*tester)
 			testerEmails := shared.SplitCSV(*email)
 			if len(testerIDs) == 0 && len(testerEmails) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --tester or --email is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--tester")
 			}
 
 			client, err := shared.GetASCClient()
@@ -799,17 +799,17 @@ Examples:
 			groupID := strings.TrimSpace(*group)
 			if groupID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --group is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--group")
 			}
 
 			testerIDs := shared.SplitCSV(*tester)
 			if len(testerIDs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --tester is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--tester")
 			}
 			if !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 
 			client, err := shared.GetASCClient()

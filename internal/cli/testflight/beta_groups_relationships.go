@@ -76,7 +76,7 @@ Examples:
 			relationshipType := strings.TrimSpace(*relType)
 			if relationshipType == "" {
 				fmt.Fprintln(os.Stderr, "Error: --type is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--type")
 			}
 
 			kind, ok := betaGroupRelationshipKinds[relationshipType]
@@ -96,7 +96,7 @@ Examples:
 			nextValue := strings.TrimSpace(*next)
 			if groupValue == "" && nextValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --group-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--group-id")
 			}
 
 			if kind == relationshipSingle && (nextValue != "" || *paginate || *limit != 0) {

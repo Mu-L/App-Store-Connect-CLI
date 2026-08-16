@@ -78,7 +78,7 @@ Examples:
 			submissionIDValue := strings.TrimSpace(*submissionID)
 			if submissionIDValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --submission-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--submission-id")
 			}
 			return runFeedbackSubmissionView(ctx, submissionIDValue, output)
 		},
@@ -106,11 +106,11 @@ Examples:
 			submissionIDValue := strings.TrimSpace(*submissionID)
 			if submissionIDValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --submission-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--submission-id")
 			}
 			if !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 			return runFeedbackSubmissionDelete(ctx, submissionIDValue, output)
 		},
@@ -182,7 +182,7 @@ Examples:
 			submissionIDValue := strings.TrimSpace(*submissionID)
 			if submissionIDValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --submission-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--submission-id")
 			}
 			return runCrashSubmissionView(ctx, submissionIDValue, output)
 		},
@@ -210,11 +210,11 @@ Examples:
 			submissionIDValue := strings.TrimSpace(*submissionID)
 			if submissionIDValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --submission-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--submission-id")
 			}
 			if !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 			return runCrashSubmissionDelete(ctx, submissionIDValue, output)
 		},
@@ -244,7 +244,7 @@ Examples:
 			crashLogIDValue := strings.TrimSpace(*crashLogID)
 			if (submissionIDValue == "" && crashLogIDValue == "") || (submissionIDValue != "" && crashLogIDValue != "") {
 				fmt.Fprintln(os.Stderr, "Error: exactly one of --submission-id or --crash-log-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--submission-id")
 			}
 			if submissionIDValue != "" {
 				return runCrashLogBySubmissionID(ctx, submissionIDValue, output)
