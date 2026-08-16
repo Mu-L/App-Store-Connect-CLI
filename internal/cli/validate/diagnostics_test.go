@@ -1,0 +1,63 @@
+package validate
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+)
+
+func TestValidationFailuresExposeStructuredDiagnostics(t *testing.T) {
+	t.Setenv("ASC_APP_ID", "")
+
+	tests := []struct {
+		name    string
+		command func() interface {
+			ParseAndRun(context.Context, []string) error
+		}
+		args      []string
+		wantCode  shared.DiagnosticCode
+		wantParam string
+	}{
+		{
+			name: "testflight missing build",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return ValidateTestFlightCommand()
+			},
+			args:      []string{"--app", "app-1"},
+			wantCode:  shared.DiagnosticRequiredInputMissing,
+			wantParam: "--build",
+		},
+		{
+			name: "validate conflicting version selectors",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return ValidateCommand()
+			},
+			args:      []string{"--app", "app-1", "--version", "1.0", "--version-id", "version-1"},
+			wantCode:  shared.DiagnosticConflictingInput,
+			wantParam: "--version-id",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.command().ParseAndRun(context.Background(), test.args)
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("error = %v, want flag.ErrHelp contract", err)
+			}
+			diagnostic, ok := shared.DiagnosticFromError(err)
+			if !ok {
+				t.Fatalf("DiagnosticFromError(%v) did not find metadata", err)
+			}
+			if diagnostic.Code != test.wantCode || diagnostic.Parameter != test.wantParam {
+				t.Fatalf("diagnostic = %+v, want code %q parameter %q", diagnostic, test.wantCode, test.wantParam)
+			}
+		})
+	}
+}

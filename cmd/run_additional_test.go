@@ -653,6 +653,9 @@ func TestRun_ValidateMissingRequiredFlagsReturnsUsage(t *testing.T) {
 	if gotContext.FailureParameter != "--version" || gotContext.OutcomeKind != telemetry.OutcomeUsageError {
 		t.Fatalf("unexpected missing-parameter telemetry context: %+v", gotContext)
 	}
+	if gotContext.DiagnosticCode != string(shared.DiagnosticRequiredInputMissing) {
+		t.Fatalf("diagnostic code = %q, want %q", gotContext.DiagnosticCode, shared.DiagnosticRequiredInputMissing)
+	}
 }
 
 func TestRun_IntroductoryOfferSelectorReportedUsageEmitsUsageTelemetry(t *testing.T) {
