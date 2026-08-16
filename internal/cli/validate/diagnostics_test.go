@@ -30,9 +30,21 @@ func TestValidationFailuresExposeStructuredDiagnostics(t *testing.T) {
 				return ValidateTestFlightCommand()
 			},
 			args:      []string{"--app", "app-1"},
-			wantError: flag.ErrHelp.Error(),
+			wantError: "--build",
 			wantCode:  shared.DiagnosticRequiredInputMissing,
 			wantParam: "--build",
+		},
+		{
+			name: "validate missing version selector",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return ValidateCommand()
+			},
+			args:      []string{"--app", "app-1"},
+			wantError: "--version or --version-id is required",
+			wantCode:  shared.DiagnosticRequiredInputMissing,
+			wantParam: "",
 		},
 		{
 			name: "validate conflicting version selectors",
@@ -45,6 +57,18 @@ func TestValidationFailuresExposeStructuredDiagnostics(t *testing.T) {
 			wantError: "--version and --version-id are mutually exclusive",
 			wantCode:  shared.DiagnosticConflictingInput,
 			wantParam: "--version-id",
+		},
+		{
+			name: "validate parent flag before subcommand",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return ValidateCommand()
+			},
+			args:      []string{"--app", "app-1", "testflight", "--build", "build-1"},
+			wantError: "--app must be passed after the validate subcommand name",
+			wantCode:  shared.DiagnosticInvalidInput,
+			wantParam: "",
 		},
 	}
 

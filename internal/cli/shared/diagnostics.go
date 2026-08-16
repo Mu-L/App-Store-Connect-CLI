@@ -16,6 +16,7 @@ const (
 	DiagnosticConflictingInput        DiagnosticCode = "conflicting_input"
 	DiagnosticFileNotFound            DiagnosticCode = "file_not_found"
 	DiagnosticFilePermissionDenied    DiagnosticCode = "file_permission_denied"
+	DiagnosticFilePermissionsInsecure DiagnosticCode = "file_permissions_insecure"
 	DiagnosticFileInvalidFormat       DiagnosticCode = "file_invalid_format"
 	DiagnosticKeyAlgorithmUnsupported DiagnosticCode = "key_algorithm_unsupported"
 	DiagnosticAuthenticationRejected  DiagnosticCode = "authentication_rejected"
@@ -90,6 +91,7 @@ func IsKnownDiagnosticCode(code DiagnosticCode) bool {
 		DiagnosticConflictingInput,
 		DiagnosticFileNotFound,
 		DiagnosticFilePermissionDenied,
+		DiagnosticFilePermissionsInsecure,
 		DiagnosticFileInvalidFormat,
 		DiagnosticKeyAlgorithmUnsupported,
 		DiagnosticAuthenticationRejected,

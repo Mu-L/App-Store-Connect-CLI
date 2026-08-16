@@ -302,7 +302,7 @@ Examples:
 
 			if *numberOfPeriods <= 0 {
 				fmt.Fprintln(os.Stderr, "Error: --number-of-periods is required")
-				return shared.MissingRequiredUsageError("--number-of-periods")
+				return requiredPositiveIntegerUsageError(fs, "number-of-periods")
 			}
 
 			priceEntries, err := parseSubscriptionOfferCodePrices(*prices, mode)
