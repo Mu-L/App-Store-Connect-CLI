@@ -111,10 +111,14 @@ framed screenshots whenever the YAML config or referenced raw assets change.`,
 				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "--watch")
 			}
 			if *watch && len(watchUnsupportedFlags) > 0 {
+				parameter := ""
+				if len(watchUnsupportedFlags) == 1 {
+					parameter = watchUnsupportedFlags[0]
+				}
 				return shared.WithDiagnostic(shared.UsageError(fmt.Sprintf(
 					"%s cannot be used with --watch; watch mode regenerates from the Koubou YAML config",
 					strings.Join(watchUnsupportedFlags, ", "),
-				)), shared.DiagnosticConflictingInput, "")
+				)), shared.DiagnosticConflictingInput, parameter)
 			}
 			if !*watch {
 				switch {

@@ -224,9 +224,23 @@ func TestShotsValidationDiagnostics(t *testing.T) {
 			} {
 				return ShotsFrameCommand()
 			},
-			args:       []string{"--config", "/tmp/frame.yaml", "--watch", "--title", "Hello"},
-			wantError:  "--title cannot be used with --watch; watch mode regenerates from the Koubou YAML config",
-			wantStderr: "Error: --title cannot be used with --watch; watch mode regenerates from the Koubou YAML config\n",
+			args:          []string{"--config", "/tmp/frame.yaml", "--watch", "--title", "Hello"},
+			wantError:     "--title cannot be used with --watch; watch mode regenerates from the Koubou YAML config",
+			wantStderr:    "Error: --title cannot be used with --watch; watch mode regenerates from the Koubou YAML config\n",
+			wantUsage:     true,
+			wantCode:      shared.DiagnosticConflictingInput,
+			wantParameter: "--title",
+		},
+		{
+			name: "frame multiple unsupported watch flags",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return ShotsFrameCommand()
+			},
+			args:       []string{"--config", "/tmp/frame.yaml", "--watch", "--title", "Hello", "--subtitle", "World"},
+			wantError:  "--subtitle, --title cannot be used with --watch; watch mode regenerates from the Koubou YAML config",
+			wantStderr: "Error: --subtitle, --title cannot be used with --watch; watch mode regenerates from the Koubou YAML config\n",
 			wantUsage:  true,
 			wantCode:   shared.DiagnosticConflictingInput,
 		},
