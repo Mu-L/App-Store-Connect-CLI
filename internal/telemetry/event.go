@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 type Event struct {
@@ -30,6 +31,7 @@ type Event struct {
 	ErrorKind        *ErrorKind       `json:"error_kind"`
 	FailureStage     *FailureStage    `json:"failure_stage"`
 	FailureParameter *string          `json:"failure_parameter"`
+	DiagnosticCode   *string          `json:"diagnostic_code,omitempty"`
 	OutcomeKind      OutcomeKind      `json:"outcome_kind,omitempty"`
 	HTTPStatus       *int             `json:"http_status,omitempty"`
 }
@@ -85,8 +87,8 @@ type EventContext struct {
 	ErrorKind        ErrorKind
 	FailureStage     FailureStage
 	FailureParameter string
-	// DiagnosticCode is populated from structured CLI errors. It remains an
-	// in-process field until the ingestion service accepts the new dimension.
+	// DiagnosticCode is populated from structured CLI errors and is sanitized
+	// against the shared low-cardinality taxonomy before it reaches the wire.
 	DiagnosticCode   string
 	OutcomeKind      OutcomeKind
 	HTTPStatus       int
@@ -149,6 +151,7 @@ func BuildEventWithContext(
 		ErrorKind:        optionalErrorKind(eventContext.ErrorKind),
 		FailureStage:     optionalFailureStage(eventContext.FailureStage),
 		FailureParameter: optionalFailureParameter(eventContext.FailureParameter, exitCode),
+		DiagnosticCode:   optionalDiagnosticCode(eventContext.DiagnosticCode, exitCode),
 		OutcomeKind:      eventContext.OutcomeKind,
 		HTTPStatus:       optionalHTTPStatus(eventContext.HTTPStatus),
 	}, true
@@ -167,6 +170,7 @@ func normalizeEventContext(eventContext EventContext, exitCode int) EventContext
 		eventContext.ErrorKind = ""
 		eventContext.FailureStage = ""
 		eventContext.FailureParameter = ""
+		eventContext.DiagnosticCode = ""
 		eventContext.OutcomeKind = OutcomeSuccess
 		eventContext.HTTPStatus = 0
 		return eventContext
@@ -277,6 +281,17 @@ func optionalHTTPStatus(status int) *int {
 	return &status
 }
 
+func optionalDiagnosticCode(code string, exitCode int) *string {
+	if exitCode == 0 {
+		return nil
+	}
+	code = strings.TrimSpace(code)
+	if !shared.IsKnownDiagnosticCode(shared.DiagnosticCode(code)) {
+		return nil
+	}
+	return &code
+}
+
 func sanitizeHTTPStatus(status int) int {
 	if status < 400 || status > 599 {
 		return 0
@@ -293,10 +308,12 @@ func (event Event) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(struct {
 		eventAlias
-		HTTPStatus *int `json:"http_status"`
+		HTTPStatus     *int    `json:"http_status"`
+		DiagnosticCode *string `json:"diagnostic_code"`
 	}{
-		eventAlias: eventAlias(event),
-		HTTPStatus: event.HTTPStatus,
+		eventAlias:     eventAlias(event),
+		HTTPStatus:     event.HTTPStatus,
+		DiagnosticCode: event.DiagnosticCode,
 	})
 }
 

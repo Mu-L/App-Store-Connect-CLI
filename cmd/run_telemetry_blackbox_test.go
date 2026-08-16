@@ -59,6 +59,9 @@ func TestRun_BuiltBinaryEmitsSchemaV4Payload(t *testing.T) {
 	if value, exists := payload["http_status"]; !exists || value != nil {
 		t.Fatalf("http_status = %v (exists=%t), want explicit null", value, exists)
 	}
+	if value, exists := payload["diagnostic_code"]; !exists || value != nil {
+		t.Fatalf("diagnostic_code = %v (exists=%t), want explicit null", value, exists)
+	}
 }
 
 func TestRun_BuiltBinaryDoesNotWaitForBlockedTelemetryEndpoint(t *testing.T) {
