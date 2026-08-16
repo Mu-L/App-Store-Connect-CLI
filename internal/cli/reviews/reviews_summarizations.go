@@ -59,7 +59,7 @@ Examples:
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if resolvedAppID == "" && nextValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--app")
 			}
 			if nextValue != "" {
 				resolvedAppID = ""
@@ -76,7 +76,7 @@ Examples:
 			}
 			if len(platformValues) == 0 && nextValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --platform is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--platform")
 			}
 
 			client, err := shared.GetASCClient()
