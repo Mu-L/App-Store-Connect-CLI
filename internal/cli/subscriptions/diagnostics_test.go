@@ -36,6 +36,30 @@ func TestSubscriptionsMissingRequiredInputExposesStructuredDiagnostic(t *testing
 	}
 }
 
+func TestSubscriptionsGroupUpdateMissingReferenceNameExposesStructuredDiagnostic(t *testing.T) {
+	var err error
+	stderr := captureSubscriptionsDiagnosticStderr(t, func() {
+		err = SubscriptionsGroupsUpdateCommand().ParseAndRun(context.Background(), []string{"--id", "group-1"})
+	})
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("error = %v, want flag.ErrHelp contract", err)
+	}
+	if got, want := err.Error(), "--reference-name"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if want := "Error: at least one update flag is required\n"; !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want diagnostic %q", stderr, want)
+	}
+
+	diagnostic, ok := shared.DiagnosticFromError(err)
+	if !ok {
+		t.Fatalf("DiagnosticFromError(%v) did not find metadata", err)
+	}
+	if diagnostic.Code != shared.DiagnosticRequiredInputMissing || diagnostic.Parameter != "--reference-name" {
+		t.Fatalf("diagnostic = %+v, want required_input_missing for --reference-name", diagnostic)
+	}
+}
+
 func TestSubscriptionsConflictingInputExposesStructuredDiagnostic(t *testing.T) {
 	for _, test := range []struct {
 		name          string

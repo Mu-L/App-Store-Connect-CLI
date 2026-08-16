@@ -358,7 +358,7 @@ Examples:
 			name := strings.TrimSpace(*referenceName)
 			if name == "" {
 				fmt.Fprintln(os.Stderr, "Error: at least one update flag is required")
-				return shared.MissingRequiredUsageError("")
+				return shared.MissingRequiredUsageError("--reference-name")
 			}
 
 			client, err := shared.GetASCClient()

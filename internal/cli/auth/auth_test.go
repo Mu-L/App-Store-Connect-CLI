@@ -1162,6 +1162,42 @@ func TestAuthStatusCommand(t *testing.T) {
 		}
 	})
 
+	t.Run("validate preserves private-key diagnostic", func(t *testing.T) {
+		cfgPath := filepath.Join(t.TempDir(), "config.json")
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+		t.Setenv("ASC_CONFIG_PATH", cfgPath)
+		missingKeyPath := filepath.Join(t.TempDir(), "missing.p8")
+
+		restore := SetListStoredCredentials(func() ([]authsvc.Credential, error) {
+			return []authsvc.Credential{{
+				Name:           "demo",
+				KeyID:          "KEY",
+				IssuerID:       "ISS",
+				PrivateKeyPath: missingKeyPath,
+			}}, nil
+		})
+		t.Cleanup(restore)
+
+		cmd := AuthStatusCommand()
+		if err := cmd.FlagSet.Parse([]string{"--output", "table", "--validate"}); err != nil {
+			t.Fatalf("Parse() error: %v", err)
+		}
+		var runErr error
+		captureAuthOutput(t, func() {
+			runErr = cmd.Exec(context.Background(), []string{})
+		})
+		if runErr == nil || !strings.Contains(runErr.Error(), "validation failed for 1 credential") {
+			t.Fatalf("expected validation failure summary, got %v", runErr)
+		}
+		diagnostic, ok := shared.DiagnosticFromError(runErr)
+		if !ok {
+			t.Fatalf("DiagnosticFromError(%v) did not find metadata", runErr)
+		}
+		if diagnostic.Code != shared.DiagnosticFileNotFound || diagnostic.Parameter != "--private-key" {
+			t.Fatalf("diagnostic = %+v, want file_not_found for --private-key", diagnostic)
+		}
+	})
+
 	t.Run("validate permission warning does not fail", func(t *testing.T) {
 		cfgPath := filepath.Join(t.TempDir(), "config.json")
 		t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
@@ -1327,6 +1363,13 @@ func TestAuthTokenCommand(t *testing.T) {
 		err := cmd.Exec(context.Background(), []string{})
 		if err == nil || !strings.Contains(err.Error(), "private key file is too permissive") {
 			t.Fatalf("expected insecure key file error, got %v", err)
+		}
+		diagnostic, ok := shared.DiagnosticFromError(err)
+		if !ok {
+			t.Fatalf("DiagnosticFromError(%v) did not find metadata", err)
+		}
+		if diagnostic.Code != shared.DiagnosticFilePermissionsInsecure || diagnostic.Parameter != "--private-key" {
+			t.Fatalf("diagnostic = %+v, want file_permissions_insecure for --private-key", diagnostic)
 		}
 	})
 
