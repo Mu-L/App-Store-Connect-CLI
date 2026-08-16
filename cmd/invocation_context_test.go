@@ -225,6 +225,25 @@ func TestValidationFailureContextPrefersStructuredDiagnostic(t *testing.T) {
 	}
 }
 
+func TestValidationFailureContextPreservesUsageKindForUnmappedDiagnostic(t *testing.T) {
+	err := shared.WithDiagnostic(
+		shared.NewReportedUsageError(shared.UsageErrorInvalidValue, "auth login: invalid private key"),
+		shared.DiagnosticFileNotFound,
+		"--private-key",
+	)
+
+	got := validationFailureContext(
+		invocationAnalysis{shape: telemetry.InvocationShapeLeaf},
+		err,
+	)
+
+	if got.ErrorKind != telemetry.ErrorKindInvalidValue ||
+		got.FailureParameter != "--private-key" ||
+		got.DiagnosticCode != string(shared.DiagnosticFileNotFound) {
+		t.Fatalf("validationFailureContext() = %+v", got)
+	}
+}
+
 func TestValidationFailureContextRetainsLegacyMessageFallback(t *testing.T) {
 	err := shared.NewReportedUsageError(shared.UsageErrorInvalidValue, "invalid value for --territory")
 

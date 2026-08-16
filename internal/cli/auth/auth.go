@@ -504,7 +504,7 @@ so commands continue to work even if the original .p8 file is removed.`,
 		Exec: func(ctx context.Context, args []string) error {
 			bypassKeychainEnabled := *bypassKeychain || authsvc.ShouldBypassKeychain()
 			if *local && !bypassKeychainEnabled {
-				return shared.WithDiagnostic(shared.UsageError("--local requires --bypass-keychain or ASC_BYPASS_KEYCHAIN set to 1/true/yes/on"), shared.DiagnosticConflictingInput, "--local")
+				return shared.WithDiagnostic(shared.UsageError("--local requires --bypass-keychain or ASC_BYPASS_KEYCHAIN set to 1/true/yes/on"), shared.DiagnosticInvalidInput, "--local")
 			}
 			if strings.TrimSpace(*name) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --name is required")

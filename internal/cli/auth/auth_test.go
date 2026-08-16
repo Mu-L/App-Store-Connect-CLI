@@ -418,6 +418,7 @@ func TestAuthLoginCommand(t *testing.T) {
 			if !errors.Is(err, flag.ErrHelp) {
 				t.Fatalf("expected flag.ErrHelp, got %v", err)
 			}
+			assertAuthDiagnostic(t, err, shared.DiagnosticInvalidInput, "--local")
 		})
 		if !strings.Contains(stderr, "--local requires --bypass-keychain") {
 			t.Fatalf("expected local/bypass error in stderr, got %q", stderr)
