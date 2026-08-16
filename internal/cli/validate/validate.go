@@ -98,7 +98,7 @@ Subscriptions:
 			trimmedVersion := strings.TrimSpace(*version)
 			trimmedVersionID := strings.TrimSpace(*versionID)
 			if trimmedVersion == "" && trimmedVersionID == "" {
-				return shared.WithDiagnostic(shared.UsageError("--version or --version-id is required"), shared.DiagnosticRequiredInputMissing, "--version")
+				return shared.WithDiagnostic(shared.UsageError("--version or --version-id is required"), shared.DiagnosticRequiredInputMissing, "")
 			}
 			if trimmedVersion != "" && trimmedVersionID != "" {
 				return shared.WithDiagnostic(shared.UsageError("--version and --version-id are mutually exclusive"), shared.DiagnosticConflictingInput, "--version-id")
@@ -139,7 +139,7 @@ func wrapValidateSubcommand(cmd *ffcli.Command, parentFlags *flag.FlagSet) *ffcl
 	originalExec := cmd.Exec
 	cmd.Exec = func(ctx context.Context, args []string) error {
 		if message := validateParentFlagUsageMessage(parentFlags); message != "" {
-			return shared.WithDiagnostic(shared.UsageError(message), shared.DiagnosticConflictingInput, "")
+			return shared.WithDiagnostic(shared.UsageError(message), shared.DiagnosticInvalidInput, "")
 		}
 		return originalExec(ctx, args)
 	}

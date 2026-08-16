@@ -243,11 +243,11 @@ func SubscriptionsGroupsVersionLocalizationsUpdateCommand() *ffcli.Command {
 			customNameSet := subscriptionGroupFlagSet(fs, "custom-app-name")
 			if nameSet && *clearName {
 				fmt.Fprintln(os.Stderr, "Error: --name cannot be used with --clear-name")
-				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "--name")
+				return shared.WithDiagnostic(shared.InvalidValueUsageError("--name"), shared.DiagnosticConflictingInput, "--name")
 			}
 			if customNameSet && *clearCustomAppName {
 				fmt.Fprintln(os.Stderr, "Error: --custom-app-name cannot be used with --clear-custom-app-name")
-				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "--custom-app-name")
+				return shared.WithDiagnostic(shared.InvalidValueUsageError("--custom-app-name"), shared.DiagnosticConflictingInput, "--custom-app-name")
 			}
 			if !nameSet && !customNameSet && !*clearName && !*clearCustomAppName {
 				fmt.Fprintln(os.Stderr, "Error: at least one update flag is required")

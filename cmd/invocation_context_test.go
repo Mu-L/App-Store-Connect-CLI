@@ -208,7 +208,7 @@ func TestRuntimeFailureContextClassifiesLowCardinalityFailures(t *testing.T) {
 func TestValidationFailureContextPrefersStructuredDiagnostic(t *testing.T) {
 	err := shared.WithDiagnostic(
 		shared.NewReportedUsageError(shared.UsageErrorMissingRequired, "--issuer-id is required"),
-		shared.DiagnosticRequiredInputMissing,
+		shared.DiagnosticConflictingInput,
 		"--key-id",
 	)
 
@@ -217,10 +217,29 @@ func TestValidationFailureContextPrefersStructuredDiagnostic(t *testing.T) {
 		err,
 	)
 
-	if got.ErrorKind != telemetry.ErrorKindMissingRequired ||
+	if got.ErrorKind != telemetry.ErrorKindInvalidValue ||
 		got.FailureStage != telemetry.FailureStageValidation ||
 		got.FailureParameter != "--key-id" ||
-		got.DiagnosticCode != string(shared.DiagnosticRequiredInputMissing) {
+		got.DiagnosticCode != string(shared.DiagnosticConflictingInput) {
+		t.Fatalf("validationFailureContext() = %+v", got)
+	}
+}
+
+func TestValidationFailureContextPreservesUsageKindForUnmappedDiagnostic(t *testing.T) {
+	err := shared.WithDiagnostic(
+		shared.NewReportedUsageError(shared.UsageErrorInvalidValue, "auth login: invalid private key"),
+		shared.DiagnosticFileNotFound,
+		"--private-key",
+	)
+
+	got := validationFailureContext(
+		invocationAnalysis{shape: telemetry.InvocationShapeLeaf},
+		err,
+	)
+
+	if got.ErrorKind != telemetry.ErrorKindInvalidValue ||
+		got.FailureParameter != "--private-key" ||
+		got.DiagnosticCode != string(shared.DiagnosticFileNotFound) {
 		t.Fatalf("validationFailureContext() = %+v", got)
 	}
 }

@@ -344,23 +344,23 @@ func validateStoredCredential(ctx context.Context, cred authsvc.Credential) erro
 	if pemValue := strings.TrimSpace(cred.PrivateKeyPEM); pemValue != "" {
 		privateKey, err = authsvc.LoadPrivateKeyFromPEM([]byte(pemValue))
 		if err != nil {
-			return withPrivateKeyDiagnostic(fmt.Errorf("invalid private key: %w", err), err, "")
+			return withPrivateKeyDiagnostic(fmt.Errorf("invalid private key: %w", err), err)
 		}
 		client, err = asc.NewClientFromPEM(cred.KeyID, signingIssuerID, pemValue)
 		if err != nil {
-			return withPrivateKeyDiagnostic(err, err, "")
+			return withPrivateKeyDiagnostic(err, err)
 		}
 	} else {
 		if err := authsvc.ValidateKeyFile(cred.PrivateKeyPath); err != nil {
-			return withPrivateKeyDiagnostic(fmt.Errorf("invalid private key: %w", err), err, "")
+			return withPrivateKeyDiagnostic(fmt.Errorf("invalid private key: %w", err), err)
 		}
 		privateKey, err = authsvc.LoadPrivateKey(cred.PrivateKeyPath)
 		if err != nil {
-			return withPrivateKeyDiagnostic(fmt.Errorf("failed to load private key: %w", err), err, "")
+			return withPrivateKeyDiagnostic(fmt.Errorf("failed to load private key: %w", err), err)
 		}
 		client, err = asc.NewClient(cred.KeyID, signingIssuerID, cred.PrivateKeyPath)
 		if err != nil {
-			return withPrivateKeyDiagnostic(err, err, "")
+			return withPrivateKeyDiagnostic(err, err)
 		}
 	}
 	if _, err := asc.GenerateJWT(cred.KeyID, signingIssuerID, privateKey); err != nil {
@@ -385,7 +385,7 @@ func credentialSigningIssuerID(cred authsvc.Credential) string {
 func validateLoginCredentials(ctx context.Context, keyID, issuerID, keyPath string, network bool) error {
 	privateKey, err := authsvc.LoadPrivateKey(keyPath)
 	if err != nil {
-		return withPrivateKeyDiagnostic(fmt.Errorf("failed to load private key: %w", err), err, "--private-key")
+		return withPrivateKeyDiagnostic(fmt.Errorf("failed to load private key: %w", err), err)
 	}
 	if _, err := loginJWTGenerator(keyID, issuerID, privateKey); err != nil {
 		return shared.WithDiagnostic(fmt.Errorf("failed to generate JWT: %w", err), shared.DiagnosticInternalError, "--private-key")
@@ -393,7 +393,7 @@ func validateLoginCredentials(ctx context.Context, keyID, issuerID, keyPath stri
 	if network {
 		if err := loginNetworkValidate(ctx, keyID, issuerID, keyPath); err != nil {
 			code := shared.DiagnosticRequestFailed
-			if errors.Is(err, asc.ErrUnauthorized) || errors.Is(err, asc.ErrForbidden) {
+			if errors.Is(err, asc.ErrUnauthorized) {
 				code = shared.DiagnosticAuthenticationRejected
 			}
 			return shared.WithDiagnostic(fmt.Errorf("network validation failed: %w", err), code, "")
@@ -402,7 +402,7 @@ func validateLoginCredentials(ctx context.Context, keyID, issuerID, keyPath stri
 	return nil
 }
 
-func withPrivateKeyDiagnostic(rendered, cause error, parameter string) error {
+func withPrivateKeyDiagnostic(rendered, cause error) error {
 	kind, ok := authsvc.PrivateKeyErrorKindOf(cause)
 	if !ok {
 		return rendered
@@ -414,6 +414,8 @@ func withPrivateKeyDiagnostic(rendered, cause error, parameter string) error {
 		code = shared.DiagnosticFileNotFound
 	case authsvc.PrivateKeyPermissionDenied:
 		code = shared.DiagnosticFilePermissionDenied
+	case authsvc.PrivateKeyPermissionsInsecure:
+		code = shared.DiagnosticFilePermissionsInsecure
 	case authsvc.PrivateKeyInvalidFormat:
 		code = shared.DiagnosticFileInvalidFormat
 	case authsvc.PrivateKeyUnsupportedAlgorithm:
@@ -421,7 +423,7 @@ func withPrivateKeyDiagnostic(rendered, cause error, parameter string) error {
 	case authsvc.PrivateKeyAccessFailed:
 		code = shared.DiagnosticRequestFailed
 	}
-	return shared.WithDiagnostic(rendered, code, parameter)
+	return shared.WithDiagnostic(rendered, code, "--private-key")
 }
 
 func validateLoginNetwork(ctx context.Context, keyID, issuerID, keyPath string) error {
@@ -502,28 +504,32 @@ so commands continue to work even if the original .p8 file is removed.`,
 		Exec: func(ctx context.Context, args []string) error {
 			bypassKeychainEnabled := *bypassKeychain || authsvc.ShouldBypassKeychain()
 			if *local && !bypassKeychainEnabled {
-				return shared.WithDiagnostic(shared.UsageError("--local requires --bypass-keychain or ASC_BYPASS_KEYCHAIN set to 1/true/yes/on"), shared.DiagnosticConflictingInput, "--local")
+				return shared.WithDiagnostic(shared.UsageError("--local requires --bypass-keychain or ASC_BYPASS_KEYCHAIN set to 1/true/yes/on"), shared.DiagnosticInvalidInput, "--local")
 			}
-			if *name == "" {
+			if strings.TrimSpace(*name) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --name is required")
 				return shared.MissingRequiredUsageError("--name")
 			}
-			if *keyID == "" {
+			trimmedKeyID := strings.TrimSpace(*keyID)
+			if trimmedKeyID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --key-id is required")
 				return shared.MissingRequiredUsageError("--key-id")
 			}
+			*keyID = trimmedKeyID
 			normalizedKeyType := config.NormalizeCredentialKeyType(*keyType)
 			if !config.IsValidCredentialKeyType(normalizedKeyType) {
 				return shared.WithDiagnostic(shared.UsageError("--key-type must be one of: team, individual"), shared.DiagnosticInvalidInput, "--key-type")
 			}
-			if normalizedKeyType == config.CredentialKeyTypeTeam && *issuerID == "" {
+			trimmedIssuerID := strings.TrimSpace(*issuerID)
+			if normalizedKeyType == config.CredentialKeyTypeTeam && trimmedIssuerID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --issuer-id is required")
 				return shared.MissingRequiredUsageError("--issuer-id")
 			}
-			if normalizedKeyType == config.CredentialKeyTypeIndividual && strings.TrimSpace(*issuerID) != "" {
+			if normalizedKeyType == config.CredentialKeyTypeIndividual && trimmedIssuerID != "" {
 				return shared.WithDiagnostic(shared.UsageError("--issuer-id must be omitted when --key-type individual"), shared.DiagnosticConflictingInput, "--issuer-id")
 			}
-			if *keyPath == "" {
+			*issuerID = trimmedIssuerID
+			if strings.TrimSpace(*keyPath) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --private-key is required")
 				return shared.MissingRequiredUsageError("--private-key")
 			}
@@ -532,7 +538,7 @@ so commands continue to work even if the original .p8 file is removed.`,
 			}
 
 			if err := authsvc.ValidateKeyFile(*keyPath); err != nil {
-				return withPrivateKeyDiagnostic(shared.UsageErrorf("auth login: invalid private key: %v", err), err, "--private-key")
+				return withPrivateKeyDiagnostic(shared.UsageErrorf("auth login: invalid private key: %v", err), err)
 			}
 
 			if !*skipValidation {
@@ -906,6 +912,9 @@ Examples:
 			}
 
 			validationFailures := 0
+			var validationDiagnostic shared.Diagnostic
+			hasValidationDiagnostic := false
+			validationDiagnosticConsistent := true
 			credentialOutput := make([]authStatusCredentialOutput, 0, len(credentials))
 			if len(credentials) == 0 {
 				if normalizedOutput == "table" {
@@ -938,6 +947,16 @@ Examples:
 								validationFailures++
 								credentialEntry.Validation = "failed"
 								credentialEntry.ValidationError = err.Error()
+								if diagnostic, ok := shared.DiagnosticFromError(err); ok {
+									if !hasValidationDiagnostic {
+										validationDiagnostic = diagnostic
+										hasValidationDiagnostic = true
+									} else if diagnostic != validationDiagnostic {
+										validationDiagnosticConsistent = false
+									}
+								} else {
+									validationDiagnosticConsistent = false
+								}
 								if normalizedOutput == "table" {
 									fmt.Printf("    %s (Key ID: %s): failed (%v)\n", cred.Name, cred.KeyID, err)
 								}
@@ -999,7 +1018,11 @@ Examples:
 			}
 
 			if *validate && validationFailures > 0 {
-				return shared.NewValidationReportedError(fmt.Errorf("auth status: validation failed for %d credential(s)", validationFailures))
+				validationError := error(fmt.Errorf("auth status: validation failed for %d credential(s)", validationFailures))
+				if hasValidationDiagnostic && validationDiagnosticConsistent {
+					validationError = shared.WithDiagnostic(validationError, validationDiagnostic.Code, validationDiagnostic.Parameter)
+				}
+				return shared.NewValidationReportedError(validationError)
 			}
 			return nil
 		},
@@ -1219,10 +1242,18 @@ Examples:
 
 func loadCredentialKey(cred shared.ResolvedAuthCredentials) (*ecdsa.PrivateKey, error) {
 	if pemValue := strings.TrimSpace(cred.KeyPEM); pemValue != "" {
-		return authsvc.LoadPrivateKeyFromPEM([]byte(pemValue))
+		privateKey, err := authsvc.LoadPrivateKeyFromPEM([]byte(pemValue))
+		if err != nil {
+			return nil, withPrivateKeyDiagnostic(err, err)
+		}
+		return privateKey, nil
 	}
 	if err := authsvc.ValidateKeyFile(cred.KeyPath); err != nil {
-		return nil, fmt.Errorf("invalid private key: %w", err)
+		return nil, withPrivateKeyDiagnostic(fmt.Errorf("invalid private key: %w", err), err)
 	}
-	return authsvc.LoadPrivateKey(cred.KeyPath)
+	privateKey, err := authsvc.LoadPrivateKey(cred.KeyPath)
+	if err != nil {
+		return nil, withPrivateKeyDiagnostic(err, err)
+	}
+	return privateKey, nil
 }
