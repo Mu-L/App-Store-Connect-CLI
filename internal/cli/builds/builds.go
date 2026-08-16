@@ -53,11 +53,11 @@ Examples:
 			groupInputs := shared.SplitCSV(*groups)
 			if len(groupInputs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --group is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--group")
 			}
 			if *submit && !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required with --submit")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 			if *confirm && !*submit {
 				fmt.Fprintln(os.Stderr, "Error: --confirm requires --submit")
@@ -200,7 +200,7 @@ Examples:
 			trimmedEncryption := strings.TrimSpace(strings.ToLower(*usesNonExemptEncryption))
 			if trimmedEncryption == "" {
 				fmt.Fprintln(os.Stderr, "Error: at least one update flag is required (e.g. --uses-non-exempt-encryption)")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--uses-non-exempt-encryption")
 			}
 
 			attrs := asc.BuildUpdateAttributes{}
@@ -271,11 +271,11 @@ Examples:
 			groupIDs := shared.SplitCSV(*groups)
 			if len(groupIDs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --group is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--group")
 			}
 			if !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 
 			client, err := shared.GetASCClient()

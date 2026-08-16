@@ -301,7 +301,7 @@ func TestBuildEventWithContextAllowsKnownFailureParameters(t *testing.T) {
 	clearContextEnv(t)
 	setTelemetryTestHome(t)
 
-	for _, parameter := range []string{"--id", "--app", "--app-id", "--key-type", "--export-xcodebuild-flag", "--copy-metadata-from", "--copyright", "--keywords", "--name", "--path", "--state", "--term", "--tester", "--treatment-id", "--type", "--uses-third-party-content", "--visible-in-app-store"} {
+	for _, parameter := range []string{"--id", "--app", "--app-id", "--key-type", "--export-xcodebuild-flag", "--copy-metadata-from", "--copyright", "--group", "--keywords", "--name", "--older-than", "--path", "--state", "--term", "--tester", "--test-notes", "--treatment-id", "--type", "--upload", "--uses-non-exempt-encryption", "--uses-third-party-content", "--visible-in-app-store", "--whats-new"} {
 		t.Run(parameter, func(t *testing.T) {
 			ev, ok := BuildEventWithContext(
 				"asc apps view",
