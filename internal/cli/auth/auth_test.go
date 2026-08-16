@@ -17,7 +17,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	authsvc "github.com/rudrankriyam/App-Store-Connect-CLI/internal/auth"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
 )
 
@@ -290,6 +292,7 @@ func TestValidateLoginCredentials(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "failed to generate JWT") {
 			t.Fatalf("expected jwt error, got %v", err)
 		}
+		assertAuthDiagnostic(t, err, shared.DiagnosticInternalError, "--private-key")
 	})
 
 	t.Run("network disabled succeeds", func(t *testing.T) {
@@ -328,6 +331,27 @@ func TestValidateLoginCredentials(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "network validation failed") {
 			t.Fatalf("expected network validation error, got %v", err)
 		}
+		assertAuthDiagnostic(t, err, shared.DiagnosticRequestFailed, "")
+	})
+
+	t.Run("network authentication rejected", func(t *testing.T) {
+		restoreJWT := SetLoginJWTGenerator(func(string, string, *ecdsa.PrivateKey) (string, error) {
+			return "token", nil
+		})
+		prevNetwork := loginNetworkValidate
+		loginNetworkValidate = func(context.Context, string, string, string) error {
+			return asc.ErrUnauthorized
+		}
+		t.Cleanup(func() {
+			restoreJWT()
+			loginNetworkValidate = prevNetwork
+		})
+
+		err := validateLoginCredentials(context.Background(), "KEY", "ISS", keyPath, true)
+		if err == nil || !strings.Contains(err.Error(), "network validation failed") {
+			t.Fatalf("expected network validation error, got %v", err)
+		}
+		assertAuthDiagnostic(t, err, shared.DiagnosticAuthenticationRejected, "")
 	})
 }
 
@@ -388,6 +412,7 @@ func TestAuthLoginCommand(t *testing.T) {
 		if !errors.Is(err, flag.ErrHelp) {
 			t.Fatalf("expected flag.ErrHelp, got %v", err)
 		}
+		assertAuthDiagnostic(t, err, shared.DiagnosticRequiredInputMissing, "--name")
 	})
 
 	t.Run("skip validation mutually exclusive with network", func(t *testing.T) {
@@ -407,6 +432,7 @@ func TestAuthLoginCommand(t *testing.T) {
 			if !errors.Is(err, flag.ErrHelp) {
 				t.Fatalf("expected flag.ErrHelp, got %v", err)
 			}
+			assertAuthDiagnostic(t, err, shared.DiagnosticConflictingInput, "--skip-validation")
 		})
 		if !strings.Contains(stderr, "mutually exclusive") {
 			t.Fatalf("expected mutual exclusion error in stderr, got %q", stderr)
@@ -430,6 +456,7 @@ func TestAuthLoginCommand(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "invalid private key") {
 				t.Fatalf("expected invalid key error, got %v", err)
 			}
+			assertAuthDiagnostic(t, err, shared.DiagnosticFileNotFound, "--private-key")
 		})
 	})
 
@@ -462,6 +489,17 @@ func TestAuthLoginCommand(t *testing.T) {
 			}
 		})
 	})
+}
+
+func assertAuthDiagnostic(t *testing.T, err error, code shared.DiagnosticCode, parameter string) {
+	t.Helper()
+	diagnostic, ok := shared.DiagnosticFromError(err)
+	if !ok {
+		t.Fatalf("DiagnosticFromError(%v) did not find metadata", err)
+	}
+	if diagnostic.Code != code || diagnostic.Parameter != parameter {
+		t.Fatalf("diagnostic = %+v, want code %q parameter %q", diagnostic, code, parameter)
+	}
 }
 
 func TestAuthSwitchCommand(t *testing.T) {

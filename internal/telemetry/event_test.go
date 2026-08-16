@@ -301,7 +301,7 @@ func TestBuildEventWithContextAllowsKnownFailureParameters(t *testing.T) {
 	clearContextEnv(t)
 	setTelemetryTestHome(t)
 
-	for _, parameter := range []string{"--id", "--app", "--app-id", "--key-type", "--export-xcodebuild-flag", "--active", "--availability-id", "--base-price", "--batch-id", "--copy-metadata-from", "--copyright", "--custom-app-name", "--group", "--input", "--keywords", "--name", "--number-of-periods", "--offer-code", "--offer-code-id", "--older-than", "--path", "--price-id", "--price-point-id", "--prices", "--product-id", "--reference-name", "--screenshot-id", "--state", "--term", "--territories", "--territory", "--tester", "--test-notes", "--treatment-id", "--type", "--upload", "--uses-non-exempt-encryption", "--uses-third-party-content", "--visible-in-app-store", "--whats-new"} {
+	for _, parameter := range []string{"--id", "--app", "--app-id", "--key-type", "--export-xcodebuild-flag", "--active", "--availability-id", "--base-price", "--batch-id", "--copy-metadata-from", "--copyright", "--custom-app-name", "--group", "--input", "--keywords", "--local", "--name", "--number-of-periods", "--offer-code", "--offer-code-id", "--older-than", "--path", "--price-id", "--price-point-id", "--prices", "--private-key", "--product-id", "--reference-name", "--screenshot-id", "--skip-validation", "--state", "--term", "--territories", "--territory", "--tester", "--test-notes", "--treatment-id", "--type", "--upload", "--uses-non-exempt-encryption", "--uses-third-party-content", "--visible-in-app-store", "--whats-new"} {
 		t.Run(parameter, func(t *testing.T) {
 			ev, ok := BuildEventWithContext(
 				"asc apps view",
