@@ -62,7 +62,7 @@ Examples:
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) > 0 {
 				fmt.Fprintln(os.Stderr, "Error: reviews ratings does not accept positional arguments")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "")
 			}
 
 			if strings.TrimSpace(*appID) == "" {
@@ -72,12 +72,12 @@ Examples:
 
 			if *workers < 1 {
 				fmt.Fprintln(os.Stderr, "Error: --workers must be at least 1")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--workers")
 			}
 			if !*all {
 				if _, err := itunes.NormalizeCountryCode(*country); err != nil {
 					fmt.Fprintln(os.Stderr, "Error: "+err.Error())
-					return flag.ErrHelp
+					return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--country")
 				}
 			}
 
