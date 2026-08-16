@@ -79,7 +79,7 @@ Examples:
 			hasPKG := *pkgPath != ""
 			if !hasIPA && !hasPKG {
 				fmt.Fprintf(os.Stderr, "Error: --ipa or --pkg is required\n\n")
-				return shared.MissingRequiredUsageError("--ipa")
+				return shared.MissingRequiredUsageError("")
 			}
 			if hasIPA && hasPKG {
 				fmt.Fprintf(os.Stderr, "Error: --ipa and --pkg are mutually exclusive\n\n")
