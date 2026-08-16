@@ -40,6 +40,7 @@ type PrivateKeyErrorKind string
 const (
 	PrivateKeyNotFound             PrivateKeyErrorKind = "not_found"
 	PrivateKeyPermissionDenied     PrivateKeyErrorKind = "permission_denied"
+	PrivateKeyPermissionsInsecure  PrivateKeyErrorKind = "permissions_insecure"
 	PrivateKeyInvalidFormat        PrivateKeyErrorKind = "invalid_format"
 	PrivateKeyUnsupportedAlgorithm PrivateKeyErrorKind = "unsupported_algorithm"
 	PrivateKeyAccessFailed         PrivateKeyErrorKind = "access_failed"
@@ -293,7 +294,7 @@ func validateKeyFileForOS(path, goos string) error {
 		return newPrivateKeyError(PrivateKeyInvalidFormat, errors.New("private key path is a directory"))
 	}
 	if filePermissionsTooPermissiveForOS(info.Mode(), goos) {
-		return newPrivateKeyError(PrivateKeyPermissionDenied, fmt.Errorf("private key file is too permissive; run: chmod 600 %q", path))
+		return newPrivateKeyError(PrivateKeyPermissionsInsecure, fmt.Errorf("private key file is too permissive; run: chmod 600 %q", path))
 	}
 
 	data, err := io.ReadAll(file)

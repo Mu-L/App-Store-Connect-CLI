@@ -90,7 +90,7 @@ func TestPrivateKeyErrorsCarryStructuredKinds(t *testing.T) {
 			t.Fatalf("set key permissions: %v", err)
 		}
 		err := ValidateKeyFile(path)
-		assertPrivateKeyErrorKind(t, err, PrivateKeyPermissionDenied)
+		assertPrivateKeyErrorKind(t, err, PrivateKeyPermissionsInsecure)
 		if !strings.Contains(err.Error(), "private key file is too permissive") {
 			t.Fatalf("error message changed: %v", err)
 		}

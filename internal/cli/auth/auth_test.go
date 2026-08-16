@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -415,6 +416,28 @@ func TestAuthLoginCommand(t *testing.T) {
 		assertAuthDiagnostic(t, err, shared.DiagnosticRequiredInputMissing, "--name")
 	})
 
+	t.Run("whitespace key id", func(t *testing.T) {
+		cmd := AuthLoginCommand()
+		if err := cmd.FlagSet.Parse([]string{
+			"--name", "demo",
+			"--key-id", "   ",
+			"--issuer-id", "ISS",
+			"--private-key", "/tmp/AuthKey.p8",
+		}); err != nil {
+			t.Fatalf("Parse() error: %v", err)
+		}
+		_, stderr := captureAuthOutput(t, func() {
+			err := cmd.Exec(context.Background(), []string{})
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("expected flag.ErrHelp, got %v", err)
+			}
+			assertAuthDiagnostic(t, err, shared.DiagnosticRequiredInputMissing, "--key-id")
+		})
+		if !strings.Contains(stderr, "--key-id is required") {
+			t.Fatalf("expected key ID error in stderr, got %q", stderr)
+		}
+	})
+
 	t.Run("skip validation mutually exclusive with network", func(t *testing.T) {
 		cmd := AuthLoginCommand()
 		if err := cmd.FlagSet.Parse([]string{
@@ -457,6 +480,32 @@ func TestAuthLoginCommand(t *testing.T) {
 				t.Fatalf("expected invalid key error, got %v", err)
 			}
 			assertAuthDiagnostic(t, err, shared.DiagnosticFileNotFound, "--private-key")
+		})
+	})
+
+	t.Run("insecure private key permissions", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows does not expose POSIX key permissions")
+		}
+		withTempRepo(t, func(string) {
+			keyPath := writeTempECDSAKeyFile(t)
+			if err := os.Chmod(keyPath, 0o644); err != nil {
+				t.Fatalf("set key permissions: %v", err)
+			}
+			cmd := AuthLoginCommand()
+			if err := cmd.FlagSet.Parse([]string{
+				"--name", "demo",
+				"--key-id", "KEY",
+				"--issuer-id", "ISS",
+				"--private-key", keyPath,
+			}); err != nil {
+				t.Fatalf("Parse() error: %v", err)
+			}
+			err := cmd.Exec(context.Background(), []string{})
+			if err == nil || !strings.Contains(err.Error(), "private key file is too permissive") {
+				t.Fatalf("expected insecure permissions error, got %v", err)
+			}
+			assertAuthDiagnostic(t, err, shared.DiagnosticFilePermissionsInsecure, "--private-key")
 		})
 	})
 

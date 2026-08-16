@@ -414,6 +414,8 @@ func withPrivateKeyDiagnostic(rendered, cause error, parameter string) error {
 		code = shared.DiagnosticFileNotFound
 	case authsvc.PrivateKeyPermissionDenied:
 		code = shared.DiagnosticFilePermissionDenied
+	case authsvc.PrivateKeyPermissionsInsecure:
+		code = shared.DiagnosticFilePermissionsInsecure
 	case authsvc.PrivateKeyInvalidFormat:
 		code = shared.DiagnosticFileInvalidFormat
 	case authsvc.PrivateKeyUnsupportedAlgorithm:
@@ -508,10 +510,12 @@ so commands continue to work even if the original .p8 file is removed.`,
 				fmt.Fprintln(os.Stderr, "Error: --name is required")
 				return shared.MissingRequiredUsageError("--name")
 			}
-			if *keyID == "" {
+			trimmedKeyID := strings.TrimSpace(*keyID)
+			if trimmedKeyID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --key-id is required")
 				return shared.MissingRequiredUsageError("--key-id")
 			}
+			*keyID = trimmedKeyID
 			normalizedKeyType := config.NormalizeCredentialKeyType(*keyType)
 			if !config.IsValidCredentialKeyType(normalizedKeyType) {
 				return shared.WithDiagnostic(shared.UsageError("--key-type must be one of: team, individual"), shared.DiagnosticInvalidInput, "--key-type")
