@@ -66,8 +66,7 @@ Examples:
 
 			periodValue, err := normalizeBetaTesterUsagePeriod(*period)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
-				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--period")
+				return err
 			}
 
 			resolvedAppID := shared.ResolveAppID(*appID)
