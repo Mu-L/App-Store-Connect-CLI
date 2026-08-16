@@ -85,6 +85,38 @@ func TestWithDiagnosticPreservesExistingErrorContract(t *testing.T) {
 	}
 }
 
+func TestMissingRequiredUsageErrorCarriesStructuredDiagnostic(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		parameter     string
+		wantMessage   string
+		wantParameter string
+	}{
+		{name: "without parameter", wantMessage: flag.ErrHelp.Error()},
+		{name: "with parameter", parameter: "--app", wantMessage: "--app", wantParameter: "--app"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := MissingRequiredUsageError(tt.parameter)
+			if got := err.Error(); got != tt.wantMessage {
+				t.Fatalf("MissingRequiredUsageError().Error() = %q, want %q", got, tt.wantMessage)
+			}
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("MissingRequiredUsageError() should preserve flag.ErrHelp: %v", err)
+			}
+			if got := ClassifyUsageError(err); got != UsageErrorMissingRequired {
+				t.Fatalf("ClassifyUsageError() = %q, want %q", got, UsageErrorMissingRequired)
+			}
+			diagnostic, ok := DiagnosticFromError(err)
+			if !ok {
+				t.Fatal("DiagnosticFromError() did not find required-input metadata")
+			}
+			if diagnostic.Code != DiagnosticRequiredInputMissing || diagnostic.Parameter != tt.wantParameter {
+				t.Fatalf("DiagnosticFromError() = %+v", diagnostic)
+			}
+		})
+	}
+}
+
 func TestDiagnosticFromErrorUsesOutermostAnnotation(t *testing.T) {
 	err := WithDiagnostic(
 		WithDiagnostic(errors.New("unchanged"), DiagnosticInvalidInput, "--issuer-id"),
