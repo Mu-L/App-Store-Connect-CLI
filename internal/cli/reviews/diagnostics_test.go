@@ -117,6 +117,55 @@ func TestReviewValidationDiagnosticsPreserveErrorContracts(t *testing.T) {
 	}
 }
 
+func TestReviewAttachmentUnreadableSourceIsDiagnosedBeforeAuth(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "attachment.pdf")
+	if err := os.WriteFile(attachmentPath, []byte("review attachment"), 0o600); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+	if err := os.Chmod(attachmentPath, 0); err != nil {
+		t.Fatalf("make attachment unreadable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(attachmentPath, 0o600) })
+
+	probe, probeErr := os.Open(attachmentPath)
+	if probeErr == nil {
+		_ = probe.Close()
+		t.Skip("current user can open mode-000 files")
+	}
+	if !errors.Is(probeErr, os.ErrPermission) {
+		t.Skipf("cannot reproduce permission-denied open: %v", probeErr)
+	}
+
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.json"))
+	t.Setenv("ASC_KEY_ID", "")
+	t.Setenv("ASC_ISSUER_ID", "")
+	t.Setenv("ASC_PRIVATE_KEY", "")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+	t.Setenv("ASC_PRIVATE_KEY_B64", "")
+
+	err := ReviewDetailsAttachmentsUploadCommand().ParseAndRun(context.Background(), []string{
+		"--review-detail", "detail-1",
+		"--file", attachmentPath,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !shared.IsValidationError(err) {
+		t.Fatalf("error = %v, want validation marker", err)
+	}
+	diagnostic, ok := shared.DiagnosticFromError(err)
+	if !ok {
+		t.Fatalf("expected structured diagnostic, got %v", err)
+	}
+	if diagnostic.Code != shared.DiagnosticFilePermissionDenied || diagnostic.Parameter != "--file" {
+		t.Fatalf("diagnostic = %+v, want file_permission_denied for --file", diagnostic)
+	}
+	if !strings.HasPrefix(err.Error(), "review attachments-upload: upload failed: ") {
+		t.Fatalf("error = %q, want preserved upload failure prefix", err)
+	}
+}
+
 func captureReviewDiagnosticStderr(t *testing.T, fn func()) string {
 	t.Helper()
 

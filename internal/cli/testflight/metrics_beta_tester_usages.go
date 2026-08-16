@@ -98,7 +98,7 @@ Examples:
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				fmt.Fprintln(os.Stderr, "Error: --limit must be between 1 and 200")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--limit")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
 				return fmt.Errorf("testflight metrics beta-tester-usages: %w", err)
@@ -107,7 +107,7 @@ Examples:
 			periodValue, err := normalizeBetaTesterUsagePeriod(*period)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--period")
 			}
 
 			resolvedAppID := shared.ResolveAppID(*appID)
