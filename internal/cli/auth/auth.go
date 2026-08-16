@@ -370,7 +370,7 @@ func validateStoredCredential(ctx context.Context, cred authsvc.Credential) erro
 		if errors.Is(err, asc.ErrForbidden) {
 			return &permissionWarning{err: err}
 		}
-		return err
+		return withNetworkDiagnostic(err, err)
 	}
 	return nil
 }
@@ -392,14 +392,18 @@ func validateLoginCredentials(ctx context.Context, keyID, issuerID, keyPath stri
 	}
 	if network {
 		if err := loginNetworkValidate(ctx, keyID, issuerID, keyPath); err != nil {
-			code := shared.DiagnosticRequestFailed
-			if errors.Is(err, asc.ErrUnauthorized) {
-				code = shared.DiagnosticAuthenticationRejected
-			}
-			return shared.WithDiagnostic(fmt.Errorf("network validation failed: %w", err), code, "")
+			return withNetworkDiagnostic(fmt.Errorf("network validation failed: %w", err), err)
 		}
 	}
 	return nil
+}
+
+func withNetworkDiagnostic(rendered, cause error) error {
+	code := shared.DiagnosticRequestFailed
+	if errors.Is(cause, asc.ErrUnauthorized) {
+		code = shared.DiagnosticAuthenticationRejected
+	}
+	return shared.WithDiagnostic(rendered, code, "")
 }
 
 func withPrivateKeyDiagnostic(rendered, cause error) error {
