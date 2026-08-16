@@ -371,6 +371,7 @@ var knownFailureParameters = map[string]struct{}{
 	"custom-app-name":            {},
 	"dry-run":                    {},
 	"email":                      {},
+	"end-date":                   {},
 	"export-xcodebuild-flag":     {},
 	"file":                       {},
 	"group-id":                   {},
