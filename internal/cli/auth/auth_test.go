@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,6 +24,12 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
 )
+
+type authRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn authRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
 
 func TestCommandWrapperReturnsAuthCommand(t *testing.T) {
 	cmd := AuthCommand()
@@ -251,6 +258,41 @@ func TestValidateStoredCredential_UsesPEMWhenPathMissing(t *testing.T) {
 	if strings.Contains(err.Error(), "failed to open key file") || strings.Contains(err.Error(), "invalid private key") {
 		t.Fatalf("expected path-independent validation failure, got %v", err)
 	}
+}
+
+func TestValidateStoredCredential_ClassifiesUnauthorizedNetworkFailure(t *testing.T) {
+	keyPath := writeTempECDSAKeyFile(t)
+	keyData, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = authRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Status:     "401 Unauthorized",
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"errors":[{"status":"401","code":"NOT_AUTHORIZED","title":"Unauthorized"}]
+			}`)),
+			Request: req,
+		}, nil
+	})
+	t.Cleanup(func() {
+		http.DefaultTransport = previousTransport
+	})
+
+	err = validateStoredCredential(context.Background(), authsvc.Credential{
+		Name:          "unauthorized",
+		KeyID:         "KEY",
+		IssuerID:      "ISS",
+		PrivateKeyPEM: string(keyData),
+	})
+	if err == nil || !errors.Is(err, asc.ErrUnauthorized) {
+		t.Fatalf("expected unauthorized validation error, got %v", err)
+	}
+	assertAuthDiagnostic(t, err, shared.DiagnosticAuthenticationRejected, "")
 }
 
 func TestCredentialSigningIssuerIDClearsIndividualIssuer(t *testing.T) {
