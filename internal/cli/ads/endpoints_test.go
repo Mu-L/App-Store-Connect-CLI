@@ -288,6 +288,20 @@ func TestPlatformEndpointHelpIncludesAgentPayloadGuidance(t *testing.T) {
 			},
 		},
 		{
+			path: []string{"insights", "search-term-popularity", "find"},
+			want: []string{
+				"Starter payload (query.json):",
+				`"granularity": "WEEKLY_SUN_SAT"`,
+			},
+		},
+		{
+			path: []string{"reports", "apps", "campaigns"},
+			want: []string{
+				"Starter payload (report.json):",
+				`"timeZone": "ORTZ"`,
+			},
+		},
+		{
 			path: []string{"budget-orders", "create"},
 			want: []string{
 				"--confirm",
@@ -755,8 +769,8 @@ func TestPlatformCampaignAndBudgetRiskConfirmationPrecedesAuth(t *testing.T) {
 	}{
 		{name: "missing status", payload: `{ "name": "agent-test" }`, want: `--confirm is required unless status is explicitly "PAUSED"; otherwise acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact`},
 		{name: "enabled", payload: `{ "status": "ENABLED" }`, want: `--confirm is required unless status is explicitly "PAUSED"; otherwise acknowledge potential Apple Ads spend, billing, delivery, targeting, or access impact`},
-		{name: "paused", payload: `{ "status": "PAUSED" }`, want: "ads: configuration not found"},
-		{name: "enabled confirmed", payload: `{ "status": "ENABLED" }`, confirm: true, want: "ads: configuration not found"},
+		{name: "paused", payload: `{ "status": "PAUSED" }`, want: "ads: configuration not found; run 'asc ads auth login' to store Apple Ads credentials, set ASC_ADS_* environment credentials, or pass --ads-profile"},
+		{name: "enabled confirmed", payload: `{ "status": "ENABLED" }`, confirm: true, want: "ads: configuration not found; run 'asc ads auth login' to store Apple Ads credentials, set ASC_ADS_* environment credentials, or pass --ads-profile"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			file := filepath.Join(t.TempDir(), "campaign.json")
@@ -837,7 +851,7 @@ func TestPlatformCampaignUpdateAndBudgetUpdateConfirmBeforeAuth(t *testing.T) {
 		confirm bool
 		want    string
 	}{
-		{name: "paused name-only update is safe", payload: `{"name":"paused-name","status":"PAUSED"}`, want: "ads: configuration not found"},
+		{name: "paused name-only update is safe", payload: `{"name":"paused-name","status":"PAUSED"}`, want: "ads: configuration not found; run 'asc ads auth login' to store Apple Ads credentials, set ASC_ADS_* environment credentials, or pass --ads-profile"},
 		{name: "missing status", payload: `{"name":"name-only"}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
 		{name: "enabled status", payload: `{"status":"ENABLED"}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
 		{name: "daily budget", payload: `{"status":"PAUSED","dailyBudget":1}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
@@ -847,7 +861,7 @@ func TestPlatformCampaignUpdateAndBudgetUpdateConfirmBeforeAuth(t *testing.T) {
 		{name: "start", payload: `{"status":"PAUSED","start":"2026-08-15"}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
 		{name: "resume", payload: `{"status":"PAUSED","resume":true}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
 		{name: "enabled field", payload: `{"status":"PAUSED","enabled":true}`, want: `--confirm is required unless status is "PAUSED" and only non-spend fields are changed`},
-		{name: "confirmed spend update", payload: `{"status":"ENABLED","dailyBudget":1}`, confirm: true, want: "ads: configuration not found"},
+		{name: "confirmed spend update", payload: `{"status":"ENABLED","dailyBudget":1}`, confirm: true, want: "ads: configuration not found; run 'asc ads auth login' to store Apple Ads credentials, set ASC_ADS_* environment credentials, or pass --ads-profile"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1911,5 +1925,38 @@ func assertSpecFlags(t *testing.T, cmd *ffcli.Command, spec appleads.EndpointSpe
 	}
 	if spec.SupportsPaginate && cmd.FlagSet.Lookup("paginate") == nil {
 		t.Fatalf("asc ads %s missing --paginate", strings.Join(spec.CommandPath, " "))
+	}
+}
+
+func TestReadBodyReadsStdinPayload(t *testing.T) {
+	spec, ok := appleads.PlatformEndpointByCommandPath("insights", "search-term-popularity", "find")
+	if !ok {
+		t.Fatal("missing insights search-term-popularity find")
+	}
+
+	payload := `{"timeRange":{"start":"2026-07-05","end":"2026-08-08","granularity":"WEEKLY_SUN_SAT"}}`
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	previous := os.Stdin
+	os.Stdin = reader
+	t.Cleanup(func() {
+		os.Stdin = previous
+		reader.Close()
+	})
+	go func() {
+		defer writer.Close()
+		_, _ = writer.WriteString(payload)
+	}()
+
+	_, flags := bindEndpointFlags(spec, "insights search-term-popularity find")
+	*flags.file = "-"
+	body, err := readBody(spec, flags)
+	if err != nil {
+		t.Fatalf("readBody(stdin) error: %v", err)
+	}
+	if string(body) != payload {
+		t.Fatalf("readBody(stdin) = %q, want %q", string(body), payload)
 	}
 }

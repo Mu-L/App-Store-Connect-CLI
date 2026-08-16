@@ -3019,6 +3019,42 @@ func TestWriteJUnitReport(t *testing.T) {
 	}
 }
 
+func TestWriteJUnitReportPreservesMissingRequiredParameter(t *testing.T) {
+	resetReportFlags(t)
+
+	reportPath := filepath.Join(t.TempDir(), "junit.xml")
+	shared.SetReportFile(reportPath)
+	t.Cleanup(func() {
+		shared.SetReportFile("")
+	})
+
+	if err := writeJUnitReport("asc reviews list", shared.MissingRequiredUsageError("--app"), time.Second); err != nil {
+		t.Fatalf("writeJUnitReport() error: %v", err)
+	}
+
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+
+	var suite struct {
+		TestCases []struct {
+			Failure *struct {
+				Message string `xml:"message,attr"`
+			} `xml:"failure"`
+		} `xml:"testcase"`
+	}
+	if err := xml.Unmarshal(data, &suite); err != nil {
+		t.Fatalf("xml.Unmarshal() error: %v", err)
+	}
+	if len(suite.TestCases) != 1 || suite.TestCases[0].Failure == nil {
+		t.Fatalf("unexpected testcase payload: %+v", suite.TestCases)
+	}
+	if got := suite.TestCases[0].Failure.Message; got != "--app" {
+		t.Fatalf("failure message = %q, want %q", got, "--app")
+	}
+}
+
 func resetReportFlags(t *testing.T) {
 	t.Helper()
 	shared.SetReportFormat("")
