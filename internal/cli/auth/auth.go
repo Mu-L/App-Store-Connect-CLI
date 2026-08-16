@@ -914,6 +914,7 @@ Examples:
 			validationFailures := 0
 			var validationDiagnostic shared.Diagnostic
 			hasValidationDiagnostic := false
+			validationDiagnosticConsistent := true
 			credentialOutput := make([]authStatusCredentialOutput, 0, len(credentials))
 			if len(credentials) == 0 {
 				if normalizedOutput == "table" {
@@ -946,11 +947,15 @@ Examples:
 								validationFailures++
 								credentialEntry.Validation = "failed"
 								credentialEntry.ValidationError = err.Error()
-								if !hasValidationDiagnostic {
-									if diagnostic, ok := shared.DiagnosticFromError(err); ok {
+								if diagnostic, ok := shared.DiagnosticFromError(err); ok {
+									if !hasValidationDiagnostic {
 										validationDiagnostic = diagnostic
 										hasValidationDiagnostic = true
+									} else if diagnostic != validationDiagnostic {
+										validationDiagnosticConsistent = false
 									}
+								} else {
+									validationDiagnosticConsistent = false
 								}
 								if normalizedOutput == "table" {
 									fmt.Printf("    %s (Key ID: %s): failed (%v)\n", cred.Name, cred.KeyID, err)
@@ -1014,7 +1019,7 @@ Examples:
 
 			if *validate && validationFailures > 0 {
 				validationError := error(fmt.Errorf("auth status: validation failed for %d credential(s)", validationFailures))
-				if hasValidationDiagnostic {
+				if hasValidationDiagnostic && validationDiagnosticConsistent {
 					validationError = shared.WithDiagnostic(validationError, validationDiagnostic.Code, validationDiagnostic.Parameter)
 				}
 				return shared.NewValidationReportedError(validationError)

@@ -1198,6 +1198,42 @@ func TestAuthStatusCommand(t *testing.T) {
 		}
 	})
 
+	t.Run("validate omits diagnostic for mixed aggregate failures", func(t *testing.T) {
+		cfgPath := filepath.Join(t.TempDir(), "config.json")
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+		t.Setenv("ASC_CONFIG_PATH", cfgPath)
+
+		restoreList := SetListStoredCredentials(func() ([]authsvc.Credential, error) {
+			return []authsvc.Credential{
+				{Name: "missing", KeyID: "KEY1", IssuerID: "ISS"},
+				{Name: "rejected", KeyID: "KEY2", IssuerID: "ISS"},
+			}, nil
+		})
+		t.Cleanup(restoreList)
+		restoreValidate := SetStatusValidateCredential(func(_ context.Context, cred authsvc.Credential) error {
+			if cred.Name == "missing" {
+				return shared.WithDiagnostic(errors.New("missing key"), shared.DiagnosticFileNotFound, "--private-key")
+			}
+			return shared.WithDiagnostic(errors.New("rejected"), shared.DiagnosticAuthenticationRejected, "")
+		})
+		t.Cleanup(restoreValidate)
+
+		cmd := AuthStatusCommand()
+		if err := cmd.FlagSet.Parse([]string{"--output", "table", "--validate"}); err != nil {
+			t.Fatalf("Parse() error: %v", err)
+		}
+		var runErr error
+		captureAuthOutput(t, func() {
+			runErr = cmd.Exec(context.Background(), []string{})
+		})
+		if runErr == nil || !strings.Contains(runErr.Error(), "validation failed for 2 credential(s)") {
+			t.Fatalf("expected validation failure summary, got %v", runErr)
+		}
+		if diagnostic, ok := shared.DiagnosticFromError(runErr); ok {
+			t.Fatalf("diagnostic = %+v, want no diagnostic for mixed aggregate failures", diagnostic)
+		}
+	})
+
 	t.Run("validate permission warning does not fail", func(t *testing.T) {
 		cfgPath := filepath.Join(t.TempDir(), "config.json")
 		t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
