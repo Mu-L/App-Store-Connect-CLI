@@ -317,6 +317,9 @@ func validateKeyFileForOS(path, goos string) error {
 	} else {
 		privateKey, err = x509.ParseECPrivateKey(block.Bytes)
 		if err != nil {
+			if _, rsaErr := x509.ParsePKCS1PrivateKey(block.Bytes); rsaErr == nil {
+				return newPrivateKeyError(PrivateKeyUnsupportedAlgorithm, errors.New("private key is not ECDSA"))
+			}
 			return newPrivateKeyError(PrivateKeyInvalidFormat, fmt.Errorf("invalid private key format: %w", err))
 		}
 	}
@@ -359,6 +362,9 @@ func LoadPrivateKeyFromPEM(data []byte) (*ecdsa.PrivateKey, error) {
 	// Try SEC1 EC private key as fallback.
 	ecdsaKey, err := x509.ParseECPrivateKey(block.Bytes)
 	if err != nil {
+		if _, rsaErr := x509.ParsePKCS1PrivateKey(block.Bytes); rsaErr == nil {
+			return nil, newPrivateKeyError(PrivateKeyUnsupportedAlgorithm, errors.New("private key is not ECDSA"))
+		}
 		return nil, newPrivateKeyError(PrivateKeyInvalidFormat, fmt.Errorf("invalid private key: %w", err))
 	}
 	if ecdsaKey.Curve != elliptic.P256() {

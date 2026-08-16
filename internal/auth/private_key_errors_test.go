@@ -50,6 +50,26 @@ func TestPrivateKeyErrorsCarryStructuredKinds(t *testing.T) {
 		}
 	})
 
+	t.Run("unsupported algorithm pkcs1", func(t *testing.T) {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate RSA key: %v", err)
+		}
+		data := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+		_, err = LoadPrivateKeyFromPEM(data)
+		assertPrivateKeyErrorKind(t, err, PrivateKeyUnsupportedAlgorithm)
+		if got, want := err.Error(), "private key is not ECDSA"; got != want {
+			t.Fatalf("error = %q, want %q", got, want)
+		}
+
+		path := filepath.Join(t.TempDir(), "rsa.p8")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatalf("write RSA key: %v", err)
+		}
+		err = ValidateKeyFile(path)
+		assertPrivateKeyErrorKind(t, err, PrivateKeyUnsupportedAlgorithm)
+	})
+
 	for _, pkcs8 := range []bool{true, false} {
 		name := "unsupported curve sec1"
 		if pkcs8 {
