@@ -633,11 +633,20 @@ func parseFailureContext(analysis invocationAnalysis) telemetry.EventContext {
 
 func validationFailureContext(analysis invocationAnalysis, err error) telemetry.EventContext {
 	kind := telemetry.ErrorKindOther
-	switch shared.ClassifyUsageError(err) {
-	case shared.UsageErrorMissingRequired:
-		kind = telemetry.ErrorKindMissingRequired
-	case shared.UsageErrorInvalidValue:
-		kind = telemetry.ErrorKindInvalidValue
+	if diagnostic, ok := shared.DiagnosticFromError(err); ok {
+		switch diagnostic.Code {
+		case shared.DiagnosticRequiredInputMissing:
+			kind = telemetry.ErrorKindMissingRequired
+		case shared.DiagnosticInvalidInput, shared.DiagnosticConflictingInput:
+			kind = telemetry.ErrorKindInvalidValue
+		}
+	} else {
+		switch shared.ClassifyUsageError(err) {
+		case shared.UsageErrorMissingRequired:
+			kind = telemetry.ErrorKindMissingRequired
+		case shared.UsageErrorInvalidValue:
+			kind = telemetry.ErrorKindInvalidValue
+		}
 	}
 	if analysis.shape == telemetry.InvocationShapeUnknownChild {
 		kind = telemetry.ErrorKindOther
