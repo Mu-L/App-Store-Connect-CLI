@@ -60,7 +60,7 @@ Examples:
 			olderThanValue := strings.TrimSpace(*olderThan)
 			if olderThanValue == "" && *keepLatest == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --older-than or --keep-latest is required")
-				return shared.MissingRequiredUsageError("--older-than")
+				return shared.MissingRequiredUsageError("")
 			}
 			if *keepLatest < 0 {
 				return fmt.Errorf("builds expire-all: --keep-latest must be greater than or equal to 0")

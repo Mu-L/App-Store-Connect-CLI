@@ -522,7 +522,7 @@ Examples:
 			}
 			if id == "" && resolvedAppID == "" && nextURL == "" {
 				fmt.Fprintln(os.Stderr, "Error: --group-id or --app is required (or set ASC_APP_ID)")
-				return shared.MissingRequiredUsageError("--group-id")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			client, err := subscriptionQueryClientFactory()
@@ -1562,7 +1562,7 @@ Examples:
 			subscriptionValue := strings.TrimSpace(*subscriptionID)
 			if availabilityValue == "" && subscriptionValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --availability-id or --subscription-id is required")
-				return shared.MissingRequiredUsageError("--availability-id")
+				return shared.MissingRequiredUsageError("")
 			}
 			if availabilityValue != "" && subscriptionValue != "" {
 				fmt.Fprintln(os.Stderr, "Error: --availability-id and --subscription-id are mutually exclusive")
@@ -1644,7 +1644,7 @@ Examples:
 			subscriptionValue := strings.TrimSpace(*subscriptionID)
 			if availabilityValue == "" && subscriptionValue == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --availability-id or --subscription-id is required")
-				return shared.MissingRequiredUsageError("--availability-id")
+				return shared.MissingRequiredUsageError("")
 			}
 			if availabilityValue != "" && subscriptionValue != "" {
 				return shared.UsageError("--availability-id and --subscription-id are mutually exclusive")

@@ -58,6 +58,27 @@ func TestBuildsMissingArtifactLeavesDiagnosticParameterEmpty(t *testing.T) {
 	}
 }
 
+func TestBuildsMissingExpireSelectorLeavesDiagnosticParameterEmpty(t *testing.T) {
+	var err error
+	stderr := captureBuildsDiagnosticStderr(t, func() {
+		err = BuildsExpireAllCommand().ParseAndRun(context.Background(), []string{"--app", "123456789"})
+	})
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("error = %v, want flag.ErrHelp contract", err)
+	}
+	if want := "Error: --older-than or --keep-latest is required\n"; !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want diagnostic %q", stderr, want)
+	}
+
+	diagnostic, ok := shared.DiagnosticFromError(err)
+	if !ok {
+		t.Fatalf("DiagnosticFromError(%v) did not find metadata", err)
+	}
+	if diagnostic.Code != shared.DiagnosticRequiredInputMissing || diagnostic.Parameter != "" {
+		t.Fatalf("diagnostic = %+v, want required_input_missing without a parameter", diagnostic)
+	}
+}
+
 func captureBuildsDiagnosticStderr(t *testing.T, fn func()) string {
 	t.Helper()
 

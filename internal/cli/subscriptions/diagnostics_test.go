@@ -64,6 +64,67 @@ func TestSubscriptionsConflictingInputExposesStructuredDiagnostic(t *testing.T) 
 	}
 }
 
+func TestSubscriptionsAlternativeSelectorsLeaveDiagnosticParameterEmpty(t *testing.T) {
+	t.Setenv("ASC_APP_ID", "")
+	tests := []struct {
+		name    string
+		command func() interface {
+			ParseAndRun(context.Context, []string) error
+		}
+		wantMessage string
+	}{
+		{
+			name: "subscription list",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return SubscriptionsListCommand()
+			},
+			wantMessage: "Error: --group-id or --app is required (or set ASC_APP_ID)\n",
+		},
+		{
+			name: "availability view",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return SubscriptionsAvailabilityViewCommand()
+			},
+			wantMessage: "Error: --availability-id or --subscription-id is required\n",
+		},
+		{
+			name: "availability territories",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return SubscriptionsAvailabilityAvailableTerritoriesCommand()
+			},
+			wantMessage: "Error: --availability-id or --subscription-id is required\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var err error
+			stderr := captureSubscriptionsDiagnosticStderr(t, func() {
+				err = test.command().ParseAndRun(context.Background(), nil)
+			})
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("error = %v, want flag.ErrHelp contract", err)
+			}
+			if !strings.Contains(stderr, test.wantMessage) {
+				t.Fatalf("stderr = %q, want diagnostic %q", stderr, test.wantMessage)
+			}
+			diagnostic, ok := shared.DiagnosticFromError(err)
+			if !ok {
+				t.Fatalf("DiagnosticFromError(%v) did not find metadata", err)
+			}
+			if diagnostic.Code != shared.DiagnosticRequiredInputMissing || diagnostic.Parameter != "" {
+				t.Fatalf("diagnostic = %+v, want required_input_missing without a parameter", diagnostic)
+			}
+		})
+	}
+}
+
 func captureSubscriptionsDiagnosticStderr(t *testing.T, fn func()) string {
 	t.Helper()
 
