@@ -256,7 +256,7 @@ Examples:
 			}
 			if attrs.BundleID == nil && attrs.PrimaryLocale == nil && attrs.ContentRightsDeclaration == nil {
 				fmt.Fprintln(os.Stderr, "Error: --bundle-id, --primary-locale, or --content-rights is required")
-				return shared.MissingRequiredUsageError("--bundle-id")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			client, err := shared.GetASCClient()

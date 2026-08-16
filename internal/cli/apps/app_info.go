@@ -114,7 +114,7 @@ Examples:
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if strings.TrimSpace(*versionID) == "" && resolvedAppID == "" && infoIDValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app or --info-id is required (or set ASC_APP_ID)")
-				return shared.MissingRequiredUsageError("--app")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			includeValues, err := normalizeAppInfoInclude(*include)
@@ -294,7 +294,7 @@ Examples:
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if strings.TrimSpace(*versionID) == "" && resolvedAppID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
-				return shared.MissingRequiredUsageError("--app")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			platforms, err := shared.NormalizeAppStoreVersionPlatforms(shared.SplitCSVUpper(*platform))

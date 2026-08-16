@@ -398,6 +398,7 @@ var knownFailureParameters = map[string]struct{}{
 	"paginate":                   {},
 	"path":                       {},
 	"platform":                   {},
+	"pkg":                        {},
 	"private-key":                {},
 	"price-id":                   {},
 	"price-point-id":             {},

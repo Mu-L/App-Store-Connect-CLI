@@ -769,7 +769,7 @@ Examples:
 			}
 			if strings.TrimSpace(*endDate) == "" {
 				fmt.Fprintln(os.Stderr, "Error: at least one update flag is required")
-				return shared.MissingRequiredUsageError("")
+				return shared.MissingRequiredUsageError("--end-date")
 			}
 
 			normalizedEndDate, err := shared.NormalizeDate(*endDate, "--end-date")

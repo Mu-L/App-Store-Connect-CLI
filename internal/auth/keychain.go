@@ -349,6 +349,9 @@ func LoadPrivateKeyFromPEM(data []byte) (*ecdsa.PrivateKey, error) {
 		if !ok {
 			return nil, newPrivateKeyError(PrivateKeyUnsupportedAlgorithm, errors.New("private key is not ECDSA"))
 		}
+		if ecdsaKey.Curve != elliptic.P256() {
+			return nil, newPrivateKeyError(PrivateKeyUnsupportedAlgorithm, errors.New("private key must use the P-256 curve"))
+		}
 		return ecdsaKey, nil
 	}
 
@@ -356,6 +359,9 @@ func LoadPrivateKeyFromPEM(data []byte) (*ecdsa.PrivateKey, error) {
 	ecdsaKey, err := x509.ParseECPrivateKey(block.Bytes)
 	if err != nil {
 		return nil, newPrivateKeyError(PrivateKeyInvalidFormat, fmt.Errorf("invalid private key: %w", err))
+	}
+	if ecdsaKey.Curve != elliptic.P256() {
+		return nil, newPrivateKeyError(PrivateKeyUnsupportedAlgorithm, errors.New("private key must use the P-256 curve"))
 	}
 
 	return ecdsaKey, nil

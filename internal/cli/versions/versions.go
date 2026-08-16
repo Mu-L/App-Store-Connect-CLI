@@ -429,7 +429,7 @@ Examples:
 			// Check that at least one update field is provided
 			if *copyright == "" && normalizedReleaseType == "" && *earliestReleaseDate == "" && *versionString == "" {
 				fmt.Fprintln(os.Stderr, "Error: at least one of --copyright, --release-type, --earliest-release-date, or --version is required")
-				return shared.MissingRequiredUsageError("--copyright")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			client, err := shared.GetASCClient()

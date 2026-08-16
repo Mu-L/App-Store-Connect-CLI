@@ -18,6 +18,7 @@ func TestValidationFailuresExposeStructuredDiagnostics(t *testing.T) {
 			ParseAndRun(context.Context, []string) error
 		}
 		args      []string
+		wantError string
 		wantCode  shared.DiagnosticCode
 		wantParam string
 	}{
@@ -29,6 +30,7 @@ func TestValidationFailuresExposeStructuredDiagnostics(t *testing.T) {
 				return ValidateTestFlightCommand()
 			},
 			args:      []string{"--app", "app-1"},
+			wantError: flag.ErrHelp.Error(),
 			wantCode:  shared.DiagnosticRequiredInputMissing,
 			wantParam: "--build",
 		},
@@ -40,6 +42,7 @@ func TestValidationFailuresExposeStructuredDiagnostics(t *testing.T) {
 				return ValidateCommand()
 			},
 			args:      []string{"--app", "app-1", "--version", "1.0", "--version-id", "version-1"},
+			wantError: "--version and --version-id are mutually exclusive",
 			wantCode:  shared.DiagnosticConflictingInput,
 			wantParam: "--version-id",
 		},
@@ -50,6 +53,9 @@ func TestValidationFailuresExposeStructuredDiagnostics(t *testing.T) {
 			err := test.command().ParseAndRun(context.Background(), test.args)
 			if !errors.Is(err, flag.ErrHelp) {
 				t.Fatalf("error = %v, want flag.ErrHelp contract", err)
+			}
+			if got := err.Error(); got != test.wantError {
+				t.Fatalf("error = %q, want %q", got, test.wantError)
 			}
 			diagnostic, ok := shared.DiagnosticFromError(err)
 			if !ok {

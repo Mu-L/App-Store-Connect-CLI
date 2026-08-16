@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -47,6 +49,34 @@ func TestPrivateKeyErrorsCarryStructuredKinds(t *testing.T) {
 			t.Fatalf("error = %q, want %q", got, want)
 		}
 	})
+
+	for _, pkcs8 := range []bool{true, false} {
+		name := "unsupported curve sec1"
+		if pkcs8 {
+			name = "unsupported curve pkcs8"
+		}
+		t.Run(name, func(t *testing.T) {
+			key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+			if err != nil {
+				t.Fatalf("generate P-384 key: %v", err)
+			}
+			var der []byte
+			if pkcs8 {
+				der, err = x509.MarshalPKCS8PrivateKey(key)
+			} else {
+				der, err = x509.MarshalECPrivateKey(key)
+			}
+			if err != nil {
+				t.Fatalf("marshal P-384 key: %v", err)
+			}
+			data := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+			_, err = LoadPrivateKeyFromPEM(data)
+			assertPrivateKeyErrorKind(t, err, PrivateKeyUnsupportedAlgorithm)
+			if got, want := err.Error(), "private key must use the P-256 curve"; got != want {
+				t.Fatalf("error = %q, want %q", got, want)
+			}
+		})
+	}
 
 	t.Run("insecure permissions", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
