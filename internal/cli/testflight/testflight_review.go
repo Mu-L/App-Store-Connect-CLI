@@ -706,9 +706,17 @@ Deprecated:
 			if visited["external-testing"] {
 				fmt.Fprintln(os.Stderr, "Warning: `--external-testing` is deprecated and cannot be applied safely; App Store Connect does not support editing `externalBuildState`.")
 				if *externalTesting {
-					return shared.UsageError(`--external-testing=true cannot select a beta group or safely infer review submission. Use asc builds add-groups --build-id "BUILD_ID" --group "GROUP_ID" --submit --confirm.`)
+					return shared.WithDiagnostic(
+						shared.UsageError(`--external-testing=true cannot select a beta group or safely infer review submission. Use asc builds add-groups --build-id "BUILD_ID" --group "GROUP_ID" --submit --confirm.`),
+						shared.DiagnosticInvalidInput,
+						"--external-testing",
+					)
 				}
-				return shared.UsageError(`--external-testing=false cannot identify which beta groups to remove. Use asc builds remove-groups --build-id "BUILD_ID" --group "GROUP_ID" --confirm.`)
+				return shared.WithDiagnostic(
+					shared.UsageError(`--external-testing=false cannot identify which beta groups to remove. Use asc builds remove-groups --build-id "BUILD_ID" --group "GROUP_ID" --confirm.`),
+					shared.DiagnosticInvalidInput,
+					"--external-testing",
+				)
 			}
 
 			detailID := strings.TrimSpace(*id)

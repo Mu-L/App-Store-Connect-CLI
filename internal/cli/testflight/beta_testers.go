@@ -103,7 +103,11 @@ Examples:
 				return fmt.Errorf("beta-testers list: %w", err)
 			}
 			if strings.TrimSpace(*group) != "" && strings.TrimSpace(*buildID) != "" && strings.TrimSpace(*next) == "" {
-				return shared.UsageError("--group cannot be combined with --build-id")
+				return shared.WithDiagnostic(
+					shared.UsageError("--group cannot be combined with --build-id"),
+					shared.DiagnosticConflictingInput,
+					"",
+				)
 			}
 
 			resolvedAppID := shared.ResolveAppID(*appID)
