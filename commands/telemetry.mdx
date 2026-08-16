@@ -109,6 +109,7 @@ The CLI sends a single best-effort JSON event after command completion:
   "error_kind": null,
   "failure_stage": null,
   "failure_parameter": null,
+  "diagnostic_code": null,
   "outcome_kind": "success",
   "http_status": null
 }
@@ -121,11 +122,13 @@ process and changes the next time `asc` starts.
 
 `invocation_shape` is one of `leaf`, `bare_group`, `group_with_flags`, or
 `unknown_child`. Failed schema-v4 events also include an allowlisted
-`error_kind`, `failure_stage`, and nullable `failure_parameter`; successful
-events set these fields to `null`. These fields are derived inside the CLI and
-never contain stderr, error text, flag values, or positional values.
-`failure_parameter` is limited to a sanitized public long flag name such as
-`--app`.
+`error_kind`, `failure_stage`, nullable `failure_parameter`, and nullable
+`diagnostic_code`; successful events set these fields to `null`. These fields
+are derived inside the CLI and never contain stderr, error text, flag values,
+or positional values. `failure_parameter` is limited to a sanitized public
+long flag name such as `--app`. `diagnostic_code` is limited to the CLI's
+low-cardinality allowlist, such as `required_input_missing` or
+`file_invalid_format`.
 
 `outcome_kind` separates success, expected negative validation results, usage errors,
 authentication and API failures, transport failures, cancellations, and
@@ -195,6 +198,7 @@ CREATE TABLE asc_cli_events
   error_kind Nullable(LowCardinality(String)),
   failure_stage Nullable(LowCardinality(String)),
   failure_parameter Nullable(LowCardinality(String)),
+  diagnostic_code Nullable(LowCardinality(String)),
   outcome_kind Nullable(LowCardinality(String)),
   http_status Nullable(Int16),
   source LowCardinality(String),
