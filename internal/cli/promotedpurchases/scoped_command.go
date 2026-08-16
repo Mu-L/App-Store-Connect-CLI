@@ -137,7 +137,7 @@ Examples:
 		}
 		if appID == "" && strings.TrimSpace(next) == "" {
 			fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
-			return shared.MissingRequiredUsageError()
+			return shared.MissingRequiredUsageError("--app")
 		}
 
 		client, err := shared.GetASCClient()
@@ -232,7 +232,7 @@ Examples:
 			} else {
 				fmt.Fprintf(os.Stderr, "Error: --promoted-purchase-id or --%s is required\n", ownerIDFlag)
 			}
-			return shared.MissingRequiredUsageError()
+			return shared.MissingRequiredUsageError("--promoted-purchase-id")
 		}
 		if promotedPurchaseID != "" && ownerID != "" {
 			return shared.UsageErrorf("%s: --promoted-purchase-id and --%s are mutually exclusive", errorPrefix, ownerIDFlag)
@@ -359,11 +359,11 @@ Examples:
 
 		if promotedPurchaseID == "" {
 			fmt.Fprintln(os.Stderr, "Error: --promoted-purchase-id is required")
-			return shared.MissingRequiredUsageError()
+			return shared.MissingRequiredUsageError("--promoted-purchase-id")
 		}
 		if !visibleForAllUsersSet && !enabledSet {
 			fmt.Fprintln(os.Stderr, "Error: at least one update flag is required")
-			return shared.MissingRequiredUsageError()
+			return shared.MissingRequiredUsageError("")
 		}
 
 		client, err := shared.GetASCClient()
@@ -416,11 +416,11 @@ Examples:
 
 		if !confirm {
 			fmt.Fprintln(os.Stderr, "Error: --confirm is required")
-			return shared.MissingRequiredUsageError()
+			return shared.MissingRequiredUsageError("--confirm")
 		}
 		if promotedPurchaseID == "" {
 			fmt.Fprintln(os.Stderr, "Error: --promoted-purchase-id is required")
-			return shared.MissingRequiredUsageError()
+			return shared.MissingRequiredUsageError("--promoted-purchase-id")
 		}
 
 		client, err := shared.GetASCClient()
@@ -478,7 +478,7 @@ Examples:
 
 		if appID == "" {
 			fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
-			return shared.MissingRequiredUsageError()
+			return shared.MissingRequiredUsageError("--app")
 		}
 
 		var scopedIDs []string
@@ -489,13 +489,13 @@ Examples:
 			}
 			if !confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required with --clear")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 		} else {
 			scopedIDs = shared.SplitCSV(promotedIDs)
 			if len(scopedIDs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --promoted-purchase-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--promoted-purchase-id")
 			}
 		}
 
