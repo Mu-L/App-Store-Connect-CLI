@@ -2,6 +2,7 @@ package reviews
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -44,7 +45,7 @@ Examples:
 		Exec: func(ctx context.Context, args []string) error {
 			nextValue := strings.TrimSpace(*next)
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("review attachments-list: %w", err)
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-list: %w", err)), shared.DiagnosticInvalidInput, "--next")
 			}
 			if err := rejectReviewNextFlagConflicts(
 				fs, *next, "review attachments-list",
@@ -53,20 +54,20 @@ Examples:
 				return err
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("review attachments-list: --limit must be between 1 and 200")
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-list: --limit must be between 1 and 200")), shared.DiagnosticInvalidInput, "--limit")
 			}
 
 			fieldsValue, err := normalizeReviewAttachmentFields(*fields)
 			if err != nil {
-				return fmt.Errorf("review attachments-list: %w", err)
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-list: %w", err)), shared.DiagnosticInvalidInput, "--fields")
 			}
 			detailFieldsValue, err := normalizeReviewDetailFields(*detailFields)
 			if err != nil {
-				return fmt.Errorf("review attachments-list: %w", err)
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-list: %w", err)), shared.DiagnosticInvalidInput, "--detail-fields")
 			}
 			includeValue, err := normalizeReviewAttachmentInclude(*include)
 			if err != nil {
-				return fmt.Errorf("review attachments-list: %w", err)
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-list: %w", err)), shared.DiagnosticInvalidInput, "--include")
 			}
 
 			reviewDetailValue := strings.TrimSpace(*reviewDetailID)
@@ -170,15 +171,15 @@ Examples:
 
 			fieldsValue, err := normalizeReviewAttachmentFields(*fields)
 			if err != nil {
-				return fmt.Errorf("review attachments-get: %w", err)
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-get: %w", err)), shared.DiagnosticInvalidInput, "--fields")
 			}
 			detailFieldsValue, err := normalizeReviewDetailFields(*detailFields)
 			if err != nil {
-				return fmt.Errorf("review attachments-get: %w", err)
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-get: %w", err)), shared.DiagnosticInvalidInput, "--detail-fields")
 			}
 			includeValue, err := normalizeReviewAttachmentInclude(*include)
 			if err != nil {
-				return fmt.Errorf("review attachments-get: %w", err)
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-get: %w", err)), shared.DiagnosticInvalidInput, "--include")
 			}
 
 			client, err := shared.GetASCClient()
@@ -245,17 +246,36 @@ Examples:
 
 			info, err := os.Lstat(pathValue)
 			if err != nil {
-				return fmt.Errorf("review attachments-upload: %w", err)
+				code := shared.DiagnosticFileInvalidFormat
+				switch {
+				case errors.Is(err, os.ErrNotExist):
+					code = shared.DiagnosticFileNotFound
+				case errors.Is(err, os.ErrPermission):
+					code = shared.DiagnosticFilePermissionDenied
+				}
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-upload: %w", err)), code, "--file")
 			}
 			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("review attachments-upload: refusing to read symlink %q", pathValue)
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-upload: refusing to read symlink %q", pathValue)), shared.DiagnosticFileInvalidFormat, "--file")
 			}
 			if info.IsDir() {
-				return fmt.Errorf("review attachments-upload: %q is a directory", pathValue)
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-upload: %q is a directory", pathValue)), shared.DiagnosticFileInvalidFormat, "--file")
 			}
 			if info.Size() <= 0 {
-				return fmt.Errorf("review attachments-upload: file size must be greater than 0")
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-upload: file size must be greater than 0")), shared.DiagnosticFileInvalidFormat, "--file")
 			}
+			source, err := os.Open(pathValue)
+			if err != nil {
+				code := shared.DiagnosticFileInvalidFormat
+				switch {
+				case errors.Is(err, os.ErrNotExist):
+					code = shared.DiagnosticFileNotFound
+				case errors.Is(err, os.ErrPermission):
+					code = shared.DiagnosticFilePermissionDenied
+				}
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-upload: upload failed: %w", err)), code, "--file")
+			}
+			_ = source.Close()
 
 			client, err := shared.GetASCClient()
 			if err != nil {

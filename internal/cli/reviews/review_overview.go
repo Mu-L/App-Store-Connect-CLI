@@ -103,7 +103,7 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) > 0 {
-				return shared.UsageError("review status does not accept positional arguments")
+				return shared.WithDiagnostic(shared.UsageError("review status does not accept positional arguments"), shared.DiagnosticInvalidInput, "")
 			}
 
 			resolvedAppID, versionValue, versionIDValue, platformValue, err := resolveReviewOverviewFlags(*appID, *version, *versionID, *platform)
@@ -165,7 +165,7 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) > 0 {
-				return shared.UsageError("review doctor does not accept positional arguments")
+				return shared.WithDiagnostic(shared.UsageError("review doctor does not accept positional arguments"), shared.DiagnosticInvalidInput, "")
 			}
 
 			resolvedAppID, versionValue, versionIDValue, platformValue, err := resolveReviewOverviewFlags(*appID, *version, *versionID, *platform)
@@ -226,14 +226,14 @@ func resolveReviewOverviewFlags(appID, version, versionID, platform string) (str
 	versionValue := strings.TrimSpace(version)
 	versionIDValue := strings.TrimSpace(versionID)
 	if versionValue != "" && versionIDValue != "" {
-		return "", "", "", "", shared.UsageError("--version and --version-id are mutually exclusive")
+		return "", "", "", "", shared.WithDiagnostic(shared.UsageError("--version and --version-id are mutually exclusive"), shared.DiagnosticConflictingInput, "")
 	}
 
 	platformValue := strings.TrimSpace(platform)
 	if platformValue != "" {
 		normalizedPlatform, err := shared.NormalizeAppStoreVersionPlatform(platformValue)
 		if err != nil {
-			return "", "", "", "", shared.UsageError(err.Error())
+			return "", "", "", "", shared.WithDiagnostic(shared.UsageError(err.Error()), shared.DiagnosticInvalidInput, "--platform")
 		}
 		platformValue = normalizedPlatform
 	}

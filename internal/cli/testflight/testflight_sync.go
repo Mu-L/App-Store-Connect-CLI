@@ -160,11 +160,11 @@ Examples:
 			testerFilters := shared.SplitCSV(*testerFilter)
 			if len(buildFilters) > 0 && !*includeBuilds {
 				fmt.Fprintf(os.Stderr, "Error: --build-id requires --include-builds\n\n")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "--build-id")
 			}
 			if len(testerFilters) > 0 && !*includeTesters {
 				fmt.Fprintf(os.Stderr, "Error: --tester requires --include-testers\n\n")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "--tester")
 			}
 
 			resolvedOutputPath, err := resolveTestFlightOutputPath(outputValue)
