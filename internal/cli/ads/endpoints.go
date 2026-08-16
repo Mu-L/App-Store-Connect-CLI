@@ -266,6 +266,14 @@ func endpointBodyHelp(spec appleads.EndpointSpec) string {
 		hint = strings.ReplaceAll(hint, "\n", "\n  ")
 		help += "\n  Guidance: " + hint
 	}
+	if strings.TrimSpace(spec.BodyExample) != "" {
+		fileName := strings.TrimSpace(spec.BodyFileExample)
+		if fileName == "" {
+			fileName = "payload.json"
+		}
+		example := strings.ReplaceAll(strings.TrimSpace(spec.BodyExample), "\n", "\n    ")
+		help += fmt.Sprintf("\n  Starter payload (%s):\n    %s", fileName, example)
+	}
 	return help
 }
 
@@ -392,7 +400,7 @@ func bindEndpointFlags(spec appleads.EndpointSpec, flagSetName string) (*flag.Fl
 		}
 	}
 	if spec.BodyKind != appleads.BodyNone {
-		values.file = fs.String("file", "", "Path to Apple Ads JSON payload")
+		values.file = fs.String("file", "", "Path to Apple Ads JSON payload ('-' reads stdin)")
 	}
 	if spec.RequiresConfirm || spec.RiskConfirm {
 		values.confirm = fs.Bool("confirm", false, confirmFlagUsage(spec))
