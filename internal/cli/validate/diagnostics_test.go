@@ -58,6 +58,18 @@ func TestValidationFailuresExposeStructuredDiagnostics(t *testing.T) {
 			wantCode:  shared.DiagnosticConflictingInput,
 			wantParam: "--version-id",
 		},
+		{
+			name: "validate parent flag before subcommand",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return ValidateCommand()
+			},
+			args:      []string{"--app", "app-1", "testflight", "--build", "build-1"},
+			wantError: "--app must be passed after the validate subcommand name",
+			wantCode:  shared.DiagnosticInvalidInput,
+			wantParam: "",
+		},
 	}
 
 	for _, test := range tests {

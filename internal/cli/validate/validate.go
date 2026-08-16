@@ -139,7 +139,7 @@ func wrapValidateSubcommand(cmd *ffcli.Command, parentFlags *flag.FlagSet) *ffcl
 	originalExec := cmd.Exec
 	cmd.Exec = func(ctx context.Context, args []string) error {
 		if message := validateParentFlagUsageMessage(parentFlags); message != "" {
-			return shared.WithDiagnostic(shared.UsageError(message), shared.DiagnosticConflictingInput, "")
+			return shared.WithDiagnostic(shared.UsageError(message), shared.DiagnosticInvalidInput, "")
 		}
 		return originalExec(ctx, args)
 	}
