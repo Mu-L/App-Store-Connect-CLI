@@ -639,6 +639,14 @@ func validationFailureContext(analysis invocationAnalysis, err error) telemetry.
 	case shared.UsageErrorInvalidValue:
 		kind = telemetry.ErrorKindInvalidValue
 	}
+	if diagnostic, ok := shared.DiagnosticFromError(err); ok {
+		switch diagnostic.Code {
+		case shared.DiagnosticRequiredInputMissing:
+			kind = telemetry.ErrorKindMissingRequired
+		case shared.DiagnosticInvalidInput, shared.DiagnosticConflictingInput:
+			kind = telemetry.ErrorKindInvalidValue
+		}
+	}
 	if analysis.shape == telemetry.InvocationShapeUnknownChild {
 		kind = telemetry.ErrorKindOther
 	}
@@ -748,7 +756,7 @@ func failureParameterFromError(err error) string {
 	if err == nil {
 		return ""
 	}
-	if diagnostic, ok := shared.DiagnosticFromError(err); ok && diagnostic.Parameter != "" {
+	if diagnostic, ok := shared.DiagnosticFromError(err); ok {
 		return diagnostic.Parameter
 	}
 	for _, field := range strings.Fields(err.Error()) {

@@ -650,8 +650,11 @@ func TestRun_ValidateMissingRequiredFlagsReturnsUsage(t *testing.T) {
 	if gotContext.ErrorKind != telemetry.ErrorKindMissingRequired || gotContext.FailureStage != telemetry.FailureStageValidation {
 		t.Fatalf("unexpected telemetry context: %+v", gotContext)
 	}
-	if gotContext.FailureParameter != "--version" || gotContext.OutcomeKind != telemetry.OutcomeUsageError {
+	if gotContext.FailureParameter != "" || gotContext.OutcomeKind != telemetry.OutcomeUsageError {
 		t.Fatalf("unexpected missing-parameter telemetry context: %+v", gotContext)
+	}
+	if gotContext.DiagnosticCode != string(shared.DiagnosticRequiredInputMissing) {
+		t.Fatalf("diagnostic code = %q, want %q", gotContext.DiagnosticCode, shared.DiagnosticRequiredInputMissing)
 	}
 }
 
@@ -702,6 +705,65 @@ func TestRun_IntroductoryOfferSelectorReportedUsageEmitsUsageTelemetry(t *testin
 			}
 			if gotExitCode != ExitUsage || gotContext.ErrorKind != test.wantKind ||
 				gotContext.FailureStage != telemetry.FailureStageValidation ||
+				gotContext.OutcomeKind != telemetry.OutcomeUsageError {
+				t.Fatalf("unexpected telemetry: exit=%d context=%+v", gotExitCode, gotContext)
+			}
+		})
+	}
+}
+
+func TestRun_SubscriptionInvalidValuesEmitInvalidValueTelemetry(t *testing.T) {
+	resetReportFlags(t)
+	for _, test := range []struct {
+		name          string
+		args          []string
+		wantParameter string
+		wantCode      shared.DiagnosticCode
+	}{
+		{
+			name: "nonpositive periods",
+			args: []string{
+				"subscriptions", "offers", "introductory", "create",
+				"--subscription-id", "8000000001",
+				"--territory", "USA",
+				"--offer-duration", "ONE_MONTH",
+				"--offer-mode", "FREE_TRIAL",
+				"--number-of-periods", "-1",
+			},
+			wantParameter: "--number-of-periods",
+			wantCode:      shared.DiagnosticInvalidInput,
+		},
+		{
+			name: "conflicting localization flags",
+			args: []string{
+				"subscriptions", "groups", "versions", "localizations", "update",
+				"--id", "localization-1",
+				"--name", "Premium",
+				"--clear-name",
+			},
+			wantParameter: "--name",
+			wantCode:      shared.DiagnosticConflictingInput,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			originalEmitTelemetry := emitTelemetry
+			t.Cleanup(func() { emitTelemetry = originalEmitTelemetry })
+			var gotExitCode int
+			var gotContext telemetry.EventContext
+			emitTelemetry = func(_ string, _ string, _ time.Duration, exitCode int, eventContext telemetry.EventContext) {
+				gotExitCode = exitCode
+				gotContext = eventContext
+			}
+
+			_, _ = captureCommandOutput(t, func() {
+				if code := Run(test.args, "1.0.0"); code != ExitUsage {
+					t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+				}
+			})
+			if gotExitCode != ExitUsage || gotContext.ErrorKind != telemetry.ErrorKindInvalidValue ||
+				gotContext.FailureStage != telemetry.FailureStageValidation ||
+				gotContext.FailureParameter != test.wantParameter ||
+				gotContext.DiagnosticCode != string(test.wantCode) ||
 				gotContext.OutcomeKind != telemetry.OutcomeUsageError {
 				t.Fatalf("unexpected telemetry: exit=%d context=%+v", gotExitCode, gotContext)
 			}

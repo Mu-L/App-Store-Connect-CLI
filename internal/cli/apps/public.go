@@ -170,7 +170,7 @@ Examples:
 			termValue := strings.TrimSpace(*term)
 			if termValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --term is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--term")
 			}
 			if *limit < 1 || *limit > 200 {
 				fmt.Fprintln(os.Stderr, "Error: --limit must be between 1 and 200")
