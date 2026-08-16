@@ -458,6 +458,45 @@ func TestAuthLoginCommand(t *testing.T) {
 		}
 	})
 
+	for _, test := range []struct {
+		name      string
+		args      []string
+		parameter string
+	}{
+		{
+			name:      "whitespace name",
+			args:      []string{"--name", "   ", "--key-id", "KEY", "--issuer-id", "ISS", "--private-key", "/tmp/AuthKey.p8"},
+			parameter: "--name",
+		},
+		{
+			name:      "whitespace issuer id",
+			args:      []string{"--name", "demo", "--key-id", "KEY", "--issuer-id", "   ", "--private-key", "/tmp/AuthKey.p8"},
+			parameter: "--issuer-id",
+		},
+		{
+			name:      "whitespace private key",
+			args:      []string{"--name", "demo", "--key-id", "KEY", "--issuer-id", "ISS", "--private-key", "   "},
+			parameter: "--private-key",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := AuthLoginCommand()
+			if err := cmd.FlagSet.Parse(test.args); err != nil {
+				t.Fatalf("Parse() error: %v", err)
+			}
+			_, stderr := captureAuthOutput(t, func() {
+				err := cmd.Exec(context.Background(), []string{})
+				if !errors.Is(err, flag.ErrHelp) {
+					t.Fatalf("expected flag.ErrHelp, got %v", err)
+				}
+				assertAuthDiagnostic(t, err, shared.DiagnosticRequiredInputMissing, test.parameter)
+			})
+			if !strings.Contains(stderr, test.parameter+" is required") {
+				t.Fatalf("expected %s error in stderr, got %q", test.parameter, stderr)
+			}
+		})
+	}
+
 	t.Run("skip validation mutually exclusive with network", func(t *testing.T) {
 		cmd := AuthLoginCommand()
 		if err := cmd.FlagSet.Parse([]string{
