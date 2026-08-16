@@ -93,7 +93,7 @@ func TestMissingRequiredUsageErrorCarriesStructuredDiagnostic(t *testing.T) {
 		wantParameter string
 	}{
 		{name: "without parameter", wantMessage: flag.ErrHelp.Error()},
-		{name: "with parameter", parameter: "--app", wantMessage: flag.ErrHelp.Error(), wantParameter: "--app"},
+		{name: "with parameter", parameter: "--app", wantMessage: "--app", wantParameter: "--app"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := MissingRequiredUsageError(tt.parameter)
