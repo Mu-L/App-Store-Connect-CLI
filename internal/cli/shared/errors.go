@@ -232,7 +232,11 @@ func MissingRequiredUsageError(parameters ...string) error {
 	if len(parameters) > 0 {
 		parameter = strings.TrimSpace(parameters[0])
 	}
-	return classifiedUsageError{kind: UsageErrorMissingRequired, message: parameter}
+	return WithDiagnostic(
+		classifiedUsageError{kind: UsageErrorMissingRequired, message: parameter},
+		DiagnosticRequiredInputMissing,
+		parameter,
+	)
 }
 
 func ClassifyUsageError(err error) UsageErrorKind {
