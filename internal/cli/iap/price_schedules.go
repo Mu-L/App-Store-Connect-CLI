@@ -75,7 +75,7 @@ Examples:
 			scheduleValue := strings.TrimSpace(*scheduleID)
 			if iapValue == "" && scheduleValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --iap-id or --schedule-id is required")
-				return shared.MissingRequiredUsageError("--iap-id")
+				return shared.MissingRequiredUsageError("")
 			}
 			if iapValue != "" && scheduleValue != "" {
 				fmt.Fprintln(os.Stderr, "Error: --iap-id and --schedule-id are mutually exclusive")
@@ -287,7 +287,7 @@ Examples:
 				}
 				if len(parsedPrices) == 0 {
 					fmt.Fprintln(os.Stderr, "Error: --prices (or --tier/--price) is required")
-					return shared.MissingRequiredUsageError("--prices")
+					return shared.MissingRequiredUsageError("")
 				}
 			}
 

@@ -90,7 +90,7 @@ Examples:
 			nextURL := strings.TrimSpace(*next)
 			if group == "" && resolvedAppID == "" && nextURL == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
-				return shared.MissingRequiredUsageError("--app")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			client, err := shared.GetASCClient()
@@ -217,7 +217,7 @@ Examples:
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if group == "" && resolvedAppID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
-				return shared.MissingRequiredUsageError("--app")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			name := strings.TrimSpace(*referenceName)
@@ -304,7 +304,7 @@ Examples:
 
 			if !hasUpdate {
 				fmt.Fprintln(os.Stderr, "Error: at least one update flag is required")
-				return shared.MissingRequiredUsageError("")
+				return shared.MissingRequiredUsageError("--reference-name")
 			}
 
 			client, err := shared.GetASCClient()
@@ -1126,7 +1126,7 @@ Examples:
 			locID := strings.TrimSpace(*localizationID)
 			if id == "" && locID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --id or --localization-id is required")
-				return shared.MissingRequiredUsageError("--id")
+				return shared.MissingRequiredUsageError("")
 			}
 			if id != "" && locID != "" {
 				fmt.Fprintln(os.Stderr, "Error: --id cannot be used with --localization-id")

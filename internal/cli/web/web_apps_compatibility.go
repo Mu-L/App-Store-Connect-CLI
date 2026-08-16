@@ -127,7 +127,7 @@ func WebAppsCompatibilityEditCommand() *ffcli.Command {
 			}
 			if !iosAppOnMac.IsSet() && !iosAppOnVisionPro.IsSet() {
 				fmt.Fprintln(os.Stderr, "Error: at least one of --ios-app-on-mac or --ios-app-on-vision-pro is required")
-				return shared.MissingRequiredUsageError("--ios-app-on-mac")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			var macValue *bool

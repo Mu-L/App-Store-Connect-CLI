@@ -147,7 +147,7 @@ Examples:
 			}
 			if idValue == "" && appValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --id or --app is required (or set ASC_APP_ID)")
-				return shared.MissingRequiredUsageError("--id")
+				return shared.MissingRequiredUsageError("")
 			}
 			if idValue != "" && strings.TrimSpace(*appID) != "" {
 				fmt.Fprintln(os.Stderr, "Error: --id and --app are mutually exclusive")

@@ -183,7 +183,7 @@ Examples:
 			// Require one of --app or --global (unless --next is provided)
 			if !*global && resolvedAppID == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintf(os.Stderr, "Error: --app or --global is required (or set ASC_APP_ID)\n\n")
-				return shared.MissingRequiredUsageError("--app")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			client, err := shared.GetASCClient()
@@ -707,7 +707,7 @@ Examples:
 			testerEmails := shared.SplitCSV(*email)
 			if len(testerIDs) == 0 && len(testerEmails) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --tester or --email is required")
-				return shared.MissingRequiredUsageError("--tester")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			client, err := shared.GetASCClient()

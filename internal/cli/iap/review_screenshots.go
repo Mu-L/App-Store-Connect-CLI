@@ -71,7 +71,7 @@ Examples:
 			screenshotValue := strings.TrimSpace(*screenshotID)
 			if iapValue == "" && screenshotValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --iap-id or --screenshot-id is required")
-				return shared.MissingRequiredUsageError("--iap-id")
+				return shared.MissingRequiredUsageError("")
 			}
 			fieldValues, err := shared.NormalizeSelection(*iapFields, iapVersionIAPFields, "--iap-fields")
 			if err != nil {

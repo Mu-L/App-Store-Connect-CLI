@@ -83,7 +83,7 @@ Examples:
 			nextURL := strings.TrimSpace(*next)
 			if group == "" && resolvedAppID == "" && nextURL == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
-				return shared.MissingRequiredUsageError("--app")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			client, err := shared.GetASCClient()
@@ -766,7 +766,7 @@ Examples:
 			locID := strings.TrimSpace(*localizationID)
 			if id == "" && locID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --id or --localization-id is required")
-				return shared.MissingRequiredUsageError("--id")
+				return shared.MissingRequiredUsageError("")
 			}
 			if id != "" && locID != "" {
 				fmt.Fprintln(os.Stderr, "Error: --id cannot be used with --localization-id")

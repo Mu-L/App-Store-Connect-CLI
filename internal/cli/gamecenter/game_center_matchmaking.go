@@ -530,7 +530,7 @@ Examples:
 			}
 			if *minPlayers == 0 || *maxPlayers == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --min-players and --max-players are required")
-				return shared.MissingRequiredUsageError("--min-players")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			attrs := asc.GameCenterMatchmakingRuleSetCreateAttributes{
@@ -1232,7 +1232,7 @@ Examples:
 			}
 			if *minPlayers == 0 || *maxPlayers == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --min-players and --max-players are required")
-				return shared.MissingRequiredUsageError("--min-players")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			attrs := asc.GameCenterMatchmakingTeamCreateAttributes{

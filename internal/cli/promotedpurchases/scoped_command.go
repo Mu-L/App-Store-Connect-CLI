@@ -229,10 +229,11 @@ Examples:
 		if promotedPurchaseID == "" && ownerID == "" {
 			if ownerIDFlag == "" {
 				fmt.Fprintln(os.Stderr, "Error: --promoted-purchase-id is required")
+				return shared.MissingRequiredUsageError("--promoted-purchase-id")
 			} else {
 				fmt.Fprintf(os.Stderr, "Error: --promoted-purchase-id or --%s is required\n", ownerIDFlag)
 			}
-			return shared.MissingRequiredUsageError("--promoted-purchase-id")
+			return shared.MissingRequiredUsageError("")
 		}
 		if promotedPurchaseID != "" && ownerID != "" {
 			return shared.UsageErrorf("%s: --promoted-purchase-id and --%s are mutually exclusive", errorPrefix, ownerIDFlag)

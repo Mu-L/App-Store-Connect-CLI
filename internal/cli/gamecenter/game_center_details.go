@@ -300,7 +300,7 @@ Examples:
 
 			if !hasUpdate {
 				fmt.Fprintln(os.Stderr, "Error: at least one update flag is required (--game-center-group-id, --default-leaderboard-id)")
-				return shared.MissingRequiredUsageError("--game-center-group-id")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			client, err := shared.GetASCClient()

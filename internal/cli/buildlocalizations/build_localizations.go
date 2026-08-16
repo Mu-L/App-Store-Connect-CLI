@@ -282,7 +282,7 @@ Examples:
 			whatsNewValue := strings.TrimSpace(*whatsNew)
 			if whatsNewValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: at least one update flag is required")
-				return shared.MissingRequiredUsageError("")
+				return shared.MissingRequiredUsageError("--whats-new")
 			}
 
 			client, err := shared.GetASCClient()

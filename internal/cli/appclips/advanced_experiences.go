@@ -301,7 +301,7 @@ Examples:
 			}
 			if subtitleValue != "" && (languageValue == "" || titleValue == "") {
 				fmt.Fprintln(os.Stderr, "Error: --language and --title are required when --subtitle is set")
-				return shared.MissingRequiredUsageError("--language")
+				return shared.MissingRequiredUsageError("")
 			}
 
 			inlineLocalizations, err := parseInlineLocalizations(inlineLocalizationJSON)

@@ -349,7 +349,7 @@ Examples:
 
 			if !eligibilityLastSubscribedMin.set && !eligibilityLastSubscribedMax.set {
 				fmt.Fprintln(os.Stderr, "Error: --eligibility-last-subscribed-min or --eligibility-last-subscribed-max is required")
-				return shared.MissingRequiredUsageError("--eligibility-last-subscribed-min")
+				return shared.MissingRequiredUsageError("")
 			}
 			if eligibilityLastSubscribedMin.set && eligibilityLastSubscribedMin.value < 0 {
 				return fmt.Errorf("win-back-offers create: eligibility last subscribed min must be 0 or greater")

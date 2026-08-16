@@ -242,9 +242,13 @@ Examples:
 		Exec: func(ctx context.Context, args []string) error {
 			submissionIDValue := strings.TrimSpace(*submissionID)
 			crashLogIDValue := strings.TrimSpace(*crashLogID)
-			if (submissionIDValue == "" && crashLogIDValue == "") || (submissionIDValue != "" && crashLogIDValue != "") {
+			if submissionIDValue == "" && crashLogIDValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: exactly one of --submission-id or --crash-log-id is required")
-				return shared.MissingRequiredUsageError("--submission-id")
+				return shared.MissingRequiredUsageError("")
+			}
+			if submissionIDValue != "" && crashLogIDValue != "" {
+				fmt.Fprintln(os.Stderr, "Error: exactly one of --submission-id or --crash-log-id is required")
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "")
 			}
 			if submissionIDValue != "" {
 				return runCrashLogBySubmissionID(ctx, submissionIDValue, output)

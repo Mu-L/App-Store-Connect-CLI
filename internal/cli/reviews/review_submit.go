@@ -71,7 +71,7 @@ Examples:
 			}
 			if strings.TrimSpace(*version) == "" && strings.TrimSpace(*versionID) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --version or --version-id is required")
-				return shared.MissingRequiredUsageError("--version")
+				return shared.MissingRequiredUsageError("")
 			}
 			if strings.TrimSpace(*version) != "" && strings.TrimSpace(*versionID) != "" {
 				return shared.UsageError("--version and --version-id are mutually exclusive")
