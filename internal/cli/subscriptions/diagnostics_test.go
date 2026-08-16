@@ -125,6 +125,72 @@ func TestSubscriptionsAlternativeSelectorsLeaveDiagnosticParameterEmpty(t *testi
 	}
 }
 
+func TestSubscriptionsNumberOfPeriodsDistinguishesMissingFromInvalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		command func() interface {
+			ParseAndRun(context.Context, []string) error
+		}
+		args []string
+	}{
+		{
+			name: "introductory offer",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return SubscriptionsIntroductoryOffersCreateCommand()
+			},
+			args: []string{"--subscription-id", "sub-1", "--offer-duration", "ONE_MONTH", "--offer-mode", "FREE_TRIAL"},
+		},
+		{
+			name: "offer code",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return SubscriptionsOfferCodesCreateCommand()
+			},
+			args: []string{"--subscription-id", "sub-1", "--name", "Spring", "--offer-eligibility", "STACK_WITH_INTRO_OFFERS", "--customer-eligibilities", "NEW", "--offer-duration", "ONE_MONTH", "--offer-mode", "FREE_TRIAL"},
+		},
+		{
+			name: "promotional offer",
+			command: func() interface {
+				ParseAndRun(context.Context, []string) error
+			} {
+				return SubscriptionsPromotionalOffersCreateCommand()
+			},
+			args: []string{"--subscription-id", "sub-1", "--offer-code", "SPRING", "--name", "Spring", "--offer-duration", "ONE_MONTH", "--offer-mode", "FREE_TRIAL"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, input := range []struct {
+				name     string
+				periods  []string
+				wantCode shared.DiagnosticCode
+			}{
+				{name: "missing", wantCode: shared.DiagnosticRequiredInputMissing},
+				{name: "nonpositive", periods: []string{"--number-of-periods", "-1"}, wantCode: shared.DiagnosticInvalidInput},
+			} {
+				t.Run(input.name, func(t *testing.T) {
+					args := append(append([]string{}, test.args...), input.periods...)
+					err := test.command().ParseAndRun(context.Background(), args)
+					if !errors.Is(err, flag.ErrHelp) {
+						t.Fatalf("error = %v, want flag.ErrHelp contract", err)
+					}
+					diagnostic, ok := shared.DiagnosticFromError(err)
+					if !ok {
+						t.Fatalf("DiagnosticFromError(%v) did not find metadata", err)
+					}
+					if diagnostic.Code != input.wantCode || diagnostic.Parameter != "--number-of-periods" {
+						t.Fatalf("diagnostic = %+v, want code %q parameter --number-of-periods", diagnostic, input.wantCode)
+					}
+				})
+			}
+		})
+	}
+}
+
 func captureSubscriptionsDiagnosticStderr(t *testing.T, fn func()) string {
 	t.Helper()
 
