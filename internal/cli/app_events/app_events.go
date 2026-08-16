@@ -84,7 +84,7 @@ Examples:
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if resolvedAppID == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--app")
 			}
 
 			client, err := appEventsClientFactory()
@@ -147,7 +147,7 @@ Examples:
 			id := strings.TrimSpace(*eventID)
 			if id == "" {
 				fmt.Fprintln(os.Stderr, "Error: --event-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--event-id")
 			}
 
 			client, err := appEventsClientFactory()
@@ -203,13 +203,13 @@ Examples:
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if resolvedAppID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--app")
 			}
 
 			nameValue := strings.TrimSpace(*name)
 			if nameValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --name is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--name")
 			}
 
 			normalizedBadge, err := normalizeAppEventBadge(*eventType)
@@ -344,7 +344,7 @@ Examples:
 			id := strings.TrimSpace(*eventID)
 			if id == "" {
 				fmt.Fprintln(os.Stderr, "Error: --event-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--event-id")
 			}
 
 			var (
@@ -433,7 +433,7 @@ Examples:
 
 			if !hasUpdate {
 				fmt.Fprintln(os.Stderr, "Error: at least one update flag is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("")
 			}
 
 			client, err := appEventsClientFactory()
@@ -476,11 +476,11 @@ Examples:
 			id := strings.TrimSpace(*eventID)
 			if id == "" {
 				fmt.Fprintln(os.Stderr, "Error: --event-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--event-id")
 			}
 			if !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 
 			client, err := appEventsClientFactory()
