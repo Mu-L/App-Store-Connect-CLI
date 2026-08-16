@@ -49,12 +49,12 @@ macOS: app must be running. Captures the frontmost visible window by bundle ID.
 			}
 			if nameVal == "." || nameVal == ".." || strings.ContainsAny(nameVal, `/\`) {
 				fmt.Fprintln(os.Stderr, "Error: --name must be a file name without path separators")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--name")
 			}
 			providerVal := strings.TrimSpace(strings.ToLower(*provider))
 			if providerVal != screenshots.ProviderAXe && providerVal != screenshots.ProviderMacOS {
 				fmt.Fprintf(os.Stderr, "Error: --provider must be %q or %q\n", screenshots.ProviderAXe, screenshots.ProviderMacOS)
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--provider")
 			}
 
 			outputDirVal := strings.TrimSpace(*outputDir)
