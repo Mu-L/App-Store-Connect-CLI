@@ -37,30 +37,51 @@ func TestSubscriptionsMissingRequiredInputExposesStructuredDiagnostic(t *testing
 }
 
 func TestSubscriptionsConflictingInputExposesStructuredDiagnostic(t *testing.T) {
-	var err error
-	stderr := captureSubscriptionsDiagnosticStderr(t, func() {
-		err = SubscriptionsGroupsVersionLocalizationsUpdateCommand().ParseAndRun(context.Background(), []string{
-			"--id", "localization-1",
-			"--name", "Premium",
-			"--clear-name",
-		})
-	})
-	if !errors.Is(err, flag.ErrHelp) {
-		t.Fatalf("error = %v, want flag.ErrHelp contract", err)
-	}
-	if got, want := err.Error(), flag.ErrHelp.Error(); got != want {
-		t.Fatalf("error = %q, want %q", got, want)
-	}
-	if want := "Error: --name cannot be used with --clear-name\n"; !strings.Contains(stderr, want) {
-		t.Fatalf("stderr = %q, want diagnostic %q", stderr, want)
-	}
+	for _, test := range []struct {
+		name          string
+		args          []string
+		wantParameter string
+		wantStderr    string
+	}{
+		{
+			name:          "name",
+			args:          []string{"--id", "localization-1", "--name", "Premium", "--clear-name"},
+			wantParameter: "--name",
+			wantStderr:    "Error: --name cannot be used with --clear-name\n",
+		},
+		{
+			name:          "custom app name",
+			args:          []string{"--id", "localization-1", "--custom-app-name", "Premium", "--clear-custom-app-name"},
+			wantParameter: "--custom-app-name",
+			wantStderr:    "Error: --custom-app-name cannot be used with --clear-custom-app-name\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var err error
+			stderr := captureSubscriptionsDiagnosticStderr(t, func() {
+				err = SubscriptionsGroupsVersionLocalizationsUpdateCommand().ParseAndRun(context.Background(), test.args)
+			})
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("error = %v, want flag.ErrHelp contract", err)
+			}
+			if got, want := err.Error(), flag.ErrHelp.Error(); got != want {
+				t.Fatalf("error = %q, want %q", got, want)
+			}
+			if got := shared.ClassifyUsageError(err); got != shared.UsageErrorInvalidValue {
+				t.Fatalf("usage classification = %q, want %q", got, shared.UsageErrorInvalidValue)
+			}
+			if !strings.Contains(stderr, test.wantStderr) {
+				t.Fatalf("stderr = %q, want diagnostic %q", stderr, test.wantStderr)
+			}
 
-	diagnostic, ok := shared.DiagnosticFromError(err)
-	if !ok {
-		t.Fatalf("DiagnosticFromError(%v) did not find metadata", err)
-	}
-	if diagnostic.Code != shared.DiagnosticConflictingInput || diagnostic.Parameter != "--name" {
-		t.Fatalf("diagnostic = %+v, want conflicting_input for --name", diagnostic)
+			diagnostic, ok := shared.DiagnosticFromError(err)
+			if !ok {
+				t.Fatalf("DiagnosticFromError(%v) did not find metadata", err)
+			}
+			if diagnostic.Code != shared.DiagnosticConflictingInput || diagnostic.Parameter != test.wantParameter {
+				t.Fatalf("diagnostic = %+v, want conflicting_input for %s", diagnostic, test.wantParameter)
+			}
+		})
 	}
 }
 
@@ -184,6 +205,13 @@ func TestSubscriptionsNumberOfPeriodsDistinguishesMissingFromInvalid(t *testing.
 					}
 					if diagnostic.Code != input.wantCode || diagnostic.Parameter != "--number-of-periods" {
 						t.Fatalf("diagnostic = %+v, want code %q parameter --number-of-periods", diagnostic, input.wantCode)
+					}
+					wantKind := shared.UsageErrorMissingRequired
+					if input.name == "nonpositive" {
+						wantKind = shared.UsageErrorInvalidValue
+					}
+					if got := shared.ClassifyUsageError(err); got != wantKind {
+						t.Fatalf("usage classification = %q, want %q", got, wantKind)
 					}
 				})
 			}

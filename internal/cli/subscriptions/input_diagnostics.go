@@ -8,9 +8,8 @@ import (
 
 func requiredPositiveIntegerUsageError(fs *flag.FlagSet, name string) error {
 	parameter := "--" + name
-	err := shared.MissingRequiredUsageError(parameter)
 	if flagWasProvided(fs, name) {
-		return shared.WithDiagnostic(err, shared.DiagnosticInvalidInput, parameter)
+		return shared.InvalidValueUsageError(parameter)
 	}
-	return err
+	return shared.MissingRequiredUsageError(parameter)
 }

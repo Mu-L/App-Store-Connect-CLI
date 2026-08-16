@@ -117,6 +117,26 @@ func TestMissingRequiredUsageErrorCarriesStructuredDiagnostic(t *testing.T) {
 	}
 }
 
+func TestInvalidValueUsageErrorCarriesStructuredDiagnostic(t *testing.T) {
+	err := InvalidValueUsageError("--number-of-periods")
+	if got := err.Error(); got != flag.ErrHelp.Error() {
+		t.Fatalf("InvalidValueUsageError().Error() = %q, want %q", got, flag.ErrHelp.Error())
+	}
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("InvalidValueUsageError() should preserve flag.ErrHelp: %v", err)
+	}
+	if got := ClassifyUsageError(err); got != UsageErrorInvalidValue {
+		t.Fatalf("ClassifyUsageError() = %q, want %q", got, UsageErrorInvalidValue)
+	}
+	diagnostic, ok := DiagnosticFromError(err)
+	if !ok {
+		t.Fatal("DiagnosticFromError() did not find invalid-input metadata")
+	}
+	if diagnostic.Code != DiagnosticInvalidInput || diagnostic.Parameter != "--number-of-periods" {
+		t.Fatalf("DiagnosticFromError() = %+v", diagnostic)
+	}
+}
+
 func TestDiagnosticFromErrorUsesOutermostAnnotation(t *testing.T) {
 	err := WithDiagnostic(
 		WithDiagnostic(errors.New("unchanged"), DiagnosticInvalidInput, "--issuer-id"),
