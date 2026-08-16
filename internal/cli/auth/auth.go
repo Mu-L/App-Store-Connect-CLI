@@ -393,7 +393,7 @@ func validateLoginCredentials(ctx context.Context, keyID, issuerID, keyPath stri
 	if network {
 		if err := loginNetworkValidate(ctx, keyID, issuerID, keyPath); err != nil {
 			code := shared.DiagnosticRequestFailed
-			if errors.Is(err, asc.ErrUnauthorized) || errors.Is(err, asc.ErrForbidden) {
+			if errors.Is(err, asc.ErrUnauthorized) {
 				code = shared.DiagnosticAuthenticationRejected
 			}
 			return shared.WithDiagnostic(fmt.Errorf("network validation failed: %w", err), code, "")

@@ -354,6 +354,26 @@ func TestValidateLoginCredentials(t *testing.T) {
 		}
 		assertAuthDiagnostic(t, err, shared.DiagnosticAuthenticationRejected, "")
 	})
+
+	t.Run("network authorization denied", func(t *testing.T) {
+		restoreJWT := SetLoginJWTGenerator(func(string, string, *ecdsa.PrivateKey) (string, error) {
+			return "token", nil
+		})
+		prevNetwork := loginNetworkValidate
+		loginNetworkValidate = func(context.Context, string, string, string) error {
+			return asc.ErrForbidden
+		}
+		t.Cleanup(func() {
+			restoreJWT()
+			loginNetworkValidate = prevNetwork
+		})
+
+		err := validateLoginCredentials(context.Background(), "KEY", "ISS", keyPath, true)
+		if err == nil || !strings.Contains(err.Error(), "network validation failed") {
+			t.Fatalf("expected network validation error, got %v", err)
+		}
+		assertAuthDiagnostic(t, err, shared.DiagnosticRequestFailed, "")
+	})
 }
 
 func TestLoginStorageMessage_BypassModes(t *testing.T) {
