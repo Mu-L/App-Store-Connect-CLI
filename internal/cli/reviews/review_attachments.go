@@ -264,6 +264,18 @@ Examples:
 			if info.Size() <= 0 {
 				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-upload: file size must be greater than 0")), shared.DiagnosticFileInvalidFormat, "--file")
 			}
+			source, err := os.Open(pathValue)
+			if err != nil {
+				code := shared.DiagnosticFileInvalidFormat
+				switch {
+				case errors.Is(err, os.ErrNotExist):
+					code = shared.DiagnosticFileNotFound
+				case errors.Is(err, os.ErrPermission):
+					code = shared.DiagnosticFilePermissionDenied
+				}
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("review attachments-upload: upload failed: %w", err)), code, "--file")
+			}
+			_ = source.Close()
 
 			client, err := shared.GetASCClient()
 			if err != nil {

@@ -127,7 +127,7 @@ Examples:
 			idValue := strings.TrimSpace(*id)
 			if idValue == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --id is required")
-				return shared.MissingRequiredUsageError("")
+				return shared.MissingRequiredUsageError("--id")
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return fmt.Errorf("bundle-ids profiles list: --limit must be between 1 and 200")
