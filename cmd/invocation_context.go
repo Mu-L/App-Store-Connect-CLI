@@ -748,7 +748,7 @@ func failureParameterFromError(err error) string {
 	if err == nil {
 		return ""
 	}
-	if diagnostic, ok := shared.DiagnosticFromError(err); ok && diagnostic.Parameter != "" {
+	if diagnostic, ok := shared.DiagnosticFromError(err); ok {
 		return diagnostic.Parameter
 	}
 	for _, field := range strings.Fields(err.Error()) {

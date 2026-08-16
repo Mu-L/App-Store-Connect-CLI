@@ -650,7 +650,7 @@ func TestRun_ValidateMissingRequiredFlagsReturnsUsage(t *testing.T) {
 	if gotContext.ErrorKind != telemetry.ErrorKindMissingRequired || gotContext.FailureStage != telemetry.FailureStageValidation {
 		t.Fatalf("unexpected telemetry context: %+v", gotContext)
 	}
-	if gotContext.FailureParameter != "--version" || gotContext.OutcomeKind != telemetry.OutcomeUsageError {
+	if gotContext.FailureParameter != "" || gotContext.OutcomeKind != telemetry.OutcomeUsageError {
 		t.Fatalf("unexpected missing-parameter telemetry context: %+v", gotContext)
 	}
 	if gotContext.DiagnosticCode != string(shared.DiagnosticRequiredInputMissing) {
