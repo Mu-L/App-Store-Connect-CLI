@@ -423,7 +423,7 @@ func validateReviewDetailUpdateDemoCredentials(
 func validateReviewDetailDemoCredentialValues(demoAccountName, demoAccountPassword string) error {
 	if strings.TrimSpace(demoAccountName) == "" || strings.TrimSpace(demoAccountPassword) == "" {
 		fmt.Fprintln(os.Stderr, reviewDetailDemoCredentialsError)
-		return flag.ErrHelp
+		return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticRequiredInputMissing, "")
 	}
 
 	return validateReviewDetailDemoPasswordLength(demoAccountPassword)
@@ -435,5 +435,5 @@ func validateReviewDetailDemoPasswordLength(demoAccountPassword string) error {
 	}
 
 	fmt.Fprintln(os.Stderr, reviewDetailDemoPasswordLengthError)
-	return flag.ErrHelp
+	return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--demo-account-password")
 }
