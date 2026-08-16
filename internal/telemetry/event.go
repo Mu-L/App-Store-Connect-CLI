@@ -85,6 +85,9 @@ type EventContext struct {
 	ErrorKind        ErrorKind
 	FailureStage     FailureStage
 	FailureParameter string
+	// DiagnosticCode is populated from structured CLI errors. It remains an
+	// in-process field until the ingestion service accepts the new dimension.
+	DiagnosticCode   string
 	OutcomeKind      OutcomeKind
 	HTTPStatus       int
 	PublicStorefront bool
