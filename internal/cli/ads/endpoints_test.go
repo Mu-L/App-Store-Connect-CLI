@@ -409,8 +409,16 @@ func TestPlatformKeywordQueriesRequireSelectorBodyBeforeAuth(t *testing.T) {
 		if !errors.Is(err, flag.ErrHelp) {
 			t.Errorf("%q missing body error = %v, want pre-auth --file usage error", strings.Join(path, " "), err)
 		}
-		if got, want := err.Error(), flag.ErrHelp.Error(); got != want {
+		if got, want := err.Error(), "--file"; got != want {
 			t.Errorf("%q missing body error = %q, want exact %q", strings.Join(path, " "), got, want)
+		}
+		diagnostic, ok := shared.DiagnosticFromError(err)
+		if !ok {
+			t.Errorf("%q missing body error has no structured diagnostic", strings.Join(path, " "))
+			continue
+		}
+		if diagnostic.Code != shared.DiagnosticRequiredInputMissing || diagnostic.Parameter != "--file" {
+			t.Errorf("%q diagnostic = %+v, want required_input_missing for --file", strings.Join(path, " "), diagnostic)
 		}
 	}
 }

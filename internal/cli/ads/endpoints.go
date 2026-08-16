@@ -729,7 +729,7 @@ func readBody(spec appleads.EndpointSpec, flags endpointFlagValues) (json.RawMes
 			return nil, nil
 		}
 		fmt.Fprintln(os.Stderr, "Error: --file is required")
-		return nil, shared.MissingRequiredUsageError()
+		return nil, shared.MissingRequiredUsageError("--file")
 	}
 	kind := shared.JSONPayloadObject
 	if spec.BodyKind == appleads.BodyArray {

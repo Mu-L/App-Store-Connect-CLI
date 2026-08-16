@@ -56,19 +56,19 @@ func NewAvailabilitySetCommand(config AvailabilitySetCommandConfig) *ffcli.Comma
 			resolvedAppID := resolveAppID(*appID)
 			if resolvedAppID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
-				return MissingRequiredUsageError()
+				return MissingRequiredUsageError("--app")
 			}
 			if !*allTerritories && strings.TrimSpace(*territory) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --territory or --all-territories is required")
-				return MissingRequiredUsageError()
+				return MissingRequiredUsageError("")
 			}
 			if !available.IsSet() {
 				fmt.Fprintln(os.Stderr, "Error: --available is required (true or false)")
-				return MissingRequiredUsageError()
+				return MissingRequiredUsageError("--available")
 			}
 			if config.IncludeAvailableInNewTerritories && !availableInNewTerritories.IsSet() {
 				fmt.Fprintln(os.Stderr, "Error: --available-in-new-territories is required (true or false)")
-				return MissingRequiredUsageError()
+				return MissingRequiredUsageError("--available-in-new-territories")
 			}
 
 			var territories []string

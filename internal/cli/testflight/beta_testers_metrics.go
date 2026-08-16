@@ -70,11 +70,11 @@ Examples:
 			nextValue := strings.TrimSpace(*next)
 			if nextValue == "" && testerValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --tester-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--tester-id")
 			}
 			if nextValue == "" && resolvedAppID == "" {
 				fmt.Fprintf(os.Stderr, "Error: --app is required (or set ASC_APP_ID)\n\n")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--app")
 			}
 
 			client, err := shared.GetASCClient()

@@ -62,7 +62,7 @@ Examples:
 			}
 			if groupValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --group-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--group-id")
 			}
 
 			client, err := shared.GetASCClient()
@@ -134,7 +134,7 @@ Examples:
 			}
 			if groupValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --group-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--group-id")
 			}
 
 			client, err := shared.GetASCClient()
@@ -206,7 +206,7 @@ Examples:
 			}
 			if groupValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --group-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--group-id")
 			}
 
 			client, err := shared.GetASCClient()

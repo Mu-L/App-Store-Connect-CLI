@@ -77,7 +77,7 @@ Examples:
 			pathValue := strings.TrimSpace(*path)
 			if pathValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --path is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--path")
 			}
 			requiresOrg, err := rawRequestRequiresOrg(pathValue)
 			if err != nil {

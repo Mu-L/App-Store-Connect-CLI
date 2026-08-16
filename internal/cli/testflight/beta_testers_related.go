@@ -75,7 +75,7 @@ Examples:
 			}
 			if testerValue == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --tester-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--tester-id")
 			}
 
 			client, err := shared.GetASCClient()
@@ -94,7 +94,7 @@ Examples:
 			if *paginate {
 				if testerValue == "" {
 					fmt.Fprintln(os.Stderr, "Error: --tester-id is required")
-					return shared.MissingRequiredUsageError()
+					return shared.MissingRequiredUsageError("--tester-id")
 				}
 				paginateOpts := append(opts, asc.WithBetaTesterAppsLimit(200))
 				resp, err := shared.PaginateWithSpinner(
@@ -184,7 +184,7 @@ Examples:
 			}
 			if testerValue == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --tester-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--tester-id")
 			}
 
 			client, err := shared.GetASCClient()
@@ -203,7 +203,7 @@ Examples:
 			if *paginate {
 				if testerValue == "" {
 					fmt.Fprintln(os.Stderr, "Error: --tester-id is required")
-					return shared.MissingRequiredUsageError()
+					return shared.MissingRequiredUsageError("--tester-id")
 				}
 				paginateOpts := append(opts, asc.WithBetaTesterBetaGroupsLimit(200))
 				resp, err := shared.PaginateWithSpinner(
@@ -293,7 +293,7 @@ Examples:
 			}
 			if testerValue == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --tester-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--tester-id")
 			}
 
 			client, err := shared.GetASCClient()
@@ -312,7 +312,7 @@ Examples:
 			if *paginate {
 				if testerValue == "" {
 					fmt.Fprintln(os.Stderr, "Error: --tester-id is required")
-					return shared.MissingRequiredUsageError()
+					return shared.MissingRequiredUsageError("--tester-id")
 				}
 				paginateOpts := append(opts, asc.WithBetaTesterBuildsLimit(200))
 				resp, err := shared.PaginateWithSpinner(

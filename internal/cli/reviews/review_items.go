@@ -119,7 +119,7 @@ Examples:
 			}
 			if strings.TrimSpace(*submissionID) == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --submission is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--submission")
 			}
 
 			client, err := reviewItemsClientFactory()
@@ -281,15 +281,15 @@ Examples:
 			}
 			if strings.TrimSpace(*submissionID) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --submission is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--submission")
 			}
 			if strings.TrimSpace(*itemType) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --item-type is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--item-type")
 			}
 			if strings.TrimSpace(*itemID) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --item-id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--item-id")
 			}
 
 			normalizedType, err := normalizeReviewSubmissionItemType(*itemType)
@@ -351,7 +351,7 @@ Examples:
 			trimmedID := strings.TrimSpace(*itemID)
 			if trimmedID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--id")
 			}
 			resolvedProvided := reviewFlagWasProvided(fs, "resolved")
 			removedProvided := reviewFlagWasProvided(fs, "removed")
@@ -459,11 +459,11 @@ Examples:
 			}
 			if !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required to remove")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 			if strings.TrimSpace(*itemID) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --id is required")
-				return shared.MissingRequiredUsageError()
+				return shared.MissingRequiredUsageError("--id")
 			}
 
 			client, err := reviewItemsClientFactory()
