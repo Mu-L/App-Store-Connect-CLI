@@ -657,6 +657,11 @@
     "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/4d/d5/0f/4dd50f26-4b76-e382-9774-5894156f11df/AppIcon-0-0-85-220-0-5-0-2x.png/512x512bb.png"
   },
   {
+    "app": "HowHigh · Barometer & Altimeter",
+    "link": "https://apps.apple.com/us/app/barometer-altimeter-howhigh/id921339656?uo=4",
+    "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/79/66/ab/7966ab76-f237-ff79-e866-a51e96a530f3/AppIcon-0-0-1x_U007emarketing-0-11-0-85-220.png/512x512bb.jpg"
+  },
+  {
     "app": "HRM Battery",
     "link": "https://apps.apple.com/app/id6758920011",
     "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/7b/43/73/7b4373fc-26e2-030b-7162-2f0ab0a7681d/AppIcon-0-0-1x_U007ewatch-0-1-P3-85-220.png/512x512bb.jpg"
@@ -1304,6 +1309,11 @@
     "app": "Reps: AI Fitness & Recovery",
     "link": "https://apps.apple.com/app/id6746460451",
     "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/d4/6b/88/d46b88b6-e459-a316-6e0d-321ccb5c501a/Reps_AppIcon-0-0-1x_U007epad-0-1-sRGB-85-220.png/512x512bb.jpg"
+  },
+  {
+    "app": "ReShoot · Video Reframe & Crop",
+    "link": "https://apps.apple.com/us/app/reshoot-video-reframe-crop/id6753581365?uo=4",
+    "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/52/db/cc/52dbcc8f-c4aa-2cf0-36f9-bdeacf943fd7/AppIcon-0-1x_U007epad-0-11-0-85-220-0.png/512x512bb.jpg"
   },
   {
     "app": "Ripple News - AI Personal News",
