@@ -112,12 +112,18 @@ func (c *Client) rankTVApp(ctx context.Context, appID, term, country string) (Pu
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return PublicRankResult{}, fmt.Errorf("failed to parse storefront search response: %w", err)
 	}
+	if payload.PageData.Bubbles == nil {
+		return PublicRankResult{}, fmt.Errorf("invalid storefront search response: missing pageData.bubbles")
+	}
 
 	orderedIDs := make([]string, 0)
 	seenIDs := make(map[string]struct{})
 	totalResults := 0
 	tvResults := 0
-	for _, bubble := range payload.PageData.Bubbles {
+	for bubbleIndex, bubble := range payload.PageData.Bubbles {
+		if bubble.Results == nil {
+			return PublicRankResult{}, fmt.Errorf("invalid storefront search response: missing pageData.bubbles[%d].results", bubbleIndex)
+		}
 		for _, result := range bubble.Results {
 			totalResults++
 			if result.Entity != appleTVSoftwareEntity {

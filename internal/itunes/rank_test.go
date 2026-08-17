@@ -216,7 +216,6 @@ func TestRankAppTVOSHandlesEmptyResultWindows(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "missing bubbles", body: `{"pageData":{}}`},
 		{name: "empty bubbles", body: `{"pageData":{"bubbles":[]}}`},
 		{name: "empty results", body: `{"pageData":{"bubbles":[{"results":[]}]}}`},
 	}
@@ -235,6 +234,34 @@ func TestRankAppTVOSHandlesEmptyResultWindows(t *testing.T) {
 			}
 			if result.Found || result.Rank != nil || result.ResultCount != 0 {
 				t.Fatalf("RankApp() = %+v, want empty not-found result", result)
+			}
+		})
+	}
+}
+
+func TestRankAppTVOSErrorsOnMissingResultWindow(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing page data", body: `{}`},
+		{name: "missing bubbles", body: `{"pageData":{}}`},
+		{name: "null bubbles", body: `{"pageData":{"bubbles":null}}`},
+		{name: "missing bubble results", body: `{"pageData":{"bubbles":[{}]}}`},
+		{name: "null bubble results", body: `{"pageData":{"bubbles":[{"results":null}]}}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeBody(t, w, test.body)
+			}))
+			defer server.Close()
+
+			client := &Client{HTTPClient: server.Client(), StorefrontSearchBaseURL: server.URL}
+			_, err := client.RankApp(context.Background(), "1234567890", "missing", "us", PublicSearchPlatformTVOS)
+			if err == nil {
+				t.Fatal("RankApp() error = nil, want missing result window error")
 			}
 		})
 	}
