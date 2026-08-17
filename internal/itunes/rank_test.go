@@ -164,7 +164,7 @@ func TestRankAppTVOSUsesStorefrontSearchOrder(t *testing.T) {
 					"results": [
 						{"id":"111","entity":"tvSoftware","score":2.0},
 						{"id":"222","entity":"tvSoftware","score":1.9},
-						{"id":"1234567890","entity":"tvSoftware","score":1.8}
+						{"id":"1234567890","entity":"tvSoftware","score":9.9}
 					]
 				}]
 			},
