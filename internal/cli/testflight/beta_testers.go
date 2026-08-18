@@ -28,9 +28,10 @@ Examples:
   asc testflight beta-testers list --app "APP_ID"
   asc testflight beta-testers view --id "TESTER_ID"
   asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta"
+  asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta,iOS 27"
   asc testflight beta-testers export --app "APP_ID" --output "./testflight-testers.csv"
   asc testflight beta-testers import --app "APP_ID" --input "./testflight-testers.csv" --dry-run
-  asc testflight beta-testers remove --app "APP_ID" --email "tester@example.com"
+  asc testflight beta-testers remove --app "APP_ID" --email "tester@example.com" --confirm
   asc testflight beta-testers add-groups --id "TESTER_ID" --group "GROUP_ID"
   asc testflight beta-testers remove-groups --id "TESTER_ID" --group "GROUP_ID"
   asc testflight beta-testers add-builds --id "TESTER_ID" --build-id "BUILD_ID"
@@ -219,6 +220,28 @@ Examples:
 	}
 }
 
+// onceCSVFlag accepts a single comma-separated flag value and rejects
+// repeated flag occurrences instead of silently keeping only the last one.
+type onceCSVFlag struct {
+	flagName string
+	value    string
+	set      bool
+}
+
+func (v *onceCSVFlag) String() string { return v.value }
+
+func (v *onceCSVFlag) Set(raw string) error {
+	if v.set {
+		return fmt.Errorf(
+			"--%s specified multiple times; pass one comma-separated list, for example --%s %q",
+			v.flagName, v.flagName, v.value+","+raw,
+		)
+	}
+	v.value = raw
+	v.set = true
+	return nil
+}
+
 // BetaTestersAddCommand returns the beta testers add subcommand.
 func BetaTestersAddCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
@@ -227,17 +250,24 @@ func BetaTestersAddCommand() *ffcli.Command {
 	email := fs.String("email", "", "Tester email address")
 	firstName := fs.String("first-name", "", "Tester first name")
 	lastName := fs.String("last-name", "", "Tester last name")
-	group := fs.String("group", "", "Beta group name or ID")
+	group := &onceCSVFlag{flagName: "group"}
+	fs.Var(group, "group", "Comma-separated beta group names or IDs")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "add",
-		ShortUsage: "asc testflight beta-testers add [flags]",
+		ShortUsage: "asc testflight beta-testers add --app APP_ID --email EMAIL --group GROUP[,GROUP...]",
 		ShortHelp:  "Add a TestFlight beta tester.",
 		LongHelp: `Add a TestFlight beta tester.
 
+The tester is added to every group in the comma-separated --group list. A
+value that exactly matches one group name is used as-is, even when the name
+contains commas. To combine a comma-containing group name with other groups
+in one list, reference that group by its ID instead.
+
 Examples:
-  asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta"`,
+  asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta"
+  asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta,iOS 27"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -250,7 +280,7 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --email is required")
 				return shared.MissingRequiredUsageError("--email")
 			}
-			if strings.TrimSpace(*group) == "" {
+			if strings.TrimSpace(group.String()) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --group is required")
 				return shared.MissingRequiredUsageError("--group")
 			}
@@ -263,12 +293,12 @@ Examples:
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 
-			groupID, err := resolveBetaGroupID(requestCtx, client, resolvedAppID, *group)
+			groupIDs, err := resolveBetaGroupIDs(requestCtx, client, resolvedAppID, group.String())
 			if err != nil {
 				return fmt.Errorf("beta-testers add: %w", err)
 			}
 
-			tester, err := client.CreateBetaTester(requestCtx, *email, *firstName, *lastName, []string{groupID})
+			tester, err := client.CreateBetaTester(requestCtx, *email, *firstName, *lastName, groupIDs)
 			if err != nil {
 				return fmt.Errorf("beta-testers add: failed to create: %w", err)
 			}
@@ -284,16 +314,21 @@ func BetaTestersRemoveCommand() *ffcli.Command {
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	email := fs.String("email", "", "Tester email address")
+	confirm := fs.Bool("confirm", false, "Confirm removal")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "remove",
-		ShortUsage: "asc testflight beta-testers remove [flags]",
+		ShortUsage: "asc testflight beta-testers remove --app APP_ID --email EMAIL --confirm",
 		ShortHelp:  "Remove a TestFlight beta tester.",
 		LongHelp: `Remove a TestFlight beta tester.
 
+Removal deletes the beta tester record itself: every group membership and
+build assignment is removed across all apps the tester belongs to, not only
+the app used for the lookup. This cannot be undone, so --confirm is required.
+
 Examples:
-  asc testflight beta-testers remove --app "APP_ID" --email "tester@example.com"`,
+  asc testflight beta-testers remove --app "APP_ID" --email "tester@example.com" --confirm`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -305,6 +340,10 @@ Examples:
 			if strings.TrimSpace(*email) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --email is required")
 				return shared.MissingRequiredUsageError("--email")
+			}
+			if !*confirm {
+				fmt.Fprintln(os.Stderr, "Error: --confirm is required")
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 
 			client, err := shared.GetASCClient()
