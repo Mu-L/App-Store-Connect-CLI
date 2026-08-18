@@ -70,6 +70,15 @@ func TestReadDeviceBatchTSVRejectsInvalidRowsBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestReadDeviceBatchTSVFromReaderRejectsInputBeyondLimit(t *testing.T) {
+	contents := "UDID-1\tDevice One\tIOS\n#" + strings.Repeat("x", maxDeviceBatchFileSize)
+
+	_, err := readDeviceBatchTSVFromReader(strings.NewReader(contents), "IOS")
+	if err == nil || !strings.Contains(err.Error(), "device file exceeds") {
+		t.Fatalf("expected size-limit error, got %v", err)
+	}
+}
+
 func writeDeviceBatchTestFile(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "devices.txt")

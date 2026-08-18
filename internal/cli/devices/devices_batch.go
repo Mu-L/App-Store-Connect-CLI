@@ -148,7 +148,7 @@ Examples:
 					result.Error = createErr.Error()
 					summary.Failed++
 					summary.Results = append(summary.Results, result)
-					if !*continueOnError || errors.Is(createErr, context.Canceled) || errors.Is(createErr, context.DeadlineExceeded) {
+					if !*continueOnError || ctx.Err() != nil {
 						break
 					}
 					continue
@@ -191,8 +191,12 @@ func readDeviceBatchTSV(path, defaultPlatform string) ([]deviceBatchRecord, erro
 	if info.Size() > maxDeviceBatchFileSize {
 		return nil, fmt.Errorf("device file exceeds %d-byte limit", maxDeviceBatchFileSize)
 	}
+	return readDeviceBatchTSVFromReader(file, defaultPlatform)
+}
 
-	reader := csv.NewReader(io.LimitReader(file, maxDeviceBatchFileSize+1))
+func readDeviceBatchTSVFromReader(input io.Reader, defaultPlatform string) ([]deviceBatchRecord, error) {
+	limited := &io.LimitedReader{R: input, N: maxDeviceBatchFileSize + 1}
+	reader := csv.NewReader(limited)
 	reader.Comma = '\t'
 	reader.FieldsPerRecord = -1
 
@@ -233,6 +237,9 @@ func readDeviceBatchTSV(path, defaultPlatform string) ([]deviceBatchRecord, erro
 		records = append(records, record)
 	}
 
+	if limited.N == 0 {
+		return nil, fmt.Errorf("device file exceeds %d-byte limit", maxDeviceBatchFileSize)
+	}
 	if len(records) == 0 {
 		return nil, fmt.Errorf("device file contains no records")
 	}

@@ -217,3 +217,51 @@ func TestDevicesRegisterBatchReportsPartialAPIFailuresAndContinues(t *testing.T)
 		t.Fatalf("expected machine-readable partial result, got %q", stdout)
 	}
 }
+
+func TestDevicesRegisterBatchContinuesAfterIsolatedRequestTimeout(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	inputPath := filepath.Join(t.TempDir(), "devices.txt")
+	if err := os.WriteFile(inputPath, []byte("UDID-1\tDevice One\tIOS\nUDID-2\tDevice Two\tIOS\n"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	createCount := 0
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/devices":
+			return jsonResponse(http.StatusOK, `{"data":[]}`)
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/devices":
+			createCount++
+			if createCount == 1 {
+				return nil, context.DeadlineExceeded
+			}
+			return jsonResponse(http.StatusCreated, `{"data":{"type":"devices","id":"device-2","attributes":{"name":"Device Two","udid":"UDID-2","platform":"IOS"}}}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	stdout, _ := captureOutput(t, func() {
+		runErr = root.Run(context.Background())
+	})
+	if runErr == nil {
+		t.Fatal("expected reported partial failure")
+	}
+	if createCount != 2 {
+		t.Fatalf("expected processing to continue after one request timeout, got %d creates", createCount)
+	}
+	if !strings.Contains(stdout, `"registered":1`) || !strings.Contains(stdout, `"failed":1`) {
+		t.Fatalf("expected machine-readable partial result, got %q", stdout)
+	}
+}
