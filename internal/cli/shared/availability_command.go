@@ -35,6 +35,24 @@ type AvailabilitySetCommandConfig struct {
 	IncludeAvailableInNewTerritories bool
 }
 
+// AvailabilityRemoveFromSaleCommandConfig configures the remove-from-sale command.
+type AvailabilityRemoveFromSaleCommandConfig struct {
+	ClientFactory func() (*asc.Client, error)
+}
+
+// AvailabilityRemoveFromSaleResult summarizes a verified remove-from-sale operation.
+type AvailabilityRemoveFromSaleResult struct {
+	AppID                          string   `json:"appId"`
+	AvailabilityID                 string   `json:"availabilityId"`
+	Status                         string   `json:"status"`
+	AvailableInNewTerritories      bool     `json:"availableInNewTerritories"`
+	TotalTerritories               int      `json:"totalTerritories"`
+	UpdatedTerritories             int      `json:"updatedTerritories"`
+	AlreadyUnavailableTerritories  int      `json:"alreadyUnavailableTerritories"`
+	VerifiedUnavailableTerritories int      `json:"verifiedUnavailableTerritories"`
+	FailedTerritories              []string `json:"failedTerritories"`
+}
+
 // NewAvailabilitySetCommand builds a shared availability set command.
 func NewAvailabilitySetCommand(config AvailabilitySetCommandConfig) *ffcli.Command {
 	fs := flag.NewFlagSet(config.FlagSetName, flag.ExitOnError)
@@ -94,153 +112,300 @@ func NewAvailabilitySetCommand(config AvailabilitySetCommandConfig) *ffcli.Comma
 			requestCtx, cancel := contextWithAvailabilityTimeout(ctx, *allTerritories)
 			defer cancel()
 
-			resp, err := client.GetAppAvailabilityV2(requestCtx, resolvedAppID)
-			if err != nil {
-				if isAppAvailabilityMissing(err) {
-					return NewErrorWithCause(
-						fmt.Errorf(
-							"%s: app availability not found for app %q; this command only updates existing app availability, so use \"asc pricing availability create\" first. If Apple rejects public-API bootstrap, authenticate with \"asc web auth login --apple-id EMAIL\" and use \"asc web apps availability create\", or configure Pricing and Availability in App Store Connect: %w",
-							config.ErrorPrefix,
-							resolvedAppID,
-							asc.ErrNotFound,
-						),
-						err,
-					)
-				}
-				return fmt.Errorf("%s: %w", config.ErrorPrefix, err)
-			}
-			availabilityID := strings.TrimSpace(resp.Data.ID)
-			if availabilityID == "" {
-				return fmt.Errorf("%s: app availability ID missing from response", config.ErrorPrefix)
-			}
-
+			var expectedAvailableInNewTerritories *bool
 			if config.IncludeAvailableInNewTerritories && availableInNewTerritories.IsSet() {
-				availableInNewTerritoriesValue := availableInNewTerritories.Value()
-				if resp.Data.Attributes.AvailableInNewTerritories != availableInNewTerritoriesValue {
-					return fmt.Errorf(
-						"%s: --available-in-new-territories does not match the existing policy (current value: %t); the public API cannot change this setting",
-						config.ErrorPrefix,
-						resp.Data.Attributes.AvailableInNewTerritories,
-					)
-				}
+				value := availableInNewTerritories.Value()
+				expectedAvailableInNewTerritories = &value
 			}
-
-			territoryResp, err := getAllTerritoryAvailabilities(requestCtx, client, availabilityID)
+			resp, _, err := executeTerritoryAvailabilityUpdate(requestCtx, client, availabilityUpdateRequest{
+				AppID:                             resolvedAppID,
+				Territories:                       territories,
+				AllTerritories:                    *allTerritories,
+				Available:                         availableValue,
+				ExpectedAvailableInNewTerritories: expectedAvailableInNewTerritories,
+				ErrorPrefix:                       config.ErrorPrefix,
+			})
 			if err != nil {
-				return fmt.Errorf("%s: %w", config.ErrorPrefix, err)
+				return err
 			}
-
-			territoryMap, err := mapTerritoryAvailabilities(territoryResp)
-			if err != nil {
-				return fmt.Errorf("%s: %w", config.ErrorPrefix, err)
-			}
-
-			var targets []availabilityEditTarget
-			if *allTerritories {
-				territoryIDs := make([]string, 0, len(territoryMap))
-				for territoryID := range territoryMap {
-					territoryIDs = append(territoryIDs, territoryID)
-				}
-				sort.Strings(territoryIDs)
-				targets = make([]availabilityEditTarget, 0, len(territoryIDs))
-				for _, territoryID := range territoryIDs {
-					availability := territoryMap[territoryID]
-					targets = append(targets, availabilityEditTarget{
-						TerritoryID:    territoryID,
-						AvailabilityID: availability.ID,
-						Available:      availability.Attributes.Available,
-					})
-				}
-			} else {
-				missingTerritories := make([]string, 0)
-				targets = make([]availabilityEditTarget, 0, len(territories))
-				for _, territoryID := range territories {
-					availability, ok := territoryMap[territoryID]
-					if !ok {
-						missingTerritories = append(missingTerritories, territoryID)
-						continue
-					}
-					targets = append(targets, availabilityEditTarget{
-						TerritoryID:    territoryID,
-						AvailabilityID: availability.ID,
-						Available:      availability.Attributes.Available,
-					})
-				}
-				if len(missingTerritories) > 0 {
-					return fmt.Errorf("%s: territory availability not found for territories: %s", config.ErrorPrefix, strings.Join(missingTerritories, ", "))
-				}
-			}
-
-			pending := make([]availabilityEditTarget, 0, len(targets))
-			skipped := 0
-			for _, target := range targets {
-				if target.Available == availableValue {
-					skipped++
-					continue
-				}
-				pending = append(pending, target)
-			}
-
-			if len(pending) == 0 {
-				fmt.Fprintf(os.Stderr, "Updated 0 territories; %d already matched.\n", skipped)
-				return printOutput(resp, *output.Output, *output.Pretty)
-			}
-
-			fmt.Fprintf(os.Stderr, "Updating availability for %d territories (%d already matched)...\n", len(pending), skipped)
-			patchErrors := updateTerritoryAvailabilityTargets(requestCtx, client, pending, availableValue)
-
-			verifiedResp, err := getAllTerritoryAvailabilities(requestCtx, client, availabilityID)
-			if err != nil {
-				return fmt.Errorf(
-					"%s: attempted %d territory updates (%d request failures, %d skipped); final verification failed: %w",
-					config.ErrorPrefix,
-					len(pending),
-					len(patchErrors),
-					skipped,
-					err,
-				)
-			}
-			verifiedMap, err := mapTerritoryAvailabilities(verifiedResp)
-			if err != nil {
-				return fmt.Errorf("%s: verify territory availabilities: %w", config.ErrorPrefix, err)
-			}
-
-			failedTerritories := make([]string, 0)
-			failureDetails := make([]string, 0)
-			for _, target := range pending {
-				verified, ok := verifiedMap[target.TerritoryID]
-				if ok && verified.Attributes.Available == availableValue {
-					continue
-				}
-				failedTerritories = append(failedTerritories, target.TerritoryID)
-				if patchErr := patchErrors[target.TerritoryID]; patchErr != nil {
-					failureDetails = append(failureDetails, fmt.Sprintf("%s: %v", target.TerritoryID, patchErr))
-				} else if !ok {
-					failureDetails = append(failureDetails, fmt.Sprintf("%s: missing from verification response", target.TerritoryID))
-				} else {
-					failureDetails = append(failureDetails, fmt.Sprintf("%s: requested state was not observed", target.TerritoryID))
-				}
-			}
-
-			updated := len(pending) - len(failedTerritories)
-			if len(failedTerritories) > 0 {
-				sort.Strings(failedTerritories)
-				sort.Strings(failureDetails)
-				return fmt.Errorf(
-					"%s: updated %d, skipped %d, failed %d (%s): %s",
-					config.ErrorPrefix,
-					updated,
-					skipped,
-					len(failedTerritories),
-					strings.Join(failedTerritories, ", "),
-					strings.Join(failureDetails, "; "),
-				)
-			}
-
-			fmt.Fprintf(os.Stderr, "Updated %d territories; %d already matched; verified %d updated territories.\n", updated, skipped, len(pending))
 			return printOutput(resp, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+// NewAvailabilityRemoveFromSaleCommand builds a command that makes every
+// existing territory unavailable while preserving the app's new-territory policy.
+func NewAvailabilityRemoveFromSaleCommand(config AvailabilityRemoveFromSaleCommandConfig) *ffcli.Command {
+	fs := flag.NewFlagSet("pricing availability remove-from-sale", flag.ExitOnError)
+	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID)")
+	confirm := fs.Bool("confirm", false, "Confirm removal from sale in all current territories")
+	output := BindOutputFlags(fs)
+
+	return &ffcli.Command{
+		Name:       "remove-from-sale",
+		ShortUsage: "asc pricing availability remove-from-sale --app \"APP_ID\" --confirm",
+		ShortHelp:  "Remove an app from sale in all current territories.",
+		LongHelp: `Remove an app from sale in all current territories.
+
+This command uses the public App Store Connect API. It makes every existing
+territory unavailable and verifies the final state. It does not delete the app
+record, and it preserves the existing availableInNewTerritories policy because
+Apple does not expose an update operation for that setting.
+
+Examples:
+  asc pricing availability remove-from-sale --app "123456789" --confirm`,
+		FlagSet:   fs,
+		UsageFunc: DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 {
+				return UsageError("pricing availability remove-from-sale does not accept positional arguments")
+			}
+			if !*confirm {
+				fmt.Fprintln(os.Stderr, "Error: --confirm is required")
+				return MissingRequiredUsageError("--confirm")
+			}
+			resolvedAppID := resolveAppID(*appID)
+			if resolvedAppID == "" {
+				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
+				return MissingRequiredUsageError("--app")
+			}
+			if config.ClientFactory == nil {
+				return fmt.Errorf("pricing availability remove-from-sale: client factory is not configured")
+			}
+			client, err := config.ClientFactory()
+			if err != nil {
+				return fmt.Errorf("pricing availability remove-from-sale: %w", err)
+			}
+
+			requestCtx, cancel := contextWithAvailabilityTimeout(ctx, true)
+			defer cancel()
+			_, summary, err := executeTerritoryAvailabilityUpdate(requestCtx, client, availabilityUpdateRequest{
+				AppID:          resolvedAppID,
+				AllTerritories: true,
+				Available:      false,
+				ErrorPrefix:    "pricing availability remove-from-sale",
+			})
+			if err != nil {
+				return err
+			}
+
+			result := AvailabilityRemoveFromSaleResult{
+				AppID:                          resolvedAppID,
+				AvailabilityID:                 summary.AvailabilityID,
+				Status:                         "removedFromSale",
+				AvailableInNewTerritories:      summary.AvailableInNewTerritories,
+				TotalTerritories:               summary.TotalTerritories,
+				UpdatedTerritories:             summary.UpdatedTerritories,
+				AlreadyUnavailableTerritories:  summary.SkippedTerritories,
+				VerifiedUnavailableTerritories: summary.VerifiedTerritories,
+				FailedTerritories:              append([]string{}, summary.FailedTerritories...),
+			}
+			fmt.Fprintf(
+				os.Stderr,
+				"App %s is unavailable in all %d current territories; preserved availableInNewTerritories=%t.\n",
+				resolvedAppID,
+				result.VerifiedUnavailableTerritories,
+				result.AvailableInNewTerritories,
+			)
+			if result.AvailableInNewTerritories {
+				fmt.Fprintln(os.Stderr, "Warning: Apple may automatically enable future App Store territories under the preserved policy.")
+			}
+			return PrintOutputWithRenderers(
+				result,
+				*output.Output,
+				*output.Pretty,
+				func() error {
+					renderAvailabilityRemoveFromSaleResult(result, false)
+					return nil
+				},
+				func() error {
+					renderAvailabilityRemoveFromSaleResult(result, true)
+					return nil
+				},
+			)
+		},
+	}
+}
+
+type availabilityUpdateRequest struct {
+	AppID                             string
+	Territories                       []string
+	AllTerritories                    bool
+	Available                         bool
+	ExpectedAvailableInNewTerritories *bool
+	ErrorPrefix                       string
+}
+
+type availabilityUpdateSummary struct {
+	AvailabilityID            string
+	AvailableInNewTerritories bool
+	TotalTerritories          int
+	UpdatedTerritories        int
+	SkippedTerritories        int
+	VerifiedTerritories       int
+	FailedTerritories         []string
+}
+
+func executeTerritoryAvailabilityUpdate(ctx context.Context, client *asc.Client, request availabilityUpdateRequest) (*asc.AppAvailabilityV2Response, availabilityUpdateSummary, error) {
+	summary := availabilityUpdateSummary{}
+	resp, err := client.GetAppAvailabilityV2(ctx, request.AppID)
+	if err != nil {
+		if isAppAvailabilityMissing(err) {
+			return nil, summary, NewErrorWithCause(
+				fmt.Errorf(
+					"%s: app availability not found for app %q; this command only updates existing app availability, so use \"asc pricing availability create\" first. If Apple rejects public-API bootstrap, authenticate with \"asc web auth login --apple-id EMAIL\" and use \"asc web apps availability create\", or configure Pricing and Availability in App Store Connect: %w",
+					request.ErrorPrefix,
+					request.AppID,
+					asc.ErrNotFound,
+				),
+				err,
+			)
+		}
+		return nil, summary, fmt.Errorf("%s: %w", request.ErrorPrefix, err)
+	}
+	availabilityID := strings.TrimSpace(resp.Data.ID)
+	if availabilityID == "" {
+		return nil, summary, fmt.Errorf("%s: app availability ID missing from response", request.ErrorPrefix)
+	}
+	summary.AvailabilityID = availabilityID
+	summary.AvailableInNewTerritories = resp.Data.Attributes.AvailableInNewTerritories
+
+	if request.ExpectedAvailableInNewTerritories != nil && resp.Data.Attributes.AvailableInNewTerritories != *request.ExpectedAvailableInNewTerritories {
+		return nil, summary, fmt.Errorf(
+			"%s: --available-in-new-territories does not match the existing policy (current value: %t); the public API cannot change this setting",
+			request.ErrorPrefix,
+			resp.Data.Attributes.AvailableInNewTerritories,
+		)
+	}
+
+	territoryResp, err := getAllTerritoryAvailabilities(ctx, client, availabilityID)
+	if err != nil {
+		return nil, summary, fmt.Errorf("%s: %w", request.ErrorPrefix, err)
+	}
+	territoryMap, err := mapTerritoryAvailabilities(territoryResp)
+	if err != nil {
+		return nil, summary, fmt.Errorf("%s: %w", request.ErrorPrefix, err)
+	}
+
+	var targets []availabilityEditTarget
+	if request.AllTerritories {
+		territoryIDs := make([]string, 0, len(territoryMap))
+		for territoryID := range territoryMap {
+			territoryIDs = append(territoryIDs, territoryID)
+		}
+		sort.Strings(territoryIDs)
+		targets = make([]availabilityEditTarget, 0, len(territoryIDs))
+		for _, territoryID := range territoryIDs {
+			availability := territoryMap[territoryID]
+			targets = append(targets, availabilityEditTarget{TerritoryID: territoryID, AvailabilityID: availability.ID, Available: availability.Attributes.Available})
+		}
+	} else {
+		missingTerritories := make([]string, 0)
+		targets = make([]availabilityEditTarget, 0, len(request.Territories))
+		for _, territoryID := range request.Territories {
+			availability, ok := territoryMap[territoryID]
+			if !ok {
+				missingTerritories = append(missingTerritories, territoryID)
+				continue
+			}
+			targets = append(targets, availabilityEditTarget{TerritoryID: territoryID, AvailabilityID: availability.ID, Available: availability.Attributes.Available})
+		}
+		if len(missingTerritories) > 0 {
+			return nil, summary, fmt.Errorf("%s: territory availability not found for territories: %s", request.ErrorPrefix, strings.Join(missingTerritories, ", "))
+		}
+	}
+
+	summary.TotalTerritories = len(targets)
+	pending := make([]availabilityEditTarget, 0, len(targets))
+	for _, target := range targets {
+		if target.Available == request.Available {
+			summary.SkippedTerritories++
+			continue
+		}
+		pending = append(pending, target)
+	}
+	if len(pending) == 0 {
+		summary.VerifiedTerritories = summary.SkippedTerritories
+		fmt.Fprintf(os.Stderr, "Updated 0 territories; %d already matched.\n", summary.SkippedTerritories)
+		return resp, summary, nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Updating availability for %d territories (%d already matched)...\n", len(pending), summary.SkippedTerritories)
+	patchErrors := updateTerritoryAvailabilityTargets(ctx, client, pending, request.Available)
+	verifiedResp, err := getAllTerritoryAvailabilities(ctx, client, availabilityID)
+	if err != nil {
+		return nil, summary, fmt.Errorf(
+			"%s: attempted %d territory updates (%d request failures, %d skipped); final verification failed: %w",
+			request.ErrorPrefix,
+			len(pending),
+			len(patchErrors),
+			summary.SkippedTerritories,
+			err,
+		)
+	}
+	verifiedMap, err := mapTerritoryAvailabilities(verifiedResp)
+	if err != nil {
+		return nil, summary, fmt.Errorf("%s: verify territory availabilities: %w", request.ErrorPrefix, err)
+	}
+
+	failureDetails := make([]string, 0)
+	for _, target := range targets {
+		verified, ok := verifiedMap[target.TerritoryID]
+		if ok && verified.Attributes.Available == request.Available {
+			if target.Available != request.Available {
+				summary.UpdatedTerritories++
+			}
+			continue
+		}
+		summary.FailedTerritories = append(summary.FailedTerritories, target.TerritoryID)
+		if patchErr := patchErrors[target.TerritoryID]; patchErr != nil {
+			failureDetails = append(failureDetails, fmt.Sprintf("%s: %v", target.TerritoryID, patchErr))
+		} else if !ok {
+			failureDetails = append(failureDetails, fmt.Sprintf("%s: missing from verification response", target.TerritoryID))
+		} else if target.Available == request.Available {
+			failureDetails = append(failureDetails, fmt.Sprintf("%s: state changed during verification", target.TerritoryID))
+		} else {
+			failureDetails = append(failureDetails, fmt.Sprintf("%s: requested state was not observed", target.TerritoryID))
+		}
+	}
+
+	summary.VerifiedTerritories = len(targets) - len(summary.FailedTerritories)
+	if len(summary.FailedTerritories) > 0 {
+		sort.Strings(summary.FailedTerritories)
+		sort.Strings(failureDetails)
+		return nil, summary, fmt.Errorf(
+			"%s: updated %d, skipped %d, failed %d (%s): %s",
+			request.ErrorPrefix,
+			summary.UpdatedTerritories,
+			summary.SkippedTerritories,
+			len(summary.FailedTerritories),
+			strings.Join(summary.FailedTerritories, ", "),
+			strings.Join(failureDetails, "; "),
+		)
+	}
+
+	fmt.Fprintf(os.Stderr, "Updated %d territories; %d already matched; verified %d updated territories.\n", summary.UpdatedTerritories, summary.SkippedTerritories, len(pending))
+	return resp, summary, nil
+}
+
+func renderAvailabilityRemoveFromSaleResult(result AvailabilityRemoveFromSaleResult, markdown bool) {
+	headers := []string{"Field", "Value"}
+	rows := [][]string{
+		{"App ID", result.AppID},
+		{"Availability ID", result.AvailabilityID},
+		{"Status", result.Status},
+		{"Available in new territories", fmt.Sprintf("%t", result.AvailableInNewTerritories)},
+		{"Total territories", fmt.Sprintf("%d", result.TotalTerritories)},
+		{"Updated territories", fmt.Sprintf("%d", result.UpdatedTerritories)},
+		{"Already unavailable", fmt.Sprintf("%d", result.AlreadyUnavailableTerritories)},
+		{"Verified unavailable", fmt.Sprintf("%d", result.VerifiedUnavailableTerritories)},
+		{"Failed territories", strings.Join(result.FailedTerritories, ", ")},
+	}
+	if markdown {
+		asc.RenderMarkdown(headers, rows)
+		return
+	}
+	asc.RenderTable(headers, rows)
 }
 
 func contextWithAvailabilityTimeout(ctx context.Context, allTerritories bool) (context.Context, context.CancelFunc) {
