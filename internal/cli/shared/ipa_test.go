@@ -242,9 +242,9 @@ func TestValidatePKGPathRejectsSymlinkAndEmptyFile(t *testing.T) {
 	}
 	linkPath := filepath.Join(dir, "link.pkg")
 	if err := os.Symlink(targetPath, linkPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+		t.Fatalf("create PKG symlink: %v", err)
 	}
-	if _, err := ValidatePKGPath(linkPath); err == nil || !strings.Contains(err.Error(), "refusing to read symlink") {
+	if _, err := ValidatePKGPath(linkPath); err == nil || !strings.Contains(err.Error(), "from --pkg") {
 		t.Fatalf("expected PKG symlink rejection, got %v", err)
 	}
 }

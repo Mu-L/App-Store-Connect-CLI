@@ -105,20 +105,22 @@ Examples:
 
 			// Validate file exists
 			var (
-				fileInfo os.FileInfo
-				err      error
+				artifactFile *os.File
+				fileInfo     os.FileInfo
+				err          error
 			)
 			if hasIPA {
-				fileInfo, err = shared.ValidateIPAPath(filePath)
+				artifactFile, fileInfo, err = shared.OpenValidatedIPAPath(filePath)
 				if err != nil {
 					return fmt.Errorf("builds upload: %w", err)
 				}
 			} else {
-				fileInfo, err = shared.ValidatePKGPath(filePath)
+				artifactFile, fileInfo, err = shared.OpenValidatedPKGPath(filePath)
 				if err != nil {
 					return fmt.Errorf("builds upload: %w", err)
 				}
 			}
+			defer artifactFile.Close()
 
 			// Determine platform
 			var platformValue asc.Platform
@@ -189,7 +191,7 @@ Examples:
 			buildNumberValue := strings.TrimSpace(*buildNumber)
 			var ipaBundleID string
 			if hasIPA {
-				ipaInfo, extractErr := shared.ExtractBundleInfoFromIPA(filePath)
+				ipaInfo, extractErr := shared.ExtractBundleInfoFromIPAFile(artifactFile)
 				if extractErr != nil {
 					return fmt.Errorf("builds upload: inspect IPA metadata: %w", extractErr)
 				}
@@ -297,7 +299,7 @@ Examples:
 				}
 				fmt.Fprintf(os.Stderr, "Uploading %s (%d bytes) to App Store Connect...\n", fileInfo.Name(), fileInfo.Size())
 				uploadCtx, uploadCancel := shared.ContextWithUploadTimeout(ctx)
-				err = asc.ExecuteUploadOperations(uploadCtx, filePath, fileResp.Data.Attributes.UploadOperations, uploadOpts...)
+				err = asc.ExecuteUploadOperationsFromFile(uploadCtx, artifactFile, fileResp.Data.Attributes.UploadOperations, uploadOpts...)
 				uploadCancel()
 				if err != nil {
 					return fmt.Errorf("builds upload: upload failed: %w", err)
@@ -310,7 +312,7 @@ Examples:
 					if src == nil || (src.File == nil && src.Composite == nil) {
 						fmt.Fprintln(os.Stderr, "Warning: --checksum requested but API provided no checksums to verify; skipping")
 					} else {
-						checksums, err := asc.VerifySourceFileChecksums(filePath, src)
+						checksums, err := asc.VerifySourceFileChecksumsFromFile(artifactFile, src)
 						if err != nil {
 							return fmt.Errorf("builds upload: checksum verification failed: %w", err)
 						}
