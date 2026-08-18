@@ -147,7 +147,7 @@ func TestAppsPublishedAggregatesNamedAppErrorsAndContinues(t *testing.T) {
 				],"links":{"next":""}
 			}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/bad-app/appAvailabilityV2":
-			return jsonHTTPResponse(http.StatusUnprocessableEntity, `{"errors":[{"status":"422","code":"ENTITY_ERROR","title":"Broken availability"}]}`), nil
+			return jsonHTTPResponse(http.StatusNotFound, `{"errors":[{"status":"404","code":"NOT_FOUND","title":"The specified resource does not exist","detail":"No apps resource exists"}]}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/good-app/appAvailabilityV2":
 			healthyAppRead.Add(1)
 			return jsonHTTPResponse(http.StatusNotFound, `{"errors":[{"status":"404","code":"NOT_FOUND","title":"The specified resource does not exist","detail":"No appAvailabilities resource exists"}]}`), nil
@@ -166,7 +166,7 @@ func TestAppsPublishedAggregatesNamedAppErrorsAndContinues(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected audit error")
 		}
-		if !strings.Contains(err.Error(), `Broken (bad-app)`) || !strings.Contains(err.Error(), "Broken availability") {
+		if !strings.Contains(err.Error(), `Broken (bad-app)`) || !strings.Contains(err.Error(), "No apps resource exists") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -206,7 +206,12 @@ func TestAppsPublishedOutputFormatsAndDeterministicOrder(t *testing.T) {
 			if !strings.Contains(stdout, test.want) {
 				t.Fatalf("%s output missing %q: %s", test.format, test.want, stdout)
 			}
-			if strings.Index(stdout, "Alpha") > strings.Index(stdout, "Zulu") {
+			alphaIndex := strings.Index(stdout, "Alpha")
+			zuluIndex := strings.Index(stdout, "Zulu")
+			if alphaIndex < 0 || zuluIndex < 0 {
+				t.Fatalf("%s output missing published apps: %s", test.format, stdout)
+			}
+			if alphaIndex > zuluIndex {
 				t.Fatalf("published apps are not sorted by name: %s", stdout)
 			}
 		})

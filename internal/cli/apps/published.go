@@ -2,6 +2,7 @@ package apps
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -203,7 +204,7 @@ func auditPublishedApps(ctx context.Context, client *asc.Client, appResources []
 func auditPublishedApp(ctx context.Context, client *asc.Client, appID string) (string, int, error) {
 	availability, err := client.GetAppAvailabilityV2(ctx, appID)
 	if err != nil {
-		if shared.IsAppAvailabilityMissing(err) {
+		if isPublishedAuditAvailabilityMissing(err) {
 			return "", 0, nil
 		}
 		return "", 0, fmt.Errorf("fetch availability: %w", err)
@@ -235,6 +236,20 @@ func auditPublishedApp(ctx context.Context, client *asc.Client, appID string) (s
 		}
 	}
 	return availabilityID, publishedTerritoryCount, nil
+}
+
+func isPublishedAuditAvailabilityMissing(err error) bool {
+	if err == nil || !errors.Is(err, asc.ErrNotFound) {
+		return false
+	}
+	var apiErr *asc.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	description := strings.ToLower(strings.Join([]string{apiErr.Code, apiErr.Title, apiErr.Detail}, " "))
+	return strings.Contains(description, "appavailabilities") ||
+		strings.Contains(description, "app availability") ||
+		strings.Contains(description, "appavailabilityv2")
 }
 
 func hasAvailableContentStatus(statuses []string) bool {
