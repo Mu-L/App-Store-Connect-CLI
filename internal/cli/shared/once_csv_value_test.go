@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"errors"
 	"flag"
 	"strings"
 	"testing"
@@ -21,8 +22,9 @@ func TestOnceCSVValue_RejectsRepeatedUse(t *testing.T) {
 	if err == nil {
 		t.Fatal("second Set() should fail")
 	}
-	if !strings.Contains(err.Error(), "--ids") || !strings.Contains(err.Error(), "comma-separated") {
-		t.Fatalf("second Set() error should mention --ids and comma-separated usage, got %q", err.Error())
+	wantMessage := `--ids specified multiple times; pass one comma-separated list, for example --ids "a,b,c"`
+	if err.Error() != wantMessage {
+		t.Fatalf("second Set() error = %q, want %q", err.Error(), wantMessage)
 	}
 	if got := value.String(); got != "a,b" {
 		t.Fatalf("rejected Set() must not overwrite value, got %q", got)
@@ -38,8 +40,12 @@ func TestOnceCSVValue_ParseRejectsRepeatedFlag(t *testing.T) {
 	if err == nil {
 		t.Fatal("parse with repeated --ids should fail")
 	}
-	if !strings.Contains(err.Error(), "specified multiple times") {
-		t.Fatalf("parse error should explain the repetition, got %q", err.Error())
+	if errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("repeated flag should be a parse error, not help: %v", err)
+	}
+	wantFragment := `--ids specified multiple times; pass one comma-separated list, for example --ids "a,b"`
+	if !strings.Contains(err.Error(), wantFragment) {
+		t.Fatalf("parse error = %q, want it to contain %q", err.Error(), wantFragment)
 	}
 }
 
