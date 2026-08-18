@@ -34,6 +34,7 @@ func DevicesRegisterBatchCommand() *ffcli.Command {
 	filePath := fs.String("file", "", "Tab-separated device file (UDID, name, optional platform)")
 	platform := fs.String("platform", "", "Default platform when a row omits it: "+strings.Join(devicePlatformList(), ", "))
 	dryRun := fs.Bool("dry-run", false, "Validate and show the registration plan without creating devices")
+	confirm := fs.Bool("confirm", false, "Confirm device registration mutations")
 	continueOnError := fs.Bool("continue-on-error", true, "Continue registering after an API failure (default true)")
 	output := shared.BindOutputFlags(fs)
 
@@ -52,10 +53,10 @@ The entire file is validated before network access. Existing devices and
 repeated UDIDs are skipped after removing hyphens and colons for comparison.
 
 Examples:
-  asc devices register-batch --file "./devices.txt"
-  asc devices register-batch --file "./devices.txt" --platform IOS
+  asc devices register-batch --file "./devices.txt" --confirm
+  asc devices register-batch --file "./devices.txt" --platform IOS --confirm
   asc devices register-batch --file "./devices.txt" --dry-run
-  asc devices register-batch --file "./devices.txt" --continue-on-error=false`,
+  asc devices register-batch --file "./devices.txt" --continue-on-error=false --confirm`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -72,6 +73,9 @@ Examples:
 			defaultPlatform, err := normalizeDevicePlatform(*platform)
 			if err != nil {
 				return fmt.Errorf("devices register-batch: %w", shared.UsageError(err.Error()))
+			}
+			if err := shared.RequireConfirmUnlessDryRun(*dryRun, *confirm); err != nil {
+				return err
 			}
 
 			records, err := readDeviceBatchTSV(fileValue, defaultPlatform)

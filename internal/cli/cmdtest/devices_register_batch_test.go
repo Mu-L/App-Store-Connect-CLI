@@ -3,6 +3,8 @@ package cmdtest
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"os"
@@ -64,7 +66,7 @@ func TestDevicesRegisterBatchPaginatesAndSkipsNormalizedDuplicates(t *testing.T)
 
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
-	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath, "--output", "json"}); err != nil {
+	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath, "--output", "json", "--confirm"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 
@@ -128,7 +130,7 @@ func TestDevicesRegisterBatchValidatesEveryRowBeforeNetwork(t *testing.T) {
 
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
-	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath}); err != nil {
+	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath, "--confirm"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	err := root.Run(context.Background())
@@ -200,7 +202,7 @@ func TestDevicesRegisterBatchReportsPartialAPIFailuresAndContinues(t *testing.T)
 
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
-	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath}); err != nil {
+	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath, "--confirm"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -248,7 +250,7 @@ func TestDevicesRegisterBatchContinuesAfterIsolatedRequestTimeout(t *testing.T) 
 
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
-	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath}); err != nil {
+	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath, "--confirm"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -293,7 +295,7 @@ func TestDevicesRegisterBatchStopsAfterAPIFailureWhenRequested(t *testing.T) {
 
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
-	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath, "--continue-on-error=false"}); err != nil {
+	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath, "--continue-on-error=false", "--confirm"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	var runErr error
@@ -316,5 +318,36 @@ func TestDevicesRegisterBatchStopsAfterAPIFailureWhenRequested(t *testing.T) {
 	}
 	if summary.Total != 2 || summary.Processed != 1 || summary.Failed != 1 {
 		t.Fatalf("unexpected stop-on-error summary: %+v", summary)
+	}
+}
+
+func TestDevicesRegisterBatchRequiresConfirmBeforeReadingFileOrNetwork(t *testing.T) {
+	setupAuth(t)
+	missingPath := filepath.Join(t.TempDir(), "missing.txt")
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected request before confirmation: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	if err := root.Parse([]string{"devices", "register-batch", "--file", missingPath}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureOutput(t, func() {
+		runErr = root.Run(context.Background())
+	})
+	if !errors.Is(runErr, flag.ErrHelp) || runErr.Error() != "--confirm is required unless --dry-run is set" {
+		t.Fatalf("run error = %v, want exact confirmation usage error", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "--confirm is required unless --dry-run is set") {
+		t.Fatalf("stderr = %q, want confirmation error", stderr)
 	}
 }
