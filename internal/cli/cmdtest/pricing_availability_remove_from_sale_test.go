@@ -230,7 +230,7 @@ func TestPricingAvailabilityRemoveFromSaleContinuesAfterPartialFailure(t *testin
 
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
-	_, _ = captureOutput(t, func() {
+	stdout, _ := captureOutput(t, func() {
 		if err := root.Parse([]string{"pricing", "availability", "remove-from-sale", "--app", "app-1", "--confirm"}); err != nil {
 			t.Fatalf("parse error: %v", err)
 		}
@@ -247,6 +247,24 @@ func TestPricingAvailabilityRemoveFromSaleContinuesAfterPartialFailure(t *testin
 	})
 	if got := patches.Load(); got != 2 {
 		t.Fatalf("PATCH count = %d, want 2", got)
+	}
+	var result struct {
+		Status                         string   `json:"status"`
+		TotalTerritories               int      `json:"totalTerritories"`
+		UpdatedTerritories             int      `json:"updatedTerritories"`
+		VerifiedUnavailableTerritories int      `json:"verifiedUnavailableTerritories"`
+		FailedTerritories              []string `json:"failedTerritories"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode partial-failure result %q: %v", stdout, err)
+	}
+	if result.Status != "partialFailure" ||
+		result.TotalTerritories != 2 ||
+		result.UpdatedTerritories != 1 ||
+		result.VerifiedUnavailableTerritories != 1 ||
+		len(result.FailedTerritories) != 1 ||
+		result.FailedTerritories[0] != "FRA" {
+		t.Fatalf("unexpected partial-failure result: %+v", result)
 	}
 }
 

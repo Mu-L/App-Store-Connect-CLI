@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -179,20 +180,24 @@ Examples:
 
 			requestCtx, cancel := contextWithAvailabilityTimeout(ctx, true)
 			defer cancel()
-			_, summary, err := executeTerritoryAvailabilityUpdate(requestCtx, client, availabilityUpdateRequest{
+			_, summary, updateErr := executeTerritoryAvailabilityUpdate(requestCtx, client, availabilityUpdateRequest{
 				AppID:          resolvedAppID,
 				AllTerritories: true,
 				Available:      false,
 				ErrorPrefix:    "pricing availability remove-from-sale",
 			})
-			if err != nil {
-				return err
+			if updateErr != nil && len(summary.FailedTerritories) == 0 {
+				return updateErr
 			}
 
+			status := "removedFromSale"
+			if updateErr != nil {
+				status = "partialFailure"
+			}
 			result := AvailabilityRemoveFromSaleResult{
 				AppID:                          resolvedAppID,
 				AvailabilityID:                 summary.AvailabilityID,
-				Status:                         "removedFromSale",
+				Status:                         status,
 				AvailableInNewTerritories:      summary.AvailableInNewTerritories,
 				TotalTerritories:               summary.TotalTerritories,
 				UpdatedTerritories:             summary.UpdatedTerritories,
@@ -200,17 +205,28 @@ Examples:
 				VerifiedUnavailableTerritories: summary.VerifiedTerritories,
 				FailedTerritories:              append([]string{}, summary.FailedTerritories...),
 			}
-			fmt.Fprintf(
-				os.Stderr,
-				"App %s is unavailable in all %d current territories; preserved availableInNewTerritories=%t.\n",
-				resolvedAppID,
-				result.VerifiedUnavailableTerritories,
-				result.AvailableInNewTerritories,
-			)
+			if updateErr != nil {
+				fmt.Fprintf(
+					os.Stderr,
+					"App %s removal is incomplete: %d of %d current territories are verified unavailable; preserved availableInNewTerritories=%t.\n",
+					resolvedAppID,
+					result.VerifiedUnavailableTerritories,
+					result.TotalTerritories,
+					result.AvailableInNewTerritories,
+				)
+			} else {
+				fmt.Fprintf(
+					os.Stderr,
+					"App %s is unavailable in all %d current territories; preserved availableInNewTerritories=%t.\n",
+					resolvedAppID,
+					result.VerifiedUnavailableTerritories,
+					result.AvailableInNewTerritories,
+				)
+			}
 			if result.AvailableInNewTerritories {
 				fmt.Fprintln(os.Stderr, "Warning: Apple may automatically enable future App Store territories under the preserved policy.")
 			}
-			return PrintOutputWithRenderers(
+			renderErr := PrintOutputWithRenderers(
 				result,
 				*output.Output,
 				*output.Pretty,
@@ -223,6 +239,7 @@ Examples:
 					return nil
 				},
 			)
+			return errors.Join(updateErr, renderErr)
 		},
 	}
 }
