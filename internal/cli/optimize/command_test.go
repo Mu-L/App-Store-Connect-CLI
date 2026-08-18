@@ -30,10 +30,11 @@ func TestSearchPlanCommandHelpDescribesOfficialReadOnlyWorkflow(t *testing.T) {
 
 func TestSearchPlanCommandValidatesRequiredFlagsBeforeAuthentication(t *testing.T) {
 	t.Setenv("ASC_APP_ID", "")
+	stubSearchPlanResolversToFail(t)
 	command := SearchPlanCommand()
 	err := command.ParseAndRun(context.Background(), nil)
-	if err == nil || !strings.Contains(err.Error(), "--app is required") {
-		t.Fatalf("error = %v, want --app required", err)
+	if err == nil || err.Error() != "--app is required (or set ASC_APP_ID)" {
+		t.Fatalf("error = %v, want exact --app usage error", err)
 	}
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("error = %v, want usage error", err)
@@ -47,15 +48,16 @@ func TestSearchPlanCommandRejectsInvalidCountryGenreLocaleAndWindow(t *testing.T
 		want string
 	}{
 		{name: "country", args: []string{"--app", "1", "--version", "4.4.4", "--ad-account", "2", "--country", "USA", "--genre", "PRODUCTIVITY_UTILITIES", "--locale", "en-US"}, want: "--country must be an ISO alpha-2 code"},
-		{name: "genre", args: []string{"--app", "1", "--version", "4.4.4", "--ad-account", "2", "--country", "US", "--genre", "bad genre", "--locale", "en-US"}, want: "--genre"},
-		{name: "locale", args: []string{"--app", "1", "--version", "4.4.4", "--ad-account", "2", "--country", "US", "--genre", "PRODUCTIVITY_UTILITIES", "--locale", "english"}, want: "--locale"},
-		{name: "window", args: []string{"--app", "1", "--version", "4.4.4", "--ad-account", "2", "--country", "US", "--genre", "PRODUCTIVITY_UTILITIES", "--locale", "en-US", "--window", "31d"}, want: "--window"},
+		{name: "genre", args: []string{"--app", "1", "--version", "4.4.4", "--ad-account", "2", "--country", "US", "--genre", "bad genre", "--locale", "en-US"}, want: "--genre must be an Apple Ads genre identifier such as PRODUCTIVITY_UTILITIES"},
+		{name: "locale", args: []string{"--app", "1", "--version", "4.4.4", "--ad-account", "2", "--country", "US", "--genre", "PRODUCTIVITY_UTILITIES", "--locale", "english"}, want: "--locale invalid locale \"english\": must match pattern like en or en-US"},
+		{name: "window", args: []string{"--app", "1", "--version", "4.4.4", "--ad-account", "2", "--country", "US", "--genre", "PRODUCTIVITY_UTILITIES", "--locale", "en-US", "--window", "31d"}, want: "--window must be a whole number of days from 2d through 30d"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			stubSearchPlanResolversToFail(t)
 			command := SearchPlanCommand()
 			err := command.ParseAndRun(context.Background(), test.args)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
+			if err == nil || err.Error() != test.want {
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
 			if !errors.Is(err, flag.ErrHelp) {
@@ -66,10 +68,32 @@ func TestSearchPlanCommandRejectsInvalidCountryGenreLocaleAndWindow(t *testing.T
 }
 
 func TestSearchPlanCommandRejectsPositionalArguments(t *testing.T) {
+	stubSearchPlanResolversToFail(t)
 	command := SearchPlanCommand()
 	err := command.Exec(context.Background(), []string{"extra"})
-	if err == nil || !strings.Contains(err.Error(), "does not accept positional arguments") {
+	if err == nil || err.Error() != "optimize search plan does not accept positional arguments" {
 		t.Fatalf("error = %v", err)
+	}
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("error = %v, want usage error", err)
+	}
+}
+
+func stubSearchPlanResolversToFail(t *testing.T) {
+	t.Helper()
+	previousMetadata := resolveSearchMetadataForPlan
+	previousAds := collectSearchDataForPlan
+	t.Cleanup(func() {
+		resolveSearchMetadataForPlan = previousMetadata
+		collectSearchDataForPlan = previousAds
+	})
+	resolveSearchMetadataForPlan = func(context.Context, string, string, string, string, string) (resolvedSearchMetadata, error) {
+		t.Fatal("metadata resolver ran before usage validation")
+		return resolvedSearchMetadata{}, nil
+	}
+	collectSearchDataForPlan = func(context.Context, string, string, ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error) {
+		t.Fatal("Apple Ads resolver ran before usage validation")
+		return ads.SearchOptimizationData{}, nil
 	}
 }
 

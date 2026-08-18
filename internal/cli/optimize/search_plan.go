@@ -130,6 +130,8 @@ type searchPlanAccumulator struct {
 	hasExistingExact    bool
 	hasExistingNegative bool
 	bestInstalls        int64
+	hasPopularity       bool
+	popularityPeriod    string
 	spendValue          float64
 	spendCurrency       string
 	spendValid          bool
@@ -179,6 +181,11 @@ func buildSearchPlan(input searchPlanBuildInput) SearchPlanReport {
 			continue
 		}
 		entry.row.Sources = appendUnique(entry.row.Sources, "search_term_popularity")
+		if !shouldSelectSearchPlanPopularity(entry, popularity) {
+			continue
+		}
+		entry.hasPopularity = true
+		entry.popularityPeriod = searchPlanPopularityPeriod(popularity)
 		entry.row.Popularity5 = copyIntPointer(popularity.Popularity5)
 		entry.row.Popularity100 = copyIntPointer(popularity.Popularity100)
 		entry.row.PopularityInGenre = copyIntPointer(popularity.PopularityInGenre)
@@ -295,6 +302,55 @@ func buildSearchPlan(input searchPlanBuildInput) SearchPlanReport {
 	report.Summary = summarizeSearchPlan(report.Rows, report.Sources, input.Ads)
 	report.Notices = searchPlanNotices(input.Ads)
 	return report
+}
+
+func shouldSelectSearchPlanPopularity(entry *searchPlanAccumulator, candidate ads.SearchPopularity) bool {
+	if !entry.hasPopularity {
+		return true
+	}
+	candidatePeriod := searchPlanPopularityPeriod(candidate)
+	if candidatePeriod != entry.popularityPeriod {
+		return candidatePeriod > entry.popularityPeriod
+	}
+	if comparison := compareOptionalInt(candidate.RankInGenre, entry.row.RankInGenre, false); comparison != 0 {
+		return comparison > 0
+	}
+	for _, values := range [][2]*int{
+		{candidate.Popularity100, entry.row.Popularity100},
+		{candidate.Popularity5, entry.row.Popularity5},
+		{candidate.PopularityInGenre, entry.row.PopularityInGenre},
+	} {
+		if comparison := compareOptionalInt(values[0], values[1], true); comparison != 0 {
+			return comparison > 0
+		}
+	}
+	return false
+}
+
+func searchPlanPopularityPeriod(popularity ads.SearchPopularity) string {
+	if week := strings.TrimSpace(popularity.Week); week != "" {
+		return week
+	}
+	return strings.TrimSpace(popularity.Month)
+}
+
+func compareOptionalInt(candidate, current *int, preferHigher bool) int {
+	switch {
+	case candidate != nil && current == nil:
+		return 1
+	case candidate == nil && current != nil:
+		return -1
+	case candidate == nil:
+		return 0
+	case *candidate == *current:
+		return 0
+	case preferHigher && *candidate > *current:
+		return 1
+	case !preferHigher && *candidate < *current:
+		return 1
+	default:
+		return -1
+	}
 }
 
 func shouldSelectSearchPlanContext(entry *searchPlanAccumulator, candidate ads.SearchTermPerformance) bool {

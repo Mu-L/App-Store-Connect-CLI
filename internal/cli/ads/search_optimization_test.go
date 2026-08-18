@@ -163,10 +163,12 @@ func TestQueryOptimizationListPaginatesRequestBody(t *testing.T) {
 			Pagination map[string]any `json:"pagination"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
+			t.Errorf("decode pagination request: %v", err)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
 		}
 		if _, present := body.Pagination["fetchTotalCount"]; present {
-			t.Fatalf("recommendation-style pagination contains unsupported fetchTotalCount: %#v", body.Pagination)
+			t.Errorf("recommendation-style pagination contains unsupported fetchTotalCount: %#v", body.Pagination)
 		}
 		offset, _ := body.Pagination["offset"].(float64)
 		offsets = append(offsets, int(offset))
@@ -198,7 +200,9 @@ func TestFetchOptimizationPhraseSuggestionsReadsPhraseField(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
+			t.Errorf("decode phrase-suggestion request: %v", err)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
 		}
 		if hasOptimizationFilter(body, "countriesOrRegions") {
 			t.Errorf("phrase suggestion request unexpectedly includes countriesOrRegions: %#v", body)
@@ -312,31 +316,32 @@ func assertFilter(t *testing.T, body map[string]any, field string, want any) {
 			}
 		}
 	}
-	t.Fatalf("body filters do not contain %s=%v: %#v", field, want, body)
+	t.Errorf("body filters do not contain %s=%v: %#v", field, want, body)
 }
 
 func assertOptimizationPaginationShape(t *testing.T, path string, body map[string]any) {
 	t.Helper()
 	if path == "/v1/suggestions/target-cpas/query" {
 		if _, present := body["pagination"]; present {
-			t.Fatalf("%s body has unnecessary pagination: %#v", path, body)
+			t.Errorf("%s body has unnecessary pagination: %#v", path, body)
 		}
 		return
 	}
 	pagination, ok := body["pagination"].(map[string]any)
 	if !ok {
-		t.Fatalf("%s body has no pagination object: %#v", path, body)
+		t.Errorf("%s body has no pagination object: %#v", path, body)
+		return
 	}
 	if _, ok := pagination["offset"]; !ok {
-		t.Fatalf("%s pagination has no offset: %#v", path, pagination)
+		t.Errorf("%s pagination has no offset: %#v", path, pagination)
 	}
 	if _, ok := pagination["pageSize"]; !ok {
-		t.Fatalf("%s pagination has no pageSize: %#v", path, pagination)
+		t.Errorf("%s pagination has no pageSize: %#v", path, pagination)
 	}
 	_, hasFetchTotalCount := pagination["fetchTotalCount"]
 	expectsFetchTotalCount := path == "/v1/campaigns/query" || path == "/v1/keywords/query" || path == "/v1/negative-keywords/query"
 	if hasFetchTotalCount != expectsFetchTotalCount {
-		t.Fatalf("%s pagination fetchTotalCount present = %t, want %t: %#v", path, hasFetchTotalCount, expectsFetchTotalCount, pagination)
+		t.Errorf("%s pagination fetchTotalCount present = %t, want %t: %#v", path, hasFetchTotalCount, expectsFetchTotalCount, pagination)
 	}
 }
 
@@ -344,7 +349,7 @@ func assertNestedValue(t *testing.T, body map[string]any, object, field string, 
 	t.Helper()
 	nested, ok := body[object].(map[string]any)
 	if !ok || nested[field] != want {
-		t.Fatalf("%s.%s = %#v, want %#v in body %#v", object, field, nested[field], want, body)
+		t.Errorf("%s.%s = %#v, want %#v in body %#v", object, field, nested[field], want, body)
 	}
 }
 
@@ -352,11 +357,12 @@ func assertSorting(t *testing.T, body map[string]any, field, orderKey, order str
 	t.Helper()
 	sorting, ok := body["sorting"].([]any)
 	if !ok || len(sorting) != 1 {
-		t.Fatalf("sorting = %#v, want one entry", body["sorting"])
+		t.Errorf("sorting = %#v, want one entry", body["sorting"])
+		return
 	}
 	entry, ok := sorting[0].(map[string]any)
 	if !ok || entry["field"] != field || entry[orderKey] != order {
-		t.Fatalf("sorting = %#v, want %s %s=%s", sorting, field, orderKey, order)
+		t.Errorf("sorting = %#v, want %s %s=%s", sorting, field, orderKey, order)
 	}
 }
 
@@ -364,14 +370,15 @@ func assertArrayContains(t *testing.T, body map[string]any, field, want string) 
 	t.Helper()
 	items, ok := body[field].([]any)
 	if !ok {
-		t.Fatalf("%s = %#v, want array containing %q", field, body[field], want)
+		t.Errorf("%s = %#v, want array containing %q", field, body[field], want)
+		return
 	}
 	for _, item := range items {
 		if item == want {
 			return
 		}
 	}
-	t.Fatalf("%s = %#v, want array containing %q", field, items, want)
+	t.Errorf("%s = %#v, want array containing %q", field, items, want)
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, payload string) {

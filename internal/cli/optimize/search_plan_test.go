@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -184,6 +185,28 @@ func TestBuildSearchPlanUsesLatestImpressionSharePeriod(t *testing.T) {
 	}
 }
 
+func TestBuildSearchPlanUsesLatestPopularityPeriodDeterministically(t *testing.T) {
+	build := func(popularities []ads.SearchPopularity) SearchPlanRow {
+		report := buildSearchPlan(searchPlanBuildInput{
+			Ads: ads.SearchOptimizationData{Popularities: popularities},
+		})
+		return findSearchPlanRow(t, report.Rows, "habit tracker")
+	}
+	old := ads.SearchPopularity{Term: "habit tracker", Week: "2026-08-02", Popularity5: intPtr(5), Popularity100: intPtr(95), RankInGenre: intPtr(1)}
+	newerWeak := ads.SearchPopularity{Term: "habit tracker", Week: "2026-08-09", Popularity5: intPtr(3), Popularity100: intPtr(70), RankInGenre: intPtr(5)}
+	newerStrong := ads.SearchPopularity{Term: "habit tracker", Week: "2026-08-09", Popularity5: intPtr(4), Popularity100: intPtr(85), RankInGenre: intPtr(2)}
+
+	for _, popularities := range [][]ads.SearchPopularity{
+		{old, newerWeak, newerStrong},
+		{newerStrong, newerWeak, old},
+	} {
+		row := build(popularities)
+		if row.Popularity5 == nil || *row.Popularity5 != 4 || row.Popularity100 == nil || *row.Popularity100 != 85 || row.RankInGenre == nil || *row.RankInGenre != 2 {
+			t.Fatalf("selected popularity = %+v, want latest period with stable best rank", row)
+		}
+	}
+}
+
 func TestBuildSearchPlanChoosesStableCampaignContextForEqualPerformance(t *testing.T) {
 	build := func(performance []ads.SearchTermPerformance) SearchPlanRow {
 		report := buildSearchPlan(searchPlanBuildInput{
@@ -258,8 +281,8 @@ func TestWriteSearchPlanArtifactsAreReviewableAndImportCompatible(t *testing.T) 
 		t.Fatalf("metadata keywords = %q", got)
 	}
 
-	assertBulkArtifact(t, filepath.Join(dir, "exact-keywords.json"), "habit tracker", "EXACT")
-	assertBulkArtifact(t, filepath.Join(dir, "negative-keywords.json"), "free planner", "EXACT")
+	assertJSONArtifact(t, filepath.Join(dir, "exact-keywords.json"), `{"items":[{"correlationId":0,"data":{"adGroupId":55,"text":"habit tracker","matchType":"EXACT"}}]}`)
+	assertJSONArtifact(t, filepath.Join(dir, "negative-keywords.json"), `{"items":[{"correlationId":0,"data":{"campaignId":44,"adGroupId":55,"text":"free planner","matchType":"EXACT","status":"ENABLED"}}]}`)
 }
 
 func TestMetadataCandidateArtifactHonorsKeywordLimitAndDuplicates(t *testing.T) {
@@ -355,25 +378,22 @@ func assertActions(t *testing.T, got []string, want ...string) {
 	}
 }
 
-func assertBulkArtifact(t *testing.T, path, text, matchType string) {
+func assertJSONArtifact(t *testing.T, path, want string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var payload struct {
-		Items []struct {
-			Data struct {
-				Text      string `json:"text"`
-				MatchType string `json:"matchType"`
-			} `json:"data"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(data, &payload); err != nil {
+	var gotValue any
+	var wantValue any
+	if err := json.Unmarshal(data, &gotValue); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Items) != 1 || payload.Items[0].Data.Text != text || payload.Items[0].Data.MatchType != matchType {
-		t.Fatalf("bulk artifact %s = %+v", path, payload)
+	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("artifact %s = %s, want %s", path, data, want)
 	}
 }
 

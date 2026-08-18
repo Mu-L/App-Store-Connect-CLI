@@ -175,9 +175,12 @@ RED-GREEN coverage includes:
   write failures;
 - built-binary stdout, stderr, and exit-code checks.
 
-Credentialed verification is intentionally deferred. On a machine with both
-credential sets, run the command read-only first and verify source fill rates,
-country scoping, report latency, and score agreement for overlapping sources.
+Credentialed verification must remain read-only and cover at least two apps,
+including an app with multiple App Info records and an app with campaign data.
+Verify source fill rates, country scoping, report latency, artifact parsing,
+pagination, and score agreement for overlapping sources. Treat provider errors
+as explicit unavailable-source risk; do not infer successful coverage from a
+partial report or apply generated artifacts during verification.
 
 ## Alternatives
 
