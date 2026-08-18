@@ -47,6 +47,15 @@ const healthyAndOutagePayload = `jsonCallback({
   ]
 });`
 
+type countingTransport struct {
+	requests atomic.Int32
+}
+
+func (transport *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	transport.requests.Add(1)
+	return nil, errors.New("unexpected HTTP request")
+}
+
 func TestSystemStatusCommandJSONFiltersServices(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -161,7 +170,9 @@ func TestSystemStatusCommandRejectsInvalidArguments(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, stderr, err := runCommand(t, http.DefaultClient, "http://127.0.0.1:1", test.args...)
+			transport := &countingTransport{}
+			client := &http.Client{Transport: transport}
+			_, stderr, err := runCommand(t, client, "https://example.invalid", test.args...)
 			if err == nil {
 				t.Fatalf("error = nil, want %q", test.want)
 			}
@@ -172,8 +183,19 @@ func TestSystemStatusCommandRejectsInvalidArguments(t *testing.T) {
 				if !strings.Contains(stderr, test.want) {
 					t.Fatalf("stderr = %q, want %q", stderr, test.want)
 				}
-			} else if !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want %q", err, test.want)
+			} else {
+				if !errors.Is(err, flag.ErrHelp) {
+					t.Fatalf("error = %v, want flag.ErrHelp classification", err)
+				}
+				if err.Error() != test.want {
+					t.Fatalf("error = %q, want %q", err.Error(), test.want)
+				}
+				if wantStderr := "Error: " + test.want + "\n"; stderr != wantStderr {
+					t.Fatalf("stderr = %q, want %q", stderr, wantStderr)
+				}
+			}
+			if requests := transport.requests.Load(); requests != 0 {
+				t.Fatalf("HTTP requests = %d, want 0", requests)
 			}
 		})
 	}
