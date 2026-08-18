@@ -138,7 +138,7 @@ func BuildsIndividualTestersAddCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("individual-testers add", flag.ExitOnError)
 
 	selectors := bindBuildSelectorFlags(fs, buildSelectorFlagOptions{})
-	testers := fs.String("tester", "", "Comma-separated tester IDs")
+	testers := shared.BindOnceCSVFlag(fs, "tester", "Comma-separated tester IDs")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -161,7 +161,7 @@ Examples:
 				return err
 			}
 
-			testerIDs := shared.SplitCSV(*testers)
+			testerIDs := shared.SplitCSV(testers.String())
 			if len(testerIDs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --tester is required")
 				return shared.MissingRequiredUsageError("--tester")
@@ -200,7 +200,7 @@ func BuildsIndividualTestersRemoveCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("individual-testers remove", flag.ExitOnError)
 
 	selectors := bindBuildSelectorFlags(fs, buildSelectorFlagOptions{})
-	testers := fs.String("tester", "", "Comma-separated tester IDs")
+	testers := shared.BindOnceCSVFlag(fs, "tester", "Comma-separated tester IDs")
 	confirm := fs.Bool("confirm", false, "Confirm removal")
 	output := shared.BindOutputFlags(fs)
 
@@ -224,7 +224,7 @@ Examples:
 				return err
 			}
 
-			testerIDs := shared.SplitCSV(*testers)
+			testerIDs := shared.SplitCSV(testers.String())
 			if len(testerIDs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --tester is required")
 				return shared.MissingRequiredUsageError("--tester")

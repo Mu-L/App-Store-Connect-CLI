@@ -199,7 +199,7 @@ func WebhooksCreateCommand() *ffcli.Command {
 	name := fs.String("name", "", "Webhook name")
 	url := fs.String("url", "", "Webhook endpoint URL")
 	secret := fs.String("secret", "", "Webhook secret")
-	events := fs.String("events", "", "Webhook event types (comma-separated)")
+	events := shared.BindOnceCSVFlag(fs, "events", "Webhook event types (comma-separated)")
 	var enabled shared.OptionalBool
 	fs.Var(&enabled, "enabled", "Enable or disable the webhook: true or false")
 	output := shared.BindOutputFlags(fs)
@@ -232,7 +232,7 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --secret is required")
 				return shared.MissingRequiredUsageError("--secret")
 			}
-			if strings.TrimSpace(*events) == "" {
+			if strings.TrimSpace(events.String()) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --events is required")
 				return shared.MissingRequiredUsageError("--events")
 			}
@@ -241,7 +241,7 @@ Examples:
 				return shared.MissingRequiredUsageError("--enabled")
 			}
 
-			eventTypes, err := normalizeWebhookEvents(*events)
+			eventTypes, err := normalizeWebhookEvents(events.String())
 			if err != nil {
 				return fmt.Errorf("webhooks create: %w", shared.UsageError(err.Error()))
 			}
@@ -280,7 +280,7 @@ func WebhooksUpdateCommand() *ffcli.Command {
 	name := fs.String("name", "", "Webhook name")
 	url := fs.String("url", "", "Webhook endpoint URL")
 	secret := fs.String("secret", "", "Webhook secret")
-	events := fs.String("events", "", "Webhook event types (comma-separated)")
+	events := shared.BindOnceCSVFlag(fs, "events", "Webhook event types (comma-separated)")
 	var enabled shared.OptionalBool
 	fs.Var(&enabled, "enabled", "Enable or disable the webhook: true or false")
 	output := shared.BindOutputFlags(fs)
@@ -321,8 +321,8 @@ Examples:
 				attrs.Secret = &value
 				hasUpdate = true
 			}
-			if strings.TrimSpace(*events) != "" {
-				eventTypes, err := normalizeWebhookEvents(*events)
+			if strings.TrimSpace(events.String()) != "" {
+				eventTypes, err := normalizeWebhookEvents(events.String())
 				if err != nil {
 					return fmt.Errorf("webhooks update: %w", shared.UsageError(err.Error()))
 				}

@@ -52,7 +52,7 @@ func AppsSearchKeywordsSetCommand() *ffcli.Command {
 	version := fs.String("version", "", "App Store version string (required)")
 	locale := fs.String("locale", "", "Version localization locale (required; for example en-US)")
 	platform := fs.String("platform", "", "App Store version platform: IOS, MAC_OS, TV_OS, VISION_OS (required only when ambiguous)")
-	keywords := fs.String("keywords", "", "Version-localized keywords (comma-separated)")
+	keywords := shared.BindOnceCSVFlag(fs, "keywords", "Version-localized keywords (comma-separated)")
 	confirm := fs.Bool("confirm", false, "Confirm replacing the localization's keywords")
 	output := shared.BindOutputFlags(fs)
 
@@ -114,7 +114,7 @@ Examples:
 				return shared.MissingRequiredUsageError("--confirm")
 			}
 
-			keywordValue := strings.TrimSpace(*keywords)
+			keywordValue := strings.TrimSpace(keywords.String())
 			if keywordValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --keywords is required")
 				return shared.MissingRequiredUsageError("--keywords")

@@ -179,7 +179,7 @@ func AndroidIosMappingCreateCommand() *ffcli.Command {
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID)")
 	packageName := fs.String("android-package-name", "", "Android package name (e.g., com.example.android)")
-	fingerprints := fs.String("fingerprints", "", "Signing key fingerprints (comma-separated)")
+	fingerprints := shared.BindOnceCSVFlag(fs, "fingerprints", "Signing key fingerprints (comma-separated)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -203,7 +203,7 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --android-package-name is required")
 				return shared.MissingRequiredUsageError("--android-package-name")
 			}
-			fingerprintValues := shared.SplitCSV(*fingerprints)
+			fingerprintValues := shared.SplitCSV(fingerprints.String())
 			if len(fingerprintValues) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --fingerprints is required")
 				return shared.MissingRequiredUsageError("--fingerprints")
@@ -236,7 +236,7 @@ func AndroidIosMappingUpdateCommand() *ffcli.Command {
 
 	id := fs.String("mapping-id", "", "Mapping ID")
 	packageName := fs.String("android-package-name", "", "Android package name (e.g., com.example.android)")
-	fingerprints := fs.String("fingerprints", "", "Signing key fingerprints (comma-separated)")
+	fingerprints := shared.BindOnceCSVFlag(fs, "fingerprints", "Signing key fingerprints (comma-separated)")
 	clearPackageName := fs.Bool("clear-android-package-name", false, "Clear the Android package name")
 	clearFingerprints := fs.Bool("clear-fingerprints", false, "Clear signing key fingerprints")
 	output := shared.BindOutputFlags(fs)
@@ -287,7 +287,7 @@ Examples:
 				attrs.PackageName = &asc.NullableString{}
 			}
 			if seen["fingerprints"] {
-				fingerprintValues := shared.SplitCSV(*fingerprints)
+				fingerprintValues := shared.SplitCSV(fingerprints.String())
 				if len(fingerprintValues) == 0 {
 					return fmt.Errorf("android-ios-mapping update: --fingerprints must include at least one value")
 				}

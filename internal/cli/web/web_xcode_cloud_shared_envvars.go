@@ -149,7 +149,7 @@ func webXcodeCloudEnvVarsSharedSetCommand() *ffcli.Command {
 	value := fs.String("value", "", "Environment variable value (required)")
 	secret := fs.Bool("secret", false, "Encrypt the value as a secret (keep value redacted)")
 	locked := fs.Bool("locked", false, "Restrict editing of this variable")
-	workflowIDs := fs.String("workflow-ids", "", "Comma-separated workflow IDs to link (optional)")
+	workflowIDs := shared.BindOnceCSVFlag(fs, "workflow-ids", "Comma-separated workflow IDs to link (optional)")
 
 	return &ffcli.Command{
 		Name:       "set",
@@ -218,7 +218,7 @@ Examples:
 					envValue = webcore.CIEnvironmentVariableValue{Plaintext: &varValue}
 				}
 
-				wfIDs := parseWorkflowIDs(*workflowIDs)
+				wfIDs := parseWorkflowIDs(workflowIDs.String())
 				if wfIDs == nil {
 					wfIDs = []string{}
 				}

@@ -190,8 +190,8 @@ func UsersUpdateCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 
 	id := fs.String("id", "", "User ID")
-	roles := fs.String("roles", "", "Comma-separated UserRole values: "+strings.Join(userRoleList(), ", "))
-	visibleApps := fs.String("visible-app", "", "Comma-separated app IDs for visible apps")
+	roles := shared.BindOnceCSVFlag(fs, "roles", "Comma-separated UserRole values: "+strings.Join(userRoleList(), ", "))
+	visibleApps := shared.BindOnceCSVFlag(fs, "visible-app", "Comma-separated app IDs for visible apps")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -212,7 +212,7 @@ Examples:
 				return shared.MissingRequiredUsageError("--id")
 			}
 
-			roleValues, err := normalizeUserRoles(*roles, "--roles")
+			roleValues, err := normalizeUserRoles(roles.String(), "--roles")
 			if err != nil {
 				return shared.UsageErrorf("users update: %v", err)
 			}
@@ -222,7 +222,7 @@ Examples:
 			}
 			warnDeprecatedUserRoles(roleValues)
 
-			visibleAppIDs := shared.SplitCSV(*visibleApps)
+			visibleAppIDs := shared.SplitCSV(visibleApps.String())
 
 			client, err := shared.GetASCClient()
 			if err != nil {
@@ -309,9 +309,9 @@ func UsersInviteCommand() *ffcli.Command {
 	email := fs.String("email", "", "Email address to invite")
 	firstName := fs.String("first-name", "", "First name of the invitee (required)")
 	lastName := fs.String("last-name", "", "Last name of the invitee (required)")
-	roles := fs.String("roles", "", "Comma-separated UserRole values: "+strings.Join(userRoleList(), ", "))
+	roles := shared.BindOnceCSVFlag(fs, "roles", "Comma-separated UserRole values: "+strings.Join(userRoleList(), ", "))
 	allApps := fs.Bool("all-apps", false, "Grant access to all apps")
-	visibleApps := fs.String("visible-app", "", "Comma-separated app IDs for visible apps")
+	visibleApps := shared.BindOnceCSVFlag(fs, "visible-app", "Comma-separated app IDs for visible apps")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -344,7 +344,7 @@ Examples:
 				return shared.MissingRequiredUsageError("--last-name")
 			}
 
-			roleValues, err := normalizeUserRoles(*roles, "--roles")
+			roleValues, err := normalizeUserRoles(roles.String(), "--roles")
 			if err != nil {
 				return shared.UsageErrorf("users invite: %v", err)
 			}
@@ -354,12 +354,12 @@ Examples:
 			}
 			warnDeprecatedUserRoles(roleValues)
 
-			if *allApps && strings.TrimSpace(*visibleApps) != "" {
+			if *allApps && strings.TrimSpace(visibleApps.String()) != "" {
 				fmt.Fprintln(os.Stderr, "Error: --all-apps and --visible-app cannot be used together")
 				return flag.ErrHelp
 			}
 
-			visibleAppIDs := shared.SplitCSV(*visibleApps)
+			visibleAppIDs := shared.SplitCSV(visibleApps.String())
 
 			if !*allApps && len(visibleAppIDs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --all-apps or --visible-app is required")

@@ -18,7 +18,7 @@ func BuildsAddGroupsCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("add-groups", flag.ExitOnError)
 
 	selectors := bindBuildSelectorFlags(fs, buildSelectorFlagOptions{})
-	groups := fs.String("group", "", "Comma-separated beta group IDs or names")
+	groups := shared.BindOnceCSVFlag(fs, "group", "Comma-separated beta group IDs or names")
 	skipInternal := fs.Bool("skip-internal", false, "Skip internal beta groups instead of adding them")
 	submit := fs.Bool("submit", false, "Submit build for beta app review after adding external groups")
 	confirm := fs.Bool("confirm", false, "Confirm beta app review submission (required with --submit)")
@@ -50,7 +50,7 @@ Examples:
 				return err
 			}
 
-			groupInputs := shared.SplitCSV(*groups)
+			groupInputs := shared.SplitCSV(groups.String())
 			if len(groupInputs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --group is required")
 				return shared.MissingRequiredUsageError("--group")
@@ -244,7 +244,7 @@ func BuildsRemoveGroupsCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("remove-groups", flag.ExitOnError)
 
 	selectors := bindBuildSelectorFlags(fs, buildSelectorFlagOptions{})
-	groups := fs.String("group", "", "Comma-separated beta group IDs")
+	groups := shared.BindOnceCSVFlag(fs, "group", "Comma-separated beta group IDs")
 	confirm := fs.Bool("confirm", false, "Confirm removal")
 	output := shared.BindOutputFlags(fs)
 
@@ -268,7 +268,7 @@ Examples:
 				return err
 			}
 
-			groupIDs := shared.SplitCSV(*groups)
+			groupIDs := shared.SplitCSV(groups.String())
 			if len(groupIDs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --group is required")
 				return shared.MissingRequiredUsageError("--group")

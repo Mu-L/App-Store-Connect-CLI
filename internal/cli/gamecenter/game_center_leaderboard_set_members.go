@@ -119,7 +119,7 @@ func GameCenterLeaderboardSetMembersSetCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("set", flag.ExitOnError)
 
 	setID := fs.String("set-id", "", "Game Center leaderboard set ID")
-	leaderboardIDs := fs.String("leaderboard-ids", "", "Comma-separated list of leaderboard IDs to set as members")
+	leaderboardIDs := shared.BindOnceCSVFlag(fs, "leaderboard-ids", "Comma-separated list of leaderboard IDs to set as members")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -143,7 +143,7 @@ Examples:
 				return shared.MissingRequiredUsageError("--set-id")
 			}
 
-			ids := shared.SplitUniqueCSV(*leaderboardIDs)
+			ids := shared.SplitUniqueCSV(leaderboardIDs.String())
 
 			client, err := shared.GetASCClient()
 			if err != nil {
