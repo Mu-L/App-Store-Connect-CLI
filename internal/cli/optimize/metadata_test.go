@@ -34,15 +34,15 @@ func TestResolveSearchMetadataJoinsVersionAndAppInfoLocalizations(t *testing.T) 
 			if request.URL.Query().Get("filter[versionString]") != "4.4.4" || request.URL.Query().Get("filter[platform]") != "IOS" {
 				t.Fatalf("version query = %s", request.URL.RawQuery)
 			}
-			return searchMetadataResponse(`{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"platform":"IOS","versionString":"4.4.4"}}]}`), nil
+			return searchMetadataResponse(`{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"platform":"IOS","versionString":"4.4.4","appStoreState":"READY_FOR_SALE"}}]}`), nil
 		case "/v1/appStoreVersions/version-1/appStoreVersionLocalizations":
 			if request.URL.Query().Get("filter[locale]") != "en-US" {
 				t.Fatalf("version localization query = %s", request.URL.RawQuery)
 			}
 			return searchMetadataResponse(`{"data":[{"type":"appStoreVersionLocalizations","id":"version-loc-1","attributes":{"locale":"en-US","keywords":"focus,timer"}}]}`), nil
 		case "/v1/apps/123456789/appInfos":
-			return searchMetadataResponse(`{"data":[{"type":"appInfos","id":"info-1","attributes":{}}]}`), nil
-		case "/v1/appInfos/info-1/appInfoLocalizations":
+			return searchMetadataResponse(`{"data":[{"type":"appInfos","id":"info-rejected","attributes":{"appStoreState":"DEVELOPER_REJECTED"}},{"type":"appInfos","id":"info-live","attributes":{"appStoreState":"READY_FOR_DISTRIBUTION"}}]}`), nil
+		case "/v1/appInfos/info-live/appInfoLocalizations":
 			if request.URL.Query().Get("filter[locale]") != "en-US" {
 				t.Fatalf("app info localization query = %s", request.URL.RawQuery)
 			}
@@ -54,11 +54,11 @@ func TestResolveSearchMetadataJoinsVersionAndAppInfoLocalizations(t *testing.T) 
 	})
 	t.Cleanup(shared.SetASCClientFactoryForTesting(func() (*asc.Client, error) { return client, nil }))
 
-	result, err := resolveSearchMetadata(context.Background(), "123456789", "4.4.4", "IOS", "en-US")
+	result, err := resolveSearchMetadata(context.Background(), "123456789", "4.4.4", "IOS", "", "en-US")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.AppID != "123456789" || result.VersionID != "version-1" || result.Platform != "IOS" {
+	if result.AppID != "123456789" || result.VersionID != "version-1" || result.AppInfoID != "info-live" || result.Platform != "IOS" {
 		t.Fatalf("identity = %+v", result)
 	}
 	if result.Metadata.Name != "Focus Keeper" || result.Metadata.Subtitle != "Habit tracker" || result.Metadata.Keywords != "focus,timer" {

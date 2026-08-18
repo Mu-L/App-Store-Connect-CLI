@@ -7,12 +7,12 @@ reviewable search plan:
 ```bash
 asc optimize search plan \
   --app "APP_ID" \
-  --version "4.4.4" \
+  --version "APP_VERSION" \
   --ad-account "AD_ACCOUNT_ID" \
   --country "US" \
   --genre "PRODUCTIVITY_UTILITIES" \
   --locale "en-US" \
-  --out-dir ".asc/optimization/4.4.4" \
+  --out-dir ".asc/optimization/APP_VERSION" \
   --output markdown
 ```
 
@@ -32,6 +32,11 @@ source failures remain visible in the report, while successful official data
 is preserved. Actions that require proving a keyword is absent are suppressed
 when their dependency is unavailable, and table or Markdown output shows the
 source matrix and notices directly.
+
+For apps with multiple App Info records, the command matches App Info to the
+selected version state. If that match is ambiguous, pass the explicit record
+with `--app-info`. The JSON report records both the resolved version ID and App
+Info ID so the evidence can be reproduced.
 
 The report also preserves Apple's app-and-country target-CPA suggestion for a
 new Maximize Conversions campaign separately from recommendations for existing

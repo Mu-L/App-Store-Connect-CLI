@@ -61,6 +61,7 @@ func SearchPlanCommand() *ffcli.Command {
 	appID := fs.String("app", "", "App Store Connect app ID, bundle ID, or exact app name (required, or ASC_APP_ID env)")
 	version := fs.String("version", "", "App Store version string (required)")
 	platform := fs.String("platform", "IOS", "App Store platform: IOS, MAC_OS, TV_OS, VISION_OS")
+	appInfoID := fs.String("app-info", "", "App Info ID override when multiple records cannot be auto-resolved")
 	adAccount := fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID/profile default)")
 	adsProfile := fs.String("ads-profile", "", "Use named Apple Ads authentication profile")
 	country := fs.String("country", "", "ISO alpha-2 Apple Ads country or region (required)")
@@ -85,8 +86,8 @@ When --out-dir is set, the command writes report.json, metadata-candidates.csv,
 exact-keywords.json, and negative-keywords.json as reviewable plans.
 
 Examples:
-  asc optimize search plan --app "123456789" --version "4.4.4" --ad-account "987654321" --country US --genre PRODUCTIVITY_UTILITIES --locale en-US
-  asc optimize search plan --app "123456789" --version "4.4.4" --ad-account "987654321" --country US --genre PRODUCTIVITY_UTILITIES --locale en-US --out-dir .asc/optimization/4.4.4 --output markdown`,
+  asc optimize search plan --app "123456789" --version "1.2.0" --ad-account "987654321" --country US --genre PRODUCTIVITY_UTILITIES --locale en-US
+  asc optimize search plan --app "123456789" --version "1.2.0" --ad-account "987654321" --country US --genre PRODUCTIVITY_UTILITIES --locale en-US --out-dir .asc/optimization/1.2.0 --output markdown`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -122,7 +123,7 @@ Examples:
 				return shared.UsageError(err.Error())
 			}
 
-			metadata, err := resolveSearchMetadataForPlan(ctx, resolvedAppSelector, strings.TrimSpace(*version), normalizedPlatform, normalizedLocale)
+			metadata, err := resolveSearchMetadataForPlan(ctx, resolvedAppSelector, strings.TrimSpace(*version), normalizedPlatform, strings.TrimSpace(*appInfoID), normalizedLocale)
 			if err != nil {
 				return fmt.Errorf("optimize search plan: App Store Connect metadata: %w", err)
 			}
@@ -144,6 +145,7 @@ Examples:
 				AppID:       metadata.AppID,
 				Version:     strings.TrimSpace(*version),
 				VersionID:   metadata.VersionID,
+				AppInfoID:   metadata.AppInfoID,
 				Platform:    metadata.Platform,
 				Country:     normalizedCountry,
 				Genre:       normalizedGenre,

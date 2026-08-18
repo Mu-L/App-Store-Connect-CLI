@@ -49,7 +49,9 @@ func TestFetchSearchOptimizationDataUsesOfficialEndpointsAndPreservesPartialFail
 			assertFilter(t, body, "countriesOrRegions", "US")
 			writeJSON(t, w, `{"result":[{"text":"habit tracker","popularity":80}],"pagination":{"offset":0,"pageSize":1000,"totalCount":1}}`)
 		case "/v1/suggestions/phrases/query":
-			assertFilter(t, body, "countriesOrRegions", "US")
+			if hasOptimizationFilter(body, "countriesOrRegions") {
+				t.Errorf("phrase suggestion request unexpectedly includes countriesOrRegions: %#v", body)
+			}
 			assertFilter(t, body, "queryType", "SUGGESTION")
 			http.Error(w, `{"errors":[{"message":"request unavailable"}]}`, http.StatusBadRequest)
 		case "/v1/suggestions/target-cpas/query":
@@ -194,6 +196,13 @@ func TestQueryOptimizationListPaginatesRequestBody(t *testing.T) {
 
 func TestFetchOptimizationPhraseSuggestionsReadsPhraseField(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if hasOptimizationFilter(body, "countriesOrRegions") {
+			t.Errorf("phrase suggestion request unexpectedly includes countriesOrRegions: %#v", body)
+		}
 		writeJSON(t, w, `{"result":[{"phrase":"best habit tracker","popularity":82}],"pagination":{"offset":0,"pageSize":1000,"totalCount":1}}`)
 	}))
 	defer server.Close()
@@ -214,6 +223,17 @@ func TestFetchOptimizationPhraseSuggestionsReadsPhraseField(t *testing.T) {
 	if len(items) != 1 || items[0].Text != "best habit tracker" || items[0].Kind != "phrase" || items[0].Popularity == nil || *items[0].Popularity != 82 {
 		t.Fatalf("phrase suggestions = %+v", items)
 	}
+}
+
+func hasOptimizationFilter(body map[string]any, field string) bool {
+	filters, _ := body["filters"].([]any)
+	for _, raw := range filters {
+		filter, _ := raw.(map[string]any)
+		if filter["field"] == field {
+			return true
+		}
+	}
+	return false
 }
 
 func TestExecuteOptimizationQueryAppliesRequestTimeout(t *testing.T) {

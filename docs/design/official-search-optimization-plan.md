@@ -16,13 +16,13 @@ under either `ads` or `metadata`:
 ```bash
 asc optimize search plan \
   --app "123456789" \
-  --version "4.4.4" \
+  --version "APP_VERSION" \
   --ad-account "987654321" \
   --country "US" \
   --genre "PRODUCTIVITY_UTILITIES" \
   --locale "en-US" \
   --window "30d" \
-  --out-dir ".asc/optimization/4.4.4" \
+  --out-dir ".asc/optimization/APP_VERSION" \
   --output markdown
 ```
 
@@ -31,6 +31,9 @@ Required inputs are `--app`, `--version`, `--ad-account`, `--country`,
 Ads profiles remain valid resolution sources. `--platform` defaults to `IOS`,
 and `--window` defaults to `30d` with an accepted range of 2 through 30 whole
 days. `--out-dir` is optional; omitting it keeps the command stdout-only.
+When an app has multiple App Info records, the command matches App Info to the
+selected version state; `--app-info` provides an explicit override when that
+match is ambiguous.
 
 The command supports JSON, table, and Markdown. Data is written only to stdout,
 diagnostics are written to stderr, and usage errors exit with code 2. The
@@ -41,6 +44,7 @@ command accepts no positional arguments.
 The workflow uses the existing typed App Store Connect client to resolve the
 selected version and read its version and app-info localizations. Apple Ads
 credentials remain independent from App Store Connect credentials.
+The report records the exact resolved version and App Info resource IDs.
 
 It composes these Platform API v1 operations:
 

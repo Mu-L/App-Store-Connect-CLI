@@ -184,6 +184,25 @@ func TestBuildSearchPlanUsesLatestImpressionSharePeriod(t *testing.T) {
 	}
 }
 
+func TestBuildSearchPlanChoosesStableCampaignContextForEqualPerformance(t *testing.T) {
+	build := func(performance []ads.SearchTermPerformance) SearchPlanRow {
+		report := buildSearchPlan(searchPlanBuildInput{
+			Ads: ads.SearchOptimizationData{SearchTerms: performance},
+		})
+		return findSearchPlanRow(t, report.Rows, "habit tracker")
+	}
+	first := ads.SearchTermPerformance{Term: "habit tracker", KeywordText: "habits", MatchType: "BROAD", CampaignID: 11, AdGroupID: 101, TotalInstalls: 3}
+	second := ads.SearchTermPerformance{Term: "habit tracker", KeywordText: "tracker", MatchType: "BROAD", CampaignID: 22, AdGroupID: 202, TotalInstalls: 3}
+
+	forward := build([]ads.SearchTermPerformance{first, second})
+	reverse := build([]ads.SearchTermPerformance{second, first})
+	for _, row := range []SearchPlanRow{forward, reverse} {
+		if row.CampaignID == nil || *row.CampaignID != 11 || row.AdGroupID == nil || *row.AdGroupID != 101 || row.MatchedKeyword != "habits" {
+			t.Fatalf("selected context = %+v, want stable lowest campaign/ad group", row)
+		}
+	}
+}
+
 func TestSearchPlanRowsUseImpressionSharePopularityAsOneToFiveFallback(t *testing.T) {
 	rows := searchPlanRows([]SearchPlanRow{{Term: "habit tracker", ImpressionSharePopularity5: intPtr(4)}})
 	if len(rows) != 1 || len(rows[0]) < 2 || rows[0][1] != "4" {

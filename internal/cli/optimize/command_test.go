@@ -91,12 +91,12 @@ func TestSearchPlanCommandRendersSupportedOutputsAndWritesArtifacts(t *testing.T
 		resolveSearchMetadataForPlan = previousMetadata
 		collectSearchDataForPlan = previousAds
 	})
-	resolveSearchMetadataForPlan = func(_ context.Context, appSelector, version, platform, locale string) (resolvedSearchMetadata, error) {
-		if appSelector != "123456789" || version != "4.4.4" || platform != "IOS" || locale != "en-US" {
-			t.Fatalf("metadata inputs = (%q, %q, %q, %q)", appSelector, version, platform, locale)
+	resolveSearchMetadataForPlan = func(_ context.Context, appSelector, version, platform, appInfoID, locale string) (resolvedSearchMetadata, error) {
+		if appSelector != "123456789" || version != "4.4.4" || platform != "IOS" || appInfoID != "info-live" || locale != "en-US" {
+			t.Fatalf("metadata inputs = (%q, %q, %q, %q, %q)", appSelector, version, platform, appInfoID, locale)
 		}
 		return resolvedSearchMetadata{
-			AppID: "123456789", VersionID: "version-1", Platform: "IOS",
+			AppID: "123456789", VersionID: "version-1", AppInfoID: "info-live", Platform: "IOS",
 			Metadata: searchMetadataSnapshot{Name: "Focus Keeper", Subtitle: "Habit tracker", Keywords: "focus,timer"},
 		}, nil
 	}
@@ -116,7 +116,7 @@ func TestSearchPlanCommandRendersSupportedOutputsAndWritesArtifacts(t *testing.T
 	}
 
 	baseArgs := []string{
-		"--app", "123456789", "--version", "4.4.4", "--ad-account", "987654321", "--ads-profile", "Ads",
+		"--app", "123456789", "--version", "4.4.4", "--app-info", "info-live", "--ad-account", "987654321", "--ads-profile", "Ads",
 		"--country", "us", "--genre", "productivity_utilities", "--locale", "en-US",
 	}
 	for _, format := range []string{"json", "table", "markdown"} {

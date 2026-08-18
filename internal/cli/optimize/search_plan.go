@@ -91,6 +91,7 @@ type SearchPlanReport struct {
 	AppID           string                               `json:"appId"`
 	Version         string                               `json:"version"`
 	VersionID       string                               `json:"versionId,omitempty"`
+	AppInfoID       string                               `json:"appInfoId,omitempty"`
 	Platform        string                               `json:"platform"`
 	Country         string                               `json:"country"`
 	Genre           string                               `json:"genre"`
@@ -112,6 +113,7 @@ type searchPlanBuildInput struct {
 	AppID       string
 	Version     string
 	VersionID   string
+	AppInfoID   string
 	Platform    string
 	Country     string
 	Genre       string
@@ -227,7 +229,7 @@ func buildSearchPlan(input searchPlanBuildInput) SearchPlanReport {
 		addInt64Pointer(&entry.row.TapInstalls, performance.TapInstalls)
 		addInt64Pointer(&entry.row.TotalInstalls, performance.TotalInstalls)
 
-		if performance.TotalInstalls >= entry.bestInstalls {
+		if shouldSelectSearchPlanContext(entry, performance) {
 			entry.bestInstalls = performance.TotalInstalls
 			entry.row.MatchedKeyword = strings.TrimSpace(performance.KeywordText)
 			entry.row.MatchType = strings.ToUpper(strings.TrimSpace(performance.MatchType))
@@ -273,6 +275,7 @@ func buildSearchPlan(input searchPlanBuildInput) SearchPlanReport {
 		AppID:         input.AppID,
 		Version:       input.Version,
 		VersionID:     input.VersionID,
+		AppInfoID:     input.AppInfoID,
 		Platform:      input.Platform,
 		Country:       input.Country,
 		Genre:         input.Genre,
@@ -292,6 +295,39 @@ func buildSearchPlan(input searchPlanBuildInput) SearchPlanReport {
 	report.Summary = summarizeSearchPlan(report.Rows, report.Sources, input.Ads)
 	report.Notices = searchPlanNotices(input.Ads)
 	return report
+}
+
+func shouldSelectSearchPlanContext(entry *searchPlanAccumulator, candidate ads.SearchTermPerformance) bool {
+	if candidate.TotalInstalls != entry.bestInstalls {
+		return candidate.TotalInstalls > entry.bestInstalls
+	}
+
+	currentCampaignID := pointerInt64Value(entry.row.CampaignID, 0)
+	switch {
+	case currentCampaignID == 0 && candidate.CampaignID > 0:
+		return true
+	case candidate.CampaignID == 0 && currentCampaignID > 0:
+		return false
+	case candidate.CampaignID != currentCampaignID:
+		return candidate.CampaignID < currentCampaignID
+	}
+
+	currentAdGroupID := pointerInt64Value(entry.row.AdGroupID, 0)
+	switch {
+	case currentAdGroupID == 0 && candidate.AdGroupID > 0:
+		return true
+	case candidate.AdGroupID == 0 && currentAdGroupID > 0:
+		return false
+	case candidate.AdGroupID != currentAdGroupID:
+		return candidate.AdGroupID < currentAdGroupID
+	}
+
+	currentKeyword := strings.ToLower(strings.TrimSpace(entry.row.MatchedKeyword))
+	candidateKeyword := strings.ToLower(strings.TrimSpace(candidate.KeywordText))
+	if candidateKeyword != currentKeyword {
+		return currentKeyword == "" || candidateKeyword < currentKeyword
+	}
+	return strings.ToUpper(strings.TrimSpace(candidate.MatchType)) < strings.ToUpper(strings.TrimSpace(entry.row.MatchType))
 }
 
 func resolveSearchPlanWindow(value string, now time.Time) (searchPlanWindow, error) {

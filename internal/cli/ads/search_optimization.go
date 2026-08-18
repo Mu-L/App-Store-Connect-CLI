@@ -289,10 +289,11 @@ func fetchOptimizationSuggestions(ctx context.Context, client *appleads.Client, 
 	filters := []any{
 		optimizationFilter("promotedObjectId", "EQUALS", []string{strings.TrimSpace(request.AppID)}),
 		optimizationFilter("promotedObjectType", "EQUALS", []string{"APPSTORE_APP"}),
-		optimizationFilter("countriesOrRegions", "IN", []string{strings.ToUpper(strings.TrimSpace(request.Country))}),
 	}
 	if phrases {
 		filters = append(filters, optimizationFilter("queryType", "EQUALS", []string{"SUGGESTION"}))
+	} else {
+		filters = append(filters, optimizationFilter("countriesOrRegions", "IN", []string{strings.ToUpper(strings.TrimSpace(request.Country))}))
 	}
 	items, err := queryOptimizationList[suggestionResponse](ctx, client, spec, map[string]any{"filters": filters}, 1000)
 	if err != nil {
