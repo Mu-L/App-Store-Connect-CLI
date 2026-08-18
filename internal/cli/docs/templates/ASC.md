@@ -131,7 +131,7 @@ Use `asc <command> --help` for subcommands and flags.
 - `init` - Initialize asc helper docs in the current repo.
 - `docs` - Generate asc cli reference docs for a repo.
 - `diff` - Generate deterministic non-mutating diff plans.
-- `system-status` - Check Apple Developer service health without authentication.
+- `system-status` - [experimental] Check Apple Developer service health without authentication.
 - `capabilities` - Show CLI, API, web-only, and public-API-limited capability coverage.
 - `search` - Search asc commands and examples for agent-oriented command discovery.
 - `status` - Show a release pipeline dashboard for an app.

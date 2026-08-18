@@ -185,7 +185,7 @@ depending on a command in CI or scripts:
 
 ### Apple service health
 
-- Check Apple's developer services without credentials: `asc system-status`
+- `[experimental]` Check Apple's developer services without credentials: `asc system-status`
 - Narrow unexpected API or upload failures: `asc system-status --service "App Store Connect"`
 - Poll only when requested: `asc system-status --watch --poll-interval 30s`
 - Use `--issues-only` for a concise incident view; summary counts still cover all matched services

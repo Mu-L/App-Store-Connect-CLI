@@ -1,5 +1,7 @@
 # Apple Developer system status
 
+Status: Experimental
+
 ## Placement and command shape
 
 `asc system-status` is a top-level utility command. It is separate from
