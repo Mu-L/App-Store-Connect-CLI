@@ -619,7 +619,7 @@ func TestSubscriptionsPricePointsEqualizationsWithoutPaginateUsesSinglePage(t *t
 		}
 	})
 
-	wantWarning := "Warning: showing 1 results; more pages exist — pass --paginate for all (or --next for the next page)\n"
+	wantWarning := "Warning: showing 1 results; more pages exist (use --paginate or --next where supported)\n"
 	if stderr != wantWarning {
 		t.Fatalf("expected truncation warning on stderr, got %q", stderr)
 	}

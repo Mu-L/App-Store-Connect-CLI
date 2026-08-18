@@ -15,25 +15,6 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
-type betaTesterUsagesPage struct {
-	Data     []json.RawMessage                    `json:"data"`
-	Links    asc.Links                            `json:"links"`
-	Included json.RawMessage                      `json:"included,omitempty"`
-	Meta     json.RawMessage                      `json:"meta,omitempty"`
-	Testers  map[string]betaTesterUsageTesterInfo `json:"testers,omitempty"`
-}
-
-// betaTesterUsageTesterInfo describes one resolved beta tester in the testers
-// sidecar keyed by tester ID.
-type betaTesterUsageTesterInfo struct {
-	ID         string `json:"id"`
-	Email      string `json:"email,omitempty"`
-	FirstName  string `json:"firstName,omitempty"`
-	LastName   string `json:"lastName,omitempty"`
-	State      string `json:"state,omitempty"`
-	InviteType string `json:"inviteType,omitempty"`
-}
-
 const (
 	// betaTesterResolveChunkSize bounds how many tester IDs are packed into a
 	// single filter[id] lookup on GET /v1/betaTesters.
@@ -210,12 +191,12 @@ func normalizeBetaTesterUsageGroupBy(value string) string {
 	}
 }
 
-func paginateBetaTesterUsages(ctx context.Context, client *asc.Client, appID string, firstPage *asc.BetaTesterUsagesResponse) (*betaTesterUsagesPage, error) {
+func paginateBetaTesterUsages(ctx context.Context, client *asc.Client, appID string, firstPage *asc.BetaTesterUsagesResponse) (*asc.BetaTesterUsagesPage, error) {
 	if firstPage == nil {
 		return nil, nil
 	}
 
-	combined := &betaTesterUsagesPage{}
+	combined := &asc.BetaTesterUsagesPage{}
 	seenNext := make(map[string]struct{})
 	pageNumber := 1
 	current := firstPage
@@ -254,12 +235,12 @@ func paginateBetaTesterUsages(ctx context.Context, client *asc.Client, appID str
 	return combined, nil
 }
 
-func parseBetaTesterUsagesPage(data json.RawMessage) (*betaTesterUsagesPage, error) {
+func parseBetaTesterUsagesPage(data json.RawMessage) (*asc.BetaTesterUsagesPage, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty response body")
 	}
 
-	var page betaTesterUsagesPage
+	var page asc.BetaTesterUsagesPage
 	if err := json.Unmarshal(data, &page); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
@@ -272,7 +253,7 @@ func parseBetaTesterUsagesPage(data json.RawMessage) (*betaTesterUsagesPage, err
 // as-is; the remainder are batch-fetched from GET /v1/betaTesters via
 // filter[id]. Resolution is capped at betaTesterResolveMaxIDs unique IDs; IDs
 // beyond the cap are skipped with a stderr warning.
-func resolveBetaTesterUsageTesters(ctx context.Context, client *asc.Client, page *betaTesterUsagesPage) error {
+func resolveBetaTesterUsageTesters(ctx context.Context, client *asc.Client, page *asc.BetaTesterUsagesPage) error {
 	if page == nil {
 		return nil
 	}
@@ -295,7 +276,7 @@ func resolveBetaTesterUsageTesters(ctx context.Context, client *asc.Client, page
 		wanted[id] = struct{}{}
 	}
 
-	testers := make(map[string]betaTesterUsageTesterInfo, len(ids))
+	testers := make(map[string]asc.BetaTesterUsageTesterInfo, len(ids))
 	addTester := func(resource asc.Resource[asc.BetaTesterAttributes]) {
 		id := strings.TrimSpace(resource.ID)
 		if id == "" {
@@ -304,7 +285,7 @@ func resolveBetaTesterUsageTesters(ctx context.Context, client *asc.Client, page
 		if _, ok := wanted[id]; !ok {
 			return
 		}
-		testers[id] = betaTesterUsageTesterInfo{
+		testers[id] = asc.BetaTesterUsageTesterInfo{
 			ID:         id,
 			Email:      resource.Attributes.Email,
 			FirstName:  resource.Attributes.FirstName,

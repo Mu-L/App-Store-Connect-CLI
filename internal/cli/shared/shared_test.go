@@ -712,7 +712,7 @@ func TestPrintOutput_WarnsWithTotalWhenMorePagesExist(t *testing.T) {
 		}
 	})
 
-	want := "Warning: showing 2 of 7 results; pass --paginate for all (or --next for the next page)\n"
+	want := "Warning: showing 2 of 7 results; more pages exist (use --paginate or --next where supported)\n"
 	if stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
@@ -737,7 +737,7 @@ func TestPrintOutput_WarnsWithCountWhenTotalUnavailable(t *testing.T) {
 		}
 	})
 
-	want := "Warning: showing 3 results; more pages exist — pass --paginate for all (or --next for the next page)\n"
+	want := "Warning: showing 3 results; more pages exist (use --paginate or --next where supported)\n"
 	if stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
@@ -810,7 +810,7 @@ func TestPrintOutput_GenericWarningWhenCountUnavailable(t *testing.T) {
 		}
 	})
 
-	want := "Warning: more pages exist; pass --paginate for all (or --next for the next page)\n"
+	want := "Warning: more pages exist (use --paginate or --next where supported)\n"
 	if stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
@@ -831,7 +831,7 @@ func TestPrintOutputWithRenderers_WarnsAfterTableRender(t *testing.T) {
 		}
 	})
 
-	want := "Warning: showing 1 of 9 results; pass --paginate for all (or --next for the next page)\n"
+	want := "Warning: showing 1 of 9 results; more pages exist (use --paginate or --next where supported)\n"
 	if stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}

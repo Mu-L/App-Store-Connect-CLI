@@ -194,10 +194,7 @@ Examples:
 				result.Version = versionValue
 			}
 
-			if format == "json" {
-				return shared.PrintOutput(result, format, *output.Pretty)
-			}
-			return shared.PrintOutput(buildResp, format, *output.Pretty)
+			return shared.PrintOutput(result, format, *output.Pretty)
 		},
 	}
 }

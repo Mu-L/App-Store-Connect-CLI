@@ -1206,14 +1206,14 @@ func warnMorePages(data any) {
 	if countOK {
 		if withMeta, hasMeta := page.(interface{ GetMeta() json.RawMessage }); hasMeta {
 			if total, totalOK := asc.ParsePagingTotalOK(withMeta.GetMeta()); totalOK {
-				fmt.Fprintf(os.Stderr, "Warning: showing %d of %d results; pass --paginate for all (or --next for the next page)\n", count, total)
+				fmt.Fprintf(os.Stderr, "Warning: showing %d of %d results; more pages exist (use --paginate or --next where supported)\n", count, total)
 				return
 			}
 		}
-		fmt.Fprintf(os.Stderr, "Warning: showing %d results; more pages exist — pass --paginate for all (or --next for the next page)\n", count)
+		fmt.Fprintf(os.Stderr, "Warning: showing %d results; more pages exist (use --paginate or --next where supported)\n", count)
 		return
 	}
-	fmt.Fprintln(os.Stderr, "Warning: more pages exist; pass --paginate for all (or --next for the next page)")
+	fmt.Fprintln(os.Stderr, "Warning: more pages exist (use --paginate or --next where supported)")
 }
 
 func printJSONOutput(data any, pretty bool) error {

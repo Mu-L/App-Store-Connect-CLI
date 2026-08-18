@@ -1,7 +1,9 @@
 package asc
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -295,4 +297,86 @@ func testFlightSyncSummaryRows(summary *TestFlightSyncSummary) ([]string, [][]st
 		fmt.Sprintf("%d", summary.Testers),
 	}}
 	return headers, rows
+}
+
+// BetaTesterUsagesPage is the printed page for tester usage metrics: the raw
+// metric data plus an optional resolved-testers sidecar keyed by tester ID.
+// The data elements stay byte-identical to Apple's response.
+type BetaTesterUsagesPage struct {
+	Data     []json.RawMessage                    `json:"data"`
+	Links    Links                                `json:"links"`
+	Included json.RawMessage                      `json:"included,omitempty"`
+	Meta     json.RawMessage                      `json:"meta,omitempty"`
+	Testers  map[string]BetaTesterUsageTesterInfo `json:"testers,omitempty"`
+}
+
+// BetaTesterUsageTesterInfo describes one resolved beta tester in the
+// testers sidecar keyed by tester ID.
+type BetaTesterUsageTesterInfo struct {
+	ID         string `json:"id"`
+	Email      string `json:"email,omitempty"`
+	FirstName  string `json:"firstName,omitempty"`
+	LastName   string `json:"lastName,omitempty"`
+	State      string `json:"state,omitempty"`
+	InviteType string `json:"inviteType,omitempty"`
+}
+
+func betaTesterUsagesPageTables(v *BetaTesterUsagesPage, render func([]string, [][]string)) error {
+	type metricEntry struct {
+		DataPoints []struct {
+			Start  string `json:"start"`
+			End    string `json:"end"`
+			Values struct {
+				SessionCount  *int `json:"sessionCount"`
+				CrashCount    *int `json:"crashCount"`
+				FeedbackCount *int `json:"feedbackCount"`
+			} `json:"values"`
+		} `json:"dataPoints"`
+		Dimensions struct {
+			BetaTesters struct {
+				Data string `json:"data"`
+			} `json:"betaTesters"`
+		} `json:"dimensions"`
+	}
+	formatCount := func(n *int) string {
+		if n == nil {
+			return ""
+		}
+		return fmt.Sprintf("%d", *n)
+	}
+	rows := make([][]string, 0, len(v.Data))
+	for _, raw := range v.Data {
+		var entry metricEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			continue
+		}
+		for _, point := range entry.DataPoints {
+			rows = append(rows, []string{
+				entry.Dimensions.BetaTesters.Data,
+				point.Start,
+				point.End,
+				formatCount(point.Values.SessionCount),
+				formatCount(point.Values.CrashCount),
+				formatCount(point.Values.FeedbackCount),
+			})
+		}
+	}
+	render([]string{"Tester ID", "Start", "End", "Sessions", "Crashes", "Feedback"}, rows)
+
+	if len(v.Testers) > 0 {
+		ids := make([]string, 0, len(v.Testers))
+		for id := range v.Testers {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		testerRows := make([][]string, 0, len(ids))
+		for _, id := range ids {
+			tester := v.Testers[id]
+			testerRows = append(testerRows, []string{
+				tester.ID, tester.Email, tester.FirstName, tester.LastName, tester.State,
+			})
+		}
+		render([]string{"Tester ID", "Email", "First Name", "Last Name", "State"}, testerRows)
+	}
+	return nil
 }

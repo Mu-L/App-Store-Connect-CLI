@@ -432,6 +432,7 @@ func registerAllOutputRenderers() {
 		}
 		return nil
 	})
+	registerDirect(betaTesterUsagesPageTables)
 	registerRows(testFlightSyncSummaryRows)
 	registerRows(promotedPurchaseDeleteResultRows)
 	registerRows(appPromotedPurchasesLinkResultRows)
