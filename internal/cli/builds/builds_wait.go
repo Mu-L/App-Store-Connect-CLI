@@ -182,7 +182,7 @@ Examples:
 			if processingState == "" {
 				processingState = "UNKNOWN"
 			}
-			result := &buildWaitResult{
+			result := &asc.BuildWaitResult{
 				Data:            buildResp.Data,
 				Links:           buildResp.Links,
 				BuildID:         strings.TrimSpace(buildResp.Data.ID),
@@ -209,16 +209,6 @@ type appBuildWaitSelector struct {
 	BuildNumber string
 	Platform    string
 	Since       *time.Time
-}
-
-type buildWaitResult struct {
-	Data            asc.Resource[asc.BuildAttributes] `json:"data"`
-	Links           asc.Links                         `json:"links,omitempty"`
-	BuildID         string                            `json:"buildId"`
-	Version         string                            `json:"version,omitempty"`
-	BuildNumber     string                            `json:"buildNumber,omitempty"`
-	ProcessingState string                            `json:"processingState"`
-	Elapsed         string                            `json:"elapsed"`
 }
 
 func waitForBuildDiscovery(

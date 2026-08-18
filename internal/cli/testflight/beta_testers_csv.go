@@ -27,36 +27,6 @@ type betaTestersCSVRow struct {
 	groups    []string // raw group values (names or IDs), trimmed
 }
 
-type betaTestersExportSummary struct {
-	AppID         string `json:"appId"`
-	OutputFile    string `json:"outputFile"`
-	Total         int    `json:"total"`
-	IncludeGroups bool   `json:"includeGroups"`
-}
-
-type betaTestersImportFailure struct {
-	Row   int    `json:"row"`
-	Email string `json:"email,omitempty"`
-	Error string `json:"error"`
-}
-
-type betaTestersImportSummary struct {
-	AppID           string                     `json:"appId"`
-	InputFile       string                     `json:"inputFile"`
-	DryRun          bool                       `json:"dryRun"`
-	Invite          bool                       `json:"invite"`
-	SkipExisting    bool                       `json:"skipExisting"`
-	ContinueOnError bool                       `json:"continueOnError"`
-	AppliedGroup    string                     `json:"appliedGroup,omitempty"`
-	Total           int                        `json:"total"`
-	Created         int                        `json:"created"`
-	Existed         int                        `json:"existed"`
-	Updated         int                        `json:"updated"`
-	Invited         int                        `json:"invited"`
-	Failed          int                        `json:"failed"`
-	Failures        []betaTestersImportFailure `json:"failures,omitempty"`
-}
-
 // BetaTestersExportCommand writes beta testers to a CSV file.
 func BetaTestersExportCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("export", flag.ExitOnError)
@@ -232,7 +202,7 @@ Examples:
 				return fmt.Errorf("beta-testers export: %w", err)
 			}
 
-			summary := &betaTestersExportSummary{
+			summary := &asc.BetaTestersExportSummary{
 				AppID:         resolvedAppID,
 				OutputFile:    filepath.Clean(outputValue),
 				Total:         len(rows),
@@ -364,7 +334,7 @@ Examples:
 			}
 
 			seenInput := make(map[string]int) // emailLower -> first row index seen
-			summary := &betaTestersImportSummary{
+			summary := &asc.BetaTestersImportSummary{
 				AppID:           resolvedAppID,
 				InputFile:       filepath.Clean(inputValue),
 				DryRun:          *dryRun,
@@ -381,7 +351,7 @@ Examples:
 				emailValue := strings.TrimSpace(row.email)
 				if emailValue == "" {
 					summary.Failed++
-					summary.Failures = append(summary.Failures, betaTestersImportFailure{
+					summary.Failures = append(summary.Failures, asc.BetaTestersImportFailure{
 						Row:   rowNumber,
 						Error: "email is required",
 					})
@@ -392,7 +362,7 @@ Examples:
 				}
 				if !isValidTesterEmail(emailValue) {
 					summary.Failed++
-					summary.Failures = append(summary.Failures, betaTestersImportFailure{
+					summary.Failures = append(summary.Failures, asc.BetaTestersImportFailure{
 						Row:   rowNumber,
 						Email: emailValue,
 						Error: "invalid email format",
@@ -406,7 +376,7 @@ Examples:
 				emailLower := strings.ToLower(emailValue)
 				if firstSeen, exists := seenInput[emailLower]; exists {
 					summary.Failed++
-					summary.Failures = append(summary.Failures, betaTestersImportFailure{
+					summary.Failures = append(summary.Failures, asc.BetaTestersImportFailure{
 						Row:   rowNumber,
 						Email: emailValue,
 						Error: fmt.Sprintf("duplicate email in input (already seen at row %d)", firstSeen),
@@ -423,7 +393,7 @@ Examples:
 					groupIDs, err = groupResolver.ResolveAll(row.groups)
 					if err != nil {
 						summary.Failed++
-						summary.Failures = append(summary.Failures, betaTestersImportFailure{
+						summary.Failures = append(summary.Failures, asc.BetaTestersImportFailure{
 							Row:   rowNumber,
 							Email: emailValue,
 							Error: err.Error(),
@@ -463,7 +433,7 @@ Examples:
 							continue
 						}
 						summary.Failed++
-						summary.Failures = append(summary.Failures, betaTestersImportFailure{
+						summary.Failures = append(summary.Failures, asc.BetaTestersImportFailure{
 							Row:   rowNumber,
 							Email: emailValue,
 							Error: err.Error(),
@@ -487,7 +457,7 @@ Examples:
 				cancel()
 				if err != nil {
 					summary.Failed++
-					summary.Failures = append(summary.Failures, betaTestersImportFailure{
+					summary.Failures = append(summary.Failures, asc.BetaTestersImportFailure{
 						Row:   rowNumber,
 						Email: emailValue,
 						Error: err.Error(),
@@ -501,7 +471,7 @@ Examples:
 				testerID := strings.TrimSpace(created.Data.ID)
 				if testerID == "" {
 					summary.Failed++
-					summary.Failures = append(summary.Failures, betaTestersImportFailure{
+					summary.Failures = append(summary.Failures, asc.BetaTestersImportFailure{
 						Row:   rowNumber,
 						Email: emailValue,
 						Error: "created tester returned empty id",
@@ -520,7 +490,7 @@ Examples:
 					cancel()
 					if err != nil {
 						summary.Failed++
-						summary.Failures = append(summary.Failures, betaTestersImportFailure{
+						summary.Failures = append(summary.Failures, asc.BetaTestersImportFailure{
 							Row:   rowNumber,
 							Email: emailValue,
 							Error: err.Error(),
@@ -532,7 +502,7 @@ Examples:
 					}
 					if invitation == nil || strings.TrimSpace(invitation.Data.ID) == "" {
 						summary.Failed++
-						summary.Failures = append(summary.Failures, betaTestersImportFailure{
+						summary.Failures = append(summary.Failures, asc.BetaTestersImportFailure{
 							Row:   rowNumber,
 							Email: emailValue,
 							Error: "invitation returned empty id",
@@ -566,7 +536,7 @@ Examples:
 	}
 }
 
-func renderImportSummaryTables(summary *betaTestersImportSummary, markdown bool) error {
+func renderImportSummaryTables(summary *asc.BetaTestersImportSummary, markdown bool) error {
 	if summary == nil {
 		return fmt.Errorf("summary is nil")
 	}

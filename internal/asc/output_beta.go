@@ -84,6 +84,48 @@ type BetaFeedbackSubmissionDeleteResult struct {
 	Deleted bool   `json:"deleted"`
 }
 
+// BetaTestersExportSummary represents CLI output for beta tester CSV exports.
+type BetaTestersExportSummary struct {
+	AppID         string `json:"appId"`
+	OutputFile    string `json:"outputFile"`
+	Total         int    `json:"total"`
+	IncludeGroups bool   `json:"includeGroups"`
+}
+
+// BetaTestersImportFailure records one CSV row that could not be imported.
+type BetaTestersImportFailure struct {
+	Row   int    `json:"row"`
+	Email string `json:"email,omitempty"`
+	Error string `json:"error"`
+}
+
+// BetaTestersImportSummary represents CLI output for beta tester CSV imports.
+type BetaTestersImportSummary struct {
+	AppID           string                     `json:"appId"`
+	InputFile       string                     `json:"inputFile"`
+	DryRun          bool                       `json:"dryRun"`
+	Invite          bool                       `json:"invite"`
+	SkipExisting    bool                       `json:"skipExisting"`
+	ContinueOnError bool                       `json:"continueOnError"`
+	AppliedGroup    string                     `json:"appliedGroup,omitempty"`
+	Total           int                        `json:"total"`
+	Created         int                        `json:"created"`
+	Existed         int                        `json:"existed"`
+	Updated         int                        `json:"updated"`
+	Invited         int                        `json:"invited"`
+	Failed          int                        `json:"failed"`
+	Failures        []BetaTestersImportFailure `json:"failures,omitempty"`
+}
+
+// TestFlightSyncSummary represents CLI output for testflight sync pull.
+type TestFlightSyncSummary struct {
+	File    string `json:"file"`
+	App     string `json:"app"`
+	Groups  int    `json:"groups"`
+	Builds  int    `json:"builds"`
+	Testers int    `json:"testers"`
+}
+
 func formatBetaTesterName(attr BetaTesterAttributes) string {
 	first := strings.TrimSpace(attr.FirstName)
 	last := strings.TrimSpace(attr.LastName)
@@ -200,5 +242,57 @@ func betaFeedbackSubmissionDeleteResultRows(result *BetaFeedbackSubmissionDelete
 func betaTesterInvitationResultRows(result *BetaTesterInvitationResult) ([]string, [][]string) {
 	headers := []string{"Invitation ID", "Tester ID", "App ID", "Email"}
 	rows := [][]string{{result.InvitationID, result.TesterID, result.AppID, result.Email}}
+	return headers, rows
+}
+
+func betaTestersExportSummaryRows(summary *BetaTestersExportSummary) ([]string, [][]string) {
+	headers := []string{"App ID", "Output File", "Total", "Include Groups"}
+	rows := [][]string{{
+		summary.AppID,
+		summary.OutputFile,
+		fmt.Sprintf("%d", summary.Total),
+		fmt.Sprintf("%t", summary.IncludeGroups),
+	}}
+	return headers, rows
+}
+
+func betaTestersImportSummaryRows(summary *BetaTestersImportSummary) ([]string, [][]string) {
+	headers := []string{"App ID", "Input File", "Dry Run", "Total", "Created", "Existed", "Updated", "Invited", "Failed"}
+	rows := [][]string{{
+		summary.AppID,
+		summary.InputFile,
+		fmt.Sprintf("%t", summary.DryRun),
+		fmt.Sprintf("%d", summary.Total),
+		fmt.Sprintf("%d", summary.Created),
+		fmt.Sprintf("%d", summary.Existed),
+		fmt.Sprintf("%d", summary.Updated),
+		fmt.Sprintf("%d", summary.Invited),
+		fmt.Sprintf("%d", summary.Failed),
+	}}
+	return headers, rows
+}
+
+func betaTestersImportFailureRows(failures []BetaTestersImportFailure) ([]string, [][]string) {
+	headers := []string{"Row", "Email", "Error"}
+	rows := make([][]string, 0, len(failures))
+	for _, failure := range failures {
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", failure.Row),
+			failure.Email,
+			compactWhitespace(failure.Error),
+		})
+	}
+	return headers, rows
+}
+
+func testFlightSyncSummaryRows(summary *TestFlightSyncSummary) ([]string, [][]string) {
+	headers := []string{"File", "App", "Groups", "Builds", "Testers"}
+	rows := [][]string{{
+		summary.File,
+		compactWhitespace(summary.App),
+		fmt.Sprintf("%d", summary.Groups),
+		fmt.Sprintf("%d", summary.Builds),
+		fmt.Sprintf("%d", summary.Testers),
+	}}
 	return headers, rows
 }

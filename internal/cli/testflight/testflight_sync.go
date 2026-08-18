@@ -69,14 +69,6 @@ type TestFlightTesterConfig struct {
 	Groups []string `yaml:"groups,omitempty"`
 }
 
-type testFlightSyncSummary struct {
-	File    string `json:"file"`
-	App     string `json:"app"`
-	Groups  int    `json:"groups"`
-	Builds  int    `json:"builds"`
-	Testers int    `json:"testers"`
-}
-
 type testFlightPullOptions struct {
 	includeBuilds  bool
 	includeTesters bool
@@ -202,7 +194,7 @@ Examples:
 				return fmt.Errorf("testflight sync pull: %w", err)
 			}
 
-			summary := testFlightSyncSummary{
+			summary := asc.TestFlightSyncSummary{
 				File:    filepath.Clean(outputValue),
 				App:     config.App.Name,
 				Groups:  len(config.Groups),

@@ -287,16 +287,7 @@ Examples:
 					}
 				}
 
-				filtered := *groups
-				filtered.Data = make([]asc.Resource[asc.BetaGroupAttributes], 0, len(groups.Data))
-				for _, g := range groups.Data {
-					if g.Attributes.IsInternalGroup == *internalFilter {
-						filtered.Data = append(filtered.Data, g)
-					}
-				}
-				if *limit > 0 && len(filtered.Data) > *limit {
-					filtered.Data = filtered.Data[:*limit]
-				}
+				filtered := filterBetaGroupsByInternal(groups, *internalFilter, *limit)
 
 				return shared.PrintOutput(&filtered, *output.Output, *output.Pretty)
 			}
@@ -327,6 +318,27 @@ Examples:
 			return shared.PrintOutput(groups, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+// filterBetaGroupsByInternal keeps only groups whose isInternalGroup matches
+// internal, truncating to limit when limit > 0. The app-scoped endpoint cannot
+// filter server-side, so every page is fetched and the limit is applied here;
+// when that truncation drops matches, warn on stderr so callers know the
+// printed set is incomplete.
+func filterBetaGroupsByInternal(groups *asc.BetaGroupsResponse, internal bool, limit int) asc.BetaGroupsResponse {
+	filtered := *groups
+	filtered.Data = make([]asc.Resource[asc.BetaGroupAttributes], 0, len(groups.Data))
+	for _, g := range groups.Data {
+		if g.Attributes.IsInternalGroup == internal {
+			filtered.Data = append(filtered.Data, g)
+		}
+	}
+	if limit > 0 && len(filtered.Data) > limit {
+		total := len(filtered.Data)
+		filtered.Data = filtered.Data[:limit]
+		fmt.Fprintf(os.Stderr, "Warning: showing %d of %d filtered groups (--limit %d); rerun without --limit for all\n", limit, total, limit)
+	}
+	return filtered
 }
 
 // BuildGroupsListCommandConfig configures the build-centric beta-group lookup

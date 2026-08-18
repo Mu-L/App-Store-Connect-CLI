@@ -27,6 +27,7 @@ func BetaTestersCommand() *ffcli.Command {
 Examples:
   asc testflight beta-testers list --app "APP_ID"
   asc testflight beta-testers view --id "TESTER_ID"
+  asc testflight beta-testers beta-groups list --id "TESTER_ID"
   asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta"
   asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta,iOS 27"
   asc testflight beta-testers export --app "APP_ID" --output "./testflight-testers.csv"
@@ -74,6 +75,8 @@ func BetaTestersListCommand() *ffcli.Command {
 	buildID, legacyBuildID := bindBuildIDFlag(fs, "Build ID to filter")
 	group := fs.String("group", "", "Beta group name or ID to filter")
 	email := fs.String("email", "", "Filter by tester email")
+	firstName := fs.String("first-name", "", "Filter by tester first name (exact match)")
+	lastName := fs.String("last-name", "", "Filter by tester last name (exact match)")
 	output := shared.BindOutputFlags(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
@@ -89,6 +92,7 @@ Examples:
   asc testflight beta-testers list --app "APP_ID"
   asc testflight beta-testers list --app "APP_ID" --build-id "BUILD_ID"
   asc testflight beta-testers list --app "APP_ID" --group "Beta"
+  asc testflight beta-testers list --app "APP_ID" --first-name "Ada" --last-name "Lovelace"
   asc testflight beta-testers list --app "APP_ID" --limit 25
   asc testflight beta-testers list --app "APP_ID" --paginate`,
 		FlagSet:   fs,
@@ -142,6 +146,14 @@ Examples:
 				opts = append(opts, asc.WithBetaTestersEmail(*email))
 			}
 
+			if strings.TrimSpace(*firstName) != "" {
+				opts = append(opts, asc.WithBetaTestersFirstName(*firstName))
+			}
+
+			if strings.TrimSpace(*lastName) != "" {
+				opts = append(opts, asc.WithBetaTestersLastName(*lastName))
+			}
+
 			if strings.TrimSpace(*group) != "" && strings.TrimSpace(*next) == "" {
 				groupID, err := resolveBetaGroupID(requestCtx, client, resolvedAppID, *group)
 				if err != nil {
@@ -192,7 +204,9 @@ func BetaTestersGetCommand() *ffcli.Command {
 		LongHelp: `View a TestFlight beta tester by ID.
 
 Examples:
-  asc testflight beta-testers view --id "TESTER_ID"`,
+  asc testflight beta-testers view --id "TESTER_ID"
+
+See also: asc testflight beta-testers beta-groups list --id "TESTER_ID" for the tester's group membership.`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
