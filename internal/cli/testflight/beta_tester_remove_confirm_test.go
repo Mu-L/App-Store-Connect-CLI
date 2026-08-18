@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"strings"
 	"testing"
 )
 
@@ -21,6 +22,9 @@ func TestBetaTestersRemoveCommand_RequiresConfirm(t *testing.T) {
 	err := cmd.Exec(context.Background(), []string{})
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("remove without --confirm should fail validation, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "--confirm") {
+		t.Fatalf("usage error should name --confirm, got %q", err.Error())
 	}
 }
 

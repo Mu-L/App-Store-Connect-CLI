@@ -90,11 +90,7 @@ func TestResolveBetaGroupIDs_SingleFetchResolvesAllTokens(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := newBetaGroupResolutionClient(t, server)
 
-	got, err := resolveBetaGroupIDs(context.Background(), client, "123456789", []string{
-		"group-beta",
-		"ios 27",
-		"QA Team",
-	})
+	got, err := resolveBetaGroupIDs(context.Background(), client, "123456789", "group-beta, ios 27,QA Team")
 	if err != nil {
 		t.Fatalf("resolveBetaGroupIDs() error: %v", err)
 	}
@@ -114,27 +110,69 @@ func TestResolveBetaGroupIDs_SingleFetchResolvesAllTokens(t *testing.T) {
 }
 
 func TestResolveBetaGroupIDs_UnknownTokenFails(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"data": []map[string]any{
-				{"type": "betaGroups", "id": "group-beta", "attributes": map[string]any{"name": "Beta"}},
-			},
-			"links": map[string]string{},
-		}); err != nil {
-			t.Fatalf("marshal response: %v", err)
-		}
+	client := newBetaGroupResolutionClient(t, newStaticBetaGroupsServer(t, map[string]string{
+		"group-beta": "Beta",
 	}))
-	t.Cleanup(server.Close)
-	client := newBetaGroupResolutionClient(t, server)
 
-	_, err := resolveBetaGroupIDs(context.Background(), client, "123456789", []string{"Beta", "Nope"})
+	_, err := resolveBetaGroupIDs(context.Background(), client, "123456789", "Beta,Nope")
 	if err == nil {
 		t.Fatal("unknown group token should fail")
 	}
 	if !strings.Contains(err.Error(), "Nope") {
 		t.Fatalf("error should name the unresolved group, got %q", err.Error())
 	}
+}
+
+func TestResolveBetaGroupIDs_CommaNameResolvesAsSingleGroup(t *testing.T) {
+	client := newBetaGroupResolutionClient(t, newStaticBetaGroupsServer(t, map[string]string{
+		"group-qa-external": "QA, External",
+		"group-qa":          "QA",
+		"group-external":    "External",
+	}))
+
+	got, err := resolveBetaGroupIDs(context.Background(), client, "123456789", "QA, External")
+	if err != nil {
+		t.Fatalf("resolveBetaGroupIDs() error: %v", err)
+	}
+	if len(got) != 1 || got[0] != "group-qa-external" {
+		t.Fatalf("comma-containing name should resolve as one group, got %v", got)
+	}
+}
+
+func TestResolveBetaGroupIDs_EmptyTokenFails(t *testing.T) {
+	client := newBetaGroupResolutionClient(t, newStaticBetaGroupsServer(t, map[string]string{
+		"group-beta": "Beta",
+	}))
+
+	_, err := resolveBetaGroupIDs(context.Background(), client, "123456789", "Beta,,")
+	if err == nil {
+		t.Fatal("empty group token should fail")
+	}
+	if !strings.Contains(err.Error(), "empty group name") {
+		t.Fatalf("error should call out the empty token, got %q", err.Error())
+	}
+}
+
+func newStaticBetaGroupsServer(t *testing.T, groups map[string]string) *httptest.Server {
+	t.Helper()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		data := make([]map[string]any, 0, len(groups))
+		for id, name := range groups {
+			data = append(data, map[string]any{
+				"type": "betaGroups", "id": id, "attributes": map[string]any{"name": name},
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"data":  data,
+			"links": map[string]string{},
+		}); err != nil {
+			t.Errorf("marshal response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
 }
 
 func newBetaGroupResolutionClient(t *testing.T, server *httptest.Server) *asc.Client {

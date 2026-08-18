@@ -12,23 +12,19 @@ import (
 var errBetaTesterNotFound = errors.New("beta tester not found")
 
 func resolveBetaGroupID(ctx context.Context, client *asc.Client, appID, group string) (string, error) {
-	ids, err := resolveBetaGroupIDs(ctx, client, appID, []string{group})
+	ids, err := resolveBetaGroupIDs(ctx, client, appID, group)
 	if err != nil {
 		return "", err
 	}
 	return ids[0], nil
 }
 
-func resolveBetaGroupIDs(ctx context.Context, client *asc.Client, appID string, groupTokens []string) ([]string, error) {
-	tokens := make([]string, 0, len(groupTokens))
-	for _, token := range groupTokens {
-		token = strings.TrimSpace(token)
-		if token == "" {
-			continue
-		}
-		tokens = append(tokens, token)
-	}
-	if len(tokens) == 0 {
+// resolveBetaGroupIDs resolves a raw --group value against a single beta-groups
+// fetch. A value that exactly matches one group ID or name is used as-is, even
+// when it contains commas; otherwise the value is treated as a comma-separated
+// list of group names or IDs.
+func resolveBetaGroupIDs(ctx context.Context, client *asc.Client, appID, rawGroups string) ([]string, error) {
+	if strings.TrimSpace(rawGroups) == "" {
 		return nil, fmt.Errorf("beta group name is required")
 	}
 
@@ -37,8 +33,25 @@ func resolveBetaGroupIDs(ctx context.Context, client *asc.Client, appID string, 
 		return nil, err
 	}
 
+	id, err := matchBetaGroupID(groups, strings.TrimSpace(rawGroups))
+	if err == nil {
+		return []string{id}, nil
+	}
+	if !errors.Is(err, errBetaGroupNotFound) {
+		return nil, err
+	}
+
+	tokens := strings.Split(rawGroups, ",")
+	if len(tokens) == 1 {
+		return nil, err
+	}
+
 	ids := make([]string, 0, len(tokens))
 	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return nil, fmt.Errorf("empty group name in --group value %q", rawGroups)
+		}
 		id, err := matchBetaGroupID(groups, token)
 		if err != nil {
 			return nil, err
@@ -47,6 +60,8 @@ func resolveBetaGroupIDs(ctx context.Context, client *asc.Client, appID string, 
 	}
 	return ids, nil
 }
+
+var errBetaGroupNotFound = errors.New("not found")
 
 func matchBetaGroupID(groups *asc.BetaGroupsResponse, group string) (string, error) {
 	for _, item := range groups.Data {
@@ -64,7 +79,7 @@ func matchBetaGroupID(groups *asc.BetaGroupsResponse, group string) (string, err
 
 	switch len(matches) {
 	case 0:
-		return "", fmt.Errorf("beta group %q not found", group)
+		return "", fmt.Errorf("beta group %q %w", group, errBetaGroupNotFound)
 	case 1:
 		return matches[0], nil
 	default:

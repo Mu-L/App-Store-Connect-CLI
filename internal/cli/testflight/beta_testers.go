@@ -260,7 +260,9 @@ func BetaTestersAddCommand() *ffcli.Command {
 		ShortHelp:  "Add a TestFlight beta tester.",
 		LongHelp: `Add a TestFlight beta tester.
 
-The tester is added to every group in the comma-separated --group list.
+The tester is added to every group in the comma-separated --group list. A
+value that exactly matches one group name is used as-is, even when the name
+contains commas.
 
 Examples:
   asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta"
@@ -277,8 +279,7 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --email is required")
 				return shared.MissingRequiredUsageError("--email")
 			}
-			groupTokens := shared.SplitUniqueCSV(group.String())
-			if len(groupTokens) == 0 {
+			if strings.TrimSpace(group.String()) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --group is required")
 				return shared.MissingRequiredUsageError("--group")
 			}
@@ -291,7 +292,7 @@ Examples:
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 
-			groupIDs, err := resolveBetaGroupIDs(requestCtx, client, resolvedAppID, groupTokens)
+			groupIDs, err := resolveBetaGroupIDs(requestCtx, client, resolvedAppID, group.String())
 			if err != nil {
 				return fmt.Errorf("beta-testers add: %w", err)
 			}
