@@ -42,10 +42,12 @@ func TestPricingAvailabilityRemoveFromSaleUpdatesAndVerifiesTerritories(t *testi
 				} `json:"data"`
 			}
 			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
-				t.Fatalf("decode PATCH: %v", err)
+				t.Errorf("decode PATCH: %v", err)
+				return nil, fmt.Errorf("decode PATCH: %w", err)
 			}
 			if payload.Data.ID != "ta-usa" || payload.Data.Attributes.Available == nil || *payload.Data.Attributes.Available {
-				t.Fatalf("unexpected PATCH payload: %+v", payload)
+				t.Errorf("unexpected PATCH payload: %+v", payload)
+				return nil, fmt.Errorf("unexpected PATCH payload")
 			}
 			patches.Add(1)
 			mu.Lock()
