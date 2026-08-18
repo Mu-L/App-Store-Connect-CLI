@@ -139,6 +139,21 @@ func TestResolveBetaGroupIDs_CommaNameResolvesAsSingleGroup(t *testing.T) {
 	}
 }
 
+func TestResolveBetaGroupID_RejectsMultiGroupValue(t *testing.T) {
+	client := newBetaGroupResolutionClient(t, newStaticBetaGroupsServer(t, map[string]string{
+		"group-beta": "Beta",
+		"group-qa":   "QA",
+	}))
+
+	_, err := resolveBetaGroupID(context.Background(), client, "123456789", "Beta,QA")
+	if err == nil {
+		t.Fatal("singular resolver should reject a value resolving to multiple groups")
+	}
+	if !strings.Contains(err.Error(), "single beta group") {
+		t.Fatalf("error should explain the single-group expectation, got %q", err.Error())
+	}
+}
+
 func TestResolveBetaGroupIDs_EmptyTokenFails(t *testing.T) {
 	client := newBetaGroupResolutionClient(t, newStaticBetaGroupsServer(t, map[string]string{
 		"group-beta": "Beta",

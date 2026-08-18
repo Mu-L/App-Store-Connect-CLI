@@ -323,8 +323,9 @@ func BetaTestersRemoveCommand() *ffcli.Command {
 		ShortHelp:  "Remove a TestFlight beta tester.",
 		LongHelp: `Remove a TestFlight beta tester.
 
-Removal deletes the tester from the app, including every group membership and
-build assignment. This cannot be undone, so --confirm is required.
+Removal deletes the beta tester record itself: every group membership and
+build assignment is removed across all apps the tester belongs to, not only
+the app used for the lookup. This cannot be undone, so --confirm is required.
 
 Examples:
   asc testflight beta-testers remove --app "APP_ID" --email "tester@example.com" --confirm`,

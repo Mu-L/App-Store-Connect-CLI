@@ -16,6 +16,9 @@ func resolveBetaGroupID(ctx context.Context, client *asc.Client, appID, group st
 	if err != nil {
 		return "", err
 	}
+	if len(ids) != 1 {
+		return "", fmt.Errorf("expected a single beta group, got %d from %q", len(ids), group)
+	}
 	return ids[0], nil
 }
 
