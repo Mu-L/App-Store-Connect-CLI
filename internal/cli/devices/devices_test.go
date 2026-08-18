@@ -21,6 +21,14 @@ func TestDevicesRegisterCommand_MissingName(t *testing.T) {
 	}
 }
 
+func TestDevicesCommand_BatchExampleConfirmsMutation(t *testing.T) {
+	cmd := DevicesCommand()
+
+	if !strings.Contains(cmd.LongHelp, `asc devices register-batch --file "./devices.txt" --confirm`) {
+		t.Fatalf("devices help must show a runnable confirmed batch example, got:\n%s", cmd.LongHelp)
+	}
+}
+
 func TestDevicesRegisterCommand_MissingUDID(t *testing.T) {
 	cmd := DevicesRegisterCommand()
 
