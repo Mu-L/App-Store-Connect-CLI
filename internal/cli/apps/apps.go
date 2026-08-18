@@ -43,6 +43,7 @@ func AppsCommand() *ffcli.Command {
 Examples:
   asc apps
   asc apps list --bundle-id "com.example.app"
+  asc apps published
   asc web apps create --name "My App" --bundle-id "com.example.app" --sku "MYAPP123"
   asc apps wall
   asc apps wall submit --app "1234567890" --confirm
@@ -69,6 +70,7 @@ Examples:
 		UsageFunc: shared.VisibleUsageFunc,
 		Subcommands: []*ffcli.Command{
 			AppsListCommand(),
+			AppsPublishedCommand(),
 			AppsWallCommand(),
 			AppsPublicCommand(),
 			AppsRegistryCommand(),
