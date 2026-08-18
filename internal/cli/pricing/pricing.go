@@ -43,8 +43,8 @@ Examples:
   asc pricing availability view --app "123456789"
   asc pricing availability view --id "AVAILABILITY_ID"
   asc pricing availability create --app "123456789" --territory "USA,GBR,DEU" --available true --available-in-new-territories true
-  asc pricing availability edit --app "123456789" --territory "US,France,DEU" --available true --available-in-new-territories true
-  asc pricing availability edit --app "123456789" --all-territories --available true --available-in-new-territories true
+  asc pricing availability edit --app "123456789" --territory "US,France,DEU" --available true
+  asc pricing availability edit --app "123456789" --all-territories --available true
   asc pricing availability territory-availabilities --availability "AVAILABILITY_ID"`,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
@@ -600,8 +600,8 @@ Examples:
   asc pricing availability view --app "123456789"
   asc pricing availability view --id "AVAILABILITY_ID"
   asc pricing availability create --app "123456789" --territory "USA,GBR,DEU" --available true --available-in-new-territories true
-  asc pricing availability edit --app "123456789" --territory "US,France,DEU" --available true --available-in-new-territories true
-  asc pricing availability edit --app "123456789" --all-territories --available true --available-in-new-territories true
+  asc pricing availability edit --app "123456789" --territory "US,France,DEU" --available true
+  asc pricing availability edit --app "123456789" --all-territories --available true
   asc pricing availability territory-availabilities --availability "AVAILABILITY_ID"`,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
@@ -852,12 +852,14 @@ func PricingAvailabilitySetCommand() *ffcli.Command {
 		LongHelp: `Edit app availability for territories.
 
 Examples:
-  asc pricing availability edit --app "123456789" --territory "US,France,DEU" --available true --available-in-new-territories true
-  asc pricing availability edit --app "123456789" --all-territories --available true --available-in-new-territories true
+  asc pricing availability edit --app "123456789" --territory "US,France,DEU" --available true
+  asc pricing availability edit --app "123456789" --all-territories --available true
 
 Note:
   This command only updates an existing app availability. If the app has no
-  availability record yet, use "asc pricing availability create" first. If
+  availability record yet, use "asc pricing availability create" first.
+  If --available-in-new-territories is supplied, it verifies the existing
+  policy; Apple does not expose an update operation for that setting. If
   Apple rejects public-API bootstrap, authenticate with
   "asc web auth login --apple-id EMAIL" and use
   "asc web apps availability create", or configure Pricing and Availability in
