@@ -100,7 +100,7 @@ test-integration:
 lint:
 	@echo "$(BLUE)Linting code...$(NC)"
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=$(GOLANGCI_LINT_TIMEOUT) ./...; \
+		GOLANGCI_LINT_CACHE=$(CURDIR)/.golangci-cache golangci-lint run --timeout=$(GOLANGCI_LINT_TIMEOUT) ./...; \
 	else \
 		echo "$(YELLOW)golangci-lint not found; falling back to 'go vet ./...'.$(NC)"; \
 		echo "$(YELLOW)Install with: make tools (or: GOTOOLCHAIN=$(GO_TOOLCHAIN_VERSION) $(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest)$(NC)"; \
