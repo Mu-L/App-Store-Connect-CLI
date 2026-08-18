@@ -114,12 +114,9 @@ Examples:
 					return fmt.Errorf("builds upload: %w", err)
 				}
 			} else {
-				fileInfo, err = os.Stat(filePath)
+				fileInfo, err = shared.ValidatePKGPath(filePath)
 				if err != nil {
-					return fmt.Errorf("builds upload: failed to stat PKG: %w", err)
-				}
-				if fileInfo.IsDir() {
-					return fmt.Errorf("builds upload: --pkg must be a file")
+					return fmt.Errorf("builds upload: %w", err)
 				}
 			}
 

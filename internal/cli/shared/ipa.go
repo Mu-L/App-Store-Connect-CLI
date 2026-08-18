@@ -19,18 +19,34 @@ type IPABundleInfo struct {
 	BuildNumber string
 }
 
-// ValidateIPAPath ensures an IPA path points to a regular file and rejects
-// symlinks so upload commands don't accidentally dereference unexpected files.
+// ValidateIPAPath ensures an IPA path points to a non-empty regular file and
+// rejects symlinks so upload commands don't dereference unexpected files.
 func ValidateIPAPath(ipaPath string) (os.FileInfo, error) {
-	fileInfo, err := os.Lstat(ipaPath)
+	return validateBuildArtifactPath(ipaPath, "IPA", "--ipa")
+}
+
+// ValidatePKGPath ensures a PKG path points to a non-empty regular file and
+// rejects symlinks before an upload reservation is created.
+func ValidatePKGPath(pkgPath string) (os.FileInfo, error) {
+	return validateBuildArtifactPath(pkgPath, "PKG", "--pkg")
+}
+
+func validateBuildArtifactPath(filePath, artifactName, flagName string) (os.FileInfo, error) {
+	fileInfo, err := os.Lstat(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to stat IPA: %w", err)
+		return nil, fmt.Errorf("failed to stat %s: %w", artifactName, err)
 	}
 	if fileInfo.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("refusing to read symlink %q", ipaPath)
+		return nil, fmt.Errorf("refusing to read symlink %q", filePath)
 	}
 	if fileInfo.IsDir() {
-		return nil, fmt.Errorf("--ipa must be a file")
+		return nil, fmt.Errorf("%s must be a file", flagName)
+	}
+	if !fileInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file", flagName)
+	}
+	if fileInfo.Size() == 0 {
+		return nil, fmt.Errorf("%s must not be empty", flagName)
 	}
 	return fileInfo, nil
 }

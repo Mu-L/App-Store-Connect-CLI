@@ -214,6 +214,41 @@ func TestValidateIPAPathAllowsRegularFile(t *testing.T) {
 	}
 }
 
+func TestValidateIPAPathRejectsEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.ipa")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("write empty IPA: %v", err)
+	}
+
+	_, err := ValidateIPAPath(path)
+	if err == nil || !strings.Contains(err.Error(), "--ipa must not be empty") {
+		t.Fatalf("expected empty IPA rejection, got %v", err)
+	}
+}
+
+func TestValidatePKGPathRejectsSymlinkAndEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "empty.pkg")
+	if err := os.WriteFile(emptyPath, nil, 0o600); err != nil {
+		t.Fatalf("write empty PKG: %v", err)
+	}
+	if _, err := ValidatePKGPath(emptyPath); err == nil || !strings.Contains(err.Error(), "--pkg must not be empty") {
+		t.Fatalf("expected empty PKG rejection, got %v", err)
+	}
+
+	targetPath := filepath.Join(dir, "target.pkg")
+	if err := os.WriteFile(targetPath, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("write PKG target: %v", err)
+	}
+	linkPath := filepath.Join(dir, "link.pkg")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	if _, err := ValidatePKGPath(linkPath); err == nil || !strings.Contains(err.Error(), "refusing to read symlink") {
+		t.Fatalf("expected PKG symlink rejection, got %v", err)
+	}
+}
+
 func TestResolveBundleInfoForIPAUsesProvidedValues(t *testing.T) {
 	version, buildNumber, err := ResolveBundleInfoForIPA("ignored.ipa", "1.2.3", "42")
 	if err != nil {
