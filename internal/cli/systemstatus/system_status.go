@@ -73,6 +73,7 @@ func commandWithClient(client *http.Client, endpoint string) *ffcli.Command {
 
 Use --service to match one or more service-name substrings. Watch mode emits
 the initial snapshot, then emits again only when the selected report changes.
+JSON watch output is newline-delimited and does not support --pretty.
 
 Examples:
   asc system-status
@@ -105,8 +106,12 @@ Examples:
 			if pollIntervalSet && !*watch {
 				return shared.UsageError("--poll-interval requires --watch")
 			}
-			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+			normalizedOutput, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty)
+			if err != nil {
 				return shared.UsageError(err.Error())
+			}
+			if *watch && *output.Pretty && normalizedOutput == "json" {
+				return shared.UsageError("--pretty is not supported with --watch JSON output")
 			}
 
 			serviceFilterSet := false

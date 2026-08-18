@@ -61,7 +61,8 @@ details. Network, HTTP, or response-format failures exit non-zero. The command
 does not require App Store Connect credentials.
 
 Watch mode retries a failed poll twice and exits after three consecutive
-failures. A successful poll resets the failure count.
+failures. A successful poll resets the failure count. JSON snapshots are
+newline-delimited, so `--pretty` is not supported with `--watch --output json`.
 
 Apple exposes this information through a public web feed rather than the App
 Store Connect OpenAPI. If Apple changes the feed shape, `asc` fails explicitly

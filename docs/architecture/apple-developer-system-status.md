@@ -63,14 +63,16 @@ goes to stdout and diagnostics go to stderr.
 
 Watch mode reports failed polls to stderr and retries twice. It exits on the
 third consecutive failure, while any successful poll resets the failure count.
+JSON watch output is newline-delimited; `--pretty` is rejected in that mode so
+each snapshot remains one complete JSON record.
 
 ## Compatibility and agent discovery
 
-This is an additive stable command with no authentication requirement and no
-changes to existing command behavior. The generated `ASC.md` agent reference
-will instruct agents to query it after unexpected Apple API failures. Timeout
-and server-error hints will reference the related App Store Connect services.
-No request automatically performs a hidden second network call.
+This is an additive experimental command with no authentication requirement
+and no changes to existing command behavior. The generated `ASC.md` agent
+reference will instruct agents to query it after unexpected Apple API failures.
+Timeout and server-error hints will reference the related App Store Connect
+services. No request automatically performs a hidden second network call.
 
 ## Tests and verification
 
