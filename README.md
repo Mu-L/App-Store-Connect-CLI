@@ -461,10 +461,6 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 MIT License - see [LICENSE](LICENSE) for details.
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=rorkai/App-Store-Connect-CLI&type=Date)](https://star-history.com/#rorkai/App-Store-Connect-CLI&Date)
-
 ---
 
 <p align="center">
