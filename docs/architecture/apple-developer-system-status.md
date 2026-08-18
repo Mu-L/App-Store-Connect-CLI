@@ -41,9 +41,10 @@ The feed currently wraps JSON in `jsonCallback(...)`. Its top-level payload has
 
 The parser also accepts plain JSON so a harmless transport-format change does
 not break the command. It rejects unknown wrappers, non-2xx responses, empty
-service lists, and bodies larger than 2 MiB. The source is a public web feed,
-not a documented API contract, so explicit parse failures are preferable to
-silently reporting a healthy state when Apple changes the schema.
+service lists, unknown non-empty event statuses, and bodies larger than 2 MiB.
+The source is a public web feed, not a documented API contract, so explicit
+parse failures are preferable to silently reporting a healthy state when Apple
+changes the schema.
 
 ## Output and exit behavior
 

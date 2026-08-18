@@ -464,3 +464,10 @@ func TestDecodeDeveloperSystemStatusRejectsMissingOrNullEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeDeveloperSystemStatusRejectsUnknownEventStatus(t *testing.T) {
+	_, err := decodeDeveloperSystemStatus([]byte(`{"services":[{"serviceName":"TestFlight","events":[{"eventStatus":"investigating"}]}]}`))
+	if err == nil || !strings.Contains(err.Error(), `service "TestFlight" event 1 has unknown eventStatus "investigating"`) {
+		t.Fatalf("decode error = %v, want unknown-event-status failure", err)
+	}
+}

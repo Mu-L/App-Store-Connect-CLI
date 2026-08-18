@@ -209,8 +209,11 @@ func decodeDeveloperSystemStatus(body []byte) (*asc.DeveloperSystemStatusReport,
 			URL:    strings.TrimSpace(rawService.RedirectURL),
 			Events: make([]asc.DeveloperSystemStatusEvent, 0, len(*rawService.Events)),
 		}
-		for _, rawEvent := range *rawService.Events {
-			active := statusEventActive(rawEvent)
+		for eventIndex, rawEvent := range *rawService.Events {
+			active, err := statusEventActive(rawEvent)
+			if err != nil {
+				return nil, fmt.Errorf("service %q event %d has %w", name, eventIndex+1, err)
+			}
 			if active {
 				service.Status = "issues"
 			}
@@ -260,12 +263,18 @@ func unwrapStatusPayload(body []byte) ([]byte, error) {
 	return bytes.TrimSpace(wrapped[:len(wrapped)-1]), nil
 }
 
-func statusEventActive(event statusFeedEvent) bool {
+func statusEventActive(event statusFeedEvent) (bool, error) {
 	status := strings.TrimSpace(event.EventStatus)
-	if strings.EqualFold(status, "ongoing") {
-		return true
+	switch {
+	case status == "":
+		return strings.TrimSpace(event.EndDate) == "" && event.EpochEndDate == nil, nil
+	case strings.EqualFold(status, "ongoing"):
+		return true, nil
+	case strings.EqualFold(status, "resolved"):
+		return false, nil
+	default:
+		return false, fmt.Errorf("unknown eventStatus %q", status)
 	}
-	return status == "" && strings.TrimSpace(event.EndDate) == "" && event.EpochEndDate == nil
 }
 
 func normalizeAffectedServices(raw json.RawMessage) string {
