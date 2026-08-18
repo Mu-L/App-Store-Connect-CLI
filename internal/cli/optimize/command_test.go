@@ -152,17 +152,27 @@ func TestSearchPlanCommandRendersSupportedOutputsAndWritesArtifacts(t *testing.T
 			stdout := captureSearchPlanStdout(t, func() error {
 				return SearchPlanCommand().ParseAndRun(context.Background(), args)
 			})
-			for _, want := range []string{"daily habits", "metadata_candidate", "untested_candidate", "phrase_suggestions", "unavailable", "request unavailable"} {
+			for _, want := range []string{"daily habits", "phrase_suggestions", "unavailable", "request unavailable"} {
 				if !strings.Contains(stdout, want) {
 					t.Fatalf("%s output missing %q:\n%s", format, want, stdout)
 				}
 			}
-			if format != "json" {
-				normalizedOutput := strings.ToLower(stdout)
-				for _, want := range []string{"Popularity 1-5", "Popularity 1-100", "Genre Rank", "Sources", "Notices"} {
-					if !strings.Contains(normalizedOutput, strings.ToLower(want)) {
-						t.Fatalf("%s output missing report section %q:\n%s", format, want, stdout)
-					}
+			normalizedOutput := strings.ToLower(stdout)
+			expectedByFormat := map[string][]string{
+				"json":     {"metadata_candidate", "untested_candidate"},
+				"table":    {"search optimization plan", "focus keeper", "popularity", "genre rank", "sources", "notices", "metadata · test"},
+				"markdown": {"popularity 1-5", "popularity 1-100", "genre rank", "sources", "notices", "metadata_candidate", "untested_candidate"},
+			}
+			for _, want := range expectedByFormat[format] {
+				if !strings.Contains(normalizedOutput, strings.ToLower(want)) {
+					t.Fatalf("%s output missing %q:\n%s", format, want, stdout)
+				}
+			}
+			if format == "table" {
+				planIndex := strings.Index(stdout, "SEARCH PLAN\n")
+				sourcesIndex := strings.Index(stdout, "SOURCES\n")
+				if planIndex < 0 || sourcesIndex < 0 || planIndex > sourcesIndex {
+					t.Fatalf("table must lead with the search plan before diagnostics:\n%s", stdout)
 				}
 			}
 			if format == "json" {

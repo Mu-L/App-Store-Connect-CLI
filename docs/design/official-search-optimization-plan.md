@@ -122,8 +122,23 @@ of them.
 
 Every Apple Ads source records `available`, `empty`, or `unavailable`. A source
 error produces a report notice and does not erase data from successful sources.
-Table and Markdown output render the source matrix and notices before the term
-plan; JSON retains the complete structured objects.
+Table and Markdown output render the source matrix, notices, and term plan; JSON
+retains the complete structured objects.
+
+The default TTY table is the compact human view. Its summary names the app and
+groups the version, platform, and market context; the term plan follows it so
+the primary result fits in one terminal capture. Source status and shortened
+one-line notices follow the plan, and the term table combines the two popularity
+scales in one `Popularity` column. Row-level source arrays and complete provider
+errors remain available in Markdown and JSON. This keeps the default output
+readable in a normal terminal without weakening the report used by scripts or
+audits.
+
+Compatibility is limited to presentation: no flag, exit code, report schema, or
+artifact changes. Keeping the original ten-column table was rejected because
+ordinary terms, actions, and source names push it well beyond a screenshot-sized
+terminal. Truncating report data was also rejected; only the TTY rendering is
+condensed.
 The command fails if App Store Connect metadata cannot be resolved or if every
 Apple Ads intelligence source is unavailable. Privacy-suppressed and genuinely
 empty official responses remain successful empty sources.
