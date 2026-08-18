@@ -53,7 +53,9 @@ func TestFetchSearchOptimizationDataUsesOfficialEndpointsAndPreservesPartialFail
 				t.Errorf("phrase suggestion request unexpectedly includes countriesOrRegions: %#v", body)
 			}
 			assertFilter(t, body, "queryType", "SUGGESTION")
-			http.Error(w, `{"errors":[{"message":"request unavailable"}]}`, http.StatusBadRequest)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":"INVALID_VALUE","message":"One or more validation errors occurred.","details":[{"code":"INVALID_FILTER","message":"Unsupported filter value","info":{"field":"filters[2].value"}}]}`))
 		case "/v1/suggestions/target-cpas/query":
 			assertFilter(t, body, "promotedObjectId", "123456789")
 			assertFilter(t, body, "promotedObjectType", "APPSTORE_APP")
@@ -148,7 +150,7 @@ func TestFetchSearchOptimizationDataUsesOfficialEndpointsAndPreservesPartialFail
 		t.Fatalf("daily budget recommendation items = %s", data.DailyBudgetRecommendationItems)
 	}
 	phraseSource := findOptimizationSource(t, data.Sources, "phrase_suggestions")
-	if phraseSource.Status != "unavailable" || !strings.Contains(phraseSource.Error, "400") {
+	if phraseSource.Status != "unavailable" || !strings.Contains(phraseSource.Error, "INVALID_FILTER") || !strings.Contains(phraseSource.Error, `"field":"filters[2].value"`) {
 		t.Fatalf("phrase source = %+v", phraseSource)
 	}
 	if requests["/v1/negative-keywords/query"] != 2 {
