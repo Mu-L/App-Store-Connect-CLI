@@ -45,6 +45,7 @@ Examples:
   asc pricing availability create --app "123456789" --territory "USA,GBR,DEU" --available true --available-in-new-territories true
   asc pricing availability edit --app "123456789" --territory "US,France,DEU" --available true
   asc pricing availability edit --app "123456789" --all-territories --available true
+  asc pricing availability remove-from-sale --app "123456789" --confirm
   asc pricing availability territory-availabilities --availability "AVAILABILITY_ID"`,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
@@ -602,6 +603,7 @@ Examples:
   asc pricing availability create --app "123456789" --territory "USA,GBR,DEU" --available true --available-in-new-territories true
   asc pricing availability edit --app "123456789" --territory "US,France,DEU" --available true
   asc pricing availability edit --app "123456789" --all-territories --available true
+  asc pricing availability remove-from-sale --app "123456789" --confirm
   asc pricing availability territory-availabilities --availability "AVAILABILITY_ID"`,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
@@ -609,6 +611,7 @@ Examples:
 			PricingAvailabilityCreateCommand(),
 			PricingAvailabilityTerritoryAvailabilitiesCommand(),
 			PricingAvailabilitySetCommand(),
+			PricingAvailabilityRemoveFromSaleCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp
@@ -866,5 +869,12 @@ Note:
   App Store Connect.`,
 		ErrorPrefix:                      "pricing availability edit",
 		IncludeAvailableInNewTerritories: true,
+	})
+}
+
+// PricingAvailabilityRemoveFromSaleCommand returns the remove-from-sale subcommand.
+func PricingAvailabilityRemoveFromSaleCommand() *ffcli.Command {
+	return shared.NewAvailabilityRemoveFromSaleCommand(shared.AvailabilityRemoveFromSaleCommandConfig{
+		ClientFactory: pricingAvailabilityClientFactory,
 	})
 }
