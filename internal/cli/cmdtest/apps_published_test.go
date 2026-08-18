@@ -214,7 +214,57 @@ func TestAppsPublishedOutputFormatsAndDeterministicOrder(t *testing.T) {
 			if alphaIndex > zuluIndex {
 				t.Fatalf("published apps are not sorted by name: %s", stdout)
 			}
+			if !strings.Contains(stdout, "Audited 2 app records; found 2 published apps.") {
+				t.Fatalf("%s output missing audit totals: %s", test.format, stdout)
+			}
 		})
+	}
+}
+
+func TestAppsPublishedRetriesRateLimitedAvailabilityReads(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_MAX_RETRIES", "1")
+	t.Setenv("ASC_BASE_DELAY", "1ms")
+	t.Setenv("ASC_MAX_DELAY", "1ms")
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	var availabilityReads atomic.Int32
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps":
+			return jsonHTTPResponse(http.StatusOK, `{
+				"data":[{"type":"apps","id":"app-1","attributes":{"name":"Retried","bundleId":"com.example.retried","sku":"RETRIED"}}],
+				"links":{"next":""}
+			}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appAvailabilityV2":
+			if availabilityReads.Add(1) == 1 {
+				return jsonHTTPResponse(http.StatusTooManyRequests, `{"errors":[{"status":"429","code":"RATE_LIMIT_EXCEEDED","title":"Too Many Requests"}]}`), nil
+			}
+			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"appAvailabilities","id":"availability-1","attributes":{"availableInNewTerritories":false}}}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
+			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"territoryAvailabilities","id":"ta-1","attributes":{"contentStatuses":["AVAILABLE"]}}],"links":{"next":""}}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, _ := captureOutput(t, func() {
+		if err := root.Parse([]string{"apps", "published"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+	if availabilityReads.Load() != 2 {
+		t.Fatalf("availability reads = %d, want 2", availabilityReads.Load())
+	}
+	if !strings.Contains(stdout, `"publishedAppCount":1`) {
+		t.Fatalf("unexpected output: %s", stdout)
 	}
 }
 

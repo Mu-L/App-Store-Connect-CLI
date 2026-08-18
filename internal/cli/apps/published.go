@@ -103,6 +103,7 @@ Examples:
 	}
 }
 
+// fetchAllAppsForPublishedAudit retrieves every app record across all result pages.
 func fetchAllAppsForPublishedAudit(ctx context.Context, client *asc.Client) (*asc.AppsResponse, error) {
 	firstPage, err := client.GetApps(ctx, asc.WithAppsLimit(200), asc.WithAppsSort("name"))
 	if err != nil {
@@ -128,6 +129,7 @@ type publishedAppAuditResult struct {
 	Err            error
 }
 
+// auditPublishedApps audits app availability concurrently and returns published apps.
 func auditPublishedApps(ctx context.Context, client *asc.Client, appResources []asc.Resource[asc.AppAttributes]) (AppsPublishedReport, error) {
 	report := AppsPublishedReport{
 		AuditedAppCount: len(appResources),
@@ -201,6 +203,7 @@ func auditPublishedApps(ctx context.Context, client *asc.Client, appResources []
 	return report, nil
 }
 
+// auditPublishedApp returns an app's availability ID and published-territory count.
 func auditPublishedApp(ctx context.Context, client *asc.Client, appID string) (string, int, error) {
 	availability, err := client.GetAppAvailabilityV2(ctx, appID)
 	if err != nil {
@@ -238,6 +241,7 @@ func auditPublishedApp(ctx context.Context, client *asc.Client, appID string) (s
 	return availabilityID, publishedTerritoryCount, nil
 }
 
+// isPublishedAuditAvailabilityMissing reports resource-specific missing availability.
 func isPublishedAuditAvailabilityMissing(err error) bool {
 	if err == nil || !errors.Is(err, asc.ErrNotFound) {
 		return false
@@ -252,6 +256,7 @@ func isPublishedAuditAvailabilityMissing(err error) bool {
 		strings.Contains(description, "appavailabilityv2")
 }
 
+// hasAvailableContentStatus reports whether any content status is AVAILABLE.
 func hasAvailableContentStatus(statuses []string) bool {
 	for _, status := range statuses {
 		if strings.EqualFold(strings.TrimSpace(status), "AVAILABLE") {
@@ -261,6 +266,7 @@ func hasAvailableContentStatus(statuses []string) bool {
 	return false
 }
 
+// renderAppsPublishedReport writes table or Markdown rows and their audit totals.
 func renderAppsPublishedReport(report AppsPublishedReport, markdown bool) error {
 	headers := []string{"ID", "Name", "Bundle ID", "SKU", "Availability ID", "Published Territories"}
 	rows := make([][]string, 0, len(report.Apps))
@@ -276,12 +282,20 @@ func renderAppsPublishedReport(report AppsPublishedReport, markdown bool) error 
 	}
 	if markdown {
 		asc.RenderMarkdown(headers, rows)
-		return nil
+	} else {
+		asc.RenderTable(headers, rows)
 	}
-	asc.RenderTable(headers, rows)
+	fmt.Fprintf(
+		os.Stdout,
+		"\nAudited %d app records; found %d published %s.\n",
+		report.AuditedAppCount,
+		report.PublishedAppCount,
+		pluralizeApp(report.PublishedAppCount),
+	)
 	return nil
 }
 
+// pluralizeApp returns the singular or plural app label for a count.
 func pluralizeApp(count int) string {
 	if count == 1 {
 		return "app"
