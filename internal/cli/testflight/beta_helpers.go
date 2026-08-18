@@ -32,6 +32,14 @@ func resolveBetaGroupIDs(ctx context.Context, client *asc.Client, appID, rawGrou
 	if err != nil {
 		return nil, err
 	}
+	for groups.Links.Next != "" {
+		page, err := client.GetBetaGroups(ctx, appID, asc.WithBetaGroupsNextURL(groups.Links.Next))
+		if err != nil {
+			return nil, err
+		}
+		groups.Data = append(groups.Data, page.Data...)
+		groups.Links.Next = page.Links.Next
+	}
 
 	id, err := matchBetaGroupID(groups, strings.TrimSpace(rawGroups))
 	if err == nil {

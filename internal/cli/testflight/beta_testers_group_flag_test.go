@@ -153,6 +153,42 @@ func TestResolveBetaGroupIDs_EmptyTokenFails(t *testing.T) {
 	}
 }
 
+func TestResolveBetaGroupIDs_FollowsPagination(t *testing.T) {
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests++
+		links := map[string]string{}
+		var data []map[string]any
+		if req.URL.Query().Get("cursor") == "" {
+			data = []map[string]any{
+				{"type": "betaGroups", "id": "group-beta", "attributes": map[string]any{"name": "Beta"}},
+			}
+			links["next"] = "https://api.appstoreconnect.apple.com/v1/apps/123456789/betaGroups?cursor=2"
+		} else {
+			data = []map[string]any{
+				{"type": "betaGroups", "id": "group-second", "attributes": map[string]any{"name": "Second"}},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{"data": data, "links": links}); err != nil {
+			t.Errorf("marshal response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newBetaGroupResolutionClient(t, server)
+
+	got, err := resolveBetaGroupIDs(context.Background(), client, "123456789", "Beta,Second")
+	if err != nil {
+		t.Fatalf("resolveBetaGroupIDs() error: %v", err)
+	}
+	if len(got) != 2 || got[0] != "group-beta" || got[1] != "group-second" {
+		t.Fatalf("paginated resolution = %v, want [group-beta group-second]", got)
+	}
+	if requests != 2 {
+		t.Fatalf("beta group fetches = %d, want 2", requests)
+	}
+}
+
 func newStaticBetaGroupsServer(t *testing.T, groups map[string]string) *httptest.Server {
 	t.Helper()
 

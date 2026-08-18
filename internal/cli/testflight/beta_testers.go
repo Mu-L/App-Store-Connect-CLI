@@ -262,7 +262,8 @@ func BetaTestersAddCommand() *ffcli.Command {
 
 The tester is added to every group in the comma-separated --group list. A
 value that exactly matches one group name is used as-is, even when the name
-contains commas.
+contains commas. To combine a comma-containing group name with other groups
+in one list, reference that group by its ID instead.
 
 Examples:
   asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta"
