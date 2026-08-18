@@ -18,6 +18,7 @@ type ClassifiedError struct {
 const (
 	requestTimeoutHint = "Increase the request timeout (e.g. set `ASC_TIMEOUT=90s`)."
 	uploadTimeoutHint  = "Increase the upload timeout (e.g. set `ASC_UPLOAD_TIMEOUT=600s`)."
+	systemStatusHint   = "Check Apple's service health with `asc system-status --service \"App Store Connect\"`."
 )
 
 func Classify(err error) ClassifiedError {
@@ -39,7 +40,15 @@ func Classify(err error) ClassifiedError {
 		}
 		return ClassifiedError{
 			Message: err.Error(),
-			Hint:    hint,
+			Hint:    hint + " " + systemStatusHint,
+		}
+	}
+
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) && statusErr.HTTPStatusCode() >= 500 {
+		return ClassifiedError{
+			Message: err.Error(),
+			Hint:    systemStatusHint,
 		}
 	}
 

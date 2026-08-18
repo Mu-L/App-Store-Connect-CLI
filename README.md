@@ -183,6 +183,13 @@ depending on a command in CI or scripts:
 - If keychain access is blocked, retry with `ASC_BYPASS_KEYCHAIN=1` or re-run `asc auth login --bypass-keychain`
 - Use `asc auth login --local --bypass-keychain ...` when you want repo-local credentials in `./.asc/config.json`
 
+### Apple service health
+
+- Check Apple's developer services without credentials: `asc system-status`
+- Narrow unexpected API or upload failures: `asc system-status --service "App Store Connect"`
+- Poll only when requested: `asc system-status --watch --poll-interval 30s`
+- Use `--issues-only` for a concise incident view; summary counts still cover all matched services
+
 ### Output
 
 - `asc` defaults to `table` in an interactive terminal and `json` in pipes, files, and CI

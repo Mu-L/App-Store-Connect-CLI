@@ -30,7 +30,7 @@ func TestClassify_Forbidden(t *testing.T) {
 
 func TestClassify_Timeout(t *testing.T) {
 	ce := Classify(context.DeadlineExceeded)
-	if ce.Hint != "Increase the request timeout (e.g. set `ASC_TIMEOUT=90s`)." {
+	if ce.Hint != "Increase the request timeout (e.g. set `ASC_TIMEOUT=90s`). Check Apple's service health with `asc system-status --service \"App Store Connect\"`." {
 		t.Fatalf("expected request timeout hint, got %q", ce.Hint)
 	}
 }
@@ -39,7 +39,7 @@ func TestClassify_TimeoutUploadOperation(t *testing.T) {
 	err := fmt.Errorf("builds upload: upload failed: upload operation 3: %w", context.DeadlineExceeded)
 
 	ce := Classify(err)
-	if ce.Hint != "Increase the upload timeout (e.g. set `ASC_UPLOAD_TIMEOUT=600s`)." {
+	if ce.Hint != "Increase the upload timeout (e.g. set `ASC_UPLOAD_TIMEOUT=600s`). Check Apple's service health with `asc system-status --service \"App Store Connect\"`." {
 		t.Fatalf("expected upload timeout hint, got %q", ce.Hint)
 	}
 }
@@ -48,8 +48,17 @@ func TestClassify_TimeoutBuildsUploadsListKeepsRequestHint(t *testing.T) {
 	err := fmt.Errorf("builds uploads list: failed to fetch: %w", context.DeadlineExceeded)
 
 	ce := Classify(err)
-	if ce.Hint != "Increase the request timeout (e.g. set `ASC_TIMEOUT=90s`)." {
+	if ce.Hint != "Increase the request timeout (e.g. set `ASC_TIMEOUT=90s`). Check Apple's service health with `asc system-status --service \"App Store Connect\"`." {
 		t.Fatalf("expected request timeout hint, got %q", ce.Hint)
+	}
+}
+
+func TestClassify_ServerErrorSuggestsSystemStatus(t *testing.T) {
+	err := &asc.APIError{Code: "INTERNAL_ERROR", Title: "Unavailable", StatusCode: 503}
+
+	ce := Classify(err)
+	if ce.Hint != "Check Apple's service health with `asc system-status --service \"App Store Connect\"`." {
+		t.Fatalf("expected system-status hint, got %q", ce.Hint)
 	}
 }
 
