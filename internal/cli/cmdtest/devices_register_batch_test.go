@@ -265,3 +265,56 @@ func TestDevicesRegisterBatchContinuesAfterIsolatedRequestTimeout(t *testing.T) 
 		t.Fatalf("expected machine-readable partial result, got %q", stdout)
 	}
 }
+
+func TestDevicesRegisterBatchStopsAfterAPIFailureWhenRequested(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	inputPath := filepath.Join(t.TempDir(), "devices.txt")
+	if err := os.WriteFile(inputPath, []byte("UDID-1\tDevice One\tIOS\nUDID-2\tDevice Two\tIOS\n"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	createCount := 0
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/devices":
+			return jsonResponse(http.StatusOK, `{"data":[]}`)
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/devices":
+			createCount++
+			return jsonResponse(http.StatusUnprocessableEntity, `{"errors":[{"status":"422","code":"ENTITY_ERROR","detail":"invalid device"}]}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	if err := root.Parse([]string{"devices", "register-batch", "--file", inputPath, "--continue-on-error=false"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	stdout, _ := captureOutput(t, func() {
+		runErr = root.Run(context.Background())
+	})
+	if runErr == nil {
+		t.Fatal("expected reported registration failure")
+	}
+	if createCount != 1 {
+		t.Fatalf("create requests = %d, want 1", createCount)
+	}
+	var summary struct {
+		Total     int `json:"total"`
+		Processed int `json:"processed"`
+		Failed    int `json:"failed"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &summary); err != nil {
+		t.Fatalf("decode summary %q: %v", stdout, err)
+	}
+	if summary.Total != 2 || summary.Processed != 1 || summary.Failed != 1 {
+		t.Fatalf("unexpected stop-on-error summary: %+v", summary)
+	}
+}

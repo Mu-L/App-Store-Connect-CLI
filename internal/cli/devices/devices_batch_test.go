@@ -56,6 +56,9 @@ func TestReadDeviceBatchTSVRejectsInvalidRowsBeforeMutation(t *testing.T) {
 		{name: "missing platform", contents: "Device ID\tDevice Name\nUDID-1\tDevice\n", want: "line 2: device platform is required"},
 		{name: "invalid platform", contents: "UDID-1\tDevice\tTV_OS\n", want: "line 1: --platform must be one of"},
 		{name: "extra columns", contents: "UDID-1\tDevice\tIOS\textra\n", want: "line 1: expected 2 or 3 tab-separated columns"},
+		{name: "bad header name", contents: "Device ID\tSerial\nUDID-1\tDevice\tIOS\n", want: "line 1: device header must start with Device ID and Device Name"},
+		{name: "header with extra column", contents: "Device ID\tDevice Name\tDevice Platform\tExtra\n", want: "line 1: device header must contain 2 or 3 tab-separated columns"},
+		{name: "bad platform header", contents: "Device ID\tDevice Name\tOS\n", want: "line 1: third header column must be Device Platform"},
 		{name: "empty file", contents: "\n# comment\n", defaultPlatform: "IOS", want: "device file contains no records"},
 	}
 
