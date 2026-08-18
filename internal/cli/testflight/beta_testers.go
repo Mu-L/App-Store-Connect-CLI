@@ -31,7 +31,7 @@ Examples:
   asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta,iOS 27"
   asc testflight beta-testers export --app "APP_ID" --output "./testflight-testers.csv"
   asc testflight beta-testers import --app "APP_ID" --input "./testflight-testers.csv" --dry-run
-  asc testflight beta-testers remove --app "APP_ID" --email "tester@example.com"
+  asc testflight beta-testers remove --app "APP_ID" --email "tester@example.com" --confirm
   asc testflight beta-testers add-groups --id "TESTER_ID" --group "GROUP_ID"
   asc testflight beta-testers remove-groups --id "TESTER_ID" --group "GROUP_ID"
   asc testflight beta-testers add-builds --id "TESTER_ID" --build-id "BUILD_ID"
@@ -312,16 +312,20 @@ func BetaTestersRemoveCommand() *ffcli.Command {
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	email := fs.String("email", "", "Tester email address")
+	confirm := fs.Bool("confirm", false, "Confirm removal")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "remove",
-		ShortUsage: "asc testflight beta-testers remove [flags]",
+		ShortUsage: "asc testflight beta-testers remove --app APP_ID --email EMAIL --confirm",
 		ShortHelp:  "Remove a TestFlight beta tester.",
 		LongHelp: `Remove a TestFlight beta tester.
 
+Removal deletes the tester from the app, including every group membership and
+build assignment. This cannot be undone, so --confirm is required.
+
 Examples:
-  asc testflight beta-testers remove --app "APP_ID" --email "tester@example.com"`,
+  asc testflight beta-testers remove --app "APP_ID" --email "tester@example.com" --confirm`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -333,6 +337,10 @@ Examples:
 			if strings.TrimSpace(*email) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --email is required")
 				return shared.MissingRequiredUsageError("--email")
+			}
+			if !*confirm {
+				fmt.Fprintln(os.Stderr, "Error: --confirm is required")
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 
 			client, err := shared.GetASCClient()
