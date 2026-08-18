@@ -452,3 +452,15 @@ func TestFetchDeveloperSystemStatusRejectsOversizedBody(t *testing.T) {
 		t.Fatalf("error = %v, want oversized response error", err)
 	}
 }
+
+func TestDecodeDeveloperSystemStatusRejectsMissingOrNullEvents(t *testing.T) {
+	for _, body := range []string{
+		`{"services":[{"serviceName":"TestFlight"}]}`,
+		`{"services":[{"serviceName":"TestFlight","events":null}]}`,
+	} {
+		_, err := decodeDeveloperSystemStatus([]byte(body))
+		if err == nil || !strings.Contains(err.Error(), `service "TestFlight" is missing events`) {
+			t.Fatalf("decode error = %v, want missing-events failure for %s", err, body)
+		}
+	}
+}

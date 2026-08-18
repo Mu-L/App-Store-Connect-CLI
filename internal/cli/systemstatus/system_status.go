@@ -32,9 +32,9 @@ type statusFeed struct {
 }
 
 type statusFeedService struct {
-	ServiceName string            `json:"serviceName"`
-	RedirectURL string            `json:"redirectUrl"`
-	Events      []statusFeedEvent `json:"events"`
+	ServiceName string             `json:"serviceName"`
+	RedirectURL string             `json:"redirectUrl"`
+	Events      *[]statusFeedEvent `json:"events"`
 }
 
 type statusFeedEvent struct {
@@ -199,14 +199,17 @@ func decodeDeveloperSystemStatus(body []byte) (*asc.DeveloperSystemStatusReport,
 		if name == "" {
 			return nil, fmt.Errorf("service %d has no name", index+1)
 		}
+		if rawService.Events == nil {
+			return nil, fmt.Errorf("service %q is missing events", name)
+		}
 
 		service := asc.DeveloperSystemStatusService{
 			Name:   name,
 			Status: "operational",
 			URL:    strings.TrimSpace(rawService.RedirectURL),
-			Events: make([]asc.DeveloperSystemStatusEvent, 0, len(rawService.Events)),
+			Events: make([]asc.DeveloperSystemStatusEvent, 0, len(*rawService.Events)),
 		}
-		for _, rawEvent := range rawService.Events {
+		for _, rawEvent := range *rawService.Events {
 			active := statusEventActive(rawEvent)
 			if active {
 				service.Status = "issues"
