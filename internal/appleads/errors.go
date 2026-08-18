@@ -66,7 +66,14 @@ func (e *APIError) Error() string {
 	if message != "" {
 		parts = append(parts, message)
 	}
-	if details := formatAPIErrorDetails(e.Details, e.Field, e.Detail); details != "" {
+	surfacedCode := strings.TrimSpace(e.MessageCode)
+	if surfacedCode == "" {
+		surfacedCode = strings.TrimSpace(e.Code)
+	}
+	if surfacedCode == "" {
+		surfacedCode = strings.TrimSpace(e.Field)
+	}
+	if details := formatAPIErrorDetails(e.Details, surfacedCode, message); details != "" {
 		parts = append(parts, details)
 	}
 	if len(parts) == 0 {

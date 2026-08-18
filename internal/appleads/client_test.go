@@ -585,6 +585,19 @@ func TestParsePlatformErrorSurfacesDetailsOnlyEnvelope(t *testing.T) {
 	}
 }
 
+func TestParsePlatformErrorDoesNotRepeatTopLevelDetail(t *testing.T) {
+	err := parseErrorForVersion(
+		[]byte(`{"code":"INVALID_VALUE","message":"One or more validation errors occurred.","details":[{"code":"INVALID_VALUE","message":"One or more validation errors occurred."}]}`),
+		400,
+		nil,
+		APIVersionPlatformV1,
+	)
+	got := err.Error()
+	if strings.Count(got, "INVALID_VALUE") != 1 || strings.Count(got, "One or more validation errors occurred.") != 1 {
+		t.Fatalf("APIError.Error() = %q, want repeated top-level detail surfaced once", got)
+	}
+}
+
 func TestEmptySuccessBodyIsVersionSpecific(t *testing.T) {
 	client, err := NewClient(Credentials{AccessToken: "ACCESS"}, WithHTTPClient(&http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

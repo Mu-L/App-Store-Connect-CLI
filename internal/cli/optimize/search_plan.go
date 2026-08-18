@@ -429,7 +429,7 @@ func classifySearchPlanRow(entry *searchPlanAccumulator, evidence searchPlanEvid
 	if evidence.targetingKeywordsComplete && entry.hasPerformance && installs > 0 && strings.EqualFold(row.MatchType, "BROAD") && !entry.hasExistingExact {
 		row.Actions = append(row.Actions, "promote_exact")
 	}
-	if evidence.negativeKeywordsComplete && entry.hasPerformance && installs == 0 && row.Taps != nil && *row.Taps >= 10 && !entry.hasExistingNegative {
+	if evidence.searchTermsComplete && evidence.negativeKeywordsComplete && entry.hasPerformance && installs == 0 && row.Taps != nil && *row.Taps >= 10 && !entry.hasExistingNegative {
 		row.Actions = append(row.Actions, "negative_candidate")
 	}
 	if len(row.MetadataFields) == 0 && (installs > 0 || entry.hasSuggestion) {

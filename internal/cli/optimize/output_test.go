@@ -56,16 +56,22 @@ func TestSearchPlanCompactTableIsScreenshotFriendly(t *testing.T) {
 }
 
 func TestCompactSearchPlanDiagnosticRemovesProviderHTMLAndCapsLength(t *testing.T) {
-	errorText := "retry limit exceeded after 4 retries: HTTP 500: <html><head><title>500 Internal Server Error</title></head><body>Apple returned a very long response that must not stretch the terminal table beyond a useful screenshot width</body></html>"
-	got := compactSearchPlanDiagnostic(errorText)
-	if strings.Contains(got, "<html>") || strings.Contains(got, "Internal Server Error") {
-		t.Fatalf("compact diagnostic retained provider HTML: %q", got)
-	}
-	if len([]rune(got)) > 72 {
-		t.Fatalf("compact diagnostic length = %d, want <= 72: %q", len([]rune(got)), got)
-	}
-	if got != "retry limit exceeded after 4 retries: HTTP 500" {
-		t.Fatalf("compact diagnostic = %q", got)
+	for _, marker := range []string{
+		"<html><head><title>500 Internal Server Error</title></head>",
+		"<!DOCTYPE html><html><head><title>500 Internal Server Error</title></head>",
+		"<body>Apple returned a provider fragment",
+	} {
+		errorText := "retry limit exceeded after 4 retries: HTTP 500: " + marker + "Apple returned a very long response that must not stretch the terminal table beyond a useful screenshot width"
+		got := compactSearchPlanDiagnostic(errorText)
+		if strings.Contains(strings.ToLower(got), "html") || strings.Contains(got, "provider fragment") || strings.Contains(got, "Internal Server Error") {
+			t.Fatalf("compact diagnostic retained provider HTML from %q: %q", marker, got)
+		}
+		if len([]rune(got)) > 72 {
+			t.Fatalf("compact diagnostic length = %d, want <= 72: %q", len([]rune(got)), got)
+		}
+		if got != "retry limit exceeded after 4 retries: HTTP 500" {
+			t.Fatalf("compact diagnostic = %q", got)
+		}
 	}
 }
 

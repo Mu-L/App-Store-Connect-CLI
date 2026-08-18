@@ -140,6 +140,23 @@ func TestBuildSearchPlanSuppressesExistingNegativeCandidate(t *testing.T) {
 	}
 }
 
+func TestBuildSearchPlanSuppressesNegativeCandidateWhenSearchTermEvidenceIsIncomplete(t *testing.T) {
+	report := buildSearchPlan(searchPlanBuildInput{
+		Metadata: searchMetadataSnapshot{},
+		Ads: ads.SearchOptimizationData{
+			Sources: []ads.SearchOptimizationSourceStatus{
+				{Name: "negative_keywords", Status: "empty"},
+				{Name: "search_term_performance", Status: "unavailable", Error: "one campaign failed"},
+			},
+			SearchTerms: []ads.SearchTermPerformance{{Term: "free planner", CampaignID: 44, AdGroupID: 55, Taps: 20, TotalInstalls: 0}},
+		},
+	})
+	row := findSearchPlanRow(t, report.Rows, "free planner")
+	if slices.Contains(row.Actions, "negative_candidate") {
+		t.Fatalf("actions = %v, incomplete search-term evidence must suppress negative candidate", row.Actions)
+	}
+}
+
 func TestBuildSearchPlanDoesNotInferAbsenceFromUnavailableSources(t *testing.T) {
 	report := buildSearchPlan(searchPlanBuildInput{
 		Metadata: searchMetadataSnapshot{},

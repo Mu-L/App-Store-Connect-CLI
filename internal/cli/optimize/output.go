@@ -148,7 +148,14 @@ func formatSearchPlanSourceName(value string) string {
 
 func compactSearchPlanDiagnostic(value string) string {
 	compact := strings.TrimSpace(value)
-	if htmlIndex := strings.Index(strings.ToLower(compact), "<html"); htmlIndex >= 0 {
+	lower := strings.ToLower(compact)
+	htmlIndex := len(compact)
+	for _, marker := range []string{"<!doctype html", "<html", "<head", "<body"} {
+		if index := strings.Index(lower, marker); index >= 0 && index < htmlIndex {
+			htmlIndex = index
+		}
+	}
+	if htmlIndex < len(compact) {
 		compact = strings.TrimSpace(compact[:htmlIndex])
 	}
 	compact = strings.TrimSpace(strings.TrimSuffix(compact, ":"))
