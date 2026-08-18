@@ -200,6 +200,7 @@ func paginateBetaTesterUsages(ctx context.Context, client *asc.Client, appID str
 	seenNext := make(map[string]struct{})
 	pageNumber := 1
 	current := firstPage
+	var mergedIncluded []json.RawMessage
 
 	for {
 		parsed, err := parseBetaTesterUsagesPage(current.Data)
@@ -208,8 +209,12 @@ func paginateBetaTesterUsages(ctx context.Context, client *asc.Client, appID str
 		}
 
 		combined.Data = append(combined.Data, parsed.Data...)
-		if len(combined.Included) == 0 && len(parsed.Included) > 0 {
-			combined.Included = parsed.Included
+		if len(parsed.Included) > 0 {
+			var pageIncluded []json.RawMessage
+			if err := json.Unmarshal(parsed.Included, &pageIncluded); err != nil {
+				return nil, fmt.Errorf("page %d: parse included: %w", pageNumber, err)
+			}
+			mergedIncluded = append(mergedIncluded, pageIncluded...)
 		}
 		if len(combined.Meta) == 0 && len(parsed.Meta) > 0 {
 			combined.Meta = parsed.Meta
@@ -230,6 +235,14 @@ func paginateBetaTesterUsages(ctx context.Context, client *asc.Client, appID str
 			return combined, fmt.Errorf("page %d: %w", pageNumber, err)
 		}
 		current = nextPage
+	}
+
+	if len(mergedIncluded) > 0 {
+		encoded, err := json.Marshal(mergedIncluded)
+		if err != nil {
+			return nil, fmt.Errorf("encode included resources: %w", err)
+		}
+		combined.Included = encoded
 	}
 
 	return combined, nil

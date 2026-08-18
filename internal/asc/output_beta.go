@@ -380,3 +380,19 @@ func betaTesterUsagesPageTables(v *BetaTesterUsagesPage, render func([]string, [
 	}
 	return nil
 }
+
+// GetLinks lets the usages page participate in pagination warnings.
+func (p *BetaTesterUsagesPage) GetLinks() *Links {
+	if p == nil {
+		return nil
+	}
+	return &p.Links
+}
+
+// GetData exposes the page's data array for page-size reporting.
+func (p *BetaTesterUsagesPage) GetData() any {
+	if p == nil {
+		return nil
+	}
+	return p.Data
+}
