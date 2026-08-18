@@ -51,8 +51,10 @@ func AppsPublishedCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "published",
 		ShortUsage: "asc apps published [flags]",
-		ShortHelp:  "List published apps and their published-territory counts.",
-		LongHelp: `List published apps and their published-territory counts.
+		ShortHelp:  "[experimental] List published apps and their published-territory counts.",
+		LongHelp: `[experimental] List published apps and their published-territory counts.
+
+This command is experimental.
 
 The command audits every App Store Connect app record and all of its territory
 availability pages. An app is published when at least one territory reports the
@@ -85,13 +87,15 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("apps published: %w", err)
 			}
-			fmt.Fprintf(
-				os.Stderr,
-				"Audited %d app records; found %d published %s.\n",
-				report.AuditedAppCount,
-				report.PublishedAppCount,
-				pluralizeApp(report.PublishedAppCount),
-			)
+			if strings.EqualFold(strings.TrimSpace(*output.Output), "json") {
+				fmt.Fprintf(
+					os.Stderr,
+					"Audited %d app records; found %d published %s.\n",
+					report.AuditedAppCount,
+					report.PublishedAppCount,
+					pluralizeApp(report.PublishedAppCount),
+				)
+			}
 			return shared.PrintOutputWithRenderers(
 				report,
 				*output.Output,

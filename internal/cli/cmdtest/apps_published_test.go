@@ -195,7 +195,7 @@ func TestAppsPublishedOutputFormatsAndDeterministicOrder(t *testing.T) {
 		t.Run(test.format, func(t *testing.T) {
 			root := RootCommand("1.2.3")
 			root.FlagSet.SetOutput(io.Discard)
-			stdout, _ := captureOutput(t, func() {
+			stdout, stderr := captureOutput(t, func() {
 				if err := root.Parse([]string{"apps", "published", "--output", test.format}); err != nil {
 					t.Fatalf("parse error: %v", err)
 				}
@@ -214,8 +214,12 @@ func TestAppsPublishedOutputFormatsAndDeterministicOrder(t *testing.T) {
 			if alphaIndex > zuluIndex {
 				t.Fatalf("published apps are not sorted by name: %s", stdout)
 			}
-			if !strings.Contains(stdout, "Audited 2 app records; found 2 published apps.") {
+			const summary = "Audited 2 app records; found 2 published apps."
+			if !strings.Contains(stdout, summary) {
 				t.Fatalf("%s output missing audit totals: %s", test.format, stdout)
+			}
+			if count := strings.Count(stdout+stderr, summary); count != 1 {
+				t.Fatalf("%s output contains audit totals %d times, want 1; stdout=%q stderr=%q", test.format, count, stdout, stderr)
 			}
 		})
 	}
