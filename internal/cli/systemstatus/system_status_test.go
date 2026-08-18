@@ -12,8 +12,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
 
 const healthyAndOutagePayload = `jsonCallback({
@@ -152,6 +155,8 @@ func TestSystemStatusCommandRejectsInvalidArguments(t *testing.T) {
 		{name: "max polls without watch", args: []string{"--max-polls", "2"}, want: "--max-polls requires --watch"},
 		{name: "poll interval without watch", args: []string{"--poll-interval", "1s"}, want: "--poll-interval requires --watch"},
 		{name: "invalid output before network", args: []string{"--output", "yaml"}, want: "unsupported format: yaml"},
+		{name: "empty service", args: []string{"--service", ""}, want: "--service must not contain empty service names"},
+		{name: "trailing empty service", args: []string{"--service", "TestFlight, "}, want: "--service must not contain empty service names"},
 	}
 
 	for _, test := range tests {
@@ -207,6 +212,59 @@ func TestSystemStatusCommandWatchPrintsOnlyChanges(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &report); err != nil {
 			t.Fatalf("line %d is not JSON: %v\n%s", index, err, line)
 		}
+	}
+}
+
+func TestSystemStatusCommandWatchRetriesTransientFailures(t *testing.T) {
+	var requests atomic.Int32
+	healthy := `{"drMessage":null,"services":[{"serviceName":"App Store Connect API","redirectUrl":null,"events":[]}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(w, healthy)
+	}))
+	defer server.Close()
+
+	stdout, stderr, err := runCommand(t, server.Client(), server.URL,
+		"--watch", "--poll-interval", "1ms", "--max-polls", "2", "--output", "json")
+	if err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests = %d, want 2", requests.Load())
+	}
+	if !strings.Contains(stderr, "poll 1 failed") || !strings.Contains(stderr, "retrying in 1ms") {
+		t.Fatalf("stderr = %q, want retry warning", stderr)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("watch output is not JSON: %v\n%s", err, stdout)
+	}
+}
+
+func TestSystemStatusCommandWatchStopsAfterRepeatedFailures(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	stdout, stderr, err := runCommand(t, server.Client(), server.URL,
+		"--watch", "--poll-interval", "1ms", "--output", "json")
+	if err == nil {
+		t.Fatal("run error = nil, want repeated failure")
+	}
+	if requests.Load() != maxWatchFailures {
+		t.Fatalf("requests = %d, want %d", requests.Load(), maxWatchFailures)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if warnings := strings.Count(stderr, "retrying in 1ms"); warnings != maxWatchFailures-1 {
+		t.Fatalf("retry warnings = %d, want %d; stderr=%q", warnings, maxWatchFailures-1, stderr)
 	}
 }
 
@@ -271,29 +329,89 @@ func runCommand(t *testing.T, client *http.Client, endpoint string, args ...stri
 		os.Stderr = originalStderr
 	}()
 
+	var stdoutBuffer bytes.Buffer
+	var stderrBuffer bytes.Buffer
+	copyErrors := make(chan error, 2)
+	var copies sync.WaitGroup
+	copies.Add(2)
+	go func() {
+		defer copies.Done()
+		_, err := io.Copy(&stdoutBuffer, stdoutReader)
+		copyErrors <- err
+	}()
+	go func() {
+		defer copies.Done()
+		_, err := io.Copy(&stderrBuffer, stderrReader)
+		copyErrors <- err
+	}()
+
 	runErr = command.Run(context.Background())
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
-
-	var stdoutBuffer bytes.Buffer
-	var stderrBuffer bytes.Buffer
-	if _, err := io.Copy(&stdoutBuffer, stdoutReader); err != nil {
-		t.Fatalf("read stdout: %v", err)
-	}
-	if _, err := io.Copy(&stderrBuffer, stderrReader); err != nil {
-		t.Fatalf("read stderr: %v", err)
+	copies.Wait()
+	close(copyErrors)
+	for err := range copyErrors {
+		if err != nil {
+			t.Fatalf("capture command output: %v", err)
+		}
 	}
 	return stdoutBuffer.String(), stderrBuffer.String(), runErr
 }
 
-func TestDecodePlainJSON(t *testing.T) {
-	payload := []byte(`{"drMessage":"Maintenance window","services":[{"serviceName":"TestFlight","redirectUrl":null,"events":[]}]}`)
-	report, err := decodeDeveloperSystemStatus(payload)
-	if err != nil {
-		t.Fatalf("decode error: %v", err)
+func TestDecodeDeveloperSystemStatusFeedShapes(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   []byte
+		assert func(*testing.T, *asc.DeveloperSystemStatusReport)
+	}{
+		{
+			name: "plain JSON",
+			body: []byte(`{"drMessage":"Maintenance window","services":[{"serviceName":"TestFlight","redirectUrl":null,"events":[]}]}`),
+			assert: func(t *testing.T, report *asc.DeveloperSystemStatusReport) {
+				if report.Message != "Maintenance window" || report.Summary.Status != "issues" {
+					t.Fatalf("unexpected report: %#v", report)
+				}
+			},
+		},
+		{
+			name: "UTF-8 BOM",
+			body: append([]byte{0xef, 0xbb, 0xbf}, []byte(`{"services":[{"serviceName":"TestFlight","events":[]}]}`)...),
+			assert: func(t *testing.T, report *asc.DeveloperSystemStatusReport) {
+				if len(report.Services) != 1 || report.Services[0].Name != "TestFlight" {
+					t.Fatalf("unexpected services: %#v", report.Services)
+				}
+			},
+		},
+		{
+			name: "affected services array",
+			body: []byte(`{"services":[{"serviceName":"Xcode Cloud","events":[{"eventStatus":"ongoing","affectedServices":["App Store","TestFlight"]}]}]}`),
+			assert: func(t *testing.T, report *asc.DeveloperSystemStatusReport) {
+				got := report.Services[0].Events[0].AffectedServices
+				if got != "App Store, TestFlight" {
+					t.Fatalf("affected services = %q, want %q", got, "App Store, TestFlight")
+				}
+			},
+		},
+		{
+			name: "resolved event",
+			body: []byte(`{"services":[{"serviceName":"TestFlight","events":[{"eventStatus":"resolved","epochEndDate":1787086740000}]}]}`),
+			assert: func(t *testing.T, report *asc.DeveloperSystemStatusReport) {
+				service := report.Services[0]
+				if service.Status != "operational" || service.Events[0].Active {
+					t.Fatalf("resolved service = %#v, want inactive operational event", service)
+				}
+			},
+		},
 	}
-	if report.Message != "Maintenance window" || report.Summary.Status != "issues" {
-		t.Fatalf("unexpected report: %#v", report)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report, err := decodeDeveloperSystemStatus(test.body)
+			if err != nil {
+				t.Fatalf("decode error: %v", err)
+			}
+			test.assert(t, report)
+		})
 	}
 }
 

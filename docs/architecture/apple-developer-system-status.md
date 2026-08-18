@@ -19,7 +19,7 @@ asc system-status --watch --poll-interval 30s
 The command accepts no positional arguments. `--service` is a comma-separated,
 case-insensitive substring filter. `--issues-only` limits the service list while
 retaining summary counts for all matched services. `--watch` emits the initial
-snapshot and later snapshots only when the selected status changes.
+snapshot and later snapshots only when the selected report changes.
 `--max-polls` provides a bounded watch for automation and tests.
 
 ## Data source and response
@@ -58,6 +58,9 @@ Markdown. A successfully fetched report exits zero even when Apple reports an
 incident; the incident is data, not a command failure. Invalid flags and flag
 combinations exit 2. Transport, HTTP, and parse failures exit 1. Standard data
 goes to stdout and diagnostics go to stderr.
+
+Watch mode reports failed polls to stderr and retries twice. It exits on the
+third consecutive failure, while any successful poll resets the failure count.
 
 ## Compatibility and agent discovery
 

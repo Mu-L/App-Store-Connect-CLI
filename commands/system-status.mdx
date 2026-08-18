@@ -23,10 +23,9 @@ asc system-status --watch --poll-interval 30s
 asc system-status --output json
 ```
 
-Service matching is case-insensitive and uses substrings, so
-`--service "App Store Connect"` selects the related API, upload, processing,
-analytics, sales, and TestFlight services. Separate multiple filters with
-commas.
+Service matching is case-insensitive and applies each substring to individual
+service names. Use separate comma-delimited filters when you need multiple
+names, for example `--service "App Store Connect,TestFlight"`.
 
 ## Flags
 
@@ -39,7 +38,7 @@ commas.
 </ParamField>
 
 <ParamField path="--watch" type="boolean" default="false">
-  Poll and emit the initial snapshot, then emit only when selected status changes
+  Poll and emit the initial snapshot, then emit only when the selected report changes
 </ParamField>
 
 <ParamField path="--poll-interval" type="string" default="30s">
@@ -60,6 +59,9 @@ A successfully fetched report exits zero even when Apple reports an incident;
 the incident is returned as data in `summary.status`, service status, and event
 details. Network, HTTP, or response-format failures exit non-zero. The command
 does not require App Store Connect credentials.
+
+Watch mode retries a failed poll twice and exits after three consecutive
+failures. A successful poll resets the failure count.
 
 Apple exposes this information through a public web feed rather than the App
 Store Connect OpenAPI. If Apple changes the feed shape, `asc` fails explicitly

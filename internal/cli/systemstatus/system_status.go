@@ -23,6 +23,7 @@ const (
 	statusDataURL          = "https://www.apple.com/support/systemstatus/data/developer/system_status_en_US.js"
 	statusPageURL          = "https://developer.apple.com/system-status/"
 	maxStatusResponseBytes = 2 << 20
+	maxWatchFailures       = 3
 )
 
 type statusFeed struct {
@@ -59,7 +60,7 @@ func commandWithClient(client *http.Client, endpoint string) *ffcli.Command {
 	fs := flag.NewFlagSet("system-status", flag.ExitOnError)
 	services := shared.BindOnceCSVFlag(fs, "service", "Filter by service name substring(s), comma-separated")
 	issuesOnly := fs.Bool("issues-only", false, "Show only services with active incidents")
-	watch := fs.Bool("watch", false, "Poll and emit snapshots when selected status changes")
+	watch := fs.Bool("watch", false, "Poll and emit snapshots when the selected report changes")
 	pollInterval := fs.Duration("poll-interval", 30*time.Second, "Polling interval for --watch")
 	maxPolls := fs.Int("max-polls", 0, "Maximum polls for --watch (0 = unlimited)")
 	output := shared.BindOutputFlags(fs)
@@ -71,7 +72,7 @@ func commandWithClient(client *http.Client, endpoint string) *ffcli.Command {
 		LongHelp: `Check Apple's public Developer System Status feed without authentication.
 
 Use --service to match one or more service-name substrings. Watch mode emits
-the initial snapshot, then emits again only when the selected status changes.
+the initial snapshot, then emits again only when the selected report changes.
 
 Examples:
   asc system-status
@@ -108,10 +109,20 @@ Examples:
 				return shared.UsageError(err.Error())
 			}
 
-			filters := shared.SplitCSV(services.String())
-			if strings.TrimSpace(services.String()) != "" && len(filters) == 0 {
-				return shared.UsageError("--service must contain at least one non-empty service name")
+			serviceFilterSet := false
+			fs.Visit(func(current *flag.Flag) {
+				if current.Name == "service" {
+					serviceFilterSet = true
+				}
+			})
+			if serviceFilterSet {
+				for _, service := range strings.Split(services.String(), ",") {
+					if strings.TrimSpace(service) == "" {
+						return shared.UsageError("--service must not contain empty service names")
+					}
+				}
 			}
+			filters := shared.SplitCSV(services.String())
 
 			if *watch {
 				return watchDeveloperSystemStatus(ctx, client, endpoint, filters, *issuesOnly, *output.Output, *output.Pretty, *pollInterval, *maxPolls)
@@ -333,6 +344,7 @@ func summarizeDeveloperSystemStatus(services []asc.DeveloperSystemStatusService,
 
 func watchDeveloperSystemStatus(ctx context.Context, client *http.Client, endpoint string, filters []string, issuesOnly bool, output string, pretty bool, pollInterval time.Duration, maxPolls int) error {
 	previous := ""
+	consecutiveFailures := 0
 	for poll := 1; maxPolls == 0 || poll <= maxPolls; poll++ {
 		requestCtx, cancel := shared.ContextWithTimeout(ctx)
 		report, err := fetchDeveloperSystemStatus(requestCtx, client, endpoint)
@@ -341,8 +353,20 @@ func watchDeveloperSystemStatus(ctx context.Context, client *http.Client, endpoi
 			if contextDone(ctx) {
 				return nil
 			}
-			return fmt.Errorf("system-status: %w", err)
+			consecutiveFailures++
+			if consecutiveFailures >= maxWatchFailures || (maxPolls > 0 && poll >= maxPolls) {
+				return fmt.Errorf("system-status: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "Warning: system-status poll %d failed (%v); retrying in %s\n", poll, err, pollInterval)
+			if err := waitForPoll(ctx, pollInterval); err != nil {
+				if contextDone(ctx) {
+					return nil
+				}
+				return err
+			}
+			continue
 		}
+		consecutiveFailures = 0
 		report, err = selectDeveloperSystemStatus(report, filters, issuesOnly)
 		if err != nil {
 			return fmt.Errorf("system-status: %w", err)
@@ -352,8 +376,8 @@ func watchDeveloperSystemStatus(ctx context.Context, client *http.Client, endpoi
 		if err != nil {
 			return fmt.Errorf("system-status: encode watch snapshot: %w", err)
 		}
-		if poll == 1 || string(snapshot) != previous {
-			if err := printWatchSnapshot(report, output, pretty, poll > 1); err != nil {
+		if string(snapshot) != previous {
+			if err := printWatchSnapshot(report, output, pretty, previous != ""); err != nil {
 				return err
 			}
 			previous = string(snapshot)
@@ -377,20 +401,7 @@ func printWatchSnapshot(report *asc.DeveloperSystemStatusReport, output string, 
 		format = shared.DefaultOutputFormat()
 	}
 	if format == "json" {
-		var (
-			data []byte
-			err  error
-		)
-		if pretty {
-			data, err = json.MarshalIndent(report, "", "  ")
-		} else {
-			data, err = json.Marshal(report)
-		}
-		if err != nil {
-			return fmt.Errorf("system-status: encode watch snapshot: %w", err)
-		}
-		_, err = fmt.Fprintln(os.Stdout, string(data))
-		return err
+		return shared.PrintOutput(report, format, pretty)
 	}
 	if separator {
 		if format == "markdown" || format == "md" {
