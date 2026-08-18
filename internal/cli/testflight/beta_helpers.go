@@ -12,16 +12,43 @@ import (
 var errBetaTesterNotFound = errors.New("beta tester not found")
 
 func resolveBetaGroupID(ctx context.Context, client *asc.Client, appID, group string) (string, error) {
-	group = strings.TrimSpace(group)
-	if group == "" {
-		return "", fmt.Errorf("beta group name is required")
+	ids, err := resolveBetaGroupIDs(ctx, client, appID, []string{group})
+	if err != nil {
+		return "", err
+	}
+	return ids[0], nil
+}
+
+func resolveBetaGroupIDs(ctx context.Context, client *asc.Client, appID string, groupTokens []string) ([]string, error) {
+	tokens := make([]string, 0, len(groupTokens))
+	for _, token := range groupTokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		tokens = append(tokens, token)
+	}
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("beta group name is required")
 	}
 
 	groups, err := client.GetBetaGroups(ctx, appID, asc.WithBetaGroupsLimit(200))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
+	ids := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		id, err := matchBetaGroupID(groups, token)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func matchBetaGroupID(groups *asc.BetaGroupsResponse, group string) (string, error) {
 	for _, item := range groups.Data {
 		if item.ID == group {
 			return item.ID, nil

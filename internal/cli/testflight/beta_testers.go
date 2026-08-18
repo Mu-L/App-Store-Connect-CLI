@@ -28,6 +28,7 @@ Examples:
   asc testflight beta-testers list --app "APP_ID"
   asc testflight beta-testers view --id "TESTER_ID"
   asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta"
+  asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta,iOS 27"
   asc testflight beta-testers export --app "APP_ID" --output "./testflight-testers.csv"
   asc testflight beta-testers import --app "APP_ID" --input "./testflight-testers.csv" --dry-run
   asc testflight beta-testers remove --app "APP_ID" --email "tester@example.com"
@@ -219,6 +220,28 @@ Examples:
 	}
 }
 
+// onceCSVFlag accepts a single comma-separated flag value and rejects
+// repeated flag occurrences instead of silently keeping only the last one.
+type onceCSVFlag struct {
+	flagName string
+	value    string
+	set      bool
+}
+
+func (v *onceCSVFlag) String() string { return v.value }
+
+func (v *onceCSVFlag) Set(raw string) error {
+	if v.set {
+		return fmt.Errorf(
+			"--%s specified multiple times; pass one comma-separated list, for example --%s %q",
+			v.flagName, v.flagName, v.value+","+raw,
+		)
+	}
+	v.value = raw
+	v.set = true
+	return nil
+}
+
 // BetaTestersAddCommand returns the beta testers add subcommand.
 func BetaTestersAddCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
@@ -227,17 +250,21 @@ func BetaTestersAddCommand() *ffcli.Command {
 	email := fs.String("email", "", "Tester email address")
 	firstName := fs.String("first-name", "", "Tester first name")
 	lastName := fs.String("last-name", "", "Tester last name")
-	group := fs.String("group", "", "Beta group name or ID")
+	group := &onceCSVFlag{flagName: "group"}
+	fs.Var(group, "group", "Comma-separated beta group names or IDs")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "add",
-		ShortUsage: "asc testflight beta-testers add [flags]",
+		ShortUsage: "asc testflight beta-testers add --app APP_ID --email EMAIL --group GROUP[,GROUP...]",
 		ShortHelp:  "Add a TestFlight beta tester.",
 		LongHelp: `Add a TestFlight beta tester.
 
+The tester is added to every group in the comma-separated --group list.
+
 Examples:
-  asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta"`,
+  asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta"
+  asc testflight beta-testers add --app "APP_ID" --email "tester@example.com" --group "Beta,iOS 27"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -250,7 +277,8 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --email is required")
 				return shared.MissingRequiredUsageError("--email")
 			}
-			if strings.TrimSpace(*group) == "" {
+			groupTokens := shared.SplitUniqueCSV(group.String())
+			if len(groupTokens) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --group is required")
 				return shared.MissingRequiredUsageError("--group")
 			}
@@ -263,12 +291,12 @@ Examples:
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 
-			groupID, err := resolveBetaGroupID(requestCtx, client, resolvedAppID, *group)
+			groupIDs, err := resolveBetaGroupIDs(requestCtx, client, resolvedAppID, groupTokens)
 			if err != nil {
 				return fmt.Errorf("beta-testers add: %w", err)
 			}
 
-			tester, err := client.CreateBetaTester(requestCtx, *email, *firstName, *lastName, []string{groupID})
+			tester, err := client.CreateBetaTester(requestCtx, *email, *firstName, *lastName, groupIDs)
 			if err != nil {
 				return fmt.Errorf("beta-testers add: failed to create: %w", err)
 			}
