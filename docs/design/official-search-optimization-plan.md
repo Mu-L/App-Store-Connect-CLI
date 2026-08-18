@@ -51,6 +51,7 @@ It composes these Platform API v1 operations:
 | Existing exclusions | `POST /v1/negative-keywords/query` |
 | App keyword discovery | `POST /v1/suggestions/keywords/query` |
 | App phrase discovery | `POST /v1/suggestions/phrases/query` |
+| New-campaign target CPA | `POST /v1/suggestions/target-cpas/query` |
 | Country/genre demand | `POST /v1/insights/apps/search-term-popularity/query` |
 | Paid competitive reach | `POST /v1/insights/apps/impression-share/query` |
 | Actual matched queries | `POST /v1/reports/apps/searchterms/query` |
@@ -60,18 +61,22 @@ It composes these Platform API v1 operations:
 
 List and report bodies use body pagination and fetch every page. The selected
 performance window ends yesterday. Search-term popularity uses the most recent
-complete Sunday-through-Saturday week because its time-range contract differs
-from Ads performance reports.
+published Sunday-through-Saturday week because its time-range contract differs
+from Ads performance reports. The workflow waits for Apple's Monday 07:00 UTC
+publication time before requesting the immediately preceding week.
 
 ## Report semantics
 
 The report contains one normalized row per search term. A row records source
 provenance instead of presenting unavailable fields as zero:
 
-- market popularity and genre rank come only from Search Term Popularity;
+- market popularity on Apple's 1–5 Campaign Management scale, its 1–100 scale,
+  and genre rank come from Search Term Popularity;
 - suggestion popularity is preserved separately because the suggestion
   response does not identify a source storefront;
 - impression share and share rank are paid, app-specific metrics;
+- the 1–5 popularity value carried by an Impression Share row is preserved
+  separately so overlapping official snapshots can be compared;
 - when Apple returns daily impression-share rows, the report selects the latest
   dated bucket deterministically and records that period;
 - impressions, taps, installs, and spend come from actual Search Terms reports;
@@ -98,12 +103,23 @@ Multiple actions can apply. Confidence is `proven` when installs exist,
 No proprietary difficulty, organic attribution, or app-specific popularity is
 invented.
 
+Actions that depend on proving absence are source-aware. `promote_exact` is
+suppressed when current targeting keywords are unavailable,
+`negative_candidate` is suppressed when existing negatives are unavailable,
+and `untested_candidate` is suppressed when search-term performance is
+unavailable. Partial rows remain usable, but missing evidence is never treated
+as an empty result.
+
 Apple's complete daily-budget and target-CPA recommendation objects are
-preserved in the report alongside their summary counts. The workflow does not
-reinterpret or apply them.
+preserved in the report alongside their summary counts. The app-and-country
+target-CPA suggestion for a new Maximize Conversions campaign is preserved as
+a separate raw official signal. The workflow does not reinterpret or apply any
+of them.
 
 Every Apple Ads source records `available`, `empty`, or `unavailable`. A source
 error produces a report notice and does not erase data from successful sources.
+Table and Markdown output render the source matrix and notices before the term
+plan; JSON retains the complete structured objects.
 The command fails if App Store Connect metadata cannot be resolved or if every
 Apple Ads intelligence source is unavailable. Privacy-suppressed and genuinely
 empty official responses remain successful empty sources.
@@ -144,9 +160,12 @@ RED-GREEN coverage includes:
 - one realistic joined result across suggestions, popularity, impression
   share, search-term performance, existing targeting, and metadata;
 - deterministic action precedence, provenance, missing data, zero installs,
-  saturated share, and existing keyword/negative suppression;
+  saturated share, existing keyword/negative suppression, and dependency-aware
+  suppression when absence cannot be proven;
 - Apple Ads method, path, context header, body filters, body pagination, and
-  API-error partial-result behavior;
+  API-error partial-result behavior, including schema-specific pagination;
+- Apple's Campaign Management-style 1–5 popularity, 1–100 popularity, genre
+  rank, and the app/country target-CPA suggestion;
 - JSON, table, and Markdown output;
 - artifact content, import compatibility, 100-character budgeting, and rooted
   write failures;

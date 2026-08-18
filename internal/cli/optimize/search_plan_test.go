@@ -32,6 +32,7 @@ func TestBuildSearchPlanJoinsOfficialEvidenceWithoutInventingMissingValues(t *te
 			Keywords: "focus,timer",
 		},
 		Ads: ads.SearchOptimizationData{
+			TargetCPASuggestion:            json.RawMessage(`{"suggestedTargetCPA":{"amount":"1.20","currency":"USD"}}`),
 			DailyBudgetRecommendationItems: []json.RawMessage{json.RawMessage(`{"id":"budget-1"}`)},
 			DailyBudgetRecommendations:     1,
 			Sources: []ads.SearchOptimizationSourceStatus{
@@ -39,18 +40,20 @@ func TestBuildSearchPlanJoinsOfficialEvidenceWithoutInventingMissingValues(t *te
 				{Name: "search_term_popularity", Status: "available", Count: 3},
 				{Name: "impression_share", Status: "available", Count: 2},
 				{Name: "search_term_performance", Status: "available", Count: 3},
+				{Name: "targeting_keywords", Status: "available", Count: 1},
+				{Name: "negative_keywords", Status: "empty"},
 			},
 			Suggestions: []ads.SearchSuggestion{
 				{Text: "daily habits", Popularity: intPtr(72), Kind: "keyword"},
 				{Text: "mood journal", Popularity: intPtr(69), Kind: "phrase"},
 			},
 			Popularities: []ads.SearchPopularity{
-				{Term: "habit tracker", Popularity100: intPtr(88), RankInGenre: intPtr(1)},
+				{Term: "habit tracker", Popularity100: intPtr(88), Popularity5: intPtr(5), RankInGenre: intPtr(1)},
 				{Term: "daily habits", Popularity100: intPtr(72), RankInGenre: intPtr(8)},
 				{Term: "free planner", Popularity100: intPtr(64), RankInGenre: intPtr(15)},
 			},
 			ImpressionShares: []ads.SearchImpressionShare{
-				{Term: "habit tracker", Low: floatPtr(0.07), High: floatPtr(0.07), Rank: intPtr(6)},
+				{Term: "habit tracker", Low: floatPtr(0.07), High: floatPtr(0.07), Rank: intPtr(6), Popularity5: intPtr(4)},
 				{Term: "mood journal", Low: floatPtr(0.91), High: floatPtr(1), Rank: intPtr(1)},
 			},
 			SearchTerms: []ads.SearchTermPerformance{
@@ -71,10 +74,19 @@ func TestBuildSearchPlanJoinsOfficialEvidenceWithoutInventingMissingValues(t *te
 	if len(report.Recommendations.DailyBudgets) != 1 || !strings.Contains(string(report.Recommendations.DailyBudgets[0]), "budget-1") {
 		t.Fatalf("recommendations = %+v", report.Recommendations)
 	}
+	if !strings.Contains(string(report.Recommendations.TargetCPASuggestion), `"amount":"1.20"`) {
+		t.Fatalf("target CPA suggestion = %s", report.Recommendations.TargetCPASuggestion)
+	}
 
 	habit := findSearchPlanRow(t, report.Rows, "habit tracker")
 	if habit.Popularity100 == nil || *habit.Popularity100 != 88 {
 		t.Fatalf("habit popularity = %v, want 88", habit.Popularity100)
+	}
+	if habit.Popularity5 == nil || *habit.Popularity5 != 5 {
+		t.Fatalf("habit 1-to-5 popularity = %v, want 5", habit.Popularity5)
+	}
+	if habit.ImpressionSharePopularity5 == nil || *habit.ImpressionSharePopularity5 != 4 {
+		t.Fatalf("habit impression-share popularity = %v, want 4", habit.ImpressionSharePopularity5)
 	}
 	if habit.CPA == nil || habit.CPA.Amount != "1.18" || habit.CPA.Currency != "USD" {
 		t.Fatalf("habit CPA = %+v, want USD 1.18", habit.CPA)
@@ -116,6 +128,7 @@ func TestBuildSearchPlanSuppressesExistingNegativeCandidate(t *testing.T) {
 	report := buildSearchPlan(searchPlanBuildInput{
 		Metadata: searchMetadataSnapshot{},
 		Ads: ads.SearchOptimizationData{
+			Sources:          []ads.SearchOptimizationSourceStatus{{Name: "negative_keywords", Status: "available", Count: 1}},
 			SearchTerms:      []ads.SearchTermPerformance{{Term: "free planner", CampaignID: 44, AdGroupID: 55, Taps: 20, TotalInstalls: 0}},
 			NegativeKeywords: []ads.SearchNegativeKeyword{{Text: "free planner", CampaignID: 44, AdGroupID: 55, MatchType: "EXACT"}},
 		},
@@ -126,16 +139,55 @@ func TestBuildSearchPlanSuppressesExistingNegativeCandidate(t *testing.T) {
 	}
 }
 
+func TestBuildSearchPlanDoesNotInferAbsenceFromUnavailableSources(t *testing.T) {
+	report := buildSearchPlan(searchPlanBuildInput{
+		Metadata: searchMetadataSnapshot{},
+		Ads: ads.SearchOptimizationData{
+			Sources: []ads.SearchOptimizationSourceStatus{
+				{Name: "targeting_keywords", Status: "unavailable", Error: "denied"},
+				{Name: "negative_keywords", Status: "unavailable", Error: "denied"},
+				{Name: "search_term_performance", Status: "unavailable", Error: "denied"},
+			},
+			Suggestions: []ads.SearchSuggestion{{Text: "untested term", Kind: "keyword"}},
+			SearchTerms: []ads.SearchTermPerformance{
+				{Term: "converting broad", MatchType: "BROAD", CampaignID: 44, AdGroupID: 55, Taps: 20, TotalInstalls: 3},
+				{Term: "waste term", MatchType: "BROAD", CampaignID: 44, AdGroupID: 55, Taps: 20, TotalInstalls: 0},
+			},
+		},
+	})
+
+	for _, test := range []struct {
+		term   string
+		action string
+	}{
+		{term: "converting broad", action: "promote_exact"},
+		{term: "waste term", action: "negative_candidate"},
+		{term: "untested term", action: "untested_candidate"},
+	} {
+		row := findSearchPlanRow(t, report.Rows, test.term)
+		if slices.Contains(row.Actions, test.action) {
+			t.Fatalf("%q actions = %v; unavailable source must suppress %q", test.term, row.Actions, test.action)
+		}
+	}
+}
+
 func TestBuildSearchPlanUsesLatestImpressionSharePeriod(t *testing.T) {
 	report := buildSearchPlan(searchPlanBuildInput{
 		Ads: ads.SearchOptimizationData{ImpressionShares: []ads.SearchImpressionShare{
-			{Term: "habit tracker", Day: "2026-08-17", Low: floatPtr(0.3), High: floatPtr(0.4), Rank: intPtr(3)},
-			{Term: "habit tracker", Day: "2026-08-16", Low: floatPtr(0.8), High: floatPtr(0.9), Rank: intPtr(1)},
+			{Term: "habit tracker", Day: "2026-08-17", Low: floatPtr(0.3), High: floatPtr(0.4), Rank: intPtr(3), Popularity5: intPtr(4)},
+			{Term: "habit tracker", Day: "2026-08-16", Low: floatPtr(0.8), High: floatPtr(0.9), Rank: intPtr(1), Popularity5: intPtr(5)},
 		}},
 	})
 	row := findSearchPlanRow(t, report.Rows, "habit tracker")
-	if row.ImpressionSharePeriod != "2026-08-17" || row.ImpressionShareLow == nil || *row.ImpressionShareLow != 0.3 || row.ImpressionShareRank == nil || *row.ImpressionShareRank != 3 {
+	if row.ImpressionSharePeriod != "2026-08-17" || row.ImpressionShareLow == nil || *row.ImpressionShareLow != 0.3 || row.ImpressionShareRank == nil || *row.ImpressionShareRank != 3 || row.ImpressionSharePopularity5 == nil || *row.ImpressionSharePopularity5 != 4 {
 		t.Fatalf("latest impression share = %+v", row)
+	}
+}
+
+func TestSearchPlanRowsUseImpressionSharePopularityAsOneToFiveFallback(t *testing.T) {
+	rows := searchPlanRows([]SearchPlanRow{{Term: "habit tracker", ImpressionSharePopularity5: intPtr(4)}})
+	if len(rows) != 1 || len(rows[0]) < 2 || rows[0][1] != "4" {
+		t.Fatalf("rendered rows = %#v, want impression-share popularity fallback", rows)
 	}
 }
 
@@ -237,6 +289,30 @@ func TestResolveSearchPlanWindowRejectsNonWholeOrOutOfRangeDuration(t *testing.T
 	}
 	if window.Start != "2026-07-19" || window.End != "2026-08-17" || window.PopularityStart != "2026-08-09" || window.PopularityEnd != "2026-08-15" {
 		t.Fatalf("window = %+v", window)
+	}
+}
+
+func TestResolveSearchPlanWindowWaitsForWeeklyPopularityPublication(t *testing.T) {
+	tests := []struct {
+		name      string
+		now       time.Time
+		wantStart string
+		wantEnd   string
+	}{
+		{name: "Sunday before publication", now: time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC), wantStart: "2026-08-02", wantEnd: "2026-08-08"},
+		{name: "Monday before publication", now: time.Date(2026, 8, 17, 6, 59, 0, 0, time.UTC), wantStart: "2026-08-02", wantEnd: "2026-08-08"},
+		{name: "Monday after publication", now: time.Date(2026, 8, 17, 7, 0, 0, 0, time.UTC), wantStart: "2026-08-09", wantEnd: "2026-08-15"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			window, err := resolveSearchPlanWindow("30d", test.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if window.PopularityStart != test.wantStart || window.PopularityEnd != test.wantEnd {
+				t.Fatalf("popularity window = %s through %s, want %s through %s", window.PopularityStart, window.PopularityEnd, test.wantStart, test.wantEnd)
+			}
+		})
 	}
 }
 

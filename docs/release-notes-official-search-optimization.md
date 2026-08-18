@@ -16,10 +16,11 @@ asc optimize search plan \
   --output markdown
 ```
 
-The command keeps Apple's metrics semantically separate: popularity is market
-search demand, impression share is app-specific paid reach, search-term report
-rows are actual paid outcomes, and metadata coverage comes from the selected
-App Store localization. Deterministic actions identify converting broad terms,
+The command keeps Apple's metrics semantically separate: Apple's 1–5 and
+1–100 popularity scores are market search demand, impression share is
+app-specific paid reach, search-term report rows are actual paid outcomes, and
+metadata coverage comes from the selected App Store localization. Deterministic
+actions identify converting broad terms,
 costly zero-install terms, metadata candidates, low-share opportunities, and
 already-saturated terms without inventing organic rank or proprietary
 difficulty scores.
@@ -28,7 +29,13 @@ When `--out-dir` is set, the command writes a canonical report plus review-only
 metadata, exact-keyword, and negative-keyword import files. It never applies
 those files or mutates campaigns or App Store metadata. Partial Apple Ads
 source failures remain visible in the report, while successful official data
-is preserved.
+is preserved. Actions that require proving a keyword is absent are suppressed
+when their dependency is unavailable, and table or Markdown output shows the
+source matrix and notices directly.
+
+The report also preserves Apple's app-and-country target-CPA suggestion for a
+new Maximize Conversions campaign separately from recommendations for existing
+campaigns.
 
 App Store Connect and Apple Ads credentials are independent. Run `asc auth`
 for App Store Connect and `asc ads auth login` for Apple Ads before using the

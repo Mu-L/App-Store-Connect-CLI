@@ -38,29 +38,31 @@ type SearchPlanMoney struct {
 
 // SearchPlanRow is one normalized term with explicit source provenance.
 type SearchPlanRow struct {
-	Term                  string           `json:"term"`
-	Popularity100         *int             `json:"popularity100,omitempty"`
-	PopularityInGenre     *int             `json:"popularityInGenre,omitempty"`
-	RankInGenre           *int             `json:"rankInGenre,omitempty"`
-	SuggestionPopularity  *int             `json:"suggestionPopularity,omitempty"`
-	ImpressionSharePeriod string           `json:"impressionSharePeriod,omitempty"`
-	ImpressionShareLow    *float64         `json:"impressionShareLow,omitempty"`
-	ImpressionShareHigh   *float64         `json:"impressionShareHigh,omitempty"`
-	ImpressionShareRank   *int             `json:"impressionShareRank,omitempty"`
-	Impressions           *int64           `json:"impressions,omitempty"`
-	Taps                  *int64           `json:"taps,omitempty"`
-	TapInstalls           *int64           `json:"tapInstalls,omitempty"`
-	TotalInstalls         *int64           `json:"totalInstalls,omitempty"`
-	Spend                 *SearchPlanMoney `json:"spend,omitempty"`
-	CPA                   *SearchPlanMoney `json:"cpa,omitempty"`
-	MatchedKeyword        string           `json:"matchedKeyword,omitempty"`
-	MatchType             string           `json:"matchType,omitempty"`
-	CampaignID            *int64           `json:"campaignId,omitempty"`
-	AdGroupID             *int64           `json:"adGroupId,omitempty"`
-	MetadataFields        []string         `json:"metadataFields,omitempty"`
-	Sources               []string         `json:"sources"`
-	Actions               []string         `json:"actions,omitempty"`
-	Confidence            string           `json:"confidence"`
+	Term                       string           `json:"term"`
+	Popularity5                *int             `json:"popularity5,omitempty"`
+	Popularity100              *int             `json:"popularity100,omitempty"`
+	PopularityInGenre          *int             `json:"popularityInGenre,omitempty"`
+	RankInGenre                *int             `json:"rankInGenre,omitempty"`
+	SuggestionPopularity       *int             `json:"suggestionPopularity,omitempty"`
+	ImpressionSharePeriod      string           `json:"impressionSharePeriod,omitempty"`
+	ImpressionSharePopularity5 *int             `json:"impressionSharePopularity5,omitempty"`
+	ImpressionShareLow         *float64         `json:"impressionShareLow,omitempty"`
+	ImpressionShareHigh        *float64         `json:"impressionShareHigh,omitempty"`
+	ImpressionShareRank        *int             `json:"impressionShareRank,omitempty"`
+	Impressions                *int64           `json:"impressions,omitempty"`
+	Taps                       *int64           `json:"taps,omitempty"`
+	TapInstalls                *int64           `json:"tapInstalls,omitempty"`
+	TotalInstalls              *int64           `json:"totalInstalls,omitempty"`
+	Spend                      *SearchPlanMoney `json:"spend,omitempty"`
+	CPA                        *SearchPlanMoney `json:"cpa,omitempty"`
+	MatchedKeyword             string           `json:"matchedKeyword,omitempty"`
+	MatchType                  string           `json:"matchType,omitempty"`
+	CampaignID                 *int64           `json:"campaignId,omitempty"`
+	AdGroupID                  *int64           `json:"adGroupId,omitempty"`
+	MetadataFields             []string         `json:"metadataFields,omitempty"`
+	Sources                    []string         `json:"sources"`
+	Actions                    []string         `json:"actions,omitempty"`
+	Confidence                 string           `json:"confidence"`
 }
 
 // SearchPlanSummary summarizes evidence and recommendation coverage.
@@ -77,8 +79,9 @@ type SearchPlanSummary struct {
 // SearchPlanRecommendations preserves Apple's actionable recommendation
 // payloads without converting them into client-authored advice.
 type SearchPlanRecommendations struct {
-	DailyBudgets []json.RawMessage `json:"dailyBudgets,omitempty"`
-	TargetCPAs   []json.RawMessage `json:"targetCpas,omitempty"`
+	DailyBudgets        []json.RawMessage `json:"dailyBudgets,omitempty"`
+	TargetCPAs          []json.RawMessage `json:"targetCpas,omitempty"`
+	TargetCPASuggestion json.RawMessage   `json:"targetCpaSuggestion,omitempty"`
 }
 
 // SearchPlanReport is the stable JSON contract emitted by the workflow.
@@ -131,7 +134,18 @@ type searchPlanAccumulator struct {
 	spendMixedCurrency  bool
 }
 
+type searchPlanEvidence struct {
+	targetingKeywordsComplete bool
+	negativeKeywordsComplete  bool
+	searchTermsComplete       bool
+}
+
 func buildSearchPlan(input searchPlanBuildInput) SearchPlanReport {
+	evidence := searchPlanEvidence{
+		targetingKeywordsComplete: searchPlanSourceComplete(input.Ads.Sources, "targeting_keywords"),
+		negativeKeywordsComplete:  searchPlanSourceComplete(input.Ads.Sources, "negative_keywords"),
+		searchTermsComplete:       searchPlanSourceComplete(input.Ads.Sources, "search_term_performance"),
+	}
 	terms := make(map[string]*searchPlanAccumulator)
 	get := func(term string) *searchPlanAccumulator {
 		key := normalizeSearchTerm(term)
@@ -163,6 +177,7 @@ func buildSearchPlan(input searchPlanBuildInput) SearchPlanReport {
 			continue
 		}
 		entry.row.Sources = appendUnique(entry.row.Sources, "search_term_popularity")
+		entry.row.Popularity5 = copyIntPointer(popularity.Popularity5)
 		entry.row.Popularity100 = copyIntPointer(popularity.Popularity100)
 		entry.row.PopularityInGenre = copyIntPointer(popularity.PopularityInGenre)
 		entry.row.RankInGenre = copyIntPointer(popularity.RankInGenre)
@@ -182,6 +197,7 @@ func buildSearchPlan(input searchPlanBuildInput) SearchPlanReport {
 			entry.row.ImpressionShareLow = copyFloatPointer(share.Low)
 			entry.row.ImpressionShareHigh = copyFloatPointer(share.High)
 			entry.row.ImpressionShareRank = copyIntPointer(share.Rank)
+			entry.row.ImpressionSharePopularity5 = copyIntPointer(share.Popularity5)
 		}
 	}
 
@@ -245,7 +261,7 @@ func buildSearchPlan(input searchPlanBuildInput) SearchPlanReport {
 				entry.row.CPA = &SearchPlanMoney{Amount: formatMoney(entry.spendValue / float64(*entry.row.TotalInstalls)), Currency: entry.spendCurrency}
 			}
 		}
-		classifySearchPlanRow(entry)
+		classifySearchPlanRow(entry, evidence)
 		sort.Strings(entry.row.Sources)
 		rows = append(rows, entry.row)
 	}
@@ -267,8 +283,9 @@ func buildSearchPlan(input searchPlanBuildInput) SearchPlanReport {
 		Eligibility:   append([]ads.SearchEligibility(nil), input.Ads.Eligibilities...),
 		Campaigns:     append([]ads.SearchCampaign(nil), input.Ads.Campaigns...),
 		Recommendations: SearchPlanRecommendations{
-			DailyBudgets: append([]json.RawMessage(nil), input.Ads.DailyBudgetRecommendationItems...),
-			TargetCPAs:   append([]json.RawMessage(nil), input.Ads.TargetCPARecommendationItems...),
+			DailyBudgets:        append([]json.RawMessage(nil), input.Ads.DailyBudgetRecommendationItems...),
+			TargetCPAs:          append([]json.RawMessage(nil), input.Ads.TargetCPARecommendationItems...),
+			TargetCPASuggestion: append(json.RawMessage(nil), input.Ads.TargetCPASuggestion...),
 		},
 		Rows: rows,
 	}
@@ -292,10 +309,14 @@ func resolveSearchPlanWindow(value string, now time.Time) (searchPlanWindow, err
 	end := today.AddDate(0, 0, -1)
 	start := end.AddDate(0, 0, -(days - 1))
 
-	// Popularity snapshots require a complete Sunday-through-Saturday week.
+	// Popularity snapshots publish at 07:00 UTC on the Monday after each week.
 	popularityEnd := end
 	for popularityEnd.Weekday() != time.Saturday {
 		popularityEnd = popularityEnd.AddDate(0, 0, -1)
+	}
+	publicationTime := popularityEnd.AddDate(0, 0, 2).Add(7 * time.Hour)
+	if utcNow.Before(publicationTime) {
+		popularityEnd = popularityEnd.AddDate(0, 0, -7)
 	}
 	popularityStart := popularityEnd.AddDate(0, 0, -6)
 
@@ -307,16 +328,16 @@ func resolveSearchPlanWindow(value string, now time.Time) (searchPlanWindow, err
 	}, nil
 }
 
-func classifySearchPlanRow(entry *searchPlanAccumulator) {
+func classifySearchPlanRow(entry *searchPlanAccumulator, evidence searchPlanEvidence) {
 	row := &entry.row
 	installs := int64(0)
 	if row.TotalInstalls != nil {
 		installs = *row.TotalInstalls
 	}
-	if entry.hasPerformance && installs > 0 && strings.EqualFold(row.MatchType, "BROAD") && !entry.hasExistingExact {
+	if evidence.targetingKeywordsComplete && entry.hasPerformance && installs > 0 && strings.EqualFold(row.MatchType, "BROAD") && !entry.hasExistingExact {
 		row.Actions = append(row.Actions, "promote_exact")
 	}
-	if entry.hasPerformance && installs == 0 && row.Taps != nil && *row.Taps >= 10 && !entry.hasExistingNegative {
+	if evidence.negativeKeywordsComplete && entry.hasPerformance && installs == 0 && row.Taps != nil && *row.Taps >= 10 && !entry.hasExistingNegative {
 		row.Actions = append(row.Actions, "negative_candidate")
 	}
 	if len(row.MetadataFields) == 0 && (installs > 0 || entry.hasSuggestion) {
@@ -328,7 +349,7 @@ func classifySearchPlanRow(entry *searchPlanAccumulator) {
 	if row.ImpressionShareLow != nil && row.ImpressionShareHigh != nil && *row.ImpressionShareLow >= 0.91 && *row.ImpressionShareHigh >= 1 {
 		row.Actions = append(row.Actions, "saturated")
 	}
-	if entry.hasSuggestion && !entry.hasPerformance {
+	if evidence.searchTermsComplete && entry.hasSuggestion && !entry.hasPerformance {
 		row.Actions = append(row.Actions, "untested_candidate")
 	}
 	switch {
@@ -339,6 +360,15 @@ func classifySearchPlanRow(entry *searchPlanAccumulator) {
 	default:
 		row.Confidence = "suggested"
 	}
+}
+
+func searchPlanSourceComplete(sources []ads.SearchOptimizationSourceStatus, name string) bool {
+	for _, source := range sources {
+		if source.Name == name {
+			return source.Status == "available" || source.Status == "empty"
+		}
+	}
+	return false
 }
 
 func summarizeSearchPlan(rows []SearchPlanRow, sources []ads.SearchOptimizationSourceStatus, data ads.SearchOptimizationData) SearchPlanSummary {

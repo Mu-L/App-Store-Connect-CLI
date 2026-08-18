@@ -3,6 +3,7 @@ package ads
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,12 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/appleads"
 )
+
+type searchOptimizationRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn searchOptimizationRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
 
 func TestFetchSearchOptimizationDataUsesOfficialEndpointsAndPreservesPartialFailures(t *testing.T) {
 	var mu sync.Mutex
@@ -29,26 +36,55 @@ func TestFetchSearchOptimizationDataUsesOfficialEndpointsAndPreservesPartialFail
 		mu.Lock()
 		requests[r.URL.Path]++
 		mu.Unlock()
+		assertOptimizationPaginationShape(t, r.URL.Path, body)
 
 		switch r.URL.Path {
 		case "/v1/campaigns/query":
+			assertFilter(t, body, "promotedObjectType", "APPSTORE_APP")
 			assertFilter(t, body, "promotedObjectId", "123456789")
 			writeJSON(t, w, `{"result":[{"id":44,"name":"US Search","status":"ENABLED","displayStatus":"RUNNING","promotedObjectId":"123456789","targeting":{"countryOrRegion":{"include":["US"]}}}],"pagination":{"offset":0,"pageSize":1000,"totalCount":1}}`)
 		case "/v1/suggestions/keywords/query":
+			assertFilter(t, body, "promotedObjectId", "123456789")
+			assertFilter(t, body, "promotedObjectType", "APPSTORE_APP")
 			assertFilter(t, body, "countriesOrRegions", "US")
 			writeJSON(t, w, `{"result":[{"text":"habit tracker","popularity":80}],"pagination":{"offset":0,"pageSize":1000,"totalCount":1}}`)
 		case "/v1/suggestions/phrases/query":
+			assertFilter(t, body, "countriesOrRegions", "US")
+			assertFilter(t, body, "queryType", "SUGGESTION")
 			http.Error(w, `{"errors":[{"message":"request unavailable"}]}`, http.StatusBadRequest)
+		case "/v1/suggestions/target-cpas/query":
+			assertFilter(t, body, "promotedObjectId", "123456789")
+			assertFilter(t, body, "promotedObjectType", "APPSTORE_APP")
+			assertFilter(t, body, "countryOrRegion", "US")
+			writeJSON(t, w, `{"result":{"promotedObjectId":"123456789","suggestedTargetCPA":{"amount":"1.20","currency":"USD"},"countryOrRegion":["US"],"appCategory":"Productivity"}}`)
 		case "/v1/insights/apps/search-term-popularity/query":
+			assertFilter(t, body, "countryOrRegion", "US")
 			assertFilter(t, body, "genre", "PRODUCTIVITY_UTILITIES")
-			writeJSON(t, w, `{"result":{"rows":[{"week":"2026-08-09","countryOrRegion":"US","genre":"PRODUCTIVITY_UTILITIES","searchTerm":"habit tracker","rankInGenre":2,"searchPopularity1to100":88}]},"pagination":{"offset":0,"pageSize":5000,"totalCount":1}}`)
+			assertNestedValue(t, body, "timeRange", "start", "2026-08-09")
+			assertNestedValue(t, body, "timeRange", "end", "2026-08-15")
+			assertNestedValue(t, body, "timeRange", "timeZone", "UTC")
+			assertNestedValue(t, body, "timeRange", "granularity", "WEEKLY_SUN_SAT")
+			assertSorting(t, body, "rankInGenre", "sortOrder", "ASC")
+			writeJSON(t, w, `{"result":{"rows":[{"week":"2026-08-09","countryOrRegion":"US","genre":"PRODUCTIVITY_UTILITIES","searchTerm":"habit tracker","rankInGenre":2,"searchPopularity1to100":88,"searchPopularity1to5":5}]},"pagination":{"offset":0,"pageSize":5000,"totalCount":1}}`)
 		case "/v1/insights/apps/impression-share/query":
+			assertFilter(t, body, "promotedObjectId", "123456789")
+			assertFilter(t, body, "countryOrRegion", "US")
+			assertNestedValue(t, body, "options", "impressionShareReportType", "ALL_SLOTS")
+			assertNestedValue(t, body, "timeRange", "timeZone", "UTC")
+			assertNestedValue(t, body, "timeRange", "granularity", "DAILY")
 			writeJSON(t, w, `{"result":{"rows":[{"day":"2026-08-17","promotedObjectId":"123456789","countryOrRegion":"US","searchTerm":"habit tracker","lowImpressionShare":0.07,"highImpressionShare":0.07,"rank":6,"searchPopularity1to5":4}]},"pagination":{"offset":0,"pageSize":5000,"totalCount":1}}`)
 		case "/v1/eligibilities/apps/query":
+			assertFilter(t, body, "adamId", float64(123456789))
 			writeJSON(t, w, `{"result":[{"adamId":123456789,"supplyPlacement":"APPSTORE_SEARCH_RESULTS","supplySource":"APPSTORE","state":"ELIGIBLE","countryOrRegion":"US","deviceClass":"IPHONE"}],"pagination":{"offset":0,"pageSize":1000,"totalCount":1}}`)
 		case "/v1/recommendations/daily-budgets/query":
+			assertFilter(t, body, "promotedObjectId", "123456789")
+			assertFilter(t, body, "promotedObjectType", "APPSTORE_APP")
+			assertFilter(t, body, "state", "AVAILABLE")
 			writeJSON(t, w, `{"result":[{"id":"budget-1","campaignId":44,"state":"AVAILABLE"}],"pagination":{"offset":0,"pageSize":1000,"totalCount":1}}`)
 		case "/v1/recommendations/target-cpas/query":
+			assertFilter(t, body, "promotedObjectId", "123456789")
+			assertFilter(t, body, "promotedObjectType", "APPSTORE_APP")
+			assertFilter(t, body, "state", "AVAILABLE")
 			writeJSON(t, w, `{"result":[],"pagination":{"offset":0,"pageSize":1000,"totalCount":0}}`)
 		case "/v1/keywords/query":
 			assertFilter(t, body, "campaignId", float64(44))
@@ -57,6 +93,12 @@ func TestFetchSearchOptimizationDataUsesOfficialEndpointsAndPreservesPartialFail
 			writeJSON(t, w, `{"result":[],"pagination":{"offset":0,"pageSize":1000,"totalCount":0}}`)
 		case "/v1/reports/apps/searchterms/query":
 			assertFilter(t, body, "campaignId", float64(44))
+			assertNestedValue(t, body, "timeRange", "start", "2026-07-19")
+			assertNestedValue(t, body, "timeRange", "end", "2026-08-17")
+			assertNestedValue(t, body, "timeRange", "timeZone", "ORTZ")
+			assertNestedValue(t, body, "timeRange", "granularity", "DAILY")
+			assertArrayContains(t, body, "fields", "totalInstalls")
+			assertArrayContains(t, body, "groupBy", "countryOrRegion")
 			writeJSON(t, w, `{"result":{"rows":[{"metadata":{"searchTermText":"habit tracker","keyword":{"id":88,"text":"habits","matchType":"BROAD"},"campaignId":44,"adGroupId":55,"countryOrRegion":"US"},"totalMetrics":{"localSpend":{"amount":"36.58","currency":"USD"},"impressions":1000,"taps":70,"tapInstalls":28,"totalInstalls":31}}]},"pagination":{"offset":0,"pageSize":5000,"totalCount":1}}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
@@ -88,7 +130,7 @@ func TestFetchSearchOptimizationDataUsesOfficialEndpointsAndPreservesPartialFail
 	if len(data.Suggestions) != 1 || data.Suggestions[0].Text != "habit tracker" {
 		t.Fatalf("suggestions = %+v", data.Suggestions)
 	}
-	if len(data.Popularities) != 1 || data.Popularities[0].Term != "habit tracker" {
+	if len(data.Popularities) != 1 || data.Popularities[0].Term != "habit tracker" || data.Popularities[0].Popularity5 == nil || *data.Popularities[0].Popularity5 != 5 {
 		t.Fatalf("popularities = %+v", data.Popularities)
 	}
 	if len(data.SearchTerms) != 1 || data.SearchTerms[0].TotalInstalls != 31 || data.SearchTerms[0].AdGroupID != 55 {
@@ -96,6 +138,9 @@ func TestFetchSearchOptimizationDataUsesOfficialEndpointsAndPreservesPartialFail
 	}
 	if data.DailyBudgetRecommendations != 1 || data.TargetCPARecommendations != 0 {
 		t.Fatalf("recommendations = (%d, %d)", data.DailyBudgetRecommendations, data.TargetCPARecommendations)
+	}
+	if len(data.TargetCPASuggestion) == 0 || !strings.Contains(string(data.TargetCPASuggestion), `"amount":"1.20"`) {
+		t.Fatalf("target CPA suggestion = %s", data.TargetCPASuggestion)
 	}
 	if len(data.DailyBudgetRecommendationItems) != 1 || !strings.Contains(string(data.DailyBudgetRecommendationItems[0]), "budget-1") {
 		t.Fatalf("daily budget recommendation items = %s", data.DailyBudgetRecommendationItems)
@@ -113,15 +158,17 @@ func TestQueryOptimizationListPaginatesRequestBody(t *testing.T) {
 	var offsets []int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Pagination struct {
-				Offset int `json:"offset"`
-			} `json:"pagination"`
+			Pagination map[string]any `json:"pagination"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		offsets = append(offsets, body.Pagination.Offset)
-		if body.Pagination.Offset == 0 {
+		if _, present := body.Pagination["fetchTotalCount"]; present {
+			t.Fatalf("recommendation-style pagination contains unsupported fetchTotalCount: %#v", body.Pagination)
+		}
+		offset, _ := body.Pagination["offset"].(float64)
+		offsets = append(offsets, int(offset))
+		if offset == 0 {
 			writeJSON(t, w, `{"result":[{"text":"one","popularity":1}],"pagination":{"offset":0,"pageSize":1,"totalCount":2}}`)
 			return
 		}
@@ -166,6 +213,35 @@ func TestFetchOptimizationPhraseSuggestionsReadsPhraseField(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Text != "best habit tracker" || items[0].Kind != "phrase" || items[0].Popularity == nil || *items[0].Popularity != 82 {
 		t.Fatalf("phrase suggestions = %+v", items)
+	}
+}
+
+func TestExecuteOptimizationQueryAppliesRequestTimeout(t *testing.T) {
+	deadlinePresent := false
+	client, err := appleads.NewClient(
+		appleads.Credentials{AccessToken: "token", AdAccountID: "account-1"},
+		appleads.WithHTTPClient(&http.Client{Transport: searchOptimizationRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			_, deadlinePresent = request.Context().Deadline()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"result":[],"pagination":{"totalCount":0}}`)),
+			}, nil
+		})}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, ok := appleads.PlatformEndpointByCommandPath("suggestions", "keywords", "find")
+	if !ok {
+		t.Fatal("missing endpoint spec")
+	}
+	if _, err := executeOptimizationQuery(context.Background(), client, spec, map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if !deadlinePresent {
+		t.Fatal("optimization request context has no deadline")
 	}
 }
 
@@ -217,6 +293,65 @@ func assertFilter(t *testing.T, body map[string]any, field string, want any) {
 		}
 	}
 	t.Fatalf("body filters do not contain %s=%v: %#v", field, want, body)
+}
+
+func assertOptimizationPaginationShape(t *testing.T, path string, body map[string]any) {
+	t.Helper()
+	if path == "/v1/suggestions/target-cpas/query" {
+		if _, present := body["pagination"]; present {
+			t.Fatalf("%s body has unnecessary pagination: %#v", path, body)
+		}
+		return
+	}
+	pagination, ok := body["pagination"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s body has no pagination object: %#v", path, body)
+	}
+	if _, ok := pagination["offset"]; !ok {
+		t.Fatalf("%s pagination has no offset: %#v", path, pagination)
+	}
+	if _, ok := pagination["pageSize"]; !ok {
+		t.Fatalf("%s pagination has no pageSize: %#v", path, pagination)
+	}
+	_, hasFetchTotalCount := pagination["fetchTotalCount"]
+	expectsFetchTotalCount := path == "/v1/campaigns/query" || path == "/v1/keywords/query" || path == "/v1/negative-keywords/query"
+	if hasFetchTotalCount != expectsFetchTotalCount {
+		t.Fatalf("%s pagination fetchTotalCount present = %t, want %t: %#v", path, hasFetchTotalCount, expectsFetchTotalCount, pagination)
+	}
+}
+
+func assertNestedValue(t *testing.T, body map[string]any, object, field string, want any) {
+	t.Helper()
+	nested, ok := body[object].(map[string]any)
+	if !ok || nested[field] != want {
+		t.Fatalf("%s.%s = %#v, want %#v in body %#v", object, field, nested[field], want, body)
+	}
+}
+
+func assertSorting(t *testing.T, body map[string]any, field, orderKey, order string) {
+	t.Helper()
+	sorting, ok := body["sorting"].([]any)
+	if !ok || len(sorting) != 1 {
+		t.Fatalf("sorting = %#v, want one entry", body["sorting"])
+	}
+	entry, ok := sorting[0].(map[string]any)
+	if !ok || entry["field"] != field || entry[orderKey] != order {
+		t.Fatalf("sorting = %#v, want %s %s=%s", sorting, field, orderKey, order)
+	}
+}
+
+func assertArrayContains(t *testing.T, body map[string]any, field, want string) {
+	t.Helper()
+	items, ok := body[field].([]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want array containing %q", field, body[field], want)
+	}
+	for _, item := range items {
+		if item == want {
+			return
+		}
+	}
+	t.Fatalf("%s = %#v, want array containing %q", field, items, want)
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, payload string) {

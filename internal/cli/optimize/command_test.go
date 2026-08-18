@@ -105,8 +105,13 @@ func TestSearchPlanCommandRendersSupportedOutputsAndWritesArtifacts(t *testing.T
 			t.Fatalf("Ads inputs = (%q, %q, %+v)", profile, account, request)
 		}
 		return ads.SearchOptimizationData{
-			Sources:     []ads.SearchOptimizationSourceStatus{{Name: "keyword_suggestions", Status: "available", Count: 1}},
-			Suggestions: []ads.SearchSuggestion{{Text: "daily habits", Popularity: intPtr(72), Kind: "keyword"}},
+			Sources: []ads.SearchOptimizationSourceStatus{
+				{Name: "keyword_suggestions", Status: "available", Count: 1},
+				{Name: "phrase_suggestions", Status: "unavailable", Error: "request unavailable"},
+				{Name: "search_term_performance", Status: "empty"},
+			},
+			Suggestions:  []ads.SearchSuggestion{{Text: "daily habits", Popularity: intPtr(72), Kind: "keyword"}},
+			Popularities: []ads.SearchPopularity{{Term: "daily habits", Popularity100: intPtr(72), Popularity5: intPtr(4), RankInGenre: intPtr(8)}},
 		}, nil
 	}
 
@@ -123,9 +128,17 @@ func TestSearchPlanCommandRendersSupportedOutputsAndWritesArtifacts(t *testing.T
 			stdout := captureSearchPlanStdout(t, func() error {
 				return SearchPlanCommand().ParseAndRun(context.Background(), args)
 			})
-			for _, want := range []string{"daily habits", "metadata_candidate", "untested_candidate"} {
+			for _, want := range []string{"daily habits", "metadata_candidate", "untested_candidate", "phrase_suggestions", "unavailable", "request unavailable"} {
 				if !strings.Contains(stdout, want) {
 					t.Fatalf("%s output missing %q:\n%s", format, want, stdout)
+				}
+			}
+			if format != "json" {
+				normalizedOutput := strings.ToLower(stdout)
+				for _, want := range []string{"Popularity 1-5", "Popularity 1-100", "Genre Rank", "Sources", "Notices"} {
+					if !strings.Contains(normalizedOutput, strings.ToLower(want)) {
+						t.Fatalf("%s output missing report section %q:\n%s", format, want, stdout)
+					}
 				}
 			}
 			if format == "json" {

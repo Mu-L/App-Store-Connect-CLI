@@ -1,6 +1,7 @@
 package ads
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/appleads"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 // SearchOptimizationRequest identifies the official Apple Ads data window and
@@ -131,6 +133,7 @@ type SearchOptimizationData struct {
 	Eligibilities                  []SearchEligibility              `json:"eligibilities,omitempty"`
 	DailyBudgetRecommendationItems []json.RawMessage                `json:"dailyBudgetRecommendationItems,omitempty"`
 	TargetCPARecommendationItems   []json.RawMessage                `json:"targetCpaRecommendationItems,omitempty"`
+	TargetCPASuggestion            json.RawMessage                  `json:"targetCpaSuggestion,omitempty"`
 	DailyBudgetRecommendations     int                              `json:"dailyBudgetRecommendations"`
 	TargetCPARecommendations       int                              `json:"targetCpaRecommendations"`
 }
@@ -189,6 +192,10 @@ func fetchSearchOptimizationData(ctx context.Context, client *appleads.Client, r
 	phraseSuggestions, phraseErr := fetchOptimizationSuggestions(ctx, client, request, true)
 	data.Suggestions = append(data.Suggestions, phraseSuggestions...)
 	record("phrase_suggestions", len(phraseSuggestions), phraseErr, true)
+
+	var targetCPASuggestionErr error
+	data.TargetCPASuggestion, targetCPASuggestionErr = fetchOptimizationTargetCPASuggestion(ctx, client, request)
+	record("target_cpa_suggestion", optimizationRawObjectCount(data.TargetCPASuggestion), targetCPASuggestionErr, true)
 
 	data.Popularities, err = fetchOptimizationPopularity(ctx, client, request)
 	record("search_term_popularity", len(data.Popularities), err, true)
@@ -385,6 +392,29 @@ func fetchOptimizationRecommendations(ctx context.Context, client *appleads.Clie
 	return items, err
 }
 
+func fetchOptimizationTargetCPASuggestion(ctx context.Context, client *appleads.Client, request SearchOptimizationRequest) (json.RawMessage, error) {
+	spec := mustOptimizationEndpoint("suggestions", "target-cpas", "find")
+	body := map[string]any{"filters": []any{
+		optimizationFilter("promotedObjectId", "EQUALS", []string{strings.TrimSpace(request.AppID)}),
+		optimizationFilter("promotedObjectType", "EQUALS", []string{"APPSTORE_APP"}),
+		optimizationFilter("countryOrRegion", "IN", []string{strings.ToUpper(strings.TrimSpace(request.Country))}),
+	}}
+	raw, err := executeOptimizationQuery(ctx, client, spec, body)
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, fmt.Errorf("decode %s response: %w", strings.Join(spec.CommandPath, " "), err)
+	}
+	if optimizationRawObjectCount(envelope.Result) == 0 {
+		return nil, nil
+	}
+	return envelope.Result, nil
+}
+
 func fetchOptimizationKeywords(ctx context.Context, client *appleads.Client, campaignID int64) ([]SearchTargetingKeyword, error) {
 	spec := mustOptimizationEndpoint("targeting-keywords", "find")
 	body := map[string]any{"filters": []any{optimizationFilter("campaignId", "EQUALS", campaignID)}}
@@ -454,7 +484,7 @@ func queryOptimizationList[T any](ctx context.Context, client *appleads.Client, 
 	offset := 0
 	for {
 		pageBody := cloneOptimizationBody(body)
-		pageBody["pagination"] = map[string]any{"offset": offset, "pageSize": pageSize, "fetchTotalCount": true}
+		pageBody["pagination"] = optimizationRequestPagination(spec, offset, pageSize)
 		raw, err := executeOptimizationQuery(ctx, client, spec, pageBody)
 		if err != nil {
 			return items, err
@@ -479,7 +509,7 @@ func queryOptimizationRows[T any](ctx context.Context, client *appleads.Client, 
 	offset := 0
 	for {
 		pageBody := cloneOptimizationBody(body)
-		pageBody["pagination"] = map[string]any{"offset": offset, "pageSize": pageSize, "fetchTotalCount": true}
+		pageBody["pagination"] = optimizationRequestPagination(spec, offset, pageSize)
 		raw, err := executeOptimizationQuery(ctx, client, spec, pageBody)
 		if err != nil {
 			return items, err
@@ -506,7 +536,9 @@ func executeOptimizationQuery(ctx context.Context, client *appleads.Client, spec
 	if err != nil {
 		return nil, err
 	}
-	return client.Do(ctx, spec, nil, nil, payload)
+	requestCtx, cancel := shared.ContextWithTimeout(ctx)
+	defer cancel()
+	return client.Do(requestCtx, spec, nil, nil, payload)
 }
 
 func optimizationPageComplete(offset, pageSize, count, total int) bool {
@@ -517,6 +549,22 @@ func optimizationPageComplete(offset, pageSize, count, total int) bool {
 		return offset+count >= total
 	}
 	return count < pageSize
+}
+
+func optimizationRequestPagination(spec appleads.EndpointSpec, offset, pageSize int) map[string]any {
+	pagination := map[string]any{"offset": offset, "pageSize": pageSize}
+	if spec.BodyType == "QueryRequest" {
+		pagination["fetchTotalCount"] = true
+	}
+	return pagination
+}
+
+func optimizationRawObjectCount(raw json.RawMessage) int {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || bytes.Equal(trimmed, []byte("{}")) {
+		return 0
+	}
+	return 1
 }
 
 func cloneOptimizationBody(body map[string]any) map[string]any {
