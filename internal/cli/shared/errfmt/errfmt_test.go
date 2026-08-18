@@ -7,8 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/appleads"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/storekit"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
 func TestClassify_MissingAuth(t *testing.T) {
@@ -30,7 +33,7 @@ func TestClassify_Forbidden(t *testing.T) {
 
 func TestClassify_Timeout(t *testing.T) {
 	ce := Classify(context.DeadlineExceeded)
-	if ce.Hint != "Increase the request timeout (e.g. set `ASC_TIMEOUT=90s`). Check Apple's service health with `asc system-status --service \"App Store Connect\"`." {
+	if ce.Hint != "Increase the request timeout (e.g. set `ASC_TIMEOUT=90s`)." {
 		t.Fatalf("expected request timeout hint, got %q", ce.Hint)
 	}
 }
@@ -39,7 +42,7 @@ func TestClassify_TimeoutUploadOperation(t *testing.T) {
 	err := fmt.Errorf("builds upload: upload failed: upload operation 3: %w", context.DeadlineExceeded)
 
 	ce := Classify(err)
-	if ce.Hint != "Increase the upload timeout (e.g. set `ASC_UPLOAD_TIMEOUT=600s`). Check Apple's service health with `asc system-status --service \"App Store Connect\"`." {
+	if ce.Hint != "Increase the upload timeout (e.g. set `ASC_UPLOAD_TIMEOUT=600s`)." {
 		t.Fatalf("expected upload timeout hint, got %q", ce.Hint)
 	}
 }
@@ -48,17 +51,36 @@ func TestClassify_TimeoutBuildsUploadsListKeepsRequestHint(t *testing.T) {
 	err := fmt.Errorf("builds uploads list: failed to fetch: %w", context.DeadlineExceeded)
 
 	ce := Classify(err)
-	if ce.Hint != "Increase the request timeout (e.g. set `ASC_TIMEOUT=90s`). Check Apple's service health with `asc system-status --service \"App Store Connect\"`." {
+	if ce.Hint != "Increase the request timeout (e.g. set `ASC_TIMEOUT=90s`)." {
 		t.Fatalf("expected request timeout hint, got %q", ce.Hint)
 	}
 }
 
 func TestClassify_ServerErrorSuggestsSystemStatus(t *testing.T) {
-	err := &asc.APIError{Code: "INTERNAL_ERROR", Title: "Unavailable", StatusCode: 503}
+	err := fmt.Errorf("apps list: %w", &asc.APIError{Code: "INTERNAL_ERROR", Title: "Unavailable", StatusCode: 503})
 
 	ce := Classify(err)
 	if ce.Hint != "Check Apple's service health with `asc system-status --service \"App Store Connect\"`." {
 		t.Fatalf("expected system-status hint, got %q", ce.Hint)
+	}
+}
+
+func TestClassify_NonASCServerErrorsDoNotSuggestSystemStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "Apple Ads", err: &appleads.APIError{StatusCode: 503}},
+		{name: "StoreKit", err: &storekit.APIError{StatusCode: 503}},
+		{name: "web session", err: &web.APIError{Status: 503}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if hint := Classify(test.err).Hint; hint != "" {
+				t.Fatalf("unexpected cross-service hint: %q", hint)
+			}
+		})
 	}
 }
 

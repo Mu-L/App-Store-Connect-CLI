@@ -40,12 +40,12 @@ func Classify(err error) ClassifiedError {
 		}
 		return ClassifiedError{
 			Message: err.Error(),
-			Hint:    hint + " " + systemStatusHint,
+			Hint:    hint,
 		}
 	}
 
-	var statusErr interface{ HTTPStatusCode() int }
-	if errors.As(err, &statusErr) && statusErr.HTTPStatusCode() >= 500 {
+	var apiErr *asc.APIError
+	if errors.As(err, &apiErr) && apiErr.HTTPStatusCode() >= 500 {
 		return ClassifiedError{
 			Message: err.Error(),
 			Hint:    systemStatusHint,

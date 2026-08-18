@@ -73,8 +73,9 @@ each snapshot remains one complete JSON record.
 This is an additive experimental command with no authentication requirement
 and no changes to existing command behavior. The generated `ASC.md` agent
 reference will instruct agents to query it after unexpected Apple API failures.
-Timeout and server-error hints will reference the related App Store Connect
-services. No request automatically performs a hidden second network call.
+App Store Connect API 5xx errors reference the related system-status services;
+generic timeout hints remain service-neutral. No request automatically performs
+a hidden second network call.
 
 ## Tests and verification
 
@@ -87,7 +88,7 @@ RED-GREEN coverage includes:
 - positional arguments and invalid watch flag combinations;
 - changed-only bounded polling;
 - JSON, table, and Markdown rendering;
-- timeout and 5xx diagnostic hints;
+- service-neutral timeout hints and App Store Connect API-only 5xx hints;
 - a built-binary one-shot check against Apple's live feed.
 
 The repository gate is `make format`, `make check-docs`, `make lint`, and
@@ -107,5 +108,6 @@ Adding flags to `asc doctor` would mix unauthenticated service health with a
 stable authentication report and its JSON contract. Adding this to `asc status`
 would require an app and credentials precisely when Apple may be unavailable.
 Automatically querying Apple on every timeout or 5xx would add latency, noise,
-and a second failure mode. A dedicated command plus contextual hints remains
-explicit, scriptable, and reusable by both people and agents.
+and a second failure mode. A dedicated command plus a scoped App Store Connect
+API 5xx hint remains explicit, scriptable, and reusable by both people and
+agents.
