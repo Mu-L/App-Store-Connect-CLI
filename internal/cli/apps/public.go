@@ -59,6 +59,7 @@ No authentication is required.
 Examples:
   asc apps public view --app "1479784361"
   asc apps public search --term "focus" --country us
+  asc apps public rank --app "1234567890" --term "focus timer" --country us --platform TV_OS
   asc apps public prices --app "1479784361"
   asc apps public descriptions --app "1479784361"
   asc apps public storefronts list`,
@@ -67,6 +68,7 @@ Examples:
 		Subcommands: []*ffcli.Command{
 			AppsPublicViewCommand(),
 			AppsPublicSearchCommand(),
+			AppsPublicRankCommand(),
 			AppsPublicPricesCommand(),
 			AppsPublicDescriptionsCommand(),
 			AppsPublicStorefrontsCommand(),

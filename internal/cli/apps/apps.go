@@ -49,6 +49,7 @@ Examples:
   asc apps wall submit --app "1234567890" --confirm
   asc apps public view --app "1234567890"
   asc apps public search --term "focus" --country us
+  asc apps public rank --app "1234567890" --term "focus timer" --country us --platform TV_OS
   asc apps public storefronts list
   asc apps registry pull --path ".asc/app-registry.json"
   asc apps view --id "APP_ID"
