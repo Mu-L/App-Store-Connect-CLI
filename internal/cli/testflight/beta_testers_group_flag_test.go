@@ -21,28 +21,6 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
 
-func TestOnceCSVFlag_RejectsRepeatedUse(t *testing.T) {
-	value := onceCSVFlag{flagName: "group"}
-
-	if err := value.Set("Beta"); err != nil {
-		t.Fatalf("first Set() error: %v", err)
-	}
-	if got := value.String(); got != "Beta" {
-		t.Fatalf("String() = %q, want %q", got, "Beta")
-	}
-
-	err := value.Set("QA")
-	if err == nil {
-		t.Fatal("second Set() should fail")
-	}
-	if !strings.Contains(err.Error(), "--group") || !strings.Contains(err.Error(), "comma-separated") {
-		t.Fatalf("second Set() error should mention --group and comma-separated usage, got %q", err.Error())
-	}
-	if got := value.String(); got != "Beta" {
-		t.Fatalf("rejected Set() must not overwrite value, got %q", got)
-	}
-}
-
 func TestBetaTestersAddCommand_CSVGroupsPassValidation(t *testing.T) {
 	isolateTestFlightAuthEnvForAddTests(t)
 

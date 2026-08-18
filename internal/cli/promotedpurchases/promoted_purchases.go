@@ -389,7 +389,7 @@ func PromotedPurchasesLinkCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("link", flag.ExitOnError)
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID)")
-	promotedIDs := fs.String("promoted-purchase-id", "", "Comma-separated promoted purchase IDs")
+	promotedIDs := shared.BindOnceCSVFlag(fs, "promoted-purchase-id", "Comma-separated promoted purchase IDs")
 	clear := fs.Bool("clear", false, "Remove all promoted purchases from the app")
 	confirm := fs.Bool("confirm", false, "Confirm removal when using --clear")
 	output := shared.BindOutputFlags(fs)
@@ -415,7 +415,7 @@ Examples:
 
 			var promotedPurchaseIDs []string
 			if *clear {
-				if strings.TrimSpace(*promotedIDs) != "" {
+				if strings.TrimSpace(promotedIDs.String()) != "" {
 					fmt.Fprintln(os.Stderr, "Error: --clear cannot be used with --promoted-purchase-id")
 					return flag.ErrHelp
 				}
@@ -425,7 +425,7 @@ Examples:
 				}
 				promotedPurchaseIDs = nil
 			} else {
-				promotedPurchaseIDs = shared.SplitCSV(*promotedIDs)
+				promotedPurchaseIDs = shared.SplitCSV(promotedIDs.String())
 				if len(promotedPurchaseIDs) == 0 {
 					fmt.Fprintln(os.Stderr, "Error: --promoted-purchase-id is required")
 					return shared.MissingRequiredUsageError("--promoted-purchase-id")

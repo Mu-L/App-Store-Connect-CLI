@@ -196,7 +196,7 @@ func GameCenterMatchmakingQueuesCreateCommand() *ffcli.Command {
 	referenceName := fs.String("reference-name", "", "Reference name for the queue")
 	ruleSetID := fs.String("rule-set-id", "", "Matchmaking rule set ID")
 	experimentRuleSetID := fs.String("experiment-rule-set-id", "", "Experiment rule set ID")
-	classicBundleIDs := fs.String("classic-bundle-ids", "", "Comma-separated bundle IDs for classic matchmaking")
+	classicBundleIDs := shared.BindOnceCSVFlag(fs, "classic-bundle-ids", "Comma-separated bundle IDs for classic matchmaking")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -224,7 +224,7 @@ Examples:
 
 			attrs := asc.GameCenterMatchmakingQueueCreateAttributes{
 				ReferenceName:               name,
-				ClassicMatchmakingBundleIDs: shared.SplitCSV(*classicBundleIDs),
+				ClassicMatchmakingBundleIDs: shared.SplitCSV(classicBundleIDs.String()),
 			}
 
 			client, err := shared.GetASCClient()
@@ -252,7 +252,7 @@ func GameCenterMatchmakingQueuesUpdateCommand() *ffcli.Command {
 	queueID := fs.String("id", "", "Matchmaking queue ID")
 	ruleSetID := fs.String("rule-set-id", "", "Matchmaking rule set ID")
 	experimentRuleSetID := fs.String("experiment-rule-set-id", "", "Experiment rule set ID")
-	classicBundleIDs := fs.String("classic-bundle-ids", "", "Comma-separated bundle IDs for classic matchmaking")
+	classicBundleIDs := shared.BindOnceCSVFlag(fs, "classic-bundle-ids", "Comma-separated bundle IDs for classic matchmaking")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -275,8 +275,8 @@ Examples:
 
 			hasUpdate := false
 			attrs := asc.GameCenterMatchmakingQueueUpdateAttributes{}
-			if strings.TrimSpace(*classicBundleIDs) != "" {
-				attrs.ClassicMatchmakingBundleIDs = shared.SplitCSV(*classicBundleIDs)
+			if strings.TrimSpace(classicBundleIDs.String()) != "" {
+				attrs.ClassicMatchmakingBundleIDs = shared.SplitCSV(classicBundleIDs.String())
 				hasUpdate = true
 			}
 
