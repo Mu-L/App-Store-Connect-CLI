@@ -49,6 +49,7 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/nominations"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/notarization"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/notify"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/optimize"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/passtypeids"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/performance"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/preorders"
@@ -128,6 +129,7 @@ func NewCatalog(version string) *Catalog {
 		commandFactory("review", "Manage App Store review details, attachments, and submissions.", reviews.ReviewCommand),
 		commandFactory("analytics", "Request and download analytics and sales reports.", analytics.AnalyticsCommand),
 		commandFactory("ads", "Manage Apple Ads API resources.", ads.AdsCommand),
+		commandFactory("optimize", "Build cross-API optimization plans. [experimental]", optimize.OptimizeCommand),
 		commandFactory("performance", "Access performance metrics and diagnostic logs.", performance.PerformanceCommand),
 		commandFactory("finance", "Download payments and financial reports.", finance.FinanceCommand),
 		commandFactory("apps", "List and manage apps in App Store Connect.", apps.AppsCommand),

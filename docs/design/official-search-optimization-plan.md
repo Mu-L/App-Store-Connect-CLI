@@ -1,0 +1,165 @@
+# Official search optimization plan
+
+## Goal
+
+Add an experimental, read-only workflow that turns the official Apple Ads
+Platform API v1 optimization surface into one evidence-based App Store search
+plan. The workflow joins Apple Ads demand and paid-performance data with the
+selected App Store Connect localization. It never calls Apple web-session or
+private endpoints and never mutates campaigns or App Store metadata.
+
+## Command placement and invocation
+
+The cross-API workflow lives under a new top-level `optimize` group rather than
+under either `ads` or `metadata`:
+
+```bash
+asc optimize search plan \
+  --app "123456789" \
+  --version "4.4.4" \
+  --ad-account "987654321" \
+  --country "US" \
+  --genre "PRODUCTIVITY_UTILITIES" \
+  --locale "en-US" \
+  --window "30d" \
+  --out-dir ".asc/optimization/4.4.4" \
+  --output markdown
+```
+
+Required inputs are `--app`, `--version`, `--ad-account`, `--country`,
+`--genre`, and `--locale`. `ASC_APP_ID`, `ASC_ADS_AD_ACCOUNT_ID`, and stored
+Ads profiles remain valid resolution sources. `--platform` defaults to `IOS`,
+and `--window` defaults to `30d` with an accepted range of 2 through 30 whole
+days. `--out-dir` is optional; omitting it keeps the command stdout-only.
+
+The command supports JSON, table, and Markdown. Data is written only to stdout,
+diagnostics are written to stderr, and usage errors exit with code 2. The
+command accepts no positional arguments.
+
+## Official API contract
+
+The workflow uses the existing typed App Store Connect client to resolve the
+selected version and read its version and app-info localizations. Apple Ads
+credentials remain independent from App Store Connect credentials.
+
+It composes these Platform API v1 operations:
+
+| Purpose | Method and endpoint |
+| --- | --- |
+| App campaign scope | `POST /v1/campaigns/query` |
+| Current targeting | `POST /v1/keywords/query` |
+| Existing exclusions | `POST /v1/negative-keywords/query` |
+| App keyword discovery | `POST /v1/suggestions/keywords/query` |
+| App phrase discovery | `POST /v1/suggestions/phrases/query` |
+| Country/genre demand | `POST /v1/insights/apps/search-term-popularity/query` |
+| Paid competitive reach | `POST /v1/insights/apps/impression-share/query` |
+| Actual matched queries | `POST /v1/reports/apps/searchterms/query` |
+| Placement eligibility | `POST /v1/eligibilities/apps/query` |
+| Budget signals | `POST /v1/recommendations/daily-budgets/query` |
+| Target-CPA signals | `POST /v1/recommendations/target-cpas/query` |
+
+List and report bodies use body pagination and fetch every page. The selected
+performance window ends yesterday. Search-term popularity uses the most recent
+complete Sunday-through-Saturday week because its time-range contract differs
+from Ads performance reports.
+
+## Report semantics
+
+The report contains one normalized row per search term. A row records source
+provenance instead of presenting unavailable fields as zero:
+
+- market popularity and genre rank come only from Search Term Popularity;
+- suggestion popularity is preserved separately because the suggestion
+  response does not identify a source storefront;
+- impression share and share rank are paid, app-specific metrics;
+- when Apple returns daily impression-share rows, the report selects the latest
+  dated bucket deterministically and records that period;
+- impressions, taps, installs, and spend come from actual Search Terms reports;
+- CPA is computed as local spend divided by total installs;
+- metadata coverage is an exact normalized phrase check across name, subtitle,
+  and comma-separated keyword values in the requested locale;
+- actions and confidence are deterministic client-side classifications.
+
+The initial action vocabulary is:
+
+- `promote_exact`: a broad-matched query has produced installs and is not an
+  existing exact keyword;
+- `negative_candidate`: at least 10 taps and no installs, excluding existing
+  negative keywords;
+- `metadata_candidate`: a converting term or app suggestion is absent from the
+  requested metadata locale;
+- `defend`: a converting term has paid impression share below 50 percent;
+- `saturated`: Apple reports the greater-than-90-percent share bucket;
+- `untested_candidate`: Apple suggests the term but the account has no
+  performance row for it.
+
+Multiple actions can apply. Confidence is `proven` when installs exist,
+`observed` when paid traffic exists, and `suggested` for discovery-only rows.
+No proprietary difficulty, organic attribution, or app-specific popularity is
+invented.
+
+Apple's complete daily-budget and target-CPA recommendation objects are
+preserved in the report alongside their summary counts. The workflow does not
+reinterpret or apply them.
+
+Every Apple Ads source records `available`, `empty`, or `unavailable`. A source
+error produces a report notice and does not erase data from successful sources.
+The command fails if App Store Connect metadata cannot be resolved or if every
+Apple Ads intelligence source is unavailable. Privacy-suppressed and genuinely
+empty official responses remain successful empty sources.
+
+## Artifacts
+
+When `--out-dir` is present, the operator-selected directory is the trusted
+`internal/rootfs` anchor. The command writes:
+
+- `report.json`: the complete canonical report;
+- `metadata-candidates.csv`: an import-compatible `locale,keywords` proposal
+  that preserves existing keywords and adds fitting candidates without
+  exceeding the 100-character field limit;
+- `exact-keywords.json`: a `KeywordCreateBulkRequest` for `promote_exact`
+  actions with known ad-group context;
+- `negative-keywords.json`: a `NegativeKeywordCreateBulkRequest` for
+  `negative_candidate` actions with known campaign/ad-group context.
+
+Artifacts are plans only. Operators apply them through the existing confirmed
+commands (`asc metadata keywords import/plan/apply`, `asc ads
+targeting-keywords create-bulk`, and `asc ads negative-keywords create-bulk`).
+`asc release stage` and `asc publish appstore --metadata-dir` remain the only
+release integration; this change does not add an implicit publish mutation.
+
+## Compatibility and lifecycle
+
+`optimize` is a new experimental root group, so there is no compatibility or
+deprecation impact. Existing raw Apple Ads and metadata commands do not change.
+The JSON report and artifacts include a schema version so future additions can
+remain explicit.
+
+## Tests and verification
+
+RED-GREEN coverage includes:
+
+- root registration, help, required flags, invalid country/locale/window, and
+  positional-argument rejection;
+- one realistic joined result across suggestions, popularity, impression
+  share, search-term performance, existing targeting, and metadata;
+- deterministic action precedence, provenance, missing data, zero installs,
+  saturated share, and existing keyword/negative suppression;
+- Apple Ads method, path, context header, body filters, body pagination, and
+  API-error partial-result behavior;
+- JSON, table, and Markdown output;
+- artifact content, import compatibility, 100-character budgeting, and rooted
+  write failures;
+- built-binary stdout, stderr, and exit-code checks.
+
+Credentialed verification is intentionally deferred. On a machine with both
+credential sets, run the command read-only first and verify source fill rates,
+country scoping, report latency, and score agreement for overlapping sources.
+
+## Alternatives
+
+Adding convenience flags to each raw endpoint would reduce JSON boilerplate
+but would still leave users to join incompatible response shapes themselves.
+Putting the workflow under `ads` would hide that App Store Connect metadata is
+an equal input. A cross-API `optimize` group makes the orchestration explicit
+without presenting the result as an Apple-provided recommendation.
