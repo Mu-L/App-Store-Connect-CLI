@@ -50,7 +50,8 @@ names, for example `--service "App Store Connect,TestFlight"`.
 </ParamField>
 
 <ParamField path="--output" type="string">
-  Output format: `json`, `table`, or `markdown`; defaults are TTY-aware
+  Output format: `json`, `table`, or `markdown`; defaults to `table` in terminals
+  and minified `json` for pipes or CI, while an explicit value takes precedence
 </ParamField>
 
 ## Behavior

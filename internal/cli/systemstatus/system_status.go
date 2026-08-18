@@ -85,8 +85,7 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) > 0 {
-				fmt.Fprintln(os.Stderr, "Error: system-status does not accept positional arguments")
-				return flag.ErrHelp
+				return shared.UsageError("system-status does not accept positional arguments")
 			}
 			if *pollInterval <= 0 {
 				return shared.UsageError("--poll-interval must be greater than 0")
@@ -282,6 +281,19 @@ func normalizeAffectedServices(raw json.RawMessage) string {
 }
 
 func selectDeveloperSystemStatus(report *asc.DeveloperSystemStatusReport, filters []string, issuesOnly bool) (*asc.DeveloperSystemStatusReport, error) {
+	for _, filter := range filters {
+		filterMatched := false
+		for _, service := range report.Services {
+			if matchesServiceFilters(service.Name, []string{filter}) {
+				filterMatched = true
+				break
+			}
+		}
+		if !filterMatched {
+			return nil, shared.UsageErrorf("no services matched --service %q", filter)
+		}
+	}
+
 	matched := make([]asc.DeveloperSystemStatusService, 0, len(report.Services))
 	for _, service := range report.Services {
 		if matchesServiceFilters(service.Name, filters) {

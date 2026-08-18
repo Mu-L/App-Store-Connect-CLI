@@ -55,8 +55,9 @@ The computed camelCase report contains:
 - selected services with computed `operational` or `issues` status and Apple's
   event details.
 
-Output follows the CLI's TTY-aware default and supports JSON, table, and
-Markdown. A successfully fetched report exits zero even when Apple reports an
+Output defaults to table in terminals and minified JSON for pipes or CI; an
+explicit `--output` value takes precedence. JSON, table, and Markdown are
+supported. A successfully fetched report exits zero even when Apple reports an
 incident; the incident is data, not a command failure. Invalid flags and flag
 combinations exit 2. Transport, HTTP, and parse failures exit 1. Standard data
 goes to stdout and diagnostics go to stderr.
@@ -91,6 +92,13 @@ RED-GREEN coverage includes:
 The repository gate is `make format`, `make check-docs`, `make lint`, and
 `ASC_BYPASS_KEYCHAIN=1 make test`. Because root help changes, generated command
 documentation must also be refreshed before the gate.
+
+## Handoff and residual risk
+
+Implementation, validation, and review history are tracked in
+[pull request #2062](https://github.com/rorkai/App-Store-Connect-CLI/pull/2062).
+The remaining external risk is that the undocumented public feed can change
+without notice; bounded parsing and explicit failures keep that visible.
 
 ## Alternatives considered
 

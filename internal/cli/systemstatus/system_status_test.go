@@ -146,9 +146,19 @@ func TestSystemStatusCommandRejectsUnknownService(t *testing.T) {
 	server := statusServer(t, healthyAndOutagePayload)
 	defer server.Close()
 
-	_, _, err := runCommand(t, server.Client(), server.URL, "--service", "No Such Service", "--output", "json")
-	if err == nil || !strings.Contains(err.Error(), `no services matched --service "No Such Service"`) {
-		t.Fatalf("error = %v, want no-match error", err)
+	for _, test := range []struct {
+		filter string
+		want   string
+	}{
+		{filter: "No Such Service", want: `no services matched --service "No Such Service"`},
+		{filter: "TestFlight,Unknown", want: `no services matched --service "Unknown"`},
+	} {
+		t.Run(test.filter, func(t *testing.T) {
+			_, _, err := runCommand(t, server.Client(), server.URL, "--service", test.filter, "--output", "json")
+			if err == nil || !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want classified error containing %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -158,7 +168,7 @@ func TestSystemStatusCommandRejectsInvalidArguments(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "positional", args: []string{"App Store Connect"}, want: "does not accept positional arguments"},
+		{name: "positional", args: []string{"App Store Connect"}, want: "system-status does not accept positional arguments"},
 		{name: "non-positive interval", args: []string{"--watch", "--poll-interval", "0s"}, want: "--poll-interval must be greater than 0"},
 		{name: "negative max polls", args: []string{"--watch", "--max-polls", "-1"}, want: "--max-polls must be greater than or equal to 0"},
 		{name: "max polls without watch", args: []string{"--max-polls", "2"}, want: "--max-polls requires --watch"},
@@ -177,23 +187,14 @@ func TestSystemStatusCommandRejectsInvalidArguments(t *testing.T) {
 			if err == nil {
 				t.Fatalf("error = nil, want %q", test.want)
 			}
-			if test.name == "positional" {
-				if !errors.Is(err, flag.ErrHelp) {
-					t.Fatalf("positional error = %v, want flag.ErrHelp", err)
-				}
-				if !strings.Contains(stderr, test.want) {
-					t.Fatalf("stderr = %q, want %q", stderr, test.want)
-				}
-			} else {
-				if !errors.Is(err, flag.ErrHelp) {
-					t.Fatalf("error = %v, want flag.ErrHelp classification", err)
-				}
-				if err.Error() != test.want {
-					t.Fatalf("error = %q, want %q", err.Error(), test.want)
-				}
-				if wantStderr := "Error: " + test.want + "\n"; stderr != wantStderr {
-					t.Fatalf("stderr = %q, want %q", stderr, wantStderr)
-				}
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("error = %v, want flag.ErrHelp classification", err)
+			}
+			if err.Error() != test.want {
+				t.Fatalf("error = %q, want %q", err.Error(), test.want)
+			}
+			if wantStderr := "Error: " + test.want + "\n"; stderr != wantStderr {
+				t.Fatalf("stderr = %q, want %q", stderr, wantStderr)
 			}
 			if requests := transport.requests.Load(); requests != 0 {
 				t.Fatalf("HTTP requests = %d, want 0", requests)
@@ -372,6 +373,8 @@ func runCommand(t *testing.T, client *http.Client, endpoint string, args ...stri
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 	copies.Wait()
+	_ = stdoutReader.Close()
+	_ = stderrReader.Close()
 	close(copyErrors)
 	for err := range copyErrors {
 		if err != nil {
