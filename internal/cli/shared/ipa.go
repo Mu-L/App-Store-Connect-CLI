@@ -10,6 +10,7 @@ import (
 
 	"howett.net/plist"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/infoplist"
 )
 
@@ -17,6 +18,7 @@ type IPABundleInfo struct {
 	BundleID    string
 	Version     string
 	BuildNumber string
+	Platform    asc.Platform
 }
 
 // ValidateIPAPath ensures an IPA path points to a regular file and rejects
@@ -95,11 +97,79 @@ func readBundleInfoFromInfoPlist(file *zip.File) (IPABundleInfo, error) {
 		return IPABundleInfo{}, fmt.Errorf("decode Info.plist: %w", err)
 	}
 
+	platform, err := detectIPAPlatform(info)
+	if err != nil {
+		return IPABundleInfo{}, err
+	}
+
 	return IPABundleInfo{
 		BundleID:    coercePlistValueToString(info["CFBundleIdentifier"]),
 		Version:     coercePlistValueToString(info["CFBundleShortVersionString"]),
 		BuildNumber: coercePlistValueToString(info["CFBundleVersion"]),
+		Platform:    platform,
 	}, nil
+}
+
+func detectIPAPlatform(info map[string]any) (asc.Platform, error) {
+	type platformMarker struct {
+		key   string
+		value string
+	}
+
+	markers := make([]platformMarker, 0, 3)
+	if value := coercePlistValueToString(info["DTPlatformName"]); value != "" {
+		markers = append(markers, platformMarker{key: "DTPlatformName", value: value})
+	}
+	for _, value := range plistStringValues(info["CFBundleSupportedPlatforms"]) {
+		markers = append(markers, platformMarker{key: "CFBundleSupportedPlatforms", value: value})
+	}
+
+	var detected asc.Platform
+	for _, marker := range markers {
+		platform, ok := appStorePlatformForIPA(marker.value)
+		if !ok {
+			return "", fmt.Errorf("unsupported IPA platform metadata %s=%q", marker.key, marker.value)
+		}
+		if detected != "" && detected != platform {
+			return "", fmt.Errorf("conflicting IPA platform metadata: %s and %s", detected, platform)
+		}
+		detected = platform
+	}
+	return detected, nil
+}
+
+func plistStringValues(value any) []string {
+	values := make([]string, 0, 1)
+	switch typed := value.(type) {
+	case []any:
+		for _, item := range typed {
+			if text := coercePlistValueToString(item); text != "" {
+				values = append(values, text)
+			}
+		}
+	case []string:
+		for _, item := range typed {
+			if text := strings.TrimSpace(item); text != "" {
+				values = append(values, text)
+			}
+		}
+	}
+	return values
+}
+
+func appStorePlatformForIPA(value string) (asc.Platform, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "iphoneos", "watchos":
+		return asc.PlatformIOS, true
+	case "appletvos":
+		return asc.PlatformTVOS, true
+	case "xros":
+		return asc.PlatformVisionOS, true
+	case "macosx":
+		return asc.PlatformMacOS, true
+	default:
+		return "", false
+	}
 }
 
 // ResolveBundleInfoForIPA fills missing version/build-number values from the IPA

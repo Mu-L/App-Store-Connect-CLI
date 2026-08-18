@@ -116,6 +116,71 @@ func TestExtractBundleInfoFromIPA_BinaryPlist(t *testing.T) {
 	}
 }
 
+func TestExtractBundleInfoFromIPA_DetectsPlatform(t *testing.T) {
+	tests := []struct {
+		name               string
+		platformName       string
+		supportedPlatforms []string
+		format             int
+		want               string
+	}{
+		{name: "iOS", platformName: "iphoneos", supportedPlatforms: []string{"iPhoneOS"}, format: plist.XMLFormat, want: "IOS"},
+		{name: "tvOS binary plist", platformName: "appletvos", supportedPlatforms: []string{"AppleTVOS"}, format: plist.BinaryFormat, want: "TV_OS"},
+		{name: "visionOS", platformName: "xros", supportedPlatforms: []string{"XROS"}, format: plist.XMLFormat, want: "VISION_OS"},
+		{name: "supported platform fallback", supportedPlatforms: []string{"AppleTVOS"}, format: plist.XMLFormat, want: "TV_OS"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plistData, err := plist.Marshal(map[string]any{
+				"CFBundleIdentifier":         "com.example.demo",
+				"CFBundleShortVersionString": "1.2.3",
+				"CFBundleVersion":            "45",
+				"DTPlatformName":             test.platformName,
+				"CFBundleSupportedPlatforms": test.supportedPlatforms,
+			}, test.format)
+			if err != nil {
+				t.Fatalf("marshal Info.plist: %v", err)
+			}
+			ipaPath := writeTestIPA(t, map[string][]byte{
+				"Payload/Demo.app/Info.plist": plistData,
+			})
+
+			info, err := ExtractBundleInfoFromIPA(ipaPath)
+			if err != nil {
+				t.Fatalf("ExtractBundleInfoFromIPA() error: %v", err)
+			}
+			if string(info.Platform) != test.want {
+				t.Fatalf("expected platform %s, got %q", test.want, info.Platform)
+			}
+		})
+	}
+}
+
+func TestExtractBundleInfoFromIPA_RejectsConflictingPlatformMetadata(t *testing.T) {
+	plistData, err := plist.Marshal(map[string]any{
+		"CFBundleIdentifier":         "com.example.demo",
+		"CFBundleShortVersionString": "1.2.3",
+		"CFBundleVersion":            "45",
+		"DTPlatformName":             "iphoneos",
+		"CFBundleSupportedPlatforms": []string{"AppleTVOS"},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatalf("marshal Info.plist: %v", err)
+	}
+	ipaPath := writeTestIPA(t, map[string][]byte{
+		"Payload/Demo.app/Info.plist": plistData,
+	})
+
+	_, err = ExtractBundleInfoFromIPA(ipaPath)
+	if err == nil {
+		t.Fatal("expected conflicting platform metadata error")
+	}
+	if !strings.Contains(err.Error(), "conflicting IPA platform metadata") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestExtractBundleInfoFromIPA_InfoPlistAtSizeLimit(t *testing.T) {
 	plistData := buildInfoPlistOfSize(t, infoplist.MaxBytes)
 	ipaPath := writeTestIPA(t, map[string][]byte{

@@ -28,7 +28,7 @@ func BuildsUploadCommand() *ffcli.Command {
 	pkgPath := fs.String("pkg", "", "Path to .pkg file (for macOS apps)")
 	version := fs.String("version", "", "CFBundleShortVersionString (e.g., 1.0.0, auto-extracted from IPA if not provided)")
 	buildNumber := fs.String("build-number", "", "CFBundleVersion (e.g., 123, auto-extracted from IPA if not provided)")
-	platform := fs.String("platform", "", "Platform: IOS, MAC_OS, TV_OS, VISION_OS (auto-detected for --pkg)")
+	platform := fs.String("platform", "", "Platform: IOS, MAC_OS, TV_OS, VISION_OS (auto-detected for --ipa and --pkg)")
 	dryRun := fs.Bool("dry-run", false, "Reserve upload operations without uploading the file")
 	concurrency := fs.Int("concurrency", asc.DefaultUploadConcurrency, "Upload concurrency")
 	verifyChecksum := fs.Bool("checksum", false, "Verify upload checksums if provided by API")
@@ -54,8 +54,10 @@ Use --dry-run to only reserve the upload operations.
 Presigned URLs and request-header values are redacted from output by default.
 Pass --include-sensitive only when another tool must consume those capabilities.
 
-Use --ipa for iOS, tvOS, and visionOS apps. Use --pkg for macOS apps.
-When using --pkg, the platform is automatically set to MAC_OS.
+Use --ipa for iOS, tvOS, and visionOS apps. Its platform is detected from the
+top-level app Info.plist when available, with IOS retained as the compatibility
+default for older archives without platform metadata. Use --pkg for macOS apps;
+its platform is automatically set to MAC_OS.
 
 Examples:
   asc builds upload --app "123456789" --ipa "path/to/app.ipa"
@@ -132,7 +134,8 @@ Examples:
 				}
 				platformValue = asc.PlatformMacOS
 			} else {
-				// For IPA files, default to IOS if not specified
+				// For IPA files, retain IOS as the compatibility default until
+				// metadata inspection can provide a more specific platform.
 				platformStr := strings.ToUpper(*platform)
 				if platformStr == "" {
 					platformStr = "IOS"
@@ -205,6 +208,12 @@ Examples:
 				}
 				if buildNumberValue == "" {
 					buildNumberValue = ipaInfo.BuildNumber
+				}
+				if ipaInfo.Platform != "" {
+					if strings.TrimSpace(*platform) != "" && platformValue != ipaInfo.Platform {
+						return fmt.Errorf("builds upload: --platform %s does not match IPA platform %s", platformValue, ipaInfo.Platform)
+					}
+					platformValue = ipaInfo.Platform
 				}
 			} else if versionValue == "" || buildNumberValue == "" {
 				// PKG files require explicit version and build number
