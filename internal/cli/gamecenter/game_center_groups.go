@@ -454,7 +454,7 @@ func GameCenterGroupAchievementsSetCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("set", flag.ExitOnError)
 
 	groupID := fs.String("group-id", "", "Game Center group ID")
-	ids := fs.String("ids", "", "Comma-separated achievement IDs")
+	ids := shared.BindOnceCSVFlag(fs, "ids", "Comma-separated achievement IDs")
 	v2 := fs.Bool("v2", false, "Use v2 relationships endpoint")
 	output := shared.BindOutputFlags(fs)
 
@@ -475,7 +475,7 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --group-id is required")
 				return shared.MissingRequiredUsageError("--group-id")
 			}
-			idsValue := shared.SplitCSV(*ids)
+			idsValue := shared.SplitCSV(ids.String())
 			if len(idsValue) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --ids is required")
 				return shared.MissingRequiredUsageError("--ids")
@@ -628,7 +628,7 @@ func GameCenterGroupLeaderboardsSetCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("set", flag.ExitOnError)
 
 	groupID := fs.String("group-id", "", "Game Center group ID")
-	ids := fs.String("ids", "", "Comma-separated leaderboard IDs")
+	ids := shared.BindOnceCSVFlag(fs, "ids", "Comma-separated leaderboard IDs")
 	v2 := fs.Bool("v2", false, "Use v2 relationships endpoint")
 	output := shared.BindOutputFlags(fs)
 
@@ -649,7 +649,7 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --group-id is required")
 				return shared.MissingRequiredUsageError("--group-id")
 			}
-			idsValue := shared.SplitCSV(*ids)
+			idsValue := shared.SplitCSV(ids.String())
 			if len(idsValue) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --ids is required")
 				return shared.MissingRequiredUsageError("--ids")

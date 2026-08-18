@@ -178,7 +178,7 @@ func AppEventsCreateCommand() *ffcli.Command {
 	start := fs.String("start", "", "Event start time (RFC3339)")
 	end := fs.String("end", "", "Event end time (RFC3339)")
 	publishStart := fs.String("publish-start", "", "Publish start time (RFC3339)")
-	territories := fs.String("territories", "", "Territory codes (comma-separated)")
+	territories := shared.BindOnceCSVFlag(fs, "territories", "Territory codes (comma-separated)")
 	deepLink := fs.String("deep-link", "", "Deep link URL")
 	purchaseRequirement := fs.String("purchase-requirement", "", "Purchase requirement (currently supported: "+supportedAppEventPurchaseRequirementValues()+")")
 	primaryLocale := fs.String("primary-locale", "", "Primary locale (e.g., en-US)")
@@ -240,7 +240,7 @@ Examples:
 				return flag.ErrHelp
 			}
 
-			schedule, scheduleProvided, err := normalizeAppEventTerritorySchedule(*start, *end, *publishStart, *territories)
+			schedule, scheduleProvided, err := normalizeAppEventTerritorySchedule(*start, *end, *publishStart, territories.String())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err.Error())
 				return flag.ErrHelp
@@ -320,7 +320,7 @@ func AppEventsUpdateCommand() *ffcli.Command {
 	start := fs.String("start", "", "Event start time (RFC3339)")
 	end := fs.String("end", "", "Event end time (RFC3339)")
 	publishStart := fs.String("publish-start", "", "Publish start time (RFC3339)")
-	territories := fs.String("territories", "", "Territory codes (comma-separated)")
+	territories := shared.BindOnceCSVFlag(fs, "territories", "Territory codes (comma-separated)")
 	deepLink := fs.String("deep-link", "", "Deep link URL")
 	purchaseRequirement := fs.String("purchase-requirement", "", "Purchase requirement (currently supported: "+supportedAppEventPurchaseRequirementValues()+")")
 	primaryLocale := fs.String("primary-locale", "", "Primary locale (e.g., en-US)")
@@ -421,7 +421,7 @@ Examples:
 				}
 			}
 
-			schedule, scheduleProvided, err := normalizeAppEventTerritorySchedule(*start, *end, *publishStart, *territories)
+			schedule, scheduleProvided, err := normalizeAppEventTerritorySchedule(*start, *end, *publishStart, territories.String())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err.Error())
 				return flag.ErrHelp

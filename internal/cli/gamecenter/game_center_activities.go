@@ -497,7 +497,7 @@ func GameCenterActivityAchievementsSetCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("set", flag.ExitOnError)
 
 	activityID := fs.String("activity-id", "", "Game Center activity ID")
-	ids := fs.String("ids", "", "Comma-separated achievement IDs")
+	ids := shared.BindOnceCSVFlag(fs, "ids", "Comma-separated achievement IDs")
 	remove := fs.Bool("remove", false, "Remove relationships instead of adding")
 	output := shared.BindOutputFlags(fs)
 
@@ -518,7 +518,7 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --activity-id is required")
 				return shared.MissingRequiredUsageError("--activity-id")
 			}
-			idsValue := shared.SplitCSV(*ids)
+			idsValue := shared.SplitCSV(ids.String())
 			if len(idsValue) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --ids is required")
 				return shared.MissingRequiredUsageError("--ids")
@@ -579,7 +579,7 @@ func GameCenterActivityLeaderboardsSetCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("set", flag.ExitOnError)
 
 	activityID := fs.String("activity-id", "", "Game Center activity ID")
-	ids := fs.String("ids", "", "Comma-separated leaderboard IDs")
+	ids := shared.BindOnceCSVFlag(fs, "ids", "Comma-separated leaderboard IDs")
 	remove := fs.Bool("remove", false, "Remove relationships instead of adding")
 	output := shared.BindOutputFlags(fs)
 
@@ -600,7 +600,7 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --activity-id is required")
 				return shared.MissingRequiredUsageError("--activity-id")
 			}
-			idsValue := shared.SplitCSV(*ids)
+			idsValue := shared.SplitCSV(ids.String())
 			if len(idsValue) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --ids is required")
 				return shared.MissingRequiredUsageError("--ids")

@@ -200,7 +200,7 @@ func SubscriptionsPromotionalOffersCreateCommand() *ffcli.Command {
 	offerDuration := fs.String("offer-duration", "", "Offer duration: "+strings.Join(subscriptionOfferDurationValues, ", "))
 	offerMode := fs.String("offer-mode", "", "Offer mode: "+strings.Join(subscriptionOfferModeValues, ", "))
 	numberOfPeriods := fs.Int("number-of-periods", 0, "Number of periods (required)")
-	prices := fs.String("prices", "", "Promotional offer prices (required): existing PRICE_ID entries, inline TERRITORY entries, or inline TERRITORY:PRICE_POINT_ID entries; territory accepts alpha-2, alpha-3, or exact English country name")
+	prices := shared.BindOnceCSVFlag(fs, "prices", "Promotional offer prices (required): existing PRICE_ID entries, inline TERRITORY entries, or inline TERRITORY:PRICE_POINT_ID entries; territory accepts alpha-2, alpha-3, or exact English country name")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -251,7 +251,7 @@ Examples:
 				return requiredPositiveIntegerUsageError(fs, "number-of-periods")
 			}
 
-			priceEntries, err := parseSubscriptionPromotionalOfferPrices(*prices)
+			priceEntries, err := parseSubscriptionPromotionalOfferPrices(prices.String())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err.Error())
 				return flag.ErrHelp
@@ -297,7 +297,7 @@ func SubscriptionsPromotionalOffersUpdateCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("promotional-offers update", flag.ExitOnError)
 
 	offerID := fs.String("id", "", "Promotional offer ID")
-	prices := fs.String("prices", "", "Promotional offer price ID(s), comma-separated")
+	prices := shared.BindOnceCSVFlag(fs, "prices", "Promotional offer price ID(s), comma-separated")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -317,7 +317,7 @@ Examples:
 				return shared.MissingRequiredUsageError("--id")
 			}
 
-			priceIDs := shared.SplitCSV(*prices)
+			priceIDs := shared.SplitCSV(prices.String())
 			if len(priceIDs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --prices is required")
 				return shared.MissingRequiredUsageError("--prices")

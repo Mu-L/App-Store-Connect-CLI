@@ -151,7 +151,7 @@ func EULACreateCommand() *ffcli.Command {
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	agreementText := fs.String("agreement-text", "", "Agreement text")
-	territories := fs.String("territory", "", "Territory inputs, comma-separated (accepts alpha-2, alpha-3, or exact English country names)")
+	territories := shared.BindOnceCSVFlag(fs, "territory", "Territory inputs, comma-separated (accepts alpha-2, alpha-3, or exact English country names)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -176,7 +176,7 @@ Examples:
 				return shared.MissingRequiredUsageError("--agreement-text")
 			}
 
-			territoryIDs, err := shared.NormalizeASCTerritoryCSV(*territories)
+			territoryIDs, err := shared.NormalizeASCTerritoryCSV(territories.String())
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}
@@ -209,7 +209,7 @@ func EULAUpdateCommand() *ffcli.Command {
 
 	id := fs.String("id", "", "EULA ID")
 	agreementText := fs.String("agreement-text", "", "Agreement text")
-	territories := fs.String("territory", "", "Territory inputs, comma-separated (accepts alpha-2, alpha-3, or exact English country names)")
+	territories := shared.BindOnceCSVFlag(fs, "territory", "Territory inputs, comma-separated (accepts alpha-2, alpha-3, or exact English country names)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -236,7 +236,7 @@ Examples:
 				agreementValue = &value
 			}
 
-			territoryIDs, err := shared.NormalizeASCTerritoryCSV(*territories)
+			territoryIDs, err := shared.NormalizeASCTerritoryCSV(territories.String())
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}

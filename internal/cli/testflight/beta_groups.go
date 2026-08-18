@@ -685,8 +685,8 @@ func BetaGroupsAddTestersCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("add-testers", flag.ExitOnError)
 
 	group := fs.String("group", "", "Beta group ID")
-	tester := fs.String("tester", "", "Beta tester ID(s), comma-separated")
-	email := fs.String("email", "", "Beta tester email(s), comma-separated")
+	tester := shared.BindOnceCSVFlag(fs, "tester", "Beta tester ID(s), comma-separated")
+	email := shared.BindOnceCSVFlag(fs, "email", "Beta tester email(s), comma-separated")
 
 	return &ffcli.Command{
 		Name:       "add-testers",
@@ -707,8 +707,8 @@ Examples:
 				return shared.MissingRequiredUsageError("--group")
 			}
 
-			testerIDs := shared.SplitCSV(*tester)
-			testerEmails := shared.SplitCSV(*email)
+			testerIDs := shared.SplitCSV(tester.String())
+			testerEmails := shared.SplitCSV(email.String())
 			if len(testerIDs) == 0 && len(testerEmails) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --tester or --email is required")
 				return shared.MissingRequiredUsageError("")
@@ -785,7 +785,7 @@ func BetaGroupsRemoveTestersCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("remove-testers", flag.ExitOnError)
 
 	group := fs.String("group", "", "Beta group ID")
-	tester := fs.String("tester", "", "Beta tester ID(s), comma-separated")
+	tester := shared.BindOnceCSVFlag(fs, "tester", "Beta tester ID(s), comma-separated")
 	confirm := fs.Bool("confirm", false, "Confirm removal")
 
 	return &ffcli.Command{
@@ -806,7 +806,7 @@ Examples:
 				return shared.MissingRequiredUsageError("--group")
 			}
 
-			testerIDs := shared.SplitCSV(*tester)
+			testerIDs := shared.SplitCSV(tester.String())
 			if len(testerIDs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --tester is required")
 				return shared.MissingRequiredUsageError("--tester")
