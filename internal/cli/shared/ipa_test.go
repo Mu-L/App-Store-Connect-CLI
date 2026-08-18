@@ -127,6 +127,7 @@ func TestExtractBundleInfoFromIPA_DetectsPlatform(t *testing.T) {
 		{name: "iOS", platformName: "iphoneos", supportedPlatforms: []string{"iPhoneOS"}, format: plist.XMLFormat, want: "IOS"},
 		{name: "tvOS binary plist", platformName: "appletvos", supportedPlatforms: []string{"AppleTVOS"}, format: plist.BinaryFormat, want: "TV_OS"},
 		{name: "visionOS", platformName: "xros", supportedPlatforms: []string{"XROS"}, format: plist.XMLFormat, want: "VISION_OS"},
+		{name: "macOS", platformName: "macosx", supportedPlatforms: []string{"MacOSX"}, format: plist.XMLFormat, want: "MAC_OS"},
 		{name: "supported platform fallback", supportedPlatforms: []string{"AppleTVOS"}, format: plist.XMLFormat, want: "TV_OS"},
 	}
 
