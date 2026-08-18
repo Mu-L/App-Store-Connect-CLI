@@ -5,6 +5,7 @@
 /build/
 /dist/
 .gocache/
+.golangci-cache/
 
 # Binaries for programs and plugins
 *.exe
