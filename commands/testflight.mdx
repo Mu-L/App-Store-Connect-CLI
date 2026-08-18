@@ -58,12 +58,16 @@ build page. A partial lookup prints the matches and per-group failures with
 
 ### Testers
 
-List testers, add new testers, and manage their group/build access:
+List testers, add new testers, and manage their group/build access. `list`
+accepts `--email`, `--first-name`, and `--last-name` exact-match filters, and
+`testers groups list` shows the groups a tester belongs to:
 
 ```bash  theme={null}
 asc testflight testers list --app APP_ID
+asc testflight testers list --app APP_ID --first-name "Ada" --last-name "Lovelace"
 asc testflight testers add --app APP_ID --email user@example.com --group "Beta"
 asc testflight testers view --id TESTER_ID
+asc testflight testers groups list --id TESTER_ID
 asc testflight testers add-groups --id TESTER_ID --group GROUP_ID
 ```
 
@@ -90,9 +94,14 @@ asc testflight notifications send --build-id BUILD_ID
 
 ### Metrics and config
 
+Tester usage metrics report tester IDs; pass `--resolve-testers` to enrich the
+output with a `testers` sidecar that maps each ID to email and name (extra API
+calls):
+
 ```bash  theme={null}
 asc testflight metrics group-testers --group GROUP_ID
 asc testflight metrics app-testers --app APP_ID
+asc testflight metrics app-testers --app APP_ID --resolve-testers
 asc testflight config export --app APP_ID --output ./testflight.yaml
 ```
 
