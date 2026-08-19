@@ -512,7 +512,10 @@ func availabilityListingState(attributes asc.AppStoreVersionAttributes) string {
 }
 
 func availabilityListingIsLive(attributes asc.AppStoreVersionAttributes) bool {
-	return attributes.AppStoreState == "READY_FOR_SALE" || attributes.AppVersionState == "READY_FOR_DISTRIBUTION"
+	return attributes.AppStoreState == "READY_FOR_SALE" ||
+		attributes.AppStoreState == "PREORDER_READY_FOR_SALE" ||
+		attributes.AppVersionState == "READY_FOR_DISTRIBUTION" ||
+		attributes.AppVersionState == "PREORDER_READY_FOR_SALE"
 }
 
 func contextWithAvailabilityTimeout(ctx context.Context, allTerritories bool) (context.Context, context.CancelFunc) {

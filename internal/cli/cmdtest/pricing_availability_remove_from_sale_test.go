@@ -348,7 +348,7 @@ func singlePlatformAppStoreVersionsResponse() *http.Response {
 }
 
 func multiPlatformAppStoreVersionsResponse() *http.Response {
-	return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"appStoreVersions","id":"ver-ios","attributes":{"platform":"IOS","versionString":"4.1.0","appStoreState":"READY_FOR_SALE","appVersionState":"READY_FOR_DISTRIBUTION","createdDate":"2026-07-14T00:00:00Z"}},{"type":"appStoreVersions","id":"ver-vision","attributes":{"platform":"VISION_OS","versionString":"1.3.1","appStoreState":"READY_FOR_SALE","appVersionState":"READY_FOR_DISTRIBUTION","createdDate":"2024-07-06T00:00:00Z"}}],"links":{}}`)
+	return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"appStoreVersions","id":"ver-ios","attributes":{"platform":"IOS","versionString":"4.1.0","appStoreState":"READY_FOR_SALE","appVersionState":"READY_FOR_DISTRIBUTION","createdDate":"2026-07-14T00:00:00Z"}},{"type":"appStoreVersions","id":"ver-vision","attributes":{"platform":"VISION_OS","versionString":"1.3.1","appStoreState":"PREORDER_READY_FOR_SALE","createdDate":"2024-07-06T00:00:00Z"}}],"links":{}}`)
 }
 
 func TestPricingAvailabilityRemoveFromSaleRequiresAllPlatformsWhenMultiplePlatformsLive(t *testing.T) {
