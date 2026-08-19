@@ -67,12 +67,13 @@ var (
 	booleanSecretMarker               = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
 	yamlCredentialScalar              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlCredentialMapping             = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
+	yamlCredentialPlainScalar         = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)[^"'[\{\s\r\n][^\r\n]*$`)
 	yamlCredentialFlowStart           = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)([\[{])`)
 	yamlExplicitCredentialKey         = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlCredentialAlias               = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlAnchor                        = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
 	jsonQuotedScalarLine              = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
-	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\()`)
+	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\(|\()`)
 	xcodeCloudEnvVarSetCommand        = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')[ \t]+web[ \t]+xcode-cloud[ \t]+env-vars[ \t]+(?:shared[ \t]+)?set\b`)
 )
 
@@ -455,10 +456,16 @@ func redactYAMLCredentialBlocks(value string) (string, bool) {
 		content, ending := splitLineEnding(lines[line])
 		match := yamlCredentialScalar.FindStringSubmatch(content)
 		blockScalar := match != nil
+		plainScalar := false
 		separator := ""
 		if match == nil {
 			match = yamlCredentialMapping.FindStringSubmatch(content)
 			separator = " "
+		}
+		if match == nil {
+			match = yamlCredentialPlainScalar.FindStringSubmatch(content)
+			plainScalar = match != nil
+			separator = ""
 		}
 		if match == nil {
 			continue
@@ -486,7 +493,7 @@ func redactYAMLCredentialBlocks(value string) (string, bool) {
 		if !hasIndentedContent {
 			continue
 		}
-		if !blockScalar && strings.HasPrefix(strings.TrimSpace(content), `"`) && jsonQuotedScalarLine.MatchString(firstIndentedContent) {
+		if !blockScalar && !plainScalar && strings.HasPrefix(strings.TrimSpace(content), `"`) && jsonQuotedScalarLine.MatchString(firstIndentedContent) {
 			continue
 		}
 
@@ -984,14 +991,20 @@ func redactSensitiveCommandSubstitutions(value string) (string, bool) {
 }
 
 func findShellCommandSubstitutionEnd(value string, open int) int {
-	if open < 0 || open+1 >= len(value) || value[open:open+2] != "$(" {
+	if open < 0 || open >= len(value) {
+		return -1
+	}
+	contentStart := open + 1
+	if value[open] == '$' && open+1 < len(value) && value[open+1] == '(' {
+		contentStart++
+	} else if value[open] != '(' {
 		return -1
 	}
 
 	depth := 1
 	resumeQuotes := []byte{0}
 	var quote byte
-	for i := open + 2; i < len(value); i++ {
+	for i := contentStart; i < len(value); i++ {
 		if quote == '\'' {
 			if value[i] == '\'' {
 				quote = 0

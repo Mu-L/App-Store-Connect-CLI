@@ -364,6 +364,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "password: [REDACTED]\nstatus: failed",
 		},
 		{
+			name:  "multiline plain yaml scalar preserves sibling",
+			input: "response:\n  password: opaque-first\n    opaque-second\n  status: failed",
+			want:  "response:\n  password: [REDACTED]\n  status: failed",
+		},
+		{
 			name:  "YAML single quoted scalar with doubled quote",
 			input: "password: 'super''sensitive'\nstatus: failed",
 			want:  "password: [REDACTED]\nstatus: failed",
@@ -436,6 +441,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 		{
 			name:  "fish command substitution in secret flag",
 			input: `asc signing sync --password (printf opaque-secret) --verbose`,
+			want:  `asc signing sync --password [REDACTED] --verbose`,
+		},
+		{
+			name:  "nested fish command substitution in secret flag",
+			input: `asc signing sync --password (printf %s (printf prefix) nested-super-secret) --verbose`,
 			want:  `asc signing sync --password [REDACTED] --verbose`,
 		},
 		{
@@ -1356,14 +1366,16 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret", "fish-substitution-secret", "quoted-executable-secret", "quoted-flag-secret"}
+	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret", "fish-substitution-secret", "quoted-executable-secret", "quoted-flag-secret", "nested-fish-secret", "yaml-continuation-secret"}
 	repro := "asc web xcode-cloud env-vars set --value " + secrets[0] + " --secret=true&& echo done\n" +
 		"curl --proxy-cert client.p12:" + secrets[1] + " https://example.test\n" +
 		"asc deploy --password $(printf %s $(printf prefix) " + secrets[2] + ") --verbose\n" +
 		"asc signing sync --password (printf " + secrets[3] + ") --verbose\n" +
 		"asc webhooks create --url https://example.test/hook --secret=true\n" +
 		`"asc" web xcode-cloud env-vars set --value ` + secrets[4] + " --secret=true\n" +
-		`asc signing sync push "--password" ` + secrets[5]
+		`asc signing sync push "--password" ` + secrets[5] + "\n" +
+		"asc signing sync --password (printf %s (printf prefix) " + secrets[6] + ") --verbose\n" +
+		"password: opaque-first\n  " + secrets[7] + "\nstatus: failed"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1393,6 +1405,8 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 		"asc webhooks create --url https://example.test/hook --secret=[REDACTED]",
 		`"asc" web xcode-cloud env-vars set --value [REDACTED] --secret=true`,
 		`asc signing sync push "--password" [REDACTED]`,
+		`asc signing sync --password [REDACTED] --verbose`,
+		"password: [REDACTED]\nstatus: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
