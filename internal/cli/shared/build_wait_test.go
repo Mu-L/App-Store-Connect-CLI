@@ -298,11 +298,11 @@ func TestBuildUploadFailureErrorIncludesRecoveryGuidance(t *testing.T) {
 			state := "FAILED"
 			details := make([]asc.StateDetail, 0, len(tt.codes))
 			for _, code := range tt.codes {
-				message := tt.message
-				if message == "" {
-					message = tt.description
-				}
-				details = append(details, asc.StateDetail{Code: code, Description: tt.description, Message: message})
+				details = append(details, asc.StateDetail{
+					Code:        code,
+					Description: tt.description,
+					Message:     tt.message,
+				})
 			}
 			upload := &asc.BuildUploadResponse{}
 			upload.Data.ID = "upload-1"
@@ -323,6 +323,35 @@ func TestBuildUploadFailureErrorIncludesRecoveryGuidance(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBuildUploadFailureErrorCombinesIndependentVersionRecoveries(t *testing.T) {
+	state := "FAILED"
+	upload := &asc.BuildUploadResponse{}
+	upload.Data.ID = "upload-1"
+	upload.Data.Attributes.State = &asc.AppMediaAssetState{
+		State: &state,
+		Errors: []asc.StateDetail{
+			{
+				Code:        "90054",
+				Description: "The value for CFBundleVersion must be a period-separated list of at most three non-negative integers.",
+			},
+			{
+				Code:        "90055",
+				Description: "The bundle identifier does not match the selected app.",
+			},
+		},
+	}
+
+	err := buildUploadFailureError(upload)
+	if err == nil {
+		t.Fatal("expected failure error")
+	}
+	for _, want := range []string{"CFBundleVersion", "period-separated list", "bundle identifier", "selected app"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected %q in %q", want, err)
+		}
 	}
 }
 

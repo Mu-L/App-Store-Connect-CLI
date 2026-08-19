@@ -291,15 +291,15 @@ func buildUploadFailureError(upload *asc.BuildUploadResponse) error {
 var usageDescriptionKeyPattern = regexp.MustCompile(`\b[A-Za-z0-9_]+UsageDescription\b`)
 
 func buildUploadRecoveryGuidance(details []asc.StateDetail) string {
+	if recovery, ok := buildUploadVersionRecoveryGuidance(details); ok {
+		return recovery
+	}
+
 	switch {
 	case allStateDetailCodesIn(details, "90062", "90186", "90478"):
 		return "increase the marketing version (CFBundleShortVersionString), rebuild, and upload again"
 	case allStateDetailCodesIn(details, "90189"):
 		return "increase the build number (CFBundleVersion), rebuild, and upload again"
-	case allStateDetailCodesIn(details, "90054") && stateDetailTextContains(details, "cfbundleversion"):
-		return "format CFBundleVersion as a period-separated list of at most three non-negative integers, rebuild, and upload again"
-	case allStateDetailCodesIn(details, "90054", "90055") && stateDetailTextContains(details, "bundle identifier"):
-		return "verify that the artifact's bundle identifier matches the selected app; rebuild with the correct identifier or select the intended app"
 	case allStateDetailCodesIn(details, "90683"):
 		keys := missingUsageDescriptionKeys(details)
 		if len(keys) > 0 {
@@ -315,6 +315,34 @@ func buildUploadRecoveryGuidance(details []asc.StateDetail) string {
 	default:
 		return ""
 	}
+}
+
+func buildUploadVersionRecoveryGuidance(details []asc.StateDetail) (string, bool) {
+	if !allStateDetailCodesIn(details, "90054", "90055") {
+		return "", false
+	}
+
+	invalidBuildNumber := false
+	bundleIdentifierMismatch := false
+	for _, detail := range details {
+		switch {
+		case strings.TrimSpace(detail.Code) == "90054" && stateDetailTextContains([]asc.StateDetail{detail}, "cfbundleversion"):
+			invalidBuildNumber = true
+		case stateDetailTextContains([]asc.StateDetail{detail}, "bundle identifier"):
+			bundleIdentifierMismatch = true
+		default:
+			return "", false
+		}
+	}
+
+	recoveries := make([]string, 0, 2)
+	if invalidBuildNumber {
+		recoveries = append(recoveries, "format CFBundleVersion as a period-separated list of at most three non-negative integers, rebuild, and upload again")
+	}
+	if bundleIdentifierMismatch {
+		recoveries = append(recoveries, "verify that the artifact's bundle identifier matches the selected app; rebuild with the correct identifier or select the intended app")
+	}
+	return strings.Join(recoveries, "; "), len(recoveries) > 0
 }
 
 // allStateDetailCodesIn reports whether every received error belongs to one
