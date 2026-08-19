@@ -20,8 +20,10 @@ const (
 	structuredCredentialName    = `(?:` + sensitivePrefixedName + `|` + credentialHeaderName + `|` + webAuthStructuredCredential + `)`
 	singleLineQuotedValue       = `(?:"(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*')`
 	shellCommandSubstitution    = `(?:\x60(?:\\.|[^\x60\\\r\n])*\x60|\$\((?:\\.|[^)\\\r\n])*\))`
+	fishCommandSubstitution     = `\((?:\\.|[^)\\\r\n])*\)`
 	singleLineUnquotedFragment  = `(?:\\[^\r\n]|[^\s\\;&|<>()"'])+`
 	singleLineShellWord         = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + singleLineUnquotedFragment + `)+`
+	fishShellWord               = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + fishCommandSubstitution + `|` + singleLineUnquotedFragment + `)+`
 	singleLineShellTerminator   = `(?:[ \t;&|<>()]|\r?\n|\z)`
 	escapedQuotedCharacter      = `\\(?:\r?\n|[^\r\n])`
 	escapeAwareQuotedValue      = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*"|\$?'(?:''|` + escapedQuotedCharacter + `|[^'\\])*')`
@@ -52,6 +54,7 @@ var (
 	escapedCookieJarPattern = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*\{`)
 	rawCredentialObject     = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
 	escapedCredentialObject = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	booleanSecretMarker     = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1)(` + singleLineShellTerminator + `)`)
 )
 
 var structuredCookieValueRedactionRules = []redactionRule{
@@ -69,6 +72,10 @@ var structuredCookieValueRedactionRules = []redactionRule{
 // unquoted fragments cannot leak, and an unmatched quote in an earlier log
 // line cannot claim a later command's opening quote as its closer.
 var singleLineShellWordRedactionRules = []redactionRule{
+	{
+		pattern:     regexp.MustCompile(`(?im)(^|[;&|][ \t]*)([ \t]*set[ \t]+(?:(?:--|-[a-z]+|--[a-z][a-z-]*)[ \t]+)*` + sensitivePrefixedName + `\b[ \t]+)` + fishShellWord + `(?:[ \t]+` + fishShellWord + `)*`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
 	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}` + sensitiveFlagName + `\b[ \t]+)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`),
 		replacement: `${1}${2}` + redactionMarker + `${3}`,
@@ -268,6 +275,7 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	redacted, booleanMarkerProtection := protectBooleanSecretMarkers(redacted)
 	for _, rule := range singleLineShellWordRedactionRules {
 		next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
 		if next != redacted {
@@ -282,7 +290,23 @@ func redactSensitiveText(value string) (string, bool) {
 			redacted = next
 		}
 	}
+	if booleanMarkerProtection != "" {
+		redacted = strings.ReplaceAll(redacted, booleanMarkerProtection, "")
+	}
 	return redacted, changed
+}
+
+func protectBooleanSecretMarkers(value string) (string, string) {
+	if !booleanSecretMarker.MatchString(value) {
+		return value, ""
+	}
+
+	protection := "\x00"
+	for strings.Contains(value, protection) {
+		protection += "\x00"
+	}
+	protected := booleanSecretMarker.ReplaceAllString(value, `${1}${2}`+protection+`${3}${4}${5}`)
+	return protected, protection
 }
 
 func redactStructuredCredentialObjects(value string) (string, bool) {

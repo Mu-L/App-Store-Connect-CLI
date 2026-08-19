@@ -374,6 +374,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `ASC_SLACK_WEBHOOK=[REDACTED] asc notify slack --message ready`,
 		},
 		{
+			name:  "Fish exported credential assignment",
+			input: `set -x ASC_SIGNING_SYNC_PASSWORD opaque-lowercase-secret; asc signing sync pull`,
+			want:  `set -x ASC_SIGNING_SYNC_PASSWORD [REDACTED]; asc signing sync pull`,
+		},
+		{
 			name:  "quoted custom secret header",
 			input: `asc web xcode-cloud usage alert --webhook-header "X-API-Key: supersecret" --webhook https://example.test`,
 			want:  `asc web xcode-cloud usage alert --webhook-header "X-API-Key: [REDACTED]" --webhook [REDACTED]`,
@@ -475,12 +480,12 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 		{
 			name:  "boolean secret marker with explicit true value",
 			input: `asc web xcode-cloud env-vars create --value s3cret --secret=true`,
-			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --secret=[REDACTED]`,
+			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --secret=true`,
 		},
 		{
 			name:  "boolean secret marker with explicit numeric true value",
 			input: `asc web xcode-cloud env-vars create --secret=1 --value s3cret`,
-			want:  `asc web xcode-cloud env-vars create --secret=[REDACTED] --value [REDACTED]`,
+			want:  `asc web xcode-cloud env-vars create --secret=1 --value [REDACTED]`,
 		},
 		{
 			name:  "boolean secret marker does not affect another line",
@@ -696,14 +701,13 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 	}
 }
 
-func TestRedactSensitiveTextFalseSecretMarkerPreservesValue(t *testing.T) {
+func TestRedactSensitiveTextPreservesFalseSecretMarkerAndValue(t *testing.T) {
 	const publicValue = "public-value"
 	input := "asc web xcode-cloud env-vars create --value " + publicValue + " --secret=false"
-	want := "asc web xcode-cloud env-vars create --value " + publicValue + " --secret=[REDACTED]"
 
 	got, changed := redactSensitiveText(input)
-	if !changed || got != want {
-		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want %q", input, got, changed, want)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
 	}
 }
 
@@ -1040,12 +1044,13 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"marked-value", "authorization-credential", "structured-secret", "continued-secret", "pretty-structured-secret", "camel-structured-secret", "escaped-structured-secret"}
+	secrets := []string{"marked-value", "authorization-credential", "structured-secret", "continued-secret", "pretty-structured-secret", "camel-structured-secret", "escaped-structured-secret", "fish-assignment-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", "asc web xcode-cloud env-vars create --value "+secrets[0]+" --secret=true\n"+
-			"asc web xcode-cloud env-vars create --value "+secrets[3]+" \\\n  --secret",
+			"asc web xcode-cloud env-vars create --value "+secrets[3]+" \\\n  --secret\n"+
+			"set --global --export ASC_SIGNING_SYNC_PASSWORD "+secrets[7]+"; asc signing sync pull",
 		"--actual", `Authorization: ApiKey `+secrets[1]+"\n"+`{"MY_CLIENT_SECRET":"`+secrets[2]+`"}`+"\n"+
 			"{\n  \"client_secret\":\n    \""+secrets[4]+"\"\n}\n"+
 			`{"demoAccountPassword":"`+secrets[5]+`"}`+"\n"+
@@ -1068,8 +1073,9 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
 	}
 	for _, want := range []string{
-		"--value [REDACTED] --secret=[REDACTED]",
+		"--value [REDACTED] --secret=true",
 		"--value [REDACTED] \\\n  --secret",
+		"set --global --export ASC_SIGNING_SYNC_PASSWORD [REDACTED]; asc signing sync pull",
 		"Authorization: [REDACTED]",
 		`{"MY_CLIENT_SECRET":"[REDACTED]"}`,
 		"\"client_secret\":\n    \"[REDACTED]\"",
