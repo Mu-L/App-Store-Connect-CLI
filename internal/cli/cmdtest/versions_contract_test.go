@@ -168,7 +168,7 @@ func TestVersionsViewSelectorValidationBeforeClient(t *testing.T) {
 		{
 			name:       "invalid platform",
 			args:       []string{"versions", "view", "--app", "app-1", "--version", "1.2.3", "--platform", "ANDROID"},
-			wantStderr: "--platform must be one of: IOS, MAC_OS, TV_OS, VISION_OS",
+			wantStderr: "versions view: --platform must be one of: IOS, MAC_OS, TV_OS, VISION_OS",
 		},
 	}
 
@@ -190,13 +190,30 @@ func TestVersionsViewSelectorValidationBeforeClient(t *testing.T) {
 			if stdout != "" {
 				t.Errorf("stdout = %q, want empty", stdout)
 			}
-			if !strings.Contains(stderr, test.wantStderr) {
-				t.Errorf("stderr = %q, want substring %q", stderr, test.wantStderr)
+			errorLine, _, _ := strings.Cut(stderr, "\n")
+			if got := errorLine + "\n"; got != "Error: "+test.wantStderr+"\n" {
+				t.Errorf("stderr error line = %q, want %q; full stderr = %q", got, "Error: "+test.wantStderr+"\n", stderr)
 			}
 			if clientFactoryCalls != 0 {
 				t.Errorf("client factory calls = %d, want 0", clientFactoryCalls)
 			}
 		})
+	}
+}
+
+func TestVersionsViewSelectorFlagsAreExperimental(t *testing.T) {
+	cmd := findSubcommand(RootCommand("test"), "versions", "view")
+	if cmd == nil {
+		t.Fatal("versions view command not found")
+	}
+	for _, name := range []string{"app", "version", "platform"} {
+		flag := cmd.FlagSet.Lookup(name)
+		if flag == nil {
+			t.Fatalf("--%s flag not found", name)
+		}
+		if !strings.HasPrefix(flag.Usage, "[experimental] ") {
+			t.Fatalf("--%s usage = %q, want [experimental] prefix", name, flag.Usage)
+		}
 	}
 }
 

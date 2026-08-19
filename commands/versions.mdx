@@ -77,8 +77,23 @@ View details for an app store version.
 In 1.0, the deprecated `asc versions get` alias was removed. Use
 `asc versions view` as the canonical command.
 
-<ParamField path="--version-id" type="string" required>
-  App Store version ID
+Provide either `--version-id`, or the experimental `--app` and `--version`
+selectors. `--platform` defaults to `IOS` for selector-based lookup.
+
+<ParamField path="--version-id" type="string">
+  App Store version ID. Cannot be combined with the alternate selectors.
+</ParamField>
+
+<ParamField path="--app" type="string">
+  **[experimental]** App Store Connect app ID (or `ASC_APP_ID`)
+</ParamField>
+
+<ParamField path="--version" type="string">
+  **[experimental]** Version string used with `--app`
+</ParamField>
+
+<ParamField path="--platform" type="string" default="IOS">
+  **[experimental]** Platform used with `--app` and `--version`: `IOS`, `MAC_OS`, `TV_OS`, or `VISION_OS`
 </ParamField>
 
 <ParamField path="--include-build" type="boolean" default="false">
@@ -97,6 +112,8 @@ In 1.0, the deprecated `asc versions get` alias was removed. Use
 
 ```bash  theme={null}
 asc versions view --version-id "VERSION_ID"
+asc versions view --app "123456789" --version "1.2.3"
+asc versions view --app "123456789" --version "1.2.3" --platform MAC_OS
 asc versions view --version-id "VERSION_ID" --include-build --include-submission
 asc versions view --version-id "VERSION_ID" --include "ageRatingDeclaration,appStoreReviewDetail"
 ```

@@ -145,9 +145,9 @@ func VersionsViewCommand() *ffcli.Command {
 
 	versionID := fs.String("version-id", "", "App Store version ID")
 	legacyID := shared.BindDeprecatedStringFlagAlias(fs, "id", "version-id")
-	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID)")
-	versionString := fs.String("version", "", "Version string used with --app")
-	platform := fs.String("platform", "IOS", "Platform used with --app and --version: IOS, MAC_OS, TV_OS, VISION_OS")
+	appID := fs.String("app", "", "[experimental] App Store Connect app ID (or ASC_APP_ID)")
+	versionString := fs.String("version", "", "[experimental] Version string used with --app")
+	platform := fs.String("platform", "IOS", "[experimental] Platform used with --app and --version: IOS, MAC_OS, TV_OS, VISION_OS")
 	includeBuild := fs.Bool("include-build", false, "Include attached build information")
 	includeSubmission := fs.Bool("include-submission", false, "Include submission information")
 	include := fs.String("include", "", "Include related resources: "+strings.Join(appStoreVersionIncludeList(), ", "))
