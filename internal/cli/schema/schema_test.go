@@ -129,8 +129,31 @@ func TestPathToActionDotNotation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
-			if got := pathToActionDotNotation(tt.method, tt.path); got != tt.want {
+			if got := pathToActionDotNotation(Endpoint{Method: tt.method, Path: tt.path}); got != tt.want {
 				t.Fatalf("pathToActionDotNotation(%q, %q) = %q, want %q", tt.method, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPathToActionDotNotationUsesOperationCardinality(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		getAction string
+		want      string
+	}{
+		{name: "to one related", path: "/v1/builds/{id}/appStoreVersion", getAction: "get", want: "builds.appStoreVersion.get"},
+		{name: "to many related", path: "/v1/apps/{id}/builds", getAction: "list", want: "apps.builds.list"},
+		{name: "to one relationship", path: "/v1/builds/{id}/relationships/appStoreVersion", getAction: "get", want: "builds.relationships.appStoreVersion.get"},
+		{name: "to many relationship", path: "/v1/apps/{id}/relationships/builds", getAction: "list", want: "apps.relationships.builds.list"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			endpoint := Endpoint{Method: "GET", Path: tt.path, getAction: tt.getAction}
+			if got := pathToActionDotNotation(endpoint); got != tt.want {
+				t.Fatalf("pathToActionDotNotation() = %q, want %q", got, tt.want)
 			}
 		})
 	}

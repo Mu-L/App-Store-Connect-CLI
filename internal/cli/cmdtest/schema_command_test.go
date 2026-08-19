@@ -50,7 +50,6 @@ func TestSchemaSupportsMethodFlagAfterQuery(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("expected empty stderr, got %q", stderr)
 	}
-
 	var endpoints []schemaEndpoint
 	if err := json.Unmarshal([]byte(stdout), &endpoints); err != nil {
 		t.Fatalf("unmarshal schema output: %v\nstdout=%s", err, stdout)
@@ -76,6 +75,9 @@ func TestSchemaMethodAndPathQueryIsExact(t *testing.T) {
 	}
 	if stderr != "" {
 		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if strings.Contains(stdout, "getAction") {
+		t.Fatalf("expected index-only cardinality metadata to remain internal, got %q", stdout)
 	}
 
 	var endpoints []schemaEndpoint
@@ -108,6 +110,29 @@ func TestSchemaSupportsDocumentedDotNotation(t *testing.T) {
 	want := []schemaEndpoint{{Method: "GET", Path: "/v1/apps"}}
 	if len(endpoints) != len(want) || endpoints[0] != want[0] {
 		t.Fatalf("expected list endpoint %#v, got %#v", want, endpoints)
+	}
+}
+
+func TestSchemaDotNotationUsesRelatedResourceCardinality(t *testing.T) {
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = rootcmd.Run([]string{"schema", "builds.appStoreVersion.get"}, "1.2.3")
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d with stderr %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	var endpoints []schemaEndpoint
+	if err := json.Unmarshal([]byte(stdout), &endpoints); err != nil {
+		t.Fatalf("unmarshal schema output: %v\nstdout=%s", err, stdout)
+	}
+	want := []schemaEndpoint{{Method: "GET", Path: "/v1/builds/{id}/appStoreVersion"}}
+	if len(endpoints) != len(want) || endpoints[0] != want[0] {
+		t.Fatalf("expected to-one endpoint %#v, got %#v", want, endpoints)
 	}
 }
 

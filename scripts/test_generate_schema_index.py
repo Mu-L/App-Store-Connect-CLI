@@ -78,6 +78,29 @@ class GenerateSchemaIndexTests(unittest.TestCase):
             endpoint["requestRelationships"]["reviewSubmission"]["required"]
         )
 
+    def test_build_index_includes_action_for_get_cardinality(self) -> None:
+        endpoints = generate_schema_index.build_index(self.spec)
+        endpoint = next(
+            endpoint
+            for endpoint in endpoints
+            if endpoint["method"] == "GET"
+            and endpoint["path"] == "/v1/builds/{id}/appStoreVersion"
+        )
+        self.assertEqual(endpoint["getAction"], "get")
+
+    def test_every_get_operation_has_an_indexed_action(self) -> None:
+        endpoints = generate_schema_index.build_index(self.spec)
+        get_endpoints = [
+            endpoint for endpoint in endpoints if endpoint["method"] == "GET"
+        ]
+        self.assertGreater(len(get_endpoints), 0)
+        self.assertTrue(
+            all(
+                endpoint.get("getAction") in {"get", "list"}
+                for endpoint in get_endpoints
+            )
+        )
+
     def test_every_request_relationship_in_snapshot_is_indexed(self) -> None:
         endpoints = generate_schema_index.build_index(self.spec)
         indexed = {

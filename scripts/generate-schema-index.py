@@ -160,6 +160,20 @@ def compact_parameters(
     return compact
 
 
+def get_operation_action(operation_id: str):
+    suffix = operation_id.rsplit("_", 1)[-1]
+    if suffix in {
+        "getInstance",
+        "getToOneRelated",
+        "getToOneRelationship",
+        "getMetrics",
+    }:
+        return "get"
+    if suffix in {"getCollection", "getToManyRelated", "getToManyRelationship"}:
+        return "list"
+    return None
+
+
 def build_index(spec: dict) -> list[dict]:
     schemas = spec.get("components", {}).get("schemas", {})
     parameter_components = spec.get("components", {}).get("parameters", {})
@@ -172,6 +186,11 @@ def build_index(spec: dict) -> list[dict]:
                 continue
 
             entry: dict = {"method": method.upper(), "path": path}
+
+            if method == "get":
+                get_action = get_operation_action(details.get("operationId", ""))
+                if get_action:
+                    entry["getAction"] = get_action
 
             params = compact_parameters(
                 parameter_components, path_params, details.get("parameters", [])

@@ -27,6 +27,12 @@ type Endpoint struct {
 	RequestAttributes    map[string]any                 `json:"requestAttributes,omitempty"`
 	RequestRelationships map[string]RequestRelationship `json:"requestRelationships,omitempty"`
 	ResponseSchema       string                         `json:"responseSchema,omitempty"`
+	getAction            string
+}
+
+type indexedEndpoint struct {
+	Endpoint
+	GetAction string `json:"getAction,omitempty"`
 }
 
 // RequestRelationship describes a JSON:API relationship accepted by a request.
@@ -45,9 +51,16 @@ type Parameter struct {
 }
 
 func loadIndex() ([]Endpoint, error) {
-	var endpoints []Endpoint
-	if err := json.Unmarshal(schemaIndexData, &endpoints); err != nil {
+	var indexed []indexedEndpoint
+	if err := json.Unmarshal(schemaIndexData, &indexed); err != nil {
 		return nil, fmt.Errorf("schema index: %w", err)
+	}
+
+	endpoints := make([]Endpoint, 0, len(indexed))
+	for _, item := range indexed {
+		endpoint := item.Endpoint
+		endpoint.getAction = item.GetAction
+		endpoints = append(endpoints, endpoint)
 	}
 	return endpoints, nil
 }
@@ -68,7 +81,7 @@ func matchEndpoint(e Endpoint, query string) bool {
 
 	q := strings.ToLower(strings.TrimSpace(query))
 	if isActionDotNotationQuery(q) {
-		return strings.EqualFold(pathToActionDotNotation(e.Method, e.Path), q)
+		return strings.EqualFold(pathToActionDotNotation(e), q)
 	}
 	if strings.Contains(strings.ToLower(e.Path), q) {
 		return true
@@ -81,7 +94,7 @@ func matchEndpoint(e Endpoint, query string) bool {
 	if strings.Contains(strings.ToLower(dotNotation), q) {
 		return true
 	}
-	actionDotNotation := pathToActionDotNotation(e.Method, e.Path)
+	actionDotNotation := pathToActionDotNotation(e)
 	return strings.Contains(strings.ToLower(actionDotNotation), q)
 }
 
@@ -137,23 +150,16 @@ func pathToDotNotation(method, path string) string {
 	return result
 }
 
-func pathToActionDotNotation(method, path string) string {
-	dotPath := pathToDotNotation("", path)
+func pathToActionDotNotation(endpoint Endpoint) string {
+	dotPath := pathToDotNotation("", endpoint.Path)
 	if dotPath == "" {
 		return ""
 	}
 
-	action := strings.ToLower(method)
-	switch method {
+	action := strings.ToLower(endpoint.Method)
+	switch endpoint.Method {
 	case http.MethodGet:
-		action = "list"
-		trimmed := strings.TrimSuffix(path, "/")
-		if lastSlash := strings.LastIndex(trimmed, "/"); lastSlash >= 0 {
-			lastSegment := trimmed[lastSlash+1:]
-			if strings.HasPrefix(lastSegment, "{") && strings.HasSuffix(lastSegment, "}") {
-				action = "get"
-			}
-		}
+		action = getEndpointAction(endpoint)
 	case http.MethodPost:
 		action = "create"
 	case http.MethodPatch:
@@ -166,6 +172,22 @@ func pathToActionDotNotation(method, path string) string {
 		return dotPath
 	}
 	return dotPath + "." + action
+}
+
+func getEndpointAction(endpoint Endpoint) string {
+	switch endpoint.getAction {
+	case "get", "list":
+		return endpoint.getAction
+	}
+
+	trimmed := strings.TrimSuffix(endpoint.Path, "/")
+	if lastSlash := strings.LastIndex(trimmed, "/"); lastSlash >= 0 {
+		lastSegment := trimmed[lastSlash+1:]
+		if strings.HasPrefix(lastSegment, "{") && strings.HasSuffix(lastSegment, "}") {
+			return "get"
+		}
+	}
+	return "list"
 }
 
 func normalizeMethodFilter(raw string) (string, error) {
