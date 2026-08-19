@@ -61,6 +61,91 @@ func TestVersionsListIncludeEmitsIncludeQuery(t *testing.T) {
 	}
 }
 
+func TestVersionsListRedactsIncludedReviewCredentialsByDefault(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	t.Setenv("ASC_APP_ID", "")
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.URL.Query().Get("include"); got != "appStoreReviewDetail" {
+			t.Fatalf("expected include=appStoreReviewDetail, got %q", got)
+		}
+		body := `{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"versionString":"1.0","platform":"IOS"}}],"included":[` +
+			includedAppStoreReviewDetailJSON() + `]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"versions", "list", "--app", "123456789",
+			"--include", "appStoreReviewDetail", "--output", "json",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	assertNoSentinel(t, "stdout", appStoreDemoPasswordSentinel, stdout)
+	assertNoSentinel(t, "stderr", appStoreDemoPasswordSentinel, stderr)
+	if !strings.Contains(stdout, redactedDemoPasswordText) {
+		t.Fatalf("expected redacted review credential, got %q", stdout)
+	}
+}
+
+func TestVersionsListIncludesReviewCredentialsWithExplicitOptIn(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	t.Setenv("ASC_APP_ID", "")
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"versionString":"1.0","platform":"IOS"}}],"included":[` +
+			includedAppStoreReviewDetailJSON() + `]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"versions", "list", "--app", "123456789",
+			"--include", "appStoreReviewDetail", "--output", "json",
+			"--include-sensitive",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	if !strings.Contains(stdout, appStoreDemoPasswordSentinel) {
+		t.Fatalf("expected real review credential with --include-sensitive, got %q", stdout)
+	}
+	if !strings.Contains(stderr, includeSensitiveWarningText) {
+		t.Fatalf("expected plaintext-secret warning, got %q", stderr)
+	}
+}
+
 func TestVersionsListPaginateKeepsInclude(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
@@ -74,14 +159,14 @@ func TestVersionsListPaginateKeepsInclude(t *testing.T) {
 	requestCount := 0
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		requestCount++
-		if got := req.URL.Query().Get("include"); got != "build" {
-			t.Fatalf("expected include=build on request %d, got %q", requestCount, got)
+		if got := req.URL.Query().Get("include"); got != "build,appStoreReviewDetail" {
+			t.Fatalf("expected include=build,appStoreReviewDetail on request %d, got %q", requestCount, got)
 		}
 
 		var body string
 		switch requestCount {
 		case 1:
-			body = `{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"versionString":"1.0","platform":"IOS"}}],"included":[{"type":"builds","id":"build-1","attributes":{"version":"42"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps/123456789/appStoreVersions?cursor=AQ&include=build"}}`
+			body = `{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"versionString":"1.0","platform":"IOS"}}],"included":[{"type":"builds","id":"build-1","attributes":{"version":"42"}},` + includedAppStoreReviewDetailJSON() + `],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps/123456789/appStoreVersions?cursor=AQ&include=build%2CappStoreReviewDetail"}}`
 		case 2:
 			body = `{"data":[{"type":"appStoreVersions","id":"version-2","attributes":{"versionString":"1.1","platform":"IOS"}}],"included":[{"type":"builds","id":"build-2","attributes":{"version":"43"}}]}`
 		default:
@@ -98,7 +183,7 @@ func TestVersionsListPaginateKeepsInclude(t *testing.T) {
 	root.FlagSet.SetOutput(io.Discard)
 
 	stdout, stderr := captureOutput(t, func() {
-		if err := root.Parse([]string{"versions", "list", "--app", "123456789", "--include", "build", "--paginate"}); err != nil {
+		if err := root.Parse([]string{"versions", "list", "--app", "123456789", "--include", "build,appStoreReviewDetail", "--paginate"}); err != nil {
 			t.Fatalf("parse error: %v", err)
 		}
 		if err := root.Run(context.Background()); err != nil {
@@ -116,6 +201,10 @@ func TestVersionsListPaginateKeepsInclude(t *testing.T) {
 		if !strings.Contains(stdout, `"id":"`+buildID+`"`) {
 			t.Fatalf("expected included build %s in aggregated output, got %q", buildID, stdout)
 		}
+	}
+	assertNoSentinel(t, "paginated stdout", appStoreDemoPasswordSentinel, stdout)
+	if !strings.Contains(stdout, redactedDemoPasswordText) {
+		t.Fatalf("expected paginated review credential to be redacted, got %q", stdout)
 	}
 }
 
