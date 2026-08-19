@@ -237,6 +237,25 @@ func TestBuildsListIncludeRejectsUnknownValue(t *testing.T) {
 	captured.assertNoRequest(t)
 }
 
+func TestBuildsListIncludeRejectsBlankCSV(t *testing.T) {
+	captured := buildsListQuerySurfaceStub(t)
+
+	_, stderr, err := runBuildsListQuerySurface(
+		t,
+		"builds", "list",
+		"--app", "123456789",
+		"--include", ",",
+	)
+
+	if got := rootcmd.ExitCodeFromError(err); got != rootcmd.ExitUsage {
+		t.Fatalf("exit code = %d, want %d (err=%v)", got, rootcmd.ExitUsage, err)
+	}
+	if !strings.Contains(stderr, "--include must be a comma-separated list of") {
+		t.Fatalf("expected include validation error, got %q", stderr)
+	}
+	captured.assertNoRequest(t)
+}
+
 func TestBuildsListRejectsQueryFlagsCombinedWithNext(t *testing.T) {
 	const nextURL = "https://api.appstoreconnect.apple.com/v1/builds?cursor=PAGE2&filter%5Bapp%5D=123456789&include=preReleaseVersion"
 

@@ -524,9 +524,13 @@ func resolveBuildsListInclude(value string) ([]string, error) {
 	if err := shared.ValidateInclude(value, buildsListIncludeValues...); err != nil {
 		return nil, shared.UsageError(err.Error())
 	}
+	items := shared.SplitUniqueCSV(value)
+	if strings.TrimSpace(value) != "" && len(items) == 0 {
+		return nil, shared.UsageErrorf("--include must be a comma-separated list of: %s", strings.Join(buildsListIncludeValues, ", "))
+	}
 
 	include := []string{buildsListDefaultInclude}
-	for _, item := range shared.SplitUniqueCSV(value) {
+	for _, item := range items {
 		if item != buildsListDefaultInclude {
 			include = append(include, item)
 		}
