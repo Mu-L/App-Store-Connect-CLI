@@ -27,6 +27,7 @@ func TestKeywordsScoreCommandHelpDocumentsSourcesAndDesignDoc(t *testing.T) {
 		"--ad-account",
 		"--genre",
 		"unavailable",
+		"latest complete week",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("help missing %q:\n%s", want, joined)
@@ -34,6 +35,9 @@ func TestKeywordsScoreCommandHelpDocumentsSourcesAndDesignDoc(t *testing.T) {
 	}
 	if !strings.HasSuffix(command.ShortHelp, "[experimental]") {
 		t.Fatalf("ShortHelp = %q, want experimental suffix", command.ShortHelp)
+	}
+	if strings.Contains(joined, "30-day") {
+		t.Fatalf("help describes a 30-day popularity window, but the collector reads one complete week:\n%s", joined)
 	}
 }
 
@@ -387,6 +391,31 @@ func TestCollectKeywordPopularityDoesNotRequireApp(t *testing.T) {
 	}
 	if status.Status != keywordStatusAvailable || len(popularity) != 1 {
 		t.Fatalf("popularity = %+v, status = %+v", popularity, status)
+	}
+}
+
+func TestCollectKeywordPopularityNormalizesEquivalentTerms(t *testing.T) {
+	previous := collectSearchPopularityForKeywords
+	t.Cleanup(func() { collectSearchPopularityForKeywords = previous })
+	collectSearchPopularityForKeywords = func(context.Context, string, string, ads.SearchOptimizationRequest) ([]ads.SearchPopularity, error) {
+		return []ads.SearchPopularity{
+			{Term: "focus timer", Week: "2026-08-08", Popularity5: intPtr(4)},
+			{Term: "ＨＡＢＩＴ　ＴＲＡＣＫＥＲ", Week: "2026-08-08", Popularity5: intPtr(3)},
+		}, nil
+	}
+
+	popularity, status := collectKeywordPopularity(context.Background(), keywordPopularityRequest{
+		Keywords: []string{"focus-timer", "habit tracker"},
+		Country:  "US",
+		Genre:    "PRODUCTIVITY_UTILITIES",
+	})
+	if status.Status != keywordStatusAvailable {
+		t.Fatalf("status = %+v", status)
+	}
+	for _, keyword := range []string{"focus-timer", "habit tracker"} {
+		if popularity[keyword].Popularity5 == nil {
+			t.Fatalf("popularity[%q] = %+v, want a normalized match", keyword, popularity[keyword])
+		}
 	}
 }
 

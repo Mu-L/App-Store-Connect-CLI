@@ -71,7 +71,9 @@ zero, a default, or an estimate:
 - If competitor metadata cannot be fetched, the two date-derived signals fall
   back to a documented one-year window (below) and the source is marked
   unavailable. The affected `rawSignals` entries carry empty date strings, so
-  the degradation is visible in the output rather than implied.
+  the degradation is visible in the output rather than implied. A partial
+  lookup remains available when it returns some metadata, but its source error
+  reports how many requested app IDs were omitted.
 - A keyword whose own search fails becomes an `unavailable` row with its error.
   Its `difficultyScore`, `minDifficultyScore`, `isBrandKeyword`, and `appCount`
   serialize as explicit `null` rather than as zeros. A command fails outright
@@ -115,7 +117,8 @@ are normalized first: NFKC normalization, every non-letter/number/mark rune
 replaced with a space, lowercased, and whitespace collapsed. NFKC folds
 compatibility forms and unifies different encodings of the same character, but
 it does not strip marks, so accents remain significant (`cafe` does not match
-`café`).
+`café`). Exact-phrase rungs require a contiguous sequence of complete tokens;
+a short keyword such as `ai` does not match inside `mail`.
 
 The ladder is evaluated in order and the first rung that holds wins:
 

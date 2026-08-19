@@ -264,6 +264,10 @@ func TestOptimizeKeywordsScoreJSONShipsRawSignalsAndDegradesPopularity(t *testin
 	if got := sources["app_rank"]; got.Status != "available" || got.Count != 1 {
 		t.Fatalf("rank source = %+v", got)
 	}
+	if got := sources["competitor_metadata"]; got.Status != "available" || got.Count != 1 ||
+		!strings.Contains(got.Error, "lookup omitted metadata for 4 of 5 requested app IDs") {
+		t.Fatalf("metadata source = %+v, want partial coverage to be explicit", got)
+	}
 
 	var raw struct {
 		Rows []map[string]json.RawMessage `json:"rows"`

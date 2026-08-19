@@ -59,7 +59,7 @@ invented value:
                produce a difficulty score.
   Popularity   Official Apple Ads country-and-genre search demand. It requires
                --genre plus Apple Ads credentials through --ad-account or
-               --ads-profile. It reads the most recent published 30-day window.
+               --ads-profile. It reads the latest complete week.
   Rank         This app's position in the public result window, added only
                when --app is set.
 
@@ -303,6 +303,7 @@ func hydrateCompetitorMetadata(
 	metadata := make(map[string]publicAppMetadata, len(ids))
 	failures := make([]error, 0, len(results))
 	failedChunks := 0
+	omittedIDs := 0
 	for _, result := range results {
 		if result.Err != nil {
 			failedChunks++
@@ -312,12 +313,28 @@ func hydrateCompetitorMetadata(
 		for appID, app := range result.Value {
 			metadata[appID] = app
 		}
+		for _, appID := range strings.Split(result.Keyword, ",") {
+			if _, ok := result.Value[appID]; !ok {
+				omittedIDs++
+			}
+		}
+	}
+	coverageErr := representativeKeywordError(failures)
+	incompleteBatches := failedChunks
+	if omittedIDs > 0 {
+		incompleteBatches++
+		omissionErr := fmt.Errorf("lookup omitted metadata for %d of %d requested app IDs", omittedIDs, len(ids))
+		if coverageErr == nil {
+			coverageErr = omissionErr
+		} else {
+			coverageErr = fmt.Errorf("%w; %w", omissionErr, coverageErr)
+		}
 	}
 	return metadata, keywordPartialSourceStatus(
 		keywordSourceMetadata,
 		len(metadata),
-		failedChunks,
-		representativeKeywordError(failures),
+		incompleteBatches,
+		coverageErr,
 	)
 }
 
@@ -367,28 +384,34 @@ func collectKeywordPopularity(
 		}
 	}
 
-	wanted := make(map[string]struct{}, len(request.Keywords))
+	wanted := make(map[string][]string, len(request.Keywords))
 	for _, keyword := range request.Keywords {
-		wanted[keyword] = struct{}{}
+		normalized := normalizeKeywordText(keyword)
+		if normalized != "" {
+			wanted[normalized] = append(wanted[normalized], keyword)
+		}
 	}
 	popularity := make(map[string]asc.KeywordPopularity)
 	for _, row := range rows {
-		term := strings.ToLower(strings.Join(strings.Fields(row.Term), " "))
-		if _, ok := wanted[term]; !ok {
+		term := normalizeKeywordText(row.Term)
+		keywords := wanted[term]
+		if len(keywords) == 0 {
 			continue
 		}
-		// Apple publishes one row per week; keep the most recent one.
-		if existing, ok := popularity[term]; ok && existing.Week >= row.Week {
-			continue
-		}
-		popularity[term] = asc.KeywordPopularity{
-			Country:           row.Country,
-			Genre:             row.Genre,
-			Week:              row.Week,
-			RankInGenre:       row.RankInGenre,
-			PopularityInGenre: row.PopularityInGenre,
-			Popularity100:     row.Popularity100,
-			Popularity5:       row.Popularity5,
+		for _, keyword := range keywords {
+			// Apple publishes one row per week; keep the most recent one.
+			if existing, ok := popularity[keyword]; ok && existing.Week >= row.Week {
+				continue
+			}
+			popularity[keyword] = asc.KeywordPopularity{
+				Country:           row.Country,
+				Genre:             row.Genre,
+				Week:              row.Week,
+				RankInGenre:       row.RankInGenre,
+				PopularityInGenre: row.PopularityInGenre,
+				Popularity100:     row.Popularity100,
+				Popularity5:       row.Popularity5,
+			}
 		}
 	}
 

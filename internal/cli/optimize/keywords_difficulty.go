@@ -218,19 +218,28 @@ func detectKeywordMatch(keyword, title, subtitle string) string {
 	phraseTokens := strings.Fields(phrase)
 
 	switch {
-	case normalizedTitle != "" && strings.Contains(normalizedTitle, phrase):
+	case containsTokenPhrase(normalizedTitle, phrase):
 		return keywordMatchTitleExactPhrase
 	case containsAllTokens(normalizedTitle, phraseTokens):
 		return keywordMatchTitleAllWords
-	case normalizedSubtitle != "" && strings.Contains(normalizedSubtitle, phrase):
+	case containsTokenPhrase(normalizedSubtitle, phrase):
 		return keywordMatchSubtitleExactPhrase
-	case strings.Contains(strings.TrimSpace(normalizedTitle+" "+normalizedSubtitle), phrase):
+	case containsTokenPhrase(strings.TrimSpace(normalizedTitle+" "+normalizedSubtitle), phrase):
 		return keywordMatchCombinedPhrase
 	case containsAllTokens(normalizedSubtitle, phraseTokens):
 		return keywordMatchSubtitleAllWords
 	default:
 		return keywordMatchNone
 	}
+}
+
+// containsTokenPhrase matches a contiguous sequence of complete normalized
+// tokens, never a substring inside a larger token.
+func containsTokenPhrase(value, phrase string) bool {
+	if value == "" || phrase == "" {
+		return false
+	}
+	return strings.Contains(" "+value+" ", " "+phrase+" ")
 }
 
 func containsAllTokens(value string, tokens []string) bool {

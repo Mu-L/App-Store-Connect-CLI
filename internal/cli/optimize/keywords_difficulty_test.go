@@ -286,6 +286,26 @@ func TestDetectKeywordMatchWalksTheLadderInOrder(t *testing.T) {
 			want:     keywordMatchTitleExactPhrase,
 		},
 		{
+			name:    "title substring is not a phrase",
+			keyword: "ai",
+			title:   "Mail",
+			want:    keywordMatchNone,
+		},
+		{
+			name:     "subtitle substring is not a phrase",
+			keyword:  "app",
+			title:    "Pomodoro",
+			subtitle: "Happy Notes",
+			want:     keywordMatchNone,
+		},
+		{
+			name:     "combined substring is not a phrase",
+			keyword:  "ail notes",
+			title:    "Mail",
+			subtitle: "Notes",
+			want:     keywordMatchNone,
+		},
+		{
 			name:    "empty keyword never matches",
 			keyword: "   ",
 			title:   "Focus Timer",
