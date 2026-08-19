@@ -15,6 +15,7 @@ const (
 	sensitiveFlagName       = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passwd|pwd|pass|token)`
 	credentialHeaderName    = `(?:authorization|cookie|set-cookie|scnt|x-apple-id-session-id|csrf|csrf_ts)`
 	traceCredentialHeader   = `(?:cookie|set-cookie|scnt|x-apple-id-session-id|csrf|csrf_ts)`
+	webAuthQueryCredential  = `(?:widgetkey|code|scnt)`
 	singleLineQuotedValue   = `(?:"(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*')`
 	escapedQuotedCharacter  = `\\(?:\r?\n|[^\r\n])`
 	escapeAwareQuotedValue  = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*"|\$?'(?:` + escapedQuotedCharacter + `|[^'\\])*')`
@@ -116,7 +117,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker + `@`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)([?&](?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|` + sensitiveAssignmentName + `)=)[^&#\s"'<>]+`),
+		pattern:     regexp.MustCompile(`(?i)([?&](?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|` + webAuthQueryCredential + `|` + sensitiveAssignmentName + `)=)[^&#\s"'<>]+`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{

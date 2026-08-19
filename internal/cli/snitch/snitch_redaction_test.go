@@ -157,6 +157,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "callback https://example.test/path?password=[REDACTED]&state=ready",
 		},
 		{
+			name:  "web auth query credentials",
+			input: "authenticate https://example.test/auth?widgetKey=widget-secret&code=123456&scnt=continuation-secret&flow=login",
+			want:  "authenticate https://example.test/auth?widgetKey=[REDACTED]&code=[REDACTED]&scnt=[REDACTED]&flow=login",
+		},
+		{
 			name:  "private key URL parameter",
 			input: "callback https://example.test/path?private_key=private-key-value&state=ready",
 			want:  "callback https://example.test/path?private_key=[REDACTED]&state=ready",
@@ -1028,6 +1033,42 @@ func TestSnitchDryRunRedactsPortalCSRFCredentials(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 		}
+	}
+}
+
+func TestSnitchDryRunRedactsWebAuthQueryCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"widget-query-secret",
+		"123456",
+		"continuation-query-secret",
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "curl 'https://example.test/auth?widgetKey="+secrets[0]+"&code="+secrets[1]+"&scnt="+secrets[2]+"&flow=login'",
+		"web auth query credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	want := "curl 'https://example.test/auth?widgetKey=[REDACTED]&code=[REDACTED]&scnt=[REDACTED]&flow=login'"
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 	}
 }
 
