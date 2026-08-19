@@ -573,8 +573,8 @@ func TestBuildsNextBuildNumberVersionFilterIgnoresNearMatchPreReleaseVersions(t 
 
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/100000001/buildUploads":
 			query := req.URL.Query()
-			if query.Get("filter[cfBundleShortVersionString]") != "1.1" {
-				t.Fatalf("expected filter[cfBundleShortVersionString]=1.1, got %q", query.Get("filter[cfBundleShortVersionString]"))
+			if query.Get("filter[cfBundleShortVersionString]") != "1.1,1.1.0" {
+				t.Fatalf("expected filter[cfBundleShortVersionString]=1.1,1.1.0, got %q", query.Get("filter[cfBundleShortVersionString]"))
 			}
 			if query.Get("filter[platform]") != "" {
 				t.Fatalf("did not expect platform filter for version-only next-build-number lookup, got %q", query.Get("filter[platform]"))
@@ -655,8 +655,8 @@ func TestBuildsNextBuildNumberVersionFilterKeepsServerMatchedPreReleaseVersionsW
 
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/100000001/buildUploads":
 			query := req.URL.Query()
-			if query.Get("filter[cfBundleShortVersionString]") != "1.1" {
-				t.Fatalf("expected filter[cfBundleShortVersionString]=1.1, got %q", query.Get("filter[cfBundleShortVersionString]"))
+			if query.Get("filter[cfBundleShortVersionString]") != "1.1,1.1.0" {
+				t.Fatalf("expected filter[cfBundleShortVersionString]=1.1,1.1.0, got %q", query.Get("filter[cfBundleShortVersionString]"))
 			}
 			if query.Get("filter[platform]") != "" {
 				t.Fatalf("did not expect platform filter for version-only next-build-number lookup, got %q", query.Get("filter[platform]"))
@@ -745,8 +745,8 @@ func TestBuildsNextBuildNumberVersionAndPlatformPaginatesPastNearMatches(t *test
 
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/100000001/buildUploads":
 			query := req.URL.Query()
-			if query.Get("filter[cfBundleShortVersionString]") != "1.1" {
-				t.Fatalf("expected filter[cfBundleShortVersionString]=1.1, got %q", query.Get("filter[cfBundleShortVersionString]"))
+			if query.Get("filter[cfBundleShortVersionString]") != "1.1,1.1.0" {
+				t.Fatalf("expected filter[cfBundleShortVersionString]=1.1,1.1.0, got %q", query.Get("filter[cfBundleShortVersionString]"))
 			}
 			if query.Get("filter[platform]") != "IOS" {
 				t.Fatalf("expected filter[platform]=IOS, got %q", query.Get("filter[platform]"))

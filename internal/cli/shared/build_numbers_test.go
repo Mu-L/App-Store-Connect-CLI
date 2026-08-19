@@ -322,3 +322,43 @@ func TestFindPreReleaseVersionIDsDeduplicatesAndSkipsBlankIDs(t *testing.T) {
 		t.Fatalf("expected one normalized ID, got %v", ids)
 	}
 }
+
+func TestResolveLatestBuildSelectionCarriesEveryEquivalentUploadVersion(t *testing.T) {
+	tests := []struct {
+		name       string
+		exactTrain bool
+	}{
+		{name: "exact train exists", exactTrain: true},
+		{name: "no train exists yet"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/v1/preReleaseVersions":
+					if test.exactTrain && req.URL.Query().Get("filter[version]") == "1.2.0" {
+						return buildWaitJSONResponse(`{"data":[{"type":"preReleaseVersions","id":"prv-1","attributes":{"version":"1.2.0","platform":"IOS"}}],"links":{}}`)
+					}
+					return buildWaitJSONResponse(`{"data":[],"links":{}}`)
+				case "/v1/builds":
+					return buildWaitJSONResponse(`{"data":[],"links":{}}`)
+				default:
+					return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+				}
+			})
+
+			selection, err := resolveLatestBuildSelection(context.Background(), client, LatestBuildSelectionOptions{
+				AppID:    "123456789",
+				Version:  "1.2.0",
+				Platform: "IOS",
+			}, true)
+			if err != nil {
+				t.Fatalf("resolveLatestBuildSelection() error: %v", err)
+			}
+			if !slices.Equal(selection.BuildUploadVersions, []string{"1.2.0", "1.2"}) {
+				t.Fatalf("BuildUploadVersions = %v, want every equivalent spelling", selection.BuildUploadVersions)
+			}
+		})
+	}
+}

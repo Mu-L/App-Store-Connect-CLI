@@ -207,20 +207,13 @@ func resolveLatestBuildSelection(ctx context.Context, client *asc.Client, opts L
 	}
 
 	hasPreReleaseFilters := opts.Version != "" || opts.Platform != ""
-	var buildUploadVersions []string
-	if opts.Version != "" {
-		buildUploadVersions = []string{opts.Version}
-	}
+	buildUploadVersions := versionQueryVariants(opts.Version)
 
 	var preReleaseVersionIDs []string
 	if hasPreReleaseFilters {
-		var matchedVersion string
-		preReleaseVersionIDs, matchedVersion, err = findPreReleaseVersionIDsWithMatchedVersion(ctx, client, resolvedAppID, opts.Version, opts.Platform)
+		preReleaseVersionIDs, err = FindPreReleaseVersionIDs(ctx, client, resolvedAppID, opts.Version, opts.Platform)
 		if err != nil {
 			return nil, err
-		}
-		if matchedVersion != "" && matchedVersion != opts.Version {
-			buildUploadVersions = versionQueryVariants(opts.Version)
 		}
 		if len(preReleaseVersionIDs) == 0 && !allowEmpty {
 			if opts.Version != "" && opts.Platform != "" {
@@ -410,17 +403,11 @@ func findHighestProcessedBuildNumber(
 // "1.2" and "1.2.0" as the same version, so when the requested format matches
 // nothing the equivalent format is tried before reporting no match.
 func FindPreReleaseVersionIDs(ctx context.Context, client *asc.Client, appID, version, platform string) ([]string, error) {
-	ids, _, err := findPreReleaseVersionIDsWithMatchedVersion(ctx, client, appID, version, platform)
-	return ids, err
-}
-
-func findPreReleaseVersionIDsWithMatchedVersion(ctx context.Context, client *asc.Client, appID, version, platform string) ([]string, string, error) {
 	requestedVersion := strings.TrimSpace(version)
 
 	variants := versionQueryVariants(requestedVersion)
 	if len(variants) == 0 {
-		ids, err := findPreReleaseVersionIDsForVersion(ctx, client, appID, "", platform)
-		return ids, "", err
+		return findPreReleaseVersionIDsForVersion(ctx, client, appID, "", platform)
 	}
 
 	// The requested format is queried first and wins outright, so an app that
@@ -429,16 +416,16 @@ func findPreReleaseVersionIDsWithMatchedVersion(ctx context.Context, client *asc
 	for _, variant := range variants {
 		ids, err := findPreReleaseVersionIDsForVersion(ctx, client, appID, variant, platform)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		if len(ids) == 0 {
 			continue
 		}
 		noteEquivalentVersionMatch(requestedVersion, variant)
-		return ids, variant, nil
+		return ids, nil
 	}
 
-	return nil, "", nil
+	return nil, nil
 }
 
 func findPreReleaseVersionIDsForVersion(ctx context.Context, client *asc.Client, appID, version, platform string) ([]string, error) {
