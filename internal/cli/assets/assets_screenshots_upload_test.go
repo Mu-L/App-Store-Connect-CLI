@@ -694,7 +694,7 @@ func TestExecuteAppScreenshotUploadSkipExistingRejectsAmbiguousRemoteChecksum(t 
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/appStoreVersionLocalizations/LOC_123/appScreenshotSets":
 			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appScreenshotSets","id":"set-1","attributes":{"screenshotDisplayType":"APP_IPHONE_65"}}],"links":{}}`)
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/appScreenshotSets/set-1/appScreenshots":
-			writeAssetsTestJSON(w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"appScreenshots","id":"duplicate-b","attributes":{"fileName":"copy.png","sourceFileChecksum":%q}},{"type":"appScreenshots","id":"duplicate-a","attributes":{"fileName":"original.png","sourceFileChecksum":%q}}],"links":{}}`, checksum, checksum))
+			writeAssetsTestJSON(w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"appScreenshots","id":"duplicate-c","attributes":{"fileName":"third.png","sourceFileChecksum":%q}},{"type":"appScreenshots","id":"duplicate-b","attributes":{"fileName":"copy.png","sourceFileChecksum":%q}},{"type":"appScreenshots","id":"duplicate-a","attributes":{"fileName":"original.png","sourceFileChecksum":%q}}],"links":{}}`, checksum, checksum, checksum))
 		default:
 			t.Fatalf("ambiguous checksum handling must not mutate remote assets: %s %s", req.Method, req.URL.String())
 		}
@@ -714,12 +714,13 @@ func TestExecuteAppScreenshotUploadSkipExistingRejectsAmbiguousRemoteChecksum(t 
 	errText := err.Error()
 	for _, want := range []string{
 		`local screenshot "01-home.png" matches multiple remote screenshots by checksum`,
-		`asset IDs: "duplicate-a", "duplicate-b"`,
+		`asset IDs: "duplicate-a", "duplicate-b", "duplicate-c"`,
 		"no remote assets were changed",
 		`asc screenshots list --version-localization "LOC_123" --output json`,
+		"retain one matching screenshot and delete every other duplicate",
 		`asc screenshots delete --id "duplicate-a" --confirm`,
 		`asc screenshots delete --id "duplicate-b" --confirm`,
-		"do not run all of them",
+		`asc screenshots delete --id "duplicate-c" --confirm`,
 		"retry --skip-existing",
 	} {
 		if !strings.Contains(errText, want) {
