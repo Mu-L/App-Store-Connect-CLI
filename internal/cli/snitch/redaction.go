@@ -37,7 +37,7 @@ const (
 	cookieDataQuoted            = `(?:"(?:\\.|[^"\\\r\n])*=(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*=(?:\\.|[^'\\\r\n])*')`
 	cookieDataUnquoted          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])*=(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])*`
 	cookieDataValue             = `(?:` + cookieDataQuoted + `|` + cookieDataUnquoted + `)`
-	curlCertOptionPrefix        = `(?:(?:(?-i:-E)|--cert)\b(?:[ \t]+|[ \t]*=[ \t]*)|(?-i:-E))`
+	curlCertOptionPrefix        = `(?:(?:(?-i:-E)|--(?:proxy-)?cert)\b(?:[ \t]+|[ \t]*=[ \t]*)|(?-i:-E))`
 	curlCertUnquotedPath        = `(?:\\(?:\r?\n|[^\r\n])|[^\s:'"])+`
 	curlHeaderOptionPrefix      = `(?:(?:-H|--header|--proxy-header)\b(?:[ \t]+|[ \t]*=[ \t]*)|-H)`
 )
@@ -48,21 +48,22 @@ type redactionRule struct {
 }
 
 var (
-	secretMarkerPattern     = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:[ \t]|$|[ \t]*=[ \t]*(?:1|t|true)(?:[ \t]|$))`)
-	secretValuePattern      = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
-	rawCookieJarPattern     = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*\{`)
-	escapedCookieJarPattern = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*\{`)
-	rawRequestHeaders       = regexp.MustCompile(`(?i)"requestHeaders"[ \t\r\n]*:[ \t\r\n]*\[`)
-	escapedRequestHeaders   = regexp.MustCompile(`(?i)\\"requestHeaders\\"[ \t\r\n]*:[ \t\r\n]*\[`)
-	rawStructuredValueStart = regexp.MustCompile(`(?i)"value"[ \t\r\n]*:[ \t\r\n]*"`)
-	escapedValueStart       = regexp.MustCompile(`(?i)\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\"`)
-	rawCredentialObject     = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
-	escapedCredentialObject = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
-	booleanSecretMarker     = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
-	yamlCredentialScalar    = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlCredentialMapping   = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
-	yamlCredentialFlowStart = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)([\[{])`)
-	jsonQuotedScalarLine    = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
+	secretMarkerPattern               = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:` + singleLineShellTerminator + `|[ \t]*=[ \t]*(?:1|t|true)(?:` + singleLineShellTerminator + `))`)
+	secretValuePattern                = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
+	rawCookieJarPattern               = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*\{`)
+	escapedCookieJarPattern           = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	rawRequestHeaders                 = regexp.MustCompile(`(?i)"requestHeaders"[ \t\r\n]*:[ \t\r\n]*\[`)
+	escapedRequestHeaders             = regexp.MustCompile(`(?i)\\"requestHeaders\\"[ \t\r\n]*:[ \t\r\n]*\[`)
+	rawStructuredValueStart           = regexp.MustCompile(`(?i)"value"[ \t\r\n]*:[ \t\r\n]*"`)
+	escapedValueStart                 = regexp.MustCompile(`(?i)\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\"`)
+	rawCredentialObject               = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
+	escapedCredentialObject           = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	booleanSecretMarker               = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
+	yamlCredentialScalar              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlCredentialMapping             = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
+	yamlCredentialFlowStart           = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)([\[{])`)
+	jsonQuotedScalarLine              = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
+	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:-{1,2}` + sensitiveFlagName + `\b(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\()`)
 )
 
 var structuredContainerValueRedactionRules = []redactionRule{
@@ -284,6 +285,10 @@ func redactSensitiveText(value string) (string, bool) {
 		changed = true
 	}
 	if next, yamlFlowChanged := redactYAMLFlowCredentials(redacted); yamlFlowChanged {
+		redacted = next
+		changed = true
+	}
+	if next, substitutionChanged := redactSensitiveCommandSubstitutions(redacted); substitutionChanged {
 		redacted = next
 		changed = true
 	}
@@ -707,6 +712,78 @@ func redactSecretMarkedValues(value string) (string, bool) {
 		start = end + 1
 	}
 	return strings.Join(redactedLines, "\n"), changed
+}
+
+func redactSensitiveCommandSubstitutions(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := sensitiveCommandSubstitutionStart.FindStringSubmatchIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		open := searchStart + match[2]
+		close := findShellCommandSubstitutionEnd(redacted, open)
+		if close < 0 {
+			close = len(redacted) - 1
+		}
+		redacted = redacted[:open] + redactionMarker + redacted[close+1:]
+		changed = true
+		searchStart = open + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func findShellCommandSubstitutionEnd(value string, open int) int {
+	if open < 0 || open+1 >= len(value) || value[open:open+2] != "$(" {
+		return -1
+	}
+
+	depth := 1
+	resumeQuotes := []byte{0}
+	var quote byte
+	for i := open + 2; i < len(value); i++ {
+		if quote == '\'' {
+			if value[i] == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if value[i] == '\\' {
+			i++
+			continue
+		}
+		if value[i] == '$' && i+1 < len(value) && value[i+1] == '(' {
+			resumeQuotes = append(resumeQuotes, quote)
+			quote = 0
+			depth++
+			i++
+			continue
+		}
+		if quote != 0 {
+			if value[i] == quote {
+				quote = 0
+			}
+			continue
+		}
+
+		switch value[i] {
+		case '\'', '"', '`':
+			quote = value[i]
+		case '(':
+			resumeQuotes = append(resumeQuotes, 0)
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+			quote = resumeQuotes[len(resumeQuotes)-1]
+			resumeQuotes = resumeQuotes[:len(resumeQuotes)-1]
+		}
+	}
+	return -1
 }
 
 func shellCommandContinues(command string) bool {

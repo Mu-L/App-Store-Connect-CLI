@@ -162,6 +162,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl --cert client.p12:[REDACTED] https://example.test`,
 		},
 		{
+			name:  "curl proxy certificate password argument",
+			input: `curl --proxy-cert client.p12:opaque-proxy-secret https://example.test`,
+			want:  `curl --proxy-cert client.p12:[REDACTED] https://example.test`,
+		},
+		{
 			name:  "persisted session cookie values",
 			input: `{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"super-session-secret","path":"/"},{"name":"dqsid","value":"second-session-secret"}]},"version":1}`,
 			want:  `{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"[REDACTED]","path":"/"},{"name":"dqsid","value":"[REDACTED]"}]},"version":1}`,
@@ -379,6 +384,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc deploy --password [REDACTED] --verbose`,
 		},
 		{
+			name:  "nested dollar command substitution in secret flag",
+			input: `asc deploy --password $(printf %s $(printf prefix) nested-super-secret) --verbose`,
+			want:  `asc deploy --password [REDACTED] --verbose`,
+		},
+		{
 			name:  "mixed adjacent fragments in secret assignment",
 			input: `PASSWORD=pre'super'"secret"post asc builds list`,
 			want:  `PASSWORD=[REDACTED] asc builds list`,
@@ -516,6 +526,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "boolean secret marker with explicit numeric true value",
 			input: `asc web xcode-cloud env-vars create --secret=1 --value s3cret`,
 			want:  `asc web xcode-cloud env-vars create --secret=1 --value [REDACTED]`,
+		},
+		{
+			name:  "boolean secret marker before command separator",
+			input: `asc web xcode-cloud env-vars create --value s3cret --secret; echo done`,
+			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --secret; echo done`,
+		},
+		{
+			name:  "true secret marker before conditional operator",
+			input: `asc web xcode-cloud env-vars create --value s3cret --secret=true&& echo done`,
+			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --secret=true&& echo done`,
 		},
 		{
 			name:  "boolean secret marker does not affect another line",
@@ -1225,6 +1245,46 @@ func TestSnitchDryRunRedactsMultilineSecretMarkedValueAndPreservesFalseMarker(t 
 	for _, want := range []string{
 		"--value [REDACTED] --secret=T",
 		"--value " + publicValue + " --secret=0",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubstitutions(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret"}
+	repro := "asc web xcode-cloud env-vars create --value " + secrets[0] + " --secret=true&& echo done\n" +
+		"curl --proxy-cert client.p12:" + secrets[1] + " https://example.test\n" +
+		"asc deploy --password $(printf %s $(printf prefix) " + secrets[2] + ") --verbose"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"shell credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"--value [REDACTED] --secret=true&& echo done",
+		"curl --proxy-cert client.p12:[REDACTED] https://example.test",
+		"asc deploy --password [REDACTED] --verbose",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
