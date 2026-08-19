@@ -64,7 +64,7 @@ Checks:
   - strict JSON schema decode (unknown keys rejected)
   - required fields
   - metadata character limits
-  - URL syntax for marketing, support, privacy policy, and privacy choices URLs
+  - URL syntax and length for marketing, support, privacy policy, and privacy choices URLs
   - optional subscription-app Terms of Use / EULA description link heuristic
 
 Examples:
@@ -329,50 +329,54 @@ func metadataIntentValidateIssues(scope, filePath, locale, version string, issue
 }
 
 func versionLengthIssues(filePath, version, locale string, loc VersionLocalization) []ValidateIssue {
-	issues := make([]ValidateIssue, 0, 4)
+	issues := make([]ValidateIssue, 0, 6)
 	for _, issue := range validation.VersionLocalizationLengthIssues(validation.VersionLocalization{
 		Description:     loc.Description,
 		Keywords:        loc.Keywords,
 		WhatsNew:        loc.WhatsNew,
 		PromotionalText: loc.PromotionalText,
+		MarketingURL:    loc.MarketingURL,
+		SupportURL:      loc.SupportURL,
 	}) {
-		message := fmt.Sprintf("%s exceeds %d %s", issue.Field, issue.Limit, issue.Unit)
-		if issue.Field == "keywords" {
-			message = fmt.Sprintf("keywords exceed %d %s", issue.Limit, issue.Unit)
-		}
-		issues = append(issues, ValidateIssue{
-			Scope:    versionDirName,
-			File:     filePath,
-			Locale:   locale,
-			Version:  version,
-			Field:    issue.Field,
-			Severity: issueSeverityError,
-			Message:  message,
-			Length:   issue.Length,
-			Limit:    issue.Limit,
-		})
+		issues = append(issues, metadataLengthValidateIssue(versionDirName, filePath, locale, version, issue))
 	}
 	return issues
 }
 
 func appInfoLengthIssues(filePath, locale string, loc AppInfoLocalization) []ValidateIssue {
-	issues := make([]ValidateIssue, 0, 2)
+	issues := make([]ValidateIssue, 0, 4)
 	for _, issue := range validation.AppInfoLocalizationLengthIssues(validation.AppInfoLocalization{
-		Name:     loc.Name,
-		Subtitle: loc.Subtitle,
+		Name:              loc.Name,
+		Subtitle:          loc.Subtitle,
+		PrivacyPolicyURL:  loc.PrivacyPolicyURL,
+		PrivacyChoicesURL: loc.PrivacyChoicesURL,
 	}) {
-		issues = append(issues, ValidateIssue{
-			Scope:    appInfoDirName,
-			File:     filePath,
-			Locale:   locale,
-			Field:    issue.Field,
-			Severity: issueSeverityError,
-			Message:  fmt.Sprintf("%s exceeds %d characters", issue.Field, issue.Limit),
-			Length:   issue.Length,
-			Limit:    issue.Limit,
-		})
+		issues = append(issues, metadataLengthValidateIssue(appInfoDirName, filePath, locale, "", issue))
 	}
 	return issues
+}
+
+func metadataLengthValidateIssue(scope, filePath, locale, version string, issue validation.MetadataLengthIssue) ValidateIssue {
+	verb := "exceeds"
+	if issue.Field == "keywords" {
+		verb = "exceed"
+	}
+	severity := issueSeverityError
+	if validation.MetadataLengthSeverity(issue.Field) == validation.SeverityWarning {
+		severity = issueSeverityWarning
+	}
+
+	return ValidateIssue{
+		Scope:    scope,
+		File:     filePath,
+		Locale:   locale,
+		Version:  version,
+		Field:    issue.Field,
+		Severity: severity,
+		Message:  fmt.Sprintf("%s %s %d %s", validation.MetadataFieldLabel(issue.Field), verb, issue.Limit, issue.Unit),
+		Length:   issue.Length,
+		Limit:    issue.Limit,
+	}
 }
 
 type metadataURLField struct {

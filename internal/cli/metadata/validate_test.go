@@ -90,6 +90,58 @@ func TestValidateDirAcceptsArabicKeywordsWithinCharacterLimit(t *testing.T) {
 	}
 }
 
+func longHTTPSURL(length int) string {
+	const prefix = "https://example.com/"
+	return prefix + strings.Repeat("a", length-len(prefix))
+}
+
+func TestURLLengthIssuesBoundaries(t *testing.T) {
+	noVersionIssues := versionLengthIssues("file", "1.2.3", "en-US", VersionLocalization{
+		MarketingURL: longHTTPSURL(validation.LimitMarketingURL),
+		SupportURL:   longHTTPSURL(validation.LimitSupportURL),
+	})
+	if len(noVersionIssues) != 0 {
+		t.Fatalf("expected no issues at URL limits, got %+v", noVersionIssues)
+	}
+
+	versionIssues := versionLengthIssues("file", "1.2.3", "en-US", VersionLocalization{
+		MarketingURL: longHTTPSURL(validation.LimitMarketingURL + 1),
+		SupportURL:   longHTTPSURL(validation.LimitSupportURL + 1),
+	})
+	if len(versionIssues) != 2 {
+		t.Fatalf("expected 2 version URL issues, got %+v", versionIssues)
+	}
+	for _, issue := range versionIssues {
+		if issue.Severity != issueSeverityWarning {
+			t.Fatalf("expected warning severity for URL length, got %+v", issue)
+		}
+		if issue.Limit != 255 {
+			t.Fatalf("expected limit 255, got %+v", issue)
+		}
+	}
+
+	noAppInfoIssues := appInfoLengthIssues("file", "en-US", AppInfoLocalization{
+		PrivacyPolicyURL:  longHTTPSURL(validation.LimitPrivacyPolicyURL),
+		PrivacyChoicesURL: longHTTPSURL(validation.LimitPrivacyChoicesURL),
+	})
+	if len(noAppInfoIssues) != 0 {
+		t.Fatalf("expected no issues at app-info URL limits, got %+v", noAppInfoIssues)
+	}
+
+	appInfoIssues := appInfoLengthIssues("file", "en-US", AppInfoLocalization{
+		PrivacyPolicyURL:  longHTTPSURL(validation.LimitPrivacyPolicyURL + 1),
+		PrivacyChoicesURL: longHTTPSURL(validation.LimitPrivacyChoicesURL + 1),
+	})
+	if len(appInfoIssues) != 2 {
+		t.Fatalf("expected 2 app-info URL issues, got %+v", appInfoIssues)
+	}
+	for _, issue := range appInfoIssues {
+		if issue.Severity != issueSeverityWarning {
+			t.Fatalf("expected warning severity for URL length, got %+v", issue)
+		}
+	}
+}
+
 func TestValidateDirWarnsForInvalidURLSyntax(t *testing.T) {
 	dir := t.TempDir()
 	version := "1.2.3"

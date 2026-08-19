@@ -68,6 +68,64 @@ func TestMetadataLengthChecks_ValidUnicode(t *testing.T) {
 	}
 }
 
+func longHTTPSURL(length int) string {
+	const prefix = "https://example.com/"
+	if length <= len(prefix) {
+		return prefix[:length]
+	}
+	return prefix + strings.Repeat("a", length-len(prefix))
+}
+
+func TestMetadataLengthChecks_URLsOverLimit(t *testing.T) {
+	loc := VersionLocalization{
+		Locale:       "en-US",
+		SupportURL:   longHTTPSURL(LimitSupportURL + 1),
+		MarketingURL: longHTTPSURL(LimitMarketingURL + 1),
+	}
+	appInfo := AppInfoLocalization{
+		Locale:            "en-US",
+		PrivacyPolicyURL:  longHTTPSURL(LimitPrivacyPolicyURL + 1),
+		PrivacyChoicesURL: longHTTPSURL(LimitPrivacyChoicesURL + 1),
+	}
+
+	checks := metadataLengthChecks([]VersionLocalization{loc}, []AppInfoLocalization{appInfo})
+
+	wantIDs := []string{
+		"metadata.length.support_url",
+		"metadata.length.marketing_url",
+		"metadata.length.privacy_policy_url",
+		"metadata.length.privacy_choices_url",
+	}
+	for _, id := range wantIDs {
+		if !hasCheckID(checks, id) {
+			t.Fatalf("expected %s check, got %+v", id, checks)
+		}
+	}
+	for _, check := range checks {
+		if check.Severity != SeverityWarning {
+			t.Fatalf("expected URL length checks to be warnings, got %+v", check)
+		}
+	}
+}
+
+func TestMetadataLengthChecks_URLsAtLimit(t *testing.T) {
+	loc := VersionLocalization{
+		Locale:       "en-US",
+		SupportURL:   longHTTPSURL(LimitSupportURL),
+		MarketingURL: longHTTPSURL(LimitMarketingURL),
+	}
+	appInfo := AppInfoLocalization{
+		Locale:            "en-US",
+		PrivacyPolicyURL:  longHTTPSURL(LimitPrivacyPolicyURL),
+		PrivacyChoicesURL: longHTTPSURL(LimitPrivacyChoicesURL),
+	}
+
+	checks := metadataLengthChecks([]VersionLocalization{loc}, []AppInfoLocalization{appInfo})
+	if len(checks) != 0 {
+		t.Fatalf("expected no checks at URL limits, got %+v", checks)
+	}
+}
+
 func TestVersionLocalizationLengthIssues_KeywordsUseCharacterLimit(t *testing.T) {
 	keywords := strings.Repeat("語", 101)
 
