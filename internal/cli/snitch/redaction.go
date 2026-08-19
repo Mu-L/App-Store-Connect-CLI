@@ -291,6 +291,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 
 func redactSensitiveText(value string) (string, bool) {
 	redacted, changed := redactSecretMarkedValues(value)
+	redacted, yamlKeyRestorations := normalizeYAMLEscapedCredentialKeys(redacted)
 	if next, tomlValueChanged := redactTOMLCredentialValues(redacted); tomlValueChanged {
 		redacted = next
 		changed = true
@@ -352,6 +353,9 @@ func redactSensitiveText(value string) (string, bool) {
 	}
 	if booleanMarkerProtection != "" {
 		redacted = strings.ReplaceAll(redacted, booleanMarkerProtection, "")
+	}
+	for placeholder, original := range yamlKeyRestorations {
+		redacted = strings.ReplaceAll(redacted, placeholder, original)
 	}
 	return redacted, changed
 }
@@ -765,6 +769,75 @@ func escapedJSONCredentialValueReplacement(value string, start int) (int, string
 		}
 		return end, `\"` + redactionMarker + `\"`
 	}
+}
+
+func normalizeYAMLEscapedCredentialKeys(value string) (string, map[string]string) {
+	lines := strings.SplitAfter(value, "\n")
+	restorations := make(map[string]string)
+	placeholderIndex := 0
+	for line := range lines {
+		content, ending := splitLineEnding(lines[line])
+		keyStart, explicitKey := yamlQuotedKeyStart(content)
+		if keyStart < 0 || keyStart >= len(content) || content[keyStart] != '"' {
+			continue
+		}
+		keyEnd := findTOMLQuotedStringEnd(content, keyStart, '"')
+		if keyEnd <= keyStart || keyEnd > len(content) {
+			continue
+		}
+		encodedKey := content[keyStart:keyEnd]
+		if !strings.Contains(encodedKey, `\`) {
+			continue
+		}
+		decodedKey, err := strconv.Unquote(encodedKey)
+		if err != nil || !tomlCredentialName.MatchString(decodedKey) || !isYAMLMappingKeySuffix(content[keyEnd:], explicitKey) {
+			continue
+		}
+
+		placeholder := ""
+		for placeholder == "" || strings.Contains(value, placeholder) {
+			placeholder = `"_snitch_redaction_` + strconv.Itoa(placeholderIndex) + `_password"`
+			placeholderIndex++
+		}
+		restorations[placeholder] = encodedKey
+		lines[line] = content[:keyStart] + placeholder + content[keyEnd:] + ending
+	}
+	return strings.Join(lines, ""), restorations
+}
+
+func yamlQuotedKeyStart(content string) (int, bool) {
+	cursor := 0
+	for cursor < len(content) && (content[cursor] == ' ' || content[cursor] == '\t') {
+		cursor++
+	}
+	if cursor < len(content) && content[cursor] == '-' {
+		cursor++
+		if cursor >= len(content) || (content[cursor] != ' ' && content[cursor] != '\t') {
+			return -1, false
+		}
+		for cursor < len(content) && (content[cursor] == ' ' || content[cursor] == '\t') {
+			cursor++
+		}
+	}
+	if cursor < len(content) && content[cursor] == '?' {
+		cursor++
+		if cursor >= len(content) || (content[cursor] != ' ' && content[cursor] != '\t') {
+			return -1, false
+		}
+		for cursor < len(content) && (content[cursor] == ' ' || content[cursor] == '\t') {
+			cursor++
+		}
+		return cursor, true
+	}
+	return cursor, false
+}
+
+func isYAMLMappingKeySuffix(suffix string, explicitKey bool) bool {
+	suffix = strings.TrimSpace(suffix)
+	if explicitKey {
+		return suffix == "" || strings.HasPrefix(suffix, "#")
+	}
+	return strings.HasPrefix(suffix, ":")
 }
 
 func redactYAMLCredentialAliases(value string) (string, bool) {
