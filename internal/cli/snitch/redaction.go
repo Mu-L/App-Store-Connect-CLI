@@ -70,7 +70,7 @@ var (
 	yamlAnchor                        = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
 	jsonQuotedScalarLine              = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
 	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:-{1,2}` + sensitiveFlagName + `\b(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\()`)
-	xcodeCloudEnvVarSetCommand        = regexp.MustCompile(`(?i)\basc[ \t]+web[ \t]+xcode-cloud[ \t]+env-vars[ \t]+(?:shared[ \t]+)?set\b`)
+	xcodeCloudEnvVarSetCommand        = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')[ \t]+web[ \t]+xcode-cloud[ \t]+env-vars[ \t]+(?:shared[ \t]+)?set\b`)
 )
 
 var structuredContainerValueRedactionRules = []redactionRule{
@@ -510,7 +510,7 @@ func redactYAMLFlowCredentials(value string) (string, bool) {
 		if close < 0 {
 			close = len(redacted) - 1
 		}
-		if redacted[open:close+1] == redactionMarker || flowStartsWithQuotedValue(redacted, open, close) {
+		if redacted[open:close+1] == redactionMarker || (flowStartsWithQuotedValue(redacted, open, close) && !yamlFlowHasNestedContainer(redacted, open, close)) {
 			searchStart = open + 1
 			continue
 		}
@@ -573,6 +573,34 @@ func flowStartsWithQuotedValue(value string, open, close int) bool {
 			continue
 		}
 		return value[i] == '"'
+	}
+	return false
+}
+
+func yamlFlowHasNestedContainer(value string, open, close int) bool {
+	var quote byte
+	for index := open + 1; index < close; index++ {
+		if quote != 0 {
+			if quote == '"' && value[index] == '\\' {
+				index++
+				continue
+			}
+			if quote == '\'' && value[index] == '\'' && index+1 < close && value[index+1] == '\'' {
+				index++
+				continue
+			}
+			if value[index] == quote {
+				quote = 0
+			}
+			continue
+		}
+
+		switch value[index] {
+		case '"', '\'':
+			quote = value[index]
+		case '[', '{':
+			return true
+		}
 	}
 	return false
 }

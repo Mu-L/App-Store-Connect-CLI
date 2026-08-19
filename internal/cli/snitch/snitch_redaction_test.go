@@ -558,6 +558,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc web xcode-cloud env-vars set --value [REDACTED] --secret=true`,
 		},
 		{
+			name:  "boolean secret marker with quoted executable",
+			input: `"asc" web xcode-cloud env-vars set --value s3cret --secret=true`,
+			want:  `"asc" web xcode-cloud env-vars set --value [REDACTED] --secret=true`,
+		},
+		{
 			name:  "boolean secret marker with explicit numeric true value",
 			input: `asc web xcode-cloud env-vars set --secret=1 --value s3cret`,
 			want:  `asc web xcode-cloud env-vars set --secret=1 --value [REDACTED]`,
@@ -751,6 +756,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "nested single-line YAML flow sequence credential",
 			input: "password: [first-secret, [second-secret], third-secret]\nstatus: failed",
 			want:  "password: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "quoted first nested YAML flow under single quoted key",
+			input: "'password': [\"first-secret\", [second-secret], third-secret]\nstatus: failed",
+			want:  "'password': [REDACTED]\nstatus: failed",
 		},
 		{
 			name:  "nested single-line YAML flow mapping credential",
@@ -1331,12 +1341,13 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret", "fish-substitution-secret"}
+	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret", "fish-substitution-secret", "quoted-executable-secret"}
 	repro := "asc web xcode-cloud env-vars set --value " + secrets[0] + " --secret=true&& echo done\n" +
 		"curl --proxy-cert client.p12:" + secrets[1] + " https://example.test\n" +
 		"asc deploy --password $(printf %s $(printf prefix) " + secrets[2] + ") --verbose\n" +
 		"asc signing sync --password (printf " + secrets[3] + ") --verbose\n" +
-		"asc webhooks create --url https://example.test/hook --secret=true"
+		"asc webhooks create --url https://example.test/hook --secret=true\n" +
+		`"asc" web xcode-cloud env-vars set --value ` + secrets[4] + ` --secret=true`
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1364,6 +1375,7 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 		"asc deploy --password [REDACTED] --verbose",
 		"asc signing sync --password [REDACTED] --verbose",
 		"asc webhooks create --url https://example.test/hook --secret=[REDACTED]",
+		`"asc" web xcode-cloud env-vars set --value [REDACTED] --secret=true`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
@@ -1635,7 +1647,7 @@ func TestSnitchDryRunRedactsMultilineCurlAndYAMLCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"multiline-user-secret", "multiline-cert-secret", "quoted-yaml-secret", "sequence-yaml-secret", "anchored-yaml-secret", "multiline-flow-secret", "quoted-block-secret", "property-block-secret", "explicit-yaml-secret", "alias-definition-secret", "nested-single-line-flow-secret"}
+	secrets := []string{"multiline-user-secret", "multiline-cert-secret", "quoted-yaml-secret", "sequence-yaml-secret", "anchored-yaml-secret", "multiline-flow-secret", "quoted-block-secret", "property-block-secret", "explicit-yaml-secret", "alias-definition-secret", "nested-single-line-flow-secret", "quoted-first-nested-flow-secret"}
 	repro := "curl --user \"alice:first\n" + secrets[0] + "\" https://example.test\n" +
 		"curl --cert \"client.p12:first\n" + secrets[1] + "\" https://example.test\n" +
 		"response:\n  \"password\":\n    value: " + secrets[2] + "\n  status: failed\n" +
@@ -1646,7 +1658,8 @@ func TestSnitchDryRunRedactsMultilineCurlAndYAMLCredentials(t *testing.T) {
 		"property-block:\n  password: &credential |\n    " + secrets[7] + "\n  status: failed\n" +
 		"explicit-key:\n  ? password\n  : " + secrets[8] + "\n  status: failed\n" +
 		"alias-key:\n  shared: &credential " + secrets[9] + "\n  password: *credential\n  status: failed\n" +
-		"nested-flow:\n  password: [first-secret, [" + secrets[10] + "], third-secret]\n  status: failed"
+		"nested-flow:\n  password: [first-secret, [" + secrets[10] + "], third-secret]\n  status: failed\n" +
+		"quoted-first-flow:\n  'password': [\"first-secret\", [" + secrets[11] + "], third-secret]\n  status: failed"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1680,6 +1693,7 @@ func TestSnitchDryRunRedactsMultilineCurlAndYAMLCredentials(t *testing.T) {
 		"explicit-key:\n  ? password\n  : [REDACTED]\n  status: failed",
 		"alias-key:\n  shared: &credential [REDACTED]\n  password: [REDACTED]\n  status: failed",
 		"nested-flow:\n  password: [REDACTED]\n  status: failed",
+		"quoted-first-flow:\n  'password': [REDACTED]\n  status: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
