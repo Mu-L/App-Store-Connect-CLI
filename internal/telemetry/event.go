@@ -598,6 +598,7 @@ var knownFailureParameters = map[string]struct{}{
 	"test-notes":                        {},
 	"tester":                            {},
 	"tester-id":                         {},
+	"tier":                              {},
 	"time-code":                         {},
 	"title":                             {},
 	"title-color":                       {},
