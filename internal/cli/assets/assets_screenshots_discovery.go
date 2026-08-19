@@ -71,7 +71,7 @@ func limitScreenshotFanoutUploadFiles(localeAssets []screenshotLocaleAssetFiles,
 	return limited, nil
 }
 
-func limitScreenshotUploadFilesForExistingSet(files []string, maxScreenshots int, existingScreenshots []asc.Resource[asc.AppScreenshotAttributes], replace bool, setID string) ([]string, error) {
+func limitScreenshotUploadFilesForExistingSet(files []string, maxScreenshots int, existingScreenshots []asc.Resource[asc.AppScreenshotAttributes], replace bool, setID, inspectCommand string) ([]string, error) {
 	setLabel := strings.TrimSpace(setID)
 	if setLabel == "" {
 		setLabel = "target set"
@@ -83,11 +83,23 @@ func limitScreenshotUploadFilesForExistingSet(files []string, maxScreenshots int
 	if maxScreenshots < 0 || maxScreenshots > appScreenshotSetMaxScreenshots {
 		return nil, fmt.Errorf("--max-screenshots must be between 0 and %d", appScreenshotSetMaxScreenshots)
 	}
+	if len(files) > 0 && len(existingScreenshots) >= appScreenshotSetMaxScreenshots {
+		if strings.TrimSpace(inspectCommand) == "" {
+			inspectCommand = fmt.Sprintf("the localization listing containing screenshot set %q", setLabel)
+		}
+		return nil, fmt.Errorf(
+			"screenshot set %q already has %d screenshot(s), so no upload slots remain; --max-screenshots cannot create capacity, and no remote assets were changed. Inspect the set with %s, then delete only an unwanted screenshot with asc screenshots delete --id %q --confirm, or rerun with --replace --confirm",
+			setLabel,
+			len(existingScreenshots),
+			inspectCommand,
+			"SCREENSHOT_ID",
+		)
+	}
 	if maxScreenshots <= 0 {
 		total := len(existingScreenshots) + len(files)
 		if total > appScreenshotSetMaxScreenshots {
 			return nil, fmt.Errorf(
-				"%s already has %d screenshot(s); uploading %d more would exceed App Store screenshot set limit %d. Pass --replace to replace existing screenshots or --max-screenshots %d to upload only the remaining slot(s)",
+				"%s already has %d screenshot(s); uploading %d more would exceed App Store screenshot set limit %d. Pass --replace --confirm to replace existing screenshots or --max-screenshots %d to upload only the remaining slot(s)",
 				setLabel,
 				len(existingScreenshots),
 				len(files),
@@ -104,7 +116,7 @@ func limitScreenshotUploadFilesForExistingSet(files []string, maxScreenshots int
 			return files, nil
 		}
 		return nil, fmt.Errorf(
-			"%s already has %d screenshot(s); --max-screenshots %d leaves no upload slots. Pass --replace to replace existing screenshots or choose a higher limit up to %d",
+			"%s already has %d screenshot(s); --max-screenshots %d leaves no upload slots. Pass --replace --confirm to replace existing screenshots or choose a higher limit up to %d",
 			setLabel,
 			len(existingScreenshots),
 			maxScreenshots,

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
@@ -45,6 +46,7 @@ func uploadScreenshots(ctx context.Context, client *asc.Client, localizationID, 
 		SkipExisting:   skipExisting,
 		Replace:        replace,
 		DryRun:         dryRun,
+		InspectCommand: screenshotInspectionCommand(localizationID),
 		RequestContext: shared.ContextWithTimeout,
 		UploadContext:  contextWithAssetUploadTimeout,
 		Access:         appStoreVersionScreenshotSetAccess,
@@ -149,12 +151,12 @@ func uploadScreenshotsWithConfig[T any](ctx context.Context, cfg screenshotUploa
 	files := cfg.Files
 	if cfg.SkipExisting {
 		var filterErr error
-		files, skippedResults, filterErr = filterExistingScreenshotFiles(cfg.Files, existingScreenshots)
+		files, skippedResults, filterErr = filterExistingScreenshotFiles(cfg.Files, existingScreenshots, cfg.InspectCommand)
 		if filterErr != nil {
 			return zero, filterErr
 		}
 	}
-	files, err = limitScreenshotUploadFilesForExistingSet(files, cfg.MaxScreenshots, existingScreenshots, cfg.Replace, set.ID)
+	files, err = limitScreenshotUploadFilesForExistingSet(files, cfg.MaxScreenshots, existingScreenshots, cfg.Replace, set.ID, cfg.InspectCommand)
 	if err != nil {
 		return zero, err
 	}
@@ -218,15 +220,23 @@ func deleteExistingScreenshots(ctx context.Context, client *asc.Client, screensh
 	return nil
 }
 
-func filterExistingScreenshotFiles(files []string, screenshots []asc.Resource[asc.AppScreenshotAttributes]) ([]string, []asc.AssetUploadResultItem, error) {
-	existingByChecksum := make(map[string]asc.Resource[asc.AppScreenshotAttributes], len(screenshots))
+func filterExistingScreenshotFiles(files []string, screenshots []asc.Resource[asc.AppScreenshotAttributes], inspectCommand string) ([]string, []asc.AssetUploadResultItem, error) {
+	existingByChecksum := make(map[string][]asc.Resource[asc.AppScreenshotAttributes], len(screenshots))
 	for _, screenshot := range screenshots {
 		checksum := strings.TrimSpace(screenshot.Attributes.SourceFileChecksum)
 		if checksum == "" {
 			continue
 		}
-		if _, exists := existingByChecksum[checksum]; !exists {
-			existingByChecksum[checksum] = screenshot
+		matches := existingByChecksum[checksum]
+		seen := false
+		for _, existing := range matches {
+			if screenshot.ID != "" && screenshot.ID == existing.ID {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			existingByChecksum[checksum] = append(matches, screenshot)
 		}
 	}
 
@@ -237,7 +247,42 @@ func filterExistingScreenshotFiles(files []string, screenshots []asc.Resource[as
 		if err != nil {
 			return nil, nil, err
 		}
-		if existing, exists := existingByChecksum[checksum]; exists {
+		matches := existingByChecksum[checksum]
+		if len(matches) > 1 {
+			ids := make([]string, 0, len(matches))
+			for _, screenshot := range matches {
+				id := strings.TrimSpace(screenshot.ID)
+				if id == "" {
+					id = "<missing asset ID>"
+				}
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			quotedIDs := make([]string, 0, len(ids))
+			deleteCommands := make([]string, 0, len(ids))
+			for _, id := range ids {
+				quotedIDs = append(quotedIDs, fmt.Sprintf("%q", id))
+				if id != "<missing asset ID>" {
+					deleteCommands = append(deleteCommands, fmt.Sprintf("asc screenshots delete --id %q --confirm", id))
+				}
+			}
+			if strings.TrimSpace(inspectCommand) == "" {
+				inspectCommand = screenshotInspectionCommand("")
+			}
+			deleteGuidance := fmt.Sprintf("delete only the unwanted duplicate with asc screenshots delete --id %q --confirm", "SCREENSHOT_ID")
+			if len(deleteCommands) > 0 {
+				deleteGuidance = fmt.Sprintf("delete only the unwanted duplicate with exactly one of these commands: %s (do not run all of them)", strings.Join(deleteCommands, " or "))
+			}
+			return nil, nil, fmt.Errorf(
+				"local screenshot %q matches multiple remote screenshots by checksum (asset IDs: %s); ASC cannot choose one safely, so no remote assets were changed. Inspect them with %s, then %s and retry --skip-existing",
+				filepath.Base(filePath),
+				strings.Join(quotedIDs, ", "),
+				inspectCommand,
+				deleteGuidance,
+			)
+		}
+		if len(matches) == 1 {
+			existing := matches[0]
 			skipped = append(skipped, asc.AssetUploadResultItem{
 				FileName: filepath.Base(filePath),
 				FilePath: filePath,
@@ -251,6 +296,14 @@ func filterExistingScreenshotFiles(files []string, screenshots []asc.Resource[as
 	}
 
 	return filtered, skipped, nil
+}
+
+func screenshotInspectionCommand(localizationID string) string {
+	localizationID = strings.TrimSpace(localizationID)
+	if localizationID == "" {
+		localizationID = "VERSION_LOCALIZATION_ID"
+	}
+	return fmt.Sprintf("asc screenshots list --version-localization %q --output json", localizationID)
 }
 
 func syncSkippedScreenshotOrder(ctx context.Context, client *asc.Client, setID string, files []string, skippedResults, uploadedResults []asc.AssetUploadResultItem) ([]string, error) {

@@ -172,12 +172,12 @@ func prepareAppScreenshotUpload(ctx context.Context, cfg screenshotUploadConfig[
 	files := cfg.Files
 	if cfg.SkipExisting {
 		var filterErr error
-		files, skippedResults, filterErr = filterExistingScreenshotFiles(cfg.Files, existingScreenshots)
+		files, skippedResults, filterErr = filterExistingScreenshotFiles(cfg.Files, existingScreenshots, screenshotInspectionCommand(cfg.LocalizationID))
 		if filterErr != nil {
 			return screenshotUploadPreparedState{}, filterErr
 		}
 	}
-	files, err = limitScreenshotUploadFilesForExistingSet(files, cfg.MaxScreenshots, existingScreenshots, cfg.Replace, set.ID)
+	files, err = limitScreenshotUploadFilesForExistingSet(files, cfg.MaxScreenshots, existingScreenshots, cfg.Replace, set.ID, screenshotInspectionCommand(cfg.LocalizationID))
 	if err != nil {
 		return screenshotUploadPreparedState{}, err
 	}

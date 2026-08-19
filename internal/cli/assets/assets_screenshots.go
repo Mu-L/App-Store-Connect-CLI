@@ -78,6 +78,7 @@ type screenshotUploadConfig[T any] struct {
 	Replace        bool
 	DryRun         bool
 	MaxScreenshots int
+	InspectCommand string
 	RequestContext func(context.Context) (context.Context, context.CancelFunc)
 	UploadContext  func(context.Context) (context.Context, context.CancelFunc)
 	Access         ScreenshotSetAccess
