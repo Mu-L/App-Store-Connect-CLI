@@ -177,6 +177,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `trace {\"token\":\"[REDACTED]\",\"status\":\"failed\"}`,
 		},
 		{
+			name:  "truncated object valued structured credential",
+			input: `{"token":{"type":"bearer","value":"opaque-lowercase-secret"`,
+			want:  `{"token":"[REDACTED]"`,
+		},
+		{
 			name:  "array-valued authorization header",
 			input: `{"Authorization":["Bearer opaque-lowercase-secret"],"status":"failed"}`,
 			want:  `{"Authorization":["[REDACTED]"],"status":"failed"}`,
@@ -297,6 +302,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "space-separated secret flag",
 			input: `asc web sandbox create --email "user@example.test" --password "Passwordtest1" --territory "USA"`,
 			want:  `asc web sandbox create --email "user@example.test" --password [REDACTED] --territory "USA"`,
+		},
+		{
+			name:  "notification webhook flag",
+			input: `asc notify slack --webhook https://hooks.slack.com/services/T/B/super-secret --message ready`,
+			want:  `asc notify slack --webhook [REDACTED] --message ready`,
+		},
+		{
+			name:  "xcode cloud slack webhook flag",
+			input: `asc web xcode-cloud usage alert --slack-webhook=https://hooks.slack.com/services/T/B/super-secret --threshold 90`,
+			want:  `asc web xcode-cloud usage alert --slack-webhook=[REDACTED] --threshold 90`,
 		},
 		{
 			name:  "direct two factor code flag",
@@ -1194,13 +1209,13 @@ func TestSnitchDryRunRedactsCompositeYAMLAndProxyHeaderCredentials(t *testing.T)
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"yaml secret tail", "nested-object-secret", "proxy-header-secret"}
+	secrets := []string{"yaml secret tail", "nested-object-secret", "proxy-header-secret", "webhook-secret", "truncated-object-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", "curl --proxy-header Cookie:myacinfo="+secrets[2]+" https://example.test",
+		"--repro", "curl --proxy-header Cookie:myacinfo="+secrets[2]+" https://example.test\nasc notify slack --webhook https://hooks.slack.com/services/T/B/"+secrets[3]+" --message ready",
 		"--expected", "password: [REDACTED]",
-		"--actual", "password: "+secrets[0]+"\nresponse: {\"token\":{\"type\":\"bearer\",\"value\":\""+secrets[1]+"\"},\"status\":\"failed\"}",
+		"--actual", "password: "+secrets[0]+"\nresponse: {\"token\":{\"type\":\"bearer\",\"value\":\""+secrets[1]+"\"},\"status\":\"failed\"}\ntruncated: {\"token\":{\"value\":\""+secrets[4]+"\"",
 		"composite credential redaction probe",
 	)
 	if err != nil {
@@ -1220,8 +1235,10 @@ func TestSnitchDryRunRedactsCompositeYAMLAndProxyHeaderCredentials(t *testing.T)
 	}
 	for _, want := range []string{
 		"curl --proxy-header Cookie:[REDACTED] https://example.test",
+		"asc notify slack --webhook [REDACTED] --message ready",
 		"password: [REDACTED]",
 		`response: {"token":"[REDACTED]","status":"failed"}`,
+		`truncated: {"token":"[REDACTED]"`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

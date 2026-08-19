@@ -12,7 +12,7 @@ const (
 
 	sensitiveAssignmentName     = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passwd|pwd|secret|token)`
 	sensitivePrefixedName       = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
-	sensitiveFlagName           = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passwd|pwd|pass|token)`
+	sensitiveFlagName           = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passwd|pwd|pass|token)`
 	credentialHeaderName        = `(?:authorization|cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
 	traceCredentialHeader       = `(?:cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
 	webAuthQueryCredential      = `(?:widgetkey|code|scnt)`
@@ -286,11 +286,7 @@ func redactStructuredCredentialObjects(value string) (string, bool) {
 			}
 
 			open := searchStart + match[1] - 1
-			close, ok := findJSONObjectEnd(redacted, open, candidate.escapedQuotes)
-			if !ok {
-				searchStart = open + 1
-				continue
-			}
+			close := findJSONObjectEnd(redacted, open, candidate.escapedQuotes)
 
 			replacement := candidate.quote + redactionMarker + candidate.quote
 			redacted = redacted[:open] + replacement + redacted[close+1:]
@@ -301,7 +297,7 @@ func redactStructuredCredentialObjects(value string) (string, bool) {
 	return redacted, changed
 }
 
-func findJSONObjectEnd(value string, open int, escapedQuotes bool) (int, bool) {
+func findJSONObjectEnd(value string, open int, escapedQuotes bool) int {
 	depth := 0
 	inString := false
 	for i := open; i < len(value); i++ {
@@ -319,11 +315,11 @@ func findJSONObjectEnd(value string, open int, escapedQuotes bool) (int, bool) {
 		case '}':
 			depth--
 			if depth == 0 {
-				return i, true
+				return i
 			}
 		}
 	}
-	return 0, false
+	return len(value) - 1
 }
 
 func isJSONStringDelimiter(value string, quote int, escapedQuotes bool) bool {
