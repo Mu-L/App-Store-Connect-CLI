@@ -305,25 +305,22 @@ func TestKeywordsScoreFlattensApplePopularityWhenAdsIsAvailable(t *testing.T) {
 	defer server.Close()
 	stubKeywordsClient(t, server.URL)
 
-	previous := collectSearchDataForKeywords
-	t.Cleanup(func() { collectSearchDataForKeywords = previous })
-	collectSearchDataForKeywords = func(_ context.Context, profile, account string, request ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error) {
+	previous := collectSearchPopularityForKeywords
+	t.Cleanup(func() { collectSearchPopularityForKeywords = previous })
+	collectSearchPopularityForKeywords = func(_ context.Context, profile, account string, request ads.SearchOptimizationRequest) ([]ads.SearchPopularity, error) {
 		if profile != "Ads" || account != "987654321" {
 			t.Fatalf("ads credentials = (%q, %q)", profile, account)
 		}
-		if request.AppID != "1234567890" || request.Country != "US" || request.Genre != "PRODUCTIVITY_UTILITIES" {
+		if request.AppID != "" || request.Country != "US" || request.Genre != "PRODUCTIVITY_UTILITIES" {
 			t.Fatalf("ads request = %+v", request)
 		}
 		if request.PopularityStart == "" || request.PopularityEnd == "" {
 			t.Fatalf("ads request is missing a popularity window: %+v", request)
 		}
-		return ads.SearchOptimizationData{
-			Sources: []ads.SearchOptimizationSourceStatus{{Name: "search_term_popularity", Status: "available", Count: 2}},
-			Popularities: []ads.SearchPopularity{
-				{Term: "Focus Timer", Country: "US", Genre: "PRODUCTIVITY_UTILITIES", Week: "2026-08-01", Popularity5: intPtr(3), Popularity100: intPtr(52), RankInGenre: intPtr(40)},
-				{Term: "focus timer", Country: "US", Genre: "PRODUCTIVITY_UTILITIES", Week: "2026-08-08", Popularity5: intPtr(4), Popularity100: intPtr(61), RankInGenre: intPtr(12)},
-				{Term: "unrelated term", Country: "US", Popularity5: intPtr(5)},
-			},
+		return []ads.SearchPopularity{
+			{Term: "Focus Timer", Country: "US", Genre: "PRODUCTIVITY_UTILITIES", Week: "2026-08-01", Popularity5: intPtr(3), Popularity100: intPtr(52), RankInGenre: intPtr(40)},
+			{Term: "focus timer", Country: "US", Genre: "PRODUCTIVITY_UTILITIES", Week: "2026-08-08", Popularity5: intPtr(4), Popularity100: intPtr(61), RankInGenre: intPtr(12)},
+			{Term: "unrelated term", Country: "US", Popularity5: intPtr(5)},
 		}, nil
 	}
 
@@ -358,6 +355,38 @@ func TestKeywordsScoreFlattensApplePopularityWhenAdsIsAvailable(t *testing.T) {
 		if source.Name == keywordSourcePopularity && source.Status != keywordStatusAvailable {
 			t.Fatalf("popularity source = %+v", source)
 		}
+	}
+}
+
+func TestCollectKeywordPopularityDoesNotRequireApp(t *testing.T) {
+	previous := collectSearchPopularityForKeywords
+	t.Cleanup(func() { collectSearchPopularityForKeywords = previous })
+	called := false
+	collectSearchPopularityForKeywords = func(_ context.Context, profile, account string, request ads.SearchOptimizationRequest) ([]ads.SearchPopularity, error) {
+		called = true
+		if profile != "Ads" || account != "987654321" {
+			t.Fatalf("ads credentials = (%q, %q)", profile, account)
+		}
+		if request.AppID != "" || request.Country != "US" || request.Genre != "PRODUCTIVITY_UTILITIES" {
+			t.Fatalf("ads request = %+v", request)
+		}
+		return []ads.SearchPopularity{{
+			Term: "focus timer", Country: "US", Genre: "PRODUCTIVITY_UTILITIES", Week: "2026-08-08", Popularity5: intPtr(4), Popularity100: intPtr(61),
+		}}, nil
+	}
+
+	popularity, status := collectKeywordPopularity(context.Background(), keywordPopularityRequest{
+		Keywords:   []string{"focus timer"},
+		Country:    "US",
+		Genre:      "PRODUCTIVITY_UTILITIES",
+		AdsProfile: "Ads",
+		AdAccount:  "987654321",
+	})
+	if !called {
+		t.Fatal("popularity collector was not called without an app ID")
+	}
+	if status.Status != keywordStatusAvailable || len(popularity) != 1 {
+		t.Fatalf("popularity = %+v, status = %+v", popularity, status)
 	}
 }
 
@@ -499,10 +528,10 @@ func writeScoreLookupResults(w http.ResponseWriter, apps ...scoreLookupApp) {
 
 func failKeywordsAdsCollector(t *testing.T) {
 	t.Helper()
-	previous := collectSearchDataForKeywords
-	t.Cleanup(func() { collectSearchDataForKeywords = previous })
-	collectSearchDataForKeywords = func(context.Context, string, string, ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error) {
+	previous := collectSearchPopularityForKeywords
+	t.Cleanup(func() { collectSearchPopularityForKeywords = previous })
+	collectSearchPopularityForKeywords = func(context.Context, string, string, ads.SearchOptimizationRequest) ([]ads.SearchPopularity, error) {
 		t.Fatal("Apple Ads collector ran without complete popularity inputs")
-		return ads.SearchOptimizationData{}, nil
+		return nil, nil
 	}
 }

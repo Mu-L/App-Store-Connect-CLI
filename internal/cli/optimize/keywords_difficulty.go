@@ -272,10 +272,6 @@ func normalizeKeywordText(value string) string {
 // difficulty. The minimum app score is weighted most heavily because the
 // weakest app in the top results is the realistic entry point.
 func computeKeywordDifficulty(appScores []float64, appCount int) keywordDifficultyResult {
-	if appCount < keywordFallbackApps {
-		return keywordDifficultyResult{Difficulty: 1, MinDifficulty: 1, Fallback: true}
-	}
-
 	total := 0.0
 	minimum := math.Inf(1)
 	for _, score := range appScores {
@@ -298,6 +294,16 @@ func computeKeywordDifficulty(appScores []float64, appCount int) keywordDifficul
 		normalizedAppCount = 1
 	default:
 		normalizedAppCount = float64(appCount-keywordAppCountFloor) / float64(keywordAppCountCeil-keywordAppCountFloor)
+	}
+	if appCount < keywordFallbackApps {
+		return keywordDifficultyResult{
+			AverageAppScore:    average,
+			MinimumAppScore:    minimum,
+			NormalizedAppCount: normalizedAppCount,
+			Difficulty:         1,
+			MinDifficulty:      1,
+			Fallback:           true,
+		}
 	}
 
 	difficulty := 100 * (0.5*normalizedAppCount + 2*average + 4*minimum) / keywordDifficultyNorm

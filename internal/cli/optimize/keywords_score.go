@@ -30,15 +30,15 @@ const (
 	keywordSourceRank        = "app_rank"
 )
 
-var collectSearchDataForKeywords = ads.CollectSearchOptimizationData
+var collectSearchPopularityForKeywords = ads.CollectSearchPopularity
 
 // KeywordsScoreCommand returns the composed keyword scoring command.
 func KeywordsScoreCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("score", flag.ExitOnError)
 	keywords := shared.BindOnceCSVFlag(fs, "keywords", "Comma-separated keyword candidates to score (required)")
 	country := fs.String("country", "us", "ISO alpha-2 App Store storefront country or region")
-	appID := fs.String("app", "", "App Store app ID; adds this app's rank and enables the Apple Ads popularity source")
-	genre := fs.String("genre", "", "Apple Ads search popularity genre; required with --app to enable the popularity source")
+	appID := fs.String("app", "", "App Store app ID; adds this app's rank")
+	genre := fs.String("genre", "", "Apple Ads search popularity genre; enables the popularity source")
 	adAccount := fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID/profile default)")
 	adsProfile := fs.String("ads-profile", "", "Use named Apple Ads authentication profile")
 	workers := fs.Int("workers", 10, "Number of parallel keyword lookups")
@@ -58,9 +58,8 @@ invented value:
                authentication is required, and this source alone is enough to
                produce a difficulty score.
   Popularity   Official Apple Ads country-and-genre search demand. It requires
-               --app and --genre, plus Apple Ads credentials through
-               --ad-account or --ads-profile. It reads the most recent
-               published 30-day window.
+               --genre plus Apple Ads credentials through --ad-account or
+               --ads-profile. It reads the most recent published 30-day window.
   Rank         This app's position in the public result window, added only
                when --app is set.
 
@@ -115,7 +114,6 @@ Examples:
 				Keywords:   normalizedKeywords,
 				Country:    strings.ToUpper(normalizedCountry),
 				Genre:      normalizedGenre,
-				AppID:      resolvedAppID,
 				AdAccount:  *adAccount,
 				AdsProfile: *adsProfile,
 			})
@@ -327,33 +325,22 @@ type keywordPopularityRequest struct {
 	Keywords   []string
 	Country    string
 	Genre      string
-	AppID      string
 	AdAccount  string
 	AdsProfile string
 }
 
 // collectKeywordPopularity reads the official Apple Ads country-and-genre
-// demand snapshot. The source is structurally scoped to an app and a genre, so
-// it degrades to unavailable with a reason whenever either is missing.
+// demand snapshot. It degrades to unavailable with a reason when the required
+// genre is missing.
 func collectKeywordPopularity(
 	ctx context.Context,
 	request keywordPopularityRequest,
 ) (map[string]asc.KeywordPopularity, ads.SearchOptimizationSourceStatus) {
-	missing := make([]string, 0, 2)
-	if strings.TrimSpace(request.AppID) == "" {
-		missing = append(missing, "--app")
-	}
 	if strings.TrimSpace(request.Genre) == "" {
-		missing = append(missing, "--genre")
-	}
-	if len(missing) > 0 {
 		return nil, ads.SearchOptimizationSourceStatus{
 			Name:   keywordSourcePopularity,
 			Status: keywordStatusUnavailable,
-			Error: fmt.Sprintf(
-				"Apple Ads search popularity needs %s; popularity was not requested",
-				strings.Join(missing, " and "),
-			),
+			Error:  "Apple Ads search popularity needs --genre; popularity was not requested",
 		}
 	}
 
@@ -366,12 +353,9 @@ func collectKeywordPopularity(
 		}
 	}
 
-	data, err := collectSearchDataForKeywords(ctx, request.AdsProfile, request.AdAccount, ads.SearchOptimizationRequest{
-		AppID:           request.AppID,
+	rows, err := collectSearchPopularityForKeywords(ctx, request.AdsProfile, request.AdAccount, ads.SearchOptimizationRequest{
 		Country:         request.Country,
 		Genre:           request.Genre,
-		Start:           window.Start,
-		End:             window.End,
 		PopularityStart: window.PopularityStart,
 		PopularityEnd:   window.PopularityEnd,
 	})
@@ -388,7 +372,7 @@ func collectKeywordPopularity(
 		wanted[keyword] = struct{}{}
 	}
 	popularity := make(map[string]asc.KeywordPopularity)
-	for _, row := range data.Popularities {
+	for _, row := range rows {
 		term := strings.ToLower(strings.Join(strings.Fields(row.Term), " "))
 		if _, ok := wanted[term]; !ok {
 			continue
@@ -408,17 +392,7 @@ func collectKeywordPopularity(
 		}
 	}
 
-	status := keywordSourceStatus(keywordSourcePopularity, len(popularity), nil)
-	for _, source := range data.Sources {
-		if source.Name == keywordSourcePopularity && source.Status == keywordStatusUnavailable {
-			status = ads.SearchOptimizationSourceStatus{
-				Name:   keywordSourcePopularity,
-				Status: keywordStatusUnavailable,
-				Error:  source.Error,
-			}
-		}
-	}
-	return popularity, status
+	return popularity, keywordSourceStatus(keywordSourcePopularity, len(popularity), nil)
 }
 
 type keywordScoreBuildInput struct {

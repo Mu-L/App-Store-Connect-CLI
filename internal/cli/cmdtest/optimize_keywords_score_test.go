@@ -40,6 +40,9 @@ type keywordScoreRowPayload struct {
 	KeywordMatch       string                      `json:"keywordMatch,omitempty"`
 	Rank               *int                        `json:"rank,omitempty"`
 	Fallback           bool                        `json:"fallback,omitempty"`
+	AverageAppScore    *float64                    `json:"averageAppScore,omitempty"`
+	MinimumAppScore    *float64                    `json:"minimumAppScore,omitempty"`
+	NormalizedAppCount *float64                    `json:"normalizedAppCount,omitempty"`
 	RawSignals         []keywordScoreSignalPayload `json:"rawSignals,omitempty"`
 	Error              string                      `json:"error,omitempty"`
 }
@@ -123,7 +126,7 @@ func TestOptimizeKeywordsScoreUsageErrors(t *testing.T) {
 			originalTransport := http.DefaultTransport
 			t.Cleanup(func() { http.DefaultTransport = originalTransport })
 			http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				t.Fatalf("unexpected request before input validation: %s", req.URL.String())
+				t.Errorf("unexpected request before input validation: %s", req.URL.String())
 				return nil, errors.New("unexpected request")
 			})
 
@@ -159,21 +162,24 @@ func TestOptimizeKeywordsScoreJSONShipsRawSignalsAndDegradesPopularity(t *testin
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Host != "itunes.apple.com" {
-			t.Fatalf("host = %q, want the public iTunes host", req.URL.Host)
+			t.Errorf("host = %q, want the public iTunes host", req.URL.Host)
+			return nil, errors.New("unexpected public API host")
 		}
 		switch req.URL.Path {
 		case "/search":
 			if got := req.URL.Query().Get("term"); got != "focus timer" {
-				t.Fatalf("term = %q, want the normalized keyword", got)
+				t.Errorf("term = %q, want the normalized keyword", got)
+				return nil, errors.New("unexpected search term")
 			}
 			return jsonResponse(http.StatusOK, searchBody)
 		case "/lookup":
 			if got := req.URL.Query().Get("entity"); got != "software" {
-				t.Fatalf("entity = %q, want software", got)
+				t.Errorf("entity = %q, want software", got)
+				return nil, errors.New("unexpected lookup entity")
 			}
 			return jsonResponse(http.StatusOK, lookupBody)
 		default:
-			t.Fatalf("unexpected path %q", req.URL.Path)
+			t.Errorf("unexpected path %q", req.URL.Path)
 			return nil, errors.New("unexpected path")
 		}
 	})
@@ -302,6 +308,12 @@ func TestOptimizeKeywordsScoreFallsBackOnThinResultWindows(t *testing.T) {
 	}
 	if row.DifficultyScore == nil || *row.DifficultyScore != 1 || row.MinDifficultyScore == nil || *row.MinDifficultyScore != 1 {
 		t.Fatalf("fallback difficulty = %+v / %+v, want 1 and 1", row.DifficultyScore, row.MinDifficultyScore)
+	}
+	if row.AverageAppScore == nil || *row.AverageAppScore <= 0 || row.MinimumAppScore == nil || *row.MinimumAppScore <= 0 {
+		t.Fatalf("fallback aggregates must preserve observed app scores: %+v", row)
+	}
+	if row.NormalizedAppCount == nil || *row.NormalizedAppCount != 0 {
+		t.Fatalf("fallback normalized app count = %+v, want 0", row.NormalizedAppCount)
 	}
 }
 

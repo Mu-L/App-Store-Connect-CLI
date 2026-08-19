@@ -59,13 +59,13 @@ this tree: `available`, `empty`, or `unavailable`.
 | --- | --- | --- | --- |
 | `public_search` | public iTunes search, limit 200 | nothing | competitor ordering and `appCount` |
 | `competitor_metadata` | public iTunes lookup, batched | nothing | competitor release dates |
-| `search_term_popularity` | Apple Ads country-and-genre demand | `--app`, `--genre`, Ads credentials | `popularity` |
+| `search_term_popularity` | Apple Ads country-and-genre demand | `--genre`, Ads credentials | `popularity` |
 | `app_rank` | derived from `public_search` | `--app` | this app's position |
 
 An unavailable source is reported as unavailable. It is never replaced with a
 zero, a default, or an estimate:
 
-- Without `--app` or `--genre`, or without working Apple Ads credentials,
+- Without `--genre`, or without working Apple Ads credentials,
   `popularity` is `null` and the source status names what was missing. Every
   other field still computes.
 - If competitor metadata cannot be fetched, the two date-derived signals fall
@@ -87,7 +87,7 @@ from, under `rows[].rawSignals[]`, so a score can be re-derived by hand.
 
 All signals are clamped to `[0, 1]`.
 
-```
+```text
 nRatingCount = clamp(userRatingCount / 10000, 0, 1)
 nAvgRating   = avgRating <= 3 ? 0
              : clamp((avgRating - 3) / 2, 0, 1) * min(userRatingCount, 20) / 20
@@ -133,7 +133,7 @@ competitors.
 
 ### Per-app score
 
-```
+```text
 appScore = max(0,
     0.2 * nRatingCount
   + 0.1 * nAvgRating
@@ -149,7 +149,7 @@ appScore = max(0,
 The top 5 results are sampled. `appCount` is the size of the result window
 Apple returned, capped at the 200-result request limit.
 
-```
+```text
 avgS          = mean(appScores)
 minS          = min(appScores)
 nAppCount     = appCount <= 10  ? 0
@@ -163,9 +163,11 @@ minDifficulty = 100 * minS
 is the realistic entry point: displacing it is what a new entrant actually has
 to do. `minDifficulty` is reported unclamped so the raw floor stays visible.
 
-When fewer than 5 apps were returned, the sample is too thin to aggregate, so
-`difficulty` and `minDifficulty` are both reported as 1 and the row is flagged
-with `fallback: true`.
+When fewer than 5 apps were returned, the sample is too thin to produce a final
+difficulty, so `difficulty` and `minDifficulty` are both reported as 1 and the
+row is flagged with `fallback: true`. The observed `averageAppScore`,
+`minimumAppScore`, and `normalizedAppCount` remain populated so the raw evidence
+stays internally consistent.
 
 ### Worked parity vectors
 
@@ -225,10 +227,8 @@ These are properties of the data, not defects to be papered over.
   source is scoped to a country and a genre and is strongly US-centric in
   coverage. Popularity is reported with the country, genre, and publication
   week it came from; it is not rescaled or interpolated to other storefronts.
-- **Popularity requires an app and a genre.** The official demand endpoint is
-  structurally scoped that way, so popularity cannot be requested for a bare
-  keyword list. This is reported as an unavailable source naming the missing
-  flags rather than silently omitted.
+- **Popularity requires a genre.** A missing genre is reported as an
+  unavailable source naming the required flag rather than silently omitted.
 - **Public endpoints are volatile.** Result ordering, window size, and
   metadata freshness are not contractual. A score is a snapshot of one
   observation, which is why `generatedAt` and every raw input travel with it.
@@ -236,10 +236,6 @@ These are properties of the data, not defects to be papered over.
   results, and the difficulty normalization saturates at the same point, so
   keywords with more than 200 competing apps are indistinguishable on that
   signal.
-- **The popularity read is broader than it needs to be.** It currently goes
-  through the shared Apple Ads optimization collection path, which also fetches
-  campaign, eligibility, and recommendation data that keyword scoring ignores.
-  A narrower exported popularity path would remove those requests.
 - **Release dates are read directly.** The shared public client type in
   `internal/itunes` does not expose `releaseDate` or
   `currentVersionReleaseDate`, so `internal/cli/optimize/keywords_metadata.go`

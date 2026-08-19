@@ -177,6 +177,9 @@ func TestComputeKeywordDifficultyEdges(t *testing.T) {
 		}
 		assertClose(t, "difficulty", result.Difficulty, 1)
 		assertClose(t, "minDifficulty", result.MinDifficulty, 1)
+		assertClose(t, "averageAppScore", result.AverageAppScore, 0.9)
+		assertClose(t, "minimumAppScore", result.MinimumAppScore, 0.9)
+		assertClose(t, "normalizedAppCount", result.NormalizedAppCount, 0)
 	})
 
 	t.Run("clamps difficulty to at least one", func(t *testing.T) {

@@ -153,6 +153,22 @@ func CollectSearchOptimizationData(ctx context.Context, adsProfile, adAccount st
 	return fetchSearchOptimizationData(ctx, client, request)
 }
 
+// CollectSearchPopularity resolves official Apple Ads authentication and reads
+// only country-and-genre search demand. Unlike the broader optimization plan,
+// this source is not scoped to a promoted app.
+func CollectSearchPopularity(ctx context.Context, adsProfile, adAccount string, request SearchOptimizationRequest) ([]SearchPopularity, error) {
+	profile := strings.TrimSpace(adsProfile)
+	account := strings.TrimSpace(adAccount)
+	client, _, err := resolvePlatformClientAndAdAccountID(ctx, commonFlags{
+		AdsProfile: &profile,
+		AdAccount:  &account,
+	}, appleads.ContextAdAccount)
+	if err != nil {
+		return nil, err
+	}
+	return fetchOptimizationPopularity(ctx, client, request)
+}
+
 func fetchSearchOptimizationData(ctx context.Context, client *appleads.Client, request SearchOptimizationRequest) (SearchOptimizationData, error) {
 	data := SearchOptimizationData{}
 	successfulIntelligenceSources := 0
