@@ -35,8 +35,8 @@ silently returning less.
 
 `--limit` on a filtered listing is now the page size of matching groups rather
 than a cap applied after the CLI filtered everything it fetched. Callers that
-used `--limit` to bound a filtered result keep working and no longer pay for the
-full page walk.
+used `--limit` to bound a filtered result keep working and no longer pay for a
+complete walk through all pages.
 
 `--next` now rejects `--internal`, `--external`, `--name`, and `--sort`. A
 `links.next` URL is followed verbatim and already carries the query it came
