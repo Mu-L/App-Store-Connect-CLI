@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/ascterritory"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
@@ -39,7 +40,7 @@ type ReviewFilterFlags struct {
 func BindReviewFilterFlags(fs *flag.FlagSet) *ReviewFilterFlags {
 	filters := &ReviewFilterFlags{}
 	fs.StringVar(&filters.Stars, "stars", "", "Filter by star ratings, comma-separated (1-5)")
-	fs.StringVar(&filters.Territory, "territory", "", "Filter by territory (e.g., US, GBR)")
+	fs.StringVar(&filters.Territory, "territory", "", "Filter by App Store territory code (e.g., USA, GBR)")
 	fs.StringVar(&filters.Sort, "sort", "", "Sort by "+strings.Join(reviewSorts, ", "))
 	fs.StringVar(&filters.ResponseState, "response-state", reviewResponseStateAny, "Filter by response state: any, unresponded/unreplied, responded/replied")
 	fs.BoolVar(&filters.OnlyUnresponded, "only-unresponded", false, "Only list reviews without a published response")
@@ -90,6 +91,17 @@ func (f *ReviewFilterFlags) ReviewOptions() ([]asc.ReviewOption, error) {
 	if err != nil {
 		return nil, shared.WithDiagnostic(shared.UsageError(err.Error()), shared.DiagnosticInvalidInput, "--stars")
 	}
+	territory := ""
+	if strings.TrimSpace(f.Territory) != "" {
+		territory, err = ascterritory.Normalize(f.Territory)
+		if err != nil {
+			return nil, shared.WithDiagnostic(
+				shared.UsageError("--territory must be a valid App Store territory code"),
+				shared.DiagnosticInvalidInput,
+				"--territory",
+			)
+		}
+	}
 	if err := shared.ValidateSort(f.Sort, reviewSorts...); err != nil {
 		return nil, shared.WithDiagnostic(shared.NewValidationError(err), shared.DiagnosticInvalidInput, "--sort")
 	}
@@ -110,7 +122,7 @@ func (f *ReviewFilterFlags) ReviewOptions() ([]asc.ReviewOption, error) {
 
 	opts := []asc.ReviewOption{
 		asc.WithRatings(ratings),
-		asc.WithTerritory(f.Territory),
+		asc.WithTerritory(territory),
 	}
 	if strings.TrimSpace(f.Sort) != "" {
 		opts = append(opts, asc.WithReviewSort(f.Sort))

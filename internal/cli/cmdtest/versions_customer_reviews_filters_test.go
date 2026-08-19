@@ -31,7 +31,7 @@ func TestVersionsCustomerReviewsListEmitsReviewFilters(t *testing.T) {
 			value string
 		}{
 			{key: "filter[rating]", value: "1,2"},
-			{key: "filter[territory]", value: "US"},
+			{key: "filter[territory]", value: "USA"},
 			{key: "sort", value: "-createdDate"},
 			{key: "exists[publishedResponse]", value: "false"},
 			{key: "include", value: "response"},
@@ -189,6 +189,11 @@ func TestVersionsCustomerReviewsFilterValidationMatchesAppLevelReviews(t *testin
 			name:        "unsupported response fields",
 			args:        []string{"--response-fields", "bogus"},
 			wantMessage: "--response-fields must be a comma-separated list of: responseBody,lastModifiedDate,state,review",
+		},
+		{
+			name:        "unsupported territory",
+			args:        []string{"--territory", "not-a-territory"},
+			wantMessage: "--territory must be a valid App Store territory code",
 		},
 		{
 			name:        "response fields with a repeated comma",

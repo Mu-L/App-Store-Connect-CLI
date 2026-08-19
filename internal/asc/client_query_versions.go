@@ -515,7 +515,7 @@ func WithRatings(ratings []int) ReviewOption {
 	}
 }
 
-// WithTerritory filters reviews by territory code (e.g. US, GBR).
+// WithTerritory filters reviews by App Store territory code (e.g. USA, GBR).
 func WithTerritory(territory string) ReviewOption {
 	return func(r *reviewQuery) {
 		if territory != "" {
