@@ -72,8 +72,8 @@ func TestClientDoOlympusRequestUsesOlympusHeaders(t *testing.T) {
 		})},
 	}
 
-	if _, err := client.doOlympusRequest(context.Background(), http.MethodGet, "/actors/actor-1", nil); err != nil {
-		t.Fatalf("doOlympusRequest() error: %v", err)
+	if _, err := client.doOlympusGet(context.Background(), "/actors/actor-1"); err != nil {
+		t.Fatalf("doOlympusGet() error: %v", err)
 	}
 
 	if gotPath != "/olympus/v1/actors/actor-1" {
