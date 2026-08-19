@@ -62,6 +62,7 @@ var (
 	yamlCredentialScalar              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlCredentialMapping             = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
 	yamlCredentialFlowStart           = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)([\[{])`)
+	yamlExplicitCredentialKey         = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
 	jsonQuotedScalarLine              = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
 	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:-{1,2}` + sensitiveFlagName + `\b(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\()`)
 	xcodeCloudEnvVarSetCommand        = regexp.MustCompile(`(?i)\basc[ \t]+web[ \t]+xcode-cloud[ \t]+env-vars[ \t]+(?:shared[ \t]+)?set\b`)
@@ -281,6 +282,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, yamlExplicitChanged := redactYAMLExplicitCredentialMappings(redacted); yamlExplicitChanged {
+		redacted = next
+		changed = true
+	}
 	if next, yamlChanged := redactYAMLCredentialBlocks(redacted); yamlChanged {
 		redacted = next
 		changed = true
@@ -312,6 +317,57 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = strings.ReplaceAll(redacted, booleanMarkerProtection, "")
 	}
 	return redacted, changed
+}
+
+func redactYAMLExplicitCredentialMappings(value string) (string, bool) {
+	lines := strings.SplitAfter(value, "\n")
+	changed := false
+	for line := 0; line < len(lines)-1; line++ {
+		key, _ := splitLineEnding(lines[line])
+		if !yamlExplicitCredentialKey.MatchString(key) {
+			continue
+		}
+
+		keyIndent := yamlKeyIndent(key)
+		valueLine := line + 1
+		valueContent, ending := splitLineEnding(lines[valueLine])
+		if leadingIndent(valueContent) != keyIndent {
+			continue
+		}
+		indicator := valueContent[keyIndent:]
+		if indicator == "" || indicator[0] != ':' || (len(indicator) > 1 && indicator[1] != ' ' && indicator[1] != '\t' && indicator[1] != '#') {
+			continue
+		}
+
+		inlineValue := strings.TrimSpace(indicator[1:])
+		hasInlineValue := inlineValue != "" && !strings.HasPrefix(inlineValue, "#")
+		end := valueLine + 1
+		hasIndentedContent := false
+		for end < len(lines) {
+			child, _ := splitLineEnding(lines[end])
+			if strings.TrimSpace(child) == "" {
+				end++
+				continue
+			}
+			if leadingIndent(child) <= keyIndent {
+				break
+			}
+			hasIndentedContent = true
+			end++
+		}
+		if !hasInlineValue && !hasIndentedContent {
+			continue
+		}
+		if inlineValue == redactionMarker && !hasIndentedContent {
+			continue
+		}
+
+		lines[valueLine] = valueContent[:keyIndent] + ": " + redactionMarker + ending
+		lines = append(lines[:valueLine+1], lines[end:]...)
+		changed = true
+		line = valueLine
+	}
+	return strings.Join(lines, ""), changed
 }
 
 func redactYAMLCredentialBlocks(value string) (string, bool) {

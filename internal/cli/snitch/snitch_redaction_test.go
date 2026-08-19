@@ -364,6 +364,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "password: [REDACTED]\nstatus: failed",
 		},
 		{
+			name:  "YAML explicit credential key",
+			input: "? password\n: opaque-explicit-secret\nstatus: failed",
+			want:  "? password\n: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "quoted YAML explicit credential block scalar",
+			input: "response:\n  ? \"password\"\n  : |\n    opaque-explicit-secret\n  status: failed",
+			want:  "response:\n  ? \"password\"\n  : [REDACTED]\n  status: failed",
+		},
+		{
+			name:  "sequence YAML explicit credential flow value",
+			input: "items:\n  - ? token\n    : [first-secret,\n      second-secret]\n    status: failed",
+			want:  "items:\n  - ? token\n    : [REDACTED]\n    status: failed",
+		},
+		{
 			name:  "space-separated secret flag",
 			input: `asc web sandbox create --email "user@example.test" --password "Passwordtest1" --territory "USA"`,
 			want:  `asc web sandbox create --email "user@example.test" --password [REDACTED] --territory "USA"`,
@@ -1543,7 +1558,7 @@ func TestSnitchDryRunRedactsMultilineCurlAndYAMLCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"multiline-user-secret", "multiline-cert-secret", "quoted-yaml-secret", "sequence-yaml-secret", "anchored-yaml-secret", "multiline-flow-secret", "quoted-block-secret", "property-block-secret"}
+	secrets := []string{"multiline-user-secret", "multiline-cert-secret", "quoted-yaml-secret", "sequence-yaml-secret", "anchored-yaml-secret", "multiline-flow-secret", "quoted-block-secret", "property-block-secret", "explicit-yaml-secret"}
 	repro := "curl --user \"alice:first\n" + secrets[0] + "\" https://example.test\n" +
 		"curl --cert \"client.p12:first\n" + secrets[1] + "\" https://example.test\n" +
 		"response:\n  \"password\":\n    value: " + secrets[2] + "\n  status: failed\n" +
@@ -1551,7 +1566,8 @@ func TestSnitchDryRunRedactsMultilineCurlAndYAMLCredentials(t *testing.T) {
 		"auth:\n  token: &credentials\n    value: " + secrets[4] + "\n  status: failed\n" +
 		"config:\n  password: [first-value,\n    " + secrets[5] + "]\n  status: failed\n" +
 		"quoted-block:\n  \"password\": |\n    \"" + secrets[6] + "\"\n  status: failed\n" +
-		"property-block:\n  password: &credential |\n    " + secrets[7] + "\n  status: failed"
+		"property-block:\n  password: &credential |\n    " + secrets[7] + "\n  status: failed\n" +
+		"explicit-key:\n  ? password\n  : " + secrets[8] + "\n  status: failed"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1582,6 +1598,7 @@ func TestSnitchDryRunRedactsMultilineCurlAndYAMLCredentials(t *testing.T) {
 		"config:\n  password: [REDACTED]\n  status: failed",
 		"quoted-block:\n  \"password\": [REDACTED]\n  status: failed",
 		"property-block:\n  password: [REDACTED]\n  status: failed",
+		"explicit-key:\n  ? password\n  : [REDACTED]\n  status: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
