@@ -107,6 +107,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl -b[REDACTED] https://example.test`,
 		},
 		{
+			name:  "curl certificate password argument",
+			input: `curl --cert client.p12:supersensitive https://example.test`,
+			want:  `curl --cert client.p12:[REDACTED] https://example.test`,
+		},
+		{
+			name:  "curl certificate password equals argument",
+			input: `curl --cert="client cert.p12:secret with spaces" https://example.test`,
+			want:  `curl --cert="client cert.p12:[REDACTED]" https://example.test`,
+		},
+		{
+			name:  "curl attached short certificate password argument",
+			input: `curl -Eclient.p12:supersensitive https://example.test`,
+			want:  `curl -Eclient.p12:[REDACTED] https://example.test`,
+		},
+		{
 			name:  "persisted session cookie values",
 			input: `{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"super-session-secret","path":"/"},{"name":"dqsid","value":"second-session-secret"}]},"version":1}`,
 			want:  `{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"[REDACTED]","path":"/"},{"name":"dqsid","value":"[REDACTED]"}]},"version":1}`,
@@ -538,6 +553,19 @@ func TestRedactSensitiveTextPreservesCurlCookieFilenames(t *testing.T) {
 		`curl --cookie=./cookies.txt https://example.test`,
 		`curl -b "$TMPDIR/cookies.jar" https://example.test`,
 		`curl -b./cookies.jar https://example.test`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextPreservesCurlCertificateWithoutPassword(t *testing.T) {
+	for _, input := range []string{
+		`curl --cert client.pem https://example.test`,
+		`curl --cert="client cert.pem" https://example.test`,
+		`curl -Eclient.p12 https://example.test`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
@@ -986,6 +1014,38 @@ func TestSnitchDryRunRedactsWebAuthenticationPayloads(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 		}
+	}
+}
+
+func TestSnitchDryRunRedactsCurlCertificatePasswords(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"space-secret", "equals-secret", "attached-secret"}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "curl --cert client.p12:"+secrets[0]+" --cert=client.pem:"+secrets[1]+" -Eclient.pfx:"+secrets[2]+" https://example.test",
+		"certificate password redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	want := "curl --cert client.p12:[REDACTED] --cert=client.pem:[REDACTED] -Eclient.pfx:[REDACTED] https://example.test"
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 	}
 }
 

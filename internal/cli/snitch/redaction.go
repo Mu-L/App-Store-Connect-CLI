@@ -31,6 +31,8 @@ const (
 	cookieDataQuoted            = `(?:"(?:\\.|[^"\\\r\n])*=(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*=(?:\\.|[^'\\\r\n])*')`
 	cookieDataUnquoted          = `(?:\\(?:\r?\n|[^\r\n])|[^\s])*=(?:\\(?:\r?\n|[^\r\n])|[^\s])*`
 	cookieDataValue             = `(?:` + cookieDataQuoted + `|` + cookieDataUnquoted + `)`
+	curlCertOptionPrefix        = `(?:(?:-E|--cert)\b(?:[ \t]+|[ \t]*=[ \t]*)|-E)`
+	curlCertUnquotedPath        = `(?:\\(?:\r?\n|[^\r\n])|[^\s:'"])+`
 )
 
 type redactionRule struct {
@@ -149,6 +151,18 @@ var sensitiveTextRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)(-u)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(")((?:\\.|[^"\\:])+):(?:\\.|[^"\\\r\n])+(")`),
+		replacement: `${1}${2}${3}${4}:` + redactionMarker + `${5}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(')((?:\\.|[^'\\:])+):(?:\\.|[^'\\\r\n])+(')`),
+		replacement: `${1}${2}${3}${4}:` + redactionMarker + `${5}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(` + curlCertUnquotedPath + `):` + shellUnquotedValue),
+		replacement: `${1}${2}${3}:` + redactionMarker,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-b|--cookie)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
