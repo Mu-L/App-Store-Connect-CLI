@@ -58,6 +58,8 @@ var (
 	escapedValueStart                 = regexp.MustCompile(`(?i)\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\"`)
 	rawCredentialObject               = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
 	escapedCredentialObject           = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	rawCredentialArray                = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\[`)
+	escapedCredentialArray            = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\[`)
 	booleanSecretMarker               = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
 	yamlCredentialScalar              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlCredentialMapping             = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
@@ -219,15 +221,15 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}${3}:` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-b|--cookie)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:(?-i:-b)|--cookie)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-b|--cookie)\b[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:(?-i:-b)|--cookie)\b[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-b)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)((?-i:-b))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
@@ -555,12 +557,15 @@ func redactStructuredCredentialObjects(value string) (string, bool) {
 	type objectPattern struct {
 		pattern       *regexp.Regexp
 		escapedQuotes bool
-		quote         string
+		replacement   string
+		array         bool
 	}
 
 	patterns := []objectPattern{
-		{pattern: rawCredentialObject, quote: `"`},
-		{pattern: escapedCredentialObject, escapedQuotes: true, quote: `\"`},
+		{pattern: rawCredentialObject, replacement: `"` + redactionMarker + `"`},
+		{pattern: escapedCredentialObject, escapedQuotes: true, replacement: `\"` + redactionMarker + `\"`},
+		{pattern: rawCredentialArray, replacement: `["` + redactionMarker + `"]`, array: true},
+		{pattern: escapedCredentialArray, escapedQuotes: true, replacement: `[\"` + redactionMarker + `\"]`, array: true},
 	}
 	redacted := value
 	changed := false
@@ -573,15 +578,39 @@ func redactStructuredCredentialObjects(value string) (string, bool) {
 			}
 
 			open := searchStart + match[1] - 1
+			if redacted[open] == '[' && (strings.HasPrefix(redacted[open:], redactionMarker) || strings.HasPrefix(redacted[open:], candidate.replacement)) {
+				searchStart = open + 1
+				continue
+			}
 			close := findJSONObjectEnd(redacted, open, candidate.escapedQuotes)
+			if candidate.array && !looksLikeJSONCredentialArray(redacted, open, close, candidate.escapedQuotes) {
+				searchStart = open + 1
+				continue
+			}
 
-			replacement := candidate.quote + redactionMarker + candidate.quote
-			redacted = redacted[:open] + replacement + redacted[close+1:]
+			redacted = redacted[:open] + candidate.replacement + redacted[close+1:]
 			changed = true
-			searchStart = open + len(replacement)
+			searchStart = open + len(candidate.replacement)
 		}
 	}
 	return redacted, changed
+}
+
+func looksLikeJSONCredentialArray(value string, open, close int, escapedQuotes bool) bool {
+	for index := open + 1; index <= close && index < len(value); index++ {
+		switch value[index] {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '"', '{', '[', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			return true
+		case '\\':
+			return escapedQuotes && index+1 < len(value) && value[index+1] == '"'
+		default:
+			remaining := value[index : close+1]
+			return strings.HasPrefix(remaining, "true") || strings.HasPrefix(remaining, "false") || strings.HasPrefix(remaining, "null")
+		}
+	}
+	return false
 }
 
 func findJSONObjectEnd(value string, open int, escapedQuotes bool) int {

@@ -242,6 +242,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `trace {\"Authorization\":[\"[REDACTED]\"],\"status\":\"failed\"}`,
 		},
 		{
+			name:  "heterogeneous credential array",
+			input: `{"password":["first-secret",{"value":"second-secret"}],"status":"failed"}`,
+			want:  `{"password":["[REDACTED]"],"status":"failed"}`,
+		},
+		{
 			name: "web auth service credentials",
 			input: `X-Apple-Widget-Key: header-service-secret
 {"authServiceKey":"auth-service-secret","serviceKey":"response-service-secret","status":"failed"}`,
@@ -889,6 +894,14 @@ func TestRedactSensitiveTextPreservesCurlCookieFilenames(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextPreservesCurlUseASCII(t *testing.T) {
+	input := `curl -B 'https://example.test/?name=value'`
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
 func TestRedactSensitiveTextPreservesCurlReferer(t *testing.T) {
 	input := `curl -e https://example.test/page https://target.test`
 
@@ -1326,6 +1339,45 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 		"asc deploy --password [REDACTED] --verbose",
 		"asc signing sync --password [REDACTED] --verbose",
 		"asc webhooks create --url https://example.test/hook --secret=[REDACTED]",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsHeterogeneousCredentialArrayAndPreservesCurlUseASCII(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"heterogeneous-first-secret", "heterogeneous-second-secret"}
+	const publicURL = "https://example.test/?name=value"
+	repro := `{"password":["` + secrets[0] + `",{"value":"` + secrets[1] + `"}],"status":"failed"}` + "\n" +
+		`curl -B '` + publicURL + `'`
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"structured array redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		`{"password":["[REDACTED]"],"status":"failed"}`,
+		`curl -B '` + publicURL + `'`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
