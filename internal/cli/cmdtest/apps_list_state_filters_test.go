@@ -138,6 +138,16 @@ func TestAppsListStateFiltersRejectUnknownValues(t *testing.T) {
 			args: []string{"apps", "--review-submission-state", "NOPE"},
 			want: "--review-submission-state must be one of: READY_FOR_REVIEW,",
 		},
+		{
+			name: "explicit empty version state",
+			args: []string{"apps", "list", "--version-state", ""},
+			want: "--version-state must not be empty",
+		},
+		{
+			name: "whitespace review submission state on the apps group",
+			args: []string{"apps", "--review-submission-state", "   "},
+			want: "--review-submission-state must not be empty",
+		},
 	}
 
 	for _, test := range tests {
@@ -183,6 +193,21 @@ func TestAppsListStateFiltersRejectNextCombination(t *testing.T) {
 			name: "review submission state",
 			args: []string{"apps", "list", "--next", next, "--review-submission-state", "IN_REVIEW"},
 			want: "--next cannot be combined with --review-submission-state",
+		},
+		{
+			name: "sort",
+			args: []string{"apps", "list", "--next", next, "--sort", "sku"},
+			want: "--next cannot be combined with --sort",
+		},
+		{
+			name: "explicit empty sku",
+			args: []string{"apps", "list", "--next", next, "--sku", ""},
+			want: "--next cannot be combined with --sku",
+		},
+		{
+			name: "explicit zero limit",
+			args: []string{"apps", "--next", next, "--limit", "0"},
+			want: "--next cannot be combined with --limit",
 		},
 	}
 

@@ -293,16 +293,28 @@ func appsList(ctx context.Context, fs *flag.FlagSet, output string, pretty bool,
 		return fmt.Errorf("apps: %w", err)
 	}
 	if strings.TrimSpace(next) != "" {
-		if flagName, ok := appFlagWasProvided(fs, "version-state", "review-submission-state", "app-info-fields", "iap-fields", "subscription-group-fields"); ok {
+		if flagName, ok := appFlagWasProvided(
+			fs,
+			"bundle-id", "name", "sku", "version-state", "review-submission-state", "sort", "limit",
+			"app-info-fields", "iap-fields", "subscription-group-fields",
+		); ok {
 			fmt.Fprintf(os.Stderr, "Error: --next cannot be combined with %s\n", flagName)
 			return flag.ErrHelp
 		}
 	}
-	versionStateValues, err := normalizeAppVersionStateFilters(shared.SplitCSVUpper(versionState))
+	versionStateValues := shared.SplitCSVUpper(versionState)
+	if _, provided := appFlagWasProvided(fs, "version-state"); provided && len(versionStateValues) == 0 {
+		return shared.UsageError("--version-state must not be empty")
+	}
+	versionStateValues, err := normalizeAppVersionStateFilters(versionStateValues)
 	if err != nil {
 		return shared.UsageError(err.Error())
 	}
-	reviewSubmissionStateValues, err := normalizeReviewSubmissionStateFilters(shared.SplitCSVUpper(reviewSubmissionState))
+	reviewSubmissionStateValues := shared.SplitCSVUpper(reviewSubmissionState)
+	if _, provided := appFlagWasProvided(fs, "review-submission-state"); provided && len(reviewSubmissionStateValues) == 0 {
+		return shared.UsageError("--review-submission-state must not be empty")
+	}
+	reviewSubmissionStateValues, err = normalizeReviewSubmissionStateFilters(reviewSubmissionStateValues)
 	if err != nil {
 		return shared.UsageError(err.Error())
 	}
