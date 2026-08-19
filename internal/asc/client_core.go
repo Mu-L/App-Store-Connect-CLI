@@ -335,6 +335,14 @@ func ResolveRetryOptions() RetryOptions {
 // WithRetry executes a function with retry logic for rate limiting.
 // It uses exponential backoff with jitter and respects Retry-After headers.
 func WithRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptions) (T, error) {
+	return withRetry(ctx, fn, opts, IsRetryable)
+}
+
+// withRetry executes a function with the shared backoff policy, retrying only
+// the errors accepted by shouldRetry. Callers that can replay a request safely
+// only under narrower conditions (writes, which are retryable when App Store
+// Connect rejects them outright) supply their own predicate.
+func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptions, shouldRetry func(error) bool) (T, error) {
 	var zero T
 	debugEnabled := ResolveDebugEnabled()
 
@@ -362,7 +370,7 @@ func WithRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 		}
 
 		// Check if error is retryable
-		if !IsRetryable(err) {
+		if !shouldRetry(err) {
 			return zero, err
 		}
 
