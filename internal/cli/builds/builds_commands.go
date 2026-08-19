@@ -562,7 +562,7 @@ Examples:
 
 			preReleaseVersionIDs := []string{}
 			if versionValue != "" && nextValue == "" {
-				preReleaseVersionIDs, err = shared.FindPreReleaseVersionIDs(requestCtx, client, resolvedAppID, versionValue, "")
+				preReleaseVersionIDs, err = shared.FindPreReleaseVersionIDs(requestCtx, client, resolvedAppID, versionValue, platformValue)
 				if err != nil {
 					return fmt.Errorf("builds: %w", err)
 				}

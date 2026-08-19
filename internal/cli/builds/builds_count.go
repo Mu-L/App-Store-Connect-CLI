@@ -90,7 +90,7 @@ Examples:
 			var preReleaseVersionIDs []string
 			versionValue := strings.TrimSpace(*version)
 			if versionValue != "" {
-				preReleaseVersionIDs, err = shared.FindPreReleaseVersionIDs(requestCtx, client, resolvedAppID, versionValue, "")
+				preReleaseVersionIDs, err = shared.FindPreReleaseVersionIDs(requestCtx, client, resolvedAppID, versionValue, platformValue)
 				if err != nil {
 					return fmt.Errorf("builds count: %w", err)
 				}

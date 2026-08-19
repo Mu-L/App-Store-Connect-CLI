@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestBuildsListMatchesEquivalentMarketingVersion(t *testing.T) {
+func TestBuildsListMatchesEquivalentMarketingVersionForPlatform(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_APP_ID", "")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
@@ -32,10 +32,13 @@ func TestBuildsListMatchesEquivalentMarketingVersion(t *testing.T) {
 			body := `{"data":[],"links":{"next":""}}`
 			if requestCount == 2 {
 				wantVersion = "98.76"
-				body = `{"data":[{"type":"preReleaseVersions","id":"prv-equivalent","attributes":{"version":"98.76","platform":"IOS"}}],"links":{"next":""}}`
+				body = `{"data":[{"type":"preReleaseVersions","id":"prv-equivalent","attributes":{"version":"98.76","platform":"MAC_OS"}}],"links":{"next":""}}`
 			}
 			if got := req.URL.Query().Get("filter[version]"); got != wantVersion {
 				t.Fatalf("filter[version] = %q, want %q", got, wantVersion)
+			}
+			if got := req.URL.Query().Get("filter[platform]"); got != "MAC_OS" {
+				t.Fatalf("filter[platform] = %q, want MAC_OS", got)
 			}
 			return jsonHTTPResponse(http.StatusOK, body), nil
 		case 3:
@@ -44,6 +47,9 @@ func TestBuildsListMatchesEquivalentMarketingVersion(t *testing.T) {
 			}
 			if got := req.URL.Query().Get("filter[preReleaseVersion]"); got != "prv-equivalent" {
 				t.Fatalf("filter[preReleaseVersion] = %q, want prv-equivalent", got)
+			}
+			if got := req.URL.Query().Get("filter[preReleaseVersion.platform]"); got != "MAC_OS" {
+				t.Fatalf("filter[preReleaseVersion.platform] = %q, want MAC_OS", got)
 			}
 			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"builds","id":"build-equivalent"}]}`), nil
 		default:
@@ -56,7 +62,7 @@ func TestBuildsListMatchesEquivalentMarketingVersion(t *testing.T) {
 	root.FlagSet.SetOutput(io.Discard)
 
 	stdout, stderr := captureOutput(t, func() {
-		if err := root.Parse([]string{"builds", "list", "--app", "123456789", "--version", "98.76.0"}); err != nil {
+		if err := root.Parse([]string{"builds", "list", "--app", "123456789", "--version", "98.76.0", "--platform", "MAC_OS"}); err != nil {
 			t.Fatalf("parse error: %v", err)
 		}
 		if err := root.Run(context.Background()); err != nil {
@@ -75,7 +81,7 @@ func TestBuildsListMatchesEquivalentMarketingVersion(t *testing.T) {
 	}
 }
 
-func TestBuildsCountMatchesEquivalentMarketingVersion(t *testing.T) {
+func TestBuildsCountMatchesEquivalentMarketingVersionForPlatform(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_APP_ID", "")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
@@ -97,10 +103,13 @@ func TestBuildsCountMatchesEquivalentMarketingVersion(t *testing.T) {
 			body := `{"data":[],"links":{"next":""}}`
 			if requestCount == 2 {
 				wantVersion = "87.65"
-				body = `{"data":[{"type":"preReleaseVersions","id":"prv-count-equivalent","attributes":{"version":"87.65","platform":"IOS"}}],"links":{"next":""}}`
+				body = `{"data":[{"type":"preReleaseVersions","id":"prv-count-equivalent","attributes":{"version":"87.65","platform":"MAC_OS"}}],"links":{"next":""}}`
 			}
 			if got := req.URL.Query().Get("filter[version]"); got != wantVersion {
 				t.Fatalf("filter[version] = %q, want %q", got, wantVersion)
+			}
+			if got := req.URL.Query().Get("filter[platform]"); got != "MAC_OS" {
+				t.Fatalf("filter[platform] = %q, want MAC_OS", got)
 			}
 			return jsonHTTPResponse(http.StatusOK, body), nil
 		case 3:
@@ -109,6 +118,9 @@ func TestBuildsCountMatchesEquivalentMarketingVersion(t *testing.T) {
 			}
 			if got := req.URL.Query().Get("filter[preReleaseVersion]"); got != "prv-count-equivalent" {
 				t.Fatalf("filter[preReleaseVersion] = %q, want prv-count-equivalent", got)
+			}
+			if got := req.URL.Query().Get("filter[preReleaseVersion.platform]"); got != "MAC_OS" {
+				t.Fatalf("filter[preReleaseVersion.platform] = %q, want MAC_OS", got)
 			}
 			return jsonHTTPResponse(http.StatusOK, `{"data":[],"meta":{"paging":{"total":4,"limit":1}}}`), nil
 		default:
@@ -121,7 +133,7 @@ func TestBuildsCountMatchesEquivalentMarketingVersion(t *testing.T) {
 	root.FlagSet.SetOutput(io.Discard)
 
 	stdout, stderr := captureOutput(t, func() {
-		if err := root.Parse([]string{"builds", "count", "--app", "123456789", "--version", "87.65.0"}); err != nil {
+		if err := root.Parse([]string{"builds", "count", "--app", "123456789", "--version", "87.65.0", "--platform", "MAC_OS"}); err != nil {
 			t.Fatalf("parse error: %v", err)
 		}
 		if err := root.Run(context.Background()); err != nil {
