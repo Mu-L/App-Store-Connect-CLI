@@ -519,6 +519,7 @@ var knownFailureParameters = map[string]struct{}{
 	"pass-type-id":                      {},
 	"patch-file":                        {},
 	"path":                              {},
+	"pattern":                           {},
 	"percentage":                        {},
 	"period-count":                      {},
 	"plan":                              {},

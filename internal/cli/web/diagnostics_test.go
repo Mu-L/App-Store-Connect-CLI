@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
 func TestWebPrivacyPullMissingAppExposesStructuredDiagnostic(t *testing.T) {
@@ -132,6 +133,91 @@ func TestWebAppsCreateMissingRequiredInputExposesStructuredDiagnostics(t *testin
 				t.Fatalf("diagnostic = %+v, want required_input_missing for %q", diagnostic, test.wantParam)
 			}
 		})
+	}
+}
+
+func TestWebReviewShowInvalidInputExposesStructuredDiagnostics(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantError  string
+		wantStderr string
+		wantCode   shared.DiagnosticCode
+		wantParam  string
+	}{
+		{
+			name:       "missing app",
+			args:       nil,
+			wantError:  "--app is required",
+			wantStderr: "Error: --app is required\n",
+			wantCode:   shared.DiagnosticRequiredInputMissing,
+			wantParam:  "--app",
+		},
+		{
+			name:       "malformed pattern",
+			args:       []string{"--app", "123456789", "--pattern", "[a-"},
+			wantError:  "--pattern is invalid: syntax error in pattern",
+			wantStderr: "Error: --pattern is invalid: syntax error in pattern\n",
+			wantCode:   shared.DiagnosticInvalidInput,
+			wantParam:  "--pattern",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := WebReviewShowCommand()
+			if err := command.FlagSet.Parse(test.args); err != nil {
+				t.Fatalf("parse flags: %v", err)
+			}
+
+			var err error
+			stderr := captureWebDiagnosticStderr(t, func() {
+				err = command.Exec(context.Background(), nil)
+			})
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if err.Error() != test.wantError {
+				t.Fatalf("error = %q, want %q", err, test.wantError)
+			}
+			if stderr != test.wantStderr {
+				t.Fatalf("stderr = %q, want %q", stderr, test.wantStderr)
+			}
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("error = %v, want flag.ErrHelp usage contract", err)
+			}
+
+			diagnostic, ok := shared.DiagnosticFromError(err)
+			if !ok {
+				t.Fatalf("DiagnosticFromError(%v) found no metadata", err)
+			}
+			if diagnostic.Code != test.wantCode || diagnostic.Parameter != test.wantParam {
+				t.Fatalf("diagnostic = %+v, want code %q parameter %q", diagnostic, test.wantCode, test.wantParam)
+			}
+		})
+	}
+}
+
+func TestChooseSubmissionForShowUnknownSubmissionExposesStructuredDiagnostic(t *testing.T) {
+	submissions := []webcore.ReviewSubmission{{ID: "submission-1", State: "COMPLETE"}}
+
+	_, _, err := chooseSubmissionForShow(submissions, "submission-404")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if want := "submission \"submission-404\" was not found for this app"; err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+	if errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("error = %v, want non-usage failure contract", err)
+	}
+
+	diagnostic, ok := shared.DiagnosticFromError(err)
+	if !ok {
+		t.Fatalf("DiagnosticFromError(%v) found no metadata", err)
+	}
+	if diagnostic.Code != shared.DiagnosticResourceNotFound || diagnostic.Parameter != "--submission" {
+		t.Fatalf("diagnostic = %+v, want resource_not_found for --submission", diagnostic)
 	}
 }
 
