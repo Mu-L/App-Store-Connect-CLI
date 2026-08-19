@@ -276,6 +276,48 @@ func TestBuildsListSortAcceptsEveryDocumentedKey(t *testing.T) {
 	}
 }
 
+// builds count documents filter parity with builds list, so the beta review
+// state filter has to reach the count request too.
+func TestBuildsCountBetaReviewStateEmitsFilter(t *testing.T) {
+	captured := buildsListQuerySurfaceStub(t)
+
+	_, stderr, err := runBuildsListQuerySurface(
+		t,
+		"builds", "count",
+		"--app", "123456789",
+		"--beta-review-state", "rejected",
+	)
+	if err != nil {
+		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
+	}
+
+	path, query := captured()
+	if path != "/v1/builds" {
+		t.Fatalf("expected /v1/builds path, got %q", path)
+	}
+	if got := query.Get("filter[betaAppReviewSubmission.betaReviewState]"); got != "REJECTED" {
+		t.Fatalf("expected normalized REJECTED filter, got %q", got)
+	}
+}
+
+func TestBuildsCountBetaReviewStateRejectsUnknownValue(t *testing.T) {
+	buildsListQuerySurfaceStub(t)
+
+	_, stderr, err := runBuildsListQuerySurface(
+		t,
+		"builds", "count",
+		"--app", "123456789",
+		"--beta-review-state", "PENDING",
+	)
+
+	if got := rootcmd.ExitCodeFromError(err); got != rootcmd.ExitUsage {
+		t.Fatalf("exit code = %d, want %d (err=%v)", got, rootcmd.ExitUsage, err)
+	}
+	if !strings.Contains(stderr, "--beta-review-state must be a comma-separated list of") {
+		t.Fatalf("expected beta review state validation error, got %q", stderr)
+	}
+}
+
 func TestBuildsListSortRejectsUnknownKey(t *testing.T) {
 	buildsListQuerySurfaceStub(t)
 
