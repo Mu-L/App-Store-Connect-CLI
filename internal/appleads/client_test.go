@@ -74,8 +74,38 @@ func TestGenerateClientSecretClaims(t *testing.T) {
 	assertClaim(t, claims, "iss", "TEAM123")
 	assertClaim(t, claims, "aud", "https://appleid.apple.com")
 	assertClaim(t, claims, "sub", "CLIENT123")
-	if got, want := int64(claims["exp"].(float64)-claims["iat"].(float64)), int64((10 * time.Minute).Seconds()); got != want {
-		t.Fatalf("exp-iat = %d, want %d", got, want)
+	// Issued-at is backdated so a client clock running ahead of Apple's does not
+	// sign a secret that is rejected as issued in the future. Expiry stays
+	// anchored to the signing time, so the requested lifetime is unchanged.
+	if got, want := int64(claims["iat"].(float64)), now.Add(-jwtIssuedAtSkew).Unix(); got != want {
+		t.Fatalf("iat = %d, want %d", got, want)
+	}
+	if got, want := int64(claims["exp"].(float64)), now.Add(10*time.Minute).Unix(); got != want {
+		t.Fatalf("exp = %d, want %d", got, want)
+	}
+}
+
+// Apple caps a client secret at 180 days. The signed token spans the backdated
+// issued-at through expiry, so the guard has to measure that whole span.
+func TestGenerateClientSecretRejectsLifetimeExceedingAppleMaximum(t *testing.T) {
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+
+	if _, err := GenerateClientSecret("KEY123", "TEAM123", "CLIENT123", testPrivateKey(t), now, maxClientSecretSpan); err == nil {
+		t.Fatal("expected error for a lifetime that pushes the signed span past 180 days, got nil")
+	}
+
+	tokenString, err := GenerateClientSecret("KEY123", "TEAM123", "CLIENT123", testPrivateKey(t), now, maxClientSecretSpan-jwtIssuedAtSkew)
+	if err != nil {
+		t.Fatalf("GenerateClientSecret() error: %v", err)
+	}
+
+	claims := jwt.MapClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(tokenString, claims); err != nil {
+		t.Fatalf("ParseUnverified() error: %v", err)
+	}
+	span := time.Duration(int64(claims["exp"].(float64)-claims["iat"].(float64))) * time.Second
+	if span != maxClientSecretSpan {
+		t.Fatalf("exp-iat = %s, want %s", span, maxClientSecretSpan)
 	}
 }
 
