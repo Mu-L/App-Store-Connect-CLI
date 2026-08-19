@@ -365,7 +365,7 @@ Examples:
 					if testNotesValue != "" {
 						fmt.Fprintf(os.Stderr, "Build %s discovered; setting What to Test notes...\n", buildResp.Data.ID)
 						if _, err := shared.UpsertBetaBuildLocalization(requestCtx, client, buildResp.Data.ID, localeValue, testNotesValue); err != nil {
-							return fmt.Errorf("builds upload: %w", err)
+							return fmt.Errorf("builds upload: %w", shared.NewTestNotesRecoveryError(buildResp.Data.ID, localeValue, testNotesValue, err))
 						}
 					}
 
