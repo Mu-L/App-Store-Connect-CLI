@@ -59,16 +59,27 @@ build page. A partial lookup prints the matches and per-group failures with
 ### Testers
 
 List testers, add new testers, and manage their group/build access. `list`
-accepts `--email`, `--first-name`, and `--last-name` exact-match filters, and
-`testers groups list` shows the groups a tester belongs to:
+accepts `--email`, `--first-name`, and `--last-name` exact-match filters plus
+`--invite-type` (`EMAIL`, `PUBLIC_LINK`) and `--sort`, and `testers groups list`
+shows the groups a tester belongs to:
 
 ```bash  theme={null}
 asc testflight testers list --app APP_ID
 asc testflight testers list --app APP_ID --first-name "Ada" --last-name "Lovelace"
+asc testflight testers list --app APP_ID --invite-type PUBLIC_LINK --sort -lastName
 asc testflight testers add --app APP_ID --email user@example.com --group "Beta"
 asc testflight testers view --id TESTER_ID
 asc testflight testers groups list --id TESTER_ID
 asc testflight testers add-groups --id TESTER_ID --group GROUP_ID
+```
+
+`--include` adds related resources (`apps`, `betaGroups`, `builds`) to the
+response's top-level `included` array, so one call can audit group membership
+for every tester instead of one lookup per tester. `--paginate` merges
+`included` across pages:
+
+```bash  theme={null}
+asc testflight testers list --app APP_ID --include betaGroups --paginate
 ```
 
 ### Feedback and crashes

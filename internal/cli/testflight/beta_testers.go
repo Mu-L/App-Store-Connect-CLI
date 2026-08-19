@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
@@ -67,6 +68,21 @@ Examples:
 	}
 }
 
+// betaTesterSortValues lists the sort expressions GET /v1/betaTesters accepts.
+var betaTesterSortValues = []string{
+	"firstName", "-firstName",
+	"lastName", "-lastName",
+	"email", "-email",
+	"inviteType", "-inviteType",
+	"state", "-state",
+}
+
+// betaTesterIncludeValues lists the relationships GET /v1/betaTesters can include.
+var betaTesterIncludeValues = []string{"apps", "betaGroups", "builds"}
+
+// betaTesterInviteTypeValues lists the accepted filter[inviteType] values.
+var betaTesterInviteTypeValues = []string{"EMAIL", "PUBLIC_LINK"}
+
 // BetaTestersListCommand returns the beta testers list subcommand.
 func BetaTestersListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
@@ -77,6 +93,9 @@ func BetaTestersListCommand() *ffcli.Command {
 	email := fs.String("email", "", "Filter by tester email")
 	firstName := fs.String("first-name", "", "Filter by tester first name (exact match)")
 	lastName := fs.String("last-name", "", "Filter by tester last name (exact match)")
+	inviteType := fs.String("invite-type", "", "Filter by invite type(s), comma-separated: "+strings.Join(betaTesterInviteTypeValues, ", "))
+	sortBy := fs.String("sort", "", "Sort by: "+strings.Join(betaTesterSortValues, ", "))
+	include := fs.String("include", "", "Include related resources, comma-separated: "+strings.Join(betaTesterIncludeValues, ", "))
 	output := shared.BindOutputFlags(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
@@ -88,11 +107,18 @@ func BetaTestersListCommand() *ffcli.Command {
 		ShortHelp:  "List TestFlight beta testers for an app.",
 		LongHelp: `List TestFlight beta testers for an app.
 
+--include adds the related resources to the response's top-level "included"
+array (JSON output). Use --include betaGroups to audit group membership for
+every tester in one call instead of one lookup per tester.
+
 Examples:
   asc testflight beta-testers list --app "APP_ID"
   asc testflight beta-testers list --app "APP_ID" --build-id "BUILD_ID"
   asc testflight beta-testers list --app "APP_ID" --group "Beta"
   asc testflight beta-testers list --app "APP_ID" --first-name "Ada" --last-name "Lovelace"
+  asc testflight beta-testers list --app "APP_ID" --invite-type "PUBLIC_LINK"
+  asc testflight beta-testers list --app "APP_ID" --sort "-lastName"
+  asc testflight beta-testers list --app "APP_ID" --include "betaGroups" --paginate
   asc testflight beta-testers list --app "APP_ID" --limit 25
   asc testflight beta-testers list --app "APP_ID" --paginate`,
 		FlagSet:   fs,
@@ -110,6 +136,24 @@ Examples:
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
 				return fmt.Errorf("beta-testers list: %w", err)
+			}
+			if err := shared.ValidateSort(*sortBy, betaTesterSortValues...); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
+				return shared.InvalidValueUsageError("--sort")
+			}
+			if err := shared.ValidateInclude(*include, betaTesterIncludeValues...); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
+				return shared.InvalidValueUsageError("--include")
+			}
+			inviteTypes, err := normalizeBetaTesterInviteTypes(*inviteType)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
+				return shared.InvalidValueUsageError("--invite-type")
+			}
+			// A links.next URL already carries the query it was produced from, so
+			// these flags would be accepted and silently dropped.
+			if err := rejectBetaTestersNextFlagConflicts(fs, *next, "invite-type", "sort", "include"); err != nil {
+				return err
 			}
 			if strings.TrimSpace(*group) != "" && strings.TrimSpace(*buildID) != "" && strings.TrimSpace(*next) == "" {
 				return shared.WithDiagnostic(
@@ -154,6 +198,18 @@ Examples:
 				opts = append(opts, asc.WithBetaTestersLastName(*lastName))
 			}
 
+			if len(inviteTypes) > 0 {
+				opts = append(opts, asc.WithBetaTestersInviteTypes(inviteTypes))
+			}
+
+			if strings.TrimSpace(*sortBy) != "" {
+				opts = append(opts, asc.WithBetaTestersSort(*sortBy))
+			}
+
+			if includeValues := shared.SplitCSV(*include); len(includeValues) > 0 {
+				opts = append(opts, asc.WithBetaTestersInclude(includeValues))
+			}
+
 			if strings.TrimSpace(*group) != "" && strings.TrimSpace(*next) == "" {
 				groupID, err := resolveBetaGroupID(requestCtx, client, resolvedAppID, *group)
 				if err != nil {
@@ -188,6 +244,41 @@ Examples:
 			return shared.PrintOutput(testers, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+// normalizeBetaTesterInviteTypes upper-cases and validates a comma-separated
+// --invite-type value against the filter[inviteType] enum.
+func normalizeBetaTesterInviteTypes(value string) ([]string, error) {
+	values := shared.SplitCSVUpper(value)
+	for _, item := range values {
+		if !slices.Contains(betaTesterInviteTypeValues, item) {
+			return nil, fmt.Errorf("--invite-type must be a comma-separated list of: %s", strings.Join(betaTesterInviteTypeValues, ", "))
+		}
+	}
+	return values, nil
+}
+
+// rejectBetaTestersNextFlagConflicts fails when a caller pairs --next with a
+// flag whose value cannot reach the request, because a links.next URL is
+// followed verbatim.
+func rejectBetaTestersNextFlagConflicts(fs *flag.FlagSet, next string, names ...string) error {
+	if strings.TrimSpace(next) == "" {
+		return nil
+	}
+	provided := make(map[string]struct{})
+	fs.Visit(func(f *flag.Flag) {
+		provided[f.Name] = struct{}{}
+	})
+	for _, name := range names {
+		if _, ok := provided[name]; ok {
+			return shared.WithDiagnostic(
+				shared.UsageErrorf("beta-testers list: --next cannot be combined with --%s", name),
+				shared.DiagnosticConflictingInput,
+				"--"+name,
+			)
+		}
+	}
+	return nil
 }
 
 // BetaTestersGetCommand returns the beta testers get subcommand.
