@@ -345,6 +345,19 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required")
 				return shared.MissingRequiredUsageError("--confirm")
 			}
+			waitFlagsProvided := make([]string, 0, 2)
+			fs.Visit(func(f *flag.Flag) {
+				if f.Name == "poll-interval" || f.Name == "timeout" {
+					waitFlagsProvided = append(waitFlagsProvided, "--"+f.Name)
+				}
+			})
+			if !*wait && len(waitFlagsProvided) > 0 {
+				verb := "requires"
+				if len(waitFlagsProvided) > 1 {
+					verb = "require"
+				}
+				return shared.UsageError(strings.Join(waitFlagsProvided, " and ") + " " + verb + " --wait")
+			}
 			if *wait {
 				if *pollInterval <= 0 {
 					return shared.UsageError("--poll-interval must be greater than 0")

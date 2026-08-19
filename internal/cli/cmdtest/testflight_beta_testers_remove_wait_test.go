@@ -148,21 +148,57 @@ func TestBetaTestersRemoveWaitTimesOutButPrintsReceipt(t *testing.T) {
 }
 
 func TestBetaTestersRemoveWaitValidatesDurations(t *testing.T) {
-	setupBetaTesterRemoveWaitEnv(t)
-
-	root := RootCommand("1.2.3")
-	root.FlagSet.SetOutput(io.Discard)
-
-	if err := root.Parse([]string{
-		"testflight", "testers", "remove",
-		"--app", "app-1", "--email", "tester@example.com", "--confirm",
-		"--wait", "--poll-interval", "0s",
-	}); err != nil {
-		t.Fatalf("parse error: %v", err)
+	cases := []struct {
+		name     string
+		args     []string
+		wantFlag string
+	}{
+		{
+			name:     "zero poll interval",
+			args:     []string{"--wait", "--poll-interval", "0s"},
+			wantFlag: "--poll-interval",
+		},
+		{
+			name:     "zero timeout",
+			args:     []string{"--wait", "--timeout", "0s"},
+			wantFlag: "--timeout",
+		},
+		{
+			name:     "poll interval without wait",
+			args:     []string{"--poll-interval", "10s"},
+			wantFlag: "--poll-interval requires --wait",
+		},
+		{
+			name:     "timeout without wait",
+			args:     []string{"--timeout", "1m"},
+			wantFlag: "--timeout requires --wait",
+		},
+		{
+			name:     "both wait flags without wait",
+			args:     []string{"--poll-interval", "10s", "--timeout", "1m"},
+			wantFlag: "--poll-interval and --timeout require --wait",
+		},
 	}
-	err := root.Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "--poll-interval") {
-		t.Fatalf("expected poll-interval usage error, got %v", err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setupBetaTesterRemoveWaitEnv(t)
+
+			root := RootCommand("1.2.3")
+			root.FlagSet.SetOutput(io.Discard)
+
+			args := append([]string{
+				"testflight", "testers", "remove",
+				"--app", "app-1", "--email", "tester@example.com", "--confirm",
+			}, tc.args...)
+			if err := root.Parse(args); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			err := root.Run(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tc.wantFlag) {
+				t.Fatalf("expected usage error mentioning %q, got %v", tc.wantFlag, err)
+			}
+		})
 	}
 }
 
