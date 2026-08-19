@@ -395,7 +395,7 @@ func uploadScreenshotAssetFromFile(ctx context.Context, client *asc.Client, setI
 	if info.Size() > maxScreenshotUploadFileSize {
 		return asc.AssetUploadResultItem{}, screenshotPendingAsset{}, fmt.Errorf("file size exceeds %d bytes: %q", maxScreenshotUploadFileSize, filePath)
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	if err := validateOpenedScreenshotFileFormat(filePath, file); err != nil {
 		return asc.AssetUploadResultItem{}, screenshotPendingAsset{}, err
 	}
 
@@ -447,6 +447,23 @@ func uploadScreenshotAssetFromFile(ctx context.Context, client *asc.Client, setI
 		AssetID:  created.Data.ID,
 		State:    state,
 	}, screenshotPendingAsset{}, nil
+}
+
+func validateOpenedScreenshotFileFormat(filePath string, file *os.File) error {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	format, err := asc.ReadImageFormatFrom(file)
+	if err != nil {
+		return fmt.Errorf("%q: %w", filePath, err)
+	}
+	if err := asc.ValidateImageFormatMatchesExtension(filePath, format); err != nil {
+		return err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UploadScreenshotAsset uploads a screenshot file to a set.

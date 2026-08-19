@@ -552,12 +552,7 @@ func validateResumedScreenshotFileFormat(root rootfs.Root, path string) error {
 		return err
 	}
 	defer file.Close()
-
-	format, err := asc.ReadImageFormatFrom(file)
-	if err != nil {
-		return fmt.Errorf("%q: %w", path, err)
-	}
-	return asc.ValidateImageFormatMatchesExtension(path, format)
+	return validateOpenedScreenshotFileFormat(path, file)
 }
 
 func screenshotArtifactNeedsSourceFiles(artifact screenshotUploadFailureArtifact) bool {
