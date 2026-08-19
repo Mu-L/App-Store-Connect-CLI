@@ -57,6 +57,8 @@ var (
 	rawCredentialObject     = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
 	escapedCredentialObject = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
 	booleanSecretMarker     = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1)(` + singleLineShellTerminator + `)`)
+	yamlCredentialScalar    = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlCredentialMapping   = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + sensitivePrefixedName + `[ \t]*:)[ \t]*$`)
 )
 
 var structuredContainerValueRedactionRules = []redactionRule{
@@ -102,20 +104,12 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: privateKeyRedactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?(?:\r?\n(?:[ \t]+[^\r\n]*|[ \t]*$))+`),
-		replacement: `${1}` + redactionMarker,
-	},
-	{
 		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?` + sensitivePrefixedName + `[ \t]*:[ \t]*)(?:\[[^\]\r\n]*\]|\{[^}\r\n]*\})`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?["']` + sensitivePrefixedName + `["'][ \t]*:[ \t]*)(?:\[[ \t]*[^"'\]\r\n][^\]\r\n]*\]|\{[ \t]*[^"'}\r\n][^}\r\n]*\})`),
 		replacement: `${1}` + redactionMarker,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?` + sensitivePrefixedName + `[ \t]*:)[ \t]*(?:\r?\n(?:[ \t]+[^\r\n]*|[ \t]*$))+`),
-		replacement: `${1} ` + redactionMarker,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:[^"'[{\s\r\n][^\r\n]*)(\r?)$`),
@@ -281,6 +275,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, yamlChanged := redactYAMLCredentialBlocks(redacted); yamlChanged {
+		redacted = next
+		changed = true
+	}
 	redacted, booleanMarkerProtection := protectBooleanSecretMarkers(redacted)
 	for _, rule := range singleLineShellWordRedactionRules {
 		next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
@@ -300,6 +298,61 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = strings.ReplaceAll(redacted, booleanMarkerProtection, "")
 	}
 	return redacted, changed
+}
+
+func redactYAMLCredentialBlocks(value string) (string, bool) {
+	lines := strings.SplitAfter(value, "\n")
+	changed := false
+	for line := 0; line < len(lines); line++ {
+		content, ending := splitLineEnding(lines[line])
+		match := yamlCredentialScalar.FindStringSubmatch(content)
+		separator := ""
+		if match == nil {
+			match = yamlCredentialMapping.FindStringSubmatch(content)
+			separator = " "
+		}
+		if match == nil {
+			continue
+		}
+
+		keyIndent := leadingIndent(content)
+		end := line + 1
+		hasIndentedContent := false
+		for end < len(lines) {
+			child, _ := splitLineEnding(lines[end])
+			if strings.TrimSpace(child) == "" {
+				end++
+				continue
+			}
+			if leadingIndent(child) <= keyIndent {
+				break
+			}
+			hasIndentedContent = true
+			end++
+		}
+		if !hasIndentedContent {
+			continue
+		}
+
+		lines[line] = match[1] + separator + redactionMarker + ending
+		lines = append(lines[:line+1], lines[end:]...)
+		changed = true
+	}
+	return strings.Join(lines, ""), changed
+}
+
+func splitLineEnding(line string) (string, string) {
+	if strings.HasSuffix(line, "\r\n") {
+		return strings.TrimSuffix(line, "\r\n"), "\r\n"
+	}
+	if strings.HasSuffix(line, "\n") {
+		return strings.TrimSuffix(line, "\n"), "\n"
+	}
+	return line, ""
+}
+
+func leadingIndent(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " \t"))
 }
 
 func protectBooleanSecretMarkers(value string) (string, string) {

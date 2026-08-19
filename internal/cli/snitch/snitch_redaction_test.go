@@ -663,6 +663,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "token: [REDACTED]\nstatus: failed",
 		},
 		{
+			name:  "nested YAML block mapping preserves sibling field",
+			input: "response:\n  token:\n    type: bearer\n    value: opaque-secret\n  status: failed",
+			want:  "response:\n  token: [REDACTED]\n  status: failed",
+		},
+		{
+			name:  "nested YAML block scalar preserves sibling field",
+			input: "response:\n  client_secret: |\n    opaque-secret\n  status: failed",
+			want:  "response:\n  client_secret: [REDACTED]\n  status: failed",
+		},
+		{
 			name:  "YAML folded base64 private key block",
 			input: "private_key_b64: >- # encoded key\n  c3VwZXI=\n\n  c2VjcmV0\nnext: preserved",
 			want:  "private_key_b64: [REDACTED]\nnext: preserved",
@@ -1259,7 +1269,7 @@ func TestSnitchDryRunRedactsNestedYAMLAndCommandSubstitutionCredentials(t *testi
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", "items:\n  - password: |\n      "+secrets[0]+"\nstatus: failed\nasc deploy --password `printf "+secrets[1]+"` --verbose\nasc deploy --password $(printf "+secrets[2]+") --verbose\ncurl --cert client.p12:'"+secrets[3]+" password' https://example.test\npassword: [first-value, "+secrets[4]+"]\n\"password\": [first-value, "+secrets[5]+"]\ntoken:\n  type: bearer\n  value: "+secrets[6]+"\nnext: preserved",
+		"--repro", "items:\n  - password: |\n      "+secrets[0]+"\nstatus: failed\nasc deploy --password `printf "+secrets[1]+"` --verbose\nasc deploy --password $(printf "+secrets[2]+") --verbose\ncurl --cert client.p12:'"+secrets[3]+" password' https://example.test\npassword: [first-value, "+secrets[4]+"]\n\"password\": [first-value, "+secrets[5]+"]\nresponse:\n  token:\n    type: bearer\n    value: "+secrets[6]+"\n  status: failed\nnext: preserved",
 		"nested credential redaction probe",
 	)
 	if err != nil {
@@ -1283,7 +1293,7 @@ func TestSnitchDryRunRedactsNestedYAMLAndCommandSubstitutionCredentials(t *testi
 		"curl --cert client.p12:[REDACTED] https://example.test",
 		"password: [REDACTED]",
 		"\"password\": [REDACTED]",
-		"token: [REDACTED]\nnext: preserved",
+		"response:\n  token: [REDACTED]\n  status: failed\nnext: preserved",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
