@@ -395,7 +395,9 @@ func WithRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 
 		preserveErrorOnDeadline := retryPreservesErrorOnDeadline(err)
 		if preserveErrorOnDeadline && retryDelayOutlastsDeadline(ctx, delay) {
-			return zero, err
+			if contextErr := ctx.Err(); contextErr == nil || errors.Is(contextErr, context.DeadlineExceeded) {
+				return zero, err
+			}
 		}
 
 		if ResolveRetryLogEnabled() {
