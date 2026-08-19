@@ -12,9 +12,17 @@ import (
 	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
 )
 
-// buildsListQuerySurfaceStub installs a transport that captures the query of the
-// single builds request the CLI issues and replies with a minimal envelope.
-func buildsListQuerySurfaceStub(t *testing.T) func() (string, url.Values) {
+// buildsListQuerySurfaceRequest records what the CLI sent, so tests can assert
+// both the emitted query and that rejected invocations sent nothing at all.
+type buildsListQuerySurfaceRequest struct {
+	calls int
+	path  string
+	query url.Values
+}
+
+// buildsListQuerySurfaceStub installs a transport that captures the builds
+// request the CLI issues and replies with a minimal envelope.
+func buildsListQuerySurfaceStub(t *testing.T) *buildsListQuerySurfaceRequest {
 	t.Helper()
 
 	setupAuth(t)
@@ -26,12 +34,12 @@ func buildsListQuerySurfaceStub(t *testing.T) func() (string, url.Values) {
 		http.DefaultTransport = originalTransport
 	})
 
-	var capturedPath string
-	var capturedQuery url.Values
+	captured := &buildsListQuerySurfaceRequest{}
 
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		capturedPath = req.URL.Path
-		capturedQuery = req.URL.Query()
+		captured.calls++
+		captured.path = req.URL.Path
+		captured.query = req.URL.Query()
 		body := `{"data":[{"type":"builds","id":"build-1","attributes":{"version":"42"}}]}`
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -40,8 +48,16 @@ func buildsListQuerySurfaceStub(t *testing.T) func() (string, url.Values) {
 		}, nil
 	})
 
-	return func() (string, url.Values) {
-		return capturedPath, capturedQuery
+	return captured
+}
+
+// assertNoRequest fails when a rejected invocation reached the network, proving
+// validation runs before any side effect.
+func (r *buildsListQuerySurfaceRequest) assertNoRequest(t *testing.T) {
+	t.Helper()
+
+	if r.calls != 0 {
+		t.Fatalf("expected validation to short-circuit before any request, got %d call(s) to %s?%s", r.calls, r.path, r.query.Encode())
 	}
 }
 
@@ -75,14 +91,13 @@ func TestBuildsListBetaReviewStateEmitsFilter(t *testing.T) {
 		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
 	}
 
-	path, query := captured()
-	if path != "/v1/builds" {
-		t.Fatalf("expected /v1/builds path, got %q", path)
+	if captured.path != "/v1/builds" {
+		t.Fatalf("expected /v1/builds path, got %q", captured.path)
 	}
-	if got := query.Get("filter[betaAppReviewSubmission.betaReviewState]"); got != "WAITING_FOR_REVIEW,IN_REVIEW" {
+	if got := captured.query.Get("filter[betaAppReviewSubmission.betaReviewState]"); got != "WAITING_FOR_REVIEW,IN_REVIEW" {
 		t.Fatalf("expected beta review state filter, got %q", got)
 	}
-	if got := query.Get("filter[app]"); got != "123456789" {
+	if got := captured.query.Get("filter[app]"); got != "123456789" {
 		t.Fatalf("expected filter[app]=123456789, got %q", got)
 	}
 	if !strings.Contains(stdout, `"id":"build-1"`) {
@@ -103,14 +118,13 @@ func TestBuildsListBetaReviewStateNormalizesCase(t *testing.T) {
 		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
 	}
 
-	_, query := captured()
-	if got := query.Get("filter[betaAppReviewSubmission.betaReviewState]"); got != "APPROVED" {
+	if got := captured.query.Get("filter[betaAppReviewSubmission.betaReviewState]"); got != "APPROVED" {
 		t.Fatalf("expected normalized APPROVED, got %q", got)
 	}
 }
 
 func TestBuildsListBetaReviewStateRejectsUnknownValue(t *testing.T) {
-	buildsListQuerySurfaceStub(t)
+	captured := buildsListQuerySurfaceStub(t)
 
 	_, stderr, err := runBuildsListQuerySurface(
 		t,
@@ -127,6 +141,7 @@ func TestBuildsListBetaReviewStateRejectsUnknownValue(t *testing.T) {
 			t.Fatalf("expected stderr to mention %q, got %q", want, stderr)
 		}
 	}
+	captured.assertNoRequest(t)
 }
 
 func TestBuildsListIncludeDefaultsToPreReleaseVersion(t *testing.T) {
@@ -137,8 +152,7 @@ func TestBuildsListIncludeDefaultsToPreReleaseVersion(t *testing.T) {
 		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
 	}
 
-	_, query := captured()
-	if got := query.Get("include"); got != "preReleaseVersion" {
+	if got := captured.query.Get("include"); got != "preReleaseVersion" {
 		t.Fatalf("expected default include=preReleaseVersion, got %q", got)
 	}
 }
@@ -156,8 +170,7 @@ func TestBuildsListIncludeUnionsWithPreReleaseVersion(t *testing.T) {
 		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
 	}
 
-	_, query := captured()
-	if got := query.Get("include"); got != "preReleaseVersion,app,buildBetaDetail" {
+	if got := captured.query.Get("include"); got != "preReleaseVersion,app,buildBetaDetail" {
 		t.Fatalf("expected include to union the table default, got %q", got)
 	}
 }
@@ -175,14 +188,13 @@ func TestBuildsListIncludeDoesNotDuplicatePreReleaseVersion(t *testing.T) {
 		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
 	}
 
-	_, query := captured()
-	if got := query.Get("include"); got != "preReleaseVersion,betaGroups" {
+	if got := captured.query.Get("include"); got != "preReleaseVersion,betaGroups" {
 		t.Fatalf("expected deduplicated include, got %q", got)
 	}
 }
 
 func TestBuildsListIncludeRejectsUnknownValue(t *testing.T) {
-	buildsListQuerySurfaceStub(t)
+	captured := buildsListQuerySurfaceStub(t)
 
 	_, stderr, err := runBuildsListQuerySurface(
 		t,
@@ -199,6 +211,7 @@ func TestBuildsListIncludeRejectsUnknownValue(t *testing.T) {
 			t.Fatalf("expected stderr to mention %q, got %q", want, stderr)
 		}
 	}
+	captured.assertNoRequest(t)
 }
 
 func TestBuildsListRejectsNewQueryFlagsCombinedWithNext(t *testing.T) {
@@ -213,7 +226,7 @@ func TestBuildsListRejectsNewQueryFlagsCombinedWithNext(t *testing.T) {
 		{name: "include", flag: "--include", args: []string{"--include", "betaGroups"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			buildsListQuerySurfaceStub(t)
+			captured := buildsListQuerySurfaceStub(t)
 
 			args := append([]string{"builds", "list", "--next", nextURL}, testCase.args...)
 			_, stderr, err := runBuildsListQuerySurface(t, args...)
@@ -224,6 +237,7 @@ func TestBuildsListRejectsNewQueryFlagsCombinedWithNext(t *testing.T) {
 			if !strings.Contains(stderr, "--next cannot be combined with "+testCase.flag) {
 				t.Fatalf("expected stderr to reject %s with --next, got %q", testCase.flag, stderr)
 			}
+			captured.assertNoRequest(t)
 		})
 	}
 }
@@ -240,9 +254,24 @@ func TestBuildsListNextAloneStillPaginates(t *testing.T) {
 		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
 	}
 
-	_, query := captured()
-	if got := query.Get("cursor"); got != "PAGE2" {
-		t.Fatalf("expected the next URL to be followed verbatim, got cursor=%q", got)
+	if captured.path != "/v1/builds" {
+		t.Fatalf("expected /v1/builds path, got %q", captured.path)
+	}
+	// The whole next URL must survive, not just the cursor: dropping filter[app]
+	// or include here would silently widen the page or break the table renderer,
+	// and adding anything would mean the URL was rebuilt rather than followed.
+	wantQuery := map[string]string{
+		"cursor":      "PAGE2",
+		"filter[app]": "123456789",
+		"include":     "preReleaseVersion",
+	}
+	for param, want := range wantQuery {
+		if got := captured.query.Get(param); got != want {
+			t.Fatalf("expected %s=%q on the followed next URL, got %q (full query %s)", param, want, got, captured.query.Encode())
+		}
+	}
+	if len(captured.query) != len(wantQuery) {
+		t.Fatalf("expected exactly the next URL's %d parameters, got %s", len(wantQuery), captured.query.Encode())
 	}
 }
 
@@ -268,8 +297,7 @@ func TestBuildsListSortAcceptsEveryDocumentedKey(t *testing.T) {
 				t.Fatalf("run error: %v (stderr=%q)", err, stderr)
 			}
 
-			_, query := captured()
-			if got := query.Get("sort"); got != sortValue {
+			if got := captured.query.Get("sort"); got != sortValue {
 				t.Fatalf("expected sort=%q, got %q", sortValue, got)
 			}
 		})
@@ -291,17 +319,16 @@ func TestBuildsCountBetaReviewStateEmitsFilter(t *testing.T) {
 		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
 	}
 
-	path, query := captured()
-	if path != "/v1/builds" {
-		t.Fatalf("expected /v1/builds path, got %q", path)
+	if captured.path != "/v1/builds" {
+		t.Fatalf("expected /v1/builds path, got %q", captured.path)
 	}
-	if got := query.Get("filter[betaAppReviewSubmission.betaReviewState]"); got != "REJECTED" {
+	if got := captured.query.Get("filter[betaAppReviewSubmission.betaReviewState]"); got != "REJECTED" {
 		t.Fatalf("expected normalized REJECTED filter, got %q", got)
 	}
 }
 
 func TestBuildsCountBetaReviewStateRejectsUnknownValue(t *testing.T) {
-	buildsListQuerySurfaceStub(t)
+	captured := buildsListQuerySurfaceStub(t)
 
 	_, stderr, err := runBuildsListQuerySurface(
 		t,
@@ -316,10 +343,11 @@ func TestBuildsCountBetaReviewStateRejectsUnknownValue(t *testing.T) {
 	if !strings.Contains(stderr, "--beta-review-state must be a comma-separated list of") {
 		t.Fatalf("expected beta review state validation error, got %q", stderr)
 	}
+	captured.assertNoRequest(t)
 }
 
 func TestBuildsListSortRejectsUnknownKey(t *testing.T) {
-	buildsListQuerySurfaceStub(t)
+	captured := buildsListQuerySurfaceStub(t)
 
 	_, stderr, err := runBuildsListQuerySurface(
 		t,
@@ -339,4 +367,5 @@ func TestBuildsListSortRejectsUnknownKey(t *testing.T) {
 			t.Fatalf("expected error to mention %q, got %v", want, err)
 		}
 	}
+	captured.assertNoRequest(t)
 }
