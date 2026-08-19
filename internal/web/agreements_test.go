@@ -306,3 +306,19 @@ func TestAcceptAgreementsSurfacesResultCodeError(t *testing.T) {
 		t.Fatalf("AcceptAgreements() error = %v, want Apple user message", err)
 	}
 }
+
+func TestAcceptAgreementsRejectsMissingResultCode(t *testing.T) {
+	requestCount := 0
+	client := agreementsTestClient(t, func(r *http.Request) (*http.Response, error) {
+		requestCount++
+		if requestCount == 1 {
+			return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), nil), nil
+		}
+		return developerPortalTestResponse(http.StatusOK, `{"agreements":[]}`, nil), nil
+	})
+
+	result, err := client.AcceptAgreements(context.Background(), AgreementsAcceptRequest{AgreementIDs: []string{"XG8DNV4HYY"}})
+	if err == nil || !strings.Contains(err.Error(), "missing resultCode") {
+		t.Fatalf("AcceptAgreements() result/error = %+v/%v, want missing resultCode error", result, err)
+	}
+}

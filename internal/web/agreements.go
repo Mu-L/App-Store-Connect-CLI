@@ -26,7 +26,7 @@ type AgreementsAcceptRequest struct {
 // These endpoints answer HTTP 200 even for failures; resultCode carries the
 // outcome (0 success; for example 3050 missing team, 3100 unknown team).
 type developerAgreementsEnvelope struct {
-	ResultCode   int                        `json:"resultCode"`
+	ResultCode   *int                       `json:"resultCode"`
 	ResultString string                     `json:"resultString"`
 	UserString   string                     `json:"userString"`
 	Agreements   []developerAgreementRecord `json:"agreements"`
@@ -174,7 +174,10 @@ func (c *Client) doDeveloperPortalAgreementsRequest(ctx context.Context, path st
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, fmt.Errorf("failed to parse Developer Portal agreements response: %w", err)
 	}
-	if envelope.ResultCode != 0 {
+	if envelope.ResultCode == nil {
+		return nil, fmt.Errorf("developer portal agreements response is missing resultCode")
+	}
+	if *envelope.ResultCode != 0 {
 		message := strings.TrimSpace(envelope.UserString)
 		if message == "" {
 			message = strings.TrimSpace(envelope.ResultString)
@@ -182,7 +185,7 @@ func (c *Client) doDeveloperPortalAgreementsRequest(ctx context.Context, path st
 		if message == "" {
 			message = "unknown Developer Portal error"
 		}
-		return nil, &DeveloperPortalAgreementsResultError{ResultCode: envelope.ResultCode, Message: message}
+		return nil, &DeveloperPortalAgreementsResultError{ResultCode: *envelope.ResultCode, Message: message}
 	}
 	return &envelope, nil
 }
