@@ -30,6 +30,8 @@ const (
 	assetDownloadUserAgent    = "curl/8.7.1 App-Store-Connect-CLI/asset-download"
 	pngEquivalenceMaxBytes    = 32 << 20
 	pngEquivalenceMaxInflated = 256 << 20
+	pngEquivalenceMaxPaletted = 64 << 20
+	pngEquivalenceMaxPalRow   = 32 << 20
 )
 
 var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
@@ -50,6 +52,7 @@ type pngImageHeader struct {
 	bitDepth  byte
 	colorType byte
 	interlace byte
+	palette   uint32
 }
 
 type downloadHTTPStatusError struct {
@@ -370,6 +373,7 @@ func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
 			if imageHeader.colorType == 3 && length/3 > 1<<imageHeader.bitDepth {
 				return digest, false
 			}
+			imageHeader.palette = length / 3
 			seenPalette = true
 		case "IDAT":
 			if imageDataEnded {
@@ -472,6 +476,9 @@ func validPNGImageData(header pngImageHeader, parts [][]byte) bool {
 
 func validPNGScanlines(reader io.Reader, header pngImageHeader) bool {
 	bitsPerPixel := uint64(header.bitDepth) * pngColorChannels(header.colorType)
+	if header.colorType == 3 && (header.palette == 0 || uint64(header.width)*uint64(header.height) > pngEquivalenceMaxPaletted) {
+		return false
+	}
 	passes := [][4]uint32{{0, 0, 1, 1}}
 	if header.interlace == 1 {
 		passes = [][4]uint32{
@@ -500,6 +507,12 @@ func validPNGScanlines(reader io.Reader, header pngImageHeader) bool {
 		}
 		inflatedBytes := uint64(height) * scanlineBytes
 		remaining -= inflatedBytes
+		if header.colorType == 3 {
+			if rowBytes > pngEquivalenceMaxPalRow || !validPNGPalettePass(reader, width, height, int(rowBytes), header.bitDepth, header.palette) {
+				return false
+			}
+			continue
+		}
 
 		for range height {
 			if _, err := io.ReadFull(reader, filter[:]); err != nil || filter[0] > 4 {
@@ -514,6 +527,88 @@ func validPNGScanlines(reader io.Reader, header pngImageHeader) bool {
 	var extra [1]byte
 	n, err := reader.Read(extra[:])
 	return n == 0 && err == io.EOF
+}
+
+func validPNGPalettePass(reader io.Reader, width, height uint32, rowBytes int, bitDepth byte, paletteEntries uint32) bool {
+	previous := make([]byte, rowBytes)
+	current := make([]byte, rowBytes)
+	var filter [1]byte
+	for range height {
+		if _, err := io.ReadFull(reader, filter[:]); err != nil {
+			return false
+		}
+		if _, err := io.ReadFull(reader, current); err != nil {
+			return false
+		}
+		if !unfilterPNGPaletteRow(current, previous, filter[0]) || !validPNGPaletteIndices(current, width, bitDepth, paletteEntries) {
+			return false
+		}
+		previous, current = current, previous
+	}
+	return true
+}
+
+func unfilterPNGPaletteRow(row, previous []byte, filter byte) bool {
+	for i := range row {
+		var left byte
+		if i > 0 {
+			left = row[i-1]
+		}
+		up := previous[i]
+		var upperLeft byte
+		if i > 0 {
+			upperLeft = previous[i-1]
+		}
+
+		switch filter {
+		case 0:
+		case 1:
+			row[i] += left
+		case 2:
+			row[i] += up
+		case 3:
+			row[i] += byte((uint16(left) + uint16(up)) / 2)
+		case 4:
+			row[i] += pngPaethPredictor(left, up, upperLeft)
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validPNGPaletteIndices(row []byte, width uint32, bitDepth byte, paletteEntries uint32) bool {
+	mask := uint32(1<<bitDepth) - 1
+	for pixel := range width {
+		bitOffset := uint64(pixel) * uint64(bitDepth)
+		shift := uint(8 - bitDepth - byte(bitOffset%8))
+		index := uint32(row[bitOffset/8]>>shift) & mask
+		if index >= paletteEntries {
+			return false
+		}
+	}
+	return true
+}
+
+func pngPaethPredictor(left, up, upperLeft byte) byte {
+	prediction := int(left) + int(up) - int(upperLeft)
+	leftDistance := pngAbs(prediction - int(left))
+	upDistance := pngAbs(prediction - int(up))
+	upperLeftDistance := pngAbs(prediction - int(upperLeft))
+	if leftDistance <= upDistance && leftDistance <= upperLeftDistance {
+		return left
+	}
+	if upDistance <= upperLeftDistance {
+		return up
+	}
+	return upperLeft
+}
+
+func pngAbs(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func pngColorChannels(colorType byte) uint64 {

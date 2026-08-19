@@ -291,6 +291,7 @@ func TestStablePNGDigestValidatesPalette(t *testing.T) {
 	grayscaleHeader := downloadTestPNGIHDR()
 	grayscaleHeader[9] = 0
 	imageData := downloadTestPNGChunk("IDAT", downloadTestPNGCompressedScanlines(t, []byte{0, 0}))
+	outOfRangeImageData := downloadTestPNGChunk("IDAT", downloadTestPNGCompressedScanlines(t, []byte{0, 0x80}))
 
 	tests := []struct {
 		name string
@@ -298,6 +299,7 @@ func TestStablePNGDigestValidatesPalette(t *testing.T) {
 		want bool
 	}{
 		{name: "valid indexed palette", png: downloadTestPNGWithIHDR(indexedHeader, downloadTestPNGChunk("PLTE", []byte{0, 0, 0}), imageData), want: true},
+		{name: "indexed pixel exceeds palette", png: downloadTestPNGWithIHDR(indexedHeader, downloadTestPNGChunk("PLTE", []byte{0, 0, 0}), outOfRangeImageData)},
 		{name: "indexed palette missing", png: downloadTestPNGWithIHDR(indexedHeader, imageData)},
 		{name: "indexed palette exceeds bit depth", png: downloadTestPNGWithIHDR(indexedHeader, downloadTestPNGChunk("PLTE", make([]byte, 9)), imageData)},
 		{name: "grayscale palette forbidden", png: downloadTestPNGWithIHDR(grayscaleHeader, downloadTestPNGChunk("PLTE", []byte{0, 0, 0}), imageData)},
@@ -308,6 +310,64 @@ func TestStablePNGDigestValidatesPalette(t *testing.T) {
 			_, got := stablePNGDigest(tt.png)
 			if got != tt.want {
 				t.Fatalf("stablePNGDigest() valid = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnfilterPNGPaletteRow(t *testing.T) {
+	tests := []struct {
+		name     string
+		filter   byte
+		row      []byte
+		previous []byte
+		want     []byte
+		valid    bool
+	}{
+		{name: "none", filter: 0, row: []byte{1, 2}, previous: []byte{2, 4}, want: []byte{1, 2}, valid: true},
+		{name: "sub", filter: 1, row: []byte{1, 1}, previous: []byte{2, 4}, want: []byte{1, 2}, valid: true},
+		{name: "up", filter: 2, row: []byte{255, 254}, previous: []byte{2, 4}, want: []byte{1, 2}, valid: true},
+		{name: "average", filter: 3, row: []byte{2, 5}, previous: []byte{2, 4}, want: []byte{3, 8}, valid: true},
+		{name: "paeth", filter: 4, row: []byte{1, 4}, previous: []byte{2, 4}, want: []byte{3, 8}, valid: true},
+		{name: "invalid", filter: 5, row: []byte{1, 2}, previous: []byte{2, 4}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotValid := unfilterPNGPaletteRow(tt.row, tt.previous, tt.filter)
+			if gotValid != tt.valid {
+				t.Fatalf("unfilterPNGPaletteRow() valid = %t, want %t", gotValid, tt.valid)
+			}
+			if gotValid && !bytes.Equal(tt.row, tt.want) {
+				t.Fatalf("unfilterPNGPaletteRow() = %v, want %v", tt.row, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidPNGPaletteIndices(t *testing.T) {
+	tests := []struct {
+		name           string
+		row            []byte
+		width          uint32
+		bitDepth       byte
+		paletteEntries uint32
+		want           bool
+	}{
+		{name: "one bit valid", row: []byte{0x40}, width: 2, bitDepth: 1, paletteEntries: 2, want: true},
+		{name: "one bit invalid", row: []byte{0x40}, width: 2, bitDepth: 1, paletteEntries: 1},
+		{name: "two bit valid", row: []byte{0x1b}, width: 4, bitDepth: 2, paletteEntries: 4, want: true},
+		{name: "two bit invalid", row: []byte{0x1b}, width: 4, bitDepth: 2, paletteEntries: 3},
+		{name: "four bit valid", row: []byte{0x1f}, width: 2, bitDepth: 4, paletteEntries: 16, want: true},
+		{name: "four bit invalid", row: []byte{0x1f}, width: 2, bitDepth: 4, paletteEntries: 15},
+		{name: "eight bit valid", row: []byte{0, 2}, width: 2, bitDepth: 8, paletteEntries: 3, want: true},
+		{name: "eight bit invalid", row: []byte{0, 2}, width: 2, bitDepth: 8, paletteEntries: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := validPNGPaletteIndices(tt.row, tt.width, tt.bitDepth, tt.paletteEntries); got != tt.want {
+				t.Fatalf("validPNGPaletteIndices() = %t, want %t", got, tt.want)
 			}
 		})
 	}
