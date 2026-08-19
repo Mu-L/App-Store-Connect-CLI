@@ -32,6 +32,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "Authorization: [REDACTED]",
 		},
 		{
+			name:  "signature authorization header with arbitrary first parameter",
+			input: `Authorization: Signature keyId="my-key",algorithm="rsa-sha256",signature="credential-value"`,
+			want:  "Authorization: [REDACTED]",
+		},
+		{
 			name:  "standalone bearer credential",
 			input: "server returned Bearer eyJhbGciOiJFUzI1NiJ9.fake.signature",
 			want:  "server returned Bearer [REDACTED]",
@@ -105,6 +110,31 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "comma in unquoted secret flag",
 			input: `asc web sandbox create --password Password1,remaining-secret --territory USA`,
 			want:  `asc web sandbox create --password [REDACTED] --territory USA`,
+		},
+		{
+			name:  "compound password flag",
+			input: `asc review details-create --demo-account-password "app-specific-password" --notes ready`,
+			want:  `asc review details-create --demo-account-password [REDACTED] --notes ready`,
+		},
+		{
+			name:  "boolean secret marker with sensitive named value",
+			input: `asc web xcode-cloud env-vars create --name MY_SECRET --value s3cret --secret --apple-id 123456789`,
+			want:  `asc web xcode-cloud env-vars create --name MY_SECRET --value [REDACTED] --secret --apple-id 123456789`,
+		},
+		{
+			name:  "boolean secret marker before value",
+			input: `asc web xcode-cloud env-vars create --name PRIVATE_CONFIG --secret --value s3cret --apple-id 123456789`,
+			want:  `asc web xcode-cloud env-vars create --name PRIVATE_CONFIG --secret --value [REDACTED] --apple-id 123456789`,
+		},
+		{
+			name:  "unterminated quoted secret flag",
+			input: "asc deploy --password \"super secret value",
+			want:  "asc deploy --password [REDACTED]",
+		},
+		{
+			name:  "comma in unquoted assignment",
+			input: `PASSWORD=Password1,remaining-secret asc builds list`,
+			want:  `PASSWORD=[REDACTED] asc builds list`,
 		},
 		{
 			name:  "prefixed environment assignment",
@@ -254,6 +284,60 @@ func TestSnitchDryRunRedactsEveryReportField(t *testing.T) {
 	}
 	if got := strings.Count(stderr, "sensitive values were redacted"); got != 1 {
 		t.Fatalf("stderr = %q, want exactly one redaction notice, got %d", stderr, got)
+	}
+}
+
+func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"app-specific-password",
+		"xcode-cloud-value",
+		"unterminated secret value",
+		"Password1,remaining-secret",
+		"credential-value",
+	}
+	repro := strings.Join([]string{
+		`asc review details-create --demo-account-password "` + secrets[0] + `" --notes ready`,
+		`asc web xcode-cloud env-vars create --name MY_SECRET --value ` + secrets[1] + ` --secret --apple-id 123456789`,
+		`asc deploy --password "` + secrets[2],
+	}, "\n")
+	actual := "PASSWORD=" + secrets[3] + "\n" +
+		`Authorization: Signature keyId="my-key",algorithm="rsa-sha256",signature="` + secrets[4] + `"`
+
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"--actual", actual,
+		"compound redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"--demo-account-password [REDACTED] --notes ready",
+		"--name MY_SECRET --value [REDACTED] --secret --apple-id 123456789",
+		"--password [REDACTED]",
+		"PASSWORD=[REDACTED]",
+		"Authorization: [REDACTED]",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
 	}
 }
 
