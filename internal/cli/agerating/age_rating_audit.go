@@ -42,6 +42,7 @@ A response counts as missing when:
   - messagingAndChat is unset
   - socialMediaAgeRestricted is unset while socialMedia is true
   - ageAssurance is unset or false while socialMediaAgeRestricted is true
+  - userGeneratedContent is false while socialMedia or socialMediaAgeRestricted is true
 
 Use "asc age-rating edit" to fill gaps.
 
@@ -239,6 +240,9 @@ func auditDeclaration(ctx context.Context, client *asc.Client, app auditApp) asc
 	}
 	if boolIsTrue(socialMediaAgeRestricted) && boolIsFalse(socialMedia) {
 		row.MissingResponses = append(row.MissingResponses, "socialMedia")
+	}
+	if (boolIsTrue(socialMedia) || boolIsTrue(socialMediaAgeRestricted)) && boolIsFalse(attrs.UserGeneratedContent) {
+		row.MissingResponses = append(row.MissingResponses, "userGeneratedContent")
 	}
 	if boolIsTrue(socialMediaAgeRestricted) && !boolIsTrue(attrs.AgeAssurance) {
 		row.MissingResponses = append(row.MissingResponses, "ageAssurance")
