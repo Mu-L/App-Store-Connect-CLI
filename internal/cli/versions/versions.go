@@ -124,8 +124,12 @@ Examples:
 			}
 
 			if *paginate || *latest {
-				// Fetch first page with limit set for consistent pagination
-				paginateOpts := append(opts, asc.WithAppStoreVersionsLimit(200))
+				// Use the caller's page size when provided; otherwise request the
+				// largest page to keep automatic pagination efficient.
+				paginateOpts := opts
+				if *limit == 0 {
+					paginateOpts = append(paginateOpts, asc.WithAppStoreVersionsLimit(200))
+				}
 				firstPage, err := client.GetAppStoreVersions(requestCtx, resolvedAppID, paginateOpts...)
 				if err != nil {
 					return fmt.Errorf("versions list: failed to fetch: %w", err)

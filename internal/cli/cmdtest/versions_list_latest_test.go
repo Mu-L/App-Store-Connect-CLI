@@ -27,6 +27,9 @@ func TestVersionsListLatestKeepsNewestVersionPerPlatform(t *testing.T) {
 				{"type":"appStoreVersions","id":"ver-mac-old","attributes":{"platform":"MAC_OS","versionString":"1.0.0","appStoreState":"READY_FOR_SALE","createdDate":"2020-01-01T00:00:00-07:00"}}
 			],"links":{}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == pageTwoPath:
+			if got := req.URL.Query().Get("limit"); got != "10" {
+				return nil, fmt.Errorf("first-page limit = %q, want 10", got)
+			}
 			return jsonHTTPResponse(http.StatusOK, fmt.Sprintf(`{"data":[
 				{"type":"appStoreVersions","id":"ver-ios-old","attributes":{"platform":"IOS","versionString":"2.3.2","appStoreState":"READY_FOR_SALE","createdDate":"2026-02-20T01:00:00+01:00"}},
 				{"type":"appStoreVersions","id":"ver-mac-new","attributes":{"platform":"MAC_OS","versionString":"2.6.2","appStoreState":"READY_FOR_SALE","createdDate":"2020-10-26T09:49:56-07:00"}}
@@ -39,7 +42,7 @@ func TestVersionsListLatestKeepsNewestVersionPerPlatform(t *testing.T) {
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
 	stdout, _ := captureOutput(t, func() {
-		if err := root.Parse([]string{"versions", "list", "--app", "app-1", "--state", "READY_FOR_SALE", "--latest", "--output", "json"}); err != nil {
+		if err := root.Parse([]string{"versions", "list", "--app", "app-1", "--state", "READY_FOR_SALE", "--latest", "--limit", "10", "--output", "json"}); err != nil {
 			t.Fatalf("parse error: %v", err)
 		}
 		if err := root.Run(context.Background()); err != nil {
