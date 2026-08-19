@@ -71,12 +71,12 @@ asc performance metrics list \
 Retrieve performance metrics for a specific build.
 
 ```bash  theme={null}
-asc performance metrics view --build "BUILD_ID"
+asc performance metrics view --build-id "BUILD_ID"
 ```
 
 **Required Flags:**
 
-* `--build` - Build ID
+* `--build-id` - Build ID
 
 **Optional Flags:**
 
@@ -88,11 +88,11 @@ asc performance metrics view --build "BUILD_ID"
 
 ```bash  theme={null}
 # Get all metrics for a build
-asc performance metrics view --build "abc-123-def"
+asc performance metrics view --build-id "abc-123-def"
 
 # Filter memory metrics for specific device
 asc performance metrics view \
-  --build "abc-123-def" \
+  --build-id "abc-123-def" \
   --metric-type "MEMORY" \
   --device-type "iPhone15,2"
 ```
@@ -172,12 +172,12 @@ Diagnostic signatures aggregate similar issues to help identify patterns.
 List diagnostic signatures for a specific build.
 
 ```bash  theme={null}
-asc performance diagnostics list --build "BUILD_ID"
+asc performance diagnostics list --build-id "BUILD_ID"
 ```
 
 **Required Flags:**
 
-* `--build` - Build ID
+* `--build-id` - Build ID
 
 **Optional Flags:**
 
@@ -199,22 +199,22 @@ asc performance diagnostics list --build "BUILD_ID"
 
 ```bash  theme={null}
 # List all diagnostic signatures
-asc performance diagnostics list --build "BUILD_ID"
+asc performance diagnostics list --build-id "BUILD_ID"
 
 # Filter by type
 asc performance diagnostics list \
-  --build "BUILD_ID" \
+  --build-id "BUILD_ID" \
   --diagnostic-type "HANGS"
 
 # Limit results and fetch all pages
 asc performance diagnostics list \
-  --build "BUILD_ID" \
+  --build-id "BUILD_ID" \
   --limit 50 \
   --paginate
 
 # Filter by multiple types
 asc performance diagnostics list \
-  --build "BUILD_ID" \
+  --build-id "BUILD_ID" \
   --diagnostic-type "HANGS,DISK_WRITES"
 ```
 
@@ -252,13 +252,13 @@ Download aggregated performance metrics data.
 
 ```bash  theme={null}
 asc performance download \
-  --build "BUILD_ID" \
+  --build-id "BUILD_ID" \
   --output ./metrics.json
 ```
 
 **Required Flags:**
 
-* `--build` - Build ID
+* `--build-id` - Build ID
 
 **Optional Flags:**
 
@@ -311,13 +311,13 @@ PREVIOUS_BUILD="previous-build-id"
 
 # Get current metrics
 asc performance metrics view \
-  --build "$CURRENT_BUILD" \
+  --build-id "$CURRENT_BUILD" \
   --metric-type "MEMORY,LAUNCH" \
   > current_metrics.json
 
 # Get previous metrics
 asc performance metrics view \
-  --build "$PREVIOUS_BUILD" \
+  --build-id "$PREVIOUS_BUILD" \
   --metric-type "MEMORY,LAUNCH" \
   > previous_metrics.json
 
@@ -330,7 +330,7 @@ asc performance metrics view \
 ```bash  theme={null}
 # Get high-impact hang signatures
 asc performance diagnostics list \
-  --build "$BUILD_ID" \
+  --build-id "$BUILD_ID" \
   --diagnostic-type "HANGS" \
   --paginate \
   > hang_signatures.json
@@ -353,7 +353,7 @@ mkdir -p "$OUTPUT_DIR"
 # Export each signature type
 for TYPE in DISK_WRITES HANGS LAUNCHES; do
   asc performance diagnostics list \
-    --build "$BUILD_ID" \
+    --build-id "$BUILD_ID" \
     --diagnostic-type "$TYPE" \
     --paginate \
     > "$OUTPUT_DIR/${TYPE}.json"
@@ -367,7 +367,7 @@ echo "Diagnostics exported to $OUTPUT_DIR"
 ```bash  theme={null}
 # Analyze metrics for latest iPhone models
 asc performance metrics view \
-  --build "$BUILD_ID" \
+  --build-id "$BUILD_ID" \
   --device-type "iPhone15,2,iPhone15,3" \
   --metric-type "MEMORY,BATTERY,LAUNCH" \
   --output table

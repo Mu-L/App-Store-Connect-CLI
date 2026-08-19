@@ -272,7 +272,7 @@ TestFlight group that needs beta app review submission.
 
 ```bash
 # Optional: preview the staging plan before submission
-asc release stage --app "123456789" --version "1.2.3" --build "BUILD_ID" --copy-metadata-from "1.2.2" --dry-run
+asc release stage --app "123456789" --version "1.2.3" --build-id "BUILD_ID" --copy-metadata-from "1.2.2" --dry-run
 
 # Canonical upload + attach + submit command
 asc publish appstore --app "123456789" --ipa "/path/to/MyApp.ipa" --version "1.2.3" --submit --confirm
