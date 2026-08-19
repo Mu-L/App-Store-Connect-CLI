@@ -286,6 +286,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "response {\n  \"client_secret\":\n    \"[REDACTED]\",\n  \"status\": \"failed\"\n}",
 		},
 		{
+			name:  "camel case JSON assignments",
+			input: `response {"demoAccountPassword":"review-secret","awsSecretAccessKey":"cloud-secret"}`,
+			want:  `response {"demoAccountPassword":"[REDACTED]","awsSecretAccessKey":"[REDACTED]"}`,
+		},
+		{
 			name:  "JWT",
 			input: "decoded eyJhbGciOiJFUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl failed",
 			want:  "decoded [REDACTED] failed",
@@ -562,14 +567,15 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"marked-value", "authorization-credential", "structured-secret", "continued-secret", "pretty-structured-secret"}
+	secrets := []string{"marked-value", "authorization-credential", "structured-secret", "continued-secret", "pretty-structured-secret", "camel-structured-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", "asc web xcode-cloud env-vars create --value "+secrets[0]+" --secret=true\n"+
 			"asc web xcode-cloud env-vars create --value "+secrets[3]+" \\\n  --secret",
 		"--actual", `Authorization: ApiKey `+secrets[1]+"\n"+`{"MY_CLIENT_SECRET":"`+secrets[2]+`"}`+"\n"+
-			"{\n  \"client_secret\":\n    \""+secrets[4]+"\"\n}",
+			"{\n  \"client_secret\":\n    \""+secrets[4]+"\"\n}\n"+
+			`{"demoAccountPassword":"`+secrets[5]+`"}`,
 		"explicit credential redaction probe",
 	)
 	if err != nil {
@@ -593,6 +599,7 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 		"Authorization: [REDACTED]",
 		`{"MY_CLIENT_SECRET":"[REDACTED]"}`,
 		"\"client_secret\":\n    \"[REDACTED]\"",
+		`{"demoAccountPassword":"[REDACTED]"}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
@@ -775,7 +782,7 @@ func TestIssueBodyPreservesBenignSecurityVocabulary(t *testing.T) {
 		Description: "token refresh failed",
 		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\nasc auth login --private-key /path/to/AuthKey.p8\nasc auth login --private-key=/path/to/AuthKey.p8\nasc xcode validate --api-key KEY123ABC\ncurl --user alice https://example.test\ncurl --proxy-user alice https://example.test\ngit clone https://example.test/repo",
 		Expected:    "secret scanning documentation remains visible",
-		Actual:      "request to https://example.test/path?signature_state=missing returned 401",
+		Actual:      `request to https://example.test/path?signature_state=missing returned 401 with {"passwordPolicy":"strict","tokenCount":0}`,
 		Severity:    "bug",
 	}
 	body := issueBody(entry)
