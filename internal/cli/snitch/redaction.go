@@ -141,6 +141,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(-H)(` + credentialHeaderName + `)[ \t]*:[ \t]*(?:\\(?:\r?\n|[^\r\n])|[^\s;])+`),
+		replacement: `${1}${2}${3}:` + redactionMarker,
+	},
+	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-u|--(?:proxy-)?user)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},

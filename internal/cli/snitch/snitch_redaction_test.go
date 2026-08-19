@@ -87,6 +87,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl -H "Cookie: [REDACTED]" https://example.test`,
 		},
 		{
+			name:  "attached cookie header argument",
+			input: `curl -HCookie:myacinfo=super-session-secret https://example.test`,
+			want:  `curl -HCookie:[REDACTED] https://example.test`,
+		},
+		{
+			name:  "attached service credential header argument",
+			input: `curl -HX-Apple-Widget-Key:header-service-secret https://example.test`,
+			want:  `curl -HX-Apple-Widget-Key:[REDACTED] https://example.test`,
+		},
+		{
 			name:  "curl long cookie data argument",
 			input: `curl --cookie 'myacinfo=super-session-secret; dslang=US-EN' https://example.test`,
 			want:  `curl --cookie [REDACTED] https://example.test`,
@@ -574,6 +584,15 @@ func TestRedactSensitiveTextPreservesCurlCertificateWithoutPassword(t *testing.T
 	}
 }
 
+func TestRedactSensitiveTextPreservesAttachedBenignCurlHeader(t *testing.T) {
+	input := `curl -HAccept:application/json https://example.test`
+
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
 func TestRedactSensitiveTextDoesNotJoinEscapedBackslashLines(t *testing.T) {
 	input := `asc unrelated --value public \\
 asc web xcode-cloud env-vars create --secret`
@@ -1044,6 +1063,38 @@ func TestSnitchDryRunRedactsCurlCertificatePasswords(t *testing.T) {
 		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
 	}
 	want := "curl --cert client.p12:[REDACTED] --cert=client.pem:[REDACTED] -Eclient.pfx:[REDACTED] https://example.test"
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+	}
+}
+
+func TestSnitchDryRunRedactsAttachedCurlCredentialHeaders(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"cookie-session-secret", "widget-service-secret"}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "curl -HCookie:myacinfo="+secrets[0]+" -HX-Apple-Widget-Key:"+secrets[1]+" -HAccept:application/json https://example.test",
+		"attached credential header redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	want := "curl -HCookie:[REDACTED] -HX-Apple-Widget-Key:[REDACTED] -HAccept:application/json https://example.test"
 	if !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 	}
