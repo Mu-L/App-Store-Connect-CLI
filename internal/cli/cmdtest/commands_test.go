@@ -163,19 +163,38 @@ func TestCompletionZshPrintsScriptToStdout(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("expected empty stderr, got %q", stderr)
 	}
-	const rootGroupPrefix = "_ASC_COMPLETION_SUBCOMMAND_GROUPS=('"
-	rootGroupStart := strings.Index(stdout, rootGroupPrefix)
-	if rootGroupStart < 0 {
-		t.Fatalf("expected root command completion data, got %q", stdout)
+	completionRootGroup := func(variable string) string {
+		t.Helper()
+		prefix := variable + "=('"
+		start := strings.Index(stdout, prefix)
+		if start < 0 {
+			t.Fatalf("expected %s root completion data, got %q", variable, stdout)
+		}
+		group := stdout[start+len(prefix):]
+		end := strings.IndexByte(group, '\'')
+		if end < 0 {
+			t.Fatalf("expected terminated %s root completion data, got %q", variable, group)
+		}
+		return group[:end]
 	}
-	rootGroup := stdout[rootGroupStart+len(rootGroupPrefix):]
-	rootGroupEnd := strings.IndexByte(rootGroup, '\'')
-	if rootGroupEnd < 0 {
-		t.Fatalf("expected terminated root command completion data, got %q", rootGroup)
-	}
-	rootGroup = rootGroup[:rootGroupEnd]
+	rootGroup := completionRootGroup("_ASC_COMPLETION_SUBCOMMAND_GROUPS")
 	if strings.Contains(rootGroup, "offer-codes") || strings.Contains(rootGroup, "win-back-offers") || strings.Contains(rootGroup, "promoted-purchases") {
 		t.Fatalf("expected hidden deprecated root commands to be omitted from root completions, got %q", rootGroup)
+	}
+	rootFlags := completionRootGroup("_ASC_COMPLETION_FLAG_GROUPS")
+	for _, expected := range []string{"--profile", "--report", "--version"} {
+		if !strings.Contains(rootFlags, expected) {
+			t.Fatalf("expected root flag completion metadata %q, got %q", expected, rootFlags)
+		}
+	}
+	rootValueFlags := completionRootGroup("_ASC_COMPLETION_VALUE_FLAG_GROUPS")
+	for _, expected := range []string{"--profile", "--report", "--report-file"} {
+		if !strings.Contains(rootValueFlags, expected) {
+			t.Fatalf("expected root value flag completion metadata %q, got %q", expected, rootValueFlags)
+		}
+	}
+	if strings.Contains(rootValueFlags, "--version") {
+		t.Fatalf("expected boolean root flag to be omitted from value flags, got %q", rootValueFlags)
 	}
 	for _, expected := range []string{"apps info", "builds list", "--bundle-id", "--processing-state"} {
 		if !strings.Contains(stdout, expected) {

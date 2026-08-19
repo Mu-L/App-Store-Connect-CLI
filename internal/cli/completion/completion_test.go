@@ -19,6 +19,10 @@ import (
 )
 
 func TestCompletionNodesIncludeNestedCommandsAndVisibleFlags(t *testing.T) {
+	rootFlags := flag.NewFlagSet("asc", flag.ContinueOnError)
+	rootFlags.String("profile", "", "Authentication profile")
+	rootFlags.Bool("version", false, "Print version")
+
 	appsFlags := flag.NewFlagSet("apps", flag.ContinueOnError)
 	appsFlags.String("app", "", "App ID")
 	appsFlags.Bool("paginate", false, "Fetch every page")
@@ -38,14 +42,21 @@ func TestCompletionNodesIncludeNestedCommandsAndVisibleFlags(t *testing.T) {
 				{Name: "compat-view", ShortHelp: "Compatibility alias: use view"},
 			},
 		},
+		{Name: "completion"},
 		{Name: "old-apps", ShortHelp: "DEPRECATED: use apps"},
 		nil,
 		{Name: "   "},
-	})
+	}, rootFlags)
 
 	root := findCompletionNode(t, nodes, "")
 	if got, want := root.subcommands, []string{"apps", "completion"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("root subcommands = %v, want %v", got, want)
+	}
+	if got, want := root.flags, []string{"--profile", "--version"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("root flags = %v, want %v", got, want)
+	}
+	if got, want := root.valueFlags, []string{"--profile"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("root value flags = %v, want %v", got, want)
 	}
 	apps := findCompletionNode(t, nodes, "apps")
 	if got, want := apps.subcommands, []string{"view"}; !reflect.DeepEqual(got, want) {
@@ -79,7 +90,10 @@ func TestCompletionCommandValidationAndOutput(t *testing.T) {
 			{Name: "builds"},
 		}
 	}
-	cmd := CompletionCommand(resolve)
+	rootFlags := flag.NewFlagSet("asc", flag.ContinueOnError)
+	rootFlags.String("profile", "", "Authentication profile")
+	resolveRootFlags := func() *flag.FlagSet { return rootFlags }
+	cmd := CompletionCommand(resolve, resolveRootFlags)
 	if resolveCalls != 0 {
 		t.Fatalf("command tree resolved during command construction")
 	}
@@ -96,7 +110,7 @@ func TestCompletionCommandValidationAndOutput(t *testing.T) {
 	}
 
 	// Unsupported shell should fail with ErrHelp.
-	cmd = CompletionCommand(resolve)
+	cmd = CompletionCommand(resolve, resolveRootFlags)
 	if err := cmd.FlagSet.Parse([]string{"--shell", "tcsh"}); err != nil {
 		t.Fatalf("failed to parse flags: %v", err)
 	}
@@ -108,7 +122,7 @@ func TestCompletionCommandValidationAndOutput(t *testing.T) {
 	}
 
 	// Supported shell should print script and succeed.
-	cmd = CompletionCommand(resolve)
+	cmd = CompletionCommand(resolve, resolveRootFlags)
 	if err := cmd.FlagSet.Parse([]string{"--shell", "bash"}); err != nil {
 		t.Fatalf("failed to parse flags: %v", err)
 	}
@@ -118,6 +132,12 @@ func TestCompletionCommandValidationAndOutput(t *testing.T) {
 	if !strings.Contains(stdout, "complete -F _asc_completions asc") {
 		t.Fatalf("expected bash completion script output, got %q", stdout)
 	}
+	if !strings.Contains(stdout, "--profile") {
+		t.Fatalf("expected root flag completion data, got %q", stdout)
+	}
+	if strings.Contains(stdout, "apps builds completion") {
+		t.Fatalf("completion command was synthesized despite being absent from the resolver: %q", stdout)
+	}
 	if resolveCalls != 1 {
 		t.Fatalf("command tree resolve calls = %d, want 1", resolveCalls)
 	}
@@ -125,7 +145,7 @@ func TestCompletionCommandValidationAndOutput(t *testing.T) {
 
 func TestCompletionScriptsContainNestedPathsAndFlags(t *testing.T) {
 	nodes := []completionNode{
-		{path: "", subcommands: []string{"apps"}},
+		{path: "", subcommands: []string{"apps"}, flags: []string{"--profile", "--version"}, valueFlags: []string{"--profile"}},
 		{path: "apps", subcommands: []string{"view"}, flags: []string{"--app", "--paginate"}, valueFlags: []string{"--app"}},
 		{path: "apps view", flags: []string{"--id"}, valueFlags: []string{"--id"}},
 	}
@@ -147,6 +167,13 @@ func TestCompletionScriptsContainNestedPathsAndFlags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFishCompletionGuardsUnknownMetadataPaths(t *testing.T) {
+	script := fishScript([]completionNode{{path: "", subcommands: []string{"apps"}}})
+	if got := strings.Count(script, `if test -z "$index"`); got != 2 {
+		t.Fatalf("fish completion index guards = %d, want 2:\n%s", got, script)
 	}
 }
 
@@ -177,7 +204,7 @@ func TestBashCompletionTracksNestedPathsAndSkipsFlagValues(t *testing.T) {
 	}
 
 	nodes := []completionNode{
-		{path: "", subcommands: []string{"apps"}},
+		{path: "", subcommands: []string{"apps"}, flags: []string{"--profile", "--version"}, valueFlags: []string{"--profile"}},
 		{path: "apps", subcommands: []string{"view"}, flags: []string{"--app"}, valueFlags: []string{"--app"}},
 		{path: "apps view", flags: []string{"--id"}, valueFlags: []string{"--id"}},
 	}
@@ -193,6 +220,8 @@ printf '%s\n' NESTED
 _asc_completion_candidates apps view
 printf '%s\n' FLAG_VALUE_MATCHES_SUBCOMMAND
 _asc_completion_candidates apps --app view
+printf '%s\n' ROOT_FLAG_VALUE_MATCHES_SUBCOMMAND
+_asc_completion_candidates --profile apps
 `
 	out, err := exec.Command(bash, "--noprofile", "--norc", "-c", command, "bash", scriptPath).CombinedOutput()
 	if err != nil {
@@ -203,6 +232,7 @@ _asc_completion_candidates apps --app view
 		"ROOT\napps\n",
 		"NESTED\n--id\n",
 		"FLAG_VALUE_MATCHES_SUBCOMMAND\nview\n--app\n",
+		"ROOT_FLAG_VALUE_MATCHES_SUBCOMMAND\napps\n--profile\n--version\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("bash resolver output missing %q:\n%s", want, got)
@@ -217,7 +247,7 @@ func TestZshCompletionPassesPriorWordsAsSeparateArguments(t *testing.T) {
 	}
 
 	nodes := []completionNode{
-		{path: "", subcommands: []string{"apps"}},
+		{path: "", subcommands: []string{"apps"}, flags: []string{"--profile", "--version"}, valueFlags: []string{"--profile"}},
 		{path: "apps", subcommands: []string{"view"}, flags: []string{"--app"}, valueFlags: []string{"--app"}},
 		{path: "apps view", flags: []string{"--id"}, valueFlags: []string{"--id"}},
 	}
@@ -237,6 +267,10 @@ printf '%s\n' FLAG_VALUE_MATCHES_SUBCOMMAND
 words=(asc apps --app view '')
 CURRENT=5
 _asc
+printf '%s\n' ROOT_FLAG_VALUE_MATCHES_SUBCOMMAND
+words=(asc --profile apps '')
+CURRENT=4
+_asc
 `
 	out, err := exec.Command(zsh, "-f", "-c", command, "zsh", scriptPath).CombinedOutput()
 	if err != nil {
@@ -246,6 +280,7 @@ _asc
 	for _, want := range []string{
 		"NESTED\n--\n--id\n",
 		"FLAG_VALUE_MATCHES_SUBCOMMAND\n--\nview\n--app\n",
+		"ROOT_FLAG_VALUE_MATCHES_SUBCOMMAND\n--\napps\n--profile\n--version\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("zsh wrapper output missing %q:\n%s", want, got)

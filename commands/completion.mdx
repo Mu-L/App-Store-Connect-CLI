@@ -97,22 +97,24 @@ The completion script provides tab completion for:
 
 Deprecated compatibility commands and hidden flag aliases are not suggested. Completion tracks flags that consume a value, so a flag value that matches a subcommand name does not move completion into the wrong command path. It does not query App Store Connect for remote resource IDs or other flag values.
 
-**Example:**
+**Abbreviated examples:**
 
 ```bash  theme={null}
 $ asc <TAB>
-auth          builds        completion    devices
-migrate       metadata      notify        profiles
-submit        testflight    users         webhooks
-workflow      xcode-cloud
+--api-debug   --debug       --profile     --report
+apps          auth          builds        completion
+devices       metadata      profiles      testflight
+...           users         webhooks      xcode-cloud
 
 $ asc builds <TAB>
 count         info          list          upload        wait
 
 $ asc builds list <TAB>
---app                 --build-number        --limit
+--app                 --build-number        --exclude-expired
+--limit               --next                --not-expired
 --output              --paginate            --platform
---processing-state    --version
+--pretty              --processing-state    --sort
+--version
 ```
 
 ## Manual Installation

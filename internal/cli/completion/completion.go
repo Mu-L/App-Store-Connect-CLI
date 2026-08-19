@@ -24,7 +24,7 @@ type completionNode struct {
 // The full command tree is resolved only after the requested shell is valid,
 // so normal command startup remains lazy and completion needs no auth or network
 // access.
-func CompletionCommand(resolveCommands func() []*ffcli.Command) *ffcli.Command {
+func CompletionCommand(resolveCommands func() []*ffcli.Command, resolveRootFlags func() *flag.FlagSet) *ffcli.Command {
 	fs := flag.NewFlagSet("completion", flag.ExitOnError)
 	shell := fs.String("shell", "", "Shell: bash, zsh, or fish")
 
@@ -54,7 +54,11 @@ func CompletionCommand(resolveCommands func() []*ffcli.Command) *ffcli.Command {
 		if resolveCommands != nil {
 			commands = resolveCommands()
 		}
-		nodes := completionNodes(commands)
+		var rootFlags *flag.FlagSet
+		if resolveRootFlags != nil {
+			rootFlags = resolveRootFlags()
+		}
+		nodes := completionNodes(commands, rootFlags)
 		switch s {
 		case "bash":
 			fmt.Fprint(os.Stdout, bashScript(nodes))
@@ -69,15 +73,11 @@ func CompletionCommand(resolveCommands func() []*ffcli.Command) *ffcli.Command {
 	return cmd
 }
 
-func completionNodes(rootSubcommands []*ffcli.Command) []completionNode {
+func completionNodes(rootSubcommands []*ffcli.Command, rootFlags *flag.FlagSet) []completionNode {
 	byPath := map[string]completionNode{"": {path: ""}}
-	rootNames := visibleSubcommandNames(rootSubcommands)
-	if !containsString(rootNames, "completion") {
-		rootNames = append(rootNames, "completion")
-		sort.Strings(rootNames)
-	}
 	root := byPath[""]
-	root.subcommands = rootNames
+	root.subcommands = visibleSubcommandNames(rootSubcommands)
+	root.flags, root.valueFlags = completionFlags(rootFlags)
 	byPath[""] = root
 
 	var visit func(parentPath string, commands []*ffcli.Command)
@@ -98,15 +98,7 @@ func completionNodes(rootSubcommands []*ffcli.Command) []completionNode {
 				path:        path,
 				subcommands: visibleSubcommandNames(command.Subcommands),
 			}
-			for _, commandFlag := range shared.VisibleHelpFlags(command.FlagSet) {
-				flagName := "--" + commandFlag.Name
-				node.flags = append(node.flags, flagName)
-				if flagRequiresValue(commandFlag) {
-					node.valueFlags = append(node.valueFlags, flagName)
-				}
-			}
-			sort.Strings(node.flags)
-			sort.Strings(node.valueFlags)
+			node.flags, node.valueFlags = completionFlags(command.FlagSet)
 			byPath[path] = node
 			visit(path, command.Subcommands)
 		}
@@ -123,6 +115,21 @@ func completionNodes(rootSubcommands []*ffcli.Command) []completionNode {
 		nodes = append(nodes, byPath[path])
 	}
 	return nodes
+}
+
+func completionFlags(fs *flag.FlagSet) ([]string, []string) {
+	var flags []string
+	var valueFlags []string
+	for _, commandFlag := range shared.VisibleHelpFlags(fs) {
+		flagName := "--" + commandFlag.Name
+		flags = append(flags, flagName)
+		if flagRequiresValue(commandFlag) {
+			valueFlags = append(valueFlags, flagName)
+		}
+	}
+	sort.Strings(flags)
+	sort.Strings(valueFlags)
+	return flags, valueFlags
 }
 
 func visibleSubcommandNames(commands []*ffcli.Command) []string {
@@ -160,15 +167,6 @@ func flagRequiresValue(commandFlag *flag.Flag) bool {
 	}
 	boolValue, ok := commandFlag.Value.(interface{ IsBoolFlag() bool })
 	return !ok || !boolValue.IsBoolFlag()
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 func bashScript(nodes []completionNode) string {
@@ -354,6 +352,9 @@ function __asc_completion_candidates
         end
 
         set -l index (__asc_completion_index "$path")
+        if test -z "$index"
+            return 0
+        end
         set -l subcommands
         set -l subcommand_group "$__asc_completion_subcommand_groups[$index]"
         if test -n "$subcommand_group"
@@ -386,6 +387,9 @@ function __asc_completion_candidates
         return 0
     end
     set -l index (__asc_completion_index "$path")
+    if test -z "$index"
+        return 0
+    end
     set -l subcommand_group "$__asc_completion_subcommand_groups[$index]"
     if test -n "$subcommand_group"
         string split ' ' -- "$subcommand_group"

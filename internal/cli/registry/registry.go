@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"strings"
 
@@ -107,7 +108,8 @@ type factory struct {
 
 // Catalog constructs root commands on demand while preserving display order.
 type Catalog struct {
-	factories []factory
+	factories   []factory
+	rootFlagSet *flag.FlagSet
 }
 
 // NewCatalog returns the current root command catalog.
@@ -200,10 +202,17 @@ func NewCatalog(version string) *Catalog {
 			return VersionCommand(version)
 		}),
 		commandFactory("completion", "Print shell completion scripts.", func() *ffcli.Command {
-			return completion.CompletionCommand(catalog.All)
+			return completion.CompletionCommand(catalog.All, func() *flag.FlagSet {
+				return catalog.rootFlagSet
+			})
 		}),
 	}
 	return catalog
+}
+
+// SetCompletionRootFlagSet supplies the flags accepted by the root command.
+func (c *Catalog) SetCompletionRootFlagSet(fs *flag.FlagSet) {
+	c.rootFlagSet = fs
 }
 
 func commandFactory(name, shortHelp string, newCommand func() *ffcli.Command) factory {
