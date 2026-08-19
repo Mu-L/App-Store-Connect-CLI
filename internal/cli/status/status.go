@@ -65,7 +65,7 @@ type latestBuild struct {
 	ProcessingState string `json:"processingState,omitempty"`
 	// Expired reports Apple's build expiry flag, which stays independent of
 	// processingState: an expired build is still VALID but no longer installable.
-	Expired      bool   `json:"expired"`
+	Expired      *bool  `json:"expired,omitempty"`
 	UploadedDate string `json:"uploadedDate,omitempty"`
 	Platform     string `json:"platform,omitempty"`
 }
@@ -581,7 +581,7 @@ func fillBuildsAndTestFlight(ctx context.Context, client *asc.Client, appID stri
 				Version:         latestContext.Version,
 				BuildNumber:     latest.Attributes.Version,
 				ProcessingState: latest.Attributes.ProcessingState,
-				Expired:         latest.Attributes.Expired,
+				Expired:         optionalBuildExpired(latest.Attributes),
 				UploadedDate:    latest.Attributes.UploadedDate,
 				Platform:        latestContext.Platform,
 			}
@@ -820,6 +820,14 @@ func buildBetaStatesByBuildID(buildIDs []string, betaDetails *asc.BuildBetaDetai
 	}
 
 	return statesByBuild
+}
+
+func optionalBuildExpired(attributes asc.BuildAttributes) *bool {
+	expired, known := attributes.ExpiredValue()
+	if !known {
+		return nil
+	}
+	return &expired
 }
 
 func betaBuildStatesFromAttributes(attributes asc.BuildBetaDetailAttributes) betaBuildStates {
@@ -1487,8 +1495,11 @@ func renderDashboard(resp *dashboardResponse, markdown bool) {
 		if resp.Builds.Latest == nil {
 			rows = append(rows, []string{"latest", "[-] none"})
 		} else {
-			expired := "[+] false"
-			if resp.Builds.Latest.Expired {
+			expired := "[-] unknown"
+			if resp.Builds.Latest.Expired != nil && !*resp.Builds.Latest.Expired {
+				expired = "[+] false"
+			}
+			if resp.Builds.Latest.Expired != nil && *resp.Builds.Latest.Expired {
 				expired = "[x] true"
 			}
 			rows = append(

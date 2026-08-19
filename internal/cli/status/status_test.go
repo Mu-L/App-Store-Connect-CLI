@@ -764,13 +764,15 @@ func buildRelationshipFixture(buildID string) json.RawMessage {
 }
 
 func TestRenderDashboardShowsLatestBuildExpiryAndInternalState(t *testing.T) {
+	boolPointer := func(value bool) *bool { return &value }
 	tests := []struct {
 		name    string
-		expired bool
+		expired *bool
 		want    string
 	}{
-		{name: "expired build is called out", expired: true, want: "[x] true"},
-		{name: "live build is called out", expired: false, want: "[+] false"},
+		{name: "expired build is called out", expired: boolPointer(true), want: "[x] true"},
+		{name: "live build is called out", expired: boolPointer(false), want: "[+] false"},
+		{name: "unknown expiry is not reported as false", expired: nil, want: "[-] unknown"},
 	}
 
 	for _, test := range tests {
@@ -804,6 +806,16 @@ func TestRenderDashboardShowsLatestBuildExpiryAndInternalState(t *testing.T) {
 				t.Fatalf("expected internalBuildState row:\n%s", stdout)
 			}
 		})
+	}
+}
+
+func TestLatestBuildJSONOmitsUnknownExpiry(t *testing.T) {
+	encoded, err := json.Marshal(latestBuild{ID: "build-1", BuildNumber: "42"})
+	if err != nil {
+		t.Fatalf("marshal latest build: %v", err)
+	}
+	if strings.Contains(string(encoded), `"expired"`) {
+		t.Fatalf("unknown expiry must be omitted, got %s", encoded)
 	}
 }
 

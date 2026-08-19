@@ -2508,8 +2508,11 @@ func TestBuildAttributesPreservesExpiredPresence(t *testing.T) {
 		input    string
 		contains string
 		excludes string
+		known    bool
+		value    bool
 	}{
-		{name: "explicit false", input: `{"version":"1","uploadedDate":"2026-01-20T00:00:00Z","expired":false}`, contains: `"expired":false`},
+		{name: "explicit false", input: `{"version":"1","uploadedDate":"2026-01-20T00:00:00Z","expired":false}`, contains: `"expired":false`, known: true},
+		{name: "explicit true", input: `{"version":"1","uploadedDate":"2026-01-20T00:00:00Z","expired":true}`, contains: `"expired":true`, known: true, value: true},
 		{name: "absent", input: `{"version":"1","uploadedDate":"2026-01-20T00:00:00Z"}`, excludes: `"expired"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2526,6 +2529,10 @@ func TestBuildAttributesPreservesExpiredPresence(t *testing.T) {
 			}
 			if tc.excludes != "" && strings.Contains(string(encoded), tc.excludes) {
 				t.Fatalf("did not expect %q in %s", tc.excludes, encoded)
+			}
+			expired, known := attrs.ExpiredValue()
+			if known != tc.known || expired != tc.value {
+				t.Fatalf("ExpiredValue() = (%t, %t), want (%t, %t)", expired, known, tc.value, tc.known)
 			}
 		})
 	}
