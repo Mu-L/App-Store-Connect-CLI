@@ -83,6 +83,13 @@ func TestMatchEndpoint_DotNotation(t *testing.T) {
 	if matchEndpoint(member, "apps.list") {
 		t.Error("unexpected list match for member endpoint")
 	}
+	versioned := Endpoint{Method: "GET", Path: "/v2/gameCenterAchievements/{id}", getAction: "get"}
+	if !matchEndpoint(versioned, "v2.gameCenterAchievements.get") {
+		t.Error("expected exact version-qualified action dot notation match")
+	}
+	if matchEndpoint(versioned, "v1.gameCenterAchievements.get") {
+		t.Error("unexpected match for a different API version")
+	}
 }
 
 func TestMatchEndpoint_FuzzyQueryDoesNotMatchActionSuffix(t *testing.T) {
@@ -175,6 +182,17 @@ func TestPathToActionDotNotationUsesOperationCardinality(t *testing.T) {
 				t.Fatalf("pathToActionDotNotation() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPathToVersionedActionDotNotation(t *testing.T) {
+	endpoint := Endpoint{
+		Method:    "GET",
+		Path:      "/v2/gameCenterAchievements/{id}",
+		getAction: "get",
+	}
+	if got, want := pathToVersionedActionDotNotation(endpoint), "v2.gameCenterAchievements.get"; got != want {
+		t.Fatalf("pathToVersionedActionDotNotation() = %q, want %q", got, want)
 	}
 }
 

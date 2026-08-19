@@ -159,6 +159,29 @@ func TestSchemaDotNotationUsesMetricsResponseCardinality(t *testing.T) {
 	}
 }
 
+func TestSchemaSupportsVersionQualifiedActionDotNotation(t *testing.T) {
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = rootcmd.Run([]string{"schema", "v2.gameCenterAchievements.get"}, "1.2.3")
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d with stderr %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	var endpoints []schemaEndpoint
+	if err := json.Unmarshal([]byte(stdout), &endpoints); err != nil {
+		t.Fatalf("unmarshal schema output: %v\nstdout=%s", err, stdout)
+	}
+	want := []schemaEndpoint{{Method: "GET", Path: "/v2/gameCenterAchievements/{id}"}}
+	if len(endpoints) != len(want) || endpoints[0] != want[0] {
+		t.Fatalf("expected exact versioned endpoint %#v, got %#v", want, endpoints)
+	}
+}
+
 func TestSchemaListRejectsPositionalQuery(t *testing.T) {
 	var code int
 	stdout, stderr := captureOutput(t, func() {

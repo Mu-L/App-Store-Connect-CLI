@@ -81,7 +81,8 @@ func matchEndpoint(e Endpoint, query string) bool {
 
 	q := strings.ToLower(strings.TrimSpace(query))
 	if isActionDotNotationQuery(q) {
-		return strings.EqualFold(pathToActionDotNotation(e), q)
+		return strings.EqualFold(pathToActionDotNotation(e), q) ||
+			strings.EqualFold(pathToVersionedActionDotNotation(e), q)
 	}
 	if strings.Contains(strings.ToLower(e.Path), q) {
 		return true
@@ -170,6 +171,16 @@ func pathToActionDotNotation(endpoint Endpoint) string {
 	return dotPath + "." + action
 }
 
+func pathToVersionedActionDotNotation(endpoint Endpoint) string {
+	actionPath := pathToActionDotNotation(endpoint)
+	trimmed := strings.TrimPrefix(endpoint.Path, "/")
+	version, _, found := strings.Cut(trimmed, "/")
+	if !found || !strings.HasPrefix(version, "v") || len(version) > 3 {
+		return actionPath
+	}
+	return version + "." + actionPath
+}
+
 func getEndpointAction(endpoint Endpoint) string {
 	switch endpoint.getAction {
 	case "get", "list":
@@ -214,7 +225,8 @@ func SchemaCommand() *ffcli.Command {
 		LongHelp: `Inspect App Store Connect API endpoint schemas at runtime.
 
 Query by fuzzy path substring, exact method+path, or exact action dot notation.
-Dot notation uses .list, .get, .create, .update, or .delete actions. Queries
+Dot notation uses .list, .get, .create, .update, or .delete actions. Prefix an
+action with v1. or v2. to select an exact API version when both exist. Queries
 with no matches return an empty JSON array. Results include parameters, request
 attributes and relationships, and response schema names as machine-readable JSON.
 
@@ -225,6 +237,7 @@ Examples:
   asc schema apps                           # All endpoints matching "apps"
   asc schema "GET /v1/apps"                 # Exact method+path match
   asc schema apps.list                      # Dot-notation query
+  asc schema v2.gameCenterAchievements.get  # Version-qualified dot notation
   asc schema --method POST apps             # Only POST endpoints for apps
   asc schema --list                         # List all 1200+ endpoints
   asc schema --list --method DELETE          # List all DELETE endpoints
