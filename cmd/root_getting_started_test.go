@@ -13,7 +13,7 @@ var ansiEscapePattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
 // wantGettingStartedInvocations pins the copy-paste invocations that teach the
 // discovery loop on the first screen of `asc --help`.
 var wantGettingStartedInvocations = []string{
-	`asc search "upload a build"`,
+	`asc search "upload a build" --output json`,
 	"asc auth doctor",
 	"asc apps list --output table",
 	"asc status --app APP_ID",
