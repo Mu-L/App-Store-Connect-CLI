@@ -162,6 +162,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl --cert client.p12:[REDACTED] https://example.test`,
 		},
 		{
+			name:  "curl certificate separately quoted path",
+			input: `curl --cert "client cert.p12":supersensitive https://example.test`,
+			want:  `curl --cert "client cert.p12":[REDACTED] https://example.test`,
+		},
+		{
 			name:  "curl proxy certificate password argument",
 			input: `curl --proxy-cert client.p12:opaque-proxy-secret https://example.test`,
 			want:  `curl --proxy-cert client.p12:[REDACTED] https://example.test`,
@@ -372,6 +377,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "TOML multiline literal string",
 			input: "password = '''opaque-head\nopaque-tail'''\nstatus = \"failed\"",
 			want:  "password = [REDACTED]\nstatus = \"failed\"",
+		},
+		{
+			name:  "TOML basic quoted credential key",
+			input: `"asc_private_key_b64" = "opaque-private-key-material"`,
+			want:  `"asc_private_key_b64" = [REDACTED]`,
+		},
+		{
+			name:  "TOML literal quoted credential key with multiline value",
+			input: "'password' = '''opaque-head\nopaque-tail'''\nstatus = \"failed\"",
+			want:  "'password' = [REDACTED]\nstatus = \"failed\"",
 		},
 		{
 			name:  "multiline plain yaml scalar preserves sibling",
@@ -675,6 +690,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 		{
 			name:  "curl user password in separate quoted shell fragment",
 			input: `curl --user alice:'supersensitive password' https://example.test`,
+			want:  `curl --user [REDACTED] https://example.test`,
+		},
+		{
+			name:  "curl user with separately quoted username",
+			input: `curl --user 'alice':supersensitive https://example.test`,
 			want:  `curl --user [REDACTED] https://example.test`,
 		},
 		{
@@ -1467,6 +1487,48 @@ func TestSnitchDryRunRedactsTOMLAndEscapedJSONCredentials(t *testing.T) {
 	for _, want := range []string{
 		"password = [REDACTED]\nstatus = \"failed\"",
 		`{"pass\u0077ord":"[REDACTED]","status":"failed"}`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsQuotedTOMLAndSplitCurlCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"quoted-toml-scalar-secret", "quoted-toml-multiline-secret", "split-cert-secret", "split-user-secret"}
+	repro := `"asc_private_key_b64" = "` + secrets[0] + `"` + "\n" +
+		"'password' = '''opaque-head\n" + secrets[1] + "'''\n" +
+		`curl --cert "client cert.p12":` + secrets[2] + " https://example.test\n" +
+		`curl --user 'alice':` + secrets[3] + " https://example.test"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"quoted credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		`"asc_private_key_b64" = [REDACTED]`,
+		`'password' = [REDACTED]`,
+		`curl --cert "client cert.p12":[REDACTED] https://example.test`,
+		`curl --user [REDACTED] https://example.test`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
