@@ -131,13 +131,15 @@ var imageFormatExtensions = map[string][]string{
 
 // ReadImageDimensions validates and decodes image dimensions from disk.
 func ReadImageDimensions(path string) (ImageDimensions, error) {
-	dimensions, _, err := readImageConfig(path)
+	dimensions, _, err := ReadImageDimensionsAndFormat(path)
 	return dimensions, err
 }
 
-// readImageConfig decodes the dimensions and the encoded image format, which
-// is the only reliable description of what a file actually contains.
-func readImageConfig(path string) (ImageDimensions, string, error) {
+// ReadImageDimensionsAndFormat decodes the dimensions together with the
+// encoded image format, which is the only reliable description of what a file
+// actually contains. Callers that report on a file rather than just sizing it
+// need both from a single decode.
+func ReadImageDimensionsAndFormat(path string) (ImageDimensions, string, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return ImageDimensions{}, "", err

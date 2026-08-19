@@ -57,7 +57,7 @@ func TestRunScreenshotsUploadRejectsFormatExtensionMismatchBeforeAnyRequest(t *t
 	}
 }
 
-func writeCmdtestScreenshotJPEG(t *testing.T, dir, name string) string {
+func writeCmdtestScreenshotJPEG(t *testing.T, dir, name string) {
 	t.Helper()
 
 	path := filepath.Join(dir, name)
@@ -76,5 +76,4 @@ func writeCmdtestScreenshotJPEG(t *testing.T, dir, name string) string {
 	if err := jpeg.Encode(file, img, nil); err != nil {
 		t.Fatalf("encode jpeg: %v", err)
 	}
-	return path
 }

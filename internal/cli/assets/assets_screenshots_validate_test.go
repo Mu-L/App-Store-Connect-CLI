@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -107,6 +108,49 @@ func TestValidateScreenshotAssetsReportsUnreadableDotfilesAndDimensionMismatch(t
 	}
 	if !hasScreenshotValidateIssueWithSeverity(result.Issues, "dimension_mismatch", screenshotValidateSeverityError, "03-bad.png") {
 		t.Fatalf("expected dimension mismatch error, got %+v", result.Issues)
+	}
+}
+
+func TestValidateScreenshotAssetsReportsFormatExtensionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	writeAssetsScreenshotValidatePNG(t, dir, "01-home.png", 1242, 2688, color.RGBA{R: 10, A: 255}, png.DefaultCompression)
+	writeAssetsScreenshotValidateJPEG(t, dir, "02-details.png", 1242, 2688, color.RGBA{R: 20, G: 90, B: 140, A: 255})
+	writeAssetsScreenshotValidateJPEG(t, dir, "03-profile.jpg", 1242, 2688, color.RGBA{R: 200, G: 30, B: 40, A: 255})
+
+	result, err := validateScreenshotAssets(dir, "APP_IPHONE_65")
+	if err != nil {
+		t.Fatalf("validateScreenshotAssets() error: %v", err)
+	}
+
+	if result.ErrorCount != 1 {
+		t.Fatalf("expected 1 error, got %d (%+v)", result.ErrorCount, result.Issues)
+	}
+	if result.ReadyFiles != 2 {
+		t.Fatalf("expected 2 ready files, got %d", result.ReadyFiles)
+	}
+	if !hasScreenshotValidateIssueWithSeverity(result.Issues, "format_mismatch", screenshotValidateSeverityError, "02-details.png") {
+		t.Fatalf("expected format mismatch error, got %+v", result.Issues)
+	}
+
+	for _, issue := range result.Issues {
+		if issue.Code != "format_mismatch" {
+			continue
+		}
+		for _, want := range []string{"JPEG", "02-details.jpg", "PNG"} {
+			if !strings.Contains(issue.Message, want) {
+				t.Fatalf("expected format mismatch message to mention %q, got %q", want, issue.Message)
+			}
+		}
+		if strings.TrimSpace(issue.Remediation) == "" {
+			t.Fatal("expected remediation for the format mismatch issue")
+		}
+	}
+
+	if result.Files[1].Status != screenshotValidateSeverityError {
+		t.Fatalf("expected mismatched file to be reported as an error, got %+v", result.Files[1])
+	}
+	if result.Files[2].Status != "ok" {
+		t.Fatalf("expected JPEG named .jpg to stay ready, got %+v", result.Files[2])
 	}
 }
 
@@ -257,6 +301,28 @@ func writeAssetsScreenshotValidatePNG(t *testing.T, dir, name string, width, hei
 		t.Fatalf("encode png: %v", err)
 	}
 	return path
+}
+
+func writeAssetsScreenshotValidateJPEG(t *testing.T, dir, name string, width, height int, marker color.RGBA) {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.SetRGBA(x, y, marker)
+		}
+	}
+
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create jpeg: %v", err)
+	}
+	defer file.Close()
+
+	if err := jpeg.Encode(file, img, nil); err != nil {
+		t.Fatalf("encode jpeg: %v", err)
+	}
 }
 
 func writeAssetsScreenshotValidatePNG64(t *testing.T, dir, name string, width, height int, marker color.NRGBA64) {
