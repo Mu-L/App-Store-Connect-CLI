@@ -65,6 +65,36 @@ type APIError struct {
 	Detail           string
 	StatusCode       int // HTTP status code that triggered this error (0 if unknown)
 	AssociatedErrors map[string][]APIAssociatedError
+	// Remediation is operator guidance for error codes whose cause is an
+	// account-level state that no API key permission can satisfy. It is
+	// appended to Error() so the guidance travels with the error itself.
+	Remediation string
+}
+
+// requiredAgreementRemediation explains a 403 that no key permission can fix.
+// An unaccepted or expired agreement blocks the whole team, and only the
+// Account Holder can clear it.
+const requiredAgreementRemediation = "Your team has an unaccepted or expired agreement, which blocks App Store Connect API access account-wide. " +
+	"An Account Holder must accept it at https://appstoreconnect.apple.com/agreements (App Store Connect may show the prompt as a banner on its home page instead). " +
+	"Access can take a few minutes to return after acceptance."
+
+// remediationForAPIError returns operator guidance for an App Store Connect
+// error code, or an empty string when the code has no account-level cause.
+//
+// Apple returns the same cause under more than one prefix (FORBIDDEN and
+// FORBIDDEN_ERROR), so the match is on the final segment of the code.
+func remediationForAPIError(code string) string {
+	segment := strings.TrimSpace(code)
+	if index := strings.LastIndex(segment, "."); index >= 0 {
+		segment = segment[index+1:]
+	}
+
+	switch strings.ToUpper(segment) {
+	case "REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED", "PLA_NOT_VALID":
+		return requiredAgreementRemediation
+	default:
+		return ""
+	}
 }
 
 // APIAssociatedError represents an additional actionable error returned
@@ -92,11 +122,14 @@ func (e *APIError) Error() string {
 		baseMessage = "API error"
 	}
 
-	associated := formatAssociatedErrors(e.AssociatedErrors)
-	if associated == "" {
-		return baseMessage
+	sections := []string{baseMessage}
+	if associated := formatAssociatedErrors(e.AssociatedErrors); associated != "" {
+		sections = append(sections, associated)
 	}
-	return fmt.Sprintf("%s\n\n%s", baseMessage, associated)
+	if remediation := strings.TrimSpace(SanitizeTerminalText(e.Remediation)); remediation != "" {
+		sections = append(sections, remediation)
+	}
+	return strings.Join(sections, "\n\n")
 }
 
 func (e *APIError) HTTPStatusCode() int {
