@@ -143,7 +143,7 @@ func TestAuthLoginAcceptsUnusualButValidCredentialShapesSilently(t *testing.T) {
 	}
 }
 
-func TestAuthLoginIndividualKeyWithUUIDKeyIDWarnsWithoutFailing(t *testing.T) {
+func TestAuthLoginIndividualKeyWithUUIDKeyIDSkipsTeamShapeWarnings(t *testing.T) {
 	withTempRepo(t, func(repo string) {
 		clearResolvedAuthEnv(t)
 		t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
@@ -157,8 +157,8 @@ func TestAuthLoginIndividualKeyWithUUIDKeyIDWarnsWithoutFailing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Exec() error: %v", err)
 		}
-		if !strings.Contains(stderr, "--key-id looks like an issuer ID") {
-			t.Fatalf("expected key ID warning in stderr, got %q", stderr)
+		if strings.Contains(stderr, "issuer") || strings.Contains(stderr, "swapped") {
+			t.Fatalf("unexpected team credential warning in stderr: %q", stderr)
 		}
 		if _, statErr := os.Stat(filepath.Join(repo, ".asc", "config.json")); statErr != nil {
 			t.Fatalf("expected credentials to be stored, stat error = %v", statErr)

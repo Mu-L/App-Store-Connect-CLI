@@ -415,16 +415,14 @@ func inspectEnvironment() DoctorSection {
 	}
 
 	shapeLabels := CredentialShapeLabels{KeyID: "ASC_KEY_ID", IssuerID: "ASC_ISSUER_ID"}
-	shapeIssuerID := issuerID
-	if individualKey {
-		shapeIssuerID = ""
-	}
-	for _, finding := range InspectCredentialShapes(shapeLabels, keyID, shapeIssuerID) {
-		checks = append(checks, DoctorCheck{
-			Status:         DoctorWarn,
-			Message:        finding.Message,
-			Recommendation: finding.Recommendation,
-		})
+	if !individualKey {
+		for _, finding := range InspectCredentialShapes(shapeLabels, keyID, issuerID) {
+			checks = append(checks, DoctorCheck{
+				Status:         DoctorWarn,
+				Message:        finding.Message,
+				Recommendation: finding.Recommendation,
+			})
+		}
 	}
 
 	if envProvided {
