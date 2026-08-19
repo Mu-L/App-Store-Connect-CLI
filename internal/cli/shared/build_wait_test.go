@@ -243,6 +243,7 @@ func TestBuildUploadFailureErrorIncludesRecoveryGuidance(t *testing.T) {
 	tests := []struct {
 		name        string
 		codes       []string
+		message     string
 		description string
 		want        []string
 	}{
@@ -257,13 +258,21 @@ func TestBuildUploadFailureErrorIncludesRecoveryGuidance(t *testing.T) {
 			want:  []string{"increase the build number", "CFBundleVersion"},
 		},
 		{
-			name:  "bundle identifier mismatch",
-			codes: []string{"90054", "90055"},
-			want:  []string{"bundle identifier", "selected app"},
+			name:        "bundle identifier mismatch",
+			codes:       []string{"90054", "90055"},
+			description: "The bundle identifier does not match the selected app.",
+			want:        []string{"bundle identifier", "selected app"},
+		},
+		{
+			name:        "invalid build number format",
+			codes:       []string{"90054"},
+			description: "The value for CFBundleVersion must be a period-separated list of at most three non-negative integers.",
+			want:        []string{"CFBundleVersion", "period-separated list"},
 		},
 		{
 			name:        "missing privacy purpose string",
 			codes:       []string{"90683"},
+			message:     "Privacy validation failed.",
 			description: "Missing Info.plist value. A value for NSCameraUsageDescription must be present.",
 			want:        []string{"NSCameraUsageDescription", "Info.plist"},
 		},
@@ -289,7 +298,11 @@ func TestBuildUploadFailureErrorIncludesRecoveryGuidance(t *testing.T) {
 			state := "FAILED"
 			details := make([]asc.StateDetail, 0, len(tt.codes))
 			for _, code := range tt.codes {
-				details = append(details, asc.StateDetail{Code: code, Description: tt.description, Message: tt.description})
+				message := tt.message
+				if message == "" {
+					message = tt.description
+				}
+				details = append(details, asc.StateDetail{Code: code, Description: tt.description, Message: message})
 			}
 			upload := &asc.BuildUploadResponse{}
 			upload.Data.ID = "upload-1"
@@ -308,6 +321,25 @@ func TestBuildUploadFailureErrorIncludesRecoveryGuidance(t *testing.T) {
 				if !strings.Contains(err.Error(), code) {
 					t.Fatalf("expected original code %q in %q", code, err)
 				}
+			}
+		})
+	}
+}
+
+func TestBuildUploadFailureErrorRecognizesIndividualCodeFromFamily(t *testing.T) {
+	for _, code := range []string{"90062", "90186", "90478"} {
+		t.Run(code, func(t *testing.T) {
+			state := "FAILED"
+			upload := &asc.BuildUploadResponse{}
+			upload.Data.ID = "upload-1"
+			upload.Data.Attributes.State = &asc.AppMediaAssetState{
+				State:  &state,
+				Errors: []asc.StateDetail{{Code: code}},
+			}
+
+			err := buildUploadFailureError(upload)
+			if err == nil || !strings.Contains(err.Error(), "increase the marketing version") {
+				t.Fatalf("expected closed-version guidance for %s, got %v", code, err)
 			}
 		})
 	}

@@ -292,30 +292,34 @@ var usageDescriptionKeyPattern = regexp.MustCompile(`\b[A-Za-z0-9_]+UsageDescrip
 
 func buildUploadRecoveryGuidance(details []asc.StateDetail) string {
 	switch {
-	case stateDetailCodesMatch(details, "90062", "90186", "90478"):
+	case allStateDetailCodesIn(details, "90062", "90186", "90478"):
 		return "increase the marketing version (CFBundleShortVersionString), rebuild, and upload again"
-	case stateDetailCodesMatch(details, "90189"):
+	case allStateDetailCodesIn(details, "90189"):
 		return "increase the build number (CFBundleVersion), rebuild, and upload again"
-	case stateDetailCodesMatch(details, "90054", "90055"):
+	case allStateDetailCodesIn(details, "90054") && stateDetailTextContains(details, "cfbundleversion"):
+		return "format CFBundleVersion as a period-separated list of at most three non-negative integers, rebuild, and upload again"
+	case allStateDetailCodesIn(details, "90054", "90055") && stateDetailTextContains(details, "bundle identifier"):
 		return "verify that the artifact's bundle identifier matches the selected app; rebuild with the correct identifier or select the intended app"
-	case stateDetailCodesMatch(details, "90683"):
+	case allStateDetailCodesIn(details, "90683"):
 		keys := missingUsageDescriptionKeys(details)
 		if len(keys) > 0 {
 			return fmt.Sprintf("add the missing privacy purpose strings to Info.plist (%s), rebuild, and upload again", strings.Join(keys, ", "))
 		}
 		return "add the missing privacy purpose strings to Info.plist, rebuild, and upload again"
-	case stateDetailCodesMatch(details, "90725"):
+	case allStateDetailCodesIn(details, "90725"):
 		return "rebuild with a currently supported SDK and toolchain, then upload again"
-	case stateDetailCodesMatch(details, "90771"):
+	case allStateDetailCodesIn(details, "90771"):
 		return "add BGTaskSchedulerPermittedIdentifiers to Info.plist with every scheduled background task identifier, rebuild, and upload again"
-	case stateDetailCodesMatch(details, "90391", "90713"):
+	case allStateDetailCodesIn(details, "90391", "90713"):
 		return "add the required app icons and icon metadata (such as CFBundleIconName or CFBundleIconFiles) to every failing bundle, rebuild, and upload again"
 	default:
 		return ""
 	}
 }
 
-func stateDetailCodesMatch(details []asc.StateDetail, allowed ...string) bool {
+// allStateDetailCodesIn reports whether every received error belongs to one
+// known code family. Codes in a family are alternatives and need not all occur.
+func allStateDetailCodesIn(details []asc.StateDetail, allowed ...string) bool {
 	if len(details) == 0 {
 		return false
 	}
@@ -333,15 +337,28 @@ func stateDetailCodesMatch(details []asc.StateDetail, allowed ...string) bool {
 	return true
 }
 
+func stateDetailTextContains(details []asc.StateDetail, fragment string) bool {
+	fragment = strings.ToLower(strings.TrimSpace(fragment))
+	if fragment == "" {
+		return false
+	}
+	for _, detail := range details {
+		for _, text := range []string{detail.Message, detail.Description} {
+			if strings.Contains(strings.ToLower(text), fragment) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func missingUsageDescriptionKeys(details []asc.StateDetail) []string {
 	keys := make(map[string]struct{})
 	for _, detail := range details {
-		message := strings.TrimSpace(detail.Message)
-		if message == "" {
-			message = strings.TrimSpace(detail.Description)
-		}
-		for _, key := range usageDescriptionKeyPattern.FindAllString(message, -1) {
-			keys[key] = struct{}{}
+		for _, text := range []string{detail.Message, detail.Description} {
+			for _, key := range usageDescriptionKeyPattern.FindAllString(strings.TrimSpace(text), -1) {
+				keys[key] = struct{}{}
+			}
 		}
 	}
 
