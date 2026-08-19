@@ -813,8 +813,10 @@ func screenshotTestPNG(t *testing.T, metadata, pixels string) []byte {
 	if err := compressor.Close(); err != nil {
 		t.Fatalf("close screenshot PNG compressor: %v", err)
 	}
+	textData := append([]byte("date:modify"), 0, 0, 0, 0, 0)
+	textData = append(textData, metadata...)
 	png = append(png, chunk("IHDR", header)...)
-	png = append(png, chunk("iTXt", []byte(metadata))...)
+	png = append(png, chunk("iTXt", textData)...)
 	png = append(png, chunk("IDAT", compressed.Bytes())...)
 	png = append(png, chunk("IEND", nil)...)
 	return png

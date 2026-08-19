@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
@@ -32,18 +33,19 @@ const (
 	pngEquivalenceMaxInflated = 256 << 20
 	pngEquivalenceMaxPaletted = 64 << 20
 	pngEquivalenceMaxPalRow   = 32 << 20
+	pngEquivalenceMaxText     = 1 << 20
 )
 
 var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 
-// The screenshot CDN can rewrite resource identifiers and timestamps in these
-// non-rendering ancillary chunks on every request. Preserve the operator's
-// existing file when every other chunk remains identical.
-var volatilePNGChunkTypes = map[string]struct{}{
-	"iTXt": {},
-	"tEXt": {},
-	"tIME": {},
-	"zTXt": {},
+// Image delivery transformations can rewrite these non-rendering timestamp
+// fields. Other text remains stable because it can carry rendering metadata,
+// including XMP and legacy Exif orientation profiles.
+var volatilePNGTextKeywords = map[string]struct{}{
+	"Creation Time":  {},
+	"date:create":    {},
+	"date:modify":    {},
+	"date:timestamp": {},
 }
 
 type pngImageHeader struct {
@@ -401,7 +403,7 @@ func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
 		if gotCRC := crc32.ChecksumIEEE(data[offset+4 : dataEndIndex]); gotCRC != wantCRC {
 			return digest, false
 		}
-		if _, volatile := volatilePNGChunkTypes[chunkType]; !volatile {
+		if !volatilePNGChunk(chunkType, data[offset+8:dataEndIndex]) {
 			_, _ = stable.Write(data[offset:chunkEndIndex])
 		}
 
@@ -429,6 +431,112 @@ func validPNGChunkType(value []byte) bool {
 		}
 	}
 	return value[2]&0x20 == 0
+}
+
+func volatilePNGChunk(chunkType string, data []byte) bool {
+	if chunkType == "tIME" {
+		return validPNGTime(data)
+	}
+	if chunkType != "tEXt" && chunkType != "zTXt" && chunkType != "iTXt" {
+		return false
+	}
+
+	keyword, payload, found := bytes.Cut(data, []byte{0})
+	if !found || !validPNGTextKeyword(keyword) {
+		return false
+	}
+	if _, allowed := volatilePNGTextKeywords[string(keyword)]; !allowed {
+		return false
+	}
+	return validPNGTextPayload(chunkType, payload)
+}
+
+func validPNGTime(data []byte) bool {
+	if len(data) != 7 {
+		return false
+	}
+	month := time.Month(data[2])
+	day := int(data[3])
+	if month < time.January || month > time.December || day == 0 {
+		return false
+	}
+	year := int(binary.BigEndian.Uint16(data[:2]))
+	lastDay := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
+	return day <= lastDay && data[4] <= 23 && data[5] <= 59 && data[6] <= 60
+}
+
+func validPNGTextKeyword(keyword []byte) bool {
+	if len(keyword) == 0 || len(keyword) > 79 || keyword[0] == ' ' || keyword[len(keyword)-1] == ' ' {
+		return false
+	}
+	for index, char := range keyword {
+		if (char < 32 || char > 126) && char < 161 {
+			return false
+		}
+		if char == ' ' && index > 0 && keyword[index-1] == ' ' {
+			return false
+		}
+	}
+	return true
+}
+
+func validPNGTextPayload(chunkType string, payload []byte) bool {
+	switch chunkType {
+	case "tEXt":
+		return !bytes.Contains(payload, []byte{0})
+	case "zTXt":
+		return len(payload) > 1 && payload[0] == 0 && validCompressedPNGText(payload[1:], false)
+	case "iTXt":
+		if len(payload) < 4 || payload[0] > 1 || payload[1] != 0 {
+			return false
+		}
+		language, remainder, found := bytes.Cut(payload[2:], []byte{0})
+		if !found || !validPNGLanguageTag(language) {
+			return false
+		}
+		translatedKeyword, text, found := bytes.Cut(remainder, []byte{0})
+		if !found || !utf8.Valid(translatedKeyword) || bytes.Contains(translatedKeyword, []byte{0}) {
+			return false
+		}
+		if payload[0] == 1 {
+			return validCompressedPNGText(text, true)
+		}
+		return utf8.Valid(text) && !bytes.Contains(text, []byte{0})
+	default:
+		return false
+	}
+}
+
+func validPNGLanguageTag(value []byte) bool {
+	if len(value) == 0 {
+		return true
+	}
+	if value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for index, char := range value {
+		if (char < 'A' || char > 'Z') && (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+			return false
+		}
+		if char == '-' && index > 0 && value[index-1] == '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func validCompressedPNGText(data []byte, requireUTF8 bool) bool {
+	compressed := bytes.NewReader(data)
+	decompressor, err := zlib.NewReader(compressed)
+	if err != nil {
+		return false
+	}
+	text, readErr := io.ReadAll(io.LimitReader(decompressor, pngEquivalenceMaxText+1))
+	closeErr := decompressor.Close()
+	if readErr != nil || closeErr != nil || compressed.Len() != 0 || len(text) > pngEquivalenceMaxText || bytes.Contains(text, []byte{0}) {
+		return false
+	}
+	return !requireUTF8 || utf8.Valid(text)
 }
 
 func validPNGIHDR(header []byte) bool {

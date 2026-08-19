@@ -108,11 +108,11 @@ func TestEquivalentPNGFiles(t *testing.T) {
 		{
 			name: "volatile metadata differs",
 			existing: downloadTestPNG(
-				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
+				downloadTestPNGTextChunk(t, "iTXt", "date:modify", "first"),
 				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: downloadTestPNG(
-				downloadTestPNGChunk("tEXt", []byte("asset-id-second")),
+				downloadTestPNGTextChunk(t, "tEXt", "date:modify", "second"),
 				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			want: true,
@@ -129,13 +129,35 @@ func TestEquivalentPNGFiles(t *testing.T) {
 			),
 		},
 		{
+			name: "XMP orientation metadata differs",
+			existing: downloadTestPNG(
+				downloadTestPNGTextChunk(t, "iTXt", "XML:com.adobe.xmp", "orientation=1"),
+				downloadTestPNGIDAT(t, "same-pixels"),
+			),
+			candidate: downloadTestPNG(
+				downloadTestPNGTextChunk(t, "iTXt", "XML:com.adobe.xmp", "orientation=6"),
+				downloadTestPNGIDAT(t, "same-pixels"),
+			),
+		},
+		{
+			name: "legacy Exif profile differs",
+			existing: downloadTestPNG(
+				downloadTestPNGTextChunk(t, "tEXt", "Raw profile type exif", "orientation=1"),
+				downloadTestPNGIDAT(t, "same-pixels"),
+			),
+			candidate: downloadTestPNG(
+				downloadTestPNGTextChunk(t, "zTXt", "Raw profile type exif", "orientation=6"),
+				downloadTestPNGIDAT(t, "same-pixels"),
+			),
+		},
+		{
 			name: "pixel data differs",
 			existing: downloadTestPNG(
-				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
+				downloadTestPNGTextChunk(t, "iTXt", "date:modify", "first"),
 				downloadTestPNGIDAT(t, "first-pixels"),
 			),
 			candidate: downloadTestPNG(
-				downloadTestPNGChunk("iTXt", []byte("asset-id-second")),
+				downloadTestPNGTextChunk(t, "iTXt", "date:modify", "second"),
 				downloadTestPNGIDAT(t, "second-pixels"),
 			),
 		},
@@ -153,22 +175,22 @@ func TestEquivalentPNGFiles(t *testing.T) {
 		{
 			name: "invalid CRC is not equivalent",
 			existing: downloadTestPNG(
-				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
+				downloadTestPNGTextChunk(t, "iTXt", "date:modify", "first"),
 				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: corruptDownloadTestPNGCRC(downloadTestPNG(
-				downloadTestPNGChunk("iTXt", []byte("asset-id-second")),
+				downloadTestPNGTextChunk(t, "iTXt", "date:modify", "second"),
 				downloadTestPNGIDAT(t, "same-pixels"),
 			)),
 		},
 		{
 			name: "truncated PNG is not equivalent",
 			existing: downloadTestPNG(
-				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
+				downloadTestPNGTextChunk(t, "iTXt", "date:modify", "first"),
 				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: truncateDownloadTestPNG(downloadTestPNG(
-				downloadTestPNGChunk("iTXt", []byte("asset-id-second")),
+				downloadTestPNGTextChunk(t, "iTXt", "date:modify", "second"),
 				downloadTestPNGIDAT(t, "same-pixels"),
 			)),
 		},
@@ -176,23 +198,23 @@ func TestEquivalentPNGFiles(t *testing.T) {
 			name: "zero width is not equivalent",
 			existing: downloadTestPNGWithIHDR(
 				zeroWidthHeader,
-				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
+				downloadTestPNGTextChunk(t, "iTXt", "date:modify", "first"),
 				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: downloadTestPNGWithIHDR(
 				zeroWidthHeader,
-				downloadTestPNGChunk("tEXt", []byte("asset-id-second")),
+				downloadTestPNGTextChunk(t, "tEXt", "date:modify", "second"),
 				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 		},
 		{
 			name: "malformed image data is not equivalent",
 			existing: downloadTestPNG(
-				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
+				downloadTestPNGTextChunk(t, "iTXt", "date:modify", "first"),
 				downloadTestPNGChunk("IDAT", []byte("not-a-zlib-stream")),
 			),
 			candidate: downloadTestPNG(
-				downloadTestPNGChunk("tEXt", []byte("asset-id-second")),
+				downloadTestPNGTextChunk(t, "tEXt", "date:modify", "second"),
 				downloadTestPNGChunk("IDAT", []byte("not-a-zlib-stream")),
 			),
 		},
@@ -200,12 +222,12 @@ func TestEquivalentPNGFiles(t *testing.T) {
 			name: "reserved chunk bit is not equivalent",
 			existing: downloadTestPNG(
 				downloadTestPNGChunk("itxt", []byte("invalid-reserved-bit")),
-				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
+				downloadTestPNGTextChunk(t, "iTXt", "date:modify", "first"),
 				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: downloadTestPNG(
 				downloadTestPNGChunk("itxt", []byte("invalid-reserved-bit")),
-				downloadTestPNGChunk("tEXt", []byte("asset-id-second")),
+				downloadTestPNGTextChunk(t, "tEXt", "date:modify", "second"),
 				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 		},
@@ -216,6 +238,38 @@ func TestEquivalentPNGFiles(t *testing.T) {
 			got := equivalentPNGBytes(tt.existing, tt.candidate)
 			if got != tt.want {
 				t.Fatalf("equivalentPNGBytes() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVolatilePNGChunk(t *testing.T) {
+	compressedITXt := append([]byte("date:modify\x00"), 1, 0, 0, 0)
+	compressedITXt = append(compressedITXt, downloadTestPNGCompressedScanlines(t, []byte("second"))...)
+
+	tests := []struct {
+		name      string
+		chunkType string
+		data      []byte
+		want      bool
+	}{
+		{name: "text modification timestamp", chunkType: "tEXt", data: downloadTestPNGTextData(t, "tEXt", "date:modify", "first"), want: true},
+		{name: "compressed creation timestamp", chunkType: "zTXt", data: downloadTestPNGTextData(t, "zTXt", "date:create", "first"), want: true},
+		{name: "international creation time", chunkType: "iTXt", data: downloadTestPNGTextData(t, "iTXt", "Creation Time", "first"), want: true},
+		{name: "compressed international timestamp", chunkType: "iTXt", data: compressedITXt, want: true},
+		{name: "valid modification time", chunkType: "tIME", data: []byte{0x07, 0xea, 8, 19, 12, 30, 45}, want: true},
+		{name: "XMP profile", chunkType: "iTXt", data: downloadTestPNGTextData(t, "iTXt", "XML:com.adobe.xmp", "orientation=6")},
+		{name: "legacy Exif profile", chunkType: "zTXt", data: downloadTestPNGTextData(t, "zTXt", "Raw profile type exif", "orientation=6")},
+		{name: "comment", chunkType: "tEXt", data: downloadTestPNGTextData(t, "tEXt", "Comment", "keep me")},
+		{name: "missing keyword terminator", chunkType: "tEXt", data: []byte("date:modify")},
+		{name: "invalid compressed text", chunkType: "zTXt", data: []byte("date:modify\x00\x00not-zlib")},
+		{name: "invalid date", chunkType: "tIME", data: []byte{0x07, 0xea, 2, 30, 12, 30, 45}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := volatilePNGChunk(tt.chunkType, tt.data); got != tt.want {
+				t.Fatalf("volatilePNGChunk() = %t, want %t", got, tt.want)
 			}
 		})
 	}
@@ -541,6 +595,30 @@ func downloadTestPNGCompressedScanlines(t *testing.T, scanlines []byte) []byte {
 		t.Fatalf("close PNG test compressor: %v", err)
 	}
 	return compressed.Bytes()
+}
+
+func downloadTestPNGTextChunk(t *testing.T, chunkType, keyword, text string) []byte {
+	t.Helper()
+	return downloadTestPNGChunk(chunkType, downloadTestPNGTextData(t, chunkType, keyword, text))
+}
+
+func downloadTestPNGTextData(t *testing.T, chunkType, keyword, text string) []byte {
+	t.Helper()
+
+	data := append([]byte(keyword), 0)
+	switch chunkType {
+	case "tEXt":
+		data = append(data, text...)
+	case "zTXt":
+		data = append(data, 0)
+		data = append(data, downloadTestPNGCompressedScanlines(t, []byte(text))...)
+	case "iTXt":
+		data = append(data, 0, 0, 0, 0)
+		data = append(data, text...)
+	default:
+		t.Fatalf("unsupported PNG text chunk type %q", chunkType)
+	}
+	return data
 }
 
 func downloadTestPNGChunk(chunkType string, data []byte) []byte {
