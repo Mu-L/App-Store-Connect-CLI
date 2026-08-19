@@ -122,6 +122,33 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","status":"failed"}`,
 		},
 		{
+			name:  "array-valued authorization header",
+			input: `{"Authorization":["Bearer opaque-lowercase-secret"],"status":"failed"}`,
+			want:  `{"Authorization":["[REDACTED]"],"status":"failed"}`,
+		},
+		{
+			name:  "escaped array-valued authorization header",
+			input: `trace {\"Authorization\":[\"Bearer first-secret\",\"Basic second-secret\"],\"status\":\"failed\"}`,
+			want:  `trace {\"Authorization\":[\"[REDACTED]\"],\"status\":\"failed\"}`,
+		},
+		{
+			name: "web auth service credentials",
+			input: `X-Apple-Widget-Key: header-service-secret
+{"authServiceKey":"auth-service-secret","serviceKey":"response-service-secret","status":"failed"}`,
+			want: `X-Apple-Widget-Key: [REDACTED]
+{"authServiceKey":"[REDACTED]","serviceKey":"[REDACTED]","status":"failed"}`,
+		},
+		{
+			name:  "nested two factor request code",
+			input: `{"securityCode":{"code":"123456"},"mode":"sms"}`,
+			want:  `{"securityCode":{"code":"[REDACTED]"},"mode":"sms"}`,
+		},
+		{
+			name:  "escaped nested two factor request code",
+			input: `trace {\"securityCode\":{\"code\":\"654321\"},\"mode\":\"sms\"}`,
+			want:  `trace {\"securityCode\":{\"code\":\"[REDACTED]\"},\"mode\":\"sms\"}`,
+		},
+		{
 			name:  "unescaped structured credential headers",
 			input: "{\"Authorization\":\"Basic c3VwZXJzZWNyZXQ=\",\"Cookie\":\"myacinfo=super-session-secret\",\"status\":\"failed\"}",
 			want:  "{\"Authorization\":\"[REDACTED]\",\"Cookie\":\"[REDACTED]\",\"status\":\"failed\"}",
@@ -543,6 +570,15 @@ func TestRedactSensitiveTextPreservesURLQueryAndFragmentAtSigns(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextPreservesOrdinaryCodeFields(t *testing.T) {
+	input := `{"error":{"code":"ENTITY_ERROR"},"status":400}`
+
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
 func TestSnitchDryRunRedactsURLUserinfoCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
@@ -903,6 +939,49 @@ func TestSnitchDryRunRedactsStructuredHeadersAndYAMLSecretBlocks(t *testing.T) {
 		`{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","status":"failed"}`,
 		"client_secret: [REDACTED]\nstatus: failed",
 		"private_key_b64: [REDACTED]\nnext: preserved",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsWebAuthenticationPayloads(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"array-authorization-secret",
+		"header-service-secret",
+		"auth-service-secret",
+		"response-service-secret",
+		"123456",
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", `{"Authorization":["Bearer `+secrets[0]+`"],"X-Apple-Widget-Key":["`+secrets[1]+`"],"status":"failed"}`,
+		"--actual", `{"authServiceKey":"`+secrets[2]+`","serviceKey":"`+secrets[3]+`","securityCode":{"code":"`+secrets[4]+`"},"mode":"sms"}`,
+		"web authentication payload redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		`{"Authorization":["[REDACTED]"],"X-Apple-Widget-Key":["[REDACTED]"],"status":"failed"}`,
+		`{"authServiceKey":"[REDACTED]","serviceKey":"[REDACTED]","securityCode":{"code":"[REDACTED]"},"mode":"sms"}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
