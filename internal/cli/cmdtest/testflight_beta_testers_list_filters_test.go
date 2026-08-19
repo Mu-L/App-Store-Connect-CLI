@@ -40,8 +40,8 @@ func TestTestFlightBetaTestersListSendsSortIncludeAndInviteType(t *testing.T) {
 			t.Fatalf("run error: %v", err)
 		}
 	})
-	if stderr != "" {
-		t.Fatalf("expected empty stderr, got %q", stderr)
+	if !strings.Contains(stderr, "included relationships can be partial") {
+		t.Fatalf("expected included-relationship completeness warning, got %q", stderr)
 	}
 	if captured == nil {
 		t.Fatal("expected an outbound request")
@@ -141,6 +141,9 @@ func TestTestFlightBetaTestersListNotesIncludeIsJSONOnly(t *testing.T) {
 			if gotNote != test.wantNote {
 				t.Fatalf("note presence = %v, want %v (stderr=%q)", gotNote, test.wantNote, stderr)
 			}
+			if !strings.Contains(stderr, "included relationships can be partial") {
+				t.Fatalf("expected included-relationship completeness warning, got %q", stderr)
+			}
 		})
 	}
 }
@@ -174,6 +177,9 @@ func TestTestFlightBetaTestersListNotesNextURLIncludedResourcesAreJSONOnly(t *te
 	})
 	if !strings.Contains(stderr, "included resources are only rendered in JSON output") {
 		t.Fatalf("expected JSON-only included-resource note, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "included relationships can be partial") {
+		t.Fatalf("expected included-relationship completeness warning, got %q", stderr)
 	}
 }
 
@@ -371,5 +377,27 @@ func TestTestFlightBetaTestersListQueryFlagsAreExperimental(t *testing.T) {
 		if !strings.HasPrefix(flag.Usage, "[experimental] ") {
 			t.Errorf("--%s usage = %q, want [experimental] prefix", name, flag.Usage)
 		}
+	}
+}
+
+func TestTestFlightBetaTestersListHelpExplainsIncludedRelationshipBounds(t *testing.T) {
+	list := findSubcommand(RootCommand("1.2.3"), "testflight", "testers", "list")
+	if list == nil {
+		t.Fatal("testflight testers list command not found")
+	}
+
+	normalizedHelp := strings.Join(strings.Fields(list.LongHelp), " ")
+	for _, want := range []string{
+		"at most 50 related resources per included relationship",
+		"--paginate pages the tester collection, not included relationships",
+		`asc testflight testers groups list --id "TESTER_ID" --paginate`,
+		"exit 2 before making a request",
+	} {
+		if !strings.Contains(normalizedHelp, want) {
+			t.Errorf("help missing %q: %q", want, list.LongHelp)
+		}
+	}
+	if strings.Contains(normalizedHelp, "audit group membership for every tester in one call") {
+		t.Errorf("help still promises complete included group membership: %q", list.LongHelp)
 	}
 }

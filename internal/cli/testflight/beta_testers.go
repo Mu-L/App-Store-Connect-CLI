@@ -84,6 +84,8 @@ var betaTesterIncludeValues = []string{"apps", "betaGroups", "builds"}
 // betaTesterInviteTypeValues lists the accepted filter[inviteType] values.
 var betaTesterInviteTypeValues = []string{"EMAIL", "PUBLIC_LINK"}
 
+const betaTesterIncludedRelationshipsWarning = "Warning: included relationships can be partial; App Store Connect returns at most 50 related resources per included relationship. --paginate pages the tester collection, not included relationships."
+
 // BetaTestersListCommand returns the beta testers list subcommand.
 func BetaTestersListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
@@ -109,15 +111,18 @@ func BetaTestersListCommand() *ffcli.Command {
 		LongHelp: `List TestFlight beta testers for an app.
 
 --include adds the related resources to the response's top-level "included"
-array, which only JSON output renders. Use --include betaGroups to audit group
-membership for every tester in one call instead of one lookup per tester.
+array, which only JSON output renders. App Store Connect returns at most 50
+related resources per included relationship. --paginate pages the tester
+collection, not included relationships. For complete group membership, run
+asc testflight beta-testers beta-groups list --id "TESTER_ID" --paginate.
 The --invite-type, --sort, and --include flags are experimental.
 A --next URL retains any include query from its original request; JSON output
 is still required to render those included resources.
 
 --invite-type, --sort, and --include cannot be combined with --next: a
 links.next URL already carries the query it was produced from, so those values
-would never reach the request.
+would never reach the request. Invalid values and these incompatible flag
+combinations exit 2 before making a request.
 
 Examples:
   asc testflight beta-testers list --app "APP_ID"
@@ -221,8 +226,12 @@ Examples:
 			// Only the JSON renderer emits the envelope's included array. A
 			// continuation URL can carry include even though --include itself is
 			// rejected beside --next, so cover both request shapes.
-			if (len(includeValues) > 0 || betaTestersNextURLHasInclude(*next)) && *output.Output != "json" {
-				fmt.Fprintln(os.Stderr, "Note: included resources are only rendered in JSON output; re-run with --output json to see them.")
+			requestHasIncludes := len(includeValues) > 0 || betaTestersNextURLHasInclude(*next)
+			if requestHasIncludes {
+				fmt.Fprintln(os.Stderr, betaTesterIncludedRelationshipsWarning)
+				if *output.Output != "json" {
+					fmt.Fprintln(os.Stderr, "Note: included resources are only rendered in JSON output; re-run with --output json to see them.")
+				}
 			}
 
 			if strings.TrimSpace(*group) != "" && strings.TrimSpace(*next) == "" {
