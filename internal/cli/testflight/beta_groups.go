@@ -451,11 +451,11 @@ func BetaGroupsCreateCommand() *ffcli.Command {
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	name := fs.String("name", "", "Beta group name")
 	internal := fs.Bool("internal", false, "Create as internal group")
-	accessAllBuilds := fs.Bool("access-all-builds", false, "Give the group access to all builds")
-	publicLinkEnabled := fs.Bool("public-link-enabled", false, "Enable the public link")
-	publicLinkLimitEnabled := fs.Bool("public-link-limit-enabled", false, "Enable the public link tester limit")
-	publicLinkLimit := fs.Int("public-link-limit", 0, "Public link tester limit (1-10000)")
-	feedbackEnabled := fs.Bool("feedback-enabled", false, "Enable tester feedback")
+	accessAllBuilds := fs.Bool("access-all-builds", false, "[experimental] Give the group access to all builds")
+	publicLinkEnabled := fs.Bool("public-link-enabled", false, "[experimental] Enable the public link")
+	publicLinkLimitEnabled := fs.Bool("public-link-limit-enabled", false, "[experimental] Enable the public link tester limit")
+	publicLinkLimit := fs.Int("public-link-limit", 0, "[experimental] Public link tester limit (1-10000)")
+	feedbackEnabled := fs.Bool("feedback-enabled", false, "[experimental] Enable tester feedback")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{

@@ -5,10 +5,30 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
+
+func TestBetaGroupsCreateNewFlagsAreExperimental(t *testing.T) {
+	command := BetaGroupsCreateCommand()
+	for _, name := range []string{
+		"access-all-builds",
+		"public-link-enabled",
+		"public-link-limit-enabled",
+		"public-link-limit",
+		"feedback-enabled",
+	} {
+		flag := command.FlagSet.Lookup(name)
+		if flag == nil {
+			t.Fatalf("expected --%s to be registered", name)
+		}
+		if !strings.Contains(flag.Usage, "[experimental]") {
+			t.Fatalf("expected --%s to be experimental, usage = %q", name, flag.Usage)
+		}
+	}
+}
 
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
