@@ -312,6 +312,51 @@ func TestUploadPreviewsAppliesSkipExistingBeforeCapacityCheck(t *testing.T) {
 	}
 }
 
+func TestUploadPreviewFilesRollsBackCreatedItemsOnConflict(t *testing.T) {
+	requests := make([]string, 0, 1)
+	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/appPreviews/created-1" {
+			writeAssetsTestJSON(w, http.StatusInternalServerError, `{"errors":[{"status":"500","detail":"unexpected request"}]}`)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	uploadCalls := 0
+	capacityErr := &asc.APIError{
+		Code:       "ENTITY_ERROR.RELATIONSHIP.INVALID",
+		Detail:     "The preview set is full.",
+		StatusCode: http.StatusConflict,
+	}
+	_, err := uploadPreviewFiles(
+		context.Background(),
+		client,
+		"set-1",
+		[]string{"first.mov", "second.mov"},
+		func(_ context.Context, _ *asc.Client, _, filePath string) (asc.AssetUploadResultItem, error) {
+			uploadCalls++
+			if filePath == "first.mov" {
+				return asc.AssetUploadResultItem{AssetID: "created-1"}, nil
+			}
+			return asc.AssetUploadResultItem{}, capacityErr
+		},
+	)
+	if !errors.Is(err, asc.ErrConflict) {
+		t.Fatalf("uploadPreviewFiles() error = %v, want conflict", err)
+	}
+	if !strings.Contains(err.Error(), "The preview set is full") {
+		t.Fatalf("uploadPreviewFiles() error = %v, want original API detail", err)
+	}
+	if uploadCalls != 2 {
+		t.Fatalf("upload calls = %d, want 2", uploadCalls)
+	}
+	wantRequests := []string{"DELETE /v1/appPreviews/created-1"}
+	if fmt.Sprint(requests) != fmt.Sprint(wantRequests) {
+		t.Fatalf("requests = %v, want %v", requests, wantRequests)
+	}
+}
+
 func TestNormalizePreviewTypeCanonicalizesIPhone69Alias(t *testing.T) {
 	testCases := []string{
 		"IPHONE_69",

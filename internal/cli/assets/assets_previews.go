@@ -2,6 +2,7 @@ package assets
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -919,15 +920,9 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 		}
 	}
 
-	results := make([]asc.AssetUploadResultItem, 0, len(skippedResults)+len(files))
-	if len(files) > 0 {
-		for _, filePath := range files {
-			item, err := uploadPreviewAsset(uploadCtx, client, set.ID, filePath)
-			if err != nil {
-				return asc.AppPreviewUploadResult{}, err
-			}
-			results = append(results, item)
-		}
+	results, err := uploadPreviewFiles(uploadCtx, client, set.ID, files, uploadPreviewAsset)
+	if err != nil {
+		return asc.AppPreviewUploadResult{}, err
 	}
 	results = append(skippedResults, results...)
 
@@ -937,6 +932,39 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 		PreviewType:           set.Attributes.PreviewType,
 		Results:               results,
 	}, nil
+}
+
+type previewAssetUploadFunc func(context.Context, *asc.Client, string, string) (asc.AssetUploadResultItem, error)
+
+func uploadPreviewFiles(ctx context.Context, client *asc.Client, setID string, files []string, upload previewAssetUploadFunc) ([]asc.AssetUploadResultItem, error) {
+	results := make([]asc.AssetUploadResultItem, 0, len(files))
+	for _, filePath := range files {
+		item, err := upload(ctx, client, setID, filePath)
+		if err != nil {
+			if errors.Is(err, asc.ErrConflict) && len(results) > 0 {
+				if rollbackErr := deleteUploadedPreviews(ctx, client, results); rollbackErr != nil {
+					return nil, errors.Join(err, fmt.Errorf("roll back previews created by this upload: %w", rollbackErr))
+				}
+			}
+			return nil, err
+		}
+		results = append(results, item)
+	}
+	return results, nil
+}
+
+func deleteUploadedPreviews(ctx context.Context, client *asc.Client, previews []asc.AssetUploadResultItem) error {
+	var rollbackErrs []error
+	for i := len(previews) - 1; i >= 0; i-- {
+		previewID := strings.TrimSpace(previews[i].AssetID)
+		if previewID == "" {
+			continue
+		}
+		if err := client.DeleteAppPreview(ctx, previewID); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("delete preview %q: %w", previewID, err))
+		}
+	}
+	return errors.Join(rollbackErrs...)
 }
 
 func deleteExistingPreviews(ctx context.Context, client *asc.Client, previews []asc.Resource[asc.AppPreviewAttributes]) error {
