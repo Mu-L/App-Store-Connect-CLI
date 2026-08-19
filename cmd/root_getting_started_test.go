@@ -21,8 +21,30 @@ var wantGettingStartedInvocations = []string{
 
 func TestRootHelpDoesNotOverstateAuthDoctorNetworkValidation(t *testing.T) {
 	block := gettingStartedBlock(t)
-	if !strings.Contains(block, "asc auth doctor") || !strings.Contains(block, "diagnose local auth configuration") {
+	if !strings.Contains(block, "Diagnose local auth configuration:\n    asc auth doctor") {
 		t.Fatalf("getting-started auth step must describe local diagnosis accurately:\n%s", block)
+	}
+	lower := strings.ToLower(block)
+	for _, unsupportedClaim := range []string{
+		"validate network",
+		"validates network",
+		"network validation",
+		"validate app store connect",
+		"validates app store connect",
+		"app store connect access",
+	} {
+		if strings.Contains(lower, unsupportedClaim) {
+			t.Fatalf("getting-started auth step must not claim %q:\n%s", unsupportedClaim, block)
+		}
+	}
+}
+
+func TestRootHelpGettingStartedSamplesHaveNoInlineShellComments(t *testing.T) {
+	for _, line := range strings.Split(gettingStartedBlock(t), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "asc ") && strings.Contains(trimmed, "#") {
+			t.Fatalf("pasteable sample has a shell-specific inline comment: %q", trimmed)
+		}
 	}
 }
 
@@ -157,17 +179,13 @@ func gettingStartedBlock(t *testing.T) string {
 	return rest[:end]
 }
 
-// gettingStartedInvocations extracts the `asc ...` sample lines from the block,
-// dropping trailing `#` annotations.
+// gettingStartedInvocations extracts the `asc ...` sample lines from the block.
 func gettingStartedInvocations(block string) []string {
 	invocations := make([]string, 0, 4)
 	for _, line := range strings.Split(block, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "asc ") {
 			continue
-		}
-		if comment := strings.Index(trimmed, "#"); comment >= 0 {
-			trimmed = strings.TrimSpace(trimmed[:comment])
 		}
 		invocations = append(invocations, trimmed)
 	}

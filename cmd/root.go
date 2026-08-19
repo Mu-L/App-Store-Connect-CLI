@@ -21,10 +21,14 @@ var versionRequested bool
 // screen: find the right command, diagnose credentials, locate an app, then
 // inspect it. Every sample is a copy-paste-valid long-form invocation, and
 // placeholders stay bare uppercase so shells do not read them as redirection.
-const rootGettingStartedSamples = `  asc search "upload a build" --output json   # find the command, with examples
-  asc auth doctor                             # diagnose local auth configuration
-  asc apps list --output table                # list your apps and their IDs
-  asc status --app APP_ID                     # one-screen release overview
+const rootGettingStartedSamples = `  Find the command, with examples:
+    asc search "upload a build" --output json
+  Diagnose local auth configuration:
+    asc auth doctor
+  List your apps and their IDs:
+    asc apps list --output table
+  Show a one-screen release overview:
+    asc status --app APP_ID
 
   Add --help to any command; replace placeholders like APP_ID with real values.`
 
