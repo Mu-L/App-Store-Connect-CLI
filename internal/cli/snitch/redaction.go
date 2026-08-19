@@ -1,6 +1,7 @@
 package snitch
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 )
@@ -73,6 +74,8 @@ var (
 	yamlCredentialAlias               = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlAnchor                        = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
 	jsonQuotedScalarLine              = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
+	jsonCredentialName                = regexp.MustCompile(`(?i)^(?:` + structuredCredentialName + `)$`)
+	tomlMultilineCredentialStart      = regexp.MustCompile(`(?i)(?:^|[^-a-z0-9_])` + sensitivePrefixedName + `\b[ \t]*=[ \t]*(?:"""|''')`)
 	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\(|\(|\x60)`)
 	xcodeCloudEnvVarSetCommand        = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')[ \t]+web[ \t]+xcode-cloud[ \t]+env-vars[ \t]+(?:shared[ \t]+)?set\b`)
 )
@@ -279,6 +282,14 @@ var sensitiveTextRedactionRules = []redactionRule{
 
 func redactSensitiveText(value string) (string, bool) {
 	redacted, changed := redactSecretMarkedValues(value)
+	if next, tomlChanged := redactTOMLMultilineCredentials(redacted); tomlChanged {
+		redacted = next
+		changed = true
+	}
+	if next, jsonKeyChanged := redactJSONEscapedCredentialValues(redacted); jsonKeyChanged {
+		redacted = next
+		changed = true
+	}
 	if next, cookieChanged := redactStructuredCookieValues(redacted); cookieChanged {
 		redacted = next
 		changed = true
@@ -330,6 +341,142 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = strings.ReplaceAll(redacted, booleanMarkerProtection, "")
 	}
 	return redacted, changed
+}
+
+func redactTOMLMultilineCredentials(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := tomlMultilineCredentialStart.FindStringIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		open := searchStart + match[1] - 3
+		close := findTOMLMultilineStringEnd(redacted, open)
+		if close < 0 {
+			close = len(redacted) - 1
+		}
+		redacted = redacted[:open] + redactionMarker + redacted[close+1:]
+		changed = true
+		searchStart = open + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func findTOMLMultilineStringEnd(value string, open int) int {
+	if open < 0 || open+3 > len(value) {
+		return -1
+	}
+	delimiter := value[open : open+3]
+	if delimiter != `"""` && delimiter != `'''` {
+		return -1
+	}
+
+	for index := open + 3; index+3 <= len(value); index++ {
+		if delimiter == `"""` && value[index] == '\\' {
+			index++
+			continue
+		}
+		if value[index:index+3] == delimiter {
+			return index + 2
+		}
+	}
+	return -1
+}
+
+func redactJSONEscapedCredentialValues(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		relativeOpen := strings.IndexByte(redacted[searchStart:], '"')
+		if relativeOpen < 0 {
+			break
+		}
+		open := searchStart + relativeOpen
+		close := findJSONStringEnd(redacted, open)
+		if close < 0 {
+			break
+		}
+
+		encodedKey := redacted[open : close+1]
+		if !strings.Contains(encodedKey, `\`) {
+			searchStart = close + 1
+			continue
+		}
+		var decodedKey string
+		if json.Unmarshal([]byte(encodedKey), &decodedKey) != nil || !jsonCredentialName.MatchString(decodedKey) {
+			searchStart = close + 1
+			continue
+		}
+
+		colon := close + 1
+		for colon < len(redacted) && strings.ContainsRune(" \t\r\n", rune(redacted[colon])) {
+			colon++
+		}
+		if colon >= len(redacted) || redacted[colon] != ':' {
+			searchStart = close + 1
+			continue
+		}
+		valueStart := colon + 1
+		for valueStart < len(redacted) && strings.ContainsRune(" \t\r\n", rune(redacted[valueStart])) {
+			valueStart++
+		}
+		valueEnd, replacement := jsonCredentialValueReplacement(redacted, valueStart)
+		if valueEnd <= valueStart {
+			searchStart = close + 1
+			continue
+		}
+		if redacted[valueStart:valueEnd] == replacement {
+			searchStart = valueEnd
+			continue
+		}
+
+		redacted = redacted[:valueStart] + replacement + redacted[valueEnd:]
+		changed = true
+		searchStart = valueStart + len(replacement)
+	}
+	return redacted, changed
+}
+
+func findJSONStringEnd(value string, open int) int {
+	if open < 0 || open >= len(value) || value[open] != '"' {
+		return -1
+	}
+	for index := open + 1; index < len(value); index++ {
+		if value[index] == '\\' {
+			index++
+			continue
+		}
+		if value[index] == '"' {
+			return index
+		}
+	}
+	return -1
+}
+
+func jsonCredentialValueReplacement(value string, start int) (int, string) {
+	if start < 0 || start >= len(value) {
+		return -1, ""
+	}
+	switch value[start] {
+	case '"':
+		close := findJSONStringEnd(value, start)
+		if close < 0 {
+			return len(value), `"` + redactionMarker + `"`
+		}
+		return close + 1, `"` + redactionMarker + `"`
+	case '{':
+		return findJSONContainerEnd(value, start, false) + 1, `"` + redactionMarker + `"`
+	case '[':
+		return findJSONContainerEnd(value, start, false) + 1, `[` + `"` + redactionMarker + `"` + `]`
+	default:
+		end := start
+		for end < len(value) && !strings.ContainsRune(",}]\r\n", rune(value[end])) {
+			end++
+		}
+		return end, `"` + redactionMarker + `"`
+	}
 }
 
 func redactYAMLCredentialAliases(value string) (string, bool) {

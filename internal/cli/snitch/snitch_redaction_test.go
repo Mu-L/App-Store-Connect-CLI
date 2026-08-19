@@ -364,6 +364,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "password: [REDACTED]\nstatus: failed",
 		},
 		{
+			name:  "TOML multiline basic string",
+			input: "password = \"\"\"opaque-head\nopaque-tail\"\"\"\nstatus = \"failed\"",
+			want:  "password = [REDACTED]\nstatus = \"failed\"",
+		},
+		{
+			name:  "TOML multiline literal string",
+			input: "password = '''opaque-head\nopaque-tail'''\nstatus = \"failed\"",
+			want:  "password = [REDACTED]\nstatus = \"failed\"",
+		},
+		{
 			name:  "multiline plain yaml scalar preserves sibling",
 			input: "response:\n  password: opaque-first\n    opaque-second\n  status: failed",
 			want:  "response:\n  password: [REDACTED]\n  status: failed",
@@ -756,6 +766,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "JSON assignment",
 			input: `response {"refresh_token":"refresh-value","status":"failed"}`,
 			want:  `response {"refresh_token":"[REDACTED]","status":"failed"}`,
+		},
+		{
+			name:  "JSON unicode escape in credential key",
+			input: `response {"pass\u0077ord":"opaque-unicode-secret","status":"failed"}`,
+			want:  `response {"pass\u0077ord":"[REDACTED]","status":"failed"}`,
 		},
 		{
 			name:  "prefixed JSON assignments",
@@ -1414,6 +1429,44 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 		`asc signing sync --password [REDACTED] --verbose`,
 		"password: [REDACTED]\nstatus: failed",
 		`asc signing sync push --password [REDACTED] --verbose`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsTOMLAndEscapedJSONCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"toml-multiline-secret", "json-unicode-key-secret"}
+	repro := "password = \"\"\"opaque-head\n" + secrets[0] + "\"\"\"\nstatus = \"failed\"\n" +
+		`{"pass\u0077ord":"` + secrets[1] + `","status":"failed"}`
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"structured credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"password = [REDACTED]\nstatus = \"failed\"",
+		`{"pass\u0077ord":"[REDACTED]","status":"failed"}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
