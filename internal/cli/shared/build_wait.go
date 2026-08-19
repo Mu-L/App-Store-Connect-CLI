@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -273,10 +275,82 @@ func buildUploadFailureError(upload *asc.BuildUploadResponse) error {
 	}
 
 	details := buildUploadStateDetails(upload.Data.Attributes.State.Errors)
+	recovery := buildUploadRecoveryGuidance(upload.Data.Attributes.State.Errors)
 	if details == "" {
+		if recovery != "" {
+			return fmt.Errorf("build upload %q failed with state %s; recovery: %s", upload.Data.ID, state, recovery)
+		}
 		return fmt.Errorf("build upload %q failed with state %s", upload.Data.ID, state)
 	}
+	if recovery != "" {
+		return fmt.Errorf("build upload %q failed with state %s: %s; recovery: %s", upload.Data.ID, state, details, recovery)
+	}
 	return fmt.Errorf("build upload %q failed with state %s: %s", upload.Data.ID, state, details)
+}
+
+var usageDescriptionKeyPattern = regexp.MustCompile(`\b[A-Za-z0-9_]+UsageDescription\b`)
+
+func buildUploadRecoveryGuidance(details []asc.StateDetail) string {
+	switch {
+	case stateDetailCodesMatch(details, "90062", "90186", "90478"):
+		return "increase the marketing version (CFBundleShortVersionString), rebuild, and upload again"
+	case stateDetailCodesMatch(details, "90189"):
+		return "increase the build number (CFBundleVersion), rebuild, and upload again"
+	case stateDetailCodesMatch(details, "90054", "90055"):
+		return "verify that the artifact's bundle identifier matches the selected app; rebuild with the correct identifier or select the intended app"
+	case stateDetailCodesMatch(details, "90683"):
+		keys := missingUsageDescriptionKeys(details)
+		if len(keys) > 0 {
+			return fmt.Sprintf("add the missing privacy purpose strings to Info.plist (%s), rebuild, and upload again", strings.Join(keys, ", "))
+		}
+		return "add the missing privacy purpose strings to Info.plist, rebuild, and upload again"
+	case stateDetailCodesMatch(details, "90725"):
+		return "rebuild with a currently supported SDK and toolchain, then upload again"
+	case stateDetailCodesMatch(details, "90771"):
+		return "add BGTaskSchedulerPermittedIdentifiers to Info.plist with every scheduled background task identifier, rebuild, and upload again"
+	case stateDetailCodesMatch(details, "90391", "90713"):
+		return "add the required app icons and icon metadata (such as CFBundleIconName or CFBundleIconFiles) to every failing bundle, rebuild, and upload again"
+	default:
+		return ""
+	}
+}
+
+func stateDetailCodesMatch(details []asc.StateDetail, allowed ...string) bool {
+	if len(details) == 0 {
+		return false
+	}
+
+	allowedCodes := make(map[string]struct{}, len(allowed))
+	for _, code := range allowed {
+		allowedCodes[code] = struct{}{}
+	}
+	for _, detail := range details {
+		code := strings.TrimSpace(detail.Code)
+		if _, ok := allowedCodes[code]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func missingUsageDescriptionKeys(details []asc.StateDetail) []string {
+	keys := make(map[string]struct{})
+	for _, detail := range details {
+		message := strings.TrimSpace(detail.Message)
+		if message == "" {
+			message = strings.TrimSpace(detail.Description)
+		}
+		for _, key := range usageDescriptionKeyPattern.FindAllString(message, -1) {
+			keys[key] = struct{}{}
+		}
+	}
+
+	result := make([]string, 0, len(keys))
+	for key := range keys {
+		result = append(result, key)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func enrichBuildUploadFailure(ctx context.Context, client *asc.Client, appID string, upload *asc.BuildUploadResponse, baseErr error) error {
