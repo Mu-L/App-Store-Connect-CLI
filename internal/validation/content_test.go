@@ -63,6 +63,32 @@ func TestContentChecksIgnoreEditoriallyAmbiguousMetadata(t *testing.T) {
 	}
 }
 
+func TestContentChecksUseUnicodeAwarePlaceholderBoundaries(t *testing.T) {
+	for _, value := range []string{
+		"MÉTODO helps you organize research.",
+		"TODOアプリ keeps tasks in sync.",
+		"éLorem ipsum is a product name.",
+	} {
+		t.Run(value, func(t *testing.T) {
+			checks := contentChecks(
+				[]VersionLocalization{{ID: "loc-1", Locale: "en-US", Description: value}},
+				nil,
+			)
+			if len(checks) != 0 {
+				t.Fatalf("checks for %q = %+v, want none", value, checks)
+			}
+		})
+	}
+
+	checks := contentChecks(
+		[]VersionLocalization{{ID: "loc-1", Locale: "ja", Description: "（TODO）finalize the copy"}},
+		nil,
+	)
+	if len(checks) != 1 || checks[0].ID != "content.placeholder_text" {
+		t.Fatalf("checks = %+v, want punctuation-delimited placeholder warning", checks)
+	}
+}
+
 func TestContentChecksPreservePlaceholderSourceOrderAcrossPatternGroups(t *testing.T) {
 	checks := contentChecks(
 		[]VersionLocalization{{ID: "loc-1", Locale: "en-US", Description: "TODO before lorem ipsum and FIXME"}},

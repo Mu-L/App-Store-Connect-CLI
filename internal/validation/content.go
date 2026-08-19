@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Placeholder-content lint is deliberately narrow. It flags unmistakable
@@ -96,6 +98,9 @@ func findContentMatches(value string, patterns []*regexp.Regexp) []string {
 	ranges := make([]contentMatch, 0, 2)
 	for _, pattern := range patterns {
 		for _, location := range pattern.FindAllStringIndex(value, -1) {
+			if !hasContentTokenBoundaries(value, location[0], location[1]) {
+				continue
+			}
 			ranges = append(ranges, contentMatch{start: location[0], end: location[1]})
 		}
 	}
@@ -129,11 +134,31 @@ func quoteContentMatches(matches []string) string {
 }
 
 func contentPhrasePattern(phrases []string) *regexp.Regexp {
-	return regexp.MustCompile(`(?i)\b(?:` + contentAlternation(phrases) + `)\b`)
+	return regexp.MustCompile(`(?i)(?:` + contentAlternation(phrases) + `)`)
 }
 
 func contentMarkerPattern(markers []string) *regexp.Regexp {
-	return regexp.MustCompile(`\b(?:` + contentAlternation(markers) + `)\b`)
+	return regexp.MustCompile(`(?:` + contentAlternation(markers) + `)`)
+}
+
+func hasContentTokenBoundaries(value string, start, end int) bool {
+	if start > 0 {
+		previous, _ := utf8.DecodeLastRuneInString(value[:start])
+		if isContentTokenRune(previous) {
+			return false
+		}
+	}
+	if end < len(value) {
+		next, _ := utf8.DecodeRuneInString(value[end:])
+		if isContentTokenRune(next) {
+			return false
+		}
+	}
+	return true
+}
+
+func isContentTokenRune(value rune) bool {
+	return value == '_' || unicode.IsLetter(value) || unicode.IsNumber(value)
 }
 
 func contentAlternation(phrases []string) string {

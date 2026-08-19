@@ -300,6 +300,8 @@ asc submit cancel --version-id "VERSION_ID" --confirm
 Readiness validation also warns when localized app names, subtitles,
 descriptions, keywords, promotional text, or What's New copy still contains an
 unmistakable template marker such as `Lorem ipsum`, `TODO`, `TBD`, or `FIXME`.
+`Lorem ipsum` matches in any letter case. `TODO`, `TBD`, and `FIXME` match only
+in uppercase because their lowercase spellings can be ordinary product wording.
 The warning includes the locale, field, matched text, resource ID, and a
 remediation step. It is advisory by default and becomes blocking only with
 `--strict`:
