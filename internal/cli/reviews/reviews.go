@@ -19,7 +19,7 @@ func ReviewsCommand() *ffcli.Command {
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	output := shared.BindOutputFlags(fs)
-	stars := fs.Int("stars", 0, "Filter by star rating (1-5)")
+	stars := fs.String("stars", "", "Filter by star ratings, comma-separated (1-5)")
 	territory := fs.String("territory", "", "Filter by territory (e.g., US, GBR)")
 	sort := fs.String("sort", "", "Sort by rating, -rating, createdDate, or -createdDate")
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
@@ -44,6 +44,7 @@ When invoked with --app, lists reviews. Subcommands allow responding to reviews.
 Examples:
   asc reviews --app "123456789"
   asc reviews --app "123456789" --stars 1 --territory US
+  asc reviews --app "123456789" --stars 1,2
   asc reviews --app "123456789" --sort -createdDate --limit 5
   asc reviews --app "123456789" --response-state unreplied --include-response
   asc reviews --app "123456789" --only-unresponded
@@ -91,7 +92,7 @@ func ReviewsListCommand() *ffcli.Command {
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	output := shared.BindOutputFlags(fs)
-	stars := fs.Int("stars", 0, "Filter by star rating (1-5)")
+	stars := fs.String("stars", "", "Filter by star ratings, comma-separated (1-5)")
 	territory := fs.String("territory", "", "Filter by territory (e.g., US, GBR)")
 	sort := fs.String("sort", "", "Sort by rating, -rating, createdDate, or -createdDate")
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
@@ -111,6 +112,7 @@ func ReviewsListCommand() *ffcli.Command {
 Examples:
   asc reviews list --app "123456789"
   asc reviews list --app "123456789" --stars 5
+  asc reviews list --app "123456789" --stars 1,2
   asc reviews list --app "123456789" --territory US --sort -createdDate
   asc reviews list --app "123456789" --response-state unreplied --include-response
   asc reviews list --app "123456789" --only-unresponded
@@ -130,12 +132,13 @@ Examples:
 	}
 }
 
-func executeReviewsList(ctx context.Context, appID, output string, pretty bool, stars int, territory, sort string, limit int, next string, paginate bool, responseState string, onlyUnresponded bool, includeResponse bool, responseFields string) error {
+func executeReviewsList(ctx context.Context, appID, output string, pretty bool, stars string, territory, sort string, limit int, next string, paginate bool, responseState string, onlyUnresponded bool, includeResponse bool, responseFields string) error {
 	if limit != 0 && (limit < 1 || limit > 200) {
 		return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("reviews: --limit must be between 1 and 200")), shared.DiagnosticInvalidInput, "--limit")
 	}
-	if stars != 0 && (stars < 1 || stars > 5) {
-		return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("reviews: --stars must be between 1 and 5")), shared.DiagnosticInvalidInput, "--stars")
+	ratings, err := normalizeReviewStars(stars)
+	if err != nil {
+		return shared.WithDiagnostic(shared.UsageError(err.Error()), shared.DiagnosticInvalidInput, "--stars")
 	}
 	if err := shared.ValidateNextURL(next); err != nil {
 		return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("reviews: %w", err)), shared.DiagnosticInvalidInput, "--next")
@@ -167,7 +170,7 @@ func executeReviewsList(ctx context.Context, appID, output string, pretty bool, 
 	defer cancel()
 
 	opts := []asc.ReviewOption{
-		asc.WithRating(stars),
+		asc.WithRatings(ratings),
 		asc.WithTerritory(territory),
 		asc.WithLimit(limit),
 		asc.WithNextURL(next),

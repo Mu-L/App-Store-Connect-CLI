@@ -2,6 +2,7 @@ package reviews
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +27,38 @@ func normalizeReviewResponseState(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("--response-state must be one of: any, unresponded, unreplied, responded, replied")
 	}
+}
+
+// normalizeReviewStars parses the comma-separated --stars value. Apple accepts
+// filter[rating] as an array parameter, so callers can ask for several ratings
+// in one request. An empty value means "no rating filter"; anything else must
+// resolve to at least one rating between 1 and 5.
+func normalizeReviewStars(value string) ([]int, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+
+	elements := strings.Split(value, ",")
+	ratings := make([]int, 0, len(elements))
+	for _, element := range elements {
+		element = strings.TrimSpace(element)
+		if element == "" {
+			continue
+		}
+		rating, err := strconv.Atoi(element)
+		if err != nil || rating < 1 || rating > 5 {
+			return nil, errInvalidReviewStars()
+		}
+		ratings = append(ratings, rating)
+	}
+	if len(ratings) == 0 {
+		return nil, errInvalidReviewStars()
+	}
+	return ratings, nil
+}
+
+func errInvalidReviewStars() error {
+	return fmt.Errorf("--stars must be a comma-separated list of star ratings: 1, 2, 3, 4, 5")
 }
 
 func normalizeReviewResponseFields(value string) ([]string, error) {
