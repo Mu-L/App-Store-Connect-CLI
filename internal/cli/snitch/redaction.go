@@ -16,7 +16,7 @@ const (
 	escapeAwareQuotedValue  = `(?:"(?:\\.|[^"\\\r\n])*"|\$'(?:\\.|[^'\\\r\n])*'|'(?:\\.|[^'\\\r\n])*')`
 	unterminatedQuotedValue = `(?:"[^\r\n]*|\$?'[^\r\n]*)`
 	shellUnquotedValue      = `(?:\\[^\r\n]|[^\s])+`
-	flagUnquotedValue       = `(?:\\[^\r\n]|-[^-\s]|[^-\s])(?:\\[^\r\n]|[^\s])*`
+	flagUnquotedValue       = `(?:\\[^\r\n]|-[^-\s\\]|[^-\s\\])(?:\\[^\r\n]|[^\s])*`
 	credentialPairQuoted    = `(?:"(?:\\.|[^"\\\r\n])*:(?:\\.|[^"\\\r\n])+"|\$'(?:\\.|[^'\\\r\n])*:(?:\\.|[^'\\\r\n])+'|'(?:\\.|[^'\\\r\n])*:(?:\\.|[^'\\\r\n])+')`
 	credentialPairOpen      = `(?:"[^\r\n]*:[^\r\n]+|\$?'[^\r\n]*:[^\r\n]+)`
 	credentialPairUnquoted  = `(?:\\[^\r\n]|[^\s:])*:(?:\\[^\r\n]|[^\s])+`
@@ -87,7 +87,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(["']` + sensitivePrefixedName + `["'][ \t]*:[ \t]*)(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;}\]]+)`),
+		pattern:     regexp.MustCompile(`(?i)(["']` + sensitivePrefixedName + `["'][ \t\r\n]*:[ \t\r\n]*)(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;}\]]+)`),
 		replacement: `${1}"` + redactionMarker + `"`,
 	},
 	{
@@ -123,17 +123,40 @@ func redactSensitiveText(value string) (string, bool) {
 func redactSecretMarkedValues(value string) (string, bool) {
 	lines := strings.Split(value, "\n")
 	changed := false
-	for i, line := range lines {
-		if !secretMarkerPattern.MatchString(strings.TrimSuffix(line, "\r")) {
-			continue
+	for start := 0; start < len(lines); {
+		end := start
+		for end < len(lines)-1 && shellLineContinues(strings.TrimSuffix(lines[end], "\r")) {
+			end++
 		}
-		redacted := secretValuePattern.ReplaceAllString(line, `${1}${2}`+redactionMarker)
-		if redacted != line {
-			lines[i] = redacted
-			changed = true
+
+		marked := false
+		for i := start; i <= end; i++ {
+			if secretMarkerPattern.MatchString(strings.TrimSuffix(lines[i], "\r")) {
+				marked = true
+				break
+			}
 		}
+		if marked {
+			for i := start; i <= end; i++ {
+				redacted := secretValuePattern.ReplaceAllString(lines[i], `${1}${2}`+redactionMarker)
+				if redacted != lines[i] {
+					lines[i] = redacted
+					changed = true
+				}
+			}
+		}
+
+		start = end + 1
 	}
 	return strings.Join(lines, "\n"), changed
+}
+
+func shellLineContinues(line string) bool {
+	backslashes := 0
+	for i := len(line) - 1; i >= 0 && line[i] == '\\'; i-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
 }
 
 func redactLogEntry(entry LogEntry) (LogEntry, bool) {

@@ -162,6 +162,20 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --value [REDACTED] --secret`,
 		},
 		{
+			name: "boolean secret marker after continued value",
+			input: `asc web xcode-cloud env-vars create --value continued-secret \
+  --secret`,
+			want: `asc web xcode-cloud env-vars create --value [REDACTED] \
+  --secret`,
+		},
+		{
+			name: "boolean secret marker before continued value",
+			input: `asc web xcode-cloud env-vars create --secret \
+  --value continued-secret`,
+			want: `asc web xcode-cloud env-vars create --secret \
+  --value [REDACTED]`,
+		},
+		{
 			name:  "boolean secret marker with value equals form",
 			input: `asc web xcode-cloud env-vars create --value=s3cret --secret`,
 			want:  `asc web xcode-cloud env-vars create --value=[REDACTED] --secret`,
@@ -262,6 +276,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `response {"AWS_SECRET_ACCESS_KEY":"[REDACTED]","MY_CLIENT_SECRET":"[REDACTED]"}`,
 		},
 		{
+			name:  "pretty-printed JSON assignment",
+			input: "response {\n  \"client_secret\":\n    \"arbitrary secret\",\n  \"status\": \"failed\"\n}",
+			want:  "response {\n  \"client_secret\":\n    \"[REDACTED]\",\n  \"status\": \"failed\"\n}",
+		},
+		{
 			name:  "JWT",
 			input: "decoded eyJhbGciOiJFUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl failed",
 			want:  "decoded [REDACTED] failed",
@@ -298,6 +317,16 @@ func TestRedactSensitiveTextFalseSecretMarkerPreservesValue(t *testing.T) {
 	got, changed := redactSensitiveText(input)
 	if !changed || got != want {
 		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want %q", input, got, changed, want)
+	}
+}
+
+func TestRedactSensitiveTextDoesNotJoinEscapedBackslashLines(t *testing.T) {
+	input := `asc unrelated --value public \\
+asc web xcode-cloud env-vars create --secret`
+
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
 	}
 }
 
@@ -525,12 +554,14 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"marked-value", "authorization-credential", "structured-secret"}
+	secrets := []string{"marked-value", "authorization-credential", "structured-secret", "continued-secret", "pretty-structured-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", "asc web xcode-cloud env-vars create --value "+secrets[0]+" --secret=true",
-		"--actual", `Authorization: ApiKey `+secrets[1]+"\n"+`{"MY_CLIENT_SECRET":"`+secrets[2]+`"}`,
+		"--repro", "asc web xcode-cloud env-vars create --value "+secrets[0]+" --secret=true\n"+
+			"asc web xcode-cloud env-vars create --value "+secrets[3]+" \\\n  --secret",
+		"--actual", `Authorization: ApiKey `+secrets[1]+"\n"+`{"MY_CLIENT_SECRET":"`+secrets[2]+`"}`+"\n"+
+			"{\n  \"client_secret\":\n    \""+secrets[4]+"\"\n}",
 		"explicit credential redaction probe",
 	)
 	if err != nil {
@@ -550,8 +581,10 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 	}
 	for _, want := range []string{
 		"--value [REDACTED] --secret=[REDACTED]",
+		"--value [REDACTED] \\\n  --secret",
 		"Authorization: [REDACTED]",
 		`{"MY_CLIENT_SECRET":"[REDACTED]"}`,
+		"\"client_secret\":\n    \"[REDACTED]\"",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
