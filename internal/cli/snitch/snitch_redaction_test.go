@@ -236,6 +236,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl -u [REDACTED] https://example.test`,
 		},
 		{
+			name:  "curl attached short user password flag",
+			input: `curl -ualice:supersensitive https://example.test`,
+			want:  `curl -u[REDACTED] https://example.test`,
+		},
+		{
 			name:  "curl equals user password flag",
 			input: `curl --user=alice:supersensitive https://example.test`,
 			want:  `curl --user=[REDACTED] https://example.test`,
@@ -254,6 +259,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "curl short proxy user password flag",
 			input: `curl -U 'alice:super sensitive' https://example.test`,
 			want:  `curl -U [REDACTED] https://example.test`,
+		},
+		{
+			name:  "curl attached short proxy user password flag",
+			input: `curl -Ualice:supersensitive https://example.test`,
+			want:  `curl -U[REDACTED] https://example.test`,
 		},
 		{
 			name:  "comma in unquoted assignment",
@@ -289,6 +299,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "camel case JSON assignments",
 			input: `response {"demoAccountPassword":"review-secret","awsSecretAccessKey":"cloud-secret"}`,
 			want:  `response {"demoAccountPassword":"[REDACTED]","awsSecretAccessKey":"[REDACTED]"}`,
+		},
+		{
+			name:  "escaped JSON assignment",
+			input: `response {\"client_secret\":\"super\\\"sensitive\",\"status\":\"failed\"}`,
+			want:  `response {\"client_secret\":\"[REDACTED]\",\"status\":\"failed\"}`,
 		},
 		{
 			name:  "JWT",
@@ -466,6 +481,8 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"--DoubleDashPassword",
 		"curl-password-tail",
 		"curl-oauth-bearer-tail",
+		"curl-attached-user-tail",
+		"curl-attached-proxy-tail",
 	}
 	repro := strings.Join([]string{
 		`asc review details-create --demo-account-password "` + secrets[0] + `" --notes ready`,
@@ -478,6 +495,8 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		`asc web sandbox create --password ` + secrets[11] + ` --territory USA`,
 		`curl -u alice:` + secrets[12] + ` https://example.test`,
 		`curl --oauth2-bearer ` + secrets[13] + ` https://example.test`,
+		`curl -ualice:` + secrets[14] + ` https://example.test`,
+		`curl -Ualice:` + secrets[15] + ` https://example.test`,
 	}, "\n")
 	actual := "PASSWORD=" + secrets[3] + "\n" +
 		`PASSWORD=$'` + secrets[7] + "'\n" +
@@ -516,6 +535,8 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"--password [REDACTED] --verbose",
 		"curl -u [REDACTED] https://example.test",
 		"curl --oauth2-bearer [REDACTED] https://example.test",
+		"curl -u[REDACTED] https://example.test",
+		"curl -U[REDACTED] https://example.test",
 		"PASSWORD=[REDACTED]",
 		"Authorization: [REDACTED]",
 	} {
@@ -567,7 +588,7 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"marked-value", "authorization-credential", "structured-secret", "continued-secret", "pretty-structured-secret", "camel-structured-secret"}
+	secrets := []string{"marked-value", "authorization-credential", "structured-secret", "continued-secret", "pretty-structured-secret", "camel-structured-secret", "escaped-structured-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -575,7 +596,8 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 			"asc web xcode-cloud env-vars create --value "+secrets[3]+" \\\n  --secret",
 		"--actual", `Authorization: ApiKey `+secrets[1]+"\n"+`{"MY_CLIENT_SECRET":"`+secrets[2]+`"}`+"\n"+
 			"{\n  \"client_secret\":\n    \""+secrets[4]+"\"\n}\n"+
-			`{"demoAccountPassword":"`+secrets[5]+`"}`,
+			`{"demoAccountPassword":"`+secrets[5]+`"}`+"\n"+
+			`response {\"client_secret\":\"`+secrets[6]+`\"}`,
 		"explicit credential redaction probe",
 	)
 	if err != nil {
@@ -600,6 +622,7 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 		`{"MY_CLIENT_SECRET":"[REDACTED]"}`,
 		"\"client_secret\":\n    \"[REDACTED]\"",
 		`{"demoAccountPassword":"[REDACTED]"}`,
+		`response {\"client_secret\":\"[REDACTED]\"}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
