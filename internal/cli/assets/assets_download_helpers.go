@@ -19,7 +19,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
-	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 const (
@@ -36,7 +36,6 @@ var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 // non-rendering ancillary chunks on every request. Preserve the operator's
 // existing file when every other chunk remains identical.
 var volatilePNGChunkTypes = map[string]struct{}{
-	"eXIf": {},
 	"iTXt": {},
 	"tEXt": {},
 	"tIME": {},
@@ -222,8 +221,17 @@ func downloadURLToFileOnce(ctx context.Context, rawURL string, outputPath string
 }
 
 func isRegularFile(path string) bool {
-	info, err := os.Lstat(path)
-	return err == nil && info.Mode().IsRegular()
+	root, err := rootfs.New(filepath.Dir(path))
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+
+	file, err := root.OpenFile(filepath.Base(path))
+	if err != nil {
+		return false
+	}
+	return file.Close() == nil
 }
 
 func writeScreenshotDownload(outputPath string, reader io.Reader) (int64, bool, error) {
@@ -242,13 +250,14 @@ func writeScreenshotDownload(outputPath string, reader io.Reader) (int64, bool, 
 }
 
 func equivalentExistingPNG(outputPath string, candidate []byte) bool {
-	parent, err := os.OpenRoot(filepath.Dir(outputPath))
+	root, err := rootfs.New(filepath.Dir(outputPath))
 	if err != nil {
 		return false
 	}
-	defer parent.Close()
+	defer root.Close()
 
-	existing, err := secureopen.OpenExistingNoFollowInRoot(parent, filepath.Base(outputPath))
+	name := filepath.Base(outputPath)
+	existing, err := root.OpenFile(name)
 	if err != nil {
 		return false
 	}
@@ -266,8 +275,13 @@ func equivalentExistingPNG(outputPath string, candidate []byte) bool {
 		return false
 	}
 
-	currentInfo, err := parent.Lstat(filepath.Base(outputPath))
+	current, err := root.OpenFile(name)
 	if err != nil {
+		return false
+	}
+	currentInfo, statErr := current.Stat()
+	closeErr = current.Close()
+	if statErr != nil || closeErr != nil {
 		return false
 	}
 	return os.SameFile(existingInfo, currentInfo)

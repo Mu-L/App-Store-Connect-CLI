@@ -106,10 +106,21 @@ func TestEquivalentPNGFiles(t *testing.T) {
 				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
 			),
 			candidate: downloadTestPNG(
-				downloadTestPNGChunk("eXIf", []byte("asset-id-second")),
+				downloadTestPNGChunk("tEXt", []byte("asset-id-second")),
 				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
 			),
 			want: true,
+		},
+		{
+			name: "Exif metadata differs",
+			existing: downloadTestPNG(
+				downloadTestPNGChunk("eXIf", []byte("orientation-first")),
+				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+			),
+			candidate: downloadTestPNG(
+				downloadTestPNGChunk("eXIf", []byte("orientation-second")),
+				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+			),
 		},
 		{
 			name: "pixel data differs",
