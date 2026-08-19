@@ -262,6 +262,9 @@ func TestPricingAvailabilityRemoveFromSaleContinuesAfterPartialFailure(t *testin
 		UpdatedTerritories             int      `json:"updatedTerritories"`
 		VerifiedUnavailableTerritories int      `json:"verifiedUnavailableTerritories"`
 		FailedTerritories              []string `json:"failedTerritories"`
+		RemovedPlatformListings        []struct {
+			Platform string `json:"platform"`
+		} `json:"removedPlatformListings"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("decode partial-failure result %q: %v", stdout, err)
@@ -273,6 +276,9 @@ func TestPricingAvailabilityRemoveFromSaleContinuesAfterPartialFailure(t *testin
 		len(result.FailedTerritories) != 1 ||
 		result.FailedTerritories[0] != "FRA" {
 		t.Fatalf("unexpected partial-failure result: %+v", result)
+	}
+	if len(result.RemovedPlatformListings) != 0 {
+		t.Fatalf("partial failure claimed removed platform listings: %+v", result.RemovedPlatformListings)
 	}
 }
 

@@ -877,9 +877,53 @@ Note:
 
 // PricingAvailabilityPlatformsCommand returns the platforms subcommand.
 func PricingAvailabilityPlatformsCommand() *ffcli.Command {
-	return shared.NewAvailabilityPlatformsCommand(shared.AvailabilityPlatformsCommandConfig{
-		ClientFactory: pricingAvailabilityClientFactory,
-	})
+	fs := flag.NewFlagSet("pricing availability platforms", flag.ExitOnError)
+	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID)")
+	output := shared.BindOutputFlags(fs)
+
+	return &ffcli.Command{
+		Name:       "platforms",
+		ShortUsage: "asc pricing availability platforms --app \"APP_ID\"",
+		ShortHelp:  "[experimental] Summarize each platform's App Store listing.",
+		LongHelp: `[experimental] Summarize each platform's App Store listing.
+
+This command is experimental.
+
+Shows one row per platform: the live listing when one exists, otherwise the
+newest version and its state. Availability is app-wide — every platform
+listing shares one availability record — so removing an app from sale removes
+every live platform at once. Use this command to preview that blast radius
+before "asc pricing availability remove-from-sale".
+
+Examples:
+  asc pricing availability platforms --app "123456789"`,
+		FlagSet:   fs,
+		UsageFunc: shared.DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 {
+				return shared.UsageError("pricing availability platforms does not accept positional arguments")
+			}
+			resolvedAppID := shared.ResolveAppID(*appID)
+			if resolvedAppID == "" {
+				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
+				return shared.MissingRequiredUsageError("--app")
+			}
+			client, err := pricingAvailabilityClientFactory()
+			if err != nil {
+				return fmt.Errorf("pricing availability platforms: %w", err)
+			}
+
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
+			listings, err := shared.FetchAvailabilityPlatformListings(requestCtx, client, resolvedAppID)
+			if err != nil {
+				return fmt.Errorf("pricing availability platforms: %w", err)
+			}
+
+			result := &asc.AvailabilityPlatformsResult{AppID: resolvedAppID, Platforms: listings}
+			return shared.PrintOutput(result, *output.Output, *output.Pretty)
+		},
+	}
 }
 
 // PricingAvailabilityRemoveFromSaleCommand returns the remove-from-sale subcommand.

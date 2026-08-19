@@ -41,11 +41,6 @@ type AvailabilityRemoveFromSaleCommandConfig struct {
 	ClientFactory func() (*asc.Client, error)
 }
 
-// AvailabilityPlatformsCommandConfig configures the platforms command.
-type AvailabilityPlatformsCommandConfig struct {
-	ClientFactory func() (*asc.Client, error)
-}
-
 // NewAvailabilitySetCommand builds a shared availability set command.
 func NewAvailabilitySetCommand(config AvailabilitySetCommandConfig) *ffcli.Command {
 	fs := flag.NewFlagSet(config.FlagSetName, flag.ExitOnError)
@@ -216,6 +211,10 @@ Examples:
 			if updateErr != nil {
 				status = "partialFailure"
 			}
+			removedPlatformListings := liveListings
+			if updateErr != nil {
+				removedPlatformListings = nil
+			}
 			result := &asc.AvailabilityRemoveFromSaleResult{
 				AppID:                          resolvedAppID,
 				AvailabilityID:                 summary.AvailabilityID,
@@ -226,7 +225,7 @@ Examples:
 				AlreadyUnavailableTerritories:  summary.SkippedTerritories,
 				VerifiedUnavailableTerritories: summary.VerifiedTerritories,
 				FailedTerritories:              append([]string{}, summary.FailedTerritories...),
-				RemovedPlatformListings:        liveListings,
+				RemovedPlatformListings:        removedPlatformListings,
 			}
 			if updateErr != nil {
 				fmt.Fprintf(
@@ -416,64 +415,9 @@ func executeTerritoryAvailabilityUpdate(ctx context.Context, client *asc.Client,
 	return resp, summary, nil
 }
 
-// NewAvailabilityPlatformsCommand builds a command that summarizes each
-// platform's App Store listing for an app.
-func NewAvailabilityPlatformsCommand(config AvailabilityPlatformsCommandConfig) *ffcli.Command {
-	fs := flag.NewFlagSet("pricing availability platforms", flag.ExitOnError)
-	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID)")
-	output := BindOutputFlags(fs)
-
-	return &ffcli.Command{
-		Name:       "platforms",
-		ShortUsage: "asc pricing availability platforms --app \"APP_ID\"",
-		ShortHelp:  "[experimental] Summarize each platform's App Store listing.",
-		LongHelp: `[experimental] Summarize each platform's App Store listing.
-
-This command is experimental.
-
-Shows one row per platform: the live listing when one exists, otherwise the
-newest version and its state. Availability is app-wide — every platform
-listing shares one availability record — so removing an app from sale removes
-every live platform at once. Use this command to preview that blast radius
-before "asc pricing availability remove-from-sale".
-
-Examples:
-  asc pricing availability platforms --app "123456789"`,
-		FlagSet:   fs,
-		UsageFunc: DefaultUsageFunc,
-		Exec: func(ctx context.Context, args []string) error {
-			if len(args) > 0 {
-				return UsageError("pricing availability platforms does not accept positional arguments")
-			}
-			resolvedAppID := resolveAppID(*appID)
-			if resolvedAppID == "" {
-				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
-				return MissingRequiredUsageError("--app")
-			}
-			if config.ClientFactory == nil {
-				return fmt.Errorf("pricing availability platforms: client factory is not configured")
-			}
-			client, err := config.ClientFactory()
-			if err != nil {
-				return fmt.Errorf("pricing availability platforms: %w", err)
-			}
-
-			requestCtx, cancel := contextWithTimeout(ctx)
-			defer cancel()
-			listings, err := fetchAvailabilityPlatformListings(requestCtx, client, resolvedAppID)
-			if err != nil {
-				return fmt.Errorf("pricing availability platforms: %w", err)
-			}
-
-			result := &asc.AvailabilityPlatformsResult{AppID: resolvedAppID, Platforms: listings}
-			return PrintOutput(result, *output.Output, *output.Pretty)
-		},
-	}
-}
-
-// fetchAvailabilityPlatformListings returns one listing per platform: the
+// FetchAvailabilityPlatformListings returns one listing per platform: the
 // newest live version when one exists, otherwise the newest version overall.
-func fetchAvailabilityPlatformListings(ctx context.Context, client *asc.Client, appID string) ([]asc.AvailabilityPlatformListing, error) {
+func FetchAvailabilityPlatformListings(ctx context.Context, client *asc.Client, appID string) ([]asc.AvailabilityPlatformListing, error) {
 	newestLive := map[string]asc.AvailabilityPlatformListing{}
 	newestAny := map[string]asc.AvailabilityPlatformListing{}
 	order := []string{}
@@ -547,7 +491,7 @@ func parseAvailabilityCreatedDate(value string) (time.Time, bool) {
 
 // fetchLiveAvailabilityPlatformListings returns only platforms with a live listing.
 func fetchLiveAvailabilityPlatformListings(ctx context.Context, client *asc.Client, appID string) ([]asc.AvailabilityPlatformListing, error) {
-	listings, err := fetchAvailabilityPlatformListings(ctx, client, appID)
+	listings, err := FetchAvailabilityPlatformListings(ctx, client, appID)
 	if err != nil {
 		return nil, err
 	}
