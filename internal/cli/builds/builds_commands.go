@@ -617,6 +617,9 @@ Examples:
 				if strings.TrimSpace(*include) != "" {
 					return shared.UsageError("builds list: --next cannot be combined with --include")
 				}
+				if strings.TrimSpace(*sort) != "" {
+					return shared.UsageError("builds list: --next cannot be combined with --sort")
+				}
 			}
 
 			betaReviewStateValues, err := normalizeBuildsListBetaReviewStates(*betaReviewState)

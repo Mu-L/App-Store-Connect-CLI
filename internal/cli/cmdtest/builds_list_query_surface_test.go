@@ -214,7 +214,7 @@ func TestBuildsListIncludeRejectsUnknownValue(t *testing.T) {
 	captured.assertNoRequest(t)
 }
 
-func TestBuildsListRejectsNewQueryFlagsCombinedWithNext(t *testing.T) {
+func TestBuildsListRejectsQueryFlagsCombinedWithNext(t *testing.T) {
 	const nextURL = "https://api.appstoreconnect.apple.com/v1/builds?cursor=PAGE2&filter%5Bapp%5D=123456789&include=preReleaseVersion"
 
 	for _, testCase := range []struct {
@@ -224,6 +224,7 @@ func TestBuildsListRejectsNewQueryFlagsCombinedWithNext(t *testing.T) {
 	}{
 		{name: "beta review state", flag: "--beta-review-state", args: []string{"--beta-review-state", "APPROVED"}},
 		{name: "include", flag: "--include", args: []string{"--include", "betaGroups"}},
+		{name: "sort", flag: "--sort", args: []string{"--sort", "version"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			captured := buildsListQuerySurfaceStub(t)
