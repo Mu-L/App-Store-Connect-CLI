@@ -92,6 +92,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl -H "Cookie: [REDACTED]" https://example.test`,
 		},
 		{
+			name:  "continued quoted cookie header argument",
+			input: "curl -H \"Cookie: myacinfo=super\\\nsecret\" https://example.test",
+			want:  `curl -H "Cookie: [REDACTED]" https://example.test`,
+		},
+		{
 			name:  "attached cookie header argument",
 			input: `curl -HCookie:myacinfo=super-session-secret https://example.test`,
 			want:  `curl -HCookie:[REDACTED] https://example.test`,
@@ -302,6 +307,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "shell assignment",
 			input: `command CLIENT_SECRET="super secret value" --verbose`,
 			want:  "command CLIENT_SECRET=[REDACTED] --verbose",
+		},
+		{
+			name:  "unquoted assignment before command separator",
+			input: `PASSWORD=supersecret; echo next`,
+			want:  `PASSWORD=[REDACTED]; echo next`,
+		},
+		{
+			name:  "unquoted secret flag before conditional operator",
+			input: `asc deploy --password supersecret && echo next`,
+			want:  `asc deploy --password [REDACTED] && echo next`,
 		},
 		{
 			name:  "multiword plain yaml scalar",
@@ -1301,6 +1316,43 @@ func TestSnitchDryRunRedactsGoHeaderMapsAndContinuedCurlCredentials(t *testing.T
 		"curl --user [REDACTED] https://example.test",
 		"request headers: map[Cookie:[REDACTED] Content-Type:[application/json]]",
 		`{"Proxy-Authorization":["[REDACTED]"],"status":"failed"}`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunPreservesOperatorsAroundContinuedHeaderCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"continued-header-secret", "assignment-secret", "flag-secret"}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "curl -H \"Cookie: myacinfo="+secrets[0]+"\\\n-tail\" https://example.test\nPASSWORD="+secrets[1]+"; echo next\nasc deploy --password "+secrets[2]+" && echo done",
+		"continued header and operator preservation probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		`curl -H "Cookie: [REDACTED]" https://example.test`,
+		"PASSWORD=[REDACTED]; echo next",
+		"asc deploy --password [REDACTED] && echo done",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

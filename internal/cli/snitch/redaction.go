@@ -22,14 +22,14 @@ const (
 	escapedQuotedCharacter      = `\\(?:\r?\n|[^\r\n])`
 	escapeAwareQuotedValue      = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*"|\$?'(?:` + escapedQuotedCharacter + `|[^'\\])*')`
 	unterminatedQuotedValue     = `(?:"[^\r\n]*|\$?'[^\r\n]*)`
-	shellUnquotedValue          = `(?:\\(?:\r?\n|[^\r\n])|[^\s])+`
-	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\]|[^-\s\\])(?:\\[^\r\n]|[^\s])*`
+	shellUnquotedValue          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>])+`
+	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\;&|<>]|[^-\s\\;&|<>])(?:\\[^\r\n]|[^\s;&|<>])*`
 	credentialPairQuoted        = `(?:"(?:\\.|[^"\\\r\n])*:(?:\\.|[^"\\\r\n])+"|\$'(?:\\.|[^'\\\r\n])*:(?:\\.|[^'\\\r\n])+'|'(?:\\.|[^'\\\r\n])*:(?:\\.|[^'\\\r\n])+')`
 	credentialPairOpen          = `(?:"[^\r\n]*:[^\r\n]+|\$?'[^\r\n]*:[^\r\n]+)`
-	credentialPairUnquoted      = `(?:\\(?:\r?\n|[^\r\n])|[^\s:])*:(?:\\(?:\r?\n|[^\r\n])|[^\s])+`
+	credentialPairUnquoted      = `(?:\\(?:\r?\n|[^\r\n])|[^\s:;&|<>])*:(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>])+`
 	credentialPairValue         = `(?:` + credentialPairQuoted + `|` + credentialPairOpen + `|` + credentialPairUnquoted + `)`
 	cookieDataQuoted            = `(?:"(?:\\.|[^"\\\r\n])*=(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*=(?:\\.|[^'\\\r\n])*')`
-	cookieDataUnquoted          = `(?:\\(?:\r?\n|[^\r\n])|[^\s])*=(?:\\(?:\r?\n|[^\r\n])|[^\s])*`
+	cookieDataUnquoted          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>])*=(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>])*`
 	cookieDataValue             = `(?:` + cookieDataQuoted + `|` + cookieDataUnquoted + `)`
 	curlCertOptionPrefix        = `(?:(?:-E|--cert)\b(?:[ \t]+|[ \t]*=[ \t]*)|-E)`
 	curlCertUnquotedPath        = `(?:\\(?:\r?\n|[^\r\n])|[^\s:'"])+`
@@ -112,11 +112,11 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)("authorization[ \t]*:[ \t]*)(?:\\.|[^"\\\r\n])*(")`),
+		pattern:     regexp.MustCompile(`(?i)("authorization[ \t]*:[ \t]*)(?:` + escapedQuotedCharacter + `|[^"\\])*(")`),
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)('authorization[ \t]*:[ \t]*)(?:\\.|[^'\\\r\n])*(')`),
+		pattern:     regexp.MustCompile(`(?i)('authorization[ \t]*:[ \t]*)(?:` + escapedQuotedCharacter + `|[^'\\])*(')`),
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
@@ -136,11 +136,11 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: "Authorization: " + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)("` + traceCredentialHeader + `[ \t]*:[ \t]*)(?:\\.|[^"\\\r\n])*(")`),
+		pattern:     regexp.MustCompile(`(?i)("` + traceCredentialHeader + `[ \t]*:[ \t]*)(?:` + escapedQuotedCharacter + `|[^"\\])*(")`),
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)('` + traceCredentialHeader + `[ \t]*:[ \t]*)(?:\\.|[^'\\\r\n])*(')`),
+		pattern:     regexp.MustCompile(`(?i)('` + traceCredentialHeader + `[ \t]*:[ \t]*)(?:` + escapedQuotedCharacter + `|[^'\\])*(')`),
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
@@ -164,7 +164,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)(` + credentialHeaderName + `)[ \t]*:[ \t]*(?:\\(?:\r?\n|[^\r\n])|[^\s;])+`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)(` + credentialHeaderName + `)[ \t]*:[ \t]*(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>])+`),
 		replacement: `${1}${2}${3}:` + redactionMarker,
 	},
 	{
