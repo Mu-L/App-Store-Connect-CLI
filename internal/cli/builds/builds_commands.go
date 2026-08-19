@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -467,6 +468,22 @@ Examples:
 	}
 }
 
+// buildsListBetaReviewStates lists the beta review states accepted by
+// filter[betaAppReviewSubmission.betaReviewState] on GET /v1/builds.
+var buildsListBetaReviewStates = []string{"WAITING_FOR_REVIEW", "IN_REVIEW", "REJECTED", "APPROVED"}
+
+// normalizeBuildsListBetaReviewStates upper-cases and validates a comma-separated
+// beta review state filter, rejecting values the API does not accept.
+func normalizeBuildsListBetaReviewStates(value string) ([]string, error) {
+	states := shared.SplitCSVUpper(value)
+	for _, state := range states {
+		if !slices.Contains(buildsListBetaReviewStates, state) {
+			return nil, shared.UsageErrorf("--beta-review-state must be a comma-separated list of: %s", strings.Join(buildsListBetaReviewStates, ", "))
+		}
+	}
+	return states, nil
+}
+
 // BuildsListCommand returns the builds list subcommand
 func BuildsListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
@@ -479,6 +496,7 @@ func BuildsListCommand() *ffcli.Command {
 	buildNumber := fs.String("build-number", "", "Filter by build number (CFBundleVersion)")
 	platform := fs.String("platform", "", "Filter by platform: IOS, MAC_OS, TV_OS, VISION_OS")
 	processingState := fs.String("processing-state", "", "Filter by processing state: VALID, PROCESSING, FAILED, INVALID, or all")
+	betaReviewState := fs.String("beta-review-state", "", "Filter by beta app review state, comma-separated ("+strings.Join(buildsListBetaReviewStates, ", ")+")")
 	excludeExpired := fs.Bool("exclude-expired", false, "Exclude expired builds")
 	notExpired := fs.Bool("not-expired", false, "Alias for --exclude-expired")
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
@@ -502,6 +520,7 @@ Examples:
   asc builds list --app "123456789" --platform IOS --version "1.2.3"
   asc builds list --app "123456789" --processing-state "PROCESSING"
   asc builds list --app "123456789" --processing-state "all"
+  asc builds list --app "123456789" --beta-review-state "WAITING_FOR_REVIEW,IN_REVIEW"
   asc builds list --app "123456789" --exclude-expired
   asc builds list --app "123456789" --version "1.2.3" --build-number "123"
   asc builds list --app "123456789" --limit 10
@@ -535,6 +554,11 @@ Examples:
 			versionValue := strings.TrimSpace(*version)
 			buildNumberValue := strings.TrimSpace(*buildNumber)
 			processingStateValues, err := normalizeBuildProcessingStateFilter(*processingState)
+			if err != nil {
+				return err
+			}
+
+			betaReviewStateValues, err := normalizeBuildsListBetaReviewStates(*betaReviewState)
 			if err != nil {
 				return err
 			}
@@ -587,6 +611,9 @@ Examples:
 			}
 			if len(processingStateValues) > 0 {
 				opts = append(opts, asc.WithBuildsProcessingStates(processingStateValues))
+			}
+			if len(betaReviewStateValues) > 0 {
+				opts = append(opts, asc.WithBuildsBetaReviewStates(betaReviewStateValues))
 			}
 			if *excludeExpired || *notExpired {
 				opts = append(opts, asc.WithBuildsExpired(false))
