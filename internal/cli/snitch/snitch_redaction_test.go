@@ -691,6 +691,15 @@ func TestRedactSensitiveTextPreservesCurlCookieFilenames(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextPreservesCurlReferer(t *testing.T) {
+	input := `curl -e https://example.test/page https://target.test`
+
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
 func TestRedactSensitiveTextPreservesCurlCertificateWithoutPassword(t *testing.T) {
 	for _, input := range []string{
 		`curl --cert client.pem https://example.test`,

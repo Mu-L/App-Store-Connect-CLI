@@ -35,7 +35,7 @@ const (
 	cookieDataQuoted            = `(?:"(?:\\.|[^"\\\r\n])*=(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*=(?:\\.|[^'\\\r\n])*')`
 	cookieDataUnquoted          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])*=(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])*`
 	cookieDataValue             = `(?:` + cookieDataQuoted + `|` + cookieDataUnquoted + `)`
-	curlCertOptionPrefix        = `(?:(?:-E|--cert)\b(?:[ \t]+|[ \t]*=[ \t]*)|-E)`
+	curlCertOptionPrefix        = `(?:(?:(?-i:-E)|--cert)\b(?:[ \t]+|[ \t]*=[ \t]*)|(?-i:-E))`
 	curlCertUnquotedPath        = `(?:\\(?:\r?\n|[^\r\n])|[^\s:'"])+`
 	curlHeaderOptionPrefix      = `(?:(?:-H|--header|--proxy-header)\b(?:[ \t]+|[ \t]*=[ \t]*)|-H)`
 )
