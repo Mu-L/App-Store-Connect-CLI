@@ -163,8 +163,24 @@ func TestCompletionZshPrintsScriptToStdout(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("expected empty stderr, got %q", stderr)
 	}
-	if strings.Contains(stdout, "offer-codes") || strings.Contains(stdout, "win-back-offers") || strings.Contains(stdout, "promoted-purchases") {
-		t.Fatalf("expected hidden deprecated root commands to be omitted from completion output, got %q", stdout)
+	const rootGroupPrefix = "_ASC_COMPLETION_SUBCOMMAND_GROUPS=('"
+	rootGroupStart := strings.Index(stdout, rootGroupPrefix)
+	if rootGroupStart < 0 {
+		t.Fatalf("expected root command completion data, got %q", stdout)
+	}
+	rootGroup := stdout[rootGroupStart+len(rootGroupPrefix):]
+	rootGroupEnd := strings.IndexByte(rootGroup, '\'')
+	if rootGroupEnd < 0 {
+		t.Fatalf("expected terminated root command completion data, got %q", rootGroup)
+	}
+	rootGroup = rootGroup[:rootGroupEnd]
+	if strings.Contains(rootGroup, "offer-codes") || strings.Contains(rootGroup, "win-back-offers") || strings.Contains(rootGroup, "promoted-purchases") {
+		t.Fatalf("expected hidden deprecated root commands to be omitted from root completions, got %q", rootGroup)
+	}
+	for _, expected := range []string{"apps info", "builds list", "--bundle-id", "--processing-state"} {
+		if !strings.Contains(stdout, expected) {
+			t.Fatalf("expected nested command completion metadata %q, got %q", expected, stdout)
+		}
 	}
 }
 

@@ -200,7 +200,7 @@ func NewCatalog(version string) *Catalog {
 			return VersionCommand(version)
 		}),
 		commandFactory("completion", "Print shell completion scripts.", func() *ffcli.Command {
-			return completion.CompletionCommand(catalog.MetadataCommands())
+			return completion.CompletionCommand(catalog.All)
 		}),
 	}
 	return catalog
