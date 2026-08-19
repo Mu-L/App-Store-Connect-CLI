@@ -24,7 +24,7 @@ const (
 	singleLineShellWord         = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + singleLineUnquotedFragment + `)+`
 	singleLineShellTerminator   = `(?:[ \t;&|<>()]|\r?\n|\z)`
 	escapedQuotedCharacter      = `\\(?:\r?\n|[^\r\n])`
-	escapeAwareQuotedValue      = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*"|\$?'(?:` + escapedQuotedCharacter + `|[^'\\])*')`
+	escapeAwareQuotedValue      = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*"|\$?'(?:''|` + escapedQuotedCharacter + `|[^'\\])*')`
 	unterminatedQuotedValue     = `(?:"[^\r\n]*|\$?'[^\r\n]*)`
 	shellUnquotedValue          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()"'])+`
 	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\;&|<>()]|[^-\s\\;&|<>()])(?:\\[^\r\n]|[^\s;&|<>()])*`

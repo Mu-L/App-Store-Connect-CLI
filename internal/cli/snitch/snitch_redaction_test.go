@@ -329,6 +329,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "password: [REDACTED]\nstatus: failed",
 		},
 		{
+			name:  "YAML single quoted scalar with doubled quote",
+			input: "password: 'super''sensitive'\nstatus: failed",
+			want:  "password: [REDACTED]\nstatus: failed",
+		},
+		{
 			name:  "space-separated secret flag",
 			input: `asc web sandbox create --email "user@example.test" --password "Passwordtest1" --territory "USA"`,
 			want:  `asc web sandbox create --email "user@example.test" --password [REDACTED] --territory "USA"`,
@@ -1161,6 +1166,35 @@ func TestSnitchDryRunRedactsStructuredHeadersAndYAMLSecretBlocks(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 		}
+	}
+}
+
+func TestSnitchDryRunRedactsYAMLSingleQuotedScalarWithDoubledQuote(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const secret = "super''sensitive"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "password: '"+secret+"'\nstatus: failed",
+		"YAML quoted credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	if strings.Contains(stderr, secret) {
+		t.Fatalf("stderr leaked %q: %q", secret, stderr)
+	}
+	if strings.Contains(stdout, secret) {
+		t.Fatalf("stdout leaked %q: %q", secret, stdout)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	if want := "password: [REDACTED]\nstatus: failed"; !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 	}
 }
 
