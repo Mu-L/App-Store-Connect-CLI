@@ -68,6 +68,54 @@ type AppInfoCandidate struct {
 	State string
 }
 
+// ResolveCurrentAppInfoIDForApp resolves the single non-historical app info for an app.
+func (c *Client) ResolveCurrentAppInfoIDForApp(ctx context.Context, appID string) (string, error) {
+	appID = strings.TrimSpace(appID)
+	if appID == "" {
+		return "", fmt.Errorf("appID is required")
+	}
+
+	appInfos, err := c.GetAppInfos(ctx, appID, WithAppInfoFields([]string{"state"}))
+	if err != nil {
+		return "", err
+	}
+	return resolveCurrentAppInfoID(appID, appInfos.Data)
+}
+
+func resolveCurrentAppInfoID(appID string, appInfos []Resource[AppInfoAttributes]) (string, error) {
+	if len(appInfos) == 0 {
+		return "", fmt.Errorf("no app info found for app %q", appID)
+	}
+
+	candidates := AppInfoCandidates(appInfos)
+	current := make([]AppInfoCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if strings.EqualFold(candidate.State, "REPLACED_WITH_NEW_INFO") {
+			continue
+		}
+		current = append(current, candidate)
+	}
+	if len(current) == 1 && current[0].ID != "" {
+		return current[0].ID, nil
+	}
+
+	formatted := FormatAppInfoCandidates(candidates)
+	if len(current) == 0 {
+		return "", fmt.Errorf(
+			"no current app info found for app %q (%s); run `asc apps info list --app %q` to inspect candidates",
+			appID,
+			formatted,
+			appID,
+		)
+	}
+	return "", fmt.Errorf(
+		"multiple current app infos found for app %q (%s); run `asc apps info list --app %q` to inspect candidates",
+		appID,
+		formatted,
+		appID,
+	)
+}
+
 // ResolveAppInfoIDForAppStoreVersion resolves the app info backing a version-scoped workflow.
 func (c *Client) ResolveAppInfoIDForAppStoreVersion(ctx context.Context, versionID string) (string, error) {
 	versionID = strings.TrimSpace(versionID)

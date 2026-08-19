@@ -1,6 +1,60 @@
 package asc
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestResolveCurrentAppInfoID(t *testing.T) {
+	tests := []struct {
+		name     string
+		appInfos []Resource[AppInfoAttributes]
+		wantID   string
+		wantErr  string
+	}{
+		{
+			name: "selects the only non-historical app info",
+			appInfos: []Resource[AppInfoAttributes]{
+				{ID: "info-old", Attributes: AppInfoAttributes{"state": "REPLACED_WITH_NEW_INFO"}},
+				{ID: "info-current", Attributes: AppInfoAttributes{"state": "READY_FOR_DISTRIBUTION"}},
+			},
+			wantID: "info-current",
+		},
+		{
+			name: "rejects ambiguous current app infos",
+			appInfos: []Resource[AppInfoAttributes]{
+				{ID: "info-one", Attributes: AppInfoAttributes{"state": "READY_FOR_REVIEW"}},
+				{ID: "info-two", Attributes: AppInfoAttributes{"state": "PREPARE_FOR_SUBMISSION"}},
+			},
+			wantErr: "multiple current app infos found",
+		},
+		{
+			name: "rejects all-historical app infos",
+			appInfos: []Resource[AppInfoAttributes]{
+				{ID: "info-old", Attributes: AppInfoAttributes{"state": "REPLACED_WITH_NEW_INFO"}},
+			},
+			wantErr: "no current app info found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveCurrentAppInfoID("app-1", tt.appInfos)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("resolveCurrentAppInfoID() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveCurrentAppInfoID() error = %v", err)
+			}
+			if got != tt.wantID {
+				t.Fatalf("resolveCurrentAppInfoID() = %q, want %q", got, tt.wantID)
+			}
+		})
+	}
+}
 
 func TestAutoResolveAppInfoIDByVersionState(t *testing.T) {
 	tests := []struct {
