@@ -21,7 +21,7 @@ type screenshotDownloadItem struct {
 	FileName    string `json:"fileName,omitempty"`
 	URL         string `json:"url,omitempty"`
 	OutputPath  string `json:"outputPath"`
-	Unchanged   bool   `json:"unchanged,omitempty"`
+	Unchanged   bool   `json:"unchanged"`
 
 	ContentType  string `json:"contentType,omitempty"`
 	BytesWritten int64  `json:"bytesWritten,omitempty"`

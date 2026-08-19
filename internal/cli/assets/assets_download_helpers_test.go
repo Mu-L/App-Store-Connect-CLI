@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -191,6 +192,40 @@ func TestWriteScreenshotDownloadReplacesChangedPixels(t *testing.T) {
 	}
 	if string(got) != string(candidate) {
 		t.Fatal("writeScreenshotDownload() did not replace changed pixels")
+	}
+}
+
+func TestWriteScreenshotDownloadReplacesUnreadableExistingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file permissions do not provide a portable unreadable-file fixture")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "screenshot.png")
+	if err := os.WriteFile(path, []byte("old screenshot"), 0o600); err != nil {
+		t.Fatalf("write existing screenshot: %v", err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatalf("make existing screenshot unreadable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	written, unchanged, err := writeScreenshotDownload(path, strings.NewReader("new screenshot"))
+	if err != nil {
+		t.Fatalf("writeScreenshotDownload() error: %v", err)
+	}
+	if unchanged {
+		t.Fatal("writeScreenshotDownload() marked unreadable destination as unchanged")
+	}
+	if written != int64(len("new screenshot")) {
+		t.Fatalf("writeScreenshotDownload() wrote %d bytes, want %d", written, len("new screenshot"))
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read replaced screenshot: %v", err)
+	}
+	if string(got) != "new screenshot" {
+		t.Fatalf("replaced screenshot = %q, want %q", got, "new screenshot")
 	}
 }
 

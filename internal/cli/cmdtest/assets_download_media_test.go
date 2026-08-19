@@ -76,6 +76,7 @@ func TestScreenshotsDownload_ByID_WritesFile(t *testing.T) {
 	type item struct {
 		ID           string `json:"id"`
 		OutputPath   string `json:"outputPath"`
+		Unchanged    *bool  `json:"unchanged"`
 		BytesWritten int64  `json:"bytesWritten"`
 	}
 	type result struct {
@@ -116,6 +117,9 @@ func TestScreenshotsDownload_ByID_WritesFile(t *testing.T) {
 	}
 	if got.Items[0].BytesWritten != int64(len("PNGDATA")) {
 		t.Fatalf("expected bytesWritten %d, got %d", len("PNGDATA"), got.Items[0].BytesWritten)
+	}
+	if got.Items[0].Unchanged == nil || *got.Items[0].Unchanged {
+		t.Fatalf("expected unchanged=false in item JSON, got %v", got.Items[0].Unchanged)
 	}
 
 	data, err := os.ReadFile(outPath)

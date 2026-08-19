@@ -232,11 +232,7 @@ func writeScreenshotDownload(outputPath string, reader io.Reader) (int64, bool, 
 		return int64(len(candidate)), false, err
 	}
 	if len(candidate) <= pngEquivalenceMaxBytes {
-		equivalent, err := equivalentExistingPNG(outputPath, candidate)
-		if err != nil {
-			return int64(len(candidate)), false, err
-		}
-		if equivalent {
+		if equivalentExistingPNG(outputPath, candidate) {
 			return 0, true, nil
 		}
 	}
@@ -245,42 +241,36 @@ func writeScreenshotDownload(outputPath string, reader io.Reader) (int64, bool, 
 	return written, false, err
 }
 
-func equivalentExistingPNG(outputPath string, candidate []byte) (bool, error) {
+func equivalentExistingPNG(outputPath string, candidate []byte) bool {
 	parent, err := os.OpenRoot(filepath.Dir(outputPath))
 	if err != nil {
-		return false, err
+		return false
 	}
 	defer parent.Close()
 
 	existing, err := secureopen.OpenExistingNoFollowInRoot(parent, filepath.Base(outputPath))
 	if err != nil {
-		return false, err
+		return false
 	}
 	existingInfo, err := existing.Stat()
 	if err != nil {
 		_ = existing.Close()
-		return false, err
+		return false
 	}
 	existingBytes, err := io.ReadAll(io.LimitReader(existing, pngEquivalenceMaxBytes+1))
 	closeErr := existing.Close()
-	if err != nil {
-		return false, err
-	}
-	if closeErr != nil {
-		return false, closeErr
+	if err != nil || closeErr != nil {
+		return false
 	}
 	if len(existingBytes) > pngEquivalenceMaxBytes || !equivalentPNGBytes(existingBytes, candidate) {
-		return false, nil
+		return false
 	}
 
 	currentInfo, err := parent.Lstat(filepath.Base(outputPath))
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
+		return false
 	}
-	return os.SameFile(existingInfo, currentInfo), nil
+	return os.SameFile(existingInfo, currentInfo)
 }
 
 func equivalentPNGBytes(existing, candidate []byte) bool {
