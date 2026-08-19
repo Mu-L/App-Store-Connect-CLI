@@ -669,47 +669,141 @@ func TestPhasedReleaseProgressBar(t *testing.T) {
 	}
 }
 
-func TestBuildExternalStatesByBuildID_AvoidsAmbiguousPositionalFallback(t *testing.T) {
+func TestBuildBetaStatesByBuildID_AvoidsAmbiguousPositionalFallback(t *testing.T) {
 	buildIDs := []string{"build-2", "build-1"}
 	betaDetails := &asc.BuildBetaDetailsResponse{
 		Data: []asc.Resource[asc.BuildBetaDetailAttributes]{
 			{
 				ID: "detail-1",
 				Attributes: asc.BuildBetaDetailAttributes{
+					InternalBuildState: "IN_BETA_TESTING",
 					ExternalBuildState: "IN_BETA_TESTING",
 				},
 			},
 			{
 				ID: "detail-2",
 				Attributes: asc.BuildBetaDetailAttributes{
+					InternalBuildState: "READY_FOR_BETA_TESTING",
 					ExternalBuildState: "READY_FOR_TESTING",
 				},
 			},
 		},
 	}
 
-	statesByBuildID := buildExternalStatesByBuildID(buildIDs, betaDetails)
+	statesByBuildID := buildBetaStatesByBuildID(buildIDs, betaDetails)
 	if len(statesByBuildID) != 0 {
 		t.Fatalf("expected no mapping without build relationships for multiple builds, got %+v", statesByBuildID)
 	}
 }
 
-func TestBuildExternalStatesByBuildID_UsesSingleItemPositionalFallback(t *testing.T) {
+func TestBuildBetaStatesByBuildID_UsesSingleItemPositionalFallback(t *testing.T) {
 	buildIDs := []string{"build-1"}
 	betaDetails := &asc.BuildBetaDetailsResponse{
 		Data: []asc.Resource[asc.BuildBetaDetailAttributes]{
 			{
 				ID: "detail-1",
 				Attributes: asc.BuildBetaDetailAttributes{
+					InternalBuildState: "READY_FOR_BETA_TESTING",
 					ExternalBuildState: "IN_BETA_TESTING",
 				},
 			},
 		},
 	}
 
-	statesByBuildID := buildExternalStatesByBuildID(buildIDs, betaDetails)
-	if statesByBuildID["build-1"] != "IN_BETA_TESTING" {
-		t.Fatalf("expected build-1 to map to IN_BETA_TESTING, got %q", statesByBuildID["build-1"])
+	statesByBuildID := buildBetaStatesByBuildID(buildIDs, betaDetails)
+	if statesByBuildID["build-1"].external != "IN_BETA_TESTING" {
+		t.Fatalf("expected build-1 external state IN_BETA_TESTING, got %q", statesByBuildID["build-1"].external)
+	}
+	if statesByBuildID["build-1"].internal != "READY_FOR_BETA_TESTING" {
+		t.Fatalf("expected build-1 internal state READY_FOR_BETA_TESTING, got %q", statesByBuildID["build-1"].internal)
+	}
+}
+
+func TestBuildBetaStatesByBuildID_KeepsInternalAndExternalStatesPerBuild(t *testing.T) {
+	buildIDs := []string{"build-2", "build-1"}
+	betaDetails := &asc.BuildBetaDetailsResponse{
+		Data: []asc.Resource[asc.BuildBetaDetailAttributes]{
+			{
+				ID:            "detail-2",
+				Relationships: buildRelationshipFixture("build-2"),
+				Attributes: asc.BuildBetaDetailAttributes{
+					InternalBuildState: "PROCESSING",
+					ExternalBuildState: "NOT_READY_FOR_TESTING",
+				},
+			},
+			{
+				ID:            "detail-1",
+				Relationships: buildRelationshipFixture("build-1"),
+				Attributes: asc.BuildBetaDetailAttributes{
+					InternalBuildState: "IN_BETA_TESTING",
+					ExternalBuildState: "IN_BETA_TESTING",
+				},
+			},
+		},
+	}
+
+	statesByBuildID := buildBetaStatesByBuildID(buildIDs, betaDetails)
+	if got := statesByBuildID["build-2"]; got.internal != "PROCESSING" || got.external != "NOT_READY_FOR_TESTING" {
+		t.Fatalf("expected build-2 states to stay paired, got %+v", got)
+	}
+	if got := statesByBuildID["build-1"]; got.internal != "IN_BETA_TESTING" || got.external != "IN_BETA_TESTING" {
+		t.Fatalf("expected build-1 states to stay paired, got %+v", got)
+	}
+}
+
+func buildRelationshipFixture(buildID string) json.RawMessage {
+	relationships, err := json.Marshal(map[string]any{
+		"build": map[string]any{
+			"data": map[string]string{"type": "builds", "id": buildID},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return relationships
+}
+
+func TestRenderDashboardShowsLatestBuildExpiryAndInternalState(t *testing.T) {
+	tests := []struct {
+		name    string
+		expired bool
+		want    string
+	}{
+		{name: "expired build is called out", expired: true, want: "[x] true"},
+		{name: "live build is called out", expired: false, want: "[+] false"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resp := &dashboardResponse{
+				Summary: statusSummary{Health: "green", NextAction: "Review release status.", Blockers: []string{}},
+				Builds: &buildsSection{
+					Latest: &latestBuild{
+						ID:              "build-2",
+						Version:         "1.2.3",
+						BuildNumber:     "45",
+						ProcessingState: "VALID",
+						Expired:         test.expired,
+					},
+				},
+				TestFlight: &testFlightSection{
+					InternalBuildState:       "PROCESSING",
+					LatestDistributedBuildID: "build-1",
+					ExternalBuildState:       "IN_BETA_TESTING",
+				},
+			}
+
+			stdout, stderr := captureOutput(t, func() { renderTable(resp) })
+			if stderr != "" {
+				t.Fatalf("expected empty stderr, got %q", stderr)
+			}
+			if !strings.Contains(stdout, "latest.expired") || !strings.Contains(stdout, test.want) {
+				t.Fatalf("expected latest.expired row rendered as %q:\n%s", test.want, stdout)
+			}
+			if !strings.Contains(stdout, "internalBuildState") || !strings.Contains(stdout, "[~] PROCESSING") {
+				t.Fatalf("expected internalBuildState row:\n%s", stdout)
+			}
+		})
 	}
 }
 
