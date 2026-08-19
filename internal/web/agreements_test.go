@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -309,13 +310,45 @@ func TestAcceptAgreementsSurfacesResultCodeError(t *testing.T) {
 
 func TestAcceptAgreementsRejectsMissingResultCode(t *testing.T) {
 	requestCount := 0
-	client := agreementsTestClient(t, func(r *http.Request) (*http.Response, error) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
-		if requestCount == 1 {
-			return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), nil), nil
+		switch requestCount {
+		case 1:
+			if r.Method != http.MethodPost || r.URL.Path != developerPortalTeamsPath {
+				t.Errorf("bootstrap request = %s %s, want POST %s", r.Method, r.URL.Path, developerPortalTeamsPath)
+			}
+			if got := r.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
+				t.Errorf("bootstrap Content-Type = %q, want application/x-www-form-urlencoded", got)
+			}
+			_, _ = io.WriteString(w, developerPortalTeamsFixture())
+		case 2:
+			if r.Method != http.MethodPost || r.URL.Path != developerPortalAcceptAgreementsPath {
+				t.Errorf("accept request = %s %s, want POST %s", r.Method, r.URL.Path, developerPortalAcceptAgreementsPath)
+			}
+			if got := r.Header.Get("Content-Type"); got != "application/json" {
+				t.Errorf("accept Content-Type = %q, want application/json", got)
+			}
+			if got := r.Header.Get("X-Requested-With"); got != "XMLHttpRequest" {
+				t.Errorf("accept X-Requested-With = %q, want XMLHttpRequest", got)
+			}
+			var payload struct {
+				TeamID       string   `json:"teamId"`
+				AgreementIDs []string `json:"agreementIds"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode accept payload: %v", err)
+			}
+			if payload.TeamID != "TEAM123456" || len(payload.AgreementIDs) != 1 || payload.AgreementIDs[0] != "XG8DNV4HYY" {
+				t.Errorf("accept payload = %+v, want selected team and agreement", payload)
+			}
+			_, _ = io.WriteString(w, `{"agreements":[]}`)
+		default:
+			t.Errorf("unexpected request %d: %s %s", requestCount, r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusInternalServerError)
 		}
-		return developerPortalTestResponse(http.StatusOK, `{"agreements":[]}`, nil), nil
-	})
+	}))
+	defer server.Close()
+	client := &Client{httpClient: server.Client(), developerPortalURL: server.URL}
 
 	result, err := client.AcceptAgreements(context.Background(), AgreementsAcceptRequest{AgreementIDs: []string{"XG8DNV4HYY"}})
 	if err == nil || !strings.Contains(err.Error(), "missing resultCode") {
