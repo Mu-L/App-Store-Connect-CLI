@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -33,6 +34,57 @@ func AppInfoLocalizationLengthIssues(loc AppInfoLocalization) []MetadataLengthIs
 		{field: "privacyPolicyUrl", value: loc.PrivacyPolicyURL, limit: LimitPrivacyPolicyURL},
 		{field: "privacyChoicesUrl", value: loc.PrivacyChoicesURL, limit: LimitPrivacyChoicesURL},
 	})
+}
+
+// MetadataMinimumLengthIssue describes one metadata field that is too short to
+// be real content.
+type MetadataMinimumLengthIssue struct {
+	Field   string
+	Length  int
+	Minimum int
+}
+
+// VersionLocalizationMinimumLengthIssues returns implausibly short fields for
+// one version localization. Empty values are left to the required-field
+// checks, which distinguish "unset" from "too short".
+func VersionLocalizationMinimumLengthIssues(loc VersionLocalization) []MetadataMinimumLengthIssue {
+	return metadataMinimumLengthIssues([]metadataMinimumLengthField{
+		{field: "description", value: loc.Description, minimum: MinLengthDescription},
+	})
+}
+
+// AppInfoLocalizationMinimumLengthIssues returns implausibly short fields for
+// one app-info localization.
+func AppInfoLocalizationMinimumLengthIssues(loc AppInfoLocalization) []MetadataMinimumLengthIssue {
+	return metadataMinimumLengthIssues([]metadataMinimumLengthField{
+		{field: "name", value: loc.Name, minimum: MinLengthName},
+	})
+}
+
+type metadataMinimumLengthField struct {
+	field   string
+	value   string
+	minimum int
+}
+
+func metadataMinimumLengthIssues(fields []metadataMinimumLengthField) []MetadataMinimumLengthIssue {
+	issues := make([]MetadataMinimumLengthIssue, 0, len(fields))
+	for _, field := range fields {
+		value := strings.TrimSpace(field.value)
+		if value == "" {
+			continue
+		}
+		length := utf8.RuneCountInString(value)
+		if length >= field.minimum {
+			continue
+		}
+		issues = append(issues, MetadataMinimumLengthIssue{
+			Field:   field.field,
+			Length:  length,
+			Minimum: field.minimum,
+		})
+	}
+	return issues
 }
 
 // MetadataFieldLabel returns the operator-facing label for a metadata field.

@@ -23,3 +23,11 @@ const (
 	LimitPrivacyPolicyURL  = 255
 	LimitPrivacyChoicesURL = 255
 )
+
+// Minimum lengths that separate real metadata from placeholders such as "X"
+// or "TBD". Apple states no exact minimum in a machine-readable form, so these
+// only ever produce warnings.
+const (
+	MinLengthName        = 2
+	MinLengthDescription = 10
+)

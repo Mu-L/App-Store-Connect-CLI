@@ -73,7 +73,7 @@ func TestValidateDirAcceptsArabicKeywordsWithinCharacterLimit(t *testing.T) {
 		t.Fatalf("mkdir version dir: %v", err)
 	}
 
-	body := `{"description":"وصف عربي","keywords":"تغريدات,ردود,اعجابات,فلترة,بحث,ارشفة,ازالة,سجل,ريتويت,لايكات,منشن,خصوصية,منشورات,قديمة,حساب"}`
+	body := `{"description":"وصف تطبيق عربي كامل","keywords":"تغريدات,ردود,اعجابات,فلترة,بحث,ارشفة,ازالة,سجل,ريتويت,لايكات,منشن,خصوصية,منشورات,قديمة,حساب"}`
 	if err := os.WriteFile(filepath.Join(dir, versionDirName, version, "ar-SA.json"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write Arabic localization: %v", err)
 	}
@@ -193,6 +193,54 @@ func TestValidateDirWarnsForInvalidURLSyntax(t *testing.T) {
 	for field, found := range wantFields {
 		if !found {
 			t.Fatalf("expected URL syntax warning for %s, got %+v", field, result.Issues)
+		}
+	}
+}
+
+func TestValidateDirWarnsForImplausiblyShortMetadata(t *testing.T) {
+	dir := t.TempDir()
+	version := "1.2.3"
+
+	if err := os.MkdirAll(filepath.Join(dir, appInfoDirName), 0o755); err != nil {
+		t.Fatalf("mkdir app-info: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, versionDirName, version), 0o755); err != nil {
+		t.Fatalf("mkdir version dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, appInfoDirName, "en-US.json"), []byte(`{"name":"X"}`), 0o644); err != nil {
+		t.Fatalf("write app-info file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, versionDirName, version, "en-US.json"), []byte(`{"description":"TBD"}`), 0o644); err != nil {
+		t.Fatalf("write version file: %v", err)
+	}
+
+	result, err := validateDir(dir, false)
+	if err != nil {
+		t.Fatalf("validateDir() error: %v", err)
+	}
+	if result.ErrorCount != 0 || !result.Valid {
+		t.Fatalf("expected short values to stay warnings, got %+v", result)
+	}
+	if len(result.Issues) != 2 {
+		t.Fatalf("expected 2 issues, got %+v", result.Issues)
+	}
+
+	wantFields := map[string]bool{"name": false, "description": false}
+	for _, issue := range result.Issues {
+		if _, ok := wantFields[issue.Field]; !ok {
+			t.Fatalf("unexpected issue: %+v", issue)
+		}
+		if issue.Severity != issueSeverityWarning {
+			t.Fatalf("expected warning severity, got %+v", issue)
+		}
+		if !strings.Contains(issue.Message, "shorter than") {
+			t.Fatalf("expected minimum-length message, got %+v", issue)
+		}
+		wantFields[issue.Field] = true
+	}
+	for field, found := range wantFields {
+		if !found {
+			t.Fatalf("expected minimum-length warning for %s, got %+v", field, result.Issues)
 		}
 	}
 }

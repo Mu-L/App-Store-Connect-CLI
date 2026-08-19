@@ -380,6 +380,64 @@ func TestMetadataValidateWarnsForInvalidURLSyntax(t *testing.T) {
 	}
 }
 
+func TestMetadataValidateWarnsForImplausiblyShortMetadata(t *testing.T) {
+	dir := t.TempDir()
+	appInfoDir := filepath.Join(dir, "app-info")
+	versionDir := filepath.Join(dir, "version", "1.2.3")
+	if err := os.MkdirAll(appInfoDir, 0o755); err != nil {
+		t.Fatalf("mkdir app-info: %v", err)
+	}
+	if err := os.MkdirAll(versionDir, 0o755); err != nil {
+		t.Fatalf("mkdir version dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(appInfoDir, "en-US.json"), []byte(`{"name":"X"}`), 0o644); err != nil {
+		t.Fatalf("write app-info file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "en-US.json"), []byte(`{"description":"TBD"}`), 0o644); err != nil {
+		t.Fatalf("write version file: %v", err)
+	}
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"metadata", "validate", "--dir", dir}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("expected warning-only validation, got %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	var payload struct {
+		Valid        bool `json:"valid"`
+		ErrorCount   int  `json:"errorCount"`
+		WarningCount int  `json:"warningCount"`
+		Issues       []struct {
+			Field    string `json:"field"`
+			Severity string `json:"severity"`
+			Message  string `json:"message"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("unmarshal output: %v\nstdout=%q", err, stdout)
+	}
+	if !payload.Valid || payload.ErrorCount != 0 {
+		t.Fatalf("expected valid warning-only report, got %+v", payload)
+	}
+	if payload.WarningCount != 2 {
+		t.Fatalf("expected two minimum-length warnings, got %+v", payload)
+	}
+	for _, issue := range payload.Issues {
+		if issue.Severity != "warning" || !strings.Contains(issue.Message, "shorter than") {
+			t.Fatalf("expected minimum-length warning, got %+v", issue)
+		}
+	}
+}
+
 func TestMetadataValidateWarnsForOverlongURLs(t *testing.T) {
 	dir := t.TempDir()
 	versionDir := filepath.Join(dir, "version", "1.2.3")

@@ -65,6 +65,7 @@ Checks:
   - required fields
   - metadata character limits
   - URL syntax and length for marketing, support, privacy policy, and privacy choices URLs
+  - implausibly short app name and description values
   - optional subscription-app Terms of Use / EULA description link heuristic
 
 Examples:
@@ -161,6 +162,7 @@ func validateDir(dir string, subscriptionApp bool) (ValidateResult, error) {
 			}
 			result.Issues = append(result.Issues, appInfoLengthIssues(filePath, resolvedLocale, loc)...)
 			result.Issues = append(result.Issues, appInfoURLIssues(filePath, resolvedLocale, loc)...)
+			result.Issues = append(result.Issues, appInfoMinimumLengthIssues(filePath, resolvedLocale, loc)...)
 		}
 	}
 
@@ -226,6 +228,7 @@ func validateDir(dir string, subscriptionApp bool) (ValidateResult, error) {
 				}
 				result.Issues = append(result.Issues, versionLengthIssues(filePath, version, resolvedLocale, loc)...)
 				result.Issues = append(result.Issues, versionURLIssues(filePath, version, resolvedLocale, loc)...)
+				result.Issues = append(result.Issues, versionMinimumLengthIssues(filePath, version, resolvedLocale, loc)...)
 				if subscriptionApp {
 					result.Issues = append(result.Issues, versionTermsIssues(filePath, version, resolvedLocale, loc)...)
 				}
@@ -354,6 +357,48 @@ func appInfoLengthIssues(filePath, locale string, loc AppInfoLocalization) []Val
 		issues = append(issues, metadataLengthValidateIssue(appInfoDirName, filePath, locale, "", issue))
 	}
 	return issues
+}
+
+// versionMinimumLengthIssues reports version localization values that are too
+// short to be real content, such as a placeholder description.
+func versionMinimumLengthIssues(filePath, version, locale string, loc VersionLocalization) []ValidateIssue {
+	issues := make([]ValidateIssue, 0, 1)
+	for _, issue := range validation.VersionLocalizationMinimumLengthIssues(validation.VersionLocalization{
+		Description: loc.Description,
+	}) {
+		issues = append(issues, metadataMinimumLengthValidateIssue(versionDirName, filePath, locale, version, issue))
+	}
+	return issues
+}
+
+// appInfoMinimumLengthIssues reports app-info localization values that are too
+// short to be real content, such as a single-character app name.
+func appInfoMinimumLengthIssues(filePath, locale string, loc AppInfoLocalization) []ValidateIssue {
+	issues := make([]ValidateIssue, 0, 1)
+	for _, issue := range validation.AppInfoLocalizationMinimumLengthIssues(validation.AppInfoLocalization{
+		Name: loc.Name,
+	}) {
+		issues = append(issues, metadataMinimumLengthValidateIssue(appInfoDirName, filePath, locale, "", issue))
+	}
+	return issues
+}
+
+func metadataMinimumLengthValidateIssue(scope, filePath, locale, version string, issue validation.MetadataMinimumLengthIssue) ValidateIssue {
+	return ValidateIssue{
+		Scope:   scope,
+		File:    filePath,
+		Locale:  locale,
+		Version: version,
+		Field:   issue.Field,
+		// Apple publishes no exact minimum, so short values are advisory.
+		Severity: issueSeverityWarning,
+		Message: fmt.Sprintf(
+			"%s is shorter than %d characters",
+			validation.MetadataFieldLabel(issue.Field),
+			issue.Minimum,
+		),
+		Length: issue.Length,
+	}
 }
 
 func metadataLengthValidateIssue(scope, filePath, locale, version string, issue validation.MetadataLengthIssue) ValidateIssue {
