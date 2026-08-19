@@ -122,6 +122,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc web sandbox create -password [REDACTED] -territory USA`,
 		},
 		{
+			name:  "password value beginning with double dash",
+			input: `asc web sandbox create --password --Passwordtest1 --territory USA`,
+			want:  `asc web sandbox create --password [REDACTED] --territory USA`,
+		},
+		{
 			name:  "boolean secret marker with sensitive named value",
 			input: `asc web xcode-cloud env-vars create --name MY_SECRET --value s3cret --secret --apple-id 123456789`,
 			want:  `asc web xcode-cloud env-vars create --name MY_SECRET --value [REDACTED] --secret --apple-id 123456789`,
@@ -185,6 +190,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "equals form secret flag",
 			input: `asc deploy --demo-account-password=super-secret --verbose`,
 			want:  `asc deploy --demo-account-password=[REDACTED] --verbose`,
+		},
+		{
+			name:  "curl long user password flag",
+			input: `curl --user alice:supersensitive https://example.test`,
+			want:  `curl --user [REDACTED] https://example.test`,
+		},
+		{
+			name:  "curl short user password flag",
+			input: `curl -u 'alice:super sensitive' https://example.test`,
+			want:  `curl -u [REDACTED] https://example.test`,
+		},
+		{
+			name:  "curl equals user password flag",
+			input: `curl --user=alice:supersensitive https://example.test`,
+			want:  `curl --user=[REDACTED] https://example.test`,
 		},
 		{
 			name:  "comma in unquoted assignment",
@@ -358,6 +378,8 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"escaped-flag-tail",
 		"escaped-assignment-tail",
 		"reordered-cloud-value",
+		"--DoubleDashPassword",
+		"curl-password-tail",
 	}
 	repro := strings.Join([]string{
 		`asc review details-create --demo-account-password "` + secrets[0] + `" --notes ready`,
@@ -367,6 +389,8 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		`asc web sandbox create -password "` + secrets[5] + `" -territory USA`,
 		`asc deploy --password $'` + secrets[6] + `' --verbose`,
 		`asc deploy --password prefix\ ` + secrets[8] + ` --verbose`,
+		`asc web sandbox create --password ` + secrets[11] + ` --territory USA`,
+		`curl -u alice:` + secrets[12] + ` https://example.test`,
 	}, "\n")
 	actual := "PASSWORD=" + secrets[3] + "\n" +
 		`PASSWORD=$'` + secrets[7] + "'\n" +
@@ -401,7 +425,9 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"--value [REDACTED] --name MY_SECRET --secret --apple-id 123456789",
 		"--password [REDACTED]",
 		"-password [REDACTED] -territory USA",
+		"--password [REDACTED] --territory USA",
 		"--password [REDACTED] --verbose",
+		"curl -u [REDACTED] https://example.test",
 		"PASSWORD=[REDACTED]",
 		"Authorization: [REDACTED]",
 	} {
@@ -584,7 +610,7 @@ func TestFormatLocalEntriesRedactsLegacyCredentials(t *testing.T) {
 func TestIssueBodyPreservesBenignSecurityVocabulary(t *testing.T) {
 	entry := LogEntry{
 		Description: "token refresh failed",
-		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\nasc auth login --private-key /path/to/AuthKey.p8\nasc auth login --private-key=/path/to/AuthKey.p8\nasc xcode validate --api-key KEY123ABC\ngit clone https://example.test/repo",
+		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\nasc auth login --private-key /path/to/AuthKey.p8\nasc auth login --private-key=/path/to/AuthKey.p8\nasc xcode validate --api-key KEY123ABC\ncurl --user alice https://example.test\ngit clone https://example.test/repo",
 		Expected:    "secret scanning documentation remains visible",
 		Actual:      "request to https://example.test/path?signature_state=missing returned 401",
 		Severity:    "bug",
