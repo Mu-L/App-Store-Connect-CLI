@@ -19,16 +19,10 @@ func ReviewsCommand() *ffcli.Command {
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	output := shared.BindOutputFlags(fs)
-	stars := fs.String("stars", "", "Filter by star ratings, comma-separated (1-5)")
-	territory := fs.String("territory", "", "Filter by territory (e.g., US, GBR)")
-	sort := fs.String("sort", "", "Sort by rating, -rating, createdDate, or -createdDate")
+	filters := BindReviewFilterFlags(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
-	responseState := fs.String("response-state", "any", "Filter by response state: any, unresponded/unreplied, responded/replied")
-	onlyUnresponded := fs.Bool("only-unresponded", false, "Only list reviews without a published response")
-	includeResponse := fs.Bool("include-response", false, "Include customer review response relationships")
-	responseFields := fs.String("response-fields", "", "Comma-separated customer review response fields: responseBody,lastModifiedDate,state,review")
 
 	return &ffcli.Command{
 		Name:       "reviews",
@@ -81,7 +75,7 @@ Examples:
 			}
 
 			// Execute the list functionality directly
-			return executeReviewsList(ctx, resolvedAppID, *output.Output, *output.Pretty, *stars, *territory, *sort, *limit, *next, *paginate, *responseState, *onlyUnresponded, *includeResponse, *responseFields)
+			return executeReviewsList(ctx, resolvedAppID, *output.Output, *output.Pretty, filters, *limit, *next, *paginate)
 		},
 	}
 }
@@ -92,16 +86,10 @@ func ReviewsListCommand() *ffcli.Command {
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	output := shared.BindOutputFlags(fs)
-	stars := fs.String("stars", "", "Filter by star ratings, comma-separated (1-5)")
-	territory := fs.String("territory", "", "Filter by territory (e.g., US, GBR)")
-	sort := fs.String("sort", "", "Sort by rating, -rating, createdDate, or -createdDate")
+	filters := BindReviewFilterFlags(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
-	responseState := fs.String("response-state", "any", "Filter by response state: any, unresponded/unreplied, responded/replied")
-	onlyUnresponded := fs.Bool("only-unresponded", false, "Only list reviews without a published response")
-	includeResponse := fs.Bool("include-response", false, "Include customer review response relationships")
-	responseFields := fs.String("response-fields", "", "Comma-separated customer review response fields: responseBody,lastModifiedDate,state,review")
 
 	return &ffcli.Command{
 		Name:       "list",
@@ -127,38 +115,21 @@ Examples:
 				return shared.MissingRequiredUsageError("--app")
 			}
 
-			return executeReviewsList(ctx, resolvedAppID, *output.Output, *output.Pretty, *stars, *territory, *sort, *limit, *next, *paginate, *responseState, *onlyUnresponded, *includeResponse, *responseFields)
+			return executeReviewsList(ctx, resolvedAppID, *output.Output, *output.Pretty, filters, *limit, *next, *paginate)
 		},
 	}
 }
 
-func executeReviewsList(ctx context.Context, appID, output string, pretty bool, stars string, territory, sort string, limit int, next string, paginate bool, responseState string, onlyUnresponded bool, includeResponse bool, responseFields string) error {
+func executeReviewsList(ctx context.Context, appID, output string, pretty bool, filters *ReviewFilterFlags, limit int, next string, paginate bool) error {
 	if limit != 0 && (limit < 1 || limit > 200) {
 		return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("reviews: --limit must be between 1 and 200")), shared.DiagnosticInvalidInput, "--limit")
 	}
-	ratings, err := normalizeReviewStars(stars)
+	filterOpts, err := filters.ReviewOptions()
 	if err != nil {
-		return shared.WithDiagnostic(shared.UsageError(err.Error()), shared.DiagnosticInvalidInput, "--stars")
+		return err
 	}
 	if err := shared.ValidateNextURL(next); err != nil {
 		return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("reviews: %w", err)), shared.DiagnosticInvalidInput, "--next")
-	}
-	if err := shared.ValidateSort(sort, "rating", "-rating", "createdDate", "-createdDate"); err != nil {
-		return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("reviews: %w", err)), shared.DiagnosticInvalidInput, "--sort")
-	}
-	normalizedResponseState, err := normalizeReviewResponseState(responseState)
-	if err != nil {
-		return shared.WithDiagnostic(shared.UsageError(err.Error()), shared.DiagnosticInvalidInput, "--response-state")
-	}
-	if onlyUnresponded {
-		if normalizedResponseState == reviewResponseStateResponded {
-			return shared.WithDiagnostic(shared.UsageError("--only-unresponded cannot be combined with --response-state responded"), shared.DiagnosticConflictingInput, "")
-		}
-		normalizedResponseState = reviewResponseStateUnresponded
-	}
-	normalizedResponseFields, err := normalizeReviewResponseFields(responseFields)
-	if err != nil {
-		return shared.WithDiagnostic(shared.UsageError(err.Error()), shared.DiagnosticInvalidInput, "--response-fields")
 	}
 
 	client, err := shared.GetASCClient()
@@ -169,24 +140,9 @@ func executeReviewsList(ctx context.Context, appID, output string, pretty bool, 
 	requestCtx, cancel := shared.ContextWithTimeout(ctx)
 	defer cancel()
 
-	opts := []asc.ReviewOption{
-		asc.WithRatings(ratings),
-		asc.WithTerritory(territory),
-		asc.WithLimit(limit),
-		asc.WithNextURL(next),
-	}
-	if strings.TrimSpace(sort) != "" {
-		opts = append(opts, asc.WithReviewSort(sort))
-	}
-	if exists, ok := publishedResponseExistsFilter(normalizedResponseState); ok {
-		opts = append(opts, asc.WithPublishedResponseExists(exists))
-	}
-	if includeResponse {
-		opts = append(opts, asc.WithReviewIncludeResponse())
-	}
-	if len(normalizedResponseFields) > 0 {
-		opts = append(opts, asc.WithReviewIncludeResponse(), asc.WithReviewResponseFields(normalizedResponseFields))
-	}
+	opts := make([]asc.ReviewOption, 0, len(filterOpts)+2)
+	opts = append(opts, filterOpts...)
+	opts = append(opts, asc.WithLimit(limit), asc.WithNextURL(next))
 
 	if paginate {
 		paginateOpts := append(opts, asc.WithLimit(200))

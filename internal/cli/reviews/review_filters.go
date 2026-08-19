@@ -1,9 +1,13 @@
 package reviews
 
 import (
+	"flag"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 const (
@@ -11,6 +15,83 @@ const (
 	reviewResponseStateUnresponded = "unresponded"
 	reviewResponseStateResponded   = "responded"
 )
+
+// reviewSorts lists the sort values Apple accepts on every customer review
+// listing endpoint.
+var reviewSorts = []string{"rating", "-rating", "createdDate", "-createdDate"}
+
+// ReviewFilterFlags holds the customer review filter flags. Apple exposes the
+// same filter, sort, and include surface on GET /v1/apps/{id}/customerReviews
+// and GET /v1/appStoreVersions/{id}/customerReviews, so every command that
+// lists customer reviews binds these flags from here and gets identical names,
+// help text, and validation.
+type ReviewFilterFlags struct {
+	Stars           string
+	Territory       string
+	Sort            string
+	ResponseState   string
+	OnlyUnresponded bool
+	IncludeResponse bool
+	ResponseFields  string
+}
+
+// BindReviewFilterFlags registers the shared customer review filter flags on fs.
+func BindReviewFilterFlags(fs *flag.FlagSet) *ReviewFilterFlags {
+	filters := &ReviewFilterFlags{}
+	fs.StringVar(&filters.Stars, "stars", "", "Filter by star ratings, comma-separated (1-5)")
+	fs.StringVar(&filters.Territory, "territory", "", "Filter by territory (e.g., US, GBR)")
+	fs.StringVar(&filters.Sort, "sort", "", "Sort by "+strings.Join(reviewSorts, ", "))
+	fs.StringVar(&filters.ResponseState, "response-state", reviewResponseStateAny, "Filter by response state: any, unresponded/unreplied, responded/replied")
+	fs.BoolVar(&filters.OnlyUnresponded, "only-unresponded", false, "Only list reviews without a published response")
+	fs.BoolVar(&filters.IncludeResponse, "include-response", false, "Include customer review response relationships")
+	fs.StringVar(&filters.ResponseFields, "response-fields", "", "Comma-separated customer review response fields: responseBody,lastModifiedDate,state,review")
+	return filters
+}
+
+// ReviewOptions validates the bound flags and returns the matching query
+// options. Invalid input is reported as a usage failure carrying the offending
+// parameter so both review listings fail the same way.
+func (f *ReviewFilterFlags) ReviewOptions() ([]asc.ReviewOption, error) {
+	ratings, err := normalizeReviewStars(f.Stars)
+	if err != nil {
+		return nil, shared.WithDiagnostic(shared.UsageError(err.Error()), shared.DiagnosticInvalidInput, "--stars")
+	}
+	if err := shared.ValidateSort(f.Sort, reviewSorts...); err != nil {
+		return nil, shared.WithDiagnostic(shared.NewValidationError(err), shared.DiagnosticInvalidInput, "--sort")
+	}
+	responseState, err := normalizeReviewResponseState(f.ResponseState)
+	if err != nil {
+		return nil, shared.WithDiagnostic(shared.UsageError(err.Error()), shared.DiagnosticInvalidInput, "--response-state")
+	}
+	if f.OnlyUnresponded {
+		if responseState == reviewResponseStateResponded {
+			return nil, shared.WithDiagnostic(shared.UsageError("--only-unresponded cannot be combined with --response-state responded"), shared.DiagnosticConflictingInput, "")
+		}
+		responseState = reviewResponseStateUnresponded
+	}
+	responseFields, err := normalizeReviewResponseFields(f.ResponseFields)
+	if err != nil {
+		return nil, shared.WithDiagnostic(shared.UsageError(err.Error()), shared.DiagnosticInvalidInput, "--response-fields")
+	}
+
+	opts := []asc.ReviewOption{
+		asc.WithRatings(ratings),
+		asc.WithTerritory(f.Territory),
+	}
+	if strings.TrimSpace(f.Sort) != "" {
+		opts = append(opts, asc.WithReviewSort(f.Sort))
+	}
+	if exists, ok := publishedResponseExistsFilter(responseState); ok {
+		opts = append(opts, asc.WithPublishedResponseExists(exists))
+	}
+	if f.IncludeResponse {
+		opts = append(opts, asc.WithReviewIncludeResponse())
+	}
+	if len(responseFields) > 0 {
+		opts = append(opts, asc.WithReviewIncludeResponse(), asc.WithReviewResponseFields(responseFields))
+	}
+	return opts, nil
+}
 
 func normalizeReviewResponseState(value string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(value))

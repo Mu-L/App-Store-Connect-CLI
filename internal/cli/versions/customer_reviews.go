@@ -10,6 +10,7 @@ import (
 	"github.com/peterbourgon/ff/v3/ffcli"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/reviews"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
@@ -41,6 +42,7 @@ func VersionsCustomerReviewsListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("customer-reviews list", flag.ExitOnError)
 
 	versionID := fs.String("version-id", "", "App Store version ID")
+	filters := reviews.BindReviewFilterFlags(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
@@ -52,14 +54,24 @@ func VersionsCustomerReviewsListCommand() *ffcli.Command {
 		ShortHelp:  "List customer reviews for an app store version.",
 		LongHelp: `List customer reviews for an app store version.
 
+Apple exposes the same review filters here as on the app-level listing, so
+these flags match ` + "`asc reviews list`" + `.
+
 Examples:
   asc versions customer-reviews list --version-id "VERSION_ID"
+  asc versions customer-reviews list --version-id "VERSION_ID" --stars 1,2
+  asc versions customer-reviews list --version-id "VERSION_ID" --territory US --sort -createdDate
+  asc versions customer-reviews list --version-id "VERSION_ID" --only-unresponded --include-response
   asc versions customer-reviews list --version-id "VERSION_ID" --paginate`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return fmt.Errorf("versions customer-reviews list: --limit must be between 1 and 200")
+			}
+			filterOpts, err := filters.ReviewOptions()
+			if err != nil {
+				return err
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
 				return fmt.Errorf("versions customer-reviews list: %w", err)
@@ -79,10 +91,9 @@ Examples:
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 
-			opts := []asc.ReviewOption{
-				asc.WithLimit(*limit),
-				asc.WithNextURL(*next),
-			}
+			opts := make([]asc.ReviewOption, 0, len(filterOpts)+2)
+			opts = append(opts, filterOpts...)
+			opts = append(opts, asc.WithLimit(*limit), asc.WithNextURL(*next))
 
 			if *paginate {
 				paginateOpts := append(opts, asc.WithLimit(200))
