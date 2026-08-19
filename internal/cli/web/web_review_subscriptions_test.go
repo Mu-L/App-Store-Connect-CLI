@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"strings"
@@ -1658,21 +1659,40 @@ func TestWebReviewSubscriptionsListCommandExplicitFlagWinsOverEnv(t *testing.T) 
 
 func TestWebReviewSubscriptionsListCommandMissingAppReportsFallbackAndDiagnostic(t *testing.T) {
 	t.Setenv("ASC_APP_ID", "")
+	origResolveSession := resolveSessionFn
+	t.Cleanup(func() { resolveSessionFn = origResolveSession })
+	sessionCalls := 0
+	resolveSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		sessionCalls++
+		return nil, "", errors.New("session resolution must not run")
+	}
 
 	cmd := WebReviewSubscriptionsListCommand()
+	if cmd.ShortUsage != "asc web review subscriptions list [--app APP_ID] [flags]" {
+		t.Fatalf("ShortUsage = %q, want optional --app", cmd.ShortUsage)
+	}
 	if err := cmd.FlagSet.Parse(nil); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 
 	var runErr error
-	_, stderr := captureOutput(t, func() {
+	stdout, stderr := captureOutput(t, func() {
 		runErr = cmd.Exec(context.Background(), nil)
 	})
-	if runErr == nil {
-		t.Fatal("expected missing --app error")
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("error = %v, want flag.ErrHelp", runErr)
 	}
-	if !strings.Contains(stderr, "--app is required (or set ASC_APP_ID)") {
-		t.Fatalf("expected ASC_APP_ID guidance in stderr, got %q", stderr)
+	if runErr.Error() != "--app is required (or set ASC_APP_ID)" {
+		t.Fatalf("error = %q, want exact missing-app message", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if stderr != "Error: --app is required (or set ASC_APP_ID)\n" {
+		t.Fatalf("stderr = %q, want exact missing-app diagnostic", stderr)
+	}
+	if sessionCalls != 0 {
+		t.Fatalf("session resolver called %d time(s), want 0", sessionCalls)
 	}
 
 	diagnostic, ok := shared.DiagnosticFromError(runErr)

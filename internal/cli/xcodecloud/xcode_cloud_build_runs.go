@@ -161,7 +161,7 @@ func xcodeCloudBuildRunsList(ctx context.Context, workflowID string, sort string
 		ctx,
 		workflowID,
 		"workflow-id",
-		"Find workflow IDs with: asc xcode-cloud workflows list --app <app>",
+		`Find workflow IDs with: asc xcode-cloud workflows list --app "APP_ID"`,
 		limit,
 		next,
 		paginate,

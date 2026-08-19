@@ -37,8 +37,11 @@ func TestXcodeCloudBuildRunsListMissingWorkflowIDPointsAtDiscoveryCommand(t *tes
 			if !strings.Contains(stderr, "Error: --workflow-id is required.") {
 				t.Fatalf("expected required-flag error in stderr, got %q", stderr)
 			}
-			if !strings.Contains(stderr, "Find workflow IDs with: asc xcode-cloud workflows list --app <app>") {
+			if !strings.Contains(stderr, `Find workflow IDs with: asc xcode-cloud workflows list --app "APP_ID"`) {
 				t.Fatalf("expected workflow discovery hint in stderr, got %q", stderr)
+			}
+			if strings.ContainsAny(stderr, "<>") {
+				t.Fatalf("workflow discovery hint must not contain shell redirection characters: %q", stderr)
 			}
 
 			diagnostic, ok := shared.DiagnosticFromError(runErr)

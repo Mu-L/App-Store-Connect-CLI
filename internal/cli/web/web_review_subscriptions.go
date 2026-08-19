@@ -456,7 +456,7 @@ func WebReviewSubscriptionsListCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "list",
-		ShortUsage: "asc web review subscriptions list --app APP_ID [flags]",
+		ShortUsage: "asc web review subscriptions list [--app APP_ID] [flags]",
 		ShortHelp:  "List subscriptions and next-version attach state.",
 		FlagSet:    fs,
 		UsageFunc:  shared.DefaultUsageFunc,
