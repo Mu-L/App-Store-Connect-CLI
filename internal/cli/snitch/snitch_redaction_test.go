@@ -429,6 +429,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc deploy --password [REDACTED] --verbose`,
 		},
 		{
+			name:  "multiline backtick command substitution in secret flag",
+			input: "asc signing sync push --password `printf '%s' 'opaque-head\nopaque-tail'` --verbose",
+			want:  `asc signing sync push --password [REDACTED] --verbose`,
+		},
+		{
 			name:  "dollar command substitution in secret flag",
 			input: `asc deploy --password $(printf supersecret) --verbose`,
 			want:  `asc deploy --password [REDACTED] --verbose`,
@@ -1366,7 +1371,7 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret", "fish-substitution-secret", "quoted-executable-secret", "quoted-flag-secret", "nested-fish-secret", "yaml-continuation-secret"}
+	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret", "fish-substitution-secret", "quoted-executable-secret", "quoted-flag-secret", "nested-fish-secret", "yaml-continuation-secret", "multiline-backtick-secret"}
 	repro := "asc web xcode-cloud env-vars set --value " + secrets[0] + " --secret=true&& echo done\n" +
 		"curl --proxy-cert client.p12:" + secrets[1] + " https://example.test\n" +
 		"asc deploy --password $(printf %s $(printf prefix) " + secrets[2] + ") --verbose\n" +
@@ -1375,7 +1380,8 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 		`"asc" web xcode-cloud env-vars set --value ` + secrets[4] + " --secret=true\n" +
 		`asc signing sync push "--password" ` + secrets[5] + "\n" +
 		"asc signing sync --password (printf %s (printf prefix) " + secrets[6] + ") --verbose\n" +
-		"password: opaque-first\n  " + secrets[7] + "\nstatus: failed"
+		"password: opaque-first\n  " + secrets[7] + "\nstatus: failed\n" +
+		"asc signing sync push --password `printf '%s' 'opaque-head\n" + secrets[8] + "'` --verbose"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1407,6 +1413,7 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 		`asc signing sync push "--password" [REDACTED]`,
 		`asc signing sync --password [REDACTED] --verbose`,
 		"password: [REDACTED]\nstatus: failed",
+		`asc signing sync push --password [REDACTED] --verbose`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
