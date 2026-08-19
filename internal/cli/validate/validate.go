@@ -58,6 +58,7 @@ The default validate response includes an ordered remediation plan, so the first
 
 Checks:
   - Metadata length limits
+  - Placeholder copy in localized listing fields (warning; --strict to block)
   - Required fields and localizations
   - App Store review details completeness
   - Primary category configured

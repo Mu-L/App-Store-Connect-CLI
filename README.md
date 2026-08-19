@@ -290,6 +290,22 @@ asc submit status --version-id "VERSION_ID"
 asc submit cancel --version-id "VERSION_ID" --confirm
 ```
 
+Readiness validation also warns when localized app names, subtitles,
+descriptions, keywords, promotional text, or What's New copy still contains an
+unmistakable template marker such as `Lorem ipsum`, `TODO`, `TBD`, or `FIXME`.
+The warning includes the locale, field, matched text, resource ID, and a
+remediation step. It is advisory by default and becomes blocking only with
+`--strict`:
+
+```bash
+asc validate --app "123456789" --version "1.2.3" --output json
+asc validate --app "123456789" --version "1.2.3" --strict
+```
+
+This lint intentionally does not judge platform names, roadmap language, or
+beta/demo wording because those phrases can be legitimate product copy and
+cannot be classified reliably offline.
+
 ### Review status and blockers
 
 ```bash
