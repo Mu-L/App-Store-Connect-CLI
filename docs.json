@@ -217,6 +217,10 @@
   },
   "redirects": [
     {
+      "source": "/migrate-to-1-0",
+      "destination": "/migrate-to-4-0"
+    },
+    {
       "source": "/commands",
       "destination": "/commands/overview"
     },
