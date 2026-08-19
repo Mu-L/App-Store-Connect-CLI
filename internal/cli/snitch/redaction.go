@@ -9,9 +9,10 @@ const (
 
 	sensitiveAssignmentName = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key|password|passwd|pwd|secret|token)`
 	sensitivePrefixedName   = `_*(?:[a-z0-9]+[_-])*` + sensitiveAssignmentName
-	sensitiveFlagName       = `(?:[a-z0-9]+[_-])*` + sensitiveAssignmentName
-	escapeAwareQuotedValue  = `(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`
-	unterminatedQuotedValue = `(?:"[^\r\n]*|'[^\r\n]*)`
+	sensitiveFlagLeafName   = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|password|passwd|pwd|secret|token)`
+	sensitiveFlagName       = `(?:[a-z0-9]+[_-])*` + sensitiveFlagLeafName
+	escapeAwareQuotedValue  = `(?:"(?:\\.|[^"\\\r\n])*"|\$'(?:\\.|[^'\\\r\n])*'|'(?:\\.|[^'\\\r\n])*')`
+	unterminatedQuotedValue = `(?:"[^\r\n]*|\$?'[^\r\n]*)`
 	flagUnquotedValue       = `(?:-[^-\s][^\s]*|[^-\s][^\s]*)`
 )
 
@@ -46,16 +47,16 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(--value[ \t]+)(?:` + escapeAwareQuotedValue + `|` + flagUnquotedValue + `)([ \t]+--secret\b)`),
-		replacement: `${1}` + redactionMarker + `${2}`,
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}value[ \t]+)(?:` + escapeAwareQuotedValue + `|` + flagUnquotedValue + `)([ \t]+-{1,2}secret\b)`),
+		replacement: `${1}${2}` + redactionMarker + `${3}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(--secret\b[ \t]+--value[ \t]+)(?:` + escapeAwareQuotedValue + `|` + flagUnquotedValue + `)`),
-		replacement: `${1}` + redactionMarker,
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret\b[ \t]+-{1,2}value[ \t]+)(?:` + escapeAwareQuotedValue + `|` + flagUnquotedValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(--` + sensitiveFlagName + `\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`),
-		replacement: `${1}` + redactionMarker,
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}` + sensitiveFlagName + `\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)(["']` + sensitiveAssignmentName + `["'][ \t]*:[ \t]*)(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;}\]]+)`),

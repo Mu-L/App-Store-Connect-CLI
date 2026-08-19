@@ -117,6 +117,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc review details-create --demo-account-password [REDACTED] --notes ready`,
 		},
 		{
+			name:  "single dash password flag",
+			input: `asc web sandbox create -password "Passwordtest1" -territory USA`,
+			want:  `asc web sandbox create -password [REDACTED] -territory USA`,
+		},
+		{
 			name:  "boolean secret marker with sensitive named value",
 			input: `asc web xcode-cloud env-vars create --name MY_SECRET --value s3cret --secret --apple-id 123456789`,
 			want:  `asc web xcode-cloud env-vars create --name MY_SECRET --value [REDACTED] --secret --apple-id 123456789`,
@@ -130,6 +135,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "unterminated quoted secret flag",
 			input: "asc deploy --password \"super secret value",
 			want:  "asc deploy --password [REDACTED]",
+		},
+		{
+			name:  "ANSI-C quoted secret flag",
+			input: `asc deploy --password $'super secret value' --verbose`,
+			want:  `asc deploy --password [REDACTED] --verbose`,
+		},
+		{
+			name:  "ANSI-C quoted assignment",
+			input: `PASSWORD=$'super secret value' asc builds list`,
+			want:  `PASSWORD=[REDACTED] asc builds list`,
 		},
 		{
 			name:  "comma in unquoted assignment",
@@ -297,13 +312,19 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"unterminated secret value",
 		"Password1,remaining-secret",
 		"credential-value",
+		"single-dash-password",
+		"ANSI-C quoted password",
+		"ANSI-C assigned password",
 	}
 	repro := strings.Join([]string{
 		`asc review details-create --demo-account-password "` + secrets[0] + `" --notes ready`,
 		`asc web xcode-cloud env-vars create --name MY_SECRET --value ` + secrets[1] + ` --secret --apple-id 123456789`,
 		`asc deploy --password "` + secrets[2],
+		`asc web sandbox create -password "` + secrets[5] + `" -territory USA`,
+		`asc deploy --password $'` + secrets[6] + `' --verbose`,
 	}, "\n")
 	actual := "PASSWORD=" + secrets[3] + "\n" +
+		`PASSWORD=$'` + secrets[7] + "'\n" +
 		`Authorization: Signature keyId="my-key",algorithm="rsa-sha256",signature="` + secrets[4] + `"`
 
 	stdout, stderr, err := runSnitchCommand(
@@ -332,6 +353,8 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"--demo-account-password [REDACTED] --notes ready",
 		"--name MY_SECRET --value [REDACTED] --secret --apple-id 123456789",
 		"--password [REDACTED]",
+		"-password [REDACTED] -territory USA",
+		"--password [REDACTED] --verbose",
 		"PASSWORD=[REDACTED]",
 		"Authorization: [REDACTED]",
 	} {
@@ -514,7 +537,7 @@ func TestFormatLocalEntriesRedactsLegacyCredentials(t *testing.T) {
 func TestIssueBodyPreservesBenignSecurityVocabulary(t *testing.T) {
 	entry := LogEntry{
 		Description: "token refresh failed",
-		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\ngit clone https://example.test/repo",
+		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\nasc auth login --private-key /path/to/AuthKey.p8\ngit clone https://example.test/repo",
 		Expected:    "secret scanning documentation remains visible",
 		Actual:      "request to https://example.test/path?signature_state=missing returned 401",
 		Severity:    "bug",
