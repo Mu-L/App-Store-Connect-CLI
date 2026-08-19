@@ -413,6 +413,15 @@ func inspectEnvironment() DoctorSection {
 		})
 	}
 
+	shapeLabels := CredentialShapeLabels{KeyID: "ASC_KEY_ID", IssuerID: "ASC_ISSUER_ID"}
+	for _, finding := range InspectCredentialShapes(shapeLabels, keyID, issuerID) {
+		checks = append(checks, DoctorCheck{
+			Status:         DoctorWarn,
+			Message:        finding.Message,
+			Recommendation: finding.Recommendation,
+		})
+	}
+
 	if envProvided {
 		defaultCreds, err := GetDefaultCredentials()
 		if err == nil && defaultCreds != nil {

@@ -98,6 +98,73 @@ func TestDoctorEnvironmentWarnsForInvalidKeyType(t *testing.T) {
 	}
 }
 
+func TestDoctorEnvironmentWarnsWhenCredentialIdentifiersLookSwapped(t *testing.T) {
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("ASC_KEY_ID", "69a6de00-aaaa-bbbb-cccc-123456789abc")
+	t.Setenv("ASC_ISSUER_ID", "39MX87M9Y4")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", "/tmp/AuthKey.p8")
+
+	report := Doctor(DoctorOptions{})
+	section := findDoctorSection(t, report, "Environment")
+	if !sectionHasStatus(section, DoctorWarn, "ASC_KEY_ID looks like an issuer ID — the values may be swapped") {
+		t.Fatalf("expected swapped key ID warning, got %#v", section.Checks)
+	}
+	if !sectionHasStatus(section, DoctorWarn, "ASC_ISSUER_ID looks like a key ID — the values may be swapped") {
+		t.Fatalf("expected swapped issuer ID warning, got %#v", section.Checks)
+	}
+	for _, check := range section.Checks {
+		if strings.Contains(check.Message, "69a6de00") || strings.Contains(check.Message, "39MX87M9Y4") {
+			t.Fatalf("credential identifier leaked in message: %q", check.Message)
+		}
+	}
+}
+
+func TestDoctorEnvironmentWarnsForNonUUIDIssuerID(t *testing.T) {
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("ASC_KEY_ID", "39MX87M9Y4")
+	t.Setenv("ASC_ISSUER_ID", "not-a-uuid")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", "/tmp/AuthKey.p8")
+
+	report := Doctor(DoctorOptions{})
+	section := findDoctorSection(t, report, "Environment")
+	if !sectionHasStatus(section, DoctorWarn, "ASC_ISSUER_ID is not a UUID") {
+		t.Fatalf("expected issuer ID shape warning, got %#v", section.Checks)
+	}
+	if sectionHasStatus(section, DoctorWarn, "ASC_KEY_ID looks like an issuer ID") {
+		t.Fatalf("expected no key ID warning for a plausible key ID, got %#v", section.Checks)
+	}
+}
+
+func TestDoctorEnvironmentAcceptsUnusualButValidCredentialShapes(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		keyID    string
+		issuerID string
+	}{
+		{name: "digits only key id", keyID: "1234567890", issuerID: "69a6de00-aaaa-bbbb-cccc-123456789abc"},
+		{name: "mixed case key id", keyID: "39Mx87M9y4", issuerID: "09f4080c-6ee7-4e52-8103-e1241eaaa58a"},
+		{name: "uppercase issuer uuid", keyID: "39MX87M9Y4", issuerID: "A7EFEF21-3432-404F-A488-083800B570FF"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
+			t.Setenv("ASC_KEY_ID", test.keyID)
+			t.Setenv("ASC_ISSUER_ID", test.issuerID)
+			t.Setenv("ASC_PRIVATE_KEY_PATH", "/tmp/AuthKey.p8")
+
+			report := Doctor(DoctorOptions{})
+			section := findDoctorSection(t, report, "Environment")
+			for _, check := range section.Checks {
+				if check.Status == DoctorWarn && (strings.Contains(check.Message, "swapped") || strings.Contains(check.Message, "not a UUID")) {
+					t.Fatalf("unexpected credential shape warning: %q", check.Message)
+				}
+			}
+		})
+	}
+}
+
 func TestDoctorTempFilesWarns(t *testing.T) {
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
