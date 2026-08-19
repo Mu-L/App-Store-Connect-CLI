@@ -132,6 +132,31 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc web xcode-cloud env-vars create --name PRIVATE_CONFIG --secret --value [REDACTED] --apple-id 123456789`,
 		},
 		{
+			name:  "boolean secret marker after intervening flag",
+			input: `asc web xcode-cloud env-vars create --value s3cret --name MY_SECRET --secret --apple-id 123456789`,
+			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --name MY_SECRET --secret --apple-id 123456789`,
+		},
+		{
+			name:  "boolean secret marker before intervening flag",
+			input: `asc web xcode-cloud env-vars create --secret --name MY_SECRET --value s3cret --apple-id 123456789`,
+			want:  `asc web xcode-cloud env-vars create --secret --name MY_SECRET --value [REDACTED] --apple-id 123456789`,
+		},
+		{
+			name:  "boolean secret marker redacts duplicate values",
+			input: `asc web xcode-cloud env-vars create --value old-secret --value effective-secret --secret`,
+			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --value [REDACTED] --secret`,
+		},
+		{
+			name:  "boolean secret marker with value equals form",
+			input: `asc web xcode-cloud env-vars create --value=s3cret --secret`,
+			want:  `asc web xcode-cloud env-vars create --value=[REDACTED] --secret`,
+		},
+		{
+			name:  "boolean secret marker does not affect another line",
+			input: "asc unrelated --value public\nasc webhooks create --secret webhook-secret",
+			want:  "asc unrelated --value public\nasc webhooks create --secret [REDACTED]",
+		},
+		{
 			name:  "unterminated quoted secret flag",
 			input: "asc deploy --password \"super secret value",
 			want:  "asc deploy --password [REDACTED]",
@@ -145,6 +170,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "ANSI-C quoted assignment",
 			input: `PASSWORD=$'super secret value' asc builds list`,
 			want:  `PASSWORD=[REDACTED] asc builds list`,
+		},
+		{
+			name:  "backslash escaped whitespace in secret flag",
+			input: `asc deploy --password super\ secret --verbose`,
+			want:  `asc deploy --password [REDACTED] --verbose`,
+		},
+		{
+			name:  "backslash escaped whitespace in assignment",
+			input: `PASSWORD=super\ secret asc builds list`,
+			want:  `PASSWORD=[REDACTED] asc builds list`,
+		},
+		{
+			name:  "equals form secret flag",
+			input: `asc deploy --demo-account-password=super-secret --verbose`,
+			want:  `asc deploy --demo-account-password=[REDACTED] --verbose`,
 		},
 		{
 			name:  "comma in unquoted assignment",
@@ -315,16 +355,22 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"single-dash-password",
 		"ANSI-C quoted password",
 		"ANSI-C assigned password",
+		"escaped-flag-tail",
+		"escaped-assignment-tail",
+		"reordered-cloud-value",
 	}
 	repro := strings.Join([]string{
 		`asc review details-create --demo-account-password "` + secrets[0] + `" --notes ready`,
 		`asc web xcode-cloud env-vars create --name MY_SECRET --value ` + secrets[1] + ` --secret --apple-id 123456789`,
+		`asc web xcode-cloud env-vars create --value ` + secrets[10] + ` --name MY_SECRET --secret --apple-id 123456789`,
 		`asc deploy --password "` + secrets[2],
 		`asc web sandbox create -password "` + secrets[5] + `" -territory USA`,
 		`asc deploy --password $'` + secrets[6] + `' --verbose`,
+		`asc deploy --password prefix\ ` + secrets[8] + ` --verbose`,
 	}, "\n")
 	actual := "PASSWORD=" + secrets[3] + "\n" +
 		`PASSWORD=$'` + secrets[7] + "'\n" +
+		`PASSWORD=prefix\ ` + secrets[9] + "\n" +
 		`Authorization: Signature keyId="my-key",algorithm="rsa-sha256",signature="` + secrets[4] + `"`
 
 	stdout, stderr, err := runSnitchCommand(
@@ -352,6 +398,7 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 	for _, want := range []string{
 		"--demo-account-password [REDACTED] --notes ready",
 		"--name MY_SECRET --value [REDACTED] --secret --apple-id 123456789",
+		"--value [REDACTED] --name MY_SECRET --secret --apple-id 123456789",
 		"--password [REDACTED]",
 		"-password [REDACTED] -territory USA",
 		"--password [REDACTED] --verbose",
@@ -537,7 +584,7 @@ func TestFormatLocalEntriesRedactsLegacyCredentials(t *testing.T) {
 func TestIssueBodyPreservesBenignSecurityVocabulary(t *testing.T) {
 	entry := LogEntry{
 		Description: "token refresh failed",
-		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\nasc auth login --private-key /path/to/AuthKey.p8\ngit clone https://example.test/repo",
+		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\nasc auth login --private-key /path/to/AuthKey.p8\nasc auth login --private-key=/path/to/AuthKey.p8\nasc xcode validate --api-key KEY123ABC\ngit clone https://example.test/repo",
 		Expected:    "secret scanning documentation remains visible",
 		Actual:      "request to https://example.test/path?signature_state=missing returned 401",
 		Severity:    "bug",

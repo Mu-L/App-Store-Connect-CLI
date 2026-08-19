@@ -1,6 +1,9 @@
 package snitch
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 const (
 	redactionMarker           = "[REDACTED]"
@@ -9,17 +12,23 @@ const (
 
 	sensitiveAssignmentName = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key|password|passwd|pwd|secret|token)`
 	sensitivePrefixedName   = `_*(?:[a-z0-9]+[_-])*` + sensitiveAssignmentName
-	sensitiveFlagLeafName   = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|password|passwd|pwd|secret|token)`
+	sensitiveFlagLeafName   = `(?:access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|password|passwd|pwd|secret|token)`
 	sensitiveFlagName       = `(?:[a-z0-9]+[_-])*` + sensitiveFlagLeafName
 	escapeAwareQuotedValue  = `(?:"(?:\\.|[^"\\\r\n])*"|\$'(?:\\.|[^'\\\r\n])*'|'(?:\\.|[^'\\\r\n])*')`
 	unterminatedQuotedValue = `(?:"[^\r\n]*|\$?'[^\r\n]*)`
-	flagUnquotedValue       = `(?:-[^-\s][^\s]*|[^-\s][^\s]*)`
+	shellUnquotedValue      = `(?:\\[^\r\n]|[^\s])+`
+	flagUnquotedValue       = `(?:\\[^\r\n]|-[^-\s]|[^-\s])(?:\\[^\r\n]|[^\s])*`
 )
 
 type redactionRule struct {
 	pattern     *regexp.Regexp
 	replacement string
 }
+
+var (
+	secretMarkerPattern = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:[ \t]|$)`)
+	secretValuePattern  = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
+)
 
 var sensitiveTextRedactionRules = []redactionRule{
 	{
@@ -47,15 +56,11 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}value[ \t]+)(?:` + escapeAwareQuotedValue + `|` + flagUnquotedValue + `)([ \t]+-{1,2}secret\b)`),
-		replacement: `${1}${2}` + redactionMarker + `${3}`,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret\b[ \t]+-{1,2}value[ \t]+)(?:` + escapeAwareQuotedValue + `|` + flagUnquotedValue + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}` + sensitiveFlagName + `\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}` + sensitiveFlagName + `\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}` + sensitiveFlagName + `\b[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
@@ -63,8 +68,8 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}"` + redactionMarker + `"`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(\b` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|(?:(?:bearer|basic|token)[ \t]+)[^\s]+|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s]+)`),
-		replacement: `${1}` + redactionMarker,
+		pattern:     regexp.MustCompile(`(?i)(^|[^-a-z0-9_])(` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|(?:(?:bearer|basic|token)[ \t]+)` + shellUnquotedValue + `|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)\bbearer[ \t]+[-A-Z0-9._~+/=]{8,}`),
@@ -81,8 +86,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 }
 
 func redactSensitiveText(value string) (string, bool) {
-	redacted := value
-	changed := false
+	redacted, changed := redactSecretMarkedValues(value)
 	for _, rule := range sensitiveTextRedactionRules {
 		next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
 		if next != redacted {
@@ -91,6 +95,22 @@ func redactSensitiveText(value string) (string, bool) {
 		}
 	}
 	return redacted, changed
+}
+
+func redactSecretMarkedValues(value string) (string, bool) {
+	lines := strings.Split(value, "\n")
+	changed := false
+	for i, line := range lines {
+		if !secretMarkerPattern.MatchString(strings.TrimSuffix(line, "\r")) {
+			continue
+		}
+		redacted := secretValuePattern.ReplaceAllString(line, `${1}${2}`+redactionMarker)
+		if redacted != line {
+			lines[i] = redacted
+			changed = true
+		}
+	}
+	return strings.Join(lines, "\n"), changed
 }
 
 func redactLogEntry(entry LogEntry) (LogEntry, bool) {
