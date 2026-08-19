@@ -198,13 +198,38 @@ func ValidateImageFormatMatchesExtension(path, format string) error {
 		strings.ToUpper(decoded),
 		extension,
 	)
-	if extensions := imageFormatExtensions[decoded]; renameableImageFormats[decoded] && len(extensions) > 0 {
-		renamed := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) + extensions[0]
+	if renamed, ok := SuggestedImageFileName(path, decoded); ok {
 		message += fmt.Sprintf("; rename it to %s or re-export it as %s", renamed, strings.ToUpper(expected))
 	} else {
 		message += fmt.Sprintf("; re-export it as %s", strings.ToUpper(expected))
 	}
 	return errors.New(message)
+}
+
+// SuggestedImageFileName returns the name path should carry for its decoded
+// format. It reports false when renaming cannot fix the file, because asset
+// collection does not pick up that format's extension.
+func SuggestedImageFileName(path, format string) (string, bool) {
+	decoded := strings.ToLower(strings.TrimSpace(format))
+	if !renameableImageFormats[decoded] {
+		return "", false
+	}
+	extensions := imageFormatExtensions[decoded]
+	if len(extensions) == 0 {
+		return "", false
+	}
+	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) + extensions[0], true
+}
+
+// ReadImageFormatFrom decodes the encoded image format from an already-opened
+// source, for callers that must open the file through a trusted root instead
+// of by path.
+func ReadImageFormatFrom(reader io.Reader) (string, error) {
+	_, format, err := image.DecodeConfig(reader)
+	if err != nil {
+		return "", fmt.Errorf("decode image format: %w", err)
+	}
+	return format, nil
 }
 
 func imageFormatForExtension(extension string) (string, bool) {

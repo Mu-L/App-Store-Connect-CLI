@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"os"
@@ -154,6 +155,41 @@ func TestValidateScreenshotAssetsReportsFormatExtensionMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateScreenshotAssetsRemediationOnlySuggestsCollectableRenames(t *testing.T) {
+	dir := t.TempDir()
+	writeAssetsScreenshotValidateJPEG(t, dir, "01-home.png", 1242, 2688, color.RGBA{R: 20, G: 90, B: 140, A: 255})
+	writeAssetsScreenshotValidateGIF(t, dir, "02-details.png", 120, 200)
+
+	result, err := validateScreenshotAssets(dir, "APP_IPHONE_65")
+	if err != nil {
+		t.Fatalf("validateScreenshotAssets() error: %v", err)
+	}
+
+	jpegIssue := findScreenshotValidateIssue(result.Issues, "format_mismatch", "01-home.png")
+	if jpegIssue == nil {
+		t.Fatalf("expected a format mismatch for the JPEG named .png, got %+v", result.Issues)
+	}
+	if !strings.Contains(jpegIssue.Remediation, "01-home.jpg") {
+		t.Fatalf("expected the JPEG remediation to name the rename target, got %q", jpegIssue.Remediation)
+	}
+
+	gifIssue := findScreenshotValidateIssue(result.Issues, "format_mismatch", "02-details.png")
+	if gifIssue == nil {
+		t.Fatalf("expected a format mismatch for the GIF named .png, got %+v", result.Issues)
+	}
+	// A .gif rename is not collectable by screenshot uploads, so the
+	// remediation must not send the operator down that path.
+	if strings.Contains(gifIssue.Remediation, ".gif") {
+		t.Fatalf("expected no .gif rename suggestion, got %q", gifIssue.Remediation)
+	}
+	if strings.Contains(strings.ToLower(gifIssue.Remediation), "rename") {
+		t.Fatalf("expected the GIF remediation to drop the rename advice, got %q", gifIssue.Remediation)
+	}
+	if !strings.Contains(strings.ToLower(gifIssue.Remediation), "re-export") {
+		t.Fatalf("expected the GIF remediation to ask for a re-export, got %q", gifIssue.Remediation)
+	}
+}
+
 func TestValidateScreenshotAssetsReportsDecodedPixelDuplicatesDeterministically(t *testing.T) {
 	dir := t.TempDir()
 	marker := color.RGBA{R: 10, G: 20, B: 30, A: 255}
@@ -274,6 +310,15 @@ func TestRenderScreenshotValidateResultIncludesCanonicalAPIDisplayTypeRowWhenItD
 	}
 }
 
+func findScreenshotValidateIssue(issues []screenshotValidateIssue, code, fileName string) *screenshotValidateIssue {
+	for i := range issues {
+		if issues[i].Code == code && issues[i].FileName == fileName {
+			return &issues[i]
+		}
+	}
+	return nil
+}
+
 func hasScreenshotValidateIssueWithSeverity(issues []screenshotValidateIssue, code, severity, fileName string) bool {
 	for _, issue := range issues {
 		if issue.Code == code && issue.Severity == severity && issue.FileName == fileName {
@@ -322,6 +367,23 @@ func writeAssetsScreenshotValidateJPEG(t *testing.T, dir, name string, width, he
 
 	if err := jpeg.Encode(file, img, nil); err != nil {
 		t.Fatalf("encode jpeg: %v", err)
+	}
+}
+
+func writeAssetsScreenshotValidateGIF(t *testing.T, dir, name string, width, height int) {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	img := image.NewPaletted(image.Rect(0, 0, width, height), color.Palette{color.Black, color.White})
+
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create gif: %v", err)
+	}
+	defer file.Close()
+
+	if err := gif.Encode(file, img, nil); err != nil {
+		t.Fatalf("encode gif: %v", err)
 	}
 }
 

@@ -344,7 +344,7 @@ func resumeAppScreenshotUpload(ctx context.Context, client *asc.Client, artifact
 			return asc.AppScreenshotUploadResult{}, fmt.Errorf("resolve resume source root: %w", err)
 		}
 	}
-	if err := validateResumedScreenshotFiles(artifact.PendingFiles); err != nil {
+	if err := validateResumedScreenshotFiles(sourceRootPath, artifact.PendingFiles); err != nil {
 		return asc.AppScreenshotUploadResult{}, shared.NewValidationError(err)
 	}
 	progress, uploadErr := resumeScreenshotsWithOrderState(uploadCtx, client, artifact.SetID, artifact.OrderedIDs, artifact.PendingFiles, artifact.PendingAssets, sourceRootPath, true, syncAfterUpload)
@@ -516,7 +516,20 @@ func normalizeScreenshotUploadFailureArtifactPaths(artifact screenshotUploadFail
 // business of the run that wrote the artifact, which validated them against
 // the display type it had; re-deciding them here would reject artifacts that
 // were valid when written.
-func validateResumedScreenshotFiles(pendingFiles []string) error {
+func validateResumedScreenshotFiles(sourceRootPath string, pendingFiles []string) error {
+	if len(pendingFiles) == 0 {
+		return nil
+	}
+
+	// The upload opens pending files through the operator-selected root, so the
+	// preflight reads them the same way: containment and open stay one
+	// operation, and a path swapped after the root was resolved cannot send
+	// this read outside it.
+	root, err := rootfs.New(sourceRootPath)
+	if err != nil {
+		return err
+	}
+
 	for _, pendingFile := range pendingFiles {
 		trimmed := strings.TrimSpace(pendingFile)
 		if trimmed == "" {
@@ -526,15 +539,25 @@ func validateResumedScreenshotFiles(pendingFiles []string) error {
 		if err != nil {
 			return err
 		}
-		_, format, err := asc.ReadImageDimensionsAndFormat(path)
-		if err != nil {
-			return err
-		}
-		if err := asc.ValidateImageFormatMatchesExtension(path, format); err != nil {
+		if err := validateResumedScreenshotFileFormat(root, path); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func validateResumedScreenshotFileFormat(root rootfs.Root, path string) error {
+	file, err := root.OpenFile(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	format, err := asc.ReadImageFormatFrom(file)
+	if err != nil {
+		return fmt.Errorf("%q: %w", path, err)
+	}
+	return asc.ValidateImageFormatMatchesExtension(path, format)
 }
 
 func screenshotArtifactNeedsSourceFiles(artifact screenshotUploadFailureArtifact) bool {

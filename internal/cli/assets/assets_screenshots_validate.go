@@ -216,7 +216,7 @@ func validateScreenshotAssets(pathValue, displayType string) (*screenshotValidat
 				FilePath:    filePath,
 				FileName:    fileName,
 				Message:     err.Error(),
-				Remediation: "Rename the file to the extension its real format uses, or re-export it in the format the current extension names.",
+				Remediation: screenshotFormatMismatchRemediation(filePath, format),
 			})
 		}
 
@@ -252,6 +252,16 @@ func validateScreenshotAssets(pathValue, displayType string) (*screenshotValidat
 	}
 
 	return result, nil
+}
+
+// screenshotFormatMismatchRemediation keeps the structured advice in step with
+// the message: a rename is only useful when screenshot uploads collect the
+// real format's extension, which they do for PNG and JPEG but not for GIF.
+func screenshotFormatMismatchRemediation(filePath, format string) string {
+	if renamed, ok := asc.SuggestedImageFileName(filePath, format); ok {
+		return fmt.Sprintf("Rename this file to %s, or re-export it in the format its extension names.", renamed)
+	}
+	return "Re-export this file in the format its extension names; screenshot uploads do not collect its real format."
 }
 
 func checkDecodedPixelDuplicate(result *screenshotValidateResult, filePath, fileName string, seenPixelDigests map[screenshotPixelDigest][]string) bool {
