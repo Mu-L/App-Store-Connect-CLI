@@ -43,11 +43,11 @@ func KeywordsCommand() *ffcli.Command {
 		ShortHelp:  "Evaluate App Store keyword candidates. [experimental]",
 		LongHelp: `Evaluate App Store keyword candidates against official Apple data. [experimental]
 
-These commands evaluate keywords you already have. The only candidates they
-produce are the ones Apple itself suggests through its official Ads endpoints;
-nothing here invents a keyword. Every computed value is reported next to the
-raw inputs it was derived from, and an unavailable source is reported instead
-of replaced.
+The rank and score commands evaluate keywords you already have. The discover
+command produces only the candidates Apple itself suggests through its official
+Ads endpoints; nothing here invents a keyword. Every computed value is reported
+next to the raw inputs it was derived from, and an unavailable source is
+reported instead of replaced.
 
 Typical loop: discover official candidates, score them to decide which are
 worth pursuing, then rank the ones that were adopted.`,

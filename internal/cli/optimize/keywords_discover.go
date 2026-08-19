@@ -89,7 +89,9 @@ Examples:
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}
-			data, err := collectSearchDataForDiscover(ctx, *adsProfile, *adAccount, ads.SearchOptimizationRequest{
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
+			data, err := collectSearchDataForDiscover(requestCtx, *adsProfile, *adAccount, ads.SearchOptimizationRequest{
 				AppID:           resolvedAppID,
 				Country:         strings.ToUpper(normalizedCountry),
 				Genre:           normalizedGenre,

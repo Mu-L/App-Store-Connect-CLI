@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/ads"
@@ -101,6 +102,30 @@ func TestKeywordsDiscoverCommandValidatesInputBeforeRequests(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestKeywordsDiscoverBoundsAdsCollectionWithCommandTimeout(t *testing.T) {
+	t.Setenv("ASC_TIMEOUT", "1s")
+	t.Setenv("ASC_TIMEOUT_SECONDS", "")
+	stubKeywordsAdsCollector(t, func(ctx context.Context, _, _ string, _ ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("Apple Ads collection context has no deadline")
+		}
+		if remaining := time.Until(deadline); remaining <= 0 || remaining > time.Second {
+			t.Fatalf("Apple Ads collection deadline remaining = %v, want within 1s", remaining)
+		}
+		return ads.SearchOptimizationData{
+			Sources:     []ads.SearchOptimizationSourceStatus{{Name: keywordSuggestionSourceKeyword, Status: keywordStatusAvailable, Count: 1}},
+			Suggestions: []ads.SearchSuggestion{{Text: "focus timer", Kind: "keyword"}},
+		}, nil
+	})
+
+	captureSearchPlanStdout(t, func() error {
+		return KeywordsDiscoverCommand().ParseAndRun(context.Background(), []string{
+			"--app", "1234567890", "--country", "US", "--output", "json",
+		})
+	})
 }
 
 func TestKeywordsDiscoverFlattensDedupesAndPreparesScoreInput(t *testing.T) {
