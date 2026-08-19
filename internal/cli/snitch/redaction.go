@@ -101,6 +101,14 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?["']` + sensitivePrefixedName + `["'][ \t]*:[ \t]*)(?:\[[ \t]*[^"'\]\r\n][^\]\r\n]*\]|\{[ \t]*[^"'}\r\n][^}\r\n]*\})`),
+		replacement: `${1}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?` + sensitivePrefixedName + `[ \t]*:)[ \t]*(?:\r?\n(?:[ \t]+[^\r\n]*|[ \t]*$))+`),
+		replacement: `${1} ` + redactionMarker,
+	},
+	{
 		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:[^"'[{\s\r\n][^\r\n]*)(\r?)$`),
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},

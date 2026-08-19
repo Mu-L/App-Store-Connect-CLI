@@ -628,6 +628,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "password: [REDACTED]\nstatus: failed",
 		},
 		{
+			name:  "quoted YAML flow sequence credential",
+			input: "\"password\": [first-secret, second-secret]\nstatus: failed",
+			want:  "\"password\": [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "YAML block mapping credential",
+			input: "token:\n  type: bearer\n  value: opaque-secret\nstatus: failed",
+			want:  "token: [REDACTED]\nstatus: failed",
+		},
+		{
 			name:  "YAML folded base64 private key block",
 			input: "private_key_b64: >- # encoded key\n  c3VwZXI=\n\n  c2VjcmV0\nnext: preserved",
 			want:  "private_key_b64: [REDACTED]\nnext: preserved",
@@ -1158,11 +1168,11 @@ func TestSnitchDryRunRedactsNestedYAMLAndCommandSubstitutionCredentials(t *testi
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"yaml-sequence-secret", "backtick-substitution-secret", "dollar-substitution-secret", "certificate-suffix-secret", "yaml-flow-secret"}
+	secrets := []string{"yaml-sequence-secret", "backtick-substitution-secret", "dollar-substitution-secret", "certificate-suffix-secret", "unquoted-flow-credential", "quoted-flow-credential", "yaml-block-mapping-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", "items:\n  - password: |\n      "+secrets[0]+"\nstatus: failed\nasc deploy --password `printf "+secrets[1]+"` --verbose\nasc deploy --password $(printf "+secrets[2]+") --verbose\ncurl --cert client.p12:'"+secrets[3]+" password' https://example.test\npassword: [first-value, "+secrets[4]+"]",
+		"--repro", "items:\n  - password: |\n      "+secrets[0]+"\nstatus: failed\nasc deploy --password `printf "+secrets[1]+"` --verbose\nasc deploy --password $(printf "+secrets[2]+") --verbose\ncurl --cert client.p12:'"+secrets[3]+" password' https://example.test\npassword: [first-value, "+secrets[4]+"]\n\"password\": [first-value, "+secrets[5]+"]\ntoken:\n  type: bearer\n  value: "+secrets[6]+"\nnext: preserved",
 		"nested credential redaction probe",
 	)
 	if err != nil {
@@ -1185,6 +1195,8 @@ func TestSnitchDryRunRedactsNestedYAMLAndCommandSubstitutionCredentials(t *testi
 		"asc deploy --password [REDACTED] --verbose",
 		"curl --cert client.p12:[REDACTED] https://example.test",
 		"password: [REDACTED]",
+		"\"password\": [REDACTED]",
+		"token: [REDACTED]\nnext: preserved",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
