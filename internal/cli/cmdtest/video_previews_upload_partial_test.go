@@ -19,7 +19,7 @@ func TestVideoPreviewsUploadReportsUploadedPreviewsWhenALaterFileFails(t *testin
 
 	pathDir := t.TempDir()
 	firstSize := writePreviewFile(t, filepath.Join(pathDir, "01-first.mov"))
-	writePreviewFile(t, filepath.Join(pathDir, "02-second.mov"))
+	secondSize := writePreviewFile(t, filepath.Join(pathDir, "02-second.mov"))
 
 	originalTransport := http.DefaultTransport
 	t.Cleanup(func() {
@@ -36,16 +36,21 @@ func TestVideoPreviewsUploadReportsUploadedPreviewsWhenALaterFileFails(t *testin
 				t.Fatalf("read create preview body: %v", err)
 			}
 			if strings.Contains(string(body), "02-second.mov") {
-				return &http.Response{
-					StatusCode: http.StatusInternalServerError,
-					Body:       io.NopCloser(strings.NewReader(`{"errors":[{"status":"500","code":"UNEXPECTED_ERROR","detail":"preview reservation failed"}]}`)),
-					Header:     http.Header{"Content-Type": []string{"application/json"}},
-				}, nil
+				return statusJSONResponse(fmt.Sprintf(
+					`{"data":{"type":"appPreviews","id":"preview-second","attributes":{"fileName":"02-second.mov","assetDeliveryState":{"state":"AWAITING_UPLOAD"},"uploadOperations":[{"method":"PUT","url":"https://upload.example/preview-second","length":%d,"offset":0}]}}}`,
+					secondSize,
+				)), nil
 			}
 			return statusJSONResponse(fmt.Sprintf(
 				`{"data":{"type":"appPreviews","id":"preview-first","attributes":{"fileName":"01-first.mov","uploadOperations":[{"method":"PUT","url":"https://upload.example/preview-first","length":%d,"offset":0}]}}}`,
 				firstSize,
 			)), nil
+		case req.Method == http.MethodPut && req.URL.Host == "upload.example" && req.URL.Path == "/preview-second":
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       io.NopCloser(strings.NewReader("preview upload failed")),
+				Header:     http.Header{},
+			}, nil
 		case req.Method == http.MethodPut && req.URL.Host == "upload.example":
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -124,11 +129,11 @@ func TestVideoPreviewsUploadReportsUploadedPreviewsWhenALaterFileFails(t *testin
 
 	failedStates := 0
 	for _, item := range payload.Results {
-		if item.FileName == "02-second.mov" && item.State == "failed" {
+		if item.FileName == "02-second.mov" && item.AssetID == "preview-second" && item.State == "AWAITING_UPLOAD" {
 			failedStates++
 		}
 	}
 	if failedStates != 1 {
-		t.Fatalf("expected the failing file to be marked failed in results, got %s", stdout)
+		t.Fatalf("expected the failing file to retain its reservation ID and last known state, got %s", stdout)
 	}
 }

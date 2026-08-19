@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
 
 func writePreviewFile(t *testing.T, path string) int64 {
@@ -32,12 +34,7 @@ func previewRelationshipIDs(t *testing.T, req *http.Request) []string {
 	if err != nil {
 		t.Fatalf("read relationship body: %v", err)
 	}
-	var payload struct {
-		Data []struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-		} `json:"data"`
-	}
+	var payload asc.RelationshipRequest
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode relationship body: %v\nbody=%s", err, body)
 	}

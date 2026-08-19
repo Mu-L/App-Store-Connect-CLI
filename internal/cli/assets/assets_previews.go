@@ -762,6 +762,10 @@ func uploadPreviewAsset(ctx context.Context, client *asc.Client, setID, filePath
 	if err != nil {
 		return asc.AssetUploadResultItem{}, err
 	}
+	result := asc.AssetUploadResultItem{
+		FileName: info.Name(),
+		FilePath: filePath,
+	}
 
 	checksum, err := asc.ComputeChecksumFromReader(file, asc.ChecksumAlgorithmMD5)
 	if err != nil {
@@ -770,31 +774,37 @@ func uploadPreviewAsset(ctx context.Context, client *asc.Client, setID, filePath
 
 	created, err := client.CreateAppPreview(ctx, setID, info.Name(), info.Size(), mimeType)
 	if err != nil {
-		return asc.AssetUploadResultItem{}, err
+		return result, err
+	}
+	result.AssetID = created.Data.ID
+	if created.Data.Attributes.AssetDeliveryState != nil {
+		result.State = created.Data.Attributes.AssetDeliveryState.State
 	}
 	if len(created.Data.Attributes.UploadOperations) == 0 {
-		return asc.AssetUploadResultItem{}, fmt.Errorf("no upload operations returned for %q", info.Name())
+		return result, fmt.Errorf("no upload operations returned for %q", info.Name())
 	}
 
 	if err := asc.UploadAssetFromFile(ctx, file, info.Size(), created.Data.Attributes.UploadOperations); err != nil {
-		return asc.AssetUploadResultItem{}, err
+		return result, err
 	}
 
-	if _, err := client.UpdateAppPreview(ctx, created.Data.ID, true, checksum.Hash); err != nil {
-		return asc.AssetUploadResultItem{}, err
+	updated, err := client.UpdateAppPreview(ctx, created.Data.ID, true, checksum.Hash)
+	if err != nil {
+		return result, err
+	}
+	if updated.Data.Attributes.AssetDeliveryState != nil {
+		result.State = updated.Data.Attributes.AssetDeliveryState.State
 	}
 
 	state, err := waitForPreviewDelivery(ctx, client, created.Data.ID)
+	if state != "" {
+		result.State = state
+	}
 	if err != nil {
-		return asc.AssetUploadResultItem{}, err
+		return result, err
 	}
 
-	return asc.AssetUploadResultItem{
-		FileName: info.Name(),
-		FilePath: filePath,
-		AssetID:  created.Data.ID,
-		State:    state,
-	}, nil
+	return result, nil
 }
 
 // UploadPreviewAsset uploads a preview file to a set.
@@ -920,10 +930,15 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 		item, err := uploadPreviewAsset(uploadCtx, client, set.ID, filePath)
 		if err != nil {
 			uploadErr = err
-			failedResult = asc.AssetUploadResultItem{
-				FileName: filepath.Base(filePath),
-				FilePath: filePath,
-				State:    "failed",
+			failedResult = item
+			if failedResult.FileName == "" {
+				failedResult.FileName = filepath.Base(filePath)
+			}
+			if failedResult.FilePath == "" {
+				failedResult.FilePath = filePath
+			}
+			if failedResult.State == "" {
+				failedResult.State = "failed"
 			}
 			failure = asc.AssetUploadFailureItem{
 				FileName: filepath.Base(filePath),
