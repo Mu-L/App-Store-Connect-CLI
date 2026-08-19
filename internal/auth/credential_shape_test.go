@@ -133,6 +133,18 @@ func TestInspectCredentialShapesStaysUncertainWithoutBothSignals(t *testing.T) {
 		}
 	})
 
+	t.Run("uuid key id with generic malformed issuer", func(t *testing.T) {
+		findings := InspectCredentialShapes(labels, "69a6de00-aaaa-bbbb-cccc-123456789abc", "issuer-uuid")
+		if len(findings) != 2 {
+			t.Fatalf("InspectCredentialShapes() = %#v, want 2 findings", findings)
+		}
+		for _, finding := range findings {
+			if finding.DefiniteSwap {
+				t.Fatal("expected no definite swap without a key-shaped issuer ID")
+			}
+		}
+	})
+
 	t.Run("malformed issuer id only", func(t *testing.T) {
 		findings := InspectCredentialShapes(labels, "39MX87M9Y4", "ENVISS")
 		if len(findings) != 1 {

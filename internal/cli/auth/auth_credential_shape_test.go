@@ -81,6 +81,12 @@ func TestAuthLoginWarnsWithoutFailingForUncertainCredentialShapes(t *testing.T) 
 			issuerID:    "ISS456",
 			wantWarning: "--issuer-id is not a UUID",
 		},
+		{
+			name:        "uuid key id with generic malformed issuer",
+			keyID:       "69a6de00-aaaa-bbbb-cccc-123456789abc",
+			issuerID:    "issuer-uuid",
+			wantWarning: "--key-id looks like an issuer ID",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			withTempRepo(t, func(repo string) {

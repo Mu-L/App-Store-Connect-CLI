@@ -103,6 +103,7 @@ func TestDoctorEnvironmentWarnsWhenCredentialIdentifiersLookSwapped(t *testing.T
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
 	t.Setenv("ASC_KEY_ID", "69a6de00-aaaa-bbbb-cccc-123456789abc")
 	t.Setenv("ASC_ISSUER_ID", "39MX87M9Y4")
+	t.Setenv("ASC_KEY_TYPE", "team")
 	t.Setenv("ASC_PRIVATE_KEY_PATH", "/tmp/AuthKey.p8")
 
 	report := Doctor(DoctorOptions{})
@@ -125,6 +126,7 @@ func TestDoctorEnvironmentWarnsForNonUUIDIssuerID(t *testing.T) {
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
 	t.Setenv("ASC_KEY_ID", "39MX87M9Y4")
 	t.Setenv("ASC_ISSUER_ID", "not-a-uuid")
+	t.Setenv("ASC_KEY_TYPE", "team")
 	t.Setenv("ASC_PRIVATE_KEY_PATH", "/tmp/AuthKey.p8")
 
 	report := Doctor(DoctorOptions{})
@@ -180,6 +182,7 @@ func TestDoctorEnvironmentAcceptsUnusualButValidCredentialShapes(t *testing.T) {
 			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
 			t.Setenv("ASC_KEY_ID", test.keyID)
 			t.Setenv("ASC_ISSUER_ID", test.issuerID)
+			t.Setenv("ASC_KEY_TYPE", "team")
 			t.Setenv("ASC_PRIVATE_KEY_PATH", "/tmp/AuthKey.p8")
 
 			report := Doctor(DoctorOptions{})

@@ -88,7 +88,7 @@ func InspectCredentialShapes(labels CredentialShapeLabels, keyID, issuerID strin
 	keyLooksLikeIssuer := LooksLikeIssuerID(keyID)
 	issuerIsMalformed := issuerID != "" && !LooksLikeIssuerID(issuerID)
 	issuerLooksLikeKey := issuerIsMalformed && LooksLikeKeyID(issuerID)
-	definiteSwap := keyLooksLikeIssuer && issuerIsMalformed
+	definiteSwap := keyLooksLikeIssuer && issuerLooksLikeKey
 
 	recommendation := fmt.Sprintf(
 		"Set %s to the App Store Connect API key ID and %s to the issuer UUID",
