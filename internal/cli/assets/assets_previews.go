@@ -843,13 +843,7 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 	}
 
 	requestCtx, reqCancel := shared.ContextWithTimeout(ctx)
-	var set asc.Resource[asc.AppPreviewSetAttributes]
-	var err error
-	if dryRun {
-		set, err = findPreviewSet(requestCtx, client, localizationID, previewType)
-	} else {
-		set, err = ensurePreviewSet(requestCtx, client, localizationID, previewType)
-	}
+	set, err := findPreviewSet(requestCtx, client, localizationID, previewType)
 	reqCancel()
 	if err != nil {
 		return asc.AppPreviewUploadResult{}, err
@@ -910,6 +904,14 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 			DryRun:                true,
 			Results:               results,
 		}, nil
+	}
+	if set.ID == "" && len(files) > 0 {
+		createCtx, createCancel := shared.ContextWithTimeout(ctx)
+		set, err = ensurePreviewSet(createCtx, client, localizationID, previewType)
+		createCancel()
+		if err != nil {
+			return asc.AppPreviewUploadResult{}, err
+		}
 	}
 
 	uploadCtx, cancel := contextWithAssetUploadTimeout(ctx)
