@@ -469,6 +469,32 @@ func loginStorageMessage(bypassKeychain, local bool) (string, error) {
 	return fmt.Sprintf("System keychain unavailable; storing credentials in config file at %s", path), nil
 }
 
+// reportLoginCredentialShapes fails only when the key ID is an issuer UUID and
+// the issuer ID is not, which can only mean the two values were swapped.
+// Everything less certain is written to stderr as a warning so valid but
+// unusual credentials never block a login.
+func reportLoginCredentialShapes(keyID, issuerID string) error {
+	findings := authsvc.InspectCredentialShapes(
+		authsvc.CredentialShapeLabels{KeyID: "--key-id", IssuerID: "--issuer-id"},
+		keyID,
+		issuerID,
+	)
+	for _, finding := range findings {
+		if !finding.DefiniteSwap {
+			continue
+		}
+		return shared.WithDiagnostic(
+			shared.UsageErrorf("auth login: %s. %s", finding.Message, finding.Recommendation),
+			shared.DiagnosticInvalidInput,
+			finding.Field,
+		)
+	}
+	for _, finding := range findings {
+		fmt.Fprintf(os.Stderr, "Warning: %s. %s\n", finding.Message, finding.Recommendation)
+	}
+	return nil
+}
+
 // AuthLogin command factory
 func AuthLoginCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("auth login", flag.ExitOnError)
@@ -539,6 +565,9 @@ so commands continue to work even if the original .p8 file is removed.`,
 			}
 			if *skipValidation && *network {
 				return shared.WithDiagnostic(shared.UsageError("--skip-validation and --network are mutually exclusive"), shared.DiagnosticConflictingInput, "--skip-validation")
+			}
+			if err := reportLoginCredentialShapes(*keyID, *issuerID); err != nil {
+				return err
 			}
 
 			if err := authsvc.ValidateKeyFile(*keyPath); err != nil {
