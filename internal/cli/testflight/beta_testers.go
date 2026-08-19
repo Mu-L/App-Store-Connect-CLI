@@ -114,7 +114,7 @@ func BetaTestersListCommand() *ffcli.Command {
 array, which only JSON output renders. App Store Connect returns at most 50
 related resources per included relationship. --paginate pages the tester
 collection, not included relationships. For complete group membership, run
-asc testflight beta-testers beta-groups list --id "TESTER_ID" --paginate.
+asc testflight testers groups list --id "TESTER_ID" --paginate.
 The --invite-type, --sort, and --include flags are experimental.
 A --next URL retains any include query from its original request; JSON output
 is still required to render those included resources.
