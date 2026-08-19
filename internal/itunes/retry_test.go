@@ -80,6 +80,12 @@ func retryTestClient(server *httptest.Server) *Client {
 	}
 }
 
+type retryRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f retryRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 // useFastRetries pins retry options so retry tests stay fast and hermetic.
 func useFastRetries(t *testing.T, maxRetries string) {
 	t.Helper()
@@ -325,6 +331,29 @@ func TestPublicRetryStopsWhenRetryAfterOutlastsDeadline(t *testing.T) {
 	}
 	if elapsed > time.Second {
 		t.Fatalf("elapsed = %s, want the call to fail without waiting out the deadline", elapsed)
+	}
+}
+
+func TestPublicRetryExplicitCancellationWinsWhenRetryAfterOutlastsDeadline(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "3")
+	t.Setenv("ASC_MAX_DELAY", "30s")
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	client := &Client{
+		BaseURL: "https://example.test",
+		HTTPClient: &http.Client{Transport: retryRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			cancel()
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     http.Header{"Retry-After": {"30"}},
+				Body:       io.NopCloser(strings.NewReader("rate limited")),
+			}, nil
+		})},
+	}
+
+	_, err := client.SearchApps(ctx, "focus", "us", 20)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want explicit context cancellation", err)
 	}
 }
 

@@ -56,12 +56,10 @@ func (c *Client) doOnce(
 		if retrySafe && isRetryablePublicStatus(resp.StatusCode) {
 			drainPublicRetryResponse(resp.Body)
 			retryAfter := publicRetryDelay(resp.Header, time.Now(), maxDelay)
-			if retryFitsDeadline(ctx, retryAfter) {
-				return &asc.RetryableError{
-					Err:                     statusErr,
-					RetryAfter:              retryAfter,
-					PreserveErrorOnDeadline: true,
-				}
+			return &asc.RetryableError{
+				Err:                     statusErr,
+				RetryAfter:              retryAfter,
+				PreserveErrorOnDeadline: true,
 			}
 		}
 		return statusErr
@@ -89,18 +87,6 @@ func unwrapRetryableError(err error) error {
 		return retryErr.Err
 	}
 	return err
-}
-
-// retryFitsDeadline reports whether waiting out a Retry-After hint still leaves
-// the caller time to replay the request. Sleeping past the deadline would only
-// trade a storefront status for a deadline error, which callers such as
-// `asc reviews ratings --all` escalate instead of skipping the storefront.
-func retryFitsDeadline(ctx context.Context, delay time.Duration) bool {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return true
-	}
-	return time.Until(deadline) > delay
 }
 
 // isRetryablePublicStatus reports whether replaying the request could succeed:
