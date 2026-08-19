@@ -62,6 +62,9 @@ func installStatusBuildStateTransport(t *testing.T) *statusBuildStateRequestCoun
 			}`), nil
 		case "/v1/buildBetaDetails":
 			counts.buildBetaDetails.Inc()
+			if got := req.URL.Query().Get("include"); got != "build" {
+				t.Fatalf("expected build beta details to include build relationships, got include=%q", got)
+			}
 			return statusJSONResponse(`{
 				"data":[
 					{

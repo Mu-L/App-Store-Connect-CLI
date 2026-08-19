@@ -608,6 +608,7 @@ func fillBuildsAndTestFlight(ctx context.Context, client *asc.Client, appID stri
 	betaDetails, err := client.GetBuildBetaDetails(
 		ctx,
 		asc.WithBuildBetaDetailsBuildIDs(buildIDs),
+		asc.WithBuildBetaDetailsIncludeBuild(),
 		asc.WithBuildBetaDetailsLimit(200),
 	)
 	if err != nil {
