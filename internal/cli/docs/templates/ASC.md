@@ -46,7 +46,7 @@ Do not memorize flags. Always use `--help` for the current interface.
 | List builds | `asc builds list --app "APP_ID"` |
 | List TestFlight groups | `asc testflight groups list --app "APP_ID"` |
 | List internal TestFlight groups | `asc testflight groups list --app "APP_ID" --internal` |
-| Stage a release (pre-submit) | `asc release stage --app "APP_ID" --version "VERSION" --build "BUILD_ID" --copy-metadata-from "PREVIOUS_VERSION" --dry-run` |
+| Stage a release (pre-submit) | `asc release stage --app "APP_ID" --version "VERSION" --build-id "BUILD_ID" --copy-metadata-from "PREVIOUS_VERSION" --dry-run` |
 | Publish to App Store (canonical) | `asc publish appstore --app "APP_ID" --ipa "./App.ipa" --version "VERSION" --submit --confirm` |
 | Review status | `asc review status --app "APP_ID"` |
 | Review blockers | `asc review doctor --app "APP_ID"` |
@@ -68,17 +68,17 @@ asc builds list --app "APP_ID" --sort -uploadedDate --limit 5
 
 ```bash
 # Dry-run the staging plan using metadata carry-forward
-asc release stage --app "APP_ID" --version "1.0.0" --build "BUILD_ID" --copy-metadata-from "0.9.0" --dry-run
+asc release stage --app "APP_ID" --version "1.0.0" --build-id "BUILD_ID" --copy-metadata-from "0.9.0" --dry-run
 
 # Stage the version without submitting it for review yet
-asc release stage --app "APP_ID" --version "1.0.0" --build "BUILD_ID" --copy-metadata-from "0.9.0" --confirm
+asc release stage --app "APP_ID" --version "1.0.0" --build-id "BUILD_ID" --copy-metadata-from "0.9.0" --confirm
 ```
 
 ### Publish to the App Store (canonical upload + submit flow)
 
 ```bash
 # Optionally stage metadata/build prep without submitting yet
-asc release stage --app "APP_ID" --version "1.0.0" --build "BUILD_ID" --copy-metadata-from "0.9.0" --dry-run
+asc release stage --app "APP_ID" --version "1.0.0" --build-id "BUILD_ID" --copy-metadata-from "0.9.0" --dry-run
 
 # Upload, attach, and submit from an IPA
 asc publish appstore --app "APP_ID" --ipa "./App.ipa" --version "1.0.0" --submit --confirm

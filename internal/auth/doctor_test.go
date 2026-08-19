@@ -454,7 +454,7 @@ func TestDoctorMigrationHintsPrefillsVersionFromXcodeAndAppID(t *testing.T) {
 	if !sliceContains(report.Migration.SuggestedCommands, `asc versions create --app "123456789" --version "2.3.4"`) {
 		t.Fatalf("expected personalized version create command, got %#v", report.Migration.SuggestedCommands)
 	}
-	if !sliceContains(report.Migration.SuggestedCommands, `asc review submit --app "123456789" --version-id "VERSION_ID" --build "UPLOADED_BUILD_ID" --platform "PLATFORM" --confirm`) {
+	if !sliceContains(report.Migration.SuggestedCommands, `asc review submit --app "123456789" --version-id "VERSION_ID" --build-id "UPLOADED_BUILD_ID" --platform "PLATFORM" --confirm`) {
 		t.Fatalf("expected review submit step for upload-only migration hints, got %#v", report.Migration.SuggestedCommands)
 	}
 	if !sliceContains(report.Migration.SuggestedCommands, `asc versions attach-build --version-id "VERSION_ID" --build-id "UPLOADED_BUILD_ID"`) {
@@ -462,7 +462,7 @@ func TestDoctorMigrationHintsPrefillsVersionFromXcodeAndAppID(t *testing.T) {
 	}
 	attachIdx := sliceIndex(report.Migration.SuggestedCommands, `asc versions attach-build --version-id "VERSION_ID" --build-id "UPLOADED_BUILD_ID"`)
 	validateIdx := sliceIndex(report.Migration.SuggestedCommands, `asc validate --app "123456789" --version-id "VERSION_ID"`)
-	reviewSubmitIdx := sliceIndex(report.Migration.SuggestedCommands, `asc review submit --app "123456789" --version-id "VERSION_ID" --build "UPLOADED_BUILD_ID" --platform "PLATFORM" --confirm`)
+	reviewSubmitIdx := sliceIndex(report.Migration.SuggestedCommands, `asc review submit --app "123456789" --version-id "VERSION_ID" --build-id "UPLOADED_BUILD_ID" --platform "PLATFORM" --confirm`)
 	if attachIdx < 0 || validateIdx <= attachIdx || reviewSubmitIdx <= validateIdx {
 		t.Fatalf("expected attach-build -> validate -> review submit ordering, got %#v", report.Migration.SuggestedCommands)
 	}
@@ -567,7 +567,7 @@ func TestBuildSuggestedCommandsUploadOnlyUsesUploadedBuildPlaceholder(t *testing
 		}
 	})
 
-	if !sliceContains(commands, `asc review submit --app "123456789" --version-id "VERSION_ID" --build "UPLOADED_BUILD_ID" --platform "PLATFORM" --confirm`) {
+	if !sliceContains(commands, `asc review submit --app "123456789" --version-id "VERSION_ID" --build-id "UPLOADED_BUILD_ID" --platform "PLATFORM" --confirm`) {
 		t.Fatalf("expected review submit guidance to use placeholder IDs, got %#v", commands)
 	}
 	if !sliceContains(commands, `asc versions attach-build --version-id "VERSION_ID" --build-id "UPLOADED_BUILD_ID"`) {
@@ -575,11 +575,11 @@ func TestBuildSuggestedCommandsUploadOnlyUsesUploadedBuildPlaceholder(t *testing
 	}
 	attachIdx := sliceIndex(commands, `asc versions attach-build --version-id "VERSION_ID" --build-id "UPLOADED_BUILD_ID"`)
 	validateIdx := sliceIndex(commands, `asc validate --app "123456789" --version-id "VERSION_ID"`)
-	reviewSubmitIdx := sliceIndex(commands, `asc review submit --app "123456789" --version-id "VERSION_ID" --build "UPLOADED_BUILD_ID" --platform "PLATFORM" --confirm`)
+	reviewSubmitIdx := sliceIndex(commands, `asc review submit --app "123456789" --version-id "VERSION_ID" --build-id "UPLOADED_BUILD_ID" --platform "PLATFORM" --confirm`)
 	if attachIdx < 0 || validateIdx <= attachIdx || reviewSubmitIdx <= validateIdx {
 		t.Fatalf("expected attach-build -> validate -> review submit ordering, got %#v", commands)
 	}
-	if sliceContains(commands, `asc review submit --app "123456789" --version-id "version-id-123" --build "UPLOADED_BUILD_ID" --platform "PLATFORM" --confirm`) {
+	if sliceContains(commands, `asc review submit --app "123456789" --version-id "version-id-123" --build-id "UPLOADED_BUILD_ID" --platform "PLATFORM" --confirm`) {
 		t.Fatalf("expected upload-only guidance to avoid a platform-agnostic resolved version ID, got %#v", commands)
 	}
 	if !sliceContains(commands, `asc versions create --app "123456789" --version "1.2.3"`) {
