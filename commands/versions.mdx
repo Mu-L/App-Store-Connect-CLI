@@ -79,6 +79,10 @@ In 1.0, the deprecated `asc versions get` alias was removed. Use
 
 Provide either `--version-id`, or the experimental `--app` and `--version`
 selectors. `--platform` defaults to `IOS` for selector-based lookup.
+Selector lookup first resolves the version ID, then fetches its details. Use
+`--version-id` to retain the single-request path for automation. Conflicting or
+incomplete selectors, and unsupported platform values, exit with a usage error
+before authentication or API requests.
 
 <ParamField path="--version-id" type="string">
   App Store version ID. Cannot be combined with the alternate selectors.
