@@ -1,6 +1,8 @@
 package cmdtest
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -801,9 +803,19 @@ func screenshotTestPNG(t *testing.T, metadata, pixels string) []byte {
 	binary.BigEndian.PutUint32(header[4:8], 1)
 	header[8] = 8
 	header[9] = 6
+	row := make([]byte, 5)
+	binary.BigEndian.PutUint32(row[1:], crc32.ChecksumIEEE([]byte(pixels)))
+	var compressed bytes.Buffer
+	compressor := zlib.NewWriter(&compressed)
+	if _, err := compressor.Write(row); err != nil {
+		t.Fatalf("compress screenshot PNG row: %v", err)
+	}
+	if err := compressor.Close(); err != nil {
+		t.Fatalf("close screenshot PNG compressor: %v", err)
+	}
 	png = append(png, chunk("IHDR", header)...)
 	png = append(png, chunk("iTXt", []byte(metadata))...)
-	png = append(png, chunk("IDAT", []byte(pixels))...)
+	png = append(png, chunk("IDAT", compressed.Bytes())...)
 	png = append(png, chunk("IEND", nil)...)
 	return png
 }

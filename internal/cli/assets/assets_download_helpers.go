@@ -2,6 +2,7 @@ package assets
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -28,6 +29,7 @@ const (
 	assetDownloadMaxDelay     = 2 * time.Second
 	assetDownloadUserAgent    = "curl/8.7.1 App-Store-Connect-CLI/asset-download"
 	pngEquivalenceMaxBytes    = 32 << 20
+	pngEquivalenceMaxInflated = 256 << 20
 )
 
 var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
@@ -40,6 +42,14 @@ var volatilePNGChunkTypes = map[string]struct{}{
 	"tEXt": {},
 	"tIME": {},
 	"zTXt": {},
+}
+
+type pngImageHeader struct {
+	width     uint32
+	height    uint32
+	bitDepth  byte
+	colorType byte
+	interlace byte
 }
 
 type downloadHTTPStatusError struct {
@@ -310,6 +320,8 @@ func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
 	seenPalette := false
 	seenImageData := false
 	imageDataEnded := false
+	var imageHeader pngImageHeader
+	var imageData [][]byte
 	for {
 		if offset+12 > len(data) {
 			return digest, false
@@ -337,11 +349,25 @@ func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
 		}
 		switch chunkType {
 		case "IHDR":
-			if !validPNGIHDR(data[offset+8 : dataEndIndex]) {
+			headerData := data[offset+8 : dataEndIndex]
+			if !validPNGIHDR(headerData) {
 				return digest, false
+			}
+			imageHeader = pngImageHeader{
+				width:     binary.BigEndian.Uint32(headerData[:4]),
+				height:    binary.BigEndian.Uint32(headerData[4:8]),
+				bitDepth:  headerData[8],
+				colorType: headerData[9],
+				interlace: headerData[12],
 			}
 		case "PLTE":
 			if seenPalette || seenImageData || length == 0 || length%3 != 0 || length > 768 {
+				return digest, false
+			}
+			if imageHeader.colorType == 0 || imageHeader.colorType == 4 {
+				return digest, false
+			}
+			if imageHeader.colorType == 3 && length/3 > 1<<imageHeader.bitDepth {
 				return digest, false
 			}
 			seenPalette = true
@@ -350,8 +376,12 @@ func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
 				return digest, false
 			}
 			seenImageData = true
+			imageData = append(imageData, data[offset+8:dataEndIndex])
 		case "IEND":
 			if length != 0 || !seenImageData {
+				return digest, false
+			}
+			if imageHeader.colorType == 3 && !seenPalette {
 				return digest, false
 			}
 		default:
@@ -373,6 +403,9 @@ func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
 
 		if chunkType == "IEND" {
 			if chunkEndIndex != len(data) {
+				return digest, false
+			}
+			if !validPNGImageData(imageHeader, imageData) {
 				return digest, false
 			}
 			copy(digest[:], stable.Sum(nil))
@@ -423,6 +456,86 @@ func validPNGIHDR(header []byte) bool {
 	}
 
 	return header[10] == 0 && header[11] == 0 && header[12] <= 1
+}
+
+func validPNGImageData(header pngImageHeader, parts [][]byte) bool {
+	compressed := bytes.NewReader(bytes.Join(parts, nil))
+	decompressor, err := zlib.NewReader(compressed)
+	if err != nil {
+		return false
+	}
+
+	valid := validPNGScanlines(decompressor, header)
+	closeErr := decompressor.Close()
+	return valid && closeErr == nil && compressed.Len() == 0
+}
+
+func validPNGScanlines(reader io.Reader, header pngImageHeader) bool {
+	bitsPerPixel := uint64(header.bitDepth) * pngColorChannels(header.colorType)
+	passes := [][4]uint32{{0, 0, 1, 1}}
+	if header.interlace == 1 {
+		passes = [][4]uint32{
+			{0, 0, 8, 8},
+			{4, 0, 8, 8},
+			{0, 4, 4, 8},
+			{2, 0, 4, 4},
+			{0, 2, 2, 4},
+			{1, 0, 2, 2},
+			{0, 1, 1, 2},
+		}
+	}
+
+	remaining := uint64(pngEquivalenceMaxInflated)
+	var filter [1]byte
+	for _, pass := range passes {
+		width := pngPassDimension(header.width, pass[0], pass[2])
+		height := pngPassDimension(header.height, pass[1], pass[3])
+		if width == 0 || height == 0 {
+			continue
+		}
+		rowBytes := (uint64(width)*bitsPerPixel + 7) / 8
+		scanlineBytes := rowBytes + 1
+		if scanlineBytes > remaining || uint64(height) > remaining/scanlineBytes {
+			return false
+		}
+		inflatedBytes := uint64(height) * scanlineBytes
+		remaining -= inflatedBytes
+
+		for range height {
+			if _, err := io.ReadFull(reader, filter[:]); err != nil || filter[0] > 4 {
+				return false
+			}
+			if _, err := io.CopyN(io.Discard, reader, int64(rowBytes)); err != nil {
+				return false
+			}
+		}
+	}
+
+	var extra [1]byte
+	n, err := reader.Read(extra[:])
+	return n == 0 && err == io.EOF
+}
+
+func pngColorChannels(colorType byte) uint64 {
+	switch colorType {
+	case 0, 3:
+		return 1
+	case 2:
+		return 3
+	case 4:
+		return 2
+	case 6:
+		return 4
+	default:
+		return 0
+	}
+}
+
+func pngPassDimension(size, start, step uint32) uint32 {
+	if size <= start {
+		return 0
+	}
+	return (size - start + step - 1) / step
 }
 
 func isRetryableDownloadError(err error) bool {

@@ -1,6 +1,8 @@
 package assets
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -107,11 +109,11 @@ func TestEquivalentPNGFiles(t *testing.T) {
 			name: "volatile metadata differs",
 			existing: downloadTestPNG(
 				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: downloadTestPNG(
 				downloadTestPNGChunk("tEXt", []byte("asset-id-second")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			want: true,
 		},
@@ -119,55 +121,55 @@ func TestEquivalentPNGFiles(t *testing.T) {
 			name: "Exif metadata differs",
 			existing: downloadTestPNG(
 				downloadTestPNGChunk("eXIf", []byte("orientation-first")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: downloadTestPNG(
 				downloadTestPNGChunk("eXIf", []byte("orientation-second")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 		},
 		{
 			name: "pixel data differs",
 			existing: downloadTestPNG(
 				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
-				downloadTestPNGChunk("IDAT", []byte("first-pixels")),
+				downloadTestPNGIDAT(t, "first-pixels"),
 			),
 			candidate: downloadTestPNG(
 				downloadTestPNGChunk("iTXt", []byte("asset-id-second")),
-				downloadTestPNGChunk("IDAT", []byte("second-pixels")),
+				downloadTestPNGIDAT(t, "second-pixels"),
 			),
 		},
 		{
 			name: "stable ancillary data differs",
 			existing: downloadTestPNG(
 				downloadTestPNGChunk("iCCP", []byte("first-profile")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: downloadTestPNG(
 				downloadTestPNGChunk("iCCP", []byte("second-profile")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 		},
 		{
 			name: "invalid CRC is not equivalent",
 			existing: downloadTestPNG(
 				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: corruptDownloadTestPNGCRC(downloadTestPNG(
 				downloadTestPNGChunk("iTXt", []byte("asset-id-second")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			)),
 		},
 		{
 			name: "truncated PNG is not equivalent",
 			existing: downloadTestPNG(
 				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: truncateDownloadTestPNG(downloadTestPNG(
 				downloadTestPNGChunk("iTXt", []byte("asset-id-second")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			)),
 		},
 		{
@@ -175,12 +177,23 @@ func TestEquivalentPNGFiles(t *testing.T) {
 			existing: downloadTestPNGWithIHDR(
 				zeroWidthHeader,
 				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: downloadTestPNGWithIHDR(
 				zeroWidthHeader,
 				downloadTestPNGChunk("tEXt", []byte("asset-id-second")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
+			),
+		},
+		{
+			name: "malformed image data is not equivalent",
+			existing: downloadTestPNG(
+				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
+				downloadTestPNGChunk("IDAT", []byte("not-a-zlib-stream")),
+			),
+			candidate: downloadTestPNG(
+				downloadTestPNGChunk("tEXt", []byte("asset-id-second")),
+				downloadTestPNGChunk("IDAT", []byte("not-a-zlib-stream")),
 			),
 		},
 		{
@@ -188,12 +201,12 @@ func TestEquivalentPNGFiles(t *testing.T) {
 			existing: downloadTestPNG(
 				downloadTestPNGChunk("itxt", []byte("invalid-reserved-bit")),
 				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 			candidate: downloadTestPNG(
 				downloadTestPNGChunk("itxt", []byte("invalid-reserved-bit")),
 				downloadTestPNGChunk("tEXt", []byte("asset-id-second")),
-				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 		},
 	}
@@ -235,11 +248,76 @@ func TestValidPNGIHDRRejectsInvalidFields(t *testing.T) {
 	}
 }
 
+func TestValidPNGImageData(t *testing.T) {
+	header := pngImageHeader{width: 1, height: 1, bitDepth: 8, colorType: 6}
+	valid := downloadTestPNGCompressedScanlines(t, []byte{0, 1, 2, 3, 4})
+	invalidFilter := downloadTestPNGCompressedScanlines(t, []byte{5, 1, 2, 3, 4})
+	shortRow := downloadTestPNGCompressedScanlines(t, []byte{0, 1, 2, 3})
+	extraRowData := downloadTestPNGCompressedScanlines(t, []byte{0, 1, 2, 3, 4, 5})
+	invalidChecksum := append([]byte(nil), valid...)
+	invalidChecksum[len(invalidChecksum)-1] ^= 0xff
+	trailingData := append(append([]byte(nil), valid...), 0)
+
+	tests := []struct {
+		name   string
+		header pngImageHeader
+		parts  [][]byte
+		want   bool
+	}{
+		{name: "valid", header: header, parts: [][]byte{valid}, want: true},
+		{name: "split stream", header: header, parts: [][]byte{valid[:2], valid[2:]}, want: true},
+		{name: "interlaced one pixel", header: pngImageHeader{width: 1, height: 1, bitDepth: 8, colorType: 6, interlace: 1}, parts: [][]byte{valid}, want: true},
+		{name: "invalid filter", header: header, parts: [][]byte{invalidFilter}},
+		{name: "short row", header: header, parts: [][]byte{shortRow}},
+		{name: "extra row data", header: header, parts: [][]byte{extraRowData}},
+		{name: "invalid checksum", header: header, parts: [][]byte{invalidChecksum}},
+		{name: "trailing compressed data", header: header, parts: [][]byte{trailingData}},
+		{name: "inflated data limit", header: pngImageHeader{width: 0x7fffffff, height: 0x7fffffff, bitDepth: 16, colorType: 6}, parts: [][]byte{valid}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := validPNGImageData(tt.header, tt.parts); got != tt.want {
+				t.Fatalf("validPNGImageData() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStablePNGDigestValidatesPalette(t *testing.T) {
+	indexedHeader := downloadTestPNGIHDR()
+	indexedHeader[8] = 1
+	indexedHeader[9] = 3
+	grayscaleHeader := downloadTestPNGIHDR()
+	grayscaleHeader[9] = 0
+	imageData := downloadTestPNGChunk("IDAT", downloadTestPNGCompressedScanlines(t, []byte{0, 0}))
+
+	tests := []struct {
+		name string
+		png  []byte
+		want bool
+	}{
+		{name: "valid indexed palette", png: downloadTestPNGWithIHDR(indexedHeader, downloadTestPNGChunk("PLTE", []byte{0, 0, 0}), imageData), want: true},
+		{name: "indexed palette missing", png: downloadTestPNGWithIHDR(indexedHeader, imageData)},
+		{name: "indexed palette exceeds bit depth", png: downloadTestPNGWithIHDR(indexedHeader, downloadTestPNGChunk("PLTE", make([]byte, 9)), imageData)},
+		{name: "grayscale palette forbidden", png: downloadTestPNGWithIHDR(grayscaleHeader, downloadTestPNGChunk("PLTE", []byte{0, 0, 0}), imageData)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, got := stablePNGDigest(tt.png)
+			if got != tt.want {
+				t.Fatalf("stablePNGDigest() valid = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWriteScreenshotDownloadReplacesChangedPixels(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "screenshot.png")
-	existing := downloadTestPNG(downloadTestPNGChunk("IDAT", []byte("old-pixels")))
-	candidate := downloadTestPNG(downloadTestPNGChunk("IDAT", []byte("new-pixels")))
+	existing := downloadTestPNG(downloadTestPNGIDAT(t, "old-pixels"))
+	candidate := downloadTestPNG(downloadTestPNGIDAT(t, "new-pixels"))
 	if err := os.WriteFile(path, existing, 0o600); err != nil {
 		t.Fatalf("write existing screenshot: %v", err)
 	}
@@ -381,6 +459,28 @@ func downloadTestPNGIHDR() []byte {
 	header[8] = 8
 	header[9] = 6
 	return header
+}
+
+func downloadTestPNGIDAT(t *testing.T, pixels string) []byte {
+	t.Helper()
+
+	row := make([]byte, 5)
+	binary.BigEndian.PutUint32(row[1:], crc32.ChecksumIEEE([]byte(pixels)))
+	return downloadTestPNGChunk("IDAT", downloadTestPNGCompressedScanlines(t, row))
+}
+
+func downloadTestPNGCompressedScanlines(t *testing.T, scanlines []byte) []byte {
+	t.Helper()
+
+	var compressed bytes.Buffer
+	compressor := zlib.NewWriter(&compressed)
+	if _, err := compressor.Write(scanlines); err != nil {
+		t.Fatalf("compress PNG test scanlines: %v", err)
+	}
+	if err := compressor.Close(); err != nil {
+		t.Fatalf("close PNG test compressor: %v", err)
+	}
+	return compressed.Bytes()
 }
 
 func downloadTestPNGChunk(chunkType string, data []byte) []byte {
