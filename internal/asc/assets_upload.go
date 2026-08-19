@@ -129,6 +129,15 @@ var imageFormatExtensions = map[string][]string{
 	"gif":  {".gif"},
 }
 
+// renameableImageFormats are the formats an operator can fix by renaming the
+// file. Asset collection only picks up .png, .jpg, and .jpeg, so suggesting a
+// .gif rename would quietly drop the file from an upload directory instead of
+// fixing it.
+var renameableImageFormats = map[string]bool{
+	"png":  true,
+	"jpeg": true,
+}
+
 // ReadImageDimensions validates and decodes image dimensions from disk.
 func ReadImageDimensions(path string) (ImageDimensions, error) {
 	dimensions, _, err := ReadImageDimensionsAndFormat(path)
@@ -169,7 +178,9 @@ func ReadImageDimensionsAndFormat(path string) (ImageDimensions, string, error) 
 // server-side, after the upload has already been paid for.
 //
 // Extensions that name no image format are left alone: the check exists to
-// catch contradictions, not to police naming.
+// catch contradictions, not to police naming. A rename is only suggested when
+// the decoded format has an extension asset collection accepts; other
+// decodable formats are told to re-export instead.
 func ValidateImageFormatMatchesExtension(path, format string) error {
 	decoded := strings.ToLower(strings.TrimSpace(format))
 	if decoded == "" {
@@ -187,7 +198,7 @@ func ValidateImageFormatMatchesExtension(path, format string) error {
 		strings.ToUpper(decoded),
 		extension,
 	)
-	if extensions := imageFormatExtensions[decoded]; len(extensions) > 0 {
+	if extensions := imageFormatExtensions[decoded]; renameableImageFormats[decoded] && len(extensions) > 0 {
 		renamed := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) + extensions[0]
 		message += fmt.Sprintf("; rename it to %s or re-export it as %s", renamed, strings.ToUpper(expected))
 	} else {

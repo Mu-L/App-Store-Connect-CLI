@@ -38,10 +38,11 @@ func TestValidateImageFormatMatchesExtensionAcceptsAgreeingFiles(t *testing.T) {
 
 func TestValidateImageFormatMatchesExtensionRejectsContradictions(t *testing.T) {
 	tests := []struct {
-		name     string
-		path     string
-		format   string
-		contains []string
+		name        string
+		path        string
+		format      string
+		contains    []string
+		notContains []string
 	}{
 		{
 			name:     "jpeg named png",
@@ -56,10 +57,13 @@ func TestValidateImageFormatMatchesExtensionRejectsContradictions(t *testing.T) 
 			contains: []string{"01-home.jpg", "PNG", "01-home.png", "JPEG"},
 		},
 		{
-			name:     "gif named png",
-			path:     "/tmp/shots/01-home.png",
-			format:   "gif",
-			contains: []string{"GIF", "01-home.gif", "PNG"},
+			// Screenshot discovery only collects .png/.jpg/.jpeg, so a .gif
+			// rename would make the file vanish from an upload directory.
+			name:        "gif named png suggests re-export instead of rename",
+			path:        "/tmp/shots/01-home.png",
+			format:      "gif",
+			contains:    []string{"01-home.png", "GIF", "re-export", "PNG"},
+			notContains: []string{"01-home.gif", "rename"},
 		},
 	}
 
@@ -73,6 +77,11 @@ func TestValidateImageFormatMatchesExtensionRejectsContradictions(t *testing.T) 
 			for _, want := range test.contains {
 				if !strings.Contains(message, want) {
 					t.Fatalf("expected error to mention %q, got %q", want, message)
+				}
+			}
+			for _, unwanted := range test.notContains {
+				if strings.Contains(message, unwanted) {
+					t.Fatalf("expected error not to mention %q, got %q", unwanted, message)
 				}
 			}
 		})
