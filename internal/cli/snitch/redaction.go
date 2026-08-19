@@ -13,7 +13,7 @@ const (
 	sensitiveAssignmentName     = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passwd|pwd|secret|token)`
 	sensitivePrefixedName       = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
 	sensitiveFlagName           = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passwd|pwd|pass|token)`
-	credentialHeaderName        = `(?:authorization|cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
+	credentialHeaderName        = `(?:proxy-authorization|authorization|cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
 	traceCredentialHeader       = `(?:cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
 	webAuthQueryCredential      = `(?:widgetkey|code|scnt)`
 	webAuthStructuredCredential = `(?:authservicekey|servicekey)`
@@ -342,13 +342,36 @@ func redactStructuredCookieValues(value string) (string, bool) {
 		return value, false
 	}
 
+	type cookieObjectPattern struct {
+		pattern       *regexp.Regexp
+		escapedQuotes bool
+	}
+	patterns := []cookieObjectPattern{
+		{pattern: rawCookieJarPattern},
+		{pattern: escapedCookieJarPattern, escapedQuotes: true},
+	}
 	redacted := value
 	changed := false
-	for _, rule := range structuredCookieValueRedactionRules {
-		next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
-		if next != redacted {
-			redacted = next
-			changed = true
+	for _, candidate := range patterns {
+		searchStart := 0
+		for searchStart < len(redacted) {
+			match := candidate.pattern.FindStringIndex(redacted[searchStart:])
+			if match == nil {
+				break
+			}
+
+			open := searchStart + match[1] - 1
+			close := findJSONObjectEnd(redacted, open, candidate.escapedQuotes)
+			object := redacted[open : close+1]
+			redactedObject := object
+			for _, rule := range structuredCookieValueRedactionRules {
+				redactedObject = rule.pattern.ReplaceAllString(redactedObject, rule.replacement)
+			}
+			if redactedObject != object {
+				redacted = redacted[:open] + redactedObject + redacted[close+1:]
+				changed = true
+			}
+			searchStart = open + len(redactedObject)
 		}
 	}
 	return redacted, changed

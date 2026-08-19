@@ -192,6 +192,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `{"Authorization":["[REDACTED]"],"status":"failed"}`,
 		},
 		{
+			name:  "array-valued proxy authorization header",
+			input: `{"Proxy-Authorization":["Basic dXNlcjpzdXBlcnNlY3JldA=="],"status":"failed"}`,
+			want:  `{"Proxy-Authorization":["[REDACTED]"],"status":"failed"}`,
+		},
+		{
 			name:  "escaped array-valued authorization header",
 			input: `trace {\"Authorization\":[\"Bearer first-secret\",\"Basic second-secret\"],\"status\":\"failed\"}`,
 			want:  `trace {\"Authorization\":[\"[REDACTED]\"],\"status\":\"failed\"}`,
@@ -697,6 +702,15 @@ func TestRedactSensitiveTextPreservesUsernameOnlySCPRemote(t *testing.T) {
 
 func TestRedactSensitiveTextPreservesOrdinaryCodeFields(t *testing.T) {
 	input := `{"error":{"code":"ENTITY_ERROR"},"status":400}`
+
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
+func TestRedactSensitiveTextPreservesNameValuePairOutsideCookieJar(t *testing.T) {
+	input := `{"cookies":{},"diagnostic":{"name":"failure","value":"preserve this explanation"}}`
 
 	got, changed := redactSensitiveText(input)
 	if changed || got != input {
@@ -1260,12 +1274,12 @@ func TestSnitchDryRunRedactsGoHeaderMapsAndContinuedCurlCredentials(t *testing.T
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"continued-user-secret", "go-header-secret"}
+	secrets := []string{"continued-user-secret", "go-header-secret", "proxy-authorization-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", "curl --user alice:"+secrets[0]+"\\\n-tail https://example.test",
-		"--actual", "request headers: map[Cookie:[myacinfo="+secrets[1]+"] Content-Type:[application/json]]",
+		"--actual", "request headers: map[Cookie:[myacinfo="+secrets[1]+"] Content-Type:[application/json]]\n{\"Proxy-Authorization\":[\"Basic "+secrets[2]+"\"],\"status\":\"failed\"}",
 		"header map and continued credential redaction probe",
 	)
 	if err != nil {
@@ -1286,6 +1300,7 @@ func TestSnitchDryRunRedactsGoHeaderMapsAndContinuedCurlCredentials(t *testing.T
 	for _, want := range []string{
 		"curl --user [REDACTED] https://example.test",
 		"request headers: map[Cookie:[REDACTED] Content-Type:[application/json]]",
+		`{"Proxy-Authorization":["[REDACTED]"],"status":"failed"}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
@@ -1468,7 +1483,7 @@ func TestSnitchDryRunRedactsCurlCookieDataAndSessionCacheValues(t *testing.T) {
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", `curl --cookie 'myacinfo=`+secrets[0]+`' --cookie ./cookies.txt https://example.test`,
-		"--actual", `{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"`+secrets[1]+`","path":"/"},{"name":"dqsid","value":"`+secrets[2]+`"}]},"version":1}`,
+		"--actual", `{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"`+secrets[1]+`","path":"/"},{"name":"dqsid","value":"`+secrets[2]+`"}]},"diagnostic":{"name":"failure","value":"preserve this explanation"},"version":1}`,
 		"session cookie redaction probe",
 	)
 	if err != nil {
@@ -1488,7 +1503,7 @@ func TestSnitchDryRunRedactsCurlCookieDataAndSessionCacheValues(t *testing.T) {
 	}
 	for _, want := range []string{
 		`curl --cookie [REDACTED] --cookie ./cookies.txt https://example.test`,
-		`{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"[REDACTED]","path":"/"},{"name":"dqsid","value":"[REDACTED]"}]},"version":1}`,
+		`{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"[REDACTED]","path":"/"},{"name":"dqsid","value":"[REDACTED]"}]},"diagnostic":{"name":"failure","value":"preserve this explanation"},"version":1}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
