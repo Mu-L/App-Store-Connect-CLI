@@ -10,7 +10,7 @@ const (
 	privateKeyRedactionMarker = "[REDACTED PRIVATE KEY]"
 	redactionNotice           = "Note: sensitive values were redacted from the snitch report."
 
-	sensitiveAssignmentName = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key|password|passwd|pwd|secret|token)`
+	sensitiveAssignmentName = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passwd|pwd|secret|token)`
 	sensitivePrefixedName   = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
 	sensitiveFlagName       = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|proxy-tlspassword|tlspassword|password|passwd|pwd|pass|token)`
 	escapeAwareQuotedValue  = `(?:"(?:\\.|[^"\\\r\n])*"|\$'(?:\\.|[^'\\\r\n])*'|'(?:\\.|[^'\\\r\n])*')`
@@ -57,6 +57,18 @@ var sensitiveTextRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;]+)`),
 		replacement: "Authorization: " + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)("(?:set-)?cookie[ \t]*:[ \t]*)(?:\\.|[^"\\\r\n])*(")`),
+		replacement: `${1}` + redactionMarker + `${2}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)('(?:set-)?cookie[ \t]*:[ \t]*)(?:\\.|[^'\\\r\n])*(')`),
+		replacement: `${1}` + redactionMarker + `${2}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:[<>][ \t]*)?(?:set-)?cookie)[ \t]*:[ \t]*[^\r\n]+`),
+		replacement: `${1}: ` + redactionMarker,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/?#\s@]+@`),

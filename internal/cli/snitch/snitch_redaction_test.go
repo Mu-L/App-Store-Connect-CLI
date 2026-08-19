@@ -42,6 +42,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "Authorization: [REDACTED]",
 		},
 		{
+			name:  "cookie request header",
+			input: "Cookie: myacinfo=super-session-secret; dslang=US-EN",
+			want:  "Cookie: [REDACTED]",
+		},
+		{
+			name:  "set cookie response header",
+			input: "< Set-Cookie: myacinfo=super-response-secret; Path=/; Secure; HttpOnly",
+			want:  "< Set-Cookie: [REDACTED]",
+		},
+		{
+			name:  "quoted cookie header argument",
+			input: `curl -H "Cookie: myacinfo=super-session-secret; dslang=US-EN" https://example.test`,
+			want:  `curl -H "Cookie: [REDACTED]" https://example.test`,
+		},
+		{
 			name:  "standalone bearer credential",
 			input: "server returned Bearer eyJhbGciOiJFUzI1NiJ9.fake.signature",
 			want:  "server returned Bearer [REDACTED]",
@@ -299,6 +314,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "prefixed environment assignment",
 			input: `AWS_SECRET_ACCESS_KEY="cloud-secret" MY_CLIENT_SECRET='client-secret'`,
 			want:  `AWS_SECRET_ACCESS_KEY=[REDACTED] MY_CLIENT_SECRET=[REDACTED]`,
+		},
+		{
+			name:  "scoped base64 private key assignments",
+			input: `ASC_STOREKIT_PRIVATE_KEY_B64=c3RvcmVraXQtcHJpdmF0ZS1rZXk= ASC_ADS_PRIVATE_KEY_B64=YWRzLXByaXZhdGUta2V5`,
+			want:  `ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED] ASC_ADS_PRIVATE_KEY_B64=[REDACTED]`,
 		},
 		{
 			name:  "leading underscore assignment",
@@ -662,6 +682,52 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 		"\"client_secret\":\n    \"[REDACTED]\"",
 		`{"demoAccountPassword":"[REDACTED]"}`,
 		`response {\"client_secret\":\"[REDACTED]\"}`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsCookieHeadersAndScopedPrivateKeys(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"web-session-secret",
+		"response-session-secret",
+		"c3RvcmVraXQtcHJpdmF0ZS1rZXk=",
+		"YWRzLXByaXZhdGUta2V5",
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", `curl -H "Cookie: myacinfo=`+secrets[0]+`; dslang=US-EN" https://example.test`,
+		"--actual", "< Set-Cookie: myacinfo="+secrets[1]+"; Path=/; Secure\n"+
+			"ASC_STOREKIT_PRIVATE_KEY_B64="+secrets[2]+"\n"+
+			"ASC_ADS_PRIVATE_KEY_B64="+secrets[3],
+		"session credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		`curl -H "Cookie: [REDACTED]" https://example.test`,
+		"< Set-Cookie: [REDACTED]",
+		"ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED]",
+		"ASC_ADS_PRIVATE_KEY_B64=[REDACTED]",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
