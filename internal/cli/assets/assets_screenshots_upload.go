@@ -270,6 +270,10 @@ func settleExistingScreenshotChecksums(ctx context.Context, client *asc.Client, 
 		if strings.TrimSpace(settled[index].Attributes.SourceFileChecksum) != "" {
 			continue
 		}
+		deliveryState := settled[index].Attributes.AssetDeliveryState
+		if deliveryState == nil || !strings.EqualFold(strings.TrimSpace(deliveryState.State), "COMPLETE") {
+			continue
+		}
 		assetID := strings.TrimSpace(settled[index].ID)
 		if assetID == "" {
 			return nil, fmt.Errorf("cannot settle screenshot checksum: existing screenshot is missing its asset ID")

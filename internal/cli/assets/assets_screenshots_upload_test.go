@@ -247,6 +247,61 @@ func TestExecuteAppScreenshotUploadSkipExistingSettlesMissingRemoteChecksum(t *t
 	}
 }
 
+func TestExecuteAppScreenshotUploadSkipExistingDoesNotWaitForUndeliveredReservation(t *testing.T) {
+	tests := []struct {
+		name  string
+		state string
+	}{
+		{name: "awaiting upload", state: "AWAITING_UPLOAD"},
+		{name: "failed", state: "FAILED"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filePath := writeAssetsTestPNG(t, t.TempDir(), "01-home.png")
+			detailCalls := 0
+			client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch {
+				case req.Method == http.MethodGet && req.URL.Path == "/v1/appStoreVersionLocalizations/LOC_123/appScreenshotSets":
+					writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appScreenshotSets","id":"set-1","attributes":{"screenshotDisplayType":"APP_IPHONE_65"}}],"links":{}}`)
+				case req.Method == http.MethodGet && req.URL.Path == "/v1/appScreenshotSets/set-1/appScreenshots":
+					writeAssetsTestJSON(w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"appScreenshots","id":"pending-1","attributes":{"fileName":"old.png","assetDeliveryState":{"state":%q}}}],"links":{}}`, tt.state))
+				case req.Method == http.MethodGet && req.URL.Path == "/v1/appScreenshots/pending-1":
+					detailCalls++
+					writeAssetsTestJSON(w, http.StatusOK, fmt.Sprintf(`{"data":{"type":"appScreenshots","id":"pending-1","attributes":{"fileName":"old.png","assetDeliveryState":{"state":%q}}}}`, tt.state))
+				default:
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+				}
+			}))
+
+			result, err := executeAppScreenshotUpload(context.Background(), screenshotUploadConfig[asc.AppScreenshotUploadResult]{
+				Client:         client,
+				LocalizationID: "LOC_123",
+				DisplayType:    "APP_IPHONE_65",
+				Files:          []string{filePath},
+				SkipExisting:   true,
+				DryRun:         true,
+				RequestContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
+					return context.WithTimeout(ctx, 20*time.Millisecond)
+				},
+				Access: appStoreVersionScreenshotSetAccess,
+				BuildResult: func(localizationID string, set asc.Resource[asc.AppScreenshotSetAttributes], dryRun bool, results []asc.AssetUploadResultItem) asc.AppScreenshotUploadResult {
+					return buildAppScreenshotUploadResult(localizationID, set, dryRun, results)
+				},
+			}, "")
+			if err != nil {
+				t.Fatalf("executeAppScreenshotUpload() error: %v", err)
+			}
+			if detailCalls != 0 {
+				t.Fatalf("expected no settlement request for %s reservation, got %d", tt.state, detailCalls)
+			}
+			if len(result.Results) != 1 || result.Results[0].State != "would-upload" {
+				t.Fatalf("expected unrelated local screenshot to remain uploadable, got %#v", result.Results)
+			}
+		})
+	}
+}
+
 func TestUploadScreenshotsSkipExistingChecksumTimeoutIncludesAssetID(t *testing.T) {
 	filePath := writeAssetsTestPNG(t, t.TempDir(), "01-home.png")
 
@@ -295,17 +350,24 @@ func TestUploadScreenshotsSkipExistingChecksumTimeoutIncludesAssetID(t *testing.
 
 func TestWaitForScreenshotSettlementReportsCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	originalPollInterval := screenshotSettlementPollInterval
+	screenshotSettlementPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		screenshotSettlementPollInterval = originalPollInterval
+		cancel()
+	})
+
+	deliveryCalls := 0
 	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet || req.URL.Path != "/v1/appScreenshots/canceled-1" {
 			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
 		}
+		deliveryCalls++
+		if deliveryCalls == 2 {
+			cancel()
+		}
 		writeAssetsTestJSON(w, http.StatusOK, `{"data":{"type":"appScreenshots","id":"canceled-1","attributes":{"assetDeliveryState":{"state":"COMPLETE"}}}}`)
 	}))
-	timer := time.AfterFunc(10*time.Millisecond, cancel)
-	t.Cleanup(func() {
-		timer.Stop()
-		cancel()
-	})
 
 	_, err := waitForScreenshotSettlement(ctx, client, "canceled-1")
 	if !errors.Is(err, context.Canceled) {
