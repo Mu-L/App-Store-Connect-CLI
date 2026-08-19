@@ -40,7 +40,7 @@ func reviewDetailsChecks(details *ReviewDetails) []CheckResult {
 	}
 	if email := strings.TrimSpace(details.ContactEmail); email == "" {
 		checks = append(checks, missingReviewDetailsField("contactEmail", resourceID))
-	} else if _, err := mail.ParseAddress(email); err != nil {
+	} else if !isBareEmailAddress(email) {
 		checks = append(checks, CheckResult{
 			ID:           "review_details.format.contact_email",
 			Severity:     SeverityError,
@@ -48,7 +48,7 @@ func reviewDetailsChecks(details *ReviewDetails) []CheckResult {
 			ResourceType: "appStoreReviewDetail",
 			ResourceID:   resourceID,
 			Message:      "review contact email is not a valid email address",
-			Remediation:  "Provide a deliverable email address App Review can reach, for example: reviewer@example.com",
+			Remediation:  "Provide a plain email address App Review can reach, with no display name, for example: reviewer@example.com",
 		})
 	}
 
@@ -77,6 +77,14 @@ func reviewDetailsChecks(details *ReviewDetails) []CheckResult {
 	}
 
 	return checks
+}
+
+// isBareEmailAddress reports whether a value is a single address with no RFC
+// display name, which is what App Store Connect stores in its contact email
+// fields. It matches the sandbox tester email rule used elsewhere in the CLI.
+func isBareEmailAddress(value string) bool {
+	parsed, err := mail.ParseAddress(value)
+	return err == nil && parsed != nil && strings.TrimSpace(parsed.Address) == value
 }
 
 // hasPlausiblePhoneDigits reports whether a free-text phone value carries a

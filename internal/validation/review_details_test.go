@@ -88,7 +88,7 @@ func TestReviewDetailsChecks_Pass(t *testing.T) {
 }
 
 func TestReviewDetailsChecks_InvalidContactEmail(t *testing.T) {
-	for _, email := range []string{"reviewer", "reviewer@", "@example.com", "reviewer example.com"} {
+	for _, email := range []string{"reviewer", "reviewer@", "@example.com", "reviewer example.com", "Reviewer <reviewer@example.com>"} {
 		checks := reviewDetailsChecks(&ReviewDetails{
 			ID:               "detail-1",
 			ContactFirstName: "A",
@@ -108,7 +108,7 @@ func TestReviewDetailsChecks_InvalidContactEmail(t *testing.T) {
 }
 
 func TestReviewDetailsChecks_AcceptsValidContactEmails(t *testing.T) {
-	for _, email := range []string{"reviewer@example.com", "  reviewer@example.com  ", "Reviewer <reviewer@example.com>"} {
+	for _, email := range []string{"reviewer@example.com", "  reviewer@example.com  ", "reviewer+app-review@example.co.uk"} {
 		checks := reviewDetailsChecks(&ReviewDetails{
 			ID:               "detail-1",
 			ContactFirstName: "A",
