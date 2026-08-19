@@ -321,6 +321,8 @@ func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
 		if chunkEnd > uint64(len(data)) {
 			return digest, false
 		}
+		dataEndIndex := int(dataEnd)
+		chunkEndIndex := int(chunkEnd)
 		chunkType := string(header[4:])
 		if !validPNGChunkType(header[4:]) {
 			return digest, false
@@ -335,7 +337,9 @@ func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
 		}
 		switch chunkType {
 		case "IHDR":
-			// The first-chunk validation above enforces the only legal IHDR.
+			if !validPNGIHDR(data[offset+8 : dataEndIndex]) {
+				return digest, false
+			}
 		case "PLTE":
 			if seenPalette || seenImageData || length == 0 || length%3 != 0 || length > 768 {
 				return digest, false
@@ -359,8 +363,6 @@ func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
 			}
 		}
 
-		dataEndIndex := int(dataEnd)
-		chunkEndIndex := int(chunkEnd)
 		wantCRC := binary.BigEndian.Uint32(data[dataEndIndex:chunkEndIndex])
 		if gotCRC := crc32.ChecksumIEEE(data[offset+4 : dataEndIndex]); gotCRC != wantCRC {
 			return digest, false
@@ -389,7 +391,38 @@ func validPNGChunkType(value []byte) bool {
 			return false
 		}
 	}
-	return true
+	return value[2]&0x20 == 0
+}
+
+func validPNGIHDR(header []byte) bool {
+	if len(header) != 13 {
+		return false
+	}
+	width := binary.BigEndian.Uint32(header[:4])
+	height := binary.BigEndian.Uint32(header[4:8])
+	if width == 0 || height == 0 || width > 0x7fffffff || height > 0x7fffffff {
+		return false
+	}
+
+	bitDepth := header[8]
+	switch header[9] {
+	case 0:
+		if bitDepth != 1 && bitDepth != 2 && bitDepth != 4 && bitDepth != 8 && bitDepth != 16 {
+			return false
+		}
+	case 2, 4, 6:
+		if bitDepth != 8 && bitDepth != 16 {
+			return false
+		}
+	case 3:
+		if bitDepth != 1 && bitDepth != 2 && bitDepth != 4 && bitDepth != 8 {
+			return false
+		}
+	default:
+		return false
+	}
+
+	return header[10] == 0 && header[11] == 0 && header[12] <= 1
 }
 
 func isRetryableDownloadError(err error) bool {

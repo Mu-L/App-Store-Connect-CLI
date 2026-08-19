@@ -82,6 +82,10 @@ func TestWriteDownloadedFile_Overwrite_ReplacesExistingFileOnSuccess(t *testing.
 }
 
 func TestEquivalentPNGFiles(t *testing.T) {
+	validHeader := downloadTestPNGIHDR()
+	zeroWidthHeader := append([]byte(nil), validHeader...)
+	binary.BigEndian.PutUint32(zeroWidthHeader[:4], 0)
+
 	tests := []struct {
 		name      string
 		existing  []byte
@@ -166,6 +170,32 @@ func TestEquivalentPNGFiles(t *testing.T) {
 				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
 			)),
 		},
+		{
+			name: "zero width is not equivalent",
+			existing: downloadTestPNGWithIHDR(
+				zeroWidthHeader,
+				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
+				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+			),
+			candidate: downloadTestPNGWithIHDR(
+				zeroWidthHeader,
+				downloadTestPNGChunk("tEXt", []byte("asset-id-second")),
+				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+			),
+		},
+		{
+			name: "reserved chunk bit is not equivalent",
+			existing: downloadTestPNG(
+				downloadTestPNGChunk("itxt", []byte("invalid-reserved-bit")),
+				downloadTestPNGChunk("iTXt", []byte("asset-id-first")),
+				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+			),
+			candidate: downloadTestPNG(
+				downloadTestPNGChunk("itxt", []byte("invalid-reserved-bit")),
+				downloadTestPNGChunk("tEXt", []byte("asset-id-second")),
+				downloadTestPNGChunk("IDAT", []byte("same-pixels")),
+			),
+		},
 	}
 
 	for _, tt := range tests {
@@ -173,6 +203,33 @@ func TestEquivalentPNGFiles(t *testing.T) {
 			got := equivalentPNGBytes(tt.existing, tt.candidate)
 			if got != tt.want {
 				t.Fatalf("equivalentPNGBytes() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidPNGIHDRRejectsInvalidFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func([]byte)
+	}{
+		{name: "zero width", mutate: func(header []byte) { binary.BigEndian.PutUint32(header[:4], 0) }},
+		{name: "zero height", mutate: func(header []byte) { binary.BigEndian.PutUint32(header[4:8], 0) }},
+		{name: "oversized width", mutate: func(header []byte) { binary.BigEndian.PutUint32(header[:4], 0x80000000) }},
+		{name: "oversized height", mutate: func(header []byte) { binary.BigEndian.PutUint32(header[4:8], 0x80000000) }},
+		{name: "invalid bit depth", mutate: func(header []byte) { header[8] = 4 }},
+		{name: "invalid color type", mutate: func(header []byte) { header[9] = 1 }},
+		{name: "invalid compression", mutate: func(header []byte) { header[10] = 1 }},
+		{name: "invalid filter", mutate: func(header []byte) { header[11] = 1 }},
+		{name: "invalid interlace", mutate: func(header []byte) { header[12] = 2 }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := downloadTestPNGIHDR()
+			tt.mutate(header)
+			if validPNGIHDR(header) {
+				t.Fatal("validPNGIHDR() = true, want false")
 			}
 		})
 	}
@@ -304,13 +361,26 @@ func TestIsRetryableDownloadError_TransientNetworkErrorIsRetryable(t *testing.T)
 }
 
 func downloadTestPNG(chunks ...[]byte) []byte {
+	return downloadTestPNGWithIHDR(downloadTestPNGIHDR(), chunks...)
+}
+
+func downloadTestPNGWithIHDR(header []byte, chunks ...[]byte) []byte {
 	png := append([]byte(nil), pngSignature...)
-	png = append(png, downloadTestPNGChunk("IHDR", make([]byte, 13))...)
+	png = append(png, downloadTestPNGChunk("IHDR", header)...)
 	for _, chunk := range chunks {
 		png = append(png, chunk...)
 	}
 	png = append(png, downloadTestPNGChunk("IEND", nil)...)
 	return png
+}
+
+func downloadTestPNGIHDR() []byte {
+	header := make([]byte, 13)
+	binary.BigEndian.PutUint32(header[:4], 1)
+	binary.BigEndian.PutUint32(header[4:8], 1)
+	header[8] = 8
+	header[9] = 6
+	return header
 }
 
 func downloadTestPNGChunk(chunkType string, data []byte) []byte {

@@ -796,7 +796,12 @@ func screenshotTestPNG(t *testing.T, metadata, pixels string) []byte {
 	}
 
 	png := append([]byte(nil), signature...)
-	png = append(png, chunk("IHDR", make([]byte, 13))...)
+	header := make([]byte, 13)
+	binary.BigEndian.PutUint32(header[:4], 1)
+	binary.BigEndian.PutUint32(header[4:8], 1)
+	header[8] = 8
+	header[9] = 6
+	png = append(png, chunk("IHDR", header)...)
 	png = append(png, chunk("iTXt", []byte(metadata))...)
 	png = append(png, chunk("IDAT", []byte(pixels))...)
 	png = append(png, chunk("IEND", nil)...)
