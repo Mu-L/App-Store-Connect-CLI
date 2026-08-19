@@ -37,6 +37,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "before\n[REDACTED PRIVATE KEY]\nafter",
 		},
 		{
+			name:  "PGP private key block",
+			input: "before\n-----BEGIN PGP PRIVATE KEY BLOCK-----\nkey-material\n-----END PGP PRIVATE KEY BLOCK-----\nafter",
+			want:  "before\n[REDACTED PRIVATE KEY]\nafter",
+		},
+		{
 			name:  "shell assignment",
 			input: `command CLIENT_SECRET="super secret value" --verbose`,
 			want:  "command CLIENT_SECRET=[REDACTED] --verbose",
