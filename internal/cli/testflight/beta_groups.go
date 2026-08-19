@@ -118,9 +118,13 @@ page size of matching groups. The --name and --sort flags are experimental;
 --build-id membership lookup accepts neither --name nor --sort.
 
 App-scoped --internal and --external continue to collect every matching page
-automatically for compatibility. App-scoped --name and --sort return one page
-unless --paginate is set. Global listings also keep their standard one-page
-default.
+automatically for compatibility when --name and --sort are absent. Combined
+filters return one page unless --paginate is set. Global listings also keep
+their standard one-page default.
+
+Explicit --paginate uses a page size of 200 instead of --limit. For the stable
+app-scoped --internal/--external behavior, --limit still caps the final
+aggregate after every page is fetched.
 
 A links.next URL already carries the query it came from, so --next cannot be
 combined with --internal, --external, --name, or --sort.
@@ -318,8 +322,8 @@ Examples:
 			// matching page without requiring --paginate. Keep that stable behavior
 			// while moving the filtering itself to the top-level endpoint. The new
 			// experimental name/sort flags retain the normal one-page default.
-			implicitFilterPagination := !*global && resolvedAppID != "" && internalFilter != nil && nameValue == "" && sortValue == ""
-			if implicitFilterPagination && !*paginate {
+			stableAppScopedFilter := !*global && resolvedAppID != "" && internalFilter != nil && nameValue == "" && sortValue == ""
+			if stableAppScopedFilter && !*paginate {
 				firstPage, err := listPage(requestCtx, opts...)
 				if err != nil {
 					return fmt.Errorf("beta-groups list: failed to fetch: %w", err)
@@ -328,6 +332,9 @@ Examples:
 					return listPage(ctx, asc.WithBetaGroupsNextURL(nextURL))
 				})
 				if err != nil {
+					return fmt.Errorf("beta-groups list: %w", err)
+				}
+				if err := preserveFilteredBetaGroupsLimit(groups, *limit); err != nil {
 					return fmt.Errorf("beta-groups list: %w", err)
 				}
 
@@ -348,6 +355,11 @@ Examples:
 				if err != nil {
 					return fmt.Errorf("beta-groups list: %w", err)
 				}
+				if stableAppScopedFilter {
+					if err := preserveFilteredBetaGroupsLimit(groups, *limit); err != nil {
+						return fmt.Errorf("beta-groups list: %w", err)
+					}
+				}
 
 				return shared.PrintOutput(groups, *output.Output, *output.Pretty)
 			}
@@ -360,6 +372,25 @@ Examples:
 			return shared.PrintOutput(groups, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+func preserveFilteredBetaGroupsLimit(groups asc.PaginatedResponse, limit int) error {
+	if limit <= 0 {
+		return nil
+	}
+
+	response, ok := groups.(*asc.BetaGroupsResponse)
+	if !ok {
+		return fmt.Errorf("unexpected response type %T", groups)
+	}
+	if len(response.Data) <= limit {
+		return nil
+	}
+
+	total := len(response.Data)
+	response.Data = response.Data[:limit]
+	fmt.Fprintf(os.Stderr, "Warning: showing %d of %d filtered groups (--limit %d); rerun without --limit for all\n", limit, total, limit)
+	return nil
 }
 
 // BuildGroupsListCommandConfig configures the build-centric beta-group lookup

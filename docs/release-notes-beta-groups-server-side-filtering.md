@@ -16,18 +16,23 @@ documents: `--name` filters on the exact group name (`filter[name]`) and
 ## Pagination compatibility
 
 App-scoped `--internal` and `--external` listings continue to collect every
-matching page automatically, so existing invocations retain complete output:
+matching page automatically when `--name` and `--sort` are absent, so existing
+invocations retain complete output:
 
 ```bash
 asc testflight groups list --app APP_ID --internal
 ```
 
-App-scoped listings that use only the new `--name` or `--sort` flags follow the
+Combined app-scoped filters, including `--internal --name NAME`, follow the
 standard one-page default; add `--paginate` to collect all matching pages.
+Listings that use only the new `--name` or `--sort` flags behave the same way.
 Global listings are unchanged and also require `--paginate` for aggregation.
 
-`--limit` on a filtered listing is now the page size of matching groups rather
-than a cap applied after the CLI filtered everything it fetched.
+For the stable app-scoped `--internal` and `--external` paths, `--limit` remains
+a cap on the final aggregate after every page is fetched. Without explicit
+`--paginate`, it is also sent as the requested page size. Explicit `--paginate`
+uses a page size of 200, then applies the same final cap. Other filtered and
+global listings retain their standard page-size semantics for `--limit`.
 
 `--next` now rejects `--internal`, `--external`, `--name`, and `--sort`. A
 `links.next` URL is followed verbatim and already carries the query it came

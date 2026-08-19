@@ -135,8 +135,9 @@ func TestBetaGroupsListAppScopedExternalFilterPassesLimitThrough(t *testing.T) {
 
 	stdout, stderr := runBetaGroupsList(t, "--app", "app-1", "--external", "--limit", "2")
 
-	if stderr != "" {
-		t.Fatalf("expected no truncation warning on stderr, got %q", stderr)
+	wantWarning := "Warning: showing 2 of 3 filtered groups (--limit 2); rerun without --limit for all\n"
+	if stderr != wantWarning {
+		t.Fatalf("stderr = %q, want %q", stderr, wantWarning)
 	}
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("expected implicit pagination to fetch 2 pages, got %d requests", got)
@@ -150,14 +151,14 @@ func TestBetaGroupsListAppScopedExternalFilterPassesLimitThrough(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
 		t.Fatalf("failed to parse json output: %v\noutput: %q", err, stdout)
 	}
-	if len(parsed.Data) != 3 {
-		t.Fatalf("expected all 3 groups across pages, got %d", len(parsed.Data))
+	if len(parsed.Data) != 2 {
+		t.Fatalf("expected stable --limit cap of 2 groups, got %d", len(parsed.Data))
 	}
 }
 
 // TestBetaGroupsListAppScopedFilterPaginates proves --paginate still aggregates
 // every page while filtering server-side.
-func TestBetaGroupsListAppScopedFilterPaginates(t *testing.T) {
+func TestBetaGroupsListAppScopedFilterPaginatesBeforeApplyingLimit(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 
@@ -195,16 +196,17 @@ func TestBetaGroupsListAppScopedFilterPaginates(t *testing.T) {
 		}
 	}))
 
-	stdout, stderr := runBetaGroupsList(t, "--app", "app-1", "--internal", "--paginate")
+	stdout, stderr := runBetaGroupsList(t, "--app", "app-1", "--internal", "--paginate", "--limit", "1")
 
-	if stderr != "" {
-		t.Fatalf("expected empty stderr, got %q", stderr)
+	wantWarning := "Warning: showing 1 of 2 filtered groups (--limit 1); rerun without --limit for all\n"
+	if stderr != wantWarning {
+		t.Fatalf("stderr = %q, want %q", stderr, wantWarning)
 	}
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("expected 2 requests with --paginate, got %d", got)
 	}
-	if !strings.Contains(stdout, `"id":"bg-int-1"`) || !strings.Contains(stdout, `"id":"bg-int-2"`) {
-		t.Fatalf("expected both pages aggregated, got %q", stdout)
+	if !strings.Contains(stdout, `"id":"bg-int-1"`) || strings.Contains(stdout, `"id":"bg-int-2"`) {
+		t.Fatalf("expected all pages fetched before the stable --limit cap, got %q", stdout)
 	}
 }
 
@@ -241,8 +243,10 @@ func TestBetaGroupsListHelpDocumentsImplicitFilterPagination(t *testing.T) {
 	}
 	for _, want := range []string{
 		"--internal and --external continue to collect every matching page",
-		"--name and --sort return one page",
-		"unless --paginate is set",
+		"when --name and --sort are absent",
+		"filters return one page unless --paginate is set",
+		"--paginate uses a page size of 200",
+		"--limit still caps the final",
 	} {
 		if !strings.Contains(cmd.LongHelp, want) {
 			t.Errorf("LongHelp missing %q, got %q", want, cmd.LongHelp)
