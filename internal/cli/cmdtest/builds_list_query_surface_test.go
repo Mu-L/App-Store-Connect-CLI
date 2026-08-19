@@ -200,3 +200,56 @@ func TestBuildsListIncludeRejectsUnknownValue(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildsListSortAcceptsEveryDocumentedKey(t *testing.T) {
+	for _, sortValue := range []string{
+		"version",
+		"-version",
+		"uploadedDate",
+		"-uploadedDate",
+		"preReleaseVersion",
+		"-preReleaseVersion",
+	} {
+		t.Run(sortValue, func(t *testing.T) {
+			captured := buildsListQuerySurfaceStub(t)
+
+			_, stderr, err := runBuildsListQuerySurface(
+				t,
+				"builds", "list",
+				"--app", "123456789",
+				"--sort", sortValue,
+			)
+			if err != nil {
+				t.Fatalf("run error: %v (stderr=%q)", err, stderr)
+			}
+
+			_, query := captured()
+			if got := query.Get("sort"); got != sortValue {
+				t.Fatalf("expected sort=%q, got %q", sortValue, got)
+			}
+		})
+	}
+}
+
+func TestBuildsListSortRejectsUnknownKey(t *testing.T) {
+	buildsListQuerySurfaceStub(t)
+
+	_, stderr, err := runBuildsListQuerySurface(
+		t,
+		"builds", "list",
+		"--app", "123456789",
+		"--sort", "expirationDate",
+	)
+
+	if err == nil {
+		t.Fatal("expected an error for an unsupported sort key")
+	}
+	if !strings.Contains(err.Error(), "--sort must be one of") {
+		t.Fatalf("expected sort validation error, got %v (stderr=%q)", err, stderr)
+	}
+	for _, want := range []string{"version", "uploadedDate", "preReleaseVersion"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to mention %q, got %v", want, err)
+		}
+	}
+}

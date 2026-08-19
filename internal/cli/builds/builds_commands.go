@@ -468,6 +468,16 @@ Examples:
 	}
 }
 
+// buildsListSortValues lists the sort keys accepted by GET /v1/builds.
+var buildsListSortValues = []string{
+	"version",
+	"-version",
+	"uploadedDate",
+	"-uploadedDate",
+	"preReleaseVersion",
+	"-preReleaseVersion",
+}
+
 // buildsListBetaReviewStates lists the beta review states accepted by
 // filter[betaAppReviewSubmission.betaReviewState] on GET /v1/builds.
 var buildsListBetaReviewStates = []string{"WAITING_FOR_REVIEW", "IN_REVIEW", "REJECTED", "APPROVED"}
@@ -528,7 +538,7 @@ func BuildsListCommand() *ffcli.Command {
 	appID := fs.String("app", "", "App Store Connect app ID, bundle ID, or exact app name (or ASC_APP_ID env)")
 	legacyAppID := shared.BindDeprecatedStringFlagAlias(fs, "app-id", "app")
 	output := shared.BindOutputFlags(fs)
-	sort := fs.String("sort", "", "Sort by uploadedDate or -uploadedDate")
+	sort := fs.String("sort", "", "Sort by "+strings.Join(buildsListSortValues, ", "))
 	version := fs.String("version", "", "Filter by marketing version string (CFBundleShortVersionString)")
 	buildNumber := fs.String("build-number", "", "Filter by build number (CFBundleVersion)")
 	platform := fs.String("platform", "", "Filter by platform: IOS, MAC_OS, TV_OS, VISION_OS")
@@ -563,6 +573,7 @@ Examples:
   asc builds list --app "123456789" --exclude-expired
   asc builds list --app "123456789" --version "1.2.3" --build-number "123"
   asc builds list --app "123456789" --limit 10
+  asc builds list --app "123456789" --sort "-version"
   asc builds list --app "123456789" --paginate`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -577,7 +588,7 @@ Examples:
 			if err := shared.ValidateNextURL(nextValue); err != nil {
 				return fmt.Errorf("builds: %w", err)
 			}
-			if err := shared.ValidateSort(*sort, "uploadedDate", "-uploadedDate"); err != nil {
+			if err := shared.ValidateSort(*sort, buildsListSortValues...); err != nil {
 				return fmt.Errorf("builds: %w", err)
 			}
 
