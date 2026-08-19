@@ -113,7 +113,9 @@ func normalizeReviewResponseState(value string) (string, error) {
 // normalizeReviewStars parses the comma-separated --stars value. Apple accepts
 // filter[rating] as an array parameter, so callers can ask for several ratings
 // in one request. An empty value means "no rating filter"; anything else must
-// resolve to at least one rating between 1 and 5.
+// be a list where every element is a rating between 1 and 5. Empty elements
+// (`1,,2`, `1,`) are rejected rather than skipped, so malformed input never
+// silently narrows the filter.
 func normalizeReviewStars(value string) ([]int, error) {
 	if strings.TrimSpace(value) == "" {
 		return nil, nil
@@ -122,18 +124,11 @@ func normalizeReviewStars(value string) ([]int, error) {
 	elements := strings.Split(value, ",")
 	ratings := make([]int, 0, len(elements))
 	for _, element := range elements {
-		element = strings.TrimSpace(element)
-		if element == "" {
-			continue
-		}
-		rating, err := strconv.Atoi(element)
+		rating, err := strconv.Atoi(strings.TrimSpace(element))
 		if err != nil || rating < 1 || rating > 5 {
 			return nil, errInvalidReviewStars()
 		}
 		ratings = append(ratings, rating)
-	}
-	if len(ratings) == 0 {
-		return nil, errInvalidReviewStars()
 	}
 	return ratings, nil
 }

@@ -104,6 +104,9 @@ func TestReviewsListRejectsInvalidStarRatings(t *testing.T) {
 		{name: "one bad element", stars: "1,9"},
 		{name: "not a number", stars: "five"},
 		{name: "no usable elements", stars: ","},
+		{name: "repeated comma", stars: "1,,2"},
+		{name: "trailing comma", stars: "1,"},
+		{name: "leading comma", stars: ",1"},
 	}
 
 	for _, test := range tests {
