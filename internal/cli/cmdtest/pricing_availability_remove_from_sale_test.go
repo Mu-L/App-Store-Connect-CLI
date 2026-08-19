@@ -3,7 +3,6 @@ package cmdtest
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -12,10 +11,12 @@ import (
 	"testing"
 
 	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/handlertest"
 )
 
 func TestPricingAvailabilityRemoveFromSaleUpdatesAndVerifiesTerritories(t *testing.T) {
 	setupAuth(t)
+	fixture := handlertest.New(t)
 
 	originalTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
@@ -31,7 +32,7 @@ func TestPricingAvailabilityRemoveFromSaleUpdatesAndVerifiesTerritories(t *testi
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
 			mu.Lock()
 			defer mu.Unlock()
-			return territoryAvailabilityResponse(t, states), nil
+			return territoryAvailabilityResponse(fixture, states), nil
 		case req.Method == http.MethodPatch && req.URL.Path == "/v1/territoryAvailabilities/ta-usa":
 			var payload struct {
 				Data struct {
@@ -42,12 +43,10 @@ func TestPricingAvailabilityRemoveFromSaleUpdatesAndVerifiesTerritories(t *testi
 				} `json:"data"`
 			}
 			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
-				t.Errorf("decode PATCH: %v", err)
-				return nil, fmt.Errorf("decode PATCH: %w", err)
+				return nil, fixture.Errorf("decode PATCH: %w", err)
 			}
 			if payload.Data.ID != "ta-usa" || payload.Data.Attributes.Available == nil || *payload.Data.Attributes.Available {
-				t.Errorf("unexpected PATCH payload: %+v", payload)
-				return nil, fmt.Errorf("unexpected PATCH payload")
+				return nil, fixture.Errorf("unexpected PATCH payload: %+v", payload)
 			}
 			patches.Add(1)
 			mu.Lock()
@@ -55,8 +54,7 @@ func TestPricingAvailabilityRemoveFromSaleUpdatesAndVerifiesTerritories(t *testi
 			mu.Unlock()
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"territoryAvailabilities","id":"ta-usa","attributes":{"available":false}}}`), nil
 		default:
-			t.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
-			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, fixture.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
 		}
 	})
 
@@ -118,6 +116,8 @@ func TestPricingAvailabilityRemoveFromSaleRequiresConfirmWithUsageExit(t *testin
 
 func TestPricingAvailabilityRemoveFromSaleOutputFormats(t *testing.T) {
 	setupAuth(t)
+	fixture := handlertest.New(t)
+
 	originalTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -125,9 +125,9 @@ func TestPricingAvailabilityRemoveFromSaleOutputFormats(t *testing.T) {
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appAvailabilityV2":
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"appAvailabilities","id":"availability-1","attributes":{"availableInNewTerritories":false}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
-			return territoryAvailabilityResponse(t, map[string]bool{"USA": false, "FRA": false}), nil
+			return territoryAvailabilityResponse(fixture, map[string]bool{"USA": false, "FRA": false}), nil
 		default:
-			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, fixture.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
 		}
 	})
 
@@ -159,6 +159,7 @@ func TestPricingAvailabilityRemoveFromSaleOutputFormats(t *testing.T) {
 
 func TestPricingAvailabilityRemoveFromSaleNoOp(t *testing.T) {
 	setupAuth(t)
+	fixture := handlertest.New(t)
 
 	originalTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
@@ -169,12 +170,12 @@ func TestPricingAvailabilityRemoveFromSaleNoOp(t *testing.T) {
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appAvailabilityV2":
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"appAvailabilities","id":"availability-1","attributes":{"availableInNewTerritories":false}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
-			return territoryAvailabilityResponse(t, map[string]bool{"USA": false, "FRA": false}), nil
+			return territoryAvailabilityResponse(fixture, map[string]bool{"USA": false, "FRA": false}), nil
 		case req.Method == http.MethodPatch:
 			patches.Add(1)
-			return nil, fmt.Errorf("unexpected PATCH %s", req.URL.Path)
+			return nil, fixture.Errorf("no-op availability should not be patched: %s", req.URL.Path)
 		default:
-			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, fixture.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
 		}
 	})
 
@@ -198,6 +199,7 @@ func TestPricingAvailabilityRemoveFromSaleNoOp(t *testing.T) {
 
 func TestPricingAvailabilityRemoveFromSaleContinuesAfterPartialFailure(t *testing.T) {
 	setupAuth(t)
+	fixture := handlertest.New(t)
 
 	originalTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
@@ -212,7 +214,7 @@ func TestPricingAvailabilityRemoveFromSaleContinuesAfterPartialFailure(t *testin
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
 			mu.Lock()
 			defer mu.Unlock()
-			return territoryAvailabilityResponse(t, states), nil
+			return territoryAvailabilityResponse(fixture, states), nil
 		case req.Method == http.MethodPatch && strings.HasPrefix(req.URL.Path, "/v1/territoryAvailabilities/ta-"):
 			patches.Add(1)
 			territory := strings.ToUpper(strings.TrimPrefix(req.URL.Path, "/v1/territoryAvailabilities/ta-"))
@@ -224,7 +226,7 @@ func TestPricingAvailabilityRemoveFromSaleContinuesAfterPartialFailure(t *testin
 			mu.Unlock()
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"territoryAvailabilities","id":"ta-usa","attributes":{"available":false}}}`), nil
 		default:
-			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, fixture.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
 		}
 	})
 
@@ -270,6 +272,7 @@ func TestPricingAvailabilityRemoveFromSaleContinuesAfterPartialFailure(t *testin
 
 func TestPricingAvailabilityRemoveFromSaleFinalReadbackIncludesInitiallyUnavailableTerritories(t *testing.T) {
 	setupAuth(t)
+	fixture := handlertest.New(t)
 
 	originalTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
@@ -280,13 +283,13 @@ func TestPricingAvailabilityRemoveFromSaleFinalReadbackIncludesInitiallyUnavaila
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"appAvailabilities","id":"availability-1","attributes":{"availableInNewTerritories":false}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
 			if territoryReads.Add(1) == 1 {
-				return territoryAvailabilityResponse(t, map[string]bool{"USA": true, "FRA": false}), nil
+				return territoryAvailabilityResponse(fixture, map[string]bool{"USA": true, "FRA": false}), nil
 			}
-			return territoryAvailabilityResponse(t, map[string]bool{"USA": false, "FRA": true}), nil
+			return territoryAvailabilityResponse(fixture, map[string]bool{"USA": false, "FRA": true}), nil
 		case req.Method == http.MethodPatch && req.URL.Path == "/v1/territoryAvailabilities/ta-usa":
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"territoryAvailabilities","id":"ta-usa","attributes":{"available":false}}}`), nil
 		default:
-			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, fixture.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
 		}
 	})
 
@@ -306,8 +309,7 @@ func TestPricingAvailabilityRemoveFromSaleFinalReadbackIncludesInitiallyUnavaila
 	})
 }
 
-func territoryAvailabilityResponse(t *testing.T, states map[string]bool) *http.Response {
-	t.Helper()
+func territoryAvailabilityResponse(fixture *handlertest.Asserter, states map[string]bool) *http.Response {
 	territories := []string{"USA", "FRA"}
 	data := make([]map[string]any, 0, len(territories))
 	for _, territory := range territories {
@@ -322,7 +324,7 @@ func territoryAvailabilityResponse(t *testing.T, states map[string]bool) *http.R
 	}
 	body, err := json.Marshal(map[string]any{"data": data, "links": map[string]string{"next": ""}})
 	if err != nil {
-		t.Fatalf("marshal territory response: %v", err)
+		return fixture.Response("marshal territory response: %v", err)
 	}
 	return jsonHTTPResponse(http.StatusOK, string(body))
 }
