@@ -22,6 +22,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "request failed with Authorization: [REDACTED] after retry",
 		},
 		{
+			name:  "parameterized authorization header",
+			input: "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260819/region/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=abcdef0123456789",
+			want:  "Authorization: [REDACTED]",
+		},
+		{
 			name:  "standalone bearer credential",
 			input: "server returned Bearer eyJhbGciOiJFUzI1NiJ9.fake.signature",
 			want:  "server returned Bearer [REDACTED]",
@@ -30,6 +35,26 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "signed URL credentials",
 			input: "upload https://example.test/file?part=1&X-Amz-Credential=ACCESS%2F20260819&X-Amz-Signature=abcdef0123456789#result",
 			want:  "upload https://example.test/file?part=1&X-Amz-Credential=[REDACTED]&X-Amz-Signature=[REDACTED]#result",
+		},
+		{
+			name:  "client secret URL parameter",
+			input: "callback https://example.test/path?client_secret=client-value&state=ready",
+			want:  "callback https://example.test/path?client_secret=[REDACTED]&state=ready",
+		},
+		{
+			name:  "refresh token URL parameter",
+			input: "callback https://example.test/path?refresh_token=refresh-value&state=ready",
+			want:  "callback https://example.test/path?refresh_token=[REDACTED]&state=ready",
+		},
+		{
+			name:  "password URL parameter",
+			input: "callback https://example.test/path?password=password-value&state=ready",
+			want:  "callback https://example.test/path?password=[REDACTED]&state=ready",
+		},
+		{
+			name:  "private key URL parameter",
+			input: "callback https://example.test/path?private_key=private-key-value&state=ready",
+			want:  "callback https://example.test/path?private_key=[REDACTED]&state=ready",
 		},
 		{
 			name:  "URL userinfo credentials",
@@ -75,6 +100,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "prefixed environment assignment",
 			input: `AWS_SECRET_ACCESS_KEY="cloud-secret" MY_CLIENT_SECRET='client-secret'`,
 			want:  `AWS_SECRET_ACCESS_KEY=[REDACTED] MY_CLIENT_SECRET=[REDACTED]`,
+		},
+		{
+			name:  "leading underscore assignment",
+			input: `//registry.npmjs.org/:_authToken=npm-secret`,
+			want:  `//registry.npmjs.org/:_authToken=[REDACTED]`,
 		},
 		{
 			name:  "JSON assignment",

@@ -23,6 +23,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: privateKeyRedactionMarker,
 	},
 	{
+		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*AWS4-HMAC-SHA256[ \t]+[^\r\n]+`),
+		replacement: "Authorization: " + redactionMarker,
+	},
+	{
 		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*(?:` + escapeAwareQuotedValue + `|(?:(?:bearer|basic|token)[ \t]+)?[^\s,;]+)`),
 		replacement: "Authorization: " + redactionMarker,
 	},
@@ -31,7 +35,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker + `@`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)([?&](?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|token|access_token|api[_-]?key|apikey)=)[^&#\s"'<>]+`),
+		pattern:     regexp.MustCompile(`(?i)([?&](?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|` + sensitiveAssignmentName + `)=)[^&#\s"'<>]+`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
@@ -43,7 +47,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}"` + redactionMarker + `"`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(\b(?:[a-z0-9]+_)*` + sensitiveAssignmentName + `\b[ \t]*[:=][ \t]*)(?:\[REDACTED PRIVATE KEY\]|(?:(?:bearer|basic|token)[ \t]+)[^\s,;]+|` + escapeAwareQuotedValue + `|[^\s,;]+)`),
+		pattern:     regexp.MustCompile(`(?i)(\b_*(?:[a-z0-9]+_)*` + sensitiveAssignmentName + `\b[ \t]*[:=][ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|(?:(?:bearer|basic|token)[ \t]+)[^\s,;]+|` + escapeAwareQuotedValue + `|[^\s,;]+)`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
