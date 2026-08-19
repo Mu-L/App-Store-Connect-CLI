@@ -33,7 +33,7 @@ const (
 	cookieDataValue             = `(?:` + cookieDataQuoted + `|` + cookieDataUnquoted + `)`
 	curlCertOptionPrefix        = `(?:(?:-E|--cert)\b(?:[ \t]+|[ \t]*=[ \t]*)|-E)`
 	curlCertUnquotedPath        = `(?:\\(?:\r?\n|[^\r\n])|[^\s:'"])+`
-	curlHeaderOptionPrefix      = `(?:(?:-H|--header)\b(?:[ \t]+|[ \t]*=[ \t]*)|-H)`
+	curlHeaderOptionPrefix      = `(?:(?:-H|--header|--proxy-header)\b(?:[ \t]+|[ \t]*=[ \t]*)|-H)`
 )
 
 type redactionRule struct {
@@ -46,6 +46,8 @@ var (
 	secretValuePattern      = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
 	rawCookieJarPattern     = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*\{`)
 	escapedCookieJarPattern = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	rawCredentialObject     = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
+	escapedCredentialObject = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
 )
 
 var structuredCookieValueRedactionRules = []redactionRule{
@@ -88,6 +90,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?(?:\r?\n(?:[ \t]+[^\r\n]*|[ \t]*$))+`),
 		replacement: `${1}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:[^"'[{\s\r\n][^\r\n]*)(\r?)$`),
+		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)(["']` + structuredCredentialName + `["'][ \t\r\n]*:[ \t\r\n]*\[)[ \t\r\n]*(?:"(?:\\.|[^"\\\r\n])*"(?:[ \t\r\n]*,[ \t\r\n]*"(?:\\.|[^"\\\r\n])*")*)[ \t\r\n]*(\])`),
@@ -237,6 +243,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, objectChanged := redactStructuredCredentialObjects(redacted); objectChanged {
+		redacted = next
+		changed = true
+	}
 	for _, rule := range singleLineQuotedRedactionRules {
 		next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
 		if next != redacted {
@@ -252,6 +262,79 @@ func redactSensitiveText(value string) (string, bool) {
 		}
 	}
 	return redacted, changed
+}
+
+func redactStructuredCredentialObjects(value string) (string, bool) {
+	type objectPattern struct {
+		pattern       *regexp.Regexp
+		escapedQuotes bool
+		quote         string
+	}
+
+	patterns := []objectPattern{
+		{pattern: rawCredentialObject, quote: `"`},
+		{pattern: escapedCredentialObject, escapedQuotes: true, quote: `\"`},
+	}
+	redacted := value
+	changed := false
+	for _, candidate := range patterns {
+		searchStart := 0
+		for searchStart < len(redacted) {
+			match := candidate.pattern.FindStringIndex(redacted[searchStart:])
+			if match == nil {
+				break
+			}
+
+			open := searchStart + match[1] - 1
+			close, ok := findJSONObjectEnd(redacted, open, candidate.escapedQuotes)
+			if !ok {
+				searchStart = open + 1
+				continue
+			}
+
+			replacement := candidate.quote + redactionMarker + candidate.quote
+			redacted = redacted[:open] + replacement + redacted[close+1:]
+			changed = true
+			searchStart = open + len(replacement)
+		}
+	}
+	return redacted, changed
+}
+
+func findJSONObjectEnd(value string, open int, escapedQuotes bool) (int, bool) {
+	depth := 0
+	inString := false
+	for i := open; i < len(value); i++ {
+		if value[i] == '"' && isJSONStringDelimiter(value, i, escapedQuotes) {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		switch value[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func isJSONStringDelimiter(value string, quote int, escapedQuotes bool) bool {
+	backslashes := 0
+	for i := quote - 1; i >= 0 && value[i] == '\\'; i-- {
+		backslashes++
+	}
+	if escapedQuotes {
+		return backslashes%4 == 1
+	}
+	return backslashes%2 == 0
 }
 
 func redactStructuredCookieValues(value string) (string, bool) {

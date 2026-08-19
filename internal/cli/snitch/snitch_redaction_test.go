@@ -112,6 +112,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl --header=Cookie:[REDACTED] https://example.test`,
 		},
 		{
+			name:  "unquoted proxy cookie header argument",
+			input: `curl --proxy-header Cookie:myacinfo=super-session-secret https://example.test`,
+			want:  `curl --proxy-header Cookie:[REDACTED] https://example.test`,
+		},
+		{
 			name:  "curl long cookie data argument",
 			input: `curl --cookie 'myacinfo=super-session-secret; dslang=US-EN' https://example.test`,
 			want:  `curl --cookie [REDACTED] https://example.test`,
@@ -160,6 +165,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "structured credential headers",
 			input: `{"Authorization":"Basic c3VwZXJzZWNyZXQ=","Cookie":"myacinfo=super-session-secret","status":"failed"}`,
 			want:  `{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","status":"failed"}`,
+		},
+		{
+			name:  "object valued structured credential",
+			input: `{"token":{"type":"bearer","value":"opaque-lowercase-secret"},"status":"failed"}`,
+			want:  `{"token":"[REDACTED]","status":"failed"}`,
+		},
+		{
+			name:  "escaped object valued structured credential",
+			input: `trace {\"token\":{\"type\":\"bearer\",\"value\":\"opaque-lowercase-secret\"},\"status\":\"failed\"}`,
+			want:  `trace {\"token\":\"[REDACTED]\",\"status\":\"failed\"}`,
 		},
 		{
 			name:  "array-valued authorization header",
@@ -272,6 +287,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "shell assignment",
 			input: `command CLIENT_SECRET="super secret value" --verbose`,
 			want:  "command CLIENT_SECRET=[REDACTED] --verbose",
+		},
+		{
+			name:  "multiword plain yaml scalar",
+			input: "password: correct horse battery staple\nstatus: failed",
+			want:  "password: [REDACTED]\nstatus: failed",
 		},
 		{
 			name:  "space-separated secret flag",
@@ -1163,6 +1183,45 @@ func TestSnitchDryRunRedactsQuotedAuthorizationAndSCPRemoteCredentials(t *testin
 	for _, want := range []string{
 		"curl -H 'Authorization: [REDACTED]' https://example.test",
 		"asc signing sync --repo [REDACTED]@github.com:team/certs.git",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsCompositeYAMLAndProxyHeaderCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"yaml secret tail", "nested-object-secret", "proxy-header-secret"}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "curl --proxy-header Cookie:myacinfo="+secrets[2]+" https://example.test",
+		"--expected", "password: [REDACTED]",
+		"--actual", "password: "+secrets[0]+"\nresponse: {\"token\":{\"type\":\"bearer\",\"value\":\""+secrets[1]+"\"},\"status\":\"failed\"}",
+		"composite credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"curl --proxy-header Cookie:[REDACTED] https://example.test",
+		"password: [REDACTED]",
+		`response: {"token":"[REDACTED]","status":"failed"}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
