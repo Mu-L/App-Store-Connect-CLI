@@ -389,6 +389,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc deploy --password [REDACTED] --verbose`,
 		},
 		{
+			name:  "fish command substitution in secret flag",
+			input: `asc signing sync --password (printf opaque-secret) --verbose`,
+			want:  `asc signing sync --password [REDACTED] --verbose`,
+		},
+		{
 			name:  "mixed adjacent fragments in secret assignment",
 			input: `PASSWORD=pre'super'"secret"post asc builds list`,
 			want:  `PASSWORD=[REDACTED] asc builds list`,
@@ -1256,10 +1261,11 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret"}
+	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret", "fish-substitution-secret"}
 	repro := "asc web xcode-cloud env-vars create --value " + secrets[0] + " --secret=true&& echo done\n" +
 		"curl --proxy-cert client.p12:" + secrets[1] + " https://example.test\n" +
-		"asc deploy --password $(printf %s $(printf prefix) " + secrets[2] + ") --verbose"
+		"asc deploy --password $(printf %s $(printf prefix) " + secrets[2] + ") --verbose\n" +
+		"asc signing sync --password (printf " + secrets[3] + ") --verbose"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1285,6 +1291,7 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 		"--value [REDACTED] --secret=true&& echo done",
 		"curl --proxy-cert client.p12:[REDACTED] https://example.test",
 		"asc deploy --password [REDACTED] --verbose",
+		"asc signing sync --password [REDACTED] --verbose",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
