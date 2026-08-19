@@ -64,6 +64,16 @@ func TestKeywordsRankCommandValidatesInputBeforeRequests(t *testing.T) {
 			want: "--app must be a numeric App Store app ID",
 		},
 		{
+			name: "zero app",
+			args: []string{"--app", "0", "--keywords", "focus timer"},
+			want: "--app must be a positive App Store app ID representable as a 64-bit integer",
+		},
+		{
+			name: "overflowing app",
+			args: []string{"--app", "9223372036854775808", "--keywords", "focus timer"},
+			want: "--app must be a positive App Store app ID representable as a 64-bit integer",
+		},
+		{
 			name: "missing keywords",
 			args: []string{"--app", "1234567890"},
 			want: "--keywords is required",

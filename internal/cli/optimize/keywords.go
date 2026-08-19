@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -112,6 +113,10 @@ func normalizeKeywordAppID(appID string) (string, error) {
 		if digit < '0' || digit > '9' {
 			return "", shared.UsageError("--app must be a numeric App Store app ID")
 		}
+	}
+	parsed, err := strconv.ParseInt(resolved, 10, 64)
+	if err != nil || parsed <= 0 {
+		return "", shared.UsageError("--app must be a positive App Store app ID representable as a 64-bit integer")
 	}
 	return resolved, nil
 }
