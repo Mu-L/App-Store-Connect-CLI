@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/itunes"
 )
 
@@ -154,7 +155,7 @@ func TestKeywordsRankReportsRanksAbsencesAndPerKeywordFailures(t *testing.T) {
 		})
 	})
 
-	var report KeywordRankReport
+	var report asc.KeywordRankReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
 	}
@@ -263,7 +264,7 @@ func TestKeywordsRankBoundsConcurrentRequestsWithWorkers(t *testing.T) {
 		})
 	})
 
-	var report KeywordRankReport
+	var report asc.KeywordRankReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("unmarshal report: %v", err)
 	}

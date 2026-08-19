@@ -3,20 +3,21 @@ package optimize
 import (
 	"strconv"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
-func renderKeywordRankTable(report KeywordRankReport) error {
+func renderKeywordRankTable(report asc.KeywordRankReport) error {
 	renderKeywordRankHuman(report, false)
 	return nil
 }
 
-func renderKeywordRankMarkdown(report KeywordRankReport) error {
+func renderKeywordRankMarkdown(report asc.KeywordRankReport) error {
 	renderKeywordRankHuman(report, true)
 	return nil
 }
 
-func renderKeywordRankHuman(report KeywordRankReport, markdown bool) {
+func renderKeywordRankHuman(report asc.KeywordRankReport, markdown bool) {
 	shared.RenderSection("Keyword Rank", []string{"Field", "Value"}, [][]string{
 		{"App", report.AppID},
 		{"Store", report.Country + " · " + formatSearchPlanPlatform(report.Platform)},
