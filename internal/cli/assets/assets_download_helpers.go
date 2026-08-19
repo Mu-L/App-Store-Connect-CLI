@@ -1,9 +1,13 @@
 package assets
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net"
 	"net/http"
@@ -15,6 +19,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 const (
@@ -22,7 +27,21 @@ const (
 	assetDownloadInitialDelay = 200 * time.Millisecond
 	assetDownloadMaxDelay     = 2 * time.Second
 	assetDownloadUserAgent    = "curl/8.7.1 App-Store-Connect-CLI/asset-download"
+	pngEquivalenceMaxBytes    = 32 << 20
 )
+
+var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+
+// The screenshot CDN can rewrite resource identifiers and timestamps in these
+// non-rendering ancillary chunks on every request. Preserve the operator's
+// existing file when every other chunk remains identical.
+var volatilePNGChunkTypes = map[string]struct{}{
+	"eXIf": {},
+	"iTXt": {},
+	"tEXt": {},
+	"tIME": {},
+	"zTXt": {},
+}
 
 type downloadHTTPStatusError struct {
 	StatusCode int
@@ -115,13 +134,22 @@ func resolveImageAssetDownloadURL(asset *asc.ImageAsset, fileName string) (strin
 }
 
 func downloadURLToFile(ctx context.Context, rawURL string, outputPath string, overwrite bool) (int64, string, error) {
+	written, contentType, _, err := downloadURLToFileWithEquivalence(ctx, rawURL, outputPath, overwrite, false)
+	return written, contentType, err
+}
+
+func downloadScreenshotURLToFile(ctx context.Context, rawURL string, outputPath string, overwrite bool) (int64, string, bool, error) {
+	return downloadURLToFileWithEquivalence(ctx, rawURL, outputPath, overwrite, true)
+}
+
+func downloadURLToFileWithEquivalence(ctx context.Context, rawURL string, outputPath string, overwrite, preserveEquivalentPNG bool) (int64, string, bool, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
-		return 0, "", fmt.Errorf("download URL is required")
+		return 0, "", false, fmt.Errorf("download URL is required")
 	}
 	outputPath = strings.TrimSpace(outputPath)
 	if outputPath == "" {
-		return 0, "", fmt.Errorf("output path is required")
+		return 0, "", false, fmt.Errorf("output path is required")
 	}
 
 	delay := assetDownloadInitialDelay
@@ -129,20 +157,20 @@ func downloadURLToFile(ctx context.Context, rawURL string, outputPath string, ov
 	lastContentType := ""
 
 	for attempt := 1; attempt <= assetDownloadMaxAttempts; attempt++ {
-		written, contentType, err := downloadURLToFileOnce(ctx, rawURL, outputPath, overwrite)
+		written, contentType, unchanged, err := downloadURLToFileOnce(ctx, rawURL, outputPath, overwrite, preserveEquivalentPNG)
 		if err == nil {
-			return written, contentType, nil
+			return written, contentType, unchanged, nil
 		}
 
 		lastErr = err
 		lastContentType = contentType
 
 		if !isRetryableDownloadError(err) || attempt == assetDownloadMaxAttempts {
-			return 0, lastContentType, lastErr
+			return 0, lastContentType, false, lastErr
 		}
 
 		if err := sleepWithContext(ctx, delay); err != nil {
-			return 0, lastContentType, err
+			return 0, lastContentType, false, err
 		}
 
 		delay *= 2
@@ -151,20 +179,20 @@ func downloadURLToFile(ctx context.Context, rawURL string, outputPath string, ov
 		}
 	}
 
-	return 0, lastContentType, lastErr
+	return 0, lastContentType, false, lastErr
 }
 
-func downloadURLToFileOnce(ctx context.Context, rawURL string, outputPath string, overwrite bool) (int64, string, error) {
+func downloadURLToFileOnce(ctx context.Context, rawURL string, outputPath string, overwrite, preserveEquivalentPNG bool) (int64, string, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("User-Agent", assetDownloadUserAgent)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
 	defer resp.Body.Close()
 
@@ -178,14 +206,186 @@ func downloadURLToFileOnce(ctx context.Context, rawURL string, outputPath string
 		if msg == "" {
 			msg = strings.TrimSpace(resp.Status)
 		}
-		return 0, contentType, &downloadHTTPStatusError{
+		return 0, contentType, false, &downloadHTTPStatusError{
 			StatusCode: resp.StatusCode,
 			Message:    msg,
 		}
 	}
 
+	if preserveEquivalentPNG && overwrite && isRegularFile(outputPath) {
+		written, unchanged, err := writeScreenshotDownload(outputPath, resp.Body)
+		return written, contentType, unchanged, err
+	}
+
 	n, err := writeDownloadedFile(outputPath, resp.Body, overwrite)
-	return n, contentType, err
+	return n, contentType, false, err
+}
+
+func isRegularFile(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
+func writeScreenshotDownload(outputPath string, reader io.Reader) (int64, bool, error) {
+	candidate, err := io.ReadAll(io.LimitReader(reader, pngEquivalenceMaxBytes+1))
+	if err != nil {
+		return int64(len(candidate)), false, err
+	}
+	if len(candidate) <= pngEquivalenceMaxBytes {
+		equivalent, err := equivalentExistingPNG(outputPath, candidate)
+		if err != nil {
+			return int64(len(candidate)), false, err
+		}
+		if equivalent {
+			return 0, true, nil
+		}
+	}
+
+	written, err := writeDownloadedFile(outputPath, io.MultiReader(bytes.NewReader(candidate), reader), true)
+	return written, false, err
+}
+
+func equivalentExistingPNG(outputPath string, candidate []byte) (bool, error) {
+	parent, err := os.OpenRoot(filepath.Dir(outputPath))
+	if err != nil {
+		return false, err
+	}
+	defer parent.Close()
+
+	existing, err := secureopen.OpenExistingNoFollowInRoot(parent, filepath.Base(outputPath))
+	if err != nil {
+		return false, err
+	}
+	existingInfo, err := existing.Stat()
+	if err != nil {
+		_ = existing.Close()
+		return false, err
+	}
+	existingBytes, err := io.ReadAll(io.LimitReader(existing, pngEquivalenceMaxBytes+1))
+	closeErr := existing.Close()
+	if err != nil {
+		return false, err
+	}
+	if closeErr != nil {
+		return false, closeErr
+	}
+	if len(existingBytes) > pngEquivalenceMaxBytes || !equivalentPNGBytes(existingBytes, candidate) {
+		return false, nil
+	}
+
+	currentInfo, err := parent.Lstat(filepath.Base(outputPath))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return os.SameFile(existingInfo, currentInfo), nil
+}
+
+func equivalentPNGBytes(existing, candidate []byte) bool {
+	if bytes.Equal(existing, candidate) {
+		return true
+	}
+
+	existingStable, existingValid := stablePNGDigest(existing)
+	candidateStable, candidateValid := stablePNGDigest(candidate)
+	return existingValid && candidateValid && existingStable == candidateStable
+}
+
+func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
+	var digest [sha256.Size]byte
+	if len(data) < len(pngSignature) || !bytes.Equal(data[:len(pngSignature)], pngSignature) {
+		return digest, false
+	}
+
+	stable := sha256.New()
+	_, _ = stable.Write(pngSignature)
+	offset := len(pngSignature)
+	seenHeader := false
+	seenPalette := false
+	seenImageData := false
+	imageDataEnded := false
+	for {
+		if offset+12 > len(data) {
+			return digest, false
+		}
+		header := data[offset : offset+8]
+		length := binary.BigEndian.Uint32(header[:4])
+		dataEnd := uint64(offset) + 8 + uint64(length)
+		chunkEnd := dataEnd + 4
+		if chunkEnd > uint64(len(data)) {
+			return digest, false
+		}
+		chunkType := string(header[4:])
+		if !validPNGChunkType(header[4:]) {
+			return digest, false
+		}
+		if !seenHeader {
+			if chunkType != "IHDR" || length != 13 {
+				return digest, false
+			}
+			seenHeader = true
+		} else if chunkType == "IHDR" {
+			return digest, false
+		}
+		switch chunkType {
+		case "IHDR":
+			// The first-chunk validation above enforces the only legal IHDR.
+		case "PLTE":
+			if seenPalette || seenImageData || length == 0 || length%3 != 0 || length > 768 {
+				return digest, false
+			}
+			seenPalette = true
+		case "IDAT":
+			if imageDataEnded {
+				return digest, false
+			}
+			seenImageData = true
+		case "IEND":
+			if length != 0 || !seenImageData {
+				return digest, false
+			}
+		default:
+			if seenImageData {
+				imageDataEnded = true
+			}
+			if header[4]&0x20 == 0 {
+				return digest, false
+			}
+		}
+
+		dataEndIndex := int(dataEnd)
+		chunkEndIndex := int(chunkEnd)
+		wantCRC := binary.BigEndian.Uint32(data[dataEndIndex:chunkEndIndex])
+		if gotCRC := crc32.ChecksumIEEE(data[offset+4 : dataEndIndex]); gotCRC != wantCRC {
+			return digest, false
+		}
+		if _, volatile := volatilePNGChunkTypes[chunkType]; !volatile {
+			_, _ = stable.Write(data[offset:chunkEndIndex])
+		}
+
+		if chunkType == "IEND" {
+			if chunkEndIndex != len(data) {
+				return digest, false
+			}
+			copy(digest[:], stable.Sum(nil))
+			return digest, true
+		}
+		offset = chunkEndIndex
+	}
+}
+
+func validPNGChunkType(value []byte) bool {
+	if len(value) != 4 {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'A' || char > 'Z') && (char < 'a' || char > 'z') {
+			return false
+		}
+	}
+	return true
 }
 
 func isRetryableDownloadError(err error) bool {
