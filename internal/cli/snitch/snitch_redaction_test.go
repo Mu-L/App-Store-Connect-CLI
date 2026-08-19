@@ -344,6 +344,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc notify slack --webhook [REDACTED] --message ready`,
 		},
 		{
+			name:  "notification webhook environment assignment",
+			input: `ASC_SLACK_WEBHOOK=https://hooks.slack.com/services/T/B/super-secret asc notify slack --message ready`,
+			want:  `ASC_SLACK_WEBHOOK=[REDACTED] asc notify slack --message ready`,
+		},
+		{
+			name:  "quoted custom secret header",
+			input: `asc web xcode-cloud usage alert --webhook-header "X-API-Key: supersecret" --webhook https://example.test`,
+			want:  `asc web xcode-cloud usage alert --webhook-header "X-API-Key: [REDACTED]" --webhook [REDACTED]`,
+		},
+		{
 			name:  "xcode cloud slack webhook flag",
 			input: `asc web xcode-cloud usage alert --slack-webhook=https://hooks.slack.com/services/T/B/super-secret --threshold 90`,
 			want:  `asc web xcode-cloud usage alert --slack-webhook=[REDACTED] --threshold 90`,
@@ -1337,11 +1347,11 @@ func TestSnitchDryRunPreservesOperatorsAroundContinuedHeaderCredentials(t *testi
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"continued-header-secret", "boundary-assignment-credential", "operator-flag-credential", "fragmented-flag-credential", "fragmented-env-credential"}
+	secrets := []string{"continued-header-secret", "boundary-assignment-credential", "operator-flag-credential", "fragmented-flag-credential", "fragmented-env-credential", "environment-webhook-secret", "custom-header-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", "curl -H \"Cookie: myacinfo="+secrets[0]+"\\\n-tail\" https://example.test\nPASSWORD="+secrets[1]+"; echo next\nasc deploy --password "+secrets[2]+" && echo done\nasc deploy --password 'adjacent-'\""+secrets[3]+"\" --verbose\nPASSWORD='adjacent-'\""+secrets[4]+"\" asc builds list",
+		"--repro", "curl -H \"Cookie: myacinfo="+secrets[0]+"\\\n-tail\" https://example.test\nPASSWORD="+secrets[1]+"; echo next\nasc deploy --password "+secrets[2]+" && echo done\nasc deploy --password 'adjacent-'\""+secrets[3]+"\" --verbose\nPASSWORD='adjacent-'\""+secrets[4]+"\" asc builds list\nASC_SLACK_WEBHOOK=https://hooks.slack.com/services/T/B/"+secrets[5]+" asc notify slack --message ready\nasc web xcode-cloud usage alert --webhook-header \"X-API-Key: "+secrets[6]+"\" --webhook https://example.test",
 		"continued header and operator preservation probe",
 	)
 	if err != nil {
@@ -1365,6 +1375,8 @@ func TestSnitchDryRunPreservesOperatorsAroundContinuedHeaderCredentials(t *testi
 		"asc deploy --password [REDACTED] && echo done",
 		"asc deploy --password [REDACTED] --verbose",
 		"PASSWORD=[REDACTED] asc builds list",
+		"ASC_SLACK_WEBHOOK=[REDACTED] asc notify slack --message ready",
+		`asc web xcode-cloud usage alert --webhook-header "X-API-Key: [REDACTED]" --webhook [REDACTED]`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
