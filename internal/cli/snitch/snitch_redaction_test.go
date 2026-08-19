@@ -364,6 +364,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc deploy --password [REDACTED] && echo next`,
 		},
 		{
+			name:  "PowerShell escaped whitespace in secret flag",
+			input: "asc signing sync --password opaque` secret --verbose",
+			want:  "asc signing sync --password [REDACTED] --verbose",
+		},
+		{
+			name:  "PowerShell continued secret flag",
+			input: "asc signing sync --password opaque`\nsecret --verbose",
+			want:  "asc signing sync --password [REDACTED] --verbose",
+		},
+		{
+			name:  "XML property list credential string",
+			input: `<plist><dict><key>password</key><string>opaque-plist-secret</string><key>status</key><string>failed</string></dict></plist>`,
+			want:  `<plist><dict><key>password</key><string>[REDACTED]</string><key>status</key><string>failed</string></dict></plist>`,
+		},
+		{
 			name:  "multiword plain yaml scalar",
 			input: "password: correct horse battery staple\nstatus: failed",
 			want:  "password: [REDACTED]\nstatus: failed",
@@ -1314,6 +1329,44 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"asc deploy --password [REDACTED] --verbose",
 		"PASSWORD=[REDACTED]",
 		"Authorization: [REDACTED]",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsPowerShellAndPlistCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const powerShellSecret = "powershell-secret-suffix"
+	const plistSecret = "plist-credential-value"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "asc signing sync --password opaque` "+powerShellSecret+" --verbose",
+		"--actual", `<plist><dict><key>password</key><string>`+plistSecret+`</string><key>status</key><string>failed</string></dict></plist>`,
+		"shell and property list credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range []string{powerShellSecret, plistSecret} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"asc signing sync --password [REDACTED] --verbose",
+		`<key>password</key><string>[REDACTED]</string><key>status</key><string>failed</string>`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

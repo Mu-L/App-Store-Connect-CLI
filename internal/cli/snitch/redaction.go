@@ -27,9 +27,10 @@ const (
 	singleLineQuotedValue       = `(?:"(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*')`
 	shellCommandSubstitution    = `(?:\x60(?:\\.|[^\x60\\\r\n])*\x60|\$\((?:\\.|[^)\\\r\n])*\))`
 	fishCommandSubstitution     = `\((?:\\.|[^)\\\r\n])*\)`
-	singleLineUnquotedFragment  = `(?:\\[^\r\n]|[^\s\\;&|<>()"'])+`
-	singleLineShellWord         = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + singleLineUnquotedFragment + `)+`
-	fishShellWord               = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + fishCommandSubstitution + `|` + singleLineUnquotedFragment + `)+`
+	powerShellEscapedCharacter  = `\x60(?:\r?\n|[^\r\n])`
+	singleLineUnquotedFragment  = `(?:\\[^\r\n]|[^\s\\;&|<>()"'\x60])+`
+	singleLineShellWord         = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + powerShellEscapedCharacter + `|` + singleLineUnquotedFragment + `)+`
+	fishShellWord               = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + fishCommandSubstitution + `|` + powerShellEscapedCharacter + `|` + singleLineUnquotedFragment + `)+`
 	singleLineShellTerminator   = `(?:[ \t;&|<>()]|\r?\n|\z)`
 	escapedQuotedCharacter      = `\\(?:\r?\n|[^\r\n])`
 	escapeAwareQuotedValue      = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*"|\$?'(?:''|` + escapedQuotedCharacter + `|[^'\\])*')`
@@ -119,6 +120,10 @@ var singleLineShellWordRedactionRules = []redactionRule{
 }
 
 var sensitiveTextRedactionRules = []redactionRule{
+	{
+		pattern:     regexp.MustCompile(`(?i)(<key>[ \t\r\n]*` + sensitivePrefixedName + `[ \t\r\n]*</key>[ \t\r\n]*<string>)[^<]*(</string[ \t\r\n]*>)`),
+		replacement: `${1}` + redactionMarker + `${2}`,
+	},
 	{
 		pattern:     regexp.MustCompile(`(?s)-----BEGIN[ \t]+(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY(?:[ \t]+BLOCK)?-----.*?-----END[ \t]+(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY(?:[ \t]+BLOCK)?-----`),
 		replacement: privateKeyRedactionMarker,
