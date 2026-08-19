@@ -99,6 +99,52 @@ func TestTestFlightBetaTestersListLowercaseInviteTypeIsNormalized(t *testing.T) 
 	}
 }
 
+func TestTestFlightBetaTestersListNotesIncludeIsJSONOnly(t *testing.T) {
+	tests := []struct {
+		name     string
+		format   string
+		wantNote bool
+	}{
+		{name: "table drops included", format: "table", wantNote: true},
+		{name: "markdown drops included", format: "markdown", wantNote: true},
+		{name: "json renders included", format: "json", wantNote: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			setupAuth(t)
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+			installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return okJSONResponse(`{"data":[{"type":"betaTesters","id":"tester-1","attributes":{"email":"tester@example.com"}}],` +
+					`"included":[{"type":"betaGroups","id":"group-a","attributes":{"name":"Alpha"}}],"links":{}}`), nil
+			}))
+
+			root := RootCommand("1.2.3")
+			root.FlagSet.SetOutput(io.Discard)
+
+			_, stderr := captureOutput(t, func() {
+				if err := root.Parse([]string{
+					"testflight", "testers", "list",
+					"--app", "app-1",
+					"--include", "betaGroups",
+					"--output", test.format,
+				}); err != nil {
+					t.Fatalf("parse error: %v", err)
+				}
+				if err := root.Run(context.Background()); err != nil {
+					t.Fatalf("run error: %v", err)
+				}
+			})
+
+			gotNote := strings.Contains(stderr, "--include resources are only rendered in JSON output")
+			if gotNote != test.wantNote {
+				t.Fatalf("note presence = %v, want %v (stderr=%q)", gotNote, test.wantNote, stderr)
+			}
+		})
+	}
+}
+
 func TestTestFlightBetaTestersListRejectsInvalidFilterValues(t *testing.T) {
 	tests := []struct {
 		name     string

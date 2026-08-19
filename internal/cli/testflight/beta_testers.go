@@ -108,8 +108,12 @@ func BetaTestersListCommand() *ffcli.Command {
 		LongHelp: `List TestFlight beta testers for an app.
 
 --include adds the related resources to the response's top-level "included"
-array (JSON output). Use --include betaGroups to audit group membership for
-every tester in one call instead of one lookup per tester.
+array, which only JSON output renders. Use --include betaGroups to audit group
+membership for every tester in one call instead of one lookup per tester.
+
+--invite-type, --sort, and --include cannot be combined with --next: a
+links.next URL already carries the query it was produced from, so those values
+would never reach the request.
 
 Examples:
   asc testflight beta-testers list --app "APP_ID"
@@ -118,7 +122,7 @@ Examples:
   asc testflight beta-testers list --app "APP_ID" --first-name "Ada" --last-name "Lovelace"
   asc testflight beta-testers list --app "APP_ID" --invite-type "PUBLIC_LINK"
   asc testflight beta-testers list --app "APP_ID" --sort "-lastName"
-  asc testflight beta-testers list --app "APP_ID" --include "betaGroups" --paginate
+  asc testflight beta-testers list --app "APP_ID" --include "betaGroups" --paginate --output json
   asc testflight beta-testers list --app "APP_ID" --limit 25
   asc testflight beta-testers list --app "APP_ID" --paginate`,
 		FlagSet:   fs,
@@ -206,8 +210,14 @@ Examples:
 				opts = append(opts, asc.WithBetaTestersSort(*sortBy))
 			}
 
-			if includeValues := shared.SplitCSV(*include); len(includeValues) > 0 {
+			includeValues := shared.SplitCSV(*include)
+			if len(includeValues) > 0 {
 				opts = append(opts, asc.WithBetaTestersInclude(includeValues))
+				// Only the JSON renderer emits the envelope's included array, so
+				// say so rather than fetching relationships the caller never sees.
+				if *output.Output != "json" {
+					fmt.Fprintf(os.Stderr, "Note: --include resources are only rendered in JSON output; re-run with --output json to see them.\n")
+				}
 			}
 
 			if strings.TrimSpace(*group) != "" && strings.TrimSpace(*next) == "" {

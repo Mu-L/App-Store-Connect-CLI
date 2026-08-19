@@ -75,12 +75,17 @@ asc testflight testers add-groups --id TESTER_ID --group GROUP_ID
 
 `--include` adds related resources (`apps`, `betaGroups`, `builds`) to the
 response's top-level `included` array, so one call can audit group membership
-for every tester instead of one lookup per tester. `--paginate` merges
-`included` across pages:
+for every tester instead of one lookup per tester. Only JSON output renders
+that array, so pass `--output json` when running interactively. `--paginate`
+merges `included` across pages:
 
 ```bash  theme={null}
-asc testflight testers list --app APP_ID --include betaGroups --paginate
+asc testflight testers list --app APP_ID --include betaGroups --paginate --output json
 ```
+
+`--invite-type`, `--sort`, and `--include` cannot be combined with `--next`. A
+`links.next` URL already carries the query it came from, so those values would
+never reach the request; the command fails instead of dropping them.
 
 ### Feedback and crashes
 
