@@ -79,8 +79,8 @@ func BetaGroupsListCommand() *ffcli.Command {
 	global := fs.Bool("global", false, "List beta groups across all apps (top-level endpoint)")
 	internal := fs.Bool("internal", false, "Filter to internal groups only")
 	external := fs.Bool("external", false, "Filter to external groups only")
-	name := fs.String("name", "", "Filter to beta groups with this exact name")
-	sort := fs.String("sort", "", "Sort order ("+strings.Join(betaGroupSortValues, ", ")+")")
+	name := fs.String("name", "", "[experimental] Filter to beta groups with this exact name")
+	sort := fs.String("sort", "", "[experimental] Sort order ("+strings.Join(betaGroupSortValues, ", ")+")")
 	output := shared.BindOutputFlags(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
@@ -113,13 +113,14 @@ printed with complete=false and the command exits nonzero.
 GET /v1/apps/{id}/betaGroups accepts only a page limit, so --internal,
 --external, --name, and --sort are served by GET /v1/betaGroups with
 filter[app]. Those filters are applied by App Store Connect, and --limit is the
-page size of matching groups. --name matches the exact group name.
+page size of matching groups. The --name and --sort flags are experimental;
+--name matches the exact group name.
 --build-id membership lookup accepts neither --name nor --sort.
 
-A filtered app-scoped listing returns one page, matching --global. Earlier
-releases walked every page to filter in the CLI; add --paginate to collect every
-matching group. When more pages exist, the usual pagination hint is printed on
-stderr.
+App-scoped --internal and --external continue to collect every matching page
+automatically for compatibility. App-scoped --name and --sort return one page
+unless --paginate is set. Global listings also keep their standard one-page
+default.
 
 A links.next URL already carries the query it came from, so --next cannot be
 combined with --internal, --external, --name, or --sort.
@@ -311,6 +312,26 @@ Examples:
 					return client.ListBetaGroups(ctx, pageOpts...)
 				}
 				return client.GetBetaGroups(ctx, resolvedAppID, pageOpts...)
+			}
+
+			// App-scoped internal/external filtering historically returned every
+			// matching page without requiring --paginate. Keep that stable behavior
+			// while moving the filtering itself to the top-level endpoint. The new
+			// experimental name/sort flags retain the normal one-page default.
+			implicitFilterPagination := !*global && resolvedAppID != "" && internalFilter != nil && nameValue == "" && sortValue == ""
+			if implicitFilterPagination && !*paginate {
+				firstPage, err := listPage(requestCtx, opts...)
+				if err != nil {
+					return fmt.Errorf("beta-groups list: failed to fetch: %w", err)
+				}
+				groups, err := asc.PaginateAll(requestCtx, firstPage, func(ctx context.Context, nextURL string) (asc.PaginatedResponse, error) {
+					return listPage(ctx, asc.WithBetaGroupsNextURL(nextURL))
+				})
+				if err != nil {
+					return fmt.Errorf("beta-groups list: %w", err)
+				}
+
+				return shared.PrintOutput(groups, *output.Output, *output.Pretty)
 			}
 
 			if *paginate {

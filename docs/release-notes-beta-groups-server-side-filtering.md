@@ -2,41 +2,32 @@
 
 `asc testflight groups list --app APP_ID --internal` and `--external` are now
 filtered by App Store Connect instead of in the CLI. `GET /v1/apps/{id}/betaGroups`
-accepts only a page limit, so the command previously fetched every page, filtered
-the aggregate in Go, truncated it to `--limit`, and printed
-`Warning: showing N of M filtered groups`. Those requests now go to
-`GET /v1/betaGroups` with `filter[app]` and `filter[isInternalGroup]`, and the
-warning is gone.
+accepts only a page limit, so the command previously fetched every page and
+filtered the aggregate in Go. Those requests now go to `GET /v1/betaGroups`
+with `filter[app]` and `filter[isInternalGroup]`, while retaining the complete
+multi-page result.
 
-Two new flags cover query parameters that endpoint already documents: `--name`
-filters on the exact group name (`filter[name]`) and `--sort` accepts `name`,
-`-name`, `createdDate`, `-createdDate`, `publicLinkEnabled`,
+Two new experimental flags cover query parameters that endpoint already
+documents: `--name` filters on the exact group name (`filter[name]`) and
+`--sort` accepts `name`, `-name`, `createdDate`, `-createdDate`, `publicLinkEnabled`,
 `-publicLinkEnabled`, `publicLinkLimit`, and `-publicLinkLimit`. An unsupported
 `--sort` value is a usage error listing the valid values.
 
-## Migration
+## Pagination compatibility
 
-A filtered app-scoped listing now returns one page, matching what
-`--global --internal` has always done. Add `--paginate` to keep collecting every
-matching group:
+App-scoped `--internal` and `--external` listings continue to collect every
+matching page automatically, so existing invocations retain complete output:
 
 ```bash
-# Before: implicitly walked every page.
 asc testflight groups list --app APP_ID --internal
-
-# After: same complete result.
-asc testflight groups list --app APP_ID --internal --paginate
 ```
 
-When more pages exist, the command prints the standard
-`more pages exist (use --paginate or --next where supported)` hint on stderr, so
-an unmigrated invocation reports that its result is partial rather than
-silently returning less.
+App-scoped listings that use only the new `--name` or `--sort` flags follow the
+standard one-page default; add `--paginate` to collect all matching pages.
+Global listings are unchanged and also require `--paginate` for aggregation.
 
 `--limit` on a filtered listing is now the page size of matching groups rather
-than a cap applied after the CLI filtered everything it fetched. Callers that
-used `--limit` to bound a filtered result keep working and no longer pay for a
-complete walk through all pages.
+than a cap applied after the CLI filtered everything it fetched.
 
 `--next` now rejects `--internal`, `--external`, `--name`, and `--sort`. A
 `links.next` URL is followed verbatim and already carries the query it came

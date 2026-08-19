@@ -7,6 +7,22 @@ import (
 	"testing"
 )
 
+func TestBetaGroupsListNameAndSortFlagsAreExperimental(t *testing.T) {
+	cmd := findSubcommand(RootCommand("1.2.3"), "testflight", "groups", "list")
+	if cmd == nil {
+		t.Fatal("command [testflight groups list] not found")
+	}
+	for _, name := range []string{"name", "sort"} {
+		flag := cmd.FlagSet.Lookup(name)
+		if flag == nil {
+			t.Fatalf("--%s flag not found", name)
+		}
+		if !strings.HasPrefix(flag.Usage, "[experimental] ") {
+			t.Fatalf("--%s usage = %q, want [experimental] prefix", name, flag.Usage)
+		}
+	}
+}
+
 // TestBetaGroupsListSortPropagates proves --sort reaches the API.
 func TestBetaGroupsListSortPropagates(t *testing.T) {
 	setupAuth(t)

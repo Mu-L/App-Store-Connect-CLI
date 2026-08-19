@@ -43,9 +43,10 @@ func TestBetaGroupsListAppScopedInternalFilterUsesTopLevelEndpoint(t *testing.T)
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 
+	const nextURL = "https://api.appstoreconnect.apple.com/v1/betaGroups?cursor=page2&filter%5Bapp%5D=app-1&filter%5BisInternalGroup%5D=true"
 	var requests atomic.Int64
 	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		requests.Add(1)
+		count := requests.Add(1)
 		if req.Method != http.MethodGet {
 			t.Errorf("expected GET, got %s", req.Method)
 		}
@@ -62,30 +63,32 @@ func TestBetaGroupsListAppScopedInternalFilterUsesTopLevelEndpoint(t *testing.T)
 		if got := query.Get("limit"); got != "" {
 			t.Errorf("limit = %q, want no limit forced onto the request", got)
 		}
-		body := `{"data":[{"type":"betaGroups","id":"bg-int","attributes":{"name":"Internal","isInternalGroup":true}}],` +
-			`"links":{"next":"https://api.appstoreconnect.apple.com/v1/betaGroups?cursor=page2"}}`
-		return betaGroupsJSONResponse(body), nil
+		switch count {
+		case 1:
+			body := `{"data":[{"type":"betaGroups","id":"bg-int-1","attributes":{"name":"Internal 1","isInternalGroup":true}}],` +
+				`"links":{"next":"` + nextURL + `"}}`
+			return betaGroupsJSONResponse(body), nil
+		case 2:
+			if got := query.Get("cursor"); got != "page2" {
+				t.Errorf("cursor = %q, want page2", got)
+			}
+			return betaGroupsJSONResponse(`{"data":[{"type":"betaGroups","id":"bg-int-2","attributes":{"name":"Internal 2","isInternalGroup":true}}]}`), nil
+		default:
+			t.Errorf("unexpected request %d: %s", count, req.URL.String())
+			return betaGroupsJSONResponse(`{"data":[]}`), nil
+		}
 	}))
 
 	stdout, stderr := runBetaGroupsList(t, "--app", "app-1", "--internal")
 
-	if strings.Contains(stderr, "filtered groups") {
-		t.Fatalf("expected no client-side truncation warning, got %q", stderr)
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
 	}
-	// Unfetched pages are surfaced by the standard pagination hint, not by a
-	// truncation warning, because the command no longer walks every page.
-	if !strings.Contains(stderr, "more pages exist") {
-		t.Fatalf("expected the standard pagination hint, got %q", stderr)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("expected implicit pagination to fetch 2 pages, got %d requests", got)
 	}
-	if got := requests.Load(); got != 1 {
-		t.Fatalf("expected exactly 1 request without --paginate, got %d", got)
-	}
-	if !strings.Contains(stdout, `"id":"bg-int"`) {
-		t.Fatalf("expected internal group in output, got %q", stdout)
-	}
-	// Apple's envelope must be printed unmodified, including links.next.
-	if !strings.Contains(stdout, `"next":"https://api.appstoreconnect.apple.com/v1/betaGroups?cursor=page2"`) {
-		t.Fatalf("expected links.next preserved in envelope, got %q", stdout)
+	if !strings.Contains(stdout, `"id":"bg-int-1"`) || !strings.Contains(stdout, `"id":"bg-int-2"`) {
+		t.Fatalf("expected both matching pages aggregated, got %q", stdout)
 	}
 }
 
@@ -95,9 +98,10 @@ func TestBetaGroupsListAppScopedExternalFilterPassesLimitThrough(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 
+	const nextURL = "https://api.appstoreconnect.apple.com/v1/betaGroups?cursor=page2&filter%5Bapp%5D=app-1&filter%5BisInternalGroup%5D=false&limit=2"
 	var requests atomic.Int64
 	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		requests.Add(1)
+		count := requests.Add(1)
 		if req.URL.Path != "/v1/betaGroups" {
 			t.Errorf("expected path /v1/betaGroups, got %s", req.URL.Path)
 		}
@@ -111,11 +115,22 @@ func TestBetaGroupsListAppScopedExternalFilterPassesLimitThrough(t *testing.T) {
 		if got := query.Get("limit"); got != "2" {
 			t.Errorf("limit = %q, want 2", got)
 		}
-		body := `{"data":[` +
-			`{"type":"betaGroups","id":"bg-ext-1","attributes":{"name":"External 1","isInternalGroup":false}},` +
-			`{"type":"betaGroups","id":"bg-ext-2","attributes":{"name":"External 2","isInternalGroup":false}}` +
-			`]}`
-		return betaGroupsJSONResponse(body), nil
+		switch count {
+		case 1:
+			body := `{"data":[` +
+				`{"type":"betaGroups","id":"bg-ext-1","attributes":{"name":"External 1","isInternalGroup":false}},` +
+				`{"type":"betaGroups","id":"bg-ext-2","attributes":{"name":"External 2","isInternalGroup":false}}` +
+				`],"links":{"next":"` + nextURL + `"}}`
+			return betaGroupsJSONResponse(body), nil
+		case 2:
+			if got := query.Get("cursor"); got != "page2" {
+				t.Errorf("cursor = %q, want page2", got)
+			}
+			return betaGroupsJSONResponse(`{"data":[{"type":"betaGroups","id":"bg-ext-3","attributes":{"name":"External 3","isInternalGroup":false}}]}`), nil
+		default:
+			t.Errorf("unexpected request %d: %s", count, req.URL.String())
+			return betaGroupsJSONResponse(`{"data":[]}`), nil
+		}
 	}))
 
 	stdout, stderr := runBetaGroupsList(t, "--app", "app-1", "--external", "--limit", "2")
@@ -123,8 +138,8 @@ func TestBetaGroupsListAppScopedExternalFilterPassesLimitThrough(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("expected no truncation warning on stderr, got %q", stderr)
 	}
-	if got := requests.Load(); got != 1 {
-		t.Fatalf("expected exactly 1 request, got %d", got)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("expected implicit pagination to fetch 2 pages, got %d requests", got)
 	}
 
 	var parsed struct {
@@ -135,8 +150,8 @@ func TestBetaGroupsListAppScopedExternalFilterPassesLimitThrough(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
 		t.Fatalf("failed to parse json output: %v\noutput: %q", err, stdout)
 	}
-	if len(parsed.Data) != 2 {
-		t.Fatalf("expected 2 groups, got %d", len(parsed.Data))
+	if len(parsed.Data) != 3 {
+		t.Fatalf("expected all 3 groups across pages, got %d", len(parsed.Data))
 	}
 }
 
@@ -217,17 +232,17 @@ func TestBetaGroupsListNextStillPagesWithoutQueryFlags(t *testing.T) {
 	}
 }
 
-// TestBetaGroupsListHelpDocumentsPaginateMigration proves the help carries the
-// migration guidance for callers that relied on the previous implicit walk of
-// every page when filtering an app-scoped listing.
-func TestBetaGroupsListHelpDocumentsPaginateMigration(t *testing.T) {
+// TestBetaGroupsListHelpDocumentsImplicitFilterPagination proves the stable
+// app-scoped internal/external pagination behavior remains discoverable.
+func TestBetaGroupsListHelpDocumentsImplicitFilterPagination(t *testing.T) {
 	cmd := findSubcommand(RootCommand("1.2.3"), "testflight", "groups", "list")
 	if cmd == nil {
 		t.Fatal("command [testflight groups list] not found")
 	}
 	for _, want := range []string{
-		"returns one page",
-		"add --paginate to collect every",
+		"--internal and --external continue to collect every matching page",
+		"--name and --sort return one page",
+		"unless --paginate is set",
 	} {
 		if !strings.Contains(cmd.LongHelp, want) {
 			t.Errorf("LongHelp missing %q, got %q", want, cmd.LongHelp)
