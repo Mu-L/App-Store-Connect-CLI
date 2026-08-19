@@ -42,13 +42,16 @@ func TestAgeRatingCommandShape(t *testing.T) {
 	}
 }
 
-func TestAgeRatingAuditPaginateFlagIsExperimental(t *testing.T) {
-	flag := AgeRatingAuditCommand().FlagSet.Lookup("paginate")
-	if flag == nil {
-		t.Fatal("expected --paginate flag")
-	}
-	if !strings.HasPrefix(flag.Usage, "[experimental] ") {
-		t.Fatalf("--paginate usage = %q, want [experimental] prefix", flag.Usage)
+func TestAgeRatingAuditFlagsAreExperimental(t *testing.T) {
+	cmd := AgeRatingAuditCommand()
+	for _, name := range []string{"app", "paginate"} {
+		flag := cmd.FlagSet.Lookup(name)
+		if flag == nil {
+			t.Fatalf("expected --%s flag", name)
+		}
+		if !strings.HasPrefix(flag.Usage, "[experimental] ") {
+			t.Fatalf("--%s usage = %q, want [experimental] prefix", name, flag.Usage)
+		}
 	}
 }
 

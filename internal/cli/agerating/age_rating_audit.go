@@ -20,7 +20,7 @@ const ageRatingAuditWorkers = 5
 func AgeRatingAuditCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("age-rating audit", flag.ExitOnError)
 
-	appIDs := shared.BindOnceCSVFlag(fs, "app", "Restrict the audit to specific app IDs (comma-separated)")
+	appIDs := shared.BindOnceCSVFlag(fs, "app", "[experimental] Restrict the audit to specific app IDs (comma-separated)")
 	paginate := fs.Bool("paginate", false, "[experimental] Fetch all app pages (default: first page only)")
 	output := shared.BindOutputFlags(fs)
 
