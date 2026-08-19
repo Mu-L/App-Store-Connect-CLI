@@ -57,6 +57,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl -H "Cookie: [REDACTED]" https://example.test`,
 		},
 		{
+			name:  "structured credential headers",
+			input: `{"Authorization":"Basic c3VwZXJzZWNyZXQ=","Cookie":"myacinfo=super-session-secret","status":"failed"}`,
+			want:  `{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","status":"failed"}`,
+		},
+		{
+			name:  "unescaped structured credential headers",
+			input: "{\"Authorization\":\"Basic c3VwZXJzZWNyZXQ=\",\"Cookie\":\"myacinfo=super-session-secret\",\"status\":\"failed\"}",
+			want:  "{\"Authorization\":\"[REDACTED]\",\"Cookie\":\"[REDACTED]\",\"status\":\"failed\"}",
+		},
+		{
+			name:  "escaped structured credential headers",
+			input: `response {\"Authorization\":\"Basic c3VwZXJzZWNyZXQ=\",\"Set-Cookie\":\"myacinfo=super-session-secret\",\"status\":\"failed\"}`,
+			want:  `response {\"Authorization\":\"[REDACTED]\",\"Set-Cookie\":\"[REDACTED]\",\"status\":\"failed\"}`,
+		},
+		{
 			name:  "standalone bearer credential",
 			input: "server returned Bearer eyJhbGciOiJFUzI1NiJ9.fake.signature",
 			want:  "server returned Bearer [REDACTED]",
@@ -339,6 +354,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "pretty-printed JSON assignment",
 			input: "response {\n  \"client_secret\":\n    \"arbitrary secret\",\n  \"status\": \"failed\"\n}",
 			want:  "response {\n  \"client_secret\":\n    \"[REDACTED]\",\n  \"status\": \"failed\"\n}",
+		},
+		{
+			name:  "YAML literal secret block",
+			input: "client_secret: |\n  super\n  sensitive\nstatus: failed",
+			want:  "client_secret: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "YAML folded base64 private key block",
+			input: "private_key_b64: >- # encoded key\n  c3VwZXI=\n\n  c2VjcmV0\nnext: preserved",
+			want:  "private_key_b64: [REDACTED]\nnext: preserved",
 		},
 		{
 			name:  "camel case JSON assignments",
@@ -728,6 +753,52 @@ func TestSnitchDryRunRedactsCookieHeadersAndScopedPrivateKeys(t *testing.T) {
 		"< Set-Cookie: [REDACTED]",
 		"ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED]",
 		"ASC_ADS_PRIVATE_KEY_B64=[REDACTED]",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsStructuredHeadersAndYAMLSecretBlocks(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"structured-authorization-secret",
+		"structured-cookie-secret",
+		"yaml-literal-secret",
+		"yaml-folded-secret",
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "{\"Authorization\":\"Basic "+secrets[0]+"\",\"Cookie\":\"myacinfo="+secrets[1]+"\",\"status\":\"failed\"}",
+		"--actual", `{"Authorization":"Basic `+secrets[0]+`","Cookie":"myacinfo=`+secrets[1]+`","status":"failed"}`+"\n"+
+			"client_secret: |\n  "+secrets[2]+"\nstatus: failed\n"+
+			"private_key_b64: >-\n  "+secrets[3]+"\nnext: preserved",
+		"structured credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"{\"Authorization\":\"[REDACTED]\",\"Cookie\":\"[REDACTED]\",\"status\":\"failed\"}",
+		`{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","status":"failed"}`,
+		"client_secret: [REDACTED]\nstatus: failed",
+		"private_key_b64: [REDACTED]\nnext: preserved",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

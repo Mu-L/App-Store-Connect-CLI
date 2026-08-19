@@ -13,6 +13,7 @@ const (
 	sensitiveAssignmentName = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passwd|pwd|secret|token)`
 	sensitivePrefixedName   = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
 	sensitiveFlagName       = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|proxy-tlspassword|tlspassword|password|passwd|pwd|pass|token)`
+	credentialHeaderName    = `(?:authorization|cookie|set-cookie)`
 	escapeAwareQuotedValue  = `(?:"(?:\\.|[^"\\\r\n])*"|\$'(?:\\.|[^'\\\r\n])*'|'(?:\\.|[^'\\\r\n])*')`
 	unterminatedQuotedValue = `(?:"[^\r\n]*|\$?'[^\r\n]*)`
 	shellUnquotedValue      = `(?:\\(?:\r?\n|[^\r\n])|[^\s])+`
@@ -41,6 +42,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?s)-----BEGIN[ \t]+(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY(?:[ \t]+BLOCK)?-----.*\z`),
 		replacement: privateKeyRedactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?(?:\r?\n(?:[ \t]+[^\r\n]*|[ \t]*$))+`),
+		replacement: `${1}` + redactionMarker,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*(?:bearer|basic|token)[ \t]+(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;]+)`),
@@ -103,11 +108,11 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(\\"` + sensitivePrefixedName + `\\"[ \t\r\n]*:[ \t\r\n]*\\")(?:\\.|[^"\\\r\n])*?(\\")([ \t\r\n]*(?:[,}\]]|\z))`),
+		pattern:     regexp.MustCompile(`(?i)(\\"(?:` + sensitivePrefixedName + `|` + credentialHeaderName + `)\\"[ \t\r\n]*:[ \t\r\n]*\\")(?:\\.|[^"\\\r\n])*?(\\")([ \t\r\n]*(?:[,}\]]|\z))`),
 		replacement: `${1}` + redactionMarker + `${2}${3}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(["']` + sensitivePrefixedName + `["'][ \t\r\n]*:[ \t\r\n]*)(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;}\]]+)`),
+		pattern:     regexp.MustCompile(`(?i)(["'](?:` + sensitivePrefixedName + `|` + credentialHeaderName + `)["'][ \t\r\n]*:[ \t\r\n]*)(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;}\]]+)`),
 		replacement: `${1}"` + redactionMarker + `"`,
 	},
 	{
