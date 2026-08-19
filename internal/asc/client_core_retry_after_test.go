@@ -19,6 +19,13 @@ func rateLimitedError(retryAfter time.Duration) error {
 	}
 }
 
+func retryableHTTPError(statusCode int, retryAfter time.Duration) error {
+	return &RetryableError{
+		Err:        buildRetryableError(statusCode, retryAfter, nil),
+		RetryAfter: retryAfter,
+	}
+}
+
 // A Retry-After Apple can actually satisfy is waited out exactly, not replaced
 // by the shorter exponential backoff.
 func TestWithRetry_HonorsRetryAfterWithinCap(t *testing.T) {
@@ -92,6 +99,64 @@ func TestWithRetry_FailsFastWhenRetryAfterExceedsCap(t *testing.T) {
 	}
 	if apiErr.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("expected status %d, got %d", http.StatusTooManyRequests, apiErr.StatusCode)
+	}
+}
+
+func TestWithRetry_FailsFastWhenRetryAfterExceedsContextBudget(t *testing.T) {
+	var attempts atomic.Int32
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := WithRetry(ctx, func() (struct{}, error) {
+		attempts.Add(1)
+		return struct{}{}, rateLimitedError(5 * time.Second)
+	}, RetryOptions{MaxRetries: 3, BaseDelay: time.Millisecond, MaxDelay: 10 * time.Second})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 attempt, got %d", got)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("expected an immediate failure, took %s", elapsed)
+	}
+	if message := err.Error(); !strings.Contains(message, "context deadline") || !strings.Contains(message, "5s") {
+		t.Fatalf("expected the requested wait and context deadline in the message, got %q", message)
+	}
+
+	apiErr, ok := errors.AsType[*APIError](err)
+	if !ok {
+		t.Fatalf("expected *APIError in chain, got %v", err)
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected status %d, got %d", http.StatusTooManyRequests, apiErr.StatusCode)
+	}
+}
+
+func TestWithRetry_OverCapNonRateLimitUsesStatusNeutralMessage(t *testing.T) {
+	var attempts atomic.Int32
+
+	_, err := WithRetry(context.Background(), func() (struct{}, error) {
+		attempts.Add(1)
+		return struct{}{}, retryableHTTPError(http.StatusServiceUnavailable, time.Hour)
+	}, RetryOptions{MaxRetries: 3, BaseDelay: time.Millisecond, MaxDelay: 30 * time.Second})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 attempt, got %d", got)
+	}
+	message := err.Error()
+	if strings.Contains(message, "rate limited") {
+		t.Fatalf("expected status-neutral retry-cap wording, got %q", message)
+	}
+	if !strings.Contains(message, "retry cap") || !strings.Contains(message, "service unavailable") {
+		t.Fatalf("expected the cap and wrapped service error in the message, got %q", message)
 	}
 }
 

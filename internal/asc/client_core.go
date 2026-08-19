@@ -418,7 +418,8 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 		}
 
 		// Calculate delay
-		delay := GetRetryAfter(err)
+		retryAfter := GetRetryAfter(err)
+		delay := retryAfter
 		switch {
 		case delay <= 0:
 			// Exponential backoff with jitter, capped to prevent overflow
@@ -438,12 +439,28 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 		case delay > opts.MaxDelay:
 			// The server asked for longer than this run is willing to wait.
 			// Retrying at the cap would just collect the same rejection, and
-			// sleeping the full hint hides the rate limit behind an eventual
+			// sleeping the full hint hides the response behind an eventual
 			// context deadline, so report both numbers now.
+			category := retryDelayCategory(err)
 			return zero, fmt.Errorf(
-				"rate limited: App Store Connect asked to wait %s, exceeding the %s retry cap (raise ASC_MAX_DELAY to wait longer): %w",
-				delay, opts.MaxDelay, err,
+				"%s: App Store Connect asked to wait %s, exceeding the %s retry cap (raise ASC_MAX_DELAY to wait longer): %w",
+				category, delay, opts.MaxDelay, err,
 			)
+		}
+
+		if retryAfter > 0 {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return zero, fmt.Errorf("retry cancelled: %w", ctxErr)
+			}
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining := time.Until(deadline)
+				if delay >= remaining {
+					return zero, fmt.Errorf(
+						"%s: App Store Connect asked to wait %s, which cannot be honored before the context deadline (%s remaining): %w",
+						retryDelayCategory(err), delay, remaining.Round(time.Millisecond), err,
+					)
+				}
+			}
 		}
 
 		if ResolveRetryLogEnabled() {
@@ -477,6 +494,14 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 			// Continue to next retry
 		}
 	}
+}
+
+func retryDelayCategory(err error) string {
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) && statusErr.HTTPStatusCode() == http.StatusTooManyRequests {
+		return "rate limited"
+	}
+	return "retry delayed"
 }
 
 func logRetry(delay time.Duration, attempt, maxRetries int, err error) {
