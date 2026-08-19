@@ -13,6 +13,8 @@ func registerAllOutputRenderers() {
 		render(sh, sr)
 		return nil
 	})
+	registerDirect(webAgreementsStatusTables)
+	registerRows(webAgreementsAcceptRows)
 	registerRows(feedbackRows)
 	registerRows(crashesRows)
 	registerRowsWithSingleResourceAdapter(reviewsRows)

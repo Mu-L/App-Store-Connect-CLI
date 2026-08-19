@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -171,6 +172,51 @@ func TestGetAgreementsStatusSurfacesResultCodeError(t *testing.T) {
 	}
 	if err != nil && !strings.Contains(err.Error(), "3050") {
 		t.Fatalf("GetAgreementsStatus() error = %v, want resultCode in message", err)
+	}
+	var resultErr *DeveloperPortalAgreementsResultError
+	if !errors.As(err, &resultErr) {
+		t.Fatalf("GetAgreementsStatus() error = %T, want *DeveloperPortalAgreementsResultError", err)
+	}
+	if resultErr.ResultCode != 3050 || resultErr.Message != "Please select a team." {
+		t.Fatalf("result error = %+v, want code 3050 and Apple message", resultErr)
+	}
+}
+
+func TestGetAgreementsStatusSurfacesHTTPStatusErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		wantText   string
+		wantAPIErr bool
+	}{
+		{name: "expired session", status: http.StatusUnauthorized, wantText: "web session is unauthorized or expired for Developer Portal"},
+		{name: "server error", status: http.StatusInternalServerError, wantText: "web api error", wantAPIErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requestCount := 0
+			client := agreementsTestClient(t, func(r *http.Request) (*http.Response, error) {
+				requestCount++
+				switch requestCount {
+				case 1:
+					return developerPortalTestResponse(http.StatusOK, `[]`, nil), nil
+				case 2:
+					return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), nil), nil
+				default:
+					return developerPortalTestResponse(tc.status, `{}`, nil), nil
+				}
+			})
+
+			_, err := client.GetAgreementsStatus(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tc.wantText) {
+				t.Fatalf("GetAgreementsStatus() error = %v, want text %q", err, tc.wantText)
+			}
+			var apiErr *APIError
+			if errors.As(err, &apiErr) != tc.wantAPIErr {
+				t.Fatalf("GetAgreementsStatus() error = %T, APIError match = %t, want %t", err, errors.As(err, &apiErr), tc.wantAPIErr)
+			}
+		})
 	}
 }
 

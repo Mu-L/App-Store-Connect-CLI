@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
@@ -67,19 +68,21 @@ func TestWebAgreementsAcceptValidationErrors(t *testing.T) {
 func TestWebAgreementsRejectPositionalArgs(t *testing.T) {
 	tests := []struct {
 		name    string
-		cmd     func() (exec func(context.Context, []string) error)
+		cmd     func(t *testing.T) (exec func(context.Context, []string) error)
 		wantErr string
 	}{
 		{
 			name: "status",
-			cmd: func() func(context.Context, []string) error {
+			cmd: func(t *testing.T) func(context.Context, []string) error {
+				t.Helper()
 				return WebAgreementsStatusCommand().Exec
 			},
 			wantErr: "web agreements status does not accept positional arguments",
 		},
 		{
 			name: "accept",
-			cmd: func() func(context.Context, []string) error {
+			cmd: func(t *testing.T) func(context.Context, []string) error {
+				t.Helper()
 				cmd := WebAgreementsAcceptCommand()
 				if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--confirm"}); err != nil {
 					t.Fatalf("parse error: %v", err)
@@ -92,7 +95,7 @@ func TestWebAgreementsRejectPositionalArgs(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			exec := tc.cmd()
+			exec := tc.cmd(t)
 			stdout, stderr := captureWebCommandOutput(t, func() {
 				err := exec(context.Background(), []string{"unexpected"})
 				if !errors.Is(err, flag.ErrHelp) {
@@ -109,21 +112,84 @@ func TestWebAgreementsRejectPositionalArgs(t *testing.T) {
 	}
 }
 
+func TestWebAgreementsCommandsAndFlagsAreExperimental(t *testing.T) {
+	group := WebAgreementsCommand()
+	if !strings.HasPrefix(group.ShortHelp, "[experimental] ") {
+		t.Fatalf("group ShortHelp = %q, want experimental prefix", group.ShortHelp)
+	}
+
+	status := WebAgreementsStatusCommand()
+	if !strings.HasPrefix(status.ShortHelp, "[experimental] ") {
+		t.Fatalf("status ShortHelp = %q, want experimental prefix", status.ShortHelp)
+	}
+
+	accept := WebAgreementsAcceptCommand()
+	if !strings.HasPrefix(accept.ShortHelp, "[experimental] ") {
+		t.Fatalf("accept ShortHelp = %q, want experimental prefix", accept.ShortHelp)
+	}
+	for _, name := range []string{"agreement-id", "confirm"} {
+		flag := accept.FlagSet.Lookup(name)
+		if flag == nil {
+			t.Fatalf("expected --%s flag", name)
+		}
+		if !strings.HasPrefix(flag.Usage, "[experimental] ") {
+			t.Fatalf("--%s usage = %q, want experimental prefix", name, flag.Usage)
+		}
+	}
+}
+
+func TestWebAgreementsStatusNonJSONOutputIncludesBannerOnlyPendingState(t *testing.T) {
+	stubWebAgreementsSession(t)
+
+	origStatus := getAgreementsStatusFn
+	t.Cleanup(func() { getAgreementsStatusFn = origStatus })
+	getAgreementsStatusFn = func(ctx context.Context, client *webcore.Client) (*asc.WebAgreementsStatusResult, error) {
+		return &asc.WebAgreementsStatusResult{
+			TeamID:  "TEAM123456",
+			Pending: true,
+			ContractMessages: []asc.WebAgreementContractMessage{{
+				ID:      "contract_message",
+				Group:   "Alert",
+				Subject: "Apple Developer Program License Agreement Updated",
+			}},
+		}, nil
+	}
+
+	for _, format := range []string{"table", "markdown"} {
+		t.Run(format, func(t *testing.T) {
+			cmd := WebAgreementsStatusCommand()
+			if err := cmd.FlagSet.Parse([]string{"--output", format}); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			stdout, _ := captureWebCommandOutput(t, func() {
+				if err := cmd.Exec(context.Background(), nil); err != nil {
+					t.Fatalf("Exec() error: %v", err)
+				}
+			})
+			for _, want := range []string{"TEAM123456", "true", "Apple Developer Program License Agreement Updated"} {
+				if !strings.Contains(stdout, want) {
+					t.Fatalf("%s output missing %q: %q", format, want, stdout)
+				}
+			}
+		})
+	}
+}
+
 func TestWebAgreementsStatusPrintsJSON(t *testing.T) {
 	stubWebAgreementsSession(t)
 
 	origStatus := getAgreementsStatusFn
 	t.Cleanup(func() { getAgreementsStatusFn = origStatus })
-	getAgreementsStatusFn = func(ctx context.Context, client *webcore.Client) (*webcore.AgreementsStatusResult, error) {
-		return &webcore.AgreementsStatusResult{
+	getAgreementsStatusFn = func(ctx context.Context, client *webcore.Client) (*asc.WebAgreementsStatusResult, error) {
+		return &asc.WebAgreementsStatusResult{
 			TeamID:  "TEAM123456",
 			Pending: true,
-			ContractMessages: []webcore.ContractMessage{{
+			ContractMessages: []asc.WebAgreementContractMessage{{
 				ID:      "contract_message",
 				Group:   "Alert",
 				Subject: "Apple Developer Program License Agreement Updated",
 			}},
-			Agreements: []webcore.Agreement{{
+			Agreements: []asc.WebAgreement{{
 				AgreementID:               "XG8DNV4HYY",
 				Title:                     "Apple Developer Program License Agreement",
 				Status:                    "active",
@@ -177,13 +243,13 @@ func TestWebAgreementsAcceptCallsClient(t *testing.T) {
 	var gotReq webcore.AgreementsAcceptRequest
 	origAccept := acceptAgreementsFn
 	t.Cleanup(func() { acceptAgreementsFn = origAccept })
-	acceptAgreementsFn = func(ctx context.Context, client *webcore.Client, req webcore.AgreementsAcceptRequest) (*webcore.AgreementsAcceptResult, error) {
+	acceptAgreementsFn = func(ctx context.Context, client *webcore.Client, req webcore.AgreementsAcceptRequest) (*asc.WebAgreementsAcceptResult, error) {
 		gotReq = req
-		return &webcore.AgreementsAcceptResult{
+		return &asc.WebAgreementsAcceptResult{
 			TeamID:       "TEAM123456",
 			AgreementIDs: []string{"XG8DNV4HYY"},
 			Status:       "accepted",
-			Agreements: []webcore.Agreement{{
+			Agreements: []asc.WebAgreement{{
 				AgreementID:  "XG8DNV4HYY",
 				Version:      "5031",
 				Status:       "active",

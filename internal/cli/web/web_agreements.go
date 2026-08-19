@@ -13,11 +13,11 @@ import (
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
-var getAgreementsStatusFn = func(ctx context.Context, client *webcore.Client) (*webcore.AgreementsStatusResult, error) {
+var getAgreementsStatusFn = func(ctx context.Context, client *webcore.Client) (*asc.WebAgreementsStatusResult, error) {
 	return client.GetAgreementsStatus(ctx)
 }
 
-var acceptAgreementsFn = func(ctx context.Context, client *webcore.Client, req webcore.AgreementsAcceptRequest) (*webcore.AgreementsAcceptResult, error) {
+var acceptAgreementsFn = func(ctx context.Context, client *webcore.Client, req webcore.AgreementsAcceptRequest) (*asc.WebAgreementsAcceptResult, error) {
 	return client.AcceptAgreements(ctx, req)
 }
 
@@ -28,8 +28,10 @@ func WebAgreementsCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "agreements",
 		ShortUsage: "asc web agreements <subcommand> [flags]",
-		ShortHelp:  "Check and accept Apple Developer Program agreements.",
+		ShortHelp:  "[experimental] Check and accept Apple Developer Program agreements.",
 		LongHelp: `WEB SESSION WORKFLOWS
+
+This command is experimental.
 
 Check and accept Apple Developer Program agreements, such as the Apple
 Developer Program License Agreement, through Apple web-session endpoints.
@@ -62,8 +64,10 @@ func WebAgreementsStatusCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "status",
 		ShortUsage: "asc web agreements status [flags]",
-		ShortHelp:  "Show Apple Developer Program agreement status.",
+		ShortHelp:  "[experimental] Show Apple Developer Program agreement status.",
 		LongHelp: `WEB SESSION WORKFLOWS
+
+This command is experimental.
 
 Show the App Store Connect agreement alert banner and the team's Apple
 Developer Program agreement history, including whether an updated agreement
@@ -93,7 +97,7 @@ Example:
 			}
 			client := newWebClientFn(session)
 
-			var result *webcore.AgreementsStatusResult
+			var result *asc.WebAgreementsStatusResult
 			err = withWebSpinner("Fetching Apple Developer Program agreement status", func() error {
 				var statusErr error
 				result, statusErr = getAgreementsStatusFn(requestCtx, client)
@@ -109,13 +113,7 @@ Example:
 			// shared jar. Cache them best-effort after the operation succeeds.
 			_ = persistWebSessionFn(session)
 
-			return shared.PrintOutputWithRenderers(
-				result,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderWebAgreementsStatusTable(result) },
-				func() error { return renderWebAgreementsStatusMarkdown(result) },
-			)
+			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -124,16 +122,18 @@ Example:
 func WebAgreementsAcceptCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web agreements accept", flag.ExitOnError)
 
-	agreementID := fs.String("agreement-id", "", "Developer Portal agreement ID to accept (from `asc web agreements status`)")
-	confirm := fs.Bool("confirm", false, "Confirm accepting the agreement on behalf of the Account Holder")
+	agreementID := fs.String("agreement-id", "", "[experimental] Developer Portal agreement ID to accept (from `asc web agreements status`)")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm accepting the agreement on behalf of the Account Holder")
 	authFlags := bindWebSessionFlags(fs)
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "accept",
 		ShortUsage: "asc web agreements accept --agreement-id AGREEMENT_ID --confirm [flags]",
-		ShortHelp:  "Accept an Apple Developer Program agreement.",
+		ShortHelp:  "[experimental] Accept an Apple Developer Program agreement.",
 		LongHelp: `WEB SESSION WORKFLOWS
+
+This command is experimental.
 
 Accept an Apple Developer Program agreement, such as an updated Apple
 Developer Program License Agreement, for the web session's team.
@@ -171,7 +171,7 @@ Example:
 			}
 			client := newWebClientFn(session)
 
-			var result *webcore.AgreementsAcceptResult
+			var result *asc.WebAgreementsAcceptResult
 			err = withWebSpinner("Accepting Apple Developer Program agreement", func() error {
 				var acceptErr error
 				result, acceptErr = acceptAgreementsFn(requestCtx, client, webcore.AgreementsAcceptRequest{
@@ -189,68 +189,7 @@ Example:
 			// shared jar. Cache them best-effort after the operation succeeds.
 			_ = persistWebSessionFn(session)
 
-			return shared.PrintOutputWithRenderers(
-				result,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderWebAgreementsAcceptTable(result) },
-				func() error { return renderWebAgreementsAcceptMarkdown(result) },
-			)
+			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
 	}
-}
-
-func webAgreementsStatusRows(result *webcore.AgreementsStatusResult) [][]string {
-	rows := make([][]string, 0, len(result.Agreements))
-	for _, agreement := range result.Agreements {
-		rows = append(rows, []string{
-			agreement.AgreementID,
-			agreement.Title,
-			agreement.Version,
-			agreement.Status,
-			fmt.Sprintf("%t", agreement.Pending),
-			agreement.DateAgreeBy,
-		})
-	}
-	return rows
-}
-
-var webAgreementsStatusHeaders = []string{"Agreement ID", "Title", "Version", "Status", "Pending", "Accept By"}
-
-func renderWebAgreementsStatusTable(result *webcore.AgreementsStatusResult) error {
-	asc.RenderTable(webAgreementsStatusHeaders, webAgreementsStatusRows(result))
-	return nil
-}
-
-func renderWebAgreementsStatusMarkdown(result *webcore.AgreementsStatusResult) error {
-	asc.RenderMarkdown(webAgreementsStatusHeaders, webAgreementsStatusRows(result))
-	return nil
-}
-
-func webAgreementsAcceptRow(result *webcore.AgreementsAcceptResult) [][]string {
-	acceptedAt := ""
-	for _, agreement := range result.Agreements {
-		if agreement.DateAccepted != "" {
-			acceptedAt = agreement.DateAccepted
-			break
-		}
-	}
-	return [][]string{{
-		result.TeamID,
-		strings.Join(result.AgreementIDs, ", "),
-		result.Status,
-		acceptedAt,
-	}}
-}
-
-var webAgreementsAcceptHeaders = []string{"Team ID", "Agreement IDs", "Status", "Accepted At"}
-
-func renderWebAgreementsAcceptTable(result *webcore.AgreementsAcceptResult) error {
-	asc.RenderTable(webAgreementsAcceptHeaders, webAgreementsAcceptRow(result))
-	return nil
-}
-
-func renderWebAgreementsAcceptMarkdown(result *webcore.AgreementsAcceptResult) error {
-	asc.RenderMarkdown(webAgreementsAcceptHeaders, webAgreementsAcceptRow(result))
-	return nil
 }

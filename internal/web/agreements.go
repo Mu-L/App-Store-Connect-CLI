@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
 
 const (
@@ -15,49 +17,9 @@ const (
 	olympusContractMessagesPath         = "/contractMessages"
 )
 
-// ContractMessage is one App Store Connect alert banner entry, such as the
-// "Apple Developer Program License Agreement Updated" warning.
-type ContractMessage struct {
-	ID      string `json:"id"`
-	Group   string `json:"group"`
-	Subject string `json:"subject"`
-	Message string `json:"message"`
-}
-
-// Agreement summarizes one Apple Developer Program agreement record.
-type Agreement struct {
-	AgreementID               string `json:"agreementId"`
-	Title                     string `json:"title"`
-	Status                    string `json:"status"`
-	Version                   string `json:"version"`
-	IsProgramLicenseAgreement bool   `json:"isProgramLicenseAgreement"`
-	Pending                   bool   `json:"pending"`
-	DateEffective             string `json:"dateEffective,omitempty"`
-	DateAccepted              string `json:"dateAccepted,omitempty"`
-	DateAgreeBy               string `json:"dateAgreeBy,omitempty"`
-	DownloadURL               string `json:"downloadUrl,omitempty"`
-}
-
-// AgreementsStatusResult reports pending and accepted Apple Developer Program
-// agreements for the web session's team.
-type AgreementsStatusResult struct {
-	TeamID           string            `json:"teamId"`
-	Pending          bool              `json:"pending"`
-	ContractMessages []ContractMessage `json:"contractMessages"`
-	Agreements       []Agreement       `json:"agreements"`
-}
-
 // AgreementsAcceptRequest accepts one or more Developer Portal agreements.
 type AgreementsAcceptRequest struct {
 	AgreementIDs []string
-}
-
-// AgreementsAcceptResult summarizes an agreement acceptance.
-type AgreementsAcceptResult struct {
-	TeamID       string      `json:"teamId"`
-	AgreementIDs []string    `json:"agreementIds"`
-	Status       string      `json:"status"`
-	Agreements   []Agreement `json:"agreements"`
 }
 
 // developerAgreementsEnvelope is the QH65B2 account services response shape.
@@ -82,9 +44,20 @@ type developerAgreementRecord struct {
 	AgreementDownloadURL string `json:"agreementDownloadUrl"`
 }
 
+// DeveloperPortalAgreementsResultError reports an agreement-services failure
+// returned inside an otherwise successful HTTP response.
+type DeveloperPortalAgreementsResultError struct {
+	ResultCode int
+	Message    string
+}
+
+func (e *DeveloperPortalAgreementsResultError) Error() string {
+	return fmt.Sprintf("developer portal agreements request failed (resultCode %d): %s", e.ResultCode, e.Message)
+}
+
 // GetAgreementsStatus reports the App Store Connect agreement banner and the
 // team's Developer Portal agreement history in one pending-aware summary.
-func (c *Client) GetAgreementsStatus(ctx context.Context) (*AgreementsStatusResult, error) {
+func (c *Client) GetAgreementsStatus(ctx context.Context) (*asc.WebAgreementsStatusResult, error) {
 	messages, err := c.getContractMessages(ctx)
 	if err != nil {
 		return nil, err
@@ -101,7 +74,7 @@ func (c *Client) GetAgreementsStatus(ctx context.Context) (*AgreementsStatusResu
 		return nil, err
 	}
 
-	agreements := make([]Agreement, 0, len(envelope.Agreements))
+	agreements := make([]asc.WebAgreement, 0, len(envelope.Agreements))
 	pending := len(messages) > 0
 	for _, record := range envelope.Agreements {
 		agreement := c.newAgreement(record)
@@ -110,7 +83,7 @@ func (c *Client) GetAgreementsStatus(ctx context.Context) (*AgreementsStatusResu
 		}
 		agreements = append(agreements, agreement)
 	}
-	return &AgreementsStatusResult{
+	return &asc.WebAgreementsStatusResult{
 		TeamID:           teamID,
 		Pending:          pending,
 		ContractMessages: messages,
@@ -120,7 +93,7 @@ func (c *Client) GetAgreementsStatus(ctx context.Context) (*AgreementsStatusResu
 
 // AcceptAgreements accepts the given Developer Portal agreements for the web
 // session's team. Apple only allows the Account Holder to accept agreements.
-func (c *Client) AcceptAgreements(ctx context.Context, req AgreementsAcceptRequest) (*AgreementsAcceptResult, error) {
+func (c *Client) AcceptAgreements(ctx context.Context, req AgreementsAcceptRequest) (*asc.WebAgreementsAcceptResult, error) {
 	agreementIDs := make([]string, 0, len(req.AgreementIDs))
 	for _, id := range req.AgreementIDs {
 		id = strings.TrimSpace(id)
@@ -148,11 +121,11 @@ func (c *Client) AcceptAgreements(ctx context.Context, req AgreementsAcceptReque
 		return nil, err
 	}
 
-	agreements := make([]Agreement, 0, len(envelope.Agreements))
+	agreements := make([]asc.WebAgreement, 0, len(envelope.Agreements))
 	for _, record := range envelope.Agreements {
 		agreements = append(agreements, c.newAgreement(record))
 	}
-	return &AgreementsAcceptResult{
+	return &asc.WebAgreementsAcceptResult{
 		TeamID:       teamID,
 		AgreementIDs: agreementIDs,
 		Status:       "accepted",
@@ -160,12 +133,12 @@ func (c *Client) AcceptAgreements(ctx context.Context, req AgreementsAcceptReque
 	}, nil
 }
 
-func (c *Client) getContractMessages(ctx context.Context) ([]ContractMessage, error) {
+func (c *Client) getContractMessages(ctx context.Context) ([]asc.WebAgreementContractMessage, error) {
 	body, err := c.doOlympusGet(ctx, olympusContractMessagesPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch App Store Connect contract messages: %w", err)
 	}
-	var messages []ContractMessage
+	var messages []asc.WebAgreementContractMessage
 	if err := json.Unmarshal(body, &messages); err != nil {
 		return nil, fmt.Errorf("failed to parse App Store Connect contract messages: %w", err)
 	}
@@ -209,17 +182,17 @@ func (c *Client) doDeveloperPortalAgreementsRequest(ctx context.Context, path st
 		if message == "" {
 			message = "unknown Developer Portal error"
 		}
-		return nil, fmt.Errorf("developer portal agreements request failed (resultCode %d): %s", envelope.ResultCode, message)
+		return nil, &DeveloperPortalAgreementsResultError{ResultCode: envelope.ResultCode, Message: message}
 	}
 	return &envelope, nil
 }
 
-func (c *Client) newAgreement(record developerAgreementRecord) Agreement {
+func (c *Client) newAgreement(record developerAgreementRecord) asc.WebAgreement {
 	downloadURL := strings.TrimSpace(record.AgreementDownloadURL)
 	if downloadURL != "" && strings.HasPrefix(downloadURL, "/") {
 		downloadURL = c.developerPortalOrigin() + downloadURL
 	}
-	return Agreement{
+	return asc.WebAgreement{
 		AgreementID:               strings.TrimSpace(record.AgreementID),
 		Title:                     strings.TrimSpace(record.Title),
 		Status:                    strings.TrimSpace(record.Status),
