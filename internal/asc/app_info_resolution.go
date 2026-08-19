@@ -75,9 +75,24 @@ func (c *Client) ResolveCurrentAppInfoIDForApp(ctx context.Context, appID string
 		return "", fmt.Errorf("appID is required")
 	}
 
-	appInfos, err := c.GetAppInfos(ctx, appID, WithAppInfoFields([]string{"state"}))
+	firstPage, err := c.GetAppInfos(
+		ctx,
+		appID,
+		WithAppInfoFields([]string{"state"}),
+		WithAppInfosLimit(200),
+	)
 	if err != nil {
 		return "", err
+	}
+	allPages, err := PaginateAll(ctx, firstPage, func(ctx context.Context, nextURL string) (PaginatedResponse, error) {
+		return c.GetAppInfos(ctx, appID, WithAppInfosNextURL(nextURL))
+	})
+	if err != nil {
+		return "", err
+	}
+	appInfos, ok := allPages.(*AppInfosResponse)
+	if !ok {
+		return "", fmt.Errorf("unexpected app info pagination response %T", allPages)
 	}
 	return resolveCurrentAppInfoID(appID, appInfos.Data)
 }

@@ -1,6 +1,8 @@
 package asc
 
 import (
+	"context"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -51,6 +53,61 @@ func TestResolveCurrentAppInfoID(t *testing.T) {
 			}
 			if got != tt.wantID {
 				t.Fatalf("resolveCurrentAppInfoID() = %q, want %q", got, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestResolveCurrentAppInfoIDForAppFollowsEveryPage(t *testing.T) {
+	tests := []struct {
+		name       string
+		firstPage  string
+		secondPage string
+		wantID     string
+		wantErr    string
+	}{
+		{
+			name:       "finds current app info on the second page",
+			firstPage:  `{"data":[{"type":"appInfos","id":"info-old","attributes":{"state":"REPLACED_WITH_NEW_INFO"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps/app-1/appInfos?cursor=next"}}`,
+			secondPage: `{"data":[{"type":"appInfos","id":"info-current","attributes":{"state":"READY_FOR_DISTRIBUTION"}}],"links":{}}`,
+			wantID:     "info-current",
+		},
+		{
+			name:       "detects current candidates split across pages",
+			firstPage:  `{"data":[{"type":"appInfos","id":"info-one","attributes":{"state":"READY_FOR_REVIEW"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps/app-1/appInfos?cursor=next"}}`,
+			secondPage: `{"data":[{"type":"appInfos","id":"info-two","attributes":{"state":"PREPARE_FOR_SUBMISSION"}}],"links":{}}`,
+			wantErr:    "multiple current app infos found",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			requests := make([]string, 0, 2)
+			client := newTestClient(t, func(req *http.Request) {
+				requests = append(requests, req.URL.String())
+			}, jsonResponse(http.StatusOK, test.firstPage), jsonResponse(http.StatusOK, test.secondPage))
+
+			got, err := client.ResolveCurrentAppInfoIDForApp(context.Background(), "app-1")
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("ResolveCurrentAppInfoIDForApp() error = %v, want containing %q", err, test.wantErr)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("ResolveCurrentAppInfoIDForApp() error = %v", err)
+				}
+				if got != test.wantID {
+					t.Fatalf("ResolveCurrentAppInfoIDForApp() = %q, want %q", got, test.wantID)
+				}
+			}
+			if len(requests) != 2 {
+				t.Fatalf("requests = %v, want two pages", requests)
+			}
+			if !strings.Contains(requests[0], "limit=200") || !strings.Contains(requests[0], "fields%5BappInfos%5D=state") {
+				t.Fatalf("first request = %q, want maximum page size and state field", requests[0])
+			}
+			if !strings.Contains(requests[1], "cursor=next") {
+				t.Fatalf("second request = %q, want continuation URL", requests[1])
 			}
 		})
 	}
