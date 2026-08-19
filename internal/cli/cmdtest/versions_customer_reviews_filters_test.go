@@ -191,6 +191,16 @@ func TestVersionsCustomerReviewsFilterValidationMatchesAppLevelReviews(t *testin
 			wantMessage: "--response-fields must be a comma-separated list of: responseBody,lastModifiedDate,state,review",
 		},
 		{
+			name:        "response fields with a repeated comma",
+			args:        []string{"--response-fields", "responseBody,,state"},
+			wantMessage: "--response-fields must be a comma-separated list of: responseBody,lastModifiedDate,state,review",
+		},
+		{
+			name:        "response fields with no usable elements",
+			args:        []string{"--response-fields", ","},
+			wantMessage: "--response-fields must be a comma-separated list of: responseBody,lastModifiedDate,state,review",
+		},
+		{
 			name:        "conflicting response filters",
 			args:        []string{"--only-unresponded", "--response-state", "responded"},
 			wantMessage: "--only-unresponded cannot be combined with --response-state responded",

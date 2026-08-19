@@ -137,6 +137,11 @@ func errInvalidReviewStars() error {
 	return fmt.Errorf("--stars must be a comma-separated list of star ratings: 1, 2, 3, 4, 5")
 }
 
+// normalizeReviewResponseFields parses the comma-separated --response-fields
+// value. An empty value means "no sparse fieldset"; anything else must be a
+// list where every element names a customer review response field. Empty
+// elements (`responseBody,,state`, `,`) are rejected rather than skipped, so
+// malformed input never silently changes or drops the fieldset.
 func normalizeReviewResponseFields(value string) ([]string, error) {
 	if strings.TrimSpace(value) == "" {
 		return nil, nil
@@ -152,9 +157,6 @@ func normalizeReviewResponseFields(value string) ([]string, error) {
 	normalized := make([]string, 0, len(fields))
 	for _, field := range fields {
 		field = strings.TrimSpace(field)
-		if field == "" {
-			continue
-		}
 		if !allowed[field] {
 			return nil, fmt.Errorf("--response-fields must be a comma-separated list of: responseBody,lastModifiedDate,state,review")
 		}
