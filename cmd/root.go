@@ -26,7 +26,7 @@ const rootGettingStartedSamples = `  Find the command, with examples:
   Diagnose local auth configuration:
     asc auth doctor
   List your apps and their IDs:
-    asc apps list --output table
+    asc apps list --paginate --output table
   Show a one-screen release overview:
     asc status --app APP_ID
 
