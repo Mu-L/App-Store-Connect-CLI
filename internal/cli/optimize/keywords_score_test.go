@@ -118,7 +118,8 @@ func TestKeywordScoreReportUsesRegisteredOutput(t *testing.T) {
 		Summary: asc.KeywordScoreSummary{Keywords: 1, Scored: 1},
 		Rows: []asc.KeywordScoreRow{{
 			Keyword: "focus timer",
-			Status:  keywordStatusAvailable,
+			Status:  keywordStatusUnavailable,
+			Error:   "keyword lookup returned status 429",
 		}},
 	}
 
@@ -130,7 +131,7 @@ func TestKeywordScoreReportUsesRegisteredOutput(t *testing.T) {
 			if strings.HasPrefix(strings.TrimSpace(stdout), "{") {
 				t.Fatalf("%s output fell back to JSON:\n%s", format, stdout)
 			}
-			for _, want := range []string{"focus timer", "Keyword", "Status"} {
+			for _, want := range []string{"focus timer", "Keyword", "Status", "429"} {
 				if !strings.Contains(stdout, want) {
 					t.Fatalf("%s output missing %q:\n%s", format, want, stdout)
 				}

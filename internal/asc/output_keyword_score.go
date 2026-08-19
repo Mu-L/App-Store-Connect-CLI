@@ -120,10 +120,11 @@ func keywordScoreTables(report *KeywordScoreReport, render func([]string, [][]st
 			formatKeywordScoreMatch(row.KeywordMatch),
 			formatKeywordScoreBool(row.IsBrandKeyword),
 			row.Status,
+			compactKeywordScoreDiagnostic(row.Error),
 		})
 	}
 	render(
-		[]string{"Keyword", "Difficulty", "Min Difficulty", "Popularity", "Apps", "Rank", "Match", "Brand", "Status"},
+		[]string{"Keyword", "Difficulty", "Min Difficulty", "Popularity", "Apps", "Rank", "Match", "Brand", "Status", "Error"},
 		rows,
 	)
 
