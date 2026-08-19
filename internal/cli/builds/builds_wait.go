@@ -157,7 +157,7 @@ Examples:
 
 				buildResp, err = waitForBuildDiscovery(requestCtx, client, selector, *pollInterval)
 				if err != nil {
-					if errors.Is(err, context.DeadlineExceeded) {
+					if requestCtx.Err() != nil && errors.Is(err, context.DeadlineExceeded) {
 						return fmt.Errorf("builds wait: timed out resolving build selector after %s", (*timeout).Round(time.Second))
 					}
 					return fmt.Errorf("builds wait: %w", err)
@@ -167,7 +167,7 @@ Examples:
 			waitBuildID := buildResp.Data.ID
 			buildResp, err = waitForBuildProcessingState(requestCtx, client, buildResp.Data.ID, *pollInterval, *failOnInvalid)
 			if err != nil {
-				if errors.Is(err, context.DeadlineExceeded) {
+				if requestCtx.Err() != nil && errors.Is(err, context.DeadlineExceeded) {
 					return fmt.Errorf("builds wait: timed out waiting for build %s after %s", waitBuildID, (*timeout).Round(time.Second))
 				}
 				return fmt.Errorf("builds wait: %w", err)
