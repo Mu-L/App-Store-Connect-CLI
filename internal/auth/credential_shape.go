@@ -32,8 +32,7 @@ type CredentialShapeFinding struct {
 	Message        string
 	Recommendation string
 	// DefiniteSwap marks the only unambiguous case: the key ID is an issuer
-	// UUID and the issuer ID is not, so the two values can only have been
-	// pasted into the wrong fields.
+	// UUID and the issuer ID also resembles an API key ID.
 	DefiniteSwap bool
 }
 
@@ -88,7 +87,12 @@ func InspectCredentialShapes(labels CredentialShapeLabels, keyID, issuerID strin
 	keyLooksLikeIssuer := LooksLikeIssuerID(keyID)
 	issuerIsMalformed := issuerID != "" && !LooksLikeIssuerID(issuerID)
 	issuerLooksLikeKey := issuerIsMalformed && LooksLikeKeyID(issuerID)
-	definiteSwap := keyLooksLikeIssuer && issuerLooksLikeKey
+	swapHintSupported := keyLooksLikeIssuer && issuerLooksLikeKey
+	definiteSwap := swapHintSupported
+	swapSuffix := ""
+	if swapHintSupported {
+		swapSuffix = " — the values may be swapped"
+	}
 
 	recommendation := fmt.Sprintf(
 		"Set %s to the App Store Connect API key ID and %s to the issuer UUID",
@@ -100,7 +104,7 @@ func InspectCredentialShapes(labels CredentialShapeLabels, keyID, issuerID strin
 	if keyLooksLikeIssuer {
 		findings = append(findings, CredentialShapeFinding{
 			Field:          labels.KeyID,
-			Message:        fmt.Sprintf("%s looks like an issuer ID — the values may be swapped", labels.KeyID),
+			Message:        fmt.Sprintf("%s looks like an issuer ID%s", labels.KeyID, swapSuffix),
 			Recommendation: recommendation,
 			DefiniteSwap:   definiteSwap,
 		})
@@ -109,9 +113,7 @@ func InspectCredentialShapes(labels CredentialShapeLabels, keyID, issuerID strin
 		message := fmt.Sprintf("%s is not a UUID", labels.IssuerID)
 		switch {
 		case issuerLooksLikeKey:
-			message = fmt.Sprintf("%s looks like a key ID — the values may be swapped", labels.IssuerID)
-		case keyLooksLikeIssuer:
-			message = fmt.Sprintf("%s is not a UUID — the values may be swapped", labels.IssuerID)
+			message = fmt.Sprintf("%s looks like a key ID%s", labels.IssuerID, swapSuffix)
 		}
 		findings = append(findings, CredentialShapeFinding{
 			Field:          labels.IssuerID,

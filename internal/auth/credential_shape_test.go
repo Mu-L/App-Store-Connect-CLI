@@ -121,6 +121,9 @@ func TestInspectCredentialShapesStaysUncertainWithoutBothSignals(t *testing.T) {
 		if findings[0].DefiniteSwap {
 			t.Fatal("expected no definite swap when the issuer ID is absent")
 		}
+		if strings.Contains(findings[0].Message, "swapped") {
+			t.Fatalf("findings[0].Message = %q, want no swap hint without both signals", findings[0].Message)
+		}
 	})
 
 	t.Run("both values are uuids", func(t *testing.T) {
@@ -130,6 +133,9 @@ func TestInspectCredentialShapesStaysUncertainWithoutBothSignals(t *testing.T) {
 		}
 		if findings[0].DefiniteSwap {
 			t.Fatal("expected no definite swap when the issuer ID is a valid UUID")
+		}
+		if strings.Contains(findings[0].Message, "swapped") {
+			t.Fatalf("findings[0].Message = %q, want no swap hint without both signals", findings[0].Message)
 		}
 	})
 
@@ -141,6 +147,9 @@ func TestInspectCredentialShapesStaysUncertainWithoutBothSignals(t *testing.T) {
 		for _, finding := range findings {
 			if finding.DefiniteSwap {
 				t.Fatal("expected no definite swap without a key-shaped issuer ID")
+			}
+			if strings.Contains(finding.Message, "swapped") {
+				t.Fatalf("finding.Message = %q, want no swap hint without both signals", finding.Message)
 			}
 		}
 	})
