@@ -6,8 +6,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -239,6 +241,56 @@ func TestKeywordsRankFailsWhenEveryKeywordFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "optimize keywords rank") || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("error = %v, want the representative server failure", err)
+	}
+}
+
+func TestKeywordsRankReturnsParentCancellationAfterPartialSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var (
+		mu       sync.Mutex
+		requests int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		requestNumber := requests
+		mu.Unlock()
+		if requestNumber == 1 {
+			writeSearchResults(w, 1234567890)
+			return
+		}
+		cancel()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	stubKeywordsClient(t, server.URL)
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stdout
+	os.Stdout = writer
+	runErr := KeywordsRankCommand().ParseAndRun(ctx, []string{
+		"--app", "1234567890",
+		"--keywords", "focus timer,habit tracker",
+		"--workers", "1",
+		"--output", "json",
+	})
+	_ = writer.Close()
+	os.Stdout = previous
+	stdout, readErr := io.ReadAll(reader)
+	_ = reader.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", runErr)
+	}
+	if len(stdout) != 0 {
+		t.Fatalf("stdout = %q, want no partial report", stdout)
 	}
 }
 

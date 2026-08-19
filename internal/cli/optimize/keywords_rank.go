@@ -92,6 +92,9 @@ Examples:
 				defer cancel()
 				return client.RankApp(requestCtx, resolvedAppID, keyword, normalizedCountry, normalizedPlatform)
 			})
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 
 			report := buildKeywordRankReport(keywordRankBuildInput{
 				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
