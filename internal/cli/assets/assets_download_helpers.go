@@ -294,12 +294,18 @@ func equivalentExistingPNG(outputPath string, candidate []byte) bool {
 	if err != nil {
 		return false
 	}
-	currentInfo, statErr := current.Stat()
+	unchanged := sameFileSnapshot(current, existingInfo, existingBytes)
 	closeErr = current.Close()
-	if statErr != nil || closeErr != nil {
+	return unchanged && closeErr == nil
+}
+
+func sameFileSnapshot(current *os.File, existingInfo os.FileInfo, existingBytes []byte) bool {
+	currentInfo, err := current.Stat()
+	if err != nil || !os.SameFile(existingInfo, currentInfo) {
 		return false
 	}
-	return os.SameFile(existingInfo, currentInfo)
+	currentBytes, err := io.ReadAll(io.LimitReader(current, pngEquivalenceMaxBytes+1))
+	return err == nil && len(currentBytes) <= pngEquivalenceMaxBytes && bytes.Equal(existingBytes, currentBytes)
 }
 
 func equivalentPNGBytes(existing, candidate []byte) bool {

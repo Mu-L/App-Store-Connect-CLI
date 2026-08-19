@@ -455,6 +455,49 @@ func TestWriteScreenshotDownloadReplacesChangedPixels(t *testing.T) {
 	}
 }
 
+func TestSameFileSnapshotRejectsInPlaceRewrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "screenshot.png")
+	original := []byte("original")
+	changed := []byte("modified")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("write original screenshot: %v", err)
+	}
+
+	initial, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open original screenshot: %v", err)
+	}
+	initialInfo, err := initial.Stat()
+	if err != nil {
+		_ = initial.Close()
+		t.Fatalf("stat original screenshot: %v", err)
+	}
+	if err := initial.Close(); err != nil {
+		t.Fatalf("close original screenshot: %v", err)
+	}
+
+	if err := os.WriteFile(path, changed, 0o600); err != nil {
+		t.Fatalf("rewrite screenshot in place: %v", err)
+	}
+	current, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("reopen rewritten screenshot: %v", err)
+	}
+	defer current.Close()
+	currentInfo, err := current.Stat()
+	if err != nil {
+		t.Fatalf("stat rewritten screenshot: %v", err)
+	}
+	if !os.SameFile(initialInfo, currentInfo) {
+		t.Fatal("in-place rewrite unexpectedly replaced the file identity")
+	}
+
+	if sameFileSnapshot(current, initialInfo, original) {
+		t.Fatal("sameFileSnapshot() = true after an in-place content rewrite")
+	}
+}
+
 func TestWriteScreenshotDownloadReplacesUnreadableExistingFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows file permissions do not provide a portable unreadable-file fixture")
