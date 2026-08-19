@@ -147,6 +147,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc deploy --password [REDACTED] --verbose`,
 		},
 		{
+			name:  "multiline double quoted secret flag",
+			input: "asc deploy --password \"multiline-head\nmultiline tail secret\" --verbose",
+			want:  "asc deploy --password [REDACTED] --verbose",
+		},
+		{
+			name:  "multiline single quoted assignment",
+			input: "PASSWORD='multiline-head\nmultiline-tail-secret' asc builds list",
+			want:  "PASSWORD=[REDACTED] asc builds list",
+		},
+		{
 			name:  "comma in unquoted secret flag",
 			input: `asc web sandbox create --password Password1,remaining-secret --territory USA`,
 			want:  `asc web sandbox create --password [REDACTED] --territory USA`,
@@ -369,6 +379,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "camel case JSON assignments",
 			input: `response {"demoAccountPassword":"review-secret","awsSecretAccessKey":"cloud-secret"}`,
 			want:  `response {"demoAccountPassword":"[REDACTED]","awsSecretAccessKey":"[REDACTED]"}`,
+		},
+		{
+			name:  "sandbox secret answer preserves question",
+			input: `{"secretQuestion":"Public question","secretAnswer":"recovery-answer-secret","status":"active"}`,
+			want:  `{"secretQuestion":"Public question","secretAnswer":"[REDACTED]","status":"active"}`,
 		},
 		{
 			name:  "escaped JSON assignment",
@@ -799,6 +814,47 @@ func TestSnitchDryRunRedactsStructuredHeadersAndYAMLSecretBlocks(t *testing.T) {
 		`{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","status":"failed"}`,
 		"client_secret: [REDACTED]\nstatus: failed",
 		"private_key_b64: [REDACTED]\nnext: preserved",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsMultilineQuotedAndSecretAnswerValues(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"multiline-head",
+		"multiline-tail-secret",
+		"recovery-answer-secret",
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "asc deploy --password \""+secrets[0]+"\n"+secrets[1]+" with space\" --verbose",
+		"--actual", `{"secretQuestion":"Public question","secretAnswer":"`+secrets[2]+`","status":"active"}`,
+		"multiline and recovery credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"asc deploy --password [REDACTED] --verbose",
+		`{"secretQuestion":"Public question","secretAnswer":"[REDACTED]","status":"active"}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
