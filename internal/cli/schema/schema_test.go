@@ -64,12 +64,24 @@ func TestMatchEndpoint_MethodAndPath(t *testing.T) {
 	if matchEndpoint(e, "DELETE /v1/apps") {
 		t.Error("unexpected match for 'DELETE /v1/apps'")
 	}
+	prefix := Endpoint{Method: "POST", Path: "/v1/apps/{id}/appInfos"}
+	if matchEndpoint(prefix, "POST /v1/apps") {
+		t.Error("unexpected prefix match for exact method and path query")
+	}
 }
 
 func TestMatchEndpoint_DotNotation(t *testing.T) {
 	e := Endpoint{Method: "GET", Path: "/v1/apps/{id}/builds"}
 	if !matchEndpoint(e, "apps.builds") {
 		t.Error("expected match for dot notation 'apps.builds'")
+	}
+	collection := Endpoint{Method: "GET", Path: "/v1/apps"}
+	if !matchEndpoint(collection, "apps.list") {
+		t.Error("expected match for action dot notation 'apps.list'")
+	}
+	member := Endpoint{Method: "GET", Path: "/v1/apps/{id}"}
+	if matchEndpoint(member, "apps.list") {
+		t.Error("unexpected list match for member endpoint")
 	}
 }
 
@@ -98,6 +110,29 @@ func TestPathToDotNotation(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("pathToDotNotation(%q, %q) = %q, want %q", tt.method, tt.path, got, tt.want)
 		}
+	}
+}
+
+func TestPathToActionDotNotation(t *testing.T) {
+	tests := []struct {
+		method string
+		path   string
+		want   string
+	}{
+		{method: "GET", path: "/v1/apps", want: "apps.list"},
+		{method: "GET", path: "/v1/apps/{id}", want: "apps.get"},
+		{method: "GET", path: "/v1/apps/{id}/builds", want: "apps.builds.list"},
+		{method: "POST", path: "/v1/apps", want: "apps.create"},
+		{method: "PATCH", path: "/v1/apps/{id}", want: "apps.update"},
+		{method: "DELETE", path: "/v1/apps/{id}", want: "apps.delete"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			if got := pathToActionDotNotation(tt.method, tt.path); got != tt.want {
+				t.Fatalf("pathToActionDotNotation(%q, %q) = %q, want %q", tt.method, tt.path, got, tt.want)
+			}
+		})
 	}
 }
 
