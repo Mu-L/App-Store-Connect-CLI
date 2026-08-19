@@ -241,7 +241,7 @@ func auditDeclaration(ctx context.Context, client *asc.Client, app auditApp) asc
 	if boolIsTrue(socialMediaAgeRestricted) && boolIsFalse(socialMedia) {
 		row.MissingResponses = append(row.MissingResponses, "socialMedia")
 	}
-	if (boolIsTrue(socialMedia) || boolIsTrue(socialMediaAgeRestricted)) && boolIsFalse(attrs.UserGeneratedContent) {
+	if (boolIsTrue(socialMedia) || boolIsTrue(socialMediaAgeRestricted)) && !boolIsTrue(attrs.UserGeneratedContent) {
 		row.MissingResponses = append(row.MissingResponses, "userGeneratedContent")
 	}
 	if boolIsTrue(socialMediaAgeRestricted) && !boolIsTrue(attrs.AgeAssurance) {

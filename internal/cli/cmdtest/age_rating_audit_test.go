@@ -28,7 +28,7 @@ func ageRatingAuditTransport() http.RoundTripper {
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/appInfos/info-app-ready/ageRatingDeclaration":
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"ageRatingDeclarations","id":"decl-1","attributes":{"socialMedia":false,"socialMediaAgeRestricted":false,"messagingAndChat":false,"ageAssurance":false}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/appInfos/info-app-social/ageRatingDeclaration":
-			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"ageRatingDeclarations","id":"decl-2","attributes":{"socialMedia":true,"messagingAndChat":true,"ageAssurance":true}}}`), nil
+			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"ageRatingDeclarations","id":"decl-2","attributes":{"socialMedia":true,"messagingAndChat":true,"ageAssurance":true,"userGeneratedContent":true}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/appInfos/info-app-unset/ageRatingDeclaration":
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"ageRatingDeclarations","id":"decl-3","attributes":{}}}`), nil
 		default:
@@ -168,7 +168,7 @@ func TestAgeRatingAuditRequiresAgeAssuranceForRestrictedSocialMedia(t *testing.T
 		case "/v1/apps/app-1/appInfos":
 			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"appInfos","id":"info-1","attributes":{"state":"READY_FOR_DISTRIBUTION"}}],"links":{}}`), nil
 		case "/v1/appInfos/info-1/ageRatingDeclaration":
-			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"ageRatingDeclarations","id":"decl-1","attributes":{"socialMedia":true,"socialMediaAgeRestricted":true,"messagingAndChat":true,"ageAssurance":false}}}`), nil
+			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"ageRatingDeclarations","id":"decl-1","attributes":{"socialMedia":true,"socialMediaAgeRestricted":true,"messagingAndChat":true,"ageAssurance":false,"userGeneratedContent":true}}}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
 		}
@@ -208,7 +208,7 @@ func TestAgeRatingAuditRejectsContradictoryRestrictedSocialMedia(t *testing.T) {
 		case "/v1/apps/app-1/appInfos":
 			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"appInfos","id":"info-1","attributes":{"state":"READY_FOR_DISTRIBUTION"}}],"links":{}}`), nil
 		case "/v1/appInfos/info-1/ageRatingDeclaration":
-			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"ageRatingDeclarations","id":"decl-1","attributes":{"socialMedia":false,"socialMediaAgeRestricted":true,"messagingAndChat":true,"ageAssurance":true}}}`), nil
+			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"ageRatingDeclarations","id":"decl-1","attributes":{"socialMedia":false,"socialMediaAgeRestricted":true,"messagingAndChat":true,"ageAssurance":true,"userGeneratedContent":true}}}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
 		}
@@ -253,6 +253,16 @@ func TestAgeRatingAuditRequiresUserGeneratedContent(t *testing.T) {
 		{
 			name:        "age-restricted social media",
 			attributes:  `"socialMedia":false,"socialMediaAgeRestricted":true,"messagingAndChat":true,"ageAssurance":true,"userGeneratedContent":false`,
+			wantMissing: "socialMedia,userGeneratedContent",
+		},
+		{
+			name:        "social media with user-generated content unset",
+			attributes:  `"socialMedia":true,"socialMediaAgeRestricted":false,"messagingAndChat":true,"ageAssurance":false`,
+			wantMissing: "userGeneratedContent",
+		},
+		{
+			name:        "age-restricted social media with user-generated content unset",
+			attributes:  `"socialMedia":false,"socialMediaAgeRestricted":true,"messagingAndChat":true,"ageAssurance":true`,
 			wantMissing: "socialMedia,userGeneratedContent",
 		},
 	}
