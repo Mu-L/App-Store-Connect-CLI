@@ -407,14 +407,37 @@ func FindPreReleaseVersionIDs(ctx context.Context, client *asc.Client, appID, ve
 
 	variants := versionQueryVariants(requestedVersion)
 	if len(variants) == 0 {
-		return findPreReleaseVersionIDsForVersion(ctx, client, appID, "", platform)
+		ids, _, err := findPreReleaseVersionIDsForVersions(ctx, client, appID, nil, platform)
+		return ids, err
+	}
+
+	// A platform-scoped lookup can stop at the caller's exact spelling. Without
+	// a platform filter, equivalent spellings can legitimately belong to
+	// different platform trains, so every variant is requested together.
+	if strings.TrimSpace(platform) == "" {
+		ids, matchedVersions, err := findPreReleaseVersionIDsForVersions(ctx, client, appID, variants, "")
+		if err != nil {
+			return nil, err
+		}
+		if _, exactMatched := matchedVersions[requestedVersion]; !exactMatched {
+			for _, variant := range variants {
+				if variant == requestedVersion {
+					continue
+				}
+				if _, ok := matchedVersions[variant]; ok {
+					noteEquivalentVersionMatch(requestedVersion, variant)
+					break
+				}
+			}
+		}
+		return ids, nil
 	}
 
 	// The requested format is queried first and wins outright, so an app that
 	// really does have a train under the caller's exact version string keeps
 	// resolving exactly as before.
 	for _, variant := range variants {
-		ids, err := findPreReleaseVersionIDsForVersion(ctx, client, appID, variant, platform)
+		ids, _, err := findPreReleaseVersionIDsForVersions(ctx, client, appID, []string{variant}, platform)
 		if err != nil {
 			return nil, err
 		}
@@ -428,12 +451,18 @@ func FindPreReleaseVersionIDs(ctx context.Context, client *asc.Client, appID, ve
 	return nil, nil
 }
 
-func findPreReleaseVersionIDsForVersion(ctx context.Context, client *asc.Client, appID, version, platform string) ([]string, error) {
+func findPreReleaseVersionIDsForVersions(ctx context.Context, client *asc.Client, appID string, versions []string, platform string) ([]string, map[string]struct{}, error) {
 	opts := []asc.PreReleaseVersionsOption{}
-	exactVersion := strings.TrimSpace(version)
+	acceptedVersions := make(map[string]struct{}, len(versions))
+	for _, version := range versions {
+		if normalized := strings.TrimSpace(version); normalized != "" {
+			acceptedVersions[normalized] = struct{}{}
+		}
+	}
+	versionFilter := strings.Join(versions, ",")
 
-	if version != "" {
-		opts = append(opts, asc.WithPreReleaseVersionsVersion(version))
+	if versionFilter != "" {
+		opts = append(opts, asc.WithPreReleaseVersionsVersion(versionFilter))
 		opts = append(opts, asc.WithPreReleaseVersionsLimit(200))
 	} else {
 		opts = append(opts, asc.WithPreReleaseVersionsLimit(200))
@@ -447,18 +476,23 @@ func findPreReleaseVersionIDsForVersion(ctx context.Context, client *asc.Client,
 	firstPage, err := client.GetPreReleaseVersions(firstPageCtx, appID, opts...)
 	firstPageCancel()
 	if err != nil {
-		return nil, fmt.Errorf("failed to lookup pre-release versions: %w", err)
+		return nil, nil, fmt.Errorf("failed to lookup pre-release versions: %w", err)
 	}
 
+	matchedVersions := make(map[string]struct{}, len(acceptedVersions))
 	matchesRequestedVersion := func(preReleaseVersion asc.PreReleaseVersion) bool {
-		if exactVersion == "" {
+		if len(acceptedVersions) == 0 {
 			return true
 		}
 		versionAttr := strings.TrimSpace(preReleaseVersion.Attributes.Version)
 		if versionAttr == "" {
 			return true
 		}
-		return versionAttr == exactVersion
+		if _, ok := acceptedVersions[versionAttr]; ok {
+			matchedVersions[versionAttr] = struct{}{}
+			return true
+		}
+		return false
 	}
 
 	ids := make([]string, 0, len(firstPage.Data))
@@ -493,10 +527,10 @@ func findPreReleaseVersionIDsForVersion(ctx context.Context, client *asc.Client,
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to paginate pre-release versions: %w", err)
+		return nil, nil, fmt.Errorf("failed to paginate pre-release versions: %w", err)
 	}
 
-	return ids, nil
+	return ids, matchedVersions, nil
 }
 
 // versionQueryVariants returns the marketing version strings worth querying for

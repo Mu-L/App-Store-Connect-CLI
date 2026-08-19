@@ -236,6 +236,39 @@ func TestFindPreReleaseVersionIDsPrefersRequestedVersionFormat(t *testing.T) {
 	}
 }
 
+func TestFindPreReleaseVersionIDsCollectsEquivalentFormatsAcrossPlatforms(t *testing.T) {
+	resetEquivalentVersionNotes()
+
+	var calls []string
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/v1/preReleaseVersions" {
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+		if got := req.URL.Query().Get("filter[platform]"); got != "" {
+			return nil, fmt.Errorf("filter[platform] = %q, want empty", got)
+		}
+		version := req.URL.Query().Get("filter[version]")
+		calls = append(calls, version)
+		switch version {
+		case "1.2.0,1.2":
+			return buildWaitJSONResponse(`{"data":[{"type":"preReleaseVersions","id":"prv-ios","attributes":{"version":"1.2.0","platform":"IOS"}},{"type":"preReleaseVersions","id":"prv-mac","attributes":{"version":"1.2","platform":"MAC_OS"}}],"links":{}}`)
+		default:
+			return buildWaitJSONResponse(`{"data":[],"links":{}}`)
+		}
+	})
+
+	ids, err := FindPreReleaseVersionIDs(context.Background(), client, "app-1", "1.2.0", "")
+	if err != nil {
+		t.Fatalf("FindPreReleaseVersionIDs() error: %v", err)
+	}
+	if !slices.Equal(ids, []string{"prv-ios", "prv-mac"}) {
+		t.Fatalf("expected both platform trains, got %v", ids)
+	}
+	if !slices.Equal(calls, []string{"1.2.0,1.2"}) {
+		t.Fatalf("expected every equivalent format in one query, got %v", calls)
+	}
+}
+
 func TestFindPreReleaseVersionIDsNotesEquivalentMatchOnlyOnce(t *testing.T) {
 	resetEquivalentVersionNotes()
 
