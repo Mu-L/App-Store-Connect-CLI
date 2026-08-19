@@ -77,6 +77,7 @@ Examples:
 		Subcommands: []*ffcli.Command{
 			AgeRatingViewCommand(),
 			AgeRatingEditCommand(),
+			AgeRatingAuditCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp
