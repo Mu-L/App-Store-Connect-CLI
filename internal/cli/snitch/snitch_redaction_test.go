@@ -92,6 +92,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "before\n[REDACTED PRIVATE KEY]\nafter",
 		},
 		{
+			name:  "unterminated private key block",
+			input: "before\n-----BEGIN PRIVATE KEY-----\ntruncated-key-material",
+			want:  "before\n[REDACTED PRIVATE KEY]",
+		},
+		{
 			name:  "shell assignment",
 			input: `command CLIENT_SECRET="super secret value" --verbose`,
 			want:  "command CLIENT_SECRET=[REDACTED] --verbose",
@@ -205,6 +210,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "curl equals user password flag",
 			input: `curl --user=alice:supersensitive https://example.test`,
 			want:  `curl --user=[REDACTED] https://example.test`,
+		},
+		{
+			name:  "curl long proxy user password flag",
+			input: `curl --proxy-user alice:supersensitive https://example.test`,
+			want:  `curl --proxy-user [REDACTED] https://example.test`,
+		},
+		{
+			name:  "curl short proxy user password flag",
+			input: `curl -U 'alice:super sensitive' https://example.test`,
+			want:  `curl -U [REDACTED] https://example.test`,
 		},
 		{
 			name:  "comma in unquoted assignment",
@@ -437,6 +452,44 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 	}
 }
 
+func TestSnitchDryRunRedactsTruncatedPrivateKeyAndProxyCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const keyMaterial = "truncated-key-material"
+	const proxyPassword = "proxy-password-tail"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "curl --proxy-user alice:"+proxyPassword+" https://example.test",
+		"--actual", "failed to load\n-----BEGIN PRIVATE KEY-----\n"+keyMaterial,
+		"malformed credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range []string{keyMaterial, proxyPassword} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"curl --proxy-user [REDACTED] https://example.test",
+		"failed to load\n[REDACTED PRIVATE KEY]",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
 func TestWriteLocalLogRedactsEveryStringField(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, err := os.Getwd()
@@ -610,7 +663,7 @@ func TestFormatLocalEntriesRedactsLegacyCredentials(t *testing.T) {
 func TestIssueBodyPreservesBenignSecurityVocabulary(t *testing.T) {
 	entry := LogEntry{
 		Description: "token refresh failed",
-		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\nasc auth login --private-key /path/to/AuthKey.p8\nasc auth login --private-key=/path/to/AuthKey.p8\nasc xcode validate --api-key KEY123ABC\ncurl --user alice https://example.test\ngit clone https://example.test/repo",
+		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\nasc auth login --private-key /path/to/AuthKey.p8\nasc auth login --private-key=/path/to/AuthKey.p8\nasc xcode validate --api-key KEY123ABC\ncurl --user alice https://example.test\ncurl --proxy-user alice https://example.test\ngit clone https://example.test/repo",
 		Expected:    "secret scanning documentation remains visible",
 		Actual:      "request to https://example.test/path?signature_state=missing returned 401",
 		Severity:    "bug",
