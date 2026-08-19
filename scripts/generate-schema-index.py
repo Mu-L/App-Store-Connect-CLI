@@ -165,10 +165,10 @@ def get_operation_action(schemas: dict, operation_id: str, response_ref: str):
     if response:
         data = response.get("properties", {}).get("data", {})
         if "$ref" in data:
-            data = resolve_ref(schemas, data["$ref"]) or data
-        if data.get("type") == "array":
-            return "list"
+            data = resolve_ref(schemas, data["$ref"])
         if data:
+            if data.get("type") == "array":
+                return "list"
             return "get"
 
     suffix = operation_id.rsplit("_", 1)[-1]

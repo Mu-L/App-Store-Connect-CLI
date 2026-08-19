@@ -98,6 +98,21 @@ class GenerateSchemaIndexTests(unittest.TestCase):
         )
         self.assertEqual(endpoint["getAction"], "list")
 
+    def test_get_operation_action_falls_back_for_unresolved_data_ref(self) -> None:
+        schemas = {
+            "CollectionResponse": {
+                "properties": {
+                    "data": {"$ref": "#/components/schemas/MissingResource"}
+                }
+            }
+        }
+        action = generate_schema_index.get_operation_action(
+            schemas,
+            "widgets_getCollection",
+            "#/components/schemas/CollectionResponse",
+        )
+        self.assertEqual(action, "list")
+
     def test_every_get_operation_has_an_indexed_action(self) -> None:
         endpoints = generate_schema_index.build_index(self.spec)
         get_endpoints = [
