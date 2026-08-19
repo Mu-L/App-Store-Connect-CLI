@@ -143,8 +143,11 @@ Examples:
 func VersionsViewCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("versions view", flag.ExitOnError)
 
-	versionID := fs.String("version-id", "", "App Store version ID (required)")
+	versionID := fs.String("version-id", "", "App Store version ID")
 	legacyID := shared.BindDeprecatedStringFlagAlias(fs, "id", "version-id")
+	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID)")
+	versionString := fs.String("version", "", "Version string used with --app")
+	platform := fs.String("platform", "IOS", "Platform used with --app and --version: IOS, MAC_OS, TV_OS, VISION_OS")
 	includeBuild := fs.Bool("include-build", false, "Include attached build information")
 	includeSubmission := fs.Bool("include-submission", false, "Include submission information")
 	include := fs.String("include", "", "Include related resources: "+strings.Join(appStoreVersionIncludeList(), ", "))
@@ -153,12 +156,14 @@ func VersionsViewCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "view",
-		ShortUsage: "asc versions view [flags]",
+		ShortUsage: "asc versions view (--version-id \"VERSION_ID\" | --app \"APP_ID\" --version \"1.2.3\") [flags]",
 		ShortHelp:  "View details for an app store version.",
 		LongHelp: `View details for an app store version.
 
 Examples:
   asc versions view --version-id "VERSION_ID"
+  asc versions view --app "123456789" --version "1.2.3"
+  asc versions view --app "123456789" --version "1.2.3" --platform MAC_OS
   asc versions view --version-id "VERSION_ID" --include-build --include-submission
   asc versions view --version-id "VERSION_ID" --include "ageRatingDeclaration,appStoreReviewDetail"`,
 		FlagSet:   fs,
@@ -168,9 +173,39 @@ Examples:
 				return err
 			}
 			trimmedID := strings.TrimSpace(*versionID)
-			if trimmedID == "" {
+			lookupRequested := false
+			fs.Visit(func(parsed *flag.Flag) {
+				switch parsed.Name {
+				case "app", "version", "platform":
+					lookupRequested = true
+				}
+			})
+			if trimmedID != "" && lookupRequested {
+				return shared.UsageError("--version-id cannot be combined with --app, --version, or --platform")
+			}
+			if trimmedID == "" && !lookupRequested {
 				fmt.Fprintln(os.Stderr, "Error: --version-id is required")
 				return shared.MissingRequiredUsageError("--version-id")
+			}
+
+			resolvedAppID := ""
+			resolvedPlatform := ""
+			trimmedVersion := strings.TrimSpace(*versionString)
+			if trimmedID == "" {
+				if trimmedVersion == "" {
+					fmt.Fprintln(os.Stderr, "Error: --version is required when resolving by app")
+					return shared.MissingRequiredUsageError("--version")
+				}
+				resolvedAppID = shared.ResolveAppID(*appID)
+				if resolvedAppID == "" {
+					fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
+					return shared.MissingRequiredUsageError("--app")
+				}
+				var err error
+				resolvedPlatform, err = shared.NormalizeAppStoreVersionPlatform(*platform)
+				if err != nil {
+					return shared.UsageErrorf("versions view: %v", err)
+				}
 			}
 
 			includeValues, err := normalizeAppStoreVersionInclude(*include)
@@ -188,6 +223,12 @@ Examples:
 
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
+			if trimmedID == "" {
+				trimmedID, err = shared.ResolveAppStoreVersionID(requestCtx, client, resolvedAppID, trimmedVersion, resolvedPlatform)
+				if err != nil {
+					return fmt.Errorf("versions view: resolve version: %w", err)
+				}
+			}
 
 			if len(includeValues) > 0 {
 				apiIncludes, includeAgeRating := splitCompatAppStoreVersionIncludes(includeValues)
