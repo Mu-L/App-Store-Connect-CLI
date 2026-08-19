@@ -21,20 +21,90 @@ type IPABundleInfo struct {
 	Platform    asc.Platform
 }
 
-// ValidateIPAPath ensures an IPA path points to a regular file and rejects
-// symlinks so upload commands don't accidentally dereference unexpected files.
+// ValidateIPAPath ensures an IPA path points to a non-empty regular file and
+// rejects symlinks so upload commands don't dereference unexpected files.
 func ValidateIPAPath(ipaPath string) (os.FileInfo, error) {
-	fileInfo, err := os.Lstat(ipaPath)
+	file, fileInfo, err := OpenValidatedIPAPath(ipaPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to stat IPA: %w", err)
+		return nil, err
 	}
-	if fileInfo.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("refusing to read symlink %q", ipaPath)
-	}
-	if fileInfo.IsDir() {
-		return nil, fmt.Errorf("--ipa must be a file")
-	}
+	_ = file.Close()
 	return fileInfo, nil
+}
+
+// ValidatePKGPath ensures a PKG path points to a non-empty regular file and
+// rejects symlinks before an upload reservation is created.
+func ValidatePKGPath(pkgPath string) (os.FileInfo, error) {
+	file, fileInfo, err := OpenValidatedPKGPath(pkgPath)
+	if err != nil {
+		return nil, err
+	}
+	_ = file.Close()
+	return fileInfo, nil
+}
+
+// OpenValidatedIPAPath opens and validates an IPA without following a symlink.
+// The returned handle pins the validated file across the upload lifecycle.
+func OpenValidatedIPAPath(ipaPath string) (*os.File, os.FileInfo, error) {
+	return openValidatedBuildArtifactPath(ipaPath, "IPA", "--ipa")
+}
+
+// OpenValidatedPKGPath opens and validates a PKG without following a symlink.
+// The returned handle pins the validated file across the upload lifecycle.
+func OpenValidatedPKGPath(pkgPath string) (*os.File, os.FileInfo, error) {
+	return openValidatedBuildArtifactPath(pkgPath, "PKG", "--pkg")
+}
+
+func openValidatedBuildArtifactPath(filePath, artifactName, flagName string) (*os.File, os.FileInfo, error) {
+	pathInfo, err := os.Lstat(filePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to stat %s: %w", artifactName, err)
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, buildArtifactSymlinkError(filePath, flagName)
+	}
+	if err := validateBuildArtifactInfo(pathInfo, flagName); err != nil {
+		return nil, nil, err
+	}
+
+	file, err := OpenExistingNoFollow(filePath)
+	if err != nil {
+		if latestInfo, statErr := os.Lstat(filePath); statErr == nil && latestInfo.Mode()&os.ModeSymlink != 0 {
+			return nil, nil, buildArtifactSymlinkError(filePath, flagName)
+		}
+		return nil, nil, fmt.Errorf("failed to open %s: %w", artifactName, err)
+	}
+	fileInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, fmt.Errorf("failed to stat opened %s: %w", artifactName, err)
+	}
+	if !os.SameFile(pathInfo, fileInfo) {
+		_ = file.Close()
+		return nil, nil, fmt.Errorf("%s changed while being opened", flagName)
+	}
+	if err := validateBuildArtifactInfo(fileInfo, flagName); err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	return file, fileInfo, nil
+}
+
+func validateBuildArtifactInfo(fileInfo os.FileInfo, flagName string) error {
+	if fileInfo.IsDir() {
+		return fmt.Errorf("%s must be a file", flagName)
+	}
+	if !fileInfo.Mode().IsRegular() {
+		return fmt.Errorf("%s must be a regular file", flagName)
+	}
+	if fileInfo.Size() == 0 {
+		return fmt.Errorf("%s must not be empty", flagName)
+	}
+	return nil
+}
+
+func buildArtifactSymlinkError(filePath, flagName string) error {
+	return fmt.Errorf("refusing to read symlink %q from %s", filePath, flagName)
 }
 
 // ExtractBundleInfoFromIPA reads the top-level app's bundle identifier and
@@ -45,8 +115,27 @@ func ExtractBundleInfoFromIPA(ipaPath string) (IPABundleInfo, error) {
 		return IPABundleInfo{}, fmt.Errorf("open IPA: %w", err)
 	}
 	defer reader.Close()
+	return extractBundleInfoFromIPAFiles(reader.File)
+}
 
-	for _, file := range reader.File {
+// ExtractBundleInfoFromIPAFile reads top-level app metadata from an opened IPA.
+func ExtractBundleInfoFromIPAFile(file *os.File) (IPABundleInfo, error) {
+	if file == nil {
+		return IPABundleInfo{}, fmt.Errorf("open IPA: file is required")
+	}
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return IPABundleInfo{}, fmt.Errorf("stat IPA: %w", err)
+	}
+	reader, err := zip.NewReader(file, fileInfo.Size())
+	if err != nil {
+		return IPABundleInfo{}, fmt.Errorf("open IPA: %w", err)
+	}
+	return extractBundleInfoFromIPAFiles(reader.File)
+}
+
+func extractBundleInfoFromIPAFiles(files []*zip.File) (IPABundleInfo, error) {
+	for _, file := range files {
 		if file.FileInfo().IsDir() {
 			continue
 		}
