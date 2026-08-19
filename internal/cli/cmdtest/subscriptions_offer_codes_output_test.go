@@ -530,7 +530,7 @@ func TestSubscriptionsOfferCodesListOutputErrors(t *testing.T) {
 			})
 
 			if !isUsageClassError(runErr) {
-				t.Fatalf("expected help error, got %v", runErr)
+				t.Fatalf("expected usage-class error, got %v", runErr)
 			}
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)

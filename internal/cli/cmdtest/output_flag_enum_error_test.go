@@ -36,6 +36,11 @@ func TestOutputFlagRejectionUsesEnumStyle(t *testing.T) {
 			args: []string{"auth", "status", "--output", "md"},
 			want: `Error: --output must be one of: table, json (got "md")` + "\n",
 		},
+		{
+			name: "rejected value preserves whitespace",
+			args: []string{"apps", "list", "--output", " yaml "},
+			want: `Error: --output must be one of: json, table, markdown (got " yaml ")` + "\n",
+		},
 	}
 
 	for _, test := range tests {

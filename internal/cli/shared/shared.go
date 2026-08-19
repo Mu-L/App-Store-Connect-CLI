@@ -1247,7 +1247,7 @@ func outputFormatEnumError(flagName, value string, allowed []string) error {
 		"--%s must be one of: %s (got %q)",
 		name,
 		strings.Join(canonicalOutputFormats(allowed), ", "),
-		strings.TrimSpace(value),
+		value,
 	)
 }
 

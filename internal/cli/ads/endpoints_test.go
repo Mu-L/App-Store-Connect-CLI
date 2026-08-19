@@ -109,7 +109,7 @@ func TestAdsRawResponseCommandsExposeJSONOnlyOutput(t *testing.T) {
 			if err := cmd.Parse(args); err != nil {
 				t.Fatalf("asc ads %s parse error: %v", strings.Join(path, " "), err)
 			}
-			if err := cmd.Exec(context.Background(), nil); err == nil || !strings.Contains(err.Error(), `(got "table")`) {
+			if err := cmd.Exec(context.Background(), nil); err == nil || !errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), `(got "table")`) {
 				t.Fatalf("asc ads %s accepted --output table for a raw response: %v", strings.Join(path, " "), err)
 			}
 		})

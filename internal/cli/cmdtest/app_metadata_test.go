@@ -199,7 +199,7 @@ func TestLocalizationsMediaSetsOutputErrors(t *testing.T) {
 				}
 				err := root.Run(context.Background())
 				if !isUsageClassError(err) {
-					t.Fatalf("expected ErrHelp, got %v", err)
+					t.Fatalf("expected usage-class error, got %v", err)
 				}
 			})
 

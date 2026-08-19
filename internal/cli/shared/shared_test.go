@@ -506,6 +506,7 @@ func TestValidateOutputFormat(t *testing.T) {
 		{name: "md alias", input: "md", pretty: false, wantFormat: "markdown"},
 		{name: "table pretty rejected", input: "table", pretty: true, wantErr: "--pretty is only valid with JSON output"},
 		{name: "unsupported rejected", input: "yaml", pretty: false, wantErr: `(got "yaml")`},
+		{name: "unsupported preserves whitespace", input: " yaml ", pretty: false, wantErr: `(got " yaml ")`},
 	}
 
 	for _, tc := range tests {
