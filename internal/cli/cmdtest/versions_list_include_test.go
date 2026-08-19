@@ -71,11 +71,22 @@ func TestVersionsListPaginateKeepsInclude(t *testing.T) {
 		http.DefaultTransport = originalTransport
 	})
 
+	requestCount := 0
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
 		if got := req.URL.Query().Get("include"); got != "build" {
-			t.Fatalf("expected include=build on the first page, got %q", got)
+			t.Fatalf("expected include=build on request %d, got %q", requestCount, got)
 		}
-		body := `{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"versionString":"1.0","platform":"IOS"}}],"included":[{"type":"builds","id":"build-1","attributes":{"version":"42"}}]}`
+
+		var body string
+		switch requestCount {
+		case 1:
+			body = `{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"versionString":"1.0","platform":"IOS"}}],"included":[{"type":"builds","id":"build-1","attributes":{"version":"42"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps/123456789/appStoreVersions?cursor=AQ&include=build"}}`
+		case 2:
+			body = `{"data":[{"type":"appStoreVersions","id":"version-2","attributes":{"versionString":"1.1","platform":"IOS"}}],"included":[{"type":"builds","id":"build-2","attributes":{"version":"43"}}]}`
+		default:
+			t.Fatalf("unexpected request %d to %s", requestCount, req.URL.String())
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(strings.NewReader(body)),
@@ -98,8 +109,13 @@ func TestVersionsListPaginateKeepsInclude(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("expected empty stderr, got %q", stderr)
 	}
-	if !strings.Contains(stdout, `"id":"build-1"`) {
-		t.Fatalf("expected included build in aggregated output, got %q", stdout)
+	if requestCount != 2 {
+		t.Fatalf("expected 2 requests, got %d", requestCount)
+	}
+	for _, buildID := range []string{"build-1", "build-2"} {
+		if !strings.Contains(stdout, `"id":"`+buildID+`"`) {
+			t.Fatalf("expected included build %s in aggregated output, got %q", buildID, stdout)
+		}
 	}
 }
 
