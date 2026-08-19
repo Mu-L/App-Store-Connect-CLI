@@ -22,6 +22,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "request failed with Authorization: [REDACTED] after retry",
 		},
 		{
+			name:  "single quoted authorization header argument",
+			input: `curl -H 'Authorization: Bearer opaque-secret' https://example.test`,
+			want:  `curl -H 'Authorization: [REDACTED]' https://example.test`,
+		},
+		{
 			name:  "parameterized authorization header",
 			input: "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260819/region/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=abcdef0123456789",
 			want:  "Authorization: [REDACTED]",
@@ -242,6 +247,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "URL username-only credential",
 			input: "fetch https://access-token@example.test/private/path",
 			want:  "fetch https://[REDACTED]@example.test/private/path",
+		},
+		{
+			name:  "scp style remote credentials",
+			input: "asc signing sync --repo user:supersensitive@github.com:team/certs.git",
+			want:  "asc signing sync --repo [REDACTED]@github.com:team/certs.git",
 		},
 		{
 			name:  "private key block",
@@ -628,6 +638,15 @@ func TestRedactSensitiveTextPreservesURLQueryAndFragmentAtSigns(t *testing.T) {
 		if changed || got != input {
 			t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
 		}
+	}
+}
+
+func TestRedactSensitiveTextPreservesUsernameOnlySCPRemote(t *testing.T) {
+	input := "asc signing sync --repo git@github.com:team/certs.git"
+
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
 	}
 }
 
@@ -1111,6 +1130,43 @@ func TestSnitchDryRunRedactsAttachedCurlCredentialHeaders(t *testing.T) {
 	want := "curl -HCookie:[REDACTED] -HX-Apple-Widget-Key:[REDACTED] -H Cookie:[REDACTED] --header=Cookie:[REDACTED] -HAccept:application/json https://example.test"
 	if !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+	}
+}
+
+func TestSnitchDryRunRedactsQuotedAuthorizationAndSCPRemoteCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"quoted-authorization-secret", "remote-password-secret"}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "curl -H 'Authorization: Bearer "+secrets[0]+"' https://example.test",
+		"--actual", "asc signing sync --repo user:"+secrets[1]+"@github.com:team/certs.git",
+		"quoted authorization and remote credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"curl -H 'Authorization: [REDACTED]' https://example.test",
+		"asc signing sync --repo [REDACTED]@github.com:team/certs.git",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
 	}
 }
 

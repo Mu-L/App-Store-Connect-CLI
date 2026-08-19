@@ -106,7 +106,15 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*(?:bearer|basic|token)[ \t]+(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;]+)`),
+		pattern:     regexp.MustCompile(`(?i)("authorization[ \t]*:[ \t]*)(?:\\.|[^"\\\r\n])*(")`),
+		replacement: `${1}` + redactionMarker + `${2}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)('authorization[ \t]*:[ \t]*)(?:\\.|[^'\\\r\n])*(')`),
+		replacement: `${1}` + redactionMarker + `${2}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*(?:bearer|basic|token)[ \t]+(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;"']+)`),
 		replacement: "Authorization: " + redactionMarker,
 	},
 	{
@@ -118,7 +126,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: "Authorization: " + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;]+)`),
+		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;"']+)`),
 		replacement: "Authorization: " + redactionMarker,
 	},
 	{
@@ -136,6 +144,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/?#\s@]+@`),
 		replacement: `${1}` + redactionMarker + `@`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|[\s"'=])[^/?#\s@:]+:[^/?#\s@]+@([a-z0-9.-]+:[^\s"'<>]+)`),
+		replacement: `${1}` + redactionMarker + `@${2}`,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)([?&](?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|` + webAuthQueryCredential + `|` + sensitiveAssignmentName + `)=)[^&#\s"'<>]+`),
