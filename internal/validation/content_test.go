@@ -75,7 +75,7 @@ func TestContentChecksPreservePlaceholderSourceOrderAcrossPatternGroups(t *testi
 	todo := strings.Index(message, `"TODO"`)
 	lorem := strings.Index(message, `"lorem ipsum"`)
 	fixme := strings.Index(message, `"FIXME"`)
-	if todo < 0 || lorem < 0 || fixme < 0 || !(todo < lorem && lorem < fixme) {
+	if todo < 0 || lorem < 0 || fixme < 0 || todo >= lorem || lorem >= fixme {
 		t.Fatalf("placeholder order = %q, want TODO, lorem ipsum, FIXME", message)
 	}
 }
