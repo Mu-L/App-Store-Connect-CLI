@@ -296,6 +296,19 @@ func equivalentExistingPNG(outputPath string, candidate []byte) bool {
 	}
 	unchanged := sameFileSnapshot(current, existingInfo, existingBytes)
 	closeErr = current.Close()
+	if !unchanged || closeErr != nil {
+		return false
+	}
+	return sameRootedFileSnapshot(root, name, existingInfo, existingBytes)
+}
+
+func sameRootedFileSnapshot(root rootfs.Root, name string, existingInfo os.FileInfo, existingBytes []byte) bool {
+	current, err := root.OpenFile(name)
+	if err != nil {
+		return false
+	}
+	unchanged := sameFileSnapshot(current, existingInfo, existingBytes)
+	closeErr := current.Close()
 	return unchanged && closeErr == nil
 }
 

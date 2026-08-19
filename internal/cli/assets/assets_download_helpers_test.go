@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 type readerThatFailsAfterFirstRead struct {
@@ -507,6 +509,49 @@ func TestSameFileSnapshotRejectsInPlaceRewrite(t *testing.T) {
 
 	if sameFileSnapshot(current, initialInfo, original) {
 		t.Fatal("sameFileSnapshot() = true after an in-place content rewrite")
+	}
+}
+
+func TestSameRootedFileSnapshotRejectsAtomicReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not permit this open-file replacement fixture")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "screenshot.png")
+	original := []byte("original")
+	changed := []byte("modified")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("write original screenshot: %v", err)
+	}
+	current, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open original screenshot: %v", err)
+	}
+	defer current.Close()
+	initialInfo, err := current.Stat()
+	if err != nil {
+		t.Fatalf("stat original screenshot: %v", err)
+	}
+
+	replacement := filepath.Join(dir, "replacement.png")
+	if err := os.WriteFile(replacement, changed, 0o600); err != nil {
+		t.Fatalf("write replacement screenshot: %v", err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatalf("replace screenshot atomically: %v", err)
+	}
+	if !sameFileSnapshot(current, initialInfo, original) {
+		t.Fatal("sameFileSnapshot() did not retain the expected open-descriptor snapshot")
+	}
+
+	root, err := rootfs.New(dir)
+	if err != nil {
+		t.Fatalf("open rooted screenshot directory: %v", err)
+	}
+	defer root.Close()
+	if sameRootedFileSnapshot(root, filepath.Base(path), initialInfo, original) {
+		t.Fatal("sameRootedFileSnapshot() = true after an atomic pathname replacement")
 	}
 }
 
