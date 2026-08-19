@@ -858,6 +858,7 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 		existingPreviews = existingResp.Data
 	}
 
+	runFiles := append([]string(nil), files...)
 	skippedResults := make([]asc.AssetUploadResultItem, 0)
 	if skipExisting {
 		files, skippedResults, err = filterExistingPreviewFiles(files, existingPreviews)
@@ -904,24 +905,79 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 		}
 	}
 
-	results := make([]asc.AssetUploadResultItem, 0, len(skippedResults)+len(files))
-	if len(files) > 0 {
-		for _, filePath := range files {
-			item, err := uploadPreviewAsset(uploadCtx, client, set.ID, filePath)
-			if err != nil {
-				return asc.AppPreviewUploadResult{}, err
-			}
-			results = append(results, item)
+	uploadedResults := make([]asc.AssetUploadResultItem, 0, len(files))
+	for _, filePath := range files {
+		item, err := uploadPreviewAsset(uploadCtx, client, set.ID, filePath)
+		if err != nil {
+			return asc.AppPreviewUploadResult{}, err
 		}
+		uploadedResults = append(uploadedResults, item)
 	}
-	results = append(skippedResults, results...)
 
-	return asc.AppPreviewUploadResult{
+	result := asc.AppPreviewUploadResult{
 		VersionLocalizationID: localizationID,
 		SetID:                 set.ID,
 		PreviewType:           set.Attributes.PreviewType,
-		Results:               results,
-	}, nil
+		Results:               append(append([]asc.AssetUploadResultItem{}, skippedResults...), uploadedResults...),
+	}
+
+	if err := syncPreviewOrder(uploadCtx, client, set.ID, runFiles, skippedResults, uploadedResults); err != nil {
+		return result, err
+	}
+
+	return result, nil
+}
+
+// getOrderedAppPreviewIDs returns preview IDs in the current remote order.
+func getOrderedAppPreviewIDs(ctx context.Context, client *asc.Client, setID string) ([]string, error) {
+	if client == nil {
+		return nil, fmt.Errorf("client is required")
+	}
+
+	firstPage, err := client.GetAppPreviewSetAppPreviewsRelationships(ctx, setID, asc.WithLinkagesLimit(200))
+	if err != nil {
+		return nil, err
+	}
+
+	return collectOrderedLinkageIDs(ctx, firstPage, func(ctx context.Context, nextURL string) (asc.PaginatedResponse, error) {
+		return client.GetAppPreviewSetAppPreviewsRelationships(ctx, "", asc.WithLinkagesNextURL(nextURL))
+	})
+}
+
+// setOrderedAppPreviews replaces the preview relationships for a set in the provided order.
+func setOrderedAppPreviews(ctx context.Context, client *asc.Client, setID string, orderedIDs []string) error {
+	if client == nil {
+		return fmt.Errorf("client is required")
+	}
+	return client.UpdateAppPreviewSetAppPreviewsRelationship(ctx, setID, normalizeAssetIDs(orderedIDs))
+}
+
+// syncPreviewOrder pins the on-store preview order to the sorted file order of
+// this run instead of the order App Store Connect happens to assign. The PATCH
+// is skipped when the set is already in the desired order.
+func syncPreviewOrder(ctx context.Context, client *asc.Client, setID string, files []string, skippedResults, uploadedResults []asc.AssetUploadResultItem) error {
+	if client == nil {
+		return fmt.Errorf("client is required")
+	}
+	setID = strings.TrimSpace(setID)
+	if setID == "" || (len(skippedResults) == 0 && len(uploadedResults) == 0) {
+		return nil
+	}
+
+	currentOrder, err := getOrderedAppPreviewIDs(ctx, client, setID)
+	if err != nil {
+		return err
+	}
+
+	orderedIDs := appendUploadedAssetIDs(currentOrder, uploadedResults)
+	if len(skippedResults) > 0 {
+		orderedIDs = orderAssetIDsForLocalFiles(currentOrder, files, skippedResults, uploadedResults)
+	}
+	if len(orderedIDs) == 0 || sameAssetIDOrder(currentOrder, orderedIDs) {
+		return nil
+	}
+
+	return setOrderedAppPreviews(ctx, client, setID, orderedIDs)
 }
 
 func deleteExistingPreviews(ctx context.Context, client *asc.Client, previews []asc.Resource[asc.AppPreviewAttributes]) error {
@@ -934,13 +990,15 @@ func deleteExistingPreviews(ctx context.Context, client *asc.Client, previews []
 }
 
 func filterExistingPreviewFiles(files []string, previews []asc.Resource[asc.AppPreviewAttributes]) ([]string, []asc.AssetUploadResultItem, error) {
-	existingChecksums := make(map[string]struct{}, len(previews))
+	existingByChecksum := make(map[string]asc.Resource[asc.AppPreviewAttributes], len(previews))
 	for _, preview := range previews {
 		checksum := strings.TrimSpace(preview.Attributes.SourceFileChecksum)
 		if checksum == "" {
 			continue
 		}
-		existingChecksums[checksum] = struct{}{}
+		if _, exists := existingByChecksum[checksum]; !exists {
+			existingByChecksum[checksum] = preview
+		}
 	}
 
 	filtered := make([]string, 0, len(files))
@@ -950,10 +1008,11 @@ func filterExistingPreviewFiles(files []string, previews []asc.Resource[asc.AppP
 		if err != nil {
 			return nil, nil, err
 		}
-		if _, exists := existingChecksums[checksum]; exists {
+		if existing, exists := existingByChecksum[checksum]; exists {
 			skipped = append(skipped, asc.AssetUploadResultItem{
 				FileName: filepath.Base(filePath),
 				FilePath: filePath,
+				AssetID:  existing.ID,
 				State:    "skipped",
 				Skipped:  true,
 			})
