@@ -90,6 +90,89 @@ func TestValidateDirAcceptsArabicKeywordsWithinCharacterLimit(t *testing.T) {
 	}
 }
 
+func TestValidateDirWarnsForInvalidURLSyntax(t *testing.T) {
+	dir := t.TempDir()
+	version := "1.2.3"
+
+	if err := os.MkdirAll(filepath.Join(dir, appInfoDirName), 0o755); err != nil {
+		t.Fatalf("mkdir app-info: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, versionDirName, version), 0o755); err != nil {
+		t.Fatalf("mkdir version dir: %v", err)
+	}
+	appInfoBody := `{"name":"App Name","privacyPolicyUrl":"example.com/privacy","privacyChoicesUrl":"example.com/choices"}`
+	if err := os.WriteFile(filepath.Join(dir, appInfoDirName, "en-US.json"), []byte(appInfoBody), 0o644); err != nil {
+		t.Fatalf("write app-info file: %v", err)
+	}
+	versionBody := `{"description":"English description","supportUrl":"example.com","marketingUrl":"www.example.com/app"}`
+	if err := os.WriteFile(filepath.Join(dir, versionDirName, version, "en-US.json"), []byte(versionBody), 0o644); err != nil {
+		t.Fatalf("write version file: %v", err)
+	}
+
+	result, err := validateDir(dir, false)
+	if err != nil {
+		t.Fatalf("validateDir() error: %v", err)
+	}
+	if result.ErrorCount != 0 {
+		t.Fatalf("expected URL syntax issues to stay warnings, got %+v", result.Issues)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid=true for warning-only report, got %+v", result)
+	}
+
+	wantFields := map[string]bool{
+		"supportUrl":        false,
+		"marketingUrl":      false,
+		"privacyPolicyUrl":  false,
+		"privacyChoicesUrl": false,
+	}
+	for _, issue := range result.Issues {
+		if _, ok := wantFields[issue.Field]; !ok {
+			continue
+		}
+		if issue.Severity != issueSeverityWarning {
+			t.Fatalf("expected warning severity for %s, got %+v", issue.Field, issue)
+		}
+		if !strings.Contains(issue.Message, "not a valid HTTP/HTTPS URL") {
+			t.Fatalf("expected URL syntax message for %s, got %+v", issue.Field, issue)
+		}
+		wantFields[issue.Field] = true
+	}
+	for field, found := range wantFields {
+		if !found {
+			t.Fatalf("expected URL syntax warning for %s, got %+v", field, result.Issues)
+		}
+	}
+}
+
+func TestValidateDirAcceptsValidURLSyntax(t *testing.T) {
+	dir := t.TempDir()
+	version := "1.2.3"
+
+	if err := os.MkdirAll(filepath.Join(dir, appInfoDirName), 0o755); err != nil {
+		t.Fatalf("mkdir app-info: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, versionDirName, version), 0o755); err != nil {
+		t.Fatalf("mkdir version dir: %v", err)
+	}
+	appInfoBody := `{"name":"App Name","privacyPolicyUrl":"https://example.com/privacy","privacyChoicesUrl":"http://example.com/choices"}`
+	if err := os.WriteFile(filepath.Join(dir, appInfoDirName, "en-US.json"), []byte(appInfoBody), 0o644); err != nil {
+		t.Fatalf("write app-info file: %v", err)
+	}
+	versionBody := `{"description":"English description","supportUrl":"https://example.com","marketingUrl":"https://example.com/app"}`
+	if err := os.WriteFile(filepath.Join(dir, versionDirName, version, "en-US.json"), []byte(versionBody), 0o644); err != nil {
+		t.Fatalf("write version file: %v", err)
+	}
+
+	result, err := validateDir(dir, false)
+	if err != nil {
+		t.Fatalf("validateDir() error: %v", err)
+	}
+	if len(result.Issues) != 0 {
+		t.Fatalf("expected no issues for valid URLs, got %+v", result.Issues)
+	}
+}
+
 func TestValidateDirTreatsDefaultLocaleCaseInsensitively(t *testing.T) {
 	dir := t.TempDir()
 	version := "1.2.3"

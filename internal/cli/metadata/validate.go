@@ -64,6 +64,7 @@ Checks:
   - strict JSON schema decode (unknown keys rejected)
   - required fields
   - metadata character limits
+  - URL syntax for marketing, support, privacy policy, and privacy choices URLs
   - optional subscription-app Terms of Use / EULA description link heuristic
 
 Examples:
@@ -159,6 +160,7 @@ func validateDir(dir string, subscriptionApp bool) (ValidateResult, error) {
 				})
 			}
 			result.Issues = append(result.Issues, appInfoLengthIssues(filePath, resolvedLocale, loc)...)
+			result.Issues = append(result.Issues, appInfoURLIssues(filePath, resolvedLocale, loc)...)
 		}
 	}
 
@@ -223,6 +225,7 @@ func validateDir(dir string, subscriptionApp bool) (ValidateResult, error) {
 					})
 				}
 				result.Issues = append(result.Issues, versionLengthIssues(filePath, version, resolvedLocale, loc)...)
+				result.Issues = append(result.Issues, versionURLIssues(filePath, version, resolvedLocale, loc)...)
 				if subscriptionApp {
 					result.Issues = append(result.Issues, versionTermsIssues(filePath, version, resolvedLocale, loc)...)
 				}
@@ -367,6 +370,50 @@ func appInfoLengthIssues(filePath, locale string, loc AppInfoLocalization) []Val
 			Message:  fmt.Sprintf("%s exceeds %d characters", issue.Field, issue.Limit),
 			Length:   issue.Length,
 			Limit:    issue.Limit,
+		})
+	}
+	return issues
+}
+
+type metadataURLField struct {
+	field string
+	label string
+	value string
+}
+
+// versionURLIssues reports version localization URL fields App Store Connect
+// rejects at push time because they are not absolute HTTP/HTTPS URLs.
+func versionURLIssues(filePath, version, locale string, loc VersionLocalization) []ValidateIssue {
+	return metadataURLIssues(versionDirName, filePath, locale, version, []metadataURLField{
+		{field: "marketingUrl", label: "marketing URL", value: loc.MarketingURL},
+		{field: "supportUrl", label: "support URL", value: loc.SupportURL},
+	})
+}
+
+// appInfoURLIssues reports app-info localization URL fields App Store Connect
+// rejects at push time because they are not absolute HTTP/HTTPS URLs.
+func appInfoURLIssues(filePath, locale string, loc AppInfoLocalization) []ValidateIssue {
+	return metadataURLIssues(appInfoDirName, filePath, locale, "", []metadataURLField{
+		{field: "privacyChoicesUrl", label: "privacy choices URL", value: loc.PrivacyChoicesURL},
+		{field: "privacyPolicyUrl", label: "privacy policy URL", value: loc.PrivacyPolicyURL},
+	})
+}
+
+func metadataURLIssues(scope, filePath, locale, version string, fields []metadataURLField) []ValidateIssue {
+	issues := make([]ValidateIssue, 0, len(fields))
+	for _, field := range fields {
+		value := strings.TrimSpace(field.value)
+		if value == "" || validation.IsValidHTTPURL(value) {
+			continue
+		}
+		issues = append(issues, ValidateIssue{
+			Scope:    scope,
+			File:     filePath,
+			Locale:   locale,
+			Version:  version,
+			Field:    field.field,
+			Severity: issueSeverityWarning,
+			Message:  fmt.Sprintf("%s is not a valid HTTP/HTTPS URL", field.label),
 		})
 	}
 	return issues
