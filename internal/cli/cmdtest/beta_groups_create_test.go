@@ -133,3 +133,113 @@ func TestBetaGroupsCreateWithoutInternalMakesOneCall(t *testing.T) {
 		t.Fatalf("expected beta group id in output, got %q", stdout)
 	}
 }
+
+func TestBetaGroupsCreateSendsDistributionControls(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_APP_ID", "")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+
+	callCount := 0
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		callCount++
+		if req.Method != http.MethodPost || req.URL.Path != "/v1/betaGroups" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+
+		payload, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read body error: %v", err)
+		}
+		body := string(payload)
+		for _, attribute := range []string{
+			`"hasAccessToAllBuilds":true`,
+			`"publicLinkEnabled":true`,
+			`"publicLinkLimitEnabled":true`,
+			`"publicLinkLimit":250`,
+			`"feedbackEnabled":true`,
+		} {
+			if !strings.Contains(body, attribute) {
+				t.Fatalf("expected %s in body, got %s", attribute, body)
+			}
+		}
+
+		response := `{"data":{"type":"betaGroups","id":"bg-3","attributes":{"name":"Internal Preview","isInternalGroup":true,"hasAccessToAllBuilds":true,"feedbackEnabled":true}}}`
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Body:       io.NopCloser(strings.NewReader(response)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	_, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"testflight", "groups", "create",
+			"--app", "app-1",
+			"--name", "Internal Preview",
+			"--internal",
+			"--access-all-builds",
+			"--public-link-enabled",
+			"--public-link-limit-enabled",
+			"--public-link-limit", "250",
+			"--feedback-enabled",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected one request, got %d", callCount)
+	}
+}
+
+func TestBetaGroupsCreateRejectsInvalidPublicLinkLimitBeforeRequest(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_APP_ID", "")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+		return nil, nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	_, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"testflight", "groups", "create",
+			"--app", "app-1",
+			"--name", "Beta",
+			"--public-link-limit", "10001",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+
+	if runErr == nil || !strings.Contains(runErr.Error(), "flag") {
+		t.Fatalf("expected usage error, got %v", runErr)
+	}
+	if !strings.Contains(stderr, "--public-link-limit must be between 1 and 10000") {
+		t.Fatalf("expected limit diagnostic, got %q", stderr)
+	}
+}

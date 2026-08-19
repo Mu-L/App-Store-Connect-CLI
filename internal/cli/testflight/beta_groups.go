@@ -451,6 +451,11 @@ func BetaGroupsCreateCommand() *ffcli.Command {
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	name := fs.String("name", "", "Beta group name")
 	internal := fs.Bool("internal", false, "Create as internal group")
+	accessAllBuilds := fs.Bool("access-all-builds", false, "Give the group access to all builds")
+	publicLinkEnabled := fs.Bool("public-link-enabled", false, "Enable the public link")
+	publicLinkLimitEnabled := fs.Bool("public-link-limit-enabled", false, "Enable the public link tester limit")
+	publicLinkLimit := fs.Int("public-link-limit", 0, "Public link tester limit (1-10000)")
+	feedbackEnabled := fs.Bool("feedback-enabled", false, "Enable tester feedback")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -461,7 +466,8 @@ func BetaGroupsCreateCommand() *ffcli.Command {
 
 Examples:
   asc testflight beta-groups create --app "APP_ID" --name "Beta Testers"
-  asc testflight beta-groups create --app "APP_ID" --name "Internal Testers" --internal`,
+  asc testflight beta-groups create --app "APP_ID" --name "Internal Testers" --internal --access-all-builds
+  asc testflight beta-groups create --app "APP_ID" --name "Public Beta" --public-link-enabled --public-link-limit-enabled --public-link-limit 250 --feedback-enabled`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -475,6 +481,19 @@ Examples:
 				return shared.MissingRequiredUsageError("--name")
 			}
 
+			visited := map[string]bool{}
+			fs.Visit(func(f *flag.Flag) {
+				visited[f.Name] = true
+			})
+			if visited["public-link-limit"] && (*publicLinkLimit < 1 || *publicLinkLimit > 10000) {
+				fmt.Fprintln(os.Stderr, "Error: --public-link-limit must be between 1 and 10000")
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--public-link-limit")
+			}
+			if visited["public-link-limit-enabled"] && *publicLinkLimitEnabled && !visited["public-link-limit"] {
+				fmt.Fprintln(os.Stderr, "Error: --public-link-limit is required when enabling public link limit")
+				return shared.MissingRequiredUsageError("--public-link-limit")
+			}
+
 			client, err := shared.GetASCClient()
 			if err != nil {
 				return fmt.Errorf("beta-groups create: %w", err)
@@ -484,10 +503,13 @@ Examples:
 			defer cancel()
 
 			attrs := asc.BetaGroupAttributes{
-				Name: strings.TrimSpace(*name),
-			}
-			if *internal {
-				attrs.IsInternalGroup = true
+				Name:                   strings.TrimSpace(*name),
+				IsInternalGroup:        *internal,
+				HasAccessToAllBuilds:   *accessAllBuilds,
+				PublicLinkEnabled:      *publicLinkEnabled,
+				PublicLinkLimitEnabled: *publicLinkLimitEnabled,
+				PublicLinkLimit:        *publicLinkLimit,
+				FeedbackEnabled:        *feedbackEnabled,
 			}
 
 			group, err := client.CreateBetaGroupWithAttributes(requestCtx, resolvedAppID, attrs)
