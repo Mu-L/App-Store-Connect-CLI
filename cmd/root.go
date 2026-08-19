@@ -17,6 +17,23 @@ import (
 
 var versionRequested bool
 
+// rootGettingStartedSamples teaches the discovery loop on the first help
+// screen: find the right command, verify credentials, locate an app, then
+// inspect it. Every sample is a copy-paste-valid long-form invocation, and
+// placeholders stay bare uppercase so shells do not read them as redirection.
+const rootGettingStartedSamples = `  asc search "upload a build"    # find the right command (JSON, with examples)
+  asc auth doctor                # check credentials before the first API call
+  asc apps list --output table   # list your apps and their IDs
+  asc status --app APP_ID        # one-screen release overview for one app
+
+  Add --help to any command; replace placeholders like APP_ID with real values.`
+
+// rootLongHelp renders the GETTING STARTED block shown between USAGE and the
+// grouped command listing.
+func rootLongHelp() string {
+	return shared.Bold("GETTING STARTED") + "\n" + rootGettingStartedSamples
+}
+
 // RootCommand returns the root command
 func RootCommand(version string) *ffcli.Command {
 	catalog := registry.NewCatalog(version)
@@ -51,7 +68,7 @@ func newRootCommand(version string, subcommands []*ffcli.Command) *ffcli.Command
 		Name:        "asc",
 		ShortUsage:  "asc <subcommand> [flags]",
 		ShortHelp:   "asc is a fast, lightweight CLI for App Store Connect from Rork.",
-		LongHelp:    "",
+		LongHelp:    rootLongHelp(),
 		FlagSet:     flag.NewFlagSet("asc", flag.ExitOnError),
 		UsageFunc:   RootUsageFunc,
 		Subcommands: subcommands,
