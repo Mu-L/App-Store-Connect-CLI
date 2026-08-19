@@ -83,6 +83,8 @@ type previewUploadDependencies struct {
 	GetClient func() (*asc.Client, error)
 }
 
+const maxPreviewsPerSet = 3
+
 // AssetsPreviewsUploadCommand returns the previews upload subcommand.
 func AssetsPreviewsUploadCommand() *ffcli.Command {
 	return assetsPreviewsUploadCommandWithDependencies(previewUploadDependencies{
@@ -115,6 +117,7 @@ func assetsPreviewsUploadCommandWithDependencies(deps previewUploadDependencies)
 --version-localization is the App Store version localization resource ID
 returned as data[].id by "asc localizations list --version VERSION_ID --output json".
 It is not the locale code such as en-US.
+Each preview set supports at most three files.
 
 Examples:
   asc localizations list --version "VERSION_ID" --output json --locale "en-US"
@@ -815,6 +818,9 @@ func detectPreviewMimeType(path string) (string, error) {
 }
 
 func validatePreviewFiles(files []string) error {
+	if len(files) > maxPreviewsPerSet {
+		return fmt.Errorf("preview sets accept at most %d files; got %d", maxPreviewsPerSet, len(files))
+	}
 	for _, filePath := range files {
 		if err := asc.ValidateImageFile(filePath); err != nil {
 			return err
@@ -848,7 +854,7 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 	}
 
 	existingPreviews := make([]asc.Resource[asc.AppPreviewAttributes], 0)
-	if (skipExisting || replace) && set.ID != "" {
+	if set.ID != "" {
 		fetchCtx, fetchCancel := shared.ContextWithTimeout(ctx)
 		existingResp, err := client.GetAppPreviews(fetchCtx, set.ID)
 		fetchCancel()
@@ -864,6 +870,15 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 		if err != nil {
 			return asc.AppPreviewUploadResult{}, err
 		}
+	}
+	if !replace && len(existingPreviews)+len(files) > maxPreviewsPerSet {
+		return asc.AppPreviewUploadResult{}, fmt.Errorf(
+			"preview set %q already contains %d preview(s); uploading %d more would exceed the preview set limit of %d; use --replace --confirm or remove existing previews first",
+			set.ID,
+			len(existingPreviews),
+			len(files),
+			maxPreviewsPerSet,
+		)
 	}
 
 	if dryRun {

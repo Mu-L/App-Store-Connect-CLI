@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -98,6 +99,50 @@ func TestAssetsPreviewsUploadCommandRejectsUnsupportedFileBeforeAuth(t *testing.
 	}
 }
 
+func TestAssetsPreviewsUploadCommandRejectsMoreThanThreeFilesBeforeAuth(t *testing.T) {
+	dir := t.TempDir()
+	for i := 1; i <= 4; i++ {
+		name := fmt.Sprintf("preview-%d.mov", i)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	clientCalled := false
+	cmd := assetsPreviewsUploadCommandWithDependencies(previewUploadDependencies{
+		GetClient: func() (*asc.Client, error) {
+			clientCalled = true
+			return &asc.Client{}, nil
+		},
+	})
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.FlagSet.Parse([]string{
+		"--version-localization", "LOC_ID",
+		"--path", dir,
+		"--device-type", "IPHONE_65",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var runErr error
+	stdout, _ := captureOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+	})
+
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if runErr == nil {
+		t.Fatal("expected preview capacity error")
+	}
+	if !strings.Contains(runErr.Error(), "at most 3 files") {
+		t.Fatalf("expected preview capacity error before auth, got %v", runErr)
+	}
+	if clientCalled {
+		t.Fatal("expected preview capacity validation before auth/client creation")
+	}
+}
+
 func TestDetectPreviewMimeTypeRejectsRegisteredNonVideoMIME(t *testing.T) {
 	_, err := detectPreviewMimeType("poster.png")
 	if err == nil {
@@ -181,6 +226,89 @@ func TestUploadPreviewsRejectsUnsupportedFileBeforeRequests(t *testing.T) {
 				t.Fatalf("DELETE requests = %d, want 0", deleteRequests)
 			}
 		})
+	}
+}
+
+func TestUploadPreviewsRejectsAppendThatWouldExceedSetCapacityBeforeMutation(t *testing.T) {
+	dir := t.TempDir()
+	files := make([]string, 0, 2)
+	for _, name := range []string{"new-1.mov", "new-2.mov"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		files = append(files, path)
+	}
+
+	requests := make([]string, 0, 2)
+	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/appStoreVersionLocalizations/LOC_ID/appPreviewSets":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appPreviewSets","id":"set-1","attributes":{"previewType":"IPHONE_65"}}]}`)
+		case "/v1/appPreviewSets/set-1/appPreviews":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appPreviews","id":"existing-1","attributes":{"fileName":"old-1.mov"}},{"type":"appPreviews","id":"existing-2","attributes":{"fileName":"old-2.mov"}}]}`)
+		default:
+			writeAssetsTestJSON(w, http.StatusInternalServerError, `{"errors":[{"status":"500","detail":"unexpected mutation"}]}`)
+		}
+	}))
+
+	_, err := uploadPreviews(context.Background(), client, "LOC_ID", "IPHONE_65", files, false, false, false)
+	if err == nil {
+		t.Fatal("expected preview capacity error")
+	}
+	if !strings.Contains(err.Error(), "would exceed the preview set limit of 3") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantRequests := []string{
+		"GET /v1/appStoreVersionLocalizations/LOC_ID/appPreviewSets",
+		"GET /v1/appPreviewSets/set-1/appPreviews",
+	}
+	if fmt.Sprint(requests) != fmt.Sprint(wantRequests) {
+		t.Fatalf("requests = %v, want %v", requests, wantRequests)
+	}
+}
+
+func TestUploadPreviewsAppliesSkipExistingBeforeCapacityCheck(t *testing.T) {
+	dir := t.TempDir()
+	matchingPath := filepath.Join(dir, "matching.mov")
+	matchingContents := []byte("matching-preview")
+	if err := os.WriteFile(matchingPath, matchingContents, 0o600); err != nil {
+		t.Fatalf("write matching preview: %v", err)
+	}
+	newPath := filepath.Join(dir, "new.mov")
+	if err := os.WriteFile(newPath, []byte("new-preview"), 0o600); err != nil {
+		t.Fatalf("write new preview: %v", err)
+	}
+	matchingChecksum, err := computeFileChecksum(matchingPath)
+	if err != nil {
+		t.Fatalf("checksum matching preview: %v", err)
+	}
+
+	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/appStoreVersionLocalizations/LOC_ID/appPreviewSets":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appPreviewSets","id":"set-1","attributes":{"previewType":"IPHONE_65"}}]}`)
+		case "/v1/appPreviewSets/set-1/appPreviews":
+			writeAssetsTestJSON(w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"appPreviews","id":"existing-1","attributes":{"fileName":"matching.mov","sourceFileChecksum":%q}},{"type":"appPreviews","id":"existing-2","attributes":{"fileName":"old.mov","sourceFileChecksum":"old-checksum"}}]}`, matchingChecksum))
+		default:
+			writeAssetsTestJSON(w, http.StatusInternalServerError, `{"errors":[{"status":"500","detail":"unexpected request"}]}`)
+		}
+	}))
+
+	result, err := uploadPreviews(context.Background(), client, "LOC_ID", "IPHONE_65", []string{matchingPath, newPath}, true, false, true)
+	if err != nil {
+		t.Fatalf("uploadPreviews() error: %v", err)
+	}
+	if len(result.Results) != 2 {
+		t.Fatalf("results = %d, want 2", len(result.Results))
+	}
+	states := map[string]string{}
+	for _, item := range result.Results {
+		states[item.FileName] = item.State
+	}
+	if states["matching.mov"] != "skipped" || states["new.mov"] != "would-upload" {
+		t.Fatalf("unexpected result states: %v", states)
 	}
 }
 
