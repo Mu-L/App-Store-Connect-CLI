@@ -173,11 +173,16 @@ Examples:
 			}
 
 			result, err := uploadPreviews(ctx, client, locID, previewType, files, *skipExisting, *replace, *dryRun)
+			if hasAppPreviewUploadResultOutput(result) {
+				if printErr := shared.PrintOutput(&result, *output.Output, *output.Pretty); printErr != nil {
+					return printErr
+				}
+			}
 			if err != nil {
 				return fmt.Errorf("video-previews upload: %w", err)
 			}
 
-			return shared.PrintOutput(&result, *output.Output, *output.Pretty)
+			return nil
 		},
 	}
 }
@@ -906,10 +911,26 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 	}
 
 	uploadedResults := make([]asc.AssetUploadResultItem, 0, len(files))
+	var (
+		uploadErr    error
+		failedResult asc.AssetUploadResultItem
+		failure      asc.AssetUploadFailureItem
+	)
 	for _, filePath := range files {
 		item, err := uploadPreviewAsset(uploadCtx, client, set.ID, filePath)
 		if err != nil {
-			return asc.AppPreviewUploadResult{}, err
+			uploadErr = err
+			failedResult = asc.AssetUploadResultItem{
+				FileName: filepath.Base(filePath),
+				FilePath: filePath,
+				State:    "failed",
+			}
+			failure = asc.AssetUploadFailureItem{
+				FileName: filepath.Base(filePath),
+				FilePath: filePath,
+				Error:    err.Error(),
+			}
+			break
 		}
 		uploadedResults = append(uploadedResults, item)
 	}
@@ -920,12 +941,25 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 		PreviewType:           set.Attributes.PreviewType,
 		Results:               append(append([]asc.AssetUploadResultItem{}, skippedResults...), uploadedResults...),
 	}
+	if uploadErr != nil {
+		result.Results = append(result.Results, failedResult)
+		result.Failures = append(result.Failures, failure)
+		return result, uploadErr
+	}
 
 	if err := syncPreviewOrder(uploadCtx, client, set.ID, runFiles, skippedResults, uploadedResults); err != nil {
 		return result, err
 	}
 
 	return result, nil
+}
+
+func hasAppPreviewUploadResultOutput(result asc.AppPreviewUploadResult) bool {
+	return strings.TrimSpace(result.VersionLocalizationID) != "" ||
+		strings.TrimSpace(result.SetID) != "" ||
+		strings.TrimSpace(result.PreviewType) != "" ||
+		len(result.Results) > 0 ||
+		len(result.Failures) > 0
 }
 
 // getOrderedAppPreviewIDs returns preview IDs in the current remote order.
