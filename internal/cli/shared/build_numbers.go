@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
@@ -396,8 +398,36 @@ func findHighestProcessedBuildNumber(
 }
 
 // FindPreReleaseVersionIDs returns the exact-matching pre-release version IDs
-// for the provided app/version/platform filters.
+// for the provided app/version/platform filters. App Store Connect treats
+// "1.2" and "1.2.0" as the same version, so when the requested format matches
+// nothing the equivalent format is tried before reporting no match.
 func FindPreReleaseVersionIDs(ctx context.Context, client *asc.Client, appID, version, platform string) ([]string, error) {
+	requestedVersion := strings.TrimSpace(version)
+
+	variants := versionQueryVariants(requestedVersion)
+	if len(variants) == 0 {
+		return findPreReleaseVersionIDsForVersion(ctx, client, appID, "", platform)
+	}
+
+	// The requested format is queried first and wins outright, so an app that
+	// really does have a train under the caller's exact version string keeps
+	// resolving exactly as before.
+	for _, variant := range variants {
+		ids, err := findPreReleaseVersionIDsForVersion(ctx, client, appID, variant, platform)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		noteEquivalentVersionMatch(requestedVersion, variant)
+		return ids, nil
+	}
+
+	return nil, nil
+}
+
+func findPreReleaseVersionIDsForVersion(ctx context.Context, client *asc.Client, appID, version, platform string) ([]string, error) {
 	opts := []asc.PreReleaseVersionsOption{}
 	exactVersion := strings.TrimSpace(version)
 
@@ -456,6 +486,100 @@ func FindPreReleaseVersionIDs(ctx context.Context, client *asc.Client, appID, ve
 	}
 
 	return ids, nil
+}
+
+// versionQueryVariants returns the marketing version strings worth querying for
+// a caller-supplied version, most specific first. App Store Connect treats
+// "1.2" and "1.2.0" as the same version but only exposes the format that was
+// uploaded first through filter[version], so a lookup that finds nothing under
+// the requested format has to retry the equivalent one before concluding the
+// version does not exist. Leading zeros are normalized the same way ("1.02.0"
+// also matches "1.2.0"), and versions that are not purely numeric are returned
+// unchanged.
+func versionQueryVariants(version string) []string {
+	trimmed := strings.TrimSpace(version)
+	if trimmed == "" {
+		return nil
+	}
+
+	variants := []string{trimmed}
+	appendVariant := func(candidate string) {
+		if candidate == "" {
+			return
+		}
+		for _, existing := range variants {
+			if existing == candidate {
+				return
+			}
+		}
+		variants = append(variants, candidate)
+	}
+
+	segments, ok := normalizedVersionSegments(trimmed)
+	if !ok {
+		return variants
+	}
+	appendVariant(strings.Join(segments, "."))
+
+	switch {
+	case len(segments) == 2:
+		appendVariant(strings.Join(append(slices.Clone(segments), "0"), "."))
+	case len(segments) == 3 && segments[2] == "0":
+		appendVariant(strings.Join(segments[:2], "."))
+	}
+
+	return variants
+}
+
+// normalizedVersionSegments strips insignificant leading zeros from each
+// numeric segment. It reports false for versions that are not purely numeric.
+func normalizedVersionSegments(version string) ([]string, bool) {
+	segments := strings.Split(version, ".")
+	normalized := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		if segment == "" {
+			return nil, false
+		}
+		for _, ch := range segment {
+			if ch < '0' || ch > '9' {
+				return nil, false
+			}
+		}
+		trimmed := strings.TrimLeft(segment, "0")
+		if trimmed == "" {
+			trimmed = "0"
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized, true
+}
+
+var (
+	equivalentVersionNoteMu sync.Mutex
+	equivalentVersionNotes  = map[string]struct{}{}
+)
+
+// noteEquivalentVersionMatch reports that a lookup succeeded through an
+// equivalent version format instead of the exact string the caller asked for.
+// Build waits repeat these lookups on every poll, so each requested/matched
+// pair is reported only once.
+func noteEquivalentVersionMatch(requested, matched string) {
+	if requested == "" || matched == "" || requested == matched {
+		return
+	}
+
+	key := requested + "\x00" + matched
+	equivalentVersionNoteMu.Lock()
+	_, seen := equivalentVersionNotes[key]
+	if !seen {
+		equivalentVersionNotes[key] = struct{}{}
+	}
+	equivalentVersionNoteMu.Unlock()
+	if seen {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "note: matched version %q for requested %q\n", matched, requested)
 }
 
 func findMostRecentlyUploadedBuild(ctx context.Context, client *asc.Client, appID string, opts ...asc.BuildsOption) (*asc.BuildResponse, error) {

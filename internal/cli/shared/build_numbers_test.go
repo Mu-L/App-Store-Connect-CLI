@@ -1,9 +1,22 @@
 package shared
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
+
+func resetEquivalentVersionNotes() {
+	equivalentVersionNoteMu.Lock()
+	defer equivalentVersionNoteMu.Unlock()
+
+	equivalentVersionNotes = map[string]struct{}{}
+}
 
 func TestParseBuildNumberRejectsNonNumeric(t *testing.T) {
 	_, err := parseBuildNumber("1a", "processed build")
@@ -115,5 +128,171 @@ func TestParseBuildTimestamp(t *testing.T) {
 				t.Fatal("expected non-zero parsed timestamp")
 			}
 		})
+	}
+}
+
+func TestVersionQueryVariants(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{name: "empty", input: "", want: nil},
+		{name: "whitespace", input: "   ", want: nil},
+		{name: "three segments with trailing zero", input: "1.2.0", want: []string{"1.2.0", "1.2"}},
+		{name: "two segments", input: "1.2", want: []string{"1.2", "1.2.0"}},
+		{name: "two segments with zero minor", input: "1.0", want: []string{"1.0", "1.0.0"}},
+		{name: "three significant segments", input: "1.2.3", want: []string{"1.2.3"}},
+		{name: "leading zero segment", input: "1.02.0", want: []string{"1.02.0", "1.2.0", "1.2"}},
+		{name: "leading zero without counterpart", input: "1.02.3", want: []string{"1.02.3", "1.2.3"}},
+		{name: "single segment", input: "1", want: []string{"1"}},
+		{name: "surrounding whitespace", input: "  1.2  ", want: []string{"1.2", "1.2.0"}},
+		{name: "four segments", input: "1.2.3.4", want: []string{"1.2.3.4"}},
+		{name: "non numeric", input: "1.2.0-beta", want: []string{"1.2.0-beta"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := versionQueryVariants(test.input)
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("versionQueryVariants(%q) = %v, want %v", test.input, got, test.want)
+			}
+		})
+	}
+}
+
+func newPreReleaseVersionLookupClient(t *testing.T, storedVersion string, calls *[]string) *asc.Client {
+	t.Helper()
+
+	return newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/v1/preReleaseVersions" {
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+		requested := req.URL.Query().Get("filter[version]")
+		*calls = append(*calls, requested)
+		if requested != storedVersion {
+			return buildWaitJSONResponse(`{"data": [], "links": {}}`)
+		}
+		return buildWaitJSONResponse(fmt.Sprintf(`{
+			"data": [
+				{
+					"type": "preReleaseVersions",
+					"id": "prv-1",
+					"attributes": {"version": %q, "platform": "IOS"}
+				}
+			],
+			"links": {}
+		}`, storedVersion))
+	})
+}
+
+func TestFindPreReleaseVersionIDsMatchesEquivalentVersionFormat(t *testing.T) {
+	resetEquivalentVersionNotes()
+
+	var calls []string
+	client := newPreReleaseVersionLookupClient(t, "1.2", &calls)
+
+	var ids []string
+	var err error
+	stderr := captureStderr(t, func() {
+		ids, err = FindPreReleaseVersionIDs(context.Background(), client, "app-1", "1.2.0", "IOS")
+	})
+	if err != nil {
+		t.Fatalf("FindPreReleaseVersionIDs() error: %v", err)
+	}
+	if !slices.Equal(ids, []string{"prv-1"}) {
+		t.Fatalf("expected [prv-1], got %v", ids)
+	}
+	if !slices.Equal(calls, []string{"1.2.0", "1.2"}) {
+		t.Fatalf("expected requested format to be queried first, got %v", calls)
+	}
+	if !strings.Contains(stderr, `note: matched version "1.2" for requested "1.2.0"`) {
+		t.Fatalf("expected equivalent version note, got %q", stderr)
+	}
+}
+
+func TestFindPreReleaseVersionIDsPrefersRequestedVersionFormat(t *testing.T) {
+	resetEquivalentVersionNotes()
+
+	var calls []string
+	client := newPreReleaseVersionLookupClient(t, "1.2.0", &calls)
+
+	var ids []string
+	var err error
+	stderr := captureStderr(t, func() {
+		ids, err = FindPreReleaseVersionIDs(context.Background(), client, "app-1", "1.2.0", "IOS")
+	})
+	if err != nil {
+		t.Fatalf("FindPreReleaseVersionIDs() error: %v", err)
+	}
+	if !slices.Equal(ids, []string{"prv-1"}) {
+		t.Fatalf("expected [prv-1], got %v", ids)
+	}
+	if !slices.Equal(calls, []string{"1.2.0"}) {
+		t.Fatalf("expected only the requested format to be queried, got %v", calls)
+	}
+	if strings.Contains(stderr, "note: matched version") {
+		t.Fatalf("did not expect an equivalent version note, got %q", stderr)
+	}
+}
+
+func TestFindPreReleaseVersionIDsNotesEquivalentMatchOnlyOnce(t *testing.T) {
+	resetEquivalentVersionNotes()
+
+	var calls []string
+	client := newPreReleaseVersionLookupClient(t, "1.2", &calls)
+
+	stderr := captureStderr(t, func() {
+		for range 3 {
+			if _, err := FindPreReleaseVersionIDs(context.Background(), client, "app-1", "1.2.0", "IOS"); err != nil {
+				t.Fatalf("FindPreReleaseVersionIDs() error: %v", err)
+			}
+		}
+	})
+	if got := strings.Count(stderr, "note: matched version"); got != 1 {
+		t.Fatalf("expected exactly 1 note across repeated lookups, got %d in %q", got, stderr)
+	}
+}
+
+func TestFindPreReleaseVersionIDsReportsNoMatchWithoutNote(t *testing.T) {
+	resetEquivalentVersionNotes()
+
+	var calls []string
+	client := newPreReleaseVersionLookupClient(t, "9.9", &calls)
+
+	var ids []string
+	var err error
+	stderr := captureStderr(t, func() {
+		ids, err = FindPreReleaseVersionIDs(context.Background(), client, "app-1", "1.2.0", "IOS")
+	})
+	if err != nil {
+		t.Fatalf("FindPreReleaseVersionIDs() error: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("expected no matches, got %v", ids)
+	}
+	if !slices.Equal(calls, []string{"1.2.0", "1.2"}) {
+		t.Fatalf("expected both version formats to be queried, got %v", calls)
+	}
+	if strings.Contains(stderr, "note: matched version") {
+		t.Fatalf("did not expect an equivalent version note, got %q", stderr)
+	}
+}
+
+func TestFindPreReleaseVersionIDsWithoutVersionFilterQueriesOnce(t *testing.T) {
+	resetEquivalentVersionNotes()
+
+	var calls []string
+	client := newPreReleaseVersionLookupClient(t, "", &calls)
+
+	ids, err := FindPreReleaseVersionIDs(context.Background(), client, "app-1", "", "IOS")
+	if err != nil {
+		t.Fatalf("FindPreReleaseVersionIDs() error: %v", err)
+	}
+	if !slices.Equal(ids, []string{"prv-1"}) {
+		t.Fatalf("expected [prv-1], got %v", ids)
+	}
+	if !slices.Equal(calls, []string{""}) {
+		t.Fatalf("expected a single unfiltered query, got %v", calls)
 	}
 }
