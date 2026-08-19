@@ -242,6 +242,23 @@ func TestSchemaPreservesFuzzyQueries(t *testing.T) {
 	}
 }
 
+func TestSchemaFuzzyQueryDoesNotSearchActionSuffixes(t *testing.T) {
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = rootcmd.Run([]string{"schema", "update"}, "1.2.3")
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d with stderr %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if stdout != "[]\n" {
+		t.Fatalf("expected path-only fuzzy search to return no matches, got %q", stdout)
+	}
+}
+
 func TestRun_SchemaInvalidMethodReturnsUsage(t *testing.T) {
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
 

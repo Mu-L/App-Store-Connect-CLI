@@ -85,6 +85,25 @@ func TestMatchEndpoint_DotNotation(t *testing.T) {
 	}
 }
 
+func TestMatchEndpoint_FuzzyQueryDoesNotMatchActionSuffix(t *testing.T) {
+	tests := []struct {
+		query    string
+		endpoint Endpoint
+	}{
+		{query: "list", endpoint: Endpoint{Method: "GET", Path: "/v1/apps", getAction: "list"}},
+		{query: "create", endpoint: Endpoint{Method: "POST", Path: "/v1/apps"}},
+		{query: "update", endpoint: Endpoint{Method: "PATCH", Path: "/v1/apps/{id}"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			if matchEndpoint(tt.endpoint, tt.query) {
+				t.Fatalf("bare fuzzy query %q matched synthesized action", tt.query)
+			}
+		})
+	}
+}
+
 func TestMatchEndpoint_CaseInsensitive(t *testing.T) {
 	e := Endpoint{Method: "GET", Path: "/v1/apps"}
 	if !matchEndpoint(e, "APPS") {
