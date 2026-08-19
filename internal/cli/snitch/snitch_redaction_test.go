@@ -221,6 +221,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `PASSWORD=[REDACTED] asc builds list`,
 		},
 		{
+			name:  "backslash continued secret flag",
+			input: "asc deploy --password super\\\nremainingcredential --verbose",
+			want:  "asc deploy --password [REDACTED] --verbose",
+		},
+		{
+			name:  "backslash continued assignment",
+			input: "PASSWORD=super\\\nremainingcredential asc builds list",
+			want:  "PASSWORD=[REDACTED] asc builds list",
+		},
+		{
 			name:  "equals form secret flag",
 			input: `asc deploy --demo-account-password=super-secret --verbose`,
 			want:  `asc deploy --demo-account-password=[REDACTED] --verbose`,
@@ -249,6 +259,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "curl OAuth bearer flag",
 			input: `curl --oauth2-bearer supersensitive https://example.test`,
 			want:  `curl --oauth2-bearer [REDACTED] https://example.test`,
+		},
+		{
+			name:  "curl private key passphrase flag",
+			input: `curl --pass superprivatephrase --key client.pem https://example.test`,
+			want:  `curl --pass [REDACTED] --key client.pem https://example.test`,
+		},
+		{
+			name:  "curl TLS password flag",
+			input: `curl --tlspassword supertlsphrase https://example.test`,
+			want:  `curl --tlspassword [REDACTED] https://example.test`,
+		},
+		{
+			name:  "curl proxy TLS password flag",
+			input: `curl --proxy-tlspassword superproxyphrase https://example.test`,
+			want:  `curl --proxy-tlspassword [REDACTED] https://example.test`,
 		},
 		{
 			name:  "curl long proxy user password flag",
@@ -483,6 +508,11 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"curl-oauth-bearer-tail",
 		"curl-attached-user-tail",
 		"curl-attached-proxy-tail",
+		"curl-private-key-passphrase-tail",
+		"curl-tls-password-tail",
+		"curl-proxy-tls-password-tail",
+		"continued-flag-tail",
+		"continued-assignment-tail",
 	}
 	repro := strings.Join([]string{
 		`asc review details-create --demo-account-password "` + secrets[0] + `" --notes ready`,
@@ -497,10 +527,15 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		`curl --oauth2-bearer ` + secrets[13] + ` https://example.test`,
 		`curl -ualice:` + secrets[14] + ` https://example.test`,
 		`curl -Ualice:` + secrets[15] + ` https://example.test`,
+		`curl --pass ` + secrets[16] + ` --key client.pem https://example.test`,
+		`curl --tlspassword ` + secrets[17] + ` https://example.test`,
+		`curl --proxy-tlspassword ` + secrets[18] + ` https://example.test`,
+		"asc deploy --password prefix\\\n" + secrets[19] + " --verbose",
 	}, "\n")
 	actual := "PASSWORD=" + secrets[3] + "\n" +
 		`PASSWORD=$'` + secrets[7] + "'\n" +
 		`PASSWORD=prefix\ ` + secrets[9] + "\n" +
+		"PASSWORD=prefix\\\n" + secrets[20] + " asc builds list\n" +
 		`Authorization: Signature keyId="my-key",algorithm="rsa-sha256",signature="` + secrets[4] + `"`
 
 	stdout, stderr, err := runSnitchCommand(
@@ -537,6 +572,10 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"curl --oauth2-bearer [REDACTED] https://example.test",
 		"curl -u[REDACTED] https://example.test",
 		"curl -U[REDACTED] https://example.test",
+		"curl --pass [REDACTED] --key client.pem https://example.test",
+		"curl --tlspassword [REDACTED] https://example.test",
+		"curl --proxy-tlspassword [REDACTED] https://example.test",
+		"asc deploy --password [REDACTED] --verbose",
 		"PASSWORD=[REDACTED]",
 		"Authorization: [REDACTED]",
 	} {
