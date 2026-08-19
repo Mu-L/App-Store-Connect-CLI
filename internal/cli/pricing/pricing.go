@@ -611,6 +611,7 @@ Examples:
 			PricingAvailabilityCreateCommand(),
 			PricingAvailabilityTerritoryAvailabilitiesCommand(),
 			PricingAvailabilitySetCommand(),
+			PricingAvailabilityPlatformsCommand(),
 			PricingAvailabilityRemoveFromSaleCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
@@ -869,6 +870,13 @@ Note:
   App Store Connect.`,
 		ErrorPrefix:                      "pricing availability edit",
 		IncludeAvailableInNewTerritories: true,
+	})
+}
+
+// PricingAvailabilityPlatformsCommand returns the platforms subcommand.
+func PricingAvailabilityPlatformsCommand() *ffcli.Command {
+	return shared.NewAvailabilityPlatformsCommand(shared.AvailabilityPlatformsCommandConfig{
+		ClientFactory: pricingAvailabilityClientFactory,
 	})
 }
 

@@ -26,6 +26,8 @@ func TestPricingAvailabilityRemoveFromSaleUpdatesAndVerifiesTerritories(t *testi
 
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appStoreVersions":
+			return singlePlatformAppStoreVersionsResponse(), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appAvailabilityV2":
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"appAvailabilities","id":"availability-1","attributes":{"availableInNewTerritories":true}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
@@ -122,6 +124,8 @@ func TestPricingAvailabilityRemoveFromSaleOutputFormats(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appStoreVersions":
+			return singlePlatformAppStoreVersionsResponse(), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appAvailabilityV2":
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"appAvailabilities","id":"availability-1","attributes":{"availableInNewTerritories":false}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
@@ -166,6 +170,8 @@ func TestPricingAvailabilityRemoveFromSaleNoOp(t *testing.T) {
 
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appStoreVersions":
+			return singlePlatformAppStoreVersionsResponse(), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appAvailabilityV2":
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"appAvailabilities","id":"availability-1","attributes":{"availableInNewTerritories":false}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
@@ -207,6 +213,8 @@ func TestPricingAvailabilityRemoveFromSaleContinuesAfterPartialFailure(t *testin
 	var patches atomic.Int32
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appStoreVersions":
+			return singlePlatformAppStoreVersionsResponse(), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appAvailabilityV2":
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"appAvailabilities","id":"availability-1","attributes":{"availableInNewTerritories":false}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
@@ -276,6 +284,8 @@ func TestPricingAvailabilityRemoveFromSaleFinalReadbackIncludesInitiallyUnavaila
 	var territoryReads atomic.Int32
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appStoreVersions":
+			return singlePlatformAppStoreVersionsResponse(), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appAvailabilityV2":
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"appAvailabilities","id":"availability-1","attributes":{"availableInNewTerritories":false}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
@@ -325,4 +335,161 @@ func territoryAvailabilityResponse(t *testing.T, states map[string]bool) *http.R
 		t.Fatalf("marshal territory response: %v", err)
 	}
 	return jsonHTTPResponse(http.StatusOK, string(body))
+}
+
+func singlePlatformAppStoreVersionsResponse() *http.Response {
+	return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"appStoreVersions","id":"ver-ios","attributes":{"platform":"IOS","versionString":"1.0","appStoreState":"READY_FOR_SALE","appVersionState":"READY_FOR_DISTRIBUTION","createdDate":"2026-01-01T00:00:00Z"}}],"links":{}}`)
+}
+
+func multiPlatformAppStoreVersionsResponse() *http.Response {
+	return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"appStoreVersions","id":"ver-ios","attributes":{"platform":"IOS","versionString":"4.1.0","appStoreState":"READY_FOR_SALE","appVersionState":"READY_FOR_DISTRIBUTION","createdDate":"2026-07-14T00:00:00Z"}},{"type":"appStoreVersions","id":"ver-vision","attributes":{"platform":"VISION_OS","versionString":"1.3.1","appStoreState":"READY_FOR_SALE","appVersionState":"READY_FOR_DISTRIBUTION","createdDate":"2024-07-06T00:00:00Z"}}],"links":{}}`)
+}
+
+func TestPricingAvailabilityRemoveFromSaleRequiresAllPlatformsWhenMultiplePlatformsLive(t *testing.T) {
+	setupAuth(t)
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	var patches atomic.Int32
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appStoreVersions":
+			return multiPlatformAppStoreVersionsResponse(), nil
+		case req.Method == http.MethodPatch:
+			patches.Add(1)
+			return nil, fmt.Errorf("unexpected PATCH: %s", req.URL.String())
+		default:
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+	})
+
+	stdout, stderr := captureOutput(t, func() {
+		if code := rootcmd.Run([]string{"pricing", "availability", "remove-from-sale", "--app", "app-1", "--confirm"}, "1.2.3"); code != rootcmd.ExitUsage {
+			t.Fatalf("exit code = %d, want %d", code, rootcmd.ExitUsage)
+		}
+	})
+	if got := patches.Load(); got != 0 {
+		t.Fatalf("PATCH count = %d, want 0", got)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	for _, want := range []string{"IOS 4.1.0", "VISION_OS 1.3.1", "--all-platforms", "App Store Connect support"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr missing %q, got %q", want, stderr)
+		}
+	}
+}
+
+func TestPricingAvailabilityRemoveFromSaleAllPlatformsAcknowledged(t *testing.T) {
+	setupAuth(t)
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	var mu sync.Mutex
+	states := map[string]bool{"USA": true, "FRA": false}
+	var patches atomic.Int32
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appStoreVersions":
+			return multiPlatformAppStoreVersionsResponse(), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appAvailabilityV2":
+			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"appAvailabilities","id":"availability-1","attributes":{"availableInNewTerritories":false}}}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
+			mu.Lock()
+			defer mu.Unlock()
+			return territoryAvailabilityResponse(t, states), nil
+		case req.Method == http.MethodPatch && req.URL.Path == "/v1/territoryAvailabilities/ta-usa":
+			patches.Add(1)
+			mu.Lock()
+			states["USA"] = false
+			mu.Unlock()
+			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"territoryAvailabilities","id":"ta-usa","attributes":{"available":false}}}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, _ := captureOutput(t, func() {
+		if err := root.Parse([]string{"pricing", "availability", "remove-from-sale", "--app", "app-1", "--confirm", "--all-platforms", "--output", "json"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+	if got := patches.Load(); got != 1 {
+		t.Fatalf("PATCH count = %d, want 1", got)
+	}
+	var result struct {
+		Status                  string `json:"status"`
+		RemovedPlatformListings []struct {
+			Platform      string `json:"platform"`
+			VersionString string `json:"versionString"`
+			Live          bool   `json:"live"`
+		} `json:"removedPlatformListings"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("unmarshal output: %v (%q)", err, stdout)
+	}
+	if result.Status != "removedFromSale" {
+		t.Fatalf("status = %q, want removedFromSale", result.Status)
+	}
+	if len(result.RemovedPlatformListings) != 2 {
+		t.Fatalf("removedPlatformListings = %d, want 2", len(result.RemovedPlatformListings))
+	}
+	if result.RemovedPlatformListings[0].Platform != "IOS" || result.RemovedPlatformListings[1].Platform != "VISION_OS" {
+		t.Fatalf("unexpected platform order: %+v", result.RemovedPlatformListings)
+	}
+}
+
+func TestPricingAvailabilityPlatformsPrefersLiveListingOverNewerNonLive(t *testing.T) {
+	setupAuth(t)
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appStoreVersions":
+			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"appStoreVersions","id":"ver-rejected","attributes":{"platform":"IOS","versionString":"2.2.1","appStoreState":"REJECTED","appVersionState":"REJECTED","createdDate":"2026-02-01T00:00:00Z"}},{"type":"appStoreVersions","id":"ver-live","attributes":{"platform":"IOS","versionString":"2.2.0","appStoreState":"READY_FOR_SALE","appVersionState":"READY_FOR_DISTRIBUTION","createdDate":"2025-09-29T00:00:00Z"}},{"type":"appStoreVersions","id":"ver-mac","attributes":{"platform":"MAC_OS","versionString":"1.0","appStoreState":"PREPARE_FOR_SUBMISSION","appVersionState":"PREPARE_FOR_SUBMISSION","createdDate":"2025-01-01T00:00:00Z"}}],"links":{}}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, _ := captureOutput(t, func() {
+		if err := root.Parse([]string{"pricing", "availability", "platforms", "--app", "app-1", "--output", "json"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+	var result struct {
+		AppID     string `json:"appId"`
+		Platforms []struct {
+			Platform      string `json:"platform"`
+			VersionString string `json:"versionString"`
+			State         string `json:"state"`
+			Live          bool   `json:"live"`
+		} `json:"platforms"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("unmarshal output: %v (%q)", err, stdout)
+	}
+	if len(result.Platforms) != 2 {
+		t.Fatalf("platforms = %d, want 2", len(result.Platforms))
+	}
+	ios := result.Platforms[0]
+	if ios.Platform != "IOS" || ios.VersionString != "2.2.0" || !ios.Live || ios.State != "READY_FOR_DISTRIBUTION" {
+		t.Fatalf("unexpected iOS listing: %+v", ios)
+	}
+	mac := result.Platforms[1]
+	if mac.Platform != "MAC_OS" || mac.VersionString != "1.0" || mac.Live {
+		t.Fatalf("unexpected macOS listing: %+v", mac)
+	}
 }
