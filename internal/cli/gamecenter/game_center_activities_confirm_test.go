@@ -32,6 +32,19 @@ func TestGameCenterActivitySetCommandsRequireConfirmForRemove(t *testing.T) {
 	}
 
 	for name, newCommand := range commands {
+		t.Run(name+" confirm without remove fails validation", func(t *testing.T) {
+			cmd := newCommand()
+			if err := cmd.FlagSet.Parse([]string{
+				"--activity-id", "activity-1", "--ids", "res-1", "--confirm",
+			}); err != nil {
+				t.Fatalf("parse flags: %v", err)
+			}
+			err := cmd.Exec(context.Background(), []string{})
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("--confirm without --remove should fail validation, got %v", err)
+			}
+		})
+
 		t.Run(name+" remove without confirm fails validation", func(t *testing.T) {
 			cmd := newCommand()
 			if err := cmd.FlagSet.Parse([]string{

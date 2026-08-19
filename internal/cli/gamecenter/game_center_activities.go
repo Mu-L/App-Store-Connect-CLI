@@ -524,6 +524,9 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --ids is required")
 				return shared.MissingRequiredUsageError("--ids")
 			}
+			if *confirm && !*remove {
+				return shared.UsageError("--confirm requires --remove")
+			}
 			if *remove && !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required with --remove")
 				return shared.MissingRequiredUsageError("--confirm")
@@ -610,6 +613,9 @@ Examples:
 			if len(idsValue) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --ids is required")
 				return shared.MissingRequiredUsageError("--ids")
+			}
+			if *confirm && !*remove {
+				return shared.UsageError("--confirm requires --remove")
 			}
 			if *remove && !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required with --remove")
