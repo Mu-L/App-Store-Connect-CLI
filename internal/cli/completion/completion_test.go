@@ -40,6 +40,7 @@ func TestCompletionNodesIncludeNestedCommandsAndVisibleFlags(t *testing.T) {
 				{Name: "old-view", ShortHelp: "DEPRECATED: use view"},
 				{Name: "removed-view", ShortHelp: "REMOVED: use view"},
 				{Name: "compat-view", ShortHelp: "Compatibility alias: use view"},
+				{Name: "compat-views", ShortHelp: "Compatibility aliases for view"},
 			},
 		},
 		{Name: "completion"},
@@ -74,7 +75,7 @@ func TestCompletionNodesIncludeNestedCommandsAndVisibleFlags(t *testing.T) {
 	}
 
 	serialized := completionNodeText(nodes)
-	for _, hidden := range []string{"legacy-app", "old-view", "removed-view", "compat-view", "old-apps"} {
+	for _, hidden := range []string{"legacy-app", "old-view", "removed-view", "compat-view", "compat-views", "old-apps"} {
 		if strings.Contains(serialized, hidden) {
 			t.Fatalf("hidden lifecycle entry %q leaked into completion nodes: %s", hidden, serialized)
 		}
