@@ -344,6 +344,9 @@ func resumeAppScreenshotUpload(ctx context.Context, client *asc.Client, artifact
 			return asc.AppScreenshotUploadResult{}, fmt.Errorf("resolve resume source root: %w", err)
 		}
 	}
+	if err := validateResumedScreenshotFiles(artifact.PendingFiles); err != nil {
+		return asc.AppScreenshotUploadResult{}, shared.NewValidationError(err)
+	}
 	progress, uploadErr := resumeScreenshotsWithOrderState(uploadCtx, client, artifact.SetID, artifact.OrderedIDs, artifact.PendingFiles, artifact.PendingAssets, sourceRootPath, true, syncAfterUpload)
 
 	result := asc.AppScreenshotUploadResult{
@@ -499,6 +502,39 @@ func normalizeScreenshotUploadFailureArtifactPaths(artifact screenshotUploadFail
 	}
 
 	return artifact, nil
+}
+
+// validateResumedScreenshotFiles preflights the files a resume will upload,
+// before the first reservation, so an artifact written by an older build or a
+// pending file replaced on disk after the original failure cannot deliver an
+// asset the upload paths already reject.
+//
+// A single in-flight pending asset must match the first pending file, so the
+// pending file list covers everything the resume reads. Only the format check
+// runs here: it needs nothing but the bytes and the file name, so it holds for
+// every artifact regardless of what the payload records. Sizes stay the
+// business of the run that wrote the artifact, which validated them against
+// the display type it had; re-deciding them here would reject artifacts that
+// were valid when written.
+func validateResumedScreenshotFiles(pendingFiles []string) error {
+	for _, pendingFile := range pendingFiles {
+		trimmed := strings.TrimSpace(pendingFile)
+		if trimmed == "" {
+			continue
+		}
+		path, err := filepath.Abs(trimmed)
+		if err != nil {
+			return err
+		}
+		_, format, err := asc.ReadImageDimensionsAndFormat(path)
+		if err != nil {
+			return err
+		}
+		if err := asc.ValidateImageFormatMatchesExtension(path, format); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func screenshotArtifactNeedsSourceFiles(artifact screenshotUploadFailureArtifact) bool {
