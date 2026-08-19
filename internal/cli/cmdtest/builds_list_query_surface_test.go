@@ -144,6 +144,29 @@ func TestBuildsListBetaReviewStateRejectsUnknownValue(t *testing.T) {
 	captured.assertNoRequest(t)
 }
 
+func TestBuildsBetaReviewStateRejectsBlankCSV(t *testing.T) {
+	for _, command := range []string{"list", "count"} {
+		t.Run(command, func(t *testing.T) {
+			captured := buildsListQuerySurfaceStub(t)
+
+			_, stderr, err := runBuildsListQuerySurface(
+				t,
+				"builds", command,
+				"--app", "123456789",
+				"--beta-review-state", ",",
+			)
+
+			if got := rootcmd.ExitCodeFromError(err); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d (err=%v)", got, rootcmd.ExitUsage, err)
+			}
+			if !strings.Contains(stderr, "--beta-review-state must be a comma-separated list of") {
+				t.Fatalf("expected beta review state validation error, got %q", stderr)
+			}
+			captured.assertNoRequest(t)
+		})
+	}
+}
+
 func TestBuildsListIncludeDefaultsToPreReleaseVersion(t *testing.T) {
 	captured := buildsListQuerySurfaceStub(t)
 

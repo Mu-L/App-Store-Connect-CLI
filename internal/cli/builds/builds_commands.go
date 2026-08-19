@@ -486,6 +486,9 @@ var buildsListBetaReviewStates = []string{"WAITING_FOR_REVIEW", "IN_REVIEW", "RE
 // beta review state filter, rejecting values the API does not accept.
 func normalizeBuildsListBetaReviewStates(value string) ([]string, error) {
 	states := shared.SplitCSVUpper(value)
+	if strings.TrimSpace(value) != "" && len(states) == 0 {
+		return nil, shared.UsageErrorf("--beta-review-state must be a comma-separated list of: %s", strings.Join(buildsListBetaReviewStates, ", "))
+	}
 	for _, state := range states {
 		if !slices.Contains(buildsListBetaReviewStates, state) {
 			return nil, shared.UsageErrorf("--beta-review-state must be a comma-separated list of: %s", strings.Join(buildsListBetaReviewStates, ", "))
