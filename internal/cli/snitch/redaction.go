@@ -12,8 +12,9 @@ const (
 
 	sensitiveAssignmentName = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passwd|pwd|secret|token)`
 	sensitivePrefixedName   = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
-	sensitiveFlagName       = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|proxy-tlspassword|tlspassword|password|passwd|pwd|pass|token)`
-	credentialHeaderName    = `(?:authorization|cookie|set-cookie)`
+	sensitiveFlagName       = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passwd|pwd|pass|token)`
+	credentialHeaderName    = `(?:authorization|cookie|set-cookie|scnt|x-apple-id-session-id)`
+	traceCredentialHeader   = `(?:cookie|set-cookie|scnt|x-apple-id-session-id)`
 	singleLineQuotedValue   = `(?:"(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*')`
 	escapedQuotedCharacter  = `\\(?:\r?\n|[^\r\n])`
 	escapeAwareQuotedValue  = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*"|\$?'(?:` + escapedQuotedCharacter + `|[^'\\])*')`
@@ -99,15 +100,15 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: "Authorization: " + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)("(?:set-)?cookie[ \t]*:[ \t]*)(?:\\.|[^"\\\r\n])*(")`),
+		pattern:     regexp.MustCompile(`(?i)("` + traceCredentialHeader + `[ \t]*:[ \t]*)(?:\\.|[^"\\\r\n])*(")`),
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)('(?:set-)?cookie[ \t]*:[ \t]*)(?:\\.|[^'\\\r\n])*(')`),
+		pattern:     regexp.MustCompile(`(?i)('` + traceCredentialHeader + `[ \t]*:[ \t]*)(?:\\.|[^'\\\r\n])*(')`),
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:[<>][ \t]*)?(?:set-)?cookie)[ \t]*:[ \t]*[^\r\n]+`),
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:[<>][ \t]*)?` + traceCredentialHeader + `)[ \t]*:[ \t]*[^\r\n]+`),
 		replacement: `${1}: ` + redactionMarker,
 	},
 	{

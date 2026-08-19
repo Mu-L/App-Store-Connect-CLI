@@ -52,6 +52,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "< Set-Cookie: [REDACTED]",
 		},
 		{
+			name:  "two factor continuation header",
+			input: "< scnt: opaque-lowercase-continuation",
+			want:  "< scnt: [REDACTED]",
+		},
+		{
+			name:  "account session continuation header",
+			input: "< X-Apple-ID-Session-Id: opaque-lowercase-session",
+			want:  "< X-Apple-ID-Session-Id: [REDACTED]",
+		},
+		{
+			name:  "quoted continuation header argument",
+			input: `curl -H "scnt: opaque-lowercase-continuation" https://example.test`,
+			want:  `curl -H "scnt: [REDACTED]" https://example.test`,
+		},
+		{
 			name:  "quoted cookie header argument",
 			input: `curl -H "Cookie: myacinfo=super-session-secret; dslang=US-EN" https://example.test`,
 			want:  `curl -H "Cookie: [REDACTED]" https://example.test`,
@@ -170,6 +185,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "space-separated secret flag",
 			input: `asc web sandbox create --email "user@example.test" --password "Passwordtest1" --territory "USA"`,
 			want:  `asc web sandbox create --email "user@example.test" --password [REDACTED] --territory "USA"`,
+		},
+		{
+			name:  "direct two factor code flag",
+			input: `asc web auth login --two-factor-code 123456 --apple-id user@example.test`,
+			want:  `asc web auth login --two-factor-code [REDACTED] --apple-id user@example.test`,
+		},
+		{
+			name:  "direct two factor code equals flag",
+			input: `asc web auth login --two-factor-code=654321 --apple-id user@example.test`,
+			want:  `asc web auth login --two-factor-code=[REDACTED] --apple-id user@example.test`,
 		},
 		{
 			name:  "escaped quote in secret flag",
@@ -899,6 +924,48 @@ func TestSnitchDryRunRedactsMultilineQuotedAndSecretAnswerValues(t *testing.T) {
 	for _, want := range []string{
 		"asc deploy --password [REDACTED] --verbose",
 		`{"secretQuestion":"Public question","secretAnswer":"[REDACTED]","status":"active"}`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsTwoFactorContinuationCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"123456",
+		"opaque-lowercase-continuation",
+		"opaque-lowercase-session",
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "asc web auth login --two-factor-code "+secrets[0]+" --apple-id user@example.test",
+		"--actual", "< scnt: "+secrets[1]+"\n< X-Apple-ID-Session-Id: "+secrets[2],
+		"two factor continuation credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"asc web auth login --two-factor-code [REDACTED] --apple-id user@example.test",
+		"< scnt: [REDACTED]",
+		"< X-Apple-ID-Session-Id: [REDACTED]",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
