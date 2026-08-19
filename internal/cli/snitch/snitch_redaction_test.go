@@ -27,6 +27,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "Authorization: [REDACTED]",
 		},
 		{
+			name:  "digest authorization header",
+			input: `Authorization: Digest username="user", nonce="nonce-value", response="credential-value"`,
+			want:  "Authorization: [REDACTED]",
+		},
+		{
 			name:  "standalone bearer credential",
 			input: "server returned Bearer eyJhbGciOiJFUzI1NiJ9.fake.signature",
 			want:  "server returned Bearer [REDACTED]",
@@ -95,6 +100,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "escaped quote in secret flag",
 			input: `asc deploy --password "pa\"ssword" --verbose`,
 			want:  `asc deploy --password [REDACTED] --verbose`,
+		},
+		{
+			name:  "comma in unquoted secret flag",
+			input: `asc web sandbox create --password Password1,remaining-secret --territory USA`,
+			want:  `asc web sandbox create --password [REDACTED] --territory USA`,
 		},
 		{
 			name:  "prefixed environment assignment",

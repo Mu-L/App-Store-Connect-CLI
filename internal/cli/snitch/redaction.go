@@ -23,7 +23,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: privateKeyRedactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*AWS4-HMAC-SHA256[ \t]+[^\r\n]+`),
+		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*[a-z][a-z0-9_-]*[ \t]+(?:credential|username|nonce|response|signature|signedheaders|algorithm|realm|qop|opaque|uri|cnonce|nc)=[^\r\n]+`),
 		replacement: "Authorization: " + redactionMarker,
 	},
 	{
@@ -39,7 +39,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(--` + sensitiveFlagName + `\b[ \t]+)(?:` + escapeAwareQuotedValue + `|[^\s,;]+)`),
+		pattern:     regexp.MustCompile(`(?i)(--` + sensitiveFlagName + `\b[ \t]+)(?:` + escapeAwareQuotedValue + `|[^\s]+)`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
