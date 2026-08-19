@@ -234,8 +234,8 @@ func TestKeywordsGroupReturnsHelpAndRegistersRank(t *testing.T) {
 			t.Fatalf("subcommand %q is missing UsageFunc", sub.Name)
 		}
 	}
-	if len(names) != 2 || names[0] != "rank" || names[1] != "score" {
-		t.Fatalf("keywords subcommands = %v, want [rank score]", names)
+	if len(names) != 3 || names[0] != "rank" || names[1] != "score" || names[2] != "discover" {
+		t.Fatalf("keywords subcommands = %v, want [rank score discover]", names)
 	}
 }
 
