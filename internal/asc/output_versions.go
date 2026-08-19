@@ -67,6 +67,15 @@ type AppStoreVersionReleaseRequestResult struct {
 	VersionID        string `json:"versionId"`
 }
 
+// AppStoreVersionsLatestResult represents a computed latest-version list.
+// Unlike a raw API response, its pagination fields describe only the selected
+// items and cannot retain stale metadata from the aggregated source pages.
+type AppStoreVersionsLatestResult struct {
+	Items      []Resource[AppStoreVersionAttributes] `json:"items"`
+	TotalCount int                                   `json:"totalCount"`
+	HasMore    bool                                  `json:"hasMore"`
+}
+
 func appStoreVersionsRows(resp *AppStoreVersionsResponse) ([]string, [][]string) {
 	headers := []string{"ID", "Version", "Platform", "State", "Created"}
 	rows := make([][]string, 0, len(resp.Data))
@@ -84,6 +93,10 @@ func appStoreVersionsRows(resp *AppStoreVersionsResponse) ([]string, [][]string)
 		})
 	}
 	return headers, rows
+}
+
+func appStoreVersionsLatestRows(result *AppStoreVersionsLatestResult) ([]string, [][]string) {
+	return appStoreVersionsRows(&AppStoreVersionsResponse{Data: result.Items})
 }
 
 func preReleaseVersionsRows(resp *PreReleaseVersionsResponse) ([]string, [][]string) {

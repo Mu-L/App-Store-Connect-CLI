@@ -23,14 +23,14 @@ func TestVersionsListLatestKeepsNewestVersionPerPlatform(t *testing.T) {
 		switch {
 		case req.Method == http.MethodGet && req.URL.Path == pageTwoPath && req.URL.RawQuery == pageTwoQuery:
 			return jsonHTTPResponse(http.StatusOK, `{"data":[
-				{"type":"appStoreVersions","id":"ver-ios-new","attributes":{"platform":"IOS","versionString":"2.4.1","appStoreState":"READY_FOR_SALE","createdDate":"2026-07-07T14:44:01-07:00"}},
+				{"type":"appStoreVersions","id":"ver-ios-new","attributes":{"platform":"IOS","versionString":"2.4.1","appStoreState":"READY_FOR_SALE","createdDate":"2026-02-20T00:30:00Z"}},
 				{"type":"appStoreVersions","id":"ver-mac-old","attributes":{"platform":"MAC_OS","versionString":"1.0.0","appStoreState":"READY_FOR_SALE","createdDate":"2020-01-01T00:00:00-07:00"}}
 			],"links":{}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == pageTwoPath:
 			return jsonHTTPResponse(http.StatusOK, fmt.Sprintf(`{"data":[
-				{"type":"appStoreVersions","id":"ver-ios-old","attributes":{"platform":"IOS","versionString":"2.3.2","appStoreState":"READY_FOR_SALE","createdDate":"2025-11-20T00:00:00-07:00"}},
+				{"type":"appStoreVersions","id":"ver-ios-old","attributes":{"platform":"IOS","versionString":"2.3.2","appStoreState":"READY_FOR_SALE","createdDate":"2026-02-20T01:00:00+01:00"}},
 				{"type":"appStoreVersions","id":"ver-mac-new","attributes":{"platform":"MAC_OS","versionString":"2.6.2","appStoreState":"READY_FOR_SALE","createdDate":"2020-10-26T09:49:56-07:00"}}
-			],"links":{"next":"https://api.appstoreconnect.apple.com%s?%s"}}`, pageTwoPath, pageTwoQuery)), nil
+			],"links":{"next":"https://api.appstoreconnect.apple.com%s?%s"},"meta":{"paging":{"total":14,"limit":200}}}`, pageTwoPath, pageTwoQuery)), nil
 		default:
 			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
 		}
@@ -48,22 +48,27 @@ func TestVersionsListLatestKeepsNewestVersionPerPlatform(t *testing.T) {
 	})
 
 	var result struct {
-		Data []struct {
+		Items []struct {
 			ID         string `json:"id"`
 			Attributes struct {
 				Platform      string `json:"platform"`
 				VersionString string `json:"versionString"`
 			} `json:"attributes"`
-		} `json:"data"`
+		} `json:"items"`
+		TotalCount int  `json:"totalCount"`
+		HasMore    bool `json:"hasMore"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("unmarshal output: %v (%q)", err, stdout)
 	}
-	if len(result.Data) != 2 {
-		t.Fatalf("data length = %d, want 2 (newest per platform)", len(result.Data))
+	if len(result.Items) != 2 {
+		t.Fatalf("items length = %d, want 2 (newest per platform)", len(result.Items))
+	}
+	if result.TotalCount != 2 || result.HasMore {
+		t.Fatalf("computed paging = totalCount %d, hasMore %t; want 2, false", result.TotalCount, result.HasMore)
 	}
 	byPlatform := map[string]string{}
-	for _, version := range result.Data {
+	for _, version := range result.Items {
 		byPlatform[version.Attributes.Platform] = version.Attributes.VersionString
 	}
 	if byPlatform["IOS"] != "2.4.1" {
@@ -71,6 +76,34 @@ func TestVersionsListLatestKeepsNewestVersionPerPlatform(t *testing.T) {
 	}
 	if byPlatform["MAC_OS"] != "2.6.2" {
 		t.Fatalf("MAC_OS latest = %q, want 2.6.2", byPlatform["MAC_OS"])
+	}
+}
+
+func TestVersionsListLatestRejectsInvalidCreatedDate(t *testing.T) {
+	setupAuth(t)
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.Path != "/v1/apps/app-1/appStoreVersions" {
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+		return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"appStoreVersions","id":"ver-invalid","attributes":{"platform":"IOS","versionString":"2.4.1","createdDate":"not-a-date"}}],"links":{}}`), nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, _ := captureOutput(t, func() {
+		if err := root.Parse([]string{"versions", "list", "--app", "app-1", "--latest", "--output", "json"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		err := root.Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), `version "ver-invalid" has invalid createdDate`) {
+			t.Fatalf("expected invalid createdDate error, got %v", err)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("expected no computed output for invalid data, got %q", stdout)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
@@ -54,7 +55,7 @@ func VersionsListCommand() *ffcli.Command {
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Next page URL from a previous response")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
-	latest := fs.Bool("latest", false, "Keep only the newest version per platform by createdDate (fetches all pages)")
+	latest := fs.Bool("latest", false, "[experimental] Keep only the newest version per platform by createdDate (fetches all pages)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -143,8 +144,16 @@ Examples:
 					if !ok {
 						return fmt.Errorf("versions list: unexpected paginated response type %T", versions)
 					}
-					aggregated.Data = latestVersionsPerPlatform(aggregated.Data)
-					return shared.PrintOutput(aggregated, *output.Output, *output.Pretty)
+					selected, err := latestVersionsPerPlatform(aggregated.Data)
+					if err != nil {
+						return fmt.Errorf("versions list: %w", err)
+					}
+					result := &asc.AppStoreVersionsLatestResult{
+						Items:      selected,
+						TotalCount: len(selected),
+						HasMore:    false,
+					}
+					return shared.PrintOutput(result, *output.Output, *output.Pretty)
 				}
 
 				return shared.PrintOutput(versions, *output.Output, *output.Pretty)
@@ -163,26 +172,35 @@ Examples:
 // latestVersionsPerPlatform keeps the newest version per platform by
 // createdDate; the API reports historical versions with live-looking states,
 // so recency has to be derived rather than filtered.
-func latestVersionsPerPlatform(data []asc.Resource[asc.AppStoreVersionAttributes]) []asc.Resource[asc.AppStoreVersionAttributes] {
-	newest := map[string]int{}
+func latestVersionsPerPlatform(data []asc.Resource[asc.AppStoreVersionAttributes]) ([]asc.Resource[asc.AppStoreVersionAttributes], error) {
+	type selectedVersion struct {
+		index       int
+		createdDate time.Time
+	}
+
+	newest := map[string]selectedVersion{}
 	order := []string{}
 	for index, version := range data {
+		createdDate, err := time.Parse(time.RFC3339, strings.TrimSpace(version.Attributes.CreatedDate))
+		if err != nil {
+			return nil, fmt.Errorf("version %q has invalid createdDate %q: %w", version.ID, version.Attributes.CreatedDate, err)
+		}
 		platform := string(version.Attributes.Platform)
 		current, seen := newest[platform]
 		if !seen {
-			newest[platform] = index
+			newest[platform] = selectedVersion{index: index, createdDate: createdDate}
 			order = append(order, platform)
 			continue
 		}
-		if version.Attributes.CreatedDate > data[current].Attributes.CreatedDate {
-			newest[platform] = index
+		if createdDate.After(current.createdDate) {
+			newest[platform] = selectedVersion{index: index, createdDate: createdDate}
 		}
 	}
 	result := make([]asc.Resource[asc.AppStoreVersionAttributes], 0, len(order))
 	for _, platform := range order {
-		result = append(result, data[newest[platform]])
+		result = append(result, data[newest[platform].index])
 	}
-	return result
+	return result, nil
 }
 
 func VersionsViewCommand() *ffcli.Command {

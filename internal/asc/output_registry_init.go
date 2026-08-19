@@ -133,6 +133,7 @@ func registerAllOutputRenderers() {
 	registerRowsWithSingleResourceAdapter(winBackOffersRows)
 	registerRowsErr(winBackOfferPricesRows)
 	registerRowsWithSingleResourceAdapter(appStoreVersionsRows)
+	registerRows(appStoreVersionsLatestRows)
 	registerRowsWithSingleToListAdapter[PreReleaseVersionResponse, PreReleaseVersionsResponse](preReleaseVersionsRows)
 	registerRows(buildIconsRows)
 	registerRowsWithSingleResourceAdapter(buildUploadsRows)
