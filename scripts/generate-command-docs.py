@@ -48,13 +48,18 @@ def parse_help(help_text: str) -> tuple[str, list[tuple[str, str]], list[tuple[s
     current_group_index: int | None = None
 
     for line in help_text.splitlines():
-        # Only the USAGE section defines the usage pattern; sample invocations
-        # elsewhere in the help text must not overwrite it.
-        if in_usage and line.startswith("  asc "):
-            usage = line.strip()
-            in_usage = False
-
         stripped = line.strip()
+
+        # Only the USAGE section defines the usage pattern; sample invocations
+        # elsewhere in the help text must not overwrite it. Any unindented
+        # heading ends the section, even one this parser does not model.
+        if in_usage:
+            if line.startswith("  asc "):
+                usage = stripped
+                in_usage = False
+            elif stripped and not line.startswith(" "):
+                in_usage = False
+
         if stripped == "USAGE":
             in_usage = True
             in_flags = False
