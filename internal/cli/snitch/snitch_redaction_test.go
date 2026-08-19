@@ -618,6 +618,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl --user [REDACTED] https://example.test`,
 		},
 		{
+			name:  "curl user password in separate quoted shell fragment",
+			input: `curl --user alice:'supersensitive password' https://example.test`,
+			want:  `curl --user [REDACTED] https://example.test`,
+		},
+		{
 			name:  "multiline quoted curl user password flag",
 			input: "curl --user \"alice:first\nsecond-secret\" https://example.test",
 			want:  "curl --user [REDACTED] https://example.test",
@@ -1847,11 +1852,12 @@ func TestSnitchDryRunRedactsGoHeaderMapsAndContinuedCurlCredentials(t *testing.T
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"continued-user-secret", "go-header-secret", "proxy-authorization-secret"}
+	secrets := []string{"continued-user-secret", "go-header-secret", "proxy-authorization-secret", "split-user-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", "curl --user alice:"+secrets[0]+"\\\n-tail https://example.test",
+		"--repro", "curl --user alice:"+secrets[0]+"\\\n-tail https://example.test\n"+
+			"curl --user alice:'"+secrets[3]+" password' https://example.test/split",
 		"--actual", "request headers: map[Cookie:[myacinfo="+secrets[1]+"] Content-Type:[application/json]]\n{\"Proxy-Authorization\":[\"Basic "+secrets[2]+"\"],\"status\":\"failed\"}",
 		"header map and continued credential redaction probe",
 	)
@@ -1872,6 +1878,7 @@ func TestSnitchDryRunRedactsGoHeaderMapsAndContinuedCurlCredentials(t *testing.T
 	}
 	for _, want := range []string{
 		"curl --user [REDACTED] https://example.test",
+		"curl --user [REDACTED] https://example.test/split",
 		"request headers: map[Cookie:[REDACTED] Content-Type:[application/json]]",
 		`{"Proxy-Authorization":["[REDACTED]"],"status":"failed"}`,
 	} {
