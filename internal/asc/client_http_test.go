@@ -5387,6 +5387,46 @@ func TestGetAppPreviews(t *testing.T) {
 	}
 }
 
+func TestGetAppPreviewsUsesNextURL(t *testing.T) {
+	response := jsonResponse(http.StatusOK, `{"data":[{"type":"appPreviews","id":"PREVIEW_456","attributes":{"fileName":"later.mov"}}]}`)
+	client := newTestClient(t, func(req *http.Request) {
+		if req.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", req.Method)
+		}
+		if req.URL.Path != "/v1/appPreviewSets/SET_123/appPreviews" || req.URL.RawQuery != "cursor=next" {
+			t.Fatalf("expected next page path and query, got %s", req.URL.RequestURI())
+		}
+		assertAuthorized(t, req)
+	}, response)
+
+	result, err := client.GetAppPreviews(
+		context.Background(),
+		"SET_123",
+		WithAppPreviewsNextURL("https://api.appstoreconnect.apple.com/v1/appPreviewSets/SET_123/appPreviews?cursor=next"),
+	)
+	if err != nil {
+		t.Fatalf("GetAppPreviews() error: %v", err)
+	}
+	if len(result.Data) != 1 || result.Data[0].ID != "PREVIEW_456" {
+		t.Fatalf("unexpected previews response: %+v", result.Data)
+	}
+}
+
+func TestGetAppPreviewsRejectsUntrustedNextURL(t *testing.T) {
+	client := newTestClient(t, func(req *http.Request) {
+		t.Fatalf("unexpected request: %s", req.URL.String())
+	}, jsonResponse(http.StatusInternalServerError, `{}`))
+
+	_, err := client.GetAppPreviews(
+		context.Background(),
+		"SET_123",
+		WithAppPreviewsNextURL("https://example.com/v1/appPreviews?cursor=next"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "untrusted host") {
+		t.Fatalf("GetAppPreviews() error = %v, want untrusted next URL rejection", err)
+	}
+}
+
 func TestGetAppPreview(t *testing.T) {
 	response := jsonResponse(http.StatusOK, `{"data":{"type":"appPreviews","id":"PREVIEW_123","attributes":{"fileName":"preview.mov","fileSize":2048}}}`)
 	client := newTestClient(t, func(req *http.Request) {

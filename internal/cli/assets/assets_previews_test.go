@@ -269,6 +269,82 @@ func TestUploadPreviewsRejectsAppendThatWouldExceedSetCapacityBeforeMutation(t *
 	}
 }
 
+func TestUploadPreviewsCountsExistingPreviewsAcrossAllPages(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "new.mov")
+	if err := os.WriteFile(filePath, []byte("new-preview"), 0o600); err != nil {
+		t.Fatalf("write preview: %v", err)
+	}
+
+	requests := make([]string, 0, 3)
+	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		switch {
+		case r.URL.Path == "/v1/appStoreVersionLocalizations/LOC_ID/appPreviewSets":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appPreviewSets","id":"set-1","attributes":{"previewType":"IPHONE_65"}}]}`)
+		case r.URL.Path == "/v1/appPreviewSets/set-1/appPreviews" && r.URL.Query().Get("cursor") == "next":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appPreviews","id":"existing-3","attributes":{"fileName":"old-3.mov"}}]}`)
+		case r.URL.Path == "/v1/appPreviewSets/set-1/appPreviews":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appPreviews","id":"existing-1","attributes":{"fileName":"old-1.mov"}},{"type":"appPreviews","id":"existing-2","attributes":{"fileName":"old-2.mov"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/appPreviewSets/set-1/appPreviews?cursor=next"}}`)
+		default:
+			writeAssetsTestJSON(w, http.StatusInternalServerError, `{"errors":[{"status":"500","detail":"unexpected mutation"}]}`)
+		}
+	}))
+
+	_, err := uploadPreviews(context.Background(), client, "LOC_ID", "IPHONE_65", []string{filePath}, false, false, true)
+	if err == nil {
+		t.Fatal("expected preview capacity error")
+	}
+	if !strings.Contains(err.Error(), "already contains 3 preview(s)") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantRequests := []string{
+		"GET /v1/appStoreVersionLocalizations/LOC_ID/appPreviewSets",
+		"GET /v1/appPreviewSets/set-1/appPreviews",
+		"GET /v1/appPreviewSets/set-1/appPreviews?cursor=next",
+	}
+	if fmt.Sprint(requests) != fmt.Sprint(wantRequests) {
+		t.Fatalf("requests = %v, want %v", requests, wantRequests)
+	}
+}
+
+func TestUploadPreviewsSkipsChecksumMatchFromLaterPage(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "matching.mov")
+	if err := os.WriteFile(filePath, []byte("matching-preview"), 0o600); err != nil {
+		t.Fatalf("write preview: %v", err)
+	}
+	checksum, err := computeFileChecksum(filePath)
+	if err != nil {
+		t.Fatalf("checksum preview: %v", err)
+	}
+
+	previewPageRequests := 0
+	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/appStoreVersionLocalizations/LOC_ID/appPreviewSets":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appPreviewSets","id":"set-1","attributes":{"previewType":"IPHONE_65"}}]}`)
+		case r.URL.Path == "/v1/appPreviewSets/set-1/appPreviews" && r.URL.Query().Get("cursor") == "next":
+			previewPageRequests++
+			writeAssetsTestJSON(w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"appPreviews","id":"existing-match","attributes":{"fileName":"matching.mov","sourceFileChecksum":%q}}]}`, checksum))
+		case r.URL.Path == "/v1/appPreviewSets/set-1/appPreviews":
+			previewPageRequests++
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appPreviews","id":"existing-1","attributes":{"fileName":"old.mov","sourceFileChecksum":"other"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/appPreviewSets/set-1/appPreviews?cursor=next"}}`)
+		default:
+			writeAssetsTestJSON(w, http.StatusInternalServerError, `{"errors":[{"status":"500","detail":"unexpected request"}]}`)
+		}
+	}))
+
+	result, err := uploadPreviews(context.Background(), client, "LOC_ID", "IPHONE_65", []string{filePath}, true, false, true)
+	if err != nil {
+		t.Fatalf("uploadPreviews() error: %v", err)
+	}
+	if previewPageRequests != 2 {
+		t.Fatalf("preview page requests = %d, want 2", previewPageRequests)
+	}
+	if len(result.Results) != 1 || !result.Results[0].Skipped || result.Results[0].State != "skipped" {
+		t.Fatalf("results = %+v, want one skipped checksum match", result.Results)
+	}
+}
+
 func TestUploadPreviewsRejectsLargeSkipExistingBatchBeforeCreatingMissingSet(t *testing.T) {
 	dir := t.TempDir()
 	files := make([]string, 0, 4)

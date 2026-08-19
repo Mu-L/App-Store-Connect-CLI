@@ -852,12 +852,11 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 	existingPreviews := make([]asc.Resource[asc.AppPreviewAttributes], 0)
 	if set.ID != "" {
 		fetchCtx, fetchCancel := shared.ContextWithTimeout(ctx)
-		existingResp, err := client.GetAppPreviews(fetchCtx, set.ID)
+		existingPreviews, err = getAllAppPreviews(fetchCtx, client, set.ID)
 		fetchCancel()
 		if err != nil {
 			return asc.AppPreviewUploadResult{}, err
 		}
-		existingPreviews = existingResp.Data
 	}
 
 	skippedResults := make([]asc.AssetUploadResultItem, 0)
@@ -935,6 +934,24 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 		PreviewType:           set.Attributes.PreviewType,
 		Results:               results,
 	}, nil
+}
+
+func getAllAppPreviews(ctx context.Context, client *asc.Client, setID string) ([]asc.Resource[asc.AppPreviewAttributes], error) {
+	firstPage, err := client.GetAppPreviews(ctx, setID)
+	if err != nil {
+		return nil, err
+	}
+	paginated, err := asc.PaginateAll(ctx, firstPage, func(ctx context.Context, nextURL string) (asc.PaginatedResponse, error) {
+		return client.GetAppPreviews(ctx, setID, asc.WithAppPreviewsNextURL(nextURL))
+	})
+	if err != nil {
+		return nil, err
+	}
+	allPages, ok := paginated.(*asc.AppPreviewsResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected app previews response")
+	}
+	return allPages.Data, nil
 }
 
 type previewAssetUploadFunc func(context.Context, *asc.Client, string, string) (asc.AssetUploadResultItem, error)
