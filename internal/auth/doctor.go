@@ -391,13 +391,14 @@ func inspectEnvironment() DoctorSection {
 	keyTypeRaw := strings.TrimSpace(os.Getenv("ASC_KEY_TYPE"))
 	keyType := config.NormalizeCredentialKeyType(keyTypeRaw)
 	keyTypeValid := keyTypeRaw == "" || config.IsValidCredentialKeyType(keyType)
+	individualKey := keyTypeValid && config.IsIndividualCredentialKeyType(keyType)
 	hasKeyPath := strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_PATH")) != "" ||
 		strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY")) != "" ||
 		strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_B64")) != ""
 	envProvided := keyID != "" || issuerID != "" || hasKeyPath || keyTypeRaw != ""
 	envComplete := keyID != "" && hasKeyPath &&
 		keyTypeValid &&
-		(issuerID != "" || config.IsIndividualCredentialKeyType(keyType))
+		(issuerID != "" || individualKey)
 	if keyTypeRaw != "" && !keyTypeValid {
 		checks = append(checks, DoctorCheck{
 			Status:         DoctorWarn,
@@ -414,7 +415,11 @@ func inspectEnvironment() DoctorSection {
 	}
 
 	shapeLabels := CredentialShapeLabels{KeyID: "ASC_KEY_ID", IssuerID: "ASC_ISSUER_ID"}
-	for _, finding := range InspectCredentialShapes(shapeLabels, keyID, issuerID) {
+	shapeIssuerID := issuerID
+	if individualKey {
+		shapeIssuerID = ""
+	}
+	for _, finding := range InspectCredentialShapes(shapeLabels, keyID, shapeIssuerID) {
 		checks = append(checks, DoctorCheck{
 			Status:         DoctorWarn,
 			Message:        finding.Message,
@@ -432,7 +437,7 @@ func inspectEnvironment() DoctorSection {
 					Recommendation: "Use --profile or clear conflicting env vars",
 				})
 			}
-			if issuerID != "" && defaultCreds.IssuerID != "" && issuerID != defaultCreds.IssuerID {
+			if !individualKey && issuerID != "" && defaultCreds.IssuerID != "" && issuerID != defaultCreds.IssuerID {
 				checks = append(checks, DoctorCheck{
 					Status:         DoctorWarn,
 					Message:        "ASC_ISSUER_ID differs from default stored credentials",

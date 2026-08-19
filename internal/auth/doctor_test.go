@@ -137,6 +137,23 @@ func TestDoctorEnvironmentWarnsForNonUUIDIssuerID(t *testing.T) {
 	}
 }
 
+func TestDoctorEnvironmentIgnoresIssuerShapeForIndividualKey(t *testing.T) {
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("ASC_KEY_ID", "39MX87M9Y4")
+	t.Setenv("ASC_ISSUER_ID", "stale-team-value")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", "/tmp/AuthKey.p8")
+	t.Setenv("ASC_KEY_TYPE", "individual")
+
+	report := Doctor(DoctorOptions{})
+	section := findDoctorSection(t, report, "Environment")
+	for _, check := range section.Checks {
+		if check.Status == DoctorWarn && (strings.Contains(check.Message, "ASC_ISSUER_ID") || strings.Contains(check.Message, "swapped")) {
+			t.Fatalf("unexpected warning for ignored individual-key issuer: %q", check.Message)
+		}
+	}
+}
+
 func TestDoctorEnvironmentAcceptsUnusualButValidCredentialShapes(t *testing.T) {
 	for _, test := range []struct {
 		name     string
