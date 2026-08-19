@@ -241,6 +241,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl --user=[REDACTED] https://example.test`,
 		},
 		{
+			name:  "curl OAuth bearer flag",
+			input: `curl --oauth2-bearer supersensitive https://example.test`,
+			want:  `curl --oauth2-bearer [REDACTED] https://example.test`,
+		},
+		{
 			name:  "curl long proxy user password flag",
 			input: `curl --proxy-user alice:supersensitive https://example.test`,
 			want:  `curl --proxy-user [REDACTED] https://example.test`,
@@ -455,6 +460,7 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"reordered-cloud-value",
 		"--DoubleDashPassword",
 		"curl-password-tail",
+		"curl-oauth-bearer-tail",
 	}
 	repro := strings.Join([]string{
 		`asc review details-create --demo-account-password "` + secrets[0] + `" --notes ready`,
@@ -466,6 +472,7 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		`asc deploy --password prefix\ ` + secrets[8] + ` --verbose`,
 		`asc web sandbox create --password ` + secrets[11] + ` --territory USA`,
 		`curl -u alice:` + secrets[12] + ` https://example.test`,
+		`curl --oauth2-bearer ` + secrets[13] + ` https://example.test`,
 	}, "\n")
 	actual := "PASSWORD=" + secrets[3] + "\n" +
 		`PASSWORD=$'` + secrets[7] + "'\n" +
@@ -503,6 +510,7 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		"--password [REDACTED] --territory USA",
 		"--password [REDACTED] --verbose",
 		"curl -u [REDACTED] https://example.test",
+		"curl --oauth2-bearer [REDACTED] https://example.test",
 		"PASSWORD=[REDACTED]",
 		"Authorization: [REDACTED]",
 	} {

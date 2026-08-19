@@ -12,7 +12,7 @@ const (
 
 	sensitiveAssignmentName = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key|password|passwd|pwd|secret|token)`
 	sensitivePrefixedName   = `_*(?:[a-z0-9]+[_-])*` + sensitiveAssignmentName
-	sensitiveFlagName       = `(?:access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|password|passwd|pwd|token)`
+	sensitiveFlagName       = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|password|passwd|pwd|token)`
 	escapeAwareQuotedValue  = `(?:"(?:\\.|[^"\\\r\n])*"|\$'(?:\\.|[^'\\\r\n])*'|'(?:\\.|[^'\\\r\n])*')`
 	unterminatedQuotedValue = `(?:"[^\r\n]*|\$?'[^\r\n]*)`
 	shellUnquotedValue      = `(?:\\[^\r\n]|[^\s])+`
