@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -93,9 +94,9 @@ func BetaTestersListCommand() *ffcli.Command {
 	email := fs.String("email", "", "Filter by tester email")
 	firstName := fs.String("first-name", "", "Filter by tester first name (exact match)")
 	lastName := fs.String("last-name", "", "Filter by tester last name (exact match)")
-	inviteType := fs.String("invite-type", "", "Filter by invite type(s), comma-separated: "+strings.Join(betaTesterInviteTypeValues, ", "))
-	sortBy := fs.String("sort", "", "Sort by: "+strings.Join(betaTesterSortValues, ", "))
-	include := fs.String("include", "", "Include related resources, comma-separated: "+strings.Join(betaTesterIncludeValues, ", "))
+	inviteType := fs.String("invite-type", "", "[experimental] Filter by invite type(s), comma-separated: "+strings.Join(betaTesterInviteTypeValues, ", "))
+	sortBy := fs.String("sort", "", "[experimental] Sort by: "+strings.Join(betaTesterSortValues, ", "))
+	include := fs.String("include", "", "[experimental] Include related resources, comma-separated: "+strings.Join(betaTesterIncludeValues, ", "))
 	output := shared.BindOutputFlags(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
@@ -110,6 +111,9 @@ func BetaTestersListCommand() *ffcli.Command {
 --include adds the related resources to the response's top-level "included"
 array, which only JSON output renders. Use --include betaGroups to audit group
 membership for every tester in one call instead of one lookup per tester.
+The --invite-type, --sort, and --include flags are experimental.
+A --next URL retains any include query from its original request; JSON output
+is still required to render those included resources.
 
 --invite-type, --sort, and --include cannot be combined with --next: a
 links.next URL already carries the query it was produced from, so those values
@@ -213,11 +217,12 @@ Examples:
 			includeValues := shared.SplitCSV(*include)
 			if len(includeValues) > 0 {
 				opts = append(opts, asc.WithBetaTestersInclude(includeValues))
-				// Only the JSON renderer emits the envelope's included array, so
-				// say so rather than fetching relationships the caller never sees.
-				if *output.Output != "json" {
-					fmt.Fprintf(os.Stderr, "Note: --include resources are only rendered in JSON output; re-run with --output json to see them.\n")
-				}
+			}
+			// Only the JSON renderer emits the envelope's included array. A
+			// continuation URL can carry include even though --include itself is
+			// rejected beside --next, so cover both request shapes.
+			if (len(includeValues) > 0 || betaTestersNextURLHasInclude(*next)) && *output.Output != "json" {
+				fmt.Fprintln(os.Stderr, "Note: included resources are only rendered in JSON output; re-run with --output json to see them.")
 			}
 
 			if strings.TrimSpace(*group) != "" && strings.TrimSpace(*next) == "" {
@@ -266,6 +271,14 @@ func normalizeBetaTesterInviteTypes(value string) ([]string, error) {
 		}
 	}
 	return values, nil
+}
+
+func betaTestersNextURLHasInclude(next string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(next))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(parsed.Query().Get("include")) != ""
 }
 
 // rejectBetaTestersNextFlagConflicts fails when a caller pairs --next with a

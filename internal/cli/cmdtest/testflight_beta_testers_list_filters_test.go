@@ -137,11 +137,43 @@ func TestTestFlightBetaTestersListNotesIncludeIsJSONOnly(t *testing.T) {
 				}
 			})
 
-			gotNote := strings.Contains(stderr, "--include resources are only rendered in JSON output")
+			gotNote := strings.Contains(stderr, "included resources are only rendered in JSON output")
 			if gotNote != test.wantNote {
 				t.Fatalf("note presence = %v, want %v (stderr=%q)", gotNote, test.wantNote, stderr)
 			}
 		})
+	}
+}
+
+func TestTestFlightBetaTestersListNotesNextURLIncludedResourcesAreJSONOnly(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	const nextURL = "https://api.appstoreconnect.apple.com/v1/betaTesters?cursor=AQ&include=betaGroups"
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != nextURL {
+			t.Fatalf("unexpected request URL %q", req.URL.String())
+		}
+		return okJSONResponse(`{"data":[],"included":[{"type":"betaGroups","id":"group-a"}],"links":{}}`), nil
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	_, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"testflight", "testers", "list",
+			"--next", nextURL,
+			"--output", "table",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+	if !strings.Contains(stderr, "included resources are only rendered in JSON output") {
+		t.Fatalf("expected JSON-only included-resource note, got %q", stderr)
 	}
 }
 
@@ -267,7 +299,7 @@ func TestTestFlightBetaTestersListPaginateMergesIncludedBetaGroups(t *testing.T)
 				t.Fatalf("unexpected second request URL %q", req.URL.String())
 			}
 			return okJSONResponse(`{"data":[{"type":"betaTesters","id":"tester-2","relationships":{"betaGroups":{"data":[{"type":"betaGroups","id":"group-b"}]}}}],` +
-				`"included":[{"type":"betaGroups","id":"group-b","attributes":{"name":"Bravo"}}],` +
+				`"included":[{"type":"betaGroups","id":"group-a","attributes":{"name":"Alpha updated"}},{"type":"betaGroups","id":"group-b","attributes":{"name":"Bravo"}}],` +
 				`"links":{}}`), nil
 		default:
 			t.Fatalf("unexpected extra request: %s %s", req.Method, req.URL.String())
@@ -302,8 +334,11 @@ func TestTestFlightBetaTestersListPaginateMergesIncludedBetaGroups(t *testing.T)
 			ID string `json:"id"`
 		} `json:"data"`
 		Included []struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
+			Type       string `json:"type"`
+			ID         string `json:"id"`
+			Attributes struct {
+				Name string `json:"name"`
+			} `json:"attributes"`
 		} `json:"included"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
@@ -313,12 +348,28 @@ func TestTestFlightBetaTestersListPaginateMergesIncludedBetaGroups(t *testing.T)
 		t.Fatalf("expected 2 aggregated testers, got %d (stdout=%q)", len(response.Data), stdout)
 	}
 
-	includedIDs := make([]string, 0, len(response.Included))
-	for _, item := range response.Included {
-		includedIDs = append(includedIDs, item.ID)
+	if len(response.Included) != 2 {
+		t.Fatalf("expected one included resource per type and ID, got %+v (stdout=%q)", response.Included, stdout)
 	}
-	if len(includedIDs) != 2 || !strings.Contains(strings.Join(includedIDs, ","), "group-a") ||
-		!strings.Contains(strings.Join(includedIDs, ","), "group-b") {
-		t.Fatalf("expected included beta groups from both pages, got %v (stdout=%q)", includedIDs, stdout)
+	if response.Included[0].ID != "group-a" || response.Included[0].Attributes.Name != "Alpha" ||
+		response.Included[1].ID != "group-b" {
+		t.Fatalf("expected first group-a representation followed by group-b, got %+v (stdout=%q)", response.Included, stdout)
+	}
+}
+
+func TestTestFlightBetaTestersListQueryFlagsAreExperimental(t *testing.T) {
+	list := findSubcommand(RootCommand("1.2.3"), "testflight", "testers", "list")
+	if list == nil {
+		t.Fatal("testflight testers list command not found")
+	}
+
+	for _, name := range []string{"invite-type", "sort", "include"} {
+		flag := list.FlagSet.Lookup(name)
+		if flag == nil {
+			t.Fatalf("--%s flag not found", name)
+		}
+		if !strings.HasPrefix(flag.Usage, "[experimental] ") {
+			t.Errorf("--%s usage = %q, want [experimental] prefix", name, flag.Usage)
+		}
 	}
 }
