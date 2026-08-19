@@ -1,9 +1,13 @@
 package optimize
 
 import (
+	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
 
 var difficultyReferenceTime = time.Date(2026, time.August, 19, 0, 0, 0, 0, time.UTC)
@@ -62,47 +66,47 @@ func TestScoreCompetitorAppNormalizesEachSignal(t *testing.T) {
 	tests := []struct {
 		name string
 		app  competitorApp
-		want func(*testing.T, KeywordScoreSignals)
+		want func(*testing.T, asc.KeywordScoreSignals)
 	}{
 		{
 			name: "rating count clamps at ten thousand",
 			app:  competitorApp{UserRatingCount: 25000, ReleaseDate: daysAgo(1000), CurrentVersionReleaseDate: daysAgo(1)},
-			want: func(t *testing.T, signals KeywordScoreSignals) {
+			want: func(t *testing.T, signals asc.KeywordScoreSignals) {
 				assertClose(t, "normalizedRatingCount", signals.NormalizedRatingCount, 1)
 			},
 		},
 		{
 			name: "average rating at or below three scores zero",
 			app:  competitorApp{AverageUserRating: 3, UserRatingCount: 5000},
-			want: func(t *testing.T, signals KeywordScoreSignals) {
+			want: func(t *testing.T, signals asc.KeywordScoreSignals) {
 				assertClose(t, "normalizedAverageRating", signals.NormalizedAverageRating, 0)
 			},
 		},
 		{
 			name: "average rating is damped by thin rating counts",
 			app:  competitorApp{AverageUserRating: 5, UserRatingCount: 10},
-			want: func(t *testing.T, signals KeywordScoreSignals) {
+			want: func(t *testing.T, signals asc.KeywordScoreSignals) {
 				assertClose(t, "normalizedAverageRating", signals.NormalizedAverageRating, 0.5)
 			},
 		},
 		{
 			name: "average rating clamps above five",
 			app:  competitorApp{AverageUserRating: 6, UserRatingCount: 100},
-			want: func(t *testing.T, signals KeywordScoreSignals) {
+			want: func(t *testing.T, signals asc.KeywordScoreSignals) {
 				assertClose(t, "normalizedAverageRating", signals.NormalizedAverageRating, 1)
 			},
 		},
 		{
 			name: "stale releases lose all age credit",
 			app:  competitorApp{CurrentVersionReleaseDate: daysAgo(400)},
-			want: func(t *testing.T, signals KeywordScoreSignals) {
+			want: func(t *testing.T, signals asc.KeywordScoreSignals) {
 				assertClose(t, "normalizedAge", signals.NormalizedAge, 0)
 			},
 		},
 		{
 			name: "missing dates degrade to a one year window",
 			app:  competitorApp{UserRatingCount: 365},
-			want: func(t *testing.T, signals KeywordScoreSignals) {
+			want: func(t *testing.T, signals asc.KeywordScoreSignals) {
 				assertClose(t, "daysSinceFirstRelease", signals.DaysSinceFirstRelease, 365)
 				assertClose(t, "daysSinceLastRelease", signals.DaysSinceLastRelease, 365)
 				assertClose(t, "normalizedAge", signals.NormalizedAge, 0)
@@ -113,7 +117,7 @@ func TestScoreCompetitorAppNormalizesEachSignal(t *testing.T) {
 		{
 			name: "unparseable dates degrade to a one year window",
 			app:  competitorApp{ReleaseDate: "not-a-date", CurrentVersionReleaseDate: "also-not-a-date", UserRatingCount: 365},
-			want: func(t *testing.T, signals KeywordScoreSignals) {
+			want: func(t *testing.T, signals asc.KeywordScoreSignals) {
 				assertClose(t, "daysSinceFirstRelease", signals.DaysSinceFirstRelease, 365)
 				assertClose(t, "ratingsPerDay", signals.RatingsPerDay, 1)
 			},
@@ -121,7 +125,7 @@ func TestScoreCompetitorAppNormalizesEachSignal(t *testing.T) {
 		{
 			name: "same day releases floor the day count at one",
 			app:  competitorApp{ReleaseDate: daysAgo(0), CurrentVersionReleaseDate: daysAgo(0), UserRatingCount: 50},
-			want: func(t *testing.T, signals KeywordScoreSignals) {
+			want: func(t *testing.T, signals asc.KeywordScoreSignals) {
 				assertClose(t, "daysSinceFirstRelease", signals.DaysSinceFirstRelease, 1)
 				assertClose(t, "ratingsPerDay", signals.RatingsPerDay, 50)
 				assertClose(t, "normalizedRatingsPerDay", signals.NormalizedRatingsPerDay, 0.25+0.75*(49.0/99.0))
@@ -130,14 +134,14 @@ func TestScoreCompetitorAppNormalizesEachSignal(t *testing.T) {
 		{
 			name: "ratings per day clamps at one hundred",
 			app:  competitorApp{ReleaseDate: daysAgo(1), CurrentVersionReleaseDate: daysAgo(1), UserRatingCount: 100000},
-			want: func(t *testing.T, signals KeywordScoreSignals) {
+			want: func(t *testing.T, signals asc.KeywordScoreSignals) {
 				assertClose(t, "normalizedRatingsPerDay", signals.NormalizedRatingsPerDay, 1)
 			},
 		},
 		{
 			name: "no ratings score zero ratings per day",
 			app:  competitorApp{ReleaseDate: daysAgo(100), CurrentVersionReleaseDate: daysAgo(100)},
-			want: func(t *testing.T, signals KeywordScoreSignals) {
+			want: func(t *testing.T, signals asc.KeywordScoreSignals) {
 				assertClose(t, "ratingsPerDay", signals.RatingsPerDay, 0)
 				assertClose(t, "normalizedRatingsPerDay", signals.NormalizedRatingsPerDay, 0)
 			},
@@ -148,6 +152,20 @@ func TestScoreCompetitorAppNormalizesEachSignal(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			test.want(t, scoreCompetitorApp(test.app, "unmatched keyword", difficultyReferenceTime))
 		})
+	}
+}
+
+func TestScoreCompetitorAppJSONPreservesMissingReleaseDates(t *testing.T) {
+	signals := scoreCompetitorApp(competitorApp{}, "focus timer", difficultyReferenceTime)
+
+	encoded, err := json.Marshal(signals)
+	if err != nil {
+		t.Fatalf("marshal signals: %v", err)
+	}
+	for _, want := range []string{`"releaseDate":""`, `"currentVersionReleaseDate":""`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("JSON missing %s: %s", want, encoded)
+		}
 	}
 }
 

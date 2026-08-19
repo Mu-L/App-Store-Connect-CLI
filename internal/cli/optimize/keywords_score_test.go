@@ -12,7 +12,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/ads"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 func TestKeywordsScoreCommandHelpDocumentsSourcesAndDesignDoc(t *testing.T) {
@@ -106,6 +108,33 @@ func TestKeywordsScoreCommandRejectsPositionalArguments(t *testing.T) {
 	}
 }
 
+func TestKeywordScoreReportUsesRegisteredOutput(t *testing.T) {
+	report := asc.KeywordScoreReport{
+		Country: "US",
+		Summary: asc.KeywordScoreSummary{Keywords: 1, Scored: 1},
+		Rows: []asc.KeywordScoreRow{{
+			Keyword: "focus timer",
+			Status:  keywordStatusAvailable,
+		}},
+	}
+
+	for _, format := range []string{"table", "markdown"} {
+		t.Run(format, func(t *testing.T) {
+			stdout := captureSearchPlanStdout(t, func() error {
+				return shared.PrintOutput(&report, format, false)
+			})
+			if strings.HasPrefix(strings.TrimSpace(stdout), "{") {
+				t.Fatalf("%s output fell back to JSON:\n%s", format, stdout)
+			}
+			for _, want := range []string{"focus timer", "Keyword", "Status"} {
+				if !strings.Contains(stdout, want) {
+					t.Fatalf("%s output missing %q:\n%s", format, want, stdout)
+				}
+			}
+		})
+	}
+}
+
 func TestKeywordsScoreComposesCompetitionRankAndDegradesPopularity(t *testing.T) {
 	var lookupIDs []string
 	var mu sync.Mutex
@@ -161,7 +190,7 @@ func TestKeywordsScoreComposesCompetitionRankAndDegradesPopularity(t *testing.T)
 		})
 	})
 
-	var report KeywordScoreReport
+	var report asc.KeywordScoreReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
 	}
@@ -217,7 +246,7 @@ func TestKeywordsScoreComposesCompetitionRankAndDegradesPopularity(t *testing.T)
 		t.Fatalf("unavailable row error = %q", failed.Error)
 	}
 
-	sources := map[string]ads.SearchOptimizationSourceStatus{}
+	sources := map[string]asc.KeywordScoreSourceStatus{}
 	for _, source := range report.Sources {
 		sources[source.Name] = source
 	}
@@ -310,7 +339,7 @@ func TestKeywordsScoreFlattensApplePopularityWhenAdsIsAvailable(t *testing.T) {
 		})
 	})
 
-	var report KeywordScoreReport
+	var report asc.KeywordScoreReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
 	}
@@ -355,7 +384,7 @@ func TestKeywordsScoreDegradesWhenCompetitorMetadataIsUnavailable(t *testing.T) 
 		})
 	})
 
-	var report KeywordScoreReport
+	var report asc.KeywordScoreReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
 	}

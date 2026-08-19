@@ -11,6 +11,7 @@ import (
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/ads"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/itunes"
@@ -30,62 +31,6 @@ const (
 )
 
 var collectSearchDataForKeywords = ads.CollectSearchOptimizationData
-
-// KeywordPopularity is the official Apple Ads demand snapshot for one term,
-// flattened from the country-and-genre popularity source.
-type KeywordPopularity struct {
-	Country           string `json:"country,omitempty"`
-	Genre             string `json:"genre,omitempty"`
-	Week              string `json:"week,omitempty"`
-	RankInGenre       *int   `json:"rankInGenre,omitempty"`
-	PopularityInGenre *int   `json:"popularityInGenre,omitempty"`
-	Popularity100     *int   `json:"popularity100,omitempty"`
-	Popularity5       *int   `json:"popularity5,omitempty"`
-}
-
-// KeywordScoreRow is one evaluated keyword. Computed fields are null whenever
-// the source they depend on was unavailable, so an absent score is never
-// reported as a zero score.
-type KeywordScoreRow struct {
-	Keyword            string                `json:"keyword"`
-	Status             string                `json:"status"`
-	Popularity         *KeywordPopularity    `json:"popularity"`
-	DifficultyScore    *float64              `json:"difficultyScore"`
-	MinDifficultyScore *float64              `json:"minDifficultyScore"`
-	IsBrandKeyword     *bool                 `json:"isBrandKeyword"`
-	AppCount           *int                  `json:"appCount"`
-	KeywordMatch       string                `json:"keywordMatch,omitempty"`
-	Rank               *int                  `json:"rank,omitempty"`
-	Fallback           bool                  `json:"fallback,omitempty"`
-	AverageAppScore    *float64              `json:"averageAppScore,omitempty"`
-	MinimumAppScore    *float64              `json:"minimumAppScore,omitempty"`
-	NormalizedAppCount *float64              `json:"normalizedAppCount,omitempty"`
-	RawSignals         []KeywordScoreSignals `json:"rawSignals,omitempty"`
-	Error              string                `json:"error,omitempty"`
-}
-
-// KeywordScoreSummary counts keyword outcomes by status.
-type KeywordScoreSummary struct {
-	Keywords     int `json:"keywords"`
-	Scored       int `json:"scored"`
-	Unavailable  int `json:"unavailable"`
-	WithRank     int `json:"withRank"`
-	BrandMatches int `json:"brandMatches"`
-}
-
-// KeywordScoreReport is the stable JSON contract emitted by
-// `asc optimize keywords score`.
-type KeywordScoreReport struct {
-	SchemaVersion string                               `json:"schemaVersion"`
-	GeneratedAt   string                               `json:"generatedAt,omitempty"`
-	AppID         string                               `json:"appId,omitempty"`
-	Country       string                               `json:"country"`
-	Genre         string                               `json:"genre,omitempty"`
-	Workers       int                                  `json:"workers"`
-	Sources       []ads.SearchOptimizationSourceStatus `json:"sources"`
-	Summary       KeywordScoreSummary                  `json:"summary"`
-	Rows          []KeywordScoreRow                    `json:"rows"`
-}
 
 // KeywordsScoreCommand returns the composed keyword scoring command.
 func KeywordsScoreCommand() *ffcli.Command {
@@ -195,13 +140,7 @@ Examples:
 				return fmt.Errorf("optimize keywords score: %w", representativeKeywordError(failures))
 			}
 
-			return shared.PrintOutputWithRenderers(
-				report,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderKeywordScoreTable(report) },
-				func() error { return renderKeywordScoreMarkdown(report) },
-			)
+			return shared.PrintOutput(&report, *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -399,7 +338,7 @@ type keywordPopularityRequest struct {
 func collectKeywordPopularity(
 	ctx context.Context,
 	request keywordPopularityRequest,
-) (map[string]KeywordPopularity, ads.SearchOptimizationSourceStatus) {
+) (map[string]asc.KeywordPopularity, ads.SearchOptimizationSourceStatus) {
 	missing := make([]string, 0, 2)
 	if strings.TrimSpace(request.AppID) == "" {
 		missing = append(missing, "--app")
@@ -448,7 +387,7 @@ func collectKeywordPopularity(
 	for _, keyword := range request.Keywords {
 		wanted[keyword] = struct{}{}
 	}
-	popularity := make(map[string]KeywordPopularity)
+	popularity := make(map[string]asc.KeywordPopularity)
 	for _, row := range data.Popularities {
 		term := strings.ToLower(strings.Join(strings.Fields(row.Term), " "))
 		if _, ok := wanted[term]; !ok {
@@ -458,7 +397,7 @@ func collectKeywordPopularity(
 		if existing, ok := popularity[term]; ok && existing.Week >= row.Week {
 			continue
 		}
-		popularity[term] = KeywordPopularity{
+		popularity[term] = asc.KeywordPopularity{
 			Country:           row.Country,
 			Genre:             row.Genre,
 			Week:              row.Week,
@@ -490,16 +429,16 @@ type keywordScoreBuildInput struct {
 	Workers     int
 	Now         time.Time
 	Sources     []ads.SearchOptimizationSourceStatus
-	Popularity  map[string]KeywordPopularity
+	Popularity  map[string]asc.KeywordPopularity
 	Competition []keywordCompetition
 }
 
-func buildKeywordScoreReport(input keywordScoreBuildInput) KeywordScoreReport {
-	rows := make([]KeywordScoreRow, 0, len(input.Competition))
-	summary := KeywordScoreSummary{Keywords: len(input.Competition)}
+func buildKeywordScoreReport(input keywordScoreBuildInput) asc.KeywordScoreReport {
+	rows := make([]asc.KeywordScoreRow, 0, len(input.Competition))
+	summary := asc.KeywordScoreSummary{Keywords: len(input.Competition)}
 
 	for _, entry := range input.Competition {
-		row := KeywordScoreRow{Keyword: entry.Keyword, Status: keywordStatusAvailable}
+		row := asc.KeywordScoreRow{Keyword: entry.Keyword, Status: keywordStatusAvailable}
 		if popularity, ok := input.Popularity[entry.Keyword]; ok {
 			value := popularity
 			row.Popularity = &value
@@ -512,7 +451,7 @@ func buildKeywordScoreReport(input keywordScoreBuildInput) KeywordScoreReport {
 			continue
 		}
 
-		signals := make([]KeywordScoreSignals, 0, len(entry.Apps))
+		signals := make([]asc.KeywordScoreSignals, 0, len(entry.Apps))
 		appScores := make([]float64, 0, len(entry.Apps))
 		match := keywordMatchNone
 		for _, app := range entry.Apps {
@@ -552,15 +491,24 @@ func buildKeywordScoreReport(input keywordScoreBuildInput) KeywordScoreReport {
 
 	sources := append([]ads.SearchOptimizationSourceStatus(nil), input.Sources...)
 	sort.SliceStable(sources, func(i, j int) bool { return sources[i].Name < sources[j].Name })
+	outputSources := make([]asc.KeywordScoreSourceStatus, 0, len(sources))
+	for _, source := range sources {
+		outputSources = append(outputSources, asc.KeywordScoreSourceStatus{
+			Name:   source.Name,
+			Status: source.Status,
+			Count:  source.Count,
+			Error:  source.Error,
+		})
+	}
 
-	return KeywordScoreReport{
+	return asc.KeywordScoreReport{
 		SchemaVersion: keywordScoreSchemaVersion,
 		GeneratedAt:   input.GeneratedAt,
 		AppID:         input.AppID,
 		Country:       input.Country,
 		Genre:         input.Genre,
 		Workers:       input.Workers,
-		Sources:       sources,
+		Sources:       outputSources,
 		Summary:       summary,
 		Rows:          rows,
 	}

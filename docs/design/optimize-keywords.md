@@ -255,8 +255,8 @@ Apple's official, documented Ads suggestion endpoints are.
 
 ## Output contract
 
-`rank` and `score` emit exported camelCase structs from
-`internal/cli/optimize` rendered through `shared.PrintOutputWithRenderers`, with
-table and Markdown renderers alongside JSON. These are computed results, not
-App Store Connect envelopes and not mutation receipts. Added fields are
-additive; removals follow the stability ladder.
+`score` emits a registered output contract from `internal/asc`, with table and
+Markdown renderers alongside JSON. `rank` remains a computed camelCase result
+from `internal/cli/optimize`. These are computed results, not App Store Connect
+envelopes and not mutation receipts. Added fields are additive; removals follow
+the stability ladder.

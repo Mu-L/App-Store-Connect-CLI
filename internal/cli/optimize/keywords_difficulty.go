@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -74,30 +75,6 @@ type competitorApp struct {
 	CurrentVersionReleaseDate string
 }
 
-// KeywordScoreSignals is the named raw evidence behind one competitor's app
-// score. Every derived value is reported next to the input it came from so a
-// caller can re-derive the score without re-running the command.
-type KeywordScoreSignals struct {
-	AppID                     string  `json:"appId"`
-	Name                      string  `json:"name"`
-	Subtitle                  string  `json:"subtitle"`
-	PublisherName             string  `json:"publisherName"`
-	AverageUserRating         float64 `json:"averageUserRating"`
-	UserRatingCount           int64   `json:"userRatingCount"`
-	ReleaseDate               string  `json:"releaseDate,omitempty"`
-	CurrentVersionReleaseDate string  `json:"currentVersionReleaseDate,omitempty"`
-	DaysSinceFirstRelease     float64 `json:"daysSinceFirstRelease"`
-	DaysSinceLastRelease      float64 `json:"daysSinceLastRelease"`
-	NormalizedRatingCount     float64 `json:"normalizedRatingCount"`
-	NormalizedAverageRating   float64 `json:"normalizedAverageRating"`
-	NormalizedAge             float64 `json:"normalizedAge"`
-	RatingsPerDay             float64 `json:"ratingsPerDay"`
-	NormalizedRatingsPerDay   float64 `json:"normalizedRatingsPerDay"`
-	KeywordMatch              string  `json:"keywordMatch"`
-	KeywordMatchScore         float64 `json:"keywordMatchScore"`
-	AppScore                  float64 `json:"appScore"`
-}
-
 // keywordDifficultyResult is the keyword-level aggregation of competitor app
 // scores, carrying its own inputs so the difficulty stays reproducible.
 type keywordDifficultyResult struct {
@@ -116,7 +93,7 @@ func clampUnit(value float64) float64 {
 // scoreCompetitorApp derives one competitor's app score from public metadata.
 // Missing or unparseable dates degrade to a one-year window instead of being
 // dropped, so a competitor is never scored as brand new by accident.
-func scoreCompetitorApp(app competitorApp, keyword string, now time.Time) KeywordScoreSignals {
+func scoreCompetitorApp(app competitorApp, keyword string, now time.Time) asc.KeywordScoreSignals {
 	daysSinceFirstRelease := daysSince(app.ReleaseDate, now)
 	daysSinceLastRelease := daysSince(app.CurrentVersionReleaseDate, now)
 
@@ -148,7 +125,7 @@ func scoreCompetitorApp(app competitorApp, keyword string, now time.Time) Keywor
 			keywordWeightRatingsPerDay*normalizedRatingsPerDay,
 	)
 
-	return KeywordScoreSignals{
+	return asc.KeywordScoreSignals{
 		AppID:                     app.AppID,
 		Name:                      app.Name,
 		Subtitle:                  app.Subtitle,
