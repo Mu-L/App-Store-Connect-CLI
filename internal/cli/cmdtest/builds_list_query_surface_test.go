@@ -128,3 +128,75 @@ func TestBuildsListBetaReviewStateRejectsUnknownValue(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildsListIncludeDefaultsToPreReleaseVersion(t *testing.T) {
+	captured := buildsListQuerySurfaceStub(t)
+
+	_, stderr, err := runBuildsListQuerySurface(t, "builds", "list", "--app", "123456789")
+	if err != nil {
+		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
+	}
+
+	_, query := captured()
+	if got := query.Get("include"); got != "preReleaseVersion" {
+		t.Fatalf("expected default include=preReleaseVersion, got %q", got)
+	}
+}
+
+func TestBuildsListIncludeUnionsWithPreReleaseVersion(t *testing.T) {
+	captured := buildsListQuerySurfaceStub(t)
+
+	_, stderr, err := runBuildsListQuerySurface(
+		t,
+		"builds", "list",
+		"--app", "123456789",
+		"--include", "app,buildBetaDetail",
+	)
+	if err != nil {
+		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
+	}
+
+	_, query := captured()
+	if got := query.Get("include"); got != "preReleaseVersion,app,buildBetaDetail" {
+		t.Fatalf("expected include to union the table default, got %q", got)
+	}
+}
+
+func TestBuildsListIncludeDoesNotDuplicatePreReleaseVersion(t *testing.T) {
+	captured := buildsListQuerySurfaceStub(t)
+
+	_, stderr, err := runBuildsListQuerySurface(
+		t,
+		"builds", "list",
+		"--app", "123456789",
+		"--include", "preReleaseVersion,betaGroups,preReleaseVersion",
+	)
+	if err != nil {
+		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
+	}
+
+	_, query := captured()
+	if got := query.Get("include"); got != "preReleaseVersion,betaGroups" {
+		t.Fatalf("expected deduplicated include, got %q", got)
+	}
+}
+
+func TestBuildsListIncludeRejectsUnknownValue(t *testing.T) {
+	buildsListQuerySurfaceStub(t)
+
+	_, stderr, err := runBuildsListQuerySurface(
+		t,
+		"builds", "list",
+		"--app", "123456789",
+		"--include", "app,buildBundle",
+	)
+
+	if got := rootcmd.ExitCodeFromError(err); got != rootcmd.ExitUsage {
+		t.Fatalf("exit code = %d, want %d (err=%v)", got, rootcmd.ExitUsage, err)
+	}
+	for _, want := range []string{"--include", "preReleaseVersion", "buildBundles", "buildUpload"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("expected stderr to mention %q, got %q", want, stderr)
+		}
+	}
+}

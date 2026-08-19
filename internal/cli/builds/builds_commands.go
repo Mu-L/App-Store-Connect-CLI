@@ -484,6 +484,43 @@ func normalizeBuildsListBetaReviewStates(value string) ([]string, error) {
 	return states, nil
 }
 
+// buildsListDefaultInclude is always requested so the table renderer can resolve
+// each build's marketing version.
+const buildsListDefaultInclude = "preReleaseVersion"
+
+// buildsListIncludeValues lists the relationships accepted by include on
+// GET /v1/builds.
+var buildsListIncludeValues = []string{
+	buildsListDefaultInclude,
+	"individualTesters",
+	"betaGroups",
+	"betaBuildLocalizations",
+	"appEncryptionDeclaration",
+	"betaAppReviewSubmission",
+	"app",
+	"buildBetaDetail",
+	"appStoreVersion",
+	"icons",
+	"buildBundles",
+	"buildUpload",
+}
+
+// resolveBuildsListInclude validates a comma-separated include value and unions
+// it with the default relationship the table renderer depends on.
+func resolveBuildsListInclude(value string) ([]string, error) {
+	if err := shared.ValidateInclude(value, buildsListIncludeValues...); err != nil {
+		return nil, shared.UsageError(err.Error())
+	}
+
+	include := []string{buildsListDefaultInclude}
+	for _, item := range shared.SplitUniqueCSV(value) {
+		if item != buildsListDefaultInclude {
+			include = append(include, item)
+		}
+	}
+	return include, nil
+}
+
 // BuildsListCommand returns the builds list subcommand
 func BuildsListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
@@ -497,6 +534,7 @@ func BuildsListCommand() *ffcli.Command {
 	platform := fs.String("platform", "", "Filter by platform: IOS, MAC_OS, TV_OS, VISION_OS")
 	processingState := fs.String("processing-state", "", "Filter by processing state: VALID, PROCESSING, FAILED, INVALID, or all")
 	betaReviewState := fs.String("beta-review-state", "", "Filter by beta app review state, comma-separated ("+strings.Join(buildsListBetaReviewStates, ", ")+")")
+	include := fs.String("include", "", "Include related resources, comma-separated ("+strings.Join(buildsListIncludeValues, ", ")+")")
 	excludeExpired := fs.Bool("exclude-expired", false, "Exclude expired builds")
 	notExpired := fs.Bool("not-expired", false, "Alias for --exclude-expired")
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
@@ -521,6 +559,7 @@ Examples:
   asc builds list --app "123456789" --processing-state "PROCESSING"
   asc builds list --app "123456789" --processing-state "all"
   asc builds list --app "123456789" --beta-review-state "WAITING_FOR_REVIEW,IN_REVIEW"
+  asc builds list --app "123456789" --include "buildBetaDetail,betaGroups"
   asc builds list --app "123456789" --exclude-expired
   asc builds list --app "123456789" --version "1.2.3" --build-number "123"
   asc builds list --app "123456789" --limit 10
@@ -563,6 +602,11 @@ Examples:
 				return err
 			}
 
+			includeValues, err := resolveBuildsListInclude(*include)
+			if err != nil {
+				return err
+			}
+
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if resolvedAppID == "" && nextValue == "" {
 				fmt.Fprintf(os.Stderr, "Error: --app is required (or set ASC_APP_ID)\n\n")
@@ -598,7 +642,7 @@ Examples:
 			opts := []asc.BuildsOption{
 				asc.WithBuildsLimit(*limit),
 				asc.WithBuildsNextURL(nextValue),
-				asc.WithBuildsInclude([]string{"preReleaseVersion"}),
+				asc.WithBuildsInclude(includeValues),
 			}
 			if strings.TrimSpace(*sort) != "" {
 				opts = append(opts, asc.WithBuildsSort(*sort))
