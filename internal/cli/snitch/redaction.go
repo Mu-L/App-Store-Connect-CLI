@@ -9,6 +9,7 @@ const (
 
 	sensitiveAssignmentName = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key|password|passwd|pwd|secret|token)`
 	sensitiveFlagName       = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|password|passwd|pwd|secret|token)`
+	escapeAwareQuotedValue  = `(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`
 )
 
 type redactionRule struct {
@@ -22,11 +23,11 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: privateKeyRedactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*(?:"[^"\r\n]*"|'[^'\r\n]*'|(?:(?:bearer|basic|token)[ \t]+)?[^\s,;]+)`),
+		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*(?:` + escapeAwareQuotedValue + `|(?:(?:bearer|basic|token)[ \t]+)?[^\s,;]+)`),
 		replacement: "Authorization: " + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]*(?::|%3a)[^/\s@]*@`),
+		pattern:     regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/?#\s@]+@`),
 		replacement: `${1}` + redactionMarker + `@`,
 	},
 	{
@@ -34,15 +35,15 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(--` + sensitiveFlagName + `\b[ \t]+)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`),
+		pattern:     regexp.MustCompile(`(?i)(--` + sensitiveFlagName + `\b[ \t]+)(?:` + escapeAwareQuotedValue + `|[^\s,;]+)`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(["']` + sensitiveAssignmentName + `["'][ \t]*:[ \t]*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)`),
+		pattern:     regexp.MustCompile(`(?i)(["']` + sensitiveAssignmentName + `["'][ \t]*:[ \t]*)(?:` + escapeAwareQuotedValue + `|[^\s,;}\]]+)`),
 		replacement: `${1}"` + redactionMarker + `"`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(\b` + sensitiveAssignmentName + `\b[ \t]*[:=][ \t]*)(?:\[REDACTED PRIVATE KEY\]|(?:(?:bearer|basic|token)[ \t]+)[^\s,;]+|"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`),
+		pattern:     regexp.MustCompile(`(?i)(\b(?:[a-z0-9]+_)*` + sensitiveAssignmentName + `\b[ \t]*[:=][ \t]*)(?:\[REDACTED PRIVATE KEY\]|(?:(?:bearer|basic|token)[ \t]+)[^\s,;]+|` + escapeAwareQuotedValue + `|[^\s,;]+)`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{

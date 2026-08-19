@@ -42,6 +42,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "fetch sftp://[REDACTED]@example.test/private/path",
 		},
 		{
+			name:  "URL username-only credential",
+			input: "fetch https://access-token@example.test/private/path",
+			want:  "fetch https://[REDACTED]@example.test/private/path",
+		},
+		{
 			name:  "private key block",
 			input: "before\n-----BEGIN OPENSSH PRIVATE KEY-----\nkey-material\n-----END OPENSSH PRIVATE KEY-----\nafter",
 			want:  "before\n[REDACTED PRIVATE KEY]\nafter",
@@ -60,6 +65,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "space-separated secret flag",
 			input: `asc web sandbox create --email "user@example.test" --password "Passwordtest1" --territory "USA"`,
 			want:  `asc web sandbox create --email "user@example.test" --password [REDACTED] --territory "USA"`,
+		},
+		{
+			name:  "escaped quote in secret flag",
+			input: `asc deploy --password "pa\"ssword" --verbose`,
+			want:  `asc deploy --password [REDACTED] --verbose`,
+		},
+		{
+			name:  "prefixed environment assignment",
+			input: `AWS_SECRET_ACCESS_KEY="cloud-secret" MY_CLIENT_SECRET='client-secret'`,
+			want:  `AWS_SECRET_ACCESS_KEY=[REDACTED] MY_CLIENT_SECRET=[REDACTED]`,
 		},
 		{
 			name:  "JSON assignment",
@@ -95,26 +110,52 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextPreservesURLQueryAndFragmentAtSigns(t *testing.T) {
+	tests := []string{
+		"https://example.test?next=a:b@evil.test",
+		"https://example.test/path#value=a:b@evil.test",
+	}
+
+	for _, input := range tests {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
 func TestSnitchDryRunRedactsURLUserinfoCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
 	const userinfo = "user:p%40ss%2Fword"
-	_, stderr, err := runSnitchCommand(
+	const usernameOnly = "access-token"
+	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--actual", "request to https://"+userinfo+"@example.test/private/path failed",
+		"--actual", "requests to https://"+userinfo+"@example.test/private/path and sftp://"+usernameOnly+"@files.example.test/upload failed",
 		"userinfo redaction probe",
 	)
 	if err != nil {
 		t.Fatalf("run snitch: %v", err)
 	}
 
-	if strings.Contains(stderr, userinfo) {
-		t.Fatalf("stderr leaked URL userinfo credentials: %q", stderr)
+	for _, secret := range []string{userinfo, usernameOnly} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked URL userinfo credentials: %q", stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked URL userinfo credentials: %q", stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
 	}
 	if !strings.Contains(stderr, "https://[REDACTED]@example.test/private/path") {
 		t.Fatalf("stderr = %q, want the URL without userinfo credentials", stderr)
+	}
+	if !strings.Contains(stderr, "sftp://[REDACTED]@files.example.test/upload") {
+		t.Fatalf("stderr = %q, want the username-only URL without credentials", stderr)
 	}
 	if !strings.Contains(stderr, "sensitive values were redacted") {
 		t.Fatalf("stderr = %q, want a generic redaction notice", stderr)
@@ -131,15 +172,17 @@ func TestSnitchDryRunRedactsEveryReportField(t *testing.T) {
 		"private-key-payload",
 		"client-secret-value",
 		"Passwordtest1",
+		"remaining-secret",
+		"prefixed-secret",
 	}
 	privateKey := "-----BEGIN PRIVATE KEY-----\n" + secrets[2] + "\n-----END PRIVATE KEY-----"
 
-	_, stderr, err := runSnitchCommand(
+	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", `curl "https://uploads.example.test/file?X-Amz-Signature=`+secrets[1]+`&part=2"`+"\n"+`asc web sandbox create --password "`+secrets[4]+`"`,
+		"--repro", `curl "https://uploads.example.test/file?X-Amz-Signature=`+secrets[1]+`&part=2"`+"\n"+`asc web sandbox create --password "`+secrets[4]+`"`+"\n"+`asc deploy --password "pa\"`+secrets[5]+`"`,
 		"--expected", "load this key\n"+privateKey+"\nthen retry",
-		"--actual", `client_secret="`+secrets[3]+`"`,
+		"--actual", `client_secret="`+secrets[3]+`" MY_CLIENT_SECRET="`+secrets[6]+`"`,
 		"Authorization: Bearer "+secrets[0]+" failed",
 	)
 	if err != nil {
@@ -150,13 +193,20 @@ func TestSnitchDryRunRedactsEveryReportField(t *testing.T) {
 		if strings.Contains(stderr, secret) {
 			t.Fatalf("stderr leaked %q: %q", secret, stderr)
 		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
 	}
 	for _, want := range []string{
 		"Authorization: [REDACTED] failed",
 		"X-Amz-Signature=[REDACTED]&part=2",
 		"asc web sandbox create --password [REDACTED]",
+		"asc deploy --password [REDACTED]",
 		"load this key\n[REDACTED PRIVATE KEY]\nthen retry",
-		"client_secret=[REDACTED]",
+		"client_secret=[REDACTED] MY_CLIENT_SECRET=[REDACTED]",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
@@ -340,7 +390,7 @@ func TestFormatLocalEntriesRedactsLegacyCredentials(t *testing.T) {
 func TestIssueBodyPreservesBenignSecurityVocabulary(t *testing.T) {
 	entry := LogEntry{
 		Description: "token refresh failed",
-		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\ngit clone https://git@example.test/repo",
+		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\ngit clone https://example.test/repo",
 		Expected:    "secret scanning documentation remains visible",
 		Actual:      "request to https://example.test/path?signature_state=missing returned 401",
 		Severity:    "bug",
