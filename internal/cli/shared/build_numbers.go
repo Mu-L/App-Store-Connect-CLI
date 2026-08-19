@@ -27,7 +27,7 @@ type LatestBuildSelectionOptions struct {
 
 type latestBuildSelectionResult struct {
 	ResolvedAppID        string
-	NormalizedVersion    string
+	BuildUploadVersions  []string
 	NormalizedPlatform   string
 	HasPreReleaseFilters bool
 	PreReleaseVersionIDs []string
@@ -148,7 +148,7 @@ func ResolveNextBuildNumber(ctx context.Context, client *asc.Client, opts NextBu
 		scanCtx,
 		client,
 		selection.ResolvedAppID,
-		selection.NormalizedVersion,
+		selection.BuildUploadVersions,
 		selection.NormalizedPlatform,
 	)
 	if err != nil {
@@ -207,7 +207,10 @@ func resolveLatestBuildSelection(ctx context.Context, client *asc.Client, opts L
 	}
 
 	hasPreReleaseFilters := opts.Version != "" || opts.Platform != ""
-	resolvedVersion := opts.Version
+	var buildUploadVersions []string
+	if opts.Version != "" {
+		buildUploadVersions = []string{opts.Version}
+	}
 
 	var preReleaseVersionIDs []string
 	if hasPreReleaseFilters {
@@ -216,8 +219,8 @@ func resolveLatestBuildSelection(ctx context.Context, client *asc.Client, opts L
 		if err != nil {
 			return nil, err
 		}
-		if matchedVersion != "" {
-			resolvedVersion = matchedVersion
+		if matchedVersion != "" && matchedVersion != opts.Version {
+			buildUploadVersions = versionQueryVariants(opts.Version)
 		}
 		if len(preReleaseVersionIDs) == 0 && !allowEmpty {
 			if opts.Version != "" && opts.Platform != "" {
@@ -321,7 +324,7 @@ func resolveLatestBuildSelection(ctx context.Context, client *asc.Client, opts L
 
 	return &latestBuildSelectionResult{
 		ResolvedAppID:        resolvedAppID,
-		NormalizedVersion:    resolvedVersion,
+		BuildUploadVersions:  append([]string(nil), buildUploadVersions...),
 		NormalizedPlatform:   opts.Platform,
 		HasPreReleaseFilters: hasPreReleaseFilters,
 		PreReleaseVersionIDs: append([]string(nil), preReleaseVersionIDs...),
@@ -753,13 +756,13 @@ func ParseBuildTimestamp(value string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("invalid time %q", trimmed)
 }
 
-func findLatestBuildUploadNumber(ctx context.Context, client *asc.Client, appID, version, platform string) (buildNumber, *string, bool, error) {
+func findLatestBuildUploadNumber(ctx context.Context, client *asc.Client, appID string, versions []string, platform string) (buildNumber, *string, bool, error) {
 	opts := []asc.BuildUploadsOption{
 		asc.WithBuildUploadsStates([]string{"AWAITING_UPLOAD", "PROCESSING", "COMPLETE"}),
 		asc.WithBuildUploadsLimit(200),
 	}
-	if strings.TrimSpace(version) != "" {
-		opts = append(opts, asc.WithBuildUploadsCFBundleShortVersionStrings([]string{version}))
+	if len(versions) > 0 {
+		opts = append(opts, asc.WithBuildUploadsCFBundleShortVersionStrings(versions))
 	}
 	if strings.TrimSpace(platform) != "" {
 		opts = append(opts, asc.WithBuildUploadsPlatforms([]string{platform}))

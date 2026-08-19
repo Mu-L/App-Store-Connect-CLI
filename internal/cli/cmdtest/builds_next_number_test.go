@@ -372,7 +372,7 @@ func TestBuildsNextBuildNumberWithFiltersUsesCanonicalQueryShape(t *testing.T) {
 	}
 }
 
-func TestBuildsNextBuildNumberScansEquivalentVersionUploads(t *testing.T) {
+func TestBuildsNextBuildNumberScansEveryEquivalentVersionUpload(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 
@@ -404,10 +404,10 @@ func TestBuildsNextBuildNumberScansEquivalentVersionUploads(t *testing.T) {
 			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"builds","id":"build-10","attributes":{"version":"10","uploadedDate":"2026-02-01T00:00:00Z"}}]}`), nil
 
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/100000001/buildUploads":
-			if got := req.URL.Query().Get("filter[cfBundleShortVersionString]"); got != "76.54" {
-				t.Fatalf("filter[cfBundleShortVersionString] = %q, want %q", got, "76.54")
+			if got := req.URL.Query().Get("filter[cfBundleShortVersionString]"); got != "76.54.0,76.54" {
+				t.Fatalf("filter[cfBundleShortVersionString] = %q, want %q", got, "76.54.0,76.54")
 			}
-			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"buildUploads","id":"upload-20","attributes":{"cfBundleVersion":"20"}}],"links":{"next":""}}`), nil
+			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"buildUploads","id":"upload-20","attributes":{"cfBundleShortVersionString":"76.54","cfBundleVersion":"20"}},{"type":"buildUploads","id":"upload-30","attributes":{"cfBundleShortVersionString":"76.54.0","cfBundleVersion":"30"}}],"links":{"next":""}}`), nil
 
 		default:
 			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
@@ -442,11 +442,11 @@ func TestBuildsNextBuildNumberScansEquivalentVersionUploads(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
 		t.Fatalf("unmarshal output: %v\nstdout: %s", err, stdout)
 	}
-	if out.LatestUploadBuildNumber == nil || *out.LatestUploadBuildNumber != "20" {
-		t.Fatalf("latestUploadBuildNumber = %v, want 20", out.LatestUploadBuildNumber)
+	if out.LatestUploadBuildNumber == nil || *out.LatestUploadBuildNumber != "30" {
+		t.Fatalf("latestUploadBuildNumber = %v, want 30", out.LatestUploadBuildNumber)
 	}
-	if out.NextBuildNumber != "21" {
-		t.Fatalf("nextBuildNumber = %q, want 21", out.NextBuildNumber)
+	if out.NextBuildNumber != "31" {
+		t.Fatalf("nextBuildNumber = %q, want 31", out.NextBuildNumber)
 	}
 	if !strings.Contains(stderr, `matched version "76.54" for requested "76.54.0"`) {
 		t.Fatalf("expected equivalent-version note, got %q", stderr)
