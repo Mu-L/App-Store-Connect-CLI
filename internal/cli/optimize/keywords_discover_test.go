@@ -51,6 +51,16 @@ func TestKeywordsDiscoverCommandValidatesInputBeforeRequests(t *testing.T) {
 			want: "--app must be a numeric App Store app ID",
 		},
 		{
+			name: "zero app",
+			args: []string{"--app", "0", "--country", "US"},
+			want: "--app must be a positive App Store app ID within 64-bit range",
+		},
+		{
+			name: "overflow app",
+			args: []string{"--app", "9223372036854775808", "--country", "US"},
+			want: "--app must be a positive App Store app ID within 64-bit range",
+		},
+		{
 			name: "country",
 			args: []string{"--app", "1234567890", "--country", "usa"},
 			want: `--country "usa" is not a supported App Store storefront`,
