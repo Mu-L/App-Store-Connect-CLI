@@ -391,7 +391,12 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 		{
 			name:  "quoted custom secret header",
 			input: `asc web xcode-cloud usage alert --webhook-header "X-API-Key: supersecret" --webhook https://example.test`,
-			want:  `asc web xcode-cloud usage alert --webhook-header "X-API-Key: [REDACTED]" --webhook [REDACTED]`,
+			want:  `asc web xcode-cloud usage alert --webhook-header [REDACTED] --webhook [REDACTED]`,
+		},
+		{
+			name:  "arbitrary custom webhook header",
+			input: `asc web xcode-cloud usage alert --webhook-header "X-Service-Credential: opaque-lowercase-secret"`,
+			want:  `asc web xcode-cloud usage alert --webhook-header [REDACTED]`,
 		},
 		{
 			name:  "xcode cloud slack webhook flag",
@@ -681,6 +686,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "quoted YAML block mapping credential",
 			input: "response:\n  \"password\":\n    value: quoted-map-secret\n  status: failed",
 			want:  "response:\n  \"password\": [REDACTED]\n  status: failed",
+		},
+		{
+			name:  "anchored YAML block mapping credential",
+			input: "response:\n  token: &auth\n    value: anchored-map-secret\n  status: failed",
+			want:  "response:\n  token: [REDACTED]\n  status: failed",
+		},
+		{
+			name:  "tagged YAML block mapping credential",
+			input: "response:\n  token: !credential\n    value: tagged-map-secret\n  status: failed",
+			want:  "response:\n  token: [REDACTED]\n  status: failed",
 		},
 		{
 			name:  "sequence YAML block mapping preserves sibling field",
@@ -1325,11 +1340,12 @@ func TestSnitchDryRunRedactsMultilineCurlAndYAMLCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"multiline-user-secret", "multiline-cert-secret", "quoted-yaml-secret", "sequence-yaml-secret"}
+	secrets := []string{"multiline-user-secret", "multiline-cert-secret", "quoted-yaml-secret", "sequence-yaml-secret", "anchored-yaml-secret"}
 	repro := "curl --user \"alice:first\n" + secrets[0] + "\" https://example.test\n" +
 		"curl --cert \"client.p12:first\n" + secrets[1] + "\" https://example.test\n" +
 		"response:\n  \"password\":\n    value: " + secrets[2] + "\n  status: failed\n" +
-		"items:\n  - token:\n      value: " + secrets[3] + "\n    status: failed"
+		"items:\n  - token:\n      value: " + secrets[3] + "\n    status: failed\n" +
+		"auth:\n  token: &credentials\n    value: " + secrets[4] + "\n  status: failed"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1356,6 +1372,7 @@ func TestSnitchDryRunRedactsMultilineCurlAndYAMLCredentials(t *testing.T) {
 		"curl --cert \"client.p12:[REDACTED]\" https://example.test",
 		"response:\n  \"password\": [REDACTED]\n  status: failed",
 		"items:\n  - token: [REDACTED]\n    status: failed",
+		"auth:\n  token: [REDACTED]\n  status: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
@@ -1619,7 +1636,7 @@ func TestSnitchDryRunPreservesOperatorsAroundContinuedHeaderCredentials(t *testi
 		"asc deploy --password [REDACTED] --verbose",
 		"PASSWORD=[REDACTED] asc builds list",
 		"ASC_SLACK_WEBHOOK=[REDACTED] asc notify slack --message ready",
-		`asc web xcode-cloud usage alert --webhook-header "X-API-Key: [REDACTED]" --webhook [REDACTED]`,
+		`asc web xcode-cloud usage alert --webhook-header [REDACTED] --webhook [REDACTED]`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
