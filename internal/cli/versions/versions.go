@@ -51,6 +51,7 @@ func VersionsListCommand() *ffcli.Command {
 	version := fs.String("version", "", "Filter by version string (comma-separated)")
 	platform := fs.String("platform", "", "Filter by platform: IOS, MAC_OS, TV_OS, VISION_OS (comma-separated)")
 	state := fs.String("state", "", "Filter by state (comma-separated)")
+	include := fs.String("include", "", "Include related resources: "+strings.Join(appStoreVersionsIncludeList(), ", "))
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Next page URL from a previous response")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
@@ -62,10 +63,14 @@ func VersionsListCommand() *ffcli.Command {
 		ShortHelp:  "List app store versions for an app.",
 		LongHelp: `List app store versions for an app.
 
+Use --include to return related resources in the same response instead of
+issuing a follow-up request per version.
+
 Examples:
   asc versions list --app "123456789"
   asc versions list --app "123456789" --version "1.0.0"
   asc versions list --app "123456789" --platform IOS --state READY_FOR_REVIEW
+  asc versions list --app "123456789" --include "build,appStoreVersionSubmission"
   asc versions list --app "123456789" --paginate`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -89,6 +94,14 @@ Examples:
 				return fmt.Errorf("versions list: %w", err)
 			}
 
+			includeValues, err := normalizeAppStoreVersionsInclude(*include)
+			if err != nil {
+				return shared.UsageErrorf("versions list: %v", err)
+			}
+			if len(includeValues) > 0 && strings.TrimSpace(*next) != "" {
+				return shared.UsageError("versions list: --next cannot be combined with --include")
+			}
+
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if resolvedAppID == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
@@ -108,6 +121,7 @@ Examples:
 				asc.WithAppStoreVersionsPlatforms(platforms),
 				asc.WithAppStoreVersionsVersionStrings(shared.SplitCSV(*version)),
 				asc.WithAppStoreVersionsStates(states),
+				asc.WithAppStoreVersionsInclude(includeValues),
 				asc.WithAppStoreVersionsNextURL(*next),
 			}
 

@@ -1,0 +1,188 @@
+package cmdtest
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	cmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
+)
+
+func TestVersionsListIncludeEmitsIncludeQuery(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	t.Setenv("ASC_APP_ID", "")
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+
+	requests := 0
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.URL.Path != "/v1/apps/123456789/appStoreVersions" {
+			t.Fatalf("expected app versions path, got %s", req.URL.Path)
+		}
+		if got := req.URL.Query().Get("include"); got != "build,appStoreVersionSubmission" {
+			t.Fatalf("expected include=build,appStoreVersionSubmission, got %q", got)
+		}
+		body := `{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"versionString":"1.0","platform":"IOS"}}],"included":[{"type":"builds","id":"build-1","attributes":{"version":"42"}}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"versions", "list", "--app", "123456789", "--include", "build,appStoreVersionSubmission"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if requests != 1 {
+		t.Fatalf("expected 1 request, got %d", requests)
+	}
+	if !strings.Contains(stdout, `"id":"build-1"`) {
+		t.Fatalf("expected included build in envelope output, got %q", stdout)
+	}
+}
+
+func TestVersionsListPaginateKeepsInclude(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	t.Setenv("ASC_APP_ID", "")
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.URL.Query().Get("include"); got != "build" {
+			t.Fatalf("expected include=build on the first page, got %q", got)
+		}
+		body := `{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"versionString":"1.0","platform":"IOS"}}],"included":[{"type":"builds","id":"build-1","attributes":{"version":"42"}}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"versions", "list", "--app", "123456789", "--include", "build", "--paginate"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if !strings.Contains(stdout, `"id":"build-1"`) {
+		t.Fatalf("expected included build in aggregated output, got %q", stdout)
+	}
+}
+
+func TestVersionsListRejectsIncludeWithNext(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	t.Setenv("ASC_APP_ID", "")
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected request to %s", req.URL.String())
+		return nil, nil
+	})
+
+	stdout, stderr := captureOutput(t, func() {
+		code := cmd.Run([]string{
+			"versions", "list",
+			"--next", "https://api.appstoreconnect.apple.com/v1/apps/123456789/appStoreVersions?cursor=AQ",
+			"--include", "build",
+		}, "1.2.3")
+		if code != cmd.ExitUsage {
+			t.Fatalf("exit code = %d, want %d", code, cmd.ExitUsage)
+		}
+	})
+
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "--next cannot be combined with --include") {
+		t.Fatalf("expected next/include conflict error, got %q", stderr)
+	}
+}
+
+func TestVersionsListRejectsUnsupportedInclude(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	t.Setenv("ASC_APP_ID", "")
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected request to %s", req.URL.String())
+		return nil, nil
+	})
+
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "unknown value", value: "notARelationship"},
+		// The app store versions collection endpoint has no ageRatingDeclaration
+		// relationship, unlike the single-version endpoint.
+		{name: "single version only value", value: "ageRatingDeclaration"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stdout, stderr := captureOutput(t, func() {
+				code := cmd.Run([]string{"versions", "list", "--app", "123456789", "--include", test.value}, "1.2.3")
+				if code != cmd.ExitUsage {
+					t.Fatalf("exit code = %d, want %d", code, cmd.ExitUsage)
+				}
+			})
+
+			if strings.TrimSpace(stdout) != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, "--include must be one of:") {
+				t.Fatalf("expected include usage error, got %q", stderr)
+			}
+			if !strings.Contains(stderr, "appStoreVersionSubmission") {
+				t.Fatalf("expected valid include values in error, got %q", stderr)
+			}
+			if strings.Contains(stderr, "ageRatingDeclaration") {
+				t.Fatalf("ageRatingDeclaration is not supported by the collection endpoint, got %q", stderr)
+			}
+		})
+	}
+}
