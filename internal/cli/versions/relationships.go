@@ -58,10 +58,18 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("versions links: --limit must be between 1 and 200")
+				return shared.WithDiagnostic(
+					fmt.Errorf("versions links: --limit must be between 1 and 200"),
+					shared.DiagnosticInvalidInput,
+					"--limit",
+				)
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("versions links: %w", err)
+				return shared.WithDiagnostic(
+					fmt.Errorf("versions links: %w", err),
+					shared.DiagnosticInvalidInput,
+					"--next",
+				)
 			}
 
 			relationshipType := strings.TrimSpace(*relType)
@@ -73,7 +81,7 @@ Examples:
 			kind, ok := appStoreVersionRelationshipKinds[relationshipType]
 			if !ok {
 				fmt.Fprintf(os.Stderr, "Error: --type must be one of: %s\n", strings.Join(appStoreVersionRelationshipList(), ", "))
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--type")
 			}
 
 			trimmedID := strings.TrimSpace(*versionID)
@@ -85,7 +93,7 @@ Examples:
 
 			if kind == relationshipSingle && (trimmedNext != "" || *paginate || *limit != 0) {
 				fmt.Fprintln(os.Stderr, "Error: --limit, --next, and --paginate are only valid for to-many relationships")
-				return flag.ErrHelp
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "")
 			}
 
 			client, err := shared.GetASCClient()
