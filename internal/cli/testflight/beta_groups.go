@@ -116,6 +116,11 @@ filter[app]. Those filters are applied by App Store Connect, and --limit is the
 page size of matching groups. --name matches the exact group name.
 --build-id membership lookup accepts neither --name nor --sort.
 
+A filtered app-scoped listing returns one page, matching --global. Earlier
+releases walked every page to filter in the CLI; add --paginate to collect every
+matching group. When more pages exist, the usual pagination hint is printed on
+stderr.
+
 A links.next URL already carries the query it came from, so --next cannot be
 combined with --internal, --external, --name, or --sort.
 

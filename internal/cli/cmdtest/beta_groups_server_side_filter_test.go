@@ -217,6 +217,24 @@ func TestBetaGroupsListNextStillPagesWithoutQueryFlags(t *testing.T) {
 	}
 }
 
+// TestBetaGroupsListHelpDocumentsPaginateMigration proves the help carries the
+// migration guidance for callers that relied on the previous implicit walk of
+// every page when filtering an app-scoped listing.
+func TestBetaGroupsListHelpDocumentsPaginateMigration(t *testing.T) {
+	cmd := findSubcommand(RootCommand("1.2.3"), "testflight", "groups", "list")
+	if cmd == nil {
+		t.Fatal("command [testflight groups list] not found")
+	}
+	for _, want := range []string{
+		"returns one page",
+		"add --paginate to collect every",
+	} {
+		if !strings.Contains(cmd.LongHelp, want) {
+			t.Errorf("LongHelp missing %q, got %q", want, cmd.LongHelp)
+		}
+	}
+}
+
 // TestBetaGroupsListNextRejectsQueryFlags proves query-shaping flags are not
 // accepted and silently discarded by the cursor URL.
 func TestBetaGroupsListNextRejectsQueryFlags(t *testing.T) {
