@@ -158,7 +158,7 @@ func hasContentTokenBoundaries(value string, start, end int) bool {
 }
 
 func isContentTokenRune(value rune) bool {
-	return value == '_' || unicode.IsLetter(value) || unicode.IsNumber(value)
+	return value == '_' || unicode.IsLetter(value) || unicode.IsNumber(value) || unicode.IsMark(value)
 }
 
 func contentAlternation(phrases []string) string {

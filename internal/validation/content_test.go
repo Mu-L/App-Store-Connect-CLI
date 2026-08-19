@@ -66,8 +66,10 @@ func TestContentChecksIgnoreEditoriallyAmbiguousMetadata(t *testing.T) {
 func TestContentChecksUseUnicodeAwarePlaceholderBoundaries(t *testing.T) {
 	for _, value := range []string{
 		"MÉTODO helps you organize research.",
+		"ME\u0301TODO helps you organize research.",
 		"TODOアプリ keeps tasks in sync.",
 		"éLorem ipsum is a product name.",
+		"e\u0301Lorem ipsum is a product name.",
 	} {
 		t.Run(value, func(t *testing.T) {
 			checks := contentChecks(
