@@ -109,13 +109,7 @@ Examples:
 				return fmt.Errorf("optimize keywords rank: %w", representativeKeywordError(failures))
 			}
 
-			return shared.PrintOutputWithRenderers(
-				report,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderKeywordRankTable(report) },
-				func() error { return renderKeywordRankMarkdown(report) },
-			)
+			return shared.PrintOutput(&report, *output.Output, *output.Pretty)
 		},
 	}
 }
