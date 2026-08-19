@@ -9,6 +9,7 @@ import (
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/ads"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
@@ -21,39 +22,7 @@ const (
 	keywordSuggestionSourcePhrase  = "phrase_suggestions"
 )
 
-// KeywordSuggestion is one term returned by Apple's official Ads suggestion
-// endpoints, carrying the endpoint it came from.
-type KeywordSuggestion struct {
-	Keyword    string `json:"keyword"`
-	Source     string `json:"source"`
-	Popularity *int   `json:"popularity,omitempty"`
-}
-
-// KeywordDiscoverSummary counts suggestion coverage.
-type KeywordDiscoverSummary struct {
-	Suggestions   int `json:"suggestions"`
-	Available     int `json:"available"`
-	KeywordSource int `json:"keywordSource"`
-	PhraseSource  int `json:"phraseSource"`
-	Duplicates    int `json:"duplicates"`
-	ScoreReady    int `json:"scoreReady"`
-}
-
-// KeywordDiscoverReport is the stable JSON contract emitted by
-// `asc optimize keywords discover`.
-type KeywordDiscoverReport struct {
-	SchemaVersion string                               `json:"schemaVersion"`
-	GeneratedAt   string                               `json:"generatedAt,omitempty"`
-	AppID         string                               `json:"appId"`
-	Country       string                               `json:"country"`
-	Genre         string                               `json:"genre,omitempty"`
-	Limit         int                                  `json:"limit"`
-	Truncated     bool                                 `json:"truncated"`
-	Sources       []ads.SearchOptimizationSourceStatus `json:"sources"`
-	Summary       KeywordDiscoverSummary               `json:"summary"`
-	ScoreKeywords string                               `json:"scoreKeywords,omitempty"`
-	Keywords      []KeywordSuggestion                  `json:"keywords"`
-}
+var collectSearchDataForDiscover = ads.CollectSearchOptimizationData
 
 // KeywordsDiscoverCommand returns the official Apple Ads keyword suggestion
 // command.
@@ -86,7 +55,8 @@ ASC_ADS_AD_ACCOUNT_ID environment variable, or a stored Apple Ads profile.
 The report also carries scoreKeywords, a comma-separated list of the
 suggestions that satisfy keyword hygiene, ready to pass straight to
 ` + "`asc optimize keywords score --keywords`" + `. Suggestions that are too long, too
-short, or too many words remain listed but are left out of that field.
+short, too many words, or contain the comma delimiter remain listed but are
+left out of that field.
 
 Examples:
   asc optimize keywords discover --app "1234567890" --country US
@@ -119,7 +89,7 @@ Examples:
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}
-			data, err := collectSearchDataForKeywords(ctx, *adsProfile, *adAccount, ads.SearchOptimizationRequest{
+			data, err := collectSearchDataForDiscover(ctx, *adsProfile, *adAccount, ads.SearchOptimizationRequest{
 				AppID:           resolvedAppID,
 				Country:         strings.ToUpper(normalizedCountry),
 				Genre:           normalizedGenre,
@@ -147,13 +117,7 @@ Examples:
 				}
 			}
 
-			return shared.PrintOutputWithRenderers(
-				report,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderKeywordDiscoverTable(report) },
-				func() error { return renderKeywordDiscoverMarkdown(report) },
-			)
+			return shared.PrintOutput(&report, *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -164,13 +128,13 @@ type keywordDiscoverBuildInput struct {
 	Country     string
 	Genre       string
 	Limit       int
-	Sources     []ads.SearchOptimizationSourceStatus
+	Sources     []asc.KeywordDiscoverSourceStatus
 	Suggestions []ads.SearchSuggestion
 }
 
-func buildKeywordDiscoverReport(input keywordDiscoverBuildInput) KeywordDiscoverReport {
+func buildKeywordDiscoverReport(input keywordDiscoverBuildInput) asc.KeywordDiscoverReport {
 	seen := make(map[string]struct{}, len(input.Suggestions))
-	suggestions := make([]KeywordSuggestion, 0, len(input.Suggestions))
+	suggestions := make([]asc.KeywordSuggestion, 0, len(input.Suggestions))
 	duplicates := 0
 
 	for _, suggestion := range input.Suggestions {
@@ -183,14 +147,14 @@ func buildKeywordDiscoverReport(input keywordDiscoverBuildInput) KeywordDiscover
 			continue
 		}
 		seen[keyword] = struct{}{}
-		suggestions = append(suggestions, KeywordSuggestion{
+		suggestions = append(suggestions, asc.KeywordSuggestion{
 			Keyword:    keyword,
 			Source:     strings.TrimSpace(suggestion.Kind),
 			Popularity: suggestion.Popularity,
 		})
 	}
 
-	summary := KeywordDiscoverSummary{Available: len(suggestions)}
+	summary := asc.KeywordDiscoverSummary{Available: len(suggestions)}
 	truncated := false
 	if input.Limit > 0 && len(suggestions) > input.Limit {
 		suggestions = suggestions[:input.Limit]
@@ -213,7 +177,7 @@ func buildKeywordDiscoverReport(input keywordDiscoverBuildInput) KeywordDiscover
 	summary.Duplicates = duplicates
 	summary.ScoreReady = len(scoreReady)
 
-	return KeywordDiscoverReport{
+	return asc.KeywordDiscoverReport{
 		SchemaVersion: keywordDiscoverSchemaVersion,
 		GeneratedAt:   input.GeneratedAt,
 		AppID:         input.AppID,
@@ -232,21 +196,29 @@ func buildKeywordDiscoverReport(input keywordDiscoverBuildInput) KeywordDiscover
 // hygiene that `asc optimize keywords score` enforces, so scoreKeywords can be
 // passed straight through without being rejected.
 func isScoreReadyKeyword(keyword string) bool {
+	if strings.ContainsRune(keyword, ',') {
+		return false
+	}
 	_, err := normalizeKeywordList(keyword)
 	return err == nil
 }
 
-func suggestionSources(sources []ads.SearchOptimizationSourceStatus) []ads.SearchOptimizationSourceStatus {
-	filtered := make([]ads.SearchOptimizationSourceStatus, 0, 2)
+func suggestionSources(sources []ads.SearchOptimizationSourceStatus) []asc.KeywordDiscoverSourceStatus {
+	filtered := make([]asc.KeywordDiscoverSourceStatus, 0, 2)
 	for _, source := range sources {
 		if source.Name == keywordSuggestionSourceKeyword || source.Name == keywordSuggestionSourcePhrase {
-			filtered = append(filtered, source)
+			filtered = append(filtered, asc.KeywordDiscoverSourceStatus{
+				Name:   source.Name,
+				Status: source.Status,
+				Count:  source.Count,
+				Error:  source.Error,
+			})
 		}
 	}
 	return filtered
 }
 
-func unavailableSuggestionCause(sources []ads.SearchOptimizationSourceStatus) string {
+func unavailableSuggestionCause(sources []asc.KeywordDiscoverSourceStatus) string {
 	causes := make([]string, 0, len(sources))
 	for _, source := range sources {
 		if source.Status != keywordStatusUnavailable {

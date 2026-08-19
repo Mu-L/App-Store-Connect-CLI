@@ -279,9 +279,9 @@ popularity Apple attached. `--limit` caps the returned list and sets
 The report also carries `scoreKeywords`: a comma-separated list of the
 suggestions that satisfy the keyword hygiene rules above, ready to pass
 straight to `score --keywords`. Suggestions that are too short, too long, or
-too many words stay listed under `keywords` but are excluded from that field,
-so nothing is silently dropped and nothing that would be rejected is handed
-onward.
+too many words, or contain the comma delimiter stay listed under `keywords`
+but are excluded from that field, so nothing is silently dropped and nothing
+that would be split into different keywords is handed onward.
 
 Apple Ads is the only source for `discover`, so it is the only command in this
 group that fails rather than degrades when its source is unavailable. The
@@ -299,8 +299,8 @@ suggestion endpoints are used.
 
 ## Output contract
 
-`score` emits a registered output contract from `internal/asc`, with table and
-Markdown renderers alongside JSON. `rank` and `discover` remain computed
-camelCase results from `internal/cli/optimize`. These are computed results, not
+`score` and `discover` emit registered output contracts from `internal/asc`,
+with table and Markdown renderers alongside JSON. `rank` remains a computed
+camelCase result from `internal/cli/optimize`. These are computed results, not
 App Store Connect envelopes and not mutation receipts. Added fields are
 additive; removals follow the stability ladder.

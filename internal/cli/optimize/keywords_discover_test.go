@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/ads"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 func TestKeywordsDiscoverCommandHelpNamesOfficialSuggestionEndpoints(t *testing.T) {
@@ -126,7 +128,7 @@ func TestKeywordsDiscoverFlattensDedupesAndPreparesScoreInput(t *testing.T) {
 		})
 	})
 
-	var report KeywordDiscoverReport
+	var report asc.KeywordDiscoverReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
 	}
@@ -134,7 +136,7 @@ func TestKeywordsDiscoverFlattensDedupesAndPreparesScoreInput(t *testing.T) {
 		t.Fatalf("unexpected report identity: %+v", report)
 	}
 
-	want := []KeywordSuggestion{
+	want := []asc.KeywordSuggestion{
 		{Keyword: "focus timer", Source: "keyword", Popularity: intPtr(61)},
 		{Keyword: "habit tracker", Source: "keyword", Popularity: intPtr(44)},
 		{Keyword: "a", Source: "keyword"},
@@ -173,6 +175,54 @@ func TestKeywordsDiscoverFlattensDedupesAndPreparesScoreInput(t *testing.T) {
 	}
 }
 
+func TestKeywordDiscoverScoreInputExcludesCommaDelimitedSuggestions(t *testing.T) {
+	report := buildKeywordDiscoverReport(keywordDiscoverBuildInput{
+		Limit: 10,
+		Suggestions: []ads.SearchSuggestion{
+			{Text: "photo editor, filters", Kind: "keyword"},
+			{Text: "focus timer", Kind: "keyword"},
+		},
+	})
+
+	if report.ScoreKeywords != "focus timer" {
+		t.Fatalf("scoreKeywords = %q, want only the delimiter-safe suggestion", report.ScoreKeywords)
+	}
+	if report.Summary.ScoreReady != 1 {
+		t.Fatalf("scoreReady = %d, want 1", report.Summary.ScoreReady)
+	}
+	if len(report.Keywords) != 2 {
+		t.Fatalf("keywords = %+v, want both suggestions preserved for inspection", report.Keywords)
+	}
+}
+
+func TestKeywordDiscoverReportUsesRegisteredOutput(t *testing.T) {
+	report := asc.KeywordDiscoverReport{
+		AppID:   "1234567890",
+		Country: "US",
+		Summary: asc.KeywordDiscoverSummary{Suggestions: 1, Available: 1, ScoreReady: 1},
+		Keywords: []asc.KeywordSuggestion{{
+			Keyword: "focus timer",
+			Source:  "keyword",
+		}},
+	}
+
+	for _, format := range []string{"table", "markdown"} {
+		t.Run(format, func(t *testing.T) {
+			stdout := captureSearchPlanStdout(t, func() error {
+				return shared.PrintOutput(&report, format, false)
+			})
+			if strings.HasPrefix(strings.TrimSpace(stdout), "{") {
+				t.Fatalf("%s output fell back to JSON:\n%s", format, stdout)
+			}
+			for _, want := range []string{"focus timer", "Keyword", "Source"} {
+				if !strings.Contains(stdout, want) {
+					t.Fatalf("%s output missing %q:\n%s", format, want, stdout)
+				}
+			}
+		})
+	}
+}
+
 func TestKeywordsDiscoverAppliesLimitAndReportsTruncation(t *testing.T) {
 	suggestions := make([]ads.SearchSuggestion, 0, 6)
 	for index := range 6 {
@@ -188,7 +238,7 @@ func TestKeywordsDiscoverAppliesLimitAndReportsTruncation(t *testing.T) {
 		})
 	})
 
-	var report KeywordDiscoverReport
+	var report asc.KeywordDiscoverReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
 	}
@@ -261,7 +311,7 @@ func TestKeywordsDiscoverReportsEmptySuggestionsWithoutFailing(t *testing.T) {
 		})
 	})
 
-	var report KeywordDiscoverReport
+	var report asc.KeywordDiscoverReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
 	}
@@ -308,7 +358,7 @@ func stubKeywordsAdsCollector(
 	collect func(context.Context, string, string, ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error),
 ) {
 	t.Helper()
-	previous := collectSearchDataForKeywords
-	t.Cleanup(func() { collectSearchDataForKeywords = previous })
-	collectSearchDataForKeywords = collect
+	previous := collectSearchDataForDiscover
+	t.Cleanup(func() { collectSearchDataForDiscover = previous })
+	collectSearchDataForDiscover = collect
 }
