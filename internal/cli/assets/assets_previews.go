@@ -29,11 +29,11 @@ func AssetsPreviewsListCommand() *ffcli.Command {
 		LongHelp: `List previews for a localization.
 
 --version-localization is the App Store version localization resource ID
-returned as data[].id by "asc localizations list --version VERSION_ID --output json".
+returned as data[].id by:
+  asc localizations list --version "VERSION_ID" --output json --locale "en-US"
 It is not the locale code such as en-US.
 
 Examples:
-  asc localizations list --version "VERSION_ID" --output json --locale "en-US"
   asc video-previews list --version-localization "VERSION_LOCALIZATION_ID"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -113,11 +113,11 @@ func assetsPreviewsUploadCommandWithDependencies(deps previewUploadDependencies)
 		LongHelp: `Upload previews for a localization.
 
 --version-localization is the App Store version localization resource ID
-returned as data[].id by "asc localizations list --version VERSION_ID --output json".
+returned as data[].id by:
+  asc localizations list --version "VERSION_ID" --output json --locale "en-US"
 It is not the locale code such as en-US.
 
 Examples:
-  asc localizations list --version "VERSION_ID" --output json --locale "en-US"
   asc video-previews upload --version-localization "VERSION_LOCALIZATION_ID" --path "./previews" --device-type "IPHONE_65"
   asc video-previews upload --version-localization "VERSION_LOCALIZATION_ID" --path "./previews/preview.mov" --device-type "IPHONE_65"
   asc video-previews upload --version-localization "VERSION_LOCALIZATION_ID" --path "./previews" --device-type "IPHONE_65" --skip-existing
@@ -232,12 +232,12 @@ func AssetsPreviewsDownloadCommand() *ffcli.Command {
 		LongHelp: `Download App Store app preview videos to disk.
 
 --version-localization is the App Store version localization resource ID
-returned as data[].id by "asc localizations list --version VERSION_ID --output json".
+returned as data[].id by:
+  asc localizations list --version "VERSION_ID" --output json --locale "en-US"
 It is not the locale code such as en-US.
 
 Examples:
   asc video-previews download --id "PREVIEW_ID" --output "./preview.mov"
-  asc localizations list --version "VERSION_ID" --output json --locale "en-US"
   asc video-previews download --version-localization "VERSION_LOCALIZATION_ID" --output-dir "./previews"
   asc video-previews download --version-localization "VERSION_LOCALIZATION_ID" --output-dir "./previews" --overwrite`,
 		FlagSet:   fs,

@@ -295,11 +295,11 @@ func AssetsScreenshotsListCommand() *ffcli.Command {
 		LongHelp: `List screenshots for a localization.
 
 --version-localization is the App Store version localization resource ID
-returned as data[].id by "asc localizations list --version VERSION_ID --output json".
+returned as data[].id by:
+  asc localizations list --version "VERSION_ID" --output json --locale "en-US"
 It is not the locale code such as en-US.
 
 Examples:
-  asc localizations list --version "VERSION_ID" --output json --locale "en-US"
   asc screenshots list --version-localization "VERSION_LOCALIZATION_ID"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -432,7 +432,8 @@ matching --device-type are uploaded. This supports layouts like
 --path points to ./screenshots/iphone.
 
 --version-localization is the App Store version localization resource ID
-returned as data[].id by "asc localizations list --version VERSION_ID --output json".
+returned as data[].id by:
+  asc localizations list --version "VERSION_ID" --output json --locale "en-US"
 It is not the locale code such as en-US.
 
 --replace deletes every existing screenshot in each target set before uploading
@@ -440,7 +441,6 @@ and therefore requires --confirm. Use --replace --dry-run to preview the
 deletions without --confirm.
 
 Examples:
-  asc localizations list --version "VERSION_ID" --output json --locale "en-US"
   asc screenshots upload --version-localization "VERSION_LOCALIZATION_ID" --path "./screenshots" --device-type "IPHONE_65"
   asc screenshots upload --version-localization "VERSION_LOCALIZATION_ID" --path "./screenshots" --device-type "IPHONE_65" --skip-existing
   asc screenshots upload --version-localization "VERSION_LOCALIZATION_ID" --path "./screenshots" --device-type "IPHONE_65" --replace --confirm
