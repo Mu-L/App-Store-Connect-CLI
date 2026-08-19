@@ -608,6 +608,17 @@ Examples:
 				return err
 			}
 
+			// A links.next URL already carries the query that produced it, and
+			// GetBuilds follows it verbatim, so these flags would be discarded.
+			if nextValue != "" {
+				if strings.TrimSpace(*betaReviewState) != "" {
+					return shared.UsageError("builds list: --next cannot be combined with --beta-review-state")
+				}
+				if strings.TrimSpace(*include) != "" {
+					return shared.UsageError("builds list: --next cannot be combined with --include")
+				}
+			}
+
 			betaReviewStateValues, err := normalizeBuildsListBetaReviewStates(*betaReviewState)
 			if err != nil {
 				return err

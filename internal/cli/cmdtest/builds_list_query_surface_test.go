@@ -201,6 +201,51 @@ func TestBuildsListIncludeRejectsUnknownValue(t *testing.T) {
 	}
 }
 
+func TestBuildsListRejectsNewQueryFlagsCombinedWithNext(t *testing.T) {
+	const nextURL = "https://api.appstoreconnect.apple.com/v1/builds?cursor=PAGE2&filter%5Bapp%5D=123456789&include=preReleaseVersion"
+
+	for _, testCase := range []struct {
+		name string
+		flag string
+		args []string
+	}{
+		{name: "beta review state", flag: "--beta-review-state", args: []string{"--beta-review-state", "APPROVED"}},
+		{name: "include", flag: "--include", args: []string{"--include", "betaGroups"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			buildsListQuerySurfaceStub(t)
+
+			args := append([]string{"builds", "list", "--next", nextURL}, testCase.args...)
+			_, stderr, err := runBuildsListQuerySurface(t, args...)
+
+			if got := rootcmd.ExitCodeFromError(err); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d (err=%v)", got, rootcmd.ExitUsage, err)
+			}
+			if !strings.Contains(stderr, "--next cannot be combined with "+testCase.flag) {
+				t.Fatalf("expected stderr to reject %s with --next, got %q", testCase.flag, stderr)
+			}
+		})
+	}
+}
+
+func TestBuildsListNextAloneStillPaginates(t *testing.T) {
+	captured := buildsListQuerySurfaceStub(t)
+
+	_, stderr, err := runBuildsListQuerySurface(
+		t,
+		"builds", "list",
+		"--next", "https://api.appstoreconnect.apple.com/v1/builds?cursor=PAGE2&filter%5Bapp%5D=123456789&include=preReleaseVersion",
+	)
+	if err != nil {
+		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
+	}
+
+	_, query := captured()
+	if got := query.Get("cursor"); got != "PAGE2" {
+		t.Fatalf("expected the next URL to be followed verbatim, got cursor=%q", got)
+	}
+}
+
 func TestBuildsListSortAcceptsEveryDocumentedKey(t *testing.T) {
 	for _, sortValue := range []string{
 		"version",
