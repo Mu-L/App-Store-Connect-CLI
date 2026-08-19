@@ -32,7 +32,7 @@ func BuildsUploadCommand() *ffcli.Command {
 	dryRun := fs.Bool("dry-run", false, "Reserve upload operations without uploading the file")
 	concurrency := fs.Int("concurrency", asc.DefaultUploadConcurrency, "Upload concurrency")
 	verifyChecksum := fs.Bool("checksum", false, "Verify upload checksums if provided by API")
-	testNotes := fs.String("test-notes", "", "What to Test notes (requires build processing)")
+	testNotes := fs.String("test-notes", "", "What to Test notes (waits for build discovery)")
 	locale := fs.String("locale", "", "Locale for --test-notes (e.g., en-US)")
 	wait := fs.Bool("wait", false, "Wait for build processing to complete")
 	pollInterval := fs.Duration("poll-interval", shared.PublishDefaultPollInterval, "Polling interval for --wait and --test-notes")
@@ -50,6 +50,9 @@ By default, this command uploads the IPA/PKG to the presigned URLs and commits
 the file immediately. Use --verify-timeout to briefly watch for immediate
 post-commit processing failures, or --wait for full build discovery and
 processing.
+When --test-notes is set, the command waits only until the build appears, then
+creates or updates the requested localization. Add --wait when the invocation
+must also wait for processing to complete.
 Use --dry-run to only reserve the upload operations.
 Presigned URLs and request-header values are redacted from output by default.
 Pass --include-sensitive only when another tool must consume those capabilities.
@@ -62,7 +65,7 @@ Examples:
   asc builds upload --ipa "app.ipa" --version "1.0.0" --build-number "123"
   asc builds upload --app "123456789" --ipa "app.ipa" --dry-run
   asc builds upload --app "123456789" --ipa "app.ipa" --dry-run --include-sensitive
-  asc builds upload --app "123456789" --ipa "app.ipa" --test-notes "Test flow" --locale "en-US" --wait
+  asc builds upload --app "123456789" --ipa "app.ipa" --test-notes "Test flow" --locale "en-US"
   asc builds upload --app "123456789" --pkg "path/to/app.pkg" --version "1.0.0" --build-number "123"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -351,14 +354,16 @@ Examples:
 						return fmt.Errorf("builds upload: failed to resolve build for version %q build %q", versionValue, buildNumberValue)
 					}
 
-					fmt.Fprintf(os.Stderr, "Build %s discovered; waiting for processing...\n", buildResp.Data.ID)
-					buildResp, err = client.WaitForBuildProcessing(requestCtx, buildResp.Data.ID, *pollInterval)
-					if err != nil {
-						return fmt.Errorf("builds upload: %w", err)
+					if testNotesValue != "" {
+						fmt.Fprintf(os.Stderr, "Build %s discovered; setting What to Test notes...\n", buildResp.Data.ID)
+						if _, err := shared.UpsertBetaBuildLocalization(requestCtx, client, buildResp.Data.ID, localeValue, testNotesValue); err != nil {
+							return fmt.Errorf("builds upload: %w", err)
+						}
 					}
 
-					if testNotesValue != "" {
-						if _, err := shared.UpsertBetaBuildLocalization(requestCtx, client, buildResp.Data.ID, localeValue, testNotesValue); err != nil {
+					if *wait {
+						fmt.Fprintf(os.Stderr, "Build %s discovered; waiting for processing...\n", buildResp.Data.ID)
+						if _, err := client.WaitForBuildProcessing(requestCtx, buildResp.Data.ID, *pollInterval); err != nil {
 							return fmt.Errorf("builds upload: %w", err)
 						}
 					}
