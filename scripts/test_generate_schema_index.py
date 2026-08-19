@@ -88,6 +88,16 @@ class GenerateSchemaIndexTests(unittest.TestCase):
         )
         self.assertEqual(endpoint["getAction"], "get")
 
+    def test_build_index_classifies_array_valued_metrics_as_list(self) -> None:
+        endpoints = generate_schema_index.build_index(self.spec)
+        endpoint = next(
+            endpoint
+            for endpoint in endpoints
+            if endpoint["method"] == "GET"
+            and endpoint["path"] == "/v1/apps/{id}/metrics/betaTesterUsages"
+        )
+        self.assertEqual(endpoint["getAction"], "list")
+
     def test_every_get_operation_has_an_indexed_action(self) -> None:
         endpoints = generate_schema_index.build_index(self.spec)
         get_endpoints = [
