@@ -32,6 +32,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "upload https://example.test/file?part=1&X-Amz-Credential=[REDACTED]&X-Amz-Signature=[REDACTED]#result",
 		},
 		{
+			name:  "URL userinfo credentials",
+			input: "fetch https://user:p%40ss%2Fword@example.test/private/path?part=1",
+			want:  "fetch https://[REDACTED]@example.test/private/path?part=1",
+		},
+		{
+			name:  "URL userinfo with encoded separator",
+			input: "fetch sftp://user%3Ap%2540ss@example.test/private/path",
+			want:  "fetch sftp://[REDACTED]@example.test/private/path",
+		},
+		{
 			name:  "private key block",
 			input: "before\n-----BEGIN OPENSSH PRIVATE KEY-----\nkey-material\n-----END OPENSSH PRIVATE KEY-----\nafter",
 			want:  "before\n[REDACTED PRIVATE KEY]\nafter",
@@ -82,6 +92,32 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 				t.Fatalf("redaction is not idempotent: second result %q, changed=%t", gotAgain, changedAgain)
 			}
 		})
+	}
+}
+
+func TestSnitchDryRunRedactsURLUserinfoCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const userinfo = "user:p%40ss%2Fword"
+	_, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", "request to https://"+userinfo+"@example.test/private/path failed",
+		"userinfo redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	if strings.Contains(stderr, userinfo) {
+		t.Fatalf("stderr leaked URL userinfo credentials: %q", stderr)
+	}
+	if !strings.Contains(stderr, "https://[REDACTED]@example.test/private/path") {
+		t.Fatalf("stderr = %q, want the URL without userinfo credentials", stderr)
+	}
+	if !strings.Contains(stderr, "sensitive values were redacted") {
+		t.Fatalf("stderr = %q, want a generic redaction notice", stderr)
 	}
 }
 
@@ -304,7 +340,7 @@ func TestFormatLocalEntriesRedactsLegacyCredentials(t *testing.T) {
 func TestIssueBodyPreservesBenignSecurityVocabulary(t *testing.T) {
 	entry := LogEntry{
 		Description: "token refresh failed",
-		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password",
+		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\ngit clone https://git@example.test/repo",
 		Expected:    "secret scanning documentation remains visible",
 		Actual:      "request to https://example.test/path?signature_state=missing returned 401",
 		Severity:    "bug",

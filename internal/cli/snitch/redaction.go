@@ -26,6 +26,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: "Authorization: " + redactionMarker,
 	},
 	{
+		pattern:     regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]*(?::|%3a)[^/\s@]*@`),
+		replacement: `${1}` + redactionMarker + `@`,
+	},
+	{
 		pattern:     regexp.MustCompile(`(?i)([?&](?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|token|access_token|api[_-]?key|apikey)=)[^&#\s"'<>]+`),
 		replacement: `${1}` + redactionMarker,
 	},
