@@ -67,6 +67,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl -H "scnt: [REDACTED]" https://example.test`,
 		},
 		{
+			name:  "portal csrf header",
+			input: "< csrf: opaque-lowercase-token-value",
+			want:  "< csrf: [REDACTED]",
+		},
+		{
+			name:  "portal csrf timestamp header",
+			input: "< csrf_ts: opaque-lowercase-timestamp-value",
+			want:  "< csrf_ts: [REDACTED]",
+		},
+		{
+			name:  "structured portal csrf headers",
+			input: `{"csrf":"opaque-lowercase-token-value","csrf_ts":"opaque-lowercase-timestamp-value","status":"failed"}`,
+			want:  `{"csrf":"[REDACTED]","csrf_ts":"[REDACTED]","status":"failed"}`,
+		},
+		{
 			name:  "quoted cookie header argument",
 			input: `curl -H "Cookie: myacinfo=super-session-secret; dslang=US-EN" https://example.test`,
 			want:  `curl -H "Cookie: [REDACTED]" https://example.test`,
@@ -966,6 +981,49 @@ func TestSnitchDryRunRedactsTwoFactorContinuationCredentials(t *testing.T) {
 		"asc web auth login --two-factor-code [REDACTED] --apple-id user@example.test",
 		"< scnt: [REDACTED]",
 		"< X-Apple-ID-Session-Id: [REDACTED]",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsPortalCSRFCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"opaque-lowercase-csrf",
+		"opaque-lowercase-csrf-timestamp",
+		"structured-csrf-secret",
+		"structured-csrf-timestamp-secret",
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "< csrf: "+secrets[0]+"\n< csrf_ts: "+secrets[1],
+		"--actual", `{"csrf":"`+secrets[2]+`","csrf_ts":"`+secrets[3]+`","status":"failed"}`,
+		"portal csrf credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"< csrf: [REDACTED]",
+		"< csrf_ts: [REDACTED]",
+		`{"csrf":"[REDACTED]","csrf_ts":"[REDACTED]","status":"failed"}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
