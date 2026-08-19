@@ -28,12 +28,12 @@ var collectSearchDataForDiscover = ads.CollectSearchOptimizationData
 // command.
 func KeywordsDiscoverCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("discover", flag.ExitOnError)
-	appID := fs.String("app", "", "App Store app ID (required, or ASC_APP_ID env)")
-	country := fs.String("country", "us", "ISO alpha-2 Apple Ads country or region")
-	genre := fs.String("genre", "", "Apple Ads genre; optional, and only narrows the shared Apple Ads collection")
-	adAccount := fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID/profile default)")
-	adsProfile := fs.String("ads-profile", "", "Use named Apple Ads authentication profile")
-	limit := fs.Int("limit", keywordDiscoverDefaultLimit, "Maximum suggestions to return")
+	appID := fs.String("app", "", "[experimental] App Store app ID (required, or ASC_APP_ID env)")
+	country := fs.String("country", "us", "[experimental] ISO alpha-2 Apple Ads country or region")
+	genre := fs.String("genre", "", "[experimental] Apple Ads genre; optional, and only narrows the shared Apple Ads collection")
+	adAccount := fs.String("ad-account", "", "[experimental] Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID/profile default)")
+	adsProfile := fs.String("ads-profile", "", "[experimental] Use named Apple Ads authentication profile")
+	limit := fs.Int("limit", keywordDiscoverDefaultLimit, "[experimental] Maximum suggestions to return")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{

@@ -33,6 +33,15 @@ func TestKeywordsDiscoverCommandHelpNamesOfficialSuggestionEndpoints(t *testing.
 	if !strings.HasSuffix(command.ShortHelp, "[experimental]") {
 		t.Fatalf("ShortHelp = %q, want experimental suffix", command.ShortHelp)
 	}
+	for _, name := range []string{"app", "country", "genre", "ad-account", "ads-profile", "limit"} {
+		flag := command.FlagSet.Lookup(name)
+		if flag == nil {
+			t.Fatalf("missing --%s flag", name)
+		}
+		if !strings.HasPrefix(flag.Usage, "[experimental] ") {
+			t.Fatalf("--%s usage = %q, want experimental lifecycle prefix", name, flag.Usage)
+		}
+	}
 }
 
 func TestKeywordsDiscoverCommandValidatesInputBeforeRequests(t *testing.T) {
