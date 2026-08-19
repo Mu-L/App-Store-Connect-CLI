@@ -498,6 +498,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
   --value [REDACTED]`,
 		},
 		{
+			name:  "boolean secret marker after literal newline in quoted value",
+			input: "asc web xcode-cloud env-vars create --value \"credential-head\ncredential-tail\" --secret",
+			want:  "asc web xcode-cloud env-vars create --value [REDACTED] --secret",
+		},
+		{
 			name:  "boolean secret marker with value equals form",
 			input: `asc web xcode-cloud env-vars create --value=s3cret --secret`,
 			want:  `asc web xcode-cloud env-vars create --value=[REDACTED] --secret`,
@@ -793,11 +798,23 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 
 func TestRedactSensitiveTextPreservesFalseSecretMarkerAndValue(t *testing.T) {
 	const publicValue = "public-value"
-	input := "asc web xcode-cloud env-vars create --value " + publicValue + " --secret=false"
+	for _, literal := range []string{"0", "f", "F", "false", "False", "FALSE"} {
+		input := "asc web xcode-cloud env-vars create --value " + publicValue + " --secret=" + literal
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
 
-	got, changed := redactSensitiveText(input)
-	if changed || got != input {
-		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+func TestRedactSensitiveTextRedactsValueForTrueSecretMarkerLiterals(t *testing.T) {
+	for _, literal := range []string{"1", "t", "T", "true", "True", "TRUE"} {
+		input := "asc web xcode-cloud env-vars create --value credential --secret=" + literal
+		want := "asc web xcode-cloud env-vars create --value [REDACTED] --secret=" + literal
+		got, changed := redactSensitiveText(input)
+		if !changed || got != want {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want %q", input, got, changed, want)
+		}
 	}
 }
 
@@ -1171,6 +1188,43 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 		"\"client_secret\":\n    \"[REDACTED]\"",
 		`{"demoAccountPassword":"[REDACTED]"}`,
 		`response {\"client_secret\":\"[REDACTED]\"}`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsMultilineSecretMarkedValueAndPreservesFalseMarker(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const secret = "literal-newline-secret"
+	const publicValue = "public-value"
+	repro := "asc web xcode-cloud env-vars create --value \"credential-head\n" + secret + "\" --secret=T\n" +
+		"asc web xcode-cloud env-vars create --value " + publicValue + " --secret=0"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"multiline secret marker redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	if strings.Contains(stderr, secret) {
+		t.Fatalf("stderr leaked %q: %q", secret, stderr)
+	}
+	if strings.Contains(stdout, secret) {
+		t.Fatalf("stdout leaked %q: %q", secret, stdout)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"--value [REDACTED] --secret=T",
+		"--value " + publicValue + " --secret=0",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

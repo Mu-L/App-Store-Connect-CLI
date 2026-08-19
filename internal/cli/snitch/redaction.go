@@ -58,7 +58,7 @@ var (
 	escapedValueStart       = regexp.MustCompile(`(?i)\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\"`)
 	rawCredentialObject     = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
 	escapedCredentialObject = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
-	booleanSecretMarker     = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1)(` + singleLineShellTerminator + `)`)
+	booleanSecretMarker     = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
 	yamlCredentialScalar    = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlCredentialMapping   = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
 	yamlCredentialFlowStart = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)([\[{])`)
@@ -686,33 +686,61 @@ func redactTruncatedStructuredValues(value string, escapedQuotes bool) (string, 
 
 func redactSecretMarkedValues(value string) (string, bool) {
 	lines := strings.Split(value, "\n")
+	redactedLines := make([]string, 0, len(lines))
 	changed := false
 	for start := 0; start < len(lines); {
 		end := start
-		for end < len(lines)-1 && shellLineContinues(strings.TrimSuffix(lines[end], "\r")) {
+		for end < len(lines)-1 && shellCommandContinues(strings.Join(lines[start:end+1], "\n")) {
 			end++
 		}
 
-		marked := false
-		for i := start; i <= end; i++ {
-			if secretMarkerPattern.MatchString(strings.TrimSuffix(lines[i], "\r")) {
-				marked = true
-				break
+		command := strings.Join(lines[start:end+1], "\n")
+		if secretMarkerPattern.MatchString(command) {
+			redacted := secretValuePattern.ReplaceAllString(command, `${1}${2}`+redactionMarker)
+			if redacted != command {
+				command = redacted
+				changed = true
 			}
 		}
-		if marked {
-			for i := start; i <= end; i++ {
-				redacted := secretValuePattern.ReplaceAllString(lines[i], `${1}${2}`+redactionMarker)
-				if redacted != lines[i] {
-					lines[i] = redacted
-					changed = true
-				}
-			}
-		}
+		redactedLines = append(redactedLines, strings.Split(command, "\n")...)
 
 		start = end + 1
 	}
-	return strings.Join(lines, "\n"), changed
+	return strings.Join(redactedLines, "\n"), changed
+}
+
+func shellCommandContinues(command string) bool {
+	lastLine := command
+	if newline := strings.LastIndexByte(command, '\n'); newline >= 0 {
+		lastLine = command[newline+1:]
+	}
+	if shellLineContinues(strings.TrimSuffix(lastLine, "\r")) {
+		return true
+	}
+
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		if quote == '\'' {
+			if command[i] == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if command[i] == '\\' {
+			i++
+			continue
+		}
+		if quote == '"' {
+			if command[i] == '"' {
+				quote = 0
+			}
+			continue
+		}
+		if command[i] == '\'' || command[i] == '"' {
+			quote = command[i]
+		}
+	}
+	return quote != 0
 }
 
 func shellLineContinues(line string) bool {
