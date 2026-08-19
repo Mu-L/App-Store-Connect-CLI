@@ -548,6 +548,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl --user [REDACTED] https://example.test`,
 		},
 		{
+			name:  "multiline quoted curl user password flag",
+			input: "curl --user \"alice:first\nsecond-secret\" https://example.test",
+			want:  "curl --user [REDACTED] https://example.test",
+		},
+		{
 			name:  "continued curl user password flag",
 			input: "curl --user alice:super\\\nremainingcredential https://example.test",
 			want:  "curl --user [REDACTED] https://example.test",
@@ -581,6 +586,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "curl TLS password flag",
 			input: `curl --tlspassword supertlsphrase https://example.test`,
 			want:  `curl --tlspassword [REDACTED] https://example.test`,
+		},
+		{
+			name:  "multiline quoted curl certificate password",
+			input: "curl --cert \"client.p12:first\nsecond-secret\" https://example.test",
+			want:  "curl --cert \"client.p12:[REDACTED]\" https://example.test",
 		},
 		{
 			name:  "curl proxy TLS password flag",
@@ -666,6 +676,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "nested YAML block mapping preserves sibling field",
 			input: "response:\n  token:\n    type: bearer\n    value: opaque-secret\n  status: failed",
 			want:  "response:\n  token: [REDACTED]\n  status: failed",
+		},
+		{
+			name:  "quoted YAML block mapping credential",
+			input: "response:\n  \"password\":\n    value: quoted-map-secret\n  status: failed",
+			want:  "response:\n  \"password\": [REDACTED]\n  status: failed",
+		},
+		{
+			name:  "sequence YAML block mapping preserves sibling field",
+			input: "items:\n  - token:\n      value: opaque-secret\n    status: failed",
+			want:  "items:\n  - token: [REDACTED]\n    status: failed",
 		},
 		{
 			name:  "nested YAML block scalar preserves sibling field",
@@ -1294,6 +1314,48 @@ func TestSnitchDryRunRedactsNestedYAMLAndCommandSubstitutionCredentials(t *testi
 		"password: [REDACTED]",
 		"\"password\": [REDACTED]",
 		"response:\n  token: [REDACTED]\n  status: failed\nnext: preserved",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsMultilineCurlAndYAMLCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"multiline-user-secret", "multiline-cert-secret", "quoted-yaml-secret", "sequence-yaml-secret"}
+	repro := "curl --user \"alice:first\n" + secrets[0] + "\" https://example.test\n" +
+		"curl --cert \"client.p12:first\n" + secrets[1] + "\" https://example.test\n" +
+		"response:\n  \"password\":\n    value: " + secrets[2] + "\n  status: failed\n" +
+		"items:\n  - token:\n      value: " + secrets[3] + "\n    status: failed"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"multiline credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"curl --user [REDACTED] https://example.test",
+		"curl --cert \"client.p12:[REDACTED]\" https://example.test",
+		"response:\n  \"password\": [REDACTED]\n  status: failed",
+		"items:\n  - token: [REDACTED]\n    status: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

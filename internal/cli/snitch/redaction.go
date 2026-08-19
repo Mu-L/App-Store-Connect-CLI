@@ -30,7 +30,7 @@ const (
 	unterminatedQuotedValue     = `(?:"[^\r\n]*|\$?'[^\r\n]*)`
 	shellUnquotedValue          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()"'])+`
 	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\;&|<>()]|[^-\s\\;&|<>()])(?:\\[^\r\n]|[^\s;&|<>()])*`
-	credentialPairQuoted        = `(?:"(?:\\.|[^"\\\r\n])*:(?:\\.|[^"\\\r\n])+"|\$'(?:\\.|[^'\\\r\n])*:(?:\\.|[^'\\\r\n])+'|'(?:\\.|[^'\\\r\n])*:(?:\\.|[^'\\\r\n])+')`
+	credentialPairQuoted        = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*:(?:` + escapedQuotedCharacter + `|[^"\\])+"|\$?'(?:` + escapedQuotedCharacter + `|[^'\\])*:(?:` + escapedQuotedCharacter + `|[^'\\])+')`
 	credentialPairOpen          = `(?:"[^\r\n]*:[^\r\n]+|\$?'[^\r\n]*:[^\r\n]+)`
 	credentialPairUnquoted      = `(?:\\(?:\r?\n|[^\r\n])|[^\s:;&|<>()])*:(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])+`
 	credentialPairValue         = `(?:` + credentialPairQuoted + `|` + credentialPairOpen + `|` + credentialPairUnquoted + `)`
@@ -58,7 +58,8 @@ var (
 	escapedCredentialObject = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
 	booleanSecretMarker     = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1)(` + singleLineShellTerminator + `)`)
 	yamlCredentialScalar    = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlCredentialMapping   = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + sensitivePrefixedName + `[ \t]*:)[ \t]*$`)
+	yamlCredentialMapping   = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*$`)
+	jsonQuotedScalarLine    = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
 )
 
 var structuredContainerValueRedactionRules = []redactionRule{
@@ -200,11 +201,11 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(")((?:\\.|[^"\\:])+):(?:\\.|[^"\\\r\n])+(")`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(")((?:` + escapedQuotedCharacter + `|[^"\\:\r\n])+):(?:` + escapedQuotedCharacter + `|[^"\\])+(")`),
 		replacement: `${1}${2}${3}${4}:` + redactionMarker + `${5}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(')((?:\\.|[^'\\:])+):(?:\\.|[^'\\\r\n])+(')`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(')((?:` + escapedQuotedCharacter + `|[^'\\:\r\n])+):(?:` + escapedQuotedCharacter + `|[^'\\])+(')`),
 		replacement: `${1}${2}${3}${4}:` + redactionMarker + `${5}`,
 	},
 	{
@@ -315,9 +316,10 @@ func redactYAMLCredentialBlocks(value string) (string, bool) {
 			continue
 		}
 
-		keyIndent := leadingIndent(content)
+		keyIndent := yamlKeyIndent(content)
 		end := line + 1
 		hasIndentedContent := false
+		firstIndentedContent := ""
 		for end < len(lines) {
 			child, _ := splitLineEnding(lines[end])
 			if strings.TrimSpace(child) == "" {
@@ -328,9 +330,15 @@ func redactYAMLCredentialBlocks(value string) (string, bool) {
 				break
 			}
 			hasIndentedContent = true
+			if firstIndentedContent == "" {
+				firstIndentedContent = strings.TrimSpace(child)
+			}
 			end++
 		}
 		if !hasIndentedContent {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(content), `"`) && jsonQuotedScalarLine.MatchString(firstIndentedContent) {
 			continue
 		}
 
@@ -353,6 +361,22 @@ func splitLineEnding(line string) (string, string) {
 
 func leadingIndent(line string) int {
 	return len(line) - len(strings.TrimLeft(line, " \t"))
+}
+
+func yamlKeyIndent(line string) int {
+	indent := leadingIndent(line)
+	if indent >= len(line) || line[indent] != '-' {
+		return indent
+	}
+
+	key := indent + 1
+	if key >= len(line) || (line[key] != ' ' && line[key] != '\t') {
+		return indent
+	}
+	for key < len(line) && (line[key] == ' ' || line[key] == '\t') {
+		key++
+	}
+	return key
 }
 
 func protectBooleanSecretMarkers(value string) (string, string) {
