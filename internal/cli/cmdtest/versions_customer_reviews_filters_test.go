@@ -171,6 +171,26 @@ func TestVersionsCustomerReviewsFilterValidationMatchesAppLevelReviews(t *testin
 			wantMessage: "--stars must be a comma-separated list of star ratings: 1, 2, 3, 4, 5",
 		},
 		{
+			name:        "explicitly empty territory",
+			args:        []string{"--territory", ""},
+			wantMessage: "--territory must be a valid App Store territory code",
+		},
+		{
+			name:        "explicitly empty sort",
+			args:        []string{"--sort", ""},
+			wantMessage: "--sort must be one of: rating, -rating, createdDate, -createdDate",
+		},
+		{
+			name:        "explicitly empty response state",
+			args:        []string{"--response-state", ""},
+			wantMessage: "--response-state must be one of: any, unresponded, unreplied, responded, replied",
+		},
+		{
+			name:        "whitespace response fields",
+			args:        []string{"--response-fields", "   "},
+			wantMessage: "--response-fields must be a comma-separated list of: responseBody,lastModifiedDate,state,review",
+		},
+		{
 			name:        "star rating out of range",
 			args:        []string{"--stars", "9"},
 			wantMessage: "--stars must be a comma-separated list of star ratings: 1, 2, 3, 4, 5",

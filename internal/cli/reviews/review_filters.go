@@ -27,30 +27,53 @@ var reviewSorts = []string{"rating", "-rating", "createdDate", "-createdDate"}
 // lists customer reviews binds these flags from here and gets identical names,
 // help text, and validation.
 type ReviewFilterFlags struct {
-	Stars           string
-	Territory       string
-	Sort            string
-	ResponseState   string
-	OnlyUnresponded bool
-	IncludeResponse bool
-	ResponseFields  string
-	starsSet        bool
+	Stars             string
+	Territory         string
+	Sort              string
+	ResponseState     string
+	OnlyUnresponded   bool
+	IncludeResponse   bool
+	ResponseFields    string
+	starsSet          bool
+	territorySet      bool
+	sortSet           bool
+	responseStateSet  bool
+	responseFieldsSet bool
+}
+
+type trackedReviewStringFlag struct {
+	value *string
+	set   *bool
+}
+
+func (f *trackedReviewStringFlag) Set(value string) error {
+	*f.value = value
+	*f.set = true
+	return nil
+}
+
+func (f *trackedReviewStringFlag) String() string {
+	if f == nil || f.value == nil {
+		return ""
+	}
+	return *f.value
+}
+
+func bindTrackedReviewStringFlag(fs *flag.FlagSet, name string, value *string, provided *bool, defaultValue string, usage string) {
+	*value = defaultValue
+	fs.Var(&trackedReviewStringFlag{value: value, set: provided}, name, usage)
 }
 
 // BindReviewFilterFlags registers the shared customer review filter flags on fs.
 func BindReviewFilterFlags(fs *flag.FlagSet) *ReviewFilterFlags {
 	filters := &ReviewFilterFlags{}
-	fs.Func("stars", "Filter by star ratings, comma-separated (1-5)", func(value string) error {
-		filters.Stars = value
-		filters.starsSet = true
-		return nil
-	})
-	fs.StringVar(&filters.Territory, "territory", "", "Filter by App Store territory code (e.g., USA, GBR)")
-	fs.StringVar(&filters.Sort, "sort", "", "Sort by "+strings.Join(reviewSorts, ", "))
-	fs.StringVar(&filters.ResponseState, "response-state", reviewResponseStateAny, "Filter by response state: any, unresponded/unreplied, responded/replied")
+	bindTrackedReviewStringFlag(fs, "stars", &filters.Stars, &filters.starsSet, "", "Filter by star ratings, comma-separated (1-5)")
+	bindTrackedReviewStringFlag(fs, "territory", &filters.Territory, &filters.territorySet, "", "Filter by App Store territory code (e.g., USA, GBR)")
+	bindTrackedReviewStringFlag(fs, "sort", &filters.Sort, &filters.sortSet, "", "Sort by "+strings.Join(reviewSorts, ", "))
+	bindTrackedReviewStringFlag(fs, "response-state", &filters.ResponseState, &filters.responseStateSet, reviewResponseStateAny, "Filter by response state: any, unresponded/unreplied, responded/replied")
 	fs.BoolVar(&filters.OnlyUnresponded, "only-unresponded", false, "Only list reviews without a published response")
 	fs.BoolVar(&filters.IncludeResponse, "include-response", false, "Include customer review response relationships")
-	fs.StringVar(&filters.ResponseFields, "response-fields", "", "Comma-separated customer review response fields: responseBody,lastModifiedDate,state,review")
+	bindTrackedReviewStringFlag(fs, "response-fields", &filters.ResponseFields, &filters.responseFieldsSet, "", "Comma-separated customer review response fields: responseBody,lastModifiedDate,state,review")
 	return filters
 }
 
@@ -94,6 +117,18 @@ func ValidateReviewNextFlagConflicts(next string, fs *flag.FlagSet, ownerFlag st
 func (f *ReviewFilterFlags) ReviewOptions() ([]asc.ReviewOption, error) {
 	if f.starsSet && strings.TrimSpace(f.Stars) == "" {
 		return nil, shared.WithDiagnostic(shared.UsageError(errInvalidReviewStars().Error()), shared.DiagnosticInvalidInput, "--stars")
+	}
+	if f.territorySet && strings.TrimSpace(f.Territory) == "" {
+		return nil, shared.WithDiagnostic(shared.UsageError("--territory must be a valid App Store territory code"), shared.DiagnosticInvalidInput, "--territory")
+	}
+	if f.sortSet && strings.TrimSpace(f.Sort) == "" {
+		return nil, shared.WithDiagnostic(shared.UsageError("--sort must be one of: "+strings.Join(reviewSorts, ", ")), shared.DiagnosticInvalidInput, "--sort")
+	}
+	if f.responseStateSet && strings.TrimSpace(f.ResponseState) == "" {
+		return nil, shared.WithDiagnostic(shared.UsageError("--response-state must be one of: any, unresponded, unreplied, responded, replied"), shared.DiagnosticInvalidInput, "--response-state")
+	}
+	if f.responseFieldsSet && strings.TrimSpace(f.ResponseFields) == "" {
+		return nil, shared.WithDiagnostic(shared.UsageError("--response-fields must be a comma-separated list of: responseBody,lastModifiedDate,state,review"), shared.DiagnosticInvalidInput, "--response-fields")
 	}
 	ratings, err := normalizeReviewStars(f.Stars)
 	if err != nil {
