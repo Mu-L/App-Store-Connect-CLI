@@ -139,9 +139,17 @@ func printConciseUnknownCommand(analysis invocationAnalysis, commandName string)
 	fmt.Fprintf(os.Stderr, "  %s --help\n", commandName)
 }
 
-func printConciseUnknownFlag(analysis invocationAnalysis, commandName string) {
+func printConciseUnknownFlag(root *ffcli.Command, analysis invocationAnalysis, commandName string) {
 	flagName := unknownFlagName(analysis)
 	fmt.Fprintf(os.Stderr, "Error: %s\n", unknownFlagError(analysis, commandName))
+	if name, ok := flagLookupName(flagName); ok && root != nil && root.FlagSet != nil && root.FlagSet.Lookup(name) != nil {
+		fmt.Fprintf(
+			os.Stderr,
+			"`%s` is a global flag; the flag and any required valid value must appear before the command name.\nFor help:\n  asc --help\n",
+			shared.SanitizeTerminal(flagName),
+		)
+		return
+	}
 
 	visibleFlags := shared.VisibleHelpFlags(analysis.command.FlagSet)
 	candidates := make([]string, 0, len(visibleFlags))
@@ -163,6 +171,14 @@ func printConciseUnknownFlag(analysis invocationAnalysis, commandName string) {
 	}
 	fmt.Fprintln(os.Stderr, "For help:")
 	fmt.Fprintf(os.Stderr, "  %s --help\n", commandName)
+}
+
+func flagLookupName(token string) (string, bool) {
+	if !hasValidFlagPrefix(token) {
+		return "", false
+	}
+	name := strings.TrimLeft(token, "-")
+	return name, name != ""
 }
 
 func unknownCommandError(analysis invocationAnalysis, commandName string) error {
