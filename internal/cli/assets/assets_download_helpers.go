@@ -331,6 +331,7 @@ func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
 	seenPalette := false
 	seenImageData := false
 	imageDataEnded := false
+	seenModificationTime := false
 	var imageHeader pngImageHeader
 	var imageData [][]byte
 	for {
@@ -403,6 +404,12 @@ func stablePNGDigest(data []byte) ([sha256.Size]byte, bool) {
 			if header[4]&0x20 == 0 {
 				return digest, false
 			}
+		}
+		if chunkType == "tIME" {
+			if seenModificationTime {
+				return digest, false
+			}
+			seenModificationTime = true
 		}
 
 		wantCRC := binary.BigEndian.Uint32(data[dataEndIndex:chunkEndIndex])

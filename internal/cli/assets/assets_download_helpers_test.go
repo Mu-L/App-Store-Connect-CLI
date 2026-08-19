@@ -231,6 +231,18 @@ func TestEquivalentPNGFiles(t *testing.T) {
 				downloadTestPNGIDAT(t, "same-pixels"),
 			),
 		},
+		{
+			name: "duplicate modification time is not equivalent",
+			existing: downloadTestPNG(
+				downloadTestPNGChunk("tIME", []byte{0x07, 0xea, 8, 19, 12, 30, 45}),
+				downloadTestPNGChunk("tIME", []byte{0x07, 0xea, 8, 19, 12, 31, 45}),
+				downloadTestPNGIDAT(t, "same-pixels"),
+			),
+			candidate: downloadTestPNG(
+				downloadTestPNGChunk("tIME", []byte{0x07, 0xea, 8, 19, 12, 32, 45}),
+				downloadTestPNGIDAT(t, "same-pixels"),
+			),
+		},
 	}
 
 	for _, tt := range tests {
