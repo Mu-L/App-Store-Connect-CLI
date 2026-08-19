@@ -99,6 +99,8 @@ func TestReviewsListRejectsInvalidStarRatings(t *testing.T) {
 		name  string
 		stars string
 	}{
+		{name: "explicitly empty", stars: ""},
+		{name: "whitespace only", stars: "   "},
 		{name: "above range", stars: "6"},
 		{name: "below range", stars: "0"},
 		{name: "one bad element", stars: "1,9"},

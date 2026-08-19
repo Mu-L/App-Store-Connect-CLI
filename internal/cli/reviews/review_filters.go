@@ -34,12 +34,17 @@ type ReviewFilterFlags struct {
 	OnlyUnresponded bool
 	IncludeResponse bool
 	ResponseFields  string
+	starsSet        bool
 }
 
 // BindReviewFilterFlags registers the shared customer review filter flags on fs.
 func BindReviewFilterFlags(fs *flag.FlagSet) *ReviewFilterFlags {
 	filters := &ReviewFilterFlags{}
-	fs.StringVar(&filters.Stars, "stars", "", "Filter by star ratings, comma-separated (1-5)")
+	fs.Func("stars", "Filter by star ratings, comma-separated (1-5)", func(value string) error {
+		filters.Stars = value
+		filters.starsSet = true
+		return nil
+	})
 	fs.StringVar(&filters.Territory, "territory", "", "Filter by App Store territory code (e.g., USA, GBR)")
 	fs.StringVar(&filters.Sort, "sort", "", "Sort by "+strings.Join(reviewSorts, ", "))
 	fs.StringVar(&filters.ResponseState, "response-state", reviewResponseStateAny, "Filter by response state: any, unresponded/unreplied, responded/replied")
@@ -87,6 +92,9 @@ func ValidateReviewNextFlagConflicts(next string, fs *flag.FlagSet, ownerFlag st
 // options. Invalid input is reported as a usage failure carrying the offending
 // parameter so both review listings fail the same way.
 func (f *ReviewFilterFlags) ReviewOptions() ([]asc.ReviewOption, error) {
+	if f.starsSet && strings.TrimSpace(f.Stars) == "" {
+		return nil, shared.WithDiagnostic(shared.UsageError(errInvalidReviewStars().Error()), shared.DiagnosticInvalidInput, "--stars")
+	}
 	ratings, err := normalizeReviewStars(f.Stars)
 	if err != nil {
 		return nil, shared.WithDiagnostic(shared.UsageError(err.Error()), shared.DiagnosticInvalidInput, "--stars")

@@ -166,6 +166,11 @@ func TestVersionsCustomerReviewsFilterValidationMatchesAppLevelReviews(t *testin
 		wantMessage string
 	}{
 		{
+			name:        "explicitly empty star rating",
+			args:        []string{"--stars", ""},
+			wantMessage: "--stars must be a comma-separated list of star ratings: 1, 2, 3, 4, 5",
+		},
+		{
 			name:        "star rating out of range",
 			args:        []string{"--stars", "9"},
 			wantMessage: "--stars must be a comma-separated list of star ratings: 1, 2, 3, 4, 5",
