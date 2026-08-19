@@ -21,8 +21,19 @@ func VersionsCommand() *ffcli.Command {
 		Name:       "versions",
 		ShortUsage: "asc versions <subcommand> [flags]",
 		ShortHelp:  "Manage App Store versions.",
-		LongHelp:   `Manage App Store versions.`,
-		UsageFunc:  shared.VisibleUsageFunc,
+		LongHelp: `Manage App Store versions.
+
+Examples:
+  asc versions list --app "123456789"
+  asc versions list --app "123456789" --platform IOS --state READY_FOR_REVIEW
+  asc versions view --version-id "VERSION_ID" --include-build --include-submission
+  asc versions create --app "123456789" --version "2.0.0" --platform IOS
+  asc versions create --app "123456789" --version "2.4.0" --copy-metadata-from "2.3.2"
+  asc versions update --version-id "VERSION_ID" --release-type MANUAL
+  asc versions attach-build --version-id "VERSION_ID" --build-id "BUILD_ID"
+  asc versions release --version-id "VERSION_ID" --confirm
+  asc versions phased-release view --version-id "VERSION_ID"`,
+		UsageFunc: shared.VisibleUsageFunc,
 		Subcommands: []*ffcli.Command{
 			VersionsListCommand(),
 			viewCmd,
