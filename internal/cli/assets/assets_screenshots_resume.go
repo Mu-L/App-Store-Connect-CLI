@@ -167,6 +167,14 @@ func prepareAppScreenshotUpload(ctx context.Context, cfg screenshotUploadConfig[
 		}
 		existingScreenshots = existingResp.Data
 	}
+	if cfg.SkipExisting && len(existingScreenshots) > 0 {
+		settleCtx, settleCancel := cfg.RequestContext(ctx)
+		existingScreenshots, err = settleExistingScreenshotChecksums(settleCtx, cfg.Client, existingScreenshots)
+		settleCancel()
+		if err != nil {
+			return screenshotUploadPreparedState{}, err
+		}
+	}
 
 	skippedResults := make([]asc.AssetUploadResultItem, 0)
 	files := cfg.Files

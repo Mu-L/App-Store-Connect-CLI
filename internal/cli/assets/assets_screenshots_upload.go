@@ -539,11 +539,14 @@ func waitForScreenshotSettlement(ctx context.Context, client *asc.Client, screen
 	if err == nil {
 		return settled, nil
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		stateDetail := ""
-		if lastState != "" {
-			stateDetail = fmt.Sprintf(" after delivery state %s", lastState)
-		}
+	stateDetail := ""
+	if lastState != "" {
+		stateDetail = fmt.Sprintf(" after delivery state %s", lastState)
+	}
+	if errors.Is(err, context.Canceled) {
+		return lastRemote, fmt.Errorf("canceled waiting for screenshot %s checksum settlement%s: %w", assetID, stateDetail, err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
 		return lastRemote, fmt.Errorf("timed out waiting for screenshot %s checksum settlement%s: %w", assetID, stateDetail, err)
 	}
 	return lastRemote, err
