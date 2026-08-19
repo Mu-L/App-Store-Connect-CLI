@@ -3,8 +3,6 @@ package cmdtest
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"flag"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -324,7 +322,7 @@ func TestTestFlightMetricsPublicLinkOutputErrors(t *testing.T) {
 		{
 			name:    "unsupported output",
 			args:    []string{"testflight", "metrics", "public-link", "--group", "group-1", "--output", "yaml"},
-			wantErr: "unsupported format: yaml",
+			wantErr: `(got "yaml")`,
 		},
 		{
 			name:    "pretty with table",
@@ -346,7 +344,7 @@ func TestTestFlightMetricsPublicLinkOutputErrors(t *testing.T) {
 				runErr = root.Run(context.Background())
 			})
 
-			if !errors.Is(runErr, flag.ErrHelp) {
+			if !isUsageClassError(runErr) {
 				t.Fatalf("expected help error, got %v", runErr)
 			}
 			if stdout != "" {

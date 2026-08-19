@@ -507,7 +507,7 @@ func TestSubscriptionsOfferCodesListOutputErrors(t *testing.T) {
 		{
 			name:    "unsupported output",
 			args:    []string{"subscriptions", "offers", "offer-codes", "list", "--subscription-id", "8000000001", "--output", "yaml"},
-			wantErr: "unsupported format: yaml",
+			wantErr: `(got "yaml")`,
 		},
 		{
 			name:    "pretty with markdown",
@@ -529,7 +529,7 @@ func TestSubscriptionsOfferCodesListOutputErrors(t *testing.T) {
 				runErr = root.Run(context.Background())
 			})
 
-			if !errors.Is(runErr, flag.ErrHelp) {
+			if !isUsageClassError(runErr) {
 				t.Fatalf("expected help error, got %v", runErr)
 			}
 			if stdout != "" {

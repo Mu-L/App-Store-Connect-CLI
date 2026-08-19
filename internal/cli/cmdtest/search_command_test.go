@@ -517,7 +517,7 @@ func TestSearchInvalidOutputExitsWithUsageCode(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "unsupported format: yaml") {
+	if !strings.Contains(stderr, `(got "yaml")`) {
 		t.Fatalf("expected unsupported format error, got %q", stderr)
 	}
 }
@@ -534,7 +534,7 @@ func TestSearchInvalidMixedOrderOutputExitsWithUsageCode(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "unsupported format: yaml") {
+	if !strings.Contains(stderr, `(got "yaml")`) {
 		t.Fatalf("expected unsupported format error, got %q", stderr)
 	}
 }

@@ -2776,7 +2776,7 @@ func TestRun_InvalidOutputReturnsUsageBeforeAuth(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(stderr, "unsupported format: yaml") {
+	if !strings.Contains(stderr, `(got "yaml")`) {
 		t.Fatalf("expected output validation error, got %q", stderr)
 	}
 	if strings.Contains(stderr, "missing authentication") {
@@ -2846,7 +2846,7 @@ func TestRun_InvalidParentOutputReturnsUsageBeforeLeafExec(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(stderr, "unsupported format: yaml") {
+	if !strings.Contains(stderr, `(got "yaml")`) {
 		t.Fatalf("expected output validation error, got %q", stderr)
 	}
 	if strings.Contains(stderr, "missing authentication") {

@@ -169,7 +169,7 @@ func TestLocalizationsMediaSetsOutputErrors(t *testing.T) {
 		{
 			name:    "preview sets get unsupported output",
 			args:    []string{"localizations", "preview-sets", "view", "--id", "SET_ID", "--output", "yaml"},
-			wantErr: "unsupported format: yaml",
+			wantErr: `(got "yaml")`,
 		},
 		{
 			name:    "preview sets get pretty with table",
@@ -179,7 +179,7 @@ func TestLocalizationsMediaSetsOutputErrors(t *testing.T) {
 		{
 			name:    "screenshot sets get unsupported output",
 			args:    []string{"localizations", "screenshot-sets", "view", "--id", "SET_ID", "--output", "yaml"},
-			wantErr: "unsupported format: yaml",
+			wantErr: `(got "yaml")`,
 		},
 		{
 			name:    "screenshot sets get pretty with markdown",
@@ -198,7 +198,7 @@ func TestLocalizationsMediaSetsOutputErrors(t *testing.T) {
 					t.Fatalf("parse error: %v", err)
 				}
 				err := root.Run(context.Background())
-				if !errors.Is(err, flag.ErrHelp) {
+				if !isUsageClassError(err) {
 					t.Fatalf("expected ErrHelp, got %v", err)
 				}
 			})
