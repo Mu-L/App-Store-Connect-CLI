@@ -54,6 +54,7 @@ func VersionsListCommand() *ffcli.Command {
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Next page URL from a previous response")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
+	latest := fs.Bool("latest", false, "Keep only the newest version per platform by createdDate (fetches all pages)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -62,10 +63,17 @@ func VersionsListCommand() *ffcli.Command {
 		ShortHelp:  "List app store versions for an app.",
 		LongHelp: `List app store versions for an app.
 
+The App Store Connect API can report every historical version of an app as
+READY_FOR_SALE, so a state filter alone cannot identify the live version.
+--latest fetches every page and keeps only the newest version per platform by
+createdDate; combine it with --state READY_FOR_SALE to get the version that
+is actually live on each platform.
+
 Examples:
   asc versions list --app "123456789"
   asc versions list --app "123456789" --version "1.0.0"
   asc versions list --app "123456789" --platform IOS --state READY_FOR_REVIEW
+  asc versions list --app "123456789" --state READY_FOR_SALE --latest
   asc versions list --app "123456789" --paginate`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -75,6 +83,9 @@ Examples:
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
 				return fmt.Errorf("versions list: %w", err)
+			}
+			if *latest && strings.TrimSpace(*next) != "" {
+				return shared.UsageError("versions list: --latest fetches all pages itself and cannot be combined with --next")
 			}
 
 			platforms, err := shared.NormalizeAppStoreVersionPlatforms(shared.SplitCSVUpper(*platform))
@@ -111,7 +122,7 @@ Examples:
 				asc.WithAppStoreVersionsNextURL(*next),
 			}
 
-			if *paginate {
+			if *paginate || *latest {
 				// Fetch first page with limit set for consistent pagination
 				paginateOpts := append(opts, asc.WithAppStoreVersionsLimit(200))
 				firstPage, err := client.GetAppStoreVersions(requestCtx, resolvedAppID, paginateOpts...)
@@ -127,6 +138,15 @@ Examples:
 					return fmt.Errorf("versions list: %w", err)
 				}
 
+				if *latest {
+					aggregated, ok := versions.(*asc.AppStoreVersionsResponse)
+					if !ok {
+						return fmt.Errorf("versions list: unexpected paginated response type %T", versions)
+					}
+					aggregated.Data = latestVersionsPerPlatform(aggregated.Data)
+					return shared.PrintOutput(aggregated, *output.Output, *output.Pretty)
+				}
+
 				return shared.PrintOutput(versions, *output.Output, *output.Pretty)
 			}
 
@@ -138,6 +158,31 @@ Examples:
 			return shared.PrintOutput(versions, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+// latestVersionsPerPlatform keeps the newest version per platform by
+// createdDate; the API reports historical versions with live-looking states,
+// so recency has to be derived rather than filtered.
+func latestVersionsPerPlatform(data []asc.Resource[asc.AppStoreVersionAttributes]) []asc.Resource[asc.AppStoreVersionAttributes] {
+	newest := map[string]int{}
+	order := []string{}
+	for index, version := range data {
+		platform := string(version.Attributes.Platform)
+		current, seen := newest[platform]
+		if !seen {
+			newest[platform] = index
+			order = append(order, platform)
+			continue
+		}
+		if version.Attributes.CreatedDate > data[current].Attributes.CreatedDate {
+			newest[platform] = index
+		}
+	}
+	result := make([]asc.Resource[asc.AppStoreVersionAttributes], 0, len(order))
+	for _, platform := range order {
+		result = append(result, data[newest[platform]])
+	}
+	return result
 }
 
 func VersionsViewCommand() *ffcli.Command {
