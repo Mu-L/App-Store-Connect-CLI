@@ -54,11 +54,14 @@ var (
 	escapedCookieJarPattern = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*\{`)
 	rawRequestHeaders       = regexp.MustCompile(`(?i)"requestHeaders"[ \t\r\n]*:[ \t\r\n]*\[`)
 	escapedRequestHeaders   = regexp.MustCompile(`(?i)\\"requestHeaders\\"[ \t\r\n]*:[ \t\r\n]*\[`)
+	rawStructuredValueStart = regexp.MustCompile(`(?i)"value"[ \t\r\n]*:[ \t\r\n]*"`)
+	escapedValueStart       = regexp.MustCompile(`(?i)\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\"`)
 	rawCredentialObject     = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
 	escapedCredentialObject = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
 	booleanSecretMarker     = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1)(` + singleLineShellTerminator + `)`)
 	yamlCredentialScalar    = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlCredentialMapping   = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
+	yamlCredentialFlowStart = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)([\[{])`)
 	jsonQuotedScalarLine    = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
 )
 
@@ -280,6 +283,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, yamlFlowChanged := redactYAMLFlowCredentials(redacted); yamlFlowChanged {
+		redacted = next
+		changed = true
+	}
 	redacted, booleanMarkerProtection := protectBooleanSecretMarkers(redacted)
 	for _, rule := range singleLineShellWordRedactionRules {
 		next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
@@ -347,6 +354,89 @@ func redactYAMLCredentialBlocks(value string) (string, bool) {
 		changed = true
 	}
 	return strings.Join(lines, ""), changed
+}
+
+func redactYAMLFlowCredentials(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := yamlCredentialFlowStart.FindStringSubmatchIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		start := searchStart + match[0]
+		prefixEnd := searchStart + match[3]
+		open := searchStart + match[4]
+		close := findYAMLFlowEnd(redacted, open)
+		if close < 0 {
+			close = len(redacted) - 1
+		}
+		if !strings.Contains(redacted[open:close+1], "\n") || flowStartsWithQuotedValue(redacted, open, close) {
+			searchStart = open + 1
+			continue
+		}
+
+		replacement := redacted[start:prefixEnd] + redactionMarker
+		redacted = redacted[:start] + replacement + redacted[close+1:]
+		changed = true
+		searchStart = start + len(replacement)
+	}
+	return redacted, changed
+}
+
+func findYAMLFlowEnd(value string, open int) int {
+	if open < 0 || open >= len(value) || (value[open] != '[' && value[open] != '{') {
+		return -1
+	}
+
+	stack := []byte{value[open]}
+	var quote byte
+	for i := open + 1; i < len(value); i++ {
+		if quote != 0 {
+			if quote == '"' && value[i] == '\\' {
+				i++
+				continue
+			}
+			if quote == '\'' && value[i] == '\'' && i+1 < len(value) && value[i+1] == '\'' {
+				i++
+				continue
+			}
+			if value[i] == quote {
+				quote = 0
+			}
+			continue
+		}
+
+		switch value[i] {
+		case '"', '\'':
+			quote = value[i]
+		case '[', '{':
+			stack = append(stack, value[i])
+		case ']':
+			if stack[len(stack)-1] == '[' {
+				stack = stack[:len(stack)-1]
+			}
+		case '}':
+			if stack[len(stack)-1] == '{' {
+				stack = stack[:len(stack)-1]
+			}
+		}
+		if len(stack) == 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+func flowStartsWithQuotedValue(value string, open, close int) bool {
+	for i := open + 1; i < close; i++ {
+		if value[i] == ' ' || value[i] == '\t' || value[i] == '\r' || value[i] == '\n' {
+			continue
+		}
+		return value[i] == '"'
+	}
+	return false
 }
 
 func splitLineEnding(line string) (string, string) {
@@ -508,6 +598,9 @@ func redactStructuredCookieValues(value string) (string, bool) {
 			for _, rule := range structuredContainerValueRedactionRules {
 				redactedObject = rule.pattern.ReplaceAllString(redactedObject, rule.replacement)
 			}
+			if next, truncatedChanged := redactTruncatedStructuredValues(redactedObject, candidate.escapedQuotes); truncatedChanged {
+				redactedObject = next
+			}
 			if redactedObject != object {
 				redacted = redacted[:open] + redactedObject + redacted[close+1:]
 				changed = true
@@ -547,6 +640,9 @@ func redactStructuredUploadHeaderValues(value string) (string, bool) {
 			for _, rule := range structuredContainerValueRedactionRules {
 				redactedContainer = rule.pattern.ReplaceAllString(redactedContainer, rule.replacement)
 			}
+			if next, truncatedChanged := redactTruncatedStructuredValues(redactedContainer, candidate.escapedQuotes); truncatedChanged {
+				redactedContainer = next
+			}
 			if redactedContainer != container {
 				redacted = redacted[:open] + redactedContainer + redacted[close+1:]
 				changed = true
@@ -555,6 +651,36 @@ func redactStructuredUploadHeaderValues(value string) (string, bool) {
 		}
 	}
 	return redacted, changed
+}
+
+func redactTruncatedStructuredValues(value string, escapedQuotes bool) (string, bool) {
+	pattern := rawStructuredValueStart
+	if escapedQuotes {
+		pattern = escapedValueStart
+	}
+
+	searchStart := 0
+	for searchStart < len(value) {
+		match := pattern.FindStringIndex(value[searchStart:])
+		if match == nil {
+			return value, false
+		}
+
+		openQuote := searchStart + match[1] - 1
+		for quote := openQuote + 1; quote < len(value); quote++ {
+			if value[quote] == '"' && isJSONStringDelimiter(value, quote, escapedQuotes) {
+				searchStart = quote + 1
+				break
+			}
+			if quote == len(value)-1 {
+				return value[:openQuote+1] + redactionMarker, true
+			}
+		}
+		if openQuote == len(value)-1 {
+			return value + redactionMarker, true
+		}
+	}
+	return value, false
 }
 
 func redactSecretMarkedValues(value string) (string, bool) {

@@ -187,6 +187,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `response {\"requestHeaders\":[{\"name\":\"x-upload-token\",\"value\":\"[REDACTED]\"}],\"method\":\"PUT\"}`,
 		},
 		{
+			name:  "truncated upload operation request header value",
+			input: `{"requestHeaders":[{"name":"Authorization","value":"opaque-upload-secret`,
+			want:  `{"requestHeaders":[{"name":"Authorization","value":"[REDACTED]`,
+		},
+		{
+			name:  "escaped truncated upload operation request header value",
+			input: `response {\"requestHeaders\":[{\"name\":\"Authorization\",\"value\":\"escaped-upload-secret`,
+			want:  `response {\"requestHeaders\":[{\"name\":\"Authorization\",\"value\":\"[REDACTED]`,
+		},
+		{
 			name:  "structured credential headers",
 			input: `{"Authorization":"Basic c3VwZXJzZWNyZXQ=","Cookie":"myacinfo=super-session-secret","status":"failed"}`,
 			want:  `{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","status":"failed"}`,
@@ -671,6 +681,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "quoted YAML flow sequence credential",
 			input: "\"password\": [first-secret, second-secret]\nstatus: failed",
 			want:  "\"password\": [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "multiline YAML flow sequence credential",
+			input: "password: [first-secret,\n  second-secret]\nstatus: failed",
+			want:  "password: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "multiline YAML flow mapping credential",
+			input: "token: {type: bearer,\n  value: opaque-secret}\nstatus: failed",
+			want:  "token: [REDACTED]\nstatus: failed",
 		},
 		{
 			name:  "YAML block mapping credential",
@@ -1296,6 +1316,34 @@ func TestSnitchDryRunRedactsUploadOperationHeaderValues(t *testing.T) {
 	}
 }
 
+func TestSnitchDryRunRedactsTruncatedUploadOperationHeaderValue(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const secret = "truncated-upload-secret"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", `{"requestHeaders":[{"name":"Authorization","value":"`+secret,
+		"truncated upload credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if strings.Contains(stderr, secret) {
+		t.Fatalf("stderr leaked %q: %q", secret, stderr)
+	}
+	if strings.Contains(stdout, secret) {
+		t.Fatalf("stdout leaked %q: %q", secret, stdout)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	if want := `{"requestHeaders":[{"name":"Authorization","value":"[REDACTED]`; !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want redacted truncated value %q", stderr, want)
+	}
+}
+
 func TestSnitchDryRunRedactsNestedYAMLAndCommandSubstitutionCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
@@ -1340,12 +1388,13 @@ func TestSnitchDryRunRedactsMultilineCurlAndYAMLCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"multiline-user-secret", "multiline-cert-secret", "quoted-yaml-secret", "sequence-yaml-secret", "anchored-yaml-secret"}
+	secrets := []string{"multiline-user-secret", "multiline-cert-secret", "quoted-yaml-secret", "sequence-yaml-secret", "anchored-yaml-secret", "multiline-flow-secret"}
 	repro := "curl --user \"alice:first\n" + secrets[0] + "\" https://example.test\n" +
 		"curl --cert \"client.p12:first\n" + secrets[1] + "\" https://example.test\n" +
 		"response:\n  \"password\":\n    value: " + secrets[2] + "\n  status: failed\n" +
 		"items:\n  - token:\n      value: " + secrets[3] + "\n    status: failed\n" +
-		"auth:\n  token: &credentials\n    value: " + secrets[4] + "\n  status: failed"
+		"auth:\n  token: &credentials\n    value: " + secrets[4] + "\n  status: failed\n" +
+		"config:\n  password: [first-value,\n    " + secrets[5] + "]\n  status: failed"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1373,6 +1422,7 @@ func TestSnitchDryRunRedactsMultilineCurlAndYAMLCredentials(t *testing.T) {
 		"response:\n  \"password\": [REDACTED]\n  status: failed",
 		"items:\n  - token: [REDACTED]\n    status: failed",
 		"auth:\n  token: [REDACTED]\n  status: failed",
+		"config:\n  password: [REDACTED]\n  status: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
