@@ -97,6 +97,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?` + sensitivePrefixedName + `[ \t]*:[ \t]*)(?:\[[^\]\r\n]*\]|\{[^}\r\n]*\})`),
+		replacement: `${1}` + redactionMarker,
+	},
+	{
 		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:[^"'[{\s\r\n][^\r\n]*)(\r?)$`),
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
@@ -193,7 +197,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}${3}${4}:` + redactionMarker + `${5}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(` + curlCertUnquotedPath + `):` + shellUnquotedValue),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(` + curlCertUnquotedPath + `):` + singleLineShellWord),
 		replacement: `${1}${2}${3}:` + redactionMarker,
 	},
 	{
