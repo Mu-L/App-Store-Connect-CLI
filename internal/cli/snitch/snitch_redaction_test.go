@@ -334,6 +334,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc deploy --password [REDACTED] --verbose`,
 		},
 		{
+			name:  "backtick command substitution in secret flag",
+			input: "asc deploy --password `printf supersecret` --verbose",
+			want:  `asc deploy --password [REDACTED] --verbose`,
+		},
+		{
+			name:  "dollar command substitution in secret flag",
+			input: `asc deploy --password $(printf supersecret) --verbose`,
+			want:  `asc deploy --password [REDACTED] --verbose`,
+		},
+		{
 			name:  "mixed adjacent fragments in secret assignment",
 			input: `PASSWORD=pre'super'"secret"post asc builds list`,
 			want:  `PASSWORD=[REDACTED] asc builds list`,
@@ -601,6 +611,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "YAML literal secret block",
 			input: "client_secret: |\n  super\n  sensitive\nstatus: failed",
 			want:  "client_secret: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "YAML sequence literal secret block",
+			input: "items:\n  - password: |\n      super\n      sensitive\nstatus: failed",
+			want:  "items:\n  - password: [REDACTED]\nstatus: failed",
 		},
 		{
 			name:  "YAML folded base64 private key block",
@@ -1113,6 +1128,42 @@ func TestSnitchDryRunRedactsStructuredHeadersAndYAMLSecretBlocks(t *testing.T) {
 		`{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","status":"failed"}`,
 		"client_secret: [REDACTED]\nstatus: failed",
 		"private_key_b64: [REDACTED]\nnext: preserved",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsNestedYAMLAndCommandSubstitutionCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"yaml-sequence-secret", "backtick-substitution-secret", "dollar-substitution-secret"}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "items:\n  - password: |\n      "+secrets[0]+"\nstatus: failed\nasc deploy --password `printf "+secrets[1]+"` --verbose\nasc deploy --password $(printf "+secrets[2]+") --verbose",
+		"nested credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"items:\n  - password: [REDACTED]\nstatus: failed",
+		"asc deploy --password [REDACTED] --verbose",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
