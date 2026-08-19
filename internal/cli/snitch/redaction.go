@@ -26,7 +26,7 @@ const (
 	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\]|[^-\s\\])(?:\\[^\r\n]|[^\s])*`
 	credentialPairQuoted        = `(?:"(?:\\.|[^"\\\r\n])*:(?:\\.|[^"\\\r\n])+"|\$'(?:\\.|[^'\\\r\n])*:(?:\\.|[^'\\\r\n])+'|'(?:\\.|[^'\\\r\n])*:(?:\\.|[^'\\\r\n])+')`
 	credentialPairOpen          = `(?:"[^\r\n]*:[^\r\n]+|\$?'[^\r\n]*:[^\r\n]+)`
-	credentialPairUnquoted      = `(?:\\[^\r\n]|[^\s:])*:(?:\\[^\r\n]|[^\s])+`
+	credentialPairUnquoted      = `(?:\\(?:\r?\n|[^\r\n])|[^\s:])*:(?:\\(?:\r?\n|[^\r\n])|[^\s])+`
 	credentialPairValue         = `(?:` + credentialPairQuoted + `|` + credentialPairOpen + `|` + credentialPairUnquoted + `)`
 	cookieDataQuoted            = `(?:"(?:\\.|[^"\\\r\n])*=(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*=(?:\\.|[^'\\\r\n])*')`
 	cookieDataUnquoted          = `(?:\\(?:\r?\n|[^\r\n])|[^\s])*=(?:\\(?:\r?\n|[^\r\n])|[^\s])*`
@@ -142,6 +142,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?i)('` + traceCredentialHeader + `[ \t]*:[ \t]*)(?:\\.|[^'\\\r\n])*(')`),
 		replacement: `${1}` + redactionMarker + `${2}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)\b(` + credentialHeaderName + `)[ \t]*:\[[^\]\r\n]*\]`),
+		replacement: `${1}:` + redactionMarker,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:[<>][ \t]*)?` + traceCredentialHeader + `)[ \t]*:[ \t]*[^\r\n]+`),

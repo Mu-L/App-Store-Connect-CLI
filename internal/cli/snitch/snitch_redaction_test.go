@@ -167,6 +167,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","status":"failed"}`,
 		},
 		{
+			name:  "go formatted credential header map",
+			input: `request headers: map[Cookie:[myacinfo=opaque-lowercase-secret] Content-Type:[application/json]]`,
+			want:  `request headers: map[Cookie:[REDACTED] Content-Type:[application/json]]`,
+		},
+		{
 			name:  "object valued structured credential",
 			input: `{"token":{"type":"bearer","value":"opaque-lowercase-secret"},"status":"failed"}`,
 			want:  `{"token":"[REDACTED]","status":"failed"}`,
@@ -461,6 +466,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "curl long user password flag",
 			input: `curl --user alice:supersensitive https://example.test`,
 			want:  `curl --user [REDACTED] https://example.test`,
+		},
+		{
+			name:  "continued curl user password flag",
+			input: "curl --user alice:super\\\nremainingcredential https://example.test",
+			want:  "curl --user [REDACTED] https://example.test",
 		},
 		{
 			name:  "curl short user password flag",
@@ -1239,6 +1249,43 @@ func TestSnitchDryRunRedactsCompositeYAMLAndProxyHeaderCredentials(t *testing.T)
 		"password: [REDACTED]",
 		`response: {"token":"[REDACTED]","status":"failed"}`,
 		`truncated: {"token":"[REDACTED]"`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsGoHeaderMapsAndContinuedCurlCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"continued-user-secret", "go-header-secret"}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "curl --user alice:"+secrets[0]+"\\\n-tail https://example.test",
+		"--actual", "request headers: map[Cookie:[myacinfo="+secrets[1]+"] Content-Type:[application/json]]",
+		"header map and continued credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"curl --user [REDACTED] https://example.test",
+		"request headers: map[Cookie:[REDACTED] Content-Type:[application/json]]",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
