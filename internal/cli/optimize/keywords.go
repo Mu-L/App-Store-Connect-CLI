@@ -47,7 +47,7 @@ candidates. Every computed value is reported next to the raw inputs it was
 derived from, and an unavailable source is reported instead of replaced.`,
 		FlagSet:     fs,
 		UsageFunc:   shared.DefaultUsageFunc,
-		Subcommands: []*ffcli.Command{KeywordsRankCommand()},
+		Subcommands: []*ffcli.Command{KeywordsRankCommand(), KeywordsScoreCommand()},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp
 		},

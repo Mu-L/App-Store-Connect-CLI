@@ -1,0 +1,479 @@
+package optimize
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/ads"
+)
+
+func TestKeywordsScoreCommandHelpDocumentsSourcesAndDesignDoc(t *testing.T) {
+	command := KeywordsScoreCommand()
+	joined := command.ShortUsage + "\n" + command.ShortHelp + "\n" + command.LongHelp
+	for _, want := range []string{
+		"asc optimize keywords score",
+		"[experimental]",
+		"docs/design/optimize-keywords.md",
+		"--ad-account",
+		"--genre",
+		"unavailable",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("help missing %q:\n%s", want, joined)
+		}
+	}
+	if !strings.HasSuffix(command.ShortHelp, "[experimental]") {
+		t.Fatalf("ShortHelp = %q, want experimental suffix", command.ShortHelp)
+	}
+}
+
+func TestKeywordsScoreCommandValidatesInputBeforeRequests(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "missing keywords",
+			args: nil,
+			want: "--keywords is required",
+		},
+		{
+			name: "keyword budget",
+			args: []string{"--keywords", strings.Join(manyKeywords(101), ",")},
+			want: "--keywords accepts at most 100 keywords per invocation",
+		},
+		{
+			name: "keyword word budget",
+			args: []string{"--keywords", "one two three four five"},
+			want: `--keywords entry "one two three four five" must contain at most 4 space-separated words`,
+		},
+		{
+			name: "workers",
+			args: []string{"--keywords", "focus timer", "--workers", "0"},
+			want: "--workers must be at least 1",
+		},
+		{
+			name: "country",
+			args: []string{"--keywords", "focus timer", "--country", "usa"},
+			want: `--country "usa" is not a supported App Store storefront`,
+		},
+		{
+			name: "app id",
+			args: []string{"--keywords", "focus timer", "--app", "com.example.app"},
+			want: "--app must be a numeric App Store app ID",
+		},
+		{
+			name: "genre",
+			args: []string{"--keywords", "focus timer", "--genre", "bad genre"},
+			want: "--genre must be an Apple Ads genre identifier such as PRODUCTIVITY_UTILITIES",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("ASC_APP_ID", "")
+			failKeywordsClient(t)
+			failKeywordsAdsCollector(t)
+			err := KeywordsScoreCommand().ParseAndRun(context.Background(), test.args)
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("error = %v, want usage error", err)
+			}
+		})
+	}
+}
+
+func TestKeywordsScoreCommandRejectsPositionalArguments(t *testing.T) {
+	failKeywordsClient(t)
+	failKeywordsAdsCollector(t)
+	err := KeywordsScoreCommand().Exec(context.Background(), []string{"extra"})
+	if err == nil || err.Error() != "optimize keywords score does not accept positional arguments" {
+		t.Fatalf("error = %v", err)
+	}
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("error = %v, want usage error", err)
+	}
+}
+
+func TestKeywordsScoreComposesCompetitionRankAndDegradesPopularity(t *testing.T) {
+	var lookupIDs []string
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search":
+			if got := r.URL.Query().Get("country"); got != "us" {
+				t.Errorf("country = %q, want us", got)
+			}
+			switch r.URL.Query().Get("term") {
+			case "focus timer":
+				writeScoreSearchResults(w, scoreSearchApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000},
+					scoreSearchApp{ID: 222, Name: "Deep Work", Seller: "Beta Labs", Rating: 4.2, Count: 4000},
+					scoreSearchApp{ID: 333, Name: "Timer Buddy", Seller: "Gamma Labs", Rating: 3.9, Count: 900},
+					scoreSearchApp{ID: 444, Name: "Pomodoro Pal", Seller: "Delta Labs", Rating: 4.1, Count: 250},
+					scoreSearchApp{ID: 1234567890, Name: "My Focus App", Seller: "Mine", Rating: 4.9, Count: 30},
+					scoreSearchApp{ID: 555, Name: "Sixth App", Seller: "Zeta Labs", Rating: 3.0, Count: 10})
+			case "tiny niche":
+				writeScoreSearchResults(w, scoreSearchApp{ID: 777, Name: "Tiny", Seller: "Solo", Rating: 5, Count: 3})
+			case "broken keyword":
+				w.WriteHeader(http.StatusTooManyRequests)
+			default:
+				t.Errorf("unexpected term %q", r.URL.Query().Get("term"))
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		case "/lookup":
+			mu.Lock()
+			lookupIDs = append(lookupIDs, r.URL.Query().Get("id"))
+			mu.Unlock()
+			if got := r.URL.Query().Get("entity"); got != "software" {
+				t.Errorf("entity = %q, want software", got)
+			}
+			writeScoreLookupResults(w,
+				scoreLookupApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000, Release: daysAgo(900), Updated: daysAgo(10)},
+				scoreLookupApp{ID: 222, Name: "Deep Work", Seller: "Beta Labs", Rating: 4.2, Count: 4000, Release: daysAgo(500), Updated: daysAgo(60)},
+				scoreLookupApp{ID: 333, Name: "Timer Buddy", Seller: "Gamma Labs", Rating: 3.9, Count: 900, Release: daysAgo(300), Updated: daysAgo(120)},
+				scoreLookupApp{ID: 444, Name: "Pomodoro Pal", Seller: "Delta Labs", Rating: 4.1, Count: 250, Release: daysAgo(200), Updated: daysAgo(30)},
+				scoreLookupApp{ID: 1234567890, Name: "My Focus App", Seller: "Mine", Rating: 4.9, Count: 30, Release: daysAgo(100), Updated: daysAgo(5)},
+				scoreLookupApp{ID: 777, Name: "Tiny", Seller: "Solo", Rating: 5, Count: 3, Release: daysAgo(50), Updated: daysAgo(50)})
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	stubKeywordsClient(t, server.URL)
+	failKeywordsAdsCollector(t)
+
+	stdout := captureSearchPlanStdout(t, func() error {
+		return KeywordsScoreCommand().ParseAndRun(context.Background(), []string{
+			"--keywords", "focus timer,tiny niche,broken keyword",
+			"--app", "1234567890",
+			"--output", "json",
+		})
+	})
+
+	var report KeywordScoreReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
+	}
+	if report.SchemaVersion != "1" || report.AppID != "1234567890" || report.Country != "US" {
+		t.Fatalf("unexpected report identity: %+v", report)
+	}
+	if len(report.Rows) != 3 {
+		t.Fatalf("rows = %d, want 3", len(report.Rows))
+	}
+
+	scored := report.Rows[0]
+	if scored.Status != keywordStatusAvailable || scored.DifficultyScore == nil || scored.MinDifficultyScore == nil {
+		t.Fatalf("scored row = %+v", scored)
+	}
+	if scored.AppCount == nil || *scored.AppCount != 6 {
+		t.Fatalf("scored row app count = %+v", scored.AppCount)
+	}
+	if scored.Rank == nil || *scored.Rank != 5 {
+		t.Fatalf("scored row rank = %+v", scored.Rank)
+	}
+	if scored.KeywordMatch != keywordMatchTitleExactPhrase {
+		t.Fatalf("scored row keyword match = %q", scored.KeywordMatch)
+	}
+	if len(scored.RawSignals) != keywordCompetitorSampleSize {
+		t.Fatalf("raw signals = %d, want %d", len(scored.RawSignals), keywordCompetitorSampleSize)
+	}
+	if scored.RawSignals[0].ReleaseDate == "" || scored.RawSignals[0].CurrentVersionReleaseDate == "" {
+		t.Fatalf("raw signals must carry hydrated release dates: %+v", scored.RawSignals[0])
+	}
+	if scored.RawSignals[0].AppScore <= 0 {
+		t.Fatalf("raw signals must carry a per-app score: %+v", scored.RawSignals[0])
+	}
+	if scored.Popularity != nil {
+		t.Fatalf("popularity must stay null without an Apple Ads source: %+v", scored.Popularity)
+	}
+	if scored.Fallback {
+		t.Fatal("Fallback = true, want false for a full result window")
+	}
+
+	fallback := report.Rows[1]
+	if !fallback.Fallback || fallback.DifficultyScore == nil || *fallback.DifficultyScore != 1 {
+		t.Fatalf("fallback row = %+v", fallback)
+	}
+	if fallback.MinDifficultyScore == nil || *fallback.MinDifficultyScore != 1 {
+		t.Fatalf("fallback row min difficulty = %+v", fallback.MinDifficultyScore)
+	}
+
+	failed := report.Rows[2]
+	if failed.Status != keywordStatusUnavailable || failed.DifficultyScore != nil || failed.AppCount != nil || failed.IsBrandKeyword != nil {
+		t.Fatalf("unavailable row must not invent scores: %+v", failed)
+	}
+	if !strings.Contains(failed.Error, "429") {
+		t.Fatalf("unavailable row error = %q", failed.Error)
+	}
+
+	sources := map[string]ads.SearchOptimizationSourceStatus{}
+	for _, source := range report.Sources {
+		sources[source.Name] = source
+	}
+	if got := sources[keywordSourcePopularity]; got.Status != keywordStatusUnavailable ||
+		!strings.Contains(got.Error, "--genre") {
+		t.Fatalf("popularity source = %+v, want an unavailable status naming the missing flag", got)
+	}
+	if got := sources[keywordSourceCompetition]; got.Status != keywordStatusAvailable || got.Count != 2 {
+		t.Fatalf("competition source = %+v", got)
+	}
+	if got := sources[keywordSourceMetadata]; got.Status != keywordStatusAvailable {
+		t.Fatalf("metadata source = %+v", got)
+	}
+	if got := sources[keywordSourceRank]; got.Status != keywordStatusAvailable || got.Count != 1 {
+		t.Fatalf("rank source = %+v", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lookupIDs) != 1 {
+		t.Fatalf("lookup requests = %v, want one deduplicated batch", lookupIDs)
+	}
+	if strings.Count(lookupIDs[0], "111") != 1 {
+		t.Fatalf("lookup batch must deduplicate app IDs across keywords: %q", lookupIDs[0])
+	}
+
+	var raw struct {
+		Rows []map[string]json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
+		t.Fatalf("unmarshal raw rows: %v", err)
+	}
+	for _, key := range []string{"popularity", "difficultyScore", "minDifficultyScore", "isBrandKeyword", "appCount"} {
+		if string(raw.Rows[2][key]) != "null" {
+			t.Fatalf("unavailable row %q = %s, want an explicit null", key, raw.Rows[2][key])
+		}
+	}
+}
+
+func TestKeywordsScoreFlattensApplePopularityWhenAdsIsAvailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search":
+			writeScoreSearchResults(w,
+				scoreSearchApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000},
+				scoreSearchApp{ID: 222, Name: "Deep Work", Seller: "Beta Labs", Rating: 4.2, Count: 4000},
+				scoreSearchApp{ID: 333, Name: "Timer Buddy", Seller: "Gamma Labs", Rating: 3.9, Count: 900},
+				scoreSearchApp{ID: 444, Name: "Pomodoro", Seller: "Delta Labs", Rating: 4.1, Count: 250},
+				scoreSearchApp{ID: 555, Name: "Fifth", Seller: "Zeta Labs", Rating: 4.0, Count: 100})
+		case "/lookup":
+			writeScoreLookupResults(w, scoreLookupApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000, Release: daysAgo(900), Updated: daysAgo(10)})
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	stubKeywordsClient(t, server.URL)
+
+	previous := collectSearchDataForKeywords
+	t.Cleanup(func() { collectSearchDataForKeywords = previous })
+	collectSearchDataForKeywords = func(_ context.Context, profile, account string, request ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error) {
+		if profile != "Ads" || account != "987654321" {
+			t.Fatalf("ads credentials = (%q, %q)", profile, account)
+		}
+		if request.AppID != "1234567890" || request.Country != "US" || request.Genre != "PRODUCTIVITY_UTILITIES" {
+			t.Fatalf("ads request = %+v", request)
+		}
+		if request.PopularityStart == "" || request.PopularityEnd == "" {
+			t.Fatalf("ads request is missing a popularity window: %+v", request)
+		}
+		return ads.SearchOptimizationData{
+			Sources: []ads.SearchOptimizationSourceStatus{{Name: "search_term_popularity", Status: "available", Count: 2}},
+			Popularities: []ads.SearchPopularity{
+				{Term: "Focus Timer", Country: "US", Genre: "PRODUCTIVITY_UTILITIES", Week: "2026-08-01", Popularity5: intPtr(3), Popularity100: intPtr(52), RankInGenre: intPtr(40)},
+				{Term: "focus timer", Country: "US", Genre: "PRODUCTIVITY_UTILITIES", Week: "2026-08-08", Popularity5: intPtr(4), Popularity100: intPtr(61), RankInGenre: intPtr(12)},
+				{Term: "unrelated term", Country: "US", Popularity5: intPtr(5)},
+			},
+		}, nil
+	}
+
+	stdout := captureSearchPlanStdout(t, func() error {
+		return KeywordsScoreCommand().ParseAndRun(context.Background(), []string{
+			"--keywords", "focus timer",
+			"--app", "1234567890",
+			"--genre", "productivity_utilities",
+			"--ad-account", "987654321",
+			"--ads-profile", "Ads",
+			"--country", "US",
+			"--output", "json",
+		})
+	})
+
+	var report KeywordScoreReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
+	}
+	if report.Genre != "PRODUCTIVITY_UTILITIES" {
+		t.Fatalf("genre = %q", report.Genre)
+	}
+	popularity := report.Rows[0].Popularity
+	if popularity == nil {
+		t.Fatal("popularity must be present when Apple Ads returns a row")
+	}
+	if popularity.Week != "2026-08-08" || popularity.Popularity5 == nil || *popularity.Popularity5 != 4 ||
+		popularity.Popularity100 == nil || *popularity.Popularity100 != 61 {
+		t.Fatalf("popularity must flatten the most recent week: %+v", popularity)
+	}
+	for _, source := range report.Sources {
+		if source.Name == keywordSourcePopularity && source.Status != keywordStatusAvailable {
+			t.Fatalf("popularity source = %+v", source)
+		}
+	}
+}
+
+func TestKeywordsScoreDegradesWhenCompetitorMetadataIsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/lookup" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		writeScoreSearchResults(w,
+			scoreSearchApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000},
+			scoreSearchApp{ID: 222, Name: "Deep Work", Seller: "Beta Labs", Rating: 4.2, Count: 4000},
+			scoreSearchApp{ID: 333, Name: "Timer Buddy", Seller: "Gamma Labs", Rating: 3.9, Count: 900},
+			scoreSearchApp{ID: 444, Name: "Pomodoro", Seller: "Delta Labs", Rating: 4.1, Count: 250},
+			scoreSearchApp{ID: 555, Name: "Fifth", Seller: "Zeta Labs", Rating: 4.0, Count: 100})
+	}))
+	defer server.Close()
+	stubKeywordsClient(t, server.URL)
+	failKeywordsAdsCollector(t)
+
+	stdout := captureSearchPlanStdout(t, func() error {
+		return KeywordsScoreCommand().ParseAndRun(context.Background(), []string{
+			"--keywords", "focus timer", "--output", "json",
+		})
+	})
+
+	var report KeywordScoreReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
+	}
+	row := report.Rows[0]
+	if row.Status != keywordStatusAvailable || row.DifficultyScore == nil {
+		t.Fatalf("competition must still score without metadata: %+v", row)
+	}
+	if row.RawSignals[0].ReleaseDate != "" || row.RawSignals[0].DaysSinceFirstRelease != keywordMissingDateDays {
+		t.Fatalf("missing metadata must degrade to the documented window: %+v", row.RawSignals[0])
+	}
+	for _, source := range report.Sources {
+		if source.Name != keywordSourceMetadata {
+			continue
+		}
+		if source.Status != keywordStatusUnavailable || !strings.Contains(source.Error, "503") {
+			t.Fatalf("metadata source = %+v", source)
+		}
+	}
+}
+
+func TestKeywordsScoreFailsWhenEveryKeywordFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	stubKeywordsClient(t, server.URL)
+	failKeywordsAdsCollector(t)
+
+	err := KeywordsScoreCommand().ParseAndRun(context.Background(), []string{
+		"--keywords", "focus timer,habit tracker", "--output", "json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "optimize keywords score") || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("error = %v, want the representative failure", err)
+	}
+}
+
+func TestKeywordsScoreRendersTableAndMarkdown(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/lookup" {
+			writeScoreLookupResults(w, scoreLookupApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000, Release: daysAgo(900), Updated: daysAgo(10)})
+			return
+		}
+		writeScoreSearchResults(w,
+			scoreSearchApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000},
+			scoreSearchApp{ID: 222, Name: "Deep Work", Seller: "Beta Labs", Rating: 4.2, Count: 4000},
+			scoreSearchApp{ID: 333, Name: "Timer Buddy", Seller: "Gamma Labs", Rating: 3.9, Count: 900},
+			scoreSearchApp{ID: 444, Name: "Pomodoro", Seller: "Delta Labs", Rating: 4.1, Count: 250},
+			scoreSearchApp{ID: 555, Name: "Fifth", Seller: "Zeta Labs", Rating: 4.0, Count: 100})
+	}))
+	defer server.Close()
+	stubKeywordsClient(t, server.URL)
+	failKeywordsAdsCollector(t)
+
+	for _, format := range []string{"table", "markdown"} {
+		t.Run(format, func(t *testing.T) {
+			stdout := captureSearchPlanStdout(t, func() error {
+				return KeywordsScoreCommand().ParseAndRun(context.Background(), []string{
+					"--keywords", "focus timer", "--output", format,
+				})
+			})
+			normalized := strings.ToLower(stdout)
+			for _, want := range []string{"keyword", "difficulty", "min difficulty", "popularity", "brand", "focus timer", "title exact phrase", "sources", "unavailable", "search term popularity"} {
+				if !strings.Contains(normalized, want) {
+					t.Fatalf("%s output missing %q:\n%s", format, want, stdout)
+				}
+			}
+		})
+	}
+}
+
+type scoreSearchApp struct {
+	ID     int64
+	Name   string
+	Seller string
+	Rating float64
+	Count  int64
+}
+
+type scoreLookupApp struct {
+	ID      int64
+	Name    string
+	Seller  string
+	Rating  float64
+	Count   int64
+	Release string
+	Updated string
+}
+
+func writeScoreSearchResults(w http.ResponseWriter, apps ...scoreSearchApp) {
+	results := make([]string, 0, len(apps))
+	for _, app := range apps {
+		results = append(results, fmt.Sprintf(
+			`{"trackId":%d,"trackName":%q,"sellerName":%q,"averageUserRating":%v,"userRatingCount":%d}`,
+			app.ID, app.Name, app.Seller, app.Rating, app.Count,
+		))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"resultCount":%d,"results":[%s]}`, len(results), strings.Join(results, ","))
+}
+
+func writeScoreLookupResults(w http.ResponseWriter, apps ...scoreLookupApp) {
+	results := make([]string, 0, len(apps))
+	for _, app := range apps {
+		results = append(results, fmt.Sprintf(
+			`{"trackId":%d,"trackName":%q,"sellerName":%q,"averageUserRating":%v,"userRatingCount":%d,"releaseDate":%q,"currentVersionReleaseDate":%q}`,
+			app.ID, app.Name, app.Seller, app.Rating, app.Count, app.Release, app.Updated,
+		))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"resultCount":%d,"results":[%s]}`, len(results), strings.Join(results, ","))
+}
+
+func failKeywordsAdsCollector(t *testing.T) {
+	t.Helper()
+	previous := collectSearchDataForKeywords
+	t.Cleanup(func() { collectSearchDataForKeywords = previous })
+	collectSearchDataForKeywords = func(context.Context, string, string, ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error) {
+		t.Fatal("Apple Ads collector ran without complete popularity inputs")
+		return ads.SearchOptimizationData{}, nil
+	}
+}
