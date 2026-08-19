@@ -35,14 +35,15 @@ This command is experimental.
 Starting September 2026, Apple requires responses to the social-media
 capability questions in the age rating questionnaire for every new submission
 and app update. By default, this command audits the first app page (up to 200
-apps). Pass --paginate to audit every app page, or --app to audit specific IDs.
+apps). Every active AppInfo for each app is audited. Pass --paginate to audit
+every app page, or --app to audit specific IDs.
 
 A response counts as missing when:
   - socialMedia is unset, or false while socialMediaAgeRestricted is true
   - messagingAndChat is unset
   - socialMediaAgeRestricted is unset while socialMedia is true
   - ageAssurance is unset or false while socialMediaAgeRestricted is true
-  - userGeneratedContent is false while socialMedia or socialMediaAgeRestricted is true
+  - userGeneratedContent is unset or false while socialMedia or socialMediaAgeRestricted is true
 
 Use "asc age-rating edit" to fill gaps.
 
@@ -96,12 +97,12 @@ Examples:
 			if result.MissingCount > 0 {
 				fmt.Fprintf(
 					os.Stderr,
-					"%d of %d apps are missing social-media age rating responses; Apple requires them for new submissions and updates starting September 2026.\n",
+					"%d of %d active app info records are missing social-media age rating responses; Apple requires them for new submissions and updates starting September 2026.\n",
 					result.MissingCount,
 					len(rows),
 				)
 			} else if result.ErrorCount == 0 {
-				fmt.Fprintf(os.Stderr, "All %d apps have the social-media age rating responses set.\n", len(rows))
+				fmt.Fprintf(os.Stderr, "All %d active app info records have the social-media age rating responses set.\n", len(rows))
 			}
 			if len(only) == 0 && moreApps {
 				fmt.Fprintln(os.Stderr, "Warning: more apps exist; use --paginate to audit every app.")
@@ -111,11 +112,11 @@ Examples:
 				return err
 			}
 			if result.ErrorCount > 0 {
-				noun := "apps"
+				noun := "app info records"
 				if result.ErrorCount == 1 {
-					noun = "app"
+					noun = "app info record"
 				}
-				err := fmt.Errorf("age-rating audit: %d %s could not be audited; see per-app errors in the output", result.ErrorCount, noun)
+				err := fmt.Errorf("age-rating audit: %d %s could not be audited; see row errors in the output", result.ErrorCount, noun)
 				fmt.Fprintln(os.Stderr, err)
 				return shared.NewReportedError(err)
 			}
@@ -178,7 +179,7 @@ func auditTargetApps(ctx context.Context, client *asc.Client, only []string, pag
 }
 
 func auditDeclarations(ctx context.Context, client *asc.Client, apps []auditApp) []asc.AgeRatingAuditRow {
-	rows := make([]asc.AgeRatingAuditRow, len(apps))
+	rowsByApp := make([][]asc.AgeRatingAuditRow, len(apps))
 	jobs := make(chan int)
 
 	var workers sync.WaitGroup
@@ -188,7 +189,7 @@ func auditDeclarations(ctx context.Context, client *asc.Client, apps []auditApp)
 		go func() {
 			defer workers.Done()
 			for index := range jobs {
-				rows[index] = auditDeclaration(ctx, client, apps[index])
+				rowsByApp[index] = auditAppDeclarations(ctx, client, apps[index])
 			}
 		}()
 	}
@@ -197,12 +198,45 @@ func auditDeclarations(ctx context.Context, client *asc.Client, apps []auditApp)
 	}
 	close(jobs)
 	workers.Wait()
+
+	rows := make([]asc.AgeRatingAuditRow, 0, len(apps))
+	for _, appRows := range rowsByApp {
+		rows = append(rows, appRows...)
+	}
 	return rows
 }
 
-func auditDeclaration(ctx context.Context, client *asc.Client, app auditApp) asc.AgeRatingAuditRow {
+func auditAppDeclarations(ctx context.Context, client *asc.Client, app auditApp) []asc.AgeRatingAuditRow {
+	requestCtx, cancel := shared.ContextWithTimeout(ctx)
+	candidates, err := client.ListAppInfoCandidatesForApp(requestCtx, app.id)
+	cancel()
+	if err != nil {
+		return []asc.AgeRatingAuditRow{newAgeRatingAuditErrorRow(app, asc.AppInfoCandidate{}, err)}
+	}
+
+	current := asc.CurrentAppInfoCandidates(candidates)
+	if len(current) == 0 {
+		err := fmt.Errorf(
+			"no current app info found for app %q (%s); run `asc apps info list --app %q` to inspect candidates",
+			app.id,
+			asc.FormatAppInfoCandidates(candidates),
+			app.id,
+		)
+		return []asc.AgeRatingAuditRow{newAgeRatingAuditErrorRow(app, asc.AppInfoCandidate{}, err)}
+	}
+
+	rows := make([]asc.AgeRatingAuditRow, 0, len(current))
+	for _, candidate := range current {
+		rows = append(rows, auditDeclaration(ctx, client, app, candidate))
+	}
+	return rows
+}
+
+func auditDeclaration(ctx context.Context, client *asc.Client, app auditApp, appInfo asc.AppInfoCandidate) asc.AgeRatingAuditRow {
 	row := asc.AgeRatingAuditRow{
 		AppID:            app.id,
+		AppInfoID:        appInfo.ID,
+		AppInfoState:     appInfo.State,
 		Name:             app.name,
 		BundleID:         app.bundleID,
 		MissingResponses: []string{},
@@ -211,14 +245,9 @@ func auditDeclaration(ctx context.Context, client *asc.Client, app auditApp) asc
 	requestCtx, cancel := shared.ContextWithTimeout(ctx)
 	defer cancel()
 
-	resp, err := fetchAgeRatingDeclaration(requestCtx, client, app.id, "", "", nil)
+	resp, err := fetchAgeRatingDeclaration(requestCtx, client, "", appInfo.ID, "", nil)
 	if err != nil {
-		row.Error = err.Error()
-		row.SocialMedia = "-"
-		row.SocialMediaAgeRestricted = "-"
-		row.MessagingAndChat = "-"
-		row.AgeAssurance = "-"
-		return row
+		return newAgeRatingAuditErrorRow(app, appInfo, err)
 	}
 
 	attrs := resp.Data.Attributes
@@ -249,6 +278,22 @@ func auditDeclaration(ctx context.Context, client *asc.Client, app auditApp) asc
 	}
 	row.Ready = len(row.MissingResponses) == 0
 	return row
+}
+
+func newAgeRatingAuditErrorRow(app auditApp, appInfo asc.AppInfoCandidate, err error) asc.AgeRatingAuditRow {
+	return asc.AgeRatingAuditRow{
+		AppID:                    app.id,
+		AppInfoID:                appInfo.ID,
+		AppInfoState:             appInfo.State,
+		Name:                     app.name,
+		BundleID:                 app.bundleID,
+		SocialMedia:              "-",
+		SocialMediaAgeRestricted: "-",
+		MessagingAndChat:         "-",
+		AgeAssurance:             "-",
+		MissingResponses:         []string{},
+		Error:                    err.Error(),
+	}
 }
 
 func auditBoolStatus(value *bool) string {

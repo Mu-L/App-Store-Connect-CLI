@@ -68,11 +68,11 @@ type AppInfoCandidate struct {
 	State string
 }
 
-// ResolveCurrentAppInfoIDForApp resolves the single non-historical app info for an app.
-func (c *Client) ResolveCurrentAppInfoIDForApp(ctx context.Context, appID string) (string, error) {
+// ListAppInfoCandidatesForApp lists every app info candidate for an app.
+func (c *Client) ListAppInfoCandidatesForApp(ctx context.Context, appID string) ([]AppInfoCandidate, error) {
 	appID = strings.TrimSpace(appID)
 	if appID == "" {
-		return "", fmt.Errorf("appID is required")
+		return nil, fmt.Errorf("appID is required")
 	}
 
 	firstPage, err := c.GetAppInfos(
@@ -82,33 +82,41 @@ func (c *Client) ResolveCurrentAppInfoIDForApp(ctx context.Context, appID string
 		WithAppInfosLimit(200),
 	)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	allPages, err := PaginateAll(ctx, firstPage, func(ctx context.Context, nextURL string) (PaginatedResponse, error) {
 		return c.GetAppInfos(ctx, appID, WithAppInfosNextURL(nextURL))
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	appInfos, ok := allPages.(*AppInfosResponse)
 	if !ok {
-		return "", fmt.Errorf("unexpected app info pagination response %T", allPages)
+		return nil, fmt.Errorf("unexpected app info pagination response %T", allPages)
 	}
-	return resolveCurrentAppInfoID(appID, appInfos.Data)
+	return AppInfoCandidates(appInfos.Data), nil
+}
+
+// ResolveCurrentAppInfoIDForApp resolves the single non-historical app info for an app.
+func (c *Client) ResolveCurrentAppInfoIDForApp(ctx context.Context, appID string) (string, error) {
+	candidates, err := c.ListAppInfoCandidatesForApp(ctx, appID)
+	if err != nil {
+		return "", err
+	}
+	return resolveCurrentAppInfoIDFromCandidates(appID, candidates)
 }
 
 func resolveCurrentAppInfoID(appID string, appInfos []Resource[AppInfoAttributes]) (string, error) {
 	if len(appInfos) == 0 {
 		return "", fmt.Errorf("no app info found for app %q", appID)
 	}
+	return resolveCurrentAppInfoIDFromCandidates(appID, AppInfoCandidates(appInfos))
+}
 
-	candidates := AppInfoCandidates(appInfos)
-	current := make([]AppInfoCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if strings.EqualFold(candidate.State, "REPLACED_WITH_NEW_INFO") {
-			continue
-		}
-		current = append(current, candidate)
+func resolveCurrentAppInfoIDFromCandidates(appID string, candidates []AppInfoCandidate) (string, error) {
+	current := CurrentAppInfoCandidates(candidates)
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no app info found for app %q", appID)
 	}
 	if len(current) == 1 && current[0].ID != "" {
 		return current[0].ID, nil
@@ -129,6 +137,18 @@ func resolveCurrentAppInfoID(appID string, appInfos []Resource[AppInfoAttributes
 		formatted,
 		appID,
 	)
+}
+
+// CurrentAppInfoCandidates excludes historical app info records.
+func CurrentAppInfoCandidates(candidates []AppInfoCandidate) []AppInfoCandidate {
+	current := make([]AppInfoCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if strings.EqualFold(candidate.State, "REPLACED_WITH_NEW_INFO") {
+			continue
+		}
+		current = append(current, candidate)
+	}
+	return current
 }
 
 // ResolveAppInfoIDForAppStoreVersion resolves the app info backing a version-scoped workflow.

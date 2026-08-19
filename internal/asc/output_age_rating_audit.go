@@ -5,9 +5,11 @@ import (
 	"strings"
 )
 
-// AgeRatingAuditRow reports one app's social-media capability responses.
+// AgeRatingAuditRow reports one active app info's social-media capability responses.
 type AgeRatingAuditRow struct {
 	AppID                    string   `json:"appId"`
+	AppInfoID                string   `json:"appInfoId,omitempty"`
+	AppInfoState             string   `json:"appInfoState,omitempty"`
 	Name                     string   `json:"name,omitempty"`
 	BundleID                 string   `json:"bundleId,omitempty"`
 	SocialMedia              string   `json:"socialMedia"`
@@ -19,7 +21,7 @@ type AgeRatingAuditRow struct {
 	Error                    string   `json:"error,omitempty"`
 }
 
-// AgeRatingAuditResult summarizes social-media capability readiness per app.
+// AgeRatingAuditResult summarizes social-media capability readiness per active app info.
 type AgeRatingAuditResult struct {
 	Apps         []AgeRatingAuditRow `json:"apps"`
 	ReadyCount   int                 `json:"readyCount"`
@@ -28,7 +30,7 @@ type AgeRatingAuditResult struct {
 }
 
 func ageRatingAuditResultRows(result *AgeRatingAuditResult) ([]string, [][]string) {
-	headers := []string{"App ID", "Name", "Social Media", "Age Restricted", "Messaging & Chat", "Age Assurance", "Ready", "Missing"}
+	headers := []string{"App ID", "App Info ID", "State", "Name", "Social Media", "Age Restricted", "Messaging & Chat", "Age Assurance", "Ready", "Missing"}
 	rows := make([][]string, 0, len(result.Apps))
 	for _, row := range result.Apps {
 		missing := strings.Join(row.MissingResponses, ", ")
@@ -37,6 +39,8 @@ func ageRatingAuditResultRows(result *AgeRatingAuditResult) ([]string, [][]strin
 		}
 		rows = append(rows, []string{
 			row.AppID,
+			row.AppInfoID,
+			row.AppInfoState,
 			row.Name,
 			row.SocialMedia,
 			row.SocialMediaAgeRestricted,

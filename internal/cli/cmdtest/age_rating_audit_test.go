@@ -159,6 +159,58 @@ func TestAgeRatingAuditSelectsCurrentAppInfo(t *testing.T) {
 	}
 }
 
+func TestAgeRatingAuditChecksEveryCurrentAppInfo(t *testing.T) {
+	setupAuth(t)
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/apps":
+			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"apps","id":"app-1","attributes":{"name":"Multi-platform App"}}],"links":{}}`), nil
+		case "/v1/apps/app-1/appInfos":
+			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"appInfos","id":"info-ios","attributes":{"state":"READY_FOR_DISTRIBUTION"}},{"type":"appInfos","id":"info-mac","attributes":{"state":"PREPARE_FOR_SUBMISSION"}}],"links":{}}`), nil
+		case "/v1/appInfos/info-ios/ageRatingDeclaration":
+			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"ageRatingDeclarations","id":"decl-ios","attributes":{"socialMedia":false,"socialMediaAgeRestricted":false,"messagingAndChat":false,"ageAssurance":false}}}`), nil
+		case "/v1/appInfos/info-mac/ageRatingDeclaration":
+			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"ageRatingDeclarations","id":"decl-mac","attributes":{"socialMedia":true,"socialMediaAgeRestricted":false,"messagingAndChat":true,"ageAssurance":false,"userGeneratedContent":true}}}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, _ := captureOutput(t, func() {
+		if err := root.Parse([]string{"age-rating", "audit", "--output", "json"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	var result struct {
+		Apps []struct {
+			AppInfoID    string `json:"appInfoId"`
+			AppInfoState string `json:"appInfoState"`
+			Ready        bool   `json:"ready"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("unmarshal output: %v (%q)", err, stdout)
+	}
+	if len(result.Apps) != 2 {
+		t.Fatalf("audit rows = %+v, want one row per current app info", result.Apps)
+	}
+	want := []struct {
+		id    string
+		state string
+	}{{"info-ios", "READY_FOR_DISTRIBUTION"}, {"info-mac", "PREPARE_FOR_SUBMISSION"}}
+	for i, row := range result.Apps {
+		if row.AppInfoID != want[i].id || row.AppInfoState != want[i].state || !row.Ready {
+			t.Fatalf("audit row %d = %+v, want app info %q in state %q and ready", i, row, want[i].id, want[i].state)
+		}
+	}
+}
+
 func TestAgeRatingAuditRequiresAgeAssuranceForRestrictedSocialMedia(t *testing.T) {
 	setupAuth(t)
 	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -310,7 +362,7 @@ func TestAgeRatingAuditRequiresUserGeneratedContent(t *testing.T) {
 	}
 }
 
-func TestAgeRatingAuditReturnsFailureAfterRenderingPerAppErrors(t *testing.T) {
+func TestAgeRatingAuditReturnsFailureAfterRenderingRowErrors(t *testing.T) {
 	setupAuth(t)
 	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
@@ -340,7 +392,7 @@ func TestAgeRatingAuditReturnsFailureAfterRenderingPerAppErrors(t *testing.T) {
 	if len(result.Apps) != 1 || result.Apps[0].Error == "" || result.ErrorCount != 1 {
 		t.Fatalf("unexpected error result: %+v", result)
 	}
-	if !strings.Contains(stderr, "age-rating audit: 1 app could not be audited") {
+	if !strings.Contains(stderr, "age-rating audit: 1 app info record could not be audited") {
 		t.Fatalf("stderr = %q, want partial-audit diagnostic", stderr)
 	}
 }
