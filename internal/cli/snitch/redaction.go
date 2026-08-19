@@ -13,6 +13,9 @@ const (
 	sensitiveAssignmentName     = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passwd|pwd|secret|token)`
 	sensitivePrefixedName       = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
 	sensitiveFlagName           = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook[_-]?header|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passwd|pwd|pass|token)`
+	sensitiveOrSecretFlagName   = `(?:` + sensitiveFlagName + `|secret)`
+	sensitiveShellFlagToken     = `(?:-{1,2}` + sensitiveFlagName + `\b|"-{1,2}` + sensitiveFlagName + `\b"|'-{1,2}` + sensitiveFlagName + `\b'|-{1,2}"` + sensitiveFlagName + `\b"|-{1,2}'` + sensitiveFlagName + `\b')`
+	sensitiveOrSecretShellToken = `(?:-{1,2}` + sensitiveOrSecretFlagName + `\b|"-{1,2}` + sensitiveOrSecretFlagName + `\b"|'-{1,2}` + sensitiveOrSecretFlagName + `\b'|-{1,2}"` + sensitiveOrSecretFlagName + `\b"|-{1,2}'` + sensitiveOrSecretFlagName + `\b')`
 	credentialHeaderName        = `(?:proxy-authorization|authorization|cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
 	traceCredentialHeader       = `(?:cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
 	webAuthQueryCredential      = `(?:widgetkey|code|scnt)`
@@ -69,7 +72,7 @@ var (
 	yamlCredentialAlias               = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlAnchor                        = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
 	jsonQuotedScalarLine              = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
-	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:-{1,2}` + sensitiveFlagName + `\b(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\()`)
+	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\()`)
 	xcodeCloudEnvVarSetCommand        = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')[ \t]+web[ \t]+xcode-cloud[ \t]+env-vars[ \t]+(?:shared[ \t]+)?set\b`)
 )
 
@@ -93,11 +96,11 @@ var singleLineShellWordRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}` + sensitiveFlagName + `\b[ \t]+)` + fishShellWord + `(` + singleLineShellTerminator + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveShellFlagToken + `[ \t]+)` + fishShellWord + `(` + singleLineShellTerminator + `)`),
 		replacement: `${1}${2}` + redactionMarker + `${3}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}(?:` + sensitiveFlagName + `|secret)\b[ \t]*=[ \t]*)` + fishShellWord + `(` + singleLineShellTerminator + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveOrSecretShellToken + `[ \t]*=[ \t]*)` + fishShellWord + `(` + singleLineShellTerminator + `)`),
 		replacement: `${1}${2}` + redactionMarker + `${3}`,
 	},
 	{
@@ -236,7 +239,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}` + sensitiveFlagName + `\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveShellFlagToken + `[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
@@ -244,7 +247,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}(?:` + sensitiveFlagName + `|secret)\b[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveOrSecretShellToken + `[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{

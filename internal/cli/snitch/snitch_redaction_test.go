@@ -399,6 +399,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc web sandbox create --email "user@example.test" --password [REDACTED] --territory "USA"`,
 		},
 		{
+			name:  "fully quoted sensitive flag",
+			input: `asc signing sync push "--password" opaque-secret`,
+			want:  `asc signing sync push "--password" [REDACTED]`,
+		},
+		{
+			name:  "quoted sensitive flag name fragment",
+			input: `asc signing sync push --"password" opaque-secret`,
+			want:  `asc signing sync push --"password" [REDACTED]`,
+		},
+		{
+			name:  "single quoted sensitive flag equals form",
+			input: `asc signing sync push '--password'=opaque-secret`,
+			want:  `asc signing sync push '--password'=[REDACTED]`,
+		},
+		{
 			name:  "adjacent quoted fragments in secret flag",
 			input: `asc deploy --password 'super''secret' --verbose`,
 			want:  `asc deploy --password [REDACTED] --verbose`,
@@ -1341,13 +1356,14 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret", "fish-substitution-secret", "quoted-executable-secret"}
+	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret", "fish-substitution-secret", "quoted-executable-secret", "quoted-flag-secret"}
 	repro := "asc web xcode-cloud env-vars set --value " + secrets[0] + " --secret=true&& echo done\n" +
 		"curl --proxy-cert client.p12:" + secrets[1] + " https://example.test\n" +
 		"asc deploy --password $(printf %s $(printf prefix) " + secrets[2] + ") --verbose\n" +
 		"asc signing sync --password (printf " + secrets[3] + ") --verbose\n" +
 		"asc webhooks create --url https://example.test/hook --secret=true\n" +
-		`"asc" web xcode-cloud env-vars set --value ` + secrets[4] + ` --secret=true`
+		`"asc" web xcode-cloud env-vars set --value ` + secrets[4] + " --secret=true\n" +
+		`asc signing sync push "--password" ` + secrets[5]
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1376,6 +1392,7 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 		"asc signing sync --password [REDACTED] --verbose",
 		"asc webhooks create --url https://example.test/hook --secret=[REDACTED]",
 		`"asc" web xcode-cloud env-vars set --value [REDACTED] --secret=true`,
+		`asc signing sync push "--password" [REDACTED]`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
