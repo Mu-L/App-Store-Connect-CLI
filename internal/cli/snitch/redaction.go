@@ -66,6 +66,8 @@ var (
 	yamlCredentialMapping             = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
 	yamlCredentialFlowStart           = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)([\[{])`)
 	yamlExplicitCredentialKey         = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlCredentialAlias               = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlAnchor                        = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
 	jsonQuotedScalarLine              = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
 	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:-{1,2}` + sensitiveFlagName + `\b(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\()`)
 	xcodeCloudEnvVarSetCommand        = regexp.MustCompile(`(?i)\basc[ \t]+web[ \t]+xcode-cloud[ \t]+env-vars[ \t]+(?:shared[ \t]+)?set\b`)
@@ -285,6 +287,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, yamlAliasChanged := redactYAMLCredentialAliases(redacted); yamlAliasChanged {
+		redacted = next
+		changed = true
+	}
 	if next, yamlExplicitChanged := redactYAMLExplicitCredentialMappings(redacted); yamlExplicitChanged {
 		redacted = next
 		changed = true
@@ -320,6 +326,72 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = strings.ReplaceAll(redacted, booleanMarkerProtection, "")
 	}
 	return redacted, changed
+}
+
+func redactYAMLCredentialAliases(value string) (string, bool) {
+	aliases := make(map[string]struct{})
+	for _, match := range yamlCredentialAlias.FindAllStringSubmatch(value, -1) {
+		aliases[match[1]] = struct{}{}
+	}
+	if len(aliases) == 0 {
+		return value, false
+	}
+
+	lines := strings.SplitAfter(value, "\n")
+	changed := false
+	for line := 0; line < len(lines); line++ {
+		content, ending := splitLineEnding(lines[line])
+		for _, match := range yamlAnchor.FindAllStringSubmatchIndex(content, -1) {
+			if _, sensitive := aliases[content[match[2]:match[3]]]; !sensitive {
+				continue
+			}
+
+			prefix := content[:match[0]]
+			valueIndent, isValue := yamlAnchorValueIndent(prefix)
+			if !isValue {
+				continue
+			}
+
+			inlineValue := strings.TrimSpace(content[match[1]:])
+			hasInlineValue := inlineValue != "" && !strings.HasPrefix(inlineValue, "#")
+			end := line + 1
+			hasIndentedContent := false
+			for end < len(lines) {
+				child, _ := splitLineEnding(lines[end])
+				if strings.TrimSpace(child) == "" {
+					end++
+					continue
+				}
+				if leadingIndent(child) <= valueIndent {
+					break
+				}
+				hasIndentedContent = true
+				end++
+			}
+			if !hasInlineValue && !hasIndentedContent {
+				continue
+			}
+			if inlineValue == redactionMarker && !hasIndentedContent {
+				continue
+			}
+
+			lines[line] = content[:match[1]] + " " + redactionMarker + ending
+			lines = append(lines[:line+1], lines[end:]...)
+			changed = true
+			break
+		}
+	}
+	return strings.Join(lines, ""), changed
+}
+
+func yamlAnchorValueIndent(prefix string) (int, bool) {
+	if colon := strings.LastIndexByte(prefix, ':'); colon >= 0 && strings.TrimSpace(prefix[colon+1:]) == "" {
+		return yamlKeyIndent(prefix), true
+	}
+	if strings.TrimSpace(prefix) == "-" {
+		return leadingIndent(prefix), true
+	}
+	return 0, false
 }
 
 func redactYAMLExplicitCredentialMappings(value string) (string, bool) {
@@ -438,7 +510,7 @@ func redactYAMLFlowCredentials(value string) (string, bool) {
 		if close < 0 {
 			close = len(redacted) - 1
 		}
-		if !strings.Contains(redacted[open:close+1], "\n") || flowStartsWithQuotedValue(redacted, open, close) {
+		if redacted[open:close+1] == redactionMarker || flowStartsWithQuotedValue(redacted, open, close) {
 			searchStart = open + 1
 			continue
 		}
