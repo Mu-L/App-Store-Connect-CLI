@@ -598,6 +598,13 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
   --value [REDACTED]`,
 		},
 		{
+			name: "boolean secret marker after continued command path",
+			input: `asc web xcode-cloud env-vars \
+  set --value continued-path-secret --secret`,
+			want: `asc web xcode-cloud env-vars \
+  set --value [REDACTED] --secret`,
+		},
+		{
 			name:  "boolean secret marker after literal newline in quoted value",
 			input: "asc web xcode-cloud env-vars set --value \"credential-head\ncredential-tail\" --secret",
 			want:  "asc web xcode-cloud env-vars set --value [REDACTED] --secret",
@@ -791,6 +798,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "JSON unicode escape in credential key",
 			input: `response {"pass\u0077ord":"opaque-unicode-secret","status":"failed"}`,
 			want:  `response {"pass\u0077ord":"[REDACTED]","status":"failed"}`,
+		},
+		{
+			name:  "escaped JSON unicode escape in credential key",
+			input: `trace {\"pass\\u0077ord\":\"opaque-escaped-unicode-secret\",\"status\":\"failed\"}`,
+			want:  `trace {\"pass\\u0077ord\":\"[REDACTED]\",\"status\":\"failed\"}`,
 		},
 		{
 			name:  "prefixed JSON assignments",
@@ -1460,9 +1472,10 @@ func TestSnitchDryRunRedactsTOMLAndEscapedJSONCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"toml-multiline-secret", "json-unicode-key-secret"}
+	secrets := []string{"toml-multiline-secret", "json-unicode-key-secret", "escaped-json-unicode-key-secret"}
 	repro := "password = \"\"\"opaque-head\n" + secrets[0] + "\"\"\"\nstatus = \"failed\"\n" +
-		`{"pass\u0077ord":"` + secrets[1] + `","status":"failed"}`
+		`{"pass\u0077ord":"` + secrets[1] + `","status":"failed"}` + "\n" +
+		`trace {\"pass\\u0077ord\":\"` + secrets[2] + `\",\"status\":\"failed\"}`
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1487,6 +1500,7 @@ func TestSnitchDryRunRedactsTOMLAndEscapedJSONCredentials(t *testing.T) {
 	for _, want := range []string{
 		"password = [REDACTED]\nstatus = \"failed\"",
 		`{"pass\u0077ord":"[REDACTED]","status":"failed"}`,
+		`trace {\"pass\\u0077ord\":\"[REDACTED]\",\"status\":\"failed\"}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
