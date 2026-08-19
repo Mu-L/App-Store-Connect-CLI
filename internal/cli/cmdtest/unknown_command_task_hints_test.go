@@ -26,11 +26,14 @@ func TestRunUnknownSubcommandTaskHints(t *testing.T) {
 			wantOrder: []string{"Error: unknown command `asc builds latest`", "Common tasks:", "For help:"},
 			wantContains: []string{
 				"  list builds          asc builds list --app <app-id>\n",
+				// The canonical latest-build lookup, not a sorted single-result list.
 				"  latest build         asc builds info --app <app-id> --latest\n",
+				// The first-class command, not arithmetic over a build listing.
+				"  next build number    asc builds next-build-number --app <app-id>\n",
 				"  wait for processing  asc builds wait --app <app-id> --latest\n",
 				"  asc builds --help\n",
 			},
-			wantAbsent: []string{"Try:"},
+			wantAbsent: []string{"Try:", "--sort -uploadedDate"},
 		},
 		{
 			name:      "guessed verb on a curated nested group",

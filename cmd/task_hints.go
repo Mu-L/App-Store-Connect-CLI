@@ -21,6 +21,11 @@ type taskHint struct {
 // the group, using long-form flags that command defines. Tests in
 // task_hints_test.go resolve each entry against the live command tree, so keep
 // the table in sync with the commands themselves rather than with memory.
+//
+// Prefer the canonical first-class command for a task over a generic equivalent
+// that happens to produce the same answer: `asc builds info --app X --latest`
+// rather than a sorted single-result list, and `asc builds next-build-number`
+// rather than arithmetic on a listing.
 var unknownChildTaskHints = map[string][]taskHint{
 	"asc apps": {
 		{task: "list apps", command: "asc apps list"},
@@ -40,9 +45,9 @@ var unknownChildTaskHints = map[string][]taskHint{
 	"asc builds": {
 		{task: "list builds", command: "asc builds list --app <app-id>"},
 		{task: "latest build", command: "asc builds info --app <app-id> --latest"},
-		{task: "wait for processing", command: "asc builds wait --app <app-id> --latest"},
+		{task: "next build number", command: "asc builds next-build-number --app <app-id>"},
 		{task: "upload a build", command: "asc builds upload --app <app-id> --ipa <path>"},
-		{task: "expire a build", command: "asc builds expire --app <app-id> --latest --confirm"},
+		{task: "wait for processing", command: "asc builds wait --app <app-id> --latest"},
 	},
 	"asc iap": {
 		{task: "list purchases", command: "asc iap list --app <app-id>"},

@@ -12,9 +12,9 @@ const (
 	buildsTaskHintBlock = "Common tasks:\n" +
 		"  list builds          asc builds list --app <app-id>\n" +
 		"  latest build         asc builds info --app <app-id> --latest\n" +
-		"  wait for processing  asc builds wait --app <app-id> --latest\n" +
+		"  next build number    asc builds next-build-number --app <app-id>\n" +
 		"  upload a build       asc builds upload --app <app-id> --ipa <path>\n" +
-		"  expire a build       asc builds expire --app <app-id> --latest --confirm\n"
+		"  wait for processing  asc builds wait --app <app-id> --latest\n"
 
 	versionsTaskHintBlock = "Common tasks:\n" +
 		"  list versions      asc versions list --app <app-id>\n" +
