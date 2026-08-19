@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -90,8 +91,21 @@ func TestGenerateClientSecretClaims(t *testing.T) {
 func TestGenerateClientSecretRejectsLifetimeExceedingAppleMaximum(t *testing.T) {
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
 
-	if _, err := GenerateClientSecret("KEY123", "TEAM123", "CLIENT123", testPrivateKey(t), now, maxClientSecretSpan); err == nil {
-		t.Fatal("expected error for a lifetime that pushes the signed span past 180 days, got nil")
+	rejected := []struct {
+		name     string
+		lifetime time.Duration
+	}{
+		{name: "span exceeds the cap once the skew is counted", lifetime: maxClientSecretSpan},
+		// Measuring the span must not overflow: a wrapped sum would slip past the
+		// guard and sign a secret with a nonsense expiry.
+		{name: "maximum representable duration", lifetime: time.Duration(math.MaxInt64)},
+	}
+	for _, tt := range rejected {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := GenerateClientSecret("KEY123", "TEAM123", "CLIENT123", testPrivateKey(t), now, tt.lifetime); err == nil {
+				t.Fatalf("expected error for lifetime %s, got nil", tt.lifetime)
+			}
+		})
 	}
 
 	tokenString, err := GenerateClientSecret("KEY123", "TEAM123", "CLIENT123", testPrivateKey(t), now, maxClientSecretSpan-jwtIssuedAtSkew)

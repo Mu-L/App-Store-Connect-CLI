@@ -164,8 +164,10 @@ func GenerateClientSecret(keyID, teamID, clientID string, privateKey *ecdsa.Priv
 		lifetime = clientSecretTTL
 	}
 	// The secret is signed with a backdated issued-at claim, so Apple's cap
-	// applies to the lifetime plus that skew.
-	if lifetime+jwtIssuedAtSkew > maxClientSecretSpan {
+	// applies to the lifetime plus that skew. Subtract instead of adding: the
+	// sum overflows for a lifetime near the maximum duration and would wrap
+	// past the guard.
+	if lifetime > maxClientSecretSpan-jwtIssuedAtSkew {
 		return "", fmt.Errorf("client secret lifetime must be <= 180 days including the %s issued-at skew", jwtIssuedAtSkew)
 	}
 	claims := jwt.MapClaims{
