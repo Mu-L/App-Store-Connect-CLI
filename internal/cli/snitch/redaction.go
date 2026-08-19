@@ -64,6 +64,7 @@ var (
 	yamlCredentialFlowStart           = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)([\[{])`)
 	jsonQuotedScalarLine              = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
 	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:-{1,2}` + sensitiveFlagName + `\b(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\()`)
+	xcodeCloudEnvVarSetCommand        = regexp.MustCompile(`(?i)\basc[ \t]+web[ \t]+xcode-cloud[ \t]+env-vars[ \t]+(?:shared[ \t]+)?set\b`)
 )
 
 var structuredContainerValueRedactionRules = []redactionRule{
@@ -484,7 +485,13 @@ func protectBooleanSecretMarkers(value string) (string, string) {
 	for strings.Contains(value, protection) {
 		protection += "\x00"
 	}
-	protected := booleanSecretMarker.ReplaceAllString(value, `${1}${2}`+protection+`${3}${4}${5}`)
+	protected, changed := transformXcodeCloudEnvVarSetCommands(value, func(command string) (string, bool) {
+		next := booleanSecretMarker.ReplaceAllString(command, `${1}${2}`+protection+`${3}${4}${5}`)
+		return next, next != command
+	})
+	if !changed {
+		return value, ""
+	}
 	return protected, protection
 }
 
@@ -690,28 +697,80 @@ func redactTruncatedStructuredValues(value string, escapedQuotes bool) (string, 
 }
 
 func redactSecretMarkedValues(value string) (string, bool) {
-	lines := strings.Split(value, "\n")
-	redactedLines := make([]string, 0, len(lines))
-	changed := false
-	for start := 0; start < len(lines); {
-		end := start
-		for end < len(lines)-1 && shellCommandContinues(strings.Join(lines[start:end+1], "\n")) {
-			end++
-		}
-
-		command := strings.Join(lines[start:end+1], "\n")
+	return transformXcodeCloudEnvVarSetCommands(value, func(command string) (string, bool) {
 		if secretMarkerPattern.MatchString(command) {
 			redacted := secretValuePattern.ReplaceAllString(command, `${1}${2}`+redactionMarker)
 			if redacted != command {
-				command = redacted
-				changed = true
+				return redacted, true
 			}
 		}
-		redactedLines = append(redactedLines, strings.Split(command, "\n")...)
+		return command, false
+	})
+}
 
-		start = end + 1
+func transformXcodeCloudEnvVarSetCommands(value string, transform func(string) (string, bool)) (string, bool) {
+	result := value
+	changed := false
+	for searchStart := 0; searchStart < len(result); {
+		match := xcodeCloudEnvVarSetCommand.FindStringIndex(result[searchStart:])
+		if match == nil {
+			break
+		}
+
+		start := searchStart + match[0]
+		end := findShellCommandEnd(result, searchStart+match[1])
+		command := result[start:end]
+		next, commandChanged := transform(command)
+		if commandChanged {
+			result = result[:start] + next + result[end:]
+			changed = true
+		}
+		searchStart = start + len(next)
 	}
-	return strings.Join(redactedLines, "\n"), changed
+	return result, changed
+}
+
+func findShellCommandEnd(value string, start int) int {
+	var quote byte
+	parenDepth := 0
+	for i := start; i < len(value); i++ {
+		if quote == '\'' {
+			if value[i] == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if value[i] == '\\' {
+			i++
+			continue
+		}
+		if quote != 0 {
+			if value[i] == quote {
+				quote = 0
+			}
+			continue
+		}
+
+		switch value[i] {
+		case '\'', '"', '`':
+			quote = value[i]
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '\r':
+			if parenDepth == 0 && i+1 < len(value) && value[i+1] == '\n' {
+				return i
+			}
+		case '\n', ';', '&', '|':
+			if parenDepth == 0 {
+				return i
+			}
+		}
+	}
+	return len(value)
 }
 
 func redactSensitiveCommandSubstitutions(value string) (string, bool) {
@@ -784,48 +843,6 @@ func findShellCommandSubstitutionEnd(value string, open int) int {
 		}
 	}
 	return -1
-}
-
-func shellCommandContinues(command string) bool {
-	lastLine := command
-	if newline := strings.LastIndexByte(command, '\n'); newline >= 0 {
-		lastLine = command[newline+1:]
-	}
-	if shellLineContinues(strings.TrimSuffix(lastLine, "\r")) {
-		return true
-	}
-
-	var quote byte
-	for i := 0; i < len(command); i++ {
-		if quote == '\'' {
-			if command[i] == '\'' {
-				quote = 0
-			}
-			continue
-		}
-		if command[i] == '\\' {
-			i++
-			continue
-		}
-		if quote == '"' {
-			if command[i] == '"' {
-				quote = 0
-			}
-			continue
-		}
-		if command[i] == '\'' || command[i] == '"' {
-			quote = command[i]
-		}
-	}
-	return quote != 0
-}
-
-func shellLineContinues(line string) bool {
-	backslashes := 0
-	for i := len(line) - 1; i >= 0 && line[i] == '\\'; i-- {
-		backslashes++
-	}
-	return backslashes%2 == 1
 }
 
 func redactLogEntry(entry LogEntry) (LogEntry, bool) {

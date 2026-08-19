@@ -475,72 +475,77 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 		},
 		{
 			name:  "boolean secret marker with sensitive named value",
-			input: `asc web xcode-cloud env-vars create --name MY_SECRET --value s3cret --secret --apple-id 123456789`,
-			want:  `asc web xcode-cloud env-vars create --name MY_SECRET --value [REDACTED] --secret --apple-id 123456789`,
+			input: `asc web xcode-cloud env-vars set --name MY_SECRET --value s3cret --secret --apple-id 123456789`,
+			want:  `asc web xcode-cloud env-vars set --name MY_SECRET --value [REDACTED] --secret --apple-id 123456789`,
 		},
 		{
 			name:  "boolean secret marker before value",
-			input: `asc web xcode-cloud env-vars create --name PRIVATE_CONFIG --secret --value s3cret --apple-id 123456789`,
-			want:  `asc web xcode-cloud env-vars create --name PRIVATE_CONFIG --secret --value [REDACTED] --apple-id 123456789`,
+			input: `asc web xcode-cloud env-vars set --name PRIVATE_CONFIG --secret --value s3cret --apple-id 123456789`,
+			want:  `asc web xcode-cloud env-vars set --name PRIVATE_CONFIG --secret --value [REDACTED] --apple-id 123456789`,
 		},
 		{
 			name:  "boolean secret marker after intervening flag",
-			input: `asc web xcode-cloud env-vars create --value s3cret --name MY_SECRET --secret --apple-id 123456789`,
-			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --name MY_SECRET --secret --apple-id 123456789`,
+			input: `asc web xcode-cloud env-vars set --value s3cret --name MY_SECRET --secret --apple-id 123456789`,
+			want:  `asc web xcode-cloud env-vars set --value [REDACTED] --name MY_SECRET --secret --apple-id 123456789`,
 		},
 		{
 			name:  "boolean secret marker before intervening flag",
-			input: `asc web xcode-cloud env-vars create --secret --name MY_SECRET --value s3cret --apple-id 123456789`,
-			want:  `asc web xcode-cloud env-vars create --secret --name MY_SECRET --value [REDACTED] --apple-id 123456789`,
+			input: `asc web xcode-cloud env-vars set --secret --name MY_SECRET --value s3cret --apple-id 123456789`,
+			want:  `asc web xcode-cloud env-vars set --secret --name MY_SECRET --value [REDACTED] --apple-id 123456789`,
 		},
 		{
 			name:  "boolean secret marker redacts duplicate values",
-			input: `asc web xcode-cloud env-vars create --value old-secret --value effective-secret --secret`,
-			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --value [REDACTED] --secret`,
+			input: `asc web xcode-cloud env-vars set --value old-secret --value effective-secret --secret`,
+			want:  `asc web xcode-cloud env-vars set --value [REDACTED] --value [REDACTED] --secret`,
 		},
 		{
 			name: "boolean secret marker after continued value",
-			input: `asc web xcode-cloud env-vars create --value continued-secret \
+			input: `asc web xcode-cloud env-vars set --value continued-secret \
   --secret`,
-			want: `asc web xcode-cloud env-vars create --value [REDACTED] \
+			want: `asc web xcode-cloud env-vars set --value [REDACTED] \
   --secret`,
 		},
 		{
 			name: "boolean secret marker before continued value",
-			input: `asc web xcode-cloud env-vars create --secret \
+			input: `asc web xcode-cloud env-vars set --secret \
   --value continued-secret`,
-			want: `asc web xcode-cloud env-vars create --secret \
+			want: `asc web xcode-cloud env-vars set --secret \
   --value [REDACTED]`,
 		},
 		{
 			name:  "boolean secret marker after literal newline in quoted value",
-			input: "asc web xcode-cloud env-vars create --value \"credential-head\ncredential-tail\" --secret",
-			want:  "asc web xcode-cloud env-vars create --value [REDACTED] --secret",
+			input: "asc web xcode-cloud env-vars set --value \"credential-head\ncredential-tail\" --secret",
+			want:  "asc web xcode-cloud env-vars set --value [REDACTED] --secret",
 		},
 		{
 			name:  "boolean secret marker with value equals form",
-			input: `asc web xcode-cloud env-vars create --value=s3cret --secret`,
-			want:  `asc web xcode-cloud env-vars create --value=[REDACTED] --secret`,
+			input: `asc web xcode-cloud env-vars set --value=s3cret --secret`,
+			want:  `asc web xcode-cloud env-vars set --value=[REDACTED] --secret`,
 		},
 		{
 			name:  "boolean secret marker with explicit true value",
-			input: `asc web xcode-cloud env-vars create --value s3cret --secret=true`,
-			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --secret=true`,
+			input: `asc web xcode-cloud env-vars set --value s3cret --secret=true`,
+			want:  `asc web xcode-cloud env-vars set --value [REDACTED] --secret=true`,
 		},
 		{
 			name:  "boolean secret marker with explicit numeric true value",
-			input: `asc web xcode-cloud env-vars create --secret=1 --value s3cret`,
-			want:  `asc web xcode-cloud env-vars create --secret=1 --value [REDACTED]`,
+			input: `asc web xcode-cloud env-vars set --secret=1 --value s3cret`,
+			want:  `asc web xcode-cloud env-vars set --secret=1 --value [REDACTED]`,
 		},
 		{
 			name:  "boolean secret marker before command separator",
-			input: `asc web xcode-cloud env-vars create --value s3cret --secret; echo done`,
-			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --secret; echo done`,
+			input: `asc web xcode-cloud env-vars set --value s3cret --secret; echo done`,
+			want:  `asc web xcode-cloud env-vars set --value [REDACTED] --secret; echo done`,
 		},
 		{
 			name:  "true secret marker before conditional operator",
-			input: `asc web xcode-cloud env-vars create --value s3cret --secret=true&& echo done`,
-			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --secret=true&& echo done`,
+			input: `asc web xcode-cloud env-vars set --value s3cret --secret=true&& echo done`,
+			want:  `asc web xcode-cloud env-vars set --value [REDACTED] --secret=true&& echo done`,
+		},
+		{
+			name:  "string valued webhook secret boolean literal",
+			input: `asc webhooks create --url https://example.test/hook --secret=true`,
+			want:  `asc webhooks create --url https://example.test/hook --secret=[REDACTED]`,
 		},
 		{
 			name:  "boolean secret marker does not affect another line",
@@ -824,7 +829,7 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 func TestRedactSensitiveTextPreservesFalseSecretMarkerAndValue(t *testing.T) {
 	const publicValue = "public-value"
 	for _, literal := range []string{"0", "f", "F", "false", "False", "FALSE"} {
-		input := "asc web xcode-cloud env-vars create --value " + publicValue + " --secret=" + literal
+		input := "asc web xcode-cloud env-vars set --value " + publicValue + " --secret=" + literal
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
 			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
@@ -834,12 +839,24 @@ func TestRedactSensitiveTextPreservesFalseSecretMarkerAndValue(t *testing.T) {
 
 func TestRedactSensitiveTextRedactsValueForTrueSecretMarkerLiterals(t *testing.T) {
 	for _, literal := range []string{"1", "t", "T", "true", "True", "TRUE"} {
-		input := "asc web xcode-cloud env-vars create --value credential --secret=" + literal
-		want := "asc web xcode-cloud env-vars create --value [REDACTED] --secret=" + literal
+		input := "asc web xcode-cloud env-vars set --value credential --secret=" + literal
+		want := "asc web xcode-cloud env-vars set --value [REDACTED] --secret=" + literal
 		got, changed := redactSensitiveText(input)
 		if !changed || got != want {
 			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want %q", input, got, changed, want)
 		}
+	}
+}
+
+func TestRedactSensitiveTextScopesBooleanSecretProtectionToEnvVarSetCommand(t *testing.T) {
+	input := "asc web xcode-cloud env-vars set --value public-value --secret=false; " +
+		"asc webhooks create --url https://example.test/hook --secret=true"
+	want := "asc web xcode-cloud env-vars set --value public-value --secret=false; " +
+		"asc webhooks create --url https://example.test/hook --secret=[REDACTED]"
+
+	got, changed := redactSensitiveText(input)
+	if !changed || got != want {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want %q", input, got, changed, want)
 	}
 }
 
@@ -894,7 +911,7 @@ func TestRedactSensitiveTextPreservesAttachedBenignCurlHeader(t *testing.T) {
 
 func TestRedactSensitiveTextDoesNotJoinEscapedBackslashLines(t *testing.T) {
 	input := `asc unrelated --value public \\
-asc web xcode-cloud env-vars create --secret`
+asc web xcode-cloud env-vars set --secret`
 
 	got, changed := redactSensitiveText(input)
 	if changed || got != input {
@@ -1065,8 +1082,8 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 	}
 	repro := strings.Join([]string{
 		`asc review details-create --demo-account-password "` + secrets[0] + `" --notes ready`,
-		`asc web xcode-cloud env-vars create --name MY_SECRET --value ` + secrets[1] + ` --secret --apple-id 123456789`,
-		`asc web xcode-cloud env-vars create --value ` + secrets[10] + ` --name MY_SECRET --secret --apple-id 123456789`,
+		`asc web xcode-cloud env-vars set --name MY_SECRET --value ` + secrets[1] + ` --secret --apple-id 123456789`,
+		`asc web xcode-cloud env-vars set --value ` + secrets[10] + ` --name MY_SECRET --secret --apple-id 123456789`,
 		`asc deploy --password "` + secrets[2],
 		`asc web sandbox create -password "` + secrets[5] + `" -territory USA`,
 		`asc deploy --password $'` + secrets[6] + `' --verbose`,
@@ -1180,8 +1197,8 @@ func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *tes
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", "asc web xcode-cloud env-vars create --value "+secrets[0]+" --secret=true\n"+
-			"asc web xcode-cloud env-vars create --value "+secrets[3]+" \\\n  --secret\n"+
+		"--repro", "asc web xcode-cloud env-vars set --value "+secrets[0]+" --secret=true\n"+
+			"asc web xcode-cloud env-vars set --value "+secrets[3]+" \\\n  --secret\n"+
 			"set --global --export ASC_SIGNING_SYNC_PASSWORD "+secrets[7]+"; asc signing sync pull",
 		"--actual", `Authorization: ApiKey `+secrets[1]+"\n"+`{"MY_CLIENT_SECRET":"`+secrets[2]+`"}`+"\n"+
 			"{\n  \"client_secret\":\n    \""+secrets[4]+"\"\n}\n"+
@@ -1226,8 +1243,8 @@ func TestSnitchDryRunRedactsMultilineSecretMarkedValueAndPreservesFalseMarker(t 
 
 	const secret = "literal-newline-secret"
 	const publicValue = "public-value"
-	repro := "asc web xcode-cloud env-vars create --value \"credential-head\n" + secret + "\" --secret=T\n" +
-		"asc web xcode-cloud env-vars create --value " + publicValue + " --secret=0"
+	repro := "asc web xcode-cloud env-vars set --value \"credential-head\n" + secret + "\" --secret=T\n" +
+		"asc web xcode-cloud env-vars set --value " + publicValue + " --secret=0"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1262,10 +1279,11 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 	t.Setenv("GH_TOKEN", "")
 
 	secrets := []string{"terminated-marker-secret", "proxy-cert-secret", "nested-substitution-secret", "fish-substitution-secret"}
-	repro := "asc web xcode-cloud env-vars create --value " + secrets[0] + " --secret=true&& echo done\n" +
+	repro := "asc web xcode-cloud env-vars set --value " + secrets[0] + " --secret=true&& echo done\n" +
 		"curl --proxy-cert client.p12:" + secrets[1] + " https://example.test\n" +
 		"asc deploy --password $(printf %s $(printf prefix) " + secrets[2] + ") --verbose\n" +
-		"asc signing sync --password (printf " + secrets[3] + ") --verbose"
+		"asc signing sync --password (printf " + secrets[3] + ") --verbose\n" +
+		"asc webhooks create --url https://example.test/hook --secret=true"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1292,6 +1310,7 @@ func TestSnitchDryRunRedactsShellTerminatedMarkersProxyCertificatesAndNestedSubs
 		"curl --proxy-cert client.p12:[REDACTED] https://example.test",
 		"asc deploy --password [REDACTED] --verbose",
 		"asc signing sync --password [REDACTED] --verbose",
+		"asc webhooks create --url https://example.test/hook --secret=[REDACTED]",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
