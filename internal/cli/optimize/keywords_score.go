@@ -37,7 +37,7 @@ func KeywordsScoreCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("score", flag.ExitOnError)
 	keywords := shared.BindOnceCSVFlag(fs, "keywords", "Comma-separated keyword candidates to score (required)")
 	country := fs.String("country", "us", "ISO alpha-2 App Store storefront country or region")
-	appID := fs.String("app", "", "App Store app ID; adds this app's rank")
+	appID := fs.String("app", "", "App Store app ID; adds this app's rank (or ASC_APP_ID env)")
 	genre := fs.String("genre", "", "Apple Ads search popularity genre; enables the popularity source")
 	adAccount := fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID/profile default)")
 	adsProfile := fs.String("ads-profile", "", "Use named Apple Ads authentication profile")
@@ -60,8 +60,8 @@ invented value:
   Popularity   Official Apple Ads country-and-genre search demand. It requires
                --genre plus Apple Ads credentials through --ad-account or
                --ads-profile. It reads the latest complete week.
-  Rank         This app's position in the public result window, added only
-               when --app is set.
+  Rank         This app's position in the public result window, added when
+               --app or ASC_APP_ID is set.
 
 Every score is reported next to the named raw inputs it was derived from, so a
 caller can re-derive it without re-running the command. The formula, its

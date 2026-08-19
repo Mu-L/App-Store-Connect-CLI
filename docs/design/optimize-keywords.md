@@ -60,7 +60,7 @@ this tree: `available`, `empty`, or `unavailable`.
 | `public_search` | public iTunes search, limit 200 | nothing | competitor ordering and `appCount` |
 | `competitor_metadata` | public iTunes lookup, batched | nothing | competitor release dates |
 | `search_term_popularity` | Apple Ads country-and-genre demand | `--genre`, Ads credentials | `popularity` |
-| `app_rank` | derived from `public_search` | `--app` | this app's position |
+| `app_rank` | derived from `public_search` | `--app` or `ASC_APP_ID` | this app's position |
 
 An unavailable source is reported as unavailable. It is never replaced with a
 zero, a default, or an estimate:

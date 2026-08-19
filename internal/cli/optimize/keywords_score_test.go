@@ -26,6 +26,7 @@ func TestKeywordsScoreCommandHelpDocumentsSourcesAndDesignDoc(t *testing.T) {
 		"docs/design/optimize-keywords.md",
 		"--ad-account",
 		"--genre",
+		"ASC_APP_ID",
 		"unavailable",
 		"latest complete week",
 	} {
@@ -38,6 +39,10 @@ func TestKeywordsScoreCommandHelpDocumentsSourcesAndDesignDoc(t *testing.T) {
 	}
 	if strings.Contains(joined, "30-day") {
 		t.Fatalf("help describes a 30-day popularity window, but the collector reads one complete week:\n%s", joined)
+	}
+	appFlag := command.FlagSet.Lookup("app")
+	if appFlag == nil || !strings.Contains(appFlag.Usage, "ASC_APP_ID") {
+		t.Fatalf("--app help must document the ASC_APP_ID fallback: %+v", appFlag)
 	}
 }
 
