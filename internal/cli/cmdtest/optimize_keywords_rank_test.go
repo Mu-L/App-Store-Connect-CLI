@@ -118,7 +118,7 @@ func TestOptimizeKeywordsRankUsageErrors(t *testing.T) {
 			originalTransport := http.DefaultTransport
 			t.Cleanup(func() { http.DefaultTransport = originalTransport })
 			http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				t.Fatalf("unexpected request before input validation: %s", req.URL.String())
+				t.Errorf("unexpected request before input validation: %s", req.URL.String())
 				return nil, errors.New("unexpected request")
 			})
 
@@ -143,10 +143,12 @@ func TestOptimizeKeywordsRankJSONComposesPublicSearchWindow(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Host != "itunes.apple.com" || req.URL.Path != "/search" {
-			t.Fatalf("request URL = %s, want the public iTunes search endpoint", req.URL.String())
+			t.Errorf("request URL = %s, want the public iTunes search endpoint", req.URL.String())
+			return nil, errors.New("unexpected request URL")
 		}
 		if got := req.URL.Query().Get("country"); got != "de" {
-			t.Fatalf("country = %q, want de", got)
+			t.Errorf("country = %q, want de", got)
+			return nil, errors.New("unexpected country")
 		}
 		switch req.URL.Query().Get("term") {
 		case "focus timer":
@@ -156,7 +158,7 @@ func TestOptimizeKeywordsRankJSONComposesPublicSearchWindow(t *testing.T) {
 		case "broken keyword":
 			return jsonResponse(http.StatusServiceUnavailable, `{}`)
 		default:
-			t.Fatalf("unexpected term %q", req.URL.Query().Get("term"))
+			t.Errorf("unexpected term %q", req.URL.Query().Get("term"))
 			return nil, errors.New("unexpected term")
 		}
 	})
