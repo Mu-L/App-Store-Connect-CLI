@@ -29,7 +29,7 @@ type redactionRule struct {
 }
 
 var (
-	secretMarkerPattern = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:[ \t]|$)`)
+	secretMarkerPattern = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:[ \t]|$|[ \t]*=[ \t]*(?:1|t|true)(?:[ \t]|$))`)
 	secretValuePattern  = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
 )
 
@@ -48,6 +48,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*[a-z][a-z0-9_-]*[ \t]+[^\s=,]+[ \t]*=[^\r\n]+`),
+		replacement: "Authorization: " + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*[a-z][a-z0-9_-]*[ \t]+[^\r\n]+`),
 		replacement: "Authorization: " + redactionMarker,
 	},
 	{
@@ -83,7 +87,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(["']` + sensitiveAssignmentName + `["'][ \t]*:[ \t]*)(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;}\]]+)`),
+		pattern:     regexp.MustCompile(`(?i)(["']` + sensitivePrefixedName + `["'][ \t]*:[ \t]*)(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;}\]]+)`),
 		replacement: `${1}"` + redactionMarker + `"`,
 	},
 	{

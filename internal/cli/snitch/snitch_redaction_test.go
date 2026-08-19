@@ -37,6 +37,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "Authorization: [REDACTED]",
 		},
 		{
+			name:  "arbitrary authorization token scheme",
+			input: `Authorization: Negotiate dG9rZW4tc2VjcmV0`,
+			want:  "Authorization: [REDACTED]",
+		},
+		{
 			name:  "standalone bearer credential",
 			input: "server returned Bearer eyJhbGciOiJFUzI1NiJ9.fake.signature",
 			want:  "server returned Bearer [REDACTED]",
@@ -162,6 +167,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc web xcode-cloud env-vars create --value=[REDACTED] --secret`,
 		},
 		{
+			name:  "boolean secret marker with explicit true value",
+			input: `asc web xcode-cloud env-vars create --value s3cret --secret=true`,
+			want:  `asc web xcode-cloud env-vars create --value [REDACTED] --secret=[REDACTED]`,
+		},
+		{
+			name:  "boolean secret marker with explicit numeric true value",
+			input: `asc web xcode-cloud env-vars create --secret=1 --value s3cret`,
+			want:  `asc web xcode-cloud env-vars create --secret=[REDACTED] --value [REDACTED]`,
+		},
+		{
 			name:  "boolean secret marker does not affect another line",
 			input: "asc unrelated --value public\nasc webhooks create --secret webhook-secret",
 			want:  "asc unrelated --value public\nasc webhooks create --secret [REDACTED]",
@@ -242,6 +257,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `response {"refresh_token":"[REDACTED]","status":"failed"}`,
 		},
 		{
+			name:  "prefixed JSON assignments",
+			input: `response {"AWS_SECRET_ACCESS_KEY":"cloud-secret-value","MY_CLIENT_SECRET":"client secret value"}`,
+			want:  `response {"AWS_SECRET_ACCESS_KEY":"[REDACTED]","MY_CLIENT_SECRET":"[REDACTED]"}`,
+		},
+		{
 			name:  "JWT",
 			input: "decoded eyJhbGciOiJFUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl failed",
 			want:  "decoded [REDACTED] failed",
@@ -267,6 +287,17 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 				t.Fatalf("redaction is not idempotent: second result %q, changed=%t", gotAgain, changedAgain)
 			}
 		})
+	}
+}
+
+func TestRedactSensitiveTextFalseSecretMarkerPreservesValue(t *testing.T) {
+	const publicValue = "public-value"
+	input := "asc web xcode-cloud env-vars create --value " + publicValue + " --secret=false"
+	want := "asc web xcode-cloud env-vars create --value " + publicValue + " --secret=[REDACTED]"
+
+	got, changed := redactSensitiveText(input)
+	if !changed || got != want {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want %q", input, got, changed, want)
 	}
 }
 
@@ -483,6 +514,44 @@ func TestSnitchDryRunRedactsTruncatedPrivateKeyAndProxyCredentials(t *testing.T)
 	for _, want := range []string{
 		"curl --proxy-user [REDACTED] https://example.test",
 		"failed to load\n[REDACTED PRIVATE KEY]",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsExplicitMarkersAuthorizationAndStructuredKeys(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"marked-value", "authorization-credential", "structured-secret"}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "asc web xcode-cloud env-vars create --value "+secrets[0]+" --secret=true",
+		"--actual", `Authorization: ApiKey `+secrets[1]+"\n"+`{"MY_CLIENT_SECRET":"`+secrets[2]+`"}`,
+		"explicit credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"--value [REDACTED] --secret=[REDACTED]",
+		"Authorization: [REDACTED]",
+		`{"MY_CLIENT_SECRET":"[REDACTED]"}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
