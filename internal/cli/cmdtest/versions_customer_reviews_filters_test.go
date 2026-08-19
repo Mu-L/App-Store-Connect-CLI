@@ -228,6 +228,58 @@ func TestVersionsCustomerReviewsFilterValidationMatchesAppLevelReviews(t *testin
 	}
 }
 
+func TestCustomerReviewListsRejectQueryFlagsWithNext(t *testing.T) {
+	const nextURL = "https://api.appstoreconnect.apple.com/v1/customerReviews?cursor=next"
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "version stars",
+			args:    []string{"versions", "customer-reviews", "list", "--next", nextURL, "--stars", "1"},
+			wantErr: "--next cannot be combined with --stars",
+		},
+		{
+			name:    "app response fields",
+			args:    []string{"reviews", "list", "--next", nextURL, "--response-fields", "responseBody"},
+			wantErr: "--next cannot be combined with --response-fields",
+		},
+		{
+			name:    "explicit empty territory",
+			args:    []string{"versions", "customer-reviews", "list", "--next", nextURL, "--territory", ""},
+			wantErr: "--next cannot be combined with --territory",
+		},
+		{
+			name:    "explicit zero limit",
+			args:    []string{"reviews", "--next", nextURL, "--limit", "0"},
+			wantErr: "--next cannot be combined with --limit",
+		},
+		{
+			name:    "version owner",
+			args:    []string{"versions", "customer-reviews", "list", "--next", nextURL, "--version-id", "version-1"},
+			wantErr: "--next cannot be combined with --version-id",
+		},
+		{
+			name:    "app owner",
+			args:    []string{"reviews", "list", "--next", nextURL, "--app", "app-1"},
+			wantErr: "--next cannot be combined with --app",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			code, stderr := runReviewFilterFailure(t, test.args)
+			if code != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d; stderr=%q", code, rootcmd.ExitUsage, stderr)
+			}
+			if !strings.Contains(stderr, test.wantErr) {
+				t.Fatalf("stderr = %q, want it to contain %q", stderr, test.wantErr)
+			}
+		})
+	}
+}
+
 func runReviewFilterFailure(t *testing.T, args []string) (int, string) {
 	t.Helper()
 

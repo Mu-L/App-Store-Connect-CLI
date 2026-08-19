@@ -48,6 +48,40 @@ func BindReviewFilterFlags(fs *flag.FlagSet) *ReviewFilterFlags {
 	return filters
 }
 
+// ValidateReviewNextFlagConflicts rejects query flags that a links.next URL
+// already encodes. Inspecting the FlagSet preserves explicit empty and zero
+// values, which must not be silently ignored either.
+func ValidateReviewNextFlagConflicts(next string, fs *flag.FlagSet, ownerFlag string) error {
+	if strings.TrimSpace(next) == "" || fs == nil {
+		return nil
+	}
+
+	setFlags := make(map[string]struct{})
+	fs.Visit(func(f *flag.Flag) {
+		setFlags[f.Name] = struct{}{}
+	})
+	for _, name := range []string{
+		ownerFlag,
+		"stars",
+		"territory",
+		"sort",
+		"response-state",
+		"only-unresponded",
+		"include-response",
+		"response-fields",
+		"limit",
+	} {
+		if _, ok := setFlags[name]; ok {
+			return shared.WithDiagnostic(
+				shared.UsageErrorf("--next cannot be combined with --%s", name),
+				shared.DiagnosticConflictingInput,
+				"",
+			)
+		}
+	}
+	return nil
+}
+
 // ReviewOptions validates the bound flags and returns the matching query
 // options. Invalid input is reported as a usage failure carrying the offending
 // parameter so both review listings fail the same way.

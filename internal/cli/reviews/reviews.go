@@ -68,6 +68,12 @@ Examples:
 			if len(args) > 0 {
 				return shared.WithDiagnostic(shared.UsageErrorf("unexpected argument(s): %s", strings.Join(args, " ")), shared.DiagnosticInvalidInput, "")
 			}
+			if err := shared.ValidateNextURL(*next); err != nil {
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("reviews: %w", err)), shared.DiagnosticInvalidInput, "--next")
+			}
+			if err := ValidateReviewNextFlagConflicts(*next, fs, "app"); err != nil {
+				return err
+			}
 
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if resolvedAppID == "" && strings.TrimSpace(*next) == "" {
@@ -109,6 +115,12 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			if err := shared.ValidateNextURL(*next); err != nil {
+				return shared.WithDiagnostic(shared.NewValidationError(fmt.Errorf("reviews: %w", err)), shared.DiagnosticInvalidInput, "--next")
+			}
+			if err := ValidateReviewNextFlagConflicts(*next, fs, "app"); err != nil {
+				return err
+			}
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if resolvedAppID == "" && strings.TrimSpace(*next) == "" {
 				fmt.Fprintf(os.Stderr, "Error: --app is required (or set ASC_APP_ID)\n\n")

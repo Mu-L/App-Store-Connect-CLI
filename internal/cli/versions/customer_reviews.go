@@ -69,12 +69,15 @@ Examples:
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return fmt.Errorf("versions customer-reviews list: --limit must be between 1 and 200")
 			}
+			if err := shared.ValidateNextURL(*next); err != nil {
+				return fmt.Errorf("versions customer-reviews list: %w", err)
+			}
+			if err := reviews.ValidateReviewNextFlagConflicts(*next, fs, "version-id"); err != nil {
+				return err
+			}
 			filterOpts, err := filters.ReviewOptions()
 			if err != nil {
 				return err
-			}
-			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("versions customer-reviews list: %w", err)
 			}
 
 			versionValue := strings.TrimSpace(*versionID)
