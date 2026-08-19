@@ -26,74 +26,79 @@ type taskHint struct {
 // that happens to produce the same answer: `asc builds info --app X --latest`
 // rather than a sorted single-result list, and `asc builds next-build-number`
 // rather than arithmetic on a listing.
+//
+// Placeholders use bare uppercase words (APP_ID, IPA_PATH) to match the nearest
+// -match suggester rendered just above them on the same stderr surface. Angle
+// brackets would be read as redirections by a POSIX shell, so a pasted hint
+// would fail before `asc` ever ran.
 var unknownChildTaskHints = map[string][]taskHint{
 	"asc apps": {
 		{task: "list apps", command: "asc apps list"},
-		{task: "find by bundle ID", command: "asc apps list --bundle-id <bundle-id>"},
-		{task: "view one app", command: "asc apps view --id <app-id>"},
-		{task: "view app metadata", command: "asc apps info view --app <app-id>"},
+		{task: "find by bundle ID", command: "asc apps list --bundle-id BUNDLE_ID"},
+		{task: "view one app", command: "asc apps view --id APP_ID"},
+		{task: "view app metadata", command: "asc apps info view --app APP_ID"},
 	},
 	"asc auth": {
 		{task: "check credentials", command: "asc auth status"},
 		{task: "diagnose problems", command: "asc auth doctor"},
-		{task: "switch profile", command: "asc auth switch --name <profile>"},
+		{task: "switch profile", command: "asc auth switch --name PROFILE"},
 		{
 			task:    "store an API key",
-			command: "asc auth login --name <name> --key-id <key-id> --issuer-id <issuer-id> --private-key <path>",
+			command: "asc auth login --name NAME --key-id KEY_ID --issuer-id ISSUER_ID --private-key KEY_PATH",
 		},
 	},
 	"asc builds": {
-		{task: "list builds", command: "asc builds list --app <app-id>"},
-		{task: "latest build", command: "asc builds info --app <app-id> --latest"},
-		{task: "next build number", command: "asc builds next-build-number --app <app-id>"},
-		{task: "upload a build", command: "asc builds upload --app <app-id> --ipa <path>"},
-		{task: "wait for processing", command: "asc builds wait --app <app-id> --latest"},
+		{task: "list builds", command: "asc builds list --app APP_ID"},
+		{task: "latest build", command: "asc builds info --app APP_ID --latest"},
+		{task: "next build number", command: "asc builds next-build-number --app APP_ID"},
+		{task: "upload a build", command: "asc builds upload --app APP_ID --ipa IPA_PATH"},
+		{task: "wait for processing", command: "asc builds wait --app APP_ID --latest"},
 	},
 	"asc iap": {
-		{task: "list purchases", command: "asc iap list --app <app-id>"},
-		{task: "view a purchase", command: "asc iap view --id <iap-id>"},
-		{task: "list versions", command: "asc iap versions list --iap-id <iap-id>"},
-		{task: "pricing summary", command: "asc iap pricing summary --app <app-id>"},
+		{task: "list purchases", command: "asc iap list --app APP_ID"},
+		{task: "view a purchase", command: "asc iap view --id IAP_ID"},
+		{task: "list versions", command: "asc iap versions list --iap-id IAP_ID"},
+		{task: "pricing summary", command: "asc iap pricing summary --app APP_ID"},
 	},
 	"asc review": {
-		{task: "review status", command: "asc review status --app <app-id>"},
-		{task: "explain blockers", command: "asc review doctor --app <app-id>"},
+		{task: "review status", command: "asc review status --app APP_ID"},
+		{task: "explain blockers", command: "asc review doctor --app APP_ID"},
 		{
 			task:    "submit for review",
-			command: "asc review submit --app <app-id> --version <version> --build <build-id> --confirm",
+			command: "asc review submit --app APP_ID --version VERSION --build BUILD_ID --confirm",
 		},
-		{task: "past submissions", command: "asc review history --app <app-id>"},
+		{task: "past submissions", command: "asc review history --app APP_ID"},
 	},
 	"asc subscriptions": {
-		{task: "list groups", command: "asc subscriptions groups list --app <app-id>"},
-		{task: "list subscriptions", command: "asc subscriptions list --app <app-id>"},
-		{task: "view a subscription", command: "asc subscriptions view --id <subscription-id>"},
-		{task: "pricing summary", command: "asc subscriptions pricing summary --app <app-id>"},
+		{task: "list groups", command: "asc subscriptions groups list --app APP_ID"},
+		{task: "list subscriptions", command: "asc subscriptions list --app APP_ID"},
+		{task: "view a subscription", command: "asc subscriptions view --id SUB_ID"},
+		{task: "pricing summary", command: "asc subscriptions pricing summary --app APP_ID"},
 	},
 	"asc testflight": {
-		{task: "list beta groups", command: "asc testflight groups list --app <app-id>"},
-		{task: "list testers", command: "asc testflight testers list --app <app-id>"},
-		{task: "read feedback", command: "asc testflight feedback list --app <app-id>"},
-		{task: "notify testers", command: "asc testflight notifications send --build-id <build-id>"},
+		{task: "list beta groups", command: "asc testflight groups list --app APP_ID"},
+		{task: "list testers", command: "asc testflight testers list --app APP_ID"},
+		{task: "read feedback", command: "asc testflight feedback list --app APP_ID"},
+		{task: "notify testers", command: "asc testflight notifications send --build-id BUILD_ID"},
 	},
 	"asc testflight groups": {
-		{task: "list groups", command: "asc testflight groups list --app <app-id>"},
-		{task: "view a group", command: "asc testflight groups view --id <group-id>"},
-		{task: "create a group", command: "asc testflight groups create --app <app-id> --name <name>"},
+		{task: "list groups", command: "asc testflight groups list --app APP_ID"},
+		{task: "view a group", command: "asc testflight groups view --id GROUP_ID"},
+		{task: "create a group", command: "asc testflight groups create --app APP_ID --name NAME"},
 		{
 			task:    "add testers",
-			command: "asc testflight groups add-testers --group <group-id> --email <email>",
+			command: "asc testflight groups add-testers --group GROUP_ID --email EMAIL",
 		},
 	},
 	"asc versions": {
-		{task: "list versions", command: "asc versions list --app <app-id>"},
-		{task: "view a version", command: "asc versions view --version-id <version-id>"},
-		{task: "create a version", command: "asc versions create --app <app-id> --version <version>"},
+		{task: "list versions", command: "asc versions list --app APP_ID"},
+		{task: "view a version", command: "asc versions view --version-id VERSION_ID"},
+		{task: "create a version", command: "asc versions create --app APP_ID --version VERSION"},
 		{
 			task:    "attach a build",
-			command: "asc versions attach-build --version-id <version-id> --build-id <build-id>",
+			command: "asc versions attach-build --version-id VERSION_ID --build-id BUILD_ID",
 		},
-		{task: "release a version", command: "asc versions release --version-id <version-id> --confirm"},
+		{task: "release a version", command: "asc versions release --version-id VERSION_ID --confirm"},
 	},
 }
 

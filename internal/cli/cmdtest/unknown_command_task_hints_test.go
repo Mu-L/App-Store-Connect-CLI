@@ -25,24 +25,25 @@ func TestRunUnknownSubcommandTaskHints(t *testing.T) {
 			args:      []string{"builds", "latest"},
 			wantOrder: []string{"Error: unknown command `asc builds latest`", "Common tasks:", "For help:"},
 			wantContains: []string{
-				"  list builds          asc builds list --app <app-id>\n",
+				"  list builds          asc builds list --app APP_ID\n",
 				// The canonical latest-build lookup, not a sorted single-result list.
-				"  latest build         asc builds info --app <app-id> --latest\n",
+				"  latest build         asc builds info --app APP_ID --latest\n",
 				// The first-class command, not arithmetic over a build listing.
-				"  next build number    asc builds next-build-number --app <app-id>\n",
-				"  wait for processing  asc builds wait --app <app-id> --latest\n",
+				"  next build number    asc builds next-build-number --app APP_ID\n",
+				"  wait for processing  asc builds wait --app APP_ID --latest\n",
 				"  asc builds --help\n",
 			},
-			wantAbsent: []string{"Try:", "--sort -uploadedDate"},
+			// Angle brackets would be shell redirections in a pasted hint.
+			wantAbsent: []string{"Try:", "--sort -uploadedDate", "<", ">"},
 		},
 		{
 			name:      "guessed verb on a curated nested group",
 			args:      []string{"testflight", "groups", "invite"},
 			wantOrder: []string{"Error: unknown command `asc testflight groups invite`", "Common tasks:", "For help:"},
 			wantContains: []string{
-				"  add testers     asc testflight groups add-testers --group <group-id> --email <email>\n",
+				"  add testers     asc testflight groups add-testers --group GROUP_ID --email EMAIL\n",
 			},
-			wantAbsent: []string{"Try:"},
+			wantAbsent: []string{"Try:", "<", ">"},
 		},
 		{
 			name:         "typo keeps the nearest-match suggestion",

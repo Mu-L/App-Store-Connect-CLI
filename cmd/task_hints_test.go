@@ -10,18 +10,18 @@ import (
 // edit fails in one place instead of drifting silently across files.
 const (
 	buildsTaskHintBlock = "Common tasks:\n" +
-		"  list builds          asc builds list --app <app-id>\n" +
-		"  latest build         asc builds info --app <app-id> --latest\n" +
-		"  next build number    asc builds next-build-number --app <app-id>\n" +
-		"  upload a build       asc builds upload --app <app-id> --ipa <path>\n" +
-		"  wait for processing  asc builds wait --app <app-id> --latest\n"
+		"  list builds          asc builds list --app APP_ID\n" +
+		"  latest build         asc builds info --app APP_ID --latest\n" +
+		"  next build number    asc builds next-build-number --app APP_ID\n" +
+		"  upload a build       asc builds upload --app APP_ID --ipa IPA_PATH\n" +
+		"  wait for processing  asc builds wait --app APP_ID --latest\n"
 
 	versionsTaskHintBlock = "Common tasks:\n" +
-		"  list versions      asc versions list --app <app-id>\n" +
-		"  view a version     asc versions view --version-id <version-id>\n" +
-		"  create a version   asc versions create --app <app-id> --version <version>\n" +
-		"  attach a build     asc versions attach-build --version-id <version-id> --build-id <build-id>\n" +
-		"  release a version  asc versions release --version-id <version-id> --confirm\n"
+		"  list versions      asc versions list --app APP_ID\n" +
+		"  view a version     asc versions view --version-id VERSION_ID\n" +
+		"  create a version   asc versions create --app APP_ID --version VERSION\n" +
+		"  attach a build     asc versions attach-build --version-id VERSION_ID --build-id BUILD_ID\n" +
+		"  release a version  asc versions release --version-id VERSION_ID --confirm\n"
 )
 
 func TestRun_UnknownChildAppendsCuratedTaskHints(t *testing.T) {
@@ -45,10 +45,10 @@ func TestRun_UnknownChildAppendsCuratedTaskHints(t *testing.T) {
 			args: []string{"testflight", "groups", "invite"},
 			wantStderr: "Error: unknown command `asc testflight groups invite`\n" +
 				"Common tasks:\n" +
-				"  list groups     asc testflight groups list --app <app-id>\n" +
-				"  view a group    asc testflight groups view --id <group-id>\n" +
-				"  create a group  asc testflight groups create --app <app-id> --name <name>\n" +
-				"  add testers     asc testflight groups add-testers --group <group-id> --email <email>\n" +
+				"  list groups     asc testflight groups list --app APP_ID\n" +
+				"  view a group    asc testflight groups view --id GROUP_ID\n" +
+				"  create a group  asc testflight groups create --app APP_ID --name NAME\n" +
+				"  add testers     asc testflight groups add-testers --group GROUP_ID --email EMAIL\n" +
 				"For help:\n" +
 				"  asc testflight groups --help\n",
 		},
@@ -162,6 +162,11 @@ func TestUnknownChildTaskHintsResolveToRealCommands(t *testing.T) {
 			if len(command.Subcommands) > 0 {
 				t.Fatalf("%q hint %q resolves to a group, not a runnable command", group, hint.command)
 			}
+			for _, token := range tokens {
+				if !isShellSafeHintToken(token) {
+					t.Fatalf("%q hint %q has shell-unsafe token %q", group, hint.command, token)
+				}
+			}
 			for _, token := range flagTokens {
 				if !strings.HasPrefix(token, "--") {
 					t.Fatalf("%q hint %q uses the short flag %q", group, hint.command, token)
@@ -173,6 +178,22 @@ func TestUnknownChildTaskHintsResolveToRealCommands(t *testing.T) {
 			}
 		}
 	}
+}
+
+// isShellSafeHintToken mirrors the unquoted-safe character set that
+// shellSafeCommandArg uses for the nearest-match suggester. A hint that needs
+// shell quoting is not copy-pasteable, and angle-bracket placeholders in
+// particular would be read as redirections.
+func isShellSafeHintToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	return strings.IndexFunc(token, func(r rune) bool {
+		isASCIILetterOrDigit := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9')
+		return !isASCIILetterOrDigit && !strings.ContainsRune("_@%+=:,./-", r)
+	}) == -1
 }
 
 func lookupTaskHintFlag(flagSet *flag.FlagSet, name string) *flag.Flag {
