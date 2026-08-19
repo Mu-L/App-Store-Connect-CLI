@@ -1,9 +1,12 @@
 package gamecenter
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
+	"io"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -39,9 +42,18 @@ func TestGameCenterActivitySetCommandsRequireConfirmForRemove(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("parse flags: %v", err)
 			}
-			err := cmd.Exec(context.Background(), []string{})
+			var err error
+			stderr := captureGameCenterStderr(t, func() {
+				err = cmd.Exec(context.Background(), []string{})
+			})
 			if !errors.Is(err, flag.ErrHelp) {
 				t.Fatalf("--confirm without --remove should fail validation, got %v", err)
+			}
+			if err.Error() != "--confirm requires --remove" {
+				t.Fatalf("error = %q, want %q", err.Error(), "--confirm requires --remove")
+			}
+			if stderr != "Error: --confirm requires --remove\n" {
+				t.Fatalf("stderr = %q, want exact conflict diagnostic", stderr)
 			}
 		})
 
@@ -52,9 +64,18 @@ func TestGameCenterActivitySetCommandsRequireConfirmForRemove(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("parse flags: %v", err)
 			}
-			err := cmd.Exec(context.Background(), []string{})
+			var err error
+			stderr := captureGameCenterStderr(t, func() {
+				err = cmd.Exec(context.Background(), []string{})
+			})
 			if !errors.Is(err, flag.ErrHelp) {
 				t.Fatalf("remove without --confirm should fail validation, got %v", err)
+			}
+			if err.Error() != "--confirm" {
+				t.Fatalf("error = %q, want missing parameter %q", err.Error(), "--confirm")
+			}
+			if stderr != "Error: --confirm is required with --remove\n" {
+				t.Fatalf("stderr = %q, want exact missing-confirm diagnostic", stderr)
 			}
 		})
 
@@ -84,4 +105,28 @@ func TestGameCenterActivitySetCommandsRequireConfirmForRemove(t *testing.T) {
 			}
 		})
 	}
+}
+
+func captureGameCenterStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	originalStderr := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	t.Cleanup(func() { os.Stderr = originalStderr })
+	os.Stderr = writer
+
+	done := make(chan string)
+	go func() {
+		var buffer bytes.Buffer
+		_, _ = io.Copy(&buffer, reader)
+		_ = reader.Close()
+		done <- buffer.String()
+	}()
+
+	fn()
+	_ = writer.Close()
+	return <-done
 }
