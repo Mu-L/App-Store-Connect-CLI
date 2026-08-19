@@ -389,6 +389,28 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "'password' = [REDACTED]\nstatus = \"failed\"",
 		},
 		{
+			name: "TOML credential inline table",
+			input: `password = { value = "opaque-inline-secret", nested = { label = "]" } }
+status = "failed"`,
+			want: `password = [REDACTED]
+status = "failed"`,
+		},
+		{
+			name: "TOML credential multiline array",
+			input: `password = [
+  "opaque-array-secret",
+  { value = "opaque-nested-secret" },
+]
+status = "failed"`,
+			want: `password = [REDACTED]
+status = "failed"`,
+		},
+		{
+			name:  "TOML escaped basic quoted credential key",
+			input: `"pass\u0077ord" = "opaque-escaped-key-secret"`,
+			want:  `"pass\u0077ord" = [REDACTED]`,
+		},
+		{
 			name:  "multiline plain yaml scalar preserves sibling",
 			input: "response:\n  password: opaque-first\n    opaque-second\n  status: failed",
 			want:  "response:\n  password: [REDACTED]\n  status: failed",
@@ -1472,10 +1494,13 @@ func TestSnitchDryRunRedactsTOMLAndEscapedJSONCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"toml-multiline-secret", "json-unicode-key-secret", "escaped-json-unicode-key-secret"}
+	secrets := []string{"toml-multiline-secret", "json-unicode-key-secret", "escaped-json-unicode-key-secret", "toml-inline-sensitive", "toml-array-sensitive", "toml-key-sensitive"}
 	repro := "password = \"\"\"opaque-head\n" + secrets[0] + "\"\"\"\nstatus = \"failed\"\n" +
 		`{"pass\u0077ord":"` + secrets[1] + `","status":"failed"}` + "\n" +
-		`trace {\"pass\\u0077ord\":\"` + secrets[2] + `\",\"status\":\"failed\"}`
+		`trace {\"pass\\u0077ord\":\"` + secrets[2] + `\",\"status\":\"failed\"}` + "\n" +
+		`password = { value = "` + secrets[3] + `", nested = { label = "]" } }` + "\n" +
+		"password = [\n  \"" + secrets[4] + "\",\n  { value = \"nested\" },\n]\n" +
+		`"pass\u0077ord" = "` + secrets[5] + `"`
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1501,6 +1526,8 @@ func TestSnitchDryRunRedactsTOMLAndEscapedJSONCredentials(t *testing.T) {
 		"password = [REDACTED]\nstatus = \"failed\"",
 		`{"pass\u0077ord":"[REDACTED]","status":"failed"}`,
 		`trace {\"pass\\u0077ord\":\"[REDACTED]\",\"status\":\"failed\"}`,
+		`password = [REDACTED]`,
+		`"pass\u0077ord" = [REDACTED]`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

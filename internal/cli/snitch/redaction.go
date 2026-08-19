@@ -3,6 +3,7 @@ package snitch
 import (
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -78,6 +79,7 @@ var (
 	yamlAnchor                        = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
 	jsonQuotedScalarLine              = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
 	jsonCredentialName                = regexp.MustCompile(`(?i)^(?:` + structuredCredentialName + `)$`)
+	tomlCredentialName                = regexp.MustCompile(`(?i)^(?:` + sensitivePrefixedName + `)$`)
 	tomlMultilineCredentialStart      = regexp.MustCompile(`(?i)(?:^|[^-a-z0-9_])(?:` + sensitivePrefixedName + `\b|` + tomlQuotedSensitiveKey + `)[ \t]*=[ \t]*(?:"""|''')`)
 	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\(|\(|\x60)`)
 	xcodeCloudEnvVarSetCommand        = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')` + shellCommandPathSeparator + `web` + shellCommandPathSeparator + `xcode-cloud` + shellCommandPathSeparator + `env-vars` + shellCommandPathSeparator + `(?:shared` + shellCommandPathSeparator + `)?set\b`)
@@ -289,6 +291,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 
 func redactSensitiveText(value string) (string, bool) {
 	redacted, changed := redactSecretMarkedValues(value)
+	if next, tomlValueChanged := redactTOMLCredentialValues(redacted); tomlValueChanged {
+		redacted = next
+		changed = true
+	}
 	if next, tomlChanged := redactTOMLMultilineCredentials(redacted); tomlChanged {
 		redacted = next
 		changed = true
@@ -348,6 +354,203 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = strings.ReplaceAll(redacted, booleanMarkerProtection, "")
 	}
 	return redacted, changed
+}
+
+func redactTOMLCredentialValues(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for lineStart := 0; lineStart < len(redacted); {
+		keyStart := lineStart
+		for keyStart < len(redacted) && (redacted[keyStart] == ' ' || redacted[keyStart] == '\t') {
+			keyStart++
+		}
+		key, keyEnd, validKey := parseTOMLKey(redacted, keyStart)
+		if !validKey {
+			lineStart = nextTOMLLineStart(redacted, lineStart)
+			continue
+		}
+
+		equals := keyEnd
+		for equals < len(redacted) && (redacted[equals] == ' ' || redacted[equals] == '\t') {
+			equals++
+		}
+		if equals >= len(redacted) || redacted[equals] != '=' || !tomlCredentialName.MatchString(key) {
+			lineStart = nextTOMLLineStart(redacted, lineStart)
+			continue
+		}
+
+		valueStart := equals + 1
+		for valueStart < len(redacted) && (redacted[valueStart] == ' ' || redacted[valueStart] == '\t') {
+			valueStart++
+		}
+		if valueStart >= len(redacted) || redacted[valueStart] == '\r' || redacted[valueStart] == '\n' {
+			lineStart = nextTOMLLineStart(redacted, lineStart)
+			continue
+		}
+		compositeValue := redacted[valueStart] == '{' || redacted[valueStart] == '['
+		escapedBasicKey := redacted[keyStart] == '"' && strings.Contains(redacted[keyStart:keyEnd], `\`)
+		if !compositeValue && !escapedBasicKey {
+			lineStart = nextTOMLLineStart(redacted, lineStart)
+			continue
+		}
+		valueEnd := findTOMLValueEnd(redacted, valueStart)
+		if valueEnd <= valueStart {
+			lineStart = nextTOMLLineStart(redacted, lineStart)
+			continue
+		}
+		if redacted[valueStart:valueEnd] != redactionMarker {
+			redacted = redacted[:valueStart] + redactionMarker + redacted[valueEnd:]
+			changed = true
+		}
+		lineStart = nextTOMLLineStart(redacted, valueStart+len(redactionMarker))
+	}
+	return redacted, changed
+}
+
+func parseTOMLKey(value string, start int) (string, int, bool) {
+	if start < 0 || start >= len(value) {
+		return "", start, false
+	}
+	switch value[start] {
+	case '"':
+		end := findTOMLQuotedStringEnd(value, start, '"')
+		if end <= start {
+			return "", start, false
+		}
+		key, err := strconv.Unquote(value[start:end])
+		return key, end, err == nil
+	case '\'':
+		end := findTOMLQuotedStringEnd(value, start, '\'')
+		if end <= start {
+			return "", start, false
+		}
+		return value[start+1 : end-1], end, true
+	default:
+		end := start
+		for end < len(value) && isTOMLBareKeyCharacter(value[end]) {
+			end++
+		}
+		if end == start {
+			return "", start, false
+		}
+		return value[start:end], end, true
+	}
+}
+
+func isTOMLBareKeyCharacter(character byte) bool {
+	return character == '_' || character == '-' || character >= 'a' && character <= 'z' ||
+		character >= 'A' && character <= 'Z' || character >= '0' && character <= '9'
+}
+
+func nextTOMLLineStart(value string, start int) int {
+	if start < 0 || start >= len(value) {
+		return len(value)
+	}
+	newline := strings.IndexByte(value[start:], '\n')
+	if newline < 0 {
+		return len(value)
+	}
+	return start + newline + 1
+}
+
+func findTOMLValueEnd(value string, start int) int {
+	if strings.HasPrefix(value[start:], `"""`) || strings.HasPrefix(value[start:], `'''`) {
+		end := findTOMLMultilineStringEnd(value, start)
+		if end < 0 {
+			return len(value)
+		}
+		return end + 1
+	}
+	switch value[start] {
+	case '"', '\'':
+		return findTOMLQuotedStringEnd(value, start, value[start])
+	case '{', '[':
+		return findTOMLCompositeEnd(value, start)
+	default:
+		end := start
+		for end < len(value) && value[end] != '#' && value[end] != '\r' && value[end] != '\n' {
+			end++
+		}
+		for end > start && (value[end-1] == ' ' || value[end-1] == '\t') {
+			end--
+		}
+		return end
+	}
+}
+
+func findTOMLQuotedStringEnd(value string, start int, quote byte) int {
+	for index := start + 1; index < len(value); index++ {
+		if value[index] == '\r' || value[index] == '\n' {
+			return index
+		}
+		if quote == '"' && value[index] == '\\' {
+			index++
+			continue
+		}
+		if value[index] == quote {
+			return index + 1
+		}
+	}
+	return len(value)
+}
+
+func findTOMLCompositeEnd(value string, start int) int {
+	stack := make([]byte, 0, 4)
+	stringDelimiter := ""
+	for index := start; index < len(value); {
+		if stringDelimiter != "" {
+			if stringDelimiter[0] == '"' && value[index] == '\\' {
+				index += 2
+				continue
+			}
+			if strings.HasPrefix(value[index:], stringDelimiter) {
+				index += len(stringDelimiter)
+				stringDelimiter = ""
+				continue
+			}
+			index++
+			continue
+		}
+
+		if value[index] == '#' {
+			for index < len(value) && value[index] != '\n' {
+				index++
+			}
+			continue
+		}
+		if strings.HasPrefix(value[index:], `"""`) || strings.HasPrefix(value[index:], `'''`) {
+			stringDelimiter = value[index : index+3]
+			index += 3
+			continue
+		}
+		switch value[index] {
+		case '"', '\'':
+			stringDelimiter = value[index : index+1]
+			index++
+		case '{', '[':
+			stack = append(stack, value[index])
+			index++
+		case '}':
+			if len(stack) > 0 && stack[len(stack)-1] == '{' {
+				stack = stack[:len(stack)-1]
+			}
+			index++
+			if len(stack) == 0 {
+				return index
+			}
+		case ']':
+			if len(stack) > 0 && stack[len(stack)-1] == '[' {
+				stack = stack[:len(stack)-1]
+			}
+			index++
+			if len(stack) == 0 {
+				return index
+			}
+		default:
+			index++
+		}
+	}
+	return len(value)
 }
 
 func redactTOMLMultilineCredentials(value string) (string, bool) {
