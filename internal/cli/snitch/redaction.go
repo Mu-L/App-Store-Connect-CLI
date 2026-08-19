@@ -52,12 +52,14 @@ var (
 	secretValuePattern      = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
 	rawCookieJarPattern     = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*\{`)
 	escapedCookieJarPattern = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	rawRequestHeaders       = regexp.MustCompile(`(?i)"requestHeaders"[ \t\r\n]*:[ \t\r\n]*\[`)
+	escapedRequestHeaders   = regexp.MustCompile(`(?i)\\"requestHeaders\\"[ \t\r\n]*:[ \t\r\n]*\[`)
 	rawCredentialObject     = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
 	escapedCredentialObject = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
 	booleanSecretMarker     = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1)(` + singleLineShellTerminator + `)`)
 )
 
-var structuredCookieValueRedactionRules = []redactionRule{
+var structuredContainerValueRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?i)("value"[ \t\r\n]*:[ \t\r\n]*")(?:\\.|[^"\\\r\n])*(")([ \t\r\n]*(?:[,}\]]|\z))`),
 		replacement: `${1}` + redactionMarker + `${2}${3}`,
@@ -271,6 +273,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, headerChanged := redactStructuredUploadHeaderValues(redacted); headerChanged {
+		redacted = next
+		changed = true
+	}
 	if next, objectChanged := redactStructuredCredentialObjects(redacted); objectChanged {
 		redacted = next
 		changed = true
@@ -343,9 +349,17 @@ func redactStructuredCredentialObjects(value string) (string, bool) {
 }
 
 func findJSONObjectEnd(value string, open int, escapedQuotes bool) int {
-	depth := 0
+	return findJSONContainerEnd(value, open, escapedQuotes)
+}
+
+func findJSONContainerEnd(value string, open int, escapedQuotes bool) int {
+	if open < 0 || open >= len(value) || (value[open] != '{' && value[open] != '[') {
+		return len(value) - 1
+	}
+
+	stack := []byte{value[open]}
 	inString := false
-	for i := open; i < len(value); i++ {
+	for i := open + 1; i < len(value); i++ {
 		if value[i] == '"' && isJSONStringDelimiter(value, i, escapedQuotes) {
 			inString = !inString
 			continue
@@ -355,11 +369,20 @@ func findJSONObjectEnd(value string, open int, escapedQuotes bool) int {
 		}
 
 		switch value[i] {
-		case '{':
-			depth++
+		case '{', '[':
+			stack = append(stack, value[i])
 		case '}':
-			depth--
-			if depth == 0 {
+			if stack[len(stack)-1] == '{' {
+				stack = stack[:len(stack)-1]
+			}
+			if len(stack) == 0 {
+				return i
+			}
+		case ']':
+			if stack[len(stack)-1] == '[' {
+				stack = stack[:len(stack)-1]
+			}
+			if len(stack) == 0 {
 				return i
 			}
 		}
@@ -405,7 +428,7 @@ func redactStructuredCookieValues(value string) (string, bool) {
 			close := findJSONObjectEnd(redacted, open, candidate.escapedQuotes)
 			object := redacted[open : close+1]
 			redactedObject := object
-			for _, rule := range structuredCookieValueRedactionRules {
+			for _, rule := range structuredContainerValueRedactionRules {
 				redactedObject = rule.pattern.ReplaceAllString(redactedObject, rule.replacement)
 			}
 			if redactedObject != object {
@@ -413,6 +436,45 @@ func redactStructuredCookieValues(value string) (string, bool) {
 				changed = true
 			}
 			searchStart = open + len(redactedObject)
+		}
+	}
+	return redacted, changed
+}
+
+// Upload-operation request-header values are capabilities regardless of their
+// names, matching asc.RedactUploadOperations while preserving useful metadata.
+func redactStructuredUploadHeaderValues(value string) (string, bool) {
+	type headerContainerPattern struct {
+		pattern       *regexp.Regexp
+		escapedQuotes bool
+	}
+	patterns := []headerContainerPattern{
+		{pattern: rawRequestHeaders},
+		{pattern: escapedRequestHeaders, escapedQuotes: true},
+	}
+
+	redacted := value
+	changed := false
+	for _, candidate := range patterns {
+		searchStart := 0
+		for searchStart < len(redacted) {
+			match := candidate.pattern.FindStringIndex(redacted[searchStart:])
+			if match == nil {
+				break
+			}
+
+			open := searchStart + match[1] - 1
+			close := findJSONContainerEnd(redacted, open, candidate.escapedQuotes)
+			container := redacted[open : close+1]
+			redactedContainer := container
+			for _, rule := range structuredContainerValueRedactionRules {
+				redactedContainer = rule.pattern.ReplaceAllString(redactedContainer, rule.replacement)
+			}
+			if redactedContainer != container {
+				redacted = redacted[:open] + redactedContainer + redacted[close+1:]
+				changed = true
+			}
+			searchStart = open + len(redactedContainer)
 		}
 	}
 	return redacted, changed

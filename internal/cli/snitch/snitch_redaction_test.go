@@ -177,6 +177,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `cache {\"cookies\":{\"https://appstoreconnect.apple.com\":[{\"name\":\"myacinfo\",\"value\":\"[REDACTED]\",\"path\":\"/\"}]}}`,
 		},
 		{
+			name:  "upload operation request header values",
+			input: `{"uploadOperations":[{"method":"PUT","requestHeaders":[{"name":"Authorization","value":"opaque-upload-secret"},{"name":"x-amz-checksum-sha256","value":"checksum-capability"}],"length":12}],"status":"pending"}`,
+			want:  `{"uploadOperations":[{"method":"PUT","requestHeaders":[{"name":"Authorization","value":"[REDACTED]"},{"name":"x-amz-checksum-sha256","value":"[REDACTED]"}],"length":12}],"status":"pending"}`,
+		},
+		{
+			name:  "escaped upload operation request header value",
+			input: `response {\"requestHeaders\":[{\"name\":\"x-upload-token\",\"value\":\"escaped-upload-secret\"}],\"method\":\"PUT\"}`,
+			want:  `response {\"requestHeaders\":[{\"name\":\"x-upload-token\",\"value\":\"[REDACTED]\"}],\"method\":\"PUT\"}`,
+		},
+		{
 			name:  "structured credential headers",
 			input: `{"Authorization":"Basic c3VwZXJzZWNyZXQ=","Cookie":"myacinfo=super-session-secret","status":"failed"}`,
 			want:  `{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","status":"failed"}`,
@@ -1206,6 +1216,38 @@ func TestSnitchDryRunRedactsYAMLSingleQuotedScalarWithDoubledQuote(t *testing.T)
 	}
 	if want := "password: [REDACTED]\nstatus: failed"; !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+	}
+}
+
+func TestSnitchDryRunRedactsUploadOperationHeaderValues(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"authorization-upload-secret", "custom-upload-secret"}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", `{"uploadOperations":[{"method":"PUT","requestHeaders":[{"name":"Authorization","value":"`+secrets[0]+`"},{"name":"x-upload-token","value":"`+secrets[1]+`"}],"length":12}],"diagnostic":{"name":"failure","value":"preserve this explanation"}}`,
+		"upload operation credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	want := `{"uploadOperations":[{"method":"PUT","requestHeaders":[{"name":"Authorization","value":"[REDACTED]"},{"name":"x-upload-token","value":"[REDACTED]"}],"length":12}],"diagnostic":{"name":"failure","value":"preserve this explanation"}}`
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want preserved response context %q", stderr, want)
 	}
 }
 
