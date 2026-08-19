@@ -485,6 +485,10 @@ Examples:
 			fs.Visit(func(f *flag.Flag) {
 				visited[f.Name] = true
 			})
+			if *internal && (visited["public-link-enabled"] || visited["public-link-limit-enabled"] || visited["public-link-limit"]) {
+				fmt.Fprintln(os.Stderr, "Error: --internal cannot be combined with public link controls")
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "--internal")
+			}
 			if visited["public-link-limit"] && (*publicLinkLimit < 1 || *publicLinkLimit > 10000) {
 				fmt.Fprintln(os.Stderr, "Error: --public-link-limit must be between 1 and 10000")
 				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--public-link-limit")

@@ -2,11 +2,15 @@ package cmdtest
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 func TestBetaGroupsCreateInternalSetsAttributeOnCreate(t *testing.T) {
@@ -168,7 +172,7 @@ func TestBetaGroupsCreateSendsDistributionControls(t *testing.T) {
 			}
 		}
 
-		response := `{"data":{"type":"betaGroups","id":"bg-3","attributes":{"name":"Internal Preview","isInternalGroup":true,"hasAccessToAllBuilds":true,"feedbackEnabled":true}}}`
+		response := `{"data":{"type":"betaGroups","id":"bg-3","attributes":{"name":"Public Preview","isInternalGroup":false,"hasAccessToAllBuilds":true,"feedbackEnabled":true}}}`
 		return &http.Response{
 			StatusCode: http.StatusCreated,
 			Body:       io.NopCloser(strings.NewReader(response)),
@@ -183,8 +187,7 @@ func TestBetaGroupsCreateSendsDistributionControls(t *testing.T) {
 		if err := root.Parse([]string{
 			"testflight", "groups", "create",
 			"--app", "app-1",
-			"--name", "Internal Preview",
-			"--internal",
+			"--name", "Public Preview",
 			"--access-all-builds",
 			"--public-link-enabled",
 			"--public-link-limit-enabled",
@@ -203,6 +206,62 @@ func TestBetaGroupsCreateSendsDistributionControls(t *testing.T) {
 	}
 	if callCount != 1 {
 		t.Fatalf("expected one request, got %d", callCount)
+	}
+}
+
+func TestBetaGroupsCreateRejectsInternalPublicLinkControlsBeforeRequest(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_APP_ID", "")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+	callCount := 0
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		callCount++
+		return nil, errors.New("unexpected request")
+	})
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "enabled", args: []string{"--public-link-enabled"}},
+		{name: "limit enabled", args: []string{"--public-link-limit-enabled"}},
+		{name: "limit", args: []string{"--public-link-limit", "250"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := RootCommand("1.2.3")
+			root.FlagSet.SetOutput(io.Discard)
+
+			args := []string{"testflight", "groups", "create", "--app", "app-1", "--name", "Internal", "--internal"}
+			args = append(args, tt.args...)
+			var runErr error
+			_, stderr := captureOutput(t, func() {
+				if err := root.Parse(args); err != nil {
+					t.Fatalf("parse error: %v", err)
+				}
+				runErr = root.Run(context.Background())
+			})
+
+			if !errors.Is(runErr, flag.ErrHelp) {
+				t.Fatalf("expected ErrHelp, got %v", runErr)
+			}
+			wantErr := shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "--internal")
+			if runErr.Error() != wantErr.Error() {
+				t.Fatalf("error = %q, want %q", runErr, wantErr)
+			}
+			if !strings.Contains(stderr, "--internal cannot be combined with public link controls") {
+				t.Fatalf("expected conflict diagnostic, got %q", stderr)
+			}
+			if callCount != 0 {
+				t.Fatalf("expected no requests, got %d", callCount)
+			}
+		})
 	}
 }
 
@@ -236,8 +295,12 @@ func TestBetaGroupsCreateRejectsInvalidPublicLinkLimitBeforeRequest(t *testing.T
 		runErr = root.Run(context.Background())
 	})
 
-	if runErr == nil || !strings.Contains(runErr.Error(), "flag") {
-		t.Fatalf("expected usage error, got %v", runErr)
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("expected ErrHelp, got %v", runErr)
+	}
+	wantErr := shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--public-link-limit")
+	if runErr.Error() != wantErr.Error() {
+		t.Fatalf("error = %q, want %q", runErr, wantErr)
 	}
 	if !strings.Contains(stderr, "--public-link-limit must be between 1 and 10000") {
 		t.Fatalf("expected limit diagnostic, got %q", stderr)
