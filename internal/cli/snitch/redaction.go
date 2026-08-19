@@ -56,11 +56,11 @@ var (
 
 var structuredCookieValueRedactionRules = []redactionRule{
 	{
-		pattern:     regexp.MustCompile(`(?i)("name"[ \t\r\n]*:[ \t\r\n]*"(?:\\.|[^"\\\r\n])*"[ \t\r\n]*,[ \t\r\n]*"value"[ \t\r\n]*:[ \t\r\n]*")(?:\\.|[^"\\\r\n])*(")([ \t\r\n]*(?:[,}\]]|\z))`),
+		pattern:     regexp.MustCompile(`(?i)("value"[ \t\r\n]*:[ \t\r\n]*")(?:\\.|[^"\\\r\n])*(")([ \t\r\n]*(?:[,}\]]|\z))`),
 		replacement: `${1}` + redactionMarker + `${2}${3}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(\\"name\\"[ \t\r\n]*:[ \t\r\n]*\\"(?:\\.|[^"\\\r\n])*?\\"[ \t\r\n]*,[ \t\r\n]*\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\")(?:\\.|[^"\\\r\n])*?(\\")([ \t\r\n]*(?:[,}\]]|\z))`),
+		pattern:     regexp.MustCompile(`(?i)(\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\")(?:\\.|[^"\\\r\n])*?(\\")([ \t\r\n]*(?:[,}\]]|\z))`),
 		replacement: `${1}` + redactionMarker + `${2}${3}`,
 	},
 }

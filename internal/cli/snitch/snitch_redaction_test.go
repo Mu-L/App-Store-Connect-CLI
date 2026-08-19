@@ -167,6 +167,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"[REDACTED]","path":"/"},{"name":"dqsid","value":"[REDACTED]"}]},"version":1}`,
 		},
 		{
+			name:  "persisted session cookie value before name",
+			input: `{"cookies":{"https://appstoreconnect.apple.com":[{"value":"super-session-secret","name":"myacinfo"}]},"version":1}`,
+			want:  `{"cookies":{"https://appstoreconnect.apple.com":[{"value":"[REDACTED]","name":"myacinfo"}]},"version":1}`,
+		},
+		{
 			name:  "escaped persisted session cookie value",
 			input: `cache {\"cookies\":{\"https://appstoreconnect.apple.com\":[{\"name\":\"myacinfo\",\"value\":\"super-session-secret\",\"path\":\"/\"}]}}`,
 			want:  `cache {\"cookies\":{\"https://appstoreconnect.apple.com\":[{\"name\":\"myacinfo\",\"value\":\"[REDACTED]\",\"path\":\"/\"}]}}`,
@@ -1672,12 +1677,13 @@ func TestSnitchDryRunRedactsCurlCookieDataAndSessionCacheValues(t *testing.T) {
 		"curl-cookie-secret",
 		"cached-cookie-secret",
 		"second-cached-cookie-secret",
+		"reordered-cached-cookie-secret",
 	}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", `curl --cookie 'myacinfo=`+secrets[0]+`' --cookie ./cookies.txt https://example.test`,
-		"--actual", `{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"`+secrets[1]+`","path":"/"},{"name":"dqsid","value":"`+secrets[2]+`"}]},"diagnostic":{"name":"failure","value":"preserve this explanation"},"version":1}`,
+		"--actual", `{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"`+secrets[1]+`","path":"/"},{"name":"dqsid","value":"`+secrets[2]+`"},{"value":"`+secrets[3]+`","name":"itctx"}]},"diagnostic":{"name":"failure","value":"preserve this explanation"},"version":1}`,
 		"session cookie redaction probe",
 	)
 	if err != nil {
@@ -1697,7 +1703,7 @@ func TestSnitchDryRunRedactsCurlCookieDataAndSessionCacheValues(t *testing.T) {
 	}
 	for _, want := range []string{
 		`curl --cookie [REDACTED] --cookie ./cookies.txt https://example.test`,
-		`{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"[REDACTED]","path":"/"},{"name":"dqsid","value":"[REDACTED]"}]},"diagnostic":{"name":"failure","value":"preserve this explanation"},"version":1}`,
+		`{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"[REDACTED]","path":"/"},{"name":"dqsid","value":"[REDACTED]"},{"value":"[REDACTED]","name":"itctx"}]},"diagnostic":{"name":"failure","value":"preserve this explanation"},"version":1}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
