@@ -17,7 +17,13 @@ func TestRequestedHelpIsWrittenToStdout(t *testing.T) {
 		want string
 	}{
 		{name: "root long help", args: []string{"--help"}, want: "asc <subcommand> [flags]"},
+		{name: "root single-dash long help", args: []string{"-help"}, want: "asc <subcommand> [flags]"},
+		{name: "root double-dash short help", args: []string{"--h"}, want: "asc <subcommand> [flags]"},
+		{name: "root short help with value", args: []string{"-h=true"}, want: "asc <subcommand> [flags]"},
+		{name: "root long help with value", args: []string{"--help=false"}, want: "asc <subcommand> [flags]"},
 		{name: "group long help", args: []string{"builds", "--help"}, want: "asc builds"},
+		{name: "group single-dash long help", args: []string{"builds", "-help"}, want: "asc builds"},
+		{name: "group double-dash short help with value", args: []string{"builds", "--h=true"}, want: "asc builds"},
 		{name: "group short help", args: []string{"builds", "-h"}, want: "asc builds"},
 		{name: "leaf long help", args: []string{"builds", "list", "--help"}, want: "asc builds list"},
 		{name: "leaf short help", args: []string{"builds", "list", "-h"}, want: "asc builds list"},

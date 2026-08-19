@@ -370,9 +370,10 @@ func commandAcceptsPositionalPayload(commandPath []string) bool {
 }
 
 // requestedHelp reports whether the invocation explicitly asked for help with
-// -h or --help. The standard flag package raises flag.ErrHelp for an undefined
-// help token, so the token itself is the only reliable signal that the operator
-// asked for the help page instead of tripping over a usage failure.
+// any -h or -help spelling accepted by the standard flag package. That package
+// raises flag.ErrHelp for an undefined help token, so the token itself is the
+// only reliable signal that the operator asked for the help page instead of
+// tripping over a usage failure.
 func requestedHelp(root *ffcli.Command, args []string) bool {
 	command := root
 	for i := 0; i < len(args); {
