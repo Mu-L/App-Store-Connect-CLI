@@ -19,17 +19,20 @@ const (
 	webAuthStructuredCredential = `(?:authservicekey|servicekey)`
 	structuredCredentialName    = `(?:` + sensitivePrefixedName + `|` + credentialHeaderName + `|` + webAuthStructuredCredential + `)`
 	singleLineQuotedValue       = `(?:"(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*')`
+	singleLineUnquotedFragment  = `(?:\\[^\r\n]|[^\s\\;&|<>()"'])+`
+	singleLineShellWord         = `(?:` + singleLineQuotedValue + `|` + singleLineUnquotedFragment + `)+`
+	singleLineShellTerminator   = `(?:[ \t;&|<>()]|\r?\n|\z)`
 	escapedQuotedCharacter      = `\\(?:\r?\n|[^\r\n])`
 	escapeAwareQuotedValue      = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*"|\$?'(?:` + escapedQuotedCharacter + `|[^'\\])*')`
 	unterminatedQuotedValue     = `(?:"[^\r\n]*|\$?'[^\r\n]*)`
-	shellUnquotedValue          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>])+`
-	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\;&|<>]|[^-\s\\;&|<>])(?:\\[^\r\n]|[^\s;&|<>])*`
+	shellUnquotedValue          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])+`
+	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\;&|<>()]|[^-\s\\;&|<>()])(?:\\[^\r\n]|[^\s;&|<>()])*`
 	credentialPairQuoted        = `(?:"(?:\\.|[^"\\\r\n])*:(?:\\.|[^"\\\r\n])+"|\$'(?:\\.|[^'\\\r\n])*:(?:\\.|[^'\\\r\n])+'|'(?:\\.|[^'\\\r\n])*:(?:\\.|[^'\\\r\n])+')`
 	credentialPairOpen          = `(?:"[^\r\n]*:[^\r\n]+|\$?'[^\r\n]*:[^\r\n]+)`
-	credentialPairUnquoted      = `(?:\\(?:\r?\n|[^\r\n])|[^\s:;&|<>])*:(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>])+`
+	credentialPairUnquoted      = `(?:\\(?:\r?\n|[^\r\n])|[^\s:;&|<>()])*:(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])+`
 	credentialPairValue         = `(?:` + credentialPairQuoted + `|` + credentialPairOpen + `|` + credentialPairUnquoted + `)`
 	cookieDataQuoted            = `(?:"(?:\\.|[^"\\\r\n])*=(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*=(?:\\.|[^'\\\r\n])*')`
-	cookieDataUnquoted          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>])*=(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>])*`
+	cookieDataUnquoted          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])*=(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])*`
 	cookieDataValue             = `(?:` + cookieDataQuoted + `|` + cookieDataUnquoted + `)`
 	curlCertOptionPrefix        = `(?:(?:-E|--cert)\b(?:[ \t]+|[ \t]*=[ \t]*)|-E)`
 	curlCertUnquotedPath        = `(?:\\(?:\r?\n|[^\r\n])|[^\s:'"])+`
@@ -61,20 +64,21 @@ var structuredCookieValueRedactionRules = []redactionRule{
 	},
 }
 
-// Redact complete single-line shell values first so an unmatched quote in an
-// earlier log line cannot claim a later command's opening quote as its closer.
-var singleLineQuotedRedactionRules = []redactionRule{
+// Redact complete single-line shell words first so adjacent quoted and
+// unquoted fragments cannot leak, and an unmatched quote in an earlier log
+// line cannot claim a later command's opening quote as its closer.
+var singleLineShellWordRedactionRules = []redactionRule{
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}` + sensitiveFlagName + `\b[ \t]+)` + singleLineQuotedValue),
-		replacement: `${1}${2}` + redactionMarker,
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}` + sensitiveFlagName + `\b[ \t]+)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`),
+		replacement: `${1}${2}` + redactionMarker + `${3}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}(?:` + sensitiveFlagName + `|secret)\b[ \t]*=[ \t]*)` + singleLineQuotedValue),
-		replacement: `${1}${2}` + redactionMarker,
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}(?:` + sensitiveFlagName + `|secret)\b[ \t]*=[ \t]*)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`),
+		replacement: `${1}${2}` + redactionMarker + `${3}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|[^-a-z0-9_])(` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)` + singleLineQuotedValue),
-		replacement: `${1}${2}` + redactionMarker,
+		pattern:     regexp.MustCompile(`(?i)(^|[^-a-z0-9_])(` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`),
+		replacement: `${1}${2}` + redactionMarker + `${3}`,
 	},
 }
 
@@ -164,7 +168,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)(` + credentialHeaderName + `)[ \t]*:[ \t]*(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>])+`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)(` + credentialHeaderName + `)[ \t]*:[ \t]*(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])+`),
 		replacement: `${1}${2}${3}:` + redactionMarker,
 	},
 	{
@@ -251,7 +255,7 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
-	for _, rule := range singleLineQuotedRedactionRules {
+	for _, rule := range singleLineShellWordRedactionRules {
 		next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
 		if next != redacted {
 			changed = true

@@ -329,6 +329,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `asc web sandbox create --email "user@example.test" --password [REDACTED] --territory "USA"`,
 		},
 		{
+			name:  "adjacent quoted fragments in secret flag",
+			input: `asc deploy --password 'super''secret' --verbose`,
+			want:  `asc deploy --password [REDACTED] --verbose`,
+		},
+		{
+			name:  "mixed adjacent fragments in secret assignment",
+			input: `PASSWORD=pre'super'"secret"post asc builds list`,
+			want:  `PASSWORD=[REDACTED] asc builds list`,
+		},
+		{
 			name:  "notification webhook flag",
 			input: `asc notify slack --webhook https://hooks.slack.com/services/T/B/super-secret --message ready`,
 			want:  `asc notify slack --webhook [REDACTED] --message ready`,
@@ -1327,11 +1337,11 @@ func TestSnitchDryRunPreservesOperatorsAroundContinuedHeaderCredentials(t *testi
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"continued-header-secret", "assignment-secret", "flag-secret"}
+	secrets := []string{"continued-header-secret", "boundary-assignment-credential", "operator-flag-credential", "fragmented-flag-credential", "fragmented-env-credential"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", "curl -H \"Cookie: myacinfo="+secrets[0]+"\\\n-tail\" https://example.test\nPASSWORD="+secrets[1]+"; echo next\nasc deploy --password "+secrets[2]+" && echo done",
+		"--repro", "curl -H \"Cookie: myacinfo="+secrets[0]+"\\\n-tail\" https://example.test\nPASSWORD="+secrets[1]+"; echo next\nasc deploy --password "+secrets[2]+" && echo done\nasc deploy --password 'adjacent-'\""+secrets[3]+"\" --verbose\nPASSWORD='adjacent-'\""+secrets[4]+"\" asc builds list",
 		"continued header and operator preservation probe",
 	)
 	if err != nil {
@@ -1353,6 +1363,8 @@ func TestSnitchDryRunPreservesOperatorsAroundContinuedHeaderCredentials(t *testi
 		`curl -H "Cookie: [REDACTED]" https://example.test`,
 		"PASSWORD=[REDACTED]; echo next",
 		"asc deploy --password [REDACTED] && echo done",
+		"asc deploy --password [REDACTED] --verbose",
+		"PASSWORD=[REDACTED] asc builds list",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
