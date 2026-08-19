@@ -461,11 +461,21 @@ func findPreReleaseVersionIDsForVersion(ctx context.Context, client *asc.Client,
 	}
 
 	ids := make([]string, 0, len(firstPage.Data))
+	seen := make(map[string]struct{}, len(firstPage.Data))
 	appendIDs := func(page *asc.PreReleaseVersionsResponse) {
 		for _, preReleaseVersion := range page.Data {
-			if matchesRequestedVersion(preReleaseVersion) {
-				ids = append(ids, preReleaseVersion.ID)
+			if !matchesRequestedVersion(preReleaseVersion) {
+				continue
 			}
+			id := strings.TrimSpace(preReleaseVersion.ID)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
 		}
 	}
 

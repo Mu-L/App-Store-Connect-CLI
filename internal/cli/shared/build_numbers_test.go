@@ -296,3 +296,29 @@ func TestFindPreReleaseVersionIDsWithoutVersionFilterQueriesOnce(t *testing.T) {
 		t.Fatalf("expected a single unfiltered query, got %v", calls)
 	}
 }
+
+func TestFindPreReleaseVersionIDsDeduplicatesAndSkipsBlankIDs(t *testing.T) {
+	resetEquivalentVersionNotes()
+
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/v1/preReleaseVersions" {
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+		return buildWaitJSONResponse(`{
+			"data": [
+				{"type": "preReleaseVersions", "id": "prv-1", "attributes": {"version": "1.2.3"}},
+				{"type": "preReleaseVersions", "id": " prv-1 ", "attributes": {"version": "1.2.3"}},
+				{"type": "preReleaseVersions", "id": "", "attributes": {"version": "1.2.3"}}
+			],
+			"links": {}
+		}`)
+	})
+
+	ids, err := FindPreReleaseVersionIDs(context.Background(), client, "app-1", "1.2.3", "IOS")
+	if err != nil {
+		t.Fatalf("FindPreReleaseVersionIDs() error: %v", err)
+	}
+	if !slices.Equal(ids, []string{"prv-1"}) {
+		t.Fatalf("expected one normalized ID, got %v", ids)
+	}
+}
