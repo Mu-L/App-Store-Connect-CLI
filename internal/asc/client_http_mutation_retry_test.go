@@ -46,6 +46,9 @@ func setFastRetryEnv(t *testing.T, maxRetries string) {
 // replaying the identical payload cannot double-apply the mutation.
 func TestClientDo_RetriesRateLimitedMutation(t *testing.T) {
 	setFastRetryEnv(t, "3")
+	// Retry-After is only honored within the retry cap, so the cap has to clear
+	// the 1s the server asks for below.
+	t.Setenv("ASC_MAX_DELAY", "5s")
 
 	const payload = `{"data":{"type":"appStoreVersionLocalizations","attributes":{"description":"hello"}}}`
 

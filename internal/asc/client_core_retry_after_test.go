@@ -1,0 +1,162 @@
+package asc
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func rateLimitedError(retryAfter time.Duration) error {
+	return &RetryableError{
+		Err:        buildRetryableError(http.StatusTooManyRequests, retryAfter, nil),
+		RetryAfter: retryAfter,
+	}
+}
+
+// A Retry-After Apple can actually satisfy is waited out exactly, not replaced
+// by the shorter exponential backoff.
+func TestWithRetry_HonorsRetryAfterWithinCap(t *testing.T) {
+	var attempts atomic.Int32
+
+	start := time.Now()
+	_, err := WithRetry(context.Background(), func() (struct{}, error) {
+		if attempts.Add(1) == 1 {
+			return struct{}{}, rateLimitedError(60 * time.Millisecond)
+		}
+		return struct{}{}, nil
+	}, RetryOptions{MaxRetries: 2, BaseDelay: time.Millisecond, MaxDelay: 5 * time.Second})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("WithRetry() error: %v", err)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("expected 2 attempts, got %d", got)
+	}
+	if elapsed < 60*time.Millisecond {
+		t.Fatalf("expected the 60ms Retry-After to be honored, retried after %s", elapsed)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("expected the wait to track Retry-After, waited %s", elapsed)
+	}
+}
+
+// A Retry-After beyond the configured cap cannot be honored, and sleeping the
+// capped amount only collects the same rejection again. Report the numbers
+// instead of stalling.
+func TestWithRetry_FailsFastWhenRetryAfterExceedsCap(t *testing.T) {
+	var attempts atomic.Int32
+
+	// Bound the test: a regression sleeps the server's hint, and this turns that
+	// into a failure instead of an hour-long hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := WithRetry(ctx, func() (struct{}, error) {
+		attempts.Add(1)
+		return struct{}{}, rateLimitedError(time.Hour)
+	}, RetryOptions{MaxRetries: 3, BaseDelay: time.Millisecond, MaxDelay: 30 * time.Second})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 attempt, got %d", got)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected an immediate failure, took %s", elapsed)
+	}
+
+	message := err.Error()
+	if !strings.Contains(message, "1h0m0s") {
+		t.Fatalf("expected the requested wait in the message, got %q", message)
+	}
+	if !strings.Contains(message, "30s") {
+		t.Fatalf("expected the retry cap in the message, got %q", message)
+	}
+	if !strings.Contains(message, "rate limited") {
+		t.Fatalf("expected the message to name rate limiting, got %q", message)
+	}
+
+	apiErr, ok := errors.AsType[*APIError](err)
+	if !ok {
+		t.Fatalf("expected *APIError in chain, got %v", err)
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected status %d, got %d", http.StatusTooManyRequests, apiErr.StatusCode)
+	}
+}
+
+func TestWithRetry_RetryAfterAtCapIsHonored(t *testing.T) {
+	var attempts atomic.Int32
+
+	_, err := WithRetry(context.Background(), func() (struct{}, error) {
+		if attempts.Add(1) == 1 {
+			return struct{}{}, rateLimitedError(20 * time.Millisecond)
+		}
+		return struct{}{}, nil
+	}, RetryOptions{MaxRetries: 2, BaseDelay: time.Millisecond, MaxDelay: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("WithRetry() error: %v", err)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("expected 2 attempts, got %d", got)
+	}
+}
+
+// Without a cap check the client sleeps the server's full hint and the command
+// ends on its context deadline, never telling the operator it was rate limited.
+func TestClientDo_RateLimitBeyondCapFailsWithoutWaiting(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "3")
+	t.Setenv("ASC_BASE_DELAY", "1ms")
+	t.Setenv("ASC_MAX_DELAY", "2s")
+	resetConfigCacheForTest()
+	t.Cleanup(resetConfigCacheForTest)
+
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"errors":[{"status":"429","code":"RATE_LIMIT_EXCEEDED","title":"Too many requests"}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := &Client{
+		httpClient: server.Client(),
+		keyID:      "KEY123",
+		issuerID:   "ISS456",
+		privateKey: testJWTPrivateKey(t),
+	}
+
+	// Bound the test the same way: without the cap check this sleeps the full
+	// hour the server asked for.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := client.do(ctx, http.MethodGet, server.URL+"/v1/apps", nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 request, got %d", got)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected an immediate failure, took %s", elapsed)
+	}
+	if message := err.Error(); !strings.Contains(message, "1h0m0s") || !strings.Contains(message, "2s") {
+		t.Fatalf("expected the requested wait and the cap in the message, got %q", message)
+	}
+}

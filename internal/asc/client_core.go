@@ -419,7 +419,8 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 
 		// Calculate delay
 		delay := GetRetryAfter(err)
-		if delay == 0 {
+		switch {
+		case delay <= 0:
 			// Exponential backoff with jitter, capped to prevent overflow
 			expDelay := opts.BaseDelay
 			if retryCount > 0 && retryCount < 31 { // Prevent overflow for reasonable retry counts
@@ -434,6 +435,15 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 			if delay < 0 {
 				delay = expDelay / 2 // minimum delay
 			}
+		case delay > opts.MaxDelay:
+			// The server asked for longer than this run is willing to wait.
+			// Retrying at the cap would just collect the same rejection, and
+			// sleeping the full hint hides the rate limit behind an eventual
+			// context deadline, so report both numbers now.
+			return zero, fmt.Errorf(
+				"rate limited: App Store Connect asked to wait %s, exceeding the %s retry cap (raise ASC_MAX_DELAY to wait longer): %w",
+				delay, opts.MaxDelay, err,
+			)
 		}
 
 		if ResolveRetryLogEnabled() {
