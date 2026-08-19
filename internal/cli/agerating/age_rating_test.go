@@ -42,6 +42,16 @@ func TestAgeRatingCommandShape(t *testing.T) {
 	}
 }
 
+func TestAgeRatingAuditPaginateFlagIsExperimental(t *testing.T) {
+	flag := AgeRatingAuditCommand().FlagSet.Lookup("paginate")
+	if flag == nil {
+		t.Fatal("expected --paginate flag")
+	}
+	if !strings.HasPrefix(flag.Usage, "[experimental] ") {
+		t.Fatalf("--paginate usage = %q, want [experimental] prefix", flag.Usage)
+	}
+}
+
 func TestAgeRatingValidationErrors(t *testing.T) {
 	t.Setenv("ASC_APP_ID", "")
 

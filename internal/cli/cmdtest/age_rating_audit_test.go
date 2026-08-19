@@ -199,6 +199,81 @@ func TestAgeRatingAuditRequiresAgeAssuranceForRestrictedSocialMedia(t *testing.T
 	}
 }
 
+func TestAgeRatingAuditRejectsContradictoryRestrictedSocialMedia(t *testing.T) {
+	setupAuth(t)
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/apps":
+			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"apps","id":"app-1"}],"links":{}}`), nil
+		case "/v1/apps/app-1/appInfos":
+			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"appInfos","id":"info-1","attributes":{"state":"READY_FOR_DISTRIBUTION"}}],"links":{}}`), nil
+		case "/v1/appInfos/info-1/ageRatingDeclaration":
+			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"ageRatingDeclarations","id":"decl-1","attributes":{"socialMedia":false,"socialMediaAgeRestricted":true,"messagingAndChat":true,"ageAssurance":true}}}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, _ := captureOutput(t, func() {
+		if err := root.Parse([]string{"age-rating", "audit", "--output", "json"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	var result struct {
+		Apps []struct {
+			MissingResponses []string `json:"missingResponses"`
+			Ready            bool     `json:"ready"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("unmarshal output: %v (%q)", err, stdout)
+	}
+	if len(result.Apps) != 1 || result.Apps[0].Ready || strings.Join(result.Apps[0].MissingResponses, ",") != "socialMedia" {
+		t.Fatalf("unexpected readiness result: %+v", result.Apps)
+	}
+}
+
+func TestAgeRatingAuditReturnsFailureAfterRenderingPerAppErrors(t *testing.T) {
+	setupAuth(t)
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/apps":
+			return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"apps","id":"app-1"}],"links":{}}`), nil
+		case "/v1/apps/app-1/appInfos":
+			return jsonHTTPResponse(http.StatusForbidden, `{"errors":[{"status":"403","title":"Forbidden"}]}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+	}))
+
+	stdout, stderr := captureOutput(t, func() {
+		if code := cmd.Run([]string{"age-rating", "audit", "--output", "json"}, "1.2.3"); code != cmd.ExitError {
+			t.Fatalf("exit code = %d, want %d", code, cmd.ExitError)
+		}
+	})
+	var result struct {
+		Apps []struct {
+			Error string `json:"error"`
+		} `json:"apps"`
+		ErrorCount int `json:"errorCount"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("unmarshal output: %v (%q)", err, stdout)
+	}
+	if len(result.Apps) != 1 || result.Apps[0].Error == "" || result.ErrorCount != 1 {
+		t.Fatalf("unexpected error result: %+v", result)
+	}
+	if !strings.Contains(stderr, "age-rating audit: 1 app could not be audited") {
+		t.Fatalf("stderr = %q, want partial-audit diagnostic", stderr)
+	}
+}
+
 func TestAgeRatingAuditRejectsExplicitEmptyApp(t *testing.T) {
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
 	t.Setenv("ASC_KEY_ID", "")

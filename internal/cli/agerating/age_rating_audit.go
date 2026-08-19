@@ -21,7 +21,7 @@ func AgeRatingAuditCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("age-rating audit", flag.ExitOnError)
 
 	appIDs := shared.BindOnceCSVFlag(fs, "app", "Restrict the audit to specific app IDs (comma-separated)")
-	paginate := fs.Bool("paginate", false, "Fetch all app pages (default: first page only)")
+	paginate := fs.Bool("paginate", false, "[experimental] Fetch all app pages (default: first page only)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -38,7 +38,7 @@ and app update. By default, this command audits the first app page (up to 200
 apps). Pass --paginate to audit every app page, or --app to audit specific IDs.
 
 A response counts as missing when:
-  - socialMedia is unset
+  - socialMedia is unset, or false while socialMediaAgeRestricted is true
   - messagingAndChat is unset
   - socialMediaAgeRestricted is unset while socialMedia is true
   - ageAssurance is unset or false while socialMediaAgeRestricted is true
@@ -106,7 +106,19 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Warning: more apps exist; use --paginate to audit every app.")
 			}
 
-			return shared.PrintOutput(&result, *output.Output, *output.Pretty)
+			if err := shared.PrintOutput(&result, *output.Output, *output.Pretty); err != nil {
+				return err
+			}
+			if result.ErrorCount > 0 {
+				noun := "apps"
+				if result.ErrorCount == 1 {
+					noun = "app"
+				}
+				err := fmt.Errorf("age-rating audit: %d %s could not be audited; see per-app errors in the output", result.ErrorCount, noun)
+				fmt.Fprintln(os.Stderr, err)
+				return shared.NewReportedError(err)
+			}
+			return nil
 		},
 	}
 }
@@ -224,6 +236,9 @@ func auditDeclaration(ctx context.Context, client *asc.Client, app auditApp) asc
 	}
 	if boolIsTrue(socialMedia) && socialMediaAgeRestricted == nil {
 		row.MissingResponses = append(row.MissingResponses, "socialMediaAgeRestricted")
+	}
+	if boolIsTrue(socialMediaAgeRestricted) && boolIsFalse(socialMedia) {
+		row.MissingResponses = append(row.MissingResponses, "socialMedia")
 	}
 	if boolIsTrue(socialMediaAgeRestricted) && !boolIsTrue(attrs.AgeAssurance) {
 		row.MissingResponses = append(row.MissingResponses, "ageAssurance")

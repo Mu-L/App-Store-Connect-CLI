@@ -1,6 +1,9 @@
 package asc
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // AgeRatingAuditRow reports one app's social-media capability responses.
 type AgeRatingAuditRow struct {
@@ -25,7 +28,7 @@ type AgeRatingAuditResult struct {
 }
 
 func ageRatingAuditResultRows(result *AgeRatingAuditResult) ([]string, [][]string) {
-	headers := []string{"App ID", "Name", "Social Media", "Age Restricted", "Messaging & Chat", "Age Assurance", "Missing"}
+	headers := []string{"App ID", "Name", "Social Media", "Age Restricted", "Messaging & Chat", "Age Assurance", "Ready", "Missing"}
 	rows := make([][]string, 0, len(result.Apps))
 	for _, row := range result.Apps {
 		missing := strings.Join(row.MissingResponses, ", ")
@@ -39,6 +42,7 @@ func ageRatingAuditResultRows(result *AgeRatingAuditResult) ([]string, [][]strin
 			row.SocialMediaAgeRestricted,
 			row.MessagingAndChat,
 			row.AgeAssurance,
+			strconv.FormatBool(row.Ready),
 			missing,
 		})
 	}

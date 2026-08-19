@@ -50,17 +50,23 @@ func TestAgeRatingAuditResultRows(t *testing.T) {
 	}
 
 	headers, rows := ageRatingAuditResultRows(result)
-	wantHeaders := []string{"App ID", "Name", "Social Media", "Age Restricted", "Messaging & Chat", "Age Assurance", "Missing"}
+	wantHeaders := []string{"App ID", "Name", "Social Media", "Age Restricted", "Messaging & Chat", "Age Assurance", "Ready", "Missing"}
 	if !reflect.DeepEqual(headers, wantHeaders) {
 		t.Fatalf("headers = %#v, want %#v", headers, wantHeaders)
 	}
 	if len(rows) != 2 {
 		t.Fatalf("rows = %#v, want 2 rows", rows)
 	}
-	if got := rows[0][6]; got != "" {
+	if got := rows[0][6]; got != "true" {
+		t.Fatalf("ready column = %q, want true", got)
+	}
+	if got := rows[0][7]; got != "" {
 		t.Fatalf("ready missing column = %q, want empty", got)
 	}
-	if got := rows[1][6]; got != "error: request failed" {
+	if got := rows[1][6]; got != "false" {
+		t.Fatalf("error ready column = %q, want false", got)
+	}
+	if got := rows[1][7]; got != "error: request failed" {
 		t.Fatalf("error missing column = %q, want error detail", got)
 	}
 	ensureOutputRegistryPopulated()
