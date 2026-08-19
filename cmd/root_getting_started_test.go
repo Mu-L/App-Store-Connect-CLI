@@ -14,9 +14,16 @@ var ansiEscapePattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
 // discovery loop on the first screen of `asc --help`.
 var wantGettingStartedInvocations = []string{
 	`asc search "upload a build" --output json`,
-	"asc auth status --validate",
+	"asc auth doctor",
 	"asc apps list --output table",
 	"asc status --app APP_ID",
+}
+
+func TestRootHelpDoesNotOverstateAuthDoctorNetworkValidation(t *testing.T) {
+	block := gettingStartedBlock(t)
+	if !strings.Contains(block, "asc auth doctor") || !strings.Contains(block, "diagnose local auth configuration") {
+		t.Fatalf("getting-started auth step must describe local diagnosis accurately:\n%s", block)
+	}
 }
 
 func TestRootHelpRendersGettingStartedBlock(t *testing.T) {

@@ -18,11 +18,11 @@ import (
 var versionRequested bool
 
 // rootGettingStartedSamples teaches the discovery loop on the first help
-// screen: find the right command, validate credentials, locate an app, then
+// screen: find the right command, diagnose credentials, locate an app, then
 // inspect it. Every sample is a copy-paste-valid long-form invocation, and
 // placeholders stay bare uppercase so shells do not read them as redirection.
 const rootGettingStartedSamples = `  asc search "upload a build" --output json   # find the command, with examples
-  asc auth status --validate                  # validate credentials up front
+  asc auth doctor                             # diagnose local auth configuration
   asc apps list --output table                # list your apps and their IDs
   asc status --app APP_ID                     # one-screen release overview
 
