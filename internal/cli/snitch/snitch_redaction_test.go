@@ -97,6 +97,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl -HX-Apple-Widget-Key:[REDACTED] https://example.test`,
 		},
 		{
+			name:  "unquoted separated cookie header argument",
+			input: `curl -H Cookie:myacinfo=super-session-secret https://example.test`,
+			want:  `curl -H Cookie:[REDACTED] https://example.test`,
+		},
+		{
+			name:  "unquoted long cookie header argument",
+			input: `curl --header=Cookie:myacinfo=super-session-secret https://example.test`,
+			want:  `curl --header=Cookie:[REDACTED] https://example.test`,
+		},
+		{
 			name:  "curl long cookie data argument",
 			input: `curl --cookie 'myacinfo=super-session-secret; dslang=US-EN' https://example.test`,
 			want:  `curl --cookie [REDACTED] https://example.test`,
@@ -585,11 +595,15 @@ func TestRedactSensitiveTextPreservesCurlCertificateWithoutPassword(t *testing.T
 }
 
 func TestRedactSensitiveTextPreservesAttachedBenignCurlHeader(t *testing.T) {
-	input := `curl -HAccept:application/json https://example.test`
-
-	got, changed := redactSensitiveText(input)
-	if changed || got != input {
-		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	for _, input := range []string{
+		`curl -HAccept:application/json https://example.test`,
+		`curl -H Accept:application/json https://example.test`,
+		`curl --header=Accept:application/json https://example.test`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
 	}
 }
 
@@ -1072,11 +1086,11 @@ func TestSnitchDryRunRedactsAttachedCurlCredentialHeaders(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"cookie-session-secret", "widget-service-secret"}
+	secrets := []string{"cookie-session-secret", "widget-service-secret", "separated-cookie-secret", "long-cookie-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", "curl -HCookie:myacinfo="+secrets[0]+" -HX-Apple-Widget-Key:"+secrets[1]+" -HAccept:application/json https://example.test",
+		"--repro", "curl -HCookie:myacinfo="+secrets[0]+" -HX-Apple-Widget-Key:"+secrets[1]+" -H Cookie:myacinfo="+secrets[2]+" --header=Cookie:myacinfo="+secrets[3]+" -HAccept:application/json https://example.test",
 		"attached credential header redaction probe",
 	)
 	if err != nil {
@@ -1094,7 +1108,7 @@ func TestSnitchDryRunRedactsAttachedCurlCredentialHeaders(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
 	}
-	want := "curl -HCookie:[REDACTED] -HX-Apple-Widget-Key:[REDACTED] -HAccept:application/json https://example.test"
+	want := "curl -HCookie:[REDACTED] -HX-Apple-Widget-Key:[REDACTED] -H Cookie:[REDACTED] --header=Cookie:[REDACTED] -HAccept:application/json https://example.test"
 	if !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 	}
