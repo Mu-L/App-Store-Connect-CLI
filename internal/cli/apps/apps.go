@@ -18,7 +18,7 @@ func appsListFlags(fs *flag.FlagSet) (output shared.OutputFlags, bundleID *strin
 	bundleID = fs.String("bundle-id", "", "Filter by bundle ID(s), comma-separated")
 	name = fs.String("name", "", "Filter by app name(s), comma-separated")
 	sku = fs.String("sku", "", "Filter by SKU(s), comma-separated")
-	sort = fs.String("sort", "", "Sort by name, -name, bundleId, or -bundleId")
+	sort = fs.String("sort", "", "Sort by name, -name, bundleId, -bundleId, sku, or -sku")
 	limit = fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next = fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate = fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
@@ -287,7 +287,7 @@ func appsList(ctx context.Context, fs *flag.FlagSet, output string, pretty bool,
 	if err := shared.ValidateNextURL(next); err != nil {
 		return fmt.Errorf("apps: %w", err)
 	}
-	if err := shared.ValidateSort(sort, "name", "-name", "bundleId", "-bundleId"); err != nil {
+	if err := shared.ValidateSort(sort, "name", "-name", "bundleId", "-bundleId", "sku", "-sku"); err != nil {
 		return fmt.Errorf("apps: %w", err)
 	}
 	if strings.TrimSpace(next) != "" {
