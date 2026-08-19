@@ -312,11 +312,71 @@ func TestUploadPreviewsAppliesSkipExistingBeforeCapacityCheck(t *testing.T) {
 	}
 }
 
-func TestUploadPreviewFilesRollsBackCreatedItemsOnConflict(t *testing.T) {
-	requests := make([]string, 0, 1)
+func TestUploadPreviewsAllowsLargeCandidateSetWhenChecksumSkipsFitCapacity(t *testing.T) {
+	dir := t.TempDir()
+	files := make([]string, 0, 4)
+	for _, file := range []struct {
+		name    string
+		content string
+	}{
+		{name: "matching-a-1.mov", content: "matching-a"},
+		{name: "matching-a-2.mov", content: "matching-a"},
+		{name: "matching-b.mov", content: "matching-b"},
+		{name: "new.mov", content: "new"},
+	} {
+		path := filepath.Join(dir, file.name)
+		if err := os.WriteFile(path, []byte(file.content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", file.name, err)
+		}
+		files = append(files, path)
+	}
+	checksumA, err := computeFileChecksum(files[0])
+	if err != nil {
+		t.Fatalf("checksum matching-a: %v", err)
+	}
+	checksumB, err := computeFileChecksum(files[2])
+	if err != nil {
+		t.Fatalf("checksum matching-b: %v", err)
+	}
+
+	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/appStoreVersionLocalizations/LOC_ID/appPreviewSets":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appPreviewSets","id":"set-1","attributes":{"previewType":"IPHONE_65"}}]}`)
+		case "/v1/appPreviewSets/set-1/appPreviews":
+			writeAssetsTestJSON(w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"appPreviews","id":"existing-a","attributes":{"sourceFileChecksum":%q}},{"type":"appPreviews","id":"existing-b","attributes":{"sourceFileChecksum":%q}}]}`, checksumA, checksumB))
+		default:
+			writeAssetsTestJSON(w, http.StatusInternalServerError, `{"errors":[{"status":"500","detail":"unexpected request"}]}`)
+		}
+	}))
+
+	result, err := uploadPreviews(context.Background(), client, "LOC_ID", "IPHONE_65", files, true, false, true)
+	if err != nil {
+		t.Fatalf("uploadPreviews() error: %v", err)
+	}
+	if len(result.Results) != 4 {
+		t.Fatalf("results = %d, want 4", len(result.Results))
+	}
+	skipped := 0
+	wouldUpload := 0
+	for _, item := range result.Results {
+		if item.Skipped {
+			skipped++
+		}
+		if item.State == "would-upload" {
+			wouldUpload++
+		}
+	}
+	if skipped != 3 || wouldUpload != 1 {
+		t.Fatalf("skipped = %d, would upload = %d; want 3 and 1", skipped, wouldUpload)
+	}
+}
+
+func TestUploadPreviewFilesRollsBackAllCreatedItemsOnPostCreateConflict(t *testing.T) {
+	requests := make([]string, 0, 2)
 	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
-		if r.Method != http.MethodDelete || r.URL.Path != "/v1/appPreviews/created-1" {
+		if r.Method != http.MethodDelete || (r.URL.Path != "/v1/appPreviews/created-1" && r.URL.Path != "/v1/appPreviews/created-2") {
 			writeAssetsTestJSON(w, http.StatusInternalServerError, `{"errors":[{"status":"500","detail":"unexpected request"}]}`)
 			return
 		}
@@ -339,7 +399,7 @@ func TestUploadPreviewFilesRollsBackCreatedItemsOnConflict(t *testing.T) {
 			if filePath == "first.mov" {
 				return asc.AssetUploadResultItem{AssetID: "created-1"}, nil
 			}
-			return asc.AssetUploadResultItem{}, capacityErr
+			return asc.AssetUploadResultItem{AssetID: "created-2"}, capacityErr
 		},
 	)
 	if !errors.Is(err, asc.ErrConflict) {
@@ -351,7 +411,10 @@ func TestUploadPreviewFilesRollsBackCreatedItemsOnConflict(t *testing.T) {
 	if uploadCalls != 2 {
 		t.Fatalf("upload calls = %d, want 2", uploadCalls)
 	}
-	wantRequests := []string{"DELETE /v1/appPreviews/created-1"}
+	wantRequests := []string{
+		"DELETE /v1/appPreviews/created-2",
+		"DELETE /v1/appPreviews/created-1",
+	}
 	if fmt.Sprint(requests) != fmt.Sprint(wantRequests) {
 		t.Fatalf("requests = %v, want %v", requests, wantRequests)
 	}

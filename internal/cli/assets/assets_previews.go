@@ -167,7 +167,7 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("video-previews upload: %w", err)
 			}
-			if err := validatePreviewFiles(files); err != nil {
+			if err := validatePreviewFiles(files, !*skipExisting); err != nil {
 				return fmt.Errorf("video-previews upload: %w", err)
 			}
 
@@ -771,29 +771,30 @@ func uploadPreviewAsset(ctx context.Context, client *asc.Client, setID, filePath
 	if err != nil {
 		return asc.AssetUploadResultItem{}, err
 	}
+	item := asc.AssetUploadResultItem{
+		FileName: info.Name(),
+		FilePath: filePath,
+		AssetID:  created.Data.ID,
+	}
 	if len(created.Data.Attributes.UploadOperations) == 0 {
-		return asc.AssetUploadResultItem{}, fmt.Errorf("no upload operations returned for %q", info.Name())
+		return item, fmt.Errorf("no upload operations returned for %q", info.Name())
 	}
 
 	if err := asc.UploadAssetFromFile(ctx, file, info.Size(), created.Data.Attributes.UploadOperations); err != nil {
-		return asc.AssetUploadResultItem{}, err
+		return item, err
 	}
 
 	if _, err := client.UpdateAppPreview(ctx, created.Data.ID, true, checksum.Hash); err != nil {
-		return asc.AssetUploadResultItem{}, err
+		return item, err
 	}
 
 	state, err := waitForPreviewDelivery(ctx, client, created.Data.ID)
 	if err != nil {
-		return asc.AssetUploadResultItem{}, err
+		return item, err
 	}
 
-	return asc.AssetUploadResultItem{
-		FileName: info.Name(),
-		FilePath: filePath,
-		AssetID:  created.Data.ID,
-		State:    state,
-	}, nil
+	item.State = state
+	return item, nil
 }
 
 // UploadPreviewAsset uploads a preview file to a set.
@@ -818,8 +819,8 @@ func detectPreviewMimeType(path string) (string, error) {
 	}
 }
 
-func validatePreviewFiles(files []string) error {
-	if len(files) > maxPreviewsPerSet {
+func validatePreviewFiles(files []string, enforceCapacity bool) error {
+	if enforceCapacity && len(files) > maxPreviewsPerSet {
 		return fmt.Errorf("preview sets accept at most %d files; got %d", maxPreviewsPerSet, len(files))
 	}
 	for _, filePath := range files {
@@ -837,7 +838,7 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 	if client == nil {
 		return asc.AppPreviewUploadResult{}, fmt.Errorf("client is required")
 	}
-	if err := validatePreviewFiles(files); err != nil {
+	if err := validatePreviewFiles(files, !skipExisting); err != nil {
 		return asc.AppPreviewUploadResult{}, err
 	}
 
@@ -941,8 +942,13 @@ func uploadPreviewFiles(ctx context.Context, client *asc.Client, setID string, f
 	for _, filePath := range files {
 		item, err := upload(ctx, client, setID, filePath)
 		if err != nil {
-			if errors.Is(err, asc.ErrConflict) && len(results) > 0 {
-				if rollbackErr := deleteUploadedPreviews(ctx, client, results); rollbackErr != nil {
+			if errors.Is(err, asc.ErrConflict) {
+				rollbackItems := make([]asc.AssetUploadResultItem, 0, len(results)+1)
+				rollbackItems = append(rollbackItems, results...)
+				if strings.TrimSpace(item.AssetID) != "" {
+					rollbackItems = append(rollbackItems, item)
+				}
+				if rollbackErr := deleteUploadedPreviews(ctx, client, rollbackItems); rollbackErr != nil {
 					return nil, errors.Join(err, fmt.Errorf("roll back previews created by this upload: %w", rollbackErr))
 				}
 			}
