@@ -8,6 +8,7 @@ const (
 	redactionNotice           = "Note: sensitive values were redacted from the snitch report."
 
 	sensitiveAssignmentName = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key|password|passwd|pwd|secret|token)`
+	sensitiveFlagName       = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|signing[_-]?secret|secret[_-]?access[_-]?key|password|passwd|pwd|secret|token)`
 )
 
 type redactionRule struct {
@@ -26,6 +27,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)([?&](?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|token|access_token|api[_-]?key|apikey)=)[^&#\s"'<>]+`),
+		replacement: `${1}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(--` + sensitiveFlagName + `\b[ \t]+)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{

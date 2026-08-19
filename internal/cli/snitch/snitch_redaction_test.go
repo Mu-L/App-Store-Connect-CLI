@@ -47,6 +47,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "command CLIENT_SECRET=[REDACTED] --verbose",
 		},
 		{
+			name:  "space-separated secret flag",
+			input: `asc web sandbox create --email "user@example.test" --password "Passwordtest1" --territory "USA"`,
+			want:  `asc web sandbox create --email "user@example.test" --password [REDACTED] --territory "USA"`,
+		},
+		{
 			name:  "JSON assignment",
 			input: `response {"refresh_token":"refresh-value","status":"failed"}`,
 			want:  `response {"refresh_token":"[REDACTED]","status":"failed"}`,
@@ -89,13 +94,14 @@ func TestSnitchDryRunRedactsEveryReportField(t *testing.T) {
 		"0123456789abcdef0123456789abcdef",
 		"private-key-payload",
 		"client-secret-value",
+		"Passwordtest1",
 	}
 	privateKey := "-----BEGIN PRIVATE KEY-----\n" + secrets[2] + "\n-----END PRIVATE KEY-----"
 
 	_, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", `curl "https://uploads.example.test/file?X-Amz-Signature=`+secrets[1]+`&part=2"`,
+		"--repro", `curl "https://uploads.example.test/file?X-Amz-Signature=`+secrets[1]+`&part=2"`+"\n"+`asc web sandbox create --password "`+secrets[4]+`"`,
 		"--expected", "load this key\n"+privateKey+"\nthen retry",
 		"--actual", `client_secret="`+secrets[3]+`"`,
 		"Authorization: Bearer "+secrets[0]+" failed",
@@ -112,6 +118,7 @@ func TestSnitchDryRunRedactsEveryReportField(t *testing.T) {
 	for _, want := range []string{
 		"Authorization: [REDACTED] failed",
 		"X-Amz-Signature=[REDACTED]&part=2",
+		"asc web sandbox create --password [REDACTED]",
 		"load this key\n[REDACTED PRIVATE KEY]\nthen retry",
 		"client_secret=[REDACTED]",
 	} {
@@ -297,7 +304,7 @@ func TestFormatLocalEntriesRedactsLegacyCredentials(t *testing.T) {
 func TestIssueBodyPreservesBenignSecurityVocabulary(t *testing.T) {
 	entry := LogEntry{
 		Description: "token refresh failed",
-		Repro:       "asc builds list --filter-key token",
+		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password",
 		Expected:    "secret scanning documentation remains visible",
 		Actual:      "request to https://example.test/path?signature_state=missing returned 401",
 		Severity:    "bug",
