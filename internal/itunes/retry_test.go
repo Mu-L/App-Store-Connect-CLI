@@ -3,6 +3,8 @@ package itunes
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -323,6 +325,62 @@ func TestPublicRetryStopsWhenRetryAfterOutlastsDeadline(t *testing.T) {
 	}
 	if elapsed > time.Second {
 		t.Fatalf("elapsed = %s, want the call to fail without waiting out the deadline", elapsed)
+	}
+}
+
+func TestPublicRetryStopsWhenFallbackBackoffOutlastsDeadline(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "3")
+	t.Setenv("ASC_BASE_DELAY", "2s")
+	t.Setenv("ASC_MAX_DELAY", "2s")
+
+	server, state := newRetryTestServer(t, 100, http.StatusTooManyRequests, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	_, err := retryTestClient(server).SearchApps(ctx, "focus", "us", 20)
+
+	if err == nil {
+		t.Fatal("expected rate limit failure")
+	}
+	if err.Error() != "search request returned status 429" {
+		t.Fatalf("error = %q, want the public storefront status error", err)
+	}
+	if got := state.requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1 (fallback backoff outlasts the deadline)", got)
+	}
+}
+
+func TestPublicRetryDrainsFailureBodyForConnectionReuse(t *testing.T) {
+	useFastRetries(t, "1")
+
+	var requests atomic.Int32
+	var connections atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, "retry after this response")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, retryLookupPayload)
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+
+	if _, err := retryTestClient(server).SearchApps(context.Background(), "focus", "us", 20); err != nil {
+		t.Fatalf("SearchApps() error: %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests = %d, want 2", got)
+	}
+	if got := connections.Load(); got != 1 {
+		t.Fatalf("connections = %d, want 1 reused connection", got)
 	}
 }
 

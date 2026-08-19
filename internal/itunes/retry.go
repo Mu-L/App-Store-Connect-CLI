@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,15 +54,29 @@ func (c *Client) doOnce(
 	if resp.StatusCode != http.StatusOK {
 		statusErr := &httpStatusError{operation: operation, statusCode: resp.StatusCode}
 		if retrySafe && isRetryablePublicStatus(resp.StatusCode) {
+			drainPublicRetryResponse(resp.Body)
 			retryAfter := publicRetryDelay(resp.Header, time.Now(), maxDelay)
 			if retryFitsDeadline(ctx, retryAfter) {
-				return &asc.RetryableError{Err: statusErr, RetryAfter: retryAfter}
+				return &asc.RetryableError{
+					Err:                     statusErr,
+					RetryAfter:              retryAfter,
+					PreserveErrorOnDeadline: true,
+				}
 			}
 		}
 		return statusErr
 	}
 
 	return handle(resp)
+}
+
+const maxPublicRetryResponseDrain = 64 << 10
+
+// drainPublicRetryResponse lets the transport reuse connections after the
+// small error bodies returned by public endpoints without trusting an
+// unbounded response body.
+func drainPublicRetryResponse(body io.Reader) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, maxPublicRetryResponseDrain))
 }
 
 // unwrapRetryableError keeps retry bookkeeping internal so an exhausted retry

@@ -233,6 +233,9 @@ func envValue(name string) (string, bool) {
 type RetryableError struct {
 	Err        error
 	RetryAfter time.Duration
+	// PreserveErrorOnDeadline returns this retryable error when the computed
+	// wait cannot finish before the context deadline.
+	PreserveErrorOnDeadline bool
 }
 
 func (e *RetryableError) Error() string {
@@ -390,6 +393,11 @@ func WithRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 			}
 		}
 
+		preserveErrorOnDeadline := retryPreservesErrorOnDeadline(err)
+		if preserveErrorOnDeadline && retryDelayOutlastsDeadline(ctx, delay) {
+			return zero, err
+		}
+
 		if ResolveRetryLogEnabled() {
 			logRetry(delay, retryCount+1, opts.MaxRetries, err)
 		}
@@ -409,11 +417,24 @@ func WithRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 		// Wait with context cancellation support
 		select {
 		case <-ctx.Done():
+			if preserveErrorOnDeadline && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return zero, err
+			}
 			return zero, fmt.Errorf("retry cancelled: %w", ctx.Err())
 		case <-time.After(delay):
 			// Continue to next retry
 		}
 	}
+}
+
+func retryPreservesErrorOnDeadline(err error) bool {
+	retryErr, ok := errors.AsType[*RetryableError](err)
+	return ok && retryErr.PreserveErrorOnDeadline
+}
+
+func retryDelayOutlastsDeadline(ctx context.Context, delay time.Duration) bool {
+	deadline, ok := ctx.Deadline()
+	return ok && time.Until(deadline) <= delay
 }
 
 func logRetry(delay time.Duration, attempt, maxRetries int, err error) {
