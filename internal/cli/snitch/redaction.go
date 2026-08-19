@@ -24,6 +24,9 @@ const (
 	credentialPairOpen      = `(?:"[^\r\n]*:[^\r\n]+|\$?'[^\r\n]*:[^\r\n]+)`
 	credentialPairUnquoted  = `(?:\\[^\r\n]|[^\s:])*:(?:\\[^\r\n]|[^\s])+`
 	credentialPairValue     = `(?:` + credentialPairQuoted + `|` + credentialPairOpen + `|` + credentialPairUnquoted + `)`
+	cookieDataQuoted        = `(?:"(?:\\.|[^"\\\r\n])*=(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*=(?:\\.|[^'\\\r\n])*')`
+	cookieDataUnquoted      = `(?:\\(?:\r?\n|[^\r\n])|[^\s])*=(?:\\(?:\r?\n|[^\r\n])|[^\s])*`
+	cookieDataValue         = `(?:` + cookieDataQuoted + `|` + cookieDataUnquoted + `)`
 )
 
 type redactionRule struct {
@@ -32,9 +35,22 @@ type redactionRule struct {
 }
 
 var (
-	secretMarkerPattern = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:[ \t]|$|[ \t]*=[ \t]*(?:1|t|true)(?:[ \t]|$))`)
-	secretValuePattern  = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
+	secretMarkerPattern     = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:[ \t]|$|[ \t]*=[ \t]*(?:1|t|true)(?:[ \t]|$))`)
+	secretValuePattern      = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
+	rawCookieJarPattern     = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*\{`)
+	escapedCookieJarPattern = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*\{`)
 )
+
+var structuredCookieValueRedactionRules = []redactionRule{
+	{
+		pattern:     regexp.MustCompile(`(?i)("name"[ \t\r\n]*:[ \t\r\n]*"(?:\\.|[^"\\\r\n])*"[ \t\r\n]*,[ \t\r\n]*"value"[ \t\r\n]*:[ \t\r\n]*")(?:\\.|[^"\\\r\n])*(")([ \t\r\n]*(?:[,}\]]|\z))`),
+		replacement: `${1}` + redactionMarker + `${2}${3}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(\\"name\\"[ \t\r\n]*:[ \t\r\n]*\\"(?:\\.|[^"\\\r\n])*?\\"[ \t\r\n]*,[ \t\r\n]*\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\")(?:\\.|[^"\\\r\n])*?(\\")([ \t\r\n]*(?:[,}\]]|\z))`),
+		replacement: `${1}` + redactionMarker + `${2}${3}`,
+	},
+}
 
 // Redact complete single-line shell values first so an unmatched quote in an
 // earlier log line cannot claim a later command's opening quote as its closer.
@@ -115,6 +131,18 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-b|--cookie)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-b|--cookie)\b[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(-b)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}` + sensitiveFlagName + `\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
@@ -154,6 +182,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 
 func redactSensitiveText(value string) (string, bool) {
 	redacted, changed := redactSecretMarkedValues(value)
+	if next, cookieChanged := redactStructuredCookieValues(redacted); cookieChanged {
+		redacted = next
+		changed = true
+	}
 	for _, rule := range singleLineQuotedRedactionRules {
 		next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
 		if next != redacted {
@@ -166,6 +198,23 @@ func redactSensitiveText(value string) (string, bool) {
 		if next != redacted {
 			changed = true
 			redacted = next
+		}
+	}
+	return redacted, changed
+}
+
+func redactStructuredCookieValues(value string) (string, bool) {
+	if !rawCookieJarPattern.MatchString(value) && !escapedCookieJarPattern.MatchString(value) {
+		return value, false
+	}
+
+	redacted := value
+	changed := false
+	for _, rule := range structuredCookieValueRedactionRules {
+		next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
+		if next != redacted {
+			redacted = next
+			changed = true
 		}
 	}
 	return redacted, changed
