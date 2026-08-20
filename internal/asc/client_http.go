@@ -103,26 +103,16 @@ func GenerateJWT(keyID, issuerID string, privateKey *ecdsa.PrivateKey) (string, 
 
 // do performs an HTTP request and returns the response.
 // GET/HEAD requests use retry logic for transient failures by default.
+// Mutating requests are throttled and retried only when App Store Connect
+// rejects them with 429; see isRateLimitRejection.
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader) ([]byte, error) {
 	if err := validateMutatingRequestTarget(method, path); err != nil {
 		return nil, err
 	}
 
-	var bodyBytes []byte
-	if body != nil {
-		var err error
-		bodyBytes, err = io.ReadAll(body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read request body: %w", err)
-		}
-	}
-
-	request := func(requestCtx context.Context) ([]byte, error) {
-		var reader io.Reader
-		if bodyBytes != nil {
-			reader = bytes.NewReader(bodyBytes)
-		}
-		return c.doOnce(requestCtx, method, path, reader)
+	request, err := c.replayableRequest(method, path, body)
+	if err != nil {
+		return nil, err
 	}
 
 	if shouldRetryMethod(method) {
@@ -132,7 +122,7 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader) ([
 		}, retryOpts)
 	}
 	if shouldLimitMutatingMethod(method) {
-		return c.doWithMutatingRequestLimiter(ctx, request)
+		return c.doMutation(ctx, request, isRateLimitRejection)
 	}
 
 	return request(ctx)
@@ -142,6 +132,35 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader) ([
 // the same transient-failure retry policy used by reads. Callers must only use
 // this for operations whose exact payload can be safely replayed.
 func (c *Client) doIdempotentMutation(ctx context.Context, method, path string, body io.Reader) ([]byte, error) {
+	if err := validateMutatingRequestTarget(method, path); err != nil {
+		return nil, err
+	}
+
+	request, err := c.replayableRequest(method, path, body)
+	if err != nil {
+		return nil, err
+	}
+
+	if !shouldLimitMutatingMethod(method) {
+		return WithRetry(ctx, func() ([]byte, error) {
+			return request(ctx)
+		}, ResolveRetryOptions())
+	}
+	return c.doMutation(ctx, request, IsRetryable)
+}
+
+// doMutation sends a mutating request under the write concurrency limiter,
+// replaying it while shouldRetry accepts the failure. Each attempt re-acquires
+// a limiter slot so backoff never holds write capacity.
+func (c *Client) doMutation(ctx context.Context, request func(context.Context) ([]byte, error), shouldRetry func(error) bool) ([]byte, error) {
+	return withRetry(ctx, func() ([]byte, error) {
+		return c.doWithMutatingRequestLimiter(ctx, request)
+	}, ResolveRetryOptions(), shouldRetry)
+}
+
+// replayableRequest buffers the request body so every attempt sends the
+// identical payload from a fresh reader.
+func (c *Client) replayableRequest(method, path string, body io.Reader) (func(context.Context) ([]byte, error), error) {
 	var bodyBytes []byte
 	if body != nil {
 		var err error
@@ -151,13 +170,26 @@ func (c *Client) doIdempotentMutation(ctx context.Context, method, path string, 
 		}
 	}
 
-	return WithRetry(ctx, func() ([]byte, error) {
+	return func(requestCtx context.Context) ([]byte, error) {
 		var reader io.Reader
 		if bodyBytes != nil {
 			reader = bytes.NewReader(bodyBytes)
 		}
-		return c.do(ctx, method, path, reader)
-	}, ResolveRetryOptions())
+		return c.doOnce(requestCtx, method, path, reader)
+	}, nil
+}
+
+// isRateLimitRejection reports whether err is a 429 from App Store Connect.
+// A 429 rejects the request before it is processed, so replaying the identical
+// payload cannot apply a mutation twice. Every other retryable failure
+// (transport errors, 408, 5xx) leaves the outcome of a write unknown and must
+// not be replayed automatically.
+func isRateLimitRejection(err error) bool {
+	retryable, ok := errors.AsType[*RetryableError](err)
+	if !ok {
+		return false
+	}
+	return retryable.HTTPStatusCode() == http.StatusTooManyRequests
 }
 
 func (c *Client) doWithMutatingRequestLimiter(ctx context.Context, request func(context.Context) ([]byte, error)) ([]byte, error) {
