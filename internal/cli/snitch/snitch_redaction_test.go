@@ -1471,6 +1471,21 @@ status = "failed"`,
 			want:  "cookie: [REDACTED]\nurl = \"https://example.test\"",
 		},
 		{
+			name:  "curl config custom credential header",
+			input: `header = "X-API-Key: opaque-curl-config-secret"`,
+			want:  `header = "X-API-Key: [REDACTED]"`,
+		},
+		{
+			name:  "curl config proxy credential header",
+			input: `proxy-header: "X-Auth-Token: opaque-curl-proxy-secret"`,
+			want:  `proxy-header: "X-Auth-Token: [REDACTED]"`,
+		},
+		{
+			name:  "curl config unquoted authorization header",
+			input: `header Authorization: Bearer opaque-curl-authorization-secret`,
+			want:  `header Authorization: [REDACTED]`,
+		},
+		{
 			name: "YAML escaped double quoted credential key block scalar",
 			input: `"pass\u0077ord": |
   opaque-yaml-key-secret
@@ -2370,6 +2385,8 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 		`tool -passout public-value`,
 		`tool --no-token output.txt`,
 		`tool --database-no-password output.txt`,
+		`header = "X-Request-ID: public-value"`,
+		`proxy-header = "@headers.txt"`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {

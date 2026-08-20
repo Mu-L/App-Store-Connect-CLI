@@ -335,6 +335,14 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}${3}:` + redactionMarker,
 	},
 	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:header|proxy-header)` + curlConfigSeparator + `")(` + credentialHeaderName + `|` + sensitivePrefixedName + `)([ \t]*:[ \t]*)(?:\\.|[^"\\\r\n])+(")`),
+		replacement: `${1}${2}${3}` + redactionMarker + `${4}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:header|proxy-header)` + curlConfigSeparator + `)(` + credentialHeaderName + `|` + sensitivePrefixedName + `)([ \t]*:[ \t]*)[^\r\n]+$`),
+		replacement: `${1}${2}${3}` + redactionMarker,
+	},
+	{
 		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:user|proxy-user)` + curlConfigSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
 		replacement: `${1}` + redactionMarker,
 	},
