@@ -615,6 +615,26 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "password: [REDACTED]\nstatus: failed",
 		},
 		{
+			name: "Kubernetes Secret data keys",
+			input: `apiVersion: v1
+kind: Secret
+data:
+  tls.key: b3BhcXVlLXByaXZhdGUta2V5
+  .dockerconfigjson: eyJhdXRocyI6eyJyZWdpc3RyeS5leGFtcGxlIjp7ImF1dGgiOiJvcGFxdWUifX19
+status: failed`,
+			want: `apiVersion: v1
+kind: Secret
+data:
+  tls.key: [REDACTED]
+  .dockerconfigjson: [REDACTED]
+status: failed`,
+		},
+		{
+			name:  "Kubernetes Secret JSON data keys",
+			input: `{"apiVersion":"v1","kind":"Secret","data":{"tls.key":"b3BhcXVlLXByaXZhdGUta2V5",".dockerconfigjson":"eyJhdXRocyI6eyJyZWdpc3RyeS5leGFtcGxlIjp7ImF1dGgiOiJvcGFxdWUifX19"},"status":"failed"}`,
+			want:  `{"apiVersion":"v1","kind":"Secret","data":{"tls.key":"[REDACTED]",".dockerconfigjson":"[REDACTED]"},"status":"failed"}`,
+		},
+		{
 			name:  "TOML multiline basic string",
 			input: "password = \"\"\"opaque-head\nopaque-tail\"\"\"\nstatus = \"failed\"",
 			want:  "password = [REDACTED]\nstatus = \"failed\"",
@@ -1603,6 +1623,15 @@ func TestRedactSensitiveTextPreservesNameValuePairOutsideCookieJar(t *testing.T)
 	}
 }
 
+func TestRedactSensitiveTextPreservesSimilarKubernetesDataKeys(t *testing.T) {
+	input := "tls.keyUsage: digital signature\n.dockerconfigjson.backup: public metadata"
+
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
 func TestSnitchDryRunRedactsURLUserinfoCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
@@ -1663,6 +1692,40 @@ func TestSnitchDryRunRedactsRegistryBase64AuthCredential(t *testing.T) {
 	}
 	if want := `//registry.npmjs.org/:_auth=[REDACTED]`; !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want redacted assignment %q", stderr, want)
+	}
+}
+
+func TestSnitchDryRunRedactsKubernetesSecretData(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const privateKey = "b3BhcXVlLXByaXZhdGUta2V5"
+	const registryConfig = "eyJhdXRocyI6eyJyZWdpc3RyeS5leGFtcGxlIjp7ImF1dGgiOiJvcGFxdWUifX19"
+	actual := "apiVersion: v1\nkind: Secret\ndata:\n  tls.key: " + privateKey + "\n  .dockerconfigjson: " + registryConfig + "\nstatus: failed"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", actual,
+		"Kubernetes Secret redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	for _, secret := range []string{privateKey, registryConfig} {
+		if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+			t.Fatalf("dry run leaked Kubernetes Secret data: stdout=%q stderr=%q", stdout, stderr)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{"tls.key: [REDACTED]", ".dockerconfigjson: [REDACTED]"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want redacted Secret data %q", stderr, want)
+		}
+	}
+	if !strings.Contains(stderr, "sensitive values were redacted") {
+		t.Fatalf("stderr = %q, want a generic redaction notice", stderr)
 	}
 }
 
