@@ -1525,6 +1525,26 @@ status: failed`,
 			want:  `kubectl create secret generic foo --from-literal=[REDACTED] --from-literal=[REDACTED]`,
 		},
 		{
+			name:  "kubectl backslash continued secret literal",
+			input: "kubectl create secret generic foo --from-literal=custom=opaque\\\n  secret --namespace demo",
+			want:  "kubectl create secret generic foo --from-literal=[REDACTED] --namespace demo",
+		},
+		{
+			name:  "kubectl continued create secret command",
+			input: "kubectl create \\\n  secret generic foo --from-literal=custom=opaque-secret --namespace demo",
+			want:  "kubectl create \\\n  secret generic foo --from-literal=[REDACTED] --namespace demo",
+		},
+		{
+			name:  "kubectl global option before create secret command",
+			input: `kubectl --context demo create secret generic foo --from-literal=custom=opaque-secret --namespace demo`,
+			want:  `kubectl --context demo create secret generic foo --from-literal=[REDACTED] --namespace demo`,
+		},
+		{
+			name:  "sudo kubectl secret literal",
+			input: `sudo kubectl create secret generic foo --from-literal=custom=opaque-secret --namespace demo`,
+			want:  `sudo kubectl create secret generic foo --from-literal=[REDACTED] --namespace demo`,
+		},
+		{
 			name:  "scoped base64 private key assignments",
 			input: `ASC_STOREKIT_PRIVATE_KEY_B64=c3RvcmVraXQtcHJpdmF0ZS1rZXk= ASC_ADS_PRIVATE_KEY_B64=YWRzLXByaXZhdGUta2V5`,
 			want:  `ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED] ASC_ADS_PRIVATE_KEY_B64=[REDACTED]`,
@@ -1793,6 +1813,19 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 		`AUTOMATION_SESSION_FILE=/tmp/session.txt`,
 		`tool --no-token output.txt`,
 		`tool --database-no-password output.txt`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextScopesKubectlSecretLiterals(t *testing.T) {
+	for _, input := range []string{
+		`echo kubectl create secret generic foo --from-literal=custom=public-value`,
+		`kubectl create configmap foo --from-literal=custom=public-value`,
+		"kubectl create\nsecret generic foo --from-literal=custom=public-value",
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {

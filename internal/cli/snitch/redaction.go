@@ -45,6 +45,7 @@ const (
 	cmdEscapedCharacter         = `\^(?:\r?\n|[^\r\n])`
 	singleLineUnquotedFragment  = `(?:\\[^\r\n]|[^\s\\;&|<>()"'\x60^])+`
 	singleLineShellWord         = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + powerShellEscapedCharacter + `|` + cmdEscapedCharacter + `|` + singleLineUnquotedFragment + `)+`
+	kubectlShellWord            = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + powerShellEscapedCharacter + `|` + cmdEscapedCharacter + `|\\\r?\n[ \t]*|` + singleLineUnquotedFragment + `)+`
 	fishShellWord               = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + fishCommandSubstitution + `|` + powerShellEscapedCharacter + `|` + cmdEscapedCharacter + `|` + singleLineUnquotedFragment + `)+`
 	singleLineShellTerminator   = `(?:[ \t;&|<>()]|\r?\n|\z)`
 	escapedQuotedCharacter      = `\\(?:\r?\n|[^\r\n])`
@@ -86,8 +87,7 @@ type redactionRule struct {
 var (
 	secretMarkerPattern                = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:` + singleLineShellTerminator + `|[ \t]*=[ \t]*(?:1|t|true)(?:` + singleLineShellTerminator + `))`)
 	secretValuePattern                 = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
-	kubectlCreateSecretCommand         = regexp.MustCompile(`(?i)(?:^|[;&|])[ \t]*kubectl[ \t]+create[ \t]+secret\b`)
-	kubectlFromLiteralValue            = regexp.MustCompile(`(?i)(--from-literal(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + singleLineShellWord + `)`)
+	kubectlFromLiteralValue            = regexp.MustCompile(`(?i)(--from-literal(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + kubectlShellWord + `)`)
 	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	rawRegistryAuthsPattern            = regexp.MustCompile(`(?i)"auths"[ \t\r\n]*:[ \t\r\n]*\{`)
@@ -3364,19 +3364,82 @@ func redactSecretMarkedValues(value string) (string, bool) {
 }
 
 func redactKubectlSecretLiterals(value string) (string, bool) {
-	lines := strings.SplitAfter(value, "\n")
+	result := value
 	changed := false
-	for index, line := range lines {
-		if !kubectlCreateSecretCommand.MatchString(line) {
-			continue
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		redacted := command
+		if isKubectlCreateSecretCommand(command) {
+			redacted = kubectlFromLiteralValue.ReplaceAllString(command, `${1}`+redactionMarker)
 		}
-		redacted := kubectlFromLiteralValue.ReplaceAllString(line, `${1}`+redactionMarker)
-		if redacted != line {
-			lines[index] = redacted
+		if redacted != command {
+			result = result[:start] + redacted + result[end:]
 			changed = true
 		}
+
+		separator := start + len(redacted)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
 	}
-	return strings.Join(lines, ""), changed
+	return result, changed
+}
+
+func isKubectlCreateSecretCommand(command string) bool {
+	normalized := strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(command)
+	words := strings.Fields(normalized)
+	if len(words) < 3 {
+		return false
+	}
+
+	kubectlIndex := -1
+	for index, word := range words {
+		word = strings.Trim(word, `"'`)
+		if separator := strings.LastIndexAny(word, `/\\`); separator >= 0 {
+			word = word[separator+1:]
+		}
+		if strings.EqualFold(word, "kubectl") {
+			kubectlIndex = index
+			break
+		}
+	}
+	if kubectlIndex < 0 || !isKubectlCommandPrefix(words[:kubectlIndex]) {
+		return false
+	}
+
+	for index := kubectlIndex + 1; index+1 < len(words); index++ {
+		if strings.EqualFold(strings.Trim(words[index], `"'`), "create") &&
+			strings.EqualFold(strings.Trim(words[index+1], `"'`), "secret") {
+			return true
+		}
+	}
+	return false
+}
+
+func isKubectlCommandPrefix(words []string) bool {
+	if len(words) == 0 {
+		return true
+	}
+
+	first := strings.ToLower(strings.Trim(words[0], `"'`))
+	if separator := strings.LastIndexAny(first, `/\\`); separator >= 0 {
+		first = first[separator+1:]
+	}
+	if first == "sudo" || first == "doas" || first == "command" || first == "env" {
+		return true
+	}
+
+	for _, word := range words {
+		if !strings.Contains(word, "=") {
+			return false
+		}
+	}
+	return true
 }
 
 func transformXcodeCloudEnvVarSetCommands(value string, transform func(string) (string, bool)) (string, bool) {
