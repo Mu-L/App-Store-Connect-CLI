@@ -861,6 +861,52 @@ data:
   config: [REDACTED]`,
 		},
 		{
+			name: "Kubernetes Secret kind from inline YAML merge mapping",
+			input: `<<: &defaults
+  kind: Secret
+data:
+  config: opaque-merged-kind-secret`,
+			want: `<<: &defaults
+  kind: Secret
+data:
+  config: [REDACTED]`,
+		},
+		{
+			name: "Kubernetes Secret kind from aliased YAML merge mapping",
+			input: `defaults: &defaults
+  kind: Secret
+<<: *defaults
+data:
+  config: opaque-aliased-merge-secret`,
+			want: `defaults: &defaults
+  kind: Secret
+<<: *defaults
+data:
+  config: [REDACTED]`,
+		},
+		{
+			name: "Kubernetes Secret kind from flow YAML merge mapping",
+			input: `defaults: &defaults {kind: Secret}
+<<: [*defaults]
+data:
+  config: opaque-flow-merge-secret`,
+			want: `defaults: &defaults {kind: Secret}
+<<: [*defaults]
+data:
+  config: [REDACTED]`,
+		},
+		{
+			name: "Kubernetes Secret data before YAML merge mapping",
+			input: `data:
+  config: opaque-merge-lookahead-secret
+<<: &defaults
+  kind: Secret`,
+			want: `data:
+  config: [REDACTED]
+<<: &defaults
+  kind: Secret`,
+		},
+		{
 			name: "Kubernetes Secret list item arbitrary data key",
 			input: `items:
 - kind: Secret
@@ -2365,6 +2411,10 @@ func TestRedactSensitiveTextPreservesSimilarKubernetesDataKeys(t *testing.T) {
 		`"k\u0069nd": ConfigMap
 "d\u0061ta":
   config: public-config`,
+		"<<: &defaults\n  kind: ConfigMap\ndata:\n  config: public-config",
+		"defaults: &defaults {kind: ConfigMap}\n<<: [*defaults]\ndata:\n  config: public-config",
+		"kind: ConfigMap\n<<: &defaults\n  kind: Secret\ndata:\n  config: public-config",
+		"data:\n  config: public-config\n<<: &defaults\n  kind: Secret\nkind: ConfigMap",
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {

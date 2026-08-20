@@ -710,7 +710,13 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 				scalarAnchors[anchorName] = scalar
 			}
 		}
-		if !secretActive && (strings.EqualFold(key, "data") || strings.EqualFold(key, "stringData")) && yamlSecretKindFollows(lines, line+1, keyIndent, scalarAnchors) {
+		if key == "<<" && yamlEffectiveMergeKindIsSecret(lines, line, keyIndent, content, valueStart, anchorLocations, scalarAnchors) {
+			secretIndent = keyIndent
+			secretActive = true
+			containerIndent = -1
+			blockIndent = -1
+		}
+		if !secretActive && (strings.EqualFold(key, "data") || strings.EqualFold(key, "stringData")) && yamlSecretKindFollows(lines, line+1, keyIndent, anchorLocations, scalarAnchors) {
 			secretIndent = keyIndent
 			secretActive = true
 		}
@@ -720,7 +726,9 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 				kind = scalarAnchors[strings.TrimPrefix(kind, "*")]
 			}
 			if strings.EqualFold(kind, "Secret") {
-				secretIndent = keyIndent
+				if !secretActive || keyIndent <= secretIndent {
+					secretIndent = keyIndent
+				}
 				secretActive = true
 				containerIndent = -1
 				blockIndent = -1
@@ -788,6 +796,156 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 	}
 	restoreYAMLExplicitStructuralMappings(lines, explicitRestorations)
 	return strings.Join(lines, ""), changed
+}
+
+func yamlMergeHasSecretKind(lines []string, line int, content string, valueStart int, locations map[string]yamlAnchorLocation, scalarAnchors map[string]string) bool {
+	value := content[valueStart:]
+	if anchor := yamlAnchor.FindStringSubmatchIndex(value); len(anchor) == 4 {
+		anchorName := value[anchor[2]:anchor[3]]
+		location, exists := locations[anchorName]
+		if !exists {
+			location = yamlAnchorLocation{line: line, anchorEnd: valueStart + anchor[1]}
+		}
+		if yamlMappingAnchorHasSecretKind(lines, location, scalarAnchors) {
+			return true
+		}
+	}
+	remainder, _ := trimYAMLNodeProperties(value)
+	remainder = strings.TrimSpace(remainder)
+	if strings.HasPrefix(remainder, "{") {
+		return yamlFlowMappingHasSecretKind(remainder, scalarAnchors)
+	}
+	if !strings.HasPrefix(remainder, "*") && !strings.HasPrefix(remainder, "[") {
+		return false
+	}
+	for _, alias := range yamlValueAlias.FindAllStringSubmatch(remainder, -1) {
+		if location, exists := locations[alias[1]]; exists && yamlMappingAnchorHasSecretKind(lines, location, scalarAnchors) {
+			return true
+		}
+	}
+	return false
+}
+
+func yamlEffectiveMergeKindIsSecret(lines []string, line, keyIndent int, content string, valueStart int, locations map[string]yamlAnchorLocation, scalarAnchors map[string]string) bool {
+	if explicitKind, exists := yamlExplicitKindForMapping(lines, line, keyIndent, scalarAnchors); exists {
+		return strings.EqualFold(explicitKind, "Secret")
+	}
+	return yamlMergeHasSecretKind(lines, line, content, valueStart, locations, scalarAnchors)
+}
+
+func yamlExplicitKindForMapping(lines []string, currentLine, mappingIndent int, scalarAnchors map[string]string) (string, bool) {
+	start := currentLine
+	for start > 0 && yamlLineBelongsToMapping(lines[start-1], mappingIndent) {
+		start--
+	}
+	end := currentLine + 1
+	for end < len(lines) && yamlLineBelongsToMapping(lines[end], mappingIndent) {
+		end++
+	}
+	for line := start; line < end; line++ {
+		content, _ := splitLineEnding(lines[line])
+		key, valueStart, ok := parseYAMLMappingLine(content)
+		if !ok || yamlKeyIndent(content) != mappingIndent || !strings.EqualFold(key, "kind") {
+			continue
+		}
+		kind := kubernetesYAMLScalar(content[valueStart:])
+		if strings.HasPrefix(kind, "*") {
+			kind = scalarAnchors[strings.TrimPrefix(kind, "*")]
+		}
+		return kind, true
+	}
+	return "", false
+}
+
+func yamlLineBelongsToMapping(line string, mappingIndent int) bool {
+	content, _ := splitLineEnding(line)
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return true
+	}
+	if yamlDocumentBoundary.MatchString(trimmed) || leadingIndent(content) < mappingIndent {
+		return false
+	}
+	return !isYAMLSequenceItemAtIndent(content, leadingIndent(content)) || yamlKeyIndent(content) == mappingIndent
+}
+
+func yamlMappingAnchorHasSecretKind(lines []string, location yamlAnchorLocation, scalarAnchors map[string]string) bool {
+	if location.line < 0 || location.line >= len(lines) {
+		return false
+	}
+	content, _ := splitLineEnding(lines[location.line])
+	if location.anchorEnd < len(content) {
+		remainder := strings.TrimSpace(content[location.anchorEnd:])
+		if strings.HasPrefix(remainder, "{") && yamlFlowMappingHasSecretKind(remainder, scalarAnchors) {
+			return true
+		}
+	}
+
+	parentIndent := yamlKeyIndent(content)
+	childIndent := -1
+	for line := location.line + 1; line < len(lines); line++ {
+		candidate, _ := splitLineEnding(lines[line])
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if yamlDocumentBoundary.MatchString(trimmed) || leadingIndent(candidate) <= parentIndent {
+			break
+		}
+		key, valueStart, ok := parseYAMLMappingLine(candidate)
+		if !ok {
+			continue
+		}
+		keyIndent := yamlKeyIndent(candidate)
+		if childIndent < 0 {
+			childIndent = keyIndent
+		}
+		if keyIndent != childIndent || !strings.EqualFold(key, "kind") {
+			continue
+		}
+		kind := kubernetesYAMLScalar(candidate[valueStart:])
+		if strings.HasPrefix(kind, "*") {
+			kind = scalarAnchors[strings.TrimPrefix(kind, "*")]
+		}
+		return strings.EqualFold(kind, "Secret")
+	}
+	return false
+}
+
+func yamlFlowMappingHasSecretKind(flow string, scalarAnchors map[string]string) bool {
+	close := findYAMLFlowEnd(flow, 0)
+	if len(flow) < 2 || flow[0] != '{' || close < 1 {
+		return false
+	}
+	flow = flow[:close+1]
+	for cursor := 1; cursor < len(flow)-1; {
+		cursor = skipYAMLFlowSpaceAndComments(flow, cursor, len(flow)-1)
+		if cursor >= len(flow)-1 {
+			break
+		}
+		colon := findKubernetesFlowColon(flow, cursor)
+		if colon < 0 {
+			return false
+		}
+		key := decodeYAMLScalar(flow[cursor:colon])
+		valueStart := colon + 1
+		for valueStart < len(flow)-1 && (flow[valueStart] == ' ' || flow[valueStart] == '\t' || flow[valueStart] == '\r' || flow[valueStart] == '\n') {
+			valueStart++
+		}
+		valueEnd := findKubernetesFlowValueEnd(flow, valueStart)
+		if valueEnd < valueStart {
+			return false
+		}
+		if strings.EqualFold(key, "kind") {
+			kind := kubernetesYAMLScalar(flow[valueStart:valueEnd])
+			if strings.HasPrefix(kind, "*") {
+				kind = scalarAnchors[strings.TrimPrefix(kind, "*")]
+			}
+			return strings.EqualFold(kind, "Secret")
+		}
+		cursor = valueEnd
+	}
+	return false
 }
 
 func redactKubernetesYAMLAnchorAliases(lines []string, value string, locations map[string]yamlAnchorLocation) {
@@ -1103,7 +1261,7 @@ func redactKubernetesSecretYAMLFlowData(value string) (string, bool) {
 	return redacted, changed
 }
 
-func yamlSecretKindFollows(lines []string, start, secretIndent int, scalarAnchors map[string]string) bool {
+func yamlSecretKindFollows(lines []string, start, secretIndent int, anchorLocations map[string]yamlAnchorLocation, scalarAnchors map[string]string) bool {
 	for line := start; line < len(lines); line++ {
 		content, _ := splitLineEnding(lines[line])
 		trimmed := strings.TrimSpace(content)
@@ -1127,6 +1285,9 @@ func yamlSecretKindFollows(lines []string, start, secretIndent int, scalarAnchor
 		}
 		if keyIndent != secretIndent {
 			continue
+		}
+		if key == "<<" && yamlEffectiveMergeKindIsSecret(lines, line, keyIndent, content, valueStart, anchorLocations, scalarAnchors) {
+			return true
 		}
 		if strings.EqualFold(key, "kind") {
 			kind := kubernetesYAMLScalar(content[valueStart:])
