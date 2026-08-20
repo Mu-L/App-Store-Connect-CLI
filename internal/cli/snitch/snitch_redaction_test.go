@@ -1085,9 +1085,14 @@ status: failed`,
 			want:  `ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED] ASC_ADS_PRIVATE_KEY_B64=[REDACTED]`,
 		},
 		{
-			name:  "leading underscore assignment",
+			name:  "leading underscore token assignment",
 			input: `//registry.npmjs.org/:_authToken=npm-secret`,
 			want:  `//registry.npmjs.org/:_authToken=[REDACTED]`,
+		},
+		{
+			name:  "registry base64 auth assignment",
+			input: `//registry.npmjs.org/:_auth=b3BhcXVlLXNlY3JldA==`,
+			want:  `//registry.npmjs.org/:_auth=[REDACTED]`,
 		},
 		{
 			name:  "JSON assignment",
@@ -1487,6 +1492,31 @@ func TestSnitchDryRunRedactsURLUserinfoCredentials(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "sensitive values were redacted") {
 		t.Fatalf("stderr = %q, want a generic redaction notice", stderr)
+	}
+}
+
+func TestSnitchDryRunRedactsRegistryBase64AuthCredential(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const secret = "b3BhcXVlLXNlY3JldA=="
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", `//registry.npmjs.org/:_auth=`+secret,
+		"registry credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+		t.Fatalf("dry run leaked registry credential: stdout=%q stderr=%q", stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	if want := `//registry.npmjs.org/:_auth=[REDACTED]`; !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want redacted assignment %q", stderr, want)
 	}
 }
 
