@@ -1615,10 +1615,12 @@ func TestSnitchDryRunPreservesLoneSingleQuote(t *testing.T) {
 
 func TestRedactSensitiveTextBoundsOversizedInputBeforeScanning(t *testing.T) {
 	const (
-		maxFieldBytes = 64 * 1024
-		tailSecret    = "discarded-oversized-tail-secret"
+		maxFieldBytes       = 64 * 1024
+		multilineTailSecret = "retained-multiline-tail-secret"
+		discardedTailSecret = "discarded-oversized-tail-secret"
 	)
-	input := strings.Repeat("diagnostic 🙂 line\n", 5000) + "password=" + tailSecret
+	input := "diagnostic 🙂 line\nPASSWORD=\"opaque-head\n" + multilineTailSecret + "\n" +
+		strings.Repeat("captured line\n", 5000) + "\"\npassword=" + discardedTailSecret
 
 	got, changed := redactSensitiveText(input)
 	if !changed {
@@ -1630,11 +1632,13 @@ func TestRedactSensitiveTextBoundsOversizedInputBeforeScanning(t *testing.T) {
 	if !utf8.ValidString(got) {
 		t.Fatal("redactSensitiveText() returned invalid UTF-8")
 	}
-	if strings.Contains(got, tailSecret) {
-		t.Fatalf("redactSensitiveText() retained discarded tail secret: %q", got)
+	for _, secret := range []string{multilineTailSecret, discardedTailSecret} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("redactSensitiveText() retained oversized credential %q: %q", secret, got)
+		}
 	}
-	if !strings.Contains(got, "oversized report field omitted") {
-		t.Fatalf("redactSensitiveText() = %q, want an explicit truncation marker", got)
+	if got != "[REDACTED: oversized report field omitted]" {
+		t.Fatalf("redactSensitiveText() = %q, want the fail-closed omission marker", got)
 	}
 
 	again, changedAgain := redactSensitiveText(got)
@@ -1684,8 +1688,12 @@ func TestSnitchDryRunBoundsOversizedReportFieldBeforePreview(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	const tailSecret = "discarded-dry-run-tail-secret"
-	actual := strings.Repeat("captured diagnostic line\n", 3500) + "password=" + tailSecret
+	const (
+		multilineTailSecret = "retained-dry-run-multiline-secret"
+		discardedTailSecret = "discarded-dry-run-tail-secret"
+	)
+	actual := "PASSWORD=\"opaque-head\n" + multilineTailSecret + "\n" +
+		strings.Repeat("captured diagnostic line\n", 3500) + "\"\npassword=" + discardedTailSecret
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1698,8 +1706,10 @@ func TestSnitchDryRunBoundsOversizedReportFieldBeforePreview(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
 	}
-	if strings.Contains(stderr, tailSecret) {
-		t.Fatalf("dry run leaked discarded tail secret: %q", stderr)
+	for _, secret := range []string{multilineTailSecret, discardedTailSecret} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("dry run leaked oversized credential %q: %q", secret, stderr)
+		}
 	}
 	if !strings.Contains(stderr, "oversized report field omitted") {
 		t.Fatalf("stderr = %q, want an explicit truncation marker", stderr)

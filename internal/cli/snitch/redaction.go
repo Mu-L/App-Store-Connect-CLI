@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 )
 
 const (
@@ -479,29 +478,13 @@ func redactSensitiveText(value string) (string, bool) {
 }
 
 // boundRedactionInput limits parser work before any redaction pass runs. It
-// retains only complete leading lines so a credential that crosses the byte
-// boundary cannot leave a partial value in a report. A single oversized line
-// is omitted in full for the same reason.
+// omits an oversized field in full so a multiline credential that crosses the
+// byte boundary cannot leave part of its value in a report.
 func boundRedactionInput(value string) (string, bool) {
 	if len(value) <= maxRedactionFieldBytes {
 		return value, false
 	}
-
-	prefixLimit := maxRedactionFieldBytes - len(oversizedFieldMarker) - 1
-	lineEnd := strings.LastIndexByte(value[:prefixLimit], '\n')
-	if lineEnd < 0 {
-		return oversizedFieldMarker, true
-	}
-
-	prefix := strings.ToValidUTF8(value[:lineEnd], "\uFFFD")
-	maxPrefixBytes := maxRedactionFieldBytes - len(oversizedFieldMarker) - 1
-	if len(prefix) > maxPrefixBytes {
-		prefix = prefix[:maxPrefixBytes]
-		for !utf8.ValidString(prefix) {
-			prefix = prefix[:len(prefix)-1]
-		}
-	}
-	return prefix + "\n" + oversizedFieldMarker, true
+	return oversizedFieldMarker, true
 }
 
 func redactPowerShellHereStringCredentials(value string) (string, bool) {
