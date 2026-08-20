@@ -809,6 +809,25 @@ func TestRenderDashboardShowsLatestBuildExpiryAndInternalState(t *testing.T) {
 	}
 }
 
+func TestRenderDashboardMarksBlockingInternalBuildStatesAsFailures(t *testing.T) {
+	for _, state := range []string{"PROCESSING_EXCEPTION", "MISSING_EXPORT_COMPLIANCE", "EXPIRED"} {
+		t.Run(state, func(t *testing.T) {
+			resp := &dashboardResponse{
+				Summary:    statusSummary{Health: "yellow", NextAction: "Review release status.", Blockers: []string{}},
+				TestFlight: &testFlightSection{InternalBuildState: state},
+			}
+
+			stdout, stderr := captureOutput(t, func() { renderTable(resp) })
+			if stderr != "" {
+				t.Fatalf("expected empty stderr, got %q", stderr)
+			}
+			if !strings.Contains(stdout, "[x] "+state) {
+				t.Fatalf("expected internalBuildState %s to render as a failure:\n%s", state, stdout)
+			}
+		})
+	}
+}
+
 func TestLatestBuildJSONOmitsUnknownExpiry(t *testing.T) {
 	encoded, err := json.Marshal(latestBuild{ID: "build-1", BuildNumber: "42"})
 	if err != nil {
@@ -833,6 +852,26 @@ func TestStateSymbolClassification(t *testing.T) {
 	for _, test := range tests {
 		if got := stateSymbol(test.value); got != test.want {
 			t.Fatalf("stateSymbol(%q) = %q, want %q", test.value, got, test.want)
+		}
+	}
+}
+
+func TestInternalBuildStateSymbolClassification(t *testing.T) {
+	tests := []struct {
+		value string
+		want  string
+	}{
+		{value: "PROCESSING", want: "[~]"},
+		{value: "PROCESSING_EXCEPTION", want: "[x]"},
+		{value: "MISSING_EXPORT_COMPLIANCE", want: "[x]"},
+		{value: "READY_FOR_BETA_TESTING", want: "[+]"},
+		{value: "IN_BETA_TESTING", want: "[+]"},
+		{value: "EXPIRED", want: "[x]"},
+		{value: "IN_EXPORT_COMPLIANCE_REVIEW", want: "[~]"},
+	}
+	for _, test := range tests {
+		if got := internalBuildStateSymbol(test.value); got != test.want {
+			t.Fatalf("internalBuildStateSymbol(%q) = %q, want %q", test.value, got, test.want)
 		}
 	}
 }

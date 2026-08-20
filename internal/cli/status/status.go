@@ -1518,7 +1518,7 @@ func renderDashboard(resp *dashboardResponse, markdown bool) {
 
 	if resp.TestFlight != nil {
 		rows := [][]string{
-			{"internalBuildState", prefixedState(resp.TestFlight.InternalBuildState)},
+			{"internalBuildState", prefixedInternalBuildState(resp.TestFlight.InternalBuildState)},
 			{"latestDistributedBuildId", shared.OrNA(resp.TestFlight.LatestDistributedBuildID)},
 			{"externalBuildState", prefixedState(resp.TestFlight.ExternalBuildState)},
 		}
@@ -1626,6 +1626,27 @@ func prefixedState(value string) string {
 		return "[-] n/a"
 	}
 	return fmt.Sprintf("%s %s", stateSymbol(trimmed), trimmed)
+}
+
+func prefixedInternalBuildState(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "[-] n/a"
+	}
+	return fmt.Sprintf("%s %s", internalBuildStateSymbol(trimmed), trimmed)
+}
+
+func internalBuildStateSymbol(value string) string {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "PROCESSING", "IN_EXPORT_COMPLIANCE_REVIEW":
+		return "[~]"
+	case "PROCESSING_EXCEPTION", "MISSING_EXPORT_COMPLIANCE", "EXPIRED":
+		return "[x]"
+	case "READY_FOR_BETA_TESTING", "IN_BETA_TESTING":
+		return "[+]"
+	default:
+		return stateSymbol(value)
+	}
 }
 
 func stateSymbol(value string) string {
