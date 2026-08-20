@@ -474,6 +474,116 @@ func TestWaitForBuildByNumberOrUploadFailureReturnsMalformedUploadRelationships(
 	}
 }
 
+func TestWaitForBuildByNumberOrUploadFailureToleratesTransientLookupFailures(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "0")
+
+	preReleaseCalls := 0
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			return nil, fmt.Errorf("expected GET, got %s", req.Method)
+		}
+
+		switch req.URL.Path {
+		case "/v1/preReleaseVersions":
+			preReleaseCalls++
+			if preReleaseCalls <= 2 {
+				return buildWaitJSONStatusResponse(http.StatusServiceUnavailable, `{
+					"errors": [
+						{"status": "503", "code": "SERVICE_UNAVAILABLE", "title": "unavailable"}
+					]
+				}`)
+			}
+			return buildWaitJSONResponse(`{
+				"data": [
+					{
+						"type": "preReleaseVersions",
+						"id": "prv-1",
+						"attributes": {
+							"version": "1.2.3",
+							"platform": "IOS"
+						}
+					}
+				],
+				"links": {}
+			}`)
+		case "/v1/builds":
+			return buildWaitJSONResponse(`{
+				"data": [
+					{
+						"type": "builds",
+						"id": "build-123",
+						"attributes": {
+							"version": "42",
+							"processingState": "PROCESSING"
+						}
+					}
+				],
+				"links": {}
+			}`)
+		default:
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+	})
+
+	var buildResp *asc.BuildResponse
+	var err error
+	stderr := captureStderr(t, func() {
+		buildResp, err = WaitForBuildByNumberOrUploadFailure(context.Background(), client, "app-1", "", "1.2.3", "42", "IOS", time.Millisecond)
+	})
+	if err != nil {
+		t.Fatalf("WaitForBuildByNumberOrUploadFailure() error: %v", err)
+	}
+	if buildResp == nil {
+		t.Fatal("expected build response after tolerating transient failures")
+		return
+	}
+	if buildResp.Data.ID != "build-123" {
+		t.Fatalf("expected build ID build-123, got %q", buildResp.Data.ID)
+	}
+	for _, want := range []string{
+		"transient App Store Connect error while waiting (1/5)",
+		"transient App Store Connect error while waiting (2/5)",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("expected stderr to contain %q, got %q", want, stderr)
+		}
+	}
+}
+
+func TestWaitForBuildByNumberOrUploadFailureFailsAfterConsecutiveTransientLimit(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "0")
+
+	preReleaseCalls := 0
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			return nil, fmt.Errorf("expected GET, got %s", req.Method)
+		}
+		if req.URL.Path != "/v1/preReleaseVersions" {
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+		preReleaseCalls++
+		return buildWaitJSONStatusResponse(http.StatusServiceUnavailable, `{
+			"errors": [
+				{"status": "503", "code": "SERVICE_UNAVAILABLE", "title": "unavailable"}
+			]
+		}`)
+	})
+
+	var err error
+	captureStderr(t, func() {
+		_, err = WaitForBuildByNumberOrUploadFailure(context.Background(), client, "app-1", "", "1.2.3", "42", "IOS", time.Millisecond)
+	})
+	if err == nil {
+		t.Fatal("expected error once transient failures exceed the ceiling, got nil")
+	}
+	if !strings.Contains(err.Error(), "giving up after 6 consecutive transient App Store Connect errors") {
+		t.Fatalf("expected consecutive transient failure error, got %v", err)
+	}
+	if preReleaseCalls != asc.DefaultMaxConsecutivePollFailures+1 {
+		t.Fatalf("expected %d lookups, got %d", asc.DefaultMaxConsecutivePollFailures+1, preReleaseCalls)
+	}
+}
+
 func TestVerifyBuildUploadAfterCommitIgnoresRetryableLookupErrorsUntilBuildLinks(t *testing.T) {
 	t.Setenv("ASC_MAX_RETRIES", "0")
 	lookupCalls := 0

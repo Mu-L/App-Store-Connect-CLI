@@ -661,6 +661,9 @@ func executeScreenshotUploadCommand(ctx context.Context, opts screenshotUploadCo
 	if err != nil {
 		return nil, shared.NewValidationError(err)
 	}
+	if err := validateScreenshotFanoutAssets(localeAssets, apiDisplayType); err != nil {
+		return nil, shared.NewValidationError(err)
+	}
 
 	client, err := deps.GetClient()
 	if err != nil {
