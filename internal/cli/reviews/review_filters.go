@@ -79,7 +79,7 @@ func bindTrackedReviewStringFlag(fs *flag.FlagSet, name string, value *string, p
 func BindReviewFilterFlags(fs *flag.FlagSet) *ReviewFilterFlags {
 	filters := &ReviewFilterFlags{}
 	bindTrackedReviewStringFlag(fs, "stars", &filters.Stars, &filters.starsSet, "", true, "Filter by star ratings, comma-separated (1-5)")
-	bindTrackedReviewStringFlag(fs, "territory", &filters.Territory, &filters.territorySet, "", false, "Filter by App Store territory code (e.g., USA, GBR)")
+	bindTrackedReviewStringFlag(fs, "territory", &filters.Territory, &filters.territorySet, "", true, "Filter by App Store territories, comma-separated (e.g., USA,GBR)")
 	bindTrackedReviewStringFlag(fs, "sort", &filters.Sort, &filters.sortSet, "", false, "Sort by "+strings.Join(reviewSorts, ", "))
 	bindTrackedReviewStringFlag(fs, "response-state", &filters.ResponseState, &filters.responseStateSet, reviewResponseStateAny, false, "Filter by response state: any, unresponded/unreplied, responded/replied")
 	fs.BoolVar(&filters.OnlyUnresponded, "only-unresponded", false, "Only list reviews without a published response")
@@ -145,16 +145,13 @@ func (f *ReviewFilterFlags) ReviewOptions() ([]asc.ReviewOption, error) {
 	if err != nil {
 		return nil, shared.WithDiagnostic(shared.UsageError(err.Error()), shared.DiagnosticInvalidInput, "--stars")
 	}
-	territory := ""
-	if strings.TrimSpace(f.Territory) != "" {
-		territory, err = ascterritory.Normalize(f.Territory)
-		if err != nil {
-			return nil, shared.WithDiagnostic(
-				shared.UsageError("--territory must be a valid App Store territory code"),
-				shared.DiagnosticInvalidInput,
-				"--territory",
-			)
-		}
+	territory, err := normalizeReviewTerritories(f.Territory)
+	if err != nil {
+		return nil, shared.WithDiagnostic(
+			shared.UsageError(err.Error()),
+			shared.DiagnosticInvalidInput,
+			"--territory",
+		)
 	}
 	if err := shared.ValidateSort(f.Sort, reviewSorts...); err != nil {
 		return nil, shared.WithDiagnostic(shared.NewValidationError(err), shared.DiagnosticInvalidInput, "--sort")
@@ -191,6 +188,23 @@ func (f *ReviewFilterFlags) ReviewOptions() ([]asc.ReviewOption, error) {
 		opts = append(opts, asc.WithReviewIncludeResponse(), asc.WithReviewResponseFields(responseFields))
 	}
 	return opts, nil
+}
+
+func normalizeReviewTerritories(value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", nil
+	}
+
+	elements := strings.Split(value, ",")
+	territories := make([]string, 0, len(elements))
+	for _, element := range elements {
+		normalized, err := ascterritory.Normalize(element)
+		if err != nil {
+			return "", fmt.Errorf("--territory must be a valid App Store territory code or comma-separated list of codes")
+		}
+		territories = append(territories, normalized)
+	}
+	return strings.Join(territories, ","), nil
 }
 
 func normalizeReviewResponseState(value string) (string, error) {

@@ -31,7 +31,7 @@ func TestVersionsCustomerReviewsListEmitsReviewFilters(t *testing.T) {
 			value string
 		}{
 			{key: "filter[rating]", value: "1,2"},
-			{key: "filter[territory]", value: "USA"},
+			{key: "filter[territory]", value: "USA,GBR"},
 			{key: "sort", value: "-createdDate"},
 			{key: "exists[publishedResponse]", value: "false"},
 			{key: "include", value: "response"},
@@ -56,7 +56,7 @@ func TestVersionsCustomerReviewsListEmitsReviewFilters(t *testing.T) {
 			"versions", "customer-reviews", "list",
 			"--version-id", "version-1",
 			"--stars", "1,2",
-			"--territory", "us",
+			"--territory", "us,GB",
 			"--sort", "-createdDate",
 			"--response-state", "unreplied",
 			"--response-fields", "responseBody,state",
@@ -243,7 +243,7 @@ func TestVersionsCustomerReviewsFilterValidationMatchesAppLevelReviews(t *testin
 		{
 			name:        "repeated territory filters",
 			args:        []string{"--territory", "USA", "--territory", "GBR"},
-			wantMessage: "--territory specified multiple times; pass it once",
+			wantMessage: `--territory specified multiple times; pass one comma-separated list, for example --territory "USA,GBR"`,
 		},
 	}
 
