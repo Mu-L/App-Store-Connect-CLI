@@ -3231,12 +3231,42 @@ func redactSensitiveYAMLBlockNameValuePairs(lines []string) bool {
 			if scalar == "" || scalar == redactionMarker || scalar == privateKeyRedactionMarker {
 				continue
 			}
-			redactKubernetesYAMLScalarContinuations(lines, candidate, valueContent, candidateValueStart)
+			redactSensitiveYAMLValueContinuations(lines, candidate, mappingIndent, valueContent, candidateValueStart)
 			lines[candidate] = valueContent[:candidateValueStart] + redactionMarker + ending
 			changed = true
 		}
 	}
 	return changed
+}
+
+func redactSensitiveYAMLValueContinuations(lines []string, line, mappingIndent int, content string, valueStart int) {
+	value, _ := trimYAMLNodeProperties(content[valueStart:])
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, "[") || strings.HasPrefix(value, "{") {
+		return
+	}
+
+	quote := byte(0)
+	if value[0] == '\'' || value[0] == '"' {
+		quote = value[0]
+		if yamlQuotedScalarCloses(value[1:], quote) {
+			return
+		}
+	}
+	for nextLine := line + 1; nextLine < len(lines); nextLine++ {
+		nextContent, _ := splitLineEnding(lines[nextLine])
+		trimmed := strings.TrimSpace(nextContent)
+		if quote == 0 && trimmed != "" && leadingIndent(nextContent) <= mappingIndent {
+			break
+		}
+		if quote != 0 && yamlQuotedScalarCloses(nextContent, quote) {
+			lines[nextLine] = ""
+			return
+		}
+		if trimmed != "" {
+			lines[nextLine] = ""
+		}
+	}
 }
 
 func redactSensitiveYAMLFlowNameValuePairs(value string) (string, bool) {

@@ -406,7 +406,7 @@ diagnostic:
 		{
 			name: "reversed Kubernetes YAML environment credential name value pair",
 			input: `env:
-  - value: "reversedAlphabeticSecret"
+  - value: reversedAlphabeticSecret
     name: API_TOKEN`,
 			want: `env:
   - value: [REDACTED]
