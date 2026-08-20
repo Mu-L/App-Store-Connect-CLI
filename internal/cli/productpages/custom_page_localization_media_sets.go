@@ -147,6 +147,7 @@ func CustomPageLocalizationsScreenshotSetsListCommand() *ffcli.Command {
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
+	includeScreenshots := fs.Bool("include-screenshots", false, "Include screenshot IDs and metadata for each set")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -156,7 +157,8 @@ func CustomPageLocalizationsScreenshotSetsListCommand() *ffcli.Command {
 		LongHelp: `List screenshot sets for a custom product page localization.
 
 Examples:
-  asc product-pages custom-pages localizations screenshot-sets list --localization-id "LOCALIZATION_ID"`,
+  asc product-pages custom-pages localizations screenshot-sets list --localization-id "LOCALIZATION_ID"
+  asc product-pages custom-pages localizations screenshot-sets list --localization-id "LOCALIZATION_ID" --include-screenshots`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -198,12 +200,30 @@ Examples:
 				if err != nil {
 					return fmt.Errorf("custom-pages localizations screenshot-sets list: %w", err)
 				}
+				if *includeScreenshots {
+					setsResponse, ok := resp.(*asc.AppScreenshotSetsResponse)
+					if !ok {
+						return fmt.Errorf("custom-pages localizations screenshot-sets list: unexpected response type %T", resp)
+					}
+					result, err := screenshotSetListResult(requestCtx, client, trimmedID, setsResponse)
+					if err != nil {
+						return fmt.Errorf("custom-pages localizations screenshot-sets list: %w", err)
+					}
+					return shared.PrintOutput(result, *output.Output, *output.Pretty)
+				}
 				return shared.PrintOutput(resp, *output.Output, *output.Pretty)
 			}
 
 			resp, err := client.GetAppCustomProductPageLocalizationScreenshotSets(requestCtx, trimmedID, opts...)
 			if err != nil {
 				return fmt.Errorf("custom-pages localizations screenshot-sets list: failed to fetch: %w", err)
+			}
+			if *includeScreenshots {
+				result, err := screenshotSetListResult(requestCtx, client, trimmedID, resp)
+				if err != nil {
+					return fmt.Errorf("custom-pages localizations screenshot-sets list: %w", err)
+				}
+				return shared.PrintOutput(result, *output.Output, *output.Pretty)
 			}
 
 			return shared.PrintOutput(resp, *output.Output, *output.Pretty)

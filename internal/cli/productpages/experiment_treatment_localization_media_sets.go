@@ -149,6 +149,7 @@ func ExperimentTreatmentLocalizationScreenshotSetsListCommand() *ffcli.Command {
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
+	includeScreenshots := fs.Bool("include-screenshots", false, "Include screenshot IDs and metadata for each set")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -158,7 +159,8 @@ func ExperimentTreatmentLocalizationScreenshotSetsListCommand() *ffcli.Command {
 		LongHelp: `List screenshot sets for a treatment localization.
 
 Examples:
-  asc product-pages experiments treatments localizations screenshot-sets list --localization-id "LOCALIZATION_ID"`,
+  asc product-pages experiments treatments localizations screenshot-sets list --localization-id "LOCALIZATION_ID"
+  asc product-pages experiments treatments localizations screenshot-sets list --localization-id "LOCALIZATION_ID" --include-screenshots`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -202,12 +204,31 @@ Examples:
 					return fmt.Errorf("experiments treatments localizations screenshot-sets list: %w", err)
 				}
 
+				if *includeScreenshots {
+					setsResponse, ok := resp.(*asc.AppScreenshotSetsResponse)
+					if !ok {
+						return fmt.Errorf("experiments treatments localizations screenshot-sets list: unexpected response type %T", resp)
+					}
+					result, err := screenshotSetListResult(requestCtx, client, trimmedID, setsResponse)
+					if err != nil {
+						return fmt.Errorf("experiments treatments localizations screenshot-sets list: %w", err)
+					}
+					return shared.PrintOutput(result, *output.Output, *output.Pretty)
+				}
+
 				return shared.PrintOutput(resp, *output.Output, *output.Pretty)
 			}
 
 			resp, err := client.GetAppStoreVersionExperimentTreatmentLocalizationScreenshotSets(requestCtx, trimmedID, opts...)
 			if err != nil {
 				return fmt.Errorf("experiments treatments localizations screenshot-sets list: failed to fetch: %w", err)
+			}
+			if *includeScreenshots {
+				result, err := screenshotSetListResult(requestCtx, client, trimmedID, resp)
+				if err != nil {
+					return fmt.Errorf("experiments treatments localizations screenshot-sets list: %w", err)
+				}
+				return shared.PrintOutput(result, *output.Output, *output.Pretty)
 			}
 
 			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
@@ -295,7 +316,7 @@ func executeExperimentTreatmentLocalizationScreenshotUpload(
 		Path:                     path,
 		DeviceType:               deviceType,
 		Replace:                  sync,
-		InspectCommand:           fmt.Sprintf("asc product-pages experiments treatments localizations screenshot-sets list --localization-id %q --output json", trimmedLocalizationID),
+		InspectCommand:           fmt.Sprintf("asc product-pages experiments treatments localizations screenshot-sets list --localization-id %q --include-screenshots --output json", trimmedLocalizationID),
 		ReplaceCommand:           shellquote.Join("asc", "product-pages", "experiments", "treatments", "localizations", "screenshot-sets", "sync", "--localization-id", trimmedLocalizationID, "--path", trimmedPath, "--device-type", trimmedDeviceType, "--confirm"),
 		InvalidDeviceTypeIsUsage: true,
 		ClientFactory:            experimentTreatmentLocalizationMediaClientFactory,

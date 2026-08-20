@@ -14,6 +14,8 @@ import (
 	"image/png"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -29,6 +31,21 @@ type customPageUploadRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn customPageUploadRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
+}
+
+type customPageBaseURLRoundTripper struct {
+	target *url.URL
+	next   http.RoundTripper
+}
+
+func (t customPageBaseURLRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	requestURL := *cloned.URL
+	requestURL.Scheme = t.target.Scheme
+	requestURL.Host = t.target.Host
+	cloned.URL = &requestURL
+	cloned.Host = t.target.Host
+	return t.next.RoundTrip(cloned)
 }
 
 func TestExecuteCustomPageScreenshotUpload_SyncDeletesExistingScreenshotsAndReordersUploads(t *testing.T) {
@@ -131,23 +148,32 @@ func TestExecuteCustomPageScreenshotUploadFullSetQuotesReplacementPath(t *testin
 	}
 	writeCustomPageTestPNG(t, trickyPath, "01-home.png")
 
-	origTransport := http.DefaultTransport
-	http.DefaultTransport = customPageUploadRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/appCustomProductPageLocalizations/loc-1/appScreenshotSets":
-			return customPageJSONResponse(http.StatusOK, `{"data":[{"type":"appScreenshotSets","id":"set-1","attributes":{"screenshotDisplayType":"APP_IPHONE_65"}}]}`)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"data":[{"type":"appScreenshotSets","id":"set-1","attributes":{"screenshotDisplayType":"APP_IPHONE_65"}}]}`)
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/appScreenshotSets/set-1/appScreenshots":
-			return customPageJSONResponse(http.StatusOK, `{"data":[{"type":"appScreenshots","id":"old-1"},{"type":"appScreenshots","id":"old-2"},{"type":"appScreenshots","id":"old-3"},{"type":"appScreenshots","id":"old-4"},{"type":"appScreenshots","id":"old-5"},{"type":"appScreenshots","id":"old-6"},{"type":"appScreenshots","id":"old-7"},{"type":"appScreenshots","id":"old-8"},{"type":"appScreenshots","id":"old-9"},{"type":"appScreenshots","id":"old-10"}]}`)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"data":[{"type":"appScreenshots","id":"old-1"},{"type":"appScreenshots","id":"old-2"},{"type":"appScreenshots","id":"old-3"},{"type":"appScreenshots","id":"old-4"},{"type":"appScreenshots","id":"old-5"},{"type":"appScreenshots","id":"old-6"},{"type":"appScreenshots","id":"old-7"},{"type":"appScreenshots","id":"old-8"},{"type":"appScreenshots","id":"old-9"},{"type":"appScreenshots","id":"old-10"}]}`)
 		default:
 			t.Fatalf("full-set remediation must not mutate remote assets: %s %s", req.Method, req.URL.String())
-			return nil, nil
+			w.WriteHeader(http.StatusInternalServerError)
 		}
-	})
+	}))
 	t.Cleanup(func() {
-		http.DefaultTransport = origTransport
+		server.Close()
 	})
 
-	client := newCustomPageTestClientWithTimeout(t, 0)
+	serverURL, parseErr := url.Parse(server.URL)
+	if parseErr != nil {
+		t.Fatalf("parse test server URL: %v", parseErr)
+	}
+	httpClient := server.Client()
+	httpClient.Transport = customPageBaseURLRoundTripper{target: serverURL, next: httpClient.Transport}
+	client := newCustomPageTestClientWithHTTPClient(t, httpClient)
 	origFactory := customPageMediaClientFactory
 	customPageMediaClientFactory = func() (*asc.Client, error) { return client, nil }
 	t.Cleanup(func() {
@@ -198,6 +224,33 @@ func newCustomPageTestClientWithTimeout(t *testing.T, timeout time.Duration) *as
 	}
 
 	client, err := asc.NewClientFromPEMWithTimeout("KEY_ID", "ISSUER_ID", string(pemBytes), timeout)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	return client
+}
+
+func newCustomPageTestClientWithHTTPClient(t *testing.T, httpClient *http.Client) *asc.Client {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	if pemBytes == nil {
+		t.Fatal("encode pem: nil")
+	}
+	keyPath := filepath.Join(t.TempDir(), "test-key.p8")
+	if err := os.WriteFile(keyPath, pemBytes, 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	client, err := asc.NewClientWithHTTPClient("KEY_ID", "ISSUER_ID", keyPath, httpClient)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

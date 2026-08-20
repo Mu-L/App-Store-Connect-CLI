@@ -146,7 +146,7 @@ func TestExecuteScreenshotSetUploadFullSetUsesOwnerSpecificInspectionCommand(t *
 		LocalizationID: "CUSTOM_LOC_123",
 		Path:           filePath,
 		DeviceType:     "IPHONE_65",
-		InspectCommand: `asc product-pages custom-pages localizations screenshot-sets list --localization-id "CUSTOM_LOC_123" --output json`,
+		InspectCommand: `asc product-pages custom-pages localizations screenshot-sets list --localization-id "CUSTOM_LOC_123" --include-screenshots --output json`,
 		ReplaceCommand: `asc product-pages custom-pages localizations screenshot-sets sync --localization-id "CUSTOM_LOC_123" --path "/tmp/screenshots" --device-type "IPHONE_65" --confirm`,
 		ClientFactory: func() (*asc.Client, error) {
 			return client, nil
@@ -174,7 +174,7 @@ func TestExecuteScreenshotSetUploadFullSetUsesOwnerSpecificInspectionCommand(t *
 	if err == nil {
 		t.Fatal("expected full screenshot set error")
 	}
-	if !strings.Contains(err.Error(), `asc product-pages custom-pages localizations screenshot-sets list --localization-id "CUSTOM_LOC_123" --output json`) {
+	if !strings.Contains(err.Error(), `asc product-pages custom-pages localizations screenshot-sets list --localization-id "CUSTOM_LOC_123" --include-screenshots --output json`) {
 		t.Fatalf("expected owner-specific inspection command, got %v", err)
 	}
 	if strings.Contains(err.Error(), "asc screenshots list --version-localization") {

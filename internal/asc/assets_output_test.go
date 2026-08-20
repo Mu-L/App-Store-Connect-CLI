@@ -136,6 +136,31 @@ func TestAssetListResultRowsRemoveTerminalControls(t *testing.T) {
 		}},
 	})
 	assertRowsAreInert(t, previewHeaders, previewRows)
+
+	customPageHeaders, customPageRows := appScreenshotSetListResultRows(&AppScreenshotSetListResult{
+		LocalizationID: "CUSTOM_LOC\x1bID",
+		Sets: []AppScreenshotSetWithScreenshots{{
+			Set: Resource[AppScreenshotSetAttributes]{
+				ID:         "SET\x1bID",
+				Attributes: AppScreenshotSetAttributes{ScreenshotDisplayType: "APP_IPHONE_67\u202e"},
+			},
+			Screenshots: []Resource[AppScreenshotAttributes]{{
+				ID: "SHOT\x1bID",
+				Attributes: AppScreenshotAttributes{
+					FileName:           hostileText,
+					AssetDeliveryState: &AssetDeliveryState{State: "COMPLETE\x07"},
+				},
+			}},
+		}},
+	})
+	assertRowsAreInert(t, customPageHeaders, customPageRows)
+	if err := renderByRegistry(&AppScreenshotSetListResult{}, func(headers []string, rows [][]string) {
+		if len(headers) == 0 || len(rows) != 0 {
+			t.Fatalf("registered screenshot-set list renderer returned headers=%v rows=%v", headers, rows)
+		}
+	}); err != nil {
+		t.Fatalf("renderByRegistry(AppScreenshotSetListResult) error: %v", err)
+	}
 }
 
 func TestAssetUploadRowsRemoveTerminalControlsAndPreserveJSON(t *testing.T) {
