@@ -19,10 +19,11 @@ const (
 	maxRedactionFieldBytes    = 64 * 1024
 
 	sensitiveAssignmentName     = `(?:_auth|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|client[_-]?key[_-]?data|app[_-]?secret|webhook[_-]?secret|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|secret[_-]?key(?:[_-]?base)?|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passphrase|passwd|pwd|secret|token)`
-	sensitivePrefixedName       = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
+	delimitedPassName           = `_*(?:(?:[a-z0-9]+[_-])+)?pass`
+	sensitivePrefixedName       = `(?:_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName + `|` + delimitedPassName + `)`
 	tomlQuotedSensitiveKey      = `(?:"` + sensitivePrefixedName + `"|'` + sensitivePrefixedName + `')`
 	valueBearingFlagPrefix      = `(?:n(?:[a-np-z0-9][a-z0-9]*|o[a-z0-9]+)?|[a-mo-z0-9][a-z0-9]*)`
-	sensitiveFlagName           = `(?:(?:` + valueBearingFlagPrefix + `[_-])+` + sensitiveAssignmentName + `|oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook[_-]?header|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|secret[_-]?key(?:[_-]?base)?|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passphrase|passwd|pwd|pass|token)`
+	sensitiveFlagName           = `(?:(?:` + valueBearingFlagPrefix + `[_-])+` + sensitiveAssignmentName + `|(?:` + valueBearingFlagPrefix + `[_-])+pass|oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook[_-]?header|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|secret[_-]?key(?:[_-]?base)?|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passphrase|passwd|pwd|pass|token)`
 	sensitiveOrSecretFlagName   = `(?:` + sensitiveFlagName + `|secret)`
 	powerShellVariableScope     = `(?:(?:env|global|local|private|script|using):)`
 	powerShellSensitiveVariable = `(?:\$(?:(?:` + powerShellVariableScope + `)?` + sensitivePrefixedName + `\b|\{(?:` + powerShellVariableScope + `)?` + sensitivePrefixedName + `\}))`
@@ -134,6 +135,7 @@ var (
 	yamlCredentialFlowStart            = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)([\[{])`)
 	yamlExplicitCredentialKey          = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+(?:` + yamlNodeTag + `[ \t]+)*(?:["']?` + yamlCredentialName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlCredentialAlias                = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlDocumentBoundary               = regexp.MustCompile(`^(?:---|\.\.\.)(?:[ \t]|$)`)
 	yamlValueAlias                     = regexp.MustCompile(`\*([a-zA-Z0-9_-]+)\b`)
 	yamlAnchor                         = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
 	yamlSensitiveNameAnchor            = regexp.MustCompile(`(?im)&([a-zA-Z0-9_-]+)[ \t]+(?:(?:` + yamlNodeTag + `)[ \t]+)*(?:["']?` + yamlCredentialName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
@@ -608,7 +610,7 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 	for line := 0; line < len(lines); line++ {
 		content, ending := splitLineEnding(lines[line])
 		trimmed := strings.TrimSpace(content)
-		if trimmed == "---" || trimmed == "..." {
+		if yamlDocumentBoundary.MatchString(trimmed) {
 			resetDocument()
 			continue
 		}

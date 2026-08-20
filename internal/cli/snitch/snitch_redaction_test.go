@@ -791,6 +791,38 @@ stringData:
 status: failed`,
 		},
 		{
+			name: "commented Kubernetes YAML document start resets Secret state",
+			input: `kind: Secret
+data:
+  token: opaque-secret
+--- # next document
+data:
+  count: 42
+kind: ConfigMap`,
+			want: `kind: Secret
+data:
+  token: [REDACTED]
+--- # next document
+data:
+  count: 42
+kind: ConfigMap`,
+		},
+		{
+			name: "commented Kubernetes YAML document end resets Secret state",
+			input: `kind: Secret
+data:
+  token: opaque-secret
+... # end document
+data:
+  count: 42`,
+			want: `kind: Secret
+data:
+  token: [REDACTED]
+... # end document
+data:
+  count: 42`,
+		},
+		{
 			name: "Kubernetes Secret list item arbitrary data key",
 			input: `items:
 - kind: Secret
@@ -1649,6 +1681,11 @@ status: failed`,
 			want:  `SECRET_KEY=[REDACTED] STRIPE_SECRET_KEY=[REDACTED] SECRET_KEY_BASE=[REDACTED]`,
 		},
 		{
+			name:  "prefixed pass assignments and flags",
+			input: "DB_PASS=database-credential\ntool --db-pass opaque-cli-credential",
+			want:  "DB_PASS=[REDACTED]\ntool --db-pass [REDACTED]",
+		},
+		{
 			name:  "secret key flag",
 			input: `tool --secret-key opaque-cli-secret --status failed`,
 			want:  `tool --secret-key [REDACTED] --status failed`,
@@ -1995,6 +2032,9 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 		`$description = ConvertTo-SecureString "public value" -AsPlainText -Force`,
 		"asc signing sync --notes @'\npublic head\npublic tail\n'@ --verbose",
 		`AUTOMATION_SESSION_FILE=/tmp/session.txt`,
+		`DB_PASS_FILE=/tmp/database-password tool --db-pass-file /tmp/database-password`,
+		`BYPASS=enabled tool --bypass enabled`,
+		`COMPASS=north tool --compass north`,
 		`tool --no-token output.txt`,
 		`tool --database-no-password output.txt`,
 	} {
