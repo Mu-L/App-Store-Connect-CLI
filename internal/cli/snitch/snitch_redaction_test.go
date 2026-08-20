@@ -198,9 +198,19 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `$client_secret = [REDACTED] -AsPlainText -Force`,
 		},
 		{
-			name:  "Netscape cookie jar credential",
-			input: ".appstoreconnect.apple.com\tTRUE\t/\tTRUE\t2147483647\tmyacinfo\topaque-cookie-jar-secret\n.example.test\tFALSE\t/\tFALSE\t0\tlocale\ten-US",
-			want:  ".appstoreconnect.apple.com\tTRUE\t/\tTRUE\t2147483647\tmyacinfo\t[REDACTED]\n.example.test\tFALSE\t/\tFALSE\t0\tlocale\ten-US",
+			name:  "Netscape cookie jar credentials",
+			input: ".example.test\tTRUE\t/\tTRUE\t2147483647\tJSESSIONID\topaque-java-session\n#HttpOnly_.example.test\tFALSE\t/\tTRUE\t0\tcsrftoken\topaque-csrf-token\n.example.test\tFALSE\t/\tFALSE\t0\tlocale\ten-US",
+			want:  ".example.test\tTRUE\t/\tTRUE\t2147483647\tJSESSIONID\t[REDACTED]\n#HttpOnly_.example.test\tFALSE\t/\tTRUE\t0\tcsrftoken\t[REDACTED]\n.example.test\tFALSE\t/\tFALSE\t0\tlocale\t[REDACTED]",
+		},
+		{
+			name:  "secret answer flag",
+			input: `tool --secret-answer "opaque recovery answer" --verbose`,
+			want:  `tool --secret-answer [REDACTED] --verbose`,
+		},
+		{
+			name:  "secret answer equals flag",
+			input: `tool --secret-answer=opaque-recovery-answer --verbose`,
+			want:  `tool --secret-answer=[REDACTED] --verbose`,
 		},
 		{
 			name:  "curl certificate password argument",
@@ -1356,6 +1366,14 @@ func TestRedactSensitiveTextPreservesKubeconfigCertificateData(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextPreservesMalformedCookieJarRow(t *testing.T) {
+	const input = ".example.test\tTRUE\t/\tTRUE\tnot-an-expiry\tJSESSIONID\tpublic-diagnostic"
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
 func TestRedactSensitiveTextPreservesBenignYAMLAliasMappingKey(t *testing.T) {
 	input := "key: &s status\n*s: failed"
 	got, changed := redactSensitiveText(input)
@@ -2216,6 +2234,55 @@ func TestSnitchDryRunRedactsCookieJarAndFoldedHeaderValues(t *testing.T) {
 		"cookie status: failed",
 		"request failed with scnt: [REDACTED]",
 		"session status: failed",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsSecretAnswerAndEveryCookieJarValue(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"quoted-recovery-answer",
+		"equals-recovery-answer",
+		"java-session-cookie",
+		"csrf-cookie-value",
+		"locale-cookie-value",
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", `tool --secret-answer "`+secrets[0]+`" --verbose`+"\n"+
+			`tool --secret-answer=`+secrets[1]+` --verbose`,
+		"--actual", ".example.test\tTRUE\t/\tTRUE\t2147483647\tJSESSIONID\t"+secrets[2]+"\n"+
+			"#HttpOnly_.example.test\tFALSE\t/\tTRUE\t0\tcsrftoken\t"+secrets[3]+"\n"+
+			".example.test\tFALSE\t/\tFALSE\t0\tlocale\t"+secrets[4],
+		"secret answer and cookie jar redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"--secret-answer [REDACTED] --verbose",
+		"--secret-answer=[REDACTED] --verbose",
+		".example.test TRUE / TRUE 2147483647 JSESSIONID [REDACTED]",
+		"#HttpOnly_.example.test FALSE / TRUE 0 csrftoken [REDACTED]",
+		".example.test FALSE / FALSE 0 locale [REDACTED]",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

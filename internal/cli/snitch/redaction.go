@@ -20,13 +20,12 @@ const (
 	sensitiveAssignmentName     = `(?:_auth|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|client[_-]?key[_-]?data|app[_-]?secret|webhook[_-]?secret|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passphrase|passwd|pwd|secret|token)`
 	sensitivePrefixedName       = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
 	tomlQuotedSensitiveKey      = `(?:"` + sensitivePrefixedName + `"|'` + sensitivePrefixedName + `')`
-	sensitiveFlagName           = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook[_-]?header|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passphrase|passwd|pwd|pass|token)`
+	sensitiveFlagName           = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook[_-]?header|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passphrase|passwd|pwd|pass|token)`
 	sensitiveOrSecretFlagName   = `(?:` + sensitiveFlagName + `|secret)`
 	powerShellSensitiveVariable = `(?:\$(?:` + sensitivePrefixedName + `\b|\{` + sensitivePrefixedName + `\}))`
 	sensitiveShellFlagToken     = `(?:-{1,2}` + sensitiveFlagName + `\b|"-{1,2}` + sensitiveFlagName + `\b"|'-{1,2}` + sensitiveFlagName + `\b'|-{1,2}"` + sensitiveFlagName + `\b"|-{1,2}'` + sensitiveFlagName + `\b')`
 	sensitiveOrSecretShellToken = `(?:-{1,2}` + sensitiveOrSecretFlagName + `\b|"-{1,2}` + sensitiveOrSecretFlagName + `\b"|'-{1,2}` + sensitiveOrSecretFlagName + `\b'|-{1,2}"` + sensitiveOrSecretFlagName + `\b"|-{1,2}'` + sensitiveOrSecretFlagName + `\b')`
 	credentialHeaderName        = `(?:proxy-authorization|authorization|cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
-	credentialCookieName        = `(?:myacinfo|dqsid|itctx)`
 	traceCredentialHeader       = `(?:cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
 	webAuthQueryCredential      = `(?:widgetkey|code|scnt)`
 	queryCredentialName         = `(?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|` + webAuthQueryCredential + `|` + sensitiveAssignmentName + `)`
@@ -282,7 +281,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)^((?:#HttpOnly_)?[^#\t\r\n][^\t\r\n]*\t(?:TRUE|FALSE)\t[^\t\r\n]*\t(?:TRUE|FALSE)\t[0-9]+\t` + credentialCookieName + `\t)(?:\[REDACTED(?: PRIVATE KEY)?\]|[^\t\r\n]+)`),
+		pattern:     regexp.MustCompile(`(?im)^((?:#HttpOnly_)?[^#\t\r\n][^\t\r\n]*\t(?:TRUE|FALSE)\t[^\t\r\n]*\t(?:TRUE|FALSE)\t[0-9]+\t[^\t\r\n]+\t)(?:\[REDACTED(?: PRIVATE KEY)?\]|[^\t\r\n]+)`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
