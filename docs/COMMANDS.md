@@ -138,6 +138,7 @@ asc <subcommand> [flags]
 
 ### Utility
 
+- `system-status` - [experimental] Check Apple Developer service health.
 - `diff` - Generate deterministic non-mutating diff plans.
 - `capabilities` - Show CLI, API, web-only, and public-API-limited capability coverage.
 - `search` - Search asc commands and examples for agent-oriented command discovery.
