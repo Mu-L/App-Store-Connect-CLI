@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -695,6 +696,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `<settings><servers><server><password>[REDACTED]</password><status>failed</status></server></servers></settings>`,
 		},
 		{
+			name:  "XML credential element value attribute",
+			input: `<settings><password value="opaque-element-attribute-secret"/><token value='opaque-token-attribute-secret'></token><status value="public"/></settings>`,
+			want:  `<settings><password value="[REDACTED]"/><token value='[REDACTED]'></token><status value="public"/></settings>`,
+		},
+		{
 			name:  "XML credential key value attributes",
 			input: `<configuration><add key="ClearTextPassword" value="opaque-attribute-secret" /><add key="status" value="failed" /></configuration>`,
 			want:  `<configuration><add key="ClearTextPassword" value="[REDACTED]" /><add key="status" value="failed" /></configuration>`,
@@ -787,6 +793,82 @@ status: failed`,
     config: public-config`,
 		},
 		{
+			name: "Kubernetes Secret data before kind",
+			input: `apiVersion: v1
+data:
+  config: opaque-order-secret
+kind: Secret
+status: failed`,
+			want: `apiVersion: v1
+data:
+  config: [REDACTED]
+kind: Secret
+status: failed`,
+		},
+		{
+			name: "Kubernetes Secret tagged kind",
+			input: `apiVersion: v1
+kind: !!str Secret
+data:
+  config: opaque-tagged-secret
+status: failed`,
+			want: `apiVersion: v1
+kind: !!str Secret
+data:
+  config: [REDACTED]
+status: failed`,
+		},
+		{
+			name:  "Kubernetes Secret flow root",
+			input: `{apiVersion: v1, data: {config: opaque-flow-secret}, kind: Secret, status: failed}`,
+			want:  `{apiVersion: v1, data: {config: [REDACTED]}, kind: Secret, status: failed}`,
+		},
+		{
+			name:  "Kubernetes Secret multiline flow root",
+			input: "{kind: Secret,\ndata: {config: opaque-multiline-flow-secret},\nstatus: failed}",
+			want:  "{kind: Secret,\ndata: {config: [REDACTED]},\nstatus: failed}",
+		},
+		{
+			name:  "Kubernetes Secret multiline flow comment",
+			input: "{kind: Secret, # public comment\n data: {config: opaque-flow-comment-secret}}",
+			want:  "{kind: Secret, # public comment\n data: {config: [REDACTED]}}",
+		},
+		{
+			name: "Kubernetes Secret anchored kind",
+			input: `kind: &secret-kind Secret
+data:
+  config: opaque-anchor-kind-secret`,
+			want: `kind: &secret-kind Secret
+data:
+  config: [REDACTED]`,
+		},
+		{
+			name: "Kubernetes Secret tagged data container",
+			input: `kind: Secret
+data: !!map
+  config: opaque-map-tag-secret`,
+			want: `kind: Secret
+data: !!map
+  config: [REDACTED]`,
+		},
+		{
+			name: "Kubernetes Secret list data before kind",
+			input: `items:
+- data:
+    config: opaque-list-order-secret
+  kind: Secret
+- kind: ConfigMap
+  data:
+    config: public-config`,
+			want: `items:
+- data:
+    config: [REDACTED]
+  kind: Secret
+- kind: ConfigMap
+  data:
+    config: public-config`,
+		},
+		{
 			name:  "Kubernetes Secret JSON data keys",
 			input: `{"apiVersion":"v1","kind":"Secret","data":{"tls.key":"b3BhcXVlLXByaXZhdGUta2V5",".dockerconfigjson":"eyJhdXRocyI6eyJyZWdpc3RyeS5leGFtcGxlIjp7ImF1dGgiOiJvcGFxdWUifX19"},"status":"failed"}`,
 			want:  `{"apiVersion":"v1","kind":"Secret","data":{"tls.key":"[REDACTED]",".dockerconfigjson":"[REDACTED]"},"status":"failed"}`,
@@ -795,6 +877,36 @@ status: failed`,
 			name:  "Kubernetes Secret JSON arbitrary data and stringData keys",
 			input: `{"apiVersion":"v1","kind":"Secret","data":{"config":"opaque-json-config"},"stringData":{"settings":"opaque-json-string-data"},"status":"failed"}`,
 			want:  `{"apiVersion":"v1","kind":"Secret","data":{"config":"[REDACTED]"},"stringData":{"settings":"[REDACTED]"},"status":"failed"}`,
+		},
+		{
+			name:  "Kubernetes Secret escaped JSON arbitrary data key",
+			input: `trace {\"kind\":\"Secret\",\"data\":{\"config\":\"opaque-escaped-secret\"}}`,
+			want:  `trace {\"kind\":\"Secret\",\"data\":{\"config\":\"[REDACTED]\"}}`,
+		},
+		{
+			name:  "Kubernetes Secret truncated JSON arbitrary data key",
+			input: `{"kind":"Secret","data":{"config":"opaque-truncated-secret"`,
+			want:  `{"kind":"Secret","data":{"config":"[REDACTED]"`,
+		},
+		{
+			name:  "Kubernetes Secret truncated escaped JSON arbitrary data key",
+			input: `{\"kind\":\"Secret\",\"data\":{\"config\":\"opaque-truncated-escaped-secret\"`,
+			want:  `{\"kind\":\"Secret\",\"data\":{\"config\":\"[REDACTED]\"`,
+		},
+		{
+			name:  "Kubernetes Secret unterminated JSON string",
+			input: `{"kind":"Secret","data":{"config":"opaque-unterminated-secret`,
+			want:  `{"kind":"Secret","data":{"config":"[REDACTED]"`,
+		},
+		{
+			name:  "Kubernetes Secret unterminated escaped JSON string",
+			input: `{\"kind\":\"Secret\",\"data\":{\"config\":\"opaque-unterminated-escaped-secret`,
+			want:  `{\"kind\":\"Secret\",\"data\":{\"config\":\"[REDACTED]\"`,
+		},
+		{
+			name:  "Kubernetes Secret truncated non-string JSON value",
+			input: `{"kind":"Secret","data":{"config":opaque-truncated-nonstring-secret`,
+			want:  `{"kind":"Secret","data":{"config":"[REDACTED]"`,
 		},
 		{
 			name:  "TOML multiline basic string",
@@ -857,6 +969,16 @@ status = "failed"`,
 			name:  "TOML quoted sensitive parent dotted key",
 			input: `"pass\u0077ord".value = "opaque-quoted-parent-secret"`,
 			want:  `"pass\u0077ord".value = [REDACTED]`,
+		},
+		{
+			name:  "TOML sensitive table path",
+			input: "[password]\nvalue = \"opaque-table-secret\"\n[metadata]\nvalue = \"public-context\"",
+			want:  "[password]\nvalue = [REDACTED]\n[metadata]\nvalue = \"public-context\"",
+		},
+		{
+			name:  "TOML sensitive array table path",
+			input: "[[token]]\nvalue = \"opaque-array-table-secret\"",
+			want:  "[[token]]\nvalue = [REDACTED]",
 		},
 		{
 			name:  "netrc inline password",
@@ -1634,6 +1756,8 @@ func TestRedactSensitiveTextPreservesBearerProse(t *testing.T) {
 		"Bearer authentication fails behind proxy",
 		"Bearer OAuth2 authentication fails",
 		"Bearer OAuth2.0 authentication fails",
+		"Bearer OAuth2.1 authentication fails",
+		"Bearer OAuth2.0-beta authentication fails",
 		"Bearer HTTP2 authentication fails",
 		"Bearer RFC6750 flow fails",
 		"Authorization: request failed because proxy unavailable",
@@ -1847,6 +1971,9 @@ func TestRedactSensitiveTextPreservesSimilarKubernetesDataKeys(t *testing.T) {
 		"tls.keyUsage: digital signature\n.dockerconfigjson.backup: public metadata",
 		"apiVersion: v1\nkind: ConfigMap\ndata: {config: public-config}\nstringData:\n  settings: public-settings",
 		`{"apiVersion":"v1","kind":"ConfigMap","data":{"config":"public-config"},"stringData":{"settings":"public-settings"}}`,
+		"data:\n  config: public-config\n# ---\nkind: ConfigMap",
+		"items:\n- data:\n    config: public-config\n- kind: Secret",
+		`message: "{kind: Secret, data: {config: public-diagnostic}}"`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
@@ -1905,6 +2032,42 @@ func TestRedactSensitiveTextRedactsDeeplyEscapedJSONCredential(t *testing.T) {
 	}
 	if !strings.Contains(got, redactionMarker) || !strings.Contains(got, "status") {
 		t.Fatalf("redactSensitiveText() = %q, want redaction marker and surrounding context", got)
+	}
+}
+
+func TestRedactSensitiveTextHandlesLargeNestedBenignJSON(t *testing.T) {
+	var input strings.Builder
+	input.WriteString(`{"root":`)
+	for index := 0; index < 6000; index++ {
+		input.WriteString(`{"level":`)
+	}
+	input.WriteString(`"public"`)
+	for index := 0; index < 6000; index++ {
+		input.WriteByte('}')
+	}
+
+	start := time.Now()
+	got, changed := redactSensitiveText(input.String())
+	if changed || got != input.String() {
+		t.Fatalf("redactSensitiveText changed benign nested JSON: changed=%t", changed)
+	}
+	t.Logf("redactSensitiveText handled %d-byte benign nested JSON in %s", input.Len(), time.Since(start))
+}
+
+func TestRedactSensitiveTextRedactsDeeplyEscapedKubernetesSecretJSON(t *testing.T) {
+	const secret = "opaque-deep-kubernetes-secret"
+	encoded := `{"kind":"Secret","data":{"config":"` + secret + `"}}`
+	for range 3 {
+		encodedJSON, err := json.Marshal(encoded)
+		if err != nil {
+			t.Fatalf("encode JSON layer: %v", err)
+		}
+		encoded = string(encodedJSON)
+	}
+
+	got, changed := redactSensitiveText(encoded)
+	if !changed || strings.Contains(got, secret) {
+		t.Fatalf("redactSensitiveText() leaked deeply escaped Kubernetes Secret: changed=%t output=%q", changed, got)
 	}
 }
 
