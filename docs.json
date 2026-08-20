@@ -17,7 +17,6 @@
             "pages": [
               "introduction",
               "migrate-to-4-0",
-              "migrate-to-1-0",
               "installation",
               "authentication",
               "quickstart"
@@ -218,6 +217,10 @@
     }
   },
   "redirects": [
+    {
+      "source": "/migrate-to-1-0",
+      "destination": "/migrate-to-4-0"
+    },
     {
       "source": "/commands",
       "destination": "/commands/overview"
