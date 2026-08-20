@@ -420,7 +420,11 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 		// Wait with context cancellation support
 		select {
 		case <-ctx.Done():
-			return zero, fmt.Errorf("retry cancelled: %w", ctx.Err())
+			// Preserve the last retryable failure as well as the cancellation
+			// cause. Callers that reconcile an ambiguous mutation must not lose
+			// a 429 (or its Retry-After hint) when the wait outlives the request
+			// deadline.
+			return zero, fmt.Errorf("retry cancelled: %w", errors.Join(ctx.Err(), err))
 		case <-time.After(delay):
 			// Continue to next retry
 		}

@@ -177,6 +177,44 @@ func TestClientDo_RateLimitedMutationExhaustsRetriesWithStatus(t *testing.T) {
 	}
 }
 
+func TestClientDo_RateLimitTimeoutPreservesRetryableCause(t *testing.T) {
+	setFastRetryEnv(t, "3")
+
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"errors":[{"status":"429","code":"RATE_LIMIT_EXCEEDED"}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := newMutationRetryTestClient(t, server.Client())
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err := client.do(ctx, http.MethodPost, server.URL+"/v1/apps", nil)
+	if err == nil {
+		t.Fatal("expected retry wait to exceed the request deadline")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("expected no second request before Retry-After elapsed, got %d attempts", got)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline in error chain, got %v", err)
+	}
+	if !IsRetryable(err) {
+		t.Fatalf("expected original 429 retryable classification to be preserved, got %v", err)
+	}
+	if got := GetRetryAfter(err); got != time.Second {
+		t.Fatalf("expected Retry-After to be preserved, got %s", got)
+	}
+	var statusErr interface{ HTTPStatusCode() int }
+	if !errors.As(err, &statusErr) || statusErr.HTTPStatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("expected status 429 to remain inspectable, got %v", err)
+	}
+}
+
 // 5xx failures are ambiguous for a write: App Store Connect may already have
 // applied the mutation, so replaying it could duplicate work.
 func TestClientDo_DoesNotRetryAmbiguousMutationFailures(t *testing.T) {
