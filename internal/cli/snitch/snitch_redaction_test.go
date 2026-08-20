@@ -695,6 +695,26 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `<settings><servers><server><password>[REDACTED]</password><status>failed</status></server></servers></settings>`,
 		},
 		{
+			name:  "XML credential key value attributes",
+			input: `<configuration><add key="ClearTextPassword" value="opaque-attribute-secret" /><add key="status" value="failed" /></configuration>`,
+			want:  `<configuration><add key="ClearTextPassword" value="[REDACTED]" /><add key="status" value="failed" /></configuration>`,
+		},
+		{
+			name:  "XML credential name and entity encoded attributes",
+			input: `<configuration><entry name='pass&#x77;ord' value='opaque-entity-attribute-secret' /><entry name='status' value='failed' /></configuration>`,
+			want:  `<configuration><entry name='pass&#x77;ord' value='[REDACTED]' /><entry name='status' value='failed' /></configuration>`,
+		},
+		{
+			name:  "truncated XML credential element",
+			input: `<settings><password>opaque-truncated-secret`,
+			want:  `<settings><password>[REDACTED]`,
+		},
+		{
+			name:  "truncated XML property list credential value",
+			input: `<plist><dict><key>password</key><string>opaque-truncated-plist-secret`,
+			want:  `<plist><dict><key>password</key><string>[REDACTED]`,
+		},
+		{
 			name:  "multiword plain yaml scalar",
 			input: "password: correct horse battery staple\nstatus: failed",
 			want:  "password: [REDACTED]\nstatus: failed",
@@ -1542,6 +1562,8 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 		`$description = ConvertTo-SecureString "public value" -AsPlainText -Force`,
 		"asc signing sync --notes @'\npublic head\npublic tail\n'@ --verbose",
 		`AUTOMATION_SESSION_FILE=/tmp/session.txt`,
+		`tool --no-token output.txt`,
+		`tool --database-no-password output.txt`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
@@ -1556,6 +1578,7 @@ func TestRedactSensitiveTextPreservesBearerProse(t *testing.T) {
 		"Bearer OAuth2 authentication fails",
 		"Bearer HTTP2 authentication fails",
 		"Bearer RFC6750 flow fails",
+		"Authorization: request failed because proxy unavailable",
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
@@ -2772,6 +2795,50 @@ func TestSnitchDryRunRedactsPrefixedFlagsAndSessionEnvironmentCredentials(t *tes
 	for _, want := range []string{
 		`tool --database-password [REDACTED] --github-token=[REDACTED] --password-file ./password.txt`,
 		`AUTOMATION_SESSION=[REDACTED]`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsXMLCredentialsAndPreservesDiagnosticContext(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"opaque-xml-attribute-secret",
+		"opaque-truncated-xml-secret",
+		"opaque-truncated-plist-secret",
+	}
+	repro := `<configuration><add key="ClearTextPassword" value="` + secrets[0] + `" /><add key="status" value="failed" /></configuration>`
+	actual := "Authorization: request failed because proxy unavailable\ntool --no-token output.txt\n<settings><password>" + secrets[1]
+	expected := `<plist><dict><key>password</key><string>` + secrets[2]
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"--actual", actual,
+		"--expected", expected,
+		"XML credential redaction and diagnostic preservation probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+			t.Fatalf("dry run leaked %q: stdout=%q stderr=%q", secret, stdout, stderr)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		`<add key="ClearTextPassword" value="[REDACTED]" />`,
+		`<settings><password>[REDACTED]`,
+		`<plist><dict><key>password</key><string>[REDACTED]`,
+		"Authorization: request failed because proxy unavailable",
+		"tool --no-token output.txt",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

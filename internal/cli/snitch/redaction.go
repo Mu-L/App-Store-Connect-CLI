@@ -3,6 +3,8 @@ package snitch
 import (
 	"encoding/json"
 	"encoding/xml"
+	"errors"
+	"io"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -19,7 +21,8 @@ const (
 	sensitiveAssignmentName     = `(?:_auth|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|client[_-]?key[_-]?data|app[_-]?secret|webhook[_-]?secret|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passphrase|passwd|pwd|secret|token)`
 	sensitivePrefixedName       = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
 	tomlQuotedSensitiveKey      = `(?:"` + sensitivePrefixedName + `"|'` + sensitivePrefixedName + `')`
-	sensitiveFlagName           = `(?:(?:[a-z0-9]+[_-])+` + sensitiveAssignmentName + `|oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook[_-]?header|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passphrase|passwd|pwd|pass|token)`
+	valueBearingFlagPrefix      = `(?:n(?:[a-np-z0-9][a-z0-9]*|o[a-z0-9]+)?|[a-mo-z0-9][a-z0-9]*)`
+	sensitiveFlagName           = `(?:(?:` + valueBearingFlagPrefix + `[_-])+` + sensitiveAssignmentName + `|oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook[_-]?header|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passphrase|passwd|pwd|pass|token)`
 	sensitiveOrSecretFlagName   = `(?:` + sensitiveFlagName + `|secret)`
 	powerShellVariableScope     = `(?:(?:env|global|local|private|script|using):)`
 	powerShellSensitiveVariable = `(?:\$(?:(?:` + powerShellVariableScope + `)?` + sensitivePrefixedName + `\b|\{(?:` + powerShellVariableScope + `)?` + sensitivePrefixedName + `\}))`
@@ -128,6 +131,9 @@ var (
 	shellAssignmentWord                = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	curlConfigCertificateEntry         = regexp.MustCompile(`(?im)^([ \t]*(?:cert|proxy-cert)` + curlConfigSeparator + `)`)
 	xmlCredentialElementStart          = regexp.MustCompile(`(?i)<(?:[a-z_][a-z0-9_.-]*:)?` + sensitivePrefixedName + `(?:[ \t\r\n/>])`)
+	xmlElementStart                    = regexp.MustCompile(`<[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:[ \t\r\n/>])`)
+	xmlAttribute                       = regexp.MustCompile(`(?s)(?:^|[ \t\r\n])([a-zA-Z_:][a-zA-Z0-9_.:-]*)[ \t\r\n]*=[ \t\r\n]*(?:"([^"]*)"|'([^']*)')`)
+	authorizationHeaderValueStart      = regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*`)
 	standaloneBearerCandidate          = regexp.MustCompile(`(?i)\bbearer[ \t]+([-a-z0-9._~+/=]+)`)
 	xcodeCloudEnvVarSetCommand         = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')` + shellCommandPathSeparator + `web` + shellCommandPathSeparator + `xcode-cloud` + shellCommandPathSeparator + `env-vars` + shellCommandPathSeparator + `(?:shared` + shellCommandPathSeparator + `)?set\b`)
 )
@@ -243,14 +249,6 @@ var sensitiveTextRedactionRules = []redactionRule{
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*[a-z][a-z0-9_-]*[ \t]+[^\s=,]+[ \t]*=[^\r\n]+` + foldedHeaderContinuation),
-		replacement: "Authorization: " + redactionMarker,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*[a-z][a-z0-9_-]*[ \t]+[^\r\n]+` + foldedHeaderContinuation),
-		replacement: "Authorization: " + redactionMarker,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*(?:` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;"']+)` + foldedHeaderContinuation),
 		replacement: "Authorization: " + redactionMarker,
 	},
 	{
@@ -441,6 +439,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, xmlChanged := redactXMLCredentialAttributes(redacted); xmlChanged {
+		redacted = next
+		changed = true
+	}
 	redacted, yamlKeyRestorations := normalizeYAMLEscapedCredentialKeys(redacted)
 	redacted, yamlAliasKeyRestorations := normalizeYAMLAliasCredentialKeys(redacted)
 	if next, tomlValueChanged := redactTOMLCredentialValues(redacted); tomlValueChanged {
@@ -513,6 +515,10 @@ func redactSensitiveText(value string) (string, bool) {
 			changed = true
 			redacted = next
 		}
+	}
+	if next, authorizationChanged := redactHighConfidenceAuthorizationCredentials(redacted); authorizationChanged {
+		redacted = next
+		changed = true
 	}
 	if next, bearerChanged := redactStandaloneBearerCredentials(redacted); bearerChanged {
 		redacted = next
@@ -1068,6 +1074,125 @@ func redactXMLCredentialElements(value string) (string, bool) {
 	return redacted, changed
 }
 
+func redactXMLCredentialAttributes(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := xmlElementStart.FindStringIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		elementStart := searchStart + match[0]
+		decoder := xml.NewDecoder(strings.NewReader(redacted[elementStart:]))
+		first, err := decoder.Token()
+		element, validElement := first.(xml.StartElement)
+		if err != nil || !validElement {
+			searchStart = elementStart + 1
+			continue
+		}
+
+		elementEnd := elementStart + int(decoder.InputOffset())
+		attributeMatches := xmlAttribute.FindAllStringSubmatchIndex(redacted[elementStart:elementEnd], -1)
+		if len(attributeMatches) != len(element.Attr) {
+			searchStart = elementEnd
+			continue
+		}
+
+		sensitiveKey := false
+		valueAttribute := -1
+		for index, attribute := range element.Attr {
+			switch strings.ToLower(attribute.Name.Local) {
+			case "key", "name":
+				if tomlCredentialName.MatchString(attribute.Value) {
+					sensitiveKey = true
+				}
+			case "value":
+				valueAttribute = index
+			}
+		}
+		if !sensitiveKey || valueAttribute < 0 {
+			searchStart = elementEnd
+			continue
+		}
+
+		attributeMatch := attributeMatches[valueAttribute]
+		valueStart, valueEnd := attributeMatch[4], attributeMatch[5]
+		if valueStart < 0 {
+			valueStart, valueEnd = attributeMatch[6], attributeMatch[7]
+		}
+		valueStart += elementStart
+		valueEnd += elementStart
+		if redacted[valueStart:valueEnd] == redactionMarker {
+			searchStart = elementEnd
+			continue
+		}
+
+		redacted = redacted[:valueStart] + redactionMarker + redacted[valueEnd:]
+		changed = true
+		searchStart = elementEnd - (valueEnd - valueStart) + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func redactHighConfidenceAuthorizationCredentials(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := authorizationHeaderValueStart.FindStringIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		headerStart := searchStart + match[0]
+		valueStart := searchStart + match[1]
+		lineEnd := valueStart
+		for lineEnd < len(redacted) && redacted[lineEnd] != '\r' && redacted[lineEnd] != '\n' {
+			lineEnd++
+		}
+		line := redacted[valueStart:lineEnd]
+		if strings.HasPrefix(line, redactionMarker) {
+			searchStart = lineEnd
+			continue
+		}
+		firstEnd := strings.IndexAny(line, " \t")
+		if firstEnd < 0 {
+			firstEnd = len(line)
+		}
+		credential := line[:firstEnd]
+		credentialEnd := firstEnd
+		nextStart := firstEnd
+		for nextStart < len(line) && (line[nextStart] == ' ' || line[nextStart] == '\t') {
+			nextStart++
+		}
+		if nextStart < len(line) {
+			nextEnd := nextStart
+			for nextEnd < len(line) && line[nextEnd] != ' ' && line[nextEnd] != '\t' {
+				nextEnd++
+			}
+			credential = line[nextStart:nextEnd]
+			credentialEnd = nextEnd
+		}
+
+		if !looksLikeAuthorizationCredential(credential) {
+			searchStart = lineEnd
+			continue
+		}
+
+		redacted = redacted[:headerStart] + "Authorization: " + redactionMarker + redacted[valueStart+credentialEnd:]
+		changed = true
+		searchStart = headerStart + len("Authorization: ") + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func looksLikeAuthorizationCredential(value string) bool {
+	if len(value) < 8 || value == redactionMarker {
+		return false
+	}
+	return strings.ContainsAny(value, "0123456789._~+/=-")
+}
+
 func redactStandaloneBearerCredentials(value string) (string, bool) {
 	redacted := value
 	changed := false
@@ -1149,6 +1274,10 @@ func findPlistElementEnd(decoder *xml.Decoder, offsetBase, contentStart int) (in
 		tokenStart := offsetBase + int(decoder.InputOffset())
 		token, tokenErr := decoder.Token()
 		if tokenErr != nil {
+			if isTruncatedXML(tokenErr) {
+				contentEnd := offsetBase + int(decoder.InputOffset())
+				return contentStart, contentEnd, contentEnd, true
+			}
 			return 0, 0, 0, false
 		}
 		switch token.(type) {
@@ -1162,6 +1291,14 @@ func findPlistElementEnd(decoder *xml.Decoder, offsetBase, contentStart int) (in
 		}
 	}
 	return 0, 0, 0, false
+}
+
+func isTruncatedXML(err error) bool {
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	var syntaxError *xml.SyntaxError
+	return errors.As(err, &syntaxError) && strings.EqualFold(syntaxError.Msg, "unexpected EOF")
 }
 
 func redactTOMLCredentialValues(value string) (string, bool) {
