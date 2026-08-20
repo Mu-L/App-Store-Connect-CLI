@@ -203,6 +203,31 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl --data-urlencode "client_secret=[REDACTED]" https://example.test`,
 		},
 		{
+			name:  "quoted curl short multipart credential with spaces",
+			input: `curl -F 'password=opaque secret tail' https://example.test`,
+			want:  `curl -F 'password=[REDACTED]' https://example.test`,
+		},
+		{
+			name:  "quoted curl attached short multipart credential with spaces",
+			input: `curl -F'password=opaque secret tail' https://example.test`,
+			want:  `curl -F'password=[REDACTED]' https://example.test`,
+		},
+		{
+			name:  "quoted curl multipart credential with spaces",
+			input: `curl --form "client_secret=opaque secret tail" https://example.test`,
+			want:  `curl --form "client_secret=[REDACTED]" https://example.test`,
+		},
+		{
+			name:  "quoted curl literal multipart credential with spaces",
+			input: `curl --form-string 'password=opaque secret tail' https://example.test`,
+			want:  `curl --form-string 'password=[REDACTED]' https://example.test`,
+		},
+		{
+			name:  "quoted curl literal multipart credential equals form",
+			input: `curl --form-string='password=opaque secret tail' https://example.test`,
+			want:  `curl --form-string='password=[REDACTED]' https://example.test`,
+		},
+		{
 			name:  "curl attached short cookie data argument",
 			input: `curl -bmyacinfo=super-session-secret https://example.test`,
 			want:  `curl -b[REDACTED] https://example.test`,
@@ -598,6 +623,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "multiword plain yaml scalar",
 			input: "password: correct horse battery staple\nstatus: failed",
 			want:  "password: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "inline structured credential scalar",
+			input: "request failed with {password: opaque-secret, status: failed}",
+			want:  "request failed with {password: [REDACTED], status: failed}",
 		},
 		{
 			name:  "implicit YAML credential value after comment",
@@ -1632,6 +1662,15 @@ func TestRedactSensitiveTextPreservesSimilarKubernetesDataKeys(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextPreservesCredentialCommandWordsInProse(t *testing.T) {
+	input := "ads auth token: token request failed: dial tcp: connection refused"
+
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
 func TestSnitchDryRunRedactsURLUserinfoCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
@@ -1726,6 +1765,36 @@ func TestSnitchDryRunRedactsKubernetesSecretData(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "sensitive values were redacted") {
 		t.Fatalf("stderr = %q, want a generic redaction notice", stderr)
+	}
+}
+
+func TestSnitchDryRunRedactsCurlMultipartCredentialAndPreservesDiagnosticProse(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const secret = "opaque multipart secret tail"
+	const diagnostic = "ads auth token: token request failed: dial tcp: connection refused"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", `curl --form-string 'password=`+secret+`' https://example.test`,
+		"--repro", diagnostic,
+		"curl multipart redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+		t.Fatalf("dry run leaked multipart credential: stdout=%q stderr=%q", stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	if want := `curl --form-string 'password=[REDACTED]' https://example.test`; !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want redacted multipart form %q", stderr, want)
+	}
+	if !strings.Contains(stderr, diagnostic) {
+		t.Fatalf("stderr = %q, want diagnostic prose preserved", stderr)
 	}
 }
 

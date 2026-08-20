@@ -48,6 +48,7 @@ const (
 	escapeAwareQuotedValue      = `(?:"(?:` + escapedQuotedCharacter + `|` + powerShellEscapedCharacter + `|[^"\\\x60])*"|\$?'(?:''|` + escapedQuotedCharacter + `|[^'\\])*')`
 	unterminatedQuotedValue     = `(?s:".*|\$?'.*)`
 	shellUnquotedValue          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()"'])+`
+	structuredUnquotedValue     = `(?:\\(?:\r?\n|[^\r\n])|[^\s,;&|<>()"'{}\[\]])+`
 	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\;&|<>()]|[^-\s\\;&|<>()])(?:\\[^\r\n]|[^\s;&|<>()])*`
 	credentialPairQuoted        = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*:(?:` + escapedQuotedCharacter + `|[^"\\])+"|\$?'(?:` + escapedQuotedCharacter + `|[^'\\])*:(?:` + escapedQuotedCharacter + `|[^'\\])+')`
 	credentialPairOpen          = `(?:"[^\r\n]*:[^\r\n]+|\$?'[^\r\n]*:[^\r\n]+)`
@@ -61,7 +62,7 @@ const (
 	curlCertUnquotedPath        = `(?:\\(?:\r?\n|[^\r\n])|[^\s:'"])+`
 	curlCertShellPath           = `(?:` + singleLineQuotedValue + `|` + curlCertUnquotedPath + `)+`
 	curlHeaderOptionPrefix      = `(?:(?:-H|--header|--proxy-header)\b(?:[ \t]+|[ \t]*=[ \t]*)|-H)`
-	curlFormDataOption          = `(?:--data-urlencode|--data)`
+	curlFormDataOptionPrefix    = `(?:(?-i:-F)(?:[ \t]+|[ \t]*=[ \t]*)?|--(?:data-urlencode|data|form-string|form)\b(?:[ \t]+|[ \t]*=[ \t]*))`
 	curlConfigSeparator         = `(?:[ \t]*[=:][ \t]*|[ \t]+)`
 	shellCommandPathSeparator   = `(?:[ \t]+(?:\\\r?\n[ \t]*)*|(?:\\\r?\n)+[ \t]+(?:\\\r?\n[ \t]*)*)`
 	foldedHeaderContinuation    = `(?:\r?\n[ \t]+[^\r\n]*)*`
@@ -332,11 +333,11 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlFormDataOption + `\b(?:[ \t]+|[ \t]*=[ \t]*))(")((?:\\.|[^"\\])*?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)(?:\\.|[^"\\])*(")`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlFormDataOptionPrefix + `)(")((?:\\.|[^"\\])*?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)(?:\\.|[^"\\])*(")`),
 		replacement: `${1}${2}${3}${4}` + redactionMarker + `${5}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlFormDataOption + `\b(?:[ \t]+|[ \t]*=[ \t]*))(')([^']*?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)[^']*(')`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlFormDataOptionPrefix + `)(')([^']*?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)[^']*(')`),
 		replacement: `${1}${2}${3}${4}` + redactionMarker + `${5}`,
 	},
 	{
@@ -364,7 +365,11 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|[^-a-z0-9_])(` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|(?:(?:bearer|basic|token)[ \t]+)` + shellUnquotedValue + `|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|[^-a-z0-9_])(` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|(?:(?:bearer|basic|token)[ \t]+)` + shellUnquotedValue + `|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?im)(^[ \t]*|[\[{(,;][ \t]*)(` + sensitivePrefixedName + `\b[ \t]*:[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|(?:(?:bearer|basic|token)[ \t]+)` + structuredUnquotedValue + `|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + structuredUnquotedValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
