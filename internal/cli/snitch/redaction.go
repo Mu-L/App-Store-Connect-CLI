@@ -90,24 +90,35 @@ type yamlAnchorLocation struct {
 	anchorEnd int
 }
 
+type yamlExplicitStructuralRestoration struct {
+	keyLine             int
+	valueLine           int
+	key                 string
+	keyOriginal         string
+	valueOriginal       string
+	originalValueStart  int
+	normalizedValueText string
+}
+
 var (
 	secretMarkerPattern            = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:` + singleLineShellTerminator + `|[ \t]*=[ \t]*(?:1|t|true)(?:` + singleLineShellTerminator + `))`)
 	secretValuePattern             = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
 	kubectlFromLiteralValue        = regexp.MustCompile(`(?i)(--from-literal(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + kubectlShellWord + `)`)
 	securityCredentialFlagPatterns = map[string]*regexp.Regexp{
-		"create-keychain":                      newSecurityCredentialFlagPattern("p"),
-		"unlock-keychain":                      newSecurityCredentialFlagPattern("p"),
-		"set-keychain-password":                newSecurityCredentialFlagPattern("o", "p"),
-		"add-generic-password":                 newSecurityCredentialFlagPattern("p", "w", "X"),
-		"add-internet-password":                newSecurityCredentialFlagPattern("w", "X"),
-		"set-generic-password-partition-list":  newSecurityCredentialFlagPattern("k"),
-		"set-internet-password-partition-list": newSecurityCredentialFlagPattern("k"),
-		"set-key-partition-list":               newSecurityCredentialFlagPattern("k"),
-		"import":                               newSecurityCredentialFlagPattern("P"),
-		"export":                               newSecurityCredentialFlagPattern("P"),
-		"cms":                                  newSecurityCredentialFlagPattern("p"),
-		"create-filevaultmaster-keychain":      newSecurityCredentialFlagPattern("p"),
+		"create-keychain":                      newCommandCredentialFlagPattern("p"),
+		"unlock-keychain":                      newCommandCredentialFlagPattern("p"),
+		"set-keychain-password":                newCommandCredentialFlagPattern("o", "p"),
+		"add-generic-password":                 newCommandCredentialFlagPattern("p", "w", "X"),
+		"add-internet-password":                newCommandCredentialFlagPattern("w", "X"),
+		"set-generic-password-partition-list":  newCommandCredentialFlagPattern("k"),
+		"set-internet-password-partition-list": newCommandCredentialFlagPattern("k"),
+		"set-key-partition-list":               newCommandCredentialFlagPattern("k"),
+		"import":                               newCommandCredentialFlagPattern("P"),
+		"export":                               newCommandCredentialFlagPattern("P"),
+		"cms":                                  newCommandCredentialFlagPattern("p"),
+		"create-filevaultmaster-keychain":      newCommandCredentialFlagPattern("p"),
 	}
+	opensslCredentialFlagPattern       = newCommandCredentialFlagPattern("passin", "passout", "passcerts")
 	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	rawRegistryAuthsPattern            = regexp.MustCompile(`(?i)"auths"[ \t\r\n]*:[ \t\r\n]*\{`)
@@ -455,6 +466,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, opensslChanged := redactOpenSSLCredentialArguments(redacted); opensslChanged {
+		redacted = next
+		changed = true
+	}
 	if next, netrcChanged := redactNetrcPasswords(redacted); netrcChanged {
 		redacted = next
 		changed = true
@@ -587,6 +602,7 @@ func redactKubernetesSecretData(value string) (string, bool) {
 func redactKubernetesSecretYAMLData(value string) (string, bool) {
 	value, flowChanged := redactKubernetesSecretYAMLFlowData(value)
 	lines := strings.SplitAfter(value, "\n")
+	explicitRestorations := normalizeYAMLExplicitStructuralMappings(lines)
 	secretIndent := -1
 	containerIndent := -1
 	blockIndent := -1
@@ -766,6 +782,7 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 		}
 		containerIndent = keyIndent
 	}
+	restoreYAMLExplicitStructuralMappings(lines, explicitRestorations)
 	return strings.Join(lines, ""), changed
 }
 
@@ -865,6 +882,90 @@ func yamlQuotedScalarCloses(value string, quote byte) bool {
 	return false
 }
 
+func normalizeYAMLExplicitStructuralMappings(lines []string) []yamlExplicitStructuralRestoration {
+	var restorations []yamlExplicitStructuralRestoration
+	for line := 0; line < len(lines); line++ {
+		content, ending := splitLineEnding(lines[line])
+		cursor := yamlKeyIndent(content)
+		if cursor >= len(content) || content[cursor] != '?' || cursor+1 >= len(content) || content[cursor+1] != ' ' && content[cursor+1] != '\t' {
+			continue
+		}
+
+		keyText := strings.TrimSpace(content[cursor+1:])
+		if comment := strings.Index(keyText, " #"); comment >= 0 {
+			keyText = strings.TrimSpace(keyText[:comment])
+		}
+		key := decodeYAMLScalar(keyText)
+		if !strings.EqualFold(key, "kind") && !strings.EqualFold(key, "data") && !strings.EqualFold(key, "stringData") {
+			continue
+		}
+
+		valueLine := line + 1
+		for valueLine < len(lines) {
+			valueContent, _ := splitLineEnding(lines[valueLine])
+			trimmed := strings.TrimSpace(valueContent)
+			if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+				break
+			}
+			valueLine++
+		}
+		if valueLine >= len(lines) {
+			continue
+		}
+
+		valueContent, valueEnding := splitLineEnding(lines[valueLine])
+		indicator := leadingIndent(valueContent)
+		if indicator != cursor || indicator >= len(valueContent) || valueContent[indicator] != ':' || indicator+1 < len(valueContent) && valueContent[indicator+1] != ' ' && valueContent[indicator+1] != '\t' {
+			continue
+		}
+		originalValueStart := indicator + 1
+		for originalValueStart < len(valueContent) && (valueContent[originalValueStart] == ' ' || valueContent[originalValueStart] == '\t') {
+			originalValueStart++
+		}
+		value := valueContent[originalValueStart:]
+
+		restorations = append(restorations, yamlExplicitStructuralRestoration{
+			keyLine:             line,
+			valueLine:           valueLine,
+			key:                 key,
+			keyOriginal:         lines[line],
+			valueOriginal:       lines[valueLine],
+			originalValueStart:  originalValueStart,
+			normalizedValueText: value,
+		})
+		normalized := content[:cursor] + key + ":"
+		if value != "" {
+			normalized += " " + value
+		}
+		lines[line] = normalized + ending
+		lines[valueLine] = valueEnding
+	}
+	return restorations
+}
+
+func restoreYAMLExplicitStructuralMappings(lines []string, restorations []yamlExplicitStructuralRestoration) {
+	for _, restoration := range restorations {
+		valueLine := restoration.valueOriginal
+		if !strings.EqualFold(restoration.key, "kind") && restoration.keyLine < len(lines) {
+			normalizedContent, _ := splitLineEnding(lines[restoration.keyLine])
+			_, valueStart, ok := parseYAMLMappingLine(normalizedContent)
+			if ok {
+				redactedValue := normalizedContent[valueStart:]
+				if redactedValue != restoration.normalizedValueText {
+					originalContent, originalEnding := splitLineEnding(restoration.valueOriginal)
+					valueLine = originalContent[:restoration.originalValueStart] + redactedValue + originalEnding
+				}
+			}
+		}
+		if restoration.keyLine < len(lines) {
+			lines[restoration.keyLine] = restoration.keyOriginal
+		}
+		if restoration.valueLine < len(lines) {
+			lines[restoration.valueLine] = valueLine
+		}
+	}
+}
+
 func parseYAMLMappingLine(content string) (string, int, bool) {
 	cursor := leadingIndent(content)
 	if cursor >= len(content) || content[cursor] == '#' {
@@ -892,8 +993,7 @@ func parseYAMLMappingLine(content string) (string, int, bool) {
 			}
 		case ':':
 			if quote == 0 {
-				key := strings.TrimSpace(content[keyStart:cursor])
-				key = strings.Trim(key, "\"'")
+				key := decodeYAMLScalar(content[keyStart:cursor])
 				if key == "" {
 					return "", 0, false
 				}
@@ -915,6 +1015,22 @@ func kubernetesYAMLScalar(value string) string {
 		value = strings.TrimSpace(value[:comment])
 	}
 	value, _ = trimYAMLNodeProperties(value)
+	return decodeYAMLScalar(value)
+}
+
+func decodeYAMLScalar(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 || value[0] != value[len(value)-1] {
+		return strings.Trim(value, "\"'")
+	}
+	switch value[0] {
+	case '"':
+		if decoded, err := strconv.Unquote(value); err == nil {
+			return decoded
+		}
+	case '\'':
+		return strings.ReplaceAll(value[1:len(value)-1], "''", "'")
+	}
 	return strings.Trim(value, "\"'")
 }
 
@@ -987,7 +1103,7 @@ func yamlSecretKindFollows(lines []string, start, secretIndent int, scalarAnchor
 	for line := start; line < len(lines); line++ {
 		content, _ := splitLineEnding(lines[line])
 		trimmed := strings.TrimSpace(content)
-		if trimmed == "---" || trimmed == "..." {
+		if yamlDocumentBoundary.MatchString(trimmed) {
 			return false
 		}
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -1060,8 +1176,7 @@ func redactKubernetesSecretYAMLFlowObject(flow string) (string, bool) {
 		if colon < 0 {
 			return flow, false
 		}
-		key := strings.TrimSpace(flow[cursor:colon])
-		key = strings.Trim(key, "\"'")
+		key := decodeYAMLScalar(flow[cursor:colon])
 		valueStart := colon + 1
 		for valueStart < len(flow)-1 && (flow[valueStart] == ' ' || flow[valueStart] == '\t' || flow[valueStart] == '\r' || flow[valueStart] == '\n') {
 			valueStart++
@@ -3574,12 +3689,54 @@ func redactKubectlSecretLiterals(value string) (string, bool) {
 	return result, changed
 }
 
-func newSecurityCredentialFlagPattern(flags ...string) *regexp.Regexp {
+func newCommandCredentialFlagPattern(flags ...string) *regexp.Regexp {
 	escapedFlags := make([]string, 0, len(flags))
 	for _, flag := range flags {
 		escapedFlags = append(escapedFlags, regexp.QuoteMeta(flag))
 	}
 	return regexp.MustCompile(`(^|[ \t])(-(?:` + strings.Join(escapedFlags, "|") + `)(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
+}
+
+func redactOpenSSLCredentialArguments(value string) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		if isOpenSSLCommand(command) {
+			redacted := opensslCredentialFlagPattern.ReplaceAllString(command, `${1}${2}`+redactionMarker)
+			if redacted != command {
+				result = result[:start] + redacted + result[end:]
+				command = redacted
+				changed = true
+			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+func isOpenSSLCommand(command string) bool {
+	normalized := strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(command)
+	words := strings.Fields(normalized)
+	for index, word := range words {
+		word = strings.Trim(word, `"'`)
+		if separator := strings.LastIndexAny(word, `/\\`); separator >= 0 {
+			word = word[separator+1:]
+		}
+		if word == "openssl" && isCredentialCommandPrefix(words[:index]) {
+			return true
+		}
+	}
+	return false
 }
 
 func redactSecurityCredentialArguments(value string) (string, bool) {
@@ -3619,7 +3776,7 @@ func securitySubcommand(command string) (string, bool) {
 		if separator := strings.LastIndexAny(word, `/\\`); separator >= 0 {
 			word = word[separator+1:]
 		}
-		if word != "security" || !isSecurityCommandPrefix(words[:index]) {
+		if word != "security" || !isCredentialCommandPrefix(words[:index]) {
 			continue
 		}
 		for _, candidate := range words[index+1:] {
@@ -3635,21 +3792,33 @@ func securitySubcommand(command string) (string, bool) {
 	return "", false
 }
 
-func isSecurityCommandPrefix(words []string) bool {
+func isCredentialCommandPrefix(words []string) bool {
 	for len(words) > 0 && shellAssignmentWord.MatchString(strings.Trim(words[0], `"'`)) {
 		words = words[1:]
 	}
 	if len(words) == 0 {
 		return true
 	}
+	if commandBaseName(words[0]) == "env" {
+		words = words[1:]
+		for len(words) > 0 && shellAssignmentWord.MatchString(strings.Trim(words[0], `"'`)) {
+			words = words[1:]
+		}
+		return len(words) == 0
+	}
 	if len(words) != 1 {
 		return false
 	}
-	prefix := strings.ToLower(strings.Trim(words[0], `"'`))
+	prefix := commandBaseName(words[0])
+	return prefix == "sudo" || prefix == "doas" || prefix == "command"
+}
+
+func commandBaseName(word string) string {
+	prefix := strings.ToLower(strings.Trim(word, `"'`))
 	if separator := strings.LastIndexAny(prefix, `/\\`); separator >= 0 {
 		prefix = prefix[separator+1:]
 	}
-	return prefix == "sudo" || prefix == "doas" || prefix == "command" || prefix == "env"
+	return prefix
 }
 
 func isKubectlCreateSecretCommand(command string) bool {

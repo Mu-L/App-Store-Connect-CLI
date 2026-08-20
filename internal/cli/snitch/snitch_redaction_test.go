@@ -823,6 +823,39 @@ data:
   count: 42`,
 		},
 		{
+			name: "Kubernetes Secret explicit mapping keys",
+			input: `? kind
+: Secret
+? data
+:
+  config: opaque-explicit-secret`,
+			want: `? kind
+: Secret
+? data
+:
+  config: [REDACTED]`,
+		},
+		{
+			name: "Kubernetes Secret explicit flow data value",
+			input: `? kind
+: Secret
+? data
+: {config: opaque-explicit-flow-secret}`,
+			want: `? kind
+: Secret
+? data
+: {config: [REDACTED]}`,
+		},
+		{
+			name: "Kubernetes Secret escaped YAML structural keys",
+			input: `"k\u0069nd": Secret
+"d\u0061ta":
+  config: opaque-escaped-key-secret`,
+			want: `"k\u0069nd": Secret
+"d\u0061ta":
+  config: [REDACTED]`,
+		},
+		{
 			name: "Kubernetes Secret list item arbitrary data key",
 			input: `items:
 - kind: Secret
@@ -1756,6 +1789,16 @@ status: failed`,
 			want:  "security unlock-keychain -p \\\n  [REDACTED] build.keychain",
 		},
 		{
+			name:  "OpenSSL passphrase source flags",
+			input: `openssl pkcs12 -export -passout pass:opaque-output -passin pass:opaque-input -passcerts pass:opaque-certs -in signing.pem`,
+			want:  `openssl pkcs12 -export -passout [REDACTED] -passin [REDACTED] -passcerts [REDACTED] -in signing.pem`,
+		},
+		{
+			name:  "OpenSSL passphrase through env wrapper",
+			input: `env PROFILE=release openssl pkey -passin env:SIGNING_PASSWORD -in signing.pem`,
+			want:  `env PROFILE=release openssl pkey -passin [REDACTED] -in signing.pem`,
+		},
+		{
 			name:  "scoped base64 private key assignments",
 			input: `ASC_STOREKIT_PRIVATE_KEY_B64=c3RvcmVraXQtcHJpdmF0ZS1rZXk= ASC_ADS_PRIVATE_KEY_B64=YWRzLXByaXZhdGUta2V5`,
 			want:  `ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED] ASC_ADS_PRIVATE_KEY_B64=[REDACTED]`,
@@ -2035,6 +2078,8 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 		`DB_PASS_FILE=/tmp/database-password tool --db-pass-file /tmp/database-password`,
 		`BYPASS=enabled tool --bypass enabled`,
 		`COMPASS=north tool --compass north`,
+		`echo openssl pkcs12 -export -passout pass:public-value`,
+		`tool -passout public-value`,
 		`tool --no-token output.txt`,
 		`tool --database-no-password output.txt`,
 	} {
@@ -2298,6 +2343,11 @@ func TestRedactSensitiveTextPreservesSimilarKubernetesDataKeys(t *testing.T) {
 		"items:\n- data:\n    config: public-config\n- kind: Secret",
 		`message: "{kind: Secret, data: {config: public-diagnostic}}"`,
 		"secretRef:\n  kind: Secret\nstatus:\n  data:\n    count: 42",
+		"data:\n  count: 42\n... # end document\nkind: Secret",
+		"? kind\n: ConfigMap\n? data\n:\n  config: public-config",
+		`"k\u0069nd": ConfigMap
+"d\u0061ta":
+  config: public-config`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
