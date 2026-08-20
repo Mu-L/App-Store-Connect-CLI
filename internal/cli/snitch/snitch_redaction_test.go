@@ -177,6 +177,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "asc signing sync --password [REDACTED] --verbose",
 		},
 		{
+			name:  "PowerShell plaintext SecureString assignment",
+			input: `$password = ConvertTo-SecureString "opaque secret" -AsPlainText -Force`,
+			want:  `$password = [REDACTED] -AsPlainText -Force`,
+		},
+		{
+			name:  "PowerShell explicit plaintext SecureString assignment",
+			input: `$client_secret = ConvertTo-SecureString -String "opaque secret" -AsPlainText -Force`,
+			want:  `$client_secret = [REDACTED] -AsPlainText -Force`,
+		},
+		{
 			name:  "Netscape cookie jar credential",
 			input: ".appstoreconnect.apple.com\tTRUE\t/\tTRUE\t2147483647\tmyacinfo\topaque-cookie-jar-secret\n.example.test\tFALSE\t/\tFALSE\t0\tlocale\ten-US",
 			want:  ".appstoreconnect.apple.com\tTRUE\t/\tTRUE\t2147483647\tmyacinfo\t[REDACTED]\n.example.test\tFALSE\t/\tFALSE\t0\tlocale\ten-US",
@@ -1263,6 +1273,7 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 	for _, input := range []string{
 		`set "STATUS=public value" & echo done`,
 		`set STATUS=opaque status value & echo done`,
+		`$description = ConvertTo-SecureString "public value" -AsPlainText -Force`,
 		"asc signing sync --notes @'\npublic head\npublic tail\n'@ --verbose",
 	} {
 		got, changed := redactSensitiveText(input)
@@ -1757,6 +1768,7 @@ func TestSnitchDryRunRedactsPowerShellAndPlistStringCredentials(t *testing.T) {
 	const hereStringSecret = "powershell-here-string-secret"
 	const commandPromptSecret = "command-prompt-set-secret"
 	const unquotedCommandPromptSecret = "unquoted-command-prompt-set-secret"
+	const secureStringSecret = "powershell-secure-string-secret"
 	const plistSecret = "plist-string-credential-value"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
@@ -1764,6 +1776,7 @@ func TestSnitchDryRunRedactsPowerShellAndPlistStringCredentials(t *testing.T) {
 		"--repro", "asc signing sync --password opaque` "+powerShellSecret+" --verbose\n"+
 			"asc signing sync --password \"opaque`\""+quotedPowerShellSecret+"\" --verbose\n"+
 			"asc signing sync --password @'\nopaque-head\n"+hereStringSecret+"\n'@ --verbose\n"+
+			`$password = ConvertTo-SecureString "opaque `+secureStringSecret+`" -AsPlainText -Force`+"\n"+
 			`set "PASSWORD=opaque `+commandPromptSecret+`" & echo done`+"\n"+
 			`set PASSWORD=opaque `+unquotedCommandPromptSecret+` value & echo done`,
 		"--actual", `<plist><dict><key>password</key><string>`+plistSecret+`</string><key>status</key><string>failed</string></dict></plist>`,
@@ -1773,7 +1786,7 @@ func TestSnitchDryRunRedactsPowerShellAndPlistStringCredentials(t *testing.T) {
 		t.Fatalf("run snitch: %v", err)
 	}
 
-	for _, secret := range []string{powerShellSecret, quotedPowerShellSecret, hereStringSecret, commandPromptSecret, unquotedCommandPromptSecret, plistSecret} {
+	for _, secret := range []string{powerShellSecret, quotedPowerShellSecret, hereStringSecret, secureStringSecret, commandPromptSecret, unquotedCommandPromptSecret, plistSecret} {
 		if strings.Contains(stderr, secret) {
 			t.Fatalf("stderr leaked %q: %q", secret, stderr)
 		}
@@ -1786,6 +1799,7 @@ func TestSnitchDryRunRedactsPowerShellAndPlistStringCredentials(t *testing.T) {
 	}
 	for _, want := range []string{
 		"asc signing sync --password [REDACTED] --verbose",
+		`$password = [REDACTED] -AsPlainText -Force`,
 		`set "PASSWORD=[REDACTED]" & echo done`,
 		`set PASSWORD=[REDACTED] & echo done`,
 		`<key>password</key><string>[REDACTED]</string><key>status</key><string>failed</string>`,
