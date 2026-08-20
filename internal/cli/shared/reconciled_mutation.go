@@ -92,6 +92,9 @@ func IsTransientMutationError(parent context.Context, err error) bool {
 	if asc.IsRetryBudgetExhausted(err) {
 		return false
 	}
+	if asc.IsRetryDelayExceeded(err) {
+		return false
+	}
 	if asc.IsRetryable(err) {
 		return true
 	}

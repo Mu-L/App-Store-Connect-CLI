@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -626,6 +628,52 @@ func TestVerifyBuildUploadAfterCommitIgnoresRetryableLookupErrorsUntilBuildLinks
 	}
 	if lookupCalls < 2 {
 		t.Fatalf("expected retryable lookup error to be retried, got %d lookup(s)", lookupCalls)
+	}
+}
+
+func TestVerifyBuildUploadAfterCommitIgnoresRetryDelayBeyondVerificationBudget(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "1")
+	t.Setenv("ASC_BASE_DELAY", "1ms")
+	t.Setenv("ASC_MAX_DELAY", "5s")
+	asc.ResetConfigCacheForTest()
+	t.Cleanup(asc.ResetConfigCacheForTest)
+
+	lookupCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", req.Method)
+		}
+		if req.URL.Path != "/v1/buildUploads/upload-current" {
+			t.Errorf("unexpected path: %s", req.URL.Path)
+		}
+		lookupCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{
+			"errors": [{"status": "429", "code": "RATE_LIMIT_EXCEEDED", "title": "Too many requests"}]
+		}`)
+	}))
+	t.Cleanup(server.Close)
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
+	}
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		redirected := req.Clone(req.Context())
+		redirected.URL.Scheme = serverURL.Scheme
+		redirected.URL.Host = serverURL.Host
+		redirected.Host = serverURL.Host
+		return server.Client().Do(redirected)
+	})
+
+	verifyTimeout := 30 * time.Millisecond
+	err = VerifyBuildUploadAfterCommit(context.Background(), client, "app-1", "upload-current", time.Millisecond, verifyTimeout)
+	if err != nil {
+		t.Fatalf("VerifyBuildUploadAfterCommit() error: %v", err)
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("expected one best-effort upload lookup before honoring Retry-After, got %d", lookupCalls)
 	}
 }
 

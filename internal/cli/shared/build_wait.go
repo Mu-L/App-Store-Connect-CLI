@@ -116,10 +116,16 @@ func VerifyBuildUploadAfterCommit(ctx context.Context, client *asc.Client, appID
 	_, err := asc.PollUntil(verifyCtx, effectiveInterval, func(ctx context.Context) (*asc.BuildUploadResponse, bool, error) {
 		upload, err := client.GetBuildUpload(ctx, uploadID)
 		if err != nil {
+			// A retry delay that cannot fit in this bounded verification window
+			// is already a terminal best-effort outcome: stop probing now and
+			// preserve the caller's asynchronous-success behavior.
+			if asc.IsRetryDelayExceeded(err) {
+				return nil, true, nil
+			}
 			// Transient lookup errors stay ignorable for the whole verification
 			// window: expiry of the bounded window itself is reported by the
 			// poll context, not by this predicate.
-			if shouldIgnoreBuildWaitLookupError(err) || asc.IsTransientWaitError(callerCtx, err) {
+			if shouldIgnoreBuildWaitLookupError(err) || asc.IsRetryDelayExceeded(err) || asc.IsTransientWaitError(callerCtx, err) {
 				return nil, false, nil
 			}
 			return nil, false, err

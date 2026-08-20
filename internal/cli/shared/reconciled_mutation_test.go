@@ -75,6 +75,27 @@ func TestRunReconciledMutationDoesNotRetryRateLimitRejection(t *testing.T) {
 	}
 }
 
+func TestIsTransientMutationErrorRejectsUnhonoredRetryDelay(t *testing.T) {
+	_, err := asc.WithRetry(context.Background(), func() (struct{}, error) {
+		return struct{}{}, &asc.RetryableError{
+			Err:        &asc.APIError{Code: "RATE_LIMIT_EXCEEDED", StatusCode: http.StatusTooManyRequests},
+			RetryAfter: time.Hour,
+		}
+	}, asc.RetryOptions{MaxRetries: 1, BaseDelay: time.Millisecond, MaxDelay: time.Second})
+	if err == nil {
+		t.Fatal("expected unhonored Retry-After error, got nil")
+	}
+	if !asc.IsRetryDelayExceeded(err) {
+		t.Fatalf("expected retry-delay marker, got %v", err)
+	}
+	if !asc.IsRetryable(err) {
+		t.Fatalf("expected original retryable cause to remain inspectable, got %v", err)
+	}
+	if IsTransientMutationError(context.Background(), err) {
+		t.Fatalf("expected unhonored Retry-After to be terminal to mutation recovery, got %v", err)
+	}
+}
+
 func TestRunReconciledMutationDoesNotReplayRateLimitAfterRetryCancellation(t *testing.T) {
 	t.Setenv("ASC_MAX_RETRIES", "1")
 	t.Setenv("ASC_BASE_DELAY", "1ms")

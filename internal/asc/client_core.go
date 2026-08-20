@@ -305,11 +305,37 @@ func (e *retryCancelledError) Unwrap() []error {
 	return []error{e.contextErr, e.err}
 }
 
+// retryDelayExceededError marks a retryable failure whose server-provided
+// delay could not be honored by this request. It preserves the original
+// retryable cause for status and Retry-After inspection, while allowing outer
+// recovery loops to treat the already-diagnosed wait as terminal.
+type retryDelayExceededError struct {
+	err error
+}
+
+func (e *retryDelayExceededError) Error() string {
+	return e.err.Error()
+}
+
+func (e *retryDelayExceededError) Unwrap() error {
+	return e.err
+}
+
+// IsRetryDelayExceeded reports whether a retryable failure was returned after
+// its server-provided delay could not be honored by the request. The original
+// retryable cause remains available through the error chain.
+func IsRetryDelayExceeded(err error) bool {
+	var delayErr *retryDelayExceededError
+	return errors.As(err, &delayErr)
+}
+
 // RetryOptions configures retry behavior.
 //   - MaxRetries: Number of retry attempts. 0 = no retries (fail fast),
 //     negative = use DefaultMaxRetries.
 //   - BaseDelay: Initial delay between retries (with exponential backoff).
-//   - MaxDelay: Maximum delay cap for backoff.
+//   - MaxDelay: Maximum delay cap for backoff and honored Retry-After hints;
+//     an explicit hint above this cap fails fast with the requested and
+//     configured durations instead of sleeping at the cap.
 type RetryOptions struct {
 	MaxRetries int           // 0=disabled, negative=default, positive=retry count
 	BaseDelay  time.Duration // Initial delay for exponential backoff
@@ -412,14 +438,32 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 			return zero, err
 		}
 
-		// Check if we've exceeded max retries
-		if retryCount >= opts.MaxRetries {
-			return zero, &retryBudgetExceededError{retries: retryCount + 1, err: err}
+		// Calculate delay
+		retryAfter := GetRetryAfter(err)
+		delay := retryAfter
+		if retryAfter > 0 {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return zero, &retryCancelledError{contextErr: ctxErr, err: err}
+			}
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining := time.Until(deadline)
+				if delay >= remaining {
+					if delay > opts.MaxDelay {
+						return zero, &retryDelayExceededError{err: fmt.Errorf(
+							"%s: upstream server asked to wait %s, exceeding the %s retry cap and the context deadline (%s remaining); raise ASC_MAX_DELAY and the request timeout to wait longer: %w",
+							retryDelayCategory(err), delay, opts.MaxDelay, remaining.Round(time.Millisecond), err,
+						)}
+					}
+					return zero, &retryDelayExceededError{err: fmt.Errorf(
+						"%s: upstream server asked to wait %s, which cannot be honored before the context deadline (%s remaining): %w",
+						retryDelayCategory(err), delay, remaining.Round(time.Millisecond), err,
+					)}
+				}
+			}
 		}
 
-		// Calculate delay
-		delay := GetRetryAfter(err)
-		if delay == 0 {
+		switch {
+		case delay <= 0:
 			// Exponential backoff with jitter, capped to prevent overflow
 			expDelay := opts.BaseDelay
 			if retryCount > 0 && retryCount < 31 { // Prevent overflow for reasonable retry counts
@@ -434,6 +478,24 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 			if delay < 0 {
 				delay = expDelay / 2 // minimum delay
 			}
+		case delay > opts.MaxDelay:
+			// The server asked for longer than this run is willing to wait.
+			// Retrying at the cap would just collect the same rejection, and
+			// sleeping the full hint hides the response behind an eventual
+			// context deadline, so report both numbers now.
+			category := retryDelayCategory(err)
+			return zero, &retryDelayExceededError{err: fmt.Errorf(
+				"%s: upstream server asked to wait %s, exceeding the %s retry cap (raise ASC_MAX_DELAY to wait longer): %w",
+				category, delay, opts.MaxDelay, err,
+			)}
+		}
+
+		// Check if we've exceeded max retries after classifying any explicit
+		// Retry-After hint. A final attempt carrying an unhonored hint must
+		// remain terminal to outer recovery loops instead of being hidden by
+		// the retry-budget marker.
+		if retryCount >= opts.MaxRetries {
+			return zero, &retryBudgetExceededError{retries: retryCount + 1, err: err}
 		}
 
 		if ResolveRetryLogEnabled() {
@@ -467,6 +529,14 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 			// Continue to next retry
 		}
 	}
+}
+
+func retryDelayCategory(err error) string {
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) && statusErr.HTTPStatusCode() == http.StatusTooManyRequests {
+		return "rate limited"
+	}
+	return "retry delayed"
 }
 
 func logRetry(delay time.Duration, attempt, maxRetries int, err error) {
