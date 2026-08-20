@@ -352,6 +352,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
+		pattern:     regexp.MustCompile(`(?i)\b(https://(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api(?:/v[0-9]+)?/webhooks/[0-9]+/)[^?#\s"'()<>{}\[\],;]+`),
+		replacement: `${1}` + redactionMarker,
+	},
+	{
 		pattern:     regexp.MustCompile(`(?i)([?&]` + queryCredentialName + `=)[^&#\s"'<>]+`),
 		replacement: `${1}` + redactionMarker,
 	},

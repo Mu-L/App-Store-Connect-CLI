@@ -578,6 +578,21 @@ env: [{name: *credential, value: [REDACTED]}]`,
 			want:  "failed webhook https://hooks.slack.com/services/[REDACTED] after retry",
 		},
 		{
+			name:  "standalone Discord webhook URL",
+			input: "failed webhook https://discord.com/api/webhooks/123456789012345678/opaqueDiscordWebhookToken?wait=true after retry",
+			want:  "failed webhook https://discord.com/api/webhooks/123456789012345678/[REDACTED]?wait=true after retry",
+		},
+		{
+			name:  "legacy Discord webhook URL",
+			input: "failed webhook https://discordapp.com/api/webhooks/123456789012345678/opaqueLegacyWebhookToken after retry",
+			want:  "failed webhook https://discordapp.com/api/webhooks/123456789012345678/[REDACTED] after retry",
+		},
+		{
+			name:  "versioned Discord webhook URL",
+			input: "failed webhook https://canary.discord.com/api/v10/webhooks/123456789012345678/opaqueCanaryWebhookToken after retry",
+			want:  "failed webhook https://canary.discord.com/api/v10/webhooks/123456789012345678/[REDACTED] after retry",
+		},
+		{
 			name:  "signed URL credentials",
 			input: "upload https://example.test/file?part=1&X-Amz-Credential=ACCESS%2F20260819&X-Amz-Signature=abcdef0123456789#result",
 			want:  "upload https://example.test/file?part=1&X-Amz-Credential=[REDACTED]&X-Amz-Signature=[REDACTED]#result",
@@ -2593,6 +2608,14 @@ func TestRedactSensitiveTextPreservesEmbeddedGoogleAPIKeyLikeText(t *testing.T) 
 		if changed || got != input {
 			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
 		}
+	}
+}
+
+func TestRedactSensitiveTextPreservesDiscordWebhookWithoutToken(t *testing.T) {
+	const input = "request failed for https://discord.com/api/webhooks/123456789012345678"
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
 	}
 }
 
