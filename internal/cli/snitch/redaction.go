@@ -44,7 +44,7 @@ const (
 	singleLineShellTerminator   = `(?:[ \t;&|<>()]|\r?\n|\z)`
 	escapedQuotedCharacter      = `\\(?:\r?\n|[^\r\n])`
 	escapeAwareQuotedValue      = `(?:"(?:` + escapedQuotedCharacter + `|` + powerShellEscapedCharacter + `|[^"\\\x60])*"|\$?'(?:''|` + escapedQuotedCharacter + `|[^'\\])*')`
-	unterminatedQuotedValue     = `(?:"[^\r\n]*|\$?'[^\r\n]*)`
+	unterminatedQuotedValue     = `(?s:".*|\$?'.*)`
 	shellUnquotedValue          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()"'])+`
 	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\;&|<>()]|[^-\s\\;&|<>()])(?:\\[^\r\n]|[^\s;&|<>()])*`
 	credentialPairQuoted        = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*:(?:` + escapedQuotedCharacter + `|[^"\\])+"|\$?'(?:` + escapedQuotedCharacter + `|[^'\\])*:(?:` + escapedQuotedCharacter + `|[^'\\])+')`
@@ -59,6 +59,7 @@ const (
 	curlCertUnquotedPath        = `(?:\\(?:\r?\n|[^\r\n])|[^\s:'"])+`
 	curlCertShellPath           = `(?:` + singleLineQuotedValue + `|` + curlCertUnquotedPath + `)+`
 	curlHeaderOptionPrefix      = `(?:(?:-H|--header|--proxy-header)\b(?:[ \t]+|[ \t]*=[ \t]*)|-H)`
+	curlFormDataOption          = `(?:--data-urlencode|--data)`
 	curlConfigSeparator         = `(?:[ \t]*[=:][ \t]*|[ \t]+)`
 	shellCommandPathSeparator   = `(?:[ \t]+(?:\\\r?\n[ \t]*)*|(?:\\\r?\n)+[ \t]+(?:\\\r?\n[ \t]*)*)`
 	foldedHeaderContinuation    = `(?:\r?\n[ \t]+[^\r\n]*)*`
@@ -326,6 +327,14 @@ var sensitiveTextRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)((?-i:-b))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlFormDataOption + `\b(?:[ \t]+|[ \t]*=[ \t]*))(")((?:\\.|[^"\\])*?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)(?:\\.|[^"\\])*(")`),
+		replacement: `${1}${2}${3}${4}` + redactionMarker + `${5}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlFormDataOption + `\b(?:[ \t]+|[ \t]*=[ \t]*))(')([^']*?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)[^']*(')`),
+		replacement: `${1}${2}${3}${4}` + redactionMarker + `${5}`,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveShellFlagToken + shellCommandPathSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),

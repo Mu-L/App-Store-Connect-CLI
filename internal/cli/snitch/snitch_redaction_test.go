@@ -193,6 +193,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl --cookie=[REDACTED] https://example.test`,
 		},
 		{
+			name:  "quoted curl data credential with spaces",
+			input: `curl --data 'password=opaque secret tail' https://example.test`,
+			want:  `curl --data 'password=[REDACTED]' https://example.test`,
+		},
+		{
+			name:  "quoted curl data urlencode credential with spaces",
+			input: `curl --data-urlencode "client_secret=opaque secret tail" https://example.test`,
+			want:  `curl --data-urlencode "client_secret=[REDACTED]" https://example.test`,
+		},
+		{
 			name:  "curl attached short cookie data argument",
 			input: `curl -bmyacinfo=super-session-secret https://example.test`,
 			want:  `curl -b[REDACTED] https://example.test`,
@@ -1009,6 +1019,11 @@ status: failed`,
 			name:  "unterminated quoted secret flag",
 			input: "asc deploy --password \"super secret value",
 			want:  "asc deploy --password [REDACTED]",
+		},
+		{
+			name:  "unterminated multiline quoted assignment",
+			input: "PASSWORD=\"opaque-head\nopaque-tail-secret",
+			want:  "PASSWORD=[REDACTED]",
 		},
 		{
 			name:  "ANSI-C quoted secret flag",
@@ -1917,7 +1932,6 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		`asc review details-create --demo-account-password "` + secrets[0] + `" --notes ready`,
 		`asc web xcode-cloud env-vars set --name MY_SECRET --value ` + secrets[1] + ` --secret --apple-id 123456789`,
 		`asc web xcode-cloud env-vars set --value ` + secrets[10] + ` --name MY_SECRET --secret --apple-id 123456789`,
-		`asc deploy --password "` + secrets[2],
 		`asc web sandbox create -password "` + secrets[5] + `" -territory USA`,
 		`asc deploy --password $'` + secrets[6] + `' --verbose`,
 		`asc deploy --password prefix\ ` + secrets[8] + ` --verbose`,
@@ -1930,6 +1944,7 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 		`curl --tlspassword ` + secrets[17] + ` https://example.test`,
 		`curl --proxy-tlspassword ` + secrets[18] + ` https://example.test`,
 		"asc deploy --password prefix\\\n" + secrets[19] + " --verbose",
+		`asc deploy --password "` + secrets[2],
 	}, "\n")
 	actual := "PASSWORD=" + secrets[3] + "\n" +
 		`PASSWORD=$'` + secrets[7] + "'\n" +
@@ -3445,6 +3460,48 @@ func TestSnitchDryRunRedactsCGICredentialHeaderVariables(t *testing.T) {
 		"REDIRECT_HTTP_AUTHORIZATION=[REDACTED]",
 		"HTTP_COOKIE=[REDACTED]",
 		"REQUEST_METHOD=GET",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsQuotedFormAndUnterminatedMultilineCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"form-password-secret",
+		"form-password-tail-secret",
+		"urlencoded-client-secret",
+		"urlencoded-client-tail-secret",
+		"opaque-head",
+		"opaque-tail-secret",
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", `curl --data 'password=`+secrets[0]+` `+secrets[1]+`' https://example.test`+"\n"+
+			`curl --data-urlencode "client_secret=`+secrets[2]+` `+secrets[3]+`" https://example.test`,
+		"--actual", "PASSWORD=\""+secrets[4]+"\n"+secrets[5],
+		"quoted form and multiline credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("dry run leaked %q: %q", secret, stderr)
+		}
+	}
+	for _, want := range []string{
+		`curl --data 'password=[REDACTED]' https://example.test`,
+		`curl --data-urlencode "client_secret=[REDACTED]" https://example.test`,
+		"PASSWORD=[REDACTED]",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
