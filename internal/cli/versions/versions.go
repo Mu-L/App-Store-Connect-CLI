@@ -300,8 +300,8 @@ func VersionsCreateCommand() *ffcli.Command {
 	copyright := fs.String("copyright", "", "Copyright text (e.g., '2026 My Company')")
 	releaseType := fs.String("release-type", "", "Release type: MANUAL, AFTER_APPROVAL, SCHEDULED")
 	copyMetadataFrom := fs.String("copy-metadata-from", "", "Copy localization metadata from this source version string")
-	copyFields := fs.String("copy-fields", "", "Comma-separated metadata fields to copy: description, keywords, marketingUrl, promotionalText, supportUrl, whatsNew")
-	excludeFields := fs.String("exclude-fields", "", "Comma-separated metadata fields to exclude from copy")
+	copyFields := shared.BindOnceCSVFlag(fs, "copy-fields", "Comma-separated metadata fields to copy: description, keywords, marketingUrl, promotionalText, supportUrl, whatsNew")
+	excludeFields := shared.BindOnceCSVFlag(fs, "exclude-fields", "Comma-separated metadata fields to exclude from copy")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -336,12 +336,12 @@ Examples:
 			}
 
 			copyMetadataFromValue := strings.TrimSpace(*copyMetadataFrom)
-			copyFieldsValue, err := normalizeVersionMetadataCopyFields(*copyFields, "--copy-fields")
+			copyFieldsValue, err := normalizeVersionMetadataCopyFields(copyFields.String(), "--copy-fields")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				return flag.ErrHelp
 			}
-			excludeFieldsValue, err := normalizeVersionMetadataCopyFields(*excludeFields, "--exclude-fields")
+			excludeFieldsValue, err := normalizeVersionMetadataCopyFields(excludeFields.String(), "--exclude-fields")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				return flag.ErrHelp
