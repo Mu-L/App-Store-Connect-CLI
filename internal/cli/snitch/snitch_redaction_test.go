@@ -568,6 +568,11 @@ env: [{name: *credential, value: [REDACTED]}]`,
 			want:  "Google request failed for [REDACTED]",
 		},
 		{
+			name:  "standalone SendGrid API key",
+			input: "request failed with SG.abcdefghijklmnopqrstuv.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq",
+			want:  "request failed with [REDACTED]",
+		},
+		{
 			name:  "standalone notification webhook URL",
 			input: "failed webhook https://hooks.slack.com/services/T012/B034/opaque-webhook-secret after retry",
 			want:  "failed webhook https://hooks.slack.com/services/[REDACTED] after retry",

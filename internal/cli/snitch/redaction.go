@@ -124,64 +124,67 @@ var (
 		"cms":                                  newCommandCredentialFlagPattern("p"),
 		"create-filevaultmaster-keychain":      newCommandCredentialFlagPattern("p"),
 	}
-	opensslCredentialFlagPattern       = newCommandCredentialFlagPattern("passin", "passout", "passcerts")
-	keytoolCredentialFlagPattern       = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass", "new", "srcstorepass", "deststorepass", "srckeypass", "destkeypass")
-	dockerLoginCredentialFlagPattern   = newCommandCredentialFlagPattern("p")
-	zipCredentialFlagPattern           = newCommandCredentialFlagPattern("P")
-	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
-	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
-	rawRegistryAuthsPattern            = regexp.MustCompile(`(?i)"auths"[ \t\r\n]*:[ \t\r\n]*\{`)
-	escapedRegistryAuthsPattern        = regexp.MustCompile(`(?i)\\"auths\\"[ \t\r\n]*:[ \t\r\n]*\{`)
-	rawRequestHeaders                  = regexp.MustCompile(`(?i)"requestHeaders"[ \t\r\n]*:[ \t\r\n]*\[`)
-	escapedRequestHeaders              = regexp.MustCompile(`(?i)\\"requestHeaders\\"[ \t\r\n]*:[ \t\r\n]*\[`)
-	rawStructuredValueStart            = regexp.MustCompile(`(?i)"value"[ \t\r\n]*:[ \t\r\n]*"`)
-	escapedValueStart                  = regexp.MustCompile(`(?i)\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\"`)
-	rawCredentialObject                = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
-	escapedCredentialObject            = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
-	rawCredentialArray                 = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\[`)
-	escapedCredentialArray             = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\[`)
-	credentialHeaderNamePattern        = regexp.MustCompile(`(?i)^` + credentialHeaderName + `$`)
-	sensitiveAssignmentHeaderName      = regexp.MustCompile(`(?i)^` + sensitivePrefixedName + `$`)
-	queryCredentialNamePattern         = regexp.MustCompile(`(?i)^` + queryCredentialName + `$`)
-	queryParameterName                 = regexp.MustCompile(`[?&]([^=&#\s"'<>]+)=`)
-	curlHeaderOptionStart              = regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)`)
-	completeShellWord                  = regexp.MustCompile(`^(` + fishShellWord + `)(` + singleLineShellTerminator + `)`)
-	netrcEntryStart                    = regexp.MustCompile(`(?im)(?:^|[\r\n])[ \t]*(?:machine[ \t]+[^\s#]+|default)(?:[ \t\r\n]|\z)`)
-	netrcPasswordValue                 = regexp.MustCompile(`(?i)(^|[ \t\r\n])(password[ \t]+)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`)
-	booleanSecretMarker                = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
-	yamlCredentialScalar               = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlCredentialMapping              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
-	yamlCredentialPlainScalar          = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)[^"'[\{\s\r\n][^\r\n]*$`)
-	yamlCredentialFlowStart            = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)([\[{])`)
-	yamlExplicitCredentialKey          = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlBlockScalarIndicator           = regexp.MustCompile(`^[|>](?:[+-]?[1-9]?|[1-9][+-]?)$`)
-	yamlCredentialAlias                = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlDocumentBoundary               = regexp.MustCompile(`^(?:---|\.\.\.)(?:[ \t]|$)`)
-	yamlValueAlias                     = regexp.MustCompile(`\*([a-zA-Z0-9_-]+)\b`)
-	yamlAnchor                         = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
-	yamlSensitiveNameAnchor            = regexp.MustCompile(`(?im)&([a-zA-Z0-9_-]+)[ \t]+(?:(?:` + yamlNodeTag + `)[ \t]+)*(?:["']?` + yamlCredentialName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlAliasMappingKey                = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?)(\*([a-zA-Z0-9_-]+))([ \t]*:)`)
-	yamlExplicitAliasKey               = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?\?[ \t]+)(\*([a-zA-Z0-9_-]+))([ \t]*(?:#[^\r\n]*)?)$`)
-	jsonQuotedScalarLine               = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
-	jsonCredentialName                 = regexp.MustCompile(`(?i)^(?:` + structuredCredentialName + `)$`)
-	yamlCredentialNamePattern          = regexp.MustCompile(`(?i)^(?:` + yamlCredentialName + `)$`)
-	tomlCredentialName                 = regexp.MustCompile(`(?i)^(?:` + sensitivePrefixedName + `)$`)
-	tomlMultilineCredentialStart       = regexp.MustCompile(`(?i)(?:^|[^-a-z0-9_])(?:` + sensitivePrefixedName + `\b|` + tomlQuotedSensitiveKey + `)[ \t]*=[ \t]*(?:"""|''')`)
-	sensitiveCommandSubstitutionStart  = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\(|\(|\x60)`)
-	powerShellHereStringCredential     = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*)|` + powerShellSensitiveVariable + `[ \t]*=[ \t]*)(@["']\r?\n)`)
-	powerShellCollectionCredential     = regexp.MustCompile(`(?i)(?:^|\s)` + powerShellSensitiveVariable + `[ \t]*=[ \t]*(@[({])`)
-	commandPromptQuotedSetAssignment   = regexp.MustCompile(`(?im)(?:^|[ \t;&|])set[ \t]+"` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
-	commandPromptUnquotedSetAssignment = regexp.MustCompile(`(?im)(?:^|[ \t;&|()])set[ \t]+` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
-	bareEnvironmentDumpCredential      = regexp.MustCompile(`(?im)^([ \t]*(?:export[ \t]+)?(?:` + sensitivePrefixedName + `|(?-i:` + uppercaseSessionEnvironmentName + `))\b[ \t]*=[ \t]*)([^\s"'\\;&|<>()]+(?:[ \t]+[^\s"'\\;&|<>()]+)+)([ \t]*\r?)$`)
-	shellAssignmentWord                = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
-	curlConfigCertificateEntry         = regexp.MustCompile(`(?im)^([ \t]*(?:cert|proxy-cert)` + curlConfigSeparator + `)`)
-	xmlCredentialElementStart          = regexp.MustCompile(`(?i)<(?:[a-z_][a-z0-9_.-]*:)?` + sensitivePrefixedName + `(?:[ \t\r\n/>])`)
-	xmlElementStart                    = regexp.MustCompile(`<[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:[ \t\r\n/>])`)
-	xmlAttribute                       = regexp.MustCompile(`(?s)(?:^|[ \t\r\n])([a-zA-Z_:][a-zA-Z0-9_.:-]*)[ \t\r\n]*=[ \t\r\n]*(?:"([^"]*)"|'([^']*)')`)
-	authorizationHeaderValueStart      = regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*`)
-	standaloneBearerCandidate          = regexp.MustCompile(`(?i)\bbearer[ \t]+([-a-z0-9._~+/=]+)`)
-	googleAPIKeyCandidate              = regexp.MustCompile(`AIza[A-Za-z0-9_-]{35}`)
-	xcodeCloudEnvVarSetCommand         = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')` + shellCommandPathSeparator + `web` + shellCommandPathSeparator + `xcode-cloud` + shellCommandPathSeparator + `env-vars` + shellCommandPathSeparator + `(?:shared` + shellCommandPathSeparator + `)?set\b`)
+	opensslCredentialFlagPattern          = newCommandCredentialFlagPattern("passin", "passout", "passcerts")
+	keytoolCredentialFlagPattern          = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass", "new", "srcstorepass", "deststorepass", "srckeypass", "destkeypass")
+	dockerLoginCredentialFlagPattern      = newCommandCredentialFlagPattern("p")
+	zipCredentialFlagPattern              = newCommandCredentialFlagPattern("P")
+	rawCookieJarPattern                   = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
+	escapedCookieJarPattern               = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
+	rawRegistryAuthsPattern               = regexp.MustCompile(`(?i)"auths"[ \t\r\n]*:[ \t\r\n]*\{`)
+	escapedRegistryAuthsPattern           = regexp.MustCompile(`(?i)\\"auths\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	rawRequestHeaders                     = regexp.MustCompile(`(?i)"requestHeaders"[ \t\r\n]*:[ \t\r\n]*\[`)
+	escapedRequestHeaders                 = regexp.MustCompile(`(?i)\\"requestHeaders\\"[ \t\r\n]*:[ \t\r\n]*\[`)
+	rawStructuredValueStart               = regexp.MustCompile(`(?i)"value"[ \t\r\n]*:[ \t\r\n]*"`)
+	escapedValueStart                     = regexp.MustCompile(`(?i)\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\"`)
+	rawCredentialObject                   = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
+	escapedCredentialObject               = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	rawCredentialArray                    = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\[`)
+	escapedCredentialArray                = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\[`)
+	credentialHeaderNamePattern           = regexp.MustCompile(`(?i)^` + credentialHeaderName + `$`)
+	sensitiveAssignmentHeaderName         = regexp.MustCompile(`(?i)^` + sensitivePrefixedName + `$`)
+	queryCredentialNamePattern            = regexp.MustCompile(`(?i)^` + queryCredentialName + `$`)
+	queryParameterName                    = regexp.MustCompile(`[?&]([^=&#\s"'<>]+)=`)
+	curlHeaderOptionStart                 = regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)`)
+	completeShellWord                     = regexp.MustCompile(`^(` + fishShellWord + `)(` + singleLineShellTerminator + `)`)
+	netrcEntryStart                       = regexp.MustCompile(`(?im)(?:^|[\r\n])[ \t]*(?:machine[ \t]+[^\s#]+|default)(?:[ \t\r\n]|\z)`)
+	netrcPasswordValue                    = regexp.MustCompile(`(?i)(^|[ \t\r\n])(password[ \t]+)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`)
+	booleanSecretMarker                   = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
+	yamlCredentialScalar                  = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlCredentialMapping                 = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
+	yamlCredentialPlainScalar             = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)[^"'[\{\s\r\n][^\r\n]*$`)
+	yamlCredentialFlowStart               = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)([\[{])`)
+	yamlExplicitCredentialKey             = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlBlockScalarIndicator              = regexp.MustCompile(`^[|>](?:[+-]?[1-9]?|[1-9][+-]?)$`)
+	yamlCredentialAlias                   = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlDocumentBoundary                  = regexp.MustCompile(`^(?:---|\.\.\.)(?:[ \t]|$)`)
+	yamlValueAlias                        = regexp.MustCompile(`\*([a-zA-Z0-9_-]+)\b`)
+	yamlAnchor                            = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
+	yamlSensitiveNameAnchor               = regexp.MustCompile(`(?im)&([a-zA-Z0-9_-]+)[ \t]+(?:(?:` + yamlNodeTag + `)[ \t]+)*(?:["']?` + yamlCredentialName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlAliasMappingKey                   = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?)(\*([a-zA-Z0-9_-]+))([ \t]*:)`)
+	yamlExplicitAliasKey                  = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?\?[ \t]+)(\*([a-zA-Z0-9_-]+))([ \t]*(?:#[^\r\n]*)?)$`)
+	jsonQuotedScalarLine                  = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
+	jsonCredentialName                    = regexp.MustCompile(`(?i)^(?:` + structuredCredentialName + `)$`)
+	yamlCredentialNamePattern             = regexp.MustCompile(`(?i)^(?:` + yamlCredentialName + `)$`)
+	tomlCredentialName                    = regexp.MustCompile(`(?i)^(?:` + sensitivePrefixedName + `)$`)
+	tomlMultilineCredentialStart          = regexp.MustCompile(`(?i)(?:^|[^-a-z0-9_])(?:` + sensitivePrefixedName + `\b|` + tomlQuotedSensitiveKey + `)[ \t]*=[ \t]*(?:"""|''')`)
+	sensitiveCommandSubstitutionStart     = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\(|\(|\x60)`)
+	powerShellHereStringCredential        = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*)|` + powerShellSensitiveVariable + `[ \t]*=[ \t]*)(@["']\r?\n)`)
+	powerShellCollectionCredential        = regexp.MustCompile(`(?i)(?:^|\s)` + powerShellSensitiveVariable + `[ \t]*=[ \t]*(@[({])`)
+	commandPromptQuotedSetAssignment      = regexp.MustCompile(`(?im)(?:^|[ \t;&|])set[ \t]+"` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
+	commandPromptUnquotedSetAssignment    = regexp.MustCompile(`(?im)(?:^|[ \t;&|()])set[ \t]+` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
+	bareEnvironmentDumpCredential         = regexp.MustCompile(`(?im)^([ \t]*(?:export[ \t]+)?(?:` + sensitivePrefixedName + `|(?-i:` + uppercaseSessionEnvironmentName + `))\b[ \t]*=[ \t]*)([^\s"'\\;&|<>()]+(?:[ \t]+[^\s"'\\;&|<>()]+)+)([ \t]*\r?)$`)
+	shellAssignmentWord                   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+	curlConfigCertificateEntry            = regexp.MustCompile(`(?im)^([ \t]*(?:cert|proxy-cert)` + curlConfigSeparator + `)`)
+	xmlCredentialElementStart             = regexp.MustCompile(`(?i)<(?:[a-z_][a-z0-9_.-]*:)?` + sensitivePrefixedName + `(?:[ \t\r\n/>])`)
+	xmlElementStart                       = regexp.MustCompile(`<[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:[ \t\r\n/>])`)
+	xmlAttribute                          = regexp.MustCompile(`(?s)(?:^|[ \t\r\n])([a-zA-Z_:][a-zA-Z0-9_.:-]*)[ \t\r\n]*=[ \t\r\n]*(?:"([^"]*)"|'([^']*)')`)
+	authorizationHeaderValueStart         = regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*`)
+	standaloneBearerCandidate             = regexp.MustCompile(`(?i)\bbearer[ \t]+([-a-z0-9._~+/=]+)`)
+	standaloneURLSafeCredentialCandidates = []*regexp.Regexp{
+		regexp.MustCompile(`AIza[A-Za-z0-9_-]{35}`),
+		regexp.MustCompile(`SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}`),
+	}
+	xcodeCloudEnvVarSetCommand = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')` + shellCommandPathSeparator + `web` + shellCommandPathSeparator + `xcode-cloud` + shellCommandPathSeparator + `env-vars` + shellCommandPathSeparator + `(?:shared` + shellCommandPathSeparator + `)?set\b`)
 )
 
 var structuredContainerValueRedactionRules = []redactionRule{
@@ -625,7 +628,7 @@ func redactSensitiveText(value string) (string, bool) {
 			redacted = next
 		}
 	}
-	if next, googleChanged := redactStandaloneGoogleAPIKeys(redacted); googleChanged {
+	if next, standaloneChanged := redactStandaloneURLSafeCredentials(redacted); standaloneChanged {
 		redacted = next
 		changed = true
 	}
@@ -2693,22 +2696,24 @@ func looksLikeAuthorizationCredential(value string) bool {
 	return strings.ContainsAny(value, "0123456789._~+/=-")
 }
 
-func redactStandaloneGoogleAPIKeys(value string) (string, bool) {
-	matches := googleAPIKeyCandidate.FindAllStringIndex(value, -1)
+func redactStandaloneURLSafeCredentials(value string) (string, bool) {
 	redacted := value
 	changed := false
-	for match := len(matches) - 1; match >= 0; match-- {
-		start, end := matches[match][0], matches[match][1]
-		if start > 0 && isGoogleAPIKeyCharacter(value[start-1]) || end < len(value) && isGoogleAPIKeyCharacter(value[end]) {
-			continue
+	for _, candidate := range standaloneURLSafeCredentialCandidates {
+		matches := candidate.FindAllStringIndex(redacted, -1)
+		for match := len(matches) - 1; match >= 0; match-- {
+			start, end := matches[match][0], matches[match][1]
+			if start > 0 && isURLSafeCredentialCharacter(redacted[start-1]) || end < len(redacted) && isURLSafeCredentialCharacter(redacted[end]) {
+				continue
+			}
+			redacted = redacted[:start] + redactionMarker + redacted[end:]
+			changed = true
 		}
-		redacted = redacted[:start] + redactionMarker + redacted[end:]
-		changed = true
 	}
 	return redacted, changed
 }
 
-func isGoogleAPIKeyCharacter(value byte) bool {
+func isURLSafeCredentialCharacter(value byte) bool {
 	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || value == '_' || value == '-'
 }
 
