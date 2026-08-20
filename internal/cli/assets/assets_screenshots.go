@@ -54,10 +54,16 @@ type ScreenshotSetAccess struct {
 // ScreenshotSetUploadOptions configures the shared screenshot upload path for
 // custom product pages and PPO treatment localizations.
 type ScreenshotSetUploadOptions[T any] struct {
-	LocalizationID           string
-	Path                     string
-	DeviceType               string
-	Replace                  bool
+	LocalizationID string
+	Path           string
+	DeviceType     string
+	Replace        bool
+	// InspectCommand is the owner-specific read-only command shown when the
+	// target screenshot set is full or has ambiguous checksum matches.
+	InspectCommand string
+	// ReplaceCommand is the owner-specific replacement command shown when the
+	// target screenshot set is full.
+	ReplaceCommand           string
 	InvalidDeviceTypeIsUsage bool
 
 	ClientFactory  func() (*asc.Client, error)
@@ -78,6 +84,8 @@ type screenshotUploadConfig[T any] struct {
 	Replace        bool
 	DryRun         bool
 	MaxScreenshots int
+	InspectCommand string
+	ReplaceCommand string
 	RequestContext func(context.Context) (context.Context, context.CancelFunc)
 	UploadContext  func(context.Context) (context.Context, context.CancelFunc)
 	Access         ScreenshotSetAccess
@@ -272,6 +280,8 @@ func ExecuteScreenshotSetUpload[T any](ctx context.Context, opts ScreenshotSetUp
 		DisplayType:    apiDisplayType,
 		Files:          files,
 		Replace:        opts.Replace,
+		InspectCommand: opts.InspectCommand,
+		ReplaceCommand: opts.ReplaceCommand,
 		RequestContext: opts.RequestContext,
 		UploadContext:  opts.UploadContext,
 		Access:         opts.Access,
