@@ -71,6 +71,7 @@ const (
 	curlHeaderOptionPrefix      = `(?:(?:-H|--header|--proxy-header)\b(?:[ \t]+|[ \t]*=[ \t]*)|-H)`
 	curlFormDataOptionPrefix    = `(?:(?-i:-F)(?:[ \t]+|[ \t]*=[ \t]*)?|--(?:data-urlencode|data|form-string|form)\b(?:[ \t]+|[ \t]*=[ \t]*))`
 	curlConfigSeparator         = `(?:[ \t]*[=:][ \t]*|[ \t]+)`
+	curlConfigExplicitSeparator = `(?:[ \t]*[=:][ \t]*)`
 	shellCommandPathSeparator   = `(?:[ \t]+(?:\\\r?\n[ \t]*)*|(?:\\\r?\n)+[ \t]+(?:\\\r?\n[ \t]*)*)`
 	foldedHeaderContinuation    = `(?:\r?\n[ \t]+[^\r\n]*)*`
 	passwordFileField           = `(?:\\[:\\]|[^:\\\r\n])+`
@@ -123,6 +124,7 @@ var (
 	opensslCredentialFlagPattern       = newCommandCredentialFlagPattern("passin", "passout", "passcerts")
 	keytoolCredentialFlagPattern       = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass", "new", "srcstorepass", "deststorepass", "srckeypass", "destkeypass")
 	dockerLoginCredentialFlagPattern   = newCommandCredentialFlagPattern("p")
+	zipCredentialFlagPattern           = newCommandCredentialFlagPattern("P")
 	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	rawRegistryAuthsPattern            = regexp.MustCompile(`(?i)"auths"[ \t\r\n]*:[ \t\r\n]*\{`)
@@ -347,7 +349,11 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:oauth2-bearer|pass|proxy-tlspassword|tlspassword)` + curlConfigSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s#]+)`),
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:oauth2-bearer|proxy-tlspassword|tlspassword)` + curlConfigSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s#]+)`),
+		replacement: `${1}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*pass` + curlConfigExplicitSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s#]+)`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
@@ -487,6 +493,14 @@ func redactSensitiveText(value string) (string, bool) {
 		changed = true
 	}
 	if next, dockerChanged := redactDockerLoginCredentialArguments(redacted); dockerChanged {
+		redacted = next
+		changed = true
+	}
+	if next, zipChanged := redactZipCredentialArguments(redacted); zipChanged {
+		redacted = next
+		changed = true
+	}
+	if next, unzipChanged := redactUnzipCredentialArguments(redacted); unzipChanged {
 		redacted = next
 		changed = true
 	}
@@ -4382,6 +4396,14 @@ func redactOpenSSLCredentialArguments(value string) (string, bool) {
 
 func redactKeytoolCredentialArguments(value string) (string, bool) {
 	return redactNamedCommandCredentialArguments(value, "keytool", keytoolCredentialFlagPattern)
+}
+
+func redactZipCredentialArguments(value string) (string, bool) {
+	return redactNamedCommandCredentialArguments(value, "zip", zipCredentialFlagPattern)
+}
+
+func redactUnzipCredentialArguments(value string) (string, bool) {
+	return redactNamedCommandCredentialArguments(value, "unzip", zipCredentialFlagPattern)
 }
 
 func redactDockerLoginCredentialArguments(value string) (string, bool) {

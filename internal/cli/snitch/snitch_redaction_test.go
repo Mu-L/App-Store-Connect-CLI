@@ -1461,6 +1461,11 @@ status = "failed"`,
 			want:  "oauth2-bearer [REDACTED]\nurl = \"https://example.test\"",
 		},
 		{
+			name:  "curl config explicit passphrase",
+			input: "pass = \"opaque-curl-passphrase\"\nurl = \"sftp://example.test\"",
+			want:  "pass = [REDACTED]\nurl = \"sftp://example.test\"",
+		},
+		{
 			name:  "curl config cookie data credential",
 			input: "cookie = \"myacinfo=opaque-cookie-secret\"\nurl = \"https://example.test\"",
 			want:  "cookie = [REDACTED]\nurl = \"https://example.test\"",
@@ -2060,6 +2065,26 @@ status: failed`,
 			want:  `C:\Docker\docker.exe login -p [REDACTED] registry.example`,
 		},
 		{
+			name:  "Zip password argument",
+			input: `zip -P opaque-zip-secret archive.zip file`,
+			want:  `zip -P [REDACTED] archive.zip file`,
+		},
+		{
+			name:  "Zip password through wrapper",
+			input: `sudo -u build /usr/bin/zip -P="opaque zip secret" archive.zip file`,
+			want:  `sudo -u build /usr/bin/zip -P=[REDACTED] archive.zip file`,
+		},
+		{
+			name:  "Windows Zip password argument",
+			input: `C:\Tools\zip.exe -P opaque-zip-secret archive.zip file`,
+			want:  `C:\Tools\zip.exe -P [REDACTED] archive.zip file`,
+		},
+		{
+			name:  "Unzip password argument",
+			input: `unzip -P opaque-zip-secret archive.zip`,
+			want:  `unzip -P [REDACTED] archive.zip`,
+		},
+		{
 			name:  "scoped base64 private key assignments",
 			input: `ASC_STOREKIT_PRIVATE_KEY_B64=c3RvcmVraXQtcHJpdmF0ZS1rZXk= ASC_ADS_PRIVATE_KEY_B64=YWRzLXByaXZhdGUta2V5`,
 			want:  `ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED] ASC_ADS_PRIVATE_KEY_B64=[REDACTED]`,
@@ -2387,6 +2412,8 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 		`tool --database-no-password output.txt`,
 		`header = "X-Request-ID: public-value"`,
 		`proxy-header = "@headers.txt"`,
+		`Pass through values`,
+		`pass through values`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
@@ -2448,6 +2475,20 @@ func TestRedactSensitiveTextScopesDockerLoginCredentialArguments(t *testing.T) {
 		`docker login --password-stdin registry.example`,
 		`docker --version login -p public-value registry.example`,
 		`tool login -p public-value`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextScopesZipCredentialArguments(t *testing.T) {
+	for _, input := range []string{
+		`echo zip -P public-value archive.zip file`,
+		`sudo echo zip -P public-value archive.zip file`,
+		`tool -P public-value`,
+		`zipinfo -P public-value archive.zip`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
