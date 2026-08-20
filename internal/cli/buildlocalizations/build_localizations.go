@@ -24,9 +24,9 @@ func BuildLocalizationsCommand() *ffcli.Command {
 		LongHelp: `Manage localized release notes by build.
 
 Examples:
-  asc build-localizations list --build "BUILD_ID"
+  asc build-localizations list --build-id "BUILD_ID"
   asc build-localizations view --id "LOCALIZATION_ID"
-  asc build-localizations create --build "BUILD_ID" --locale "en-US" --whats-new "Bug fixes"
+  asc build-localizations create --build-id "BUILD_ID" --locale "en-US" --whats-new "Bug fixes"
   asc build-localizations update --id "LOCALIZATION_ID" --whats-new "New features"
   asc build-localizations delete --id "LOCALIZATION_ID" --confirm`,
 		FlagSet:   fs,
@@ -48,7 +48,8 @@ Examples:
 func BuildLocalizationsListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 
-	buildID := fs.String("build", "", "Build ID")
+	buildID := fs.String("build-id", "", "Build ID")
+	legacyBuildID := shared.BindDeprecatedStringFlagAlias(fs, "build", "build-id")
 	locale := fs.String("locale", "", "Filter by locale(s), comma-separated")
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
@@ -62,12 +63,15 @@ func BuildLocalizationsListCommand() *ffcli.Command {
 		LongHelp: `List release note localizations for a build.
 
 Examples:
-  asc build-localizations list --build "BUILD_ID"
-  asc build-localizations list --build "BUILD_ID" --locale "en-US,ja"
-  asc build-localizations list --build "BUILD_ID" --paginate`,
+  asc build-localizations list --build-id "BUILD_ID"
+  asc build-localizations list --build-id "BUILD_ID" --locale "en-US,ja"
+  asc build-localizations list --build-id "BUILD_ID" --paginate`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			if err := legacyBuildID.Apply(buildID); err != nil {
+				return err
+			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return fmt.Errorf("build-localizations list: --limit must be between 1 and 200")
 			}
@@ -77,8 +81,8 @@ Examples:
 
 			build := strings.TrimSpace(*buildID)
 			if build == "" {
-				fmt.Fprintln(os.Stderr, "Error: --build is required")
-				return shared.MissingRequiredUsageError("--build")
+				fmt.Fprintln(os.Stderr, "Error: --build-id is required")
+				return shared.MissingRequiredUsageError("--build-id")
 			}
 
 			locales := shared.SplitCSV(*locale)
@@ -178,7 +182,8 @@ Examples:
 func BuildLocalizationsCreateCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
 
-	buildID := fs.String("build", "", "Build ID")
+	buildID := fs.String("build-id", "", "Build ID")
+	legacyBuildID := shared.BindDeprecatedStringFlagAlias(fs, "build", "build-id")
 	locale := fs.String("locale", "", "Locale (e.g., en-US)")
 	whatsNew := fs.String("whats-new", "", "Release notes (whats new), up to 4000 characters")
 	output := shared.BindOutputFlags(fs)
@@ -193,15 +198,19 @@ Release notes are limited to 4000 characters and are checked before the
 request is sent.
 
 Examples:
-  asc build-localizations create --build "BUILD_ID" --locale "en-US"
-  asc build-localizations create --build "BUILD_ID" --locale "en-US" --whats-new "Bug fixes"`,
+  asc build-localizations create --build-id "BUILD_ID" --locale "en-US"
+  asc build-localizations create --build-id "BUILD_ID" --locale "en-US" --whats-new "Bug fixes"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			if err := legacyBuildID.Apply(buildID); err != nil {
+				return err
+			}
+
 			build := strings.TrimSpace(*buildID)
 			if build == "" {
-				fmt.Fprintln(os.Stderr, "Error: --build is required")
-				return shared.MissingRequiredUsageError("--build")
+				fmt.Fprintln(os.Stderr, "Error: --build-id is required")
+				return shared.MissingRequiredUsageError("--build-id")
 			}
 
 			localeValue := strings.TrimSpace(*locale)

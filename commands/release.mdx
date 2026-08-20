@@ -21,7 +21,7 @@ asc release <subcommand> [flags]
 
 Run a deterministic pre-submit staging pipeline:
 
-1. Verify `--build` exists and belongs to `--app`
+1. Verify `--build-id` exists and belongs to `--app`
 2. Ensure or create the version
 3. Apply metadata/localizations or copy from another version
 4. Reconcile routing app coverage when `--routing-coverage-file` is set
@@ -34,14 +34,14 @@ Stops before creating a review submission.
 asc release stage \
   --app "APP_ID" \
   --version "2.4.0" \
-  --build "BUILD_ID" \
+  --build-id "BUILD_ID" \
   --copy-metadata-from "2.3.2" \
   --dry-run
 
 asc release stage \
   --app "APP_ID" \
   --version "2.4.0" \
-  --build "BUILD_ID" \
+  --build-id "BUILD_ID" \
   --metadata-dir "./metadata/version/2.4.0" \
   --routing-coverage-file "./coverage.geojson" \
   --confirm
@@ -51,7 +51,7 @@ asc release stage \
 
 * `--app` - App Store Connect app ID (or `ASC_APP_ID`)
 * `--version` - App Store version string
-* `--build` - Build ID to attach
+* `--build-id` - Build ID to attach
 * `--metadata-dir` - Metadata directory to apply
 * `--allow-deletes` - Allow destructive delete operations when applying `--metadata-dir` (disables the default locale fallback for missing locales)
 * `--routing-coverage-file` - [experimental] Routing app coverage GeoJSON file to reconcile before build attachment and readiness
