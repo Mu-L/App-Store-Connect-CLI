@@ -26,6 +26,68 @@ func retryableHTTPError(statusCode int, retryAfter time.Duration) error {
 	}
 }
 
+func TestParseRetryAfterHeaderHandlesNumericDateAndBoundaryValues(t *testing.T) {
+	const maxRetryAfterDuration = time.Duration(1<<63 - 1)
+
+	tests := []struct {
+		name  string
+		value string
+		check func(t *testing.T, got time.Duration)
+	}{
+		{
+			name:  "numeric seconds",
+			value: "7",
+			check: func(t *testing.T, got time.Duration) {
+				if got != 7*time.Second {
+					t.Fatalf("parseRetryAfterHeader() = %s, want 7s", got)
+				}
+			},
+		},
+		{
+			name:  "zero falls back",
+			value: "0",
+			check: func(t *testing.T, got time.Duration) {
+				if got != 0 {
+					t.Fatalf("parseRetryAfterHeader() = %s, want 0", got)
+				}
+			},
+		},
+		{
+			name:  "negative falls back",
+			value: "-7",
+			check: func(t *testing.T, got time.Duration) {
+				if got != 0 {
+					t.Fatalf("parseRetryAfterHeader() = %s, want 0", got)
+				}
+			},
+		},
+		{
+			name:  "huge numeric saturates",
+			value: "9223372036854775807",
+			check: func(t *testing.T, got time.Duration) {
+				if got != maxRetryAfterDuration {
+					t.Fatalf("parseRetryAfterHeader() = %s, want %s", got, maxRetryAfterDuration)
+				}
+			},
+		},
+		{
+			name:  "future http date",
+			value: time.Now().UTC().Add(2 * time.Second).Format(http.TimeFormat),
+			check: func(t *testing.T, got time.Duration) {
+				if got < 500*time.Millisecond || got > 3*time.Second {
+					t.Fatalf("parseRetryAfterHeader() = %s, want roughly 2s", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.check(t, parseRetryAfterHeader(tt.value))
+		})
+	}
+}
+
 // A Retry-After Apple can actually satisfy is waited out exactly, not replaced
 // by the shorter exponential backoff.
 func TestWithRetry_HonorsRetryAfterWithinCap(t *testing.T) {
@@ -223,5 +285,48 @@ func TestClientDo_RateLimitBeyondCapFailsWithoutWaiting(t *testing.T) {
 	}
 	if message := err.Error(); !strings.Contains(message, "1h0m0s") || !strings.Contains(message, "2s") {
 		t.Fatalf("expected the requested wait and the cap in the message, got %q", message)
+	}
+}
+
+func TestClientDo_RateLimitWithHugeNumericRetryAfterFailsWithoutRetry(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "3")
+	t.Setenv("ASC_BASE_DELAY", "1ms")
+	t.Setenv("ASC_MAX_DELAY", "2s")
+	resetConfigCacheForTest()
+	t.Cleanup(resetConfigCacheForTest)
+
+	const hugeRetryAfter = "9223372036854775807"
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Retry-After", hugeRetryAfter)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(server.Close)
+
+	client := &Client{
+		httpClient: server.Client(),
+		keyID:      "KEY123",
+		issuerID:   "ISS456",
+		privateKey: testJWTPrivateKey(t),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := client.do(ctx, http.MethodGet, server.URL+"/v1/apps", nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 request, got %d (Retry-After overflow was ignored)", got)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected an immediate failure, took %s", elapsed)
+	}
+	if !strings.Contains(err.Error(), "retry cap") {
+		t.Fatalf("expected retry-cap error, got %q", err)
 	}
 }

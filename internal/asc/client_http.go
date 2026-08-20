@@ -453,8 +453,20 @@ func parseRetryAfterHeader(value string) time.Duration {
 	}
 
 	// Try to parse as seconds first
-	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+	const maxRetryAfterDuration = time.Duration(1<<63 - 1)
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+		if seconds > int64(maxRetryAfterDuration/time.Second) {
+			return maxRetryAfterDuration
+		}
 		return time.Duration(seconds) * time.Second
+	} else if _, err := strconv.ParseUint(value, 10, 64); err != nil {
+		var numberErr *strconv.NumError
+		if errors.As(err, &numberErr) && errors.Is(numberErr.Err, strconv.ErrRange) && !strings.HasPrefix(value, "-") {
+			// A positive value that does not fit in int64 seconds is still an
+			// unambiguously huge delay. Saturate it so the retry cap can reject it
+			// instead of silently falling back to exponential backoff.
+			return maxRetryAfterDuration
+		}
 	}
 
 	// Try to parse as HTTP-date (try multiple formats)
