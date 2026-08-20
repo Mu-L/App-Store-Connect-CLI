@@ -57,6 +57,7 @@ type reviewSubmissionItemsQuery struct {
 type appStoreVersionLocalizationsQuery struct {
 	listQuery
 	locales []string
+	include []string
 }
 
 type appInfoLocalizationsQuery struct {
@@ -239,6 +240,7 @@ func buildReviewSubmissionItemsQuery(query *reviewSubmissionItemsQuery) string {
 func buildAppStoreVersionLocalizationsQuery(query *appStoreVersionLocalizationsQuery) string {
 	values := url.Values{}
 	addCSV(values, "filter[locale]", query.locales)
+	addCSV(values, "include", query.include)
 	addLimit(values, query.limit)
 	return values.Encode()
 }
@@ -781,6 +783,15 @@ func WithAppStoreVersionLocalizationsNextURL(next string) AppStoreVersionLocaliz
 func WithAppStoreVersionLocalizationLocales(locales []string) AppStoreVersionLocalizationsOption {
 	return func(q *appStoreVersionLocalizationsQuery) {
 		q.locales = normalizeList(locales)
+	}
+}
+
+// WithAppStoreVersionLocalizationsInclude includes related resources for
+// version localizations (appStoreVersion, appScreenshotSets, appPreviewSets,
+// searchKeywords).
+func WithAppStoreVersionLocalizationsInclude(include []string) AppStoreVersionLocalizationsOption {
+	return func(q *appStoreVersionLocalizationsQuery) {
+		q.include = normalizeList(include)
 	}
 }
 
