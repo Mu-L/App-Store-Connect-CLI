@@ -13,6 +13,7 @@ const (
 	redactionMarker           = "[REDACTED]"
 	privateKeyRedactionMarker = "[REDACTED PRIVATE KEY]"
 	redactionNotice           = "Note: sensitive values were redacted from the snitch report."
+	maxJSONEscapeDepth        = 4
 
 	sensitiveAssignmentName     = `(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passwd|pwd|secret|token)`
 	sensitivePrefixedName       = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
@@ -957,47 +958,43 @@ func findTOMLMultilineStringEnd(value string, open int) int {
 }
 
 func redactJSONEscapedCredentialValues(value string) (string, bool) {
-	redacted, changed := redactJSONCredentialValues(value, false)
-	if next, escapedChanged := redactJSONCredentialValues(redacted, true); escapedChanged {
-		redacted = next
-		changed = true
+	redacted := value
+	changed := false
+	for escapeDepth := 0; escapeDepth <= maxJSONEscapeDepth; escapeDepth++ {
+		if next, layerChanged := redactJSONCredentialValues(redacted, escapeDepth); layerChanged {
+			redacted = next
+			changed = true
+		}
 	}
 	return redacted, changed
 }
 
-func redactJSONCredentialValues(value string, escapedQuotes bool) (string, bool) {
+func redactJSONCredentialValues(value string, escapeDepth int) (string, bool) {
 	redacted := value
 	changed := false
+	quoteDelimiter := jsonQuoteDelimiter(escapeDepth)
 	for searchStart := 0; searchStart < len(redacted); {
-		relativeOpen := strings.IndexByte(redacted[searchStart:], '"')
-		if escapedQuotes {
-			relativeOpen = strings.Index(redacted[searchStart:], `\"`)
-		}
+		relativeOpen := strings.Index(redacted[searchStart:], quoteDelimiter)
 		if relativeOpen < 0 {
 			break
 		}
 		open := searchStart + relativeOpen
-		close := findJSONStringEnd(redacted, open)
-		if escapedQuotes {
-			if !isJSONStringDelimiter(redacted, open+1, true) {
-				searchStart = open + 2
-				continue
-			}
-			close = findEscapedJSONStringEnd(redacted, open)
-		} else if !isJSONStringDelimiter(redacted, open, false) {
-			searchStart = open + 1
+		quote := open + len(quoteDelimiter) - 1
+		if !isJSONStringDelimiterAtDepth(redacted, quote, escapeDepth) {
+			searchStart = open + len(quoteDelimiter)
 			continue
 		}
+		close := findJSONStringEndAtDepth(redacted, open, escapeDepth)
 		if close < 0 {
 			break
 		}
 
 		encodedKey := redacted[open : close+1]
-		if !escapedQuotes && !strings.Contains(encodedKey, `\`) {
+		if escapeDepth == 0 && !strings.Contains(encodedKey, `\`) {
 			searchStart = close + 1
 			continue
 		}
-		decodedKey, valid := decodeJSONCredentialKey(encodedKey, escapedQuotes)
+		decodedKey, valid := decodeJSONCredentialKey(encodedKey, escapeDepth)
 		if !valid || !jsonCredentialName.MatchString(decodedKey) {
 			searchStart = close + 1
 			continue
@@ -1015,10 +1012,7 @@ func redactJSONCredentialValues(value string, escapedQuotes bool) (string, bool)
 		for valueStart < len(redacted) && strings.ContainsRune(" \t\r\n", rune(redacted[valueStart])) {
 			valueStart++
 		}
-		valueEnd, replacement := jsonCredentialValueReplacement(redacted, valueStart)
-		if escapedQuotes {
-			valueEnd, replacement = escapedJSONCredentialValueReplacement(redacted, valueStart)
-		}
+		valueEnd, replacement := jsonCredentialValueReplacement(redacted, valueStart, escapeDepth)
 		if valueEnd <= valueStart {
 			searchStart = close + 1
 			continue
@@ -1035,8 +1029,8 @@ func redactJSONCredentialValues(value string, escapedQuotes bool) (string, bool)
 	return redacted, changed
 }
 
-func decodeJSONCredentialKey(encodedKey string, escapedQuotes bool) (string, bool) {
-	if escapedQuotes {
+func decodeJSONCredentialKey(encodedKey string, escapeDepth int) (string, bool) {
+	for layer := 0; layer < escapeDepth; layer++ {
 		var rawKey string
 		if json.Unmarshal([]byte(`"`+encodedKey+`"`), &rawKey) != nil {
 			return "", false
@@ -1051,81 +1045,50 @@ func decodeJSONCredentialKey(encodedKey string, escapedQuotes bool) (string, boo
 	return decodedKey, true
 }
 
-func findJSONStringEnd(value string, open int) int {
-	if open < 0 || open >= len(value) || value[open] != '"' {
+func findJSONStringEndAtDepth(value string, open, escapeDepth int) int {
+	delimiter := jsonQuoteDelimiter(escapeDepth)
+	if open < 0 || open+len(delimiter) > len(value) || value[open:open+len(delimiter)] != delimiter {
 		return -1
 	}
-	for index := open + 1; index < len(value); index++ {
-		if value[index] == '\\' {
-			index++
-			continue
-		}
-		if value[index] == '"' {
-			return index
-		}
-	}
-	return -1
-}
-
-func findEscapedJSONStringEnd(value string, open int) int {
-	if open < 0 || open+1 >= len(value) || value[open:open+2] != `\"` {
+	if !isJSONStringDelimiterAtDepth(value, open+len(delimiter)-1, escapeDepth) {
 		return -1
 	}
-	for quote := open + 2; quote < len(value); quote++ {
-		if value[quote] == '"' && isJSONStringDelimiter(value, quote, true) {
+	for quote := open + len(delimiter); quote < len(value); quote++ {
+		if value[quote] == '"' && isJSONStringDelimiterAtDepth(value, quote, escapeDepth) {
 			return quote
 		}
 	}
 	return -1
 }
 
-func jsonCredentialValueReplacement(value string, start int) (int, string) {
+func jsonCredentialValueReplacement(value string, start, escapeDepth int) (int, string) {
 	if start < 0 || start >= len(value) {
 		return -1, ""
 	}
-	switch value[start] {
-	case '"':
-		close := findJSONStringEnd(value, start)
+	delimiter := jsonQuoteDelimiter(escapeDepth)
+	if strings.HasPrefix(value[start:], delimiter) && isJSONStringDelimiterAtDepth(value, start+len(delimiter)-1, escapeDepth) {
+		close := findJSONStringEndAtDepth(value, start, escapeDepth)
 		if close < 0 {
-			return len(value), `"` + redactionMarker + `"`
+			return len(value), delimiter + redactionMarker + delimiter
 		}
-		return close + 1, `"` + redactionMarker + `"`
+		return close + 1, delimiter + redactionMarker + delimiter
+	}
+	switch value[start] {
 	case '{':
-		return findJSONContainerEnd(value, start, false) + 1, `"` + redactionMarker + `"`
+		return findJSONContainerEndAtDepth(value, start, escapeDepth) + 1, delimiter + redactionMarker + delimiter
 	case '[':
-		return findJSONContainerEnd(value, start, false) + 1, `[` + `"` + redactionMarker + `"` + `]`
+		return findJSONContainerEndAtDepth(value, start, escapeDepth) + 1, `[` + delimiter + redactionMarker + delimiter + `]`
 	default:
 		end := start
 		for end < len(value) && !strings.ContainsRune(",}]\r\n", rune(value[end])) {
 			end++
 		}
-		return end, `"` + redactionMarker + `"`
+		return end, delimiter + redactionMarker + delimiter
 	}
 }
 
-func escapedJSONCredentialValueReplacement(value string, start int) (int, string) {
-	if start < 0 || start >= len(value) {
-		return -1, ""
-	}
-	if start+1 < len(value) && value[start:start+2] == `\"` {
-		close := findEscapedJSONStringEnd(value, start)
-		if close < 0 {
-			return len(value), `\"` + redactionMarker + `\"`
-		}
-		return close + 1, `\"` + redactionMarker + `\"`
-	}
-	switch value[start] {
-	case '{':
-		return findJSONContainerEnd(value, start, true) + 1, `\"` + redactionMarker + `\"`
-	case '[':
-		return findJSONContainerEnd(value, start, true) + 1, `[\"` + redactionMarker + `\"]`
-	default:
-		end := start
-		for end < len(value) && !strings.ContainsRune(",}]\r\n", rune(value[end])) {
-			end++
-		}
-		return end, `\"` + redactionMarker + `\"`
-	}
+func jsonQuoteDelimiter(escapeDepth int) string {
+	return strings.Repeat(`\`, 1<<escapeDepth-1) + `"`
 }
 
 func normalizeYAMLEscapedCredentialKeys(value string) (string, map[string]string) {
@@ -1312,6 +1275,17 @@ func redactYAMLExplicitCredentialMappings(value string) (string, bool) {
 
 		keyIndent := yamlKeyIndent(key)
 		valueLine := line + 1
+		for valueLine < len(lines) {
+			candidate, _ := splitLineEnding(lines[valueLine])
+			trimmed := strings.TrimSpace(candidate)
+			if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+				break
+			}
+			valueLine++
+		}
+		if valueLine >= len(lines) {
+			continue
+		}
 		valueContent, ending := splitLineEnding(lines[valueLine])
 		if leadingIndent(valueContent) != keyIndent {
 			continue
@@ -1603,6 +1577,14 @@ func findJSONObjectEnd(value string, open int, escapedQuotes bool) int {
 }
 
 func findJSONContainerEnd(value string, open int, escapedQuotes bool) int {
+	escapeDepth := 0
+	if escapedQuotes {
+		escapeDepth = 1
+	}
+	return findJSONContainerEndAtDepth(value, open, escapeDepth)
+}
+
+func findJSONContainerEndAtDepth(value string, open, escapeDepth int) int {
 	if open < 0 || open >= len(value) || (value[open] != '{' && value[open] != '[') {
 		return len(value) - 1
 	}
@@ -1610,7 +1592,7 @@ func findJSONContainerEnd(value string, open int, escapedQuotes bool) int {
 	stack := []byte{value[open]}
 	inString := false
 	for i := open + 1; i < len(value); i++ {
-		if value[i] == '"' && isJSONStringDelimiter(value, i, escapedQuotes) {
+		if value[i] == '"' && isJSONStringDelimiterAtDepth(value, i, escapeDepth) {
 			inString = !inString
 			continue
 		}
@@ -1641,14 +1623,21 @@ func findJSONContainerEnd(value string, open int, escapedQuotes bool) int {
 }
 
 func isJSONStringDelimiter(value string, quote int, escapedQuotes bool) bool {
+	escapeDepth := 0
+	if escapedQuotes {
+		escapeDepth = 1
+	}
+	return isJSONStringDelimiterAtDepth(value, quote, escapeDepth)
+}
+
+func isJSONStringDelimiterAtDepth(value string, quote, escapeDepth int) bool {
 	backslashes := 0
 	for i := quote - 1; i >= 0 && value[i] == '\\'; i-- {
 		backslashes++
 	}
-	if escapedQuotes {
-		return backslashes%4 == 1
-	}
-	return backslashes%2 == 0
+	period := 1 << (escapeDepth + 1)
+	want := 1<<escapeDepth - 1
+	return backslashes%period == want
 }
 
 func redactStructuredCookieValues(value string) (string, bool) {

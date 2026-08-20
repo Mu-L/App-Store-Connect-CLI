@@ -564,6 +564,11 @@ status: failed`,
 			want:  "? password\n: [REDACTED]\nstatus: failed",
 		},
 		{
+			name:  "YAML explicit credential key with intervening comments",
+			input: "? password\n# context\n\n: opaque-explicit-secret\nstatus: failed",
+			want:  "? password\n# context\n\n: [REDACTED]\nstatus: failed",
+		},
+		{
 			name:  "tagged YAML explicit credential key",
 			input: "? !!str password\n: opaque-tagged-explicit-secret\nstatus: failed",
 			want:  "? !!str password\n: [REDACTED]\nstatus: failed",
@@ -988,6 +993,11 @@ status: failed`,
 			name:  "escaped JSON unicode escape in credential key",
 			input: `trace {\"pass\\u0077ord\":\"opaque-escaped-unicode-secret\",\"status\":\"failed\"}`,
 			want:  `trace {\"pass\\u0077ord\":\"[REDACTED]\",\"status\":\"failed\"}`,
+		},
+		{
+			name:  "double escaped JSON unicode escape in credential key",
+			input: `trace {\\\"pass\\\\u0077ord\\\":\\\"opaque-double-escaped-secret\\\",\\\"status\\\":\\\"failed\\\"}`,
+			want:  `trace {\\\"pass\\\\u0077ord\\\":\\\"[REDACTED]\\\",\\\"status\\\":\\\"failed\\\"}`,
 		},
 		{
 			name:  "prefixed JSON assignments",
@@ -1944,14 +1954,15 @@ func TestSnitchDryRunRedactsTOMLAndEscapedJSONCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"toml-multiline-secret", "json-unicode-key-secret", "escaped-json-unicode-key-secret", "toml-inline-sensitive", "toml-array-sensitive", "toml-key-sensitive", "yaml-key-sensitive"}
+	secrets := []string{"toml-multiline-secret", "json-unicode-key-secret", "escaped-json-unicode-key-secret", "toml-inline-sensitive", "toml-array-sensitive", "toml-key-sensitive", "yaml-key-sensitive", "double-escaped-json-secret"}
 	repro := "password = \"\"\"opaque-head\n" + secrets[0] + "\"\"\"\nstatus = \"failed\"\n" +
 		`{"pass\u0077ord":"` + secrets[1] + `","status":"failed"}` + "\n" +
 		`trace {\"pass\\u0077ord\":\"` + secrets[2] + `\",\"status\":\"failed\"}` + "\n" +
 		`password = { value = "` + secrets[3] + `", nested = { label = "]" } }` + "\n" +
 		"password = [\n  \"" + secrets[4] + "\",\n  { value = \"nested\" },\n]\n" +
 		`"pass\u0077ord" = "` + secrets[5] + `"` + "\n" +
-		`"pass\u0077ord": |` + "\n  " + secrets[6] + "\nstatus: failed"
+		`"pass\u0077ord": |` + "\n  " + secrets[6] + "\nstatus: failed\n" +
+		`trace {\\\"pass\\\\u0077ord\\\":\\\"` + secrets[7] + `\\\",\\\"status\\\":\\\"failed\\\"}`
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
@@ -1977,6 +1988,7 @@ func TestSnitchDryRunRedactsTOMLAndEscapedJSONCredentials(t *testing.T) {
 		"password = [REDACTED]\nstatus = \"failed\"",
 		`{"pass\u0077ord":"[REDACTED]","status":"failed"}`,
 		`trace {\"pass\\u0077ord\":\"[REDACTED]\",\"status\":\"failed\"}`,
+		`trace {\\\"pass\\\\u0077ord\\\":\\\"[REDACTED]\\\",\\\"status\\\":\\\"failed\\\"}`,
 		`password = [REDACTED]`,
 		`"pass\u0077ord" = [REDACTED]`,
 		`"pass\u0077ord": [REDACTED]`,
@@ -2253,23 +2265,26 @@ func TestSnitchDryRunRedactsYAMLCredentialAliasMappingKey(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	const secret = "yaml-alias-key-secret"
+	const aliasSecret = "yaml-alias-key-secret"
+	const explicitSecret = "yaml-explicit-comment-secret"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--actual", "key: &s api_key\n*s: "+secret+"\nstatus: failed",
+		"--actual", "key: &s api_key\n*s: "+aliasSecret+"\n? password\n# context\n\n: "+explicitSecret+"\nstatus: failed",
 		"YAML alias credential key redaction probe",
 	)
 	if err != nil {
 		t.Fatalf("run snitch: %v", err)
 	}
-	if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
-		t.Fatalf("dry run leaked %q: stdout=%q stderr=%q", secret, stdout, stderr)
+	for _, secret := range []string{aliasSecret, explicitSecret} {
+		if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+			t.Fatalf("dry run leaked %q: stdout=%q stderr=%q", secret, stdout, stderr)
+		}
 	}
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
 	}
-	for _, want := range []string{"key: &s api_key", "*s: [REDACTED]", "status: failed"} {
+	for _, want := range []string{"key: &s api_key", "*s: [REDACTED]", "? password\n# context\n\n: [REDACTED]", "status: failed"} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 		}
