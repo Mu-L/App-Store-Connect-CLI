@@ -30,6 +30,9 @@ const (
 	tokenLifetime = 10 * time.Minute
 	// jwtRefreshSkew refreshes a token a bit early to avoid edge-of-expiry races.
 	jwtRefreshSkew = 30 * time.Second
+	// jwtIssuedAtSkew backdates the issued-at claim so a client clock running
+	// ahead of Apple's does not produce a token rejected as issued in the future.
+	jwtIssuedAtSkew = 60 * time.Second
 
 	// Retry defaults
 	DefaultMaxRetries = 3

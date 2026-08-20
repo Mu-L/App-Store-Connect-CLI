@@ -58,6 +58,21 @@ func limitScreenshotUploadFiles(files []string, maxScreenshots int, source strin
 	return files, nil
 }
 
+// validateScreenshotFanoutAssets runs the localization-scoped upload preflight
+// over every collected locale group. Fan-out selection only compares decoded
+// dimensions, so this is where a file whose encoded format contradicts its
+// extension is caught. It must run before any client or API work: with
+// --replace, the upload deletes a locale's existing screenshots first, and a
+// file rejected later would cost the operator those screenshots.
+func validateScreenshotFanoutAssets(localeAssets []screenshotLocaleAssetFiles, apiDisplayType string) error {
+	for _, item := range localeAssets {
+		if err := validateScreenshotDimensions(item.Files, apiDisplayType); err != nil {
+			return fmt.Errorf("locale %s: %w", item.Locale, err)
+		}
+	}
+	return nil
+}
+
 func limitScreenshotFanoutUploadFiles(localeAssets []screenshotLocaleAssetFiles, maxScreenshots int) ([]screenshotLocaleAssetFiles, error) {
 	limited := make([]screenshotLocaleAssetFiles, 0, len(localeAssets))
 	for _, item := range localeAssets {
