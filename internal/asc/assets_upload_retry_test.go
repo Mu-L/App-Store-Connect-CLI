@@ -151,6 +151,12 @@ func TestUploadAssetFromFileHonorsRetryAfterHeader(t *testing.T) {
 	if message := err.Error(); !strings.Contains(message, "retry cap") || !strings.Contains(message, "context deadline") {
 		t.Fatalf("expected the cap and context budget in the error, got %v", err)
 	}
+	if strings.Contains(err.Error(), "App Store Connect") {
+		t.Fatalf("expected external upload failure to avoid App Store Connect attribution, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "upload server") {
+		t.Fatalf("expected external upload source in the error, got %v", err)
+	}
 }
 
 func TestUploadAssetFromFileDoesNotReplayNonPUTOperations(t *testing.T) {

@@ -429,12 +429,12 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 				if delay >= remaining {
 					if delay > opts.MaxDelay {
 						return zero, fmt.Errorf(
-							"%s: App Store Connect asked to wait %s, exceeding the %s retry cap and the context deadline (%s remaining); raise ASC_MAX_DELAY and the request timeout to wait longer: %w",
+							"%s: upstream server asked to wait %s, exceeding the %s retry cap and the context deadline (%s remaining); raise ASC_MAX_DELAY and the request timeout to wait longer: %w",
 							retryDelayCategory(err), delay, opts.MaxDelay, remaining.Round(time.Millisecond), err,
 						)
 					}
 					return zero, fmt.Errorf(
-						"%s: App Store Connect asked to wait %s, which cannot be honored before the context deadline (%s remaining): %w",
+						"%s: upstream server asked to wait %s, which cannot be honored before the context deadline (%s remaining): %w",
 						retryDelayCategory(err), delay, remaining.Round(time.Millisecond), err,
 					)
 				}
@@ -463,7 +463,7 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 			// context deadline, so report both numbers now.
 			category := retryDelayCategory(err)
 			return zero, fmt.Errorf(
-				"%s: App Store Connect asked to wait %s, exceeding the %s retry cap (raise ASC_MAX_DELAY to wait longer): %w",
+				"%s: upstream server asked to wait %s, exceeding the %s retry cap (raise ASC_MAX_DELAY to wait longer): %w",
 				category, delay, opts.MaxDelay, err,
 			)
 		}

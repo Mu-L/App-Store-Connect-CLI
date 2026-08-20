@@ -391,20 +391,24 @@ func shouldLimitMutatingMethod(method string) bool {
 }
 
 func buildRetryableError(statusCode int, retryAfter time.Duration, respBody []byte) error {
+	return buildRetryableErrorWithSource(statusCode, retryAfter, respBody, "App Store Connect")
+}
+
+func buildRetryableErrorWithSource(statusCode int, retryAfter time.Duration, respBody []byte, source string) error {
 	base := "API request failed"
 	switch statusCode {
 	case http.StatusRequestTimeout:
-		base = "App Store Connect request timeout"
+		base = fmt.Sprintf("%s request timeout", source)
 	case http.StatusTooManyRequests:
-		base = "rate limited by App Store Connect"
+		base = fmt.Sprintf("rate limited by %s", source)
 	case http.StatusInternalServerError:
-		base = "App Store Connect internal server error"
+		base = fmt.Sprintf("%s internal server error", source)
 	case http.StatusBadGateway:
-		base = "App Store Connect bad gateway"
+		base = fmt.Sprintf("%s bad gateway", source)
 	case http.StatusServiceUnavailable:
-		base = "App Store Connect service unavailable"
+		base = fmt.Sprintf("%s service unavailable", source)
 	case http.StatusGatewayTimeout:
-		base = "App Store Connect gateway timeout"
+		base = fmt.Sprintf("%s gateway timeout", source)
 	}
 
 	message := fmt.Sprintf("%s (status %d)", base, statusCode)
