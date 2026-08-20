@@ -246,39 +246,57 @@ func TestProductPagesScreenshotSetIncludeScreenshotsRequiresFullLocalizationList
 	const nextURL = "https://api.appstoreconnect.apple.com/v1/appCustomProductPageLocalizations/loc-1/appScreenshotSets?cursor=next"
 
 	cases := []struct {
-		name       string
-		path       []string
-		next       string
-		wantStderr string
+		name           string
+		path           []string
+		localizationID string
+		next           string
+		wantStderr     string
 	}{
 		{
-			name:       "custom pages requires paginate",
+			name:       "custom pages requires localization id for expansion",
 			path:       []string{"product-pages", "custom-pages", "localizations", "screenshot-sets", "list"},
-			wantStderr: "custom-pages localizations screenshot-sets list: --include-screenshots requires --paginate",
+			wantStderr: "Error: --localization-id is required",
 		},
 		{
-			name:       "custom pages rejects next",
-			path:       []string{"product-pages", "custom-pages", "localizations", "screenshot-sets", "list"},
-			next:       nextURL,
-			wantStderr: "custom-pages localizations screenshot-sets list: --include-screenshots cannot be combined with --next",
+			name:           "custom pages requires paginate",
+			path:           []string{"product-pages", "custom-pages", "localizations", "screenshot-sets", "list"},
+			localizationID: "loc-1",
+			wantStderr:     "custom-pages localizations screenshot-sets list: --include-screenshots requires --paginate",
 		},
 		{
-			name:       "treatment requires paginate",
+			name:           "custom pages rejects next",
+			path:           []string{"product-pages", "custom-pages", "localizations", "screenshot-sets", "list"},
+			localizationID: "loc-1",
+			next:           nextURL,
+			wantStderr:     "custom-pages localizations screenshot-sets list: --include-screenshots cannot be combined with --next",
+		},
+		{
+			name:       "treatment requires localization id for expansion",
 			path:       []string{"product-pages", "experiments", "treatments", "localizations", "screenshot-sets", "list"},
-			wantStderr: "experiments treatments localizations screenshot-sets list: --include-screenshots requires --paginate",
+			wantStderr: "Error: --localization-id is required",
 		},
 		{
-			name:       "treatment rejects next",
-			path:       []string{"product-pages", "experiments", "treatments", "localizations", "screenshot-sets", "list"},
-			next:       nextURL,
-			wantStderr: "experiments treatments localizations screenshot-sets list: --include-screenshots cannot be combined with --next",
+			name:           "treatment requires paginate",
+			path:           []string{"product-pages", "experiments", "treatments", "localizations", "screenshot-sets", "list"},
+			localizationID: "loc-1",
+			wantStderr:     "experiments treatments localizations screenshot-sets list: --include-screenshots requires --paginate",
+		},
+		{
+			name:           "treatment rejects next",
+			path:           []string{"product-pages", "experiments", "treatments", "localizations", "screenshot-sets", "list"},
+			localizationID: "loc-1",
+			next:           nextURL,
+			wantStderr:     "experiments treatments localizations screenshot-sets list: --include-screenshots cannot be combined with --next",
 		},
 	}
 
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			root := RootCommand("1.2.3")
-			args := append(append([]string{}, test.path...), "--localization-id", "loc-1", "--include-screenshots")
+			args := append(append([]string{}, test.path...), "--include-screenshots")
+			if test.localizationID != "" {
+				args = append(args, "--localization-id", test.localizationID)
+			}
 			if test.next != "" {
 				args = append(args, "--paginate", "--next", test.next)
 			}

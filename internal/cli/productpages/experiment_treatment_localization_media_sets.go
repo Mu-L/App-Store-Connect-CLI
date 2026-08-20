@@ -168,6 +168,7 @@ Examples:
 			trimmedNext := strings.TrimSpace(*next)
 			if *includeScreenshots {
 				if trimmedID == "" {
+					fmt.Fprintln(os.Stderr, "Error: --localization-id is required")
 					return shared.MissingRequiredUsageError("--localization-id")
 				}
 				if trimmedNext != "" {
@@ -220,7 +221,7 @@ Examples:
 					if !ok {
 						return fmt.Errorf("experiments treatments localizations screenshot-sets list: unexpected response type %T", resp)
 					}
-					result, err := screenshotSetListResult(requestCtx, client, trimmedID, setsResponse)
+					result, err := screenshotSetListResult(ctx, client, trimmedID, setsResponse)
 					if err != nil {
 						return fmt.Errorf("experiments treatments localizations screenshot-sets list: %w", err)
 					}
@@ -235,7 +236,7 @@ Examples:
 				return fmt.Errorf("experiments treatments localizations screenshot-sets list: failed to fetch: %w", err)
 			}
 			if *includeScreenshots {
-				result, err := screenshotSetListResult(requestCtx, client, trimmedID, resp)
+				result, err := screenshotSetListResult(ctx, client, trimmedID, resp)
 				if err != nil {
 					return fmt.Errorf("experiments treatments localizations screenshot-sets list: %w", err)
 				}
