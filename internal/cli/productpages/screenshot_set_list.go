@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 func screenshotSetListResult(ctx context.Context, client *asc.Client, localizationID string, response *asc.AppScreenshotSetsResponse) (*asc.AppScreenshotSetListResult, error) {
@@ -13,7 +14,9 @@ func screenshotSetListResult(ctx context.Context, client *asc.Client, localizati
 		Sets:           make([]asc.AppScreenshotSetWithScreenshots, 0, len(response.Data)),
 	}
 	for _, set := range response.Data {
-		screenshots, err := client.GetAppScreenshots(ctx, set.ID)
+		requestCtx, cancel := shared.ContextWithTimeout(ctx)
+		screenshots, err := client.GetAppScreenshots(requestCtx, set.ID)
+		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch screenshots for set %s: %w", set.ID, err)
 		}
