@@ -1480,6 +1480,16 @@ status: failed`,
 			want:  `AWS_SECRET_ACCESS_KEY=[REDACTED] MY_CLIENT_SECRET=[REDACTED]`,
 		},
 		{
+			name:  "secret key environment assignments",
+			input: `SECRET_KEY=framework-secret STRIPE_SECRET_KEY=payment-secret SECRET_KEY_BASE=rails-secret`,
+			want:  `SECRET_KEY=[REDACTED] STRIPE_SECRET_KEY=[REDACTED] SECRET_KEY_BASE=[REDACTED]`,
+		},
+		{
+			name:  "secret key flag",
+			input: `tool --secret-key opaque-cli-secret --status failed`,
+			want:  `tool --secret-key [REDACTED] --status failed`,
+		},
+		{
 			name:  "scoped base64 private key assignments",
 			input: `ASC_STOREKIT_PRIVATE_KEY_B64=c3RvcmVraXQtcHJpdmF0ZS1rZXk= ASC_ADS_PRIVATE_KEY_B64=YWRzLXByaXZhdGUta2V5`,
 			want:  `ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED] ASC_ADS_PRIVATE_KEY_B64=[REDACTED]`,
@@ -1528,6 +1538,11 @@ status: failed`,
 			name:  "prefixed JSON assignments",
 			input: `response {"AWS_SECRET_ACCESS_KEY":"cloud-secret-value","MY_CLIENT_SECRET":"client secret value"}`,
 			want:  `response {"AWS_SECRET_ACCESS_KEY":"[REDACTED]","MY_CLIENT_SECRET":"[REDACTED]"}`,
+		},
+		{
+			name:  "secret key JSON assignments",
+			input: `response {"secret_key":"opaque-json-secret","secret_key_base":"opaque-base-secret","status":"failed"}`,
+			want:  `response {"secret_key":"[REDACTED]","secret_key_base":"[REDACTED]","status":"failed"}`,
 		},
 		{
 			name:  "pretty-printed JSON assignment",
