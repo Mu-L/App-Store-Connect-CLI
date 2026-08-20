@@ -241,6 +241,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*cookie[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
+		replacement: `${1}` + redactionMarker,
+	},
+	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-u|--(?:proxy-)?user)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},

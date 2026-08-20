@@ -516,6 +516,11 @@ status = "failed"`,
 			want:  "oauth2-bearer = [REDACTED]\nurl = \"https://example.test\"",
 		},
 		{
+			name:  "curl config cookie data credential",
+			input: "cookie = \"myacinfo=opaque-cookie-secret\"\nurl = \"https://example.test\"",
+			want:  "cookie = [REDACTED]\nurl = \"https://example.test\"",
+		},
+		{
 			name: "YAML escaped double quoted credential key block scalar",
 			input: `"pass\u0077ord": |
   opaque-yaml-key-secret
@@ -1148,6 +1153,7 @@ func TestRedactSensitiveTextPreservesCurlCookieFilenames(t *testing.T) {
 		`curl --cookie=./cookies.txt https://example.test`,
 		`curl -b "$TMPDIR/cookies.jar" https://example.test`,
 		`curl -b./cookies.jar https://example.test`,
+		`cookie = "./cookies.txt"`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
@@ -1533,12 +1539,12 @@ func TestSnitchDryRunRedactsContinuedFlagAndCurlConfigCredentials(t *testing.T) 
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"continued-flag-secret", "curl-user-secret", "curl-bearer-secret"}
+	secrets := []string{"continued-flag-secret", "curl-user-secret", "curl-bearer-secret", "curl-cookie-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", "asc deploy --password \\\n  "+secrets[0]+" --verbose",
-		"--actual", "user = \"alice:"+secrets[1]+"\"\noauth2-bearer = \""+secrets[2]+"\"\nurl = \"https://example.test\"",
+		"--actual", "user = \"alice:"+secrets[1]+"\"\noauth2-bearer = \""+secrets[2]+"\"\ncookie = \"myacinfo="+secrets[3]+"\"\nurl = \"https://example.test\"",
 		"continued flag and curl config credential redaction probe",
 	)
 	if err != nil {
@@ -1560,6 +1566,7 @@ func TestSnitchDryRunRedactsContinuedFlagAndCurlConfigCredentials(t *testing.T) 
 		"asc deploy --password \\\n  [REDACTED] --verbose",
 		"user = [REDACTED]",
 		"oauth2-bearer = [REDACTED]",
+		"cookie = [REDACTED]",
 		"url = \"https://example.test\"",
 	} {
 		if !strings.Contains(stderr, want) {
