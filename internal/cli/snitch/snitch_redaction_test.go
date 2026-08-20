@@ -580,6 +580,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `PASSWORD=[REDACTED]`,
 		},
 		{
+			name:  "uppercase session environment credential",
+			input: `AUTOMATION_SESSION=opaque-session-value`,
+			want:  `AUTOMATION_SESSION=[REDACTED]`,
+		},
+		{
+			name:  "uppercase session environment credential with spaces",
+			input: `AUTOMATION_SESSION=opaque session tail`,
+			want:  `AUTOMATION_SESSION=[REDACTED]`,
+		},
+		{
 			name:  "unquoted secret flag before conditional operator",
 			input: `asc deploy --password supersecret && echo next`,
 			want:  `asc deploy --password [REDACTED] && echo next`,
@@ -923,6 +933,11 @@ status: failed`,
 			name:  "space-separated secret flag",
 			input: `asc web sandbox create --email "user@example.test" --password "Passwordtest1" --territory "USA"`,
 			want:  `asc web sandbox create --email "user@example.test" --password [REDACTED] --territory "USA"`,
+		},
+		{
+			name:  "prefixed credential flags",
+			input: `tool --database-password opaque-db-secret --github-token=opaque-token --password-file ./password.txt`,
+			want:  `tool --database-password [REDACTED] --github-token=[REDACTED] --password-file ./password.txt`,
 		},
 		{
 			name:  "fully quoted sensitive flag",
@@ -1526,6 +1541,7 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 		`set STATUS=opaque status value & echo done`,
 		`$description = ConvertTo-SecureString "public value" -AsPlainText -Force`,
 		"asc signing sync --notes @'\npublic head\npublic tail\n'@ --verbose",
+		`AUTOMATION_SESSION_FILE=/tmp/session.txt`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
@@ -2718,6 +2734,44 @@ func TestSnitchDryRunRedactsCustomCurlHeadersAndSecureStringSwitches(t *testing.
 		`curl --header "X-Auth-Token: [REDACTED]" https://example.test`,
 		`$password = [REDACTED] -Force`,
 		`$client_secret = [REDACTED] -AsPlainText`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsPrefixedFlagsAndSessionEnvironmentCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"opaque-database-password",
+		"opaque-service-token",
+		"opaque-automation-session",
+	}
+	repro := `tool --database-password ` + secrets[0] + ` --github-token=` + secrets[1] + ` --password-file ./password.txt` + "\n" +
+		`AUTOMATION_SESSION=` + secrets[2]
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"prefixed flag and session environment redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+			t.Fatalf("dry run leaked %q: stdout=%q stderr=%q", secret, stdout, stderr)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		`tool --database-password [REDACTED] --github-token=[REDACTED] --password-file ./password.txt`,
+		`AUTOMATION_SESSION=[REDACTED]`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

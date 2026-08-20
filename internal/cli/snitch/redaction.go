@@ -19,7 +19,7 @@ const (
 	sensitiveAssignmentName     = `(?:_auth|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|client[_-]?key[_-]?data|app[_-]?secret|webhook[_-]?secret|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passphrase|passwd|pwd|secret|token)`
 	sensitivePrefixedName       = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
 	tomlQuotedSensitiveKey      = `(?:"` + sensitivePrefixedName + `"|'` + sensitivePrefixedName + `')`
-	sensitiveFlagName           = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook[_-]?header|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passphrase|passwd|pwd|pass|token)`
+	sensitiveFlagName           = `(?:(?:[a-z0-9]+[_-])+` + sensitiveAssignmentName + `|oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook[_-]?header|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passphrase|passwd|pwd|pass|token)`
 	sensitiveOrSecretFlagName   = `(?:` + sensitiveFlagName + `|secret)`
 	powerShellVariableScope     = `(?:(?:env|global|local|private|script|using):)`
 	powerShellSensitiveVariable = `(?:\$(?:(?:` + powerShellVariableScope + `)?` + sensitivePrefixedName + `\b|\{(?:` + powerShellVariableScope + `)?` + sensitivePrefixedName + `\}))`
@@ -70,7 +70,10 @@ const (
 	passwordFileHostField       = `(?:\\[:\\]|[^#:\\\r\n])(?:\\[:\\]|[^:\\\r\n])*`
 )
 
-const powerShellSecureStringSwitch = `(?:(?:-AsPlainText|-Force)(?:[ \t]+|[ \t]*:[ \t]*\$?(?:true|false)[ \t]+))`
+const (
+	powerShellSecureStringSwitch    = `(?:(?:-AsPlainText|-Force)(?:[ \t]+|[ \t]*:[ \t]*\$?(?:true|false)[ \t]+))`
+	uppercaseSessionEnvironmentName = `(?:[A-Z0-9]+_)+SESSION`
+)
 
 type redactionRule struct {
 	pattern     *regexp.Regexp
@@ -121,7 +124,7 @@ var (
 	powerShellCollectionCredential     = regexp.MustCompile(`(?i)(?:^|\s)` + powerShellSensitiveVariable + `[ \t]*=[ \t]*(@[({])`)
 	commandPromptQuotedSetAssignment   = regexp.MustCompile(`(?im)(?:^|[ \t;&|])set[ \t]+"` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
 	commandPromptUnquotedSetAssignment = regexp.MustCompile(`(?im)(?:^|[ \t;&|()])set[ \t]+` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
-	bareEnvironmentDumpCredential      = regexp.MustCompile(`(?im)^([ \t]*(?:export[ \t]+)?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)([^\s"'\\;&|<>()]+(?:[ \t]+[^\s"'\\;&|<>()]+)+)([ \t]*\r?)$`)
+	bareEnvironmentDumpCredential      = regexp.MustCompile(`(?im)^([ \t]*(?:export[ \t]+)?(?:` + sensitivePrefixedName + `|(?-i:` + uppercaseSessionEnvironmentName + `))\b[ \t]*=[ \t]*)([^\s"'\\;&|<>()]+(?:[ \t]+[^\s"'\\;&|<>()]+)+)([ \t]*\r?)$`)
 	shellAssignmentWord                = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	curlConfigCertificateEntry         = regexp.MustCompile(`(?im)^([ \t]*(?:cert|proxy-cert)` + curlConfigSeparator + `)`)
 	xmlCredentialElementStart          = regexp.MustCompile(`(?i)<(?:[a-z_][a-z0-9_.-]*:)?` + sensitivePrefixedName + `(?:[ \t\r\n/>])`)
@@ -155,6 +158,10 @@ var registryAuthValueRedactionRules = []redactionRule{
 // unquoted fragments cannot leak, and an unmatched quote in an earlier log
 // line cannot claim a later command's opening quote as its closer.
 var singleLineShellWordRedactionRules = []redactionRule{
+	{
+		pattern:     regexp.MustCompile(`(?m)(^|[ \t;&|])(` + uppercaseSessionEnvironmentName + `[ \t]*=[ \t]*)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`),
+		replacement: `${1}${2}` + redactionMarker + `${3}`,
+	},
 	{
 		pattern:     regexp.MustCompile(`(?im)(^|[ \t;&|])(` + powerShellSensitiveVariable + `[ \t]*=[ \t]*)(?:&[ \t]+)?(?:[a-z0-9_.-]+\\)?ConvertTo-SecureString[ \t]+(?:` + powerShellSecureStringSwitch + `)*(?:-String(?:[ \t]+|[ \t]*:[ \t]*))?` + fishShellWord + `(` + singleLineShellTerminator + `)`),
 		replacement: `${1}${2}` + redactionMarker + `${3}`,
