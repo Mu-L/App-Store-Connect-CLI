@@ -2030,6 +2030,21 @@ status: failed`,
 			want:  `doas -u build command -p keytool -list -storepass [REDACTED]`,
 		},
 		{
+			name:  "Docker login short password",
+			input: `docker login -u build -p opaque-docker-secret registry.example`,
+			want:  `docker login -u build -p [REDACTED] registry.example`,
+		},
+		{
+			name:  "Docker login short password with global option and wrapper",
+			input: `sudo -u build docker --config /tmp/docker login --username build -p=opaque-docker-secret registry.example`,
+			want:  `sudo -u build docker --config /tmp/docker login --username build -p=[REDACTED] registry.example`,
+		},
+		{
+			name:  "Windows Docker login short password",
+			input: `C:\Docker\docker.exe login -p "opaque docker secret" registry.example`,
+			want:  `C:\Docker\docker.exe login -p [REDACTED] registry.example`,
+		},
+		{
 			name:  "scoped base64 private key assignments",
 			input: `ASC_STOREKIT_PRIVATE_KEY_B64=c3RvcmVraXQtcHJpdmF0ZS1rZXk= ASC_ADS_PRIVATE_KEY_B64=YWRzLXByaXZhdGUta2V5`,
 			want:  `ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED] ASC_ADS_PRIVATE_KEY_B64=[REDACTED]`,
@@ -2399,6 +2414,23 @@ func TestRedactSensitiveTextScopesKeytoolCredentialArguments(t *testing.T) {
 		`echo keytool.exe -list -storepass:env PUBLIC_VALUE`,
 		`tool -storepass public-value`,
 		`keytool -list -keystore public-value`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextScopesDockerLoginCredentialArguments(t *testing.T) {
+	for _, input := range []string{
+		`echo docker login -p public-value registry.example`,
+		`sudo echo docker login -p public-value registry.example`,
+		`docker run -p 8080:80 image`,
+		`docker run image login -p public-value`,
+		`docker login --password-stdin registry.example`,
+		`docker --version login -p public-value registry.example`,
+		`tool login -p public-value`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {

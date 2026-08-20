@@ -122,6 +122,7 @@ var (
 	}
 	opensslCredentialFlagPattern       = newCommandCredentialFlagPattern("passin", "passout", "passcerts")
 	keytoolCredentialFlagPattern       = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass", "new", "srcstorepass", "deststorepass", "srckeypass", "destkeypass")
+	dockerLoginCredentialFlagPattern   = newCommandCredentialFlagPattern("p")
 	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	rawRegistryAuthsPattern            = regexp.MustCompile(`(?i)"auths"[ \t\r\n]*:[ \t\r\n]*\{`)
@@ -474,6 +475,10 @@ func redactSensitiveText(value string) (string, bool) {
 		changed = true
 	}
 	if next, keytoolChanged := redactKeytoolCredentialArguments(redacted); keytoolChanged {
+		redacted = next
+		changed = true
+	}
+	if next, dockerChanged := redactDockerLoginCredentialArguments(redacted); dockerChanged {
 		redacted = next
 		changed = true
 	}
@@ -4369,6 +4374,101 @@ func redactOpenSSLCredentialArguments(value string) (string, bool) {
 
 func redactKeytoolCredentialArguments(value string) (string, bool) {
 	return redactNamedCommandCredentialArguments(value, "keytool", keytoolCredentialFlagPattern)
+}
+
+func redactDockerLoginCredentialArguments(value string) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		if isDockerLoginCommand(command) {
+			redacted := dockerLoginCredentialFlagPattern.ReplaceAllString(command, `${1}${2}`+redactionMarker)
+			if redacted != command {
+				result = result[:start] + redacted + result[end:]
+				command = redacted
+				changed = true
+			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+func isDockerLoginCommand(command string) bool {
+	normalized := strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(command)
+	words := strings.Fields(normalized)
+	for index, word := range words {
+		baseName := commandBaseName(word)
+		if (baseName != "docker" && baseName != "docker.exe") || !isCredentialCommandPrefix(words[:index]) {
+			continue
+		}
+		subcommand, ok := dockerSubcommand(words[index+1:])
+		return ok && subcommand == "login"
+	}
+	return false
+}
+
+func dockerSubcommand(words []string) (string, bool) {
+	for len(words) > 0 {
+		word := strings.Trim(words[0], `"'`)
+		if word == "--" {
+			words = words[1:]
+			break
+		}
+		if !strings.HasPrefix(word, "-") || word == "-" {
+			return word, true
+		}
+
+		requiresArgument, allowed := dockerGlobalOption(word)
+		if !allowed {
+			return "", false
+		}
+		words = words[1:]
+		if requiresArgument {
+			if len(words) == 0 {
+				return "", false
+			}
+			words = words[1:]
+		}
+	}
+	if len(words) == 0 {
+		return "", false
+	}
+	return strings.Trim(words[0], `"'`), true
+}
+
+func dockerGlobalOption(option string) (bool, bool) {
+	if strings.HasPrefix(option, "--") {
+		name, _, attached := strings.Cut(option, "=")
+		switch name {
+		case "--config", "--context", "--host", "--log-level", "--tlscacert", "--tlscert", "--tlskey":
+			return !attached, true
+		case "--debug", "--tls", "--tlsverify":
+			return false, true
+		default:
+			return false, false
+		}
+	}
+	if len(option) < 2 {
+		return false, false
+	}
+	switch option[1] {
+	case 'c', 'H', 'l':
+		return len(option) == 2, true
+	case 'D':
+		return false, len(option) == 2
+	default:
+		return false, false
+	}
 }
 
 func redactNamedCommandCredentialArguments(value, commandName string, pattern *regexp.Regexp) (string, bool) {
