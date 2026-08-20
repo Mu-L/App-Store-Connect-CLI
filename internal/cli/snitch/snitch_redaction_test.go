@@ -63,6 +63,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "Authorization: [REDACTED]\r\nstatus: failed",
 		},
 		{
+			name:  "folded cookie header",
+			input: "< Cookie: dslang=US-EN;\r\n myacinfo=opaque-tail-secret\r\nstatus: failed",
+			want:  "< Cookie: [REDACTED]\r\nstatus: failed",
+		},
+		{
+			name:  "folded embedded session header",
+			input: "request failed with scnt: opaque-head\r\n opaque-tail-secret\r\nstatus: failed",
+			want:  "request failed with scnt: [REDACTED]\r\nstatus: failed",
+		},
+		{
 			name:  "cookie request header",
 			input: "Cookie: myacinfo=super-session-secret; dslang=US-EN",
 			want:  "Cookie: [REDACTED]",
@@ -2062,17 +2072,26 @@ func TestSnitchDryRunRedactsPrefixedCredentialHeaders(t *testing.T) {
 	}
 }
 
-func TestSnitchDryRunRedactsCookieJarAndFoldedAuthorizationValues(t *testing.T) {
+func TestSnitchDryRunRedactsCookieJarAndFoldedHeaderValues(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"cookie-jar-secret", "folded-head-secret", "folded-tail-secret"}
+	secrets := []string{
+		"cookie-jar-secret",
+		"folded-authorization-head-secret",
+		"folded-authorization-tail-secret",
+		"folded-cookie-tail-secret",
+		"folded-session-head-secret",
+		"folded-session-tail-secret",
+	}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--actual", ".appstoreconnect.apple.com\tTRUE\t/\tTRUE\t2147483647\tmyacinfo\t"+secrets[0]+"\n"+
-			"Authorization: Bearer "+secrets[1]+"\r\n "+secrets[2]+"\r\nstatus: failed",
-		"cookie jar and folded authorization redaction probe",
+			"Authorization: Bearer "+secrets[1]+"\r\n "+secrets[2]+"\r\nstatus: failed\r\n"+
+			"< Cookie: dslang=US-EN;\r\n myacinfo="+secrets[3]+"\r\ncookie status: failed\r\n"+
+			"request failed with scnt: "+secrets[4]+"\r\n "+secrets[5]+"\r\nsession status: failed",
+		"cookie jar and folded header redaction probe",
 	)
 	if err != nil {
 		t.Fatalf("run snitch: %v", err)
@@ -2093,6 +2112,10 @@ func TestSnitchDryRunRedactsCookieJarAndFoldedAuthorizationValues(t *testing.T) 
 		".appstoreconnect.apple.com TRUE / TRUE 2147483647 myacinfo [REDACTED]",
 		"Authorization: [REDACTED]",
 		"status: failed",
+		"< Cookie: [REDACTED]",
+		"cookie status: failed",
+		"request failed with scnt: [REDACTED]",
+		"session status: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
