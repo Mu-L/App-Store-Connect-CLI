@@ -1737,14 +1737,14 @@ func TestRun_CommonWrongCommandPathRecoveryDoesNotInterceptCanonicalHelp(t *test
 				t.Fatalf("Run(%q) exit code = %d, want %d", args, code, ExitSuccess)
 			}
 		})
-		if stdout != "" {
-			t.Fatalf("Run(%q) stdout = %q, want empty", args, stdout)
+		if stderr != "" {
+			t.Fatalf("Run(%q) stderr = %q, want empty", args, stderr)
 		}
-		if strings.Contains(stderr, "Try:") {
-			t.Fatalf("Run(%q) was intercepted by recovery: %q", args, stderr)
+		if strings.Contains(stdout, "Try:") {
+			t.Fatalf("Run(%q) was intercepted by recovery: %q", args, stdout)
 		}
-		if !strings.Contains(stderr, "USAGE") {
-			t.Fatalf("Run(%q) stderr = %q, want command help", args, stderr)
+		if !strings.Contains(stdout, "USAGE") {
+			t.Fatalf("Run(%q) stdout = %q, want command help", args, stdout)
 		}
 	}
 }

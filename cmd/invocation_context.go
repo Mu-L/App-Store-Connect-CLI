@@ -610,7 +610,13 @@ func preservesLegacyChild(analysis invocationAnalysis, commandName string) bool 
 }
 
 func isHelpToken(token string) bool {
-	return token == "-h" || token == "--help" || strings.HasPrefix(token, "--help=")
+	if token == "" || token == "-" || token[0] != '-' {
+		return false
+	}
+	name := token[1:]
+	name = strings.TrimPrefix(name, "-")
+	name, _, _ = strings.Cut(name, "=")
+	return name == "h" || name == "help"
 }
 
 func parseFailureContext(analysis invocationAnalysis) telemetry.EventContext {
