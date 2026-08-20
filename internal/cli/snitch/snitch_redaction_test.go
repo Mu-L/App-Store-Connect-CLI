@@ -27,6 +27,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl -H 'Authorization: [REDACTED]' https://example.test`,
 		},
 		{
+			name:  "compound quoted authorization header argument",
+			input: `curl -H 'Authorization: Bearer 'opaque-secret https://example.test`,
+			want:  `curl -H "Authorization: [REDACTED]" https://example.test`,
+		},
+		{
+			name:  "compound authorization header name and value",
+			input: `curl --header Auth'oriz'ation:'Bearer opaque-secret' https://example.test`,
+			want:  `curl --header "Authorization: [REDACTED]" https://example.test`,
+		},
+		{
 			name:  "parameterized authorization header",
 			input: "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260819/region/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=abcdef0123456789",
 			want:  "Authorization: [REDACTED]",
@@ -402,6 +412,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "XML property list credential string",
 			input: `<plist><dict><key>password</key><string>opaque-plist-secret</string><key>status</key><string>failed</string></dict></plist>`,
 			want:  `<plist><dict><key>password</key><string>[REDACTED]</string><key>status</key><string>failed</string></dict></plist>`,
+		},
+		{
+			name:  "XML property list credential data",
+			input: `<plist><dict><key>password</key><data>b3BhcXVlLXNlY3JldA==</data><key>status</key><string>failed</string></dict></plist>`,
+			want:  `<plist><dict><key>password</key><data>[REDACTED]</data><key>status</key><string>failed</string></dict></plist>`,
+		},
+		{
+			name:  "XML property list credential container",
+			input: `<plist><dict><key>token</key><array><string>first-secret</string><dict><key>value</key><string>second-secret</string></dict></array><key>status</key><string>failed</string></dict></plist>`,
+			want:  `<plist><dict><key>token</key><array>[REDACTED]</array><key>status</key><string>failed</string></dict></plist>`,
 		},
 		{
 			name:  "multiword plain yaml scalar",
@@ -1361,18 +1381,56 @@ func TestSnitchDryRunRedactsMalformedAndCompoundCLISecrets(t *testing.T) {
 	}
 }
 
-func TestSnitchDryRunRedactsPowerShellAndPlistCredentials(t *testing.T) {
+func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const headerSecret = "compound-header-secret"
+	const plistSecret = "plist-credential-value"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "curl -H 'Authorization: Bearer '"+headerSecret+" https://example.test",
+		"--actual", `<plist><dict><key>password</key><data>`+plistSecret+`</data><key>status</key><string>failed</string></dict></plist>`,
+		"compound header and property list credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range []string{headerSecret, plistSecret} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		`curl -H "Authorization: [REDACTED]" https://example.test`,
+		`<key>password</key><data>[REDACTED]</data><key>status</key><string>failed</string>`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsPowerShellAndPlistStringCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
 	const powerShellSecret = "powershell-secret-suffix"
-	const plistSecret = "plist-credential-value"
+	const plistSecret = "plist-string-credential-value"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", "asc signing sync --password opaque` "+powerShellSecret+" --verbose",
 		"--actual", `<plist><dict><key>password</key><string>`+plistSecret+`</string><key>status</key><string>failed</string></dict></plist>`,
-		"shell and property list credential redaction probe",
+		"shell and property list string credential redaction probe",
 	)
 	if err != nil {
 		t.Fatalf("run snitch: %v", err)

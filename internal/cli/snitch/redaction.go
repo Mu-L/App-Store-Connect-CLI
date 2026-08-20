@@ -2,6 +2,7 @@ package snitch
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"regexp"
 	"strconv"
 	"strings"
@@ -71,6 +72,10 @@ var (
 	escapedCredentialObject           = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
 	rawCredentialArray                = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\[`)
 	escapedCredentialArray            = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\[`)
+	credentialHeaderNamePattern       = regexp.MustCompile(`(?i)^` + credentialHeaderName + `$`)
+	curlHeaderOptionStart             = regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)`)
+	completeShellWord                 = regexp.MustCompile(`^(` + fishShellWord + `)(` + singleLineShellTerminator + `)`)
+	plistCredentialKey                = regexp.MustCompile(`(?i)<key>[ \t\r\n]*` + sensitivePrefixedName + `[ \t\r\n]*</key>`)
 	booleanSecretMarker               = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
 	yamlCredentialScalar              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlCredentialMapping             = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
@@ -121,10 +126,6 @@ var singleLineShellWordRedactionRules = []redactionRule{
 }
 
 var sensitiveTextRedactionRules = []redactionRule{
-	{
-		pattern:     regexp.MustCompile(`(?i)(<key>[ \t\r\n]*` + sensitivePrefixedName + `[ \t\r\n]*</key>[ \t\r\n]*<string>)[^<]*(</string[ \t\r\n]*>)`),
-		replacement: `${1}` + redactionMarker + `${2}`,
-	},
 	{
 		pattern:     regexp.MustCompile(`(?s)-----BEGIN[ \t]+(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY(?:[ \t]+BLOCK)?-----.*?-----END[ \t]+(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY(?:[ \t]+BLOCK)?-----`),
 		replacement: privateKeyRedactionMarker,
@@ -305,6 +306,14 @@ var sensitiveTextRedactionRules = []redactionRule{
 
 func redactSensitiveText(value string) (string, bool) {
 	redacted, changed := redactSecretMarkedValues(value)
+	if next, headerChanged := redactCompoundCurlHeaderWords(redacted); headerChanged {
+		redacted = next
+		changed = true
+	}
+	if next, plistChanged := redactPlistCredentialValues(redacted); plistChanged {
+		redacted = next
+		changed = true
+	}
 	redacted, yamlKeyRestorations := normalizeYAMLEscapedCredentialKeys(redacted)
 	if next, tomlValueChanged := redactTOMLCredentialValues(redacted); tomlValueChanged {
 		redacted = next
@@ -372,6 +381,169 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = strings.ReplaceAll(redacted, placeholder, original)
 	}
 	return redacted, changed
+}
+
+func redactCompoundCurlHeaderWords(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		option := curlHeaderOptionStart.FindStringSubmatchIndex(redacted[searchStart:])
+		if option == nil {
+			break
+		}
+
+		valueStart := searchStart + option[1]
+		wordMatch := completeShellWord.FindStringSubmatchIndex(redacted[valueStart:])
+		if wordMatch == nil {
+			searchStart = valueStart
+			continue
+		}
+		wordEnd := valueStart + wordMatch[3]
+		word := redacted[valueStart:wordEnd]
+		if !isCompoundQuotedShellWord(word) {
+			searchStart = wordEnd
+			continue
+		}
+
+		headerName, valid := decodeShellHeaderName(word)
+		if !valid || !credentialHeaderNamePattern.MatchString(headerName) {
+			searchStart = wordEnd
+			continue
+		}
+
+		replacement := `"` + headerName + `: ` + redactionMarker + `"`
+		redacted = redacted[:valueStart] + replacement + redacted[wordEnd:]
+		changed = true
+		searchStart = valueStart + len(replacement)
+	}
+	return redacted, changed
+}
+
+func isCompoundQuotedShellWord(word string) bool {
+	if word == "" || !strings.ContainsAny(word, `"'`) {
+		return false
+	}
+	if word[0] != '\'' && word[0] != '"' {
+		return true
+	}
+
+	quote := word[0]
+	for index := 1; index < len(word); index++ {
+		if quote == '"' && word[index] == '\\' {
+			index++
+			continue
+		}
+		if word[index] == quote {
+			return index != len(word)-1
+		}
+	}
+	return false
+}
+
+func decodeShellHeaderName(word string) (string, bool) {
+	var decoded strings.Builder
+	var quote byte
+	for index := 0; index < len(word); index++ {
+		character := word[index]
+		if quote != 0 {
+			if character == quote {
+				quote = 0
+				continue
+			}
+			if quote != '"' || character != '\\' {
+				if character == ':' {
+					return decoded.String(), decoded.Len() > 0
+				}
+				decoded.WriteByte(character)
+				continue
+			}
+		} else {
+			switch character {
+			case '\'', '"':
+				quote = character
+				continue
+			case ':':
+				return decoded.String(), decoded.Len() > 0
+			case '$', '(', ')':
+				return "", false
+			case '\\', '`', '^':
+			default:
+				decoded.WriteByte(character)
+				continue
+			}
+		}
+
+		index++
+		if index >= len(word) {
+			return "", false
+		}
+		if word[index] == '\r' && index+1 < len(word) && word[index+1] == '\n' {
+			index++
+			continue
+		}
+		if word[index] != '\n' {
+			decoded.WriteByte(word[index])
+		}
+	}
+	return "", false
+}
+
+func redactPlistCredentialValues(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		key := plistCredentialKey.FindStringIndex(redacted[searchStart:])
+		if key == nil {
+			break
+		}
+
+		valueStart := searchStart + key[1]
+		for valueStart < len(redacted) && strings.ContainsRune(" \t\r\n", rune(redacted[valueStart])) {
+			valueStart++
+		}
+		contentStart, contentEnd, elementEnd, valid := findPlistValueElement(redacted, valueStart)
+		if !valid || contentStart == contentEnd || redacted[contentStart:contentEnd] == redactionMarker {
+			searchStart = valueStart + 1
+			continue
+		}
+
+		redacted = redacted[:contentStart] + redactionMarker + redacted[contentEnd:]
+		changed = true
+		searchStart = elementEnd - (contentEnd - contentStart) + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func findPlistValueElement(value string, start int) (int, int, int, bool) {
+	if start < 0 || start >= len(value) || value[start] != '<' {
+		return 0, 0, 0, false
+	}
+	decoder := xml.NewDecoder(strings.NewReader(value[start:]))
+	first, err := decoder.Token()
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	if _, ok := first.(xml.StartElement); !ok {
+		return 0, 0, 0, false
+	}
+	contentStart := start + int(decoder.InputOffset())
+	for depth := 1; depth > 0; {
+		tokenStart := start + int(decoder.InputOffset())
+		token, tokenErr := decoder.Token()
+		if tokenErr != nil {
+			return 0, 0, 0, false
+		}
+		switch token.(type) {
+		case xml.StartElement:
+			depth++
+		case xml.EndElement:
+			depth--
+			if depth == 0 {
+				return contentStart, tokenStart, start + int(decoder.InputOffset()), true
+			}
+		}
+	}
+	return 0, 0, 0, false
 }
 
 func redactTOMLCredentialValues(value string) (string, bool) {
