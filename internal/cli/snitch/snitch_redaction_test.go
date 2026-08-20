@@ -485,6 +485,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `PASSWORD=[REDACTED]; echo next`,
 		},
 		{
+			name:  "bare environment dump value with spaces",
+			input: `PASSWORD=opaque secret tail`,
+			want:  `PASSWORD=[REDACTED]`,
+		},
+		{
 			name:  "unquoted secret flag before conditional operator",
 			input: `asc deploy --password supersecret && echo next`,
 			want:  `asc deploy --password [REDACTED] && echo next`,
@@ -1298,6 +1303,21 @@ status: failed`,
 		{
 			name:  "known opaque token",
 			input: "credential ghp_abcdefghijklmnopqrstuvwxyz123456",
+			want:  "credential [REDACTED]",
+		},
+		{
+			name:  "Slack bot token",
+			input: "credential xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx",
+			want:  "credential [REDACTED]",
+		},
+		{
+			name:  "npm access token",
+			input: "credential npm_abcdefghijklmnopqrstuvwxyz0123456789",
+			want:  "credential [REDACTED]",
+		},
+		{
+			name:  "GitLab personal access token",
+			input: "credential glpat-abcdefghijklmnopqrstuvwxyz",
 			want:  "credential [REDACTED]",
 		},
 	}
@@ -2283,6 +2303,44 @@ func TestSnitchDryRunRedactsSecretAnswerAndEveryCookieJarValue(t *testing.T) {
 		".example.test TRUE / TRUE 2147483647 JSESSIONID [REDACTED]",
 		"#HttpOnly_.example.test FALSE / TRUE 0 csrftoken [REDACTED]",
 		".example.test FALSE / FALSE 0 locale [REDACTED]",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsEnvironmentDumpAndKnownServiceTokens(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"opaque secret tail",
+		"xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx",
+		"npm_abcdefghijklmnopqrstuvwxyz0123456789",
+		"glpat-abcdefghijklmnopqrstuvwxyz",
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", "PASSWORD="+secrets[0]+"\ncredential "+secrets[1]+"\ncredential "+secrets[2]+"\ncredential "+secrets[3]+"\nstatus: failed",
+		"environment dump and service token redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("dry run leaked %q: %q", secret, stderr)
+		}
+	}
+	for _, want := range []string{
+		"PASSWORD=[REDACTED]",
+		"credential [REDACTED]",
+		"status: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

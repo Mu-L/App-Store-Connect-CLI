@@ -109,6 +109,8 @@ var (
 	powerShellHereStringCredential     = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(@["']\r?\n)`)
 	commandPromptQuotedSetAssignment   = regexp.MustCompile(`(?im)(?:^|[ \t;&|])set[ \t]+"` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
 	commandPromptUnquotedSetAssignment = regexp.MustCompile(`(?im)(?:^|[ \t;&|()])set[ \t]+` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
+	bareEnvironmentDumpCredential      = regexp.MustCompile(`(?im)^([ \t]*(?:export[ \t]+)?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)([^\s"'\\;&|<>()]+(?:[ \t]+[^\s"'\\;&|<>()]+)+)([ \t]*\r?)$`)
+	shellAssignmentWord                = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	curlConfigCertificateEntry         = regexp.MustCompile(`(?im)^([ \t]*(?:cert|proxy-cert)` + curlConfigSeparator + `)`)
 	xmlCredentialElementStart          = regexp.MustCompile(`(?i)<(?:[a-z_][a-z0-9_.-]*:)?` + sensitivePrefixedName + `(?:[ \t\r\n/>])`)
 	standaloneBearerCandidate          = regexp.MustCompile(`(?i)\bbearer[ \t]+([-a-z0-9._~+/=]+)`)
@@ -353,7 +355,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,})\b`),
+		pattern:     regexp.MustCompile(`\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|xoxb-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{36}|glpat-[A-Za-z0-9_-]{20,})\b`),
 		replacement: redactionMarker,
 	},
 }
@@ -446,6 +448,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, environmentChanged := redactBareEnvironmentDumpCredentials(redacted); environmentChanged {
+		redacted = next
+		changed = true
+	}
 	redacted, booleanMarkerProtection := protectBooleanSecretMarkers(redacted)
 	for _, rule := range singleLineShellWordRedactionRules {
 		next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
@@ -475,6 +481,38 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = strings.ReplaceAll(redacted, placeholder, original)
 	}
 	return redacted, changed
+}
+
+func redactBareEnvironmentDumpCredentials(value string) (string, bool) {
+	matches := bareEnvironmentDumpCredential.FindAllStringSubmatchIndex(value, -1)
+	if len(matches) == 0 {
+		return value, false
+	}
+
+	var redacted strings.Builder
+	redacted.Grow(len(value))
+	last := 0
+	changed := false
+	for _, match := range matches {
+		valueStart, valueEnd := match[4], match[5]
+		words := strings.Fields(value[valueStart:valueEnd])
+		// A leading assignment followed by asc is a shell command invocation,
+		// not an environment dump. The shell-word pass below redacts only the
+		// assignment value and preserves that useful command context.
+		if len(words) > 1 && (words[1] == "asc" || shellAssignmentWord.MatchString(words[1])) {
+			continue
+		}
+
+		redacted.WriteString(value[last:valueStart])
+		redacted.WriteString(redactionMarker)
+		last = valueEnd
+		changed = true
+	}
+	if !changed {
+		return value, false
+	}
+	redacted.WriteString(value[last:])
+	return redacted.String(), true
 }
 
 // boundRedactionInput limits parser work before any redaction pass runs. It
