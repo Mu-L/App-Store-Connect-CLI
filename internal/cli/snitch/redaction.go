@@ -940,7 +940,7 @@ func yamlFlowMappingHasSecretKind(flow string, scalarAnchors map[string]string) 
 		if colon < 0 {
 			return false
 		}
-		key := decodeYAMLScalar(flow[cursor:colon])
+		key := decodeYAMLMappingKey(flow[cursor:colon])
 		valueStart := colon + 1
 		for valueStart < len(flow)-1 && (flow[valueStart] == ' ' || flow[valueStart] == '\t' || flow[valueStart] == '\r' || flow[valueStart] == '\n') {
 			valueStart++
@@ -1070,7 +1070,7 @@ func normalizeYAMLExplicitStructuralMappings(lines []string) []yamlExplicitStruc
 		if comment := strings.Index(keyText, " #"); comment >= 0 {
 			keyText = strings.TrimSpace(keyText[:comment])
 		}
-		key := decodeYAMLScalar(keyText)
+		key := decodeYAMLMappingKey(keyText)
 		if !strings.EqualFold(key, "kind") && !strings.EqualFold(key, "data") && !strings.EqualFold(key, "stringData") {
 			continue
 		}
@@ -1168,7 +1168,7 @@ func parseYAMLMappingLine(content string) (string, int, bool) {
 			}
 		case ':':
 			if quote == 0 {
-				key := decodeYAMLScalar(content[keyStart:cursor])
+				key := decodeYAMLMappingKey(content[keyStart:cursor])
 				if key == "" {
 					return "", 0, false
 				}
@@ -1207,6 +1207,11 @@ func decodeYAMLScalar(value string) string {
 		return strings.ReplaceAll(value[1:len(value)-1], "''", "'")
 	}
 	return strings.Trim(value, "\"'")
+}
+
+func decodeYAMLMappingKey(value string) string {
+	value, _ = trimYAMLNodeProperties(value)
+	return decodeYAMLScalar(value)
 }
 
 func trimYAMLNodeProperties(value string) (string, int) {
@@ -1354,7 +1359,7 @@ func redactKubernetesSecretYAMLFlowObject(flow string) (string, bool) {
 		if colon < 0 {
 			return flow, false
 		}
-		key := decodeYAMLScalar(flow[cursor:colon])
+		key := decodeYAMLMappingKey(flow[cursor:colon])
 		valueStart := colon + 1
 		for valueStart < len(flow)-1 && (flow[valueStart] == ' ' || flow[valueStart] == '\t' || flow[valueStart] == '\r' || flow[valueStart] == '\n') {
 			valueStart++
@@ -3415,7 +3420,7 @@ func redactSensitiveYAMLFlowNameValueObject(object string, scalarAnchors map[str
 		if colon < 0 {
 			return object, false
 		}
-		key := decodeYAMLScalar(object[cursor:colon])
+		key := decodeYAMLMappingKey(object[cursor:colon])
 		valueStart := colon + 1
 		for valueStart < len(object)-1 && strings.ContainsRune(" \t\r\n", rune(object[valueStart])) {
 			valueStart++
@@ -4444,24 +4449,121 @@ func securitySubcommand(command string) (string, bool) {
 }
 
 func isCredentialCommandPrefix(words []string) bool {
-	for len(words) > 0 && shellAssignmentWord.MatchString(strings.Trim(words[0], `"'`)) {
-		words = words[1:]
-	}
-	if len(words) == 0 {
-		return true
-	}
-	if commandBaseName(words[0]) == "env" {
-		words = words[1:]
+	for {
 		for len(words) > 0 && shellAssignmentWord.MatchString(strings.Trim(words[0], `"'`)) {
 			words = words[1:]
 		}
-		return len(words) == 0
+		if len(words) == 0 {
+			return true
+		}
+
+		remaining, ok := consumeCredentialCommandWrapper(words)
+		if !ok {
+			return false
+		}
+		words = remaining
 	}
-	if len(words) != 1 {
-		return false
+}
+
+func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
+	if len(words) == 0 {
+		return nil, false
 	}
-	prefix := commandBaseName(words[0])
-	return prefix == "sudo" || prefix == "doas" || prefix == "command"
+	wrapper := commandBaseName(words[0])
+	if wrapper != "sudo" && wrapper != "doas" && wrapper != "command" && wrapper != "env" {
+		return nil, false
+	}
+
+	words = words[1:]
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			return words[1:], true
+		}
+		if len(option) < 2 || option[0] != '-' || option == "-" {
+			return words, true
+		}
+
+		requiresArgument, allowed := credentialWrapperOption(wrapper, option)
+		if !allowed {
+			return nil, false
+		}
+		words = words[1:]
+		if requiresArgument {
+			if len(words) == 0 {
+				return nil, false
+			}
+			words = words[1:]
+		}
+	}
+	return words, true
+}
+
+func credentialWrapperOption(wrapper, option string) (bool, bool) {
+	if strings.HasPrefix(option, "--") {
+		name, _, attached := strings.Cut(option, "=")
+		requiresArgument, allowed := credentialWrapperLongOption(wrapper, name)
+		return requiresArgument && !attached, allowed
+	}
+
+	requiresArgument := false
+	for index := 1; index < len(option); index++ {
+		requiresValue, allowed := credentialWrapperShortOption(wrapper, option[index])
+		if !allowed {
+			return false, false
+		}
+		if requiresValue {
+			requiresArgument = index == len(option)-1
+			break
+		}
+	}
+	return requiresArgument, true
+}
+
+func credentialWrapperShortOption(wrapper string, option byte) (bool, bool) {
+	switch wrapper {
+	case "sudo":
+		if strings.ContainsRune("CDghpRrTtUu", rune(option)) {
+			return true, true
+		}
+		return false, strings.ContainsRune("AbEHKknPS", rune(option))
+	case "doas":
+		if option == 'a' || option == 'u' {
+			return true, true
+		}
+		return false, option == 'n'
+	case "command":
+		return false, option == 'p'
+	case "env":
+		if option == 'C' || option == 'u' {
+			return true, true
+		}
+		return false, option == 'i'
+	default:
+		return false, false
+	}
+}
+
+func credentialWrapperLongOption(wrapper, option string) (bool, bool) {
+	switch wrapper {
+	case "sudo":
+		switch option {
+		case "--chdir", "--close-from", "--command-timeout", "--group", "--host", "--other-user", "--prompt", "--role", "--type", "--user":
+			return true, true
+		case "--askpass", "--background", "--non-interactive", "--preserve-env", "--remove-timestamp", "--reset-timestamp", "--stdin":
+			return false, true
+		}
+	case "doas", "command":
+		return false, false
+	case "env":
+		switch option {
+		case "--argv0", "--chdir", "--unset":
+			return true, true
+		case "--ignore-environment":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 func commandBaseName(word string) string {

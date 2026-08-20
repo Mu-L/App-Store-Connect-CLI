@@ -1065,6 +1065,24 @@ data:
 status: failed`,
 		},
 		{
+			name: "Kubernetes Secret tagged structural keys",
+			input: `apiVersion: v1
+!!str kind: Secret
+!!str data:
+  config: opaque-tagged-key-secret
+status: failed`,
+			want: `apiVersion: v1
+!!str kind: Secret
+!!str data:
+  config: [REDACTED]
+status: failed`,
+		},
+		{
+			name:  "Kubernetes Secret tagged flow structural keys",
+			input: `{!!str kind: Secret, !!str data: {config: opaque-tagged-flow-key-secret}, status: failed}`,
+			want:  `{!!str kind: Secret, !!str data: {config: [REDACTED]}, status: failed}`,
+		},
+		{
 			name:  "Kubernetes Secret flow root",
 			input: `{apiVersion: v1, data: {config: opaque-flow-secret}, kind: Secret, status: failed}`,
 			want:  `{apiVersion: v1, data: {config: [REDACTED]}, kind: Secret, status: failed}`,
@@ -1967,6 +1985,21 @@ status: failed`,
 			want:  `C:\Java\bin\keytool.exe -list -storepass:env [REDACTED] -keypass:file [REDACTED]`,
 		},
 		{
+			name:  "keytool through option-bearing wrappers",
+			input: `sudo -u build env -i PROFILE=release keytool -list -storepass opaque-store`,
+			want:  `sudo -u build env -i PROFILE=release keytool -list -storepass [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL through option-bearing wrapper",
+			input: `sudo --user=build openssl pkcs12 -passout pass:opaque-output`,
+			want:  `sudo --user=build openssl pkcs12 -passout [REDACTED]`,
+		},
+		{
+			name:  "keytool through doas and command wrappers",
+			input: `doas -u build command -p keytool -list -storepass opaque-store`,
+			want:  `doas -u build command -p keytool -list -storepass [REDACTED]`,
+		},
+		{
 			name:  "scoped base64 private key assignments",
 			input: `ASC_STOREKIT_PRIVATE_KEY_B64=c3RvcmVraXQtcHJpdmF0ZS1rZXk= ASC_ADS_PRIVATE_KEY_B64=YWRzLXByaXZhdGUta2V5`,
 			want:  `ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED] ASC_ADS_PRIVATE_KEY_B64=[REDACTED]`,
@@ -2294,6 +2327,27 @@ func TestRedactSensitiveTextScopesKeytoolCredentialArguments(t *testing.T) {
 		`echo keytool.exe -list -storepass:env PUBLIC_VALUE`,
 		`tool -storepass public-value`,
 		`keytool -list -keystore public-value`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextPreservesTaggedConfigMapStructuralKeys(t *testing.T) {
+	input := "!!str kind: ConfigMap\n!!str data:\n  config: public-value"
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
+func TestRedactSensitiveTextRejectsNonExecutingCredentialCommandWrappers(t *testing.T) {
+	for _, input := range []string{
+		`sudo -u build echo keytool -list -storepass public-value`,
+		`command -v keytool -storepass public-value`,
+		`doas -u build echo openssl -passout public-value`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
