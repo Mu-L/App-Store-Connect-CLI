@@ -558,6 +558,11 @@ env: [{name: *credential, value: [REDACTED]}]`,
 			want:  "server returned Bearer [REDACTED]",
 		},
 		{
+			name:  "standalone Google API key",
+			input: "Google request failed for AIza0123456789abcdefghijklmnopqrstuvwxy",
+			want:  "Google request failed for [REDACTED]",
+		},
+		{
 			name:  "standalone notification webhook URL",
 			input: "failed webhook https://hooks.slack.com/services/T012/B034/opaque-webhook-secret after retry",
 			want:  "failed webhook https://hooks.slack.com/services/[REDACTED] after retry",
@@ -952,6 +957,19 @@ data:
 : Secret
 ? data
 : {config: [REDACTED]}`,
+		},
+		{
+			name: "Kubernetes Secret multiline explicit block scalar data key",
+			input: `kind: Secret
+data:
+  ? >-
+    config
+  : opaque-multiline-explicit-secret`,
+			want: `kind: Secret
+data:
+  ? >-
+    config
+  : [REDACTED]`,
 		},
 		{
 			name: "Kubernetes Secret escaped YAML structural keys",
@@ -2631,6 +2649,18 @@ func TestRedactSensitiveTextPreservesCurlUseASCII(t *testing.T) {
 	got, changed := redactSensitiveText(input)
 	if changed || got != input {
 		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
+func TestRedactSensitiveTextPreservesNonCurlShortUArguments(t *testing.T) {
+	for _, input := range []string{
+		`git diff -u HEAD~1:README.md HEAD:README.md`,
+		`diff -u before:file after:file`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
 	}
 }
 

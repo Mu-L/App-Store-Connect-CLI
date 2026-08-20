@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -94,13 +96,14 @@ type yamlAnchorLocation struct {
 }
 
 type yamlExplicitMappingRestoration struct {
-	keyLine             int
-	valueLine           int
-	key                 string
-	keyOriginal         string
-	valueOriginal       string
-	originalValueStart  int
-	normalizedValueText string
+	keyLine                  int
+	valueLine                int
+	key                      string
+	keyOriginal              string
+	keyContinuationOriginals []string
+	valueOriginal            string
+	originalValueStart       int
+	normalizedValueText      string
 }
 
 var (
@@ -151,6 +154,7 @@ var (
 	yamlCredentialPlainScalar          = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)[^"'[\{\s\r\n][^\r\n]*$`)
 	yamlCredentialFlowStart            = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)([\[{])`)
 	yamlExplicitCredentialKey          = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlBlockScalarIndicator           = regexp.MustCompile(`^[|>](?:[+-]?[1-9]?|[1-9][+-]?)$`)
 	yamlCredentialAlias                = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlDocumentBoundary               = regexp.MustCompile(`^(?:---|\.\.\.)(?:[ \t]|$)`)
 	yamlValueAlias                     = regexp.MustCompile(`\*([a-zA-Z0-9_-]+)\b`)
@@ -198,6 +202,21 @@ var registryAuthValueRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?i)(\\"auth\\"[ \t\r\n]*:[ \t\r\n]*\\")(?:\\.|[^"\\\r\n])*?(\\")`),
 		replacement: `${1}` + redactionMarker + `${2}`,
+	},
+}
+
+var curlUserCredentialRedactionRules = []redactionRule{
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-u|--(?:proxy-)?user)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-u|--(?:proxy-)?user)\b[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(-u)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
 	},
 }
 
@@ -365,18 +384,6 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-u|--(?:proxy-)?user)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
-		replacement: `${1}${2}` + redactionMarker,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-u|--(?:proxy-)?user)\b[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
-		replacement: `${1}${2}` + redactionMarker,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-u)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
-		replacement: `${1}${2}` + redactionMarker,
-	},
-	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(")((?:` + escapedQuotedCharacter + `|[^"\\:\r\n])+):(?:` + escapedQuotedCharacter + `|[^"\\])+(")`),
 		replacement: `${1}${2}${3}${4}:` + redactionMarker + `${5}`,
 	},
@@ -445,7 +452,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|xoxb-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{20,}|xoxp-[A-Za-z0-9-]{20,}|xapp-[0-9]+-[A-Za-z0-9]{10,}(?:-[A-Za-z0-9]{6,})+|npm_[A-Za-z0-9]{36}|glpat-[A-Za-z0-9_-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,})\b`),
+		pattern:     regexp.MustCompile(`\b(?:AIza[A-Za-z0-9_-]{35}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|xoxb-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{20,}|xoxp-[A-Za-z0-9-]{20,}|xapp-[0-9]+-[A-Za-z0-9]{10,}(?:-[A-Za-z0-9]{6,})+|npm_[A-Za-z0-9]{36}|glpat-[A-Za-z0-9_-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,})\b`),
 		replacement: redactionMarker,
 	},
 }
@@ -501,6 +508,10 @@ func redactSensitiveText(value string) (string, bool) {
 		changed = true
 	}
 	if next, unzipChanged := redactUnzipCredentialArguments(redacted); unzipChanged {
+		redacted = next
+		changed = true
+	}
+	if next, curlUserChanged := redactCurlUserCredentialArguments(redacted); curlUserChanged {
 		redacted = next
 		changed = true
 	}
@@ -1099,19 +1110,22 @@ func normalizeYAMLExplicitMappings(lines []string) []yamlExplicitMappingRestorat
 		if comment := strings.Index(keyText, " #"); comment >= 0 {
 			keyText = strings.TrimSpace(keyText[:comment])
 		}
-		key, scalarKey := decodeYAMLExplicitScalarKey(keyText)
+		key, valueLine, blockScalarKey := decodeYAMLExplicitBlockScalarKey(lines, line, cursor, keyText)
+		scalarKey := blockScalarKey
+		if !blockScalarKey {
+			key, scalarKey = decodeYAMLExplicitScalarKey(keyText)
+			valueLine = line + 1
+			for valueLine < len(lines) {
+				valueContent, _ := splitLineEnding(lines[valueLine])
+				trimmed := strings.TrimSpace(valueContent)
+				if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+					break
+				}
+				valueLine++
+			}
+		}
 		if !scalarKey {
 			continue
-		}
-
-		valueLine := line + 1
-		for valueLine < len(lines) {
-			valueContent, _ := splitLineEnding(lines[valueLine])
-			trimmed := strings.TrimSpace(valueContent)
-			if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-				break
-			}
-			valueLine++
 		}
 		if valueLine >= len(lines) {
 			continue
@@ -1129,15 +1143,24 @@ func normalizeYAMLExplicitMappings(lines []string) []yamlExplicitMappingRestorat
 		value := valueContent[originalValueStart:]
 
 		restorations = append(restorations, yamlExplicitMappingRestoration{
-			keyLine:             line,
-			valueLine:           valueLine,
-			key:                 key,
-			keyOriginal:         lines[line],
-			valueOriginal:       lines[valueLine],
-			originalValueStart:  originalValueStart,
-			normalizedValueText: value,
+			keyLine:                  line,
+			valueLine:                valueLine,
+			key:                      key,
+			keyOriginal:              lines[line],
+			keyContinuationOriginals: append([]string(nil), lines[line+1:valueLine]...),
+			valueOriginal:            lines[valueLine],
+			originalValueStart:       originalValueStart,
+			normalizedValueText:      value,
 		})
-		normalized := content[:cursor] + key + ":"
+		normalizedKey := key
+		if blockScalarKey {
+			normalizedKey = strconv.Quote(key)
+			for continuation := line + 1; continuation < valueLine; continuation++ {
+				_, continuationEnding := splitLineEnding(lines[continuation])
+				lines[continuation] = continuationEnding
+			}
+		}
+		normalized := content[:cursor] + normalizedKey + ":"
 		if value != "" {
 			normalized += " " + value
 		}
@@ -1164,10 +1187,69 @@ func restoreYAMLExplicitMappings(lines []string, restorations []yamlExplicitMapp
 		if restoration.keyLine < len(lines) {
 			lines[restoration.keyLine] = restoration.keyOriginal
 		}
+		for offset, original := range restoration.keyContinuationOriginals {
+			continuation := restoration.keyLine + 1 + offset
+			if continuation < len(lines) {
+				lines[continuation] = original
+			}
+		}
 		if restoration.valueLine < len(lines) {
 			lines[restoration.valueLine] = valueLine
 		}
 	}
+}
+
+func decodeYAMLExplicitBlockScalarKey(lines []string, line, cursor int, keyText string) (string, int, bool) {
+	header, _ := trimYAMLNodeProperties(keyText)
+	header = strings.TrimSpace(header)
+	if comment := strings.Index(header, " #"); comment >= 0 {
+		header = strings.TrimSpace(header[:comment])
+	}
+	if !yamlBlockScalarIndicator.MatchString(header) {
+		return "", 0, false
+	}
+
+	valueLine := line + 1
+	for valueLine < len(lines) {
+		content, _ := splitLineEnding(lines[valueLine])
+		indent := leadingIndent(content)
+		if indent == cursor && indent < len(content) && content[indent] == ':' &&
+			(indent+1 == len(content) || content[indent+1] == ' ' || content[indent+1] == '\t') {
+			break
+		}
+		trimmed := strings.TrimSpace(content)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && indent <= cursor {
+			return "", 0, false
+		}
+		valueLine++
+	}
+	if valueLine >= len(lines) {
+		return "", 0, false
+	}
+
+	var fragment strings.Builder
+	for keyLine := line; keyLine < valueLine; keyLine++ {
+		content, ending := splitLineEnding(lines[keyLine])
+		if len(content) < cursor {
+			return "", 0, false
+		}
+		fragment.WriteString(content[cursor:])
+		if ending == "" {
+			ending = "\n"
+		}
+		fragment.WriteString(ending)
+	}
+	fragment.WriteString(": null\n")
+
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(fragment.String()), &document); err != nil || len(document.Content) != 1 {
+		return "", 0, false
+	}
+	mapping := document.Content[0]
+	if mapping.Kind != yaml.MappingNode || len(mapping.Content) < 2 || mapping.Content[0].Kind != yaml.ScalarNode || mapping.Content[0].Value == "" {
+		return "", 0, false
+	}
+	return mapping.Content[0].Value, valueLine, true
 }
 
 func parseYAMLMappingLine(content string) (string, int, bool) {
@@ -4404,6 +4486,35 @@ func redactZipCredentialArguments(value string) (string, bool) {
 
 func redactUnzipCredentialArguments(value string) (string, bool) {
 	return redactNamedCommandCredentialArguments(value, "unzip", zipCredentialFlagPattern)
+}
+
+func redactCurlUserCredentialArguments(value string) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		if isNamedCredentialCommand(command, "curl") {
+			for _, rule := range curlUserCredentialRedactionRules {
+				redacted := rule.pattern.ReplaceAllString(command, rule.replacement)
+				if redacted != command {
+					result = result[:start] + redacted + result[end:]
+					command = redacted
+					changed = true
+				}
+			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
 }
 
 func redactDockerLoginCredentialArguments(value string) (string, bool) {
