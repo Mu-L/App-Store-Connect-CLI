@@ -92,7 +92,7 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 ## Authentication & Rate Limiting
 
 - JWTs issued for App Store Connect are valid for 10 minutes (handled internally).
-- For App Store Connect API requests, automatic retries apply only to GET/HEAD requests on 429/503 responses; POST/PATCH/DELETE are not retried. Presigned uploads follow the upload-specific rules below.
+- For App Store Connect API requests, GET/HEAD requests automatically retry transient 408/429/5xx responses and transient transport failures. POST/PATCH/PUT/DELETE requests are automatically replayed only after App Store Connect rejects them with 429; ambiguous 408/5xx responses and transport failures are surfaced without replay. Mutation bodies are buffered and sent identically on each rate-limit attempt. Set `ASC_MAX_RETRIES=0` to disable retries. Presigned uploads follow the upload-specific rules below.
 - Retry-After headers are honored when present; configure retry settings via `ASC_MAX_RETRIES`, `ASC_BASE_DELAY`, `ASC_MAX_DELAY`, `ASC_RETRY_LOG`.
 - Uploads to the presigned URLs Apple returns in `uploadOperations` retry per part rather than per file: a PUT part is retried on 408/429/500/502/503/504 and on transient transport failures, using the same retry settings and honoring Retry-After. Parts that use any other method are never replayed, and each attempt is bounded by `ASC_UPLOAD_TIMEOUT`. This applies to build, screenshot, Game Center, App Clip, subscription, in-app purchase, and app event asset uploads.
 - `--api-debug` and `ASC_DEBUG=api` log each response's raw `X-Rate-Limit` value to stderr without changing stdout.
