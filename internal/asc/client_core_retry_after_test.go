@@ -244,6 +244,44 @@ func TestWithRetry_FailsFastWhenRetryAfterExceedsContextBudget(t *testing.T) {
 	}
 }
 
+func TestWithRetry_CancellationPreservesRetryableCause(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var attempts atomic.Int32
+	_, err := WithRetry(ctx, func() (struct{}, error) {
+		attempts.Add(1)
+		cancel()
+		return struct{}{}, rateLimitedError(time.Second)
+	}, RetryOptions{MaxRetries: 3, BaseDelay: time.Millisecond, MaxDelay: 10 * time.Second})
+
+	if err == nil {
+		t.Fatal("expected cancellation error, got nil")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("expected exactly one attempt after cancellation, got %d", got)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation in error chain, got %v", err)
+	}
+	if !IsRetryable(err) {
+		t.Fatalf("expected the original 429 to remain retryable, got %v", err)
+	}
+	if IsRetryBudgetExhausted(err) {
+		t.Fatalf("did not expect retry budget exhaustion before a retry, got %v", err)
+	}
+	if got := GetRetryAfter(err); got != time.Second {
+		t.Fatalf("expected Retry-After to be preserved, got %s", got)
+	}
+	apiErr, ok := errors.AsType[*APIError](err)
+	if !ok {
+		t.Fatalf("expected *APIError in chain, got %v", err)
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected status %d, got %d", http.StatusTooManyRequests, apiErr.StatusCode)
+	}
+}
+
 func TestWithRetry_OverCapNonRateLimitUsesStatusNeutralMessage(t *testing.T) {
 	var attempts atomic.Int32
 

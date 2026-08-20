@@ -309,7 +309,9 @@ func (e *retryCancelledError) Unwrap() []error {
 //   - MaxRetries: Number of retry attempts. 0 = no retries (fail fast),
 //     negative = use DefaultMaxRetries.
 //   - BaseDelay: Initial delay between retries (with exponential backoff).
-//   - MaxDelay: Maximum delay cap for backoff.
+//   - MaxDelay: Maximum delay cap for backoff and honored Retry-After hints;
+//     an explicit hint above this cap fails fast with the requested and
+//     configured durations instead of sleeping at the cap.
 type RetryOptions struct {
 	MaxRetries int           // 0=disabled, negative=default, positive=retry count
 	BaseDelay  time.Duration // Initial delay for exponential backoff
@@ -422,7 +424,7 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 		delay := retryAfter
 		if retryAfter > 0 {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return zero, fmt.Errorf("retry cancelled: %w", ctxErr)
+				return zero, &retryCancelledError{contextErr: ctxErr, err: err}
 			}
 			if deadline, ok := ctx.Deadline(); ok {
 				remaining := time.Until(deadline)
