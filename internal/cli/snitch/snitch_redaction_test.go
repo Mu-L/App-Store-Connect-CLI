@@ -389,6 +389,55 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `{"env":[{"name":"DB_PASSWORD","value":"[REDACTED]"}],"diagnostic":{"name":"failure","value":"preserve this explanation"}}`,
 		},
 		{
+			name: "Kubernetes YAML environment credential name value pair",
+			input: `env:
+  - name: DB_PASSWORD
+    value: opaqueAlphabeticSecret
+diagnostic:
+  name: failure
+  value: preserve this explanation`,
+			want: `env:
+  - name: DB_PASSWORD
+    value: [REDACTED]
+diagnostic:
+  name: failure
+  value: preserve this explanation`,
+		},
+		{
+			name: "reversed Kubernetes YAML environment credential name value pair",
+			input: `env:
+  - value: "reversedAlphabeticSecret"
+    name: API_TOKEN`,
+			want: `env:
+  - value: [REDACTED]
+    name: API_TOKEN`,
+		},
+		{
+			name:  "Kubernetes YAML flow environment credential name value pair",
+			input: `env: [{value: flowAlphabeticSecret, name: DB_PASSWORD}]`,
+			want:  `env: [{value: [REDACTED], name: DB_PASSWORD}]`,
+		},
+		{
+			name: "Kubernetes YAML block environment credential preserves public sibling",
+			input: `env:
+  - name: DB_PASSWORD
+    value: |-
+      firstSecretLine
+      secondSecretLine
+  - name: PUBLIC_CONFIG
+    value: keep-public`,
+			want: `env:
+  - name: DB_PASSWORD
+    value: [REDACTED]
+  - name: PUBLIC_CONFIG
+    value: keep-public`,
+		},
+		{
+			name:  "quoted Kubernetes YAML flow environment credential",
+			input: `env: [{name: "API_TOKEN", value: "quotedAlphabeticSecret"}]`,
+			want:  `env: [{name: "API_TOKEN", value: "[REDACTED]"}]`,
+		},
+		{
 			name:  "truncated upload operation request header value",
 			input: `{"requestHeaders":[{"name":"Authorization","value":"opaque-upload-secret`,
 			want:  `{"requestHeaders":[{"name":"Authorization","value":"[REDACTED]`,

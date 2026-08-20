@@ -520,6 +520,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, yamlPairChanged := redactSensitiveYAMLNameValuePairs(redacted); yamlPairChanged {
+		redacted = next
+		changed = true
+	}
 	if next, cookieChanged := redactStructuredCookieValues(redacted); cookieChanged {
 		redacted = next
 		changed = true
@@ -3182,6 +3186,182 @@ func redactSensitiveJSONNameValueObject(object string, escapeDepth int) (string,
 		redacted = redacted[:span.start] + span.value + redacted[span.end:]
 	}
 	return redacted, true
+}
+
+func redactSensitiveYAMLNameValuePairs(value string) (string, bool) {
+	lines := strings.SplitAfter(value, "\n")
+	blockChanged := redactSensitiveYAMLBlockNameValuePairs(lines)
+	redacted := strings.Join(lines, "")
+	redacted, flowChanged := redactSensitiveYAMLFlowNameValuePairs(redacted)
+	return redacted, blockChanged || flowChanged
+}
+
+func redactSensitiveYAMLBlockNameValuePairs(lines []string) bool {
+	changed := false
+	for line := 0; line < len(lines); line++ {
+		content, _ := splitLineEnding(lines[line])
+		key, valueStart, ok := parseYAMLMappingLine(content)
+		if !ok || !strings.EqualFold(key, "name") || !yamlCredentialNamePattern.MatchString(kubernetesYAMLScalar(content[valueStart:])) {
+			continue
+		}
+
+		mappingIndent := yamlKeyIndent(content)
+		start := line
+		for start > 0 && yamlLineBelongsToMapping(lines[start-1], mappingIndent) {
+			start--
+		}
+		if start > 0 {
+			previous, _ := splitLineEnding(lines[start-1])
+			previousIndent := leadingIndent(previous)
+			if isYAMLSequenceItemAtIndent(previous, previousIndent) && yamlKeyIndent(previous) == mappingIndent {
+				start--
+			}
+		}
+		end := line + 1
+		for end < len(lines) && yamlLineBelongsToMapping(lines[end], mappingIndent) {
+			end++
+		}
+		for candidate := start; candidate < end; candidate++ {
+			valueContent, ending := splitLineEnding(lines[candidate])
+			valueKey, candidateValueStart, valid := parseYAMLMappingLine(valueContent)
+			if !valid || yamlKeyIndent(valueContent) != mappingIndent || !strings.EqualFold(valueKey, "value") {
+				continue
+			}
+			scalar := kubernetesYAMLScalar(valueContent[candidateValueStart:])
+			if scalar == "" || scalar == redactionMarker || scalar == privateKeyRedactionMarker {
+				continue
+			}
+			redactKubernetesYAMLScalarContinuations(lines, candidate, valueContent, candidateValueStart)
+			lines[candidate] = valueContent[:candidateValueStart] + redactionMarker + ending
+			changed = true
+		}
+	}
+	return changed
+}
+
+func redactSensitiveYAMLFlowNameValuePairs(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		open := nextYAMLFlowObjectStart(redacted, searchStart)
+		if open < 0 {
+			break
+		}
+		close := findYAMLFlowEnd(redacted, open)
+		if close < open {
+			break
+		}
+		object := redacted[open : close+1]
+		redactedObject, objectChanged := redactSensitiveYAMLFlowNameValueObject(object)
+		if objectChanged {
+			redacted = redacted[:open] + redactedObject + redacted[close+1:]
+			changed = true
+		}
+		searchStart = open + 1
+	}
+	return redacted, changed
+}
+
+func nextYAMLFlowObjectStart(value string, start int) int {
+	var quote byte
+	inComment := false
+	for index := start; index < len(value); index++ {
+		if inComment {
+			if value[index] == '\r' || value[index] == '\n' {
+				inComment = false
+			}
+			continue
+		}
+		if quote != 0 {
+			if quote == '"' && value[index] == '\\' {
+				index++
+				continue
+			}
+			if quote == '\'' && value[index] == '\'' && index+1 < len(value) && value[index+1] == '\'' {
+				index++
+				continue
+			}
+			if value[index] == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch value[index] {
+		case '\'', '"':
+			quote = value[index]
+		case '#':
+			inComment = true
+		case '{':
+			return index
+		}
+	}
+	return -1
+}
+
+func redactSensitiveYAMLFlowNameValueObject(object string) (string, bool) {
+	if len(object) < 2 || object[0] != '{' || object[len(object)-1] != '}' {
+		return object, false
+	}
+	type property struct {
+		key             string
+		valueStart      int
+		trimmedValueEnd int
+	}
+	var properties []property
+	for cursor := 1; cursor < len(object)-1; {
+		cursor = skipYAMLFlowSpaceAndComments(object, cursor, len(object)-1)
+		if cursor >= len(object)-1 {
+			break
+		}
+		colon := findKubernetesFlowColon(object, cursor)
+		if colon < 0 {
+			return object, false
+		}
+		key := decodeYAMLScalar(object[cursor:colon])
+		valueStart := colon + 1
+		for valueStart < len(object)-1 && strings.ContainsRune(" \t\r\n", rune(object[valueStart])) {
+			valueStart++
+		}
+		valueEnd := findKubernetesFlowValueEnd(object, valueStart)
+		if valueEnd < valueStart {
+			return object, false
+		}
+		trimmedEnd := valueEnd
+		for trimmedEnd > valueStart && strings.ContainsRune(" \t\r\n", rune(object[trimmedEnd-1])) {
+			trimmedEnd--
+		}
+		properties = append(properties, property{key: key, valueStart: valueStart, trimmedValueEnd: trimmedEnd})
+		cursor = valueEnd
+	}
+
+	sensitiveName := false
+	for _, property := range properties {
+		if strings.EqualFold(property.key, "name") && yamlCredentialNamePattern.MatchString(kubernetesYAMLScalar(object[property.valueStart:property.trimmedValueEnd])) {
+			sensitiveName = true
+			break
+		}
+	}
+	if !sensitiveName {
+		return object, false
+	}
+
+	redacted := object
+	for index := len(properties) - 1; index >= 0; index-- {
+		property := properties[index]
+		if !strings.EqualFold(property.key, "value") || property.valueStart >= property.trimmedValueEnd {
+			continue
+		}
+		replacementStart, replacementEnd := property.valueStart, property.trimmedValueEnd
+		if replacementEnd-replacementStart >= 2 && (object[replacementStart] == '\'' || object[replacementStart] == '"') && object[replacementEnd-1] == object[replacementStart] {
+			replacementStart++
+			replacementEnd--
+		}
+		if object[replacementStart:replacementEnd] == redactionMarker {
+			continue
+		}
+		redacted = redacted[:replacementStart] + redactionMarker + redacted[replacementEnd:]
+	}
+	return redacted, redacted != object
 }
 
 func redactJSONValuesInNamedContainer(value string, escapeDepth int, rule contextualJSONContainerRule) (string, bool) {
