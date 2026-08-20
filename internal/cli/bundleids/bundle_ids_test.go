@@ -134,6 +134,21 @@ func TestBundleIDMutationsRejectPositionalArgsBeforeAuth(t *testing.T) {
 			cmd:  BundleIDsDeleteCommand,
 			args: []string{"--id", "bundle-1", "--confirm", "stray", "extra"},
 		},
+		{
+			name: "capabilities add",
+			cmd:  BundleIDsCapabilitiesAddCommand,
+			args: []string{"--bundle", "bundle-1", "--capability", "ICLOUD", "stray", "extra"},
+		},
+		{
+			name: "capabilities update",
+			cmd:  BundleIDsCapabilitiesUpdateCommand,
+			args: []string{"--id", "capability-1", "--capability", "ICLOUD", "stray", "extra"},
+		},
+		{
+			name: "capabilities remove",
+			cmd:  BundleIDsCapabilitiesRemoveCommand,
+			args: []string{"--id", "capability-1", "--confirm=true", "stray", "extra"},
+		},
 	}
 
 	for _, test := range tests {
