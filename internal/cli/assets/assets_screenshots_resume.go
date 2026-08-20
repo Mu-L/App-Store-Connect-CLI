@@ -141,6 +141,12 @@ func prepareAppScreenshotUpload(ctx context.Context, cfg screenshotUploadConfig[
 	if cfg.UploadContext == nil {
 		cfg.UploadContext = contextWithAssetUploadTimeout
 	}
+	if strings.TrimSpace(cfg.InspectCommand) == "" {
+		cfg.InspectCommand = screenshotInspectionCommand(cfg.LocalizationID)
+	}
+	if strings.TrimSpace(cfg.ReplaceCommand) == "" {
+		cfg.ReplaceCommand = "--replace --confirm"
+	}
 
 	requestCtx, reqCancel := cfg.RequestContext(ctx)
 	var (
@@ -180,12 +186,12 @@ func prepareAppScreenshotUpload(ctx context.Context, cfg screenshotUploadConfig[
 	files := cfg.Files
 	if cfg.SkipExisting {
 		var filterErr error
-		files, skippedResults, filterErr = filterExistingScreenshotFiles(cfg.Files, existingScreenshots)
+		files, skippedResults, filterErr = filterExistingScreenshotFiles(cfg.Files, existingScreenshots, cfg.InspectCommand)
 		if filterErr != nil {
 			return screenshotUploadPreparedState{}, filterErr
 		}
 	}
-	files, err = limitScreenshotUploadFilesForExistingSet(files, cfg.MaxScreenshots, existingScreenshots, cfg.Replace, set.ID)
+	files, err = limitScreenshotUploadFilesForExistingSet(files, cfg.MaxScreenshots, existingScreenshots, cfg.Replace, set.ID, cfg.InspectCommand, cfg.ReplaceCommand)
 	if err != nil {
 		return screenshotUploadPreparedState{}, err
 	}
