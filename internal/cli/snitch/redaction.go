@@ -111,6 +111,8 @@ var (
 	commandPromptQuotedSetAssignment   = regexp.MustCompile(`(?im)(?:^|[ \t;&|])set[ \t]+"` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
 	commandPromptUnquotedSetAssignment = regexp.MustCompile(`(?im)(?:^|[ \t;&|()])set[ \t]+` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
 	curlConfigCertificateEntry         = regexp.MustCompile(`(?im)^([ \t]*(?:cert|proxy-cert)` + curlConfigSeparator + `)`)
+	xmlCredentialElementStart          = regexp.MustCompile(`(?i)<(?:[a-z_][a-z0-9_.-]*:)?` + sensitivePrefixedName + `(?:[ \t\r\n/>])`)
+	standaloneBearerCandidate          = regexp.MustCompile(`(?i)\bbearer[ \t]+([-a-z0-9._~+/=]+)`)
 	xcodeCloudEnvVarSetCommand         = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')` + shellCommandPathSeparator + `web` + shellCommandPathSeparator + `xcode-cloud` + shellCommandPathSeparator + `env-vars` + shellCommandPathSeparator + `(?:shared` + shellCommandPathSeparator + `)?set\b`)
 )
 
@@ -348,15 +350,6 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)\bbearer[ \t]+(?:` +
-			`[0-9+/=][-a-z0-9._~+/=]{7,}|` +
-			`[-a-z0-9._~+/=][0-9+/=][-a-z0-9._~+/=]{6,}|` +
-			`[-a-z0-9._~+/=]{2}[0-9+/=][-a-z0-9._~+/=]{5,}|` +
-			`[-a-z0-9._~+/=]{3}[0-9+/=][-a-z0-9._~+/=]{4,}|` +
-			`[-a-z0-9._~+/=]{4,}[0-9+/=][-a-z0-9._~+/=]*)`),
-		replacement: "Bearer " + redactionMarker,
-	},
-	{
 		pattern:     regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`),
 		replacement: redactionMarker,
 	},
@@ -397,6 +390,10 @@ func redactSensitiveText(value string) (string, bool) {
 		changed = true
 	}
 	if next, plistChanged := redactPlistCredentialValues(redacted); plistChanged {
+		redacted = next
+		changed = true
+	}
+	if next, xmlChanged := redactXMLCredentialElements(redacted); xmlChanged {
 		redacted = next
 		changed = true
 	}
@@ -464,6 +461,10 @@ func redactSensitiveText(value string) (string, bool) {
 			changed = true
 			redacted = next
 		}
+	}
+	if next, bearerChanged := redactStandaloneBearerCredentials(redacted); bearerChanged {
+		redacted = next
+		changed = true
 	}
 	if booleanMarkerProtection != "" {
 		redacted = strings.ReplaceAll(redacted, booleanMarkerProtection, "")
@@ -867,6 +868,66 @@ func redactPlistCredentialValues(value string) (string, bool) {
 		redacted = redacted[:contentStart] + redactionMarker + redacted[contentEnd:]
 		changed = true
 		searchStart = elementEnd - (contentEnd - contentStart) + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func redactXMLCredentialElements(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := xmlCredentialElementStart.FindStringIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		elementStart := searchStart + match[0]
+		decoder := xml.NewDecoder(strings.NewReader(redacted[elementStart:]))
+		first, err := decoder.Token()
+		element, validElement := first.(xml.StartElement)
+		if err != nil || !validElement || !tomlCredentialName.MatchString(element.Name.Local) {
+			searchStart = elementStart + 1
+			continue
+		}
+
+		contentStart := elementStart + int(decoder.InputOffset())
+		_, contentEnd, elementEnd, valid := findPlistElementEnd(decoder, elementStart, contentStart)
+		if !valid {
+			searchStart = elementStart + 1
+			continue
+		}
+		if contentStart == contentEnd || redacted[contentStart:contentEnd] == redactionMarker {
+			searchStart = elementEnd
+			continue
+		}
+
+		redacted = redacted[:contentStart] + redactionMarker + redacted[contentEnd:]
+		changed = true
+		searchStart = elementEnd - (contentEnd - contentStart) + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func redactStandaloneBearerCredentials(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := standaloneBearerCandidate.FindStringSubmatchIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		tokenStart := searchStart + match[2]
+		tokenEnd := searchStart + match[3]
+		token := redacted[tokenStart:tokenEnd]
+		if len(token) < 8 || !strings.ContainsAny(token, "0123456789") {
+			searchStart = tokenEnd
+			continue
+		}
+
+		redacted = redacted[:tokenStart] + redactionMarker + redacted[tokenEnd:]
+		changed = true
+		searchStart = tokenStart + len(redactionMarker)
 	}
 	return redacted, changed
 }

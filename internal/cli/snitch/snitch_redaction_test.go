@@ -345,6 +345,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "server returned Bearer [REDACTED]",
 		},
 		{
+			name:  "standalone minimum-length bearer credential",
+			input: "server returned Bearer abcd1234",
+			want:  "server returned Bearer [REDACTED]",
+		},
+		{
 			name:  "standalone notification webhook URL",
 			input: "failed webhook https://hooks.slack.com/services/T012/B034/opaque-webhook-secret after retry",
 			want:  "failed webhook https://hooks.slack.com/services/[REDACTED] after retry",
@@ -533,6 +538,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "XML property list credential container",
 			input: `<plist><dict><key>token</key><array><string>first-secret</string><dict><key>value</key><string>second-secret</string></dict></array><key>status</key><string>failed</string></dict></plist>`,
 			want:  `<plist><dict><key>token</key><array>[REDACTED]</array><key>status</key><string>failed</string></dict></plist>`,
+		},
+		{
+			name:  "XML credential element",
+			input: `<settings><servers><server><password>opaque-xml-secret</password><status>failed</status></server></servers></settings>`,
+			want:  `<settings><servers><server><password>[REDACTED]</password><status>failed</status></server></servers></settings>`,
 		},
 		{
 			name:  "multiword plain yaml scalar",
@@ -1325,10 +1335,16 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 }
 
 func TestRedactSensitiveTextPreservesBearerProse(t *testing.T) {
-	const input = "Bearer authentication fails behind proxy"
-	got, changed := redactSensitiveText(input)
-	if changed || got != input {
-		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	for _, input := range []string{
+		"Bearer authentication fails behind proxy",
+		"Bearer OAuth2 authentication fails",
+		"Bearer HTTP2 authentication fails",
+		"Bearer RFC6750 flow fails",
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
 	}
 }
 
@@ -1911,6 +1927,7 @@ func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
 
 	const headerSecret = "compound-header-secret"
 	const plistSecret = "plist-credential-value"
+	const xmlElementSecret = "xml-element-credential-value"
 	const yamlSecret = "yaml-indentless-secret"
 	const tomlSecret = "toml-dotted-secret"
 	const netrcSecret = "netrc-password-secret"
@@ -1919,6 +1936,7 @@ func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
 		"--dry-run",
 		"--repro", "curl -H 'Authorization: Bearer '"+headerSecret+" https://example.test",
 		"--actual", `<plist><dict><key>pass&#x77;ord</key><!-- context --><data>`+plistSecret+`</data><key>status</key><string>failed</string></dict></plist>`+"\n"+
+			`<settings><server><password>`+xmlElementSecret+`</password><status>failed</status></server></settings>`+"\n"+
 			`credentials."pass\u0077ord" = "`+tomlSecret+`"`+"\n"+
 			"machine api.example.test login alice password "+netrcSecret,
 		"--expected", "password:\n- "+yamlSecret+"\nstatus: failed",
@@ -1928,7 +1946,7 @@ func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
 		t.Fatalf("run snitch: %v", err)
 	}
 
-	for _, secret := range []string{headerSecret, plistSecret, yamlSecret, tomlSecret, netrcSecret} {
+	for _, secret := range []string{headerSecret, plistSecret, xmlElementSecret, yamlSecret, tomlSecret, netrcSecret} {
 		if strings.Contains(stderr, secret) {
 			t.Fatalf("stderr leaked %q: %q", secret, stderr)
 		}
@@ -1942,6 +1960,7 @@ func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
 	for _, want := range []string{
 		`curl -H "Authorization: [REDACTED]" https://example.test`,
 		`<key>pass&#x77;ord</key><!-- context --><data>[REDACTED]</data><key>status</key><string>failed</string>`,
+		`<settings><server><password>[REDACTED]</password><status>failed</status></server></settings>`,
 		"password: [REDACTED]\nstatus: failed",
 		`credentials."pass\u0077ord" = [REDACTED]`,
 		"machine api.example.test login alice password [REDACTED]",
@@ -1949,6 +1968,34 @@ func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 		}
+	}
+}
+
+func TestSnitchDryRunPreservesBearerProtocolProse(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const description = "Bearer OAuth2 authentication fails"
+	const actual = "Bearer HTTP2 authentication fails; Bearer RFC6750 flow fails"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", actual,
+		description,
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{description, actual} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want benign protocol prose %q", stderr, want)
+		}
+	}
+	if strings.Contains(stderr, "Bearer [REDACTED]") {
+		t.Fatalf("stderr over-redacted benign protocol prose: %q", stderr)
 	}
 }
 
