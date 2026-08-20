@@ -66,44 +66,45 @@ type redactionRule struct {
 }
 
 var (
-	secretMarkerPattern               = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:` + singleLineShellTerminator + `|[ \t]*=[ \t]*(?:1|t|true)(?:` + singleLineShellTerminator + `))`)
-	secretValuePattern                = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
-	rawCookieJarPattern               = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*\{`)
-	escapedCookieJarPattern           = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*\{`)
-	rawRequestHeaders                 = regexp.MustCompile(`(?i)"requestHeaders"[ \t\r\n]*:[ \t\r\n]*\[`)
-	escapedRequestHeaders             = regexp.MustCompile(`(?i)\\"requestHeaders\\"[ \t\r\n]*:[ \t\r\n]*\[`)
-	rawStructuredValueStart           = regexp.MustCompile(`(?i)"value"[ \t\r\n]*:[ \t\r\n]*"`)
-	escapedValueStart                 = regexp.MustCompile(`(?i)\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\"`)
-	rawCredentialObject               = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
-	escapedCredentialObject           = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
-	rawCredentialArray                = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\[`)
-	escapedCredentialArray            = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\[`)
-	credentialHeaderNamePattern       = regexp.MustCompile(`(?i)^` + credentialHeaderName + `$`)
-	queryCredentialNamePattern        = regexp.MustCompile(`(?i)^` + queryCredentialName + `$`)
-	queryParameterName                = regexp.MustCompile(`[?&]([^=&#\s"'<>]+)=`)
-	curlHeaderOptionStart             = regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)`)
-	completeShellWord                 = regexp.MustCompile(`^(` + fishShellWord + `)(` + singleLineShellTerminator + `)`)
-	netrcEntryStart                   = regexp.MustCompile(`(?im)(?:^|[\r\n])[ \t]*(?:machine[ \t]+[^\s#]+|default)(?:[ \t\r\n]|\z)`)
-	netrcPasswordValue                = regexp.MustCompile(`(?i)(^|[ \t\r\n])(password[ \t]+)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`)
-	booleanSecretMarker               = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
-	yamlCredentialScalar              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlCredentialMapping             = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
-	yamlCredentialPlainScalar         = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)[^"'[\{\s\r\n][^\r\n]*$`)
-	yamlCredentialFlowStart           = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)([\[{])`)
-	yamlExplicitCredentialKey         = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+(?:` + yamlNodeTag + `[ \t]+)*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlCredentialAlias               = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlAnchor                        = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
-	yamlSensitiveNameAnchor           = regexp.MustCompile(`(?im)&([a-zA-Z0-9_-]+)[ \t]+(?:(?:` + yamlNodeTag + `)[ \t]+)*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlAliasMappingKey               = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?)(\*([a-zA-Z0-9_-]+))([ \t]*:)`)
-	yamlExplicitAliasKey              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?\?[ \t]+)(\*([a-zA-Z0-9_-]+))([ \t]*(?:#[^\r\n]*)?)$`)
-	jsonQuotedScalarLine              = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
-	jsonCredentialName                = regexp.MustCompile(`(?i)^(?:` + structuredCredentialName + `)$`)
-	tomlCredentialName                = regexp.MustCompile(`(?i)^(?:` + sensitivePrefixedName + `)$`)
-	tomlMultilineCredentialStart      = regexp.MustCompile(`(?i)(?:^|[^-a-z0-9_])(?:` + sensitivePrefixedName + `\b|` + tomlQuotedSensitiveKey + `)[ \t]*=[ \t]*(?:"""|''')`)
-	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\(|\(|\x60)`)
-	powerShellHereStringCredential    = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(@["']\r?\n)`)
-	commandPromptQuotedSetAssignment  = regexp.MustCompile(`(?im)(?:^|[ \t;&|])set[ \t]+"` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
-	xcodeCloudEnvVarSetCommand        = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')` + shellCommandPathSeparator + `web` + shellCommandPathSeparator + `xcode-cloud` + shellCommandPathSeparator + `env-vars` + shellCommandPathSeparator + `(?:shared` + shellCommandPathSeparator + `)?set\b`)
+	secretMarkerPattern                = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:` + singleLineShellTerminator + `|[ \t]*=[ \t]*(?:1|t|true)(?:` + singleLineShellTerminator + `))`)
+	secretValuePattern                 = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
+	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*\{`)
+	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	rawRequestHeaders                  = regexp.MustCompile(`(?i)"requestHeaders"[ \t\r\n]*:[ \t\r\n]*\[`)
+	escapedRequestHeaders              = regexp.MustCompile(`(?i)\\"requestHeaders\\"[ \t\r\n]*:[ \t\r\n]*\[`)
+	rawStructuredValueStart            = regexp.MustCompile(`(?i)"value"[ \t\r\n]*:[ \t\r\n]*"`)
+	escapedValueStart                  = regexp.MustCompile(`(?i)\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\"`)
+	rawCredentialObject                = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\{`)
+	escapedCredentialObject            = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	rawCredentialArray                 = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\[`)
+	escapedCredentialArray             = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\[`)
+	credentialHeaderNamePattern        = regexp.MustCompile(`(?i)^` + credentialHeaderName + `$`)
+	queryCredentialNamePattern         = regexp.MustCompile(`(?i)^` + queryCredentialName + `$`)
+	queryParameterName                 = regexp.MustCompile(`[?&]([^=&#\s"'<>]+)=`)
+	curlHeaderOptionStart              = regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)`)
+	completeShellWord                  = regexp.MustCompile(`^(` + fishShellWord + `)(` + singleLineShellTerminator + `)`)
+	netrcEntryStart                    = regexp.MustCompile(`(?im)(?:^|[\r\n])[ \t]*(?:machine[ \t]+[^\s#]+|default)(?:[ \t\r\n]|\z)`)
+	netrcPasswordValue                 = regexp.MustCompile(`(?i)(^|[ \t\r\n])(password[ \t]+)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`)
+	booleanSecretMarker                = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
+	yamlCredentialScalar               = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlCredentialMapping              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
+	yamlCredentialPlainScalar          = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)[^"'[\{\s\r\n][^\r\n]*$`)
+	yamlCredentialFlowStart            = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)([\[{])`)
+	yamlExplicitCredentialKey          = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+(?:` + yamlNodeTag + `[ \t]+)*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlCredentialAlias                = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlAnchor                         = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
+	yamlSensitiveNameAnchor            = regexp.MustCompile(`(?im)&([a-zA-Z0-9_-]+)[ \t]+(?:(?:` + yamlNodeTag + `)[ \t]+)*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlAliasMappingKey                = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?)(\*([a-zA-Z0-9_-]+))([ \t]*:)`)
+	yamlExplicitAliasKey               = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?\?[ \t]+)(\*([a-zA-Z0-9_-]+))([ \t]*(?:#[^\r\n]*)?)$`)
+	jsonQuotedScalarLine               = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
+	jsonCredentialName                 = regexp.MustCompile(`(?i)^(?:` + structuredCredentialName + `)$`)
+	tomlCredentialName                 = regexp.MustCompile(`(?i)^(?:` + sensitivePrefixedName + `)$`)
+	tomlMultilineCredentialStart       = regexp.MustCompile(`(?i)(?:^|[^-a-z0-9_])(?:` + sensitivePrefixedName + `\b|` + tomlQuotedSensitiveKey + `)[ \t]*=[ \t]*(?:"""|''')`)
+	sensitiveCommandSubstitutionStart  = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\(|\(|\x60)`)
+	powerShellHereStringCredential     = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(@["']\r?\n)`)
+	commandPromptQuotedSetAssignment   = regexp.MustCompile(`(?im)(?:^|[ \t;&|])set[ \t]+"` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
+	commandPromptUnquotedSetAssignment = regexp.MustCompile(`(?im)(?:^|[ \t;&|()])set[ \t]+` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
+	xcodeCloudEnvVarSetCommand         = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')` + shellCommandPathSeparator + `web` + shellCommandPathSeparator + `xcode-cloud` + shellCommandPathSeparator + `env-vars` + shellCommandPathSeparator + `(?:shared` + shellCommandPathSeparator + `)?set\b`)
 )
 
 var structuredContainerValueRedactionRules = []redactionRule{
@@ -485,16 +486,25 @@ func findPowerShellHereStringEnd(value string, contentStart int, quote byte) int
 }
 
 func redactCommandPromptSetAssignments(value string) (string, bool) {
+	redacted, changed := redactCommandPromptSetAssignmentValues(value, commandPromptQuotedSetAssignment, findCommandPromptQuotedSetValueEnd)
+	if next, unquotedChanged := redactCommandPromptSetAssignmentValues(redacted, commandPromptUnquotedSetAssignment, findCommandPromptUnquotedSetValueEnd); unquotedChanged {
+		redacted = next
+		changed = true
+	}
+	return redacted, changed
+}
+
+func redactCommandPromptSetAssignmentValues(value string, pattern *regexp.Regexp, findValueEnd func(string, int) int) (string, bool) {
 	redacted := value
 	changed := false
 	for searchStart := 0; searchStart < len(redacted); {
-		match := commandPromptQuotedSetAssignment.FindStringIndex(redacted[searchStart:])
+		match := pattern.FindStringIndex(redacted[searchStart:])
 		if match == nil {
 			break
 		}
 
 		valueStart := searchStart + match[1]
-		valueEnd := findCommandPromptQuotedSetValueEnd(redacted, valueStart)
+		valueEnd := findValueEnd(redacted, valueStart)
 		currentValue := redacted[valueStart:valueEnd]
 		if currentValue == "" || currentValue == redactionMarker || currentValue == privateKeyRedactionMarker {
 			searchStart = valueEnd + 1
@@ -518,6 +528,30 @@ func findCommandPromptQuotedSetValueEnd(value string, start int) int {
 			}
 		case '"', '\r', '\n':
 			return index
+		}
+	}
+	return len(value)
+}
+
+func findCommandPromptUnquotedSetValueEnd(value string, start int) int {
+	inQuotes := false
+	for index := start; index < len(value); index++ {
+		switch value[index] {
+		case '^':
+			if index+2 < len(value) && value[index+1] == '\r' && value[index+2] == '\n' {
+				index += 2
+			} else if index+1 < len(value) {
+				index++
+			}
+		case '"':
+			inQuotes = !inQuotes
+		case '&', '|', '<', '>', '(', ')', '\r', '\n':
+			if !inQuotes {
+				for index > start && (value[index-1] == ' ' || value[index-1] == '\t') {
+					index--
+				}
+				return index
+			}
 		}
 	}
 	return len(value)
