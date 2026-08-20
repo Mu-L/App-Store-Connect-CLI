@@ -438,6 +438,24 @@ diagnostic:
 			want:  `env: [{name: "API_TOKEN", value: "[REDACTED]"}]`,
 		},
 		{
+			name: "aliased Kubernetes YAML environment credential name",
+			input: `credential: &credential DB_PASSWORD
+env:
+  - name: *credential
+    value: opaqueAliasSecret`,
+			want: `credential: &credential DB_PASSWORD
+env:
+  - name: *credential
+    value: [REDACTED]`,
+		},
+		{
+			name: "aliased Kubernetes YAML flow environment credential name",
+			input: `credential: &credential API_TOKEN
+env: [{name: *credential, value: opaqueFlowAliasSecret}]`,
+			want: `credential: &credential API_TOKEN
+env: [{name: *credential, value: [REDACTED]}]`,
+		},
+		{
 			name:  "truncated upload operation request header value",
 			input: `{"requestHeaders":[{"name":"Authorization","value":"opaque-upload-secret`,
 			want:  `{"requestHeaders":[{"name":"Authorization","value":"[REDACTED]`,
@@ -803,6 +821,16 @@ diagnostic:
 			name:  "XML credential name and entity encoded attributes",
 			input: `<configuration><entry name='pass&#x77;ord' value='opaque-entity-attribute-secret' /><entry name='status' value='failed' /></configuration>`,
 			want:  `<configuration><entry name='pass&#x77;ord' value='[REDACTED]' /><entry name='status' value='failed' /></configuration>`,
+		},
+		{
+			name:  "XML credential name attribute with text content",
+			input: `<configuration><variable name="DB_PASSWORD">opaqueXmlSecret</variable><variable name="status">failed</variable></configuration>`,
+			want:  `<configuration><variable name="DB_PASSWORD">[REDACTED]</variable><variable name="status">failed</variable></configuration>`,
+		},
+		{
+			name:  "XML credential key attribute with text content",
+			input: `<configuration><property key='pass&#x77;ord'>opaqueEntitySecret</property><property key='status'>failed</property></configuration>`,
+			want:  `<configuration><property key='pass&#x77;ord'>[REDACTED]</property><property key='status'>failed</property></configuration>`,
 		},
 		{
 			name:  "truncated XML credential element",
@@ -2464,6 +2492,15 @@ func TestRedactSensitiveTextPreservesUnterminatedTOMLLiteralKey(t *testing.T) {
 
 func TestRedactSensitiveTextPreservesNameValuePairOutsideCookieJar(t *testing.T) {
 	input := `{"cookies":{},"diagnostic":{"name":"failure","value":"preserve this explanation"}}`
+
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
+func TestRedactSensitiveTextDoesNotResolveYAMLAliasesAcrossDocuments(t *testing.T) {
+	input := "credential: &credential DB_PASSWORD\n---\nenv:\n  - name: *credential\n    value: preserve-public-value"
 
 	got, changed := redactSensitiveText(input)
 	if changed || got != input {

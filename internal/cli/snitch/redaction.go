@@ -2451,8 +2451,20 @@ func redactXMLCredentialAttributes(value string) (string, bool) {
 				valueAttribute = index
 			}
 		}
-		if !sensitiveKey || valueAttribute < 0 {
+		if !sensitiveKey {
 			searchStart = elementEnd
+			continue
+		}
+		if valueAttribute < 0 {
+			contentStart := elementEnd
+			_, contentEnd, fullElementEnd, valid := findPlistElementEnd(decoder, elementStart, contentStart)
+			if !valid || contentEnd <= contentStart || strings.TrimSpace(redacted[contentStart:contentEnd]) == "" || redacted[contentStart:contentEnd] == redactionMarker {
+				searchStart = elementEnd
+				continue
+			}
+			redacted = redacted[:contentStart] + redactionMarker + redacted[contentEnd:]
+			changed = true
+			searchStart = fullElementEnd - (contentEnd - contentStart) + len(redactionMarker)
 			continue
 		}
 
@@ -3190,18 +3202,69 @@ func redactSensitiveJSONNameValueObject(object string, escapeDepth int) (string,
 
 func redactSensitiveYAMLNameValuePairs(value string) (string, bool) {
 	lines := strings.SplitAfter(value, "\n")
-	blockChanged := redactSensitiveYAMLBlockNameValuePairs(lines)
+	var redacted strings.Builder
+	redacted.Grow(len(value))
+	changed := false
+	documentStart := 0
+	for line := 0; line < len(lines); line++ {
+		content, _ := splitLineEnding(lines[line])
+		if !yamlDocumentBoundary.MatchString(strings.TrimSpace(content)) {
+			continue
+		}
+		document, documentChanged := redactSensitiveYAMLNameValueDocument(lines[documentStart:line])
+		redacted.WriteString(document)
+		redacted.WriteString(lines[line])
+		changed = changed || documentChanged
+		documentStart = line + 1
+	}
+	document, documentChanged := redactSensitiveYAMLNameValueDocument(lines[documentStart:])
+	redacted.WriteString(document)
+	return redacted.String(), changed || documentChanged
+}
+
+func redactSensitiveYAMLNameValueDocument(lines []string) (string, bool) {
+	scalarAnchors := collectYAMLScalarAnchors(lines)
+	blockChanged := redactSensitiveYAMLBlockNameValuePairs(lines, scalarAnchors)
 	redacted := strings.Join(lines, "")
-	redacted, flowChanged := redactSensitiveYAMLFlowNameValuePairs(redacted)
+	redacted, flowChanged := redactSensitiveYAMLFlowNameValuePairs(redacted, scalarAnchors)
 	return redacted, blockChanged || flowChanged
 }
 
-func redactSensitiveYAMLBlockNameValuePairs(lines []string) bool {
+func collectYAMLScalarAnchors(lines []string) map[string]string {
+	anchors := make(map[string]string)
+	for _, line := range lines {
+		content, _ := splitLineEnding(line)
+		_, valueStart, ok := parseYAMLMappingLine(content)
+		if !ok {
+			continue
+		}
+		rawValue := content[valueStart:]
+		anchor := yamlAnchor.FindStringSubmatchIndex(rawValue)
+		if len(anchor) != 4 {
+			continue
+		}
+		scalar := kubernetesYAMLScalar(rawValue)
+		if scalar == "" || strings.HasPrefix(scalar, "*") {
+			continue
+		}
+		anchors[rawValue[anchor[2]:anchor[3]]] = scalar
+	}
+	return anchors
+}
+
+func redactSensitiveYAMLBlockNameValuePairs(lines []string, scalarAnchors map[string]string) bool {
 	changed := false
 	for line := 0; line < len(lines); line++ {
 		content, _ := splitLineEnding(lines[line])
 		key, valueStart, ok := parseYAMLMappingLine(content)
-		if !ok || !strings.EqualFold(key, "name") || !yamlCredentialNamePattern.MatchString(kubernetesYAMLScalar(content[valueStart:])) {
+		if !ok || !strings.EqualFold(key, "name") {
+			continue
+		}
+		name := kubernetesYAMLScalar(content[valueStart:])
+		if strings.HasPrefix(name, "*") {
+			name = scalarAnchors[strings.TrimPrefix(name, "*")]
+		}
+		if !yamlCredentialNamePattern.MatchString(name) {
 			continue
 		}
 
@@ -3269,7 +3332,7 @@ func redactSensitiveYAMLValueContinuations(lines []string, line, mappingIndent i
 	}
 }
 
-func redactSensitiveYAMLFlowNameValuePairs(value string) (string, bool) {
+func redactSensitiveYAMLFlowNameValuePairs(value string, scalarAnchors map[string]string) (string, bool) {
 	redacted := value
 	changed := false
 	for searchStart := 0; searchStart < len(redacted); {
@@ -3282,7 +3345,7 @@ func redactSensitiveYAMLFlowNameValuePairs(value string) (string, bool) {
 			break
 		}
 		object := redacted[open : close+1]
-		redactedObject, objectChanged := redactSensitiveYAMLFlowNameValueObject(object)
+		redactedObject, objectChanged := redactSensitiveYAMLFlowNameValueObject(object, scalarAnchors)
 		if objectChanged {
 			redacted = redacted[:open] + redactedObject + redacted[close+1:]
 			changed = true
@@ -3328,7 +3391,7 @@ func nextYAMLFlowObjectStart(value string, start int) int {
 	return -1
 }
 
-func redactSensitiveYAMLFlowNameValueObject(object string) (string, bool) {
+func redactSensitiveYAMLFlowNameValueObject(object string, scalarAnchors map[string]string) (string, bool) {
 	if len(object) < 2 || object[0] != '{' || object[len(object)-1] != '}' {
 		return object, false
 	}
@@ -3366,7 +3429,14 @@ func redactSensitiveYAMLFlowNameValueObject(object string) (string, bool) {
 
 	sensitiveName := false
 	for _, property := range properties {
-		if strings.EqualFold(property.key, "name") && yamlCredentialNamePattern.MatchString(kubernetesYAMLScalar(object[property.valueStart:property.trimmedValueEnd])) {
+		if !strings.EqualFold(property.key, "name") {
+			continue
+		}
+		name := kubernetesYAMLScalar(object[property.valueStart:property.trimmedValueEnd])
+		if strings.HasPrefix(name, "*") {
+			name = scalarAnchors[strings.TrimPrefix(name, "*")]
+		}
+		if yamlCredentialNamePattern.MatchString(name) {
 			sensitiveName = true
 			break
 		}
