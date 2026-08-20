@@ -57,6 +57,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "Authorization: [REDACTED]",
 		},
 		{
+			name:  "folded authorization header",
+			input: "Authorization: Bearer opaque-head\r\n opaque-tail\r\nstatus: failed",
+			want:  "Authorization: [REDACTED]\r\nstatus: failed",
+		},
+		{
 			name:  "cookie request header",
 			input: "Cookie: myacinfo=super-session-secret; dslang=US-EN",
 			want:  "Cookie: [REDACTED]",
@@ -165,6 +170,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "curl attached short cookie data argument",
 			input: `curl -bmyacinfo=super-session-secret https://example.test`,
 			want:  `curl -b[REDACTED] https://example.test`,
+		},
+		{
+			name:  "Netscape cookie jar credential",
+			input: ".appstoreconnect.apple.com\tTRUE\t/\tTRUE\t2147483647\tmyacinfo\topaque-cookie-jar-secret\n.example.test\tFALSE\t/\tFALSE\t0\tlocale\ten-US",
+			want:  ".appstoreconnect.apple.com\tTRUE\t/\tTRUE\t2147483647\tmyacinfo\t[REDACTED]\n.example.test\tFALSE\t/\tFALSE\t0\tlocale\ten-US",
 		},
 		{
 			name:  "curl certificate password argument",
@@ -1644,6 +1654,44 @@ func TestSnitchDryRunRedactsPrefixedCredentialHeaders(t *testing.T) {
 	for _, want := range []string{
 		"request failed with Cookie: [REDACTED] after retry",
 		"request failed with scnt: [REDACTED] after retry",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsCookieJarAndFoldedAuthorizationValues(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"cookie-jar-secret", "folded-head-secret", "folded-tail-secret"}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", ".appstoreconnect.apple.com\tTRUE\t/\tTRUE\t2147483647\tmyacinfo\t"+secrets[0]+"\n"+
+			"Authorization: Bearer "+secrets[1]+"\r\n "+secrets[2]+"\r\nstatus: failed",
+		"cookie jar and folded authorization redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		".appstoreconnect.apple.com TRUE / TRUE 2147483647 myacinfo [REDACTED]",
+		"Authorization: [REDACTED]",
+		"status: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
