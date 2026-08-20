@@ -580,6 +580,31 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "asc signing sync --password [REDACTED]",
 		},
 		{
+			name:  "PowerShell here string credential assignment",
+			input: "$password = @'\nopaque-head\nopaque-tail\n'@\nWrite-Host done",
+			want:  "$password = [REDACTED]\nWrite-Host done",
+		},
+		{
+			name:  "unterminated PowerShell here string credential assignment",
+			input: "$password = @\"\nopaque-head\nopaque-tail",
+			want:  "$password = [REDACTED]",
+		},
+		{
+			name:  "PowerShell array credential assignment",
+			input: `$password = @("opaque-first", @{ nested = "opaque-second" }) ; Write-Host done`,
+			want:  `$password = [REDACTED] ; Write-Host done`,
+		},
+		{
+			name:  "PowerShell hashtable credential assignment",
+			input: `$client_secret = @{ primary = "opaque-first"; nested = @("opaque-second") }; Write-Host done`,
+			want:  `$client_secret = [REDACTED]; Write-Host done`,
+		},
+		{
+			name:  "unterminated PowerShell collection credential assignment",
+			input: `${client_secret} = @("opaque-first", "opaque-tail"`,
+			want:  `${client_secret} = [REDACTED]`,
+		},
+		{
 			name:  "Command Prompt continued secret flag",
 			input: "asc signing sync --password opaque^\r\nsecret --verbose",
 			want:  "asc signing sync --password [REDACTED] --verbose",
@@ -710,6 +735,21 @@ status = "failed"`,
 			name:  "TOML dotted escaped credential key",
 			input: `credentials."pass\u0077ord" = "opaque-dotted-key-secret"`,
 			want:  `credentials."pass\u0077ord" = [REDACTED]`,
+		},
+		{
+			name:  "TOML sensitive parent dotted key",
+			input: `password.value = "opaque-parent-secret"`,
+			want:  `password.value = [REDACTED]`,
+		},
+		{
+			name:  "TOML sensitive middle dotted key",
+			input: `credentials.client_secret.value = "opaque-middle-secret"`,
+			want:  `credentials.client_secret.value = [REDACTED]`,
+		},
+		{
+			name:  "TOML quoted sensitive parent dotted key",
+			input: `"pass\u0077ord".value = "opaque-quoted-parent-secret"`,
+			want:  `"pass\u0077ord".value = [REDACTED]`,
 		},
 		{
 			name:  "netrc inline password",
@@ -1671,6 +1711,15 @@ func TestRedactSensitiveTextPreservesCredentialCommandWordsInProse(t *testing.T)
 	}
 }
 
+func TestRedactSensitiveTextPreservesOrdinaryDottedTOMLKey(t *testing.T) {
+	input := `metadata.value = "public context"`
+
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
 func TestRedactSensitiveTextRedactsDeeplyEscapedJSONCredential(t *testing.T) {
 	const secret = "opaque-deeply-escaped-secret"
 	encoded := `{"password":"` + secret + `","status":"failed"}`
@@ -1851,6 +1900,49 @@ func TestSnitchDryRunRedactsDeeplyEscapedJSONCredential(t *testing.T) {
 	}
 	if !strings.Contains(stderr, redactionMarker) || !strings.Contains(stderr, "status") {
 		t.Fatalf("stderr = %q, want redaction marker and surrounding context", stderr)
+	}
+}
+
+func TestSnitchDryRunRedactsStructuredCredentialAssignments(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"opaque-here-string-tail",
+		"opaque-array-secret",
+		"opaque-hashtable-secret",
+		"opaque-toml-parent-secret",
+	}
+	repro := "$password = @'\nopaque-head\n" + secrets[0] + "\n'@\n" +
+		`$password = @("` + secrets[1] + `", "second")` + "\n" +
+		`$client_secret = @{ primary = "` + secrets[2] + `"; status = "failed" }`
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"--actual", `password.value = "`+secrets[3]+`"`+"\nstatus = \"failed\"",
+		"structured credential assignment redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+			t.Fatalf("dry run leaked structured credential %q: stdout=%q stderr=%q", secret, stdout, stderr)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"$password = [REDACTED]",
+		"$client_secret = [REDACTED]",
+		`password.value = [REDACTED]`,
+		`status = "failed"`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
 	}
 }
 

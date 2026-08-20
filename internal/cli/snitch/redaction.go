@@ -111,7 +111,8 @@ var (
 	tomlCredentialName                 = regexp.MustCompile(`(?i)^(?:` + sensitivePrefixedName + `)$`)
 	tomlMultilineCredentialStart       = regexp.MustCompile(`(?i)(?:^|[^-a-z0-9_])(?:` + sensitivePrefixedName + `\b|` + tomlQuotedSensitiveKey + `)[ \t]*=[ \t]*(?:"""|''')`)
 	sensitiveCommandSubstitutionStart  = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\(|\(|\x60)`)
-	powerShellHereStringCredential     = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(@["']\r?\n)`)
+	powerShellHereStringCredential     = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*)|` + powerShellSensitiveVariable + `[ \t]*=[ \t]*)(@["']\r?\n)`)
+	powerShellCollectionCredential     = regexp.MustCompile(`(?i)(?:^|\s)` + powerShellSensitiveVariable + `[ \t]*=[ \t]*(@[({])`)
 	commandPromptQuotedSetAssignment   = regexp.MustCompile(`(?im)(?:^|[ \t;&|])set[ \t]+"` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
 	commandPromptUnquotedSetAssignment = regexp.MustCompile(`(?im)(?:^|[ \t;&|()])set[ \t]+` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
 	bareEnvironmentDumpCredential      = regexp.MustCompile(`(?im)^([ \t]*(?:export[ \t]+)?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)([^\s"'\\;&|<>()]+(?:[ \t]+[^\s"'\\;&|<>()]+)+)([ \t]*\r?)$`)
@@ -387,6 +388,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, powerShellChanged := redactPowerShellCollectionCredentials(redacted); powerShellChanged {
+		redacted = next
+		changed = true
+	}
 	if next, commandPromptChanged := redactCommandPromptSetAssignments(redacted); commandPromptChanged {
 		redacted = next
 		changed = true
@@ -586,6 +591,78 @@ func findPowerShellHereStringEnd(value string, contentStart int, quote byte) int
 		lineStart += lineBreak + 1
 	}
 	return -1
+}
+
+func redactPowerShellCollectionCredentials(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := powerShellCollectionCredential.FindStringSubmatchIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		open := searchStart + match[2]
+		end := findPowerShellCollectionEnd(redacted, open)
+		if end < 0 {
+			end = len(redacted)
+		}
+		redacted = redacted[:open] + redactionMarker + redacted[end:]
+		changed = true
+		searchStart = open + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func findPowerShellCollectionEnd(value string, open int) int {
+	if open < 0 || open+1 >= len(value) || value[open] != '@' ||
+		(value[open+1] != '(' && value[open+1] != '{') {
+		return -1
+	}
+
+	stack := []byte{value[open+1]}
+	var quote byte
+	for index := open + 2; index < len(value); index++ {
+		if quote != 0 {
+			if quote == '"' && value[index] == '`' {
+				index++
+				continue
+			}
+			if value[index] != quote {
+				continue
+			}
+			if quote == '\'' && index+1 < len(value) && value[index+1] == '\'' {
+				index++
+				continue
+			}
+			quote = 0
+			continue
+		}
+		if value[index] == '`' {
+			index++
+			continue
+		}
+
+		switch value[index] {
+		case '\'', '"':
+			quote = value[index]
+		case '(', '{', '[':
+			stack = append(stack, value[index])
+		case ')', '}', ']':
+			if !powerShellDelimitersMatch(stack[len(stack)-1], value[index]) {
+				continue
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				return index + 1
+			}
+		}
+	}
+	return -1
+}
+
+func powerShellDelimitersMatch(open, close byte) bool {
+	return open == '(' && close == ')' || open == '{' && close == '}' || open == '[' && close == ']'
 }
 
 func redactCommandPromptSetAssignments(value string) (string, bool) {
@@ -1070,7 +1147,7 @@ func redactTOMLCredentialValues(value string) (string, bool) {
 		for keyStart < len(redacted) && (redacted[keyStart] == ' ' || redacted[keyStart] == '\t') {
 			keyStart++
 		}
-		key, keyEnd, validKey := parseTOMLKeyPath(redacted, keyStart)
+		keyEnd, sensitiveKey, validKey := parseTOMLKeyPath(redacted, keyStart)
 		if !validKey {
 			lineStart = nextTOMLLineStart(redacted, lineStart)
 			continue
@@ -1080,7 +1157,7 @@ func redactTOMLCredentialValues(value string) (string, bool) {
 		for equals < len(redacted) && (redacted[equals] == ' ' || redacted[equals] == '\t') {
 			equals++
 		}
-		if equals >= len(redacted) || redacted[equals] != '=' || !tomlCredentialName.MatchString(key) {
+		if equals >= len(redacted) || redacted[equals] != '=' || !sensitiveKey {
 			lineStart = nextTOMLLineStart(redacted, lineStart)
 			continue
 		}
@@ -1113,18 +1190,19 @@ func redactTOMLCredentialValues(value string) (string, bool) {
 	return redacted, changed
 }
 
-func parseTOMLKeyPath(value string, start int) (string, int, bool) {
+func parseTOMLKeyPath(value string, start int) (int, bool, bool) {
 	component, componentEnd, valid := parseTOMLKey(value, start)
 	if !valid {
-		return "", start, false
+		return start, false, false
 	}
+	sensitive := tomlCredentialName.MatchString(component)
 	for {
 		dot := componentEnd
 		for dot < len(value) && (value[dot] == ' ' || value[dot] == '\t') {
 			dot++
 		}
 		if dot >= len(value) || value[dot] != '.' {
-			return component, componentEnd, true
+			return componentEnd, sensitive, true
 		}
 
 		next := dot + 1
@@ -1133,8 +1211,9 @@ func parseTOMLKeyPath(value string, start int) (string, int, bool) {
 		}
 		component, componentEnd, valid = parseTOMLKey(value, next)
 		if !valid {
-			return "", start, false
+			return start, false, false
 		}
+		sensitive = sensitive || tomlCredentialName.MatchString(component)
 	}
 }
 
