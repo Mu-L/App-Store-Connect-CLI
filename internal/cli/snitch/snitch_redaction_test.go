@@ -861,6 +861,41 @@ data:
 status: failed`,
 		},
 		{
+			name: "Kubernetes Secret aliased data value",
+			input: `kind: Secret
+metadata:
+  annotations:
+    source: &secretValue opaque-anchored-data-secret
+data:
+  config: *secretValue
+status: failed`,
+			want: `kind: Secret
+metadata:
+  annotations:
+    source: &secretValue [REDACTED]
+data:
+  config: [REDACTED]
+status: failed`,
+		},
+		{
+			name: "Kubernetes Secret aliased multiline data value",
+			input: `kind: Secret
+metadata:
+  annotations:
+    source: &secretValue "opaque-anchor-head
+      opaque-anchor-tail-secret"
+data:
+  config: *secretValue
+status: failed`,
+			want: `kind: Secret
+metadata:
+  annotations:
+    source: &secretValue [REDACTED]
+data:
+  config: [REDACTED]
+status: failed`,
+		},
+		{
 			name: "Kubernetes Secret multiline quoted data scalar",
 			input: `kind: Secret
 data:

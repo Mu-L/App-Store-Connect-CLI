@@ -84,6 +84,11 @@ type redactionRule struct {
 	replacement string
 }
 
+type yamlScalarAnchorLocation struct {
+	line      int
+	anchorEnd int
+}
+
 var (
 	secretMarkerPattern                = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:` + singleLineShellTerminator + `|[ \t]*=[ \t]*(?:1|t|true)(?:` + singleLineShellTerminator + `))`)
 	secretValuePattern                 = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
@@ -566,6 +571,7 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 	blockIndent := -1
 	secretActive := false
 	scalarAnchors := make(map[string]string)
+	scalarAnchorLocations := make(map[string]yamlScalarAnchorLocation)
 	changed := flowChanged
 
 	resetSecret := func() {
@@ -577,6 +583,7 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 	resetDocument := func() {
 		resetSecret()
 		clear(scalarAnchors)
+		clear(scalarAnchorLocations)
 	}
 
 	for line := 0; line < len(lines); line++ {
@@ -619,6 +626,12 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 			if indent > containerIndent {
 				if _, valueStart, ok := parseYAMLMappingLine(content); ok {
 					if next, scalarChanged, blockScalar := redactKubernetesYAMLScalar(content, valueStart); scalarChanged {
+						if alias := kubernetesYAMLScalar(content[valueStart:]); strings.HasPrefix(alias, "*") {
+							location, exists := scalarAnchorLocations[strings.TrimPrefix(alias, "*")]
+							if exists {
+								redactKubernetesYAMLAnchorDefinition(lines, location)
+							}
+						}
 						lines[line] = next + ending
 						changed = true
 						if blockScalar {
@@ -645,9 +658,15 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 		if secretActive && keyIndent < secretIndent {
 			resetSecret()
 		}
-		if anchor := yamlAnchor.FindStringSubmatch(value); len(anchor) == 2 {
+		rawValue := content[valueStart:]
+		if anchor := yamlAnchor.FindStringSubmatchIndex(rawValue); len(anchor) == 4 {
+			anchorName := rawValue[anchor[2]:anchor[3]]
 			if scalar := kubernetesYAMLScalar(value); scalar != "" && scalar != value {
-				scalarAnchors[anchor[1]] = scalar
+				scalarAnchors[anchorName] = scalar
+				scalarAnchorLocations[anchorName] = yamlScalarAnchorLocation{
+					line:      line,
+					anchorEnd: valueStart + anchor[1],
+				}
 			}
 		}
 		if !secretActive && (strings.EqualFold(key, "data") || strings.EqualFold(key, "stringData")) && yamlSecretKindFollows(lines, line+1, keyIndent) {
@@ -715,6 +734,23 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 		containerIndent = keyIndent
 	}
 	return strings.Join(lines, ""), changed
+}
+
+func redactKubernetesYAMLAnchorDefinition(lines []string, location yamlScalarAnchorLocation) bool {
+	if location.line < 0 || location.line >= len(lines) {
+		return false
+	}
+	content, ending := splitLineEnding(lines[location.line])
+	cursor := location.anchorEnd
+	for cursor < len(content) && (content[cursor] == ' ' || content[cursor] == '\t') {
+		cursor++
+	}
+	if cursor >= len(content) || strings.HasPrefix(content[cursor:], redactionMarker) {
+		return false
+	}
+	redactKubernetesYAMLScalarContinuations(lines, location.line, content, cursor)
+	lines[location.line] = content[:cursor] + redactionMarker + ending
+	return true
 }
 
 func redactKubernetesYAMLScalarContinuations(lines []string, line int, content string, valueStart int) bool {
