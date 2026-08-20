@@ -43,7 +43,7 @@ func TestBetaGroupsListAppScopedInternalFilterUsesTopLevelEndpoint(t *testing.T)
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 
-	const nextURL = "https://api.appstoreconnect.apple.com/v1/betaGroups?cursor=page2&filter%5Bapp%5D=app-1&filter%5BisInternalGroup%5D=true"
+	const nextURL = "https://api.appstoreconnect.apple.com/v1/betaGroups?cursor=page2&filter%5Bapp%5D=app-1&filter%5BisInternalGroup%5D=true&limit=200"
 	var requests atomic.Int64
 	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		count := requests.Add(1)
@@ -60,8 +60,8 @@ func TestBetaGroupsListAppScopedInternalFilterUsesTopLevelEndpoint(t *testing.T)
 		if got := query.Get("filter[isInternalGroup]"); got != "true" {
 			t.Errorf("filter[isInternalGroup] = %q, want true", got)
 		}
-		if got := query.Get("limit"); got != "" {
-			t.Errorf("limit = %q, want no limit forced onto the request", got)
+		if got := query.Get("limit"); got != "200" {
+			t.Errorf("limit = %q, want 200 for the stable filtered aggregate", got)
 		}
 		switch count {
 		case 1:
@@ -92,13 +92,14 @@ func TestBetaGroupsListAppScopedInternalFilterUsesTopLevelEndpoint(t *testing.T)
 	}
 }
 
-// TestBetaGroupsListAppScopedExternalFilterPassesLimitThrough proves --limit is
-// forwarded as the page size instead of truncating a client-side filtered set.
-func TestBetaGroupsListAppScopedExternalFilterPassesLimitThrough(t *testing.T) {
+// TestBetaGroupsListAppScopedExternalFilterUsesMaxPageSize proves the stable
+// filtered aggregate fetches with the maximum page size before applying the
+// final --limit cap.
+func TestBetaGroupsListAppScopedExternalFilterUsesMaxPageSize(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 
-	const nextURL = "https://api.appstoreconnect.apple.com/v1/betaGroups?cursor=page2&filter%5Bapp%5D=app-1&filter%5BisInternalGroup%5D=false&limit=2"
+	const nextURL = "https://api.appstoreconnect.apple.com/v1/betaGroups?cursor=page2&filter%5Bapp%5D=app-1&filter%5BisInternalGroup%5D=false&limit=200"
 	var requests atomic.Int64
 	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		count := requests.Add(1)
@@ -112,8 +113,8 @@ func TestBetaGroupsListAppScopedExternalFilterPassesLimitThrough(t *testing.T) {
 		if got := query.Get("filter[isInternalGroup]"); got != "false" {
 			t.Errorf("filter[isInternalGroup] = %q, want false", got)
 		}
-		if got := query.Get("limit"); got != "2" {
-			t.Errorf("limit = %q, want 2", got)
+		if got := query.Get("limit"); got != "200" {
+			t.Errorf("limit = %q, want 200 for the stable filtered aggregate", got)
 		}
 		switch count {
 		case 1:

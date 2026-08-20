@@ -339,8 +339,8 @@ func TestBetaGroupsListScopedWithExternalFilter(t *testing.T) {
 		if req.URL.Query().Get("filter[isInternalGroup]") != "false" {
 			t.Fatalf("expected filter[isInternalGroup]=false, got %q", req.URL.Query().Get("filter[isInternalGroup]"))
 		}
-		if req.URL.Query().Get("limit") != "" {
-			t.Fatalf("expected no forced limit, got %q", req.URL.Query().Get("limit"))
+		if req.URL.Query().Get("limit") != "200" {
+			t.Fatalf("expected maximum page size for the filtered aggregate, got %q", req.URL.Query().Get("limit"))
 		}
 
 		body := `{"data":[` +

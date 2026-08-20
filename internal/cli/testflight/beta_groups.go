@@ -324,7 +324,11 @@ Examples:
 			// experimental name/sort flags retain the normal one-page default.
 			stableAppScopedFilter := !*global && resolvedAppID != "" && internalFilter != nil && nameValue == "" && sortValue == ""
 			if stableAppScopedFilter && !*paginate {
-				firstPage, err := listPage(requestCtx, opts...)
+				// Fetch with Apple's maximum page size before applying the
+				// stable client-side cap. Passing a small --limit here would
+				// make a large filtered set require one request per page.
+				firstPageOpts := append(slices.Clone(opts), asc.WithBetaGroupsLimit(200))
+				firstPage, err := listPage(requestCtx, firstPageOpts...)
 				if err != nil {
 					return fmt.Errorf("beta-groups list: failed to fetch: %w", err)
 				}
