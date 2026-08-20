@@ -945,3 +945,122 @@ func TestExecuteAppScreenshotUploadRejectsAppendAboveScreenshotLimit(t *testing.
 		t.Fatalf("expected screenshot set limit error, got %v", err)
 	}
 }
+
+func TestExecuteAppScreenshotUploadFullSetProvidesUsableRemediation(t *testing.T) {
+	dir := t.TempDir()
+	filePath := writeAssetsTestPNG(t, dir, "01-home.png")
+
+	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/appStoreVersionLocalizations/LOC_123/appScreenshotSets":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appScreenshotSets","id":"set-1","attributes":{"screenshotDisplayType":"APP_IPHONE_65"}}],"links":{}}`)
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/appScreenshotSets/set-1/appScreenshots":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appScreenshots","id":"old-1"},{"type":"appScreenshots","id":"old-2"},{"type":"appScreenshots","id":"old-3"},{"type":"appScreenshots","id":"old-4"},{"type":"appScreenshots","id":"old-5"},{"type":"appScreenshots","id":"old-6"},{"type":"appScreenshots","id":"old-7"},{"type":"appScreenshots","id":"old-8"},{"type":"appScreenshots","id":"old-9"},{"type":"appScreenshots","id":"old-10"}],"links":{}}`)
+		default:
+			t.Fatalf("full-set remediation must not mutate remote assets: %s %s", req.Method, req.URL.String())
+		}
+	}))
+
+	_, err := executeAppScreenshotUpload(context.Background(), screenshotUploadConfig[asc.AppScreenshotUploadResult]{
+		Client:         client,
+		LocalizationID: "LOC_123",
+		DisplayType:    "APP_IPHONE_65",
+		Files:          []string{filePath},
+		Access:         appStoreVersionScreenshotSetAccess,
+	}, "")
+	if err == nil {
+		t.Fatal("expected full screenshot set error")
+	}
+	errText := err.Error()
+	if strings.Contains(errText, "--max-screenshots 0") {
+		t.Fatalf("remediation recommends an unusable zero limit: %v", err)
+	}
+	for _, want := range []string{
+		"no upload slots remain",
+		"no remote assets were changed for this screenshot set",
+		`asc screenshots list --version-localization "LOC_123" --output json`,
+		`asc screenshots delete --id "SCREENSHOT_ID" --confirm`,
+		"--replace --confirm",
+	} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("full-set remediation missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestExecuteAppScreenshotUploadSkipExistingRejectsAmbiguousRemoteChecksum(t *testing.T) {
+	dir := t.TempDir()
+	filePath := writeAssetsTestPNG(t, dir, "01-home.png")
+	checksum, err := computeFileChecksum(filePath)
+	if err != nil {
+		t.Fatalf("computeFileChecksum() error: %v", err)
+	}
+
+	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/appStoreVersionLocalizations/LOC_123/appScreenshotSets":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appScreenshotSets","id":"set-1","attributes":{"screenshotDisplayType":"APP_IPHONE_65"}}],"links":{}}`)
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/appScreenshotSets/set-1/appScreenshots":
+			writeAssetsTestJSON(w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"appScreenshots","id":"duplicate-c","attributes":{"fileName":"third.png","sourceFileChecksum":%q}},{"type":"appScreenshots","id":"duplicate-b","attributes":{"fileName":"copy.png","sourceFileChecksum":%q}},{"type":"appScreenshots","id":"duplicate-a","attributes":{"fileName":"original.png","sourceFileChecksum":%q}}],"links":{}}`, checksum, checksum, checksum))
+		default:
+			t.Fatalf("ambiguous checksum handling must not mutate remote assets: %s %s", req.Method, req.URL.String())
+		}
+	}))
+
+	_, err = executeAppScreenshotUpload(context.Background(), screenshotUploadConfig[asc.AppScreenshotUploadResult]{
+		Client:         client,
+		LocalizationID: "LOC_123",
+		DisplayType:    "APP_IPHONE_65",
+		Files:          []string{filePath},
+		SkipExisting:   true,
+		Access:         appStoreVersionScreenshotSetAccess,
+	}, "")
+	if err == nil {
+		t.Fatal("expected ambiguous remote checksum error")
+	}
+	errText := err.Error()
+	for _, want := range []string{
+		`local screenshot "01-home.png" matches multiple remote screenshots by checksum`,
+		`asset IDs: "duplicate-a", "duplicate-b", "duplicate-c"`,
+		"no remote assets were changed for this screenshot set",
+		`asc screenshots list --version-localization "LOC_123" --output json`,
+		"retain one matching screenshot and delete every other duplicate",
+		`asc screenshots delete --id "duplicate-a" --confirm`,
+		`asc screenshots delete --id "duplicate-b" --confirm`,
+		`asc screenshots delete --id "duplicate-c" --confirm`,
+		"retry --skip-existing",
+	} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("duplicate-checksum remediation missing %q: %v", want, err)
+		}
+	}
+	if strings.Index(errText, "duplicate-a") > strings.Index(errText, "duplicate-b") {
+		t.Fatalf("expected stable asset ID ordering, got %v", err)
+	}
+}
+
+func TestFilterExistingScreenshotFilesDoesNotTreatRepeatedResourceAsAmbiguous(t *testing.T) {
+	filePath := writeAssetsTestPNG(t, t.TempDir(), "01-home.png")
+	checksum, err := computeFileChecksum(filePath)
+	if err != nil {
+		t.Fatalf("computeFileChecksum() error: %v", err)
+	}
+	resource := asc.Resource[asc.AppScreenshotAttributes]{
+		ID: "existing-1",
+		Attributes: asc.AppScreenshotAttributes{
+			SourceFileChecksum: checksum,
+		},
+	}
+
+	files, skipped, err := filterExistingScreenshotFiles(
+		[]string{filePath},
+		[]asc.Resource[asc.AppScreenshotAttributes]{resource, resource},
+		screenshotInspectionCommand("LOC_123"),
+	)
+	if err != nil {
+		t.Fatalf("filterExistingScreenshotFiles() error: %v", err)
+	}
+	if len(files) != 0 || len(skipped) != 1 || skipped[0].AssetID != "existing-1" {
+		t.Fatalf("files = %v, skipped = %#v", files, skipped)
+	}
+}
