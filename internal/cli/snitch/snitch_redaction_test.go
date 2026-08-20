@@ -1952,6 +1952,21 @@ status: failed`,
 			want:  `env PROFILE=release openssl pkey -passin [REDACTED] -in signing.pem`,
 		},
 		{
+			name:  "keytool keystore and key passwords",
+			input: `keytool -importkeystore -srcstorepass opaque-source-store -deststorepass=opaque-destination-store -srckeypass "opaque source key" -destkeypass 'opaque destination key' -storepass opaque-store -keypass opaque-key`,
+			want:  `keytool -importkeystore -srcstorepass [REDACTED] -deststorepass=[REDACTED] -srckeypass [REDACTED] -destkeypass [REDACTED] -storepass [REDACTED] -keypass [REDACTED]`,
+		},
+		{
+			name:  "keytool new password through env wrapper",
+			input: "env PROFILE=release /usr/bin/keytool -keypasswd -storepass old-store -keypass old-key -new \\\n  new-key -alias signing",
+			want:  "env PROFILE=release /usr/bin/keytool -keypasswd -storepass [REDACTED] -keypass [REDACTED] -new \\\n  [REDACTED] -alias signing",
+		},
+		{
+			name:  "Windows keytool password sources",
+			input: `C:\Java\bin\keytool.exe -list -storepass:env STORE_PASSWORD -keypass:file key-password.txt`,
+			want:  `C:\Java\bin\keytool.exe -list -storepass:env [REDACTED] -keypass:file [REDACTED]`,
+		},
+		{
 			name:  "scoped base64 private key assignments",
 			input: `ASC_STOREKIT_PRIVATE_KEY_B64=c3RvcmVraXQtcHJpdmF0ZS1rZXk= ASC_ADS_PRIVATE_KEY_B64=YWRzLXByaXZhdGUta2V5`,
 			want:  `ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED] ASC_ADS_PRIVATE_KEY_B64=[REDACTED]`,
@@ -2264,6 +2279,21 @@ func TestRedactSensitiveTextScopesSecurityCredentialArguments(t *testing.T) {
 		`security import signing.cer -k build.keychain`,
 		`security list-keychains -p public-value`,
 		`tool -p public-value`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextScopesKeytoolCredentialArguments(t *testing.T) {
+	for _, input := range []string{
+		`echo keytool -list -storepass public-value`,
+		`sudo echo keytool -list -storepass public-value`,
+		`echo keytool.exe -list -storepass:env PUBLIC_VALUE`,
+		`tool -storepass public-value`,
+		`keytool -list -keystore public-value`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {

@@ -119,6 +119,7 @@ var (
 		"create-filevaultmaster-keychain":      newCommandCredentialFlagPattern("p"),
 	}
 	opensslCredentialFlagPattern       = newCommandCredentialFlagPattern("passin", "passout", "passcerts")
+	keytoolCredentialFlagPattern       = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass", "new", "srcstorepass", "deststorepass", "srckeypass", "destkeypass")
 	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	rawRegistryAuthsPattern            = regexp.MustCompile(`(?i)"auths"[ \t\r\n]*:[ \t\r\n]*\{`)
@@ -467,6 +468,10 @@ func redactSensitiveText(value string) (string, bool) {
 		changed = true
 	}
 	if next, opensslChanged := redactOpenSSLCredentialArguments(redacted); opensslChanged {
+		redacted = next
+		changed = true
+	}
+	if next, keytoolChanged := redactKeytoolCredentialArguments(redacted); keytoolChanged {
 		redacted = next
 		changed = true
 	}
@@ -4327,21 +4332,33 @@ func redactKubectlSecretLiterals(value string) (string, bool) {
 }
 
 func newCommandCredentialFlagPattern(flags ...string) *regexp.Regexp {
+	return newCommandCredentialFlagPatternWithSuffix("", flags...)
+}
+
+func newCommandCredentialFlagPatternWithSuffix(suffix string, flags ...string) *regexp.Regexp {
 	escapedFlags := make([]string, 0, len(flags))
 	for _, flag := range flags {
 		escapedFlags = append(escapedFlags, regexp.QuoteMeta(flag))
 	}
-	return regexp.MustCompile(`(^|[ \t])(-(?:` + strings.Join(escapedFlags, "|") + `)(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
+	return regexp.MustCompile(`(^|[ \t])(-(?:` + strings.Join(escapedFlags, "|") + `)` + suffix + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
 }
 
 func redactOpenSSLCredentialArguments(value string) (string, bool) {
+	return redactNamedCommandCredentialArguments(value, "openssl", opensslCredentialFlagPattern)
+}
+
+func redactKeytoolCredentialArguments(value string) (string, bool) {
+	return redactNamedCommandCredentialArguments(value, "keytool", keytoolCredentialFlagPattern)
+}
+
+func redactNamedCommandCredentialArguments(value, commandName string, pattern *regexp.Regexp) (string, bool) {
 	result := value
 	changed := false
 	for start := 0; start < len(result); {
 		end := findShellCommandEnd(result, start)
 		command := result[start:end]
-		if isOpenSSLCommand(command) {
-			redacted := opensslCredentialFlagPattern.ReplaceAllString(command, `${1}${2}`+redactionMarker)
+		if isNamedCredentialCommand(command, commandName) {
+			redacted := pattern.ReplaceAllString(command, `${1}${2}`+redactionMarker)
 			if redacted != command {
 				result = result[:start] + redacted + result[end:]
 				command = redacted
@@ -4361,15 +4378,12 @@ func redactOpenSSLCredentialArguments(value string) (string, bool) {
 	return result, changed
 }
 
-func isOpenSSLCommand(command string) bool {
+func isNamedCredentialCommand(command, commandName string) bool {
 	normalized := strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(command)
 	words := strings.Fields(normalized)
 	for index, word := range words {
-		word = strings.Trim(word, `"'`)
-		if separator := strings.LastIndexAny(word, `/\\`); separator >= 0 {
-			word = word[separator+1:]
-		}
-		if word == "openssl" && isCredentialCommandPrefix(words[:index]) {
+		baseName := commandBaseName(word)
+		if (baseName == commandName || baseName == commandName+".exe") && isCredentialCommandPrefix(words[:index]) {
 			return true
 		}
 	}
