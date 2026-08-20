@@ -1216,6 +1216,14 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextPreservesBearerProse(t *testing.T) {
+	const input = "Bearer authentication fails behind proxy"
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
 func TestRedactSensitiveTextPreservesBenignYAMLAliasMappingKey(t *testing.T) {
 	input := "key: &s status\n*s: failed"
 	got, changed := redactSensitiveText(input)
@@ -2998,7 +3006,7 @@ func TestSearchIssuesRedactsCredentialInQuery(t *testing.T) {
 }
 
 func TestCreateIssueRedactsCredentialPayload(t *testing.T) {
-	const secret = "issue-payload-secret"
+	const secret = "issue-payload-secret-123"
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -3089,13 +3097,16 @@ func TestFormatLocalEntriesRedactsLegacyCredentials(t *testing.T) {
 
 func TestIssueBodyPreservesBenignSecurityVocabulary(t *testing.T) {
 	entry := LogEntry{
-		Description: "token refresh failed",
+		Description: "Bearer authentication fails behind proxy",
 		Repro:       "asc builds list --filter-key token\nasc signing sync pull --password-file /tmp/sync-password\nasc auth login --private-key /path/to/AuthKey.p8\nasc auth login --private-key=/path/to/AuthKey.p8\nasc xcode validate --api-key KEY123ABC\ncurl --user alice https://example.test\ncurl --proxy-user alice https://example.test\ngit clone https://example.test/repo",
 		Expected:    "secret scanning documentation remains visible",
 		Actual:      `request to https://example.test/path?signature_state=missing returned 401 with {"passwordPolicy":"strict","tokenCount":0}`,
 		Severity:    "bug",
 	}
 	body := issueBody(entry)
+	if title := issueTitle(entry); title != entry.Description {
+		t.Fatalf("issueTitle() = %q, want benign description %q preserved", title, entry.Description)
+	}
 
 	for _, want := range []string{entry.Description, entry.Repro, entry.Expected, entry.Actual} {
 		if !strings.Contains(body, want) {

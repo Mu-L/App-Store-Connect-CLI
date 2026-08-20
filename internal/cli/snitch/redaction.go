@@ -325,7 +325,12 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)\bbearer[ \t]+[-A-Z0-9._~+/=]{8,}`),
+		pattern: regexp.MustCompile(`(?i)\bbearer[ \t]+(?:` +
+			`[0-9+/=][-a-z0-9._~+/=]{7,}|` +
+			`[-a-z0-9._~+/=][0-9+/=][-a-z0-9._~+/=]{6,}|` +
+			`[-a-z0-9._~+/=]{2}[0-9+/=][-a-z0-9._~+/=]{5,}|` +
+			`[-a-z0-9._~+/=]{3}[0-9+/=][-a-z0-9._~+/=]{4,}|` +
+			`[-a-z0-9._~+/=]{4,}[0-9+/=][-a-z0-9._~+/=]*)`),
 		replacement: "Bearer " + redactionMarker,
 	},
 	{
