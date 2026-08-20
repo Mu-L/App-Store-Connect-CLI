@@ -2023,6 +2023,11 @@ status: failed`,
 			want:  `sudo kubectl create secret generic foo --from-literal=[REDACTED] --namespace demo`,
 		},
 		{
+			name:  "kubectl secret literal through option-bearing wrappers",
+			input: `sudo -u build env -v PROFILE=release kubectl create secret generic foo --from-literal=custom=opaque-secret --namespace demo`,
+			want:  `sudo -u build env -v PROFILE=release kubectl create secret generic foo --from-literal=[REDACTED] --namespace demo`,
+		},
+		{
 			name:  "security unlock keychain password",
 			input: `security unlock-keychain -p "opaque credential" build.keychain`,
 			want:  `security unlock-keychain -p [REDACTED] build.keychain`,
@@ -2061,6 +2066,31 @@ status: failed`,
 			name:  "OpenSSL passphrase through env wrapper",
 			input: `env PROFILE=release openssl pkey -passin env:SIGNING_PASSWORD -in signing.pem`,
 			want:  `env PROFILE=release openssl pkey -passin [REDACTED] -in signing.pem`,
+		},
+		{
+			name:  "OpenSSL passphrase through env debug wrapper",
+			input: `env -v openssl pkcs12 -export -passout pass:opaque-output`,
+			want:  `env -v openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passphrase through env long debug wrapper",
+			input: `env --debug openssl pkcs12 -export -passout pass:opaque-output`,
+			want:  `env --debug openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passphrase through env utility path wrapper",
+			input: `env -P /usr/bin openssl pkcs12 -export -passout pass:opaque-output`,
+			want:  `env -P /usr/bin openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passphrase through env split string wrapper",
+			input: `env -S "openssl pkcs12 -export -passout pass:opaque-output"`,
+			want:  `env -S "openssl pkcs12 -export -passout [REDACTED]"`,
+		},
+		{
+			name:  "OpenSSL passphrase through env long split string wrapper",
+			input: `env --split-string="openssl pkcs12 -export -passout pass:opaque-output"`,
+			want:  `env --split-string="openssl pkcs12 -export -passout [REDACTED]"`,
 		},
 		{
 			name:  "keytool keystore and key passwords",
@@ -2468,7 +2498,13 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 func TestRedactSensitiveTextScopesKubectlSecretLiterals(t *testing.T) {
 	for _, input := range []string{
 		`echo kubectl create secret generic foo --from-literal=custom=public-value`,
+		`sudo echo kubectl create secret generic foo --from-literal=custom=public-value`,
+		`sudo -u build echo kubectl create secret generic foo --from-literal=custom=public-value`,
+		`env -v echo kubectl create secret generic foo --from-literal=custom=public-value`,
+		`env -S "echo kubectl create secret generic foo --from-literal=custom=public-value"`,
 		`kubectl create configmap foo --from-literal=custom=public-value`,
+		`kubectl get pods create secret generic foo --from-literal=custom=public-value`,
+		`kubectl run demo -- echo create secret --from-literal=custom=public-value`,
 		"kubectl create\nsecret generic foo --from-literal=custom=public-value",
 	} {
 		got, changed := redactSensitiveText(input)
@@ -2561,6 +2597,7 @@ func TestRedactSensitiveTextRejectsNonExecutingCredentialCommandWrappers(t *test
 		`sudo -u build echo keytool -list -storepass public-value`,
 		`command -v keytool -storepass public-value`,
 		`doas -u build echo openssl -passout public-value`,
+		`env -S "echo openssl pkcs12 -passout public-value"`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {

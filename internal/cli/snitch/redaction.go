@@ -59,6 +59,7 @@ const (
 	shellUnquotedValue          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()"'])+`
 	structuredUnquotedValue     = `(?:\\(?:\r?\n|[^\r\n])|[^\s,;&|<>()"'{}\[\]])+`
 	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\;&|<>()]|[^-\s\\;&|<>()])(?:\\[^\r\n]|[^\s;&|<>()])*`
+	commandFlagUnquotedValue    = `(?:\\[^\r\n]|-[^-\s\\;&|<>()"']|[^-\s\\;&|<>()"'])(?:\\[^\r\n]|[^\s;&|<>()"'])*`
 	credentialPairQuoted        = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*:(?:` + escapedQuotedCharacter + `|[^"\\])+"|\$?'(?:` + escapedQuotedCharacter + `|[^'\\])*:(?:` + escapedQuotedCharacter + `|[^'\\])+')`
 	credentialPairOpen          = `(?:"[^\r\n]*:[^\r\n]+|\$?'[^\r\n]*:[^\r\n]+)`
 	credentialPairShellWord     = `(?:` + singleLineQuotedValue + `|\\(?:\r?\n|[^\r\n])|[^\s:;&|<>()"'])+:(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + fishCommandSubstitution + `|` + shellUnquotedValue + `)+`
@@ -180,6 +181,7 @@ var (
 	xmlAttribute                          = regexp.MustCompile(`(?s)(?:^|[ \t\r\n])([a-zA-Z_:][a-zA-Z0-9_.:-]*)[ \t\r\n]*=[ \t\r\n]*(?:"([^"]*)"|'([^']*)')`)
 	authorizationHeaderValueStart         = regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*`)
 	standaloneBearerCandidate             = regexp.MustCompile(`(?i)\bbearer[ \t]+([-a-z0-9._~+/=]+)`)
+	envLongSplitStringOption              = regexp.MustCompile(`(?i)--split-string[ \t]*=`)
 	standaloneURLSafeCredentialCandidates = []*regexp.Regexp{
 		regexp.MustCompile(`AIza[A-Za-z0-9_-]{35}`),
 		regexp.MustCompile(`SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}`),
@@ -4502,7 +4504,7 @@ func newCommandCredentialFlagPatternWithSuffix(suffix string, flags ...string) *
 	for _, flag := range flags {
 		escapedFlags = append(escapedFlags, regexp.QuoteMeta(flag))
 	}
-	return regexp.MustCompile(`(^|[ \t])(-(?:` + strings.Join(escapedFlags, "|") + `)` + suffix + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
+	return regexp.MustCompile(`(^|[ \t])(-(?:` + strings.Join(escapedFlags, "|") + `)` + suffix + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + commandFlagUnquotedValue + `)`)
 }
 
 func redactOpenSSLCredentialArguments(value string) (string, bool) {
@@ -4578,7 +4580,7 @@ func redactDockerLoginCredentialArguments(value string) (string, bool) {
 }
 
 func isDockerLoginCommand(command string) bool {
-	normalized := strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(command)
+	normalized := normalizeCredentialCommand(command)
 	words := strings.Fields(normalized)
 	for index, word := range words {
 		baseName := commandBaseName(word)
@@ -4673,7 +4675,7 @@ func redactNamedCommandCredentialArguments(value, commandName string, pattern *r
 }
 
 func isNamedCredentialCommand(command, commandName string) bool {
-	normalized := strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(command)
+	normalized := normalizeCredentialCommand(command)
 	words := strings.Fields(normalized)
 	for index, word := range words {
 		baseName := commandBaseName(word)
@@ -4714,7 +4716,7 @@ func redactSecurityCredentialArguments(value string) (string, bool) {
 }
 
 func securitySubcommand(command string) (string, bool) {
-	normalized := strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(command)
+	normalized := normalizeCredentialCommand(command)
 	words := strings.Fields(normalized)
 	for index, word := range words {
 		word = strings.Trim(word, `"'`)
@@ -4824,10 +4826,12 @@ func credentialWrapperShortOption(wrapper string, option byte) (bool, bool) {
 	case "command":
 		return false, option == 'p'
 	case "env":
-		if option == 'C' || option == 'u' {
+		if option == 'C' || option == 'P' || option == 'u' {
 			return true, true
 		}
-		return false, option == 'i'
+		// Treat -S as transparent here so the command words inside its split
+		// string remain available to the command-scoped redactors.
+		return false, option == 'S' || option == 'i' || option == 'v'
 	default:
 		return false, false
 	}
@@ -4848,7 +4852,7 @@ func credentialWrapperLongOption(wrapper, option string) (bool, bool) {
 		switch option {
 		case "--argv0", "--chdir", "--unset":
 			return true, true
-		case "--ignore-environment":
+		case "--debug", "--ignore-environment":
 			return false, true
 		}
 	}
@@ -4863,8 +4867,13 @@ func commandBaseName(word string) string {
 	return prefix
 }
 
-func isKubectlCreateSecretCommand(command string) bool {
+func normalizeCredentialCommand(command string) string {
 	normalized := strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(command)
+	return envLongSplitStringOption.ReplaceAllString(normalized, "-S ")
+}
+
+func isKubectlCreateSecretCommand(command string) bool {
+	normalized := normalizeCredentialCommand(command)
 	words := strings.Fields(normalized)
 	if len(words) < 3 {
 		return false
@@ -4885,34 +4894,63 @@ func isKubectlCreateSecretCommand(command string) bool {
 		return false
 	}
 
-	for index := kubectlIndex + 1; index+1 < len(words); index++ {
-		if strings.EqualFold(strings.Trim(words[index], `"'`), "create") &&
-			strings.EqualFold(strings.Trim(words[index+1], `"'`), "secret") {
-			return true
-		}
-	}
-	return false
+	return isKubectlCreateSecretSubcommand(words[kubectlIndex+1:])
 }
 
 func isKubectlCommandPrefix(words []string) bool {
-	if len(words) == 0 {
-		return true
-	}
+	return isCredentialCommandPrefix(words)
+}
 
-	first := strings.ToLower(strings.Trim(words[0], `"'`))
-	if separator := strings.LastIndexAny(first, `/\\`); separator >= 0 {
-		first = first[separator+1:]
-	}
-	if first == "sudo" || first == "doas" || first == "command" || first == "env" {
-		return true
-	}
+func isKubectlCreateSecretSubcommand(words []string) bool {
+	for len(words) > 0 {
+		word := strings.Trim(words[0], `"'`)
+		if word == "--" {
+			words = words[1:]
+			break
+		}
+		if !strings.HasPrefix(word, "-") || word == "-" {
+			break
+		}
 
-	for _, word := range words {
-		if !strings.Contains(word, "=") {
+		requiresArgument, allowed := kubectlGlobalOption(word)
+		if !allowed {
 			return false
 		}
+		words = words[1:]
+		if requiresArgument {
+			if len(words) == 0 {
+				return false
+			}
+			words = words[1:]
+		}
 	}
-	return true
+
+	return len(words) >= 2 &&
+		strings.EqualFold(strings.Trim(words[0], `"'`), "create") &&
+		strings.EqualFold(strings.Trim(words[1], `"'`), "secret")
+}
+
+func kubectlGlobalOption(option string) (bool, bool) {
+	if strings.HasPrefix(option, "--") {
+		name, _, attached := strings.Cut(option, "=")
+		switch name {
+		case "--as", "--as-group", "--as-uid", "--cache-dir", "--certificate-authority", "--client-certificate", "--client-key", "--cluster", "--context", "--kubeconfig", "--namespace", "--password", "--profile", "--profile-output", "--request-timeout", "--server", "--tls-server-name", "--token", "--user", "--username", "--v", "--vmodule":
+			return !attached, true
+		case "--disable-compression", "--insecure-skip-tls-verify", "--match-server-version", "--warnings-as-errors":
+			return false, true
+		default:
+			return false, false
+		}
+	}
+	if len(option) < 2 {
+		return false, false
+	}
+	switch option[1] {
+	case 'n', 's', 'v':
+		return len(option) == 2, true
+	default:
+		return false, false
+	}
 }
 
 func transformXcodeCloudEnvVarSetCommands(value string, transform func(string) (string, bool)) (string, bool) {
