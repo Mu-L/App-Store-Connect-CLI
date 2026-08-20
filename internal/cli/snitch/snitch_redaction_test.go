@@ -1918,6 +1918,16 @@ status: failed`,
 			input: "credential glpat-abcdefghijklmnopqrstuvwxyz",
 			want:  "credential [REDACTED]",
 		},
+		{
+			name:  "Stripe secret API key",
+			input: "request failed for " + "sk_live_" + "51ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+			want:  "request failed for [REDACTED]",
+		},
+		{
+			name:  "Stripe restricted test API key",
+			input: "request failed for " + "rk_test_" + "51ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+			want:  "request failed for [REDACTED]",
+		},
 	}
 
 	for _, tt := range tests {

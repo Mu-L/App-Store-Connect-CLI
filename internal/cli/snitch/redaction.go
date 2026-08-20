@@ -400,7 +400,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|xoxb-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{20,}|xoxp-[A-Za-z0-9-]{20,}|xapp-[0-9]+-[A-Za-z0-9]{10,}(?:-[A-Za-z0-9]{6,})+|npm_[A-Za-z0-9]{36}|glpat-[A-Za-z0-9_-]{20,})\b`),
+		pattern:     regexp.MustCompile(`\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|xoxb-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{20,}|xoxp-[A-Za-z0-9-]{20,}|xapp-[0-9]+-[A-Za-z0-9]{10,}(?:-[A-Za-z0-9]{6,})+|npm_[A-Za-z0-9]{36}|glpat-[A-Za-z0-9_-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,})\b`),
 		replacement: redactionMarker,
 	},
 }
