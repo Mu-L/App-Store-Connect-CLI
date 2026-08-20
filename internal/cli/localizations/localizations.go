@@ -62,7 +62,7 @@ func LocalizationsListCommand() *ffcli.Command {
 	appInfoID := fs.String("app-info", "", "App Info ID (optional override)")
 	locType := fs.String("type", shared.LocalizationTypeVersion, "Localization type: version (default) or app-info")
 	appInfoFields := fs.String("app-info-fields", "", "Sparse app info fields for app-info localizations: kidsAgeBand (deprecated; prefer age-rating data)")
-	include := fs.String("include", "", "Include related resources for version localizations, comma-separated: "+strings.Join(versionLocalizationIncludeList(), ", "))
+	include := shared.BindOnceCSVFlag(fs, "include", "Include related resources for version localizations, comma-separated: "+strings.Join(versionLocalizationIncludeList(), ", "))
 	locale := fs.String("locale", "", "Filter by locale(s), comma-separated")
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
@@ -116,7 +116,7 @@ Examples:
 			if includeProvided && normalizedType != shared.LocalizationTypeVersion {
 				return shared.UsageError("--include requires --type version")
 			}
-			includeValues, err := shared.NormalizeSelection(*include, versionLocalizationIncludeList(), "--include")
+			includeValues, err := shared.NormalizeSelection(include.String(), versionLocalizationIncludeList(), "--include")
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}

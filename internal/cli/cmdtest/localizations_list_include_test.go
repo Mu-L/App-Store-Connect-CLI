@@ -165,6 +165,11 @@ func TestLocalizationsListIncludeValidationErrors(t *testing.T) {
 			wantErr: "--include must not be empty",
 		},
 		{
+			name:    "repeated include flag",
+			args:    []string{"localizations", "list", "--version", "version-1", "--include", "appScreenshotSets", "--include", "appPreviewSets"},
+			wantErr: `--include specified multiple times; pass one comma-separated list, for example --include "appScreenshotSets,appPreviewSets"`,
+		},
+		{
 			name: "include with next",
 			args: []string{
 				"localizations", "list",
