@@ -63,6 +63,23 @@ func TestIsTransientMutationErrorSkipsExhaustedClientRateLimit(t *testing.T) {
 	}
 }
 
+func TestPartitionEqualizeFailuresKeepsUnhonoredRetryDelayFinal(t *testing.T) {
+	_, err := asc.WithRetry(context.Background(), func() (struct{}, error) {
+		return struct{}{}, &asc.RetryableError{
+			Err:        &asc.APIError{Code: "RATE_LIMIT_EXCEEDED", StatusCode: http.StatusTooManyRequests},
+			RetryAfter: time.Hour,
+		}
+	}, asc.RetryOptions{MaxRetries: 1, BaseDelay: time.Millisecond, MaxDelay: time.Second})
+	if err == nil {
+		t.Fatal("expected unhonored Retry-After error, got nil")
+	}
+
+	retryable, final := partitionEqualizeFailures(context.Background(), []equalizeAttemptFailure{{Target: equalization{Territory: "USA"}, Err: err}})
+	if len(retryable) != 0 || len(final) != 1 {
+		t.Fatalf("expected one final failure and no retryable failures, got retryable=%d final=%d", len(retryable), len(final))
+	}
+}
+
 func TestApplyEqualizedPricesDoesNotReplayExhaustedClientRateLimit(t *testing.T) {
 	t.Setenv("ASC_MAX_RETRIES", "3")
 	t.Setenv("ASC_BASE_DELAY", "1ms")
