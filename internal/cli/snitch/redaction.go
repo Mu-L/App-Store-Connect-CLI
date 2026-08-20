@@ -516,6 +516,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, jsonPairChanged := redactSensitiveJSONNameValuePairs(redacted); jsonPairChanged {
+		redacted = next
+		changed = true
+	}
 	if next, cookieChanged := redactStructuredCookieValues(redacted); cookieChanged {
 		redacted = next
 		changed = true
@@ -1555,7 +1559,7 @@ func findKubernetesFlowValueEnd(value string, start int) int {
 	return len(value) - 1
 }
 
-type kubernetesJSONProperty struct {
+type jsonObjectProperty struct {
 	key        string
 	valueStart int
 	valueEnd   int
@@ -1633,7 +1637,7 @@ func nextJSONObjectStart(value string, start, escapeDepth int) int {
 }
 
 func redactKubernetesSecretJSONObject(object string, escapeDepth int) (string, bool) {
-	properties := parseKubernetesJSONObject(object, escapeDepth)
+	properties := parseJSONObjectProperties(object, escapeDepth)
 	if len(properties) == 0 {
 		return object, false
 	}
@@ -1660,7 +1664,7 @@ func redactKubernetesSecretJSONObject(object string, escapeDepth int) (string, b
 			continue
 		}
 		container := object[property.valueStart:property.valueEnd]
-		containerProperties := parseKubernetesJSONObject(container, escapeDepth)
+		containerProperties := parseJSONObjectProperties(container, escapeDepth)
 		for _, child := range containerProperties {
 			if child.valueStart >= len(container) || container[child.valueStart:child.valueEnd] == quotedMarker {
 				continue
@@ -1682,7 +1686,7 @@ func redactKubernetesSecretJSONObject(object string, escapeDepth int) (string, b
 	return redacted, true
 }
 
-func parseKubernetesJSONObject(object string, escapeDepth int) []kubernetesJSONProperty {
+func parseJSONObjectProperties(object string, escapeDepth int) []jsonObjectProperty {
 	if len(object) < 2 || object[0] != '{' {
 		return nil
 	}
@@ -1690,7 +1694,7 @@ func parseKubernetesJSONObject(object string, escapeDepth int) []kubernetesJSONP
 	if object[len(object)-1] == '}' {
 		objectEnd--
 	}
-	var properties []kubernetesJSONProperty
+	var properties []jsonObjectProperty
 	for cursor := 1; cursor < objectEnd; {
 		for cursor < objectEnd && (object[cursor] == ' ' || object[cursor] == '\t' || object[cursor] == '\r' || object[cursor] == '\n' || object[cursor] == ',') {
 			cursor++
@@ -1718,17 +1722,17 @@ func parseKubernetesJSONObject(object string, escapeDepth int) []kubernetesJSONP
 		for valueStart < len(object) && (object[valueStart] == ' ' || object[valueStart] == '\t' || object[valueStart] == '\r' || object[valueStart] == '\n') {
 			valueStart++
 		}
-		valueEnd := jsonKubernetesPropertyValueEnd(object, valueStart, escapeDepth)
+		valueEnd := jsonPropertyValueEnd(object, valueStart, escapeDepth)
 		if valueEnd <= valueStart {
 			return properties
 		}
-		properties = append(properties, kubernetesJSONProperty{key: key, valueStart: valueStart, valueEnd: valueEnd})
+		properties = append(properties, jsonObjectProperty{key: key, valueStart: valueStart, valueEnd: valueEnd})
 		cursor = valueEnd
 	}
 	return properties
 }
 
-func jsonKubernetesPropertyValueEnd(object string, start, escapeDepth int) int {
+func jsonPropertyValueEnd(object string, start, escapeDepth int) int {
 	end, _ := jsonCredentialValueReplacement(object, start, escapeDepth)
 	return end
 }
@@ -2498,6 +2502,7 @@ func redactHighConfidenceAuthorizationCredentials(value string) (string, bool) {
 		for nextStart < len(line) && (line[nextStart] == ' ' || line[nextStart] == '\t') {
 			nextStart++
 		}
+		hasSeparateCredential := false
 		if nextStart < len(line) {
 			nextEnd := nextStart
 			for nextEnd < len(line) && line[nextEnd] != ' ' && line[nextEnd] != '\t' {
@@ -2505,9 +2510,10 @@ func redactHighConfidenceAuthorizationCredentials(value string) (string, bool) {
 			}
 			credential = line[nextStart:nextEnd]
 			credentialEnd = nextEnd
+			hasSeparateCredential = strings.TrimSpace(line[nextEnd:]) == ""
 		}
 
-		if !isCredentialSpecificAuthorizationScheme(scheme) && !looksLikeAuthorizationCredential(credential) {
+		if !hasSeparateCredential && !isCredentialSpecificAuthorizationScheme(scheme) && !looksLikeAuthorizationCredential(credential) {
 			searchStart = lineEnd
 			continue
 		}
@@ -3091,6 +3097,91 @@ func redactContextualJSONCredentialValues(value string) (string, bool) {
 		}
 	}
 	return redacted, changed
+}
+
+func redactSensitiveJSONNameValuePairs(value string) (string, bool) {
+	redacted := value
+	changed := false
+	maxEscapeDepth := maxJSONEscapeDepthForLength(len(value))
+	for escapeDepth := 0; escapeDepth <= maxEscapeDepth; escapeDepth++ {
+		if next, layerChanged := redactSensitiveJSONNameValuePairsAtDepth(redacted, escapeDepth); layerChanged {
+			redacted = next
+			changed = true
+		}
+	}
+	return redacted, changed
+}
+
+func redactSensitiveJSONNameValuePairsAtDepth(value string, escapeDepth int) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		open := nextJSONObjectStart(redacted, searchStart, escapeDepth)
+		if open < 0 {
+			break
+		}
+		close := findJSONContainerEndAtDepth(redacted, open, escapeDepth)
+		if close < open {
+			break
+		}
+		object := redacted[open : close+1]
+		redactedObject, objectChanged := redactSensitiveJSONNameValueObject(object, escapeDepth)
+		if objectChanged {
+			redacted = redacted[:open] + redactedObject + redacted[close+1:]
+			changed = true
+		}
+		searchStart = open + 1
+	}
+	return redacted, changed
+}
+
+func redactSensitiveJSONNameValueObject(object string, escapeDepth int) (string, bool) {
+	properties := parseJSONObjectProperties(object, escapeDepth)
+	delimiter := jsonQuoteDelimiter(escapeDepth)
+	sensitiveName := false
+	for _, property := range properties {
+		if !strings.EqualFold(property.key, "name") || property.valueStart >= len(object) || !strings.HasPrefix(object[property.valueStart:], delimiter) {
+			continue
+		}
+		name, valid := decodeJSONCredentialKey(object[property.valueStart:property.valueEnd], escapeDepth)
+		if valid && jsonCredentialName.MatchString(name) {
+			sensitiveName = true
+			break
+		}
+	}
+	if !sensitiveName {
+		return object, false
+	}
+
+	type replacement struct {
+		start int
+		end   int
+		value string
+	}
+	var replacements []replacement
+	for _, property := range properties {
+		if !strings.EqualFold(property.key, "value") || property.valueStart >= len(object) {
+			continue
+		}
+		valueEnd, replacementValue := jsonCredentialValueReplacement(object, property.valueStart, escapeDepth)
+		if strings.HasPrefix(object[property.valueStart:], delimiter) && findJSONStringEndAtDepth(object, property.valueStart, escapeDepth) < 0 {
+			replacementValue = delimiter + redactionMarker
+		}
+		if valueEnd <= property.valueStart || object[property.valueStart:valueEnd] == replacementValue {
+			continue
+		}
+		replacements = append(replacements, replacement{start: property.valueStart, end: valueEnd, value: replacementValue})
+	}
+	if len(replacements) == 0 {
+		return object, false
+	}
+
+	redacted := object
+	for index := len(replacements) - 1; index >= 0; index-- {
+		span := replacements[index]
+		redacted = redacted[:span.start] + span.value + redacted[span.end:]
+	}
+	return redacted, true
 }
 
 func redactJSONValuesInNamedContainer(value string, escapeDepth int, rule contextualJSONContainerRule) (string, bool) {

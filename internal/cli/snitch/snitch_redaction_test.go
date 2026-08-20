@@ -79,6 +79,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "Authorization: [REDACTED]",
 		},
 		{
+			name:  "alphabetic arbitrary authorization token scheme",
+			input: `Authorization: Negotiate opaqueSecretValue`,
+			want:  "Authorization: [REDACTED]",
+		},
+		{
 			name:  "folded authorization header",
 			input: "Authorization: Bearer opaque-head\r\n opaque-tail\r\nstatus: failed",
 			want:  "Authorization: [REDACTED]\r\nstatus: failed",
@@ -367,6 +372,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "escaped upload operation request header value",
 			input: `response {\"requestHeaders\":[{\"name\":\"x-upload-token\",\"value\":\"escaped-upload-secret\"}],\"method\":\"PUT\"}`,
 			want:  `response {\"requestHeaders\":[{\"name\":\"x-upload-token\",\"value\":\"[REDACTED]\"}],\"method\":\"PUT\"}`,
+		},
+		{
+			name:  "Kubernetes environment credential name value pair",
+			input: `{"name":"DB_PASSWORD","value":"opaqueAlphabeticSecret","valueFrom":null}`,
+			want:  `{"name":"DB_PASSWORD","value":"[REDACTED]","valueFrom":null}`,
+		},
+		{
+			name:  "escaped reversed Kubernetes environment credential name value pair",
+			input: `deployment {\"value\":\"escapedAlphabeticSecret\",\"name\":\"API_TOKEN\"}`,
+			want:  `deployment {\"value\":\"[REDACTED]\",\"name\":\"API_TOKEN\"}`,
+		},
+		{
+			name:  "nested Kubernetes environment credential preserves diagnostic pair",
+			input: `{"env":[{"name":"DB_PASSWORD","value":"nestedAlphabeticSecret"}],"diagnostic":{"name":"failure","value":"preserve this explanation"}}`,
+			want:  `{"env":[{"name":"DB_PASSWORD","value":"[REDACTED]"}],"diagnostic":{"name":"failure","value":"preserve this explanation"}}`,
 		},
 		{
 			name:  "truncated upload operation request header value",
