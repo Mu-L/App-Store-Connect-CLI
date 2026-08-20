@@ -1227,6 +1227,36 @@ data: !!map
   config: [REDACTED]`,
 		},
 		{
+			name: "Kubernetes Secret explicit data child",
+			input: `kind: Secret
+data:
+  ? config
+  : opaque-explicit-data-secret
+status: failed`,
+			want: `kind: Secret
+data:
+  ? config
+  : [REDACTED]
+status: failed`,
+		},
+		{
+			name: "Kubernetes Secret tagged explicit stringData child block scalar",
+			input: `kind: Secret
+stringData:
+  ? !!str config
+  : |
+    opaque-explicit-head
+    opaque-explicit-tail
+status: failed`,
+			want: `kind: Secret
+stringData:
+  ? !!str config
+  : [REDACTED]
+    [REDACTED]
+    [REDACTED]
+status: failed`,
+		},
+		{
 			name: "Kubernetes Secret multiline data flow map",
 			input: `apiVersion: v1
 kind: Secret

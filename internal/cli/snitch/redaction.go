@@ -90,7 +90,7 @@ type yamlAnchorLocation struct {
 	anchorEnd int
 }
 
-type yamlExplicitStructuralRestoration struct {
+type yamlExplicitMappingRestoration struct {
 	keyLine             int
 	valueLine           int
 	key                 string
@@ -619,7 +619,7 @@ func redactKubernetesSecretData(value string) (string, bool) {
 func redactKubernetesSecretYAMLData(value string) (string, bool) {
 	value, flowChanged := redactKubernetesSecretYAMLFlowData(value)
 	lines := strings.SplitAfter(value, "\n")
-	explicitRestorations := normalizeYAMLExplicitStructuralMappings(lines)
+	explicitRestorations := normalizeYAMLExplicitMappings(lines)
 	secretIndent := -1
 	containerIndent := -1
 	blockIndent := -1
@@ -807,7 +807,7 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 		}
 		containerIndent = keyIndent
 	}
-	restoreYAMLExplicitStructuralMappings(lines, explicitRestorations)
+	restoreYAMLExplicitMappings(lines, explicitRestorations)
 	return strings.Join(lines, ""), changed
 }
 
@@ -1057,8 +1057,8 @@ func yamlQuotedScalarCloses(value string, quote byte) bool {
 	return false
 }
 
-func normalizeYAMLExplicitStructuralMappings(lines []string) []yamlExplicitStructuralRestoration {
-	var restorations []yamlExplicitStructuralRestoration
+func normalizeYAMLExplicitMappings(lines []string) []yamlExplicitMappingRestoration {
+	var restorations []yamlExplicitMappingRestoration
 	for line := 0; line < len(lines); line++ {
 		content, ending := splitLineEnding(lines[line])
 		cursor := yamlKeyIndent(content)
@@ -1070,8 +1070,8 @@ func normalizeYAMLExplicitStructuralMappings(lines []string) []yamlExplicitStruc
 		if comment := strings.Index(keyText, " #"); comment >= 0 {
 			keyText = strings.TrimSpace(keyText[:comment])
 		}
-		key := decodeYAMLMappingKey(keyText)
-		if !strings.EqualFold(key, "kind") && !strings.EqualFold(key, "data") && !strings.EqualFold(key, "stringData") {
+		key, scalarKey := decodeYAMLExplicitScalarKey(keyText)
+		if !scalarKey {
 			continue
 		}
 
@@ -1099,7 +1099,7 @@ func normalizeYAMLExplicitStructuralMappings(lines []string) []yamlExplicitStruc
 		}
 		value := valueContent[originalValueStart:]
 
-		restorations = append(restorations, yamlExplicitStructuralRestoration{
+		restorations = append(restorations, yamlExplicitMappingRestoration{
 			keyLine:             line,
 			valueLine:           valueLine,
 			key:                 key,
@@ -1118,7 +1118,7 @@ func normalizeYAMLExplicitStructuralMappings(lines []string) []yamlExplicitStruc
 	return restorations
 }
 
-func restoreYAMLExplicitStructuralMappings(lines []string, restorations []yamlExplicitStructuralRestoration) {
+func restoreYAMLExplicitMappings(lines []string, restorations []yamlExplicitMappingRestoration) {
 	for _, restoration := range restorations {
 		valueLine := restoration.valueOriginal
 		if !strings.EqualFold(restoration.key, "kind") && restoration.keyLine < len(lines) {
@@ -1212,6 +1212,16 @@ func decodeYAMLScalar(value string) string {
 func decodeYAMLMappingKey(value string) string {
 	value, _ = trimYAMLNodeProperties(value)
 	return decodeYAMLScalar(value)
+}
+
+func decodeYAMLExplicitScalarKey(value string) (string, bool) {
+	value, _ = trimYAMLNodeProperties(value)
+	value = strings.TrimSpace(value)
+	if value == "" || value[0] == '[' || value[0] == '{' {
+		return "", false
+	}
+	key := decodeYAMLScalar(value)
+	return key, key != ""
 }
 
 func trimYAMLNodeProperties(value string) (string, int) {
