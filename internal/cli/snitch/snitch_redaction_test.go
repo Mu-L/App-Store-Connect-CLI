@@ -419,6 +419,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `<plist><dict><key>password</key><data>[REDACTED]</data><key>status</key><string>failed</string></dict></plist>`,
 		},
 		{
+			name:  "XML entity encoded property list credential key",
+			input: `<plist><dict><key>pass&#x77;ord</key><string>opaque-entity-secret</string><key>status</key><string>failed</string></dict></plist>`,
+			want:  `<plist><dict><key>pass&#x77;ord</key><string>[REDACTED]</string><key>status</key><string>failed</string></dict></plist>`,
+		},
+		{
+			name:  "XML comment before property list credential value",
+			input: `<plist><dict><key>password</key><!-- diagnostic context --><data>b3BhcXVlLXNlY3JldA==</data><key>status</key><string>failed</string></dict></plist>`,
+			want:  `<plist><dict><key>password</key><!-- diagnostic context --><data>[REDACTED]</data><key>status</key><string>failed</string></dict></plist>`,
+		},
+		{
 			name:  "XML property list credential container",
 			input: `<plist><dict><key>token</key><array><string>first-secret</string><dict><key>value</key><string>second-secret</string></dict></array><key>status</key><string>failed</string></dict></plist>`,
 			want:  `<plist><dict><key>token</key><array>[REDACTED]</array><key>status</key><string>failed</string></dict></plist>`,
@@ -426,6 +436,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 		{
 			name:  "multiword plain yaml scalar",
 			input: "password: correct horse battery staple\nstatus: failed",
+			want:  "password: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "indentless YAML credential sequence",
+			input: "password:\n- opaque-first-secret\n- opaque-second-secret\nstatus: failed",
 			want:  "password: [REDACTED]\nstatus: failed",
 		},
 		{
@@ -1387,18 +1402,20 @@ func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
 
 	const headerSecret = "compound-header-secret"
 	const plistSecret = "plist-credential-value"
+	const yamlSecret = "yaml-indentless-secret"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", "curl -H 'Authorization: Bearer '"+headerSecret+" https://example.test",
-		"--actual", `<plist><dict><key>password</key><data>`+plistSecret+`</data><key>status</key><string>failed</string></dict></plist>`,
+		"--actual", `<plist><dict><key>pass&#x77;ord</key><!-- context --><data>`+plistSecret+`</data><key>status</key><string>failed</string></dict></plist>`,
+		"--expected", "password:\n- "+yamlSecret+"\nstatus: failed",
 		"compound header and property list credential redaction probe",
 	)
 	if err != nil {
 		t.Fatalf("run snitch: %v", err)
 	}
 
-	for _, secret := range []string{headerSecret, plistSecret} {
+	for _, secret := range []string{headerSecret, plistSecret, yamlSecret} {
 		if strings.Contains(stderr, secret) {
 			t.Fatalf("stderr leaked %q: %q", secret, stderr)
 		}
@@ -1411,7 +1428,8 @@ func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
 	}
 	for _, want := range []string{
 		`curl -H "Authorization: [REDACTED]" https://example.test`,
-		`<key>password</key><data>[REDACTED]</data><key>status</key><string>failed</string>`,
+		`<key>pass&#x77;ord</key><!-- context --><data>[REDACTED]</data><key>status</key><string>failed</string>`,
+		"password: [REDACTED]\nstatus: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

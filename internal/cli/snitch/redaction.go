@@ -75,7 +75,6 @@ var (
 	credentialHeaderNamePattern       = regexp.MustCompile(`(?i)^` + credentialHeaderName + `$`)
 	curlHeaderOptionStart             = regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)`)
 	completeShellWord                 = regexp.MustCompile(`^(` + fishShellWord + `)(` + singleLineShellTerminator + `)`)
-	plistCredentialKey                = regexp.MustCompile(`(?i)<key>[ \t\r\n]*` + sensitivePrefixedName + `[ \t\r\n]*</key>`)
 	booleanSecretMarker               = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
 	yamlCredentialScalar              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlCredentialMapping             = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
@@ -492,18 +491,14 @@ func redactPlistCredentialValues(value string) (string, bool) {
 	redacted := value
 	changed := false
 	for searchStart := 0; searchStart < len(redacted); {
-		key := plistCredentialKey.FindStringIndex(redacted[searchStart:])
-		if key == nil {
+		relativeKey := strings.Index(redacted[searchStart:], "<key")
+		if relativeKey < 0 {
 			break
 		}
-
-		valueStart := searchStart + key[1]
-		for valueStart < len(redacted) && strings.ContainsRune(" \t\r\n", rune(redacted[valueStart])) {
-			valueStart++
-		}
-		contentStart, contentEnd, elementEnd, valid := findPlistValueElement(redacted, valueStart)
+		keyStart := searchStart + relativeKey
+		contentStart, contentEnd, elementEnd, valid := findPlistCredentialValue(redacted, keyStart)
 		if !valid || contentStart == contentEnd || redacted[contentStart:contentEnd] == redactionMarker {
-			searchStart = valueStart + 1
+			searchStart = keyStart + len("<key")
 			continue
 		}
 
@@ -514,21 +509,61 @@ func redactPlistCredentialValues(value string) (string, bool) {
 	return redacted, changed
 }
 
-func findPlistValueElement(value string, start int) (int, int, int, bool) {
-	if start < 0 || start >= len(value) || value[start] != '<' {
-		return 0, 0, 0, false
-	}
-	decoder := xml.NewDecoder(strings.NewReader(value[start:]))
+func findPlistCredentialValue(value string, keyStart int) (int, int, int, bool) {
+	decoder := xml.NewDecoder(strings.NewReader(value[keyStart:]))
 	first, err := decoder.Token()
-	if err != nil {
+	keyElement, validKeyElement := first.(xml.StartElement)
+	if err != nil || !validKeyElement || keyElement.Name.Local != "key" {
 		return 0, 0, 0, false
 	}
-	if _, ok := first.(xml.StartElement); !ok {
-		return 0, 0, 0, false
+
+	var keyText strings.Builder
+	for {
+		token, tokenErr := decoder.Token()
+		if tokenErr != nil {
+			return 0, 0, 0, false
+		}
+		switch typed := token.(type) {
+		case xml.CharData:
+			keyText.Write(typed)
+		case xml.Comment, xml.ProcInst, xml.Directive:
+		case xml.EndElement:
+			if typed.Name != keyElement.Name {
+				return 0, 0, 0, false
+			}
+			if !tomlCredentialName.MatchString(strings.TrimSpace(keyText.String())) {
+				return 0, 0, 0, false
+			}
+			goto findValue
+		default:
+			return 0, 0, 0, false
+		}
 	}
-	contentStart := start + int(decoder.InputOffset())
+
+findValue:
+	for {
+		token, tokenErr := decoder.Token()
+		if tokenErr != nil {
+			return 0, 0, 0, false
+		}
+		switch typed := token.(type) {
+		case xml.CharData:
+			if strings.TrimSpace(string(typed)) != "" {
+				return 0, 0, 0, false
+			}
+		case xml.Comment, xml.ProcInst, xml.Directive:
+		case xml.StartElement:
+			contentStart := keyStart + int(decoder.InputOffset())
+			return findPlistElementEnd(decoder, keyStart, contentStart)
+		default:
+			return 0, 0, 0, false
+		}
+	}
+}
+
+func findPlistElementEnd(decoder *xml.Decoder, offsetBase, contentStart int) (int, int, int, bool) {
 	for depth := 1; depth > 0; {
-		tokenStart := start + int(decoder.InputOffset())
+		tokenStart := offsetBase + int(decoder.InputOffset())
 		token, tokenErr := decoder.Token()
 		if tokenErr != nil {
 			return 0, 0, 0, false
@@ -539,7 +574,7 @@ func findPlistValueElement(value string, start int) (int, int, int, bool) {
 		case xml.EndElement:
 			depth--
 			if depth == 0 {
-				return contentStart, tokenStart, start + int(decoder.InputOffset()), true
+				return contentStart, tokenStart, offsetBase + int(decoder.InputOffset()), true
 			}
 		}
 	}
@@ -1175,7 +1210,9 @@ func redactYAMLCredentialBlocks(value string) (string, bool) {
 				end++
 				continue
 			}
-			if leadingIndent(child) <= keyIndent {
+			childIndent := leadingIndent(child)
+			indentlessSequence := !blockScalar && !plainScalar && isYAMLSequenceItemAtIndent(child, keyIndent)
+			if childIndent < keyIndent || childIndent == keyIndent && !indentlessSequence {
 				break
 			}
 			hasIndentedContent = true
@@ -1337,6 +1374,13 @@ func yamlKeyIndent(line string) int {
 		key++
 	}
 	return key
+}
+
+func isYAMLSequenceItemAtIndent(line string, indent int) bool {
+	if indent < 0 || leadingIndent(line) != indent || indent >= len(line) || line[indent] != '-' {
+		return false
+	}
+	return indent+1 == len(line) || line[indent+1] == ' ' || line[indent+1] == '\t'
 }
 
 func protectBooleanSecretMarkers(value string) (string, string) {
