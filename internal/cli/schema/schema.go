@@ -281,6 +281,11 @@ func parseInterspersedSchemaFlags(fs *flag.FlagSet, args []string) ([]string, er
 	if fs == nil || len(args) == 0 {
 		return args, nil
 	}
+	// flag.FlagSet removes a leading -- before Exec. If the first remaining
+	// argument still starts with a dash, it was escaped and must stay positional.
+	if strings.HasPrefix(args[0], "-") {
+		return args, nil
+	}
 
 	queryArgs := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {

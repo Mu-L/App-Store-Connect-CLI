@@ -216,6 +216,23 @@ func TestSchemaRejectsUnknownFlagAfterQuery(t *testing.T) {
 	}
 }
 
+func TestSchemaPreservesArgumentsAfterFlagTerminator(t *testing.T) {
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = rootcmd.Run([]string{"schema", "--", "--list"}, "1.2.3")
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d with stderr %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if stdout != "[]\n" {
+		t.Fatalf("expected literal query after -- to return an empty JSON array, got %q", stdout)
+	}
+}
+
 func TestSchemaNoMatchReturnsEmptyJSONArray(t *testing.T) {
 	var code int
 	stdout, stderr := captureOutput(t, func() {
