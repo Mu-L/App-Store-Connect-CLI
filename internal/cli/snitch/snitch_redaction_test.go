@@ -309,6 +309,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "server returned Bearer [REDACTED]",
 		},
 		{
+			name:  "standalone notification webhook URL",
+			input: "failed webhook https://hooks.slack.com/services/T012/B034/opaque-webhook-secret after retry",
+			want:  "failed webhook https://hooks.slack.com/services/[REDACTED] after retry",
+		},
+		{
 			name:  "signed URL credentials",
 			input: "upload https://example.test/file?part=1&X-Amz-Credential=ACCESS%2F20260819&X-Amz-Signature=abcdef0123456789#result",
 			want:  "upload https://example.test/file?part=1&X-Amz-Credential=[REDACTED]&X-Amz-Signature=[REDACTED]#result",
@@ -522,6 +527,11 @@ status: failed`,
 			name:  "YAML explicit credential key",
 			input: "? password\n: opaque-explicit-secret\nstatus: failed",
 			want:  "? password\n: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "tagged YAML explicit credential key",
+			input: "? !!str password\n: opaque-tagged-explicit-secret\nstatus: failed",
+			want:  "? !!str password\n: [REDACTED]\nstatus: failed",
 		},
 		{
 			name:  "quoted YAML explicit credential block scalar",
@@ -1451,6 +1461,44 @@ func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
 		"password: [REDACTED]\nstatus: failed",
 		`credentials."pass\u0077ord" = [REDACTED]`,
 		"machine api.example.test login alice password [REDACTED]",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsStandaloneWebhookAndTaggedExplicitYAML(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const webhookSecret = "standalone-webhook-secret"
+	const yamlSecret = "tagged-explicit-yaml-secret"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "failed webhook https://hooks.slack-gov.com/services/T012/B034/"+webhookSecret+" after retry",
+		"--actual", "? !!str password\n: "+yamlSecret+"\nstatus: failed",
+		"standalone webhook and tagged explicit YAML credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range []string{webhookSecret, yamlSecret} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"failed webhook https://hooks.slack-gov.com/services/[REDACTED] after retry",
+		"? !!str password\n: [REDACTED]\nstatus: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
