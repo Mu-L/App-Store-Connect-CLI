@@ -70,6 +70,8 @@ const (
 	passwordFileHostField       = `(?:\\[:\\]|[^#:\\\r\n])(?:\\[:\\]|[^:\\\r\n])*`
 )
 
+const powerShellSecureStringSwitch = `(?:(?:-AsPlainText|-Force)(?:[ \t]+|[ \t]*:[ \t]*\$?(?:true|false)[ \t]+))`
+
 type redactionRule struct {
 	pattern     *regexp.Regexp
 	replacement string
@@ -91,6 +93,7 @@ var (
 	rawCredentialArray                 = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\[`)
 	escapedCredentialArray             = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\[`)
 	credentialHeaderNamePattern        = regexp.MustCompile(`(?i)^` + credentialHeaderName + `$`)
+	sensitiveAssignmentHeaderName      = regexp.MustCompile(`(?i)^` + sensitivePrefixedName + `$`)
 	queryCredentialNamePattern         = regexp.MustCompile(`(?i)^` + queryCredentialName + `$`)
 	queryParameterName                 = regexp.MustCompile(`[?&]([^=&#\s"'<>]+)=`)
 	curlHeaderOptionStart              = regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)`)
@@ -153,7 +156,7 @@ var registryAuthValueRedactionRules = []redactionRule{
 // line cannot claim a later command's opening quote as its closer.
 var singleLineShellWordRedactionRules = []redactionRule{
 	{
-		pattern:     regexp.MustCompile(`(?im)(^|[ \t;&|])(` + powerShellSensitiveVariable + `[ \t]*=[ \t]*)(?:&[ \t]+)?(?:[a-z0-9_.-]+\\)?ConvertTo-SecureString[ \t]+(?:-String(?:[ \t]+|[ \t]*:[ \t]*))?` + fishShellWord + `(` + singleLineShellTerminator + `)`),
+		pattern:     regexp.MustCompile(`(?im)(^|[ \t;&|])(` + powerShellSensitiveVariable + `[ \t]*=[ \t]*)(?:&[ \t]+)?(?:[a-z0-9_.-]+\\)?ConvertTo-SecureString[ \t]+(?:` + powerShellSecureStringSwitch + `)*(?:-String(?:[ \t]+|[ \t]*:[ \t]*))?` + fishShellWord + `(` + singleLineShellTerminator + `)`),
 		replacement: `${1}${2}` + redactionMarker + `${3}`,
 	},
 	{
@@ -908,18 +911,22 @@ func redactCompoundCurlHeaderWords(value string) (string, bool) {
 		}
 		wordEnd := valueStart + wordMatch[3]
 		word := redacted[valueStart:wordEnd]
-		if !isCompoundQuotedShellWord(word) {
+		headerName, valid := decodeShellHeaderName(word)
+		assignmentHeader := valid && sensitiveAssignmentHeaderName.MatchString(headerName)
+		if !valid || (!credentialHeaderNamePattern.MatchString(headerName) && !assignmentHeader) {
 			searchStart = wordEnd
 			continue
 		}
-
-		headerName, valid := decodeShellHeaderName(word)
-		if !valid || !credentialHeaderNamePattern.MatchString(headerName) {
+		if !assignmentHeader && !isCompoundQuotedShellWord(word) {
 			searchStart = wordEnd
 			continue
 		}
 
 		replacement := `"` + headerName + `: ` + redactionMarker + `"`
+		if word == replacement {
+			searchStart = wordEnd
+			continue
+		}
 		redacted = redacted[:valueStart] + replacement + redacted[wordEnd:]
 		changed = true
 		searchStart = valueStart + len(replacement)

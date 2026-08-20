@@ -38,6 +38,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl --header "Authorization: [REDACTED]" https://example.test`,
 		},
 		{
+			name:  "quoted curl API key header",
+			input: `curl -H "X-API-Key: opaque-secret" https://example.test`,
+			want:  `curl -H "X-API-Key: [REDACTED]" https://example.test`,
+		},
+		{
+			name:  "quoted curl auth token header",
+			input: `curl --header 'X-Auth-Token: opaque-secret' https://example.test`,
+			want:  `curl --header "X-Auth-Token: [REDACTED]" https://example.test`,
+		},
+		{
 			name:  "parameterized authorization header",
 			input: "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260819/region/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=abcdef0123456789",
 			want:  "Authorization: [REDACTED]",
@@ -246,6 +256,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "PowerShell explicit plaintext SecureString assignment",
 			input: `$client_secret = ConvertTo-SecureString -String "opaque secret" -AsPlainText -Force`,
 			want:  `$client_secret = [REDACTED] -AsPlainText -Force`,
+		},
+		{
+			name:  "PowerShell plaintext SecureString switches before explicit input",
+			input: `$password = ConvertTo-SecureString -AsPlainText -String "opaque secret" -Force`,
+			want:  `$password = [REDACTED] -Force`,
+		},
+		{
+			name:  "PowerShell plaintext SecureString switches before positional input",
+			input: `$client_secret = ConvertTo-SecureString -Force "opaque secret" -AsPlainText`,
+			want:  `$client_secret = [REDACTED] -AsPlainText`,
 		},
 		{
 			name:  "Netscape cookie jar credentials",
@@ -2655,6 +2675,49 @@ func TestSnitchDryRunRedactsPowerShellAndPlistStringCredentials(t *testing.T) {
 		`set "PASSWORD=[REDACTED]" & echo done`,
 		`set PASSWORD=[REDACTED] & echo done`,
 		`<key>password</key><string>[REDACTED]</string><key>status</key><string>failed</string>`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsCustomCurlHeadersAndSecureStringSwitches(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"opaque-curl-api-key-secret",
+		"opaque-curl-auth-token-secret",
+		"opaque-secure-string-explicit-secret",
+		"opaque-secure-string-positional-secret",
+	}
+	repro := `curl -H "X-API-Key: ` + secrets[0] + `" https://example.test` + "\n" +
+		`curl --header 'X-Auth-Token: ` + secrets[1] + `' https://example.test` + "\n" +
+		`$password = ConvertTo-SecureString -AsPlainText -String "` + secrets[2] + `" -Force` + "\n" +
+		`$client_secret = ConvertTo-SecureString -Force "` + secrets[3] + `" -AsPlainText`
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"custom header and SecureString switch redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+			t.Fatalf("dry run leaked %q: stdout=%q stderr=%q", secret, stdout, stderr)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		`curl -H "X-API-Key: [REDACTED]" https://example.test`,
+		`curl --header "X-Auth-Token: [REDACTED]" https://example.test`,
+		`$password = [REDACTED] -Force`,
+		`$client_secret = [REDACTED] -AsPlainText`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
