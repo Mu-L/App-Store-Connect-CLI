@@ -51,7 +51,7 @@ func VersionsListCommand() *ffcli.Command {
 	version := fs.String("version", "", "Filter by version string (comma-separated)")
 	platform := fs.String("platform", "", "Filter by platform: IOS, MAC_OS, TV_OS, VISION_OS (comma-separated)")
 	state := fs.String("state", "", "Filter by state (comma-separated)")
-	include := fs.String("include", "", "[experimental] Include related resources: "+strings.Join(appStoreVersionsIncludeList(), ", "))
+	include := shared.BindOnceCSVFlag(fs, "include", "[experimental] Include related resources: "+strings.Join(appStoreVersionsIncludeList(), ", "))
 	includeSensitive := shared.BindIncludeSensitiveFlag(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Next page URL from a previous response")
@@ -96,7 +96,7 @@ Examples:
 				return fmt.Errorf("versions list: %w", err)
 			}
 
-			includeValues, err := normalizeAppStoreVersionsInclude(*include)
+			includeValues, err := normalizeAppStoreVersionsInclude(include.String())
 			if err != nil {
 				return shared.UsageErrorf("versions list: %v", err)
 			}

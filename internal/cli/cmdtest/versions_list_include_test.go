@@ -242,6 +242,39 @@ func TestVersionsListRejectsIncludeWithNext(t *testing.T) {
 	}
 }
 
+func TestVersionsListRejectsRepeatedIncludeFlags(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	t.Setenv("ASC_APP_ID", "")
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected request to %s", req.URL.String())
+		return nil, nil
+	})
+
+	stdout, stderr := captureOutput(t, func() {
+		code := cmd.Run([]string{
+			"versions", "list", "--app", "123456789",
+			"--include", "build", "--include", "appStoreReviewDetail",
+		}, "1.2.3")
+		if code != cmd.ExitUsage {
+			t.Fatalf("exit code = %d, want %d", code, cmd.ExitUsage)
+		}
+	})
+
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	want := `--include specified multiple times; pass one comma-separated list, for example --include "build,appStoreReviewDetail"`
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want it to contain %q", stderr, want)
+	}
+}
+
 func TestVersionsListRejectsUnsupportedInclude(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
