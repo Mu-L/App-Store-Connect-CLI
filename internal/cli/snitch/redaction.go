@@ -92,6 +92,9 @@ var (
 	yamlExplicitCredentialKey         = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+(?:` + yamlNodeTag + `[ \t]+)*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlCredentialAlias               = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlAnchor                        = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
+	yamlSensitiveNameAnchor           = regexp.MustCompile(`(?im)&([a-zA-Z0-9_-]+)[ \t]+(?:(?:` + yamlNodeTag + `)[ \t]+)*(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlAliasMappingKey               = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?)(\*([a-zA-Z0-9_-]+))([ \t]*:)`)
+	yamlExplicitAliasKey              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?\?[ \t]+)(\*([a-zA-Z0-9_-]+))([ \t]*(?:#[^\r\n]*)?)$`)
 	jsonQuotedScalarLine              = regexp.MustCompile(`^"(?:\\.|[^"\\])*"[ \t]*,?[ \t]*$`)
 	jsonCredentialName                = regexp.MustCompile(`(?i)^(?:` + structuredCredentialName + `)$`)
 	tomlCredentialName                = regexp.MustCompile(`(?i)^(?:` + sensitivePrefixedName + `)$`)
@@ -351,6 +354,7 @@ func redactSensitiveText(value string) (string, bool) {
 		changed = true
 	}
 	redacted, yamlKeyRestorations := normalizeYAMLEscapedCredentialKeys(redacted)
+	redacted, yamlAliasKeyRestorations := normalizeYAMLAliasCredentialKeys(redacted)
 	if next, tomlValueChanged := redactTOMLCredentialValues(redacted); tomlValueChanged {
 		redacted = next
 		changed = true
@@ -414,6 +418,9 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = strings.ReplaceAll(redacted, booleanMarkerProtection, "")
 	}
 	for placeholder, original := range yamlKeyRestorations {
+		redacted = strings.ReplaceAll(redacted, placeholder, original)
+	}
+	for placeholder, original := range yamlAliasKeyRestorations {
 		redacted = strings.ReplaceAll(redacted, placeholder, original)
 	}
 	return redacted, changed
@@ -1151,6 +1158,44 @@ func normalizeYAMLEscapedCredentialKeys(value string) (string, map[string]string
 		}
 		restorations[placeholder] = encodedKey
 		lines[line] = content[:keyStart] + placeholder + content[keyEnd:] + ending
+	}
+	return strings.Join(lines, ""), restorations
+}
+
+func normalizeYAMLAliasCredentialKeys(value string) (string, map[string]string) {
+	sensitiveAliases := make(map[string]struct{})
+	for _, match := range yamlSensitiveNameAnchor.FindAllStringSubmatch(value, -1) {
+		sensitiveAliases[match[1]] = struct{}{}
+	}
+	if len(sensitiveAliases) == 0 {
+		return value, nil
+	}
+
+	lines := strings.SplitAfter(value, "\n")
+	restorations := make(map[string]string)
+	placeholderIndex := 0
+	patterns := []*regexp.Regexp{yamlAliasMappingKey, yamlExplicitAliasKey}
+	for line := range lines {
+		content, ending := splitLineEnding(lines[line])
+		for _, pattern := range patterns {
+			match := pattern.FindStringSubmatchIndex(content)
+			if match == nil {
+				continue
+			}
+			if _, sensitive := sensitiveAliases[content[match[6]:match[7]]]; !sensitive {
+				continue
+			}
+
+			placeholder := ""
+			for placeholder == "" || strings.Contains(value, placeholder) {
+				placeholder = `_snitch_redaction_` + strconv.Itoa(placeholderIndex) + `_password`
+				placeholderIndex++
+			}
+			original := content[match[4]:match[5]]
+			restorations[placeholder] = original
+			lines[line] = content[:match[4]] + placeholder + content[match[5]:] + ending
+			break
+		}
 	}
 	return strings.Join(lines, ""), restorations
 }

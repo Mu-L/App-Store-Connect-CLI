@@ -589,6 +589,21 @@ status: failed`,
 			want:  "shared: &credential [REDACTED]\npassword: [REDACTED]\nstatus: failed",
 		},
 		{
+			name:  "YAML credential alias mapping key",
+			input: "key: &s api_key\n*s: opaque-api-key\nstatus: failed",
+			want:  "key: &s api_key\n*s: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "YAML credential alias flow mapping key",
+			input: "key: &s client_secret\n*s: [first-secret,\n  second-secret]\nstatus: failed",
+			want:  "key: &s client_secret\n*s: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "YAML explicit credential alias mapping key",
+			input: "key: &s token\n? *s\n: opaque-token\nstatus: failed",
+			want:  "key: &s token\n? *s\n: [REDACTED]\nstatus: failed",
+		},
+		{
 			name:  "space-separated secret flag",
 			input: `asc web sandbox create --email "user@example.test" --password "Passwordtest1" --territory "USA"`,
 			want:  `asc web sandbox create --email "user@example.test" --password [REDACTED] --territory "USA"`,
@@ -1141,6 +1156,14 @@ func TestRedactSensitiveTextPreservesFalseSecretMarkerAndValue(t *testing.T) {
 		if changed || got != input {
 			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
 		}
+	}
+}
+
+func TestRedactSensitiveTextPreservesBenignYAMLAliasMappingKey(t *testing.T) {
+	input := "key: &s status\n*s: failed"
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
 	}
 }
 
@@ -2223,6 +2246,33 @@ func TestSnitchDryRunRedactsTruncatedUploadOperationHeaderValue(t *testing.T) {
 	}
 	if want := `{"requestHeaders":[{"name":"Authorization","value":"[REDACTED]`; !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want redacted truncated value %q", stderr, want)
+	}
+}
+
+func TestSnitchDryRunRedactsYAMLCredentialAliasMappingKey(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const secret = "yaml-alias-key-secret"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", "key: &s api_key\n*s: "+secret+"\nstatus: failed",
+		"YAML alias credential key redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+		t.Fatalf("dry run leaked %q: stdout=%q stderr=%q", secret, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{"key: &s api_key", "*s: [REDACTED]", "status: failed"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
 	}
 }
 
