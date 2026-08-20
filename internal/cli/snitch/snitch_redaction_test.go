@@ -172,6 +172,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl -b[REDACTED] https://example.test`,
 		},
 		{
+			name:  "PowerShell escaped quote in credential value",
+			input: "asc signing sync --password \"opaque`\"suffix\" --verbose",
+			want:  "asc signing sync --password [REDACTED] --verbose",
+		},
+		{
 			name:  "Netscape cookie jar credential",
 			input: ".appstoreconnect.apple.com\tTRUE\t/\tTRUE\t2147483647\tmyacinfo\topaque-cookie-jar-secret\n.example.test\tFALSE\t/\tFALSE\t0\tlocale\ten-US",
 			want:  ".appstoreconnect.apple.com\tTRUE\t/\tTRUE\t2147483647\tmyacinfo\t[REDACTED]\n.example.test\tFALSE\t/\tFALSE\t0\tlocale\ten-US",
@@ -342,6 +347,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "password URL parameter",
 			input: "callback https://example.test/path?password=password-value&state=ready",
 			want:  "callback https://example.test/path?password=[REDACTED]&state=ready",
+		},
+		{
+			name:  "percent encoded password URL parameter name",
+			input: "callback https://example.test/path?pass%77ord=password-value&state=ready",
+			want:  "callback https://example.test/path?pass%77ord=[REDACTED]&state=ready",
 		},
 		{
 			name:  "web auth query credentials",
@@ -1590,11 +1600,13 @@ func TestSnitchDryRunRedactsPowerShellAndPlistStringCredentials(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
 
 	const powerShellSecret = "powershell-secret-suffix"
+	const quotedPowerShellSecret = "powershell-quoted-secret-suffix"
 	const plistSecret = "plist-string-credential-value"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", "asc signing sync --password opaque` "+powerShellSecret+" --verbose",
+		"--repro", "asc signing sync --password opaque` "+powerShellSecret+" --verbose\n"+
+			"asc signing sync --password \"opaque`\""+quotedPowerShellSecret+"\" --verbose",
 		"--actual", `<plist><dict><key>password</key><string>`+plistSecret+`</string><key>status</key><string>failed</string></dict></plist>`,
 		"shell and property list string credential redaction probe",
 	)
@@ -1602,7 +1614,7 @@ func TestSnitchDryRunRedactsPowerShellAndPlistStringCredentials(t *testing.T) {
 		t.Fatalf("run snitch: %v", err)
 	}
 
-	for _, secret := range []string{powerShellSecret, plistSecret} {
+	for _, secret := range []string{powerShellSecret, quotedPowerShellSecret, plistSecret} {
 		if strings.Contains(stderr, secret) {
 			t.Fatalf("stderr leaked %q: %q", secret, stderr)
 		}
@@ -2712,11 +2724,13 @@ func TestSnitchDryRunRedactsWebAuthQueryCredentials(t *testing.T) {
 		"widget-query-secret",
 		"123456",
 		"continuation-query-secret",
+		"encoded-name-query-secret",
 	}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", "curl 'https://example.test/auth?widgetKey="+secrets[0]+"&code="+secrets[1]+"&scnt="+secrets[2]+"&flow=login'",
+		"--actual", "callback https://example.test/path?pass%77ord="+secrets[3]+"&state=ready",
 		"web auth query credential redaction probe",
 	)
 	if err != nil {
@@ -2734,9 +2748,13 @@ func TestSnitchDryRunRedactsWebAuthQueryCredentials(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
 	}
-	want := "curl 'https://example.test/auth?widgetKey=[REDACTED]&code=[REDACTED]&scnt=[REDACTED]&flow=login'"
-	if !strings.Contains(stderr, want) {
-		t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+	for _, want := range []string{
+		"curl 'https://example.test/auth?widgetKey=[REDACTED]&code=[REDACTED]&scnt=[REDACTED]&flow=login'",
+		"callback https://example.test/path?pass%77ord=[REDACTED]&state=ready",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
 	}
 }
 

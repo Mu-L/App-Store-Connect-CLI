@@ -3,6 +3,7 @@ package snitch
 import (
 	"encoding/json"
 	"encoding/xml"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,20 +25,21 @@ const (
 	credentialCookieName        = `(?:myacinfo|dqsid|itctx)`
 	traceCredentialHeader       = `(?:cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
 	webAuthQueryCredential      = `(?:widgetkey|code|scnt)`
+	queryCredentialName         = `(?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|` + webAuthQueryCredential + `|` + sensitiveAssignmentName + `)`
 	webAuthStructuredCredential = `(?:authservicekey|servicekey)`
 	structuredCredentialName    = `(?:` + sensitivePrefixedName + `|` + credentialHeaderName + `|` + webAuthStructuredCredential + `)`
 	yamlNodeTag                 = `(?:!<[^>\r\n]+>|![^\s#]+)`
-	singleLineQuotedValue       = `(?:"(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*')`
+	powerShellEscapedCharacter  = `\x60(?:\r?\n|[^\r\n])`
+	singleLineQuotedValue       = `(?:"(?:\\.|` + powerShellEscapedCharacter + `|[^"\\\x60\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*')`
 	shellCommandSubstitution    = `(?:\x60(?:\\.|[^\x60\\\r\n])*\x60|\$\((?:\\.|[^)\\\r\n])*\))`
 	fishCommandSubstitution     = `\((?:\\.|[^)\\\r\n])*\)`
-	powerShellEscapedCharacter  = `\x60(?:\r?\n|[^\r\n])`
 	cmdEscapedCharacter         = `\^(?:\r?\n|[^\r\n])`
 	singleLineUnquotedFragment  = `(?:\\[^\r\n]|[^\s\\;&|<>()"'\x60^])+`
 	singleLineShellWord         = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + powerShellEscapedCharacter + `|` + cmdEscapedCharacter + `|` + singleLineUnquotedFragment + `)+`
 	fishShellWord               = `(?:` + singleLineQuotedValue + `|` + shellCommandSubstitution + `|` + fishCommandSubstitution + `|` + powerShellEscapedCharacter + `|` + cmdEscapedCharacter + `|` + singleLineUnquotedFragment + `)+`
 	singleLineShellTerminator   = `(?:[ \t;&|<>()]|\r?\n|\z)`
 	escapedQuotedCharacter      = `\\(?:\r?\n|[^\r\n])`
-	escapeAwareQuotedValue      = `(?:"(?:` + escapedQuotedCharacter + `|[^"\\])*"|\$?'(?:''|` + escapedQuotedCharacter + `|[^'\\])*')`
+	escapeAwareQuotedValue      = `(?:"(?:` + escapedQuotedCharacter + `|` + powerShellEscapedCharacter + `|[^"\\\x60])*"|\$?'(?:''|` + escapedQuotedCharacter + `|[^'\\])*')`
 	unterminatedQuotedValue     = `(?:"[^\r\n]*|\$?'[^\r\n]*)`
 	shellUnquotedValue          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()"'])+`
 	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\;&|<>()]|[^-\s\\;&|<>()])(?:\\[^\r\n]|[^\s;&|<>()])*`
@@ -76,6 +78,8 @@ var (
 	rawCredentialArray                = regexp.MustCompile(`(?i)"` + structuredCredentialName + `"[ \t\r\n]*:[ \t\r\n]*\[`)
 	escapedCredentialArray            = regexp.MustCompile(`(?i)\\"` + structuredCredentialName + `\\"[ \t\r\n]*:[ \t\r\n]*\[`)
 	credentialHeaderNamePattern       = regexp.MustCompile(`(?i)^` + credentialHeaderName + `$`)
+	queryCredentialNamePattern        = regexp.MustCompile(`(?i)^` + queryCredentialName + `$`)
+	queryParameterName                = regexp.MustCompile(`[?&]([^=&#\s"'<>]+)=`)
 	curlHeaderOptionStart             = regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)`)
 	completeShellWord                 = regexp.MustCompile(`^(` + fishShellWord + `)(` + singleLineShellTerminator + `)`)
 	netrcEntryStart                   = regexp.MustCompile(`(?im)(?:^|[\r\n])[ \t]*(?:machine[ \t]+[^\s#]+|default)(?:[ \t\r\n]|\z)`)
@@ -227,7 +231,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)([?&](?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|` + webAuthQueryCredential + `|` + sensitiveAssignmentName + `)=)[^&#\s"'<>]+`),
+		pattern:     regexp.MustCompile(`(?i)([?&]` + queryCredentialName + `=)[^&#\s"'<>]+`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
@@ -334,6 +338,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, queryChanged := redactEncodedQueryCredentialValues(redacted); queryChanged {
+		redacted = next
+		changed = true
+	}
 	if next, headerChanged := redactCompoundCurlHeaderWords(redacted); headerChanged {
 		redacted = next
 		changed = true
@@ -432,6 +440,52 @@ func redactNetrcPasswords(value string) (string, bool) {
 	return redacted, changed
 }
 
+func redactEncodedQueryCredentialValues(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := queryParameterName.FindStringSubmatchIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		nameStart := searchStart + match[2]
+		nameEnd := searchStart + match[3]
+		valueStart := searchStart + match[1]
+		searchStart = valueStart
+		encodedName := redacted[nameStart:nameEnd]
+		if !strings.Contains(encodedName, "%") {
+			continue
+		}
+		decodedName, err := url.QueryUnescape(encodedName)
+		if err != nil || !queryCredentialNamePattern.MatchString(decodedName) {
+			continue
+		}
+
+		valueEnd := valueStart
+		for valueEnd < len(redacted) && !isQueryValueTerminator(redacted[valueEnd]) {
+			valueEnd++
+		}
+		if valueEnd == valueStart || redacted[valueStart:valueEnd] == redactionMarker {
+			continue
+		}
+
+		redacted = redacted[:valueStart] + redactionMarker + redacted[valueEnd:]
+		changed = true
+		searchStart = valueStart + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func isQueryValueTerminator(character byte) bool {
+	switch character {
+	case '&', '#', ' ', '\t', '\r', '\n', '\f', '\v', '"', '\'', '<', '>':
+		return true
+	default:
+		return false
+	}
+}
+
 func redactCompoundCurlHeaderWords(value string) (string, bool) {
 	redacted := value
 	changed := false
@@ -478,7 +532,7 @@ func isCompoundQuotedShellWord(word string) bool {
 
 	quote := word[0]
 	for index := 1; index < len(word); index++ {
-		if quote == '"' && word[index] == '\\' {
+		if quote == '"' && (word[index] == '\\' || word[index] == '`') {
 			index++
 			continue
 		}
@@ -499,7 +553,7 @@ func decodeShellHeaderName(word string) (string, bool) {
 				quote = 0
 				continue
 			}
-			if quote != '"' || character != '\\' {
+			if quote != '"' || (character != '\\' && character != '`') {
 				if character == ':' {
 					return decoded.String(), decoded.Len() > 0
 				}
