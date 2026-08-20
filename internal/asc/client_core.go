@@ -270,6 +270,41 @@ func GetRetryAfter(err error) time.Duration {
 	return 0
 }
 
+type retryBudgetExceededError struct {
+	retries int
+	err     error
+}
+
+func (e *retryBudgetExceededError) Error() string {
+	return fmt.Sprintf("retry limit exceeded after %d retries: %v", e.retries, e.err)
+}
+
+func (e *retryBudgetExceededError) Unwrap() error {
+	return e.err
+}
+
+// IsRetryBudgetExhausted reports whether the retry helper consumed its
+// configured request retry budget before returning the error. Callers with a
+// second, higher-level recovery loop should not replay the same request after
+// this marker is present.
+func IsRetryBudgetExhausted(err error) bool {
+	var exhausted *retryBudgetExceededError
+	return errors.As(err, &exhausted)
+}
+
+type retryCancelledError struct {
+	contextErr error
+	err        error
+}
+
+func (e *retryCancelledError) Error() string {
+	return fmt.Sprintf("retry cancelled: %v", e.contextErr)
+}
+
+func (e *retryCancelledError) Unwrap() []error {
+	return []error{e.contextErr, e.err}
+}
+
 // RetryOptions configures retry behavior.
 //   - MaxRetries: Number of retry attempts. 0 = no retries (fail fast),
 //     negative = use DefaultMaxRetries.
@@ -338,6 +373,14 @@ func ResolveRetryOptions() RetryOptions {
 // WithRetry executes a function with retry logic for rate limiting.
 // It uses exponential backoff with jitter and respects Retry-After headers.
 func WithRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptions) (T, error) {
+	return withRetry(ctx, fn, opts, IsRetryable)
+}
+
+// withRetry executes a function with the shared backoff policy, retrying only
+// the errors accepted by shouldRetry. Callers that can replay a request safely
+// only under narrower conditions (writes, which are retryable when App Store
+// Connect rejects them outright) supply their own predicate.
+func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptions, shouldRetry func(error) bool) (T, error) {
 	var zero T
 	debugEnabled := ResolveDebugEnabled()
 
@@ -365,13 +408,13 @@ func WithRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 		}
 
 		// Check if error is retryable
-		if !IsRetryable(err) {
+		if !shouldRetry(err) {
 			return zero, err
 		}
 
 		// Check if we've exceeded max retries
 		if retryCount >= opts.MaxRetries {
-			return zero, fmt.Errorf("retry limit exceeded after %d retries: %w", retryCount+1, err)
+			return zero, &retryBudgetExceededError{retries: retryCount + 1, err: err}
 		}
 
 		// Calculate delay
@@ -412,7 +455,14 @@ func WithRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 		// Wait with context cancellation support
 		select {
 		case <-ctx.Done():
-			return zero, fmt.Errorf("retry cancelled: %w", ctx.Err())
+			// Preserve the last retryable failure as well as the cancellation
+			// cause. Callers that reconcile an ambiguous mutation must not lose
+			// a 429 (or its Retry-After hint) when the wait outlives the request
+			// deadline.
+			return zero, &retryCancelledError{
+				contextErr: ctx.Err(),
+				err:        &retryBudgetExceededError{retries: retryCount, err: err},
+			}
 		case <-time.After(delay):
 			// Continue to next retry
 		}
