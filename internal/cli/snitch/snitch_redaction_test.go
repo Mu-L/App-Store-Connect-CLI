@@ -563,6 +563,11 @@ env: [{name: *credential, value: [REDACTED]}]`,
 			want:  "Google request failed for [REDACTED]",
 		},
 		{
+			name:  "standalone Google API key ending in hyphen",
+			input: "Google request failed for AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-",
+			want:  "Google request failed for [REDACTED]",
+		},
+		{
 			name:  "standalone notification webhook URL",
 			input: "failed webhook https://hooks.slack.com/services/T012/B034/opaque-webhook-secret after retry",
 			want:  "failed webhook https://hooks.slack.com/services/[REDACTED] after retry",
@@ -2566,6 +2571,18 @@ func TestRedactSensitiveTextPreservesEmbeddedSlackTokenLikeText(t *testing.T) {
 	for _, input := range []string{
 		"prefixxoxp-123456789012-123456789012-abcdefghijklmnopqrstuvwx",
 		"prefixxapp-1-A0123456789-example",
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextPreservesEmbeddedGoogleAPIKeyLikeText(t *testing.T) {
+	for _, input := range []string{
+		"prefixAIza0123456789abcdefghijklmnopqrstuvwxy",
+		"AIza0123456789abcdefghijklmnopqrstuvwxyz",
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {

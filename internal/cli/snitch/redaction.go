@@ -180,6 +180,7 @@ var (
 	xmlAttribute                       = regexp.MustCompile(`(?s)(?:^|[ \t\r\n])([a-zA-Z_:][a-zA-Z0-9_.:-]*)[ \t\r\n]*=[ \t\r\n]*(?:"([^"]*)"|'([^']*)')`)
 	authorizationHeaderValueStart      = regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*`)
 	standaloneBearerCandidate          = regexp.MustCompile(`(?i)\bbearer[ \t]+([-a-z0-9._~+/=]+)`)
+	googleAPIKeyCandidate              = regexp.MustCompile(`AIza[A-Za-z0-9_-]{35}`)
 	xcodeCloudEnvVarSetCommand         = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')` + shellCommandPathSeparator + `web` + shellCommandPathSeparator + `xcode-cloud` + shellCommandPathSeparator + `env-vars` + shellCommandPathSeparator + `(?:shared` + shellCommandPathSeparator + `)?set\b`)
 )
 
@@ -452,7 +453,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`\b(?:AIza[A-Za-z0-9_-]{35}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|xoxb-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{20,}|xoxp-[A-Za-z0-9-]{20,}|xapp-[0-9]+-[A-Za-z0-9]{10,}(?:-[A-Za-z0-9]{6,})+|npm_[A-Za-z0-9]{36}|glpat-[A-Za-z0-9_-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,})\b`),
+		pattern:     regexp.MustCompile(`\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|xoxb-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{20,}|xoxp-[A-Za-z0-9-]{20,}|xapp-[0-9]+-[A-Za-z0-9]{10,}(?:-[A-Za-z0-9]{6,})+|npm_[A-Za-z0-9]{36}|glpat-[A-Za-z0-9_-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,})\b`),
 		replacement: redactionMarker,
 	},
 }
@@ -623,6 +624,10 @@ func redactSensitiveText(value string) (string, bool) {
 			changed = true
 			redacted = next
 		}
+	}
+	if next, googleChanged := redactStandaloneGoogleAPIKeys(redacted); googleChanged {
+		redacted = next
+		changed = true
 	}
 	if next, authorizationChanged := redactHighConfidenceAuthorizationCredentials(redacted); authorizationChanged {
 		redacted = next
@@ -2686,6 +2691,25 @@ func looksLikeAuthorizationCredential(value string) bool {
 		return false
 	}
 	return strings.ContainsAny(value, "0123456789._~+/=-")
+}
+
+func redactStandaloneGoogleAPIKeys(value string) (string, bool) {
+	matches := googleAPIKeyCandidate.FindAllStringIndex(value, -1)
+	redacted := value
+	changed := false
+	for match := len(matches) - 1; match >= 0; match-- {
+		start, end := matches[match][0], matches[match][1]
+		if start > 0 && isGoogleAPIKeyCharacter(value[start-1]) || end < len(value) && isGoogleAPIKeyCharacter(value[end]) {
+			continue
+		}
+		redacted = redacted[:start] + redactionMarker + redacted[end:]
+		changed = true
+	}
+	return redacted, changed
+}
+
+func isGoogleAPIKeyCharacter(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || value == '_' || value == '-'
 }
 
 func redactStandaloneBearerCredentials(value string) (string, bool) {
