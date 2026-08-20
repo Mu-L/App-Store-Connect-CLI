@@ -389,6 +389,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "asc signing sync --password [REDACTED] --verbose",
 		},
 		{
+			name:  "Command Prompt continued secret flag",
+			input: "asc signing sync --password opaque^\r\nsecret --verbose",
+			want:  "asc signing sync --password [REDACTED] --verbose",
+		},
+		{
+			name:  "Command Prompt escaped whitespace in secret flag",
+			input: "asc signing sync --password opaque^ secret --verbose",
+			want:  "asc signing sync --password [REDACTED] --verbose",
+		},
+		{
 			name:  "XML property list credential string",
 			input: `<plist><dict><key>password</key><string>opaque-plist-secret</string><key>status</key><string>failed</string></dict></plist>`,
 			want:  `<plist><dict><key>password</key><string>[REDACTED]</string><key>status</key><string>failed</string></dict></plist>`,
@@ -1424,6 +1434,35 @@ func TestSnitchDryRunRedactsPrefixedCredentialHeaders(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 		}
+	}
+}
+
+func TestSnitchDryRunRedactsCommandPromptContinuedCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const secret = "command-prompt-secret-suffix"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "asc signing sync --password opaque^\r\n"+secret+" --verbose",
+		"Command Prompt credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	if strings.Contains(stderr, secret) {
+		t.Fatalf("stderr leaked %q: %q", secret, stderr)
+	}
+	if strings.Contains(stdout, secret) {
+		t.Fatalf("stdout leaked %q: %q", secret, stdout)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	if want := "asc signing sync --password [REDACTED] --verbose"; !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 	}
 }
 
