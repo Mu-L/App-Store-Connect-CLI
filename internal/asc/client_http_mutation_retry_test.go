@@ -168,6 +168,9 @@ func TestClientDo_RateLimitedMutationExhaustsRetriesWithStatus(t *testing.T) {
 	if !IsRetryable(err) {
 		t.Fatalf("expected retryable error after exhaustion, got %v", err)
 	}
+	if !IsRetryBudgetExhausted(err) {
+		t.Fatalf("expected retry budget exhaustion marker, got %v", err)
+	}
 	apiErr, ok := errors.AsType[*APIError](err)
 	if !ok {
 		t.Fatalf("expected *APIError in chain, got %v", err)
@@ -205,6 +208,9 @@ func TestClientDo_RateLimitTimeoutPreservesRetryableCause(t *testing.T) {
 	}
 	if !IsRetryable(err) {
 		t.Fatalf("expected original 429 retryable classification to be preserved, got %v", err)
+	}
+	if !IsRetryBudgetExhausted(err) {
+		t.Fatalf("expected retry budget exhaustion marker after cancellation, got %v", err)
 	}
 	if got := GetRetryAfter(err); got != time.Second {
 		t.Fatalf("expected Retry-After to be preserved, got %s", got)

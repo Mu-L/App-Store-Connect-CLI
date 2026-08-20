@@ -270,6 +270,41 @@ func GetRetryAfter(err error) time.Duration {
 	return 0
 }
 
+type retryBudgetExceededError struct {
+	retries int
+	err     error
+}
+
+func (e *retryBudgetExceededError) Error() string {
+	return fmt.Sprintf("retry limit exceeded after %d retries: %v", e.retries, e.err)
+}
+
+func (e *retryBudgetExceededError) Unwrap() error {
+	return e.err
+}
+
+// IsRetryBudgetExhausted reports whether the retry helper consumed its
+// configured request retry budget before returning the error. Callers with a
+// second, higher-level recovery loop should not replay the same request after
+// this marker is present.
+func IsRetryBudgetExhausted(err error) bool {
+	var exhausted *retryBudgetExceededError
+	return errors.As(err, &exhausted)
+}
+
+type retryCancelledError struct {
+	contextErr error
+	err        error
+}
+
+func (e *retryCancelledError) Error() string {
+	return fmt.Sprintf("retry cancelled: %v", e.contextErr)
+}
+
+func (e *retryCancelledError) Unwrap() []error {
+	return []error{e.contextErr, e.err}
+}
+
 // RetryOptions configures retry behavior.
 //   - MaxRetries: Number of retry attempts. 0 = no retries (fail fast),
 //     negative = use DefaultMaxRetries.
@@ -379,7 +414,7 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 
 		// Check if we've exceeded max retries
 		if retryCount >= opts.MaxRetries {
-			return zero, fmt.Errorf("retry limit exceeded after %d retries: %w", retryCount+1, err)
+			return zero, &retryBudgetExceededError{retries: retryCount + 1, err: err}
 		}
 
 		// Calculate delay
@@ -424,7 +459,10 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 			// cause. Callers that reconcile an ambiguous mutation must not lose
 			// a 429 (or its Retry-After hint) when the wait outlives the request
 			// deadline.
-			return zero, fmt.Errorf("retry cancelled: %w", errors.Join(ctx.Err(), err))
+			return zero, &retryCancelledError{
+				contextErr: ctx.Err(),
+				err:        &retryBudgetExceededError{retries: retryCount, err: err},
+			}
 		case <-time.After(delay):
 			// Continue to next retry
 		}

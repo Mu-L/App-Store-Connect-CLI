@@ -89,6 +89,9 @@ func runMutationReadback[T any](ctx context.Context, readback func(context.Conte
 // IsTransientMutationError reports whether a mutation can be retried after
 // state readback while the parent operation remains healthy.
 func IsTransientMutationError(parent context.Context, err error) bool {
+	if asc.IsRetryBudgetExhausted(err) {
+		return false
+	}
 	if asc.IsRetryable(err) {
 		return true
 	}
