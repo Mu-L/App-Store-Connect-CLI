@@ -52,6 +52,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "Cookie: [REDACTED]",
 		},
 		{
+			name:  "cookie header embedded in diagnostic line",
+			input: "request failed with Cookie: myacinfo=opaque-session-secret after retry",
+			want:  "request failed with Cookie: [REDACTED] after retry",
+		},
+		{
+			name:  "continuation header embedded in diagnostic line",
+			input: "request failed with scnt: opaque-continuation-secret after retry",
+			want:  "request failed with scnt: [REDACTED] after retry",
+		},
+		{
+			name:  "parenthesized continuation header embedded in diagnostic line",
+			input: "request failed (scnt: opaque-continuation-secret) after retry",
+			want:  "request failed (scnt: [REDACTED]) after retry",
+		},
+		{
 			name:  "set cookie response header",
 			input: "< Set-Cookie: myacinfo=super-response-secret; Path=/; Secure; HttpOnly",
 			want:  "< Set-Cookie: [REDACTED]",
@@ -1367,6 +1382,44 @@ func TestSnitchDryRunRedactsPowerShellAndPlistCredentials(t *testing.T) {
 	for _, want := range []string{
 		"asc signing sync --password [REDACTED] --verbose",
 		`<key>password</key><string>[REDACTED]</string><key>status</key><string>failed</string>`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsPrefixedCredentialHeaders(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const cookieSecret = "prefixed-cookie-secret"
+	const continuationSecret = "prefixed-continuation-secret"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", "request failed with Cookie: myacinfo="+cookieSecret+" after retry\n"+
+			"request failed with scnt: "+continuationSecret+" after retry",
+		"prefixed credential header redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range []string{cookieSecret, continuationSecret} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"request failed with Cookie: [REDACTED] after retry",
+		"request failed with scnt: [REDACTED] after retry",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

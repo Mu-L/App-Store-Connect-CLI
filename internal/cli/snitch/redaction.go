@@ -201,6 +201,14 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}: ` + redactionMarker,
 	},
 	{
+		pattern:     regexp.MustCompile(`(?i)(^|[\s"'(<>{}\[\],;])((?:cookie|set-cookie)[ \t]*:[ \t]*)(?:` + cookieDataQuoted + `|` + cookieDataUnquoted + `)(?:[ \t]*;[ \t]*` + cookieDataUnquoted + `)*`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|[\s"'(<>{}\[\],;])((?:` + traceCredentialHeader + `)[ \t]*:[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s,;"'()<>{}\[\]]+)`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
 		pattern:     regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/?#\s@]+@`),
 		replacement: `${1}` + redactionMarker + `@`,
 	},
