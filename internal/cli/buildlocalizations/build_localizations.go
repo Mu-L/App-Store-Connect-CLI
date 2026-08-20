@@ -180,7 +180,7 @@ func BuildLocalizationsCreateCommand() *ffcli.Command {
 
 	buildID := fs.String("build", "", "Build ID")
 	locale := fs.String("locale", "", "Locale (e.g., en-US)")
-	whatsNew := fs.String("whats-new", "", "Release notes (whats new)")
+	whatsNew := fs.String("whats-new", "", "Release notes (whats new), up to 4000 characters")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -188,6 +188,9 @@ func BuildLocalizationsCreateCommand() *ffcli.Command {
 		ShortUsage: "asc build-localizations create [flags]",
 		ShortHelp:  "Create a localization for a build.",
 		LongHelp: `Create a localization for a build.
+
+Release notes are limited to 4000 characters and are checked before the
+request is sent.
 
 Examples:
   asc build-localizations create --build "BUILD_ID" --locale "en-US"
@@ -212,6 +215,16 @@ Examples:
 
 			whatsNewValue := strings.TrimSpace(*whatsNew)
 
+			attrs := asc.AppStoreVersionLocalizationAttributes{
+				Locale: localeValue,
+			}
+			if whatsNewValue != "" {
+				attrs.WhatsNew = whatsNewValue
+			}
+			if err := shared.ValidateVersionLocalizationAttributes(attrs); err != nil {
+				return shared.UsageError(err.Error())
+			}
+
 			client, err := shared.GetASCClient()
 			if err != nil {
 				return fmt.Errorf("build-localizations create: %w", err)
@@ -223,13 +236,6 @@ Examples:
 			versionID, err := resolveBuildAppStoreVersion(requestCtx, client, build)
 			if err != nil {
 				return fmt.Errorf("build-localizations create: %w", err)
-			}
-
-			attrs := asc.AppStoreVersionLocalizationAttributes{
-				Locale: localeValue,
-			}
-			if whatsNewValue != "" {
-				attrs.WhatsNew = whatsNewValue
 			}
 
 			resp, err := client.CreateAppStoreVersionLocalization(requestCtx, versionID, attrs)
@@ -259,7 +265,7 @@ func BuildLocalizationsUpdateCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 
 	localizationID := fs.String("id", "", "Localization ID")
-	whatsNew := fs.String("whats-new", "", "Release notes (whats new)")
+	whatsNew := fs.String("whats-new", "", "Release notes (whats new), up to 4000 characters")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -267,6 +273,9 @@ func BuildLocalizationsUpdateCommand() *ffcli.Command {
 		ShortUsage: "asc build-localizations update [flags]",
 		ShortHelp:  "Update a localization by ID.",
 		LongHelp: `Update a localization by ID.
+
+Release notes are limited to 4000 characters and are checked before the
+request is sent.
 
 Examples:
   asc build-localizations update --id "LOCALIZATION_ID" --whats-new "New features"`,
@@ -285,6 +294,13 @@ Examples:
 				return shared.MissingRequiredUsageError("--whats-new")
 			}
 
+			attrs := asc.AppStoreVersionLocalizationAttributes{
+				WhatsNew: whatsNewValue,
+			}
+			if err := shared.ValidateVersionLocalizationAttributes(attrs); err != nil {
+				return shared.UsageError(err.Error())
+			}
+
 			client, err := shared.GetASCClient()
 			if err != nil {
 				return fmt.Errorf("build-localizations update: %w", err)
@@ -292,10 +308,6 @@ Examples:
 
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
-
-			attrs := asc.AppStoreVersionLocalizationAttributes{
-				WhatsNew: whatsNewValue,
-			}
 
 			resp, err := client.UpdateAppStoreVersionLocalization(requestCtx, id, attrs)
 			if err != nil {
