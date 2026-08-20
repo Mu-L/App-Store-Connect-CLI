@@ -78,6 +78,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "Cookie: [REDACTED]",
 		},
 		{
+			name:  "CGI authorization environment variable",
+			input: "HTTP_AUTHORIZATION=Bearer opaque-bearer-secret",
+			want:  "HTTP_AUTHORIZATION=[REDACTED]",
+		},
+		{
+			name:  "redirected CGI authorization environment variable",
+			input: "REDIRECT_HTTP_AUTHORIZATION=Basic dXNlcjpwYXNz",
+			want:  "REDIRECT_HTTP_AUTHORIZATION=[REDACTED]",
+		},
+		{
+			name:  "CGI cookie environment variable",
+			input: "HTTP_COOKIE=sessionid=opaque-session-secret; locale=en-US",
+			want:  "HTTP_COOKIE=[REDACTED]",
+		},
+		{
 			name:  "cookie header embedded in diagnostic line",
 			input: "request failed with Cookie: myacinfo=opaque-session-secret after retry",
 			want:  "request failed with Cookie: [REDACTED] after retry",
@@ -3389,6 +3404,47 @@ func TestSnitchDryRunRedactsPortalCSRFCredentials(t *testing.T) {
 		"< csrf: [REDACTED]",
 		"< csrf_ts: [REDACTED]",
 		`{"csrf":"[REDACTED]","csrf_ts":"[REDACTED]","status":"failed"}`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsCGICredentialHeaderVariables(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"opaque-bearer-secret",
+		"dXNlcjpwYXNz",
+		"opaque-session-secret",
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", "HTTP_AUTHORIZATION=Bearer "+secrets[0]+"\n"+
+			"REDIRECT_HTTP_AUTHORIZATION=Basic "+secrets[1]+"\n"+
+			"HTTP_COOKIE=sessionid="+secrets[2]+"; locale=en-US\n"+
+			"REQUEST_METHOD=GET",
+		"CGI credential header redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("dry run leaked %q: %q", secret, stderr)
+		}
+	}
+	for _, want := range []string{
+		"HTTP_AUTHORIZATION=[REDACTED]",
+		"REDIRECT_HTTP_AUTHORIZATION=[REDACTED]",
+		"HTTP_COOKIE=[REDACTED]",
+		"REQUEST_METHOD=GET",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
