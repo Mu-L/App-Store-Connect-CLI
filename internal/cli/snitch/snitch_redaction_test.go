@@ -404,6 +404,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "command CLIENT_SECRET=[REDACTED] --verbose",
 		},
 		{
+			name:  "passphrase assignment",
+			input: `passphrase = "opaque private key credential"`,
+			want:  "passphrase = [REDACTED]",
+		},
+		{
+			name:  "passphrase flag",
+			input: `asc signing sync --passphrase "opaque private key credential" --verbose`,
+			want:  "asc signing sync --passphrase [REDACTED] --verbose",
+		},
+		{
 			name:  "Command Prompt quoted set assignment",
 			input: `set "PASSWORD=opaque secret value" & echo done`,
 			want:  `set "PASSWORD=[REDACTED]" & echo done`,
@@ -1414,15 +1424,17 @@ func TestSnitchDryRunRedactsEveryReportField(t *testing.T) {
 		"Passwordtest1",
 		"remaining-secret",
 		"prefixed-secret",
+		"flag-passphrase-secret",
+		"assignment-passphrase-secret",
 	}
 	privateKey := "-----BEGIN PRIVATE KEY-----\n" + secrets[2] + "\n-----END PRIVATE KEY-----"
 
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--repro", `curl "https://uploads.example.test/file?X-Amz-Signature=`+secrets[1]+`&part=2"`+"\n"+`asc web sandbox create --password "`+secrets[4]+`"`+"\n"+`asc deploy --password "pa\"`+secrets[5]+`"`,
+		"--repro", `curl "https://uploads.example.test/file?X-Amz-Signature=`+secrets[1]+`&part=2"`+"\n"+`asc web sandbox create --password "`+secrets[4]+`"`+"\n"+`asc deploy --password "pa\"`+secrets[5]+`"`+"\n"+`asc signing sync --passphrase "`+secrets[7]+`"`,
 		"--expected", "load this key\n"+privateKey+"\nthen retry",
-		"--actual", `client_secret="`+secrets[3]+`" MY_CLIENT_SECRET="`+secrets[6]+`"`,
+		"--actual", `client_secret="`+secrets[3]+`" MY_CLIENT_SECRET="`+secrets[6]+`" passphrase = "`+secrets[8]+`"`,
 		"Authorization: Bearer "+secrets[0]+" failed",
 	)
 	if err != nil {
@@ -1445,8 +1457,9 @@ func TestSnitchDryRunRedactsEveryReportField(t *testing.T) {
 		"X-Amz-Signature=[REDACTED]&part=2",
 		"asc web sandbox create --password [REDACTED]",
 		"asc deploy --password [REDACTED]",
+		"asc signing sync --passphrase [REDACTED]",
 		"load this key\n[REDACTED PRIVATE KEY]\nthen retry",
-		"client_secret=[REDACTED] MY_CLIENT_SECRET=[REDACTED]",
+		"client_secret=[REDACTED] MY_CLIENT_SECRET=[REDACTED] passphrase = [REDACTED]",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
