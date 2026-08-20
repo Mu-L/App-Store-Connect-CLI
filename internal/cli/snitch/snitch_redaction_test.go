@@ -985,6 +985,11 @@ status: failed`,
 			want:  "password: [REDACTED]\nstatus: failed",
 		},
 		{
+			name:  "quoted first multiline YAML flow sequence credential",
+			input: "password: [\n  \"opaque-first\",\n  \"opaque-second\"\n]\nstatus: failed",
+			want:  "password: [REDACTED]\nstatus: failed",
+		},
+		{
 			name:  "multiline YAML flow mapping credential",
 			input: "token: {type: bearer,\n  value: opaque-secret}\nstatus: failed",
 			want:  "token: [REDACTED]\nstatus: failed",
@@ -1474,18 +1479,20 @@ func TestSnitchDryRunRedactsStandaloneWebhookAndTaggedExplicitYAML(t *testing.T)
 
 	const webhookSecret = "standalone-webhook-secret"
 	const yamlSecret = "tagged-explicit-yaml-secret"
+	const flowSecret = "quoted-first-flow-secret"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", "failed webhook https://hooks.slack-gov.com/services/T012/B034/"+webhookSecret+" after retry",
 		"--actual", "? !!str password\n: "+yamlSecret+"\nstatus: failed",
+		"--expected", "password: [\n  \""+flowSecret+"\",\n  \"second-secret\"\n]\nstatus: failed",
 		"standalone webhook and tagged explicit YAML credential redaction probe",
 	)
 	if err != nil {
 		t.Fatalf("run snitch: %v", err)
 	}
 
-	for _, secret := range []string{webhookSecret, yamlSecret} {
+	for _, secret := range []string{webhookSecret, yamlSecret, flowSecret, "second-secret"} {
 		if strings.Contains(stderr, secret) {
 			t.Fatalf("stderr leaked %q: %q", secret, stderr)
 		}
@@ -1499,6 +1506,7 @@ func TestSnitchDryRunRedactsStandaloneWebhookAndTaggedExplicitYAML(t *testing.T)
 	for _, want := range []string{
 		"failed webhook https://hooks.slack-gov.com/services/[REDACTED] after retry",
 		"? !!str password\n: [REDACTED]\nstatus: failed",
+		"password: [REDACTED]\nstatus: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)

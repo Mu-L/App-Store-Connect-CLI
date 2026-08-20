@@ -1308,7 +1308,7 @@ func redactYAMLFlowCredentials(value string) (string, bool) {
 		if close < 0 {
 			close = len(redacted) - 1
 		}
-		if redacted[open:close+1] == redactionMarker || (flowStartsWithQuotedValue(redacted, open, close) && !yamlFlowHasNestedContainer(redacted, open, close)) {
+		if redacted[open:close+1] == redactionMarker {
 			searchStart = open + 1
 			continue
 		}
@@ -1363,44 +1363,6 @@ func findYAMLFlowEnd(value string, open int) int {
 		}
 	}
 	return -1
-}
-
-func flowStartsWithQuotedValue(value string, open, close int) bool {
-	for i := open + 1; i < close; i++ {
-		if value[i] == ' ' || value[i] == '\t' || value[i] == '\r' || value[i] == '\n' {
-			continue
-		}
-		return value[i] == '"'
-	}
-	return false
-}
-
-func yamlFlowHasNestedContainer(value string, open, close int) bool {
-	var quote byte
-	for index := open + 1; index < close; index++ {
-		if quote != 0 {
-			if quote == '"' && value[index] == '\\' {
-				index++
-				continue
-			}
-			if quote == '\'' && value[index] == '\'' && index+1 < close && value[index+1] == '\'' {
-				index++
-				continue
-			}
-			if value[index] == quote {
-				quote = 0
-			}
-			continue
-		}
-
-		switch value[index] {
-		case '"', '\'':
-			quote = value[index]
-		case '[', '{':
-			return true
-		}
-	}
-	return false
 }
 
 func splitLineEnding(line string) (string, string) {
