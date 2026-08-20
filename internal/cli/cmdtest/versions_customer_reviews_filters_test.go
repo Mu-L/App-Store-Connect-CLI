@@ -235,6 +235,16 @@ func TestVersionsCustomerReviewsFilterValidationMatchesAppLevelReviews(t *testin
 			args:        []string{"--only-unresponded", "--response-state", "responded"},
 			wantMessage: "--only-unresponded cannot be combined with --response-state responded",
 		},
+		{
+			name:        "repeated star filters",
+			args:        []string{"--stars", "1", "--stars", "2"},
+			wantMessage: `--stars specified multiple times; pass one comma-separated list, for example --stars "1,2"`,
+		},
+		{
+			name:        "repeated territory filters",
+			args:        []string{"--territory", "USA", "--territory", "GBR"},
+			wantMessage: "--territory specified multiple times; pass it once",
+		},
 	}
 
 	for _, test := range tests {

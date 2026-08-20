@@ -42,11 +42,22 @@ type ReviewFilterFlags struct {
 }
 
 type trackedReviewStringFlag struct {
-	value *string
-	set   *bool
+	name           string
+	value          *string
+	set            *bool
+	commaSeparated bool
 }
 
 func (f *trackedReviewStringFlag) Set(value string) error {
+	if *f.set {
+		if f.commaSeparated {
+			return fmt.Errorf(
+				"--%s specified multiple times; pass one comma-separated list, for example --%s %q",
+				f.name, f.name, *f.value+","+value,
+			)
+		}
+		return fmt.Errorf("--%s specified multiple times; pass it once", f.name)
+	}
 	*f.value = value
 	*f.set = true
 	return nil
@@ -59,21 +70,21 @@ func (f *trackedReviewStringFlag) String() string {
 	return *f.value
 }
 
-func bindTrackedReviewStringFlag(fs *flag.FlagSet, name string, value *string, provided *bool, defaultValue string, usage string) {
+func bindTrackedReviewStringFlag(fs *flag.FlagSet, name string, value *string, provided *bool, defaultValue string, commaSeparated bool, usage string) {
 	*value = defaultValue
-	fs.Var(&trackedReviewStringFlag{value: value, set: provided}, name, usage)
+	fs.Var(&trackedReviewStringFlag{name: name, value: value, set: provided, commaSeparated: commaSeparated}, name, usage)
 }
 
 // BindReviewFilterFlags registers the shared customer review filter flags on fs.
 func BindReviewFilterFlags(fs *flag.FlagSet) *ReviewFilterFlags {
 	filters := &ReviewFilterFlags{}
-	bindTrackedReviewStringFlag(fs, "stars", &filters.Stars, &filters.starsSet, "", "Filter by star ratings, comma-separated (1-5)")
-	bindTrackedReviewStringFlag(fs, "territory", &filters.Territory, &filters.territorySet, "", "Filter by App Store territory code (e.g., USA, GBR)")
-	bindTrackedReviewStringFlag(fs, "sort", &filters.Sort, &filters.sortSet, "", "Sort by "+strings.Join(reviewSorts, ", "))
-	bindTrackedReviewStringFlag(fs, "response-state", &filters.ResponseState, &filters.responseStateSet, reviewResponseStateAny, "Filter by response state: any, unresponded/unreplied, responded/replied")
+	bindTrackedReviewStringFlag(fs, "stars", &filters.Stars, &filters.starsSet, "", true, "Filter by star ratings, comma-separated (1-5)")
+	bindTrackedReviewStringFlag(fs, "territory", &filters.Territory, &filters.territorySet, "", false, "Filter by App Store territory code (e.g., USA, GBR)")
+	bindTrackedReviewStringFlag(fs, "sort", &filters.Sort, &filters.sortSet, "", false, "Sort by "+strings.Join(reviewSorts, ", "))
+	bindTrackedReviewStringFlag(fs, "response-state", &filters.ResponseState, &filters.responseStateSet, reviewResponseStateAny, false, "Filter by response state: any, unresponded/unreplied, responded/replied")
 	fs.BoolVar(&filters.OnlyUnresponded, "only-unresponded", false, "Only list reviews without a published response")
 	fs.BoolVar(&filters.IncludeResponse, "include-response", false, "Include customer review response relationships")
-	bindTrackedReviewStringFlag(fs, "response-fields", &filters.ResponseFields, &filters.responseFieldsSet, "", "Comma-separated customer review response fields: responseBody,lastModifiedDate,state,review")
+	bindTrackedReviewStringFlag(fs, "response-fields", &filters.ResponseFields, &filters.responseFieldsSet, "", true, "Comma-separated customer review response fields: responseBody,lastModifiedDate,state,review")
 	return filters
 }
 
