@@ -86,6 +86,8 @@ type redactionRule struct {
 var (
 	secretMarkerPattern                = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:` + singleLineShellTerminator + `|[ \t]*=[ \t]*(?:1|t|true)(?:` + singleLineShellTerminator + `))`)
 	secretValuePattern                 = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
+	kubectlCreateSecretCommand         = regexp.MustCompile(`(?i)(?:^|[;&|])[ \t]*kubectl[ \t]+create[ \t]+secret\b`)
+	kubectlFromLiteralValue            = regexp.MustCompile(`(?i)(--from-literal(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + singleLineShellWord + `)`)
 	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	rawRegistryAuthsPattern            = regexp.MustCompile(`(?i)"auths"[ \t\r\n]*:[ \t\r\n]*\{`)
@@ -420,6 +422,10 @@ func redactSensitiveText(value string) (string, bool) {
 		changed = true
 	}
 	if next, secretChanged := redactSecretMarkedValues(redacted); secretChanged {
+		redacted = next
+		changed = true
+	}
+	if next, kubectlChanged := redactKubectlSecretLiterals(redacted); kubectlChanged {
 		redacted = next
 		changed = true
 	}
@@ -1920,7 +1926,8 @@ func redactHighConfidenceAuthorizationCredentials(value string) (string, bool) {
 		if firstEnd < 0 {
 			firstEnd = len(line)
 		}
-		credential := line[:firstEnd]
+		scheme := line[:firstEnd]
+		credential := scheme
 		credentialEnd := firstEnd
 		nextStart := firstEnd
 		for nextStart < len(line) && (line[nextStart] == ' ' || line[nextStart] == '\t') {
@@ -1935,7 +1942,7 @@ func redactHighConfidenceAuthorizationCredentials(value string) (string, bool) {
 			credentialEnd = nextEnd
 		}
 
-		if !looksLikeAuthorizationCredential(credential) {
+		if !isCredentialSpecificAuthorizationScheme(scheme) && !looksLikeAuthorizationCredential(credential) {
 			searchStart = lineEnd
 			continue
 		}
@@ -1945,6 +1952,15 @@ func redactHighConfidenceAuthorizationCredentials(value string) (string, bool) {
 		searchStart = headerStart + len("Authorization: ") + len(redactionMarker)
 	}
 	return redacted, changed
+}
+
+func isCredentialSpecificAuthorizationScheme(value string) bool {
+	switch strings.ToLower(value) {
+	case "apikey", "api-key":
+		return true
+	default:
+		return false
+	}
 }
 
 func looksLikeAuthorizationCredential(value string) bool {
@@ -3345,6 +3361,22 @@ func redactSecretMarkedValues(value string) (string, bool) {
 		}
 		return command, false
 	})
+}
+
+func redactKubectlSecretLiterals(value string) (string, bool) {
+	lines := strings.SplitAfter(value, "\n")
+	changed := false
+	for index, line := range lines {
+		if !kubectlCreateSecretCommand.MatchString(line) {
+			continue
+		}
+		redacted := kubectlFromLiteralValue.ReplaceAllString(line, `${1}`+redactionMarker)
+		if redacted != line {
+			lines[index] = redacted
+			changed = true
+		}
+	}
+	return strings.Join(lines, ""), changed
 }
 
 func transformXcodeCloudEnvVarSetCommands(value string, transform func(string) (string, bool)) (string, bool) {

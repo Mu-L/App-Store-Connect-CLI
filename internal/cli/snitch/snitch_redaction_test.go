@@ -374,6 +374,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","status":"failed"}`,
 		},
 		{
+			name:  "alphabetic API key authorization header",
+			input: "Authorization: ApiKey opaqueSecretValue\nstatus: failed",
+			want:  "Authorization: [REDACTED]\nstatus: failed",
+		},
+		{
 			name:  "go formatted credential header map",
 			input: `request headers: map[Cookie:[myacinfo=opaque-lowercase-secret] Content-Type:[application/json]]`,
 			want:  `request headers: map[Cookie:[REDACTED] Content-Type:[application/json]]`,
@@ -1503,6 +1508,21 @@ status: failed`,
 			name:  "secret key flag",
 			input: `tool --secret-key opaque-cli-secret --status failed`,
 			want:  `tool --secret-key [REDACTED] --status failed`,
+		},
+		{
+			name:  "kubectl secret literal",
+			input: `kubectl create secret generic foo --from-literal=custom=opaque-secret --namespace demo`,
+			want:  `kubectl create secret generic foo --from-literal=[REDACTED] --namespace demo`,
+		},
+		{
+			name:  "kubectl quoted secret literal",
+			input: `kubectl create secret generic foo --from-literal "custom=opaque secret" --namespace demo`,
+			want:  `kubectl create secret generic foo --from-literal [REDACTED] --namespace demo`,
+		},
+		{
+			name:  "kubectl compound quoted secret literal",
+			input: `kubectl create secret generic foo --from-literal=custom="opaque secret" --from-literal=second='opaque two'`,
+			want:  `kubectl create secret generic foo --from-literal=[REDACTED] --from-literal=[REDACTED]`,
 		},
 		{
 			name:  "scoped base64 private key assignments",
