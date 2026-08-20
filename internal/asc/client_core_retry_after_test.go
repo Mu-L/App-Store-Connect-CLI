@@ -189,6 +189,9 @@ func TestWithRetry_FailsFastWhenRetryAfterExceedsContextBudget(t *testing.T) {
 	if message := err.Error(); !strings.Contains(message, "context deadline") || !strings.Contains(message, "5s") {
 		t.Fatalf("expected the requested wait and context deadline in the message, got %q", message)
 	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline classification in error chain, got %v", err)
+	}
 
 	apiErr, ok := errors.AsType[*APIError](err)
 	if !ok {
