@@ -652,7 +652,7 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 		flowValueStart := valueStart + propertyOffset
 		if flowValueStart < len(content) && content[flowValueStart] == '{' {
 			close := findYAMLFlowEnd(content, flowValueStart)
-			if close >= valueStart {
+			if close >= flowValueStart {
 				flow, nestedFlowChanged := redactKubernetesSecretFlowMap(content[flowValueStart : close+1])
 				if nestedFlowChanged {
 					lines[line] = content[:flowValueStart] + flow + content[close+1:] + ending
@@ -660,6 +660,23 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 				}
 				continue
 			}
+
+			remaining := strings.Join(lines[line:], "")
+			close = findYAMLFlowEnd(remaining, flowValueStart)
+			if close >= flowValueStart {
+				flow, nestedFlowChanged := redactKubernetesSecretFlowMap(remaining[flowValueStart : close+1])
+				if nestedFlowChanged {
+					updated := remaining[:flowValueStart] + flow + remaining[close+1:]
+					lines = append(lines[:line], strings.SplitAfter(updated, "\n")...)
+					changed = true
+				}
+				continue
+			}
+
+			lines[line] = content[:flowValueStart] + redactionMarker + ending
+			blockIndent = keyIndent
+			changed = true
+			continue
 		}
 		if remainder, _ := trimYAMLNodeProperties(value); value != "" && (strings.TrimSpace(remainder) == "" || strings.HasPrefix(strings.TrimSpace(remainder), "#")) {
 			containerIndent = keyIndent

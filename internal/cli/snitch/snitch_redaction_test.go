@@ -852,6 +852,21 @@ data: !!map
   config: [REDACTED]`,
 		},
 		{
+			name: "Kubernetes Secret multiline data flow map",
+			input: `apiVersion: v1
+kind: Secret
+data: {
+  config: opaque-multiline-data-flow-secret
+}
+status: failed`,
+			want: `apiVersion: v1
+kind: Secret
+data: {
+  config: [REDACTED]
+}
+status: failed`,
+		},
+		{
 			name: "Kubernetes Secret list data before kind",
 			input: `items:
 - data:
