@@ -2663,6 +2663,9 @@ func TestRootCommand_UsageGroupsSubcommands(t *testing.T) {
 	if !strings.Contains(usage, "  screenshots:") || !strings.Contains(usage, "  video-previews:") {
 		t.Fatalf("expected screenshots and video-previews commands in root usage, got %q", usage)
 	}
+	if !strings.Contains(usage, "  system-status:") {
+		t.Fatalf("expected system-status command in root usage, got %q", usage)
+	}
 
 	if strings.Contains(usage, "  assets:") || strings.Contains(usage, "  shots:") {
 		t.Fatalf("expected old assets/shots commands to be removed from root usage, got %q", usage)
