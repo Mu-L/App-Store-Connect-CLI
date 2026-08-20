@@ -12,7 +12,6 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 )
@@ -36,16 +35,24 @@ func UploadAsset(ctx context.Context, filePath string, operations []UploadOperat
 }
 
 // UploadAssetFromFile uploads a file using the provided upload operations.
+// Operations run sequentially through the shared upload executor, so a part
+// that hits a transient transport failure or retryable status is retried
+// instead of leaving the asset partially uploaded.
 func UploadAssetFromFile(ctx context.Context, file *os.File, fileSize int64, operations []UploadOperation) error {
 	if len(operations) == 0 {
 		return fmt.Errorf("no upload operations provided")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	client := clientWithoutRedirects(&http.Client{Timeout: ResolveUploadTimeout()})
+	uploadOpts := UploadOptions{
+		Client:    clientWithoutRedirects(newUploadClient()),
+		RetryOpts: ResolveRetryOptions(),
+	}
 
 	for i, op := range operations {
-		method := strings.ToUpper(strings.TrimSpace(op.Method))
-		if method == "" {
+		if strings.TrimSpace(op.Method) == "" {
 			return fmt.Errorf("upload operation %d missing method", i)
 		}
 		if strings.TrimSpace(op.URL) == "" {
@@ -58,25 +65,8 @@ func UploadAssetFromFile(ctx context.Context, file *os.File, fileSize int64, ope
 			return fmt.Errorf("upload operation %d exceeds file size", i)
 		}
 
-		reader := io.NewSectionReader(file, op.Offset, op.Length)
-		req, err := http.NewRequestWithContext(ctx, method, op.URL, reader)
-		if err != nil {
-			return fmt.Errorf("upload operation %d: %w", i, newSanitizedUploadError("create upload request", op.URL, err))
-		}
-		req.ContentLength = op.Length
-		for _, header := range op.RequestHeaders {
-			req.Header.Set(header.Name, header.Value)
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return fmt.Errorf("upload operation %d: %w", i, newSanitizedUploadError("upload request", op.URL, err))
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return fmt.Errorf("upload operation %d failed with status %d", i, resp.StatusCode)
+		if err := executeUploadOperation(ctx, file, uploadTask{index: i, op: op}, uploadOpts); err != nil {
+			return err
 		}
 	}
 
