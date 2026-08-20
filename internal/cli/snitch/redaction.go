@@ -101,6 +101,8 @@ var (
 	tomlCredentialName                = regexp.MustCompile(`(?i)^(?:` + sensitivePrefixedName + `)$`)
 	tomlMultilineCredentialStart      = regexp.MustCompile(`(?i)(?:^|[^-a-z0-9_])(?:` + sensitivePrefixedName + `\b|` + tomlQuotedSensitiveKey + `)[ \t]*=[ \t]*(?:"""|''')`)
 	sensitiveCommandSubstitutionStart = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:[ \t]+|[ \t]*=[ \t]*)|` + sensitivePrefixedName + `\b[ \t]*[:=][ \t]*)(\$\(|\(|\x60)`)
+	powerShellHereStringCredential    = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(@["']\r?\n)`)
+	commandPromptQuotedSetAssignment  = regexp.MustCompile(`(?im)(?:^|[ \t;&|])set[ \t]+"` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
 	xcodeCloudEnvVarSetCommand        = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')` + shellCommandPathSeparator + `web` + shellCommandPathSeparator + `xcode-cloud` + shellCommandPathSeparator + `env-vars` + shellCommandPathSeparator + `(?:shared` + shellCommandPathSeparator + `)?set\b`)
 )
 
@@ -337,7 +339,15 @@ var sensitiveTextRedactionRules = []redactionRule{
 }
 
 func redactSensitiveText(value string) (string, bool) {
-	redacted, changed := redactSecretMarkedValues(value)
+	redacted, changed := redactPowerShellHereStringCredentials(value)
+	if next, commandPromptChanged := redactCommandPromptSetAssignments(redacted); commandPromptChanged {
+		redacted = next
+		changed = true
+	}
+	if next, secretChanged := redactSecretMarkedValues(redacted); secretChanged {
+		redacted = next
+		changed = true
+	}
 	if next, netrcChanged := redactNetrcPasswords(redacted); netrcChanged {
 		redacted = next
 		changed = true
@@ -425,6 +435,87 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = strings.ReplaceAll(redacted, placeholder, original)
 	}
 	return redacted, changed
+}
+
+func redactPowerShellHereStringCredentials(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := powerShellHereStringCredential.FindStringSubmatchIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		open := searchStart + match[2]
+		contentStart := searchStart + match[3]
+		quote := redacted[open+1]
+		end := findPowerShellHereStringEnd(redacted, contentStart, quote)
+		if end < 0 {
+			end = len(redacted)
+		}
+		redacted = redacted[:open] + redactionMarker + redacted[end:]
+		changed = true
+		searchStart = open + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func findPowerShellHereStringEnd(value string, contentStart int, quote byte) int {
+	for lineStart := contentStart; lineStart < len(value); {
+		marker := lineStart
+		for marker < len(value) && (value[marker] == ' ' || value[marker] == '\t') {
+			marker++
+		}
+		if marker+1 < len(value) && value[marker] == quote && value[marker+1] == '@' &&
+			(marker+2 == len(value) || strings.ContainsRune(" \t\r\n;&|)", rune(value[marker+2]))) {
+			return marker + 2
+		}
+		lineBreak := strings.IndexByte(value[lineStart:], '\n')
+		if lineBreak < 0 {
+			break
+		}
+		lineStart += lineBreak + 1
+	}
+	return -1
+}
+
+func redactCommandPromptSetAssignments(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := commandPromptQuotedSetAssignment.FindStringIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		valueStart := searchStart + match[1]
+		valueEnd := findCommandPromptQuotedSetValueEnd(redacted, valueStart)
+		currentValue := redacted[valueStart:valueEnd]
+		if currentValue == "" || currentValue == redactionMarker || currentValue == privateKeyRedactionMarker {
+			searchStart = valueEnd + 1
+			continue
+		}
+		redacted = redacted[:valueStart] + redactionMarker + redacted[valueEnd:]
+		changed = true
+		searchStart = valueStart + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func findCommandPromptQuotedSetValueEnd(value string, start int) int {
+	for index := start; index < len(value); index++ {
+		switch value[index] {
+		case '^':
+			if index+2 < len(value) && value[index+1] == '\r' && value[index+2] == '\n' {
+				index += 2
+			} else if index+1 < len(value) {
+				index++
+			}
+		case '"', '\r', '\n':
+			return index
+		}
+	}
+	return len(value)
 }
 
 func redactNetrcPasswords(value string) (string, bool) {

@@ -404,6 +404,26 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "command CLIENT_SECRET=[REDACTED] --verbose",
 		},
 		{
+			name:  "Command Prompt quoted set assignment",
+			input: `set "PASSWORD=opaque secret value" & echo done`,
+			want:  `set "PASSWORD=[REDACTED]" & echo done`,
+		},
+		{
+			name:  "Command Prompt quoted set assignment with escaped quote",
+			input: `echo preparing & set "PASSWORD=opaque ^" secret value" & echo done`,
+			want:  `echo preparing & set "PASSWORD=[REDACTED]" & echo done`,
+		},
+		{
+			name:  "Command Prompt continued quoted set assignment",
+			input: "set \"PASSWORD=opaque^\r\nsecret value\" & echo done",
+			want:  "set \"PASSWORD=[REDACTED]\" & echo done",
+		},
+		{
+			name:  "unterminated Command Prompt quoted set assignment",
+			input: "set \"PASSWORD=opaque secret value\nstatus: failed",
+			want:  "set \"PASSWORD=[REDACTED]\nstatus: failed",
+		},
+		{
 			name:  "unquoted assignment before command separator",
 			input: `PASSWORD=supersecret; echo next`,
 			want:  `PASSWORD=[REDACTED]; echo next`,
@@ -422,6 +442,21 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "PowerShell continued secret flag",
 			input: "asc signing sync --password opaque`\nsecret --verbose",
 			want:  "asc signing sync --password [REDACTED] --verbose",
+		},
+		{
+			name:  "PowerShell single quoted here string in secret flag",
+			input: "asc signing sync --password @'\nopaque-head\nopaque-tail\n'@ --verbose",
+			want:  "asc signing sync --password [REDACTED] --verbose",
+		},
+		{
+			name:  "PowerShell double quoted here string in secret flag",
+			input: "asc signing sync --password @\"\nopaque-head\nopaque-tail\n\"@ --verbose",
+			want:  "asc signing sync --password [REDACTED] --verbose",
+		},
+		{
+			name:  "unterminated PowerShell here string in secret flag",
+			input: "asc signing sync --password @'\nopaque-head\nopaque-tail",
+			want:  "asc signing sync --password [REDACTED]",
 		},
 		{
 			name:  "Command Prompt continued secret flag",
@@ -1169,6 +1204,18 @@ func TestRedactSensitiveTextPreservesFalseSecretMarkerAndValue(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
+	for _, input := range []string{
+		`set "STATUS=public value" & echo done`,
+		"asc signing sync --notes @'\npublic head\npublic tail\n'@ --verbose",
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
 func TestRedactSensitiveTextPreservesBenignYAMLAliasMappingKey(t *testing.T) {
 	input := "key: &s status\n*s: failed"
 	got, changed := redactSensitiveText(input)
@@ -1634,12 +1681,16 @@ func TestSnitchDryRunRedactsPowerShellAndPlistStringCredentials(t *testing.T) {
 
 	const powerShellSecret = "powershell-secret-suffix"
 	const quotedPowerShellSecret = "powershell-quoted-secret-suffix"
+	const hereStringSecret = "powershell-here-string-secret"
+	const commandPromptSecret = "command-prompt-set-secret"
 	const plistSecret = "plist-string-credential-value"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", "asc signing sync --password opaque` "+powerShellSecret+" --verbose\n"+
-			"asc signing sync --password \"opaque`\""+quotedPowerShellSecret+"\" --verbose",
+			"asc signing sync --password \"opaque`\""+quotedPowerShellSecret+"\" --verbose\n"+
+			"asc signing sync --password @'\nopaque-head\n"+hereStringSecret+"\n'@ --verbose\n"+
+			`set "PASSWORD=opaque `+commandPromptSecret+`" & echo done`,
 		"--actual", `<plist><dict><key>password</key><string>`+plistSecret+`</string><key>status</key><string>failed</string></dict></plist>`,
 		"shell and property list string credential redaction probe",
 	)
@@ -1647,7 +1698,7 @@ func TestSnitchDryRunRedactsPowerShellAndPlistStringCredentials(t *testing.T) {
 		t.Fatalf("run snitch: %v", err)
 	}
 
-	for _, secret := range []string{powerShellSecret, quotedPowerShellSecret, plistSecret} {
+	for _, secret := range []string{powerShellSecret, quotedPowerShellSecret, hereStringSecret, commandPromptSecret, plistSecret} {
 		if strings.Contains(stderr, secret) {
 			t.Fatalf("stderr leaked %q: %q", secret, stderr)
 		}
@@ -1660,6 +1711,7 @@ func TestSnitchDryRunRedactsPowerShellAndPlistStringCredentials(t *testing.T) {
 	}
 	for _, want := range []string{
 		"asc signing sync --password [REDACTED] --verbose",
+		`set "PASSWORD=[REDACTED]" & echo done`,
 		`<key>password</key><string>[REDACTED]</string><key>status</key><string>failed</string>`,
 	} {
 		if !strings.Contains(stderr, want) {
