@@ -192,15 +192,6 @@ func prepareAppScreenshotUpload(ctx context.Context, cfg screenshotUploadConfig[
 		}
 	}
 
-	if !cfg.DryRun && cfg.Replace {
-		deleteCtx, deleteCancel := cfg.UploadContext(ctx)
-		err = deleteExistingScreenshots(deleteCtx, cfg.Client, existingScreenshots)
-		deleteCancel()
-		if err != nil {
-			return screenshotUploadPreparedState{}, err
-		}
-	}
-
 	return screenshotUploadPreparedState{
 		Set:                 set,
 		ExistingScreenshots: existingScreenshots,
@@ -251,7 +242,23 @@ func executeAppScreenshotUpload(ctx context.Context, cfg screenshotUploadConfig[
 	uploadCtx, cancel := cfg.UploadContext(ctx)
 	defer cancel()
 
-	progress, uploadErr := uploadScreenshotsWithOrderState(uploadCtx, cfg.Client, prepared.Set.ID, prepared.OrderedIDs, prepared.Files, cfg.RootPath, false, true)
+	var openedFiles openedScreenshotFiles
+	if cfg.Replace && len(prepared.Files) > 0 {
+		openedFiles, err = openAndValidateScreenshotFiles(cfg.RootPath, prepared.Files)
+		if err != nil {
+			return asc.AppScreenshotUploadResult{}, err
+		}
+		defer closeOpenedScreenshotFiles(openedFiles)
+		if err := deleteExistingScreenshots(uploadCtx, cfg.Client, prepared.ExistingScreenshots); err != nil {
+			return asc.AppScreenshotUploadResult{}, err
+		}
+	} else if cfg.Replace {
+		if err := deleteExistingScreenshots(uploadCtx, cfg.Client, prepared.ExistingScreenshots); err != nil {
+			return asc.AppScreenshotUploadResult{}, err
+		}
+	}
+
+	progress, uploadErr := uploadScreenshotsWithOrderStateWithOpenedFiles(uploadCtx, cfg.Client, prepared.Set.ID, prepared.OrderedIDs, prepared.Files, cfg.RootPath, false, true, openedFiles)
 	if uploadErr == nil && cfg.SkipExisting && len(prepared.SkippedResults) > 0 {
 		desiredIDs, err := syncSkippedScreenshotOrder(uploadCtx, cfg.Client, prepared.Set.ID, cfg.Files, prepared.SkippedResults, progress.Results)
 		if err != nil {

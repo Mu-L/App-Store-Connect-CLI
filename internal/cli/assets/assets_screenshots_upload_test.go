@@ -20,7 +20,7 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
-func TestUploadScreenshotsReplaceRevalidatesOpenedFileBeforeReservation(t *testing.T) {
+func TestUploadScreenshotsReplaceValidatesOpenedFileBeforeDeletingExistingScreenshots(t *testing.T) {
 	dir := t.TempDir()
 	filePath := writeAssetsTestPNGWithSize(t, dir, "01-home.png", 1242, 2688)
 	replacementPath := filepath.Join(dir, "replacement.jpg")
@@ -48,14 +48,14 @@ func TestUploadScreenshotsReplaceRevalidatesOpenedFileBeforeReservation(t *testi
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/appStoreVersionLocalizations/LOC_123/appScreenshotSets":
 			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appScreenshotSets","id":"set-1","attributes":{"screenshotDisplayType":"APP_IPHONE_65"}}],"links":{}}`)
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/appScreenshotSets/set-1/appScreenshots":
-			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appScreenshots","id":"existing-1","attributes":{"fileName":"old.png"}}],"links":{}}`)
-		case req.Method == http.MethodDelete && req.URL.Path == "/v1/appScreenshots/existing-1":
-			deleted = true
 			replacementErr = os.Rename(replacementPath, filePath)
 			if replacementErr != nil {
 				http.Error(w, replacementErr.Error(), http.StatusInternalServerError)
 				return
 			}
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appScreenshots","id":"existing-1","attributes":{"fileName":"old.png"}}],"links":{}}`)
+		case req.Method == http.MethodDelete && req.URL.Path == "/v1/appScreenshots/existing-1":
+			deleted = true
 			w.WriteHeader(http.StatusNoContent)
 		case req.Method == http.MethodPost && req.URL.Path == "/v1/appScreenshots":
 			reserved = true
@@ -78,8 +78,8 @@ func TestUploadScreenshotsReplaceRevalidatesOpenedFileBeforeReservation(t *testi
 			t.Fatalf("uploadScreenshots() error = %q, want %q", err, want)
 		}
 	}
-	if !deleted {
-		t.Fatal("expected replacement after existing screenshot deletion")
+	if deleted {
+		t.Fatal("existing screenshot was deleted before the replacement mismatch was rejected")
 	}
 	if reserved {
 		t.Fatal("replacement screenshot reached asset reservation")
