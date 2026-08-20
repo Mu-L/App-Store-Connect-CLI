@@ -295,7 +295,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)\b(` + credentialHeaderName + `)[ \t]*:\[[^\]\r\n]*\]`),
+		pattern:     regexp.MustCompile(`(?i)\b(` + credentialHeaderName + `|` + sensitivePrefixedName + `)[ \t]*:\[[^\]\r\n]*\]`),
 		replacement: `${1}:` + redactionMarker,
 	},
 	{

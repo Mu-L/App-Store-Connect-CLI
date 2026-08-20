@@ -394,6 +394,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `request headers: map[Cookie:[REDACTED] Content-Type:[application/json]]`,
 		},
 		{
+			name:  "go formatted custom credential header map",
+			input: `request headers: map[X-API-Key:[opaqueAlphabeticSecret] X-Auth-Token:[firstToken secondToken] Content-Type:[application/json]]`,
+			want:  `request headers: map[X-API-Key:[REDACTED] X-Auth-Token:[REDACTED] Content-Type:[application/json]]`,
+		},
+		{
 			name:  "object valued structured credential",
 			input: `{"token":{"type":"bearer","value":"opaque-lowercase-secret"},"status":"failed"}`,
 			want:  `{"token":"[REDACTED]","status":"failed"}`,
