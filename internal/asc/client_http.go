@@ -466,7 +466,7 @@ func parseRetryAfterHeader(value string) time.Duration {
 		// accepts the portion that fits in uint64; values beyond that range
 		// report ErrRange there as well. Both cases are an unambiguously huge
 		// positive delay and must saturate instead of falling back to backoff.
-		if _, unsignedErr := strconv.ParseUint(value, 10, 64); unsignedErr == nil {
+		if _, unsignedErr := strconv.ParseUint(strings.TrimPrefix(value, "+"), 10, 64); unsignedErr == nil {
 			return maxRetryAfterDuration
 		} else {
 			var numberErr *strconv.NumError

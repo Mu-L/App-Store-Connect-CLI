@@ -80,6 +80,15 @@ func TestParseRetryAfterHeaderHandlesNumericDateAndBoundaryValues(t *testing.T) 
 			},
 		},
 		{
+			name:  "unsigned range numeric with plus saturates",
+			value: "+9223372036854775808",
+			check: func(t *testing.T, got time.Duration) {
+				if got != maxRetryAfterDuration {
+					t.Fatalf("parseRetryAfterHeader() = %s, want %s", got, maxRetryAfterDuration)
+				}
+			},
+		},
+		{
 			name:  "uint64 maximum numeric saturates",
 			value: "18446744073709551615",
 			check: func(t *testing.T, got time.Duration) {
