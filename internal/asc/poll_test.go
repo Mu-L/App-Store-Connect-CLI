@@ -177,6 +177,39 @@ func TestPollUntilTolerantToleratesTransientFailuresUntilSuccess(t *testing.T) {
 	}
 }
 
+func TestPollUntilTolerantDoesNotReplayRetryAfterBeyondCap(t *testing.T) {
+	t.Parallel()
+
+	checks := 0
+	_, err := PollUntilTolerant(context.Background(), time.Millisecond, func(context.Context) (string, bool, error) {
+		checks++
+		_, retryErr := WithRetry(context.Background(), func() (struct{}, error) {
+			return struct{}{}, rateLimitedError(time.Hour)
+		}, RetryOptions{MaxRetries: 1, BaseDelay: time.Millisecond, MaxDelay: time.Second})
+		return "", false, retryErr
+	}, PollOptions{
+		Tolerate: IsTransientWaitError,
+		OnToleratedFailure: func(err error, failures, max int) {
+			t.Fatalf("did not expect bounded Retry-After to be tolerated (%d/%d): %v", failures, max, err)
+		},
+	})
+	if err == nil {
+		t.Fatal("expected bounded Retry-After error, got nil")
+	}
+	if checks != 1 {
+		t.Fatalf("expected one poll check for bounded Retry-After, got %d", checks)
+	}
+	if !strings.Contains(err.Error(), "retry cap") {
+		t.Fatalf("expected retry-cap error, got %v", err)
+	}
+	if IsTransientWaitError(context.Background(), err) {
+		t.Fatalf("expected bounded Retry-After to be terminal to poll recovery, got %v", err)
+	}
+	if !IsRetryable(err) || GetRetryAfter(err) != time.Hour {
+		t.Fatalf("expected direct retry classification and Retry-After to survive, got %v", err)
+	}
+}
+
 func TestPollUntilTolerantFailsAfterConsecutiveFailureCeiling(t *testing.T) {
 	t.Parallel()
 

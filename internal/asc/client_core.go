@@ -305,6 +305,22 @@ func (e *retryCancelledError) Unwrap() []error {
 	return []error{e.contextErr, e.err}
 }
 
+// retryDelayExceededError marks a retryable failure whose server-provided
+// delay could not be honored by this request. It preserves the original
+// retryable cause for status and Retry-After inspection, while allowing outer
+// recovery loops to treat the already-diagnosed wait as terminal.
+type retryDelayExceededError struct {
+	err error
+}
+
+func (e *retryDelayExceededError) Error() string {
+	return e.err.Error()
+}
+
+func (e *retryDelayExceededError) Unwrap() error {
+	return e.err
+}
+
 // RetryOptions configures retry behavior.
 //   - MaxRetries: Number of retry attempts. 0 = no retries (fail fast),
 //     negative = use DefaultMaxRetries.
@@ -430,15 +446,15 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 				remaining := time.Until(deadline)
 				if delay >= remaining {
 					if delay > opts.MaxDelay {
-						return zero, fmt.Errorf(
+						return zero, &retryDelayExceededError{err: fmt.Errorf(
 							"%s: upstream server asked to wait %s, exceeding the %s retry cap and the context deadline (%s remaining); raise ASC_MAX_DELAY and the request timeout to wait longer: %w",
 							retryDelayCategory(err), delay, opts.MaxDelay, remaining.Round(time.Millisecond), err,
-						)
+						)}
 					}
-					return zero, fmt.Errorf(
+					return zero, &retryDelayExceededError{err: fmt.Errorf(
 						"%s: upstream server asked to wait %s, which cannot be honored before the context deadline (%s remaining): %w",
 						retryDelayCategory(err), delay, remaining.Round(time.Millisecond), err,
-					)
+					)}
 				}
 			}
 		}
@@ -464,10 +480,10 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 			// sleeping the full hint hides the response behind an eventual
 			// context deadline, so report both numbers now.
 			category := retryDelayCategory(err)
-			return zero, fmt.Errorf(
+			return zero, &retryDelayExceededError{err: fmt.Errorf(
 				"%s: upstream server asked to wait %s, exceeding the %s retry cap (raise ASC_MAX_DELAY to wait longer): %w",
 				category, delay, opts.MaxDelay, err,
-			)
+			)}
 		}
 
 		if ResolveRetryLogEnabled() {
