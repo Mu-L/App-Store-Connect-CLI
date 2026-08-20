@@ -755,9 +755,46 @@ data:
 status: failed`,
 		},
 		{
+			name: "Kubernetes Secret arbitrary data and stringData keys",
+			input: `apiVersion: v1
+kind: Secret
+data: {config: b3BhcXVlLWNvbmZpZw==}
+stringData:
+  settings: opaque-kubernetes-string-data
+status: failed`,
+			want: `apiVersion: v1
+kind: Secret
+data: {config: [REDACTED]}
+stringData:
+  settings: [REDACTED]
+status: failed`,
+		},
+		{
+			name: "Kubernetes Secret list item arbitrary data key",
+			input: `items:
+- kind: Secret
+  data:
+    config: opaque-list-secret
+- kind: ConfigMap
+  data:
+    config: public-config`,
+			want: `items:
+- kind: Secret
+  data:
+    config: [REDACTED]
+- kind: ConfigMap
+  data:
+    config: public-config`,
+		},
+		{
 			name:  "Kubernetes Secret JSON data keys",
 			input: `{"apiVersion":"v1","kind":"Secret","data":{"tls.key":"b3BhcXVlLXByaXZhdGUta2V5",".dockerconfigjson":"eyJhdXRocyI6eyJyZWdpc3RyeS5leGFtcGxlIjp7ImF1dGgiOiJvcGFxdWUifX19"},"status":"failed"}`,
 			want:  `{"apiVersion":"v1","kind":"Secret","data":{"tls.key":"[REDACTED]",".dockerconfigjson":"[REDACTED]"},"status":"failed"}`,
+		},
+		{
+			name:  "Kubernetes Secret JSON arbitrary data and stringData keys",
+			input: `{"apiVersion":"v1","kind":"Secret","data":{"config":"opaque-json-config"},"stringData":{"settings":"opaque-json-string-data"},"status":"failed"}`,
+			want:  `{"apiVersion":"v1","kind":"Secret","data":{"config":"[REDACTED]"},"stringData":{"settings":"[REDACTED]"},"status":"failed"}`,
 		},
 		{
 			name:  "TOML multiline basic string",
@@ -1516,6 +1553,26 @@ status: failed`,
 			want:  "credential [REDACTED]",
 		},
 		{
+			name:  "Slack user token",
+			input: "credential xoxp-123456789012-123456789012-abcdefghijklmnopqrstuvwx",
+			want:  "credential [REDACTED]",
+		},
+		{
+			name:  "Slack user token documented shape",
+			input: "credential xoxp-abcdef-abcdef-abcdef-abcdef",
+			want:  "credential [REDACTED]",
+		},
+		{
+			name:  "Slack app token",
+			input: "credential xapp-1-123456789012-123456789012-abcdefghijklmnopqrstuvwx",
+			want:  "credential [REDACTED]",
+		},
+		{
+			name:  "Slack app token documented shape",
+			input: "credential xapp-1-A0123456789-example",
+			want:  "credential [REDACTED]",
+		},
+		{
 			name:  "npm access token",
 			input: "credential npm_abcdefghijklmnopqrstuvwxyz0123456789",
 			want:  "credential [REDACTED]",
@@ -1576,9 +1633,22 @@ func TestRedactSensitiveTextPreservesBearerProse(t *testing.T) {
 	for _, input := range []string{
 		"Bearer authentication fails behind proxy",
 		"Bearer OAuth2 authentication fails",
+		"Bearer OAuth2.0 authentication fails",
 		"Bearer HTTP2 authentication fails",
 		"Bearer RFC6750 flow fails",
 		"Authorization: request failed because proxy unavailable",
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextPreservesEmbeddedSlackTokenLikeText(t *testing.T) {
+	for _, input := range []string{
+		"prefixxoxp-123456789012-123456789012-abcdefghijklmnopqrstuvwx",
+		"prefixxapp-1-A0123456789-example",
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
@@ -1773,11 +1843,15 @@ func TestRedactSensitiveTextPreservesNameValuePairOutsideCookieJar(t *testing.T)
 }
 
 func TestRedactSensitiveTextPreservesSimilarKubernetesDataKeys(t *testing.T) {
-	input := "tls.keyUsage: digital signature\n.dockerconfigjson.backup: public metadata"
-
-	got, changed := redactSensitiveText(input)
-	if changed || got != input {
-		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	for _, input := range []string{
+		"tls.keyUsage: digital signature\n.dockerconfigjson.backup: public metadata",
+		"apiVersion: v1\nkind: ConfigMap\ndata: {config: public-config}\nstringData:\n  settings: public-settings",
+		`{"apiVersion":"v1","kind":"ConfigMap","data":{"config":"public-config"},"stringData":{"settings":"public-settings"}}`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
 	}
 }
 
