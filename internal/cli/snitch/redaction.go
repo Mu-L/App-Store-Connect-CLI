@@ -271,7 +271,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}:` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:[<>][ \t]*)?` + traceCredentialHeader + `)[ \t]*:[ \t]*[^\r\n]+` + foldedHeaderContinuation),
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:(?:[<>][ \t]*)?` + traceCredentialHeader + `|[<>][ \t]*` + sensitivePrefixedName + `))[ \t]*:[ \t]*[^\r\n]+` + foldedHeaderContinuation),
 		replacement: `${1}: ` + redactionMarker,
 	},
 	{
@@ -669,7 +669,7 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 				}
 			}
 		}
-		if !secretActive && (strings.EqualFold(key, "data") || strings.EqualFold(key, "stringData")) && yamlSecretKindFollows(lines, line+1, keyIndent) {
+		if !secretActive && (strings.EqualFold(key, "data") || strings.EqualFold(key, "stringData")) && yamlSecretKindFollows(lines, line+1, keyIndent, scalarAnchors) {
 			secretIndent = keyIndent
 			secretActive = true
 		}
@@ -924,7 +924,7 @@ func redactKubernetesSecretYAMLFlowData(value string) (string, bool) {
 	return redacted, changed
 }
 
-func yamlSecretKindFollows(lines []string, start, secretIndent int) bool {
+func yamlSecretKindFollows(lines []string, start, secretIndent int, scalarAnchors map[string]string) bool {
 	for line := start; line < len(lines); line++ {
 		content, _ := splitLineEnding(lines[line])
 		trimmed := strings.TrimSpace(content)
@@ -950,7 +950,11 @@ func yamlSecretKindFollows(lines []string, start, secretIndent int) bool {
 			continue
 		}
 		if strings.EqualFold(key, "kind") {
-			return strings.EqualFold(kubernetesYAMLScalar(content[valueStart:]), "Secret")
+			kind := kubernetesYAMLScalar(content[valueStart:])
+			if strings.HasPrefix(kind, "*") {
+				kind = scalarAnchors[strings.TrimPrefix(kind, "*")]
+			}
+			return strings.EqualFold(kind, "Secret")
 		}
 	}
 	return false

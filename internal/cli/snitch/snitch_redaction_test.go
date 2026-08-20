@@ -49,6 +49,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `curl --header "X-Auth-Token: [REDACTED]" https://example.test`,
 		},
 		{
+			name:  "outgoing HTTP trace API key header",
+			input: "> X-API-Key: opaqueTraceSecret\n> Content-Type: application/json",
+			want:  "> X-API-Key: [REDACTED]\n> Content-Type: application/json",
+		},
+		{
+			name:  "incoming HTTP trace auth token header",
+			input: "< X-Auth-Token: opaqueTraceSecret\n< Content-Type: application/json",
+			want:  "< X-Auth-Token: [REDACTED]\n< Content-Type: application/json",
+		},
+		{
 			name:  "parameterized authorization header",
 			input: "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260819/region/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=abcdef0123456789",
 			want:  "Authorization: [REDACTED]",
@@ -808,6 +818,19 @@ status: failed`,
 data:
   config: [REDACTED]
 kind: Secret
+status: failed`,
+		},
+		{
+			name: "Kubernetes Secret data before aliased kind",
+			input: `secretKind: &secretKind Secret
+data:
+  config: opaque-alias-lookahead-secret
+kind: *secretKind
+status: failed`,
+			want: `secretKind: &secretKind Secret
+data:
+  config: [REDACTED]
+kind: *secretKind
 status: failed`,
 		},
 		{
