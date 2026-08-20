@@ -420,6 +420,26 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 		// Calculate delay
 		retryAfter := GetRetryAfter(err)
 		delay := retryAfter
+		if retryAfter > 0 {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return zero, fmt.Errorf("retry cancelled: %w", ctxErr)
+			}
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining := time.Until(deadline)
+				if delay >= remaining {
+					if delay > opts.MaxDelay {
+						return zero, fmt.Errorf(
+							"%s: App Store Connect asked to wait %s, exceeding the %s retry cap and the context deadline (%s remaining); raise ASC_MAX_DELAY and the request timeout to wait longer: %w: %w",
+							retryDelayCategory(err), delay, opts.MaxDelay, remaining.Round(time.Millisecond), err, context.DeadlineExceeded,
+						)
+					}
+					return zero, fmt.Errorf(
+						"%s: App Store Connect asked to wait %s, which cannot be honored before the context deadline (%s remaining): %w: %w",
+						retryDelayCategory(err), delay, remaining.Round(time.Millisecond), err, context.DeadlineExceeded,
+					)
+				}
+			}
+		}
 		switch {
 		case delay <= 0:
 			// Exponential backoff with jitter, capped to prevent overflow
@@ -446,21 +466,6 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 				"%s: App Store Connect asked to wait %s, exceeding the %s retry cap (raise ASC_MAX_DELAY to wait longer): %w",
 				category, delay, opts.MaxDelay, err,
 			)
-		}
-
-		if retryAfter > 0 {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return zero, fmt.Errorf("retry cancelled: %w", ctxErr)
-			}
-			if deadline, ok := ctx.Deadline(); ok {
-				remaining := time.Until(deadline)
-				if delay >= remaining {
-					return zero, fmt.Errorf(
-						"%s: App Store Connect asked to wait %s, which cannot be honored before the context deadline (%s remaining): %w: %w",
-						retryDelayCategory(err), delay, remaining.Round(time.Millisecond), err, context.DeadlineExceeded,
-					)
-				}
-			}
 		}
 
 		if ResolveRetryLogEnabled() {

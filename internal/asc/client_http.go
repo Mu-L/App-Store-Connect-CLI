@@ -461,7 +461,7 @@ func parseRetryAfterHeader(value string) time.Duration {
 		return time.Duration(seconds) * time.Second
 	} else if _, err := strconv.ParseUint(value, 10, 64); err != nil {
 		var numberErr *strconv.NumError
-		if errors.As(err, &numberErr) && errors.Is(numberErr.Err, strconv.ErrRange) && !strings.HasPrefix(value, "-") {
+		if errors.As(err, &numberErr) && errors.Is(numberErr.Err, strconv.ErrRange) && isPositiveDecimal(value) {
 			// A positive value that does not fit in int64 seconds is still an
 			// unambiguously huge delay. Saturate it so the retry cap can reject it
 			// instead of silently falling back to exponential backoff.
@@ -485,6 +485,19 @@ func parseRetryAfterHeader(value string) time.Duration {
 	}
 
 	return 0
+}
+
+func isPositiveDecimal(value string) bool {
+	value = strings.TrimPrefix(value, "+")
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // validateNextURL validates that a pagination URL is safe to use.

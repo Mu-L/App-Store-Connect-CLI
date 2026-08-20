@@ -71,6 +71,15 @@ func TestParseRetryAfterHeaderHandlesNumericDateAndBoundaryValues(t *testing.T) 
 			},
 		},
 		{
+			name:  "overflow with trailing text is malformed",
+			value: "18446744073709551616x",
+			check: func(t *testing.T, got time.Duration) {
+				if got != 0 {
+					t.Fatalf("parseRetryAfterHeader() = %s, want 0", got)
+				}
+			},
+		},
+		{
 			name:  "future http date",
 			value: time.Now().UTC().Add(2 * time.Second).Format(http.TimeFormat),
 			check: func(t *testing.T, got time.Duration) {
@@ -153,6 +162,12 @@ func TestWithRetry_FailsFastWhenRetryAfterExceedsCap(t *testing.T) {
 	}
 	if !strings.Contains(message, "rate limited") {
 		t.Fatalf("expected the message to name rate limiting, got %q", message)
+	}
+	if !strings.Contains(message, "context deadline") {
+		t.Fatalf("expected the message to name the context deadline, got %q", message)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline classification in error chain, got %v", err)
 	}
 
 	apiErr, ok := errors.AsType[*APIError](err)
