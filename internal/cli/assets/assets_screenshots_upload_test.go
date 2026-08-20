@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"os"
@@ -17,6 +19,72 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
+
+func TestUploadScreenshotsReplaceValidatesOpenedFileBeforeDeletingExistingScreenshots(t *testing.T) {
+	dir := t.TempDir()
+	filePath := writeAssetsTestPNGWithSize(t, dir, "01-home.png", 1242, 2688)
+	replacementPath := filepath.Join(dir, "replacement.jpg")
+	replacement, err := os.Create(replacementPath)
+	if err != nil {
+		t.Fatalf("create replacement: %v", err)
+	}
+	if err := jpeg.Encode(replacement, image.NewRGBA(image.Rect(0, 0, 8, 8)), nil); err != nil {
+		replacement.Close()
+		t.Fatalf("encode replacement: %v", err)
+	}
+	if err := replacement.Close(); err != nil {
+		t.Fatalf("close replacement: %v", err)
+	}
+
+	if err := validateScreenshotDimensions([]string{filePath}, "APP_IPHONE_65"); err != nil {
+		t.Fatalf("initial screenshot preflight failed: %v", err)
+	}
+
+	deleted := false
+	reserved := false
+	var replacementErr error
+	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/appStoreVersionLocalizations/LOC_123/appScreenshotSets":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appScreenshotSets","id":"set-1","attributes":{"screenshotDisplayType":"APP_IPHONE_65"}}],"links":{}}`)
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/appScreenshotSets/set-1/appScreenshots":
+			replacementErr = os.Rename(replacementPath, filePath)
+			if replacementErr != nil {
+				http.Error(w, replacementErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appScreenshots","id":"existing-1","attributes":{"fileName":"old.png"}}],"links":{}}`)
+		case req.Method == http.MethodDelete && req.URL.Path == "/v1/appScreenshots/existing-1":
+			deleted = true
+			w.WriteHeader(http.StatusNoContent)
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/appScreenshots":
+			reserved = true
+			http.Error(w, "replacement reached reservation", http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+
+	_, err = uploadScreenshots(context.Background(), client, "LOC_123", "APP_IPHONE_65", []string{filePath}, false, true, false)
+	if replacementErr != nil {
+		t.Fatalf("replace validated screenshot: %v", replacementErr)
+	}
+	if err == nil {
+		t.Fatal("uploadScreenshots() error = nil, want format mismatch")
+	}
+	for _, want := range []string{"01-home.png", "JPEG", ".png"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("uploadScreenshots() error = %q, want %q", err, want)
+		}
+	}
+	if deleted {
+		t.Fatal("existing screenshot was deleted before the replacement mismatch was rejected")
+	}
+	if reserved {
+		t.Fatal("replacement screenshot reached asset reservation")
+	}
+}
 
 func TestUploadScreenshotsReplaceValidatesRootBeforeDeletingExistingScreenshots(t *testing.T) {
 	root := t.TempDir()

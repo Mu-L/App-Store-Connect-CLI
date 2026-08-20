@@ -181,6 +181,15 @@ func uploadScreenshotsWithConfig[T any](ctx context.Context, cfg screenshotUploa
 		return cfg.BuildResult(cfg.LocalizationID, set, true, results), nil
 	}
 
+	var openedFiles openedScreenshotFiles
+	if cfg.Replace && len(files) > 0 {
+		openedFiles, err = openAndValidateScreenshotFiles(sourceRootPath, files)
+		if err != nil {
+			return zero, err
+		}
+		defer closeOpenedScreenshotFiles(openedFiles)
+	}
+
 	uploadCtx, cancel := cfg.UploadContext(ctx)
 	defer cancel()
 
@@ -192,7 +201,7 @@ func uploadScreenshotsWithConfig[T any](ctx context.Context, cfg screenshotUploa
 
 	results := make([]asc.AssetUploadResultItem, 0, len(skippedResults)+len(files))
 	if len(files) > 0 {
-		uploadedResults, err := uploadScreenshotsToSetFromRoot(uploadCtx, cfg.Client, set.ID, files, sourceRootPath, !cfg.Replace)
+		uploadedResults, err := uploadScreenshotsToSetFromRootWithOpenedFiles(uploadCtx, cfg.Client, set.ID, files, sourceRootPath, !cfg.Replace, openedFiles)
 		if err != nil {
 			return zero, err
 		}
@@ -377,6 +386,70 @@ func uploadScreenshotAsset(ctx context.Context, client *asc.Client, setID, sourc
 	return uploadScreenshotAssetFromFile(ctx, client, setID, filePath, file)
 }
 
+type openedScreenshotFiles map[string]*os.File
+
+func openAndValidateScreenshotFiles(sourceRootPath string, filePaths []string) (openedScreenshotFiles, error) {
+	if len(filePaths) == 0 {
+		return nil, nil
+	}
+	root, err := rootfs.New(sourceRootPath)
+	if err != nil {
+		return nil, err
+	}
+
+	opened := make(openedScreenshotFiles, len(filePaths))
+	closeOpened := func() {
+		closeOpenedScreenshotFiles(opened)
+	}
+	for _, filePath := range filePaths {
+		sourcePath, err := filepath.Abs(filePath)
+		if err != nil {
+			closeOpened()
+			return nil, err
+		}
+		file, err := root.OpenFile(sourcePath)
+		if err != nil {
+			closeOpened()
+			return nil, err
+		}
+		if err := validateOpenedScreenshotFileFormat(filePath, file); err != nil {
+			_ = file.Close()
+			closeOpened()
+			return nil, err
+		}
+
+		key := filepath.Clean(filePath)
+		if existing := opened[key]; existing != nil {
+			_ = file.Close()
+			continue
+		}
+		opened[key] = file
+	}
+	return opened, nil
+}
+
+func closeOpenedScreenshotFiles(files openedScreenshotFiles) {
+	for _, file := range files {
+		if file != nil {
+			_ = file.Close()
+		}
+	}
+}
+
+func openedScreenshotFileForPath(files openedScreenshotFiles, filePath string) *os.File {
+	if len(files) == 0 {
+		return nil
+	}
+	if file := files[filepath.Clean(filePath)]; file != nil {
+		return file
+	}
+	absolute, err := filepath.Abs(filePath)
+	if err != nil {
+		return nil
+	}
+	return files[filepath.Clean(absolute)]
+}
+
 func uploadScreenshotAssetFromFile(ctx context.Context, client *asc.Client, setID, filePath string, file *os.File) (asc.AssetUploadResultItem, screenshotPendingAsset, error) {
 	if file == nil {
 		return asc.AssetUploadResultItem{}, screenshotPendingAsset{}, fmt.Errorf("screenshot file is required")
@@ -395,7 +468,7 @@ func uploadScreenshotAssetFromFile(ctx context.Context, client *asc.Client, setI
 	if info.Size() > maxScreenshotUploadFileSize {
 		return asc.AssetUploadResultItem{}, screenshotPendingAsset{}, fmt.Errorf("file size exceeds %d bytes: %q", maxScreenshotUploadFileSize, filePath)
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	if err := validateOpenedScreenshotFileFormat(filePath, file); err != nil {
 		return asc.AssetUploadResultItem{}, screenshotPendingAsset{}, err
 	}
 
@@ -447,6 +520,23 @@ func uploadScreenshotAssetFromFile(ctx context.Context, client *asc.Client, setI
 		AssetID:  created.Data.ID,
 		State:    state,
 	}, screenshotPendingAsset{}, nil
+}
+
+func validateOpenedScreenshotFileFormat(filePath string, file *os.File) error {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	format, err := asc.ReadImageFormatFrom(file)
+	if err != nil {
+		return fmt.Errorf("%q: %w", filePath, err)
+	}
+	if err := asc.ValidateImageFormatMatchesExtension(filePath, format); err != nil {
+		return err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UploadScreenshotAsset uploads a screenshot file to a set.

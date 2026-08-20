@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"image"
@@ -13,6 +14,7 @@ import (
 	_ "image/png"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -109,29 +111,126 @@ type ImageDimensions struct {
 	Height int
 }
 
+// imageFormatExtensions maps the image formats this binary can decode to the
+// file extensions that describe them.
+var imageFormatExtensions = map[string][]string{
+	"png":  {".png"},
+	"jpeg": {".jpg", ".jpeg"},
+	"gif":  {".gif"},
+}
+
+// renameableImageFormats are the formats an operator can fix by renaming the
+// file. Asset collection only picks up .png, .jpg, and .jpeg, so suggesting a
+// .gif rename would quietly drop the file from an upload directory instead of
+// fixing it.
+var renameableImageFormats = map[string]bool{
+	"png":  true,
+	"jpeg": true,
+}
+
 // ReadImageDimensions validates and decodes image dimensions from disk.
 func ReadImageDimensions(path string) (ImageDimensions, error) {
+	dimensions, _, err := ReadImageDimensionsAndFormat(path)
+	return dimensions, err
+}
+
+// ReadImageDimensionsAndFormat decodes the dimensions together with the
+// encoded image format, which is the only reliable description of what a file
+// actually contains. Callers that report on a file rather than just sizing it
+// need both from a single decode.
+func ReadImageDimensionsAndFormat(path string) (ImageDimensions, string, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return ImageDimensions{}, err
+		return ImageDimensions{}, "", err
 	}
 	if err := validateAssetFileInfo(path, info); err != nil {
-		return ImageDimensions{}, err
+		return ImageDimensions{}, "", err
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return ImageDimensions{}, err
+		return ImageDimensions{}, "", err
 	}
 	defer file.Close()
 
-	cfg, _, err := image.DecodeConfig(file)
+	cfg, format, err := image.DecodeConfig(file)
 	if err != nil {
-		return ImageDimensions{}, fmt.Errorf("decode image dimensions for %q: %w", path, err)
+		return ImageDimensions{}, "", fmt.Errorf("decode image dimensions for %q: %w", path, err)
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 {
-		return ImageDimensions{}, fmt.Errorf("invalid image dimensions %dx%d for %q", cfg.Width, cfg.Height, path)
+		return ImageDimensions{}, "", fmt.Errorf("invalid image dimensions %dx%d for %q", cfg.Width, cfg.Height, path)
 	}
-	return ImageDimensions{Width: cfg.Width, Height: cfg.Height}, nil
+	return ImageDimensions{Width: cfg.Width, Height: cfg.Height}, format, nil
+}
+
+// ValidateImageFormatMatchesExtension rejects a file whose decoded image
+// format contradicts its extension. App Store Connect derives the asset
+// content type from the file name, so a JPEG named .png is only rejected
+// server-side, after the upload has already been paid for.
+//
+// Extensions that name no image format are left alone: the check exists to
+// catch contradictions, not to police naming. A rename is only suggested when
+// the decoded format has an extension asset collection accepts; other
+// decodable formats are told to re-export instead.
+func ValidateImageFormatMatchesExtension(path, format string) error {
+	decoded := strings.ToLower(strings.TrimSpace(format))
+	if decoded == "" {
+		return nil
+	}
+	extension := strings.ToLower(filepath.Ext(path))
+	expected, known := imageFormatForExtension(extension)
+	if !known || expected == decoded {
+		return nil
+	}
+
+	message := fmt.Sprintf(
+		"%q is %s data but has a %s extension",
+		path,
+		strings.ToUpper(decoded),
+		extension,
+	)
+	if renamed, ok := SuggestedImageFileName(path, decoded); ok {
+		message += fmt.Sprintf("; rename it to %s or re-export it as %s", renamed, strings.ToUpper(expected))
+	} else {
+		message += fmt.Sprintf("; re-export it as %s", strings.ToUpper(expected))
+	}
+	return errors.New(message)
+}
+
+// SuggestedImageFileName returns the name path should carry for its decoded
+// format. It reports false when renaming cannot fix the file, because asset
+// collection does not pick up that format's extension.
+func SuggestedImageFileName(path, format string) (string, bool) {
+	decoded := strings.ToLower(strings.TrimSpace(format))
+	if !renameableImageFormats[decoded] {
+		return "", false
+	}
+	extensions := imageFormatExtensions[decoded]
+	if len(extensions) == 0 {
+		return "", false
+	}
+	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) + extensions[0], true
+}
+
+// ReadImageFormatFrom decodes the encoded image format from an already-opened
+// source, for callers that must open the file through a trusted root instead
+// of by path.
+func ReadImageFormatFrom(reader io.Reader) (string, error) {
+	_, format, err := image.DecodeConfig(reader)
+	if err != nil {
+		return "", fmt.Errorf("decode image format: %w", err)
+	}
+	return format, nil
+}
+
+func imageFormatForExtension(extension string) (string, bool) {
+	for format, extensions := range imageFormatExtensions {
+		for _, candidate := range extensions {
+			if candidate == extension {
+				return format, true
+			}
+		}
+	}
+	return "", false
 }
 
 // ComputeChecksumFromReader computes a checksum for an io.Reader.
