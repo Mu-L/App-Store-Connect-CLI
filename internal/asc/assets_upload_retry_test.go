@@ -142,13 +142,20 @@ func TestUploadAssetFromFileHonorsRetryAfterHeader(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected upload to fail")
 	}
-	// A 60s Retry-After must win over the 1ms exponential backoff, so the
-	// context deadline arrives before a second attempt is made.
+	// A 60s Retry-After exceeds both the 1ms retry cap and this request's
+	// remaining context budget, so the client fails fast before a second
+	// attempt is made and names both recovery constraints.
 	if got := atomic.LoadInt32(&requests); got != 1 {
-		t.Fatalf("expected Retry-After to delay the retry past the deadline, got %d requests", got)
+		t.Fatalf("expected over-cap Retry-After to fail before a retry, got %d requests", got)
 	}
-	if !strings.Contains(err.Error(), "retry cancelled") {
-		t.Fatalf("expected a cancelled retry error, got %v", err)
+	if message := err.Error(); !strings.Contains(message, "retry cap") || !strings.Contains(message, "context deadline") {
+		t.Fatalf("expected the cap and context budget in the error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "App Store Connect") {
+		t.Fatalf("expected external upload failure to avoid App Store Connect attribution, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "upload server") {
+		t.Fatalf("expected external upload source in the error, got %v", err)
 	}
 }
 

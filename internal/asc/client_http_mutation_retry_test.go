@@ -46,6 +46,9 @@ func setFastRetryEnv(t *testing.T, maxRetries string) {
 // replaying the identical payload cannot double-apply the mutation.
 func TestClientDo_RetriesRateLimitedMutation(t *testing.T) {
 	setFastRetryEnv(t, "3")
+	// Retry-After is only honored within the retry cap, so the cap has to clear
+	// the 1s the server asks for below.
+	t.Setenv("ASC_MAX_DELAY", "5s")
 
 	const payload = `{"data":{"type":"appStoreVersionLocalizations","attributes":{"description":"hello"}}}`
 
@@ -203,14 +206,17 @@ func TestClientDo_RateLimitTimeoutPreservesRetryableCause(t *testing.T) {
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("expected no second request before Retry-After elapsed, got %d attempts", got)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context deadline in error chain, got %v", err)
+	if message := err.Error(); !strings.Contains(message, "retry cap") || !strings.Contains(message, "context deadline") {
+		t.Fatalf("expected retry-cap and context-budget diagnostics, got %v", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("did not expect context deadline classification before the parent context expires, got %v", err)
 	}
 	if !IsRetryable(err) {
 		t.Fatalf("expected original 429 retryable classification to be preserved, got %v", err)
 	}
-	if !IsRetryBudgetExhausted(err) {
-		t.Fatalf("expected retry budget exhaustion marker after cancellation, got %v", err)
+	if IsRetryBudgetExhausted(err) {
+		t.Fatalf("did not expect retry budget exhaustion before a retry was attempted, got %v", err)
 	}
 	if got := GetRetryAfter(err); got != time.Second {
 		t.Fatalf("expected Retry-After to be preserved, got %s", got)
