@@ -168,6 +168,7 @@ func registerAllOutputRenderers() {
 	registerRows(appInfoLocalizationsRows)
 	registerRowsWithSingleResourceAdapter(appScreenshotSetsRows)
 	registerRowsWithSingleResourceAdapter(appScreenshotsRows)
+	registerRows(appScreenshotSetListResultRows)
 	registerRowsWithSingleResourceAdapter(appPreviewSetsRows)
 	registerRowsWithSingleResourceAdapter(appPreviewsRows)
 	registerRowsWithSingleResourceAdapter(betaGroupsRows)
