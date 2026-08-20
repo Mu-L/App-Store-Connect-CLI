@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -637,27 +639,37 @@ func TestVerifyBuildUploadAfterCommitIgnoresRetryDelayBeyondVerificationBudget(t
 	t.Cleanup(asc.ResetConfigCacheForTest)
 
 	lookupCalls := 0
-	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet {
-			return nil, fmt.Errorf("expected GET, got %s", req.Method)
+			t.Errorf("expected GET, got %s", req.Method)
 		}
 		if req.URL.Path != "/v1/buildUploads/upload-current" {
-			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+			t.Errorf("unexpected path: %s", req.URL.Path)
 		}
 		lookupCalls++
-		response, err := buildWaitJSONStatusResponse(http.StatusTooManyRequests, `{
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{
 			"errors": [{"status": "429", "code": "RATE_LIMIT_EXCEEDED", "title": "Too many requests"}]
 		}`)
-		if err != nil {
-			return nil, err
-		}
-		response.Header.Set("Retry-After", "1")
-		return response, nil
+	}))
+	t.Cleanup(server.Close)
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
+	}
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		redirected := req.Clone(req.Context())
+		redirected.URL.Scheme = serverURL.Scheme
+		redirected.URL.Host = serverURL.Host
+		redirected.Host = serverURL.Host
+		return server.Client().Do(redirected)
 	})
 
 	verifyTimeout := 30 * time.Millisecond
 	start := time.Now()
-	err := VerifyBuildUploadAfterCommit(context.Background(), client, "app-1", "upload-current", time.Millisecond, verifyTimeout)
+	err = VerifyBuildUploadAfterCommit(context.Background(), client, "app-1", "upload-current", time.Millisecond, verifyTimeout)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("VerifyBuildUploadAfterCommit() error: %v", err)

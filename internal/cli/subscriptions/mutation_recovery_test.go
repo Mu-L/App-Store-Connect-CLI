@@ -131,6 +131,66 @@ func TestApplyEqualizedPricesDoesNotReplayExhaustedClientRateLimit(t *testing.T)
 	}
 }
 
+func TestApplyEqualizedPricesDoesNotSleepOnUnhonoredRetryAfter(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "3")
+	t.Setenv("ASC_BASE_DELAY", "1ms")
+	t.Setenv("ASC_MAX_DELAY", "1s")
+	asc.ResetConfigCacheForTest()
+	t.Cleanup(asc.ResetConfigCacheForTest)
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	postAttempts := 0
+	readbacks := 0
+	http.DefaultTransport = resolvedPricesRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/subscriptionPrices":
+			postAttempts++
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(strings.NewReader(`{"errors":[{"status":"429","code":"RATE_LIMIT_EXCEEDED"}]}`)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}, "Retry-After": []string{"3600"}},
+			}, nil
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/subscriptions/sub-1/prices":
+			readbacks++
+			return resolvedPricesJSONResponse(`{"data":[],"included":[],"links":{"next":""}}`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	})
+	client, err := asc.NewClientFromPEM("KEY123", "issuer", introImportTestPrivateKeyPEM(t))
+	if err != nil {
+		t.Fatalf("NewClientFromPEM() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	succeeded, failures := applyEqualizedPrices(
+		ctx,
+		client,
+		"sub-1",
+		[]equalization{{Territory: "CAN", Price: "1.29", PricePointID: "price-point-can"}},
+		1,
+		asc.SubscriptionPriceCreateAttributes{},
+		time.Now().UTC(),
+	)
+	elapsed := time.Since(start)
+	if succeeded != 0 || len(failures) != 1 {
+		t.Fatalf("unexpected equalize result: succeeded=%d failures=%d", succeeded, len(failures))
+	}
+	if postAttempts != 1 {
+		t.Fatalf("expected one POST when Retry-After exceeds cap, got %d", postAttempts)
+	}
+	if readbacks != 1 {
+		t.Fatalf("expected one final reconciliation readback, got %d", readbacks)
+	}
+	if elapsed >= 50*time.Millisecond {
+		t.Fatalf("expected no long equalize recovery sleep, took %s", elapsed)
+	}
+}
+
 func TestRunReconciledMutationRetriesChildDeadlineAfterNegativeReadback(t *testing.T) {
 	t.Setenv("ASC_MAX_RETRIES", "1")
 	t.Setenv("ASC_BASE_DELAY", "1ms")
