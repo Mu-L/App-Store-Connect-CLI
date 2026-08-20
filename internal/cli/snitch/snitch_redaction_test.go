@@ -1251,6 +1251,11 @@ status: failed`,
 			want:  "private_key_b64: [REDACTED]\nnext: preserved",
 		},
 		{
+			name:  "kubeconfig client key data",
+			input: "client-key-data: b3BhcXVlLXByaXZhdGUta2V5\nclient-certificate-data: public-certificate",
+			want:  "client-key-data: [REDACTED]\nclient-certificate-data: public-certificate",
+		},
+		{
 			name:  "camel case JSON assignments",
 			input: `response {"demoAccountPassword":"review-secret","awsSecretAccessKey":"cloud-secret"}`,
 			want:  `response {"demoAccountPassword":"[REDACTED]","awsSecretAccessKey":"[REDACTED]"}`,
@@ -1321,6 +1326,14 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 
 func TestRedactSensitiveTextPreservesBearerProse(t *testing.T) {
 	const input = "Bearer authentication fails behind proxy"
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
+func TestRedactSensitiveTextPreservesKubeconfigCertificateData(t *testing.T) {
+	const input = "client-certificate-data: public-certificate"
 	got, changed := redactSensitiveText(input)
 	if changed || got != input {
 		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
@@ -1693,6 +1706,36 @@ func TestSnitchDryRunBoundsOversizedReportFieldBeforePreview(t *testing.T) {
 	}
 	if len(stderr) > 70*1024 {
 		t.Fatalf("stderr returned %d bytes, want bounded dry-run preview", len(stderr))
+	}
+}
+
+func TestSnitchDryRunRedactsKubeconfigClientKeyData(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const secret = "b3BhcXVlLXByaXZhdGUta2V5"
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", "client-key-data: "+secret+"\nclient-certificate-data: public-certificate",
+		"kubeconfig credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	if strings.Contains(stderr, secret) {
+		t.Fatalf("dry run leaked kubeconfig client key data: %q", stderr)
+	}
+	for _, want := range []string{
+		"client-key-data: [REDACTED]",
+		"client-certificate-data: public-certificate",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
 	}
 }
 
