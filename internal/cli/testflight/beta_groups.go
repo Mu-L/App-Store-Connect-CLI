@@ -112,9 +112,11 @@ printed with complete=false and the command exits nonzero.
 
 GET /v1/apps/{id}/betaGroups accepts only a page limit, so --internal,
 --external, --name, and --sort are served by GET /v1/betaGroups with
-filter[app]. Those filters are applied by App Store Connect, and --limit is the
-page size of matching groups. The --name and --sort flags are experimental;
---name matches the exact group name.
+filter[app]. Those filters are applied by App Store Connect. For ordinary
+one-page filtered and global listings, --limit is the page size. The stable
+app-scoped --internal/--external aggregate fetches with the maximum page size
+of 200 before applying --limit as the final cap. The --name and --sort flags
+are experimental; --name matches the exact group name.
 --build-id membership lookup accepts neither --name nor --sort.
 
 App-scoped --internal and --external continue to collect every matching page

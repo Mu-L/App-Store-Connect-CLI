@@ -30,9 +30,10 @@ Global listings are unchanged and also require `--paginate` for aggregation.
 
 For the stable app-scoped `--internal` and `--external` paths, `--limit` remains
 a cap on the final aggregate after every page is fetched. Without explicit
-`--paginate`, it is also sent as the requested page size. Explicit `--paginate`
-uses a page size of 200, then applies the same final cap. Other filtered and
-global listings retain their standard page-size semantics for `--limit`.
+`--paginate`, the aggregate fetch uses the maximum page size of 200 regardless
+of `--limit`, then applies the same final cap. Explicit `--paginate` uses the
+same page size of 200. Other filtered and global listings retain their standard
+page-size semantics for `--limit`.
 
 `--next` now rejects `--internal`, `--external`, `--name`, and `--sort`. A
 `links.next` URL is followed verbatim and already carries the query it came
