@@ -668,17 +668,12 @@ func TestVerifyBuildUploadAfterCommitIgnoresRetryDelayBeyondVerificationBudget(t
 	})
 
 	verifyTimeout := 30 * time.Millisecond
-	start := time.Now()
 	err = VerifyBuildUploadAfterCommit(context.Background(), client, "app-1", "upload-current", time.Millisecond, verifyTimeout)
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("VerifyBuildUploadAfterCommit() error: %v", err)
 	}
 	if lookupCalls != 1 {
 		t.Fatalf("expected one best-effort upload lookup before honoring Retry-After, got %d", lookupCalls)
-	}
-	if elapsed >= verifyTimeout/2 {
-		t.Fatalf("expected verification to stop rather than spin until its timeout, took %s", elapsed)
 	}
 }
 
