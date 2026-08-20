@@ -17,7 +17,6 @@
             "pages": [
               "introduction",
               "migrate-to-4-0",
-              "migrate-to-1-0",
               "installation",
               "authentication",
               "quickstart"
@@ -154,6 +153,7 @@
               "commands/xcode-cloud",
               "commands/notify",
               "commands/migrate",
+              "commands/system-status",
               "commands/completion",
               "commands/telemetry"
             ]
@@ -217,6 +217,10 @@
     }
   },
   "redirects": [
+    {
+      "source": "/migrate-to-1-0",
+      "destination": "/migrate-to-4-0"
+    },
     {
       "source": "/commands",
       "destination": "/commands/overview"
