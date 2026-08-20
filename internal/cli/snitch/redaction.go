@@ -71,8 +71,8 @@ type redactionRule struct {
 var (
 	secretMarkerPattern                = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:` + singleLineShellTerminator + `|[ \t]*=[ \t]*(?:1|t|true)(?:` + singleLineShellTerminator + `))`)
 	secretValuePattern                 = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
-	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*\{`)
-	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
+	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	rawRegistryAuthsPattern            = regexp.MustCompile(`(?i)"auths"[ \t\r\n]*:[ \t\r\n]*\{`)
 	escapedRegistryAuthsPattern        = regexp.MustCompile(`(?i)\\"auths\\"[ \t\r\n]*:[ \t\r\n]*\{`)
 	rawRequestHeaders                  = regexp.MustCompile(`(?i)"requestHeaders"[ \t\r\n]*:[ \t\r\n]*\[`)

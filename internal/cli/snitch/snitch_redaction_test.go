@@ -258,6 +258,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  `cache {\"cookies\":{\"https://appstoreconnect.apple.com\":[{\"name\":\"myacinfo\",\"value\":\"[REDACTED]\",\"path\":\"/\"}]}}`,
 		},
 		{
+			name:  "browser cookie export array",
+			input: `{"cookies":[{"name":"sessionid","value":"opaque-session-secret","domain":"example.test"}],"version":1}`,
+			want:  `{"cookies":[{"name":"sessionid","value":"[REDACTED]","domain":"example.test"}],"version":1}`,
+		},
+		{
+			name:  "escaped browser cookie export array",
+			input: `cache {\"cookies\":[{\"name\":\"sessionid\",\"value\":\"opaque-session-secret\",\"domain\":\"example.test\"}]}`,
+			want:  `cache {\"cookies\":[{\"name\":\"sessionid\",\"value\":\"[REDACTED]\",\"domain\":\"example.test\"}]}`,
+		},
+		{
 			name:  "upload operation request header values",
 			input: `{"uploadOperations":[{"method":"PUT","requestHeaders":[{"name":"Authorization","value":"opaque-upload-secret"},{"name":"x-amz-checksum-sha256","value":"checksum-capability"}],"length":12}],"status":"pending"}`,
 			want:  `{"uploadOperations":[{"method":"PUT","requestHeaders":[{"name":"Authorization","value":"[REDACTED]"},{"name":"x-amz-checksum-sha256","value":"[REDACTED]"}],"length":12}],"status":"pending"}`,
@@ -3437,12 +3447,14 @@ func TestSnitchDryRunRedactsCurlCookieDataAndSessionCacheValues(t *testing.T) {
 		"cached-cookie-secret",
 		"second-cached-cookie-secret",
 		"reordered-cached-cookie-secret",
+		"browser-cookie-secret",
 	}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", `curl --cookie 'myacinfo=`+secrets[0]+`' --cookie ./cookies.txt https://example.test`,
-		"--actual", `{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"`+secrets[1]+`","path":"/"},{"name":"dqsid","value":"`+secrets[2]+`"},{"value":"`+secrets[3]+`","name":"itctx"}]},"diagnostic":{"name":"failure","value":"preserve this explanation"},"version":1}`,
+		"--actual", `{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"`+secrets[1]+`","path":"/"},{"name":"dqsid","value":"`+secrets[2]+`"},{"value":"`+secrets[3]+`","name":"itctx"}]},"diagnostic":{"name":"failure","value":"preserve this explanation"},"version":1}`+"\n"+
+			`{"cookies":[{"name":"sessionid","value":"`+secrets[4]+`","domain":"example.test"}],"version":1}`,
 		"session cookie redaction probe",
 	)
 	if err != nil {
@@ -3463,6 +3475,7 @@ func TestSnitchDryRunRedactsCurlCookieDataAndSessionCacheValues(t *testing.T) {
 	for _, want := range []string{
 		`curl --cookie [REDACTED] --cookie ./cookies.txt https://example.test`,
 		`{"cookies":{"https://appstoreconnect.apple.com":[{"name":"myacinfo","value":"[REDACTED]","path":"/"},{"name":"dqsid","value":"[REDACTED]"},{"value":"[REDACTED]","name":"itctx"}]},"diagnostic":{"name":"failure","value":"preserve this explanation"},"version":1}`,
+		`{"cookies":[{"name":"sessionid","value":"[REDACTED]","domain":"example.test"}],"version":1}`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
