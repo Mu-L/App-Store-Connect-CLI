@@ -160,6 +160,7 @@ func executeCustomPageScreenshotUpload(
 		Path:           path,
 		DeviceType:     deviceType,
 		Replace:        sync,
+		InspectCommand: fmt.Sprintf("asc product-pages custom-pages localizations screenshot-sets list --localization-id %q --output json", localizationID),
 		ClientFactory:  customPageMediaClientFactory,
 		RequestContext: contextWithCustomPageMediaUploadTimeout,
 		UploadContext:  contextWithCustomPageMediaUploadTimeout,

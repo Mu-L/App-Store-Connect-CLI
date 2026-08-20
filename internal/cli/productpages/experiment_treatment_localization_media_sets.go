@@ -291,6 +291,7 @@ func executeExperimentTreatmentLocalizationScreenshotUpload(
 		Path:                     path,
 		DeviceType:               deviceType,
 		Replace:                  sync,
+		InspectCommand:           fmt.Sprintf("asc product-pages experiments treatments localizations screenshot-sets list --localization-id %q --output json", localizationID),
 		InvalidDeviceTypeIsUsage: true,
 		ClientFactory:            experimentTreatmentLocalizationMediaClientFactory,
 		RequestContext:           shared.ContextWithTimeout,

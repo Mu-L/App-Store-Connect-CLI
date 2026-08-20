@@ -111,6 +111,9 @@ func uploadScreenshotsWithConfig[T any](ctx context.Context, cfg screenshotUploa
 	if cfg.UploadContext == nil {
 		cfg.UploadContext = contextWithAssetUploadTimeout
 	}
+	if strings.TrimSpace(cfg.InspectCommand) == "" {
+		cfg.InspectCommand = screenshotInspectionCommand(cfg.LocalizationID)
+	}
 
 	sourceRootPath := ""
 	if len(cfg.Files) > 0 {
