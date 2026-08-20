@@ -290,7 +290,7 @@ func AssetsScreenshotsListCommand() *ffcli.Command {
 	appID := fs.String("app", "", "App Store Connect app ID, bundle ID, or exact app name (or ASC_APP_ID env)")
 	version := fs.String("version", "", "App Store version string (requires --app)")
 	versionID := fs.String("version-id", "", "App Store version ID")
-	platform := fs.String("platform", "", "Platform for --version lookup: IOS, MAC_OS, TV_OS, VISION_OS (default: IOS)")
+	platform := fs.String("platform", "", "Platform: IOS, MAC_OS, TV_OS, VISION_OS (defaults to IOS with --version; with --version-id requires --app or ASC_APP_ID)")
 	locale := fs.String("locale", "", "Localization locale (required with --version or --version-id)")
 	output := shared.BindOutputFlags(fs)
 
@@ -388,15 +388,17 @@ func executeScreenshotListCommand(ctx context.Context, opts screenshotListComman
 			fmt.Fprintln(os.Stderr, "Error: --locale is required with --version or --version-id")
 			return nil, shared.MissingRequiredUsageError("--locale")
 		}
-		if versionValue != "" {
+		if versionValue != "" || (versionIDValue != "" && platformValue != "") {
 			appValue = shared.ResolveAppID(appValue)
+		}
+		if versionValue != "" {
 			if appValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required with --version (or set ASC_APP_ID)")
 				return nil, shared.MissingRequiredUsageError("--app")
 			}
 		}
 		if platformValue != "" && versionValue == "" && appValue == "" {
-			return nil, shared.UsageError("--platform with --version-id requires --app so ownership and platform can be verified")
+			return nil, shared.UsageError("--platform with --version-id requires --app or ASC_APP_ID so ownership and platform can be verified")
 		}
 		if platformValue != "" {
 			parsedPlatform, platformErr := shared.NormalizeAppStoreVersionPlatform(platformValue)

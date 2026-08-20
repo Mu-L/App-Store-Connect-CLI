@@ -49,6 +49,41 @@ func TestExecuteScreenshotListCommandResolvesVersionLocalizationByVersionIDAndLo
 	}
 }
 
+func TestExecuteScreenshotListCommandUsesASCAppIDForVersionIDPlatformVerification(t *testing.T) {
+	t.Setenv("ASC_APP_ID", "123456789")
+	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/v1/appStoreVersions/version-1":
+			if got := req.URL.Query().Get("include"); got != "app" {
+				t.Errorf("version include = %q, want app", got)
+			}
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":{"type":"appStoreVersions","id":"version-1","attributes":{"versionString":"1.2.3","platform":"IOS"},"relationships":{"app":{"data":{"type":"apps","id":"123456789"}}}}}`)
+		case "/v1/appStoreVersions/version-1/appStoreVersionLocalizations":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appStoreVersionLocalizations","id":"loc-en","attributes":{"locale":"en-US"}}],"links":{}}`)
+		case "/v1/appStoreVersionLocalizations/loc-en/appScreenshotSets":
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[],"links":{}}`)
+		default:
+			t.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+
+	result, err := executeScreenshotListCommand(context.Background(), screenshotListCommandOptions{
+		VersionID: "version-1",
+		Platform:  "IOS",
+		Locale:    "en-US",
+	}, screenshotListDependencies{
+		GetClient:      func() (*asc.Client, error) { return client, nil },
+		RequestContext: shared.ContextWithTimeout,
+	})
+	if err != nil {
+		t.Fatalf("executeScreenshotListCommand() error: %v", err)
+	}
+	if result.VersionLocalizationID != "loc-en" {
+		t.Fatalf("version localization ID = %q, want loc-en", result.VersionLocalizationID)
+	}
+}
+
 func TestExecuteScreenshotListCommandResolvesAppVersionAndLocale(t *testing.T) {
 	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
@@ -171,5 +206,17 @@ func TestAssetsScreenshotsListCommandAcceptsLocalizationIDAlias(t *testing.T) {
 	cmd.FlagSet.SetOutput(io.Discard)
 	if err := cmd.FlagSet.Parse([]string{"--localization-id", "loc-1"}); err != nil {
 		t.Fatalf("parse alias: %v", err)
+	}
+}
+
+func TestAssetsScreenshotsListPlatformHelpExplainsSelectorSpecificAppRequirement(t *testing.T) {
+	platformFlag := AssetsScreenshotsListCommand().FlagSet.Lookup("platform")
+	if platformFlag == nil {
+		t.Fatal("--platform flag not found")
+	}
+	for _, want := range []string{"defaults to IOS with --version", "--version-id requires --app or ASC_APP_ID"} {
+		if !strings.Contains(platformFlag.Usage, want) {
+			t.Fatalf("--platform help = %q, want substring %q", platformFlag.Usage, want)
+		}
 	}
 }
