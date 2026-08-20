@@ -163,6 +163,39 @@ func TestAssetListResultRowsRemoveTerminalControls(t *testing.T) {
 	}
 }
 
+func TestAppScreenshotSetListResultJSONOutputPreservesNestedScreenshotIDs(t *testing.T) {
+	result := &AppScreenshotSetListResult{
+		LocalizationID: "custom-localization-1",
+		Sets: []AppScreenshotSetWithScreenshots{{
+			Set: Resource[AppScreenshotSetAttributes]{
+				ID:         "set-1",
+				Attributes: AppScreenshotSetAttributes{ScreenshotDisplayType: "APP_IPHONE_65"},
+			},
+			Screenshots: []Resource[AppScreenshotAttributes]{{
+				ID: "screenshot-1",
+				Attributes: AppScreenshotAttributes{
+					FileName: "01-home.png",
+				},
+			}},
+		}},
+	}
+
+	payload, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var decoded AppScreenshotSetListResult
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if decoded.LocalizationID != result.LocalizationID {
+		t.Fatalf("localizationId = %q, want %q", decoded.LocalizationID, result.LocalizationID)
+	}
+	if len(decoded.Sets) != 1 || len(decoded.Sets[0].Screenshots) != 1 || decoded.Sets[0].Screenshots[0].ID != "screenshot-1" {
+		t.Fatalf("nested screenshot output = %#v", decoded.Sets)
+	}
+}
+
 func TestAssetUploadRowsRemoveTerminalControlsAndPreserveJSON(t *testing.T) {
 	result := &AppScreenshotUploadResult{
 		VersionLocalizationID: "LOC\x1bID",

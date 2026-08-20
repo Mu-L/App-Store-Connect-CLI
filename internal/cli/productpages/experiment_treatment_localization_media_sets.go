@@ -149,7 +149,7 @@ func ExperimentTreatmentLocalizationScreenshotSetsListCommand() *ffcli.Command {
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
-	includeScreenshots := fs.Bool("include-screenshots", false, "[experimental] Include screenshot IDs and metadata for each set")
+	includeScreenshots := fs.Bool("include-screenshots", false, "[experimental] Include screenshot IDs and metadata for each set (requires --localization-id and --paginate)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -160,12 +160,23 @@ func ExperimentTreatmentLocalizationScreenshotSetsListCommand() *ffcli.Command {
 
 Examples:
   asc product-pages experiments treatments localizations screenshot-sets list --localization-id "LOCALIZATION_ID"
-  asc product-pages experiments treatments localizations screenshot-sets list --localization-id "LOCALIZATION_ID" --include-screenshots`,
+  asc product-pages experiments treatments localizations screenshot-sets list --localization-id "LOCALIZATION_ID" --include-screenshots --paginate`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			trimmedID := strings.TrimSpace(*localizationID)
 			trimmedNext := strings.TrimSpace(*next)
+			if *includeScreenshots {
+				if trimmedID == "" {
+					return shared.MissingRequiredUsageError("--localization-id")
+				}
+				if trimmedNext != "" {
+					return shared.UsageError("experiments treatments localizations screenshot-sets list: --include-screenshots cannot be combined with --next")
+				}
+				if !*paginate {
+					return shared.UsageError("experiments treatments localizations screenshot-sets list: --include-screenshots requires --paginate")
+				}
+			}
 			if trimmedID == "" && trimmedNext == "" {
 				fmt.Fprintln(os.Stderr, "Error: --localization-id is required")
 				return shared.MissingRequiredUsageError("--localization-id")
@@ -316,7 +327,7 @@ func executeExperimentTreatmentLocalizationScreenshotUpload(
 		Path:                     path,
 		DeviceType:               deviceType,
 		Replace:                  sync,
-		InspectCommand:           fmt.Sprintf("asc product-pages experiments treatments localizations screenshot-sets list --localization-id %q --include-screenshots --output json", trimmedLocalizationID),
+		InspectCommand:           fmt.Sprintf("asc product-pages experiments treatments localizations screenshot-sets list --localization-id %q --include-screenshots --paginate --output json", trimmedLocalizationID),
 		ReplaceCommand:           shellquote.Join("asc", "product-pages", "experiments", "treatments", "localizations", "screenshot-sets", "sync", "--localization-id", trimmedLocalizationID, "--path", trimmedPath, "--device-type", trimmedDeviceType, "--confirm"),
 		InvalidDeviceTypeIsUsage: true,
 		ClientFactory:            experimentTreatmentLocalizationMediaClientFactory,
