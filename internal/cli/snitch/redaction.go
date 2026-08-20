@@ -90,9 +90,23 @@ type yamlAnchorLocation struct {
 }
 
 var (
-	secretMarkerPattern                = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:` + singleLineShellTerminator + `|[ \t]*=[ \t]*(?:1|t|true)(?:` + singleLineShellTerminator + `))`)
-	secretValuePattern                 = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
-	kubectlFromLiteralValue            = regexp.MustCompile(`(?i)(--from-literal(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + kubectlShellWord + `)`)
+	secretMarkerPattern            = regexp.MustCompile(`(?i)(^|[ \t])-{1,2}secret(?:` + singleLineShellTerminator + `|[ \t]*=[ \t]*(?:1|t|true)(?:` + singleLineShellTerminator + `))`)
+	secretValuePattern             = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
+	kubectlFromLiteralValue        = regexp.MustCompile(`(?i)(--from-literal(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + kubectlShellWord + `)`)
+	securityCredentialFlagPatterns = map[string]*regexp.Regexp{
+		"create-keychain":                      newSecurityCredentialFlagPattern("p"),
+		"unlock-keychain":                      newSecurityCredentialFlagPattern("p"),
+		"set-keychain-password":                newSecurityCredentialFlagPattern("o", "p"),
+		"add-generic-password":                 newSecurityCredentialFlagPattern("p", "w", "X"),
+		"add-internet-password":                newSecurityCredentialFlagPattern("w", "X"),
+		"set-generic-password-partition-list":  newSecurityCredentialFlagPattern("k"),
+		"set-internet-password-partition-list": newSecurityCredentialFlagPattern("k"),
+		"set-key-partition-list":               newSecurityCredentialFlagPattern("k"),
+		"import":                               newSecurityCredentialFlagPattern("P"),
+		"export":                               newSecurityCredentialFlagPattern("P"),
+		"cms":                                  newSecurityCredentialFlagPattern("p"),
+		"create-filevaultmaster-keychain":      newSecurityCredentialFlagPattern("p"),
+	}
 	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
 	rawRegistryAuthsPattern            = regexp.MustCompile(`(?i)"auths"[ \t\r\n]*:[ \t\r\n]*\{`)
@@ -432,6 +446,10 @@ func redactSensitiveText(value string) (string, bool) {
 		changed = true
 	}
 	if next, kubectlChanged := redactKubectlSecretLiterals(redacted); kubectlChanged {
+		redacted = next
+		changed = true
+	}
+	if next, securityChanged := redactSecurityCredentialArguments(redacted); securityChanged {
 		redacted = next
 		changed = true
 	}
@@ -3552,6 +3570,84 @@ func redactKubectlSecretLiterals(value string) (string, bool) {
 		}
 	}
 	return result, changed
+}
+
+func newSecurityCredentialFlagPattern(flags ...string) *regexp.Regexp {
+	escapedFlags := make([]string, 0, len(flags))
+	for _, flag := range flags {
+		escapedFlags = append(escapedFlags, regexp.QuoteMeta(flag))
+	}
+	return regexp.MustCompile(`(^|[ \t])(-(?:` + strings.Join(escapedFlags, "|") + `)(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
+}
+
+func redactSecurityCredentialArguments(value string) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		if subcommand, ok := securitySubcommand(command); ok {
+			if pattern := securityCredentialFlagPatterns[subcommand]; pattern != nil {
+				redacted := pattern.ReplaceAllString(command, `${1}${2}`+redactionMarker)
+				if redacted != command {
+					result = result[:start] + redacted + result[end:]
+					command = redacted
+					changed = true
+				}
+			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+func securitySubcommand(command string) (string, bool) {
+	normalized := strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(command)
+	words := strings.Fields(normalized)
+	for index, word := range words {
+		word = strings.Trim(word, `"'`)
+		if separator := strings.LastIndexAny(word, `/\\`); separator >= 0 {
+			word = word[separator+1:]
+		}
+		if word != "security" || !isSecurityCommandPrefix(words[:index]) {
+			continue
+		}
+		for _, candidate := range words[index+1:] {
+			candidate = strings.Trim(candidate, `"'`)
+			if candidate == "--" || strings.HasPrefix(candidate, "-") {
+				continue
+			}
+			_, known := securityCredentialFlagPatterns[candidate]
+			return candidate, known
+		}
+		return "", false
+	}
+	return "", false
+}
+
+func isSecurityCommandPrefix(words []string) bool {
+	for len(words) > 0 && shellAssignmentWord.MatchString(strings.Trim(words[0], `"'`)) {
+		words = words[1:]
+	}
+	if len(words) == 0 {
+		return true
+	}
+	if len(words) != 1 {
+		return false
+	}
+	prefix := strings.ToLower(strings.Trim(words[0], `"'`))
+	if separator := strings.LastIndexAny(prefix, `/\\`); separator >= 0 {
+		prefix = prefix[separator+1:]
+	}
+	return prefix == "sudo" || prefix == "doas" || prefix == "command" || prefix == "env"
 }
 
 func isKubectlCreateSecretCommand(command string) bool {

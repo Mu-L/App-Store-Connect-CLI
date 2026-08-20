@@ -1689,6 +1689,36 @@ status: failed`,
 			want:  `sudo kubectl create secret generic foo --from-literal=[REDACTED] --namespace demo`,
 		},
 		{
+			name:  "security unlock keychain password",
+			input: `security unlock-keychain -p "opaque credential" build.keychain`,
+			want:  `security unlock-keychain -p [REDACTED] build.keychain`,
+		},
+		{
+			name:  "sudo security partition list keychain password",
+			input: `sudo /usr/bin/security set-key-partition-list -S apple-tool:,apple: -s -k 'opaque credential' build.keychain`,
+			want:  `sudo /usr/bin/security set-key-partition-list -S apple-tool:,apple: -s -k [REDACTED] build.keychain`,
+		},
+		{
+			name:  "security old and new keychain passwords",
+			input: `security set-keychain-password -o old-credential -p new-credential build.keychain`,
+			want:  `security set-keychain-password -o [REDACTED] -p [REDACTED] build.keychain`,
+		},
+		{
+			name:  "security generic password value",
+			input: `security add-generic-password -a build -s signing -w opaque-credential build.keychain`,
+			want:  `security add-generic-password -a build -s signing -w [REDACTED] build.keychain`,
+		},
+		{
+			name:  "security import passphrase",
+			input: `security import signing.p12 -k build.keychain -P opaque-passphrase`,
+			want:  `security import signing.p12 -k build.keychain -P [REDACTED]`,
+		},
+		{
+			name:  "continued security password argument",
+			input: "security unlock-keychain -p \\\n  opaque-credential build.keychain",
+			want:  "security unlock-keychain -p \\\n  [REDACTED] build.keychain",
+		},
+		{
 			name:  "scoped base64 private key assignments",
 			input: `ASC_STOREKIT_PRIVATE_KEY_B64=c3RvcmVraXQtcHJpdmF0ZS1rZXk= ASC_ADS_PRIVATE_KEY_B64=YWRzLXByaXZhdGUta2V5`,
 			want:  `ASC_STOREKIT_PRIVATE_KEY_B64=[REDACTED] ASC_ADS_PRIVATE_KEY_B64=[REDACTED]`,
@@ -1980,6 +2010,22 @@ func TestRedactSensitiveTextScopesKubectlSecretLiterals(t *testing.T) {
 		`echo kubectl create secret generic foo --from-literal=custom=public-value`,
 		`kubectl create configmap foo --from-literal=custom=public-value`,
 		"kubectl create\nsecret generic foo --from-literal=custom=public-value",
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextScopesSecurityCredentialArguments(t *testing.T) {
+	for _, input := range []string{
+		`echo security unlock-keychain -p public-value build.keychain`,
+		`sudo echo security unlock-keychain -p public-value build.keychain`,
+		`security export -p output.pem -o exported.pem`,
+		`security import signing.cer -k build.keychain`,
+		`security list-keychains -p public-value`,
+		`tool -p public-value`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
