@@ -1467,6 +1467,15 @@ func TestRedactSensitiveTextPreservesOrdinaryAuthField(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextPreservesUnterminatedTOMLLiteralKey(t *testing.T) {
+	for _, input := range []string{"'", "'unterminated"} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
 func TestRedactSensitiveTextPreservesNameValuePairOutsideCookieJar(t *testing.T) {
 	input := `{"cookies":{},"diagnostic":{"name":"failure","value":"preserve this explanation"}}`
 
@@ -1561,6 +1570,22 @@ func TestSnitchDryRunRedactsRegistryConfigurationAuthCredential(t *testing.T) {
 	}
 	if want := `{"auths":{"registry.example":{"auth":"[REDACTED]"}},"status":"failed"}`; !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want redacted configuration %q", stderr, want)
+	}
+}
+
+func TestSnitchDryRunPreservesLoneSingleQuote(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	stdout, stderr, err := runSnitchCommand(t, "9.9.9", "--dry-run", "'")
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	if !strings.Contains(stderr, "Title: '") {
+		t.Fatalf("stderr = %q, want the original report title", stderr)
 	}
 }
 

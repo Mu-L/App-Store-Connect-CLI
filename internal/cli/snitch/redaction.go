@@ -1017,7 +1017,7 @@ func parseTOMLKey(value string, start int) (string, int, bool) {
 		return key, end, err == nil
 	case '\'':
 		end := findTOMLQuotedStringEnd(value, start, '\'')
-		if end <= start {
+		if end <= start+1 || end > len(value) || value[end-1] != '\'' {
 			return "", start, false
 		}
 		return value[start+1 : end-1], end, true
