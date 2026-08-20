@@ -75,6 +75,8 @@ var (
 	credentialHeaderNamePattern       = regexp.MustCompile(`(?i)^` + credentialHeaderName + `$`)
 	curlHeaderOptionStart             = regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)`)
 	completeShellWord                 = regexp.MustCompile(`^(` + fishShellWord + `)(` + singleLineShellTerminator + `)`)
+	netrcEntryStart                   = regexp.MustCompile(`(?im)(?:^|[\r\n])[ \t]*(?:machine[ \t]+[^\s#]+|default)(?:[ \t\r\n]|\z)`)
+	netrcPasswordValue                = regexp.MustCompile(`(?i)(^|[ \t\r\n])(password[ \t]+)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`)
 	booleanSecretMarker               = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
 	yamlCredentialScalar              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlCredentialMapping             = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + sensitivePrefixedName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
@@ -305,6 +307,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 
 func redactSensitiveText(value string) (string, bool) {
 	redacted, changed := redactSecretMarkedValues(value)
+	if next, netrcChanged := redactNetrcPasswords(redacted); netrcChanged {
+		redacted = next
+		changed = true
+	}
 	if next, headerChanged := redactCompoundCurlHeaderWords(redacted); headerChanged {
 		redacted = next
 		changed = true
@@ -378,6 +384,27 @@ func redactSensitiveText(value string) (string, bool) {
 	}
 	for placeholder, original := range yamlKeyRestorations {
 		redacted = strings.ReplaceAll(redacted, placeholder, original)
+	}
+	return redacted, changed
+}
+
+func redactNetrcPasswords(value string) (string, bool) {
+	redacted := value
+	entries := netrcEntryStart.FindAllStringIndex(redacted, -1)
+	changed := false
+	for index := len(entries) - 1; index >= 0; index-- {
+		start := entries[index][0]
+		end := len(redacted)
+		if index+1 < len(entries) {
+			end = entries[index+1][0]
+		}
+		entry := redacted[start:end]
+		next := netrcPasswordValue.ReplaceAllString(entry, `${1}${2}`+redactionMarker+`${3}`)
+		if next == entry {
+			continue
+		}
+		redacted = redacted[:start] + next + redacted[end:]
+		changed = true
 	}
 	return redacted, changed
 }
@@ -589,7 +616,7 @@ func redactTOMLCredentialValues(value string) (string, bool) {
 		for keyStart < len(redacted) && (redacted[keyStart] == ' ' || redacted[keyStart] == '\t') {
 			keyStart++
 		}
-		key, keyEnd, validKey := parseTOMLKey(redacted, keyStart)
+		key, keyEnd, validKey := parseTOMLKeyPath(redacted, keyStart)
 		if !validKey {
 			lineStart = nextTOMLLineStart(redacted, lineStart)
 			continue
@@ -613,8 +640,8 @@ func redactTOMLCredentialValues(value string) (string, bool) {
 			continue
 		}
 		compositeValue := redacted[valueStart] == '{' || redacted[valueStart] == '['
-		escapedBasicKey := redacted[keyStart] == '"' && strings.Contains(redacted[keyStart:keyEnd], `\`)
-		if !compositeValue && !escapedBasicKey {
+		structuredKey := strings.ContainsAny(redacted[keyStart:keyEnd], `.\`)
+		if !compositeValue && !structuredKey {
 			lineStart = nextTOMLLineStart(redacted, lineStart)
 			continue
 		}
@@ -630,6 +657,31 @@ func redactTOMLCredentialValues(value string) (string, bool) {
 		lineStart = nextTOMLLineStart(redacted, valueStart+len(redactionMarker))
 	}
 	return redacted, changed
+}
+
+func parseTOMLKeyPath(value string, start int) (string, int, bool) {
+	component, componentEnd, valid := parseTOMLKey(value, start)
+	if !valid {
+		return "", start, false
+	}
+	for {
+		dot := componentEnd
+		for dot < len(value) && (value[dot] == ' ' || value[dot] == '\t') {
+			dot++
+		}
+		if dot >= len(value) || value[dot] != '.' {
+			return component, componentEnd, true
+		}
+
+		next := dot + 1
+		for next < len(value) && (value[next] == ' ' || value[next] == '\t') {
+			next++
+		}
+		component, componentEnd, valid = parseTOMLKey(value, next)
+		if !valid {
+			return "", start, false
+		}
+	}
 }
 
 func parseTOMLKey(value string, start int) (string, int, bool) {

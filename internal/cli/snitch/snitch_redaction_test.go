@@ -486,6 +486,21 @@ status = "failed"`,
 			want:  `"pass\u0077ord" = [REDACTED]`,
 		},
 		{
+			name:  "TOML dotted escaped credential key",
+			input: `credentials."pass\u0077ord" = "opaque-dotted-key-secret"`,
+			want:  `credentials."pass\u0077ord" = [REDACTED]`,
+		},
+		{
+			name:  "netrc inline password",
+			input: `machine api.example.test login alice password opaque-netrc-secret`,
+			want:  `machine api.example.test login alice password [REDACTED]`,
+		},
+		{
+			name:  "netrc multiline password",
+			input: "machine api.example.test\n  login alice\n  password opaque-netrc-secret\nmachine public.example.test\n  login guest",
+			want:  "machine api.example.test\n  login alice\n  password [REDACTED]\nmachine public.example.test\n  login guest",
+		},
+		{
 			name: "YAML escaped double quoted credential key block scalar",
 			input: `"pass\u0077ord": |
   opaque-yaml-key-secret
@@ -1403,11 +1418,15 @@ func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
 	const headerSecret = "compound-header-secret"
 	const plistSecret = "plist-credential-value"
 	const yamlSecret = "yaml-indentless-secret"
+	const tomlSecret = "toml-dotted-secret"
+	const netrcSecret = "netrc-password-secret"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", "curl -H 'Authorization: Bearer '"+headerSecret+" https://example.test",
-		"--actual", `<plist><dict><key>pass&#x77;ord</key><!-- context --><data>`+plistSecret+`</data><key>status</key><string>failed</string></dict></plist>`,
+		"--actual", `<plist><dict><key>pass&#x77;ord</key><!-- context --><data>`+plistSecret+`</data><key>status</key><string>failed</string></dict></plist>`+"\n"+
+			`credentials."pass\u0077ord" = "`+tomlSecret+`"`+"\n"+
+			"machine api.example.test login alice password "+netrcSecret,
 		"--expected", "password:\n- "+yamlSecret+"\nstatus: failed",
 		"compound header and property list credential redaction probe",
 	)
@@ -1415,7 +1434,7 @@ func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
 		t.Fatalf("run snitch: %v", err)
 	}
 
-	for _, secret := range []string{headerSecret, plistSecret, yamlSecret} {
+	for _, secret := range []string{headerSecret, plistSecret, yamlSecret, tomlSecret, netrcSecret} {
 		if strings.Contains(stderr, secret) {
 			t.Fatalf("stderr leaked %q: %q", secret, stderr)
 		}
@@ -1430,6 +1449,8 @@ func TestSnitchDryRunRedactsCompoundHeaderAndPlistCredentials(t *testing.T) {
 		`curl -H "Authorization: [REDACTED]" https://example.test`,
 		`<key>pass&#x77;ord</key><!-- context --><data>[REDACTED]</data><key>status</key><string>failed</string>`,
 		"password: [REDACTED]\nstatus: failed",
+		`credentials."pass\u0077ord" = [REDACTED]`,
+		"machine api.example.test login alice password [REDACTED]",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
