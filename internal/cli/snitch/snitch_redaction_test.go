@@ -848,6 +848,55 @@ data:
   config: [REDACTED]`,
 		},
 		{
+			name: "Kubernetes Secret aliased kind",
+			input: `secretKind: &secretKind Secret
+kind: *secretKind
+data:
+  config: opaque-aliased-kind-secret
+status: failed`,
+			want: `secretKind: &secretKind Secret
+kind: *secretKind
+data:
+  config: [REDACTED]
+status: failed`,
+		},
+		{
+			name: "Kubernetes Secret multiline quoted data scalar",
+			input: `kind: Secret
+data:
+  config: "opaque-head
+    opaque-tail-secret"
+status: failed`,
+			want: `kind: Secret
+data:
+  config: [REDACTED]
+status: failed`,
+		},
+		{
+			name: "Kubernetes Secret multiline single quoted data scalar",
+			input: `kind: Secret
+data:
+  config: 'opaque-head
+    opaque-tail-secret'
+status: failed`,
+			want: `kind: Secret
+data:
+  config: [REDACTED]
+status: failed`,
+		},
+		{
+			name: "Kubernetes Secret multiline plain data scalar",
+			input: `kind: Secret
+data:
+  config: opaque-head
+    opaque-tail-secret
+status: failed`,
+			want: `kind: Secret
+data:
+  config: [REDACTED]
+status: failed`,
+		},
+		{
 			name: "Kubernetes Secret tagged data container",
 			input: `kind: Secret
 data: !!map
@@ -902,6 +951,16 @@ status: failed`,
 			name:  "Kubernetes Secret escaped JSON arbitrary data key",
 			input: `trace {\"kind\":\"Secret\",\"data\":{\"config\":\"opaque-escaped-secret\"}}`,
 			want:  `trace {\"kind\":\"Secret\",\"data\":{\"config\":\"[REDACTED]\"}}`,
+		},
+		{
+			name:  "Kubernetes Secret unicode escaped JSON kind key",
+			input: `{"\u006b\u0069\u006e\u0064":"Secret","data":{"config":"opaque-unicode-kind-secret"}}`,
+			want:  `{"\u006b\u0069\u006e\u0064":"Secret","data":{"config":"[REDACTED]"}}`,
+		},
+		{
+			name:  "Kubernetes Secret unicode escaped JSON data key",
+			input: `{"kind":"Secret","\u0064\u0061\u0074\u0061":{"config":"opaque-unicode-data-secret"}}`,
+			want:  `{"kind":"Secret","\u0064\u0061\u0074\u0061":{"config":"[REDACTED]"}}`,
 		},
 		{
 			name:  "Kubernetes Secret truncated JSON arbitrary data key",
@@ -2057,6 +2116,7 @@ func TestRedactSensitiveTextPreservesSimilarKubernetesDataKeys(t *testing.T) {
 		"data:\n  config: public-config\n# ---\nkind: ConfigMap",
 		"items:\n- data:\n    config: public-config\n- kind: Secret",
 		`message: "{kind: Secret, data: {config: public-diagnostic}}"`,
+		"secretRef:\n  kind: Secret\nstatus:\n  data:\n    count: 42",
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {

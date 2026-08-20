@@ -565,13 +565,18 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 	containerIndent := -1
 	blockIndent := -1
 	secretActive := false
+	scalarAnchors := make(map[string]string)
 	changed := flowChanged
 
-	resetDocument := func() {
+	resetSecret := func() {
 		secretIndent = -1
 		containerIndent = -1
 		blockIndent = -1
 		secretActive = false
+	}
+	resetDocument := func() {
+		resetSecret()
+		clear(scalarAnchors)
 	}
 
 	for line := 0; line < len(lines); line++ {
@@ -618,6 +623,8 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 						changed = true
 						if blockScalar {
 							blockIndent = indent
+						} else if redactKubernetesYAMLScalarContinuations(lines, line, content, valueStart) {
+							changed = true
 						}
 					}
 				} else if isYAMLSequenceItemAtIndent(content, indent) {
@@ -635,18 +642,30 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 		}
 		value := strings.TrimSpace(content[valueStart:])
 		keyIndent := yamlKeyIndent(content)
+		if secretActive && keyIndent < secretIndent {
+			resetSecret()
+		}
+		if anchor := yamlAnchor.FindStringSubmatch(value); len(anchor) == 2 {
+			if scalar := kubernetesYAMLScalar(value); scalar != "" && scalar != value {
+				scalarAnchors[anchor[1]] = scalar
+			}
+		}
 		if !secretActive && (strings.EqualFold(key, "data") || strings.EqualFold(key, "stringData")) && yamlSecretKindFollows(lines, line+1, keyIndent) {
 			secretIndent = keyIndent
 			secretActive = true
 		}
 		if strings.EqualFold(key, "kind") {
-			if strings.EqualFold(kubernetesYAMLScalar(value), "Secret") {
+			kind := kubernetesYAMLScalar(value)
+			if strings.HasPrefix(kind, "*") {
+				kind = scalarAnchors[strings.TrimPrefix(kind, "*")]
+			}
+			if strings.EqualFold(kind, "Secret") {
 				secretIndent = keyIndent
 				secretActive = true
 				containerIndent = -1
 				blockIndent = -1
 			} else if secretActive && keyIndent <= secretIndent {
-				resetDocument()
+				resetSecret()
 			}
 			continue
 		}
@@ -696,6 +715,59 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 		containerIndent = keyIndent
 	}
 	return strings.Join(lines, ""), changed
+}
+
+func redactKubernetesYAMLScalarContinuations(lines []string, line int, content string, valueStart int) bool {
+	value, _ := trimYAMLNodeProperties(content[valueStart:])
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, "[") || strings.HasPrefix(value, "{") {
+		return false
+	}
+
+	indent := leadingIndent(content)
+	quote := byte(0)
+	if value[0] == '\'' || value[0] == '"' {
+		quote = value[0]
+		if yamlQuotedScalarCloses(value[1:], quote) {
+			return false
+		}
+	}
+
+	changed := false
+	for nextLine := line + 1; nextLine < len(lines); nextLine++ {
+		nextContent, _ := splitLineEnding(lines[nextLine])
+		trimmed := strings.TrimSpace(nextContent)
+		if quote == 0 && trimmed != "" && leadingIndent(nextContent) <= indent {
+			break
+		}
+		if quote != 0 && yamlQuotedScalarCloses(nextContent, quote) {
+			lines[nextLine] = ""
+			return true
+		}
+		if trimmed != "" {
+			lines[nextLine] = ""
+			changed = true
+		}
+	}
+	return changed
+}
+
+func yamlQuotedScalarCloses(value string, quote byte) bool {
+	for index := 0; index < len(value); index++ {
+		if quote == '"' && value[index] == '\\' {
+			index++
+			continue
+		}
+		if value[index] != quote {
+			continue
+		}
+		if quote == '\'' && index+1 < len(value) && value[index+1] == '\'' {
+			index++
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func parseYAMLMappingLine(content string) (string, int, bool) {
@@ -1139,17 +1211,30 @@ func redactKubernetesSecretJSONData(value string, escapeDepth int) (string, bool
 
 func containsJSONKeyAtDepth(value, key string, escapeDepth int) bool {
 	delimiter := jsonQuoteDelimiter(escapeDepth)
-	needle := delimiter + key + delimiter
 	for searchStart := 0; searchStart < len(value); {
-		relative := strings.Index(value[searchStart:], needle)
+		relative := strings.Index(value[searchStart:], delimiter)
 		if relative < 0 {
 			return false
 		}
-		start := searchStart + relative
-		if isJSONStringDelimiterAtDepth(value, start+len(delimiter)-1, escapeDepth) {
+		open := searchStart + relative
+		quote := open + len(delimiter) - 1
+		if !isJSONStringDelimiterAtDepth(value, quote, escapeDepth) {
+			searchStart = open + len(delimiter)
+			continue
+		}
+		close := findJSONStringEndAtDepth(value, open, escapeDepth)
+		if close < 0 {
+			return false
+		}
+		cursor := close + 1
+		for cursor < len(value) && (value[cursor] == ' ' || value[cursor] == '\t' || value[cursor] == '\r' || value[cursor] == '\n') {
+			cursor++
+		}
+		decoded, valid := decodeJSONCredentialKey(value[open:close+1], escapeDepth)
+		if valid && cursor < len(value) && value[cursor] == ':' && strings.EqualFold(decoded, key) {
 			return true
 		}
-		searchStart = start + len(delimiter)
+		searchStart = close + 1
 	}
 	return false
 }
