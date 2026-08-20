@@ -448,7 +448,7 @@ func TestLimitScreenshotUploadFilesForExistingSetValidatesReplaceBeforeDelete(t 
 		files[i] = fmt.Sprintf("%02d.png", i+1)
 	}
 
-	_, err := limitScreenshotUploadFilesForExistingSet(files, 0, nil, true, "set-1", "")
+	_, err := limitScreenshotUploadFilesForExistingSet(files, 0, nil, true, "set-1", "", "")
 	if err == nil {
 		t.Fatal("expected replacement upload above Apple maximum to fail")
 	}
@@ -470,6 +470,7 @@ func TestLimitScreenshotUploadFilesForFullSetRejectsExplicitLimitWithUsableRemed
 		false,
 		"set-1",
 		screenshotInspectionCommand("LOC_123"),
+		"",
 	)
 	if err == nil {
 		t.Fatal("expected full screenshot set error")

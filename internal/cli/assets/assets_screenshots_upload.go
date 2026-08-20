@@ -114,6 +114,9 @@ func uploadScreenshotsWithConfig[T any](ctx context.Context, cfg screenshotUploa
 	if strings.TrimSpace(cfg.InspectCommand) == "" {
 		cfg.InspectCommand = screenshotInspectionCommand(cfg.LocalizationID)
 	}
+	if strings.TrimSpace(cfg.ReplaceCommand) == "" {
+		cfg.ReplaceCommand = "--replace --confirm"
+	}
 
 	sourceRootPath := ""
 	if len(cfg.Files) > 0 {
@@ -159,7 +162,7 @@ func uploadScreenshotsWithConfig[T any](ctx context.Context, cfg screenshotUploa
 			return zero, filterErr
 		}
 	}
-	files, err = limitScreenshotUploadFilesForExistingSet(files, cfg.MaxScreenshots, existingScreenshots, cfg.Replace, set.ID, cfg.InspectCommand)
+	files, err = limitScreenshotUploadFilesForExistingSet(files, cfg.MaxScreenshots, existingScreenshots, cfg.Replace, set.ID, cfg.InspectCommand, cfg.ReplaceCommand)
 	if err != nil {
 		return zero, err
 	}

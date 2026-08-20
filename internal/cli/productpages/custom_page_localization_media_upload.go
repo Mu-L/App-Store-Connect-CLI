@@ -155,12 +155,16 @@ func executeCustomPageScreenshotUpload(
 	localizationID, path, deviceType string,
 	sync bool,
 ) (*asc.CustomProductPageScreenshotUploadResult, error) {
+	trimmedLocalizationID := strings.TrimSpace(localizationID)
+	trimmedPath := strings.TrimSpace(path)
+	trimmedDeviceType := strings.TrimSpace(deviceType)
 	return assets.ExecuteScreenshotSetUpload(ctx, assets.ScreenshotSetUploadOptions[*asc.CustomProductPageScreenshotUploadResult]{
 		LocalizationID: localizationID,
 		Path:           path,
 		DeviceType:     deviceType,
 		Replace:        sync,
-		InspectCommand: fmt.Sprintf("asc product-pages custom-pages localizations screenshot-sets list --localization-id %q --output json", localizationID),
+		InspectCommand: fmt.Sprintf("asc product-pages custom-pages localizations screenshot-sets list --localization-id %q --output json", trimmedLocalizationID),
+		ReplaceCommand: fmt.Sprintf("asc product-pages custom-pages localizations screenshot-sets sync --localization-id %q --path %q --device-type %q --confirm", trimmedLocalizationID, trimmedPath, trimmedDeviceType),
 		ClientFactory:  customPageMediaClientFactory,
 		RequestContext: contextWithCustomPageMediaUploadTimeout,
 		UploadContext:  contextWithCustomPageMediaUploadTimeout,

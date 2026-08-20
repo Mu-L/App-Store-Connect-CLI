@@ -147,6 +147,7 @@ func TestExecuteScreenshotSetUploadFullSetUsesOwnerSpecificInspectionCommand(t *
 		Path:           filePath,
 		DeviceType:     "IPHONE_65",
 		InspectCommand: `asc product-pages custom-pages localizations screenshot-sets list --localization-id "CUSTOM_LOC_123" --output json`,
+		ReplaceCommand: `asc product-pages custom-pages localizations screenshot-sets sync --localization-id "CUSTOM_LOC_123" --path "/tmp/screenshots" --device-type "IPHONE_65" --confirm`,
 		ClientFactory: func() (*asc.Client, error) {
 			return client, nil
 		},
@@ -178,6 +179,12 @@ func TestExecuteScreenshotSetUploadFullSetUsesOwnerSpecificInspectionCommand(t *
 	}
 	if strings.Contains(err.Error(), "asc screenshots list --version-localization") {
 		t.Fatalf("must not recommend App Store localization command for a custom page, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `asc product-pages custom-pages localizations screenshot-sets sync --localization-id "CUSTOM_LOC_123" --path "/tmp/screenshots" --device-type "IPHONE_65" --confirm`) {
+		t.Fatalf("expected owner-specific replacement command, got %v", err)
+	}
+	if strings.Contains(err.Error(), "--replace --confirm") {
+		t.Fatalf("must not recommend unavailable replacement flags for a custom page, got %v", err)
 	}
 }
 
