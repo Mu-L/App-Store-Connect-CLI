@@ -21,7 +21,8 @@ const (
 	tomlQuotedSensitiveKey      = `(?:"` + sensitivePrefixedName + `"|'` + sensitivePrefixedName + `')`
 	sensitiveFlagName           = `(?:oauth2-bearer|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook[_-]?header|slack[_-]?webhook|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|demo[_-]?account[_-]?password|two[_-]?factor[_-]?code|proxy-tlspassword|tlspassword|password|passphrase|passwd|pwd|pass|token)`
 	sensitiveOrSecretFlagName   = `(?:` + sensitiveFlagName + `|secret)`
-	powerShellSensitiveVariable = `(?:\$(?:` + sensitivePrefixedName + `\b|\{` + sensitivePrefixedName + `\}))`
+	powerShellVariableScope     = `(?:(?:env|global|local|private|script|using):)`
+	powerShellSensitiveVariable = `(?:\$(?:(?:` + powerShellVariableScope + `)?` + sensitivePrefixedName + `\b|\{(?:` + powerShellVariableScope + `)?` + sensitivePrefixedName + `\}))`
 	sensitiveShellFlagToken     = `(?:-{1,2}` + sensitiveFlagName + `\b|"-{1,2}` + sensitiveFlagName + `\b"|'-{1,2}` + sensitiveFlagName + `\b'|-{1,2}"` + sensitiveFlagName + `\b"|-{1,2}'` + sensitiveFlagName + `\b')`
 	sensitiveOrSecretShellToken = `(?:-{1,2}` + sensitiveOrSecretFlagName + `\b|"-{1,2}` + sensitiveOrSecretFlagName + `\b"|'-{1,2}` + sensitiveOrSecretFlagName + `\b'|-{1,2}"` + sensitiveOrSecretFlagName + `\b"|-{1,2}'` + sensitiveOrSecretFlagName + `\b')`
 	credentialHeaderName        = `(?:proxy-authorization|authorization|cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
@@ -65,6 +66,8 @@ const (
 	curlConfigSeparator         = `(?:[ \t]*[=:][ \t]*|[ \t]+)`
 	shellCommandPathSeparator   = `(?:[ \t]+(?:\\\r?\n[ \t]*)*|(?:\\\r?\n)+[ \t]+(?:\\\r?\n[ \t]*)*)`
 	foldedHeaderContinuation    = `(?:\r?\n[ \t]+[^\r\n]*)*`
+	passwordFileField           = `(?:\\[:\\]|[^:\\\r\n])+`
+	passwordFileHostField       = `(?:\\[:\\]|[^#:\\\r\n])(?:\\[:\\]|[^:\\\r\n])*`
 )
 
 type redactionRule struct {
@@ -182,6 +185,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 	},
 	{
 		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:redirect_)?http_` + cgiCredentialHeaderName + `\b[ \t]*=[ \t]*)[^\r\n]*(\r?)$`),
+		replacement: `${1}` + redactionMarker + `${2}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?m)^(` + passwordFileHostField + `:(?:[0-9]+|\*):` + passwordFileField + `:` + passwordFileField + `:)` + passwordFileField + `(\r?)$`),
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{

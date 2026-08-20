@@ -253,6 +253,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  ".example.test\tTRUE\t/\tTRUE\t2147483647\tJSESSIONID\t[REDACTED]\n#HttpOnly_.example.test\tFALSE\t/\tTRUE\t0\tcsrftoken\t[REDACTED]\n.example.test\tFALSE\t/\tFALSE\t0\tlocale\t[REDACTED]",
 		},
 		{
+			name:  "password file credential row",
+			input: `db.example.com:5432:app:alice:opaque-password`,
+			want:  `db.example.com:5432:app:alice:[REDACTED]`,
+		},
+		{
+			name:  "password file credential row with escapes",
+			input: `db\:primary.example.com:5432:app:alice:opaque\:password\\tail`,
+			want:  `db\:primary.example.com:5432:app:alice:[REDACTED]`,
+		},
+		{
 			name:  "secret answer flag",
 			input: `tool --secret-answer "opaque recovery answer" --verbose`,
 			want:  `tool --secret-answer [REDACTED] --verbose`,
@@ -585,6 +595,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "$password = [REDACTED]\nWrite-Host done",
 		},
 		{
+			name:  "scoped PowerShell here string credential assignment",
+			input: "$env:PASSWORD = @'\nopaque-head\nopaque-tail\n'@\nWrite-Host done",
+			want:  "$env:PASSWORD = [REDACTED]\nWrite-Host done",
+		},
+		{
 			name:  "unterminated PowerShell here string credential assignment",
 			input: "$password = @\"\nopaque-head\nopaque-tail",
 			want:  "$password = [REDACTED]",
@@ -598,6 +613,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			name:  "PowerShell hashtable credential assignment",
 			input: `$client_secret = @{ primary = "opaque-first"; nested = @("opaque-second") }; Write-Host done`,
 			want:  `$client_secret = [REDACTED]; Write-Host done`,
+		},
+		{
+			name:  "braced scoped PowerShell collection credential assignment",
+			input: `${global:client_secret} = @("opaque-first", "opaque-second"); Write-Host done`,
+			want:  `${global:client_secret} = [REDACTED]; Write-Host done`,
 		},
 		{
 			name:  "unterminated PowerShell collection credential assignment",
@@ -1720,6 +1740,18 @@ func TestRedactSensitiveTextPreservesOrdinaryDottedTOMLKey(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextPreservesPasswordFileCommentsAndNonNumericPorts(t *testing.T) {
+	for _, input := range []string{
+		"#db.example.com:5432:app:alice:documentation",
+		"db.example.com:postgres:app:alice:diagnostic context",
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
 func TestRedactSensitiveTextRedactsDeeplyEscapedJSONCredential(t *testing.T) {
 	const secret = "opaque-deeply-escaped-secret"
 	encoded := `{"password":"` + secret + `","status":"failed"}`
@@ -1939,6 +1971,47 @@ func TestSnitchDryRunRedactsStructuredCredentialAssignments(t *testing.T) {
 		"$client_secret = [REDACTED]",
 		`password.value = [REDACTED]`,
 		`status = "failed"`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsScopedPowerShellAndPasswordFileCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"opaque-scoped-here-string-tail",
+		"opaque-scoped-collection-secret",
+		`opaque\:password\\tail`,
+	}
+	repro := "$env:PASSWORD = @'\nopaque-head\n" + secrets[0] + "\n'@\n" +
+		`${global:client_secret} = @("` + secrets[1] + `", "second")`
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", repro,
+		"--actual", `db\:primary.example.com:5432:app:alice:`+secrets[2]+"\nstatus: failed",
+		"scoped shell and password file redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+			t.Fatalf("dry run leaked credential %q: stdout=%q stderr=%q", secret, stdout, stderr)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"$env:PASSWORD = [REDACTED]",
+		"${global:client_secret} = [REDACTED]",
+		`db\:primary.example.com:5432:app:alice:[REDACTED]`,
+		"status: failed",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
