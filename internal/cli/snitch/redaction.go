@@ -39,6 +39,8 @@ const (
 	structuredCredentialName    = `(?:` + sensitivePrefixedName + `|` + credentialHeaderName + `|` + webAuthStructuredCredential + `|` + wellKnownSecretDataName + `)`
 	yamlCredentialName          = `(?:` + sensitivePrefixedName + `|` + wellKnownSecretDataName + `)`
 	yamlNodeTag                 = `(?:!<[^>\r\n]+>|![^\s#]+)`
+	yamlNodeAnchor              = `(?:&[a-zA-Z0-9_-]+)`
+	yamlMappingKeyProperties    = `(?:(?:` + yamlNodeTag + `|` + yamlNodeAnchor + `)[ \t]+)*`
 	powerShellEscapedCharacter  = `\x60(?:\r?\n|[^\r\n])`
 	singleLineQuotedValue       = `(?:"(?:\\.|` + powerShellEscapedCharacter + `|[^"\\\x60\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*')`
 	shellCommandSubstitution    = `(?:\x60(?:\\.|[^\x60\\\r\n])*\x60|\$\((?:\\.|[^)\\\r\n])*\))`
@@ -141,12 +143,12 @@ var (
 	netrcEntryStart                    = regexp.MustCompile(`(?im)(?:^|[\r\n])[ \t]*(?:machine[ \t]+[^\s#]+|default)(?:[ \t\r\n]|\z)`)
 	netrcPasswordValue                 = regexp.MustCompile(`(?i)(^|[ \t\r\n])(password[ \t]+)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`)
 	booleanSecretMarker                = regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret)([ \t]*=[ \t]*)(true|false|1|0|t|f)(` + singleLineShellTerminator + `)`)
-	yamlCredentialScalar               = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlCredentialMapping              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + yamlCredentialName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
-	yamlCredentialPlainScalar          = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)[^"'[\{\s\r\n][^\r\n]*$`)
-	yamlCredentialFlowStart            = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)([\[{])`)
-	yamlExplicitCredentialKey          = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+(?:` + yamlNodeTag + `[ \t]+)*(?:["']?` + yamlCredentialName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
-	yamlCredentialAlias                = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlCredentialScalar               = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)(?:(?:[!&][^\s#]+)[ \t]*)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlCredentialMapping              = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:)[ \t]*(?:(?:[!&][^\s#]+)[ \t]*)*(?:#[^\r\n]*)?$`)
+	yamlCredentialPlainScalar          = regexp.MustCompile(`(?i)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)[^"'[\{\s\r\n][^\r\n]*$`)
+	yamlCredentialFlowStart            = regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)([\[{])`)
+	yamlExplicitCredentialKey          = regexp.MustCompile(`(?i)^[ \t]*(?:-[ \t]+)?\?[ \t]+` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*(?:#[^\r\n]*)?$`)
+	yamlCredentialAlias                = regexp.MustCompile(`(?im)^[ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*\*([a-z0-9_-]+)[ \t]*(?:#[^\r\n]*)?$`)
 	yamlDocumentBoundary               = regexp.MustCompile(`^(?:---|\.\.\.)(?:[ \t]|$)`)
 	yamlValueAlias                     = regexp.MustCompile(`\*([a-zA-Z0-9_-]+)\b`)
 	yamlAnchor                         = regexp.MustCompile(`&([a-zA-Z0-9_-]+)\b`)
@@ -244,15 +246,15 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?` + yamlCredentialName + `[ \t]*:[ \t]*)(?:\[[^\]\r\n]*\]|\{[^}\r\n]*\})`),
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + yamlCredentialName + `[ \t]*:[ \t]*)(?:\[[^\]\r\n]*\]|\{[^}\r\n]*\})`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?["']` + yamlCredentialName + `["'][ \t]*:[ \t]*)(?:\[[ \t]*[^"'\]\r\n][^\]\r\n]*\]|\{[ \t]*[^"'}\r\n][^}\r\n]*\})`),
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:-[ \t]+)?` + yamlMappingKeyProperties + `["']` + yamlCredentialName + `["'][ \t]*:[ \t]*)(?:\[[ \t]*[^"'\]\r\n][^\]\r\n]*\]|\{[ \t]*[^"'}\r\n][^}\r\n]*\})`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)(?:[^"'[{\s\r\n][^\r\n]*)(\r?)$`),
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*` + yamlMappingKeyProperties + `(?:["']?` + yamlCredentialName + `["']?)[ \t]*:[ \t]*)(?:[^"'[{\s\r\n][^\r\n]*)(\r?)$`),
 		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 	{
@@ -420,7 +422,7 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)(^[ \t]*|[\[{(,;][ \t]*)(` + sensitivePrefixedName + `\b[ \t]*:[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|(?:(?:bearer|basic|token)[ \t]+)` + structuredUnquotedValue + `|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + structuredUnquotedValue + `)`),
+		pattern:     regexp.MustCompile(`(?im)(^[ \t]*|[\[{(,;][ \t]*)(` + yamlMappingKeyProperties + sensitivePrefixedName + `\b[ \t]*:[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|(?:(?:bearer|basic|token)[ \t]+)` + structuredUnquotedValue + `|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + structuredUnquotedValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
@@ -3677,6 +3679,7 @@ func normalizeYAMLAliasCredentialKeys(value string) (string, map[string]string) 
 
 func yamlQuotedKeyStart(content string) (int, bool) {
 	cursor := 0
+	explicitKey := false
 	for cursor < len(content) && (content[cursor] == ' ' || content[cursor] == '\t') {
 		cursor++
 	}
@@ -3690,6 +3693,7 @@ func yamlQuotedKeyStart(content string) (int, bool) {
 		}
 	}
 	if cursor < len(content) && content[cursor] == '?' {
+		explicitKey = true
 		cursor++
 		if cursor >= len(content) || (content[cursor] != ' ' && content[cursor] != '\t') {
 			return -1, false
@@ -3697,9 +3701,10 @@ func yamlQuotedKeyStart(content string) (int, bool) {
 		for cursor < len(content) && (content[cursor] == ' ' || content[cursor] == '\t') {
 			cursor++
 		}
-		return cursor, true
 	}
-	return cursor, false
+	_, propertyOffset := trimYAMLNodeProperties(content[cursor:])
+	cursor += propertyOffset
+	return cursor, explicitKey
 }
 
 func isYAMLMappingKeySuffix(suffix string, explicitKey bool) bool {

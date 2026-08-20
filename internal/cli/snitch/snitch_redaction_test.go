@@ -2095,6 +2095,48 @@ status: failed`,
 			want:  "client_secret: [REDACTED]\nstatus: failed",
 		},
 		{
+			name:  "tagged YAML credential key",
+			input: `!!str password: opaque-tagged-key-secret`,
+			want:  `!!str password: [REDACTED]`,
+		},
+		{
+			name:  "anchored YAML credential key",
+			input: `&credential password: opaque-anchored-key-secret`,
+			want:  `&credential password: [REDACTED]`,
+		},
+		{
+			name: "sequence tagged quoted YAML credential key",
+			input: `items:
+  - !!str "password": "opaque tagged quoted key secret"`,
+			want: `items:
+  - !!str "password": "[REDACTED]"`,
+		},
+		{
+			name:  "tagged escaped YAML credential key",
+			input: `!!str "pass\u0077ord": opaque-tagged-escaped-key-secret`,
+			want:  `!!str "pass\u0077ord": [REDACTED]`,
+		},
+		{
+			name:  "tagged YAML credential key block scalar",
+			input: "!!str password: |\n  opaque-tagged-key-head\n  opaque-tagged-key-tail\nstatus: failed",
+			want:  "!!str password: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "tagged YAML credential key flow value",
+			input: `!!str password: {nested: opaque-tagged-key-secret, status: failed}`,
+			want:  `!!str password: [REDACTED]`,
+		},
+		{
+			name:  "tagged YAML credential alias",
+			input: "source: &credential opaque-tagged-alias-secret\n!!str password: *credential",
+			want:  "source: &credential [REDACTED]\n!!str password: [REDACTED]",
+		},
+		{
+			name:  "tagged YAML credential key in flow object",
+			input: `{!!str password: opaque-tagged-flow-key-secret, status: failed}`,
+			want:  `{!!str password: [REDACTED], status: failed}`,
+		},
+		{
 			name:  "YAML sequence literal secret block",
 			input: "items:\n  - password: |\n      super\n      sensitive\nstatus: failed",
 			want:  "items:\n  - password: [REDACTED]\nstatus: failed",
@@ -2367,6 +2409,14 @@ func TestRedactSensitiveTextScopesKeytoolCredentialArguments(t *testing.T) {
 
 func TestRedactSensitiveTextPreservesTaggedConfigMapStructuralKeys(t *testing.T) {
 	input := "!!str kind: ConfigMap\n!!str data:\n  config: public-value"
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
+func TestRedactSensitiveTextPreservesTaggedYAMLNonCredentialKey(t *testing.T) {
+	input := "!!str status: visible-value\n&field name: visible-name"
 	got, changed := redactSensitiveText(input)
 	if changed || got != input {
 		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
