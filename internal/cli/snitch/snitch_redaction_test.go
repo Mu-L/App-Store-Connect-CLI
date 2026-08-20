@@ -501,6 +501,11 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "authenticate https://example.test/auth?widgetKey=[REDACTED]&code=[REDACTED]&scnt=[REDACTED]&flow=login",
 		},
 		{
+			name:  "OAuth callback code query credential",
+			input: "callback https://example.test/oauth/callback?c%6fde=opaque-oauth-code&state=ready",
+			want:  "callback https://example.test/oauth/callback?c%6fde=[REDACTED]&state=ready",
+		},
+		{
 			name:  "private key URL parameter",
 			input: "callback https://example.test/path?private_key=private-key-value&state=ready",
 			want:  "callback https://example.test/path?private_key=[REDACTED]&state=ready",
@@ -2285,6 +2290,18 @@ func TestRedactSensitiveTextPreservesURLQueryAndFragmentAtSigns(t *testing.T) {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
 			t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextPreservesDiagnosticCodeQueryParameter(t *testing.T) {
+	for _, input := range []string{
+		"request failed: https://example.com/error?code=404&message=not_found",
+		"login failed: https://example.com/auth/error?code=404&message=not_found",
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Fatalf("redactSensitiveText(%q) = (%q, %t), want unchanged", input, got, changed)
 		}
 	}
 }

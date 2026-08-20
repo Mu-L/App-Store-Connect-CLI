@@ -32,7 +32,7 @@ const (
 	credentialHeaderName        = `(?:proxy-authorization|authorization|cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
 	cgiCredentialHeaderName     = `(?:proxy_authorization|authorization|cookie|set_cookie|scnt|x_apple_id_session_id|x_apple_widget_key|csrf|csrf_ts)`
 	traceCredentialHeader       = `(?:cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
-	webAuthQueryCredential      = `(?:widgetkey|code|scnt)`
+	webAuthQueryCredential      = `(?:widgetkey|scnt)`
 	queryCredentialName         = `(?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|` + webAuthQueryCredential + `|` + sensitiveAssignmentName + `)`
 	webAuthStructuredCredential = `(?:authservicekey|servicekey)`
 	wellKnownSecretDataName     = `(?:tls\.key|\.dockerconfigjson)`
@@ -471,6 +471,10 @@ func redactSensitiveText(value string) (string, bool) {
 		changed = true
 	}
 	if next, netrcChanged := redactNetrcPasswords(redacted); netrcChanged {
+		redacted = next
+		changed = true
+	}
+	if next, queryChanged := redactWebAuthCodeQueryValues(redacted); queryChanged {
 		redacted = next
 		changed = true
 	}
@@ -1928,6 +1932,107 @@ func redactEncodedQueryCredentialValues(value string) (string, bool) {
 		searchStart = valueStart + len(redactionMarker)
 	}
 	return redacted, changed
+}
+
+func redactWebAuthCodeQueryValues(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := queryParameterName.FindStringSubmatchIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		nameStart := searchStart + match[2]
+		nameEnd := searchStart + match[3]
+		valueStart := searchStart + match[1]
+		searchStart = valueStart
+		decodedName, err := url.QueryUnescape(redacted[nameStart:nameEnd])
+		if err != nil || !strings.EqualFold(decodedName, "code") {
+			continue
+		}
+
+		valueEnd := valueStart
+		for valueEnd < len(redacted) && !isQueryValueTerminator(redacted[valueEnd]) {
+			valueEnd++
+		}
+		if valueEnd == valueStart || redacted[valueStart:valueEnd] == redactionMarker || !hasWebAuthQueryContext(redacted, nameStart, redacted[valueStart:valueEnd]) {
+			continue
+		}
+
+		redacted = redacted[:valueStart] + redactionMarker + redacted[valueEnd:]
+		changed = true
+		searchStart = valueStart + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func hasWebAuthQueryContext(value string, parameterStart int, codeValue string) bool {
+	queryStart := strings.LastIndex(value[:parameterStart], "?")
+	if queryStart < 0 {
+		return false
+	}
+	for cursor := queryStart + 1; cursor < parameterStart; cursor++ {
+		if isURLTextBoundary(value[cursor]) {
+			return false
+		}
+	}
+
+	queryEnd := queryStart + 1
+	for queryEnd < len(value) && !isURLTextBoundary(value[queryEnd]) {
+		queryEnd++
+	}
+	for _, parameter := range strings.Split(value[queryStart+1:queryEnd], "&") {
+		name, _, _ := strings.Cut(parameter, "=")
+		decodedName, err := url.QueryUnescape(name)
+		if err == nil && (strings.EqualFold(decodedName, "widgetkey") || strings.EqualFold(decodedName, "scnt")) {
+			return true
+		}
+	}
+
+	urlStart := queryStart
+	for urlStart > 0 && !isURLTextBoundary(value[urlStart-1]) {
+		urlStart--
+	}
+	parsed, err := url.Parse(value[urlStart:queryStart])
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.FieldsFunc(strings.ToLower(parsed.Hostname()+parsed.EscapedPath()), func(character rune) bool {
+		return character == '.' || character == '/'
+	}) {
+		switch part {
+		case "auth", "oauth", "oauth2", "authorize", "authorization", "login", "signin", "sign-in":
+			return looksLikeWebAuthCode(codeValue)
+		}
+	}
+	return false
+}
+
+func looksLikeWebAuthCode(value string) bool {
+	decoded, err := url.QueryUnescape(value)
+	if err != nil || len(decoded) < 8 {
+		return false
+	}
+	if len(decoded) >= 16 {
+		return true
+	}
+	hasLetter := false
+	hasDigit := false
+	for _, character := range decoded {
+		hasLetter = hasLetter || character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z'
+		hasDigit = hasDigit || character >= '0' && character <= '9'
+	}
+	return hasLetter && hasDigit
+}
+
+func isURLTextBoundary(character byte) bool {
+	switch character {
+	case ' ', '\t', '\r', '\n', '\f', '\v', '"', '\'', '<', '>', '(', ')', '[', ']', '{', '}', '#', ';', '|', '`':
+		return true
+	default:
+		return false
+	}
 }
 
 func isQueryValueTerminator(character byte) bool {
