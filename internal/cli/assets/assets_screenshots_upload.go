@@ -280,7 +280,7 @@ func filterExistingScreenshotFiles(files []string, screenshots []asc.Resource[as
 				deleteGuidance = fmt.Sprintf("retain one matching screenshot and delete every other duplicate by running each applicable command except the retained ID: %s", strings.Join(deleteCommands, "; "))
 			}
 			return nil, nil, fmt.Errorf(
-				"local screenshot %q matches multiple remote screenshots by checksum (asset IDs: %s); ASC cannot choose one safely, so no remote assets were changed. Inspect them with %s, then %s and retry --skip-existing",
+				"local screenshot %q matches multiple remote screenshots by checksum (asset IDs: %s); ASC cannot choose one safely, so no remote assets were changed for this screenshot set. Inspect them with %s, then %s and retry --skip-existing",
 				filepath.Base(filePath),
 				strings.Join(quotedIDs, ", "),
 				inspectCommand,

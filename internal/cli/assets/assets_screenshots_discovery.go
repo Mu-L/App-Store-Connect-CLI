@@ -91,7 +91,7 @@ func limitScreenshotUploadFilesForExistingSet(files []string, maxScreenshots int
 			inspectCommand = fmt.Sprintf("the localization listing containing screenshot set %q", setLabel)
 		}
 		return nil, fmt.Errorf(
-			"screenshot set %q already has %d screenshot(s), so no upload slots remain; --max-screenshots cannot create capacity, and no remote assets were changed. Inspect the set with %s, then delete only an unwanted screenshot with asc screenshots delete --id %q --confirm, or rerun with %s",
+			"screenshot set %q already has %d screenshot(s), so no upload slots remain; --max-screenshots cannot create capacity, and no remote assets were changed for this screenshot set. Inspect the set with %s, then delete only an unwanted screenshot with asc screenshots delete --id %q --confirm, or rerun with %s",
 			setLabel,
 			len(existingScreenshots),
 			inspectCommand,

@@ -670,7 +670,7 @@ func TestExecuteAppScreenshotUploadFullSetProvidesUsableRemediation(t *testing.T
 	}
 	for _, want := range []string{
 		"no upload slots remain",
-		"no remote assets were changed",
+		"no remote assets were changed for this screenshot set",
 		`asc screenshots list --version-localization "LOC_123" --output json`,
 		`asc screenshots delete --id "SCREENSHOT_ID" --confirm`,
 		"--replace --confirm",
@@ -715,7 +715,7 @@ func TestExecuteAppScreenshotUploadSkipExistingRejectsAmbiguousRemoteChecksum(t 
 	for _, want := range []string{
 		`local screenshot "01-home.png" matches multiple remote screenshots by checksum`,
 		`asset IDs: "duplicate-a", "duplicate-b", "duplicate-c"`,
-		"no remote assets were changed",
+		"no remote assets were changed for this screenshot set",
 		`asc screenshots list --version-localization "LOC_123" --output json`,
 		"retain one matching screenshot and delete every other duplicate",
 		`asc screenshots delete --id "duplicate-a" --confirm`,

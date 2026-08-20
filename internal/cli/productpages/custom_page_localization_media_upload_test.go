@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kballard/go-shellquote"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
 
@@ -119,6 +120,60 @@ func TestExecuteCustomPageScreenshotUpload_SyncDeletesExistingScreenshotsAndReor
 	}
 	if !relationshipPatchCalled {
 		t.Fatal("expected screenshot relationship reorder PATCH to be called")
+	}
+}
+
+func TestExecuteCustomPageScreenshotUploadFullSetQuotesReplacementPath(t *testing.T) {
+	rootDir := t.TempDir()
+	trickyPath := filepath.Join(rootDir, "$HOME", "$(touch pwned)")
+	if err := os.MkdirAll(trickyPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+	writeCustomPageTestPNG(t, trickyPath, "01-home.png")
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = customPageUploadRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/appCustomProductPageLocalizations/loc-1/appScreenshotSets":
+			return customPageJSONResponse(http.StatusOK, `{"data":[{"type":"appScreenshotSets","id":"set-1","attributes":{"screenshotDisplayType":"APP_IPHONE_65"}}]}`)
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/appScreenshotSets/set-1/appScreenshots":
+			return customPageJSONResponse(http.StatusOK, `{"data":[{"type":"appScreenshots","id":"old-1"},{"type":"appScreenshots","id":"old-2"},{"type":"appScreenshots","id":"old-3"},{"type":"appScreenshots","id":"old-4"},{"type":"appScreenshots","id":"old-5"},{"type":"appScreenshots","id":"old-6"},{"type":"appScreenshots","id":"old-7"},{"type":"appScreenshots","id":"old-8"},{"type":"appScreenshots","id":"old-9"},{"type":"appScreenshots","id":"old-10"}]}`)
+		default:
+			t.Fatalf("full-set remediation must not mutate remote assets: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	})
+	t.Cleanup(func() {
+		http.DefaultTransport = origTransport
+	})
+
+	client := newCustomPageTestClientWithTimeout(t, 0)
+	origFactory := customPageMediaClientFactory
+	customPageMediaClientFactory = func() (*asc.Client, error) { return client, nil }
+	t.Cleanup(func() {
+		customPageMediaClientFactory = origFactory
+	})
+
+	_, err := executeCustomPageScreenshotUpload(context.Background(), "loc-1", trickyPath, "IPHONE_65", false)
+	if err == nil {
+		t.Fatal("expected full screenshot set error")
+	}
+	const marker = "or rerun with "
+	commandIndex := strings.Index(err.Error(), marker)
+	if commandIndex < 0 {
+		t.Fatalf("expected replacement command in error: %v", err)
+	}
+	command := strings.TrimSpace(err.Error()[commandIndex+len(marker):])
+	args, splitErr := shellquote.Split(command)
+	if splitErr != nil {
+		t.Fatalf("replacement command is not shell-parseable: %v", splitErr)
+	}
+	wantArgs := []string{
+		"asc", "product-pages", "custom-pages", "localizations", "screenshot-sets", "sync",
+		"--localization-id", "loc-1", "--path", trickyPath, "--device-type", "IPHONE_65", "--confirm",
+	}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("replacement command args = %#v, want %#v (error: %v)", args, wantArgs, err)
 	}
 }
 
