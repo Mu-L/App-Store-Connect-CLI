@@ -39,6 +39,7 @@ Do not memorize flags. Always use `--help` for the current interface.
 |------|---------|
 | Check auth status | `asc auth status` |
 | Run auth doctor | `asc doctor --output json` |
+| Check Apple service health | `asc system-status --service "App Store Connect"` |
 | Check account health | `asc account status` |
 | Generate ASC.md | `asc init` |
 | Create an app (web flow) | `asc web apps create --name "My App" --bundle-id "com.example.app" --sku "SKU123"` |
@@ -130,6 +131,7 @@ Use `asc <command> --help` for subcommands and flags.
 - `init` - Initialize asc helper docs in the current repo.
 - `docs` - Generate asc cli reference docs for a repo.
 - `diff` - Generate deterministic non-mutating diff plans.
+- `system-status` - [experimental] Check Apple Developer service health without authentication.
 - `capabilities` - Show CLI, API, web-only, and public-API-limited capability coverage.
 - `search` - Search asc commands and examples for agent-oriented command discovery.
 - `status` - Show a release pipeline dashboard for an app.

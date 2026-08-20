@@ -3519,7 +3519,7 @@ func TestScreenshotsAndVideoPreviewsValidationErrors(t *testing.T) {
 		{
 			name:    "screenshots list missing localization",
 			args:    []string{"screenshots", "list"},
-			wantErr: "--version-localization is required",
+			wantErr: "choose a localization selector",
 		},
 		{
 			name:    "screenshots upload missing mode",
