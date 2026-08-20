@@ -114,7 +114,7 @@ var singleLineShellWordRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveShellFlagToken + `[ \t]+)` + fishShellWord + `(` + singleLineShellTerminator + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveShellFlagToken + shellCommandPathSeparator + `)` + fishShellWord + `(` + singleLineShellTerminator + `)`),
 		replacement: `${1}${2}` + redactionMarker + `${3}`,
 	},
 	{
@@ -233,6 +233,14 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}${3}:` + redactionMarker,
 	},
 	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:user|proxy-user)[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
+		replacement: `${1}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:oauth2-bearer|pass|proxy-tlspassword|tlspassword)[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s#]+)`),
+		replacement: `${1}` + redactionMarker,
+	},
+	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-u|--(?:proxy-)?user)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
@@ -269,11 +277,11 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveShellFlagToken + `[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveShellFlagToken + shellCommandPathSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret\b` + shellCommandPathSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{

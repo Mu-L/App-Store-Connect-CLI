@@ -506,6 +506,16 @@ status = "failed"`,
 			want:  "machine api.example.test\n  login alice\n  password [REDACTED]\nmachine public.example.test\n  login guest",
 		},
 		{
+			name:  "curl config user credential",
+			input: "user = \"alice:opaque-config-secret\"\nurl = \"https://example.test\"",
+			want:  "user = [REDACTED]\nurl = \"https://example.test\"",
+		},
+		{
+			name:  "curl config bearer credential",
+			input: "oauth2-bearer = \"opaque-bearer-secret\"\nurl = \"https://example.test\"",
+			want:  "oauth2-bearer = [REDACTED]\nurl = \"https://example.test\"",
+		},
+		{
 			name: "YAML escaped double quoted credential key block scalar",
 			input: `"pass\u0077ord": |
   opaque-yaml-key-secret
@@ -808,6 +818,11 @@ status: failed`,
 			name:  "backslash continued secret flag",
 			input: "asc deploy --password super\\\nremainingcredential --verbose",
 			want:  "asc deploy --password [REDACTED] --verbose",
+		},
+		{
+			name:  "backslash continuation between secret flag and value",
+			input: "asc deploy --password \\\n  opaque-secret --verbose",
+			want:  "asc deploy --password \\\n  [REDACTED] --verbose",
 		},
 		{
 			name:  "backslash continued assignment",
@@ -1507,6 +1522,45 @@ func TestSnitchDryRunRedactsStandaloneWebhookAndTaggedExplicitYAML(t *testing.T)
 		"failed webhook https://hooks.slack-gov.com/services/[REDACTED] after retry",
 		"? !!str password\n: [REDACTED]\nstatus: failed",
 		"password: [REDACTED]\nstatus: failed",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
+		}
+	}
+}
+
+func TestSnitchDryRunRedactsContinuedFlagAndCurlConfigCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{"continued-flag-secret", "curl-user-secret", "curl-bearer-secret"}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--repro", "asc deploy --password \\\n  "+secrets[0]+" --verbose",
+		"--actual", "user = \"alice:"+secrets[1]+"\"\noauth2-bearer = \""+secrets[2]+"\"\nurl = \"https://example.test\"",
+		"continued flag and curl config credential redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q: %q", secret, stderr)
+		}
+		if strings.Contains(stdout, secret) {
+			t.Fatalf("stdout leaked %q: %q", secret, stdout)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	for _, want := range []string{
+		"asc deploy --password \\\n  [REDACTED] --verbose",
+		"user = [REDACTED]",
+		"oauth2-bearer = [REDACTED]",
+		"url = \"https://example.test\"",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
