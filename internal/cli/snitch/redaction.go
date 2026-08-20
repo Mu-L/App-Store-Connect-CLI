@@ -445,6 +445,10 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, jsonContextChanged := redactContextualJSONCredentialValues(redacted); jsonContextChanged {
+		redacted = next
+		changed = true
+	}
 	if next, cookieChanged := redactStructuredCookieValues(redacted); cookieChanged {
 		redacted = next
 		changed = true
@@ -1435,6 +1439,10 @@ func maxJSONEscapeDepthForLength(length int) int {
 }
 
 func redactJSONCredentialValues(value string, escapeDepth int) (string, bool) {
+	return redactJSONValuesMatchingName(value, escapeDepth, jsonCredentialName.MatchString, false, false)
+}
+
+func redactJSONValuesMatchingName(value string, escapeDepth int, nameMatches func(string) bool, includePlainKeys, preserveUnterminatedValues bool) (string, bool) {
 	redacted := value
 	changed := false
 	quoteDelimiter := jsonQuoteDelimiter(escapeDepth)
@@ -1455,12 +1463,12 @@ func redactJSONCredentialValues(value string, escapeDepth int) (string, bool) {
 		}
 
 		encodedKey := redacted[open : close+1]
-		if escapeDepth == 0 && !strings.Contains(encodedKey, `\`) {
+		if !includePlainKeys && escapeDepth == 0 && !strings.Contains(encodedKey, `\`) {
 			searchStart = close + 1
 			continue
 		}
 		decodedKey, valid := decodeJSONCredentialKey(encodedKey, escapeDepth)
-		if !valid || !jsonCredentialName.MatchString(decodedKey) {
+		if !valid || !nameMatches(decodedKey) {
 			searchStart = close + 1
 			continue
 		}
@@ -1478,6 +1486,10 @@ func redactJSONCredentialValues(value string, escapeDepth int) (string, bool) {
 			valueStart++
 		}
 		valueEnd, replacement := jsonCredentialValueReplacement(redacted, valueStart, escapeDepth)
+		if preserveUnterminatedValues && strings.HasPrefix(redacted[valueStart:], quoteDelimiter) && findJSONStringEndAtDepth(redacted, valueStart, escapeDepth) < 0 {
+			valueEnd = len(redacted)
+			replacement = quoteDelimiter + redactionMarker
+		}
 		if valueEnd <= valueStart {
 			searchStart = close + 1
 			continue
@@ -1490,6 +1502,90 @@ func redactJSONCredentialValues(value string, escapeDepth int) (string, bool) {
 		redacted = redacted[:valueStart] + replacement + redacted[valueEnd:]
 		changed = true
 		searchStart = valueStart + len(replacement)
+	}
+	return redacted, changed
+}
+
+type contextualJSONContainerRule struct {
+	name      string
+	openers   string
+	valueName string
+}
+
+var contextualJSONContainerRules = []contextualJSONContainerRule{
+	{name: "cookies", openers: "[{", valueName: "value"},
+	{name: "auths", openers: "{", valueName: "auth"},
+	{name: "requestHeaders", openers: "[", valueName: "value"},
+}
+
+func redactContextualJSONCredentialValues(value string) (string, bool) {
+	redacted := value
+	changed := false
+	maxEscapeDepth := maxJSONEscapeDepthForLength(len(value))
+	for escapeDepth := 0; escapeDepth <= maxEscapeDepth; escapeDepth++ {
+		for _, rule := range contextualJSONContainerRules {
+			if next, layerChanged := redactJSONValuesInNamedContainer(redacted, escapeDepth, rule); layerChanged {
+				redacted = next
+				changed = true
+			}
+		}
+	}
+	return redacted, changed
+}
+
+func redactJSONValuesInNamedContainer(value string, escapeDepth int, rule contextualJSONContainerRule) (string, bool) {
+	redacted := value
+	changed := false
+	quoteDelimiter := jsonQuoteDelimiter(escapeDepth)
+	for searchStart := 0; searchStart < len(redacted); {
+		relativeOpen := strings.Index(redacted[searchStart:], quoteDelimiter)
+		if relativeOpen < 0 {
+			break
+		}
+		keyOpen := searchStart + relativeOpen
+		quote := keyOpen + len(quoteDelimiter) - 1
+		if !isJSONStringDelimiterAtDepth(redacted, quote, escapeDepth) {
+			searchStart = keyOpen + len(quoteDelimiter)
+			continue
+		}
+		keyClose := findJSONStringEndAtDepth(redacted, keyOpen, escapeDepth)
+		if keyClose < 0 {
+			break
+		}
+
+		decodedKey, valid := decodeJSONCredentialKey(redacted[keyOpen:keyClose+1], escapeDepth)
+		if !valid || !strings.EqualFold(decodedKey, rule.name) {
+			searchStart = keyClose + 1
+			continue
+		}
+
+		colon := keyClose + 1
+		for colon < len(redacted) && strings.ContainsRune(" \t\r\n", rune(redacted[colon])) {
+			colon++
+		}
+		if colon >= len(redacted) || redacted[colon] != ':' {
+			searchStart = keyClose + 1
+			continue
+		}
+		containerOpen := colon + 1
+		for containerOpen < len(redacted) && strings.ContainsRune(" \t\r\n", rune(redacted[containerOpen])) {
+			containerOpen++
+		}
+		if containerOpen >= len(redacted) || !strings.ContainsRune(rule.openers, rune(redacted[containerOpen])) {
+			searchStart = keyClose + 1
+			continue
+		}
+
+		containerClose := findJSONContainerEndAtDepth(redacted, containerOpen, escapeDepth)
+		container := redacted[containerOpen : containerClose+1]
+		redactedContainer, containerChanged := redactJSONValuesMatchingName(container, escapeDepth, func(name string) bool {
+			return strings.EqualFold(name, rule.valueName)
+		}, true, true)
+		if containerChanged {
+			redacted = redacted[:containerOpen] + redactedContainer + redacted[containerClose+1:]
+			changed = true
+		}
+		searchStart = containerOpen + len(redactedContainer)
 	}
 	return redacted, changed
 }

@@ -1775,6 +1775,54 @@ func TestRedactSensitiveTextRedactsDeeplyEscapedJSONCredential(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextRedactsDeeplyEscapedContextualJSONCredentials(t *testing.T) {
+	tests := []struct {
+		name   string
+		secret string
+		raw    string
+	}{
+		{
+			name:   "cookie jar",
+			secret: "opaque-deep-cookie-secret",
+			raw:    `{"cookies":[{"name":"session","value":"opaque-deep-cookie-secret"}],"diagnostic":{"value":"preserve contextual diagnostics"},"status":"failed"}`,
+		},
+		{
+			name:   "registry authentication map",
+			secret: "opaque-deep-registry-secret",
+			raw:    `{"auths":{"registry.example":{"auth":"opaque-deep-registry-secret"}},"diagnostic":{"value":"preserve contextual diagnostics"},"status":"failed"}`,
+		},
+		{
+			name:   "upload request headers",
+			secret: "opaque-deep-header-secret",
+			raw:    `{"requestHeaders":[{"name":"Authorization","value":"opaque-deep-header-secret"}],"diagnostic":{"value":"preserve contextual diagnostics"},"status":"failed"}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			encoded := test.raw
+			for range 3 {
+				encodedJSON, err := json.Marshal(encoded)
+				if err != nil {
+					t.Fatalf("encode JSON layer: %v", err)
+				}
+				encoded = string(encodedJSON)
+			}
+
+			got, changed := redactSensitiveText(encoded)
+			if !changed {
+				t.Fatalf("redactSensitiveText() did not report a change for deeply escaped %s", test.name)
+			}
+			if strings.Contains(got, test.secret) {
+				t.Fatalf("redactSensitiveText() leaked deeply escaped %s: %q", test.name, got)
+			}
+			if !strings.Contains(got, redactionMarker) || !strings.Contains(got, "status") || !strings.Contains(got, "preserve contextual diagnostics") {
+				t.Fatalf("redactSensitiveText() = %q, want redaction marker and surrounding context", got)
+			}
+		})
+	}
+}
+
 func TestSnitchDryRunRedactsURLUserinfoCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
@@ -1932,6 +1980,55 @@ func TestSnitchDryRunRedactsDeeplyEscapedJSONCredential(t *testing.T) {
 	}
 	if !strings.Contains(stderr, redactionMarker) || !strings.Contains(stderr, "status") {
 		t.Fatalf("stderr = %q, want redaction marker and surrounding context", stderr)
+	}
+}
+
+func TestSnitchDryRunRedactsDeeplyEscapedContextualJSONCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	secrets := []string{
+		"opaque-deep-cookie-dry-run-secret",
+		"opaque-deep-registry-dry-run-secret",
+		"opaque-deep-header-dry-run-secret",
+	}
+	rawValues := []string{
+		`{"cookies":[{"name":"session","value":"` + secrets[0] + `"}],"status":"failed"}`,
+		`{"auths":{"registry.example":{"auth":"` + secrets[1] + `"}},"status":"failed"}`,
+		`{"requestHeaders":[{"name":"Authorization","value":"` + secrets[2] + `"}],"status":"failed"}`,
+	}
+	for index, value := range rawValues {
+		for range 3 {
+			encodedJSON, err := json.Marshal(value)
+			if err != nil {
+				t.Fatalf("encode JSON layer: %v", err)
+			}
+			value = string(encodedJSON)
+		}
+		rawValues[index] = value
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", strings.Join(rawValues, "\n"),
+		"deeply escaped contextual JSON redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+			t.Fatalf("dry run leaked contextual JSON credential %q: stdout=%q stderr=%q", secret, stdout, stderr)
+		}
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	if count := strings.Count(stderr, redactionMarker); count < len(secrets) {
+		t.Fatalf("stderr = %q, want at least %d redaction markers, got %d", stderr, len(secrets), count)
+	}
+	if !strings.Contains(stderr, "status") {
+		t.Fatalf("stderr = %q, want surrounding context preserved", stderr)
 	}
 }
 
