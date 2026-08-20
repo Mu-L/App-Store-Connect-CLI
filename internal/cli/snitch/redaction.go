@@ -15,7 +15,6 @@ const (
 	oversizedFieldMarker      = "[REDACTED: oversized report field omitted]"
 	redactionNotice           = "Note: sensitive values were redacted from the snitch report."
 	maxRedactionFieldBytes    = 64 * 1024
-	maxJSONEscapeDepth        = 4
 
 	sensitiveAssignmentName     = `(?:_auth|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|client[_-]?key[_-]?data|app[_-]?secret|webhook[_-]?secret|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passphrase|passwd|pwd|secret|token)`
 	sensitivePrefixedName       = `_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName
@@ -1330,13 +1329,23 @@ func findTOMLMultilineStringEnd(value string, open int) int {
 func redactJSONEscapedCredentialValues(value string) (string, bool) {
 	redacted := value
 	changed := false
-	for escapeDepth := 0; escapeDepth <= maxJSONEscapeDepth; escapeDepth++ {
+	maxEscapeDepth := maxJSONEscapeDepthForLength(len(value))
+	for escapeDepth := 0; escapeDepth <= maxEscapeDepth; escapeDepth++ {
 		if next, layerChanged := redactJSONCredentialValues(redacted, escapeDepth); layerChanged {
 			redacted = next
 			changed = true
 		}
 	}
 	return redacted, changed
+}
+
+func maxJSONEscapeDepthForLength(length int) int {
+	maxDepth := 0
+	for length > 1 {
+		maxDepth++
+		length >>= 1
+	}
+	return maxDepth
 }
 
 func redactJSONCredentialValues(value string, escapeDepth int) (string, bool) {

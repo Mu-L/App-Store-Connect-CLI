@@ -1671,6 +1671,29 @@ func TestRedactSensitiveTextPreservesCredentialCommandWordsInProse(t *testing.T)
 	}
 }
 
+func TestRedactSensitiveTextRedactsDeeplyEscapedJSONCredential(t *testing.T) {
+	const secret = "opaque-deeply-escaped-secret"
+	encoded := `{"password":"` + secret + `","status":"failed"}`
+	for range 6 {
+		encodedJSON, err := json.Marshal(encoded)
+		if err != nil {
+			t.Fatalf("encode JSON layer: %v", err)
+		}
+		encoded = string(encodedJSON)
+	}
+
+	got, changed := redactSensitiveText(encoded)
+	if !changed {
+		t.Fatalf("redactSensitiveText() did not report a change for deeply escaped JSON")
+	}
+	if strings.Contains(got, secret) {
+		t.Fatalf("redactSensitiveText() leaked deeply escaped credential: %q", got)
+	}
+	if !strings.Contains(got, redactionMarker) || !strings.Contains(got, "status") {
+		t.Fatalf("redactSensitiveText() = %q, want redaction marker and surrounding context", got)
+	}
+}
+
 func TestSnitchDryRunRedactsURLUserinfoCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
@@ -1795,6 +1818,39 @@ func TestSnitchDryRunRedactsCurlMultipartCredentialAndPreservesDiagnosticProse(t
 	}
 	if !strings.Contains(stderr, diagnostic) {
 		t.Fatalf("stderr = %q, want diagnostic prose preserved", stderr)
+	}
+}
+
+func TestSnitchDryRunRedactsDeeplyEscapedJSONCredential(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const secret = "opaque-deeply-escaped-dry-run-secret"
+	encoded := `{"password":"` + secret + `","status":"failed"}`
+	for range 6 {
+		encodedJSON, err := json.Marshal(encoded)
+		if err != nil {
+			t.Fatalf("encode JSON layer: %v", err)
+		}
+		encoded = string(encodedJSON)
+	}
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", encoded,
+		"deeply escaped JSON redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+		t.Fatalf("dry run leaked deeply escaped JSON credential: stdout=%q stderr=%q", stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	if !strings.Contains(stderr, redactionMarker) || !strings.Contains(stderr, "status") {
+		t.Fatalf("stderr = %q, want redaction marker and surrounding context", stderr)
 	}
 }
 
