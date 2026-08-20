@@ -50,12 +50,13 @@ const (
 	credentialPairUnquoted      = `(?:\\(?:\r?\n|[^\r\n])|[^\s:;&|<>()])*:(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])+`
 	credentialPairValue         = `(?:` + credentialPairQuoted + `|` + credentialPairShellWord + `|` + credentialPairOpen + `|` + credentialPairUnquoted + `)`
 	cookieDataQuoted            = `(?:"(?:\\.|[^"\\\r\n])*=(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*=(?:\\.|[^'\\\r\n])*')`
-	cookieDataUnquoted          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])*=(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])*`
+	cookieDataUnquoted          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])+=(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])*`
 	cookieDataValue             = `(?:` + cookieDataQuoted + `|` + cookieDataUnquoted + `)`
 	curlCertOptionPrefix        = `(?:(?:(?-i:-E)|--(?:proxy-)?cert)\b(?:[ \t]+|[ \t]*=[ \t]*)|(?-i:-E))`
 	curlCertUnquotedPath        = `(?:\\(?:\r?\n|[^\r\n])|[^\s:'"])+`
 	curlCertShellPath           = `(?:` + singleLineQuotedValue + `|` + curlCertUnquotedPath + `)+`
 	curlHeaderOptionPrefix      = `(?:(?:-H|--header|--proxy-header)\b(?:[ \t]+|[ \t]*=[ \t]*)|-H)`
+	curlConfigSeparator         = `(?:[ \t]*[=:][ \t]*|[ \t]+)`
 	shellCommandPathSeparator   = `(?:[ \t]+(?:\\\r?\n[ \t]*)*|(?:\\\r?\n)+[ \t]+(?:\\\r?\n[ \t]*)*)`
 	foldedHeaderContinuation    = `(?:\r?\n[ \t]+[^\r\n]*)*`
 )
@@ -104,6 +105,7 @@ var (
 	powerShellHereStringCredential     = regexp.MustCompile(`(?i)(?:^|\s)(?:` + sensitiveShellFlagToken + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(@["']\r?\n)`)
 	commandPromptQuotedSetAssignment   = regexp.MustCompile(`(?im)(?:^|[ \t;&|])set[ \t]+"` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
 	commandPromptUnquotedSetAssignment = regexp.MustCompile(`(?im)(?:^|[ \t;&|()])set[ \t]+` + sensitivePrefixedName + `\b[ \t]*=[ \t]*`)
+	curlConfigCertificateEntry         = regexp.MustCompile(`(?im)^([ \t]*(?:cert|proxy-cert)` + curlConfigSeparator + `)`)
 	xcodeCloudEnvVarSetCommand         = regexp.MustCompile(`(?i)(?:\basc\b|"asc"|'asc')` + shellCommandPathSeparator + `web` + shellCommandPathSeparator + `xcode-cloud` + shellCommandPathSeparator + `env-vars` + shellCommandPathSeparator + `(?:shared` + shellCommandPathSeparator + `)?set\b`)
 )
 
@@ -246,15 +248,15 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}${2}${3}:` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:user|proxy-user)[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:user|proxy-user)` + curlConfigSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:oauth2-bearer|pass|proxy-tlspassword|tlspassword)[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s#]+)`),
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:oauth2-bearer|pass|proxy-tlspassword|tlspassword)` + curlConfigSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|[^\s#]+)`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?im)^([ \t]*cookie[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
+		pattern:     regexp.MustCompile(`(?im)^([ \t]*cookie` + curlConfigSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
 		replacement: `${1}` + redactionMarker,
 	},
 	{
@@ -347,6 +349,10 @@ var sensitiveTextRedactionRules = []redactionRule{
 func redactSensitiveText(value string) (string, bool) {
 	redacted, changed := redactPowerShellHereStringCredentials(value)
 	if next, commandPromptChanged := redactCommandPromptSetAssignments(redacted); commandPromptChanged {
+		redacted = next
+		changed = true
+	}
+	if next, curlConfigChanged := redactCurlConfigCertificatePasswords(redacted); curlConfigChanged {
 		redacted = next
 		changed = true
 	}
@@ -555,6 +561,82 @@ func findCommandPromptUnquotedSetValueEnd(value string, start int) int {
 		}
 	}
 	return len(value)
+}
+
+func redactCurlConfigCertificatePasswords(value string) (string, bool) {
+	redacted := value
+	changed := false
+	for searchStart := 0; searchStart < len(redacted); {
+		match := curlConfigCertificateEntry.FindStringSubmatchIndex(redacted[searchStart:])
+		if match == nil {
+			break
+		}
+
+		valueStart := searchStart + match[1]
+		lineEnd := valueStart + strings.IndexAny(redacted[valueStart:], "\r\n")
+		if lineEnd < valueStart {
+			lineEnd = len(redacted)
+		}
+		contentStart, contentEnd := curlConfigValueBounds(redacted, valueStart, lineEnd)
+		separator := curlCertificatePasswordSeparator(redacted[contentStart:contentEnd])
+		if separator < 0 {
+			searchStart = lineEnd + 1
+			continue
+		}
+
+		passwordStart := contentStart + separator + 1
+		if passwordStart == contentEnd || redacted[passwordStart:contentEnd] == redactionMarker {
+			searchStart = lineEnd + 1
+			continue
+		}
+		redacted = redacted[:passwordStart] + redactionMarker + redacted[contentEnd:]
+		changed = true
+		searchStart = passwordStart + len(redactionMarker)
+	}
+	return redacted, changed
+}
+
+func curlConfigValueBounds(value string, start, lineEnd int) (int, int) {
+	if start >= lineEnd || (value[start] != '"' && value[start] != '\'') {
+		end := start
+		for end < lineEnd && value[end] != ' ' && value[end] != '\t' {
+			end++
+		}
+		return start, end
+	}
+
+	quote := value[start]
+	for index := start + 1; index < lineEnd; index++ {
+		if value[index] == '\\' && index+1 < lineEnd {
+			index++
+			continue
+		}
+		if value[index] == quote {
+			return start + 1, index
+		}
+	}
+	return start + 1, lineEnd
+}
+
+func curlCertificatePasswordSeparator(value string) int {
+	searchStart := 0
+	if len(value) >= 3 && isASCIIAlpha(value[0]) && value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+		searchStart = 3
+	}
+	for index := searchStart; index < len(value); index++ {
+		if value[index] == '\\' && index+1 < len(value) {
+			index++
+			continue
+		}
+		if value[index] == ':' {
+			return index
+		}
+	}
+	return -1
+}
+
+func isASCIIAlpha(character byte) bool {
+	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z'
 }
 
 func redactNetrcPasswords(value string) (string, bool) {

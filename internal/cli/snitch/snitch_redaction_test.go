@@ -586,14 +586,49 @@ status = "failed"`,
 			want:  "user = [REDACTED]\nurl = \"https://example.test\"",
 		},
 		{
+			name:  "curl config user credential with colon separator",
+			input: "user: \"alice:opaque-config-secret\"\nurl = \"https://example.test\"",
+			want:  "user: [REDACTED]\nurl = \"https://example.test\"",
+		},
+		{
+			name:  "curl config user credential with whitespace separator",
+			input: "proxy-user \"alice:opaque-config-secret\"\nurl = \"https://example.test\"",
+			want:  "proxy-user [REDACTED]\nurl = \"https://example.test\"",
+		},
+		{
+			name:  "curl config certificate password",
+			input: "cert = \"client.p12:opaque-config-secret\"\nurl = \"https://example.test\"",
+			want:  "cert = \"client.p12:[REDACTED]\"\nurl = \"https://example.test\"",
+		},
+		{
+			name:  "curl config proxy certificate password with colon separator",
+			input: "proxy-cert: client.p12:opaque-config-secret\nurl = \"https://example.test\"",
+			want:  "proxy-cert: client.p12:[REDACTED]\nurl = \"https://example.test\"",
+		},
+		{
+			name:  "curl config Windows certificate password",
+			input: `cert = "C:\client.p12:opaque-config-secret"`,
+			want:  `cert = "C:\client.p12:[REDACTED]"`,
+		},
+		{
 			name:  "curl config bearer credential",
 			input: "oauth2-bearer = \"opaque-bearer-secret\"\nurl = \"https://example.test\"",
 			want:  "oauth2-bearer = [REDACTED]\nurl = \"https://example.test\"",
 		},
 		{
+			name:  "curl config bearer credential with whitespace separator",
+			input: "oauth2-bearer \"opaque-bearer-secret\"\nurl = \"https://example.test\"",
+			want:  "oauth2-bearer [REDACTED]\nurl = \"https://example.test\"",
+		},
+		{
 			name:  "curl config cookie data credential",
 			input: "cookie = \"myacinfo=opaque-cookie-secret\"\nurl = \"https://example.test\"",
 			want:  "cookie = [REDACTED]\nurl = \"https://example.test\"",
+		},
+		{
+			name:  "curl config cookie data credential with colon separator",
+			input: "cookie: \"myacinfo=opaque-cookie-secret\"\nurl = \"https://example.test\"",
+			want:  "cookie: [REDACTED]\nurl = \"https://example.test\"",
 		},
 		{
 			name: "YAML escaped double quoted credential key block scalar",
@@ -1313,6 +1348,9 @@ func TestRedactSensitiveTextPreservesCurlCertificateWithoutPassword(t *testing.T
 		`curl --cert client.pem https://example.test`,
 		`curl --cert="client cert.pem" https://example.test`,
 		`curl -Eclient.p12 https://example.test`,
+		`cert = "client cert.pem"`,
+		`proxy-cert: client.p12`,
+		`cert = C:\client.p12`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
@@ -1671,12 +1709,12 @@ func TestSnitchDryRunRedactsContinuedFlagAndCurlConfigCredentials(t *testing.T) 
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	secrets := []string{"continued-flag-secret", "curl-user-secret", "curl-bearer-secret", "curl-cookie-secret"}
+	secrets := []string{"continued-flag-secret", "curl-user-secret", "curl-bearer-secret", "curl-cookie-secret", "curl-colon-user-secret", "curl-config-cert-secret", "curl-config-proxy-cert-secret"}
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
 		"--repro", "asc deploy --password \\\n  "+secrets[0]+" --verbose",
-		"--actual", "user = \"alice:"+secrets[1]+"\"\noauth2-bearer = \""+secrets[2]+"\"\ncookie = \"myacinfo="+secrets[3]+"\"\nurl = \"https://example.test\"",
+		"--actual", "user = \"alice:"+secrets[1]+"\"\noauth2-bearer \""+secrets[2]+"\"\ncookie: \"myacinfo="+secrets[3]+"\"\nproxy-user: \"alice:"+secrets[4]+"\"\ncert \"client.p12:"+secrets[5]+"\"\nproxy-cert = client.p12:"+secrets[6]+"\nurl = \"https://example.test\"",
 		"continued flag and curl config credential redaction probe",
 	)
 	if err != nil {
@@ -1697,8 +1735,11 @@ func TestSnitchDryRunRedactsContinuedFlagAndCurlConfigCredentials(t *testing.T) 
 	for _, want := range []string{
 		"asc deploy --password \\\n  [REDACTED] --verbose",
 		"user = [REDACTED]",
-		"oauth2-bearer = [REDACTED]",
-		"cookie = [REDACTED]",
+		"oauth2-bearer [REDACTED]",
+		"cookie: [REDACTED]",
+		"proxy-user: [REDACTED]",
+		`cert "client.p12:[REDACTED]"`,
+		"proxy-cert = client.p12:[REDACTED]",
 		"url = \"https://example.test\"",
 	} {
 		if !strings.Contains(stderr, want) {
