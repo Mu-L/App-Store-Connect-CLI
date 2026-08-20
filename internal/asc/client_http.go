@@ -454,18 +454,25 @@ func parseRetryAfterHeader(value string) time.Duration {
 
 	// Try to parse as seconds first
 	const maxRetryAfterDuration = time.Duration(1<<63 - 1)
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
-		if seconds > int64(maxRetryAfterDuration/time.Second) {
-			return maxRetryAfterDuration
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds > 0 {
+			if seconds > int64(maxRetryAfterDuration/time.Second) {
+				return maxRetryAfterDuration
+			}
+			return time.Duration(seconds) * time.Second
 		}
-		return time.Duration(seconds) * time.Second
-	} else if _, err := strconv.ParseUint(value, 10, 64); err != nil {
-		var numberErr *strconv.NumError
-		if errors.As(err, &numberErr) && errors.Is(numberErr.Err, strconv.ErrRange) && isPositiveDecimal(value) {
-			// A positive value that does not fit in int64 seconds is still an
-			// unambiguously huge delay. Saturate it so the retry cap can reject it
-			// instead of silently falling back to exponential backoff.
+	} else if isPositiveDecimal(value) {
+		// ParseInt reports ErrRange for values above MaxInt64. ParseUint still
+		// accepts the portion that fits in uint64; values beyond that range
+		// report ErrRange there as well. Both cases are an unambiguously huge
+		// positive delay and must saturate instead of falling back to backoff.
+		if _, unsignedErr := strconv.ParseUint(value, 10, 64); unsignedErr == nil {
 			return maxRetryAfterDuration
+		} else {
+			var numberErr *strconv.NumError
+			if errors.As(unsignedErr, &numberErr) && errors.Is(numberErr.Err, strconv.ErrRange) {
+				return maxRetryAfterDuration
+			}
 		}
 	}
 
@@ -492,12 +499,14 @@ func isPositiveDecimal(value string) bool {
 	if value == "" {
 		return false
 	}
+	positive := false
 	for i := 0; i < len(value); i++ {
 		if value[i] < '0' || value[i] > '9' {
 			return false
 		}
+		positive = positive || value[i] != '0'
 	}
-	return true
+	return positive
 }
 
 // validateNextURL validates that a pagination URL is safe to use.

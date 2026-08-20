@@ -71,6 +71,24 @@ func TestParseRetryAfterHeaderHandlesNumericDateAndBoundaryValues(t *testing.T) 
 			},
 		},
 		{
+			name:  "unsigned range numeric saturates",
+			value: "9223372036854775808",
+			check: func(t *testing.T, got time.Duration) {
+				if got != maxRetryAfterDuration {
+					t.Fatalf("parseRetryAfterHeader() = %s, want %s", got, maxRetryAfterDuration)
+				}
+			},
+		},
+		{
+			name:  "uint64 maximum numeric saturates",
+			value: "18446744073709551615",
+			check: func(t *testing.T, got time.Duration) {
+				if got != maxRetryAfterDuration {
+					t.Fatalf("parseRetryAfterHeader() = %s, want %s", got, maxRetryAfterDuration)
+				}
+			},
+		},
+		{
 			name:  "overflow with trailing text is malformed",
 			value: "18446744073709551616x",
 			check: func(t *testing.T, got time.Duration) {
@@ -166,8 +184,8 @@ func TestWithRetry_FailsFastWhenRetryAfterExceedsCap(t *testing.T) {
 	if !strings.Contains(message, "context deadline") {
 		t.Fatalf("expected the message to name the context deadline, got %q", message)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context deadline classification in error chain, got %v", err)
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("did not expect context deadline classification before the parent context expires, got %v", err)
 	}
 
 	apiErr, ok := errors.AsType[*APIError](err)
@@ -204,8 +222,8 @@ func TestWithRetry_FailsFastWhenRetryAfterExceedsContextBudget(t *testing.T) {
 	if message := err.Error(); !strings.Contains(message, "context deadline") || !strings.Contains(message, "5s") {
 		t.Fatalf("expected the requested wait and context deadline in the message, got %q", message)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context deadline classification in error chain, got %v", err)
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("did not expect context deadline classification before the parent context expires, got %v", err)
 	}
 
 	apiErr, ok := errors.AsType[*APIError](err)
