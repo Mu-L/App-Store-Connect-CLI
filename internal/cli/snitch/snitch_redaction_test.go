@@ -919,6 +919,33 @@ data:
 status: failed`,
 		},
 		{
+			name: "Kubernetes Secret aliased data mapping",
+			input: `secretData: &secretData
+  config: opaque-anchored-mapping-secret
+kind: Secret
+data: *secretData
+status: failed`,
+			want: `secretData: &secretData [REDACTED]
+kind: Secret
+data: [REDACTED]
+status: failed`,
+		},
+		{
+			name: "Kubernetes Secret flow data alias",
+			input: `kind: Secret
+metadata:
+  annotations:
+    source: &secretValue opaque-flow-alias-secret
+data: {config: *secretValue}
+status: failed`,
+			want: `kind: Secret
+metadata:
+  annotations:
+    source: &secretValue [REDACTED]
+data: {config: [REDACTED]}
+status: failed`,
+		},
+		{
 			name: "Kubernetes Secret multiline quoted data scalar",
 			input: `kind: Secret
 data:
