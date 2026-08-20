@@ -1571,7 +1571,8 @@ func redactYAMLCredentialBlocks(value string) (string, bool) {
 		firstIndentedContent := ""
 		for end < len(lines) {
 			child, _ := splitLineEnding(lines[end])
-			if strings.TrimSpace(child) == "" {
+			trimmedChild := strings.TrimSpace(child)
+			if trimmedChild == "" || !blockScalar && !plainScalar && strings.HasPrefix(trimmedChild, "#") {
 				end++
 				continue
 			}
@@ -1582,7 +1583,7 @@ func redactYAMLCredentialBlocks(value string) (string, bool) {
 			}
 			hasIndentedContent = true
 			if firstIndentedContent == "" {
-				firstIndentedContent = strings.TrimSpace(child)
+				firstIndentedContent = trimmedChild
 			}
 			end++
 		}

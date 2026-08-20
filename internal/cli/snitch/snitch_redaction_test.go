@@ -529,6 +529,16 @@ func TestRedactSensitiveTextPatterns(t *testing.T) {
 			want:  "password: [REDACTED]\nstatus: failed",
 		},
 		{
+			name:  "implicit YAML credential value after comment",
+			input: "password:\n# context\n  opaque-secret\nstatus: failed",
+			want:  "password: [REDACTED]\nstatus: failed",
+		},
+		{
+			name:  "YAML block scalar hash prefixed content",
+			input: "password: |\n  # opaque-secret\nstatus: failed",
+			want:  "password: [REDACTED]\nstatus: failed",
+		},
+		{
 			name:  "indentless YAML credential sequence",
 			input: "password:\n- opaque-first-secret\n- opaque-second-secret\nstatus: failed",
 			want:  "password: [REDACTED]\nstatus: failed",
@@ -1293,6 +1303,14 @@ func TestRedactSensitiveTextPreservesBearerProse(t *testing.T) {
 
 func TestRedactSensitiveTextPreservesBenignYAMLAliasMappingKey(t *testing.T) {
 	input := "key: &s status\n*s: failed"
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
+func TestRedactSensitiveTextPreservesEmptyYAMLCredentialMappingBeforeComment(t *testing.T) {
+	input := "password:\n# context\nstatus: failed"
 	got, changed := redactSensitiveText(input)
 	if changed || got != input {
 		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
@@ -2409,16 +2427,17 @@ func TestSnitchDryRunRedactsYAMLCredentialAliasMappingKey(t *testing.T) {
 
 	const aliasSecret = "yaml-alias-key-secret"
 	const explicitSecret = "yaml-explicit-comment-secret"
+	const implicitSecret = "yaml-implicit-comment-secret"
 	stdout, stderr, err := runSnitchCommand(
 		t, "9.9.9",
 		"--dry-run",
-		"--actual", "key: &s api_key\n*s: "+aliasSecret+"\n? password\n# context\n\n: "+explicitSecret+"\nstatus: failed",
+		"--actual", "key: &s api_key\n*s: "+aliasSecret+"\n? password\n# context\n\n: "+explicitSecret+"\npassword:\n# context\n  "+implicitSecret+"\nstatus: failed",
 		"YAML alias credential key redaction probe",
 	)
 	if err != nil {
 		t.Fatalf("run snitch: %v", err)
 	}
-	for _, secret := range []string{aliasSecret, explicitSecret} {
+	for _, secret := range []string{aliasSecret, explicitSecret, implicitSecret} {
 		if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
 			t.Fatalf("dry run leaked %q: stdout=%q stderr=%q", secret, stdout, stderr)
 		}
@@ -2426,7 +2445,7 @@ func TestSnitchDryRunRedactsYAMLCredentialAliasMappingKey(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
 	}
-	for _, want := range []string{"key: &s api_key", "*s: [REDACTED]", "? password\n# context\n\n: [REDACTED]", "status: failed"} {
+	for _, want := range []string{"key: &s api_key", "*s: [REDACTED]", "? password\n# context\n\n: [REDACTED]", "password: [REDACTED]", "status: failed"} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want preserved context %q", stderr, want)
 		}
