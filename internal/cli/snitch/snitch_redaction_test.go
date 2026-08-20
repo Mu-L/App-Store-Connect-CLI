@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRedactSensitiveTextPatterns(t *testing.T) {
@@ -1586,6 +1587,102 @@ func TestSnitchDryRunPreservesLoneSingleQuote(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "Title: '") {
 		t.Fatalf("stderr = %q, want the original report title", stderr)
+	}
+}
+
+func TestRedactSensitiveTextBoundsOversizedInputBeforeScanning(t *testing.T) {
+	const (
+		maxFieldBytes = 64 * 1024
+		tailSecret    = "discarded-oversized-tail-secret"
+	)
+	input := strings.Repeat("diagnostic 🙂 line\n", 5000) + "password=" + tailSecret
+
+	got, changed := redactSensitiveText(input)
+	if !changed {
+		t.Fatal("redactSensitiveText() changed = false, want oversized input reported as changed")
+	}
+	if len(got) > maxFieldBytes {
+		t.Fatalf("redactSensitiveText() returned %d bytes, want at most %d", len(got), maxFieldBytes)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatal("redactSensitiveText() returned invalid UTF-8")
+	}
+	if strings.Contains(got, tailSecret) {
+		t.Fatalf("redactSensitiveText() retained discarded tail secret: %q", got)
+	}
+	if !strings.Contains(got, "oversized report field omitted") {
+		t.Fatalf("redactSensitiveText() = %q, want an explicit truncation marker", got)
+	}
+
+	again, changedAgain := redactSensitiveText(got)
+	if changedAgain || again != got {
+		t.Fatalf("second redactSensitiveText() = %q, changed=%t; want idempotent %q", again, changedAgain, got)
+	}
+}
+
+func TestRedactLogEntryBoundsEveryStringField(t *testing.T) {
+	const maxFieldBytes = 64 * 1024
+	oversized := strings.Repeat("x", maxFieldBytes+1)
+	entry := LogEntry{
+		Description: oversized,
+		Repro:       oversized,
+		Expected:    oversized,
+		Actual:      oversized,
+		Labels:      []string{oversized},
+		Severity:    oversized,
+		ASCVersion:  oversized,
+		OS:          oversized,
+	}
+
+	got, changed := redactLogEntry(entry)
+	if !changed {
+		t.Fatal("redactLogEntry() changed = false, want oversized fields reported as changed")
+	}
+	fields := append([]string{
+		got.Description,
+		got.Repro,
+		got.Expected,
+		got.Actual,
+		got.Severity,
+		got.ASCVersion,
+		got.OS,
+	}, got.Labels...)
+	for index, field := range fields {
+		if len(field) > maxFieldBytes {
+			t.Errorf("field %d returned %d bytes, want at most %d", index, len(field), maxFieldBytes)
+		}
+		if !strings.Contains(field, "oversized report field omitted") {
+			t.Errorf("field %d = %q, want an explicit truncation marker", index, field)
+		}
+	}
+}
+
+func TestSnitchDryRunBoundsOversizedReportFieldBeforePreview(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const tailSecret = "discarded-dry-run-tail-secret"
+	actual := strings.Repeat("captured diagnostic line\n", 3500) + "password=" + tailSecret
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", actual,
+		"oversized diagnostic redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	if strings.Contains(stderr, tailSecret) {
+		t.Fatalf("dry run leaked discarded tail secret: %q", stderr)
+	}
+	if !strings.Contains(stderr, "oversized report field omitted") {
+		t.Fatalf("stderr = %q, want an explicit truncation marker", stderr)
+	}
+	if len(stderr) > 70*1024 {
+		t.Fatalf("stderr returned %d bytes, want bounded dry-run preview", len(stderr))
 	}
 }
 

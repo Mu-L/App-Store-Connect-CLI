@@ -7,12 +7,15 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
 	redactionMarker           = "[REDACTED]"
 	privateKeyRedactionMarker = "[REDACTED PRIVATE KEY]"
+	oversizedFieldMarker      = "[REDACTED: oversized report field omitted]"
 	redactionNotice           = "Note: sensitive values were redacted from the snitch report."
+	maxRedactionFieldBytes    = 64 * 1024
 	maxJSONEscapeDepth        = 4
 
 	sensitiveAssignmentName     = `(?:_auth|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|webhook[_-]?secret|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passphrase|passwd|pwd|secret|token)`
@@ -365,7 +368,11 @@ var sensitiveTextRedactionRules = []redactionRule{
 }
 
 func redactSensitiveText(value string) (string, bool) {
-	redacted, changed := redactPowerShellHereStringCredentials(value)
+	redacted, changed := boundRedactionInput(value)
+	if next, powerShellChanged := redactPowerShellHereStringCredentials(redacted); powerShellChanged {
+		redacted = next
+		changed = true
+	}
 	if next, commandPromptChanged := redactCommandPromptSetAssignments(redacted); commandPromptChanged {
 		redacted = next
 		changed = true
@@ -469,6 +476,32 @@ func redactSensitiveText(value string) (string, bool) {
 		redacted = strings.ReplaceAll(redacted, placeholder, original)
 	}
 	return redacted, changed
+}
+
+// boundRedactionInput limits parser work before any redaction pass runs. It
+// retains only complete leading lines so a credential that crosses the byte
+// boundary cannot leave a partial value in a report. A single oversized line
+// is omitted in full for the same reason.
+func boundRedactionInput(value string) (string, bool) {
+	if len(value) <= maxRedactionFieldBytes {
+		return value, false
+	}
+
+	prefixLimit := maxRedactionFieldBytes - len(oversizedFieldMarker) - 1
+	lineEnd := strings.LastIndexByte(value[:prefixLimit], '\n')
+	if lineEnd < 0 {
+		return oversizedFieldMarker, true
+	}
+
+	prefix := strings.ToValidUTF8(value[:lineEnd], "\uFFFD")
+	maxPrefixBytes := maxRedactionFieldBytes - len(oversizedFieldMarker) - 1
+	if len(prefix) > maxPrefixBytes {
+		prefix = prefix[:maxPrefixBytes]
+		for !utf8.ValidString(prefix) {
+			prefix = prefix[:len(prefix)-1]
+		}
+	}
+	return prefix + "\n" + oversizedFieldMarker, true
 }
 
 func redactPowerShellHereStringCredentials(value string) (string, bool) {
