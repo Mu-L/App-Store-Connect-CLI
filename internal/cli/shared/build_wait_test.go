@@ -629,6 +629,41 @@ func TestVerifyBuildUploadAfterCommitIgnoresRetryableLookupErrorsUntilBuildLinks
 	}
 }
 
+func TestVerifyBuildUploadAfterCommitIgnoresRetryDelayBeyondVerificationBudget(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "1")
+	t.Setenv("ASC_BASE_DELAY", "1ms")
+	t.Setenv("ASC_MAX_DELAY", "5s")
+	asc.ResetConfigCacheForTest()
+	t.Cleanup(asc.ResetConfigCacheForTest)
+
+	lookupCalls := 0
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			return nil, fmt.Errorf("expected GET, got %s", req.Method)
+		}
+		if req.URL.Path != "/v1/buildUploads/upload-current" {
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+		lookupCalls++
+		response, err := buildWaitJSONStatusResponse(http.StatusTooManyRequests, `{
+			"errors": [{"status": "429", "code": "RATE_LIMIT_EXCEEDED", "title": "Too many requests"}]
+		}`)
+		if err != nil {
+			return nil, err
+		}
+		response.Header.Set("Retry-After", "1")
+		return response, nil
+	})
+
+	err := VerifyBuildUploadAfterCommit(context.Background(), client, "app-1", "upload-current", time.Millisecond, 30*time.Millisecond)
+	if err != nil {
+		t.Fatalf("VerifyBuildUploadAfterCommit() error: %v", err)
+	}
+	if lookupCalls == 0 {
+		t.Fatal("expected at least one best-effort upload lookup")
+	}
+}
+
 func TestResolveBuildStatusBundleIDReturnsAppBundleIDWhenSupported(t *testing.T) {
 	previous := buildStatusBundleIDSupportedFn
 	buildStatusBundleIDSupportedFn = func(context.Context) bool { return true }

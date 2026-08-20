@@ -138,8 +138,7 @@ func IsTransientWaitError(ctx context.Context, err error) bool {
 	if ctx != nil && ctx.Err() != nil {
 		return false
 	}
-	var delayErr *retryDelayExceededError
-	if errors.As(err, &delayErr) {
+	if IsRetryDelayExceeded(err) {
 		return false
 	}
 	if IsRetryable(err) {

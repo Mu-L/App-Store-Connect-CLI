@@ -244,6 +244,32 @@ func TestWithRetry_FailsFastWhenRetryAfterExceedsContextBudget(t *testing.T) {
 	}
 }
 
+func TestWithRetry_ClassifiesOverCapHintBeforeFinalRetryBudget(t *testing.T) {
+	var attempts atomic.Int32
+
+	_, err := WithRetry(context.Background(), func() (struct{}, error) {
+		if attempts.Add(1) == 1 {
+			return struct{}{}, retryableHTTPError(http.StatusServiceUnavailable, 0)
+		}
+		return struct{}{}, rateLimitedError(time.Hour)
+	}, RetryOptions{MaxRetries: 1, BaseDelay: time.Millisecond, MaxDelay: time.Second})
+	if err == nil {
+		t.Fatal("expected over-cap Retry-After error, got nil")
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("expected final allowed attempt to be made, got %d attempts", got)
+	}
+	if !strings.Contains(err.Error(), "retry cap") {
+		t.Fatalf("expected retry-cap diagnostic, got %v", err)
+	}
+	if IsRetryBudgetExhausted(err) {
+		t.Fatalf("did not expect retry budget marker to hide over-cap diagnostic, got %v", err)
+	}
+	if IsTransientWaitError(context.Background(), err) {
+		t.Fatalf("expected over-cap final attempt to be terminal to poll recovery, got %v", err)
+	}
+}
+
 func TestWithRetry_CancellationPreservesRetryableCause(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

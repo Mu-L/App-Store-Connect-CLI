@@ -119,7 +119,7 @@ func VerifyBuildUploadAfterCommit(ctx context.Context, client *asc.Client, appID
 			// Transient lookup errors stay ignorable for the whole verification
 			// window: expiry of the bounded window itself is reported by the
 			// poll context, not by this predicate.
-			if shouldIgnoreBuildWaitLookupError(err) || asc.IsTransientWaitError(callerCtx, err) {
+			if shouldIgnoreBuildWaitLookupError(err) || asc.IsRetryDelayExceeded(err) || asc.IsTransientWaitError(callerCtx, err) {
 				return nil, false, nil
 			}
 			return nil, false, err
