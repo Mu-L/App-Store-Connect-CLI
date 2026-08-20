@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
@@ -49,7 +50,7 @@ func RunReconciledMutation[T any](
 		if matches {
 			return value, ReconciledMutationRecovered, nil
 		}
-		if !IsTransientMutationError(ctx, mutationErr) || retry >= retryOpts.MaxRetries {
+		if isRateLimitRejection(mutationErr) || !IsTransientMutationError(ctx, mutationErr) || retry >= retryOpts.MaxRetries {
 			return zero, "", mutationErr
 		}
 
@@ -65,6 +66,14 @@ func RunReconciledMutation[T any](
 			return value, ReconciledMutationRecovered, nil
 		}
 	}
+}
+
+func isRateLimitRejection(err error) bool {
+	if !asc.IsRetryable(err) {
+		return false
+	}
+	var statusErr interface{ HTTPStatusCode() int }
+	return errors.As(err, &statusErr) && statusErr.HTTPStatusCode() == http.StatusTooManyRequests
 }
 
 func runMutationWithFreshTimeout[T any](ctx context.Context, mutate func(context.Context) (T, error)) (T, error) {
