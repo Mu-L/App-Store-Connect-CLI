@@ -72,6 +72,8 @@ var (
 	secretValuePattern                 = regexp.MustCompile(`(?i)(^|[ \t])(-{1,2}value(?:[ \t]+|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`)
 	rawCookieJarPattern                = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*\{`)
 	escapedCookieJarPattern            = regexp.MustCompile(`(?i)\\"cookies\\"[ \t\r\n]*:[ \t\r\n]*\{`)
+	rawRegistryAuthsPattern            = regexp.MustCompile(`(?i)"auths"[ \t\r\n]*:[ \t\r\n]*\{`)
+	escapedRegistryAuthsPattern        = regexp.MustCompile(`(?i)\\"auths\\"[ \t\r\n]*:[ \t\r\n]*\{`)
 	rawRequestHeaders                  = regexp.MustCompile(`(?i)"requestHeaders"[ \t\r\n]*:[ \t\r\n]*\[`)
 	escapedRequestHeaders              = regexp.MustCompile(`(?i)\\"requestHeaders\\"[ \t\r\n]*:[ \t\r\n]*\[`)
 	rawStructuredValueStart            = regexp.MustCompile(`(?i)"value"[ \t\r\n]*:[ \t\r\n]*"`)
@@ -118,6 +120,17 @@ var structuredContainerValueRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?i)(\\"value\\"[ \t\r\n]*:[ \t\r\n]*\\")(?:\\.|[^"\\\r\n])*?(\\")([ \t\r\n]*(?:[,}\]]|\z))`),
 		replacement: `${1}` + redactionMarker + `${2}${3}`,
+	},
+}
+
+var registryAuthValueRedactionRules = []redactionRule{
+	{
+		pattern:     regexp.MustCompile(`(?i)("auth"[ \t\r\n]*:[ \t\r\n]*")(?:\\.|[^"\\\r\n])*(")`),
+		replacement: `${1}` + redactionMarker + `${2}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(\\"auth\\"[ \t\r\n]*:[ \t\r\n]*\\")(?:\\.|[^"\\\r\n])*?(\\")`),
+		replacement: `${1}` + redactionMarker + `${2}`,
 	},
 }
 
@@ -396,6 +409,10 @@ func redactSensitiveText(value string) (string, bool) {
 		changed = true
 	}
 	if next, cookieChanged := redactStructuredCookieValues(redacted); cookieChanged {
+		redacted = next
+		changed = true
+	}
+	if next, registryChanged := redactRegistryConfigurationAuthValues(redacted); registryChanged {
 		redacted = next
 		changed = true
 	}
@@ -1896,6 +1913,45 @@ func redactStructuredCookieValues(value string) (string, bool) {
 				changed = true
 			}
 			searchStart = open + len(redactedObject)
+		}
+	}
+	return redacted, changed
+}
+
+// Registry configuration auth values are base64-encoded username/password
+// pairs. Scope the generic "auth" key to the auths container so unrelated
+// diagnostic fields with that name remain useful.
+func redactRegistryConfigurationAuthValues(value string) (string, bool) {
+	type authsContainerPattern struct {
+		pattern       *regexp.Regexp
+		escapedQuotes bool
+	}
+	patterns := []authsContainerPattern{
+		{pattern: rawRegistryAuthsPattern},
+		{pattern: escapedRegistryAuthsPattern, escapedQuotes: true},
+	}
+
+	redacted := value
+	changed := false
+	for _, candidate := range patterns {
+		for searchStart := 0; searchStart < len(redacted); {
+			match := candidate.pattern.FindStringIndex(redacted[searchStart:])
+			if match == nil {
+				break
+			}
+
+			open := searchStart + match[1] - 1
+			close := findJSONObjectEnd(redacted, open, candidate.escapedQuotes)
+			container := redacted[open : close+1]
+			redactedContainer := container
+			for _, rule := range registryAuthValueRedactionRules {
+				redactedContainer = rule.pattern.ReplaceAllString(redactedContainer, rule.replacement)
+			}
+			if redactedContainer != container {
+				redacted = redacted[:open] + redactedContainer + redacted[close+1:]
+				changed = true
+			}
+			searchStart = open + len(redactedContainer)
 		}
 	}
 	return redacted, changed

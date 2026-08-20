@@ -1095,6 +1095,16 @@ status: failed`,
 			want:  `//registry.npmjs.org/:_auth=[REDACTED]`,
 		},
 		{
+			name:  "registry configuration auth value",
+			input: `{"auths":{"registry.example":{"auth":"YWxpY2U6b3BhcXVlLXNlY3JldA=="}},"credsStore":"desktop"}`,
+			want:  `{"auths":{"registry.example":{"auth":"[REDACTED]"}},"credsStore":"desktop"}`,
+		},
+		{
+			name:  "escaped registry configuration auth value",
+			input: `trace {\"auths\":{\"registry.example\":{\"auth\":\"YWxpY2U6b3BhcXVlLXNlY3JldA==\"}},\"status\":\"failed\"}`,
+			want:  `trace {\"auths\":{\"registry.example\":{\"auth\":\"[REDACTED]\"}},\"status\":\"failed\"}`,
+		},
+		{
 			name:  "JSON assignment",
 			input: `response {"refresh_token":"refresh-value","status":"failed"}`,
 			want:  `response {"refresh_token":"[REDACTED]","status":"failed"}`,
@@ -1448,6 +1458,15 @@ func TestRedactSensitiveTextPreservesOrdinaryCodeFields(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextPreservesOrdinaryAuthField(t *testing.T) {
+	input := `{"auth":"public mode","status":"ready"}`
+
+	got, changed := redactSensitiveText(input)
+	if changed || got != input {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	}
+}
+
 func TestRedactSensitiveTextPreservesNameValuePairOutsideCookieJar(t *testing.T) {
 	input := `{"cookies":{},"diagnostic":{"name":"failure","value":"preserve this explanation"}}`
 
@@ -1517,6 +1536,31 @@ func TestSnitchDryRunRedactsRegistryBase64AuthCredential(t *testing.T) {
 	}
 	if want := `//registry.npmjs.org/:_auth=[REDACTED]`; !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want redacted assignment %q", stderr, want)
+	}
+}
+
+func TestSnitchDryRunRedactsRegistryConfigurationAuthCredential(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	const secret = "YWxpY2U6b3BhcXVlLXNlY3JldA=="
+	stdout, stderr, err := runSnitchCommand(
+		t, "9.9.9",
+		"--dry-run",
+		"--actual", `{"auths":{"registry.example":{"auth":"`+secret+`"}},"status":"failed"}`,
+		"registry configuration redaction probe",
+	)
+	if err != nil {
+		t.Fatalf("run snitch: %v", err)
+	}
+	if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+		t.Fatalf("dry run leaked registry configuration credential: stdout=%q stderr=%q", stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want dry-run diagnostics on stderr only", stdout)
+	}
+	if want := `{"auths":{"registry.example":{"auth":"[REDACTED]"}},"status":"failed"}`; !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want redacted configuration %q", stderr, want)
 	}
 }
 
