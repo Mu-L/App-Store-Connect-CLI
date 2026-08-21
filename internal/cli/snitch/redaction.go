@@ -144,7 +144,11 @@ var (
 		"cms":                                  "p",
 		"create-filevaultmaster-keychain":      "p",
 	}
-	opensslCredentialFlagPattern          = newCommandCredentialFlagPattern("passin", "passout", "passcerts", "pass", "k", "K")
+	opensslCredentialFlagPattern        = newCommandCredentialFlagPattern("passin", "passout", "passcerts", "pass", "k", "K")
+	opensslSubcommandCredentialPatterns = map[string]*regexp.Regexp{
+		"ca":   newCommandCredentialFlagValueStartPattern("key"),
+		"dgst": newCommandCredentialFlagValueStartPattern("hmac"),
+	}
 	keytoolCredentialFlagPattern          = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass", "new", "srcstorepass", "deststorepass", "srckeypass", "destkeypass")
 	jarsignerCredentialFlagPattern        = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass")
 	dockerLoginCredentialFlagPattern      = newCommandShortCredentialFlagPattern("p")
@@ -4621,7 +4625,7 @@ func newCommandCredentialFlagPatternWithSuffix(suffix string, flags ...string) *
 	for _, flag := range flags {
 		escapedFlags = append(escapedFlags, regexp.QuoteMeta(flag))
 	}
-	return regexp.MustCompile(`(^|[ \t])(-(?:` + strings.Join(escapedFlags, "|") + `)` + suffix + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + commandFlagUnquotedValue + `)`)
+	return regexp.MustCompile(`(^|[ \t]|\\\r?\n)(-(?:` + strings.Join(escapedFlags, "|") + `)` + suffix + `(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + commandFlagUnquotedValue + `)`)
 }
 
 func newCommandShortCredentialFlagPattern(flags ...string) *regexp.Regexp {
@@ -4629,13 +4633,124 @@ func newCommandShortCredentialFlagPattern(flags ...string) *regexp.Regexp {
 	for _, flag := range flags {
 		escapedFlags = append(escapedFlags, regexp.QuoteMeta(flag))
 	}
-	return regexp.MustCompile(`(^|[ \t])(-(?:` + strings.Join(escapedFlags, "|") + `)(?:(?:[ \t]*=[ \t]*|` + shellCommandPathSeparator + `))?)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + commandShortShellWord + `|` + unterminatedQuotedValue + `)`)
+	return regexp.MustCompile(`(^|[ \t]|\\\r?\n)(-(?:` + strings.Join(escapedFlags, "|") + `)(?:(?:[ \t]*=[ \t]*|` + shellCommandPathSeparator + `))?)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + commandShortShellWord + `|` + unterminatedQuotedValue + `)`)
+}
+
+func newCommandCredentialFlagValueStartPattern(flags ...string) *regexp.Regexp {
+	escapedFlags := make([]string, 0, len(flags))
+	for _, flag := range flags {
+		escapedFlags = append(escapedFlags, regexp.QuoteMeta(flag))
+	}
+	return regexp.MustCompile(`(^|[ \t]|\\\r?\n)-(?:` + strings.Join(escapedFlags, "|") + `)(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*)`)
 }
 
 func redactOpenSSLCredentialArguments(value string) (string, bool) {
 	redacted, flagChanged := redactNamedCommandCredentialArguments(value, "openssl", opensslCredentialFlagPattern)
+	redacted, subcommandChanged := redactOpenSSLSubcommandCredentialArguments(redacted)
 	redacted, positionalChanged := redactOpenSSLPasswdPositionalArguments(redacted)
-	return redacted, flagChanged || positionalChanged
+	return redacted, flagChanged || subcommandChanged || positionalChanged
+}
+
+func redactOpenSSLSubcommandCredentialArguments(value string) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		commandStart, subcommand, ok := openSSLCommand(command)
+		if pattern := opensslSubcommandCredentialPatterns[subcommand]; ok && pattern != nil {
+			redacted, commandChanged := redactCommandCredentialFlagValues(command[commandStart:], pattern)
+			if commandChanged {
+				command = command[:commandStart] + redacted
+				result = result[:start] + command + result[end:]
+				changed = true
+			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+func redactCommandCredentialFlagValues(command string, pattern *regexp.Regexp) (string, bool) {
+	result := command
+	changed := false
+	for searchStart := 0; searchStart < len(result); {
+		match := pattern.FindStringIndex(result[searchStart:])
+		if match == nil {
+			break
+		}
+		valueStart := searchStart + match[1]
+		valueEnd := findCredentialShellWordEnd(result, valueStart)
+		if valueEnd <= valueStart {
+			searchStart = valueStart
+			continue
+		}
+		if result[valueStart:valueEnd] == redactionMarker {
+			searchStart = valueEnd
+			continue
+		}
+		result = result[:valueStart] + redactionMarker + result[valueEnd:]
+		searchStart = valueStart + len(redactionMarker)
+		changed = true
+	}
+	return result, changed
+}
+
+func openSSLCommand(command string) (int, string, bool) {
+	spans := splitCredentialShellWordSpans(command)
+	words := make([]string, 0, len(spans))
+	for _, span := range spans {
+		words = append(words, span.value)
+	}
+	for index, word := range words {
+		baseName := commandBaseName(word)
+		if (baseName != "openssl" && baseName != "openssl.exe") || !isCredentialCommandPrefix(words[:index]) {
+			continue
+		}
+		if index+1 >= len(words) {
+			return 0, "", false
+		}
+		for subcommandIndex := index + 1; subcommandIndex < len(words); subcommandIndex++ {
+			option := strings.ToLower(strings.Trim(words[subcommandIndex], `"'`))
+			if option == "--" {
+				continue
+			}
+			if !strings.HasPrefix(option, "-") || option == "-" {
+				return spans[index].start, option, true
+			}
+			requiresArgument, allowed := openSSLGlobalOption(option)
+			if !allowed {
+				return 0, "", false
+			}
+			if requiresArgument {
+				subcommandIndex++
+				if subcommandIndex >= len(words) {
+					return 0, "", false
+				}
+			}
+		}
+		return 0, "", false
+	}
+	return 0, "", false
+}
+
+func openSSLGlobalOption(option string) (bool, bool) {
+	name, _, attached := strings.Cut(option, "=")
+	name = strings.TrimLeft(name, "-")
+	switch name {
+	case "config", "provider", "provider-path", "propquery":
+		return !attached, true
+	default:
+		return false, false
+	}
 }
 
 func redactOpenSSLPasswdPositionalArguments(value string) (string, bool) {
@@ -4798,12 +4913,12 @@ func redactCurlUserCredentialArguments(value string) (string, bool) {
 	for start := 0; start < len(result); {
 		end := findShellCommandEnd(result, start)
 		command := result[start:end]
-		if isNamedCredentialCommand(command, "curl") {
+		if commandStart, ok := namedCredentialCommandStart(command, "curl"); ok {
 			for _, rule := range curlUserCredentialRedactionRules {
-				redacted := rule.pattern.ReplaceAllString(command, rule.replacement)
-				if redacted != command {
-					result = result[:start] + redacted + result[end:]
-					command = redacted
+				redacted := rule.pattern.ReplaceAllString(command[commandStart:], rule.replacement)
+				if redacted != command[commandStart:] {
+					command = command[:commandStart] + redacted
+					result = result[:start] + command + result[end:]
 					changed = true
 				}
 			}
@@ -4827,12 +4942,12 @@ func redactDockerLoginCredentialArguments(value string) (string, bool) {
 	for start := 0; start < len(result); {
 		end := findShellCommandEnd(result, start)
 		command := result[start:end]
-		if isDockerLoginCommand(command) {
-			redacted, _ := redactAttachedShortCredentialArguments(command, "p")
+		if commandStart, ok := dockerLoginCommandStart(command); ok {
+			redacted, _ := redactAttachedShortCredentialArguments(command[commandStart:], "p")
 			redacted = dockerLoginCredentialFlagPattern.ReplaceAllString(redacted, `${1}${2}`+redactionMarker)
-			if redacted != command {
-				result = result[:start] + redacted + result[end:]
-				command = redacted
+			if redacted != command[commandStart:] {
+				command = command[:commandStart] + redacted
+				result = result[:start] + command + result[end:]
 				changed = true
 			}
 		}
@@ -4849,17 +4964,21 @@ func redactDockerLoginCredentialArguments(value string) (string, bool) {
 	return result, changed
 }
 
-func isDockerLoginCommand(command string) bool {
-	words := credentialCommandWords(command)
+func dockerLoginCommandStart(command string) (int, bool) {
+	spans := splitCredentialShellWordSpans(command)
+	words := make([]string, 0, len(spans))
+	for _, span := range spans {
+		words = append(words, span.value)
+	}
 	for index, word := range words {
 		baseName := commandBaseName(word)
 		if (baseName != "docker" && baseName != "docker.exe") || !isCredentialCommandPrefix(words[:index]) {
 			continue
 		}
 		subcommand, ok := dockerSubcommand(words[index+1:])
-		return ok && subcommand == "login"
+		return spans[index].start, ok && subcommand == "login"
 	}
-	return false
+	return 0, false
 }
 
 func dockerSubcommand(words []string) (string, bool) {
@@ -4922,11 +5041,11 @@ func redactNamedCommandCredentialArguments(value, commandName string, pattern *r
 	for start := 0; start < len(result); {
 		end := findShellCommandEnd(result, start)
 		command := result[start:end]
-		if isNamedCredentialCommand(command, commandName) {
-			redacted := pattern.ReplaceAllString(command, `${1}${2}`+redactionMarker)
-			if redacted != command {
-				result = result[:start] + redacted + result[end:]
-				command = redacted
+		if commandStart, ok := namedCredentialCommandStart(command, commandName); ok {
+			redacted := pattern.ReplaceAllString(command[commandStart:], `${1}${2}`+redactionMarker)
+			if redacted != command[commandStart:] {
+				command = command[:commandStart] + redacted
+				result = result[:start] + command + result[end:]
 				changed = true
 			}
 		}
@@ -4949,11 +5068,11 @@ func redactNamedCommandAttachedShortCredentialArguments(value, commandName, flag
 	for start := 0; start < len(result); {
 		end := findShellCommandEnd(result, start)
 		command := result[start:end]
-		if isNamedCredentialCommand(command, commandName) {
-			redacted, commandChanged := redactAttachedShortCredentialArguments(command, flags)
+		if commandStart, ok := namedCredentialCommandStart(command, commandName); ok {
+			redacted, commandChanged := redactAttachedShortCredentialArguments(command[commandStart:], flags)
 			if commandChanged {
-				result = result[:start] + redacted + result[end:]
-				command = redacted
+				command = command[:commandStart] + redacted
+				result = result[:start] + command + result[end:]
 				changed = true
 			}
 		}
@@ -5004,15 +5123,19 @@ func redactAttachedShortCredentialArguments(command, flags string) (string, bool
 	return result, changed
 }
 
-func isNamedCredentialCommand(command, commandName string) bool {
-	words := credentialCommandWords(command)
+func namedCredentialCommandStart(command, commandName string) (int, bool) {
+	spans := splitCredentialShellWordSpans(command)
+	words := make([]string, 0, len(spans))
+	for _, span := range spans {
+		words = append(words, span.value)
+	}
 	for index, word := range words {
 		baseName := commandBaseName(word)
 		if (baseName == commandName || baseName == commandName+".exe") && isCredentialCommandPrefix(words[:index]) {
-			return true
+			return spans[index].start, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 func redactSecurityCredentialArguments(value string) (string, bool) {
@@ -5021,13 +5144,13 @@ func redactSecurityCredentialArguments(value string) (string, bool) {
 	for start := 0; start < len(result); {
 		end := findShellCommandEnd(result, start)
 		command := result[start:end]
-		if subcommand, ok := securitySubcommand(command); ok {
+		if commandStart, subcommand, ok := securityCommand(command); ok {
 			if pattern := securityCredentialFlagPatterns[subcommand]; pattern != nil {
-				redacted, _ := redactAttachedShortCredentialArguments(command, securityAttachedCredentialFlags[subcommand])
+				redacted, _ := redactAttachedShortCredentialArguments(command[commandStart:], securityAttachedCredentialFlags[subcommand])
 				redacted = pattern.ReplaceAllString(redacted, `${1}${2}`+redactionMarker)
-				if redacted != command {
-					result = result[:start] + redacted + result[end:]
-					command = redacted
+				if redacted != command[commandStart:] {
+					command = command[:commandStart] + redacted
+					result = result[:start] + command + result[end:]
 					changed = true
 				}
 			}
@@ -5045,8 +5168,12 @@ func redactSecurityCredentialArguments(value string) (string, bool) {
 	return result, changed
 }
 
-func securitySubcommand(command string) (string, bool) {
-	words := credentialCommandWords(command)
+func securityCommand(command string) (int, string, bool) {
+	spans := splitCredentialShellWordSpans(command)
+	words := make([]string, 0, len(spans))
+	for _, span := range spans {
+		words = append(words, span.value)
+	}
 	for index, word := range words {
 		word = strings.Trim(word, `"'`)
 		if separator := strings.LastIndexAny(word, `/\\`); separator >= 0 {
@@ -5061,11 +5188,11 @@ func securitySubcommand(command string) (string, bool) {
 				continue
 			}
 			_, known := securityCredentialFlagPatterns[candidate]
-			return candidate, known
+			return spans[index].start, candidate, known
 		}
-		return "", false
+		return 0, "", false
 	}
-	return "", false
+	return 0, "", false
 }
 
 func isCredentialCommandPrefix(words []string) bool {
@@ -5964,6 +6091,10 @@ func splitCredentialShellWordSpans(value string) []credentialShellWord {
 			wordStart = index
 		}
 		switch {
+		case character == '\\' && quote != '\'' && index+1 < len(value) && value[index+1] == '\n':
+			index++
+		case character == '\\' && quote != '\'' && index+2 < len(value) && value[index+1] == '\r' && value[index+2] == '\n':
+			index += 2
 		case character == '\\' && quote != '\'' && index+1 < len(value):
 			started = true
 			word.WriteByte(character)

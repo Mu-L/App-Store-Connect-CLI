@@ -2004,6 +2004,11 @@ status: failed`,
 			want:  `curl -u [REDACTED] https://example.test`,
 		},
 		{
+			name:  "curl user after similarly named wrapper option",
+			input: `sudo -u build curl -u alice:supersensitive https://example.test`,
+			want:  `sudo -u build curl -u [REDACTED] https://example.test`,
+		},
+		{
 			name:  "curl attached short user password flag",
 			input: `curl -ualice:supersensitive https://example.test`,
 			want:  `curl -u[REDACTED] https://example.test`,
@@ -2124,6 +2129,21 @@ status: failed`,
 			want:  `security unlock-keychain -p [REDACTED] build.keychain`,
 		},
 		{
+			name:  "security password after unindented continuation",
+			input: "security unlock-keychain \\\n-popaque-credential build.keychain",
+			want:  "security unlock-keychain \\\n-p[REDACTED] build.keychain",
+		},
+		{
+			name:  "security password after similarly named wrapper option",
+			input: `sudo -p public-prompt security unlock-keychain -p opaque-credential build.keychain`,
+			want:  `sudo -p public-prompt security unlock-keychain -p [REDACTED] build.keychain`,
+		},
+		{
+			name:  "security password through continued wrapper option",
+			input: "sudo -p \\\n public-prompt security unlock-keychain -p opaque-credential build.keychain",
+			want:  "sudo -p \\\n public-prompt security unlock-keychain -p [REDACTED] build.keychain",
+		},
+		{
 			name:  "sudo security partition list keychain password",
 			input: `sudo /usr/bin/security set-key-partition-list -S apple-tool:,apple: -s -k 'opaque credential' build.keychain`,
 			want:  `sudo /usr/bin/security set-key-partition-list -S apple-tool:,apple: -s -k [REDACTED] build.keychain`,
@@ -2154,9 +2174,54 @@ status: failed`,
 			want:  `openssl pkcs12 -export -passout [REDACTED] -passin [REDACTED] -passcerts [REDACTED] -in signing.pem`,
 		},
 		{
+			name:  "OpenSSL passphrase flag after unindented continuation",
+			input: "openssl pkcs12 \\\n-passout pass:opaque-output -in signing.pem",
+			want:  "openssl pkcs12 \\\n-passout [REDACTED] -in signing.pem",
+		},
+		{
 			name:  "OpenSSL enc passphrase and raw key options",
 			input: `openssl enc -aes-256-cbc -k opaque-passphrase -K=0123456789abcdef -pass env:ENC_PASSWORD -in plaintext`,
 			want:  `openssl enc -aes-256-cbc -k [REDACTED] -K=[REDACTED] -pass [REDACTED] -in plaintext`,
+		},
+		{
+			name:  "OpenSSL digest HMAC key",
+			input: `sudo -P openssl dgst -sha256 -hmac "opaque HMAC key" artifact`,
+			want:  `sudo -P openssl dgst -sha256 -hmac [REDACTED] artifact`,
+		},
+		{
+			name:  "OpenSSL digest HMAC key after unindented continuation",
+			input: "openssl dgst \\\n-hmac=opaque-hmac-secret artifact",
+			want:  "openssl dgst \\\n-hmac=[REDACTED] artifact",
+		},
+		{
+			name:  "OpenSSL digest HMAC key from command substitution",
+			input: `openssl -provider default dgst -sha256 -hmac $(printf opaque-hmac-secret) artifact`,
+			want:  `openssl -provider default dgst -sha256 -hmac [REDACTED] artifact`,
+		},
+		{
+			name:  "OpenSSL digest HMAC key with embedded substitution",
+			input: `openssl dgst -hmac prefix$(printf opaque-hmac-secret)suffix artifact`,
+			want:  `openssl dgst -hmac [REDACTED] artifact`,
+		},
+		{
+			name:  "OpenSSL CA private key passphrase",
+			input: `openssl ca -config ca.cnf -key=opaque-ca-passphrase -in request.pem`,
+			want:  `openssl ca -config ca.cnf -key=[REDACTED] -in request.pem`,
+		},
+		{
+			name:  "OpenSSL CA private key passphrase after unindented continuation",
+			input: "openssl ca \\\n-key opaque-ca-passphrase -in request.pem",
+			want:  "openssl ca \\\n-key [REDACTED] -in request.pem",
+		},
+		{
+			name:  "OpenSSL CA private key passphrase from arithmetic expansion",
+			input: `openssl --provider default ca -key $((1000 + 95)) -in request.pem`,
+			want:  `openssl --provider default ca -key [REDACTED] -in request.pem`,
+		},
+		{
+			name:  "OpenSSL CA private key passphrase from backtick substitution",
+			input: "openssl ca -key `printf opaque-ca-secret` -in request.pem",
+			want:  `openssl ca -key [REDACTED] -in request.pem`,
 		},
 		{
 			name:  "OpenSSL passwd positional password",
@@ -2584,6 +2649,16 @@ status: failed`,
 			want:  `sudo --user=build openssl pkcs12 -passout [REDACTED]`,
 		},
 		{
+			name:  "OpenSSL through continued wrapper options",
+			input: "sudo \\\n-P openssl pkcs12 -passout pass:opaque-output",
+			want:  "sudo \\\n-P openssl pkcs12 -passout [REDACTED]",
+		},
+		{
+			name:  "OpenSSL key after similarly named wrapper option",
+			input: `sudo -K openssl enc -K opaque-key -in plaintext`,
+			want:  `sudo -K openssl enc -K [REDACTED] -in plaintext`,
+		},
+		{
 			name:  "OpenSSL through wrapper with quoted option argument",
 			input: `sudo -p "enter credentials: " openssl pkcs12 -export -passout pass:opaque-output`,
 			want:  `sudo -p "enter credentials: " openssl pkcs12 -export -passout [REDACTED]`,
@@ -2634,6 +2709,21 @@ status: failed`,
 			want:  `sudo -u build docker --config /tmp/docker login --username build -p=[REDACTED] registry.example`,
 		},
 		{
+			name:  "Docker password after similarly named wrapper option",
+			input: `sudo -p public-prompt docker login -p opaque-docker-secret registry.example`,
+			want:  `sudo -p public-prompt docker login -p [REDACTED] registry.example`,
+		},
+		{
+			name:  "Docker password after unindented continuation",
+			input: "docker login \\\n-popaque-docker-secret registry.example",
+			want:  "docker login \\\n-p[REDACTED] registry.example",
+		},
+		{
+			name:  "Docker password through continued command wrapper",
+			input: "command \\\n-p docker login -p opaque-docker-secret registry.example",
+			want:  "command \\\n-p docker login -p [REDACTED] registry.example",
+		},
+		{
 			name:  "Windows Docker login short password",
 			input: `C:\Docker\docker.exe login -p "opaque docker secret" registry.example`,
 			want:  `C:\Docker\docker.exe login -p [REDACTED] registry.example`,
@@ -2644,9 +2734,34 @@ status: failed`,
 			want:  `zip -P [REDACTED] archive.zip file`,
 		},
 		{
+			name:  "Zip password after unindented continuation",
+			input: "zip \\\n-Popaque-zip-secret archive.zip file",
+			want:  "zip \\\n-P[REDACTED] archive.zip file",
+		},
+		{
 			name:  "Zip password through wrapper",
 			input: `sudo -u build /usr/bin/zip -P="opaque zip secret" archive.zip file`,
 			want:  `sudo -u build /usr/bin/zip -P=[REDACTED] archive.zip file`,
+		},
+		{
+			name:  "Zip password after similarly named wrapper option",
+			input: `sudo -P zip -P opaque-zip-secret archive.zip file`,
+			want:  `sudo -P zip -P [REDACTED] archive.zip file`,
+		},
+		{
+			name:  "Zip password through continued xargs wrapper",
+			input: "xargs \\\n-P 4 zip -P opaque-zip-secret archive.zip file",
+			want:  "xargs \\\n-P 4 zip -P [REDACTED] archive.zip file",
+		},
+		{
+			name:  "Zip password through continued sudo wrapper",
+			input: "sudo \\\n-P zip -P opaque-zip-secret archive.zip file",
+			want:  "sudo \\\n-P zip -P [REDACTED] archive.zip file",
+		},
+		{
+			name:  "Zip password through continued env wrapper",
+			input: "env \\\n-P /usr/bin zip -P opaque-zip-secret archive.zip file",
+			want:  "env \\\n-P /usr/bin zip -P [REDACTED] archive.zip file",
 		},
 		{
 			name:  "Windows Zip password argument",
@@ -3013,6 +3128,11 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 		`tool -passout public-value`,
 		`tool -k public-value -K public-key`,
 		`openssl enc -iv public-iv -S public-salt -in public-input`,
+		`openssl enc -hmac public-value -in public-input`,
+		`openssl dgst -key public-filename artifact`,
+		`openssl req -key public-filename -in request.pem`,
+		`openssl ca -keyfile public-filename -in request.pem`,
+		`echo openssl dgst -hmac public-value artifact`,
 		`openssl passwd -6 -salt public-salt -in passwords.txt`,
 		`openssl passwd -help public-value`,
 		`if echo openssl pkcs12 -passout pass:public-value; then :; fi`,
@@ -3071,6 +3191,8 @@ func TestRedactSensitiveTextScopesKubectlSecretLiterals(t *testing.T) {
 
 func TestRedactSensitiveTextScopesSecurityCredentialArguments(t *testing.T) {
 	for _, input := range []string{
+		`sudo -p public-prompt security unlock-keychain build.keychain`,
+		`sudo -P security unlock-keychain build.keychain`,
 		`echo security unlock-keychain -p public-value build.keychain`,
 		`sudo echo security unlock-keychain -p public-value build.keychain`,
 		`security export -p output.pem -o exported.pem`,
@@ -3117,6 +3239,7 @@ func TestRedactSensitiveTextScopesJarsignerCredentialArguments(t *testing.T) {
 
 func TestRedactSensitiveTextScopesDockerLoginCredentialArguments(t *testing.T) {
 	for _, input := range []string{
+		`sudo -p public-prompt docker login registry.example`,
 		`echo docker login -p public-value registry.example`,
 		`sudo echo docker login -p public-value registry.example`,
 		`docker run -p 8080:80 image`,
@@ -3134,6 +3257,8 @@ func TestRedactSensitiveTextScopesDockerLoginCredentialArguments(t *testing.T) {
 
 func TestRedactSensitiveTextScopesZipCredentialArguments(t *testing.T) {
 	for _, input := range []string{
+		`sudo -P zip archive.zip file`,
+		`sudo -P unzip archive.zip`,
 		`echo zip -P public-value archive.zip file`,
 		`sudo echo zip -P public-value archive.zip file`,
 		`tool -P public-value`,
