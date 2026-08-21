@@ -85,6 +85,9 @@ Examples:
   asc apps content-rights edit --app "APP_ID" --uses-third-party-content=false
   asc apps --limit 10
   asc apps --sort name
+  asc apps --sort sku
+  asc apps --version-state IN_REVIEW,WAITING_FOR_REVIEW
+  asc apps --review-submission-state IN_REVIEW
   asc apps --app-info-fields kidsAgeBand --iap-fields versions --subscription-group-fields versions
   asc apps --output table
   asc apps --next "<links.next>"
@@ -153,6 +156,9 @@ Examples:
   asc apps list --name "My App"
   asc apps list --limit 10
   asc apps list --sort name
+  asc apps list --sort sku
+  asc apps list --version-state IN_REVIEW,WAITING_FOR_REVIEW
+  asc apps list --review-submission-state IN_REVIEW
   asc apps list --app-info-fields kidsAgeBand --iap-fields versions --subscription-group-fields versions
   asc apps list --output table
   asc apps list --next "<links.next>"
