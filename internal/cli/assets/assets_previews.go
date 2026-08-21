@@ -922,8 +922,6 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 
 	uploadCtx, cancel := contextWithAssetUploadTimeout(ctx)
 	defer cancel()
-	rollbackCtx, rollbackCancel := shared.ContextWithTimeout(shared.ContextWithoutTimeout(ctx))
-	defer rollbackCancel()
 
 	if replace {
 		if err := deleteExistingPreviews(uploadCtx, client, existingPreviews); err != nil {
@@ -931,7 +929,7 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 		}
 	}
 
-	results, err := uploadPreviewFiles(uploadCtx, rollbackCtx, client, set.ID, files, uploadPreviewAsset)
+	results, err := uploadPreviewFiles(uploadCtx, ctx, client, set.ID, files, uploadPreviewAsset)
 	if err != nil {
 		return asc.AppPreviewUploadResult{}, err
 	}
@@ -965,7 +963,7 @@ func getAllAppPreviews(ctx context.Context, client *asc.Client, setID string) ([
 
 type previewAssetUploadFunc func(context.Context, *asc.Client, string, string) (asc.AssetUploadResultItem, error)
 
-func uploadPreviewFiles(uploadCtx, rollbackCtx context.Context, client *asc.Client, setID string, files []string, upload previewAssetUploadFunc) ([]asc.AssetUploadResultItem, error) {
+func uploadPreviewFiles(uploadCtx, rollbackBase context.Context, client *asc.Client, setID string, files []string, upload previewAssetUploadFunc) ([]asc.AssetUploadResultItem, error) {
 	results := make([]asc.AssetUploadResultItem, 0, len(files))
 	for _, filePath := range files {
 		item, err := upload(uploadCtx, client, setID, filePath)
@@ -976,7 +974,12 @@ func uploadPreviewFiles(uploadCtx, rollbackCtx context.Context, client *asc.Clie
 				rollbackItems = append(rollbackItems, item)
 			}
 			if len(rollbackItems) > 0 {
-				if rollbackErr := deleteUploadedPreviews(rollbackCtx, client, rollbackItems); rollbackErr != nil {
+				rollbackErr := func() error {
+					rollbackCtx, rollbackCancel := shared.ContextWithTimeout(shared.ContextWithoutTimeout(rollbackBase))
+					defer rollbackCancel()
+					return deleteUploadedPreviews(rollbackCtx, client, rollbackItems)
+				}()
+				if rollbackErr != nil {
 					return nil, errors.Join(err, fmt.Errorf("roll back previews created by this upload: %w", rollbackErr))
 				}
 			}
