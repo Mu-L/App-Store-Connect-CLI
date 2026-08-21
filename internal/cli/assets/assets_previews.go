@@ -975,7 +975,8 @@ func uploadPreviewFiles(uploadCtx, rollbackBase context.Context, client *asc.Cli
 			}
 			if len(rollbackItems) > 0 {
 				rollbackErr := func() error {
-					rollbackCtx, rollbackCancel := shared.ContextWithTimeout(shared.ContextWithoutTimeout(rollbackBase))
+					rollbackParent := context.WithoutCancel(shared.ContextWithoutTimeout(rollbackBase))
+					rollbackCtx, rollbackCancel := shared.ContextWithTimeout(rollbackParent)
 					defer rollbackCancel()
 					return deleteUploadedPreviews(rollbackCtx, client, rollbackItems)
 				}()
