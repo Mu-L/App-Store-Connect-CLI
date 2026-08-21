@@ -569,6 +569,10 @@ func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, sshKeygenChanged := redactSSHKeygenCredentialArguments(redacted); sshKeygenChanged {
+		redacted = next
+		changed = true
+	}
 	if next, zipChanged := redactZipCredentialArguments(redacted); zipChanged {
 		redacted = next
 		changed = true
@@ -5182,6 +5186,103 @@ func dockerGlobalOption(option string) (bool, bool) {
 	default:
 		return false, false
 	}
+}
+
+func redactSSHKeygenCredentialArguments(value string) (string, bool) {
+	type replacement struct {
+		start int
+		end   int
+		text  string
+	}
+
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		spans := splitCredentialShellWordSpans(command)
+		words := make([]string, 0, len(spans))
+		for _, span := range spans {
+			words = append(words, span.value)
+		}
+
+		replacements := make([]replacement, 0, 2)
+		for commandIndex, word := range words {
+			baseName := commandBaseName(word)
+			if (baseName != "ssh-keygen" && baseName != "ssh-keygen.exe") || !isCredentialCommandPrefix(words[:commandIndex]) {
+				continue
+			}
+		options:
+			for optionIndex := commandIndex + 1; optionIndex < len(words); optionIndex++ {
+				option := strings.Trim(words[optionIndex], `"'`)
+				if option == "--" || len(option) < 2 || option[0] != '-' || option == "-" || option[1] == '-' {
+					break
+				}
+
+				for flagIndex := 1; flagIndex < len(option); flagIndex++ {
+					flag := option[flagIndex]
+					if strings.ContainsRune("ABHKLQUXceghiklopquvy", rune(flag)) {
+						continue
+					}
+					if !strings.ContainsRune("CDEFIMNOPRVYZabfgmnrstwz", rune(flag)) {
+						break options
+					}
+
+					attached := flagIndex+1 < len(option)
+					argumentSpanIndex := optionIndex
+					if !attached {
+						if optionIndex+1 >= len(words) {
+							break options
+						}
+						argumentSpanIndex = optionIndex + 1
+					}
+					argumentEnd := credentialShellArgumentEnd(command, spans[argumentSpanIndex])
+					if flag == 'N' || flag == 'P' {
+						if attached {
+							valueStart := flagIndex + 1
+							if option[valueStart] == '=' {
+								valueStart++
+							}
+							if option[valueStart:] != redactionMarker {
+								prefix := option[:valueStart]
+								replacements = append(replacements, replacement{start: spans[optionIndex].start, end: argumentEnd, text: prefix + redactionMarker})
+							}
+						} else {
+							passphraseSpan := spans[argumentSpanIndex]
+							if strings.Trim(words[argumentSpanIndex], `"'`) != redactionMarker {
+								replacements = append(replacements, replacement{start: passphraseSpan.start, end: argumentEnd, text: redactionMarker})
+							}
+						}
+					}
+					optionIndex = argumentSpanIndex
+					for optionIndex+1 < len(spans) && spans[optionIndex+1].start < argumentEnd {
+						optionIndex++
+					}
+					continue options
+				}
+			}
+			break
+		}
+
+		for index := len(replacements) - 1; index >= 0; index-- {
+			replacement := replacements[index]
+			command = command[:replacement.start] + replacement.text + command[replacement.end:]
+			changed = true
+		}
+		if len(replacements) > 0 {
+			result = result[:start] + command + result[end:]
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
 }
 
 func redactNamedCommandCredentialArguments(value, commandName string, pattern *regexp.Regexp) (string, bool) {
