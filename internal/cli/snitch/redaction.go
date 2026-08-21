@@ -20,6 +20,7 @@ const (
 	oversizedFieldMarker      = "[REDACTED: oversized report field omitted]"
 	redactionNotice           = "Note: sensitive values were redacted from the snitch report."
 	maxRedactionFieldBytes    = 64 * 1024
+	maxShellRedactionDepth    = 32
 
 	sensitiveAssignmentName     = `(?:_auth|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|client[_-]?key[_-]?data|app[_-]?secret|webhook[_-]?secret|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|secret[_-]?key(?:[_-]?base)?|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passphrase|passwd|pwd|secret|token)`
 	delimitedPassName           = `_*(?:(?:[a-z0-9]+[_-])+)?pass`
@@ -58,6 +59,9 @@ const (
 	escapeAwareQuotedValue      = `(?:"(?:` + escapedQuotedCharacter + `|` + powerShellEscapedCharacter + `|[^"\\\x60])*"|\$?'(?:''|` + escapedQuotedCharacter + `|[^'\\])*')`
 	unterminatedQuotedValue     = `(?s:".*|\$?'.*)`
 	shellUnquotedValue          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()"'])+`
+	commandShortSubstitution    = `(?:\x60(?:\\.|[^\x60\\\r\n])*\x60|\$\((?:\\.|[^()\\\r\n]|\((?:\\.|[^()\\\r\n])*\))*\))`
+	commandShortUnquotedValue   = `(?:\\[^\r\n]|[^\s\\;&|<>()"'\x60^$])+`
+	commandShortShellWord       = `(?:` + singleLineQuotedValue + `|` + commandShortSubstitution + `|` + powerShellEscapedCharacter + `|` + cmdEscapedCharacter + `|` + commandShortUnquotedValue + `|\$)+`
 	structuredUnquotedValue     = `(?:\\(?:\r?\n|[^\r\n])|[^\s,;&|<>()"'{}\[\]])+`
 	flagUnquotedValue           = `(?:\\[^\r\n]|-[^-\s\\;&|<>()]|[^-\s\\;&|<>()])(?:\\[^\r\n]|[^\s;&|<>()])*`
 	commandFlagUnquotedValue    = `(?:\\[^\r\n]|-[^-\s\\;&|<>()"']|[^-\s\\;&|<>()"'])(?:\\[^\r\n]|[^\s;&|<>()"'])*`
@@ -125,6 +129,20 @@ var (
 		"export":                               newCommandShortCredentialFlagPattern("P"),
 		"cms":                                  newCommandShortCredentialFlagPattern("p"),
 		"create-filevaultmaster-keychain":      newCommandShortCredentialFlagPattern("p"),
+	}
+	securityAttachedCredentialFlags = map[string]string{
+		"create-keychain":                      "p",
+		"unlock-keychain":                      "p",
+		"set-keychain-password":                "op",
+		"add-generic-password":                 "pwX",
+		"add-internet-password":                "wX",
+		"set-generic-password-partition-list":  "k",
+		"set-internet-password-partition-list": "k",
+		"set-key-partition-list":               "k",
+		"import":                               "P",
+		"export":                               "P",
+		"cms":                                  "p",
+		"create-filevaultmaster-keychain":      "p",
 	}
 	opensslCredentialFlagPattern          = newCommandCredentialFlagPattern("passin", "passout", "passcerts", "pass", "k", "K")
 	keytoolCredentialFlagPattern          = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass", "new", "srcstorepass", "deststorepass", "srckeypass", "destkeypass")
@@ -475,8 +493,12 @@ func redactSensitiveText(value string) (string, bool) {
 
 func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 	redacted, changed := boundRedactionInput(value)
-	if depth < 8 {
+	if depth < maxShellRedactionDepth {
 		if next, substitutionChanged := redactShellCommandSubstitutionContents(redacted, depth); substitutionChanged {
+			redacted = next
+			changed = true
+		}
+		if next, subshellChanged := redactShellSubshellGroupContents(redacted, depth); subshellChanged {
 			redacted = next
 			changed = true
 		}
@@ -4607,7 +4629,7 @@ func newCommandShortCredentialFlagPattern(flags ...string) *regexp.Regexp {
 	for _, flag := range flags {
 		escapedFlags = append(escapedFlags, regexp.QuoteMeta(flag))
 	}
-	return regexp.MustCompile(`(^|[ \t])(-(?:` + strings.Join(escapedFlags, "|") + `)(?:(?:` + shellCommandPathSeparator + `|[ \t]*=[ \t]*))?)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + commandFlagUnquotedValue + `)`)
+	return regexp.MustCompile(`(^|[ \t])(-(?:` + strings.Join(escapedFlags, "|") + `)(?:(?:[ \t]*=[ \t]*|` + shellCommandPathSeparator + `))?)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + commandShortShellWord + `|` + unterminatedQuotedValue + `)`)
 }
 
 func redactOpenSSLCredentialArguments(value string) (string, bool) {
@@ -4630,7 +4652,8 @@ func redactOpenSSLPasswdPositionalArguments(value string) (string, bool) {
 
 		if passwordIndex, ok := openSSLPasswdPasswordWordIndex(words); ok {
 			span := spans[passwordIndex]
-			command = command[:span.start] + redactionMarker + command[span.end:]
+			redactionEnd := credentialShellArgumentEnd(command, span)
+			command = command[:span.start] + redactionMarker + command[redactionEnd:]
 			result = result[:start] + command + result[end:]
 			changed = true
 		}
@@ -4649,7 +4672,8 @@ func redactOpenSSLPasswdPositionalArguments(value string) (string, bool) {
 
 func openSSLPasswdPasswordWordIndex(words []string) (int, bool) {
 	for opensslIndex, word := range words {
-		if commandBaseName(word) != "openssl" || !isCredentialCommandPrefix(words[:opensslIndex]) {
+		baseName := commandBaseName(word)
+		if (baseName != "openssl" && baseName != "openssl.exe") || !isCredentialCommandPrefix(words[:opensslIndex]) {
 			continue
 		}
 		if opensslIndex+1 >= len(words) || strings.Trim(words[opensslIndex+1], `"'`) != "passwd" {
@@ -4664,7 +4688,7 @@ func openSSLPasswdPasswordWordIndex(words []string) (int, bool) {
 				return index + 1, index+1 < len(words)
 			}
 			if !strings.HasPrefix(option, "-") || option == "-" {
-				if option == redactionMarker {
+				if strings.TrimRight(option, ")") == redactionMarker {
 					return 0, false
 				}
 				return index, true
@@ -4694,6 +4718,60 @@ func openSSLPasswdPasswordWordIndex(words []string) (int, bool) {
 	return 0, false
 }
 
+func credentialShellArgumentEnd(command string, span credentialShellWord) int {
+	end := findCredentialShellWordEnd(command, span.start)
+	if end < span.end {
+		return span.end
+	}
+	return end
+}
+
+func findCredentialShellWordEnd(value string, start int) int {
+	var quote byte
+	for index := start; index < len(value); index++ {
+		if quote != 0 {
+			if value[index] == '\\' && quote == '"' && index+1 < len(value) {
+				index++
+				continue
+			}
+			if value[index] == quote {
+				quote = 0
+			}
+			continue
+		}
+		if value[index] == '\\' && index+1 < len(value) {
+			index++
+			continue
+		}
+		if value[index] == '\'' || value[index] == '"' {
+			quote = value[index]
+			continue
+		}
+
+		open := -1
+		switch {
+		case value[index] == '$' && index+1 < len(value) && value[index+1] == '(':
+			open = index
+		case value[index] == '`':
+			open = index
+		case (value[index] == '<' || value[index] == '>') && index+1 < len(value) && value[index+1] == '(':
+			open = index + 1
+		}
+		if open >= 0 {
+			if close := findShellCommandSubstitutionEnd(value, open); close >= 0 {
+				index = close
+				continue
+			}
+			return len(value)
+		}
+
+		if strings.ContainsRune(" \t\r\n;&|<>()", rune(value[index])) {
+			return index
+		}
+	}
+	return len(value)
+}
+
 func redactKeytoolCredentialArguments(value string) (string, bool) {
 	return redactNamedCommandCredentialArguments(value, "keytool", keytoolCredentialFlagPattern)
 }
@@ -4703,11 +4781,15 @@ func redactJarsignerCredentialArguments(value string) (string, bool) {
 }
 
 func redactZipCredentialArguments(value string) (string, bool) {
-	return redactNamedCommandCredentialArguments(value, "zip", zipCredentialFlagPattern)
+	redacted, attachedChanged := redactNamedCommandAttachedShortCredentialArguments(value, "zip", "P")
+	redacted, patternChanged := redactNamedCommandCredentialArguments(redacted, "zip", zipCredentialFlagPattern)
+	return redacted, attachedChanged || patternChanged
 }
 
 func redactUnzipCredentialArguments(value string) (string, bool) {
-	return redactNamedCommandCredentialArguments(value, "unzip", zipCredentialFlagPattern)
+	redacted, attachedChanged := redactNamedCommandAttachedShortCredentialArguments(value, "unzip", "P")
+	redacted, patternChanged := redactNamedCommandCredentialArguments(redacted, "unzip", zipCredentialFlagPattern)
+	return redacted, attachedChanged || patternChanged
 }
 
 func redactCurlUserCredentialArguments(value string) (string, bool) {
@@ -4746,7 +4828,8 @@ func redactDockerLoginCredentialArguments(value string) (string, bool) {
 		end := findShellCommandEnd(result, start)
 		command := result[start:end]
 		if isDockerLoginCommand(command) {
-			redacted := dockerLoginCredentialFlagPattern.ReplaceAllString(command, `${1}${2}`+redactionMarker)
+			redacted, _ := redactAttachedShortCredentialArguments(command, "p")
+			redacted = dockerLoginCredentialFlagPattern.ReplaceAllString(redacted, `${1}${2}`+redactionMarker)
 			if redacted != command {
 				result = result[:start] + redacted + result[end:]
 				command = redacted
@@ -4860,6 +4943,67 @@ func redactNamedCommandCredentialArguments(value, commandName string, pattern *r
 	return result, changed
 }
 
+func redactNamedCommandAttachedShortCredentialArguments(value, commandName, flags string) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		if isNamedCredentialCommand(command, commandName) {
+			redacted, commandChanged := redactAttachedShortCredentialArguments(command, flags)
+			if commandChanged {
+				result = result[:start] + redacted + result[end:]
+				command = redacted
+				changed = true
+			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+func redactAttachedShortCredentialArguments(command, flags string) (string, bool) {
+	result := command
+	changed := false
+	for index := 0; index < len(result); {
+		if strings.ContainsRune(" \t\r\n;&|<>()", rune(result[index])) {
+			index++
+			continue
+		}
+		end := findCredentialShellWordEnd(result, index)
+		if end <= index {
+			index++
+			continue
+		}
+		word := result[index:end]
+		if len(word) <= 2 || word[0] != '-' || word[1] == '-' || !strings.ContainsRune(flags, rune(word[1])) {
+			index = end
+			continue
+		}
+		valueStart := 2
+		if word[valueStart] == '=' {
+			valueStart++
+		}
+		if valueStart >= len(word) || word[valueStart:] == redactionMarker {
+			index = end
+			continue
+		}
+		redacted := word[:valueStart] + redactionMarker
+		result = result[:index] + redacted + result[end:]
+		index += len(redacted)
+		changed = true
+	}
+	return result, changed
+}
+
 func isNamedCredentialCommand(command, commandName string) bool {
 	words := credentialCommandWords(command)
 	for index, word := range words {
@@ -4879,7 +5023,8 @@ func redactSecurityCredentialArguments(value string) (string, bool) {
 		command := result[start:end]
 		if subcommand, ok := securitySubcommand(command); ok {
 			if pattern := securityCredentialFlagPatterns[subcommand]; pattern != nil {
-				redacted := pattern.ReplaceAllString(command, `${1}${2}`+redactionMarker)
+				redacted, _ := redactAttachedShortCredentialArguments(command, securityAttachedCredentialFlags[subcommand])
+				redacted = pattern.ReplaceAllString(redacted, `${1}${2}`+redactionMarker)
 				if redacted != command {
 					result = result[:start] + redacted + result[end:]
 					command = redacted
@@ -4924,6 +5069,9 @@ func securitySubcommand(command string) (string, bool) {
 }
 
 func isCredentialCommandPrefix(words []string) bool {
+	if isShellArrayAssignmentPrefix(words) {
+		return false
+	}
 	for {
 		for len(words) > 0 && shellAssignmentWord.MatchString(strings.Trim(words[0], `"'`)) {
 			words = words[1:]
@@ -4944,9 +5092,42 @@ func isCredentialCommandPrefix(words []string) bool {
 	}
 }
 
+func isShellArrayAssignmentPrefix(words []string) bool {
+	depth := 0
+	for _, word := range words {
+		word = strings.Trim(word, `"'`)
+		start := 0
+		if depth == 0 {
+			assignment := strings.Index(word, "=(")
+			if assignment <= 0 || !isCredentialShellIdentifier(word[:assignment]) {
+				continue
+			}
+			start = assignment + 1
+		}
+		for index := start; index < len(word); index++ {
+			if word[index] == '\\' && index+1 < len(word) {
+				index++
+				continue
+			}
+			switch word[index] {
+			case '(':
+				depth++
+			case ')':
+				if depth > 0 {
+					depth--
+				}
+			}
+		}
+	}
+	return depth > 0
+}
+
 func consumeShellControlPrefix(words []string) ([]string, bool) {
 	if len(words) == 0 {
 		return nil, false
+	}
+	if remaining, ok := consumeShellFunctionDeclarationPrefix(words); ok {
+		return remaining, true
 	}
 	word := strings.Trim(words[0], `"'`)
 	switch word {
@@ -4969,6 +5150,51 @@ func consumeShellControlPrefix(words []string) ([]string, bool) {
 		return words[1:], true
 	}
 	return nil, false
+}
+
+func consumeShellFunctionDeclarationPrefix(words []string) ([]string, bool) {
+	trimmed := func(index int) string { return strings.Trim(words[index], `"'`) }
+	if name := strings.TrimSuffix(trimmed(0), "(){"); name != trimmed(0) && isCredentialShellIdentifier(name) {
+		return words[1:], true
+	}
+	if len(words) >= 2 {
+		name := trimmed(0)
+		if strings.HasSuffix(name, "()") && isCredentialShellIdentifier(strings.TrimSuffix(name, "()")) && trimmed(1) == "{" {
+			return words[2:], true
+		}
+		if trimmed(0) == "function" {
+			name = strings.TrimSuffix(trimmed(1), "(){")
+			if name != trimmed(1) && isCredentialShellIdentifier(name) {
+				return words[2:], true
+			}
+		}
+	}
+	if len(words) >= 3 && isCredentialShellIdentifier(trimmed(0)) && trimmed(1) == "()" && trimmed(2) == "{" {
+		return words[3:], true
+	}
+	if len(words) >= 3 && trimmed(0) == "function" {
+		name := strings.TrimSuffix(trimmed(1), "()")
+		if isCredentialShellIdentifier(name) && trimmed(2) == "{" {
+			return words[3:], true
+		}
+	}
+	return nil, false
+}
+
+func isCredentialShellIdentifier(value string) bool {
+	if value == "" || !isCredentialShellIdentifierStart(value[0]) {
+		return false
+	}
+	for index := 1; index < len(value); index++ {
+		if !isCredentialShellIdentifierStart(value[index]) && (value[index] < '0' || value[index] > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func isCredentialShellIdentifierStart(character byte) bool {
+	return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || character == '_'
 }
 
 func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
@@ -5002,6 +5228,9 @@ func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
 	}
 	if wrapper == "find" || wrapper == "gfind" {
 		return consumeFindExecCredentialWrapper(words[1:])
+	}
+	if wrapper == "watch" {
+		return consumeWatchCredentialWrapper(words[1:])
 	}
 	if wrapper != "sudo" && wrapper != "doas" && wrapper != "command" && wrapper != "env" {
 		return nil, false
@@ -5047,7 +5276,16 @@ func consumeXargsCredentialWrapper(words []string) ([]string, bool) {
 		if strings.HasPrefix(option, "--") {
 			name, value, attached := strings.Cut(option, "=")
 			switch name {
-			case "--arg-file", "--delimiter", "--eof", "--replace", "--max-lines", "--max-args", "--max-procs", "--max-chars":
+			case "--eof", "--replace":
+				words = words[1:]
+				continue
+			case "--max-lines":
+				words = words[1:]
+				if attached && value == "" {
+					return nil, false
+				}
+				continue
+			case "--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars", "--process-slot-var":
 				words = words[1:]
 				if !attached {
 					if len(words) == 0 {
@@ -5074,7 +5312,11 @@ func consumeXargsCredentialWrapper(words []string) ([]string, bool) {
 			switch option[index] {
 			case '0', 'o', 'p', 'r', 't', 'x':
 				continue
-			case 'a', 'd', 'E', 'e', 'I', 'i', 'L', 'l', 'n', 'P', 's':
+			case 'e', 'i', 'l':
+				// GNU xargs treats these compatibility options as having an
+				// optional attached value. A following word is the command.
+				index = len(option)
+			case 'a', 'd', 'E', 'I', 'J', 'L', 'n', 'P', 'R', 'S', 's':
 				requiresArgument = index == len(option)-1
 				index = len(option)
 			default:
@@ -5093,13 +5335,116 @@ func consumeXargsCredentialWrapper(words []string) ([]string, bool) {
 }
 
 func consumeFindExecCredentialWrapper(words []string) ([]string, bool) {
-	for index, word := range words {
-		switch strings.Trim(word, `"'`) {
-		case "-exec", "-execdir":
+	for index := 0; index < len(words); index++ {
+		word := strings.Trim(words[index], `"'`)
+		switch word {
+		case "-exec", "-execdir", "-ok", "-okdir":
 			return words[index+1:], true
+		}
+		argumentCount := findExpressionArgumentCount(word)
+		if argumentCount > 0 {
+			index += argumentCount
 		}
 	}
 	return nil, false
+}
+
+func findExpressionArgumentCount(word string) int {
+	switch word {
+	case "-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-lname", "-ilname",
+		"-regex", "-iregex", "-type", "-xtype", "-user", "-group", "-uid", "-gid", "-perm", "-size",
+		"-Bmin", "-Bnewer", "-Btime", "-atime", "-amin", "-anewer", "-ctime", "-cmin", "-cnewer", "-mtime", "-mmin", "-mnewer", "-newer", "-newermt",
+		"-fstype", "-links", "-inum", "-samefile", "-maxdepth", "-mindepth", "-regextype", "-printf",
+		"-fprint", "-fprint0", "-fls", "-flags", "-used", "-xattrname", "-context", "-f", "-D", "-O", "-files0-from":
+		return 1
+	case "-fprintf":
+		return 2
+	}
+	if len(word) == len("-newerXY") && strings.HasPrefix(word, "-newer") {
+		return 1
+	}
+	return 0
+}
+
+func consumeWatchCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			return words[1:], true
+		}
+		if len(option) < 2 || option[0] != '-' || option == "-" {
+			return words, true
+		}
+		if strings.HasPrefix(option, "--") {
+			name, value, attached := strings.Cut(option, "=")
+			switch name {
+			case "--interval":
+				words = words[1:]
+				if attached {
+					if value == "" {
+						return nil, false
+					}
+					continue
+				}
+				if len(words) == 0 {
+					return nil, false
+				}
+				words = words[1:]
+				continue
+			case "--differences":
+				if attached && value == "" {
+					return nil, false
+				}
+				words = words[1:]
+				continue
+			case "--equexit", "--shotsdir":
+				words = words[1:]
+				if attached {
+					if value == "" {
+						return nil, false
+					}
+					continue
+				}
+				if len(words) == 0 {
+					return nil, false
+				}
+				words = words[1:]
+				continue
+			case "--beep", "--color", "--no-color", "--errexit", "--chgexit", "--exec", "--precise", "--no-title", "--no-rerun", "--no-wrap":
+				if attached {
+					return nil, false
+				}
+				words = words[1:]
+				continue
+			default:
+				return nil, false
+			}
+		}
+
+		requiresArgument := false
+		for index := 1; index < len(option); index++ {
+			switch option[index] {
+			case 'b', 'c', 'C', 'e', 'f', 'g', 'p', 'r', 't', 'w', 'x':
+				continue
+			case 'd':
+				// The cumulative marker is an optional attached value.
+				index = len(option)
+			case 'n', 'q', 's':
+				requiresArgument = index == len(option)-1
+				index = len(option)
+			default:
+				return nil, false
+			}
+		}
+		words = words[1:]
+		if requiresArgument {
+			if len(words) == 0 {
+				return nil, false
+			}
+			words = words[1:]
+		}
+	}
+	return words, true
 }
 
 func consumeNohupCredentialWrapper(words []string) ([]string, bool) {
@@ -5480,15 +5825,22 @@ func credentialWrapperLongOption(wrapper, option string) (bool, bool) {
 
 func commandBaseName(word string) string {
 	prefix := strings.ToLower(strings.Trim(word, `"'`))
+	if strings.HasPrefix(prefix, "((") {
+		return prefix
+	}
+	if assignment := strings.Index(prefix, "=("); assignment > 0 && isCredentialShellIdentifier(prefix[:assignment]) {
+		return prefix
+	}
 	prefix = strings.TrimLeft(prefix, "(")
 	prefix = strings.TrimRight(prefix, ")")
-	windowsPath := len(prefix) >= 3 && prefix[0] >= 'a' && prefix[0] <= 'z' && prefix[1] == ':' && prefix[2] == '\\'
-	if separator := strings.LastIndex(prefix, "/"); separator >= 0 {
-		prefix = prefix[separator+1:]
-	} else if windowsPath || strings.HasPrefix(prefix, `\\`) {
-		if separator := strings.LastIndex(prefix, `\`); separator >= 0 {
+	windowsPath := (len(prefix) >= 3 && prefix[0] >= 'a' && prefix[0] <= 'z' && prefix[1] == ':' && (prefix[2] == '\\' || prefix[2] == '/')) ||
+		strings.HasPrefix(prefix, `\\`) || (strings.HasSuffix(prefix, ".exe") && strings.Contains(prefix, `\`))
+	if windowsPath {
+		if separator := strings.LastIndexAny(prefix, `/\\`); separator >= 0 {
 			prefix = prefix[separator+1:]
 		}
+	} else if separator := strings.LastIndex(prefix, "/"); separator >= 0 {
+		prefix = prefix[separator+1:]
 	}
 	if !windowsPath {
 		var unescaped strings.Builder
@@ -5693,7 +6045,8 @@ func redactShellCommandSubstitutionContents(value string, depth int) (string, bo
 		open := -1
 		contentStart := -1
 		switch {
-		case result[index] == '$' && index+1 < len(result) && result[index+1] == '(':
+		case result[index] == '$' && index+1 < len(result) && result[index+1] == '(' &&
+			(index+2 >= len(result) || result[index+2] != '('):
 			open = index
 			contentStart = index + 2
 		case result[index] == '`' && isShellBacktickSubstitutionStart(result, index):
@@ -5721,6 +6074,113 @@ func redactShellCommandSubstitutionContents(value string, depth int) (string, bo
 		index = close
 	}
 	return result, changed
+}
+
+func redactShellSubshellGroupContents(value string, depth int) (string, bool) {
+	result := value
+	changed := false
+	var quote byte
+	for index := 0; index < len(result); index++ {
+		switch quote {
+		case '\'':
+			if result[index] == '\'' {
+				quote = 0
+			}
+			continue
+		case '"':
+			if result[index] == '"' {
+				quote = 0
+			}
+			continue
+		}
+		if result[index] == '\\' {
+			index++
+			continue
+		}
+		if result[index] == '"' {
+			quote = '"'
+			continue
+		}
+		if quote == 0 && result[index] == '\'' {
+			quote = '\''
+			continue
+		}
+		if quote != 0 || result[index] != '(' || !isShellSubshellGroupStart(result, index) {
+			continue
+		}
+
+		close := findShellCommandSubstitutionEnd(result, index)
+		if close <= index {
+			continue
+		}
+		contentStart := index + 1
+		inner := result[contentStart:close]
+		redacted, innerChanged := redactSensitiveTextDepth(inner, depth+1)
+		if innerChanged {
+			result = result[:contentStart] + redacted + result[close:]
+			close = contentStart + len(redacted)
+			changed = true
+		}
+		index = close
+	}
+	return result, changed
+}
+
+func isShellSubshellGroupStart(value string, index int) bool {
+	if index < 0 || index >= len(value) || value[index] != '(' {
+		return false
+	}
+	if index+1 < len(value) && value[index+1] == '(' {
+		return false
+	}
+	if index > 0 {
+		previous := value[index-1]
+		if previous == '$' || previous == '<' || previous == '>' || previous == '(' {
+			return false
+		}
+		if strings.ContainsRune(";&|{!", rune(previous)) {
+			return true
+		}
+		if !strings.ContainsRune(" \t\r\n", rune(previous)) {
+			return false
+		}
+		if previous == '\r' || previous == '\n' {
+			return true
+		}
+		wordEnd := index - 1
+		for wordEnd >= 0 && (value[wordEnd] == ' ' || value[wordEnd] == '\t') {
+			wordEnd--
+		}
+		if wordEnd < 0 || value[wordEnd] == '\r' || value[wordEnd] == '\n' || strings.ContainsRune(";&|{!", rune(value[wordEnd])) {
+			return true
+		}
+		wordStart := wordEnd
+		for wordStart > 0 && !strings.ContainsRune(" \t\r\n;&|{!", rune(value[wordStart-1])) {
+			wordStart--
+		}
+		switch value[wordStart : wordEnd+1] {
+		case "if", "then", "elif", "while", "until", "do", "else":
+			return true
+		default:
+			return isShellFunctionSubshellBodyPrefix(value[:index])
+		}
+	}
+	return true
+}
+
+func isShellFunctionSubshellBodyPrefix(value string) bool {
+	words := splitCredentialShellWords(value)
+	if len(words) == 0 {
+		return false
+	}
+	last := strings.Trim(words[len(words)-1], `"'`)
+	if strings.HasSuffix(last, "()") && isCredentialShellIdentifier(strings.TrimSuffix(last, "()")) {
+		return true
+	}
+	if len(words) >= 2 && last == "()" && isCredentialShellIdentifier(strings.Trim(words[len(words)-2], `"'`)) {
+		return true
+	}
+	return len(words) >= 2 && strings.Trim(words[len(words)-2], `"'`) == "function" && isCredentialShellIdentifier(last)
 }
 
 func isShellBacktickSubstitutionStart(value string, index int) bool {

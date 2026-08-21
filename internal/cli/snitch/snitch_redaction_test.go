@@ -2169,6 +2169,101 @@ status: failed`,
 			want:  `openssl passwd -- [REDACTED]`,
 		},
 		{
+			name:  "OpenSSL passwd positional password from command substitution",
+			input: `openssl passwd -6 $(printf opaque-command-substitution)`,
+			want:  `openssl passwd -6 [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passwd positional password with embedded command substitution",
+			input: `openssl passwd -6 foo$(printf opaque-command-substitution)bar`,
+			want:  `openssl passwd -6 [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passwd positional password from arithmetic expansion",
+			input: `openssl passwd -6 $((1 + 2))`,
+			want:  `openssl passwd -6 [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passwd positional password from backtick substitution",
+			input: "openssl passwd -6 `printf opaque-backtick-substitution`",
+			want:  `openssl passwd -6 [REDACTED]`,
+		},
+		{
+			name:  "Windows OpenSSL passwd positional password",
+			input: `C:\OpenSSL\bin\openssl.exe passwd -6 opaque-windows-password`,
+			want:  `C:\OpenSSL\bin\openssl.exe passwd -6 [REDACTED]`,
+		},
+		{
+			name:  "relative Windows OpenSSL passwd positional password",
+			input: `.\bin\openssl.exe passwd -6 opaque-windows-password`,
+			want:  `.\bin\openssl.exe passwd -6 [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passwd positional password after command in subshell",
+			input: `(true; openssl passwd -6 opaque-subshell-password)`,
+			want:  `(true; openssl passwd -6 [REDACTED])`,
+		},
+		{
+			name:  "OpenSSL passwd positional password after conditional in subshell",
+			input: `(true && openssl passwd -6 opaque-subshell-password)`,
+			want:  `(true && openssl passwd -6 [REDACTED])`,
+		},
+		{
+			name:  "OpenSSL passwd positional password after pipeline in subshell",
+			input: `(true | openssl passwd -6 opaque-subshell-password)`,
+			want:  `(true | openssl passwd -6 [REDACTED])`,
+		},
+		{
+			name:  "OpenSSL passwd positional password in nested subshell",
+			input: `(true; (openssl passwd -6 opaque-nested-password))`,
+			want:  `(true; (openssl passwd -6 [REDACTED]))`,
+		},
+		{
+			name:  "OpenSSL passwd positional password in subshell after quoted command",
+			input: `echo "safe"; (true; openssl passwd -6 opaque-after-quoted-command)`,
+			want:  `echo "safe"; (true; openssl passwd -6 [REDACTED])`,
+		},
+		{
+			name:  "OpenSSL passwd positional password in subshell condition",
+			input: `if (true; openssl passwd -6 opaque-condition-password); then :; fi`,
+			want:  `if (true; openssl passwd -6 [REDACTED]); then :; fi`,
+		},
+		{
+			name:  "OpenSSL passwd positional password in shell function",
+			input: `sign_password() { openssl passwd -6 opaque-function-password; }`,
+			want:  `sign_password() { openssl passwd -6 [REDACTED]; }`,
+		},
+		{
+			name:  "OpenSSL passwd positional password in compact shell function",
+			input: `sign_password(){ openssl passwd -6 opaque-function-password; }`,
+			want:  `sign_password(){ openssl passwd -6 [REDACTED]; }`,
+		},
+		{
+			name:  "OpenSSL passwd positional password in spaced shell function",
+			input: `sign_password () { openssl passwd -6 opaque-function-password; }`,
+			want:  `sign_password () { openssl passwd -6 [REDACTED]; }`,
+		},
+		{
+			name:  "OpenSSL passwd positional password in function keyword body",
+			input: `function sign_password { openssl passwd -6 opaque-function-password; }`,
+			want:  `function sign_password { openssl passwd -6 [REDACTED]; }`,
+		},
+		{
+			name:  "OpenSSL passwd positional password in function keyword parenthesized body",
+			input: `function sign_password() { openssl passwd -6 opaque-function-password; }`,
+			want:  `function sign_password() { openssl passwd -6 [REDACTED]; }`,
+		},
+		{
+			name:  "OpenSSL passwd positional password in compact function keyword body",
+			input: `function sign_password(){ openssl passwd -6 opaque-function-password; }`,
+			want:  `function sign_password(){ openssl passwd -6 [REDACTED]; }`,
+		},
+		{
+			name:  "OpenSSL passwd positional password in spaced subshell function",
+			input: `sign_password () (true; openssl passwd -6 opaque-function-password)`,
+			want:  `sign_password () (true; openssl passwd -6 [REDACTED])`,
+		},
+		{
 			name:  "OpenSSL credential in if condition",
 			input: `if openssl pkcs12 -export -passout pass:opaque-if-secret; then :; fi`,
 			want:  `if openssl pkcs12 -export -passout [REDACTED]; then :; fi`,
@@ -2204,9 +2299,34 @@ status: failed`,
 			want:  `xargs -0 sh -c 'openssl pkcs12 -export -passout [REDACTED]'`,
 		},
 		{
+			name:  "OpenSSL credential through xargs optional EOF flag",
+			input: `xargs -e openssl pkcs12 -export -passout pass:opaque-xargs-secret`,
+			want:  `xargs -e openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL credential through xargs optional long replace flag",
+			input: `xargs --replace openssl pkcs12 -export -passout pass:opaque-xargs-secret`,
+			want:  `xargs --replace openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL credential through xargs required BSD replacement flag",
+			input: `xargs -J replacement openssl pkcs12 -export -passout pass:opaque-xargs-secret`,
+			want:  `xargs -J replacement openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
 			name:  "OpenSSL credential through find exec shell command",
 			input: `find . -name '*.p12' -exec sh -c 'openssl pkcs12 -export -passout pass:opaque-find-secret' \;`,
 			want:  `find . -name '*.p12' -exec sh -c 'openssl pkcs12 -export -passout [REDACTED]' \;`,
+		},
+		{
+			name:  "OpenSSL credential through find confirmation command",
+			input: `find . -name '*.p12' -ok openssl passwd -6 opaque-find-secret \;`,
+			want:  `find . -name '*.p12' -ok openssl passwd -6 [REDACTED] \;`,
+		},
+		{
+			name:  "OpenSSL credential through watch exec wrapper",
+			input: `watch -n 1 -x openssl pkcs12 -export -passout pass:opaque-watch-secret`,
+			want:  `watch -n 1 -x openssl pkcs12 -export -passout [REDACTED]`,
 		},
 		{
 			name:  "OpenSSL passphrase through env wrapper",
@@ -2394,6 +2514,31 @@ status: failed`,
 			want:  `security set-keychain-password -o[REDACTED] -p[REDACTED] build.keychain && security add-generic-password -w[REDACTED] -X[REDACTED] build.keychain && security import signing.p12 -P[REDACTED]`,
 		},
 		{
+			name:  "attached short credentials beginning with hyphens",
+			input: `security unlock-keychain -p--security-secret build.keychain && docker login -p=--docker-secret registry.example && zip -P---zip-secret archive.zip file.txt`,
+			want:  `security unlock-keychain -p[REDACTED] build.keychain && docker login -p=[REDACTED] registry.example && zip -P[REDACTED] archive.zip file.txt`,
+		},
+		{
+			name:  "attached short credential concatenated from shell fragments",
+			input: `docker login -pfoo"bar-secret" registry.example`,
+			want:  `docker login -p[REDACTED] registry.example`,
+		},
+		{
+			name:  "attached short credential with embedded command substitution",
+			input: `docker login -pfoo$(printf opaque-short-secret)bar registry.example`,
+			want:  `docker login -p[REDACTED] registry.example`,
+		},
+		{
+			name:  "attached short credential with deeply nested command substitution",
+			input: `docker login -pfoo$(printf $(printf $(printf opaque-short-secret)))bar registry.example`,
+			want:  `docker login -p[REDACTED] registry.example`,
+		},
+		{
+			name:  "macOS security attached password long-form spelling",
+			input: `security unlock-keychain -password build.keychain`,
+			want:  `security unlock-keychain -p[REDACTED] build.keychain`,
+		},
+		{
 			name:  "jarsigner keystore and key passwords",
 			input: `jarsigner -storepass opaque-store-secret -keypass opaque-key-secret signed.jar alias`,
 			want:  `jarsigner -storepass [REDACTED] -keypass [REDACTED] signed.jar alias`,
@@ -2402,6 +2547,21 @@ status: failed`,
 			name:  "Windows jarsigner password sources through wrapper",
 			input: `sudo -u build C:\Java\bin\jarsigner.exe -storepass:env STORE_PASSWORD -keypass:file key-password.txt signed.jar alias`,
 			want:  `sudo -u build C:\Java\bin\jarsigner.exe -storepass:env [REDACTED] -keypass:file [REDACTED] signed.jar alias`,
+		},
+		{
+			name:  "mixed-separator Windows jarsigner path",
+			input: `C:/Java/bin\jarsigner.exe -storepass opaque-store-secret signed.jar alias`,
+			want:  `C:/Java/bin\jarsigner.exe -storepass [REDACTED] signed.jar alias`,
+		},
+		{
+			name:  "relative Windows jarsigner path",
+			input: `bin\jarsigner.exe -storepass opaque-store-secret signed.jar alias`,
+			want:  `bin\jarsigner.exe -storepass [REDACTED] signed.jar alias`,
+		},
+		{
+			name:  "drive-relative Windows jarsigner path",
+			input: `C:Java\bin\jarsigner.exe -storepass opaque-store-secret signed.jar alias`,
+			want:  `C:Java\bin\jarsigner.exe -storepass [REDACTED] signed.jar alias`,
 		},
 		{
 			name:  "jarsigner passwords through shell command string",
@@ -2825,6 +2985,18 @@ func TestRedactSensitiveTextPreservesFalseSecretMarkerAndValue(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextDeeplyNestedShellCommands(t *testing.T) {
+	input := strings.Repeat("$( ", 12) + "docker login -popaque-deep-secret registry.example" + strings.Repeat(" )", 12)
+	got, changed := redactSensitiveText(input)
+	if !changed || strings.Contains(got, "opaque-deep-secret") || !strings.Contains(got, redactionMarker) {
+		t.Fatalf("redactSensitiveText() = %q, changed=%t; want nested secret redacted", got, changed)
+	}
+	gotAgain, changedAgain := redactSensitiveText(got)
+	if changedAgain || gotAgain != got {
+		t.Fatalf("redaction is not idempotent: second result %q, changed=%t", gotAgain, changedAgain)
+	}
+}
+
 func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 	for _, input := range []string{
 		`set "STATUS=public value" & echo done`,
@@ -2848,6 +3020,22 @@ func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 		`sudo -l openssl pkcs12 -passout pass:public-value`,
 		`xargs echo openssl pkcs12 -passout pass:public-value`,
 		`find . -print openssl pkcs12 -passout pass:public-value`,
+		`find . -path '-exec' openssl passwd -6 public-value`,
+		`find . -name '-exec' openssl passwd -6 public-value`,
+		`find . -fprintf report '-exec' openssl passwd -6 public-value`,
+		`watch -x echo openssl pkcs12 -passout pass:public-value`,
+		`watch --help openssl pkcs12 -passout pass:public-value`,
+		`values=(openssl passwd -6 public-value)`,
+		`values=(foo\bin\openssl.exe passwd -6 public-array-path)`,
+		`values=( docker login -ppublic-value registry.example )`,
+		"values=(\n docker login -ppublic-value registry.example\n)",
+		`values=( zip -Ppublic-value archive.zip file.txt )`,
+		`values=( security unlock-keychain -ppublic-value build.keychain )`,
+		`values=( openssl passwd -6 public-value )`,
+		`((openssl passwd -6 public-value))`,
+		`echo $((openssl passwd -6 public-value))`,
+		`echo '(true; openssl passwd -6 public-value)'`,
+		`foo () { echo openssl passwd -6 public-value; }`,
 		`tool --no-token output.txt`,
 		`tool --database-no-password output.txt`,
 		`header = "X-Request-ID: public-value"`,
