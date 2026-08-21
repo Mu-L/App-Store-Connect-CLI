@@ -543,7 +543,7 @@ func TestUploadPreviewFilesRollsBackAllCreatedItemsOnPostCreateConflict(t *testi
 		Detail:     "The preview set is full.",
 		StatusCode: http.StatusConflict,
 	}
-	_, err := uploadPreviewFiles(
+	results, err := uploadPreviewFiles(
 		context.Background(),
 		context.Background(),
 		client,
@@ -566,12 +566,55 @@ func TestUploadPreviewFilesRollsBackAllCreatedItemsOnPostCreateConflict(t *testi
 	if uploadCalls != 2 {
 		t.Fatalf("upload calls = %d, want 2", uploadCalls)
 	}
+	if len(results) != 2 {
+		t.Fatalf("uploadPreviewFiles() results = %d items, want 2", len(results))
+	}
+	if results[0].AssetID != "created-1" || results[1].AssetID != "created-2" {
+		t.Fatalf("uploadPreviewFiles() results = %#v, want created asset IDs", results)
+	}
 	wantRequests := []string{
 		"DELETE /v1/appPreviews/created-2",
 		"DELETE /v1/appPreviews/created-1",
 	}
 	if fmt.Sprint(requests) != fmt.Sprint(wantRequests) {
 		t.Fatalf("requests = %v, want %v", requests, wantRequests)
+	}
+}
+
+func TestUploadPreviewFilesPreservesResultsWhenRollbackFails(t *testing.T) {
+	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			writeAssetsTestJSON(w, http.StatusInternalServerError, `{"errors":[{"status":"500","detail":"unexpected request"}]}`)
+			return
+		}
+		writeAssetsTestJSON(w, http.StatusInternalServerError, `{"errors":[{"status":"500","detail":"rollback failed"}]}`)
+	}))
+
+	uploadErr := errors.New("preview upload failed")
+	results, err := uploadPreviewFiles(
+		context.Background(),
+		context.Background(),
+		client,
+		"set-1",
+		[]string{"first.mov", "second.mov"},
+		func(_ context.Context, _ *asc.Client, _, filePath string) (asc.AssetUploadResultItem, error) {
+			if filePath == "first.mov" {
+				return asc.AssetUploadResultItem{AssetID: "created-1"}, nil
+			}
+			return asc.AssetUploadResultItem{AssetID: "created-2"}, uploadErr
+		},
+	)
+	if !errors.Is(err, uploadErr) {
+		t.Fatalf("uploadPreviewFiles() error = %v, want original upload error", err)
+	}
+	if !strings.Contains(err.Error(), "roll back previews created by this upload") {
+		t.Fatalf("uploadPreviewFiles() error = %v, want rollback failure context", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("uploadPreviewFiles() results = %d items, want 2", len(results))
+	}
+	if results[0].AssetID != "created-1" || results[1].AssetID != "created-2" {
+		t.Fatalf("uploadPreviewFiles() results = %#v, want created asset IDs", results)
 	}
 }
 

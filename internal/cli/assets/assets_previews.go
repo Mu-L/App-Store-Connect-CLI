@@ -930,17 +930,18 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 	}
 
 	results, err := uploadPreviewFiles(uploadCtx, ctx, client, set.ID, files, uploadPreviewAsset)
-	if err != nil {
-		return asc.AppPreviewUploadResult{}, err
-	}
 	results = append(skippedResults, results...)
-
-	return asc.AppPreviewUploadResult{
+	result := asc.AppPreviewUploadResult{
 		VersionLocalizationID: localizationID,
 		SetID:                 set.ID,
 		PreviewType:           set.Attributes.PreviewType,
 		Results:               results,
-	}, nil
+	}
+	if err != nil {
+		return result, err
+	}
+
+	return result, nil
 }
 
 func getAllAppPreviews(ctx context.Context, client *asc.Client, setID string) ([]asc.Resource[asc.AppPreviewAttributes], error) {
@@ -981,10 +982,10 @@ func uploadPreviewFiles(uploadCtx, rollbackBase context.Context, client *asc.Cli
 					return deleteUploadedPreviews(rollbackCtx, client, rollbackItems)
 				}()
 				if rollbackErr != nil {
-					return nil, errors.Join(err, fmt.Errorf("roll back previews created by this upload: %w", rollbackErr))
+					return rollbackItems, errors.Join(err, fmt.Errorf("roll back previews created by this upload: %w", rollbackErr))
 				}
 			}
-			return nil, err
+			return rollbackItems, err
 		}
 		results = append(results, item)
 	}
