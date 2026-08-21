@@ -144,10 +144,20 @@ var (
 		"cms":                                  "p",
 		"create-filevaultmaster-keychain":      "p",
 	}
-	opensslCredentialFlagPattern        = newCommandCredentialFlagPattern("passin", "passout", "passcerts", "pass", "k", "K")
+	opensslCredentialOptions            = []string{"passin", "passout", "passcerts", "pass", "k", "K"}
 	opensslSubcommandCredentialPatterns = map[string]*regexp.Regexp{
 		"ca":   newCommandCredentialFlagValueStartPattern("key"),
 		"dgst": newCommandCredentialFlagValueStartPattern("hmac"),
+	}
+	opensslSubcommandCredentialOptions = map[string][]string{
+		"pkeyutl":  {"pkeyopt_passin"},
+		"s_client": {"psk"},
+		"s_server": {"psk"},
+	}
+	opensslSubcommandArgumentOptions = map[string]string{
+		"pkeyutl":  "engine config in inkey passin peerkey peerform sigfile keyform out secret digest pkeyopt pkeyopt_passin kdf kdflen kemop rand writerand provider-path provider provparam propquery",
+		"s_client": "engine ssl_client_engine ssl_config ctlogfile host port connect bind proxy proxy_user proxy_pass unix maxfraglen max_send_frag split_send_frag max_pipelines read_buf cert certform cert_chain key keyform pass verify nameopt CApath CAfile CAstore requestCAfile dane_tlsa_domain dane_tlsa_rrdata psk_identity psk psk_session name sess_out sess_in starttls xmpphost msgfile keymatexport keymatexportlen keylogfile servername serverinfo alpn mtu nextprotoneg early_data use_srtp srpuser srppass srp_strength rand writerand sigalgs client_sigalgs groups curves named_curve cipher ciphersuites min_protocol max_protocol record_padding policy purpose verify_name verify_depth auth_level attime verify_hostname verify_email verify_ip CRL CRLform chainCAfile chainCApath chainCAstore verifyCAfile verifyCApath verifyCAstore xkey xcert xchain xcertform xkeyform provider-path provider provparam propquery",
+		"s_server": "ssl_config engine port accept unix context CAfile CApath CAstore verify Verify nameopt cert cert2 certform cert_chain serverinfo key key2 keyform pass dcert dcertform dcert_chain dkey dkeyform dpass dhparam servername id_prefix keymatexport keymatexportlen CRL CRLform chainCAfile chainCApath chainCAstore verifyCAfile verifyCApath verifyCAstore status_timeout status_url proxy no_proxy status_file msgfile max_pipelines naccept keylogfile mtu read_buf split_send_frag max_send_frag psk_identity psk_hint psk psk_session srpvfile srpuserseed max_early_data recv_max_early_data num_tickets use_srtp nextprotoneg alpn rand writerand sigalgs client_sigalgs groups curves named_curve cipher ciphersuites min_protocol max_protocol record_padding policy purpose verify_name verify_depth auth_level attime verify_hostname verify_email verify_ip xkey xcert xchain xcertform xkeyform provider-path provider provparam propquery",
 	}
 	opensslMACOptionValueStartPattern     = newCommandCredentialFlagValueStartPattern("macopt")
 	opensslKDFOptionValueStartPattern     = newCommandCredentialFlagValueStartPattern("kdfopt")
@@ -4630,10 +4640,6 @@ func redactKubectlSecretLiterals(value string) (string, bool) {
 	return result, changed
 }
 
-func newCommandCredentialFlagPattern(flags ...string) *regexp.Regexp {
-	return newCommandCredentialFlagPatternWithSuffix("", flags...)
-}
-
 func newCommandCredentialFlagPatternWithSuffix(suffix string, flags ...string) *regexp.Regexp {
 	escapedFlags := make([]string, 0, len(flags))
 	for _, flag := range flags {
@@ -4659,10 +4665,9 @@ func newCommandCredentialFlagValueStartPattern(flags ...string) *regexp.Regexp {
 }
 
 func redactOpenSSLCredentialArguments(value string) (string, bool) {
-	redacted, flagChanged := redactNamedCommandCredentialArguments(value, "openssl", opensslCredentialFlagPattern)
-	redacted, subcommandChanged := redactOpenSSLSubcommandCredentialArguments(redacted)
+	redacted, subcommandChanged := redactOpenSSLSubcommandCredentialArguments(value)
 	redacted, positionalChanged := redactOpenSSLPasswdPositionalArguments(redacted)
-	return redacted, flagChanged || subcommandChanged || positionalChanged
+	return redacted, subcommandChanged || positionalChanged
 }
 
 func redactOpenSSLSubcommandCredentialArguments(value string) (string, bool) {
@@ -4676,6 +4681,13 @@ func redactOpenSSLSubcommandCredentialArguments(value string) (string, bool) {
 		commandChanged := false
 		if pattern := opensslSubcommandCredentialPatterns[subcommand]; ok && pattern != nil {
 			commandSuffix, commandChanged = redactCommandCredentialFlagValues(commandSuffix, pattern)
+		}
+		if ok {
+			options := append([]string{}, opensslCredentialOptions...)
+			options = append(options, opensslSubcommandCredentialOptions[subcommand]...)
+			var optionChanged bool
+			commandSuffix, optionChanged = redactCommandCredentialOptionValues(commandSuffix, subcommand, options...)
+			commandChanged = commandChanged || optionChanged
 		}
 		if subcommand == "dgst" || subcommand == "mac" {
 			var macChanged bool
@@ -4738,6 +4750,181 @@ func redactCommandCredentialFlagValuesMatching(command string, pattern *regexp.R
 	return result, changed
 }
 
+func redactCommandCredentialOptionValues(command, subcommand string, options ...string) (string, bool) {
+	type replacement struct {
+		start int
+		end   int
+		text  string
+	}
+
+	spans := splitCredentialShellWordSpans(command)
+	replacements := make([]replacement, 0, 2)
+	for index := 0; index < len(spans); index++ {
+		span := spans[index]
+		if span.start < len(command) && command[span.start] == '#' {
+			break
+		}
+		option := normalizeCredentialShellOptionToken(command[span.start:span.end])
+		if option == "--" {
+			break
+		}
+
+		matchedOption := ""
+		attached := false
+		for _, name := range options {
+			for _, dashes := range []string{"-", "--"} {
+				candidate := dashes + name
+				if option == candidate {
+					matchedOption = candidate
+					break
+				}
+				if strings.HasPrefix(option, candidate+"=") {
+					matchedOption = candidate
+					attached = true
+					break
+				}
+			}
+			if matchedOption != "" {
+				break
+			}
+		}
+		if matchedOption == "" {
+			if openSSLSubcommandOptionRequiresArgument(subcommand, option) && !strings.Contains(option, "=") && index+1 < len(spans) {
+				argumentSpan := spans[index+1]
+				if argumentSpan.start < len(command) && command[argumentSpan.start] == '#' {
+					break
+				}
+				argumentEnd := credentialShellOptionArgumentEnd(command, argumentSpan)
+				index++
+				for index+1 < len(spans) && spans[index+1].start < argumentEnd {
+					index++
+				}
+			}
+			continue
+		}
+
+		argumentSpanIndex := index
+		if !attached {
+			if index+1 >= len(spans) || (spans[index+1].start < len(command) && command[spans[index+1].start] == '#') {
+				continue
+			}
+			argumentSpanIndex = index + 1
+		}
+		argumentEnd := credentialShellOptionArgumentEnd(command, spans[argumentSpanIndex])
+		rawArgument := command[spans[argumentSpanIndex].start:argumentEnd]
+		contentStart, contentEnd := credentialShellWordContentSpan(rawArgument)
+		if attached {
+			content := rawArgument[contentStart:contentEnd]
+			separator := strings.IndexByte(content, '=')
+			if separator < 0 {
+				replacements = append(replacements, replacement{
+					start: spans[argumentSpanIndex].start,
+					end:   argumentEnd,
+					text:  redactionMarker,
+				})
+				continue
+			}
+			if content[separator+1:] == redactionMarker {
+				continue
+			}
+			replacements = append(replacements, replacement{
+				start: spans[argumentSpanIndex].start + contentStart + separator + 1,
+				end:   spans[argumentSpanIndex].start + contentEnd,
+				text:  redactionMarker,
+			})
+		} else if rawArgument[contentStart:contentEnd] != redactionMarker {
+			replacements = append(replacements, replacement{
+				start: spans[argumentSpanIndex].start,
+				end:   argumentEnd,
+				text:  redactionMarker,
+			})
+		}
+		index = argumentSpanIndex
+		for index+1 < len(spans) && spans[index+1].start < argumentEnd {
+			index++
+		}
+	}
+
+	result := command
+	for index := len(replacements) - 1; index >= 0; index-- {
+		replacement := replacements[index]
+		result = result[:replacement.start] + replacement.text + result[replacement.end:]
+	}
+	return result, len(replacements) > 0
+}
+
+func openSSLSubcommandOptionRequiresArgument(subcommand, option string) bool {
+	if option == "" || option == "-" || !strings.HasPrefix(option, "-") || strings.Contains(option, "=") {
+		return false
+	}
+	name := strings.TrimLeft(option, "-")
+	if name == "" {
+		return false
+	}
+	options := opensslSubcommandArgumentOptions[subcommand]
+	return strings.Contains(" "+options+" ", " "+name+" ")
+}
+
+func normalizeCredentialShellOptionToken(raw string) string {
+	var result strings.Builder
+	result.Grow(len(raw))
+	var quote byte
+	ansiCQuote := false
+	for index := 0; index < len(raw); index++ {
+		character := raw[index]
+		if quote == '\'' {
+			if ansiCQuote && character == '\\' {
+				decoded, _, tail, err := strconv.UnquoteChar(raw[index:], '\'')
+				if err == nil {
+					result.WriteRune(decoded)
+					index += len(raw[index:]) - len(tail) - 1
+					continue
+				}
+			}
+			if character == '\'' {
+				quote = 0
+				ansiCQuote = false
+			} else {
+				result.WriteByte(character)
+			}
+			continue
+		}
+		if quote == '"' {
+			if character == '"' {
+				quote = 0
+				continue
+			}
+			if character == '\\' && index+1 < len(raw) && strings.ContainsRune("$`\"\\\n", rune(raw[index+1])) {
+				index++
+				if raw[index] != '\n' {
+					result.WriteByte(raw[index])
+				}
+				continue
+			}
+			result.WriteByte(character)
+			continue
+		}
+		if character == '$' && index+1 < len(raw) && (raw[index+1] == '\'' || raw[index+1] == '"') {
+			continue
+		}
+		switch character {
+		case '\'', '"':
+			quote = character
+			ansiCQuote = character == '\'' && index > 0 && raw[index-1] == '$'
+		case '\\':
+			if index+1 < len(raw) {
+				index++
+				if raw[index] != '\n' {
+					result.WriteByte(raw[index])
+				}
+			}
+		default:
+			result.WriteByte(character)
+		}
+	}
+	return result.String()
+}
+
 func isOpenSSLMACKeyOption(value string) bool {
 	spans := splitCredentialShellWordSpans(value)
 	if len(spans) == 0 {
@@ -4775,13 +4962,17 @@ func openSSLCommand(command string) (int, string, bool) {
 		if index+1 >= len(words) {
 			return 0, "", false
 		}
-		for subcommandIndex := index + 1; subcommandIndex < len(words); subcommandIndex++ {
+		subcommandStart := index + 1
+		if index+3 < len(words) && strings.Trim(words[index+1], `"'`) == "--" && isLaunchctlSubmitExecutablePrefix(words[:index]) {
+			subcommandStart = index + 3
+		}
+		for subcommandIndex := subcommandStart; subcommandIndex < len(words); subcommandIndex++ {
 			option := strings.ToLower(strings.Trim(words[subcommandIndex], `"'`))
 			if option == "--" {
 				continue
 			}
 			if !strings.HasPrefix(option, "-") || option == "-" {
-				return spans[index].start, option, true
+				return spans[subcommandIndex].start, option, true
 			}
 			requiresArgument, allowed := openSSLGlobalOption(option)
 			if !allowed {
@@ -4797,6 +4988,18 @@ func openSSLCommand(command string) (int, string, bool) {
 		return 0, "", false
 	}
 	return 0, "", false
+}
+
+func isLaunchctlSubmitExecutablePrefix(words []string) bool {
+	if len(words) == 0 || strings.Trim(words[len(words)-1], `"'`) != "-p" {
+		return false
+	}
+	for index := 0; index+1 < len(words); index++ {
+		if commandBaseName(words[index]) == "launchctl" && strings.Trim(words[index+1], `"'`) == "submit" && isCredentialCommandPrefix(words[:index]) {
+			return true
+		}
+	}
+	return false
 }
 
 func openSSLGlobalOption(option string) (bool, bool) {
@@ -4898,6 +5101,10 @@ func credentialShellArgumentEnd(command string, span credentialShellWord) int {
 	return end
 }
 
+func credentialShellOptionArgumentEnd(command string, span credentialShellWord) int {
+	return findCredentialShellWordEnd(command, span.start)
+}
+
 func findCredentialShellWordEnd(value string, start int) int {
 	var quote byte
 	for index := start; index < len(value); index++ {
@@ -4928,6 +5135,8 @@ func findCredentialShellWordEnd(value string, start int) int {
 			open = index
 		case (value[index] == '<' || value[index] == '>') && index+1 < len(value) && value[index+1] == '(':
 			open = index + 1
+		case value[index] == '(' && (index == start || !strings.ContainsRune(" \t\r\n;&|<>()", rune(value[index-1]))):
+			open = index
 		}
 		if open >= 0 {
 			if close := findShellCommandSubstitutionEnd(value, open); close >= 0 {
@@ -6731,7 +6940,7 @@ func splitCredentialShellWordSpans(value string) []credentialShellWord {
 
 func credentialShellWordContentSpan(raw string) (int, int) {
 	quoteStart := 0
-	if len(raw) >= 3 && raw[0] == '$' && raw[1] == '\'' {
+	if len(raw) >= 3 && raw[0] == '$' && (raw[1] == '\'' || raw[1] == '"') {
 		quoteStart = 1
 	}
 	if len(raw)-quoteStart < 2 || (raw[quoteStart] != '\'' && raw[quoteStart] != '"') {
@@ -6797,6 +7006,11 @@ func redactShellCommandSubstitutionContents(value string, depth int) (string, bo
 		case (result[index] == '<' || result[index] == '>') && index+1 < len(result) && result[index+1] == '(':
 			open = index + 1
 			contentStart = index + 2
+		case result[index] == '(' && (index+1 >= len(result) || result[index+1] != '(') &&
+			(index == 0 || !strings.ContainsRune("$<>=()", rune(result[index-1]))) &&
+			!isWithinShellArithmeticExpression(result, index) && !isWithinShellArraySubscript(result, index):
+			open = index
+			contentStart = index + 1
 		}
 		if open < 0 {
 			continue
@@ -6816,6 +7030,106 @@ func redactShellCommandSubstitutionContents(value string, depth int) (string, bo
 		index = close
 	}
 	return result, changed
+}
+
+func isWithinShellArithmeticExpression(value string, position int) bool {
+	var quote byte
+	for index := 0; index < position; index++ {
+		if quote == '\'' {
+			if value[index] == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if value[index] == '\\' {
+			index++
+			continue
+		}
+		if quote != 0 {
+			if value[index] == quote {
+				quote = 0
+			}
+			continue
+		}
+		if value[index] == '\'' || value[index] == '"' || value[index] == '`' {
+			quote = value[index]
+			continue
+		}
+
+		open := -1
+		if value[index] == '$' && index+2 < position && value[index+1] == '(' && value[index+2] == '(' {
+			open = index
+		} else if value[index] == '(' && index+1 < position && value[index+1] == '(' {
+			open = index
+		}
+		if open < 0 {
+			continue
+		}
+		close := findShellCommandSubstitutionEnd(value, open)
+		if close >= position {
+			return true
+		}
+		if close >= 0 {
+			index = close
+		}
+	}
+	return false
+}
+
+func isWithinShellArraySubscript(value string, position int) bool {
+	type subscript struct {
+		fishSlice bool
+	}
+	openers := make([]subscript, 0, 2)
+	closedFishSlice := make(map[int]bool)
+	var quote byte
+	for index := 0; index < position; index++ {
+		if quote == '\'' {
+			if value[index] == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if value[index] == '\\' {
+			index++
+			continue
+		}
+		if quote != 0 {
+			if value[index] == quote {
+				quote = 0
+			}
+			continue
+		}
+		if value[index] == '\'' || value[index] == '"' || value[index] == '`' {
+			quote = value[index]
+			continue
+		}
+		switch value[index] {
+		case '[':
+			identifierStart := index
+			for identifierStart > 0 {
+				character := value[identifierStart-1]
+				if !isCredentialShellIdentifierStart(character) && (character < '0' || character > '9') {
+					break
+				}
+				identifierStart--
+			}
+			fishSlice := identifierStart > 0 && value[identifierStart-1] == '$'
+			if !fishSlice && index > 0 && value[index-1] == ']' {
+				fishSlice = closedFishSlice[index-1]
+			}
+			openers = append(openers, subscript{fishSlice: fishSlice})
+		case ']':
+			if len(openers) > 0 {
+				closedFishSlice[index] = openers[len(openers)-1].fishSlice
+				openers = openers[:len(openers)-1]
+			}
+		}
+	}
+	if len(openers) == 0 {
+		return false
+	}
+	return !openers[len(openers)-1].fishSlice
 }
 
 func redactShellSubshellGroupContents(value string, depth int) (string, bool) {
