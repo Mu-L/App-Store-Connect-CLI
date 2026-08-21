@@ -565,6 +565,10 @@ func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, sshpassChanged := redactSSHPassCredentialArguments(redacted); sshpassChanged {
+		redacted = next
+		changed = true
+	}
 	if next, zipChanged := redactZipCredentialArguments(redacted); zipChanged {
 		redacted = next
 		changed = true
@@ -4995,6 +4999,106 @@ func redactDockerLoginCredentialArguments(value string) (string, bool) {
 				result = result[:start] + command + result[end:]
 				changed = true
 			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+func redactSSHPassCredentialArguments(value string) (string, bool) {
+	type replacement struct {
+		start int
+		end   int
+		text  string
+	}
+
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		spans := splitCredentialShellWordSpans(command)
+		words := make([]string, 0, len(spans))
+		for _, span := range spans {
+			words = append(words, span.value)
+		}
+
+		replacements := make([]replacement, 0, 1)
+		for sshpassIndex, word := range words {
+			baseName := commandBaseName(word)
+			if (baseName != "sshpass" && baseName != "sshpass.exe") || !isCredentialCommandPrefix(words[:sshpassIndex]) {
+				continue
+			}
+		options:
+			for optionIndex := sshpassIndex + 1; optionIndex < len(words); optionIndex++ {
+				option := strings.Trim(words[optionIndex], `"'`)
+				if option == "--" || len(option) < 2 || option[0] != '-' || option == "-" {
+					break
+				}
+				if option[1] == '-' {
+					break
+				}
+
+				for flagIndex := 1; flagIndex < len(option); flagIndex++ {
+					flag := option[flagIndex]
+					switch flag {
+					case 'v':
+						continue
+					case 'h', 'V':
+						break options
+					case 'e':
+						if flagIndex+1 < len(option) {
+							continue options
+						}
+					case 'f', 'd', 'P', 'p':
+						attached := flagIndex+1 < len(option)
+						if flag == 'p' {
+							if attached {
+								valueStart := flagIndex + 1
+								if option[valueStart] == '=' {
+									valueStart++
+								}
+								if option[valueStart:] != redactionMarker {
+									prefix := option[:valueStart]
+									replacements = append(replacements, replacement{start: spans[optionIndex].start, end: credentialShellArgumentEnd(command, spans[optionIndex]), text: prefix + redactionMarker})
+								}
+							} else if optionIndex+1 < len(words) {
+								passwordSpan := spans[optionIndex+1]
+								if strings.Trim(words[optionIndex+1], `"'`) != redactionMarker {
+									replacements = append(replacements, replacement{start: passwordSpan.start, end: credentialShellArgumentEnd(command, passwordSpan), text: redactionMarker})
+								}
+							}
+						}
+						if !attached {
+							if optionIndex+1 >= len(words) {
+								break options
+							}
+							optionIndex++
+						}
+						continue options
+					default:
+						break options
+					}
+				}
+			}
+			break
+		}
+
+		for index := len(replacements) - 1; index >= 0; index-- {
+			replacement := replacements[index]
+			command = command[:replacement.start] + replacement.text + command[replacement.end:]
+			changed = true
+		}
+		if len(replacements) > 0 {
+			result = result[:start] + command + result[end:]
 		}
 
 		separator := start + len(command)
