@@ -2334,6 +2334,21 @@ status: failed`,
 			want:  `C:\Java\bin\keytool.exe -list -storepass:env [REDACTED] -keypass:file [REDACTED]`,
 		},
 		{
+			name:  "jarsigner keystore and key passwords",
+			input: `jarsigner -storepass opaque-store-secret -keypass opaque-key-secret signed.jar alias`,
+			want:  `jarsigner -storepass [REDACTED] -keypass [REDACTED] signed.jar alias`,
+		},
+		{
+			name:  "Windows jarsigner password sources through wrapper",
+			input: `sudo -u build C:\Java\bin\jarsigner.exe -storepass:env STORE_PASSWORD -keypass:file key-password.txt signed.jar alias`,
+			want:  `sudo -u build C:\Java\bin\jarsigner.exe -storepass:env [REDACTED] -keypass:file [REDACTED] signed.jar alias`,
+		},
+		{
+			name:  "jarsigner passwords through shell command string",
+			input: `bash -c 'jarsigner -storepass opaque-store-secret -keypass=opaque-key-secret signed.jar alias'`,
+			want:  `bash -c 'jarsigner -storepass [REDACTED] -keypass=[REDACTED] signed.jar alias'`,
+		},
+		{
 			name:  "keytool through option-bearing wrappers",
 			input: `sudo -u build env -i PROFILE=release keytool -list -storepass opaque-store`,
 			want:  `sudo -u build env -i PROFILE=release keytool -list -storepass [REDACTED]`,
@@ -2813,6 +2828,21 @@ func TestRedactSensitiveTextScopesKeytoolCredentialArguments(t *testing.T) {
 		`echo keytool.exe -list -storepass:env PUBLIC_VALUE`,
 		`tool -storepass public-value`,
 		`keytool -list -keystore public-value`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextScopesJarsignerCredentialArguments(t *testing.T) {
+	for _, input := range []string{
+		`echo jarsigner -storepass public-value signed.jar alias`,
+		`sudo echo jarsigner -keypass public-value signed.jar alias`,
+		`tool -storepass public-value`,
+		`jarsigner -keystore public-value signed.jar alias`,
+		`jarsigner -signedjar public-output.jar input.jar alias`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {

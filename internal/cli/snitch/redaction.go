@@ -128,6 +128,7 @@ var (
 	}
 	opensslCredentialFlagPattern          = newCommandCredentialFlagPattern("passin", "passout", "passcerts")
 	keytoolCredentialFlagPattern          = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass", "new", "srcstorepass", "deststorepass", "srckeypass", "destkeypass")
+	jarsignerCredentialFlagPattern        = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass")
 	dockerLoginCredentialFlagPattern      = newCommandCredentialFlagPattern("p")
 	zipCredentialFlagPattern              = newCommandCredentialFlagPattern("P")
 	rawCookieJarPattern                   = regexp.MustCompile(`(?i)"cookies"[ \t\r\n]*:[ \t\r\n]*(?:\{|\[)`)
@@ -525,6 +526,10 @@ func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 		changed = true
 	}
 	if next, keytoolChanged := redactKeytoolCredentialArguments(redacted); keytoolChanged {
+		redacted = next
+		changed = true
+	}
+	if next, jarsignerChanged := redactJarsignerCredentialArguments(redacted); jarsignerChanged {
 		redacted = next
 		changed = true
 	}
@@ -4603,6 +4608,10 @@ func redactOpenSSLCredentialArguments(value string) (string, bool) {
 
 func redactKeytoolCredentialArguments(value string) (string, bool) {
 	return redactNamedCommandCredentialArguments(value, "keytool", keytoolCredentialFlagPattern)
+}
+
+func redactJarsignerCredentialArguments(value string) (string, bool) {
+	return redactNamedCommandCredentialArguments(value, "jarsigner", jarsignerCredentialFlagPattern)
 }
 
 func redactZipCredentialArguments(value string) (string, bool) {
