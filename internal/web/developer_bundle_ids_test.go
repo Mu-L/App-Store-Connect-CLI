@@ -62,7 +62,7 @@ func TestEnsureDeveloperPortalSessionRejectsDifferentPortRedirect(t *testing.T) 
 	}
 }
 
-func TestEnableDeveloperBundleIDCapabilityPreservesFullPayload(t *testing.T) {
+func TestEnableDeveloperBundleIDCapabilityPreservesWritablePayloadAndGraph(t *testing.T) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatalf("cookiejar.New() error: %v", err)
@@ -175,7 +175,7 @@ func TestEnableDeveloperBundleIDCapabilityPreservesFullPayload(t *testing.T) {
 						"included":[{
 							"type":"bundleIdCapabilities",
 							"id":"icloud-1",
-							"attributes":{"enabled":true,"settings":[{"key":"ICLOUD_VERSION","options":[{"key":"XCODE_6","enabled":true}]}]},
+							"attributes":{"enabled":true,"settings":[{"key":"ICLOUD_VERSION","options":[{"key":"XCODE_6","enabled":true}]}],"ownerType":"BUNDLE","editable":true,"inputs":[],"responseId":"response-1"},
 							"relationships":{
 								"capability":{"data":{"type":"capabilities","id":"ICLOUD"}},
 								"appGroups":{"data":[{"type":"appGroups","id":"group-1"}]},
@@ -231,8 +231,13 @@ func TestEnableDeveloperBundleIDCapabilityPreservesFullPayload(t *testing.T) {
 	if payload.Data.ID != "bundle-1" || payload.Data.Type != "bundleIds" {
 		t.Fatalf("unexpected resource identity: %+v", payload.Data)
 	}
-	if payload.Data.Attributes["platform"] != "IOS" || payload.Data.Attributes["seedId"] != "TEAMID" || payload.Data.Attributes["~permissions.edit"] != true {
-		t.Fatalf("bundle attributes were not preserved: %+v", payload.Data.Attributes)
+	if payload.Data.Attributes["platform"] != "IOS" || payload.Data.Attributes["seedId"] != "TEAMID" {
+		t.Fatalf("writable Bundle ID attributes were not preserved: %+v", payload.Data.Attributes)
+	}
+	for _, key := range []string{"permissions", "~permissions.delete", "~permissions.edit"} {
+		if _, ok := payload.Data.Attributes[key]; ok {
+			t.Fatalf("read-only Bundle ID attribute %q was sent in PATCH: %+v", key, payload.Data.Attributes)
+		}
 	}
 	if payload.Data.Attributes["teamId"] != "TEAM123456" {
 		t.Fatalf("Developer Portal teamId = %v", payload.Data.Attributes["teamId"])
@@ -255,6 +260,9 @@ func TestEnableDeveloperBundleIDCapabilityPreservesFullPayload(t *testing.T) {
 	existing := capabilityRelationship.Data[0]
 	if existing.ID != "icloud-1" || existing.Attributes["enabled"] != true {
 		t.Fatalf("existing capability changed: %+v", existing)
+	}
+	if len(existing.Attributes) != 2 {
+		t.Fatalf("PATCH contained read-only capability attributes: %+v", existing.Attributes)
 	}
 	if _, ok := existing.Relationships["appGroups"]; !ok {
 		t.Fatalf("existing appGroups relationship was not preserved: %+v", existing.Relationships)
@@ -481,8 +489,11 @@ func TestEnableDeveloperBundleIDCapabilityUpdatesDisabledTargetOnce(t *testing.T
 	if err := json.Unmarshal(caps[0].Attributes, &attributes); err != nil {
 		t.Fatalf("decode attributes: %v", err)
 	}
-	if attributes["enabled"] != true || attributes["portalOwned"] != "keep" {
-		t.Fatalf("target attributes not preserved: %+v", attributes)
+	if attributes["enabled"] != true {
+		t.Fatalf("target enabled state not updated: %+v", attributes)
+	}
+	if _, ok := attributes["portalOwned"]; ok {
+		t.Fatalf("read-only target attribute was sent in PATCH: %+v", attributes)
 	}
 	settings, ok := attributes["settings"].([]any)
 	if !ok || len(settings) != 1 {
