@@ -5375,6 +5375,9 @@ func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
 	if wrapper == "setsid" {
 		return consumeSetsidCredentialWrapper(words[1:])
 	}
+	if wrapper == "ionice" {
+		return consumeIoniceCredentialWrapper(words[1:])
+	}
 	if wrapper == "xargs" || wrapper == "gxargs" {
 		return consumeXargsCredentialWrapper(words[1:])
 	}
@@ -5837,6 +5840,69 @@ func consumeSetsidCredentialWrapper(words []string) ([]string, bool) {
 			}
 		}
 		words = words[1:]
+	}
+	return words, true
+}
+
+func consumeIoniceCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			return words[1:], true
+		}
+		if len(option) < 2 || option[0] != '-' || option == "-" {
+			return words, true
+		}
+		if strings.HasPrefix(option, "--") {
+			name, value, attached := strings.Cut(option, "=")
+			switch name {
+			case "--class", "--classdata":
+				words = words[1:]
+				if attached {
+					if value == "" {
+						return nil, false
+					}
+					continue
+				}
+				if len(words) == 0 {
+					return nil, false
+				}
+				words = words[1:]
+				continue
+			case "--ignore":
+				if attached {
+					return nil, false
+				}
+				words = words[1:]
+				continue
+			case "--pid", "--pgid", "--uid", "--help", "--version":
+				return nil, false
+			default:
+				return nil, false
+			}
+		}
+
+		requiresArgument := false
+		for index := 1; index < len(option); index++ {
+			switch option[index] {
+			case 't':
+				continue
+			case 'c', 'n':
+				requiresArgument = index == len(option)-1
+				index = len(option)
+			case 'p', 'P', 'u', 'h', 'V':
+				return nil, false
+			default:
+				return nil, false
+			}
+		}
+		words = words[1:]
+		if requiresArgument {
+			if len(words) == 0 {
+				return nil, false
+			}
+			words = words[1:]
+		}
 	}
 	return words, true
 }
