@@ -610,6 +610,9 @@ func TestUploadPreviewFilesPreservesResultsWhenRollbackFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "roll back previews created by this upload") {
 		t.Fatalf("uploadPreviewFiles() error = %v, want rollback failure context", err)
 	}
+	if !strings.Contains(err.Error(), "rollback failed") {
+		t.Fatalf("uploadPreviewFiles() error = %v, want rollback failure detail", err)
+	}
 	if len(results) != 2 {
 		t.Fatalf("uploadPreviewFiles() results = %d items, want 2", len(results))
 	}
