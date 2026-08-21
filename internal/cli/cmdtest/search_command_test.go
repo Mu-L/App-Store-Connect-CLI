@@ -185,6 +185,31 @@ func TestSearchPrioritizesPreciseCommandPathsForNaturalLanguage(t *testing.T) {
 	}
 }
 
+func TestSearchKeepsBuildDownloadsAheadOfGenericDownloads(t *testing.T) {
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = rootcmd.Run([]string{"search", "--output", "json", "--limit", "5", "download", "build"}, "1.2.3")
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d with stderr %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	var response searchResponse
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatalf("failed to unmarshal search JSON: %v\nstdout=%s", err, stdout)
+	}
+	if len(response.Results) == 0 {
+		t.Fatalf("expected search results, got %#v", response)
+	}
+	if response.Results[0].Command != "asc builds dsyms" {
+		t.Fatalf("expected build dSYM download command first, got %#v", response.Results)
+	}
+}
+
 func TestSearchKeepsExactBuildUploadAheadOfBroaderPublishWorkflows(t *testing.T) {
 	for _, query := range [][]string{
 		{"upload", "build"},

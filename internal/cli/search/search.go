@@ -401,7 +401,7 @@ func scoreCommandDoc(doc commandDoc, queryTokens []string) (int, []string) {
 		}
 	}
 	if len(queryTokens) > 1 {
-		if leafToken, ok := exactLeafQueryToken(doc.Command, queryTokens); ok {
+		if leafToken, ok := exactLeafQueryToken(doc.Command, queryTokens); ok && hasSupportingQueryToken(doc, queryTokens, leafToken) {
 			score += exactLeafCommandBoost
 			addReason(&reasons, seenReasons, "command-leaf:"+leafToken)
 		}
@@ -488,6 +488,20 @@ func exactLeafQueryToken(command string, queryTokens []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func hasSupportingQueryToken(doc commandDoc, queryTokens []string, leafToken string) bool {
+	for _, token := range queryTokens {
+		if sameSearchStem(token, leafToken) {
+			continue
+		}
+		if tokenContains(doc.PathTokens, token) ||
+			tokenContains(doc.SummaryTokens, token) ||
+			tokenContains(doc.UsageTokens, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalBoostFor(command string, queryTokens []string) (int, string) {
