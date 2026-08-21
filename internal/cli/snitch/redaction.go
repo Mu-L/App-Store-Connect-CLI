@@ -150,6 +150,7 @@ var (
 		"dgst": newCommandCredentialFlagValueStartPattern("hmac"),
 	}
 	opensslMACOptionValueStartPattern     = newCommandCredentialFlagValueStartPattern("macopt")
+	opensslKDFOptionValueStartPattern     = newCommandCredentialFlagValueStartPattern("kdfopt")
 	keytoolCredentialFlagPattern          = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass", "new", "srcstorepass", "deststorepass", "srckeypass", "destkeypass")
 	jarsignerCredentialFlagPattern        = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass")
 	dockerLoginCredentialFlagPattern      = newCommandShortCredentialFlagPattern("p")
@@ -4669,6 +4670,11 @@ func redactOpenSSLSubcommandCredentialArguments(value string) (string, bool) {
 			commandSuffix, macChanged = redactCommandCredentialFlagValuesMatching(commandSuffix, opensslMACOptionValueStartPattern, isOpenSSLMACKeyOption)
 			commandChanged = commandChanged || macChanged
 		}
+		if subcommand == "kdf" {
+			var kdfChanged bool
+			commandSuffix, kdfChanged = redactCommandCredentialFlagValuesMatching(commandSuffix, opensslKDFOptionValueStartPattern, isOpenSSLKDFSecretOption)
+			commandChanged = commandChanged || kdfChanged
+		}
 		if commandChanged {
 			command = command[:commandStart] + commandSuffix
 			result = result[:start] + command + result[end:]
@@ -4727,6 +4733,20 @@ func isOpenSSLMACKeyOption(value string) bool {
 	}
 	option := strings.ToLower(strings.TrimPrefix(strings.Trim(spans[0].value, `"'`), "$"))
 	return strings.HasPrefix(option, "key:") || strings.HasPrefix(option, "hexkey:")
+}
+
+func isOpenSSLKDFSecretOption(value string) bool {
+	spans := splitCredentialShellWordSpans(value)
+	if len(spans) == 0 {
+		return false
+	}
+	option := strings.ToLower(strings.TrimPrefix(strings.Trim(spans[0].value, `"'`), "$"))
+	for _, name := range []string{"key:", "hexkey:", "secret:", "hexsecret:", "pass:", "hexpass:"} {
+		if strings.HasPrefix(option, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func openSSLCommand(command string) (int, string, bool) {
