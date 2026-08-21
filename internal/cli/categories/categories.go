@@ -64,7 +64,9 @@ and secondary categories.
 Examples:
   asc categories list
   asc categories list --output table
-  asc categories list --paginate`,
+  asc categories list --paginate
+  asc categories list --next "<links.next>"
+  asc categories list --paginate --next "<links.next>"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {

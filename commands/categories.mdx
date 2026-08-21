@@ -34,6 +34,8 @@ List available App Store categories.
 asc categories list
 asc categories list --output table
 asc categories list --paginate
+asc categories list --next "<links.next>"
+asc categories list --paginate --next "<links.next>"
 ```
 
 Use `--next` with the `links.next` URL from a previous response to resume from
@@ -66,7 +68,11 @@ the page size.
         "platforms": ["IOS", "MAC_OS"]
       }
     }
-  ]
+  ],
+  "links": {
+    "self": "https://api.appstoreconnect.apple.com/v1/appCategories?limit=200",
+    "next": "https://api.appstoreconnect.apple.com/v1/appCategories?cursor=NEXT_CURSOR&limit=200"
+  }
 }
 ```
 

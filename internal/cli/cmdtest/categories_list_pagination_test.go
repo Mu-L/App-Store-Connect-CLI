@@ -27,6 +27,18 @@ func TestCategoriesListSupportsPaginationFlags(t *testing.T) {
 	}
 }
 
+func TestCategoriesListHelpDocumentsCursorResumeExamples(t *testing.T) {
+	cmd := findCommandByPath(t, "categories", "list")
+	for _, example := range []string{
+		`asc categories list --next "<links.next>"`,
+		`asc categories list --paginate --next "<links.next>"`,
+	} {
+		if !strings.Contains(cmd.LongHelp, example) {
+			t.Fatalf("categories list help = %q, want example %q", cmd.LongHelp, example)
+		}
+	}
+}
+
 func TestCategoriesListRejectsNextQueryFlagsBeforeAuth(t *testing.T) {
 	const nextURL = "https://api.appstoreconnect.apple.com/v1/appCategories?cursor=next"
 	tests := []struct {
