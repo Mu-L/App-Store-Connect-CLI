@@ -37,7 +37,7 @@ const (
 	cgiCredentialHeaderName     = `(?:proxy_authorization|authorization|cookie|set_cookie|scnt|x_apple_id_session_id|x_apple_widget_key|csrf|csrf_ts)`
 	traceCredentialHeader       = `(?:cookie|set-cookie|scnt|x-apple-id-session-id|x-apple-widget-key|csrf|csrf_ts)`
 	webAuthQueryCredential      = `(?:widgetkey|scnt)`
-	queryCredentialName         = `(?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|` + webAuthQueryCredential + `|` + sensitiveAssignmentName + `)`
+	queryCredentialName         = `(?:x-amz-(?:credential|security-token|signature)|x-goog-(?:credential|signature)|signature|sig|authorization|auth|` + webAuthQueryCredential + `|` + sensitiveAssignmentName + `)`
 	webAuthStructuredCredential = `(?:authservicekey|servicekey)`
 	wellKnownSecretDataName     = `(?:tls\.key|\.dockerconfigjson)`
 	structuredCredentialName    = `(?:` + sensitivePrefixedName + `|` + credentialHeaderName + `|` + webAuthStructuredCredential + `|` + wellKnownSecretDataName + `)`
@@ -73,9 +73,10 @@ const (
 	cookieDataQuoted            = `(?:"(?:\\.|[^"\\\r\n])*=(?:\\.|[^"\\\r\n])*"|\$?'(?:\\.|[^'\\\r\n])*=(?:\\.|[^'\\\r\n])*')`
 	cookieDataUnquoted          = `(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])+=(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])*`
 	cookieDataValue             = `(?:` + cookieDataQuoted + `|` + cookieDataUnquoted + `)`
-	curlCertOptionPrefix        = `(?:(?:(?-i:-E)|--(?:proxy-)?cert)\b(?:[ \t]+|[ \t]*=[ \t]*)|(?-i:-E))`
+	curlOptionValueSeparator    = `(?:[ \t]+|[ \t]*=[ \t]*|[ \t]*(?:\\|\x60|\^)\r?\n[ \t]*)`
+	curlCertOptionPrefix        = `(?:(?:(?-i:-E)|--(?:proxy-)?cert)\b` + curlOptionValueSeparator + `|(?-i:-E))`
 	curlCertUnquotedPath        = `(?:\\(?:\r?\n|[^\r\n])|[^\s:'"])+`
-	curlCertShellPath           = `(?:` + singleLineQuotedValue + `|` + curlCertUnquotedPath + `)+`
+	curlCertShellPath           = `(?:` + singleLineQuotedValue + `|` + curlCertUnquotedPath + `)*`
 	curlHeaderOptionPrefix      = `(?:(?:-H|--header|--proxy-header)\b(?:[ \t]+|[ \t]*=[ \t]*)|-H)`
 	curlFormDataOptionPrefix    = `(?:(?-i:-F)(?:[ \t]+|[ \t]*=[ \t]*)?|--(?:data-urlencode|data|form-string|form)\b(?:[ \t]+|[ \t]*=[ \t]*))`
 	curlConfigSeparator         = `(?:[ \t]*[=:][ \t]*|[ \t]+)`
@@ -212,7 +213,8 @@ var (
 	bareEnvironmentDumpCredential         = regexp.MustCompile(`(?im)^([ \t]*(?:export[ \t]+)?(?:` + sensitivePrefixedName + `|(?-i:` + uppercaseSessionEnvironmentName + `))\b[ \t]*=[ \t]*)([^\s"'\\;&|<>()]+(?:[ \t]+[^\s"'\\;&|<>()]+)+)([ \t]*\r?)$`)
 	shellAssignmentWord                   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	curlConfigCertificateEntry            = regexp.MustCompile(`(?im)^([ \t]*(?:cert|proxy-cert)` + curlConfigSeparator + `)`)
-	xmlCredentialElementStart             = regexp.MustCompile(`(?i)<(?:[a-z_][a-z0-9_.-]*:)?` + sensitivePrefixedName + `(?:[ \t\r\n/>])`)
+	xmlCredentialElementStart             = regexp.MustCompile(`(?i)<(?:[a-z_][a-z0-9_.-]*:)?` + structuredCredentialName + `(?:[ \t\r\n/>])`)
+	xmlCredentialName                     = regexp.MustCompile(`(?i)^(?:` + structuredCredentialName + `)$`)
 	xmlElementStart                       = regexp.MustCompile(`<[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:[ \t\r\n/>])`)
 	xmlAttribute                          = regexp.MustCompile(`(?s)(?:^|[ \t\r\n])([a-zA-Z_:][a-zA-Z0-9_.:-]*)[ \t\r\n]*=[ \t\r\n]*(?:"([^"]*)"|'([^']*)')`)
 	authorizationHeaderValueStart         = regexp.MustCompile(`(?i)\bauthorization[ \t]*[:=][ \t]*`)
@@ -249,7 +251,7 @@ var registryAuthValueRedactionRules = []redactionRule{
 
 var curlUserCredentialRedactionRules = []redactionRule{
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-u|--(?:proxy-)?user)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
+		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:-u|--(?:proxy-)?user)\b` + curlOptionValueSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
@@ -259,6 +261,48 @@ var curlUserCredentialRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)(-u)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + credentialPairValue + `)`),
 		replacement: `${1}${2}` + redactionMarker,
+	},
+}
+
+var curlCertificateCredentialRedactionRules = []redactionRule{
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(")((?:` + escapedQuotedCharacter + `|[^"\\:\r\n])*):(?:` + escapedQuotedCharacter + `|[^"\\])+(")`),
+		replacement: `${1}${2}${3}${4}:` + redactionMarker + `${5}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(')((?:` + escapedQuotedCharacter + `|[^'\\:\r\n])*):(?:` + escapedQuotedCharacter + `|[^'\\])+(')`),
+		replacement: `${1}${2}${3}${4}:` + redactionMarker + `${5}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(` + curlCertShellPath + `):` + singleLineShellWord),
+		replacement: `${1}${2}${3}:` + redactionMarker,
+	},
+}
+
+var curlArgumentCredentialRedactionRules = []redactionRule{
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)(` + credentialHeaderName + `)[ \t]*:[ \t]*(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])+`),
+		replacement: `${1}${2}${3}:` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:(?-i:-b)|--cookie)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:(?-i:-b)|--cookie)\b[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)((?-i:-b))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlFormDataOptionPrefix + `)(")((?:\\.|[^"\\])*?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)(?:\\.|[^"\\])*(")`),
+		replacement: `${1}${2}${3}${4}` + redactionMarker + `${5}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlFormDataOptionPrefix + `)(')([^']*?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)[^']*(')`),
+		replacement: `${1}${2}${3}${4}` + redactionMarker + `${5}`,
 	},
 }
 
@@ -279,16 +323,23 @@ var singleLineShellWordRedactionRules = []redactionRule{
 		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveShellFlagToken + shellCommandPathSeparator + `)` + fishShellWord + `(` + singleLineShellTerminator + `)`),
-		replacement: `${1}${2}` + redactionMarker + `${3}`,
-	},
-	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveOrSecretShellToken + `[ \t]*=[ \t]*)` + fishShellWord + `(` + singleLineShellTerminator + `)`),
 		replacement: `${1}${2}` + redactionMarker + `${3}`,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)(^|[^-a-z0-9_])(` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)` + singleLineShellWord + `(` + singleLineShellTerminator + `)`),
 		replacement: `${1}${2}` + redactionMarker + `${3}`,
+	},
+}
+
+var commandScopedSensitiveFlagRedactionRules = []redactionRule{
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveShellFlagToken + shellCommandPathSeparator + `)` + fishShellWord + `(` + singleLineShellTerminator + `)`),
+		replacement: `${1}${2}` + redactionMarker + `${3}`,
+	},
+	{
+		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveShellFlagToken + shellCommandPathSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
+		replacement: `${1}${2}` + redactionMarker,
 	},
 }
 
@@ -398,10 +449,6 @@ var sensitiveTextRedactionRules = []redactionRule{
 		replacement: `${1}` + redactionMarker,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlHeaderOptionPrefix + `)(` + credentialHeaderName + `)[ \t]*:[ \t]*(?:\\(?:\r?\n|[^\r\n])|[^\s;&|<>()])+`),
-		replacement: `${1}${2}${3}:` + redactionMarker,
-	},
-	{
 		pattern:     regexp.MustCompile(`(?im)^([ \t]*(?:header|proxy-header)` + curlConfigSeparator + `")(` + credentialHeaderName + `|` + sensitivePrefixedName + `)([ \t]*:[ \t]*)(?:\\.|[^"\\\r\n])+(")`),
 		replacement: `${1}${2}${3}` + redactionMarker + `${4}`,
 	},
@@ -428,42 +475,6 @@ var sensitiveTextRedactionRules = []redactionRule{
 	{
 		pattern:     regexp.MustCompile(`(?im)^((?:#HttpOnly_)?[^#\t\r\n][^\t\r\n]*\t(?:TRUE|FALSE)\t[^\t\r\n]*\t(?:TRUE|FALSE)\t[0-9]+\t[^\t\r\n]+\t)(?:\[REDACTED(?: PRIVATE KEY)?\]|[^\t\r\n]+)`),
 		replacement: `${1}` + redactionMarker,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(")((?:` + escapedQuotedCharacter + `|[^"\\:\r\n])+):(?:` + escapedQuotedCharacter + `|[^"\\])+(")`),
-		replacement: `${1}${2}${3}${4}:` + redactionMarker + `${5}`,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(')((?:` + escapedQuotedCharacter + `|[^'\\:\r\n])+):(?:` + escapedQuotedCharacter + `|[^'\\])+(')`),
-		replacement: `${1}${2}${3}${4}:` + redactionMarker + `${5}`,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlCertOptionPrefix + `)(` + curlCertShellPath + `):` + singleLineShellWord),
-		replacement: `${1}${2}${3}:` + redactionMarker,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:(?-i:-b)|--cookie)\b[ \t]+)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
-		replacement: `${1}${2}` + redactionMarker,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)((?:(?-i:-b)|--cookie)\b[ \t]*=[ \t]*)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
-		replacement: `${1}${2}` + redactionMarker,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)((?-i:-b))(?:\[REDACTED(?: PRIVATE KEY)?\]|` + cookieDataValue + `)`),
-		replacement: `${1}${2}` + redactionMarker,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlFormDataOptionPrefix + `)(")((?:\\.|[^"\\])*?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)(?:\\.|[^"\\])*(")`),
-		replacement: `${1}${2}${3}${4}` + redactionMarker + `${5}`,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + curlFormDataOptionPrefix + `)(')([^']*?` + sensitivePrefixedName + `\b[ \t]*=[ \t]*)[^']*(')`),
-		replacement: `${1}${2}${3}${4}` + redactionMarker + `${5}`,
-	},
-	{
-		pattern:     regexp.MustCompile(`(?i)(^|\s)(` + sensitiveShellFlagToken + shellCommandPathSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + shellUnquotedValue + `)`),
-		replacement: `${1}${2}` + redactionMarker,
 	},
 	{
 		pattern:     regexp.MustCompile(`(?i)(^|\s)(-{1,2}secret\b` + shellCommandPathSeparator + `)(?:\[REDACTED(?: PRIVATE KEY)?\]|` + escapeAwareQuotedValue + `|` + unterminatedQuotedValue + `|` + flagUnquotedValue + `)`),
@@ -505,6 +516,83 @@ var sensitiveTextRedactionRules = []redactionRule{
 
 func redactSensitiveText(value string) (string, bool) {
 	return redactSensitiveTextDepth(value, 0)
+}
+
+// redactCommandScopedSensitiveFlags keeps generic credential flags scoped to
+// commands that may consume their values. Text-producing commands such as
+// echo and grep commonly appear in diagnostics as examples; redacting their
+// prose would both corrupt useful reports and make the sanitizer surprising.
+// Nested substitutions are handled before this pass, so a command such as
+// echo "$(curl --user ...)" still redacts the inner command's credential.
+func redactCommandScopedSensitiveFlags(value string) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findScopedSensitiveCommandEnd(result, start)
+		command := result[start:end]
+		if !isBenignTextCommand(command) {
+			redacted := command
+			for _, rule := range commandScopedSensitiveFlagRedactionRules {
+				next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
+				if next != redacted {
+					redacted = next
+					changed = true
+				}
+			}
+			if redacted != command {
+				result = result[:start] + redacted + result[end:]
+			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+func findScopedSensitiveCommandEnd(value string, start int) int {
+	end := findShellCommandEnd(value, start)
+	for end < len(value) {
+		if end == 0 || (value[end-1] != '^' && value[end-1] != '`') {
+			break
+		}
+		if value[end] == '\r' && end+1 < len(value) && value[end+1] == '\n' {
+			end += 2
+		} else if value[end] == '\n' {
+			end++
+		} else {
+			break
+		}
+		end = findShellCommandEnd(value, end)
+	}
+	return end
+}
+
+func isBenignTextCommand(command string) bool {
+	spans := splitCredentialShellWordSpans(command)
+	if len(spans) == 0 {
+		return false
+	}
+	words := make([]string, 0, len(spans))
+	for _, span := range spans {
+		words = append(words, span.value)
+	}
+	for index, word := range words {
+		if !isCredentialCommandPrefix(words[:index]) {
+			continue
+		}
+		switch commandBaseName(word) {
+		case "echo", "printf", "grep", "rg", "ripgrep":
+			return true
+		}
+	}
+	return false
 }
 
 func redactSensitiveTextDepth(value string, depth int) (string, bool) {
@@ -595,7 +683,11 @@ func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 		redacted = next
 		changed = true
 	}
-	if next, curlUserChanged := redactCurlUserCredentialArguments(redacted); curlUserChanged {
+	if next, redisChanged := redactRedisCLICredentialArguments(redacted); redisChanged {
+		redacted = next
+		changed = true
+	}
+	if next, curlChanged := redactCurlCredentialArguments(redacted); curlChanged {
 		redacted = next
 		changed = true
 	}
@@ -608,10 +700,6 @@ func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 		changed = true
 	}
 	if next, queryChanged := redactEncodedQueryCredentialValues(redacted); queryChanged {
-		redacted = next
-		changed = true
-	}
-	if next, headerChanged := redactCompoundCurlHeaderWords(redacted); headerChanged {
 		redacted = next
 		changed = true
 	}
@@ -694,6 +782,10 @@ func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 		changed = true
 	}
 	redacted, booleanMarkerProtection := protectBooleanSecretMarkers(redacted)
+	if next, flagChanged := redactCommandScopedSensitiveFlags(redacted); flagChanged {
+		redacted = next
+		changed = true
+	}
 	for _, rule := range singleLineShellWordRedactionRules {
 		next := rule.pattern.ReplaceAllString(redacted, rule.replacement)
 		if next != redacted {
@@ -1871,7 +1963,14 @@ func redactKubernetesSecretJSONData(value string, escapeDepth int) (string, bool
 		if open < 0 {
 			break
 		}
-		close := findJSONContainerEndAtDepth(redacted, open, escapeDepth)
+		close := findJSONContainerEndAtDepthStrict(redacted, open, escapeDepth)
+		truncated := close < open
+		if truncated {
+			// A malformed outer object used to make every nested opening brace
+			// rescan the remaining suffix. Keep the existing truncated-object
+			// redaction behavior, but stop after the first unmatched container.
+			close = len(redacted) - 1
+		}
 		if close < open {
 			break
 		}
@@ -1880,6 +1979,9 @@ func redactKubernetesSecretJSONData(value string, escapeDepth int) (string, bool
 		if objectChanged {
 			redacted = redacted[:open] + redactedObject + redacted[close+1:]
 			changed = true
+		}
+		if truncated {
+			break
 		}
 		searchStart = open + 1
 	}
@@ -2373,8 +2475,20 @@ func redactEncodedQueryCredentialValues(value string) (string, bool) {
 		if !strings.Contains(encodedName, "%") {
 			continue
 		}
-		decodedName, err := url.QueryUnescape(encodedName)
-		if err != nil || !queryCredentialNamePattern.MatchString(decodedName) {
+		decodedName := encodedName
+		matchedCredentialName := false
+		for decodeLayer := 0; decodeLayer < 2; decodeLayer++ {
+			decoded, err := url.QueryUnescape(decodedName)
+			if err != nil {
+				break
+			}
+			decodedName = decoded
+			if queryCredentialNamePattern.MatchString(decodedName) {
+				matchedCredentialName = true
+				break
+			}
+		}
+		if !matchedCredentialName {
 			continue
 		}
 
@@ -2647,7 +2761,7 @@ func redactXMLCredentialElements(value string) (string, bool) {
 		decoder := xml.NewDecoder(strings.NewReader(redacted[elementStart:]))
 		first, err := decoder.Token()
 		element, validElement := first.(xml.StartElement)
-		if err != nil || !validElement || !tomlCredentialName.MatchString(element.Name.Local) {
+		if err != nil || !validElement || !xmlCredentialName.MatchString(element.Name.Local) {
 			searchStart = elementStart + 1
 			continue
 		}
@@ -3447,8 +3561,11 @@ func redactSensitiveJSONNameValuePairsAtDepth(value string, escapeDepth int) (st
 		if open < 0 {
 			break
 		}
-		close := findJSONContainerEndAtDepth(redacted, open, escapeDepth)
+		close := findJSONContainerEndAtDepthStrict(redacted, open, escapeDepth)
 		if close < open {
+			// Do not rescan every nested object when the outer JSON container is
+			// malformed. Other JSON passes still handle credential pairs in the
+			// truncated text, while this object-oriented pass has no safe bound.
 			break
 		}
 		object := redacted[open : close+1]
@@ -4392,8 +4509,15 @@ func findJSONContainerEnd(value string, open int, escapedQuotes bool) int {
 }
 
 func findJSONContainerEndAtDepth(value string, open, escapeDepth int) int {
+	if end := findJSONContainerEndAtDepthStrict(value, open, escapeDepth); end >= 0 {
+		return end
+	}
+	return len(value) - 1
+}
+
+func findJSONContainerEndAtDepthStrict(value string, open, escapeDepth int) int {
 	if open < 0 || open >= len(value) || (value[open] != '{' && value[open] != '[') {
-		return len(value) - 1
+		return -1
 	}
 
 	stack := []byte{value[open]}
@@ -4411,22 +4535,24 @@ func findJSONContainerEndAtDepth(value string, open, escapeDepth int) int {
 		case '{', '[':
 			stack = append(stack, value[i])
 		case '}':
-			if stack[len(stack)-1] == '{' {
-				stack = stack[:len(stack)-1]
+			if len(stack) == 0 || stack[len(stack)-1] != '{' {
+				return -1
 			}
+			stack = stack[:len(stack)-1]
 			if len(stack) == 0 {
 				return i
 			}
 		case ']':
-			if stack[len(stack)-1] == '[' {
-				stack = stack[:len(stack)-1]
+			if len(stack) == 0 || stack[len(stack)-1] != '[' {
+				return -1
 			}
+			stack = stack[:len(stack)-1]
 			if len(stack) == 0 {
 				return i
 			}
 		}
 	}
-	return len(value) - 1
+	return -1
 }
 
 func isJSONStringDelimiter(value string, quote int, escapedQuotes bool) bool {
@@ -5173,20 +5299,51 @@ func redactUnzipCredentialArguments(value string) (string, bool) {
 	return redacted, attachedChanged || patternChanged
 }
 
-func redactCurlUserCredentialArguments(value string) (string, bool) {
+func redactCurlCredentialArguments(value string) (string, bool) {
 	result := value
 	changed := false
 	for start := 0; start < len(result); {
 		end := findShellCommandEnd(result, start)
 		command := result[start:end]
 		if commandStart, ok := namedCredentialCommandStart(command, "curl"); ok {
-			for _, rule := range curlUserCredentialRedactionRules {
-				redacted := rule.pattern.ReplaceAllString(command[commandStart:], rule.replacement)
-				if redacted != command[commandStart:] {
-					command = command[:commandStart] + redacted
-					result = result[:start] + command + result[end:]
-					changed = true
+			redacted := command[commandStart:]
+			for _, rules := range [][]redactionRule{curlUserCredentialRedactionRules, curlCertificateCredentialRedactionRules, curlArgumentCredentialRedactionRules} {
+				for _, rule := range rules {
+					redacted = rule.pattern.ReplaceAllString(redacted, rule.replacement)
 				}
+			}
+			redacted, _ = redactCompoundCurlHeaderWords(redacted)
+			if redacted != command[commandStart:] {
+				command = command[:commandStart] + redacted
+				result = result[:start] + command + result[end:]
+				changed = true
+			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+func redactRedisCLICredentialArguments(value string) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		if commandStart, ok := namedCredentialCommandStart(command, "redis-cli"); ok {
+			redacted, commandChanged := redactCommandCredentialOptionValues(command[commandStart:], "", "a", "pass")
+			if commandChanged {
+				command = command[:commandStart] + redacted
+				result = result[:start] + command + result[end:]
+				changed = true
 			}
 		}
 

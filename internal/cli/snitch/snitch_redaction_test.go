@@ -3909,6 +3909,60 @@ func TestRedactSensitiveTextPreservesNonCurlShortUArguments(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextScopesCurlCertificatePasswordsToCurl(t *testing.T) {
+	for _, input := range []string{
+		`grep -E "host:port" logfile`,
+		`grep --cert client.p12:public-pattern logfile`,
+		`echo curl --cert client.p12:public-example`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
+func TestRedactSensitiveTextRedactsCombinedCurlCredentials(t *testing.T) {
+	input := `curl --user alice:opaque-user --cert client.p12:opaque-cert https://example.test`
+	want := `curl --user [REDACTED] --cert client.p12:[REDACTED] https://example.test`
+
+	got, changed := redactSensitiveText(input)
+	if !changed || got != want {
+		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want %q", input, got, changed, want)
+	}
+}
+
+func TestRedactSensitiveTextRedactsRedisCLIPassword(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{input: `redis-cli -a opaque-redis-secret PING`, want: `redis-cli -a [REDACTED] PING`},
+		{input: `redis-cli -a=opaque-redis-secret PING`, want: `redis-cli -a=[REDACTED] PING`},
+		{input: `redis-cli '-a' opaque-redis-secret PING`, want: `redis-cli '-a' [REDACTED] PING`},
+		{input: `sudo -u build /usr/local/bin/redis-cli -a opaque-redis-secret PING`, want: `sudo -u build /usr/local/bin/redis-cli -a [REDACTED] PING`},
+		{input: `sh -c "redis-cli -a opaque-redis-secret PING"`, want: `sh -c "redis-cli -a [REDACTED] PING"`},
+	} {
+		got, changed := redactSensitiveText(test.input)
+		if !changed || got != test.want {
+			t.Errorf("redactSensitiveText(%q) = %q, changed=%t; want %q", test.input, got, changed, test.want)
+		}
+	}
+}
+
+func TestRedactSensitiveTextPreservesNonCredentialRedisCLIArguments(t *testing.T) {
+	for _, input := range []string{
+		`redis-cli GET -akey`,
+		`redis-cli -aopaque-not-an-option PING`,
+		`echo redis-cli -a public-example PING`,
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
+	}
+}
+
 func TestRedactSensitiveTextPreservesCurlReferer(t *testing.T) {
 	input := `curl -e https://example.test/page https://target.test`
 
