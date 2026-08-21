@@ -40,11 +40,13 @@ func AppsCommand() *ffcli.Command {
 		ShortHelp:  "List and manage apps in App Store Connect.",
 		LongHelp: `List and manage apps in App Store Connect.
 
+Creating an app record runs through a web session, not this command group:
+  asc web apps create --name "My App" --bundle-id "com.example.app" --sku "MYAPP123"
+
 Examples:
   asc apps
   asc apps list --bundle-id "com.example.app"
   asc apps published
-  asc web apps create --name "My App" --bundle-id "com.example.app" --sku "MYAPP123"
   asc apps wall
   asc apps wall submit --app "1234567890" --confirm
   asc apps public view --app "1234567890"
