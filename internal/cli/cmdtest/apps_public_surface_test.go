@@ -101,6 +101,14 @@ func TestAppsListHelpShowsFeatureExamples(t *testing.T) {
 	} {
 		usage := command.UsageFunc(command)
 		for _, want := range []string{
+			"[experimental] Filter by App Store version state(s)",
+			"[experimental] Filter by review submission state(s)",
+		} {
+			if !strings.Contains(usage, want) {
+				t.Errorf("%s help missing lifecycle marker %q, got %q", name, want, usage)
+			}
+		}
+		for _, want := range []string{
 			"--sort sku",
 			"--version-state IN_REVIEW,WAITING_FOR_REVIEW",
 			"--review-submission-state IN_REVIEW",
