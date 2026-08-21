@@ -478,6 +478,52 @@ func TestSubscriptionsIntroductoryOffersCreateSingleTerritoryDryRunSummarizesRes
 	}
 }
 
+func TestSubscriptionsIntroductoryOffersCreateSingleTerritoryDryRunSkipsSubscriptionLookup(t *testing.T) {
+	isolateIntroductoryOfferCreateAuth(t)
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("single-territory dry-run should not resolve subscription selectors: %s %s", req.Method, req.URL.Path)
+		return nil, nil
+	})
+
+	stdout, stderr, runErr := runRootCommand(t, []string{
+		"subscriptions", "offers", "introductory", "create",
+		"--subscription-id", "com.example.monthly",
+		"--app", "app-1",
+		"--offer-duration", "ONE_MONTH",
+		"--offer-mode", "FREE_TRIAL",
+		"--number-of-periods", "1",
+		"--territory", "US",
+		"--dry-run",
+		"--output", "json",
+	})
+	if runErr != nil {
+		t.Fatalf("run error: %v", runErr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	var summary struct {
+		SubscriptionID string `json:"subscriptionId"`
+		Territory      string `json:"territory"`
+		DryRun         bool   `json:"dryRun"`
+		Total          int    `json:"total"`
+		Created        int    `json:"created"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &summary); err != nil {
+		t.Fatalf("parse JSON summary: %v", err)
+	}
+	if summary.SubscriptionID != "com.example.monthly" || summary.Territory != "USA" || !summary.DryRun {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+	if summary.Total != 1 || summary.Created != 1 {
+		t.Fatalf("unexpected summary counts: %+v", summary)
+	}
+}
+
 func TestSubscriptionsIntroductoryOffersCreateDeprecatedAllAliasCreatesPerAvailabilityTerritory(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))

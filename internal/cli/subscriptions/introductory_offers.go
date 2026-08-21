@@ -369,6 +369,16 @@ Timeouts:
 				}
 			}
 
+			if *dryRun && !useAllTerritories {
+				return summarizeSubscriptionIntroductoryOfferCreateDryRun(
+					id,
+					territoryID,
+					*continueOnError,
+					*output.Output,
+					*output.Pretty,
+				)
+			}
+
 			client, err := shared.GetASCClient()
 			if err != nil {
 				return fmt.Errorf("subscriptions introductory-offers create: %w", err)
@@ -401,16 +411,6 @@ Timeouts:
 					id,
 					attrs,
 					*dryRun,
-					*continueOnError,
-					*output.Output,
-					*output.Pretty,
-				)
-			}
-
-			if *dryRun {
-				return summarizeSubscriptionIntroductoryOfferCreateDryRun(
-					id,
-					territoryID,
 					*continueOnError,
 					*output.Output,
 					*output.Pretty,
