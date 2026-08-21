@@ -183,6 +183,13 @@ depending on a command in CI or scripts:
 - If keychain access is blocked, retry with `ASC_BYPASS_KEYCHAIN=1` or re-run `asc auth login --bypass-keychain`
 - Use `asc auth login --local --bypass-keychain ...` when you want repo-local credentials in `./.asc/config.json`
 
+### Apple service health
+
+- `[experimental]` Check Apple's developer services without credentials: `asc system-status`
+- Narrow unexpected API or upload failures: `asc system-status --service "App Store Connect"`
+- Poll only when requested: `asc system-status --watch --poll-interval 30s`
+- Use `--issues-only` for a concise incident view; summary counts still cover all matched services
+
 ### Output
 
 - `asc` defaults to `table` in an interactive terminal and `json` in pipes, files, and CI
@@ -272,7 +279,7 @@ TestFlight group that needs beta app review submission.
 
 ```bash
 # Optional: preview the staging plan before submission
-asc release stage --app "123456789" --version "1.2.3" --build "BUILD_ID" --copy-metadata-from "1.2.2" --dry-run
+asc release stage --app "123456789" --version "1.2.3" --build-id "BUILD_ID" --copy-metadata-from "1.2.2" --dry-run
 
 # Canonical upload + attach + submit command
 asc publish appstore --app "123456789" --ipa "/path/to/MyApp.ipa" --version "1.2.3" --submit --confirm
