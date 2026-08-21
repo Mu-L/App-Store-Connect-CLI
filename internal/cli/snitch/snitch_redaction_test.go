@@ -2214,6 +2214,21 @@ status: failed`,
 			want:  `timeout .5s openssl pkcs12 -export -passout [REDACTED]`,
 		},
 		{
+			name:  "OpenSSL passphrase through nohup wrapper",
+			input: `nohup openssl pkcs12 -export -passout pass:opaque-nohup-secret`,
+			want:  `nohup openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passphrase through nohup option terminator",
+			input: `/usr/bin/nohup -- env PROFILE=release openssl pkcs12 -export -passout pass:opaque-nohup-secret`,
+			want:  `/usr/bin/nohup -- env PROFILE=release openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passphrase through nested timeout and nohup wrappers",
+			input: `timeout 30 nohup sudo -u build openssl pkcs12 -export -passout pass:opaque-nohup-secret`,
+			want:  `timeout 30 nohup sudo -u build openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
 			name:  "keytool keystore and key passwords",
 			input: `keytool -importkeystore -srcstorepass opaque-source-store -deststorepass=opaque-destination-store -srckeypass "opaque source key" -destkeypass 'opaque destination key' -storepass opaque-store -keypass opaque-key`,
 			want:  `keytool -importkeystore -srcstorepass [REDACTED] -deststorepass=[REDACTED] -srckeypass [REDACTED] -destkeypass [REDACTED] -storepass [REDACTED] -keypass [REDACTED]`,
@@ -2743,6 +2758,12 @@ func TestRedactSensitiveTextRejectsNonExecutingCredentialCommandWrappers(t *test
 		`timeout 30 echo openssl pkcs12 -passout public-value`,
 		`timeout --help openssl pkcs12 -passout public-value`,
 		`timeout --foreground=bad 30 openssl pkcs12 -passout public-value`,
+		`nohup echo openssl pkcs12 -passout public-value`,
+		`nohup --help openssl pkcs12 -passout public-value`,
+		`nohup --version openssl pkcs12 -passout public-value`,
+		`nohup --unknown openssl pkcs12 -passout public-value`,
+		`nohup -- --help openssl pkcs12 -passout public-value`,
+		`nohup "" openssl pkcs12 -passout public-value`,
 		`sudo -p "enter credentials: " echo openssl pkcs12 -passout public-value`,
 	} {
 		got, changed := redactSensitiveText(input)

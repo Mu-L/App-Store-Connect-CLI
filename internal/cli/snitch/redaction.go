@@ -4833,6 +4833,9 @@ func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
 	if wrapper == "timeout" || wrapper == "gtimeout" {
 		return consumeTimeoutCredentialWrapper(words[1:])
 	}
+	if wrapper == "nohup" {
+		return consumeNohupCredentialWrapper(words[1:])
+	}
 	if wrapper != "sudo" && wrapper != "doas" && wrapper != "command" && wrapper != "env" {
 		return nil, false
 	}
@@ -4858,6 +4861,19 @@ func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
 			}
 			words = words[1:]
 		}
+	}
+	return words, true
+}
+
+func consumeNohupCredentialWrapper(words []string) ([]string, bool) {
+	if len(words) == 0 {
+		return words, true
+	}
+	if strings.Trim(words[0], `"'`) == "--" {
+		return words[1:], true
+	}
+	if strings.HasPrefix(strings.Trim(words[0], `"'`), "-") {
+		return nil, false
 	}
 	return words, true
 }
