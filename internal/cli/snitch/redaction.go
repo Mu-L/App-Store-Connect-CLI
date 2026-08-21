@@ -151,8 +151,8 @@ var (
 	}
 	opensslSubcommandCredentialOptions = map[string][]string{
 		"pkeyutl":  {"pkeyopt_passin"},
-		"s_client": {"psk"},
-		"s_server": {"psk"},
+		"s_client": {"proxy_pass", "psk", "srppass"},
+		"s_server": {"dpass", "psk"},
 	}
 	opensslSubcommandArgumentOptions = map[string]string{
 		"pkeyutl":  "engine config in inkey passin peerkey peerform sigfile keyform out secret digest pkeyopt pkeyopt_passin kdf kdflen kemop rand writerand provider-path provider provparam propquery",

@@ -2724,6 +2724,11 @@ status: failed`,
 			want:  `openssl s_client -connect example.com:443 -psk [REDACTED] && C:\\OpenSSL\\bin\\openssl.exe s_server -accept 443 -psk=[REDACTED]`,
 		},
 		{
+			name:  "OpenSSL client and server password sources",
+			input: `openssl s_client -proxy proxy.example:8080 -proxy_pass pass:opaque-proxy-password -srpuser build -srppass opaque-srp-password && openssl s_server -cert server.pem -dpass=pass:opaque-second-key-password`,
+			want:  `openssl s_client -proxy proxy.example:8080 -proxy_pass [REDACTED] -srpuser build -srppass [REDACTED] && openssl s_server -cert server.pem -dpass=[REDACTED]`,
+		},
+		{
 			name:  "OpenSSL double-dash passphrase and PSK options",
 			input: `openssl pkeyutl --pkeyopt_passin option:opaque-passphrase -inkey key.pem && openssl s_client --psk=001122opaqueclientaabb`,
 			want:  `openssl pkeyutl --pkeyopt_passin [REDACTED] -inkey key.pem && openssl s_client --psk=[REDACTED]`,
