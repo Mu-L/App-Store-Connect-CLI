@@ -66,7 +66,7 @@ func TestEnableDeveloperBundleIDCapabilityPreservesWritablePayloadAndGraph(t *te
 	var patchBody []byte
 	var err error
 	requestCount := 0
-	handler := func(r *http.Request) (*http.Response, error) {
+	handler := func(r *http.Request) *http.Response {
 		requestCount++
 		for _, header := range []string{"Accept", "Content-Type", "Referer", "User-Agent", "X-Requested-With"} {
 			if strings.TrimSpace(r.Header.Get(header)) == "" {
@@ -79,7 +79,7 @@ func TestEnableDeveloperBundleIDCapabilityPreservesWritablePayloadAndGraph(t *te
 			if r.Method != http.MethodPost || r.URL.Path != "/services-account/QH65B2/account/listTeams.action" {
 				t.Fatalf("unexpected bootstrap request %s %s", r.Method, r.URL.String())
 			}
-			return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), http.Header{"csrf": []string{"bootstrap-csrf"}, "csrf_ts": []string{"bootstrap-ts"}}), nil
+			return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), http.Header{"csrf": []string{"bootstrap-csrf"}, "csrf_ts": []string{"bootstrap-ts"}})
 		case 2:
 			if r.Method != http.MethodPost || r.URL.Path != "/services-account/v1/capabilities" {
 				t.Fatalf("unexpected metadata request %s %s", r.Method, r.URL.String())
@@ -116,7 +116,7 @@ func TestEnableDeveloperBundleIDCapabilityPreservesWritablePayloadAndGraph(t *te
 								"canRequestFromPortal":false
 							}
 						}]
-					}`, http.Header{"csrf": []string{"secret-csrf"}, "csrf_ts": []string{"secret-ts"}}), nil
+					}`, http.Header{"csrf": []string{"secret-csrf"}, "csrf_ts": []string{"secret-ts"}})
 		case 3:
 			if r.Method != http.MethodPost || r.URL.Path != "/services-account/v1/bundleIds/bundle-1" {
 				t.Fatalf("unexpected bundle request %s %s", r.Method, r.URL.String())
@@ -175,7 +175,7 @@ func TestEnableDeveloperBundleIDCapabilityPreservesWritablePayloadAndGraph(t *te
 								"cloudContainers":{"data":[{"type":"cloudContainers","id":"cloud-1"}]}
 							}
 						}]
-					}`, nil), nil
+					}`, nil)
 		case 4:
 			if r.Method != http.MethodPatch || r.URL.Path != "/services-account/v1/bundleIds/bundle-1" {
 				t.Fatalf("unexpected patch request %s %s", r.Method, r.URL.String())
@@ -187,19 +187,14 @@ func TestEnableDeveloperBundleIDCapabilityPreservesWritablePayloadAndGraph(t *te
 			if err != nil {
 				t.Fatalf("ReadAll() error: %v", err)
 			}
-			return developerPortalTestResponse(http.StatusOK, `{"data":{"type":"bundleIds","id":"bundle-1"}}`, nil), nil
+			return developerPortalTestResponse(http.StatusOK, `{"data":{"type":"bundleIds","id":"bundle-1"}}`, nil)
 		default:
 			t.Fatalf("unexpected request %d: %s %s", requestCount, r.Method, r.URL.String())
-			return nil, nil
+			return nil
 		}
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		response, err := handler(request)
-		if err != nil {
-			t.Errorf("test Developer Portal handler: %v", err)
-			http.Error(writer, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		response := handler(request)
 		if response == nil {
 			t.Error("test Developer Portal handler returned a nil response")
 			http.Error(writer, "missing test response", http.StatusInternalServerError)
