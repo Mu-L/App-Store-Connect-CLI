@@ -4652,8 +4652,7 @@ func redactDockerLoginCredentialArguments(value string) (string, bool) {
 }
 
 func isDockerLoginCommand(command string) bool {
-	normalized := normalizeCredentialCommand(command)
-	words := strings.Fields(normalized)
+	words := credentialCommandWords(command)
 	for index, word := range words {
 		baseName := commandBaseName(word)
 		if (baseName != "docker" && baseName != "docker.exe") || !isCredentialCommandPrefix(words[:index]) {
@@ -4747,8 +4746,7 @@ func redactNamedCommandCredentialArguments(value, commandName string, pattern *r
 }
 
 func isNamedCredentialCommand(command, commandName string) bool {
-	normalized := normalizeCredentialCommand(command)
-	words := strings.Fields(normalized)
+	words := credentialCommandWords(command)
 	for index, word := range words {
 		baseName := commandBaseName(word)
 		if (baseName == commandName || baseName == commandName+".exe") && isCredentialCommandPrefix(words[:index]) {
@@ -4788,8 +4786,7 @@ func redactSecurityCredentialArguments(value string) (string, bool) {
 }
 
 func securitySubcommand(command string) (string, bool) {
-	normalized := normalizeCredentialCommand(command)
-	words := strings.Fields(normalized)
+	words := credentialCommandWords(command)
 	for index, word := range words {
 		word = strings.Trim(word, `"'`)
 		if separator := strings.LastIndexAny(word, `/\\`); separator >= 0 {
@@ -4992,7 +4989,7 @@ func credentialWrapperLongOption(wrapper, option string) (bool, bool) {
 		switch option {
 		case "--argv0", "--chdir", "--unset":
 			return true, true
-		case "--debug", "--ignore-environment":
+		case "--debug", "--ignore-environment", "--split-string":
 			return false, true
 		}
 	}
@@ -5012,9 +5009,106 @@ func normalizeCredentialCommand(command string) string {
 	return envLongSplitStringOption.ReplaceAllString(normalized, "-S ")
 }
 
+func credentialCommandWords(command string) []string {
+	words := splitCredentialShellWords(normalizeCredentialCommand(command))
+	for index := 0; index < len(words); index++ {
+		if commandBaseName(words[index]) != "env" || !isCredentialCommandPrefix(words[:index]) {
+			continue
+		}
+		for optionIndex := index + 1; optionIndex < len(words); {
+			word := strings.Trim(words[optionIndex], `"'`)
+			if shellAssignmentWord.MatchString(word) {
+				optionIndex++
+				continue
+			}
+			if option, inner, attached := envSplitStringOption(word); option != "" {
+				words[optionIndex] = option
+				if attached {
+					innerWords := splitCredentialShellWords(inner)
+					words = append(words[:optionIndex+1], append(innerWords, words[optionIndex+1:]...)...)
+				} else if optionIndex+1 < len(words) {
+					innerWords := splitCredentialShellWords(words[optionIndex+1])
+					words = append(words[:optionIndex+1], append(innerWords, words[optionIndex+2:]...)...)
+				}
+				break
+			}
+			if len(word) < 2 || word[0] != '-' || word == "-" {
+				break
+			}
+			requiresArgument, allowed := credentialWrapperOption("env", word)
+			if !allowed {
+				break
+			}
+			optionIndex++
+			if requiresArgument {
+				optionIndex++
+			}
+		}
+	}
+	return words
+}
+
+func envSplitStringOption(option string) (string, string, bool) {
+	if option == "--split-string" {
+		return "-S", "", false
+	}
+	if len(option) < 2 || option[0] != '-' || option[1] == '-' {
+		return "", "", false
+	}
+	for index := 1; index < len(option); index++ {
+		switch option[index] {
+		case 'i', 'v':
+			continue
+		case 'S':
+			return option[:index+1], option[index+1:], index+1 < len(option)
+		default:
+			return "", "", false
+		}
+	}
+	return "", "", false
+}
+
+func splitCredentialShellWords(value string) []string {
+	words := make([]string, 0, len(strings.Fields(value)))
+	var word strings.Builder
+	var quote byte
+	started := false
+	flush := func() {
+		if !started {
+			return
+		}
+		words = append(words, word.String())
+		word.Reset()
+		started = false
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		switch {
+		case character == '\\' && quote != '\'' && index+1 < len(value):
+			started = true
+			word.WriteByte(character)
+			index++
+			word.WriteByte(value[index])
+		case quote == '\'' && character == '\'':
+			quote = 0
+		case quote == '"' && character == '"':
+			quote = 0
+		case quote == 0 && (character == '\'' || character == '"'):
+			started = true
+			quote = character
+		case quote == 0 && (character == ' ' || character == '\t' || character == '\r' || character == '\n'):
+			flush()
+		default:
+			started = true
+			word.WriteByte(character)
+		}
+	}
+	flush()
+	return words
+}
+
 func isKubectlCreateSecretCommand(command string) bool {
-	normalized := normalizeCredentialCommand(command)
-	words := strings.Fields(normalized)
+	words := credentialCommandWords(command)
 	if len(words) < 3 {
 		return false
 	}

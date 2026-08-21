@@ -2184,6 +2184,16 @@ status: failed`,
 			want:  `env --split-string="openssl pkcs12 -export -passout [REDACTED]"`,
 		},
 		{
+			name:  "OpenSSL passphrase through separate env long split string wrapper",
+			input: `env --split-string "PROFILE=release openssl pkcs12 -export -passout pass:opaque-output"`,
+			want:  `env --split-string "PROFILE=release openssl pkcs12 -export -passout [REDACTED]"`,
+		},
+		{
+			name:  "OpenSSL passphrase through attached env split string wrapper",
+			input: `env -iS"PROFILE=release openssl pkcs12 -export -passout pass:opaque-output"`,
+			want:  `env -iS"PROFILE=release openssl pkcs12 -export -passout [REDACTED]"`,
+		},
+		{
 			name:  "OpenSSL passphrase through timeout wrapper",
 			input: `timeout 30 openssl pkcs12 -export -passout pass:opaque-timeout-secret`,
 			want:  `timeout 30 openssl pkcs12 -export -passout [REDACTED]`,
@@ -2227,6 +2237,26 @@ status: failed`,
 			name:  "OpenSSL through option-bearing wrapper",
 			input: `sudo --user=build openssl pkcs12 -passout pass:opaque-output`,
 			want:  `sudo --user=build openssl pkcs12 -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL through wrapper with quoted option argument",
+			input: `sudo -p "enter credentials: " openssl pkcs12 -export -passout pass:opaque-output`,
+			want:  `sudo -p "enter credentials: " openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL through wrapper with empty quoted option argument",
+			input: `sudo -p "" "/usr/bin/openssl" pkcs12 -export -passout pass:opaque-output`,
+			want:  `sudo -p "" "/usr/bin/openssl" pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL through wrapper with escaped quoted option argument",
+			input: `sudo -p "enter \"credentials\": " openssl pkcs12 -export -passout pass:opaque-output`,
+			want:  `sudo -p "enter \"credentials\": " openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL through env split string with quoted wrapper argument",
+			input: `env -S "sudo -p 'enter credentials: ' openssl pkcs12 -export -passout pass:opaque-output"`,
+			want:  `env -S "sudo -p 'enter credentials: ' openssl pkcs12 -export -passout [REDACTED]"`,
 		},
 		{
 			name:  "keytool through doas and command wrappers",
@@ -2713,6 +2743,7 @@ func TestRedactSensitiveTextRejectsNonExecutingCredentialCommandWrappers(t *test
 		`timeout 30 echo openssl pkcs12 -passout public-value`,
 		`timeout --help openssl pkcs12 -passout public-value`,
 		`timeout --foreground=bad 30 openssl pkcs12 -passout public-value`,
+		`sudo -p "enter credentials: " echo openssl pkcs12 -passout public-value`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {
