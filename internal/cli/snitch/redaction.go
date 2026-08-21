@@ -475,6 +475,14 @@ func redactSensitiveText(value string) (string, bool) {
 func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 	redacted, changed := boundRedactionInput(value)
 	if depth < 8 {
+		if next, substitutionChanged := redactShellCommandSubstitutionContents(redacted, depth); substitutionChanged {
+			redacted = next
+			changed = true
+		}
+		if next, envSplitChanged := redactEnvSplitCommandStrings(redacted, depth); envSplitChanged {
+			redacted = next
+			changed = true
+		}
 		if next, shellChanged := redactShellCommandStrings(redacted, depth); shellChanged {
 			redacted = next
 			changed = true
@@ -5238,7 +5246,7 @@ func credentialWrapperShortOption(wrapper string, option byte) (bool, bool) {
 		}
 		// Treat -S as transparent here so the command words inside its split
 		// string remain available to the command-scoped redactors.
-		return false, option == 'S' || option == 'i' || option == 'v'
+		return false, option == '0' || option == 'S' || option == 'i' || option == 'v'
 	default:
 		return false, false
 	}
@@ -5259,7 +5267,7 @@ func credentialWrapperLongOption(wrapper, option string) (bool, bool) {
 		switch option {
 		case "--argv0", "--chdir", "--unset":
 			return true, true
-		case "--debug", "--ignore-environment", "--split-string":
+		case "--debug", "--ignore-environment", "--null", "--split-string":
 			return false, true
 		}
 	}
@@ -5340,6 +5348,8 @@ func envSplitStringOption(option string) (string, string, bool) {
 
 type credentialShellWord struct {
 	value        string
+	start        int
+	end          int
 	contentStart int
 	contentEnd   int
 }
@@ -5366,6 +5376,8 @@ func splitCredentialShellWordSpans(value string) []credentialShellWord {
 		contentStart, contentEnd := credentialShellWordContentSpan(value[wordStart:end])
 		words = append(words, credentialShellWord{
 			value:        word.String(),
+			start:        wordStart,
+			end:          end,
 			contentStart: wordStart + contentStart,
 			contentEnd:   wordStart + contentEnd,
 		})
@@ -5424,6 +5436,202 @@ func credentialShellWordContentSpan(raw string) (int, int) {
 		return 0, len(raw)
 	}
 	return 0, len(raw)
+}
+
+func redactShellCommandSubstitutionContents(value string, depth int) (string, bool) {
+	result := value
+	changed := false
+	var quote byte
+	for index := 0; index < len(result); index++ {
+		switch quote {
+		case '\'':
+			if result[index] == '\'' {
+				quote = 0
+			}
+			continue
+		case '"':
+			if result[index] == '"' {
+				quote = 0
+				continue
+			}
+		}
+		if result[index] == '\\' {
+			index++
+			continue
+		}
+		if result[index] == '"' {
+			quote = '"'
+			continue
+		}
+		if quote == 0 && result[index] == '\'' {
+			quote = '\''
+			continue
+		}
+
+		open := -1
+		contentStart := -1
+		switch {
+		case result[index] == '$' && index+1 < len(result) && result[index+1] == '(':
+			open = index
+			contentStart = index + 2
+		case result[index] == '`' && isShellBacktickSubstitutionStart(result, index):
+			open = index
+			contentStart = index + 1
+		case (result[index] == '<' || result[index] == '>') && index+1 < len(result) && result[index+1] == '(':
+			open = index + 1
+			contentStart = index + 2
+		}
+		if open < 0 {
+			continue
+		}
+
+		close := findShellCommandSubstitutionEnd(result, open)
+		if close < contentStart {
+			continue
+		}
+		inner := result[contentStart:close]
+		redacted, innerChanged := redactSensitiveTextDepth(inner, depth+1)
+		if innerChanged {
+			result = result[:contentStart] + redacted + result[close:]
+			close = contentStart + len(redacted)
+			changed = true
+		}
+		index = close
+	}
+	return result, changed
+}
+
+func isShellBacktickSubstitutionStart(value string, index int) bool {
+	if index == 0 {
+		return true
+	}
+	return strings.ContainsRune(" \t\r\n=([{,:;|&\"", rune(value[index-1]))
+}
+
+func redactEnvSplitCommandStrings(value string, depth int) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		contentStart, contentEnd, ok := envSplitCommandStringSpan(command)
+		if ok {
+			inner := command[contentStart:contentEnd]
+			redacted, innerChanged := redactSensitiveTextDepth(inner, depth+1)
+			if !innerChanged && strings.Contains(inner, `\`) {
+				decoded := decodeEnvSplitStringForRedaction(inner)
+				_, innerChanged = redactSensitiveTextDepth(decoded, depth+1)
+				if innerChanged {
+					redacted = redactionMarker
+				}
+			}
+			if innerChanged {
+				command = command[:contentStart] + redacted + command[contentEnd:]
+				result = result[:start] + command + result[end:]
+				changed = true
+			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+func envSplitCommandStringSpan(command string) (int, int, bool) {
+	spans := splitCredentialShellWordSpans(command)
+	words := make([]string, 0, len(spans))
+	for _, span := range spans {
+		words = append(words, span.value)
+	}
+	for index, word := range words {
+		if commandBaseName(word) != "env" || !isCredentialCommandPrefix(words[:index]) {
+			continue
+		}
+		for optionIndex := index + 1; optionIndex < len(words); {
+			option := strings.Trim(words[optionIndex], `"'`)
+			if shellAssignmentWord.MatchString(option) {
+				optionIndex++
+				continue
+			}
+			if option == "--split-string" {
+				if optionIndex+1 >= len(spans) {
+					return 0, 0, false
+				}
+				span := spans[optionIndex+1]
+				return span.contentStart, span.contentEnd, true
+			}
+			if strings.HasPrefix(option, "--split-string=") {
+				return attachedEnvSplitStringSpan(command, spans[optionIndex], "--split-string=")
+			}
+			if splitOption, _, attached := envSplitStringOption(option); splitOption != "" {
+				if attached {
+					return attachedEnvSplitStringSpan(command, spans[optionIndex], "S")
+				}
+				if optionIndex+1 >= len(spans) {
+					return 0, 0, false
+				}
+				span := spans[optionIndex+1]
+				return span.contentStart, span.contentEnd, true
+			}
+			if len(option) < 2 || option[0] != '-' || option == "-" {
+				break
+			}
+			requiresArgument, allowed := credentialWrapperOption("env", option)
+			if !allowed {
+				break
+			}
+			optionIndex++
+			if requiresArgument {
+				optionIndex++
+			}
+		}
+		return 0, 0, false
+	}
+	return 0, 0, false
+}
+
+func attachedEnvSplitStringSpan(command string, span credentialShellWord, marker string) (int, int, bool) {
+	raw := command[span.start:span.end]
+	markerIndex := strings.Index(raw, marker)
+	if markerIndex < 0 {
+		return 0, 0, false
+	}
+	payloadStart := markerIndex + len(marker)
+	if payloadStart >= len(raw) {
+		return 0, 0, false
+	}
+	contentStart, contentEnd := credentialShellWordContentSpan(raw[payloadStart:])
+	return span.start + payloadStart + contentStart, span.start + payloadStart + contentEnd, true
+}
+
+func decodeEnvSplitStringForRedaction(value string) string {
+	var decoded strings.Builder
+	decoded.Grow(len(value))
+	for index := 0; index < len(value); index++ {
+		if value[index] != '\\' || index+1 >= len(value) {
+			decoded.WriteByte(value[index])
+			continue
+		}
+		index++
+		switch value[index] {
+		case '_':
+			decoded.WriteByte(' ')
+		case 'n':
+			decoded.WriteByte('\n')
+		case 't':
+			decoded.WriteByte('\t')
+		default:
+			decoded.WriteByte(value[index])
+		}
+	}
+	return decoded.String()
 }
 
 func redactShellCommandStrings(value string, depth int) (string, bool) {
