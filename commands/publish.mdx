@@ -19,9 +19,7 @@ Use these top-level workflows deliberately:
 * `asc publish appstore` - canonical high-level App Store publish path
 * `asc release stage` - prepare an App Store version without submitting it
 
-In 1.0, the deprecated `asc release run` path was removed. Use
-[Migrate to 1.0](/migrate-to-1-0) if you still have older automation that
-expects a single deprecated release command.
+In 1.0, the deprecated `asc release run` path was removed.
 
 ## Workflows
 
@@ -57,7 +55,7 @@ asc publish testflight \
 ```
 
 `--upload-only` cannot be combined with `--group`, `--notify`, `--submit`,
-`--confirm`, `--test-notes`, `--locale`, or `--build`. Use the returned
+`--confirm`, `--test-notes`, `--locale`, or `--build-id`. Use the returned
 `buildId` with `asc builds wait`, then `asc builds add-groups`, in later
 resumable steps.
 
