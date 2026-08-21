@@ -85,7 +85,7 @@ Preview the staging plan:
 asc release stage \
   --app "$ASC_APP_ID" \
   --version "$VERSION" \
-  --build "$ASC_BUILD_ID" \
+  --build-id "$ASC_BUILD_ID" \
   --platform IOS \
   --copy-metadata-from "1.2.2" \
   --dry-run \
@@ -104,7 +104,7 @@ after any digital goods are submitted:
 asc release stage \
   --app "$ASC_APP_ID" \
   --version "$VERSION" \
-  --build "$ASC_BUILD_ID" \
+  --build-id "$ASC_BUILD_ID" \
   --platform IOS \
   --copy-metadata-from "1.2.2" \
   --confirm \
@@ -237,7 +237,7 @@ check is failing. When all applicable gates pass, preview the submission:
 asc review submit \
   --app "$ASC_APP_ID" \
   --version "$VERSION" \
-  --build "$ASC_BUILD_ID" \
+  --build-id "$ASC_BUILD_ID" \
   --platform IOS \
   --dry-run \
   --output table
