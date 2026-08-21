@@ -530,6 +530,28 @@ func TestSearchSupportsMixedFlagOrder(t *testing.T) {
 	}
 }
 
+func TestSearchPreservesRootShapedQueryTerms(t *testing.T) {
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = rootcmd.Run([]string{"search", "--output", "json", "logging", "--debug"}, "1.2.3")
+	})
+
+	if code != rootcmd.ExitSuccess {
+		t.Fatalf("exit code = %d, want %d with stderr %q", code, rootcmd.ExitSuccess, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+
+	var response searchResponse
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatalf("failed to unmarshal search JSON: %v\nstdout=%s", err, stdout)
+	}
+	if response.Query != "logging --debug" {
+		t.Fatalf("query = %q, want %q", response.Query, "logging --debug")
+	}
+}
+
 func TestSearchRequiresQuery(t *testing.T) {
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
