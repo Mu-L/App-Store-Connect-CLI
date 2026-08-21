@@ -671,7 +671,7 @@ func TestSubscriptionsReviewScreenshotCreateRejectsUnsafeInvocationBeforeHTTP(t 
 		wantErr string
 	}{
 		{name: "positional", extra: []string{"stray"}, wantErr: "does not accept positional arguments"},
-		{name: "unsupported output", extra: []string{"--output", "yaml"}, wantErr: "unsupported format: yaml"},
+		{name: "unsupported output", extra: []string{"--output", "yaml"}, wantErr: `(got "yaml")`},
 		{name: "pretty table", extra: []string{"--output", "table", "--pretty"}, wantErr: "--pretty is only valid with JSON output"},
 	}
 	for _, tt := range tests {
