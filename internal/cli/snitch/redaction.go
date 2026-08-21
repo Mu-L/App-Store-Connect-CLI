@@ -623,6 +623,10 @@ func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 		redacted = next
 		changed = true
 	}
+	if next, launchctlChanged := redactLaunchctlSubmitEmbeddedCommands(redacted, depth); launchctlChanged {
+		redacted = next
+		changed = true
+	}
 	if next, kubernetesChanged := redactKubernetesSecretData(redacted); kubernetesChanged {
 		redacted = next
 		changed = true
@@ -7619,6 +7623,117 @@ func redactEvalCommandStrings(value string, depth int) (string, bool) {
 		}
 	}
 	return result, changed
+}
+
+// launchctl submit -p supplies the executable separately from the argv passed
+// after --. The first word after -- is argv[0], not an argument to the
+// executable. Command-specific redactors therefore cannot see the real
+// command boundary in the original text (for example, docker's login flags
+// appear after a second `docker` word). Redact a synthetic command containing
+// the executable and its arguments, then splice only the argument suffix back
+// into the original text so formatting and argv[0] remain unchanged.
+func redactLaunchctlSubmitEmbeddedCommands(value string, depth int) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		redacted, commandChanged := redactLaunchctlSubmitEmbeddedCommand(command, depth)
+		if commandChanged {
+			result = result[:start] + redacted + result[end:]
+			command = redacted
+			changed = true
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+func redactLaunchctlSubmitEmbeddedCommand(command string, depth int) (string, bool) {
+	spans := splitCredentialShellWordSpans(command)
+	words := make([]string, 0, len(spans))
+	for _, span := range spans {
+		words = append(words, span.value)
+	}
+
+	for launchctlIndex, word := range words {
+		if commandBaseName(word) != "launchctl" || !isCredentialCommandPrefix(words[:launchctlIndex]) {
+			continue
+		}
+		if launchctlIndex+1 >= len(words) || strings.Trim(words[launchctlIndex+1], `"'`) != "submit" {
+			continue
+		}
+
+		executableIndex := -1
+		separatorIndex := -1
+		for index := launchctlIndex + 2; index < len(words); index++ {
+			option := strings.Trim(words[index], `"'`)
+			switch option {
+			case "-l", "-o", "-e":
+				if index+1 >= len(words) {
+					return command, false
+				}
+				index++
+			case "-p":
+				if index+1 >= len(words) {
+					return command, false
+				}
+				executableIndex = index + 1
+				index++
+			case "--":
+				separatorIndex = index
+				index = len(words)
+			default:
+				return command, false
+			}
+		}
+		if executableIndex < 0 || separatorIndex < 0 || separatorIndex+1 >= len(spans) {
+			continue
+		}
+
+		argv0Index := separatorIndex + 1
+		payloadStart := spans[argv0Index].end
+		if payloadStart >= len(command) || strings.TrimSpace(command[payloadStart:]) == "" {
+			continue
+		}
+		rawExecutable := command[spans[executableIndex].start:spans[executableIndex].end]
+		effectivePrefix := rawExecutable + " "
+		effective := effectivePrefix + command[payloadStart:]
+		// OpenSSL supports argv[0]-selected commands. When launchctl's argv[0]
+		// is itself a known OpenSSL subcommand, retain it in the synthetic
+		// command; arbitrary argv[0] values are skipped as normal process names.
+		if commandBaseName(words[executableIndex]) == "openssl" || commandBaseName(words[executableIndex]) == "openssl.exe" {
+			if isOpenSSLSubcommandName(words[argv0Index]) {
+				rawArgv0 := command[spans[argv0Index].start:spans[argv0Index].end]
+				effectivePrefix += rawArgv0 + " "
+				effective = effectivePrefix + command[payloadStart:]
+			}
+		}
+		redactedEffective, effectiveChanged := redactSensitiveTextDepth(effective, depth+1)
+		if !effectiveChanged || len(redactedEffective) < len(effectivePrefix) {
+			continue
+		}
+		redactedSuffix := redactedEffective[len(effectivePrefix):]
+		return command[:payloadStart] + redactedSuffix, true
+	}
+	return command, false
+}
+
+func isOpenSSLSubcommandName(value string) bool {
+	switch strings.ToLower(strings.Trim(value, `"'`)) {
+	case "asn1parse", "ca", "ciphers", "cmp", "cms", "configutl", "crl", "crl2pkcs7", "dgst", "dhparam", "dsa", "dsaparam", "ec", "ecparam", "enc", "engine", "errstr", "fipsinstall", "gendsa", "genpkey", "genrsa", "help", "info", "kdf", "list", "mac", "nseq", "ocsp", "passwd", "pkcs12", "pkcs7", "pkcs8", "pkey", "pkeyparam", "pkeyutl", "prime", "provider", "rand", "rehash", "req", "rsa", "rsautl", "s_client", "s_server", "s_time", "sess_id", "skeyutl", "smime", "speed", "spkac", "srp", "storeutl", "ts", "verify", "version", "x509":
+		return true
+	default:
+		return false
+	}
 }
 
 func shellCommandStringSpan(command string) (int, int, bool) {

@@ -37,6 +37,12 @@ func TestAuditAdversarialCredentialBoundaries(t *testing.T) {
 		{"azure service bus key", "Endpoint=sb://demo.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=opaque-service-bus-key", "Endpoint=sb://demo.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=[REDACTED]"},
 		{"echo password", "echo --password public-word", "echo --password public-word"},
 		{"launchctl executable boundary", "launchctl submit -l signer -p echo -- echo openssl s_client -psk launchctl-public-secret", "launchctl submit -l signer -p echo -- echo openssl s_client -psk launchctl-public-secret"},
+		{"launchctl openssl passwd argv0", "launchctl submit -l signer -p openssl -- passwd -6 launchctl-passphrase", "launchctl submit -l signer -p openssl -- passwd -6 [REDACTED]"},
+		{"launchctl openssl pkcs12 argv0", "launchctl submit -l signer -p openssl -- pkcs12 -export -passout pass:launchctl-pkcs12-passphrase", "launchctl submit -l signer -p openssl -- pkcs12 -export -passout [REDACTED]"},
+		{"launchctl redis argv0", "launchctl submit -l signer -p redis-cli -- redis-cli -a launchctl-redis-passphrase PING", "launchctl submit -l signer -p redis-cli -- redis-cli -a [REDACTED] PING"},
+		{"launchctl docker argv0", "launchctl submit -l signer -p docker -- docker login -p launchctl-docker-passphrase registry.example.test", "launchctl submit -l signer -p docker -- docker login -p [REDACTED] registry.example.test"},
+		{"launchctl security argv0", "launchctl submit -l signer -p security -- security unlock-keychain -p launchctl-keychain-passphrase login.keychain", "launchctl submit -l signer -p security -- security unlock-keychain -p [REDACTED] login.keychain"},
+		{"launchctl sshpass argv0", "launchctl submit -l signer -p sshpass -- sshpass -p launchctl-ssh-passphrase ssh user@example.test", "launchctl submit -l signer -p sshpass -- sshpass -p [REDACTED] ssh user@example.test"},
 	}
 
 	for _, test := range tests {
