@@ -502,14 +502,14 @@ func aggregateXcodeCloudArtifactsFromRun(ctx context.Context, client *asc.Client
 		return nil, err
 	}
 
-	archiveActionIDs := matchingBuildActionIDsByType(actions, "ARCHIVE")
-	if len(archiveActionIDs) == 0 {
-		return nil, shared.UsageErrorf("no ARCHIVE build actions found for --run-id %q", runID)
-	}
-
 	combined := &asc.CiArtifactsResponse{Data: make([]asc.CiArtifactResource, 0)}
 	remaining := limit
-	for _, actionID := range archiveActionIDs {
+	for _, action := range actions {
+		actionID := strings.TrimSpace(action.ID)
+		if actionID == "" {
+			continue
+		}
+
 		pageLimit := remaining
 		if paginate {
 			pageLimit = 200
