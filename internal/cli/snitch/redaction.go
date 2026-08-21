@@ -4849,6 +4849,18 @@ func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
 	if wrapper == "exec" {
 		return consumeExecCredentialWrapper(words[1:])
 	}
+	if wrapper == "nice" || wrapper == "gnice" {
+		return consumeNiceCredentialWrapper(words[1:])
+	}
+	if wrapper == "time" || wrapper == "gtime" {
+		return consumeTimeCredentialWrapper(words[1:])
+	}
+	if wrapper == "stdbuf" || wrapper == "gstdbuf" {
+		return consumeStdbufCredentialWrapper(words[1:])
+	}
+	if wrapper == "setsid" {
+		return consumeSetsidCredentialWrapper(words[1:])
+	}
 	if wrapper != "sudo" && wrapper != "doas" && wrapper != "command" && wrapper != "env" {
 		return nil, false
 	}
@@ -4912,6 +4924,210 @@ func consumeExecCredentialWrapper(words []string) ([]string, bool) {
 			return nil, false
 		}
 		return words, true
+	}
+	return words, true
+}
+
+func consumeNiceCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			return words[1:], true
+		}
+		if option == "-n" || option == "--adjustment" {
+			if len(words) < 2 || !isNiceAdjustment(strings.Trim(words[1], `"'`)) {
+				return nil, false
+			}
+			words = words[2:]
+			continue
+		}
+		if strings.HasPrefix(option, "--adjustment=") {
+			if !isNiceAdjustment(strings.TrimPrefix(option, "--adjustment=")) {
+				return nil, false
+			}
+			words = words[1:]
+			continue
+		}
+		if strings.HasPrefix(option, "-n") && len(option) > 2 {
+			if !isNiceAdjustment(option[2:]) {
+				return nil, false
+			}
+			words = words[1:]
+			continue
+		}
+		if strings.HasPrefix(option, "-") && len(option) > 1 {
+			if !isNiceAdjustment(option[1:]) {
+				return nil, false
+			}
+			words = words[1:]
+			continue
+		}
+		return words, true
+	}
+	return words, true
+}
+
+func isNiceAdjustment(value string) bool {
+	if value == "" {
+		return false
+	}
+	_, err := strconv.Atoi(value)
+	return err == nil
+}
+
+func consumeTimeCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			return words[1:], true
+		}
+		if strings.HasPrefix(option, "--") {
+			requiresArgument, allowed := timeCredentialWrapperLongOption(option)
+			if !allowed {
+				return nil, false
+			}
+			words = words[1:]
+			if requiresArgument {
+				if len(words) == 0 {
+					return nil, false
+				}
+				words = words[1:]
+			}
+			continue
+		}
+		if len(option) < 2 || option[0] != '-' || option == "-" {
+			return words, true
+		}
+		requiresArgument := false
+		for index := 1; index < len(option); index++ {
+			switch option[index] {
+			case 'a', 'h', 'l', 'p', 'q', 'v':
+				continue
+			case 'f', 'o':
+				requiresArgument = index == len(option)-1
+				index = len(option)
+			default:
+				return nil, false
+			}
+		}
+		words = words[1:]
+		if requiresArgument {
+			if len(words) == 0 {
+				return nil, false
+			}
+			words = words[1:]
+		}
+	}
+	return words, true
+}
+
+func timeCredentialWrapperLongOption(option string) (bool, bool) {
+	name, value, attached := strings.Cut(option, "=")
+	switch name {
+	case "--format", "--output":
+		return !attached, !attached || value != ""
+	case "--append", "--portability", "--quiet", "--verbose":
+		return false, !attached
+	default:
+		return false, false
+	}
+}
+
+func consumeStdbufCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			return words[1:], true
+		}
+		if strings.HasPrefix(option, "--") {
+			requiresArgument, mode, allowed := stdbufCredentialWrapperLongOption(option)
+			if !allowed {
+				return nil, false
+			}
+			words = words[1:]
+			if requiresArgument {
+				if len(words) == 0 {
+					return nil, false
+				}
+				mode = strings.Trim(words[0], `"'`)
+				words = words[1:]
+			}
+			if !isStdbufMode(mode) {
+				return nil, false
+			}
+			continue
+		}
+		if len(option) < 2 || option[0] != '-' || option == "-" {
+			return words, true
+		}
+		if option[1] != 'e' && option[1] != 'i' && option[1] != 'o' {
+			return nil, false
+		}
+		mode := strings.TrimPrefix(option[2:], "=")
+		words = words[1:]
+		if mode == "" {
+			if len(words) == 0 {
+				return nil, false
+			}
+			mode = strings.Trim(words[0], `"'`)
+			words = words[1:]
+		}
+		if !isStdbufMode(mode) {
+			return nil, false
+		}
+	}
+	return words, true
+}
+
+func stdbufCredentialWrapperLongOption(option string) (bool, string, bool) {
+	name, value, attached := strings.Cut(option, "=")
+	switch name {
+	case "--error", "--input", "--output":
+		return !attached, value, !attached || value != ""
+	default:
+		return false, "", false
+	}
+}
+
+func isStdbufMode(value string) bool {
+	if value == "0" || value == "L" || value == "B" {
+		return true
+	}
+	value = strings.TrimSuffix(value, "B")
+	if len(value) > 0 && strings.ContainsRune("KMGTPEZY", rune(value[len(value)-1])) {
+		value = value[:len(value)-1]
+	}
+	if value == "" {
+		return false
+	}
+	_, err := strconv.ParseUint(value, 10, 64)
+	return err == nil
+}
+
+func consumeSetsidCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			return words[1:], true
+		}
+		if len(option) < 2 || option[0] != '-' || option == "-" {
+			return words, true
+		}
+		if strings.HasPrefix(option, "--") {
+			switch option {
+			case "--ctty", "--fork", "--wait":
+				words = words[1:]
+				continue
+			default:
+				return nil, false
+			}
+		}
+		for _, flag := range option[1:] {
+			if !strings.ContainsRune("cfw", flag) {
+				return nil, false
+			}
+		}
+		words = words[1:]
 	}
 	return words, true
 }
