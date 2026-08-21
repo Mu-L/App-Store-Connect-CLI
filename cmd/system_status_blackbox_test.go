@@ -26,7 +26,7 @@ func TestSystemStatusInvalidOutputWithBuiltBinary(t *testing.T) {
 	if stdout.String() != "" {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Error: unsupported format: yaml") {
+	if !strings.Contains(stderr.String(), `Error: --output must be one of: json, table, markdown (got "yaml")`) {
 		t.Fatalf("stderr = %q, want invalid-output diagnostic", stderr.String())
 	}
 }

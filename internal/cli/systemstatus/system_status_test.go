@@ -173,7 +173,7 @@ func TestSystemStatusCommandRejectsInvalidArguments(t *testing.T) {
 		{name: "negative max polls", args: []string{"--watch", "--max-polls", "-1"}, want: "--max-polls must be greater than or equal to 0"},
 		{name: "max polls without watch", args: []string{"--max-polls", "2"}, want: "--max-polls requires --watch"},
 		{name: "poll interval without watch", args: []string{"--poll-interval", "1s"}, want: "--poll-interval requires --watch"},
-		{name: "invalid output before network", args: []string{"--output", "yaml"}, want: "unsupported format: yaml"},
+		{name: "invalid output before network", args: []string{"--output", "yaml"}, want: `--output must be one of: json, table, markdown (got "yaml")`},
 		{name: "pretty JSON watch", args: []string{"--watch", "--output", "json", "--pretty"}, want: "--pretty is not supported with --watch JSON output"},
 		{name: "empty service", args: []string{"--service", ""}, want: "--service must not contain empty service names"},
 		{name: "trailing empty service", args: []string{"--service", "TestFlight, "}, want: "--service must not contain empty service names"},

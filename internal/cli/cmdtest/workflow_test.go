@@ -634,7 +634,7 @@ func TestWorkflowValidate_UnsupportedOutputExitsWithUsageCode(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if !strings.Contains(stderr, "unsupported format: "+format) {
+			if !strings.Contains(stderr, `(got "`+format+`")`) {
 				t.Fatalf("expected standard output validation error, got %q", stderr)
 			}
 			if strings.Contains(stderr, "read workflow") {
