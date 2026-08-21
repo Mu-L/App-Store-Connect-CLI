@@ -499,23 +499,27 @@ func redactSensitiveText(value string) (string, bool) {
 
 func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 	redacted, changed := boundRedactionInput(value)
-	if depth < maxShellRedactionDepth {
-		if next, substitutionChanged := redactShellCommandSubstitutionContents(redacted, depth); substitutionChanged {
-			redacted = next
-			changed = true
+	if depth > maxShellRedactionDepth {
+		if redacted == redactionMarker {
+			return redacted, changed
 		}
-		if next, subshellChanged := redactShellSubshellGroupContents(redacted, depth); subshellChanged {
-			redacted = next
-			changed = true
-		}
-		if next, envSplitChanged := redactEnvSplitCommandStrings(redacted, depth); envSplitChanged {
-			redacted = next
-			changed = true
-		}
-		if next, shellChanged := redactShellCommandStrings(redacted, depth); shellChanged {
-			redacted = next
-			changed = true
-		}
+		return redactionMarker, true
+	}
+	if next, substitutionChanged := redactShellCommandSubstitutionContents(redacted, depth); substitutionChanged {
+		redacted = next
+		changed = true
+	}
+	if next, subshellChanged := redactShellSubshellGroupContents(redacted, depth); subshellChanged {
+		redacted = next
+		changed = true
+	}
+	if next, envSplitChanged := redactEnvSplitCommandStrings(redacted, depth); envSplitChanged {
+		redacted = next
+		changed = true
+	}
+	if next, shellChanged := redactShellCommandStrings(redacted, depth); shellChanged {
+		redacted = next
+		changed = true
 	}
 	if next, kubernetesChanged := redactKubernetesSecretData(redacted); kubernetesChanged {
 		redacted = next

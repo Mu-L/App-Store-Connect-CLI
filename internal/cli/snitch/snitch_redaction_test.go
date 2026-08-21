@@ -3297,6 +3297,49 @@ func TestRedactSensitiveTextDeeplyNestedShellCommands(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveTextFailsClosedBeyondShellNestingLimit(t *testing.T) {
+	boundaryInput := strings.Repeat("$( ", maxShellRedactionDepth) + "openssl pkcs12 -passout pass:opaque-boundary-secret" + strings.Repeat(" )", maxShellRedactionDepth)
+	boundaryResult, boundaryChanged := redactSensitiveText(boundaryInput)
+	if !boundaryChanged || strings.Contains(boundaryResult, "opaque-boundary-secret") || !strings.Contains(boundaryResult, redactionMarker) {
+		t.Fatalf("boundary redaction = %q, changed=%t; want credential-specific redaction", boundaryResult, boundaryChanged)
+	}
+
+	input := strings.Repeat("$(echo ", maxShellRedactionDepth+1) + "openssl pkcs12 -passout pass:opaque-depth-limit-secret" + strings.Repeat(")", maxShellRedactionDepth+1)
+	got, changed := redactSensitiveText(input)
+	if !changed || strings.Contains(got, "opaque-depth-limit-secret") || !strings.Contains(got, redactionMarker) {
+		t.Fatalf("redactSensitiveText() = %q, changed=%t; want content beyond nesting limit redacted", got, changed)
+	}
+	gotAgain, changedAgain := redactSensitiveText(got)
+	if changedAgain || gotAgain != got {
+		t.Fatalf("redaction is not idempotent: second result %q, changed=%t", gotAgain, changedAgain)
+	}
+
+	if got, changed := redactSensitiveTextDepth("public boundary value", maxShellRedactionDepth); changed || got != "public boundary value" {
+		t.Fatalf("boundary value = %q, changed=%t; want unchanged", got, changed)
+	}
+	if got, changed := redactSensitiveTextDepth("unresolved nested content", maxShellRedactionDepth+1); !changed || got != redactionMarker {
+		t.Fatalf("over-limit value = %q, changed=%t; want fail-closed marker", got, changed)
+	}
+
+	for _, nested := range []string{
+		`$(openssl pkcs12 -passout pass:opaque-limit-secret)`,
+		"`openssl pkcs12 -passout pass:opaque-limit-secret`",
+		`(openssl pkcs12 -passout pass:opaque-limit-secret)`,
+		`env -S "openssl pkcs12 -passout pass:opaque-limit-secret"`,
+		`sh -c 'openssl pkcs12 -passout pass:opaque-limit-secret'`,
+	} {
+		got, changed := redactSensitiveTextDepth(nested, maxShellRedactionDepth)
+		if !changed || strings.Contains(got, "opaque-limit-secret") || !strings.Contains(got, redactionMarker) {
+			t.Errorf("boundary nested redaction for %q = %q, changed=%t; want fail-closed marker", nested, got, changed)
+			continue
+		}
+		gotAgain, changedAgain := redactSensitiveText(got)
+		if changedAgain || gotAgain != got {
+			t.Errorf("boundary nested redaction is not idempotent for %q: second result %q, changed=%t", nested, gotAgain, changedAgain)
+		}
+	}
+}
+
 func TestRedactSensitiveTextPreservesBenignShellValues(t *testing.T) {
 	for _, input := range []string{
 		`set "STATUS=public value" & echo done`,
