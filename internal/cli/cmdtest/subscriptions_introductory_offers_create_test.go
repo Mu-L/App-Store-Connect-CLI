@@ -177,7 +177,7 @@ func isolateIntroductoryOfferCreateAuth(t *testing.T) {
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 	for _, key := range []string{
-		"ASC_PROFILE", "ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY_PATH",
+		"ASC_APP_ID", "ASC_PROFILE", "ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY_PATH",
 		"ASC_PRIVATE_KEY", "ASC_PRIVATE_KEY_B64", "ASC_STRICT_AUTH",
 	} {
 		t.Setenv(key, "")
@@ -521,6 +521,44 @@ func TestSubscriptionsIntroductoryOffersCreateSingleTerritoryDryRunSkipsSubscrip
 	}
 	if summary.Total != 1 || summary.Created != 1 {
 		t.Fatalf("unexpected summary counts: %+v", summary)
+	}
+}
+
+func TestSubscriptionsIntroductoryOffersCreateSingleTerritoryDryRunRequiresAppForLookupSelectors(t *testing.T) {
+	isolateIntroductoryOfferCreateAuth(t)
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("missing app validation must happen before HTTP: %s %s", req.Method, req.URL.Path)
+		return nil, nil
+	})
+
+	for _, selector := range []string{"com.example.monthly", "Monthly Plan"} {
+		t.Run(selector, func(t *testing.T) {
+			stdout, stderr, runErr := runRootCommand(t, []string{
+				"subscriptions", "offers", "introductory", "create",
+				"--subscription-id", selector,
+				"--offer-duration", "ONE_MONTH",
+				"--offer-mode", "FREE_TRIAL",
+				"--number-of-periods", "1",
+				"--territory", "US",
+				"--dry-run",
+				"--output", "json",
+			})
+			if !errors.Is(runErr, flag.ErrHelp) {
+				t.Fatalf("expected usage error, got %v", runErr)
+			}
+			if rootcmd.ExitCodeFromError(runErr) != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", rootcmd.ExitCodeFromError(runErr), rootcmd.ExitUsage)
+			}
+			if stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", stdout)
+			}
+			if !strings.Contains(stderr, "Error: --app is required (or set ASC_APP_ID) when --subscription-id is a product ID or name") {
+				t.Fatalf("unexpected stderr: %q", stderr)
+			}
+		})
 	}
 }
 

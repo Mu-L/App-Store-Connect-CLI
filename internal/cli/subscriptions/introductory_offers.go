@@ -369,6 +369,10 @@ Timeouts:
 				}
 			}
 
+			if err := shared.RequireAppForStableSelector(shared.ResolveAppID(*appID), id, "--subscription-id"); err != nil {
+				return err
+			}
+
 			if *dryRun && !useAllTerritories {
 				if err := ctx.Err(); err != nil {
 					return err
