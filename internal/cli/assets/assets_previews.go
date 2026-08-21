@@ -866,6 +866,13 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 			return asc.AppPreviewUploadResult{}, err
 		}
 	}
+	if len(files) > maxPreviewsPerSet {
+		return asc.AppPreviewUploadResult{}, fmt.Errorf(
+			"preview sets accept at most %d files after checksum filtering; got %d",
+			maxPreviewsPerSet,
+			len(files),
+		)
+	}
 	if !replace && len(existingPreviews)+len(files) > maxPreviewsPerSet {
 		return asc.AppPreviewUploadResult{}, fmt.Errorf(
 			"preview set %q already contains %d preview(s); uploading %d more would exceed the preview set limit of %d; use --replace --confirm or remove existing previews first",
@@ -915,6 +922,8 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 
 	uploadCtx, cancel := contextWithAssetUploadTimeout(ctx)
 	defer cancel()
+	rollbackCtx, rollbackCancel := shared.ContextWithTimeout(shared.ContextWithoutTimeout(ctx))
+	defer rollbackCancel()
 
 	if replace {
 		if err := deleteExistingPreviews(uploadCtx, client, existingPreviews); err != nil {
@@ -922,7 +931,7 @@ func uploadPreviews(ctx context.Context, client *asc.Client, localizationID, pre
 		}
 	}
 
-	results, err := uploadPreviewFiles(uploadCtx, client, set.ID, files, uploadPreviewAsset)
+	results, err := uploadPreviewFiles(uploadCtx, rollbackCtx, client, set.ID, files, uploadPreviewAsset)
 	if err != nil {
 		return asc.AppPreviewUploadResult{}, err
 	}
@@ -956,18 +965,18 @@ func getAllAppPreviews(ctx context.Context, client *asc.Client, setID string) ([
 
 type previewAssetUploadFunc func(context.Context, *asc.Client, string, string) (asc.AssetUploadResultItem, error)
 
-func uploadPreviewFiles(ctx context.Context, client *asc.Client, setID string, files []string, upload previewAssetUploadFunc) ([]asc.AssetUploadResultItem, error) {
+func uploadPreviewFiles(uploadCtx, rollbackCtx context.Context, client *asc.Client, setID string, files []string, upload previewAssetUploadFunc) ([]asc.AssetUploadResultItem, error) {
 	results := make([]asc.AssetUploadResultItem, 0, len(files))
 	for _, filePath := range files {
-		item, err := upload(ctx, client, setID, filePath)
+		item, err := upload(uploadCtx, client, setID, filePath)
 		if err != nil {
-			if errors.Is(err, asc.ErrConflict) {
-				rollbackItems := make([]asc.AssetUploadResultItem, 0, len(results)+1)
-				rollbackItems = append(rollbackItems, results...)
-				if strings.TrimSpace(item.AssetID) != "" {
-					rollbackItems = append(rollbackItems, item)
-				}
-				if rollbackErr := deleteUploadedPreviews(ctx, client, rollbackItems); rollbackErr != nil {
+			rollbackItems := make([]asc.AssetUploadResultItem, 0, len(results)+1)
+			rollbackItems = append(rollbackItems, results...)
+			if strings.TrimSpace(item.AssetID) != "" {
+				rollbackItems = append(rollbackItems, item)
+			}
+			if len(rollbackItems) > 0 {
+				if rollbackErr := deleteUploadedPreviews(rollbackCtx, client, rollbackItems); rollbackErr != nil {
 					return nil, errors.Join(err, fmt.Errorf("roll back previews created by this upload: %w", rollbackErr))
 				}
 			}
