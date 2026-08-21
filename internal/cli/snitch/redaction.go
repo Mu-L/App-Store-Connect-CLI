@@ -126,7 +126,7 @@ var (
 		"cms":                                  newCommandCredentialFlagPattern("p"),
 		"create-filevaultmaster-keychain":      newCommandCredentialFlagPattern("p"),
 	}
-	opensslCredentialFlagPattern          = newCommandCredentialFlagPattern("passin", "passout", "passcerts")
+	opensslCredentialFlagPattern          = newCommandCredentialFlagPattern("passin", "passout", "passcerts", "pass", "k", "K")
 	keytoolCredentialFlagPattern          = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass", "new", "srcstorepass", "deststorepass", "srckeypass", "destkeypass")
 	jarsignerCredentialFlagPattern        = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass")
 	dockerLoginCredentialFlagPattern      = newCommandCredentialFlagPattern("p")
