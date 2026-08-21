@@ -22,7 +22,7 @@ const (
 	maxRedactionFieldBytes    = 64 * 1024
 	maxShellRedactionDepth    = 32
 
-	sensitiveAssignmentName     = `(?:_auth|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|client[_-]?key[_-]?data|app[_-]?secret|webhook[_-]?secret|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|secret[_-]?key(?:[_-]?base)?|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passphrase|passwd|pwd|secret|token)`
+	sensitiveAssignmentName     = `(?:_auth|account[_-]?key|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|shared[_-]?access[_-]?key|client[_-]?secret|client[_-]?key[_-]?data|app[_-]?secret|webhook[_-]?secret|webhook|signing[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?answer|secret[_-]?key(?:[_-]?base)?|asc[_-]?private[_-]?key(?:[_-]?b64)?|private[_-]?key(?:[_-]?b64)?|password|passphrase|passwd|pwd|secret|token)`
 	delimitedPassName           = `_*(?:(?:[a-z0-9]+[_-])+)?pass`
 	sensitivePrefixedName       = `(?:_*(?:[a-z0-9]+[_-])*[a-z0-9]*` + sensitiveAssignmentName + `|` + delimitedPassName + `)`
 	tomlQuotedSensitiveKey      = `(?:"` + sensitivePrefixedName + `"|'` + sensitivePrefixedName + `')`
@@ -616,6 +616,10 @@ func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 		changed = true
 	}
 	if next, shellChanged := redactShellCommandStrings(redacted, depth); shellChanged {
+		redacted = next
+		changed = true
+	}
+	if next, evalChanged := redactEvalCommandStrings(redacted, depth); evalChanged {
 		redacted = next
 		changed = true
 	}
@@ -7544,6 +7548,65 @@ func redactShellCommandStrings(value string, depth int) (string, bool) {
 				result = result[:start] + command + result[end:]
 				changed = true
 			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+// eval is a shell builtin whose arguments are joined and executed as a new
+// command. Unlike sh -c, its command text is often quoted, so the ordinary
+// quote-aware substitution pass intentionally leaves it untouched. Redact
+// each eval argument recursively while preserving its quoting and spacing.
+func redactEvalCommandStrings(value string, depth int) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		spans := splitCredentialShellWordSpans(command)
+		words := make([]string, 0, len(spans))
+		for _, span := range spans {
+			words = append(words, span.value)
+		}
+		var replacements []struct {
+			start int
+			end   int
+			text  string
+		}
+		for index, word := range words {
+			if commandBaseName(word) != "eval" || !isCredentialCommandPrefix(words[:index]) {
+				continue
+			}
+			for argumentIndex := index + 1; argumentIndex < len(spans); argumentIndex++ {
+				span := spans[argumentIndex]
+				inner := command[span.contentStart:span.contentEnd]
+				redacted, argumentChanged := redactSensitiveTextDepth(inner, depth+1)
+				if argumentChanged && redacted != inner {
+					replacements = append(replacements, struct {
+						start int
+						end   int
+						text  string
+					}{start: span.contentStart, end: span.contentEnd, text: redacted})
+				}
+			}
+			break
+		}
+		for index := len(replacements) - 1; index >= 0; index-- {
+			replacement := replacements[index]
+			command = command[:replacement.start] + replacement.text + command[replacement.end:]
+			changed = true
+		}
+		if len(replacements) > 0 {
+			result = result[:start] + command + result[end:]
 		}
 
 		separator := start + len(command)

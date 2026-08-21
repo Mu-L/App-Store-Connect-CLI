@@ -29,6 +29,12 @@ func TestAuditAdversarialCredentialBoundaries(t *testing.T) {
 		{"grep password", "grep --password public-word logfile", "grep --password public-word logfile"},
 		{"nested curl in echo", "echo \"$(curl --user alice:nested-curl-secret https://example.test)\"", "echo \"$(curl --user [REDACTED] https://example.test)\""},
 		{"wrapped curl", "env -- curl --user alice:wrapped-curl-secret https://example.test", "env -- curl --user [REDACTED] https://example.test"},
+		{"kubectl arbitrary literal", "kubectl create secret generic demo --from-literal=custom=opaque-kubectl-secret", "kubectl create secret generic demo --from-literal=[REDACTED]"},
+		{"openssl pkeyutl passphrase", "openssl pkeyutl -pkeyopt_passin opt:opaque-pkey-passphrase", "openssl pkeyutl -pkeyopt_passin [REDACTED]"},
+		{"openssl client PSK", "openssl s_client -psk 00112233445566778899aabbccddeeff", "openssl s_client -psk [REDACTED]"},
+		{"eval nested openssl", "eval 'openssl pkcs12 -export -passout pass:opaque-eval-passphrase'", "eval 'openssl pkcs12 -export -passout [REDACTED]'"},
+		{"azure connection key", "DefaultEndpointsProtocol=https;AccountName=demo;AccountKey=YWJjZGVmZ2hpamtsbW5vcA==;EndpointSuffix=core.windows.net", "DefaultEndpointsProtocol=https;AccountName=demo;AccountKey=[REDACTED];EndpointSuffix=core.windows.net"},
+		{"azure service bus key", "Endpoint=sb://demo.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=opaque-service-bus-key", "Endpoint=sb://demo.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=[REDACTED]"},
 		{"echo password", "echo --password public-word", "echo --password public-word"},
 		{"launchctl executable boundary", "launchctl submit -l signer -p echo -- echo openssl s_client -psk launchctl-public-secret", "launchctl submit -l signer -p echo -- echo openssl s_client -psk launchctl-public-secret"},
 	}
