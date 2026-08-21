@@ -469,7 +469,17 @@ var sensitiveTextRedactionRules = []redactionRule{
 }
 
 func redactSensitiveText(value string) (string, bool) {
+	return redactSensitiveTextDepth(value, 0)
+}
+
+func redactSensitiveTextDepth(value string, depth int) (string, bool) {
 	redacted, changed := boundRedactionInput(value)
+	if depth < 8 {
+		if next, shellChanged := redactShellCommandStrings(redacted, depth); shellChanged {
+			redacted = next
+			changed = true
+		}
+	}
 	if next, kubernetesChanged := redactKubernetesSecretData(redacted); kubernetesChanged {
 		redacted = next
 		changed = true
@@ -4836,6 +4846,9 @@ func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
 	if wrapper == "nohup" {
 		return consumeNohupCredentialWrapper(words[1:])
 	}
+	if wrapper == "exec" {
+		return consumeExecCredentialWrapper(words[1:])
+	}
 	if wrapper != "sudo" && wrapper != "doas" && wrapper != "command" && wrapper != "env" {
 		return nil, false
 	}
@@ -4874,6 +4887,31 @@ func consumeNohupCredentialWrapper(words []string) ([]string, bool) {
 	}
 	if strings.HasPrefix(strings.Trim(words[0], `"'`), "-") {
 		return nil, false
+	}
+	return words, true
+}
+
+func consumeExecCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			return words[1:], true
+		}
+		if option == "-a" {
+			if len(words) < 2 {
+				return nil, false
+			}
+			words = words[2:]
+			continue
+		}
+		if option == "-c" || option == "-l" || option == "-cl" || option == "-lc" {
+			words = words[1:]
+			continue
+		}
+		if strings.HasPrefix(option, "-") && option != "-" {
+			return nil, false
+		}
+		return words, true
 	}
 	return words, true
 }
@@ -5084,21 +5122,45 @@ func envSplitStringOption(option string) (string, string, bool) {
 	return "", "", false
 }
 
+type credentialShellWord struct {
+	value        string
+	contentStart int
+	contentEnd   int
+}
+
 func splitCredentialShellWords(value string) []string {
-	words := make([]string, 0, len(strings.Fields(value)))
+	spans := splitCredentialShellWordSpans(value)
+	words := make([]string, 0, len(spans))
+	for _, span := range spans {
+		words = append(words, span.value)
+	}
+	return words
+}
+
+func splitCredentialShellWordSpans(value string) []credentialShellWord {
+	words := make([]credentialShellWord, 0, len(strings.Fields(value)))
 	var word strings.Builder
 	var quote byte
 	started := false
-	flush := func() {
+	wordStart := 0
+	flush := func(end int) {
 		if !started {
 			return
 		}
-		words = append(words, word.String())
+		contentStart, contentEnd := credentialShellWordContentSpan(value[wordStart:end])
+		words = append(words, credentialShellWord{
+			value:        word.String(),
+			contentStart: wordStart + contentStart,
+			contentEnd:   wordStart + contentEnd,
+		})
 		word.Reset()
 		started = false
 	}
 	for index := 0; index < len(value); index++ {
 		character := value[index]
+		if !started && character != ' ' && character != '\t' && character != '\r' && character != '\n' {
+			wordStart = index
+		}
 		switch {
 		case character == '\\' && quote != '\'' && index+1 < len(value):
 			started = true
@@ -5113,14 +5175,160 @@ func splitCredentialShellWords(value string) []string {
 			started = true
 			quote = character
 		case quote == 0 && (character == ' ' || character == '\t' || character == '\r' || character == '\n'):
-			flush()
+			flush(index)
 		default:
 			started = true
 			word.WriteByte(character)
 		}
 	}
-	flush()
+	flush(len(value))
 	return words
+}
+
+func credentialShellWordContentSpan(raw string) (int, int) {
+	quoteStart := 0
+	if len(raw) >= 3 && raw[0] == '$' && raw[1] == '\'' {
+		quoteStart = 1
+	}
+	if len(raw)-quoteStart < 2 || (raw[quoteStart] != '\'' && raw[quoteStart] != '"') {
+		return 0, len(raw)
+	}
+	quote := raw[quoteStart]
+	for index := quoteStart + 1; index < len(raw); index++ {
+		if quote == '"' && raw[index] == '\\' && index+1 < len(raw) {
+			index++
+			continue
+		}
+		if raw[index] != quote {
+			continue
+		}
+		if index == len(raw)-1 {
+			return quoteStart + 1, index
+		}
+		return 0, len(raw)
+	}
+	return 0, len(raw)
+}
+
+func redactShellCommandStrings(value string, depth int) (string, bool) {
+	result := value
+	changed := false
+	for start := 0; start < len(result); {
+		end := findShellCommandEnd(result, start)
+		command := result[start:end]
+		contentStart, contentEnd, ok := shellCommandStringSpan(command)
+		if ok {
+			inner := command[contentStart:contentEnd]
+			redacted, innerChanged := redactSensitiveTextDepth(inner, depth+1)
+			if innerChanged {
+				command = command[:contentStart] + redacted + command[contentEnd:]
+				result = result[:start] + command + result[end:]
+				changed = true
+			}
+		}
+
+		separator := start + len(command)
+		if separator >= len(result) {
+			break
+		}
+		start = separator + 1
+		if result[separator] == '\r' && start < len(result) && result[start] == '\n' {
+			start++
+		}
+	}
+	return result, changed
+}
+
+func shellCommandStringSpan(command string) (int, int, bool) {
+	spans := splitCredentialShellWordSpans(command)
+	words := make([]string, 0, len(spans))
+	for _, span := range spans {
+		words = append(words, span.value)
+	}
+	for index, word := range words {
+		if !isCredentialShell(commandBaseName(word)) || !isCredentialCommandPrefix(words[:index]) {
+			continue
+		}
+		commandIndex, ok := shellCommandStringWordIndex(words[index+1:])
+		if !ok {
+			return 0, 0, false
+		}
+		span := spans[index+1+commandIndex]
+		return span.contentStart, span.contentEnd, true
+	}
+	return 0, 0, false
+}
+
+func isCredentialShell(name string) bool {
+	name = strings.TrimSuffix(name, ".exe")
+	switch name {
+	case "ash", "bash", "dash", "ksh", "mksh", "sh", "zsh":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellCommandStringWordIndex(words []string) (int, bool) {
+	for index := 0; index < len(words); index++ {
+		raw := words[index]
+		option := strings.Trim(raw, `"'`)
+		if option == "--" || len(option) < 2 || option[0] != '-' || option == "-" {
+			return 0, false
+		}
+		if strings.HasPrefix(option, "--") {
+			requiresArgument, allowed := shellCommandStringLongOption(option)
+			if !allowed {
+				return 0, false
+			}
+			if requiresArgument {
+				index++
+				if index >= len(words) {
+					return 0, false
+				}
+			}
+			continue
+		}
+		if option == "-o" || option == "-O" {
+			index++
+			if index >= len(words) {
+				return 0, false
+			}
+			continue
+		}
+		hasCommandString := false
+		for _, flag := range option[1:] {
+			if !strings.ContainsRune("abefhiklmnprstuvxBCDEHPTc", flag) {
+				return 0, false
+			}
+			if flag == 'c' {
+				hasCommandString = true
+			}
+		}
+		if hasCommandString {
+			commandIndex := index + 1
+			if commandIndex < len(words) && strings.Trim(words[commandIndex], `"'`) == "--" {
+				commandIndex++
+			}
+			if commandIndex >= len(words) {
+				return 0, false
+			}
+			return commandIndex, true
+		}
+	}
+	return 0, false
+}
+
+func shellCommandStringLongOption(option string) (bool, bool) {
+	name, value, attached := strings.Cut(option, "=")
+	switch name {
+	case "--init-file", "--rcfile":
+		return !attached, !attached || value != ""
+	case "--login", "--noediting", "--noprofile", "--norc", "--posix", "--restricted", "--verbose":
+		return false, !attached
+	default:
+		return false, false
+	}
 }
 
 func isKubectlCreateSecretCommand(command string) bool {
