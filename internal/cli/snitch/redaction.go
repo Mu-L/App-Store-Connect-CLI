@@ -7718,7 +7718,13 @@ func redactLaunchctlSubmitEmbeddedCommand(command string, depth int) (string, bo
 			}
 		}
 		redactedEffective, effectiveChanged := redactSensitiveTextDepth(effective, depth+1)
-		if !effectiveChanged || len(redactedEffective) < len(effectivePrefix) {
+		if !effectiveChanged {
+			continue
+		}
+		if redactedEffective == redactionMarker {
+			return command[:payloadStart] + redactionMarker, true
+		}
+		if len(redactedEffective) < len(effectivePrefix) {
 			continue
 		}
 		redactedSuffix := redactedEffective[len(effectivePrefix):]

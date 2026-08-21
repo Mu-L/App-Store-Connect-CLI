@@ -79,6 +79,18 @@ func TestAuditMalformedKubernetesSecretJSONStopsAtUnmatchedOuterContainer(t *tes
 	}
 }
 
+func TestAuditLaunchctlEmbeddedCommandFailsClosedAtDepthLimit(t *testing.T) {
+	input := "launchctl submit -l signer -p openssl -- signer pkcs12 -export -passout pass:launchctl-depth-limit-passphrase"
+	got, changed := redactSensitiveTextDepth(input, maxShellRedactionDepth)
+	if !changed || strings.Contains(got, "launchctl-depth-limit-passphrase") || !strings.Contains(got, redactionMarker) {
+		t.Fatalf("depth-limited launchctl redaction = %q, changed=%t; want fail-closed marker", got, changed)
+	}
+	gotAgain, changedAgain := redactSensitiveText(got)
+	if changedAgain || gotAgain != got {
+		t.Fatalf("depth-limited launchctl redaction is not idempotent: second result %q, changed=%t", gotAgain, changedAgain)
+	}
+}
+
 func BenchmarkAuditMalformedKubernetesSecretJSON(b *testing.B) {
 	var input strings.Builder
 	input.WriteString(`{"kind":"Secret","data":`)
