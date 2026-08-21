@@ -149,6 +149,7 @@ var (
 		"ca":   newCommandCredentialFlagValueStartPattern("key"),
 		"dgst": newCommandCredentialFlagValueStartPattern("hmac"),
 	}
+	opensslMACOptionValueStartPattern     = newCommandCredentialFlagValueStartPattern("macopt")
 	keytoolCredentialFlagPattern          = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass", "new", "srcstorepass", "deststorepass", "srckeypass", "destkeypass")
 	jarsignerCredentialFlagPattern        = newCommandCredentialFlagPatternWithSuffix("(?::(?:env|file))?", "storepass", "keypass")
 	dockerLoginCredentialFlagPattern      = newCommandShortCredentialFlagPattern("p")
@@ -4658,13 +4659,20 @@ func redactOpenSSLSubcommandCredentialArguments(value string) (string, bool) {
 		end := findShellCommandEnd(result, start)
 		command := result[start:end]
 		commandStart, subcommand, ok := openSSLCommand(command)
+		commandSuffix := command[commandStart:]
+		commandChanged := false
 		if pattern := opensslSubcommandCredentialPatterns[subcommand]; ok && pattern != nil {
-			redacted, commandChanged := redactCommandCredentialFlagValues(command[commandStart:], pattern)
-			if commandChanged {
-				command = command[:commandStart] + redacted
-				result = result[:start] + command + result[end:]
-				changed = true
-			}
+			commandSuffix, commandChanged = redactCommandCredentialFlagValues(commandSuffix, pattern)
+		}
+		if subcommand == "dgst" || subcommand == "mac" {
+			var macChanged bool
+			commandSuffix, macChanged = redactCommandCredentialFlagValuesMatching(commandSuffix, opensslMACOptionValueStartPattern, isOpenSSLMACKeyOption)
+			commandChanged = commandChanged || macChanged
+		}
+		if commandChanged {
+			command = command[:commandStart] + commandSuffix
+			result = result[:start] + command + result[end:]
+			changed = true
 		}
 
 		separator := start + len(command)
@@ -4680,6 +4688,10 @@ func redactOpenSSLSubcommandCredentialArguments(value string) (string, bool) {
 }
 
 func redactCommandCredentialFlagValues(command string, pattern *regexp.Regexp) (string, bool) {
+	return redactCommandCredentialFlagValuesMatching(command, pattern, func(string) bool { return true })
+}
+
+func redactCommandCredentialFlagValuesMatching(command string, pattern *regexp.Regexp, shouldRedact func(string) bool) (string, bool) {
 	result := command
 	changed := false
 	for searchStart := 0; searchStart < len(result); {
@@ -4697,11 +4709,24 @@ func redactCommandCredentialFlagValues(command string, pattern *regexp.Regexp) (
 			searchStart = valueEnd
 			continue
 		}
+		if !shouldRedact(result[valueStart:valueEnd]) {
+			searchStart = valueEnd
+			continue
+		}
 		result = result[:valueStart] + redactionMarker + result[valueEnd:]
 		searchStart = valueStart + len(redactionMarker)
 		changed = true
 	}
 	return result, changed
+}
+
+func isOpenSSLMACKeyOption(value string) bool {
+	spans := splitCredentialShellWordSpans(value)
+	if len(spans) == 0 {
+		return false
+	}
+	option := strings.ToLower(strings.TrimPrefix(strings.Trim(spans[0].value, `"'`), "$"))
+	return strings.HasPrefix(option, "key:") || strings.HasPrefix(option, "hexkey:")
 }
 
 func openSSLCommand(command string) (int, string, bool) {
