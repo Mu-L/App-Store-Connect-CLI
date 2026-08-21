@@ -90,7 +90,7 @@ func TestPrintTable_SubscriptionIntroductoryOfferCreateSummary(t *testing.T) {
 		AvailabilityID: "availability-1",
 		AllTerritories: true,
 		DryRun:         true,
-		Total:          2,
+		Total:          3,
 		Created:        1,
 		Skipped:        1,
 		Failed:         1,
@@ -105,7 +105,11 @@ func TestPrintTable_SubscriptionIntroductoryOfferCreateSummary(t *testing.T) {
 	}
 
 	output := captureStdout(t, func() error { return PrintTable(result) })
-	for _, want := range []string{"Availability ID", "availability-1", "Skipped Territory", "USA", "Failed Territory", "provider rejected request"} {
+	for _, want := range []string{
+		"Subscription ID", "sub-1", "Availability ID", "availability-1",
+		"Dry Run", "true", "Total", "3", "Created", "1", "Skipped", "1", "Failed", "1",
+		"Skipped Territory", "USA", "already exists", "Failed Territory", "CAN", "provider rejected request",
+	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected %q in output, got: %s", want, output)
 		}
@@ -125,7 +129,10 @@ func TestPrintMarkdown_SubscriptionIntroductoryOfferCreateSummary(t *testing.T) 
 	}
 
 	output := captureStdout(t, func() error { return PrintMarkdown(result) })
-	for _, want := range []string{"Subscription ID", "Territory", "USA", "Dry Run", "true"} {
+	for _, want := range []string{
+		"Subscription ID", "sub-1", "Territory", "USA", "Dry Run", "true",
+		"Total", "1", "Created", "1", "Skipped", "0", "Failed", "0",
+	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected %q in output, got: %s", want, output)
 		}

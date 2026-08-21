@@ -444,12 +444,6 @@ func subscriptionIntroductoryOfferSelectorUsageError(kind shared.UsageErrorKind,
 	return shared.NewReportedUsageError(kind, message)
 }
 
-type (
-	subscriptionIntroductoryOfferCreateBulkSummary        = asc.SubscriptionIntroductoryOfferCreateSummary
-	subscriptionIntroductoryOfferCreateBulkSummarySkip    = asc.SubscriptionIntroductoryOfferCreateSummarySkip
-	subscriptionIntroductoryOfferCreateBulkSummaryFailure = asc.SubscriptionIntroductoryOfferCreateSummaryFailure
-)
-
 // summarizeSubscriptionIntroductoryOfferCreateDryRun reports what a single-territory
 // create would do, using the same summary shape as the all-territories path so both
 // dry runs read alike. It performs no requests: the territory is already resolved
@@ -462,7 +456,7 @@ func summarizeSubscriptionIntroductoryOfferCreateDryRun(
 	output string,
 	pretty bool,
 ) error {
-	summary := &subscriptionIntroductoryOfferCreateBulkSummary{
+	summary := &asc.SubscriptionIntroductoryOfferCreateSummary{
 		SubscriptionID:  subscriptionID,
 		Territory:       territoryID,
 		AllTerritories:  false,
@@ -495,7 +489,7 @@ func createSubscriptionIntroductoryOffersForAllTerritories(
 		return fmt.Errorf("subscriptions introductory-offers create: %w", err)
 	}
 
-	summary := &subscriptionIntroductoryOfferCreateBulkSummary{
+	summary := &asc.SubscriptionIntroductoryOfferCreateSummary{
 		SubscriptionID:  subscriptionID,
 		AvailabilityID:  availabilityID,
 		AllTerritories:  true,
@@ -687,23 +681,23 @@ func introductoryOfferTerritoryIDFromEncodedID(id string) string {
 	return territoryID
 }
 
-func appendSubscriptionIntroductoryOfferCreateBulkSkip(summary *subscriptionIntroductoryOfferCreateBulkSummary, territoryID, reason string) {
+func appendSubscriptionIntroductoryOfferCreateBulkSkip(summary *asc.SubscriptionIntroductoryOfferCreateSummary, territoryID, reason string) {
 	if summary == nil {
 		return
 	}
 	summary.Skipped++
-	summary.Skips = append(summary.Skips, subscriptionIntroductoryOfferCreateBulkSummarySkip{
+	summary.Skips = append(summary.Skips, asc.SubscriptionIntroductoryOfferCreateSummarySkip{
 		Territory: territoryID,
 		Reason:    reason,
 	})
 }
 
-func appendSubscriptionIntroductoryOfferCreateBulkFailure(summary *subscriptionIntroductoryOfferCreateBulkSummary, territoryID string, err error) {
+func appendSubscriptionIntroductoryOfferCreateBulkFailure(summary *asc.SubscriptionIntroductoryOfferCreateSummary, territoryID string, err error) {
 	if summary == nil || err == nil {
 		return
 	}
 	summary.Failed++
-	summary.Failures = append(summary.Failures, subscriptionIntroductoryOfferCreateBulkSummaryFailure{
+	summary.Failures = append(summary.Failures, asc.SubscriptionIntroductoryOfferCreateSummaryFailure{
 		Territory: territoryID,
 		Error:     err.Error(),
 	})
