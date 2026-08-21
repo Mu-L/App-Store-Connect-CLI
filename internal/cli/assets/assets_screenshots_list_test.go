@@ -17,10 +17,14 @@ func TestExecuteScreenshotListCommandResolvesVersionLocalizationByVersionIDAndLo
 	client := newAssetsUploadTestServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
 		case "/v1/appStoreVersions/version-1/appStoreVersionLocalizations":
+			if req.URL.Query().Get("cursor") == "page-2" {
+				writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appStoreVersionLocalizations","id":"loc-en","attributes":{"locale":"en-US"}}],"links":{}}`)
+				return
+			}
 			if got := req.URL.Query().Get("limit"); got != "200" {
 				t.Errorf("localizations limit = %q, want 200", got)
 			}
-			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appStoreVersionLocalizations","id":"loc-de","attributes":{"locale":"de-DE"}},{"type":"appStoreVersionLocalizations","id":"loc-en","attributes":{"locale":"en-US"}}],"links":{}}`)
+			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appStoreVersionLocalizations","id":"loc-de","attributes":{"locale":"de-DE"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/appStoreVersions/version-1/appStoreVersionLocalizations?cursor=page-2"}}`)
 		case "/v1/appStoreVersionLocalizations/loc-en/appScreenshotSets":
 			writeAssetsTestJSON(w, http.StatusOK, `{"data":[{"type":"appScreenshotSets","id":"set-1","attributes":{"screenshotDisplayType":"APP_IPHONE_65"}}],"links":{}}`)
 		case "/v1/appScreenshotSets/set-1/appScreenshots":
@@ -206,6 +210,27 @@ func TestAssetsScreenshotsListCommandAcceptsLocalizationIDAlias(t *testing.T) {
 	cmd.FlagSet.SetOutput(io.Discard)
 	if err := cmd.FlagSet.Parse([]string{"--localization-id", "loc-1"}); err != nil {
 		t.Fatalf("parse alias: %v", err)
+	}
+}
+
+func TestAssetsScreenshotsListCommandRejectsUnexpectedArguments(t *testing.T) {
+	cmd := AssetsScreenshotsListCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.FlagSet.Parse([]string{"--version-localization", "loc-1", "typo"}); err != nil {
+		t.Fatalf("parse arguments: %v", err)
+	}
+
+	stdout, stderr := captureOutput(t, func() {
+		err := cmd.Exec(context.Background(), cmd.FlagSet.Args())
+		if !errors.Is(err, flag.ErrHelp) {
+			t.Fatalf("error = %v, want usage error", err)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "unexpected argument(s): typo") {
+		t.Fatalf("stderr = %q, want unexpected argument diagnostic", stderr)
 	}
 }
 

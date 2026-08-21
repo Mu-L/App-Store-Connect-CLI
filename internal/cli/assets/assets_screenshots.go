@@ -322,6 +322,9 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			if err := shared.RejectPositionalArgs(args); err != nil {
+				return err
+			}
 			if err := legacyLocalizationID.Apply(localizationID); err != nil {
 				return err
 			}
@@ -452,13 +455,11 @@ func executeScreenshotListCommand(ctx context.Context, opts screenshotListComman
 			}
 		}
 
-		requestCtx, cancel := deps.RequestContext(ctx)
-		localizations, listErr := client.GetAppStoreVersionLocalizations(requestCtx, resolvedVersionID, asc.WithAppStoreVersionLocalizationsLimit(200))
-		cancel()
+		localizations, listErr := fetchAllScreenshotVersionLocalizations(ctx, client, resolvedVersionID, deps.RequestContext)
 		if listErr != nil {
 			return nil, fmt.Errorf("failed to fetch version localizations: %w", listErr)
 		}
-		for _, item := range localizations.Data {
+		for _, item := range localizations {
 			if strings.EqualFold(strings.TrimSpace(item.Attributes.Locale), localeValue) {
 				locID = strings.TrimSpace(item.ID)
 				break
@@ -470,6 +471,44 @@ func executeScreenshotListCommand(ctx context.Context, opts screenshotListComman
 	}
 
 	return fetchScreenshotList(ctx, client, locID, deps.RequestContext)
+}
+
+func fetchAllScreenshotVersionLocalizations(
+	ctx context.Context,
+	client *asc.Client,
+	versionID string,
+	requestContext func(context.Context) (context.Context, context.CancelFunc),
+) ([]asc.Resource[asc.AppStoreVersionLocalizationAttributes], error) {
+	requestCtx, cancel := requestContext(ctx)
+	firstPage, err := client.GetAppStoreVersionLocalizations(requestCtx, versionID, asc.WithAppStoreVersionLocalizationsLimit(200))
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	if firstPage == nil {
+		return nil, fmt.Errorf("empty version localization response")
+	}
+
+	paginated, err := asc.PaginateAll(ctx, firstPage, func(pageCtx context.Context, nextURL string) (asc.PaginatedResponse, error) {
+		nextCtx, nextCancel := requestContext(pageCtx)
+		nextPage, nextErr := client.GetAppStoreVersionLocalizations(nextCtx, versionID, asc.WithAppStoreVersionLocalizationsNextURL(nextURL))
+		nextCancel()
+		if nextErr != nil {
+			return nil, nextErr
+		}
+		if nextPage == nil {
+			return nil, fmt.Errorf("empty version localization response")
+		}
+		return nextPage, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	allPages, ok := paginated.(*asc.AppStoreVersionLocalizationsResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected version localization pagination response type")
+	}
+	return allPages.Data, nil
 }
 
 func fetchScreenshotList(
