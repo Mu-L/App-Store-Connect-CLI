@@ -413,6 +413,41 @@ diagnostic:
     name: API_TOKEN`,
 		},
 		{
+			name: "Kubernetes YAML block scalar environment credential name",
+			input: `env:
+  - name: |-
+      DB_PASSWORD
+    value: opaqueBlockNameSecret`,
+			want: `env:
+  - name: |-
+      DB_PASSWORD
+    value: [REDACTED]`,
+		},
+		{
+			name: "Kubernetes YAML folded tagged block scalar environment credential name",
+			input: `env:
+  - name: !!str >-
+      API_TOKEN
+    value: opaqueFoldedBlockNameSecret`,
+			want: `env:
+  - name: !!str >-
+      API_TOKEN
+    value: [REDACTED]`,
+		},
+		{
+			name: "Kubernetes YAML block scalar credential name with blank line",
+			input: `env:
+  - name: |-
+
+      DB_PASSWORD
+    value: opaqueBlankBlockNameSecret`,
+			want: `env:
+  - name: |-
+
+      DB_PASSWORD
+    value: [REDACTED]`,
+		},
+		{
 			name:  "Kubernetes YAML flow environment credential name value pair",
 			input: `env: [{value: flowAlphabeticSecret, name: DB_PASSWORD}]`,
 			want:  `env: [{value: [REDACTED], name: DB_PASSWORD}]`,
@@ -926,6 +961,62 @@ data: {config: [REDACTED]}
 stringData:
   settings: [REDACTED]
 status: failed`,
+		},
+		{
+			name: "Kubernetes Secret block scalar kind",
+			input: `apiVersion: v1
+kind: |-
+  Secret
+data:
+  config: opaqueBlockKindSecret
+status: failed`,
+			want: `apiVersion: v1
+kind: |-
+  Secret
+data:
+  config: [REDACTED]
+status: failed`,
+		},
+		{
+			name: "Kubernetes Secret folded tagged block scalar kind",
+			input: `apiVersion: v1
+kind: !!str >-
+  Secret
+stringData:
+  config: opaqueFoldedBlockKindSecret
+status: failed`,
+			want: `apiVersion: v1
+kind: !!str >-
+  Secret
+stringData:
+  config: [REDACTED]
+status: failed`,
+		},
+		{
+			name: "Kubernetes Secret data before anchored block scalar kind",
+			input: `apiVersion: v1
+data:
+  config: opaqueDataBeforeBlockKindSecret
+kind: &secret-kind |2-
+  Secret`,
+			want: `apiVersion: v1
+data:
+  config: [REDACTED]
+kind: &secret-kind |2-
+  Secret`,
+		},
+		{
+			name: "Kubernetes Secret aliased block scalar kind",
+			input: `secretKind: &secret-kind |-
+  Secret
+kind: *secret-kind
+data:
+  config: opaqueAliasedBlockKindSecret`,
+			want: `secretKind: &secret-kind |-
+  Secret
+kind: *secret-kind
+data:
+  config: [REDACTED]`,
 		},
 		{
 			name: "commented Kubernetes YAML document start resets Secret state",
@@ -2857,11 +2948,14 @@ func TestRedactSensitiveTextPreservesUnterminatedTOMLLiteralKey(t *testing.T) {
 }
 
 func TestRedactSensitiveTextPreservesNameValuePairOutsideCookieJar(t *testing.T) {
-	input := `{"cookies":{},"diagnostic":{"name":"failure","value":"preserve this explanation"}}`
-
-	got, changed := redactSensitiveText(input)
-	if changed || got != input {
-		t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+	for _, input := range []string{
+		`{"cookies":{},"diagnostic":{"name":"failure","value":"preserve this explanation"}}`,
+		"env:\n  - name: |-\n      DB_PASSWORD\n      value: diagnostic text\n    value: preserve-public-value",
+	} {
+		got, changed := redactSensitiveText(input)
+		if changed || got != input {
+			t.Fatalf("redactSensitiveText(%q) = %q, changed=%t; want unchanged", input, got, changed)
+		}
 	}
 }
 
@@ -2878,6 +2972,8 @@ func TestRedactSensitiveTextPreservesSimilarKubernetesDataKeys(t *testing.T) {
 	for _, input := range []string{
 		"tls.keyUsage: digital signature\n.dockerconfigjson.backup: public metadata",
 		"apiVersion: v1\nkind: ConfigMap\ndata: {config: public-config}\nstringData:\n  settings: public-settings",
+		"apiVersion: v1\nkind: >-\n  Con\n  figMap\ndata:\n  config: public-config",
+		"apiVersion: v1\nkind: |-\n  ConfigMap\ndata:\n  config: public-config",
 		`{"apiVersion":"v1","kind":"ConfigMap","data":{"config":"public-config"},"stringData":{"settings":"public-settings"}}`,
 		"data:\n  config: public-config\n# ---\nkind: ConfigMap",
 		"items:\n- data:\n    config: public-config\n- kind: Secret",

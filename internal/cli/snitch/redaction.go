@@ -773,7 +773,7 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 				line:      line,
 				anchorEnd: valueStart + anchor[1],
 			}
-			if scalar := kubernetesYAMLScalar(value); scalar != "" && scalar != value {
+			if scalar := yamlMappingScalar(lines, line, content, valueStart); scalar != "" && scalar != value {
 				scalarAnchors[anchorName] = scalar
 			}
 		}
@@ -788,7 +788,7 @@ func redactKubernetesSecretYAMLData(value string) (string, bool) {
 			secretActive = true
 		}
 		if strings.EqualFold(key, "kind") {
-			kind := kubernetesYAMLScalar(value)
+			kind := yamlMappingScalar(lines, line, content, valueStart)
 			if strings.HasPrefix(kind, "*") {
 				kind = scalarAnchors[strings.TrimPrefix(kind, "*")]
 			}
@@ -915,7 +915,7 @@ func yamlExplicitKindForMapping(lines []string, currentLine, mappingIndent int, 
 		if !ok || yamlKeyIndent(content) != mappingIndent || !strings.EqualFold(key, "kind") {
 			continue
 		}
-		kind := kubernetesYAMLScalar(content[valueStart:])
+		kind := yamlMappingScalar(lines, line, content, valueStart)
 		if strings.HasPrefix(kind, "*") {
 			kind = scalarAnchors[strings.TrimPrefix(kind, "*")]
 		}
@@ -970,7 +970,7 @@ func yamlMappingAnchorHasSecretKind(lines []string, location yamlAnchorLocation,
 		if keyIndent != childIndent || !strings.EqualFold(key, "kind") {
 			continue
 		}
-		kind := kubernetesYAMLScalar(candidate[valueStart:])
+		kind := yamlMappingScalar(lines, line, candidate, valueStart)
 		if strings.HasPrefix(kind, "*") {
 			kind = scalarAnchors[strings.TrimPrefix(kind, "*")]
 		}
@@ -1339,6 +1339,77 @@ func decodeYAMLMappingKey(value string) string {
 	return decodeYAMLScalar(value)
 }
 
+func yamlMappingScalar(lines []string, line int, content string, valueStart int) string {
+	if scalar, ok := decodeYAMLBlockScalarValue(lines, line, content, valueStart); ok {
+		return strings.TrimSpace(scalar)
+	}
+	return kubernetesYAMLScalar(content[valueStart:])
+}
+
+func decodeYAMLBlockScalarValue(lines []string, line int, content string, valueStart int) (string, bool) {
+	header, _ := trimYAMLNodeProperties(content[valueStart:])
+	header = strings.TrimSpace(header)
+	if comment := strings.Index(header, " #"); comment >= 0 {
+		header = strings.TrimSpace(header[:comment])
+	}
+	if !yamlBlockScalarIndicator.MatchString(header) {
+		return "", false
+	}
+
+	keyIndent := yamlKeyIndent(content)
+	end := line + 1
+	for end < len(lines) {
+		candidate, _ := splitLineEnding(lines[end])
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && leadingIndent(candidate) <= keyIndent {
+			break
+		}
+		end++
+	}
+
+	var fragment strings.Builder
+	fragment.WriteString("value: ")
+	fragment.WriteString(content[valueStart:])
+	fragment.WriteByte('\n')
+	for continuation := line + 1; continuation < end; continuation++ {
+		candidate, ending := splitLineEnding(lines[continuation])
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" {
+			if ending == "" {
+				ending = "\n"
+			}
+			fragment.WriteString(ending)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") && leadingIndent(candidate) <= keyIndent {
+			fragment.WriteString(candidate)
+			if ending == "" {
+				ending = "\n"
+			}
+			fragment.WriteString(ending)
+			continue
+		}
+		if len(candidate) < keyIndent {
+			return "", false
+		}
+		fragment.WriteString(candidate[keyIndent:])
+		if ending == "" {
+			ending = "\n"
+		}
+		fragment.WriteString(ending)
+	}
+
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(fragment.String()), &document); err != nil || len(document.Content) != 1 {
+		return "", false
+	}
+	mapping := document.Content[0]
+	if mapping.Kind != yaml.MappingNode || len(mapping.Content) != 2 || mapping.Content[1].Kind != yaml.ScalarNode {
+		return "", false
+	}
+	return mapping.Content[1].Value, true
+}
+
 func decodeYAMLExplicitScalarKey(value string) (string, bool) {
 	value, _ = trimYAMLNodeProperties(value)
 	value = strings.TrimSpace(value)
@@ -1443,7 +1514,7 @@ func yamlSecretKindFollows(lines []string, start, secretIndent int, anchorLocati
 			return true
 		}
 		if strings.EqualFold(key, "kind") {
-			kind := kubernetesYAMLScalar(content[valueStart:])
+			kind := yamlMappingScalar(lines, line, content, valueStart)
 			if strings.HasPrefix(kind, "*") {
 				kind = scalarAnchors[strings.TrimPrefix(kind, "*")]
 			}
@@ -3398,8 +3469,8 @@ func redactSensitiveYAMLNameValueDocument(lines []string) (string, bool) {
 
 func collectYAMLScalarAnchors(lines []string) map[string]string {
 	anchors := make(map[string]string)
-	for _, line := range lines {
-		content, _ := splitLineEnding(line)
+	for line := range lines {
+		content, _ := splitLineEnding(lines[line])
 		_, valueStart, ok := parseYAMLMappingLine(content)
 		if !ok {
 			continue
@@ -3409,7 +3480,7 @@ func collectYAMLScalarAnchors(lines []string) map[string]string {
 		if len(anchor) != 4 {
 			continue
 		}
-		scalar := kubernetesYAMLScalar(rawValue)
+		scalar := yamlMappingScalar(lines, line, content, valueStart)
 		if scalar == "" || strings.HasPrefix(scalar, "*") {
 			continue
 		}
@@ -3426,7 +3497,7 @@ func redactSensitiveYAMLBlockNameValuePairs(lines []string, scalarAnchors map[st
 		if !ok || !strings.EqualFold(key, "name") {
 			continue
 		}
-		name := kubernetesYAMLScalar(content[valueStart:])
+		name := yamlMappingScalar(lines, line, content, valueStart)
 		if strings.HasPrefix(name, "*") {
 			name = scalarAnchors[strings.TrimPrefix(name, "*")]
 		}
