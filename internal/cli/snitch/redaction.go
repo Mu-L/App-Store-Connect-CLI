@@ -5514,6 +5514,9 @@ func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
 	if wrapper == "launchctl" {
 		return consumeLaunchctlCredentialWrapper(words[1:])
 	}
+	if wrapper == "chroot" || wrapper == "gchroot" || wrapper == "chroot.exe" || wrapper == "gchroot.exe" {
+		return consumeChrootCredentialWrapper(words[1:])
+	}
 	if wrapper == "xargs" || wrapper == "gxargs" {
 		return consumeXargsCredentialWrapper(words[1:])
 	}
@@ -6244,6 +6247,79 @@ func consumeLaunchctlSubmitCredentialWrapper(words []string) ([]string, bool) {
 		}
 	}
 	return nil, false
+}
+
+func consumeChrootCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			words = words[1:]
+			break
+		}
+		if len(option) < 2 || option[0] != '-' || option == "-" {
+			break
+		}
+		if option[1] == '-' {
+			name, value, attached := strings.Cut(option, "=")
+			switch name {
+			case "--groups":
+				if attached {
+					words = words[1:]
+					continue
+				}
+				if len(words) < 2 {
+					return nil, false
+				}
+				words = words[2:]
+			case "--userspec":
+				if attached {
+					if value == "" {
+						return nil, false
+					}
+					words = words[1:]
+					continue
+				}
+				if len(words) < 2 {
+					return nil, false
+				}
+				words = words[2:]
+			case "--skip-chdir":
+				if attached {
+					return nil, false
+				}
+				words = words[1:]
+			case "--help", "--version":
+				return nil, false
+			default:
+				return nil, false
+			}
+			continue
+		}
+
+		requiresArgument := false
+		for index := 1; index < len(option); index++ {
+			switch option[index] {
+			case 'n':
+				continue
+			case 'G', 'g', 'u':
+				requiresArgument = index == len(option)-1
+				index = len(option)
+			default:
+				return nil, false
+			}
+		}
+		words = words[1:]
+		if requiresArgument {
+			if len(words) == 0 {
+				return nil, false
+			}
+			words = words[1:]
+		}
+	}
+	if len(words) == 0 || strings.Trim(words[0], `"'`) == "" {
+		return nil, false
+	}
+	return words[1:], true
 }
 
 func consumeTimeoutCredentialWrapper(words []string) ([]string, bool) {
