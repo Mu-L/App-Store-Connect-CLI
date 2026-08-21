@@ -5378,6 +5378,18 @@ func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
 	if wrapper == "ionice" {
 		return consumeIoniceCredentialWrapper(words[1:])
 	}
+	if wrapper == "caffeinate" {
+		return consumeCaffeinateCredentialWrapper(words[1:])
+	}
+	if wrapper == "arch" {
+		return consumeArchCredentialWrapper(words[1:])
+	}
+	if wrapper == "xcrun" {
+		return consumeXcrunCredentialWrapper(words[1:])
+	}
+	if wrapper == "launchctl" {
+		return consumeLaunchctlCredentialWrapper(words[1:])
+	}
 	if wrapper == "xargs" || wrapper == "gxargs" {
 		return consumeXargsCredentialWrapper(words[1:])
 	}
@@ -5905,6 +5917,209 @@ func consumeIoniceCredentialWrapper(words []string) ([]string, bool) {
 		}
 	}
 	return words, true
+}
+
+func consumeCaffeinateCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			return words[1:], true
+		}
+		if len(option) < 2 || option[0] != '-' || option == "-" {
+			return words, true
+		}
+		argumentFlag := byte(0)
+		argument := ""
+		for index := 1; index < len(option); index++ {
+			switch option[index] {
+			case 'd', 'i', 'm', 's', 'u':
+				continue
+			case 't', 'w':
+				argumentFlag = option[index]
+				argument = option[index+1:]
+				index = len(option)
+			default:
+				return nil, false
+			}
+		}
+		words = words[1:]
+		if argumentFlag != 0 {
+			if argument == "" {
+				if len(words) == 0 {
+					return nil, false
+				}
+				argument = strings.Trim(words[0], `"'`)
+				words = words[1:]
+			}
+			if argumentFlag == 't' && !isCaffeinateTimeoutArgument(argument) {
+				return nil, false
+			}
+			if argumentFlag == 'w' && !isCaffeinatePIDArgument(argument) {
+				return nil, false
+			}
+		}
+	}
+	return words, true
+}
+
+func isCaffeinateTimeoutArgument(value string) bool {
+	if isCredentialDynamicShellArgument(value) {
+		return true
+	}
+	timeout, err := strconv.ParseFloat(value, 64)
+	return (err == nil && !math.IsNaN(timeout) && !math.IsInf(timeout, 0)) || hasCredentialNumericPrefix(value)
+}
+
+func isCaffeinatePIDArgument(value string) bool {
+	if isCredentialDynamicShellArgument(value) {
+		return true
+	}
+	_, err := strconv.ParseUint(value, 10, 64)
+	return err == nil || hasCredentialNumericPrefix(value)
+}
+
+func isCredentialDynamicShellArgument(value string) bool {
+	return strings.ContainsAny(value, "$`")
+}
+
+func hasCredentialNumericPrefix(value string) bool {
+	value = strings.TrimPrefix(strings.TrimPrefix(value, "+"), "-")
+	return value != "" && value[0] >= '0' && value[0] <= '9'
+}
+
+func consumeArchCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			return nil, false
+		}
+		if len(option) < 2 || option[0] != '-' || option == "-" {
+			return words, true
+		}
+		switch option {
+		case "-32", "-64", "-arm64", "-arm64e", "-x86_64", "-x86_64h", "-i386":
+			words = words[1:]
+		case "-arch":
+			if len(words) < 2 || !isCredentialArchName(strings.Trim(words[1], `"'`)) {
+				return nil, false
+			}
+			words = words[2:]
+		case "-c":
+			words = words[1:]
+		case "-d":
+			if len(words) < 2 || strings.Trim(words[1], `"'`) == "" {
+				return nil, false
+			}
+			words = words[2:]
+		case "-e":
+			if len(words) < 2 || !isCredentialArchEnvironmentAssignment(strings.Trim(words[1], `"'`)) {
+				return nil, false
+			}
+			words = words[2:]
+		default:
+			return nil, false
+		}
+	}
+	return words, true
+}
+
+func isCredentialArchName(value string) bool {
+	switch value {
+	case "i386", "x86_64", "x86_64h", "arm64", "arm64e":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCredentialArchEnvironmentAssignment(value string) bool {
+	_, _, found := strings.Cut(value, "=")
+	return found
+}
+
+func consumeXcrunCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			return words[1:], true
+		}
+		if len(option) < 2 || option[0] != '-' || option == "-" {
+			return words, true
+		}
+		switch option {
+		case "--sdk", "--toolchain", "-sdk", "-toolchain":
+			if len(words) < 2 || strings.HasPrefix(strings.Trim(words[1], `"'`), "-") {
+				return nil, false
+			}
+			words = words[2:]
+		case "--log", "--verbose", "--no-cache", "--kill-cache", "--run", "-log", "-verbose", "-no-cache", "-kill-cache", "-run", "-l", "-v", "-n", "-k", "-r":
+			words = words[1:]
+		case "--find", "--help", "--version", "-find", "-help", "-version", "-f", "-h":
+			return nil, false
+		default:
+			if strings.HasPrefix(option, "--show-sdk-") || strings.HasPrefix(option, "-show-sdk-") || option == "--show-toolchain-path" || option == "-show-toolchain-path" {
+				return nil, false
+			}
+			return nil, false
+		}
+	}
+	return words, true
+}
+
+func consumeLaunchctlCredentialWrapper(words []string) ([]string, bool) {
+	if len(words) == 0 {
+		return nil, false
+	}
+	mode := strings.Trim(words[0], `"'`)
+	if mode == "submit" {
+		return consumeLaunchctlSubmitCredentialWrapper(words[1:])
+	}
+	if len(words) < 2 || (mode != "asuser" && mode != "bsexec") {
+		return nil, false
+	}
+	uid := strings.Trim(words[1], `"'`)
+	if _, err := strconv.ParseUint(uid, 10, 64); err != nil {
+		return nil, false
+	}
+	return words[2:], true
+}
+
+func consumeLaunchctlSubmitCredentialWrapper(words []string) ([]string, bool) {
+	hasLabel := false
+	executable := ""
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		switch option {
+		case "-l", "-o", "-e":
+			if len(words) < 2 {
+				return nil, false
+			}
+			if option == "-l" {
+				hasLabel = true
+			}
+			words = words[2:]
+		case "-p":
+			if !hasLabel {
+				return nil, false
+			}
+			if len(words) == 1 {
+				return nil, true
+			}
+			executable = words[1]
+			words = words[2:]
+		case "--":
+			if !hasLabel {
+				return nil, false
+			}
+			if executable != "" {
+				return append([]string{executable}, words[1:]...), true
+			}
+			return words[1:], true
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
 }
 
 func consumeTimeoutCredentialWrapper(words []string) ([]string, bool) {
