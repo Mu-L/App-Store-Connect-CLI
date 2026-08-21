@@ -158,6 +158,19 @@ func registerAllOutputRenderers() {
 	})
 	registerRows(winBackOfferDeleteResultRows)
 	registerRows(subscriptionPriceDeleteResultRows)
+	registerDirect(func(v *SubscriptionIntroductoryOfferCreateSummary, render func([]string, [][]string)) error {
+		h, r := subscriptionIntroductoryOfferCreateSummaryRows(v)
+		render(h, r)
+		if len(v.Skips) > 0 {
+			sh, sr := subscriptionIntroductoryOfferCreateSummarySkipRows(v)
+			render(sh, sr)
+		}
+		if len(v.Failures) > 0 {
+			fh, fr := subscriptionIntroductoryOfferCreateSummaryFailureRows(v)
+			render(fh, fr)
+		}
+		return nil
+	})
 	registerRowsErr(offerCodePricesRows)
 	registerRows(appAvailabilityRows)
 	registerRows(territoryAvailabilitiesRows)
