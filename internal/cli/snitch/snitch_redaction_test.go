@@ -2184,6 +2184,26 @@ status: failed`,
 			want:  `env --split-string="openssl pkcs12 -export -passout [REDACTED]"`,
 		},
 		{
+			name:  "OpenSSL passphrase through timeout wrapper",
+			input: `timeout 30 openssl pkcs12 -export -passout pass:opaque-timeout-secret`,
+			want:  `timeout 30 openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passphrase through option-bearing gtimeout wrapper",
+			input: `gtimeout --preserve-status --kill-after=5s 30s sudo -u build openssl pkcs12 -export -passout pass:opaque-timeout-secret`,
+			want:  `gtimeout --preserve-status --kill-after=5s 30s sudo -u build openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passphrase through grouped timeout options and hex duration",
+			input: `timeout -fk5s 0x1p0d openssl pkcs12 -export -passout pass:opaque-timeout-secret`,
+			want:  `timeout -fk5s 0x1p0d openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
+			name:  "OpenSSL passphrase through fractional timeout duration",
+			input: `timeout .5s openssl pkcs12 -export -passout pass:opaque-timeout-secret`,
+			want:  `timeout .5s openssl pkcs12 -export -passout [REDACTED]`,
+		},
+		{
 			name:  "keytool keystore and key passwords",
 			input: `keytool -importkeystore -srcstorepass opaque-source-store -deststorepass=opaque-destination-store -srckeypass "opaque source key" -destkeypass 'opaque destination key' -storepass opaque-store -keypass opaque-key`,
 			want:  `keytool -importkeystore -srcstorepass [REDACTED] -deststorepass=[REDACTED] -srckeypass [REDACTED] -destkeypass [REDACTED] -storepass [REDACTED] -keypass [REDACTED]`,
@@ -2689,6 +2709,10 @@ func TestRedactSensitiveTextRejectsNonExecutingCredentialCommandWrappers(t *test
 		`command -v keytool -storepass public-value`,
 		`doas -u build echo openssl -passout public-value`,
 		`env -S "echo openssl pkcs12 -passout public-value"`,
+		`timeout echo openssl pkcs12 -passout public-value`,
+		`timeout 30 echo openssl pkcs12 -passout public-value`,
+		`timeout --help openssl pkcs12 -passout public-value`,
+		`timeout --foreground=bad 30 openssl pkcs12 -passout public-value`,
 	} {
 		got, changed := redactSensitiveText(input)
 		if changed || got != input {

@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"math"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -4832,6 +4833,9 @@ func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
 		return nil, false
 	}
 	wrapper := commandBaseName(words[0])
+	if wrapper == "timeout" || wrapper == "gtimeout" {
+		return consumeTimeoutCredentialWrapper(words[1:])
+	}
 	if wrapper != "sudo" && wrapper != "doas" && wrapper != "command" && wrapper != "env" {
 		return nil, false
 	}
@@ -4859,6 +4863,71 @@ func consumeCredentialCommandWrapper(words []string) ([]string, bool) {
 		}
 	}
 	return words, true
+}
+
+func consumeTimeoutCredentialWrapper(words []string) ([]string, bool) {
+	for len(words) > 0 {
+		option := strings.Trim(words[0], `"'`)
+		if option == "--" {
+			words = words[1:]
+			break
+		}
+		if len(option) < 2 || option[0] != '-' || option == "-" {
+			break
+		}
+
+		requiresArgument, allowed := timeoutCredentialWrapperOption(option)
+		if !allowed {
+			return nil, false
+		}
+		words = words[1:]
+		if requiresArgument {
+			if len(words) == 0 {
+				return nil, false
+			}
+			words = words[1:]
+		}
+	}
+	if len(words) == 0 || !isTimeoutDurationWord(strings.Trim(words[0], `"'`)) {
+		return nil, false
+	}
+	return words[1:], true
+}
+
+func isTimeoutDurationWord(value string) bool {
+	if len(value) > 1 && strings.ContainsRune("smhdSMHD", rune(value[len(value)-1])) {
+		value = value[:len(value)-1]
+	}
+	duration, err := strconv.ParseFloat(value, 64)
+	return err == nil && duration >= 0 && !math.IsNaN(duration)
+}
+
+func timeoutCredentialWrapperOption(option string) (bool, bool) {
+	if strings.HasPrefix(option, "--") {
+		name, value, attached := strings.Cut(option, "=")
+		switch name {
+		case "--kill-after", "--signal":
+			return !attached, !attached || value != ""
+		case "--foreground", "--preserve-status", "--verbose":
+			return false, !attached
+		default:
+			return false, false
+		}
+	}
+	if len(option) < 2 {
+		return false, false
+	}
+	for index := 1; index < len(option); index++ {
+		switch option[index] {
+		case 'f', 'p', 'v':
+			continue
+		case 'k', 's':
+			return index == len(option)-1, true
+		default:
+			return false, false
+		}
+	}
+	return false, true
 }
 
 func credentialWrapperOption(wrapper, option string) (bool, bool) {
