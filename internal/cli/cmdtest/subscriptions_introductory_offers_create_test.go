@@ -416,6 +416,68 @@ func TestSubscriptionsIntroductoryOffersCreateAllTerritoriesDryRunSummarizesAvai
 	}
 }
 
+func TestSubscriptionsIntroductoryOffersCreateSingleTerritoryDryRunSummarizesResolvedTerritory(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+
+	seen := make([]string, 0, 1)
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		seen = append(seen, req.Method+" "+req.URL.Path)
+		t.Fatalf("dry-run should not POST or otherwise reach the API, saw requests: %v", seen)
+		return nil, nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var summary struct {
+		SubscriptionID string `json:"subscriptionId"`
+		Territory      string `json:"territory"`
+		AllTerritories bool   `json:"allTerritories"`
+		DryRun         bool   `json:"dryRun"`
+		Total          int    `json:"total"`
+		Created        int    `json:"created"`
+		Skipped        int    `json:"skipped"`
+		Failed         int    `json:"failed"`
+	}
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"subscriptions", "offers", "introductory", "create",
+			"--subscription-id", "8000000001",
+			"--offer-duration", "ONE_MONTH",
+			"--offer-mode", "FREE_TRIAL",
+			"--number-of-periods", "1",
+			"--territory", "US",
+			"--dry-run",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &summary); err != nil {
+		t.Fatalf("parse JSON summary: %v", err)
+	}
+	if summary.SubscriptionID != "8000000001" || summary.AllTerritories || !summary.DryRun {
+		t.Fatalf("unexpected summary identity: %+v", summary)
+	}
+	if summary.Territory != "USA" {
+		t.Fatalf("expected normalized territory USA, got %+v", summary)
+	}
+	if summary.Total != 1 || summary.Created != 1 || summary.Skipped != 0 || summary.Failed != 0 {
+		t.Fatalf("unexpected summary counts: %+v", summary)
+	}
+}
+
 func TestSubscriptionsIntroductoryOffersCreateDeprecatedAllAliasCreatesPerAvailabilityTerritory(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))

@@ -281,6 +281,7 @@ Examples:
   asc subscriptions offers introductory create --subscription-id "SUB_ID" --territory "USA" --offer-duration ONE_MONTH --offer-mode FREE_TRIAL --number-of-periods 1
   asc subscriptions offers introductory create --subscription-id "SUB_ID" --all-territories --offer-duration ONE_MONTH --offer-mode FREE_TRIAL --number-of-periods 1
   asc subscriptions offers introductory create --subscription-id "SUB_ID" --all-territories --dry-run --offer-duration ONE_MONTH --offer-mode FREE_TRIAL --number-of-periods 1
+  asc subscriptions offers introductory create --subscription-id "SUB_ID" --territory "USA" --dry-run --offer-duration ONE_MONTH --offer-mode FREE_TRIAL --number-of-periods 1
 
 Timeouts:
   An explicit ASC_TIMEOUT caps the full create operation. Without an override, the operation uses a 5m fallback while individual requests retain the standard request timeout.`,
@@ -406,6 +407,16 @@ Timeouts:
 				)
 			}
 
+			if *dryRun {
+				return summarizeSubscriptionIntroductoryOfferCreateDryRun(
+					id,
+					territoryID,
+					*continueOnError,
+					*output.Output,
+					*output.Pretty,
+				)
+			}
+
 			requestCtx, cancel := shared.ContextWithTimeout(operationCtx)
 			defer cancel()
 
@@ -433,6 +444,7 @@ func subscriptionIntroductoryOfferSelectorUsageError(kind shared.UsageErrorKind,
 type subscriptionIntroductoryOfferCreateBulkSummary struct {
 	SubscriptionID  string                                                  `json:"subscriptionId"`
 	AvailabilityID  string                                                  `json:"availabilityId,omitempty"`
+	Territory       string                                                  `json:"territory,omitempty"`
 	AllTerritories  bool                                                    `json:"allTerritories"`
 	DryRun          bool                                                    `json:"dryRun"`
 	ContinueOnError bool                                                    `json:"continueOnError"`
@@ -452,6 +464,37 @@ type subscriptionIntroductoryOfferCreateBulkSummarySkip struct {
 type subscriptionIntroductoryOfferCreateBulkSummaryFailure struct {
 	Territory string `json:"territory"`
 	Error     string `json:"error"`
+}
+
+// summarizeSubscriptionIntroductoryOfferCreateDryRun reports what a single-territory
+// create would do, using the same summary shape as the all-territories path so both
+// dry runs read alike. It performs no requests: the territory is already resolved
+// locally, and the availability lookup the bulk path needs to enumerate territories
+// would be wasted work here.
+func summarizeSubscriptionIntroductoryOfferCreateDryRun(
+	subscriptionID string,
+	territoryID string,
+	continueOnError bool,
+	output string,
+	pretty bool,
+) error {
+	summary := &subscriptionIntroductoryOfferCreateBulkSummary{
+		SubscriptionID:  subscriptionID,
+		Territory:       territoryID,
+		AllTerritories:  false,
+		DryRun:          true,
+		ContinueOnError: continueOnError,
+		Total:           1,
+		Created:         1,
+	}
+
+	return shared.PrintOutputWithRenderers(
+		summary,
+		output,
+		pretty,
+		func() error { return renderSubscriptionIntroductoryOfferCreateBulkSummary(summary, false) },
+		func() error { return renderSubscriptionIntroductoryOfferCreateBulkSummary(summary, true) },
+	)
 }
 
 func createSubscriptionIntroductoryOffersForAllTerritories(
@@ -704,18 +747,29 @@ func renderSubscriptionIntroductoryOfferCreateBulkSummary(summary *subscriptionI
 		render = asc.RenderMarkdown
 	}
 
-	render(
-		[]string{"Subscription ID", "Availability ID", "Dry Run", "Total", "Created", "Skipped", "Failed"},
-		[][]string{{
-			summary.SubscriptionID,
-			summary.AvailabilityID,
-			fmt.Sprintf("%t", summary.DryRun),
-			fmt.Sprintf("%d", summary.Total),
-			fmt.Sprintf("%d", summary.Created),
-			fmt.Sprintf("%d", summary.Skipped),
-			fmt.Sprintf("%d", summary.Failed),
-		}},
+	// Mirror the summary's omitempty JSON fields: a column only appears when the
+	// path that produced the summary actually fills it in.
+	headers := []string{"Subscription ID"}
+	row := []string{summary.SubscriptionID}
+	if summary.AvailabilityID != "" {
+		headers = append(headers, "Availability ID")
+		row = append(row, summary.AvailabilityID)
+	}
+	if summary.Territory != "" {
+		headers = append(headers, "Territory")
+		row = append(row, summary.Territory)
+	}
+	headers = append(headers, "Dry Run", "Total", "Created", "Skipped", "Failed")
+	row = append(
+		row,
+		fmt.Sprintf("%t", summary.DryRun),
+		fmt.Sprintf("%d", summary.Total),
+		fmt.Sprintf("%d", summary.Created),
+		fmt.Sprintf("%d", summary.Skipped),
+		fmt.Sprintf("%d", summary.Failed),
 	)
+
+	render(headers, [][]string{row})
 
 	if len(summary.Skips) > 0 {
 		rows := make([][]string, 0, len(summary.Skips))
