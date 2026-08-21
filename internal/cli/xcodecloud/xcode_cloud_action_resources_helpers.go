@@ -361,12 +361,20 @@ func resolveSingleBuildActionIDForRun(ctx context.Context, client *asc.Client, r
 }
 
 func listBuildActionsForRun(ctx context.Context, client *asc.Client, runID string) ([]asc.CiBuildActionResource, error) {
+	actions, err := listBuildActionsForRunAllowEmpty(ctx, client, runID)
+	if err != nil {
+		return nil, err
+	}
+	if len(actions) == 0 {
+		return nil, shared.UsageErrorf("no build actions found for --run-id %q", runID)
+	}
+	return actions, nil
+}
+
+func listBuildActionsForRunAllowEmpty(ctx context.Context, client *asc.Client, runID string) ([]asc.CiBuildActionResource, error) {
 	resp, err := client.GetCiBuildActions(ctx, runID, asc.WithCiBuildActionsLimit(200))
 	if err != nil {
 		return nil, fmt.Errorf("resolve build actions for run %q: %w", runID, err)
-	}
-	if len(resp.Data) == 0 {
-		return nil, shared.UsageErrorf("no build actions found for --run-id %q", runID)
 	}
 	if strings.TrimSpace(resp.Links.Next) == "" {
 		return resp.Data, nil
@@ -383,10 +391,6 @@ func listBuildActionsForRun(ctx context.Context, client *asc.Client, runID strin
 	if !ok {
 		return nil, fmt.Errorf("resolve build actions for run %q: unexpected response type %T", runID, allPages)
 	}
-	if len(allActions.Data) == 0 {
-		return nil, shared.UsageErrorf("no build actions found for --run-id %q", runID)
-	}
-
 	return allActions.Data, nil
 }
 
