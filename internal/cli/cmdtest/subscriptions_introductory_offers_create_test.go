@@ -524,6 +524,74 @@ func TestSubscriptionsIntroductoryOffersCreateSingleTerritoryDryRunSkipsSubscrip
 	}
 }
 
+func TestSubscriptionsIntroductoryOffersCreateSingleTerritoryDryRunHonorsCanceledContext(t *testing.T) {
+	isolateIntroductoryOfferCreateAuth(t)
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("canceled dry-run should not reach the API: %s %s", req.Method, req.URL.Path)
+		return nil, nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	if err := root.Parse([]string{
+		"subscriptions", "offers", "introductory", "create",
+		"--subscription-id", "8000000001",
+		"--offer-duration", "ONE_MONTH",
+		"--offer-mode", "FREE_TRIAL",
+		"--number-of-periods", "1",
+		"--territory", "US",
+		"--dry-run",
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Run(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("run error = %v, want context canceled", err)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("expected no output after cancellation, got %q", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+}
+
+func TestSubscriptionsIntroductoryOffersCreateSingleTerritoryDryRunRendersRegisteredFormats(t *testing.T) {
+	isolateIntroductoryOfferCreateAuth(t)
+
+	for _, format := range []string{"table", "markdown"} {
+		t.Run(format, func(t *testing.T) {
+			stdout, stderr, runErr := runRootCommand(t, []string{
+				"subscriptions", "offers", "introductory", "create",
+				"--subscription-id", "8000000001",
+				"--offer-duration", "ONE_MONTH",
+				"--offer-mode", "FREE_TRIAL",
+				"--number-of-periods", "1",
+				"--territory", "US",
+				"--dry-run",
+				"--output", format,
+			})
+			if runErr != nil {
+				t.Fatalf("run error: %v", runErr)
+			}
+			if stderr != "" {
+				t.Fatalf("expected empty stderr, got %q", stderr)
+			}
+			if !strings.Contains(stdout, "Subscription ID") || !strings.Contains(stdout, "USA") {
+				t.Fatalf("expected registered %s output, got %q", format, stdout)
+			}
+		})
+	}
+}
+
 func TestSubscriptionsIntroductoryOffersCreateDeprecatedAllAliasCreatesPerAvailabilityTerritory(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))

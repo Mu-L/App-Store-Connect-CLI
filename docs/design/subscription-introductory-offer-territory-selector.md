@@ -38,7 +38,12 @@ schema and has callers outside this command.
 same summary shape. Single-territory mode reports `total: 1` with the resolved
 territory and issues no requests of its own, because the territory is already
 resolved locally and the availability lookup only exists to enumerate territories
-for the bulk path.
+for the bulk path. In this mode the `subscriptionId` summary field echoes the
+selector supplied by the caller; it is not resolved or existence-checked. The
+single planned create is therefore reported as `created: 1` even when an
+existing offer might cause the real create to be rejected. All-territories mode
+retains its existing availability and offer reconciliation reads, so its
+`created` and `skipped` counts remain provider-backed.
 
 ## Compatibility and verification
 

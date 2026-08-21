@@ -896,6 +896,9 @@ Offer discounted pricing to new subscribers.
 new scripts; combining both spellings is invalid.
 
 `--dry-run` prints a summary and creates nothing, in either territory mode.
+Single-territory dry runs normalize the territory locally and make no network
+requests; the `subscriptionId` field echoes the selector supplied on the command
+line and `created: 1` is the planned create count, not an existing-offer check.
 
 ```bash  theme={null}
 # Create introductory offer
