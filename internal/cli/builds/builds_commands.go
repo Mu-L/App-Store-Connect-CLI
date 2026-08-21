@@ -596,7 +596,7 @@ Examples:
 				return fmt.Errorf("builds: %w", err)
 			}
 			if err := shared.ValidateSort(*sort, buildsListSortValues...); err != nil {
-				return fmt.Errorf("builds: %w", err)
+				return shared.UsageErrorf("builds: %v", err)
 			}
 
 			platformValue := ""

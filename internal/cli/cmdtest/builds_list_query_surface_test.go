@@ -2,6 +2,8 @@ package cmdtest
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"net/url"
@@ -229,7 +231,21 @@ func TestBuildsListIncludeRejectsUnknownValue(t *testing.T) {
 	if got := rootcmd.ExitCodeFromError(err); got != rootcmd.ExitUsage {
 		t.Fatalf("exit code = %d, want %d (err=%v)", got, rootcmd.ExitUsage, err)
 	}
-	for _, want := range []string{"--include", "preReleaseVersion", "buildBundles", "buildUpload"} {
+	for _, want := range []string{
+		"--include",
+		"preReleaseVersion",
+		"individualTesters",
+		"betaGroups",
+		"betaBuildLocalizations",
+		"appEncryptionDeclaration",
+		"betaAppReviewSubmission",
+		"app",
+		"buildBetaDetail",
+		"appStoreVersion",
+		"icons",
+		"buildBundles",
+		"buildUpload",
+	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("expected stderr to mention %q, got %q", want, stderr)
 		}
@@ -383,8 +399,12 @@ func TestBuildsCountBetaReviewStateRejectsUnknownValue(t *testing.T) {
 	if got := rootcmd.ExitCodeFromError(err); got != rootcmd.ExitUsage {
 		t.Fatalf("exit code = %d, want %d (err=%v)", got, rootcmd.ExitUsage, err)
 	}
-	if !strings.Contains(stderr, "--beta-review-state must be a comma-separated list of") {
-		t.Fatalf("expected beta review state validation error, got %q", stderr)
+	wantError := "--beta-review-state must be a comma-separated list of: WAITING_FOR_REVIEW, IN_REVIEW, REJECTED, APPROVED"
+	if err == nil || !errors.Is(err, flag.ErrHelp) || err.Error() != wantError {
+		t.Fatalf("error = %v, want usage error %q (stderr=%q)", err, wantError, stderr)
+	}
+	if !strings.Contains(stderr, wantError) {
+		t.Fatalf("expected stderr to contain %q, got %q", wantError, stderr)
 	}
 	captured.assertNoRequest(t)
 }
@@ -399,16 +419,15 @@ func TestBuildsListSortRejectsUnknownKey(t *testing.T) {
 		"--sort", "expirationDate",
 	)
 
-	if err == nil {
-		t.Fatal("expected an error for an unsupported sort key")
+	wantError := "builds: --sort must be one of: version, -version, uploadedDate, -uploadedDate, preReleaseVersion, -preReleaseVersion"
+	if got := rootcmd.ExitCodeFromError(err); got != rootcmd.ExitUsage {
+		t.Fatalf("exit code = %d, want %d (err=%v)", got, rootcmd.ExitUsage, err)
 	}
-	if !strings.Contains(err.Error(), "--sort must be one of") {
-		t.Fatalf("expected sort validation error, got %v (stderr=%q)", err, stderr)
+	if err == nil || !errors.Is(err, flag.ErrHelp) || err.Error() != wantError {
+		t.Fatalf("error = %v, want usage error %q (stderr=%q)", err, wantError, stderr)
 	}
-	for _, want := range []string{"version", "uploadedDate", "preReleaseVersion"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("expected error to mention %q, got %v", want, err)
-		}
+	if !strings.Contains(stderr, wantError) {
+		t.Fatalf("expected stderr to contain %q, got %q", wantError, stderr)
 	}
 	captured.assertNoRequest(t)
 }
