@@ -239,7 +239,11 @@ export ASC_ISSUER_ID="YOUR_ISSUER_ID"
 export ASC_PRIVATE_KEY_PATH="/path/to/AuthKey.p8"
 export ASC_APP_ID="YOUR_APP_ID"
 
-ASC_BYPASS_KEYCHAIN=1 ASC_CONFIG_PATH="$(mktemp -d)/config.json" make test-integration
+(
+  ASC_TEST_CONFIG_DIR="$(mktemp -d)"
+  trap 'rm -rf "$ASC_TEST_CONFIG_DIR"' EXIT
+  ASC_BYPASS_KEYCHAIN=1 ASC_CONFIG_PATH="$ASC_TEST_CONFIG_DIR/config.json" make test-integration
+)
 ```
 
 ## Platform-Specific Issues
