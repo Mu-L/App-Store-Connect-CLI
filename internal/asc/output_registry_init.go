@@ -13,6 +13,8 @@ func registerAllOutputRenderers() {
 		render(sh, sr)
 		return nil
 	})
+	registerDirect(webAgreementsStatusTables)
+	registerRows(webAgreementsAcceptRows)
 	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {
 		h, r := keywordRankSummaryRows(v)
 		render(h, r)
