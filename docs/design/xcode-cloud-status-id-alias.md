@@ -21,8 +21,8 @@ Warning: `--id` is deprecated. Use `--run-id`.
 ```
 
 New scripts should use `--run-id`. The alias may be removed in the next major
-release after the standard deprecation window. Release notes are generated from
-the pull request, whose title and body identify the alias and replacement.
+release after the standard deprecation window. The migration is recorded in
+[`release-notes-xcode-cloud-status-id-alias.md`](../release-notes-xcode-cloud-status-id-alias.md).
 
 ## Verification
 
