@@ -248,6 +248,39 @@ func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
 			t.Fatalf("expected default stored credentials ignore note, got %#v", section.Checks)
 		}
 	})
+
+	t.Run("default keychain key with environment issuer fallback", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "")
+		t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")
+		t.Setenv("ASC_KEY_TYPE", "")
+		t.Setenv("ASC_PRIVATE_KEY", "")
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", filepath.Join(tempDir, "unused-missing-env.p8"))
+		if err := StoreCredentials("doctor-partial-keychain", "STOREDKEY", "", storedKeyPath); err != nil {
+			t.Fatalf("StoreCredentials() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-partial-keychain"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		report := Doctor(DoctorOptions{})
+		section := findDoctorSection(t, report, "Environment")
+		if sectionHasStatus(section, DoctorFail, "ASC_PRIVATE_KEY_PATH") {
+			t.Fatalf("expected selected default key material to suppress unused environment key failure, got %#v", section.Checks)
+		}
+		if !sectionHasStatus(section, DoctorInfo, "ignored because default stored private key is selected") {
+			t.Fatalf("expected default stored key material ignore note, got %#v", section.Checks)
+		}
+	})
 }
 
 func TestDoctorEnvironmentPrivateKeyPathRedactsEveryOccurrence(t *testing.T) {

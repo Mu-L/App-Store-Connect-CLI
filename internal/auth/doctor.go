@@ -481,13 +481,18 @@ func ignoredEnvironmentPrivateKeyReason(options DoctorOptions) string {
 	if err != nil || credentials == nil {
 		return ""
 	}
+	hasKeyID := strings.TrimSpace(credentials.KeyID) != ""
 	hasIssuer := strings.TrimSpace(credentials.IssuerID) != "" || config.IsIndividualCredentialKeyType(credentials.KeyType)
 	hasPrivateKey := strings.TrimSpace(credentials.PrivateKeyPath) != "" || strings.TrimSpace(credentials.PrivateKeyPEM) != ""
-	if strings.TrimSpace(credentials.KeyID) == "" || !hasIssuer || !hasPrivateKey {
+	if !hasPrivateKey {
 		return ""
 	}
+	complete := hasKeyID && hasIssuer
 	if shouldBypassKeychain() {
 		return "complete stored config credentials are selected in keychain bypass mode"
+	}
+	if !complete {
+		return "default stored private key is selected"
 	}
 	return "complete default stored credentials are selected"
 }
