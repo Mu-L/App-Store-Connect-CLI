@@ -181,7 +181,10 @@ Examples:
 			defer cancel()
 
 			liveListings, listingsErr := fetchLiveAvailabilityPlatformListings(requestCtx, client, resolvedAppID)
+			platformListingsVerified := listingsErr == nil
+			platformListingsVerificationError := ""
 			if listingsErr != nil {
+				platformListingsVerificationError = strings.TrimSpace(listingsErr.Error())
 				if !*allPlatforms {
 					return fmt.Errorf("pricing availability remove-from-sale: could not verify live platform listings; retry or pass --all-platforms to acknowledge the unknown app-wide blast radius: %w", listingsErr)
 				}
@@ -216,16 +219,18 @@ Examples:
 				removedPlatformListings = nil
 			}
 			result := &asc.AvailabilityRemoveFromSaleResult{
-				AppID:                          resolvedAppID,
-				AvailabilityID:                 summary.AvailabilityID,
-				Status:                         status,
-				AvailableInNewTerritories:      summary.AvailableInNewTerritories,
-				TotalTerritories:               summary.TotalTerritories,
-				UpdatedTerritories:             summary.UpdatedTerritories,
-				AlreadyUnavailableTerritories:  summary.SkippedTerritories,
-				VerifiedUnavailableTerritories: summary.VerifiedTerritories,
-				FailedTerritories:              append([]string{}, summary.FailedTerritories...),
-				RemovedPlatformListings:        removedPlatformListings,
+				AppID:                             resolvedAppID,
+				AvailabilityID:                    summary.AvailabilityID,
+				Status:                            status,
+				AvailableInNewTerritories:         summary.AvailableInNewTerritories,
+				TotalTerritories:                  summary.TotalTerritories,
+				UpdatedTerritories:                summary.UpdatedTerritories,
+				AlreadyUnavailableTerritories:     summary.SkippedTerritories,
+				VerifiedUnavailableTerritories:    summary.VerifiedTerritories,
+				FailedTerritories:                 append([]string{}, summary.FailedTerritories...),
+				PlatformListingsVerified:          platformListingsVerified,
+				PlatformListingsVerificationError: platformListingsVerificationError,
+				RemovedPlatformListings:           removedPlatformListings,
 			}
 			if updateErr != nil {
 				fmt.Fprintf(
@@ -420,6 +425,7 @@ func executeTerritoryAvailabilityUpdate(ctx context.Context, client *asc.Client,
 func FetchAvailabilityPlatformListings(ctx context.Context, client *asc.Client, appID string) ([]asc.AvailabilityPlatformListing, error) {
 	newestLive := map[string]asc.AvailabilityPlatformListing{}
 	newestAny := map[string]asc.AvailabilityPlatformListing{}
+	platformStateKnown := map[string]bool{}
 	order := []string{}
 	next := ""
 	for {
@@ -436,15 +442,21 @@ func FetchAvailabilityPlatformListings(ctx context.Context, client *asc.Client, 
 			if platform == "" {
 				continue
 			}
+			state, live, stateKnown := availabilityListingStatus(version.Attributes)
 			listing := asc.AvailabilityPlatformListing{
 				Platform:      platform,
 				VersionString: version.Attributes.VersionString,
-				State:         availabilityListingState(version.Attributes),
-				Live:          availabilityListingIsLive(version.Attributes),
+				State:         state,
+				Live:          live,
+				StateKnown:    stateKnown,
 				CreatedDate:   version.Attributes.CreatedDate,
 			}
 			if _, seen := newestAny[platform]; !seen {
 				order = append(order, platform)
+				platformStateKnown[platform] = true
+			}
+			if !listing.StateKnown {
+				platformStateKnown[platform] = false
 			}
 			if current, seen := newestAny[platform]; !seen || availabilityListingIsNewer(listing, current) {
 				newestAny[platform] = listing
@@ -463,10 +475,13 @@ func FetchAvailabilityPlatformListings(ctx context.Context, client *asc.Client, 
 	listings := make([]asc.AvailabilityPlatformListing, 0, len(order))
 	for _, platform := range order {
 		if live, ok := newestLive[platform]; ok {
+			live.StateKnown = live.StateKnown && platformStateKnown[platform]
 			listings = append(listings, live)
 			continue
 		}
-		listings = append(listings, newestAny[platform])
+		listing := newestAny[platform]
+		listing.StateKnown = listing.StateKnown && platformStateKnown[platform]
+		listings = append(listings, listing)
 	}
 	return listings, nil
 }
@@ -496,26 +511,59 @@ func fetchLiveAvailabilityPlatformListings(ctx context.Context, client *asc.Clie
 		return nil, err
 	}
 	live := make([]asc.AvailabilityPlatformListing, 0, len(listings))
+	unverifiable := make([]string, 0)
 	for _, listing := range listings {
+		if !listing.StateKnown {
+			state := strings.TrimSpace(listing.State)
+			if state == "" {
+				state = "<missing>"
+			}
+			unverifiable = append(unverifiable, fmt.Sprintf("%s %s (%s)", listing.Platform, listing.VersionString, state))
+			continue
+		}
 		if listing.Live {
 			live = append(live, listing)
 		}
+	}
+	if len(unverifiable) > 0 {
+		sort.Strings(unverifiable)
+		return nil, fmt.Errorf("platform listing states are unverifiable: %s", strings.Join(unverifiable, "; "))
 	}
 	return live, nil
 }
 
 func availabilityListingState(attributes asc.AppStoreVersionAttributes) string {
 	if attributes.AppVersionState != "" {
-		return attributes.AppVersionState
+		return strings.TrimSpace(attributes.AppVersionState)
 	}
-	return attributes.AppStoreState
+	return strings.TrimSpace(attributes.AppStoreState)
 }
 
-func availabilityListingIsLive(attributes asc.AppStoreVersionAttributes) bool {
-	return attributes.AppStoreState == "READY_FOR_SALE" ||
-		attributes.AppStoreState == "PREORDER_READY_FOR_SALE" ||
-		attributes.AppVersionState == "READY_FOR_DISTRIBUTION" ||
-		attributes.AppVersionState == "PREORDER_READY_FOR_SALE"
+func availabilityListingStatus(attributes asc.AppStoreVersionAttributes) (string, bool, bool) {
+	appStoreState := strings.TrimSpace(attributes.AppStoreState)
+	appVersionState := strings.TrimSpace(attributes.AppVersionState)
+	state := availabilityListingState(attributes)
+	if appStoreState == "" && appVersionState == "" {
+		return state, false, false
+	}
+
+	stateKnown := true
+	for _, candidate := range []string{appStoreState, appVersionState} {
+		if candidate == "" {
+			continue
+		}
+		if _, ok := appStoreVersionStates[strings.ToUpper(candidate)]; !ok {
+			stateKnown = false
+		}
+	}
+
+	appStoreStateUpper := strings.ToUpper(appStoreState)
+	appVersionStateUpper := strings.ToUpper(appVersionState)
+	live := appStoreStateUpper == "READY_FOR_SALE" ||
+		appStoreStateUpper == "PREORDER_READY_FOR_SALE" ||
+		appVersionStateUpper == "READY_FOR_DISTRIBUTION" ||
+		appVersionStateUpper == "PREORDER_READY_FOR_SALE"
+	return state, live, stateKnown
 }
 
 func contextWithAvailabilityTimeout(ctx context.Context, allTerritories bool) (context.Context, context.CancelFunc) {

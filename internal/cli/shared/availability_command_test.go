@@ -161,3 +161,55 @@ func TestAvailabilityListingIsNewerUsesChronologicalTime(t *testing.T) {
 		})
 	}
 }
+
+func TestAvailabilityListingStatusRequiresRecognizedVersionStates(t *testing.T) {
+	tests := []struct {
+		name           string
+		attributes     asc.AppStoreVersionAttributes
+		wantState      string
+		wantLive       bool
+		wantStateKnown bool
+	}{
+		{
+			name:           "missing states",
+			attributes:     asc.AppStoreVersionAttributes{},
+			wantStateKnown: false,
+		},
+		{
+			name: "unknown app store state",
+			attributes: asc.AppStoreVersionAttributes{
+				AppStoreState: "FUTURE_SALE_STATE",
+			},
+			wantState:      "FUTURE_SALE_STATE",
+			wantStateKnown: false,
+		},
+		{
+			name: "known app version preorder state",
+			attributes: asc.AppStoreVersionAttributes{
+				AppVersionState: "PREORDER_READY_FOR_SALE",
+			},
+			wantState:      "PREORDER_READY_FOR_SALE",
+			wantLive:       true,
+			wantStateKnown: true,
+		},
+		{
+			name: "known live state with unknown companion state",
+			attributes: asc.AppStoreVersionAttributes{
+				AppStoreState:   "READY_FOR_SALE",
+				AppVersionState: "FUTURE_DISTRIBUTION_STATE",
+			},
+			wantState:      "FUTURE_DISTRIBUTION_STATE",
+			wantLive:       true,
+			wantStateKnown: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state, live, stateKnown := availabilityListingStatus(test.attributes)
+			if state != test.wantState || live != test.wantLive || stateKnown != test.wantStateKnown {
+				t.Fatalf("availabilityListingStatus() = (%q, %t, %t), want (%q, %t, %t)", state, live, stateKnown, test.wantState, test.wantLive, test.wantStateKnown)
+			}
+		})
+	}
+}

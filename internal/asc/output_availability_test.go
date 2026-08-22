@@ -13,6 +13,7 @@ func TestAvailabilityPlatformsResultUsesOutputRegistry(t *testing.T) {
 			VersionString: "4.2.0",
 			State:         "READY_FOR_DISTRIBUTION",
 			Live:          true,
+			StateKnown:    true,
 			CreatedDate:   "2026-08-19T00:00:00Z",
 		}},
 	}
@@ -25,10 +26,10 @@ func TestAvailabilityPlatformsResultUsesOutputRegistry(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("renderByRegistry() error: %v", err)
 	}
-	if want := []string{"Platform", "Version", "State", "Live", "Created"}; !reflect.DeepEqual(headers, want) {
+	if want := []string{"Platform", "Version", "State", "Live", "State known", "Created"}; !reflect.DeepEqual(headers, want) {
 		t.Fatalf("headers = %#v, want %#v", headers, want)
 	}
-	if want := [][]string{{"IOS", "4.2.0", "READY_FOR_DISTRIBUTION", "true", "2026-08-19T00:00:00Z"}}; !reflect.DeepEqual(rows, want) {
+	if want := [][]string{{"IOS", "4.2.0", "READY_FOR_DISTRIBUTION", "true", "true", "2026-08-19T00:00:00Z"}}; !reflect.DeepEqual(rows, want) {
 		t.Fatalf("rows = %#v, want %#v", rows, want)
 	}
 }
@@ -48,7 +49,9 @@ func TestAvailabilityRemoveFromSaleResultUsesOutputRegistry(t *testing.T) {
 			Platform:      "IOS",
 			VersionString: "4.2.0",
 			Live:          true,
+			StateKnown:    true,
 		}},
+		PlatformListingsVerified: true,
 	}
 
 	var headers []string
@@ -62,7 +65,7 @@ func TestAvailabilityRemoveFromSaleResultUsesOutputRegistry(t *testing.T) {
 	if want := []string{"Field", "Value"}; !reflect.DeepEqual(headers, want) {
 		t.Fatalf("headers = %#v, want %#v", headers, want)
 	}
-	if len(rows) != 10 || rows[1][1] != "availability-1" || rows[7][1] != "2" || rows[9][1] != "IOS 4.2.0" {
+	if len(rows) != 12 || rows[1][1] != "availability-1" || rows[7][1] != "2" || rows[9][1] != "true" || rows[11][1] != "IOS 4.2.0" {
 		t.Fatalf("unexpected rows: %#v", rows)
 	}
 }
