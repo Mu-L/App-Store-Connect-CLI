@@ -1108,6 +1108,11 @@ func strictAuthEnabled() bool {
 	}
 }
 
+// StrictAuthEnabled reports whether mixed credential sources must fail.
+func StrictAuthEnabled() bool {
+	return strictAuthEnabled()
+}
+
 func warnInvalidStrictAuthValueOnce(value string) {
 	if value == "" {
 		return

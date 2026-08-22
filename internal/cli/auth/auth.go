@@ -185,8 +185,9 @@ Examples:
 
 			report := authsvc.DoctorWithMigrationResolver(
 				authsvc.DoctorOptions{
-					Fix:     *fix && *confirm,
-					Profile: shared.ResolveProfileName(),
+					Fix:        *fix && *confirm,
+					Profile:    shared.ResolveProfileName(),
+					StrictAuth: shared.StrictAuthEnabled(),
 				},
 				doctorMigrationSuggestionResolver(),
 			)

@@ -301,6 +301,99 @@ func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
 		}
 	})
 
+	t.Run("selected profile accepts individual environment key type", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "")
+		t.Setenv("ASC_ISSUER_ID", "")
+		t.Setenv("ASC_KEY_TYPE", config.CredentialKeyTypeIndividual)
+		t.Setenv("ASC_PRIVATE_KEY", "")
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+		if err := StoreCredentials("doctor-selected-individual-fallback", "STOREDKEY", "", storedKeyPath); err != nil {
+			t.Fatalf("StoreCredentials() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-selected-individual-fallback"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		report := Doctor(DoctorOptions{Profile: "doctor-selected-individual-fallback"})
+		section := findDoctorSection(t, report, "Environment")
+		if sectionHasStatus(section, DoctorFail, "Selected profile \"doctor-selected-individual-fallback\"") {
+			t.Fatalf("expected individual environment key type to remove issuer requirement, got %#v", section.Checks)
+		}
+		if report.Summary.Errors != 0 {
+			t.Fatalf("expected no doctor errors for effective individual credentials, got %#v", report.Summary)
+		}
+	})
+
+	t.Run("selected profile rejects invalid environment key type", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "")
+		t.Setenv("ASC_ISSUER_ID", "")
+		t.Setenv("ASC_KEY_TYPE", "invalid")
+		t.Setenv("ASC_PRIVATE_KEY", "")
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+		if err := StoreCredentials("doctor-selected-invalid-key-type", "STOREDKEY", "", storedKeyPath); err != nil {
+			t.Fatalf("StoreCredentials() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-selected-invalid-key-type"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		report := Doctor(DoctorOptions{Profile: "doctor-selected-invalid-key-type"})
+		section := findDoctorSection(t, report, "Environment")
+		if !sectionHasStatus(section, DoctorFail, "Selected profile \"doctor-selected-invalid-key-type\" cannot use environment fallback: ASC_KEY_TYPE must be team or individual") {
+			t.Fatalf("expected invalid fallback key type failure, got %#v", section.Checks)
+		}
+	})
+
+	t.Run("selected profile rejects mixed sources in strict auth", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "")
+		t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")
+		t.Setenv("ASC_KEY_TYPE", "")
+		t.Setenv("ASC_PRIVATE_KEY", "")
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+		if err := StoreCredentials("doctor-selected-strict-mixed", "STOREDKEY", "", storedKeyPath); err != nil {
+			t.Fatalf("StoreCredentials() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-selected-strict-mixed"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		report := Doctor(DoctorOptions{Profile: "doctor-selected-strict-mixed", StrictAuth: true})
+		section := findDoctorSection(t, report, "Environment")
+		if !sectionHasStatus(section, DoctorFail, "Selected profile \"doctor-selected-strict-mixed\" requires mixed stored and environment credential sources while strict authentication is enabled") {
+			t.Fatalf("expected strict mixed-source failure, got %#v", section.Checks)
+		}
+	})
+
 	t.Run("complete bypass config", func(t *testing.T) {
 		tempDir := t.TempDir()
 		storedKeyPath := filepath.Join(tempDir, "stored.p8")

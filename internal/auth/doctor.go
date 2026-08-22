@@ -49,8 +49,9 @@ type DoctorReport struct {
 }
 
 type DoctorOptions struct {
-	Fix     bool
-	Profile string
+	Fix        bool
+	Profile    string
+	StrictAuth bool
 }
 
 func Doctor(options DoctorOptions) DoctorReport {
@@ -529,33 +530,83 @@ func inspectSelectedProfile(options DoctorOptions) *DoctorCheck {
 			Recommendation: "Choose an existing complete profile or update the selected profile credentials",
 		}
 	}
-	missing := effectiveCredentialMissingFields(credentials)
-	if len(missing) > 0 {
+	shape := effectiveCredentialShape(credentials)
+	if shape.invalidEnvironmentKeyType {
 		return &DoctorCheck{
 			Status:         DoctorFail,
-			Message:        fmt.Sprintf("Selected profile %q is incomplete after environment fallback (missing %s)", profile, strings.Join(missing, ", ")),
+			Message:        fmt.Sprintf("Selected profile %q cannot use environment fallback: ASC_KEY_TYPE must be team or individual", profile),
+			Recommendation: "Set ASC_KEY_TYPE to team or individual, or update the selected profile so fallback is unnecessary",
+		}
+	}
+	if len(shape.missing) > 0 {
+		return &DoctorCheck{
+			Status:         DoctorFail,
+			Message:        fmt.Sprintf("Selected profile %q is incomplete after environment fallback (missing %s)", profile, strings.Join(shape.missing, ", ")),
 			Recommendation: "Update the selected profile or set the missing ASC_* environment fields",
+		}
+	}
+	if options.StrictAuth && shape.mixedSources {
+		return &DoctorCheck{
+			Status:         DoctorFail,
+			Message:        fmt.Sprintf("Selected profile %q requires mixed stored and environment credential sources while strict authentication is enabled", profile),
+			Recommendation: "Store a complete credential profile or clear ASC_STRICT_AUTH",
 		}
 	}
 	return nil
 }
 
-func effectiveCredentialMissingFields(credentials *config.Config) []string {
-	missing := []string{}
-	if strings.TrimSpace(credentials.KeyID) == "" && strings.TrimSpace(os.Getenv("ASC_KEY_ID")) == "" {
-		missing = append(missing, "key ID")
+type credentialShape struct {
+	missing                   []string
+	invalidEnvironmentKeyType bool
+	mixedSources              bool
+}
+
+func effectiveCredentialShape(credentials *config.Config) credentialShape {
+	storedKeyID := strings.TrimSpace(credentials.KeyID) != ""
+	storedIssuer := strings.TrimSpace(credentials.IssuerID) != ""
+	storedPrivateKey := strings.TrimSpace(credentials.PrivateKeyPath) != "" || strings.TrimSpace(credentials.PrivateKeyPEM) != ""
+	storedIndividual := config.IsIndividualCredentialKeyType(credentials.KeyType)
+	needsFallback := !storedKeyID || (!storedIssuer && !storedIndividual) || !storedPrivateKey
+
+	shape := credentialShape{}
+	effectiveIndividual := storedIndividual
+	if needsFallback {
+		environmentKeyType := strings.TrimSpace(os.Getenv("ASC_KEY_TYPE"))
+		if environmentKeyType != "" && !config.IsValidCredentialKeyType(environmentKeyType) {
+			shape.invalidEnvironmentKeyType = true
+			return shape
+		}
+		if !storedIndividual && config.IsIndividualCredentialKeyType(environmentKeyType) {
+			effectiveIndividual = true
+		}
 	}
-	if !config.IsIndividualCredentialKeyType(credentials.KeyType) &&
-		strings.TrimSpace(credentials.IssuerID) == "" &&
-		strings.TrimSpace(os.Getenv("ASC_ISSUER_ID")) == "" {
-		missing = append(missing, "issuer ID")
+
+	sources := map[string]struct{}{}
+	if storedKeyID {
+		sources["stored"] = struct{}{}
+	} else if strings.TrimSpace(os.Getenv("ASC_KEY_ID")) != "" {
+		sources["environment"] = struct{}{}
+	} else {
+		shape.missing = append(shape.missing, "key ID")
 	}
-	if strings.TrimSpace(credentials.PrivateKeyPath) == "" &&
-		strings.TrimSpace(credentials.PrivateKeyPEM) == "" &&
-		!hasEnvironmentPrivateKey() {
-		missing = append(missing, "private key")
+	if !effectiveIndividual {
+		if storedIssuer {
+			sources["stored"] = struct{}{}
+		} else if strings.TrimSpace(os.Getenv("ASC_ISSUER_ID")) != "" {
+			sources["environment"] = struct{}{}
+		} else {
+			shape.missing = append(shape.missing, "issuer ID")
+		}
 	}
-	return missing
+	if storedPrivateKey {
+		sources["stored"] = struct{}{}
+	} else if hasEnvironmentPrivateKey() {
+		sources["environment"] = struct{}{}
+	} else {
+		shape.missing = append(shape.missing, "private key")
+	}
+	shape.mixedSources = len(sources) > 1
+	return shape
 }
 
 func hasEnvironmentPrivateKey() bool {
