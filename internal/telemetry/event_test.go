@@ -356,6 +356,63 @@ func TestBuildEventWithContextStripsKnownFailureParameterValue(t *testing.T) {
 	}
 }
 
+func TestBuildEventWithContextAllowsDirWithoutItsValue(t *testing.T) {
+	clearContextEnv(t)
+	setTelemetryTestHome(t)
+
+	ev, ok := BuildEventWithContext(
+		"asc metadata validate",
+		"1.2.3",
+		0,
+		2,
+		EventContext{
+			InvocationShape:  InvocationShapeLeaf,
+			ErrorKind:        ErrorKindMissingRequired,
+			FailureStage:     FailureStageValidation,
+			FailureParameter: "--dir=/Users/example/private-metadata",
+		},
+	)
+	if !ok {
+		t.Fatal("expected event")
+	}
+	if ev.FailureParameter == nil || *ev.FailureParameter != "--dir" {
+		t.Fatalf("FailureParameter = %v, want --dir", ev.FailureParameter)
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("json.Marshal() error: %v", err)
+	}
+	if strings.Contains(string(data), "private-metadata") {
+		t.Fatalf("payload leaked --dir value: %s", data)
+	}
+
+	for _, parameter := range []string{
+		"/Users/example/private-metadata",
+		"--dir /Users/example/private-metadata",
+	} {
+		t.Run(parameter, func(t *testing.T) {
+			pathEvent, pathOK := BuildEventWithContext(
+				"asc metadata validate",
+				"1.2.3",
+				0,
+				2,
+				EventContext{
+					InvocationShape:  InvocationShapeLeaf,
+					ErrorKind:        ErrorKindMissingRequired,
+					FailureStage:     FailureStageValidation,
+					FailureParameter: parameter,
+				},
+			)
+			if !pathOK {
+				t.Fatal("expected event")
+			}
+			if pathEvent.FailureParameter != nil {
+				t.Fatalf("FailureParameter = %q, want nil", *pathEvent.FailureParameter)
+			}
+		})
+	}
+}
+
 func TestBuildEventWithContextCanonicalizesFailureStage(t *testing.T) {
 	clearContextEnv(t)
 	setTelemetryTestHome(t)
