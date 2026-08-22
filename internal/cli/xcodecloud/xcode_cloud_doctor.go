@@ -334,7 +334,11 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 	hasImportDiagnostic := false
 	hasSuccessfulExport := false
 	failedActionLogBundles := doctorFailedActionLogBundleCount(result)
+	failedActionIDs := doctorFailedActionIDs(result)
 	for _, bundle := range result.LogBundles {
+		if _, failed := failedActionIDs[bundle.ActionID]; !failed {
+			continue
+		}
 		if bundle.ExportStatus == "SUCCEEDED" {
 			hasSuccessfulExport = true
 		}
@@ -400,6 +404,19 @@ func doctorFailedActionLogBundleCount(result *asc.XcodeCloudDoctorResult) int {
 	return count
 }
 
+func doctorFailedActionIDs(result *asc.XcodeCloudDoctorResult) map[string]struct{} {
+	failed := make(map[string]struct{})
+	if result == nil {
+		return failed
+	}
+	for _, action := range result.Actions {
+		if isFailedDoctorAction(action.CompletionStatus) {
+			failed[action.ID] = struct{}{}
+		}
+	}
+	return failed
+}
+
 func doctorRunFailed(result *asc.XcodeCloudDoctorResult) bool {
 	if result == nil || result.Run == nil {
 		return false
@@ -414,7 +431,15 @@ func doctorRunFailed(result *asc.XcodeCloudDoctorResult) bool {
 
 func doctorHasAppStorePreparationIssue(result *asc.XcodeCloudDoctorResult) bool {
 	for _, action := range result.Actions {
+		if !isFailedDoctorAction(action.CompletionStatus) {
+			continue
+		}
 		for _, issue := range action.Issues {
+			switch strings.ToUpper(strings.TrimSpace(issue.IssueType)) {
+			case "ERROR", "TEST_FAILURE":
+			default:
+				continue
+			}
 			text := strings.ToLower(issue.Category + " " + issue.Message)
 			if strings.Contains(text, "app store connect") || strings.Contains(text, "prepare build for app store") {
 				return true

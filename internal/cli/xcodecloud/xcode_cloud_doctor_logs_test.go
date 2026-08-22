@@ -57,8 +57,14 @@ func TestFinishXcodeCloudDoctorResultDoesNotInventImportFailure(t *testing.T) {
 			ExecutionProgress: "COMPLETE",
 			CompletionStatus:  "FAILED",
 		},
+		Actions: []asc.XcodeCloudDoctorAction{{
+			ID:               "archive-ios",
+			CompletionStatus: "FAILED",
+			Artifacts:        []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}},
+		}},
 		LogBundles: []asc.XcodeCloudDoctorLogBundle{{
 			ArtifactID:   "log-92",
+			ActionID:     "archive-ios",
 			Inspected:    true,
 			ExportStatus: "SUCCEEDED",
 			Diagnostics:  []asc.XcodeCloudDoctorLogDiagnostic{},
@@ -173,17 +179,67 @@ func TestDoctorFailureAggregationExcludesCanceledActions(t *testing.T) {
 func TestFinishXcodeCloudDoctorResultIgnoresSuccessfulActionLogBundles(t *testing.T) {
 	result := &asc.XcodeCloudDoctorResult{
 		Run: &asc.XcodeCloudStatusResult{ExecutionProgress: "COMPLETE", CompletionStatus: "FAILED"},
-		Actions: []asc.XcodeCloudDoctorAction{{
-			CompletionStatus: "SUCCEEDED",
-			Artifacts:        []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}},
-		}},
+		Actions: []asc.XcodeCloudDoctorAction{
+			{
+				ID:               "failed-test",
+				CompletionStatus: "FAILED",
+				Issues: []asc.XcodeCloudDoctorIssue{{
+					IssueType: "ERROR",
+					Category:  "Testing",
+					Message:   "A test failed",
+				}},
+			},
+			{
+				ID:               "successful-archive",
+				CompletionStatus: "SUCCEEDED",
+				Artifacts:        []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}},
+			},
+		},
 		Summary: asc.XcodeCloudDoctorSummary{LogBundles: 1, Errors: 1},
+		LogBundles: []asc.XcodeCloudDoctorLogBundle{{
+			ActionID:     "successful-archive",
+			Inspected:    true,
+			ExportStatus: "SUCCEEDED",
+			Diagnostics: []asc.XcodeCloudDoctorLogDiagnostic{{
+				Code:    "ITMS-90000",
+				Message: "Incidental diagnostic",
+			}},
+		}},
 	}
 
 	finishXcodeCloudDoctorResult(result)
 
-	if strings.Contains(result.Conclusion, "not inspected") || strings.Contains(result.NextAction, "--skip-logs") {
-		t.Fatalf("successful-action bundle produced misleading remediation: conclusion=%q nextAction=%q", result.Conclusion, result.NextAction)
+	if !strings.Contains(result.Conclusion, "reported actionable issues") {
+		t.Fatalf("successful-action bundle changed diagnosis: conclusion=%q nextAction=%q", result.Conclusion, result.NextAction)
+	}
+}
+
+func TestDoctorHasAppStorePreparationIssueUsesFailedErrorActions(t *testing.T) {
+	result := &asc.XcodeCloudDoctorResult{Actions: []asc.XcodeCloudDoctorAction{
+		{
+			CompletionStatus: "SUCCEEDED",
+			Issues: []asc.XcodeCloudDoctorIssue{{
+				IssueType: "WARNING",
+				Message:   "App Store Connect warning",
+			}},
+		},
+		{
+			CompletionStatus: "FAILED",
+			Issues: []asc.XcodeCloudDoctorIssue{{
+				IssueType: "ERROR",
+				Message:   "Compilation failed",
+			}},
+		},
+	}}
+
+	if doctorHasAppStorePreparationIssue(result) {
+		t.Fatal("successful warning must not be treated as the failed run's App Store preparation issue")
+	}
+
+	result.Actions[1].Issues[0].Category = "PrepareBuildForAppStoreConnect"
+	result.Actions[1].Issues[0].Message = "Preparing build for App Store Connect failed"
+	if !doctorHasAppStorePreparationIssue(result) {
+		t.Fatal("failed error action's App Store preparation issue was not detected")
 	}
 }
 
