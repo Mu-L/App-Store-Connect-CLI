@@ -157,6 +157,11 @@ func TestVersionsViewSelectorValidationBeforeClient(t *testing.T) {
 			wantStderr: "--version-id cannot be combined with --app, --version, or --platform",
 		},
 		{
+			name:       "explicit empty direct ID with lookup selectors",
+			args:       []string{"versions", "view", "--version-id", " ", "--app", "app-1", "--version", "1.2.3"},
+			wantStderr: "--version-id cannot be combined with --app, --version, or --platform",
+		},
+		{
 			name:       "app without version",
 			args:       []string{"versions", "view", "--app", "app-1"},
 			wantStderr: "--version is required when resolving by app",
@@ -164,6 +169,11 @@ func TestVersionsViewSelectorValidationBeforeClient(t *testing.T) {
 		{
 			name:       "version without app",
 			args:       []string{"versions", "view", "--version", "1.2.3"},
+			wantStderr: "--app is required (or set ASC_APP_ID)",
+		},
+		{
+			name:       "version with whitespace app",
+			args:       []string{"versions", "view", "--app", " ", "--version", "1.2.3"},
 			wantStderr: "--app is required (or set ASC_APP_ID)",
 		},
 		{

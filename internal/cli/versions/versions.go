@@ -173,14 +173,17 @@ Examples:
 				return err
 			}
 			trimmedID := strings.TrimSpace(*versionID)
+			directIDRequested := false
 			lookupRequested := false
 			fs.Visit(func(parsed *flag.Flag) {
 				switch parsed.Name {
+				case "id", "version-id":
+					directIDRequested = true
 				case "app", "version", "platform":
 					lookupRequested = true
 				}
 			})
-			if trimmedID != "" && lookupRequested {
+			if directIDRequested && lookupRequested {
 				return shared.UsageError("--version-id cannot be combined with --app, --version, or --platform")
 			}
 			if trimmedID == "" && !lookupRequested {
@@ -196,7 +199,7 @@ Examples:
 					fmt.Fprintln(os.Stderr, "Error: --version is required when resolving by app")
 					return shared.MissingRequiredUsageError("--version")
 				}
-				resolvedAppID = shared.ResolveAppID(*appID)
+				resolvedAppID = strings.TrimSpace(shared.ResolveAppID(*appID))
 				if resolvedAppID == "" {
 					fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
 					return shared.MissingRequiredUsageError("--app")
