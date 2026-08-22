@@ -22,76 +22,23 @@ type xcodeCloudDoctorOptions struct {
 	SaveLogs     string
 }
 
-type xcodeCloudDoctorResult struct {
-	Run              *asc.XcodeCloudStatusResult       `json:"run"`
-	Summary          xcodeCloudDoctorSummary           `json:"summary"`
-	Actions          []xcodeCloudDoctorAction          `json:"actions"`
-	LogBundles       []xcodeCloudDoctorLogBundle       `json:"logBundles"`
-	CoverageWarnings []xcodeCloudDoctorCoverageWarning `json:"coverageWarnings"`
-	Conclusion       string                            `json:"conclusion"`
-	NextAction       string                            `json:"nextAction"`
-}
-
-type xcodeCloudDoctorSummary struct {
-	TotalActions        int `json:"totalActions"`
-	FailedActions       int `json:"failedActions"`
-	SkippedActions      int `json:"skippedActions"`
-	Errors              int `json:"errors"`
-	Warnings            int `json:"warnings"`
-	Artifacts           int `json:"artifacts"`
-	LogBundles          int `json:"logBundles"`
-	LogBundlesInspected int `json:"logBundlesInspected"`
-}
-
-type xcodeCloudDoctorAction struct {
-	ID                string                     `json:"id"`
-	Name              string                     `json:"name,omitempty"`
-	ActionType        string                     `json:"actionType,omitempty"`
-	ExecutionProgress string                     `json:"executionProgress,omitempty"`
-	CompletionStatus  string                     `json:"completionStatus,omitempty"`
-	IsRequiredToPass  *bool                      `json:"isRequiredToPass,omitempty"`
-	Issues            []xcodeCloudDoctorIssue    `json:"issues"`
-	Artifacts         []xcodeCloudDoctorArtifact `json:"artifacts"`
-}
-
-type xcodeCloudDoctorIssue struct {
-	ID         string            `json:"id"`
-	IssueType  string            `json:"issueType,omitempty"`
-	Category   string            `json:"category,omitempty"`
-	Message    string            `json:"message,omitempty"`
-	FileSource *asc.FileLocation `json:"fileSource,omitempty"`
-}
-
-type xcodeCloudDoctorArtifact struct {
-	ID       string `json:"id"`
-	FileType string `json:"fileType,omitempty"`
-	FileName string `json:"fileName,omitempty"`
-	FileSize int    `json:"fileSize,omitempty"`
-}
-
-type xcodeCloudDoctorCoverageWarning struct {
-	ID          string `json:"id"`
-	Message     string `json:"message"`
-	Remediation string `json:"remediation"`
-}
-
 // XcodeCloudDoctorCommand returns the xcode-cloud doctor subcommand.
 func XcodeCloudDoctorCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 
-	runID := fs.String("run-id", "", "Build run ID to diagnose")
-	wait := fs.Bool("wait", false, "Wait for the build run to complete before diagnosing it")
-	pollInterval := fs.Duration("poll-interval", 10*time.Second, "Poll interval when waiting")
-	timeout := fs.Duration("timeout", 0, "Timeout for Xcode Cloud requests (0 = use ASC_TIMEOUT or 30m default)")
-	skipLogs := fs.Bool("skip-logs", false, "Skip automatic inspection of failed-action log bundles")
-	saveLogs := fs.String("save-logs", "", "Directory in which to retain inspected log bundles")
+	runID := fs.String("run-id", "", "[experimental] Build run ID to diagnose")
+	wait := fs.Bool("wait", false, "[experimental] Wait for the build run to complete before diagnosing it")
+	pollInterval := fs.Duration("poll-interval", 10*time.Second, "[experimental] Poll interval when waiting")
+	timeout := fs.Duration("timeout", 0, "[experimental] Timeout for Xcode Cloud requests (0 = use ASC_TIMEOUT or 30m default)")
+	skipLogs := fs.Bool("skip-logs", false, "[experimental] Skip automatic inspection of failed-action log bundles")
+	saveLogs := fs.String("save-logs", "", "[experimental] Directory in which to retain inspected log bundles")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "doctor",
 		ShortUsage: "asc xcode-cloud doctor --run-id \"BUILD_RUN_ID\" [flags]",
-		ShortHelp:  "Diagnose an Xcode Cloud build run and inspect failure logs.",
-		LongHelp: `Diagnose an Xcode Cloud build run.
+		ShortHelp:  "[experimental] Diagnose an Xcode Cloud build run and inspect failure logs.",
+		LongHelp: `[experimental] Diagnose an Xcode Cloud build run.
 
 The command combines run status, actions, issues, and artifacts into one report.
 For failed runs, it inspects failed-action LOG_BUNDLE artifacts in memory and
@@ -164,7 +111,7 @@ func flagWasSet(fs *flag.FlagSet, name string) bool {
 	return set
 }
 
-func diagnoseXcodeCloudRun(ctx context.Context, client *asc.Client, runID string, options xcodeCloudDoctorOptions) (*xcodeCloudDoctorResult, error) {
+func diagnoseXcodeCloudRun(ctx context.Context, client *asc.Client, runID string, options xcodeCloudDoctorOptions) (*asc.XcodeCloudDoctorResult, error) {
 	var (
 		run *asc.CiBuildRunResponse
 		err error
@@ -183,11 +130,11 @@ func diagnoseXcodeCloudRun(ctx context.Context, client *asc.Client, runID string
 		return nil, err
 	}
 
-	result := &xcodeCloudDoctorResult{
+	result := &asc.XcodeCloudDoctorResult{
 		Run:              buildStatusResult(run),
-		Actions:          make([]xcodeCloudDoctorAction, 0, len(actions)),
-		LogBundles:       make([]xcodeCloudDoctorLogBundle, 0),
-		CoverageWarnings: make([]xcodeCloudDoctorCoverageWarning, 0),
+		Actions:          make([]asc.XcodeCloudDoctorAction, 0, len(actions)),
+		LogBundles:       make([]asc.XcodeCloudDoctorLogBundle, 0),
+		CoverageWarnings: make([]asc.XcodeCloudDoctorCoverageWarning, 0),
 	}
 	for _, action := range actions {
 		actionResult, err := diagnoseXcodeCloudAction(ctx, client, action)
@@ -199,7 +146,7 @@ func diagnoseXcodeCloudRun(ctx context.Context, client *asc.Client, runID string
 
 	summarizeXcodeCloudDoctorResult(result)
 	if options.SkipLogs && result.Summary.LogBundles > 0 && doctorRunFailed(result) {
-		result.CoverageWarnings = append(result.CoverageWarnings, xcodeCloudDoctorCoverageWarning{
+		result.CoverageWarnings = append(result.CoverageWarnings, asc.XcodeCloudDoctorCoverageWarning{
 			ID:          "log_bundle_inspection_skipped",
 			Message:     "Log bundle inspection was disabled with --skip-logs.",
 			Remediation: "Re-run without --skip-logs to inspect failed-action log bundles.",
@@ -236,17 +183,17 @@ func waitForBuildRunForDoctor(ctx context.Context, client *asc.Client, runID str
 	return run, nil
 }
 
-func diagnoseXcodeCloudAction(ctx context.Context, client *asc.Client, action asc.CiBuildActionResource) (xcodeCloudDoctorAction, error) {
+func diagnoseXcodeCloudAction(ctx context.Context, client *asc.Client, action asc.CiBuildActionResource) (asc.XcodeCloudDoctorAction, error) {
 	actionID := strings.TrimSpace(action.ID)
-	result := xcodeCloudDoctorAction{
+	result := asc.XcodeCloudDoctorAction{
 		ID:                actionID,
 		Name:              action.Attributes.Name,
 		ActionType:        action.Attributes.ActionType,
 		ExecutionProgress: string(action.Attributes.ExecutionProgress),
 		CompletionStatus:  string(action.Attributes.CompletionStatus),
 		IsRequiredToPass:  action.Attributes.IsRequiredToPass,
-		Issues:            make([]xcodeCloudDoctorIssue, 0),
-		Artifacts:         make([]xcodeCloudDoctorArtifact, 0),
+		Issues:            make([]asc.XcodeCloudDoctorIssue, 0),
+		Artifacts:         make([]asc.XcodeCloudDoctorArtifact, 0),
 	}
 	if actionID == "" {
 		return result, nil
@@ -257,7 +204,7 @@ func diagnoseXcodeCloudAction(ctx context.Context, client *asc.Client, action as
 		return result, fmt.Errorf("list issues for action %q: %w", actionID, err)
 	}
 	for _, issue := range issues {
-		result.Issues = append(result.Issues, xcodeCloudDoctorIssue{
+		result.Issues = append(result.Issues, asc.XcodeCloudDoctorIssue{
 			ID:         issue.ID,
 			IssueType:  issue.Attributes.IssueType,
 			Category:   issue.Attributes.Category,
@@ -271,7 +218,7 @@ func diagnoseXcodeCloudAction(ctx context.Context, client *asc.Client, action as
 		return result, fmt.Errorf("list artifacts for action %q: %w", actionID, err)
 	}
 	for _, artifact := range artifacts {
-		result.Artifacts = append(result.Artifacts, xcodeCloudDoctorArtifact{
+		result.Artifacts = append(result.Artifacts, asc.XcodeCloudDoctorArtifact{
 			ID:       artifact.ID,
 			FileType: artifact.Attributes.FileType,
 			FileName: artifact.Attributes.FileName,
@@ -323,7 +270,7 @@ func listAllXcodeCloudActionArtifacts(ctx context.Context, client *asc.Client, a
 	return allArtifacts.Data, nil
 }
 
-func summarizeXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
+func summarizeXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 	result.Summary.TotalActions = len(result.Actions)
 	for _, action := range result.Actions {
 		switch strings.ToUpper(strings.TrimSpace(action.CompletionStatus)) {
@@ -349,7 +296,7 @@ func summarizeXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
 	}
 }
 
-func shouldInspectDoctorLogs(result *xcodeCloudDoctorResult, options xcodeCloudDoctorOptions) bool {
+func shouldInspectDoctorLogs(result *asc.XcodeCloudDoctorResult, options xcodeCloudDoctorOptions) bool {
 	if options.SkipLogs || result.Summary.LogBundles == 0 {
 		return false
 	}
@@ -360,7 +307,7 @@ func shouldInspectDoctorLogs(result *xcodeCloudDoctorResult, options xcodeCloudD
 		asc.IsBuildRunComplete(asc.CiBuildRunExecutionProgress(result.Run.ExecutionProgress))
 }
 
-func finishXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
+func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 	status := strings.ToUpper(strings.TrimSpace(result.Run.CompletionStatus))
 	if !strings.EqualFold(result.Run.ExecutionProgress, string(asc.CiBuildRunExecutionProgressComplete)) {
 		result.Conclusion = "The Xcode Cloud build run is not complete."
@@ -370,6 +317,16 @@ func finishXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
 	if status == string(asc.CiBuildRunCompletionStatusSucceeded) {
 		result.Conclusion = "The Xcode Cloud build run completed successfully."
 		result.NextAction = "No corrective action is required."
+		return
+	}
+	if status == string(asc.CiBuildRunCompletionStatusCanceled) {
+		result.Conclusion = "The Xcode Cloud build run was canceled."
+		result.NextAction = "Review the cancellation reason and start a new build run when ready."
+		return
+	}
+	if status == string(asc.CiBuildRunCompletionStatusSkipped) {
+		result.Conclusion = "The Xcode Cloud build run was skipped."
+		result.NextAction = "Review the workflow conditions and action results to determine why the run was skipped."
 		return
 	}
 
@@ -403,7 +360,7 @@ func finishXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
 		if result.Summary.LogBundlesInspected > 0 {
 			coverageMessage = "The Xcode Cloud API and inspected log bundles did not expose a detailed App Store import rejection."
 		}
-		result.CoverageWarnings = append(result.CoverageWarnings, xcodeCloudDoctorCoverageWarning{
+		result.CoverageWarnings = append(result.CoverageWarnings, asc.XcodeCloudDoctorCoverageWarning{
 			ID:          "app_store_import_detail_unavailable",
 			Message:     coverageMessage,
 			Remediation: "Check the App Store Connect delivery notification or build processing state; do not infer an ITMS root cause from the generic Xcode Cloud issue.",
@@ -423,7 +380,7 @@ func finishXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
 	}
 }
 
-func doctorRunFailed(result *xcodeCloudDoctorResult) bool {
+func doctorRunFailed(result *asc.XcodeCloudDoctorResult) bool {
 	if result == nil || result.Run == nil {
 		return false
 	}
@@ -431,7 +388,7 @@ func doctorRunFailed(result *xcodeCloudDoctorResult) bool {
 		!strings.EqualFold(strings.TrimSpace(result.Run.CompletionStatus), string(asc.CiBuildRunCompletionStatusSucceeded))
 }
 
-func doctorHasAppStorePreparationIssue(result *xcodeCloudDoctorResult) bool {
+func doctorHasAppStorePreparationIssue(result *asc.XcodeCloudDoctorResult) bool {
 	for _, action := range result.Actions {
 		for _, issue := range action.Issues {
 			text := strings.ToLower(issue.Category + " " + issue.Message)
