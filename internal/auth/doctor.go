@@ -398,8 +398,8 @@ func inspectEnvironment(options DoctorOptions) DoctorSection {
 	if selectedProfileCheck := inspectSelectedProfile(options); selectedProfileCheck != nil {
 		checks = append(checks, *selectedProfileCheck)
 	}
-	if defaultStrictAuthCheck := inspectDefaultStrictAuth(options); defaultStrictAuthCheck != nil {
-		checks = append(checks, *defaultStrictAuthCheck)
+	if defaultCredentialCheck := inspectDefaultCredentialFallback(options); defaultCredentialCheck != nil {
+		checks = append(checks, *defaultCredentialCheck)
 	}
 
 	keyID := strings.TrimSpace(os.Getenv("ASC_KEY_ID"))
@@ -558,8 +558,8 @@ func inspectSelectedProfile(options DoctorOptions) *DoctorCheck {
 	return nil
 }
 
-func inspectDefaultStrictAuth(options DoctorOptions) *DoctorCheck {
-	if !options.StrictAuth || selectedDoctorProfile(options) != "" {
+func inspectDefaultCredentialFallback(options DoctorOptions) *DoctorCheck {
+	if selectedDoctorProfile(options) != "" {
 		return nil
 	}
 	if !shouldBypassKeychain() && completeEnvironmentCredentialsPreemptStored() {
@@ -570,7 +570,21 @@ func inspectDefaultStrictAuth(options DoctorOptions) *DoctorCheck {
 		return nil
 	}
 	shape := effectiveCredentialShape(credentials)
-	if shape.invalidEnvironmentKeyType || len(shape.missing) > 0 || !shape.mixedSources {
+	if shape.invalidEnvironmentKeyType {
+		return &DoctorCheck{
+			Status:         DoctorFail,
+			Message:        "Default stored credentials cannot use environment fallback: ASC_KEY_TYPE must be team or individual",
+			Recommendation: "Set ASC_KEY_TYPE to team or individual, or complete the default stored credentials",
+		}
+	}
+	if len(shape.missing) > 0 {
+		return &DoctorCheck{
+			Status:         DoctorFail,
+			Message:        fmt.Sprintf("Default stored credentials are incomplete after environment fallback (missing %s)", strings.Join(shape.missing, ", ")),
+			Recommendation: "Complete the default stored credentials or set the missing ASC_* environment fields",
+		}
+	}
+	if !options.StrictAuth || !shape.mixedSources {
 		return nil
 	}
 	return &DoctorCheck{
@@ -656,12 +670,32 @@ func completeEnvironmentCredentialsPreemptStored() bool {
 	case strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_B64")) != "":
 		compact := strings.Join(strings.Fields(os.Getenv("ASC_PRIVATE_KEY_B64")), "")
 		decoded, err := base64.StdEncoding.DecodeString(compact)
-		return err == nil && len(decoded) > 0
+		return err == nil && len(decoded) > 0 && environmentPrivateKeyCanMaterialize(len(decoded))
 	case strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY")) != "":
-		return true
+		normalized := strings.ReplaceAll(strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY")), `\n`, "\n")
+		return environmentPrivateKeyCanMaterialize(len(normalized))
 	default:
 		return false
 	}
+}
+
+func environmentPrivateKeyCanMaterialize(size int) bool {
+	file, err := os.CreateTemp("", "asc-doctor-key-check-*.p8")
+	if err != nil {
+		return false
+	}
+	path := file.Name()
+	defer func() {
+		_ = file.Close()
+		_ = os.Remove(path)
+	}()
+	if err := file.Chmod(0o600); err != nil {
+		return false
+	}
+	if _, err := file.Write(make([]byte, size)); err != nil {
+		return false
+	}
+	return file.Close() == nil
 }
 
 func inspectEnvironmentPrivateKey(options DoctorOptions) *DoctorCheck {
@@ -688,6 +722,13 @@ func inspectEnvironmentPrivateKey(options DoctorOptions) *DoctorCheck {
 				Recommendation: "Set ASC_PRIVATE_KEY_B64 to a base64-encoded ECDSA P-256 private key",
 			}
 		}
+		if !environmentPrivateKeyCanMaterialize(len(decoded)) {
+			return &DoctorCheck{
+				Status:         DoctorFail,
+				Message:        "ASC_PRIVATE_KEY_B64 cannot be materialized as a temporary private key",
+				Recommendation: "Set TMPDIR to a writable directory or use ASC_PRIVATE_KEY_PATH",
+			}
+		}
 		return &DoctorCheck{
 			Status:  DoctorOK,
 			Message: "ASC_PRIVATE_KEY_B64 contains a valid ECDSA private key",
@@ -701,6 +742,13 @@ func inspectEnvironmentPrivateKey(options DoctorOptions) *DoctorCheck {
 				Status:         DoctorFail,
 				Message:        "ASC_PRIVATE_KEY is not a valid private key",
 				Recommendation: "Set ASC_PRIVATE_KEY to an ECDSA P-256 private key in PEM format",
+			}
+		}
+		if !environmentPrivateKeyCanMaterialize(len(value)) {
+			return &DoctorCheck{
+				Status:         DoctorFail,
+				Message:        "ASC_PRIVATE_KEY cannot be materialized as a temporary private key",
+				Recommendation: "Set TMPDIR to a writable directory or use ASC_PRIVATE_KEY_PATH",
 			}
 		}
 		return &DoctorCheck{

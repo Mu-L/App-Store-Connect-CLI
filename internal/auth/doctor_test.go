@@ -170,6 +170,61 @@ func TestDoctorEnvironmentValidatesSelectedPrivateKey(t *testing.T) {
 	}
 }
 
+func TestDoctorEnvironmentRequiresWritablePrivateKeyTempDir(t *testing.T) {
+	validKeyPath := filepath.Join(t.TempDir(), "AuthKey.p8")
+	writeECDSAPEM(t, validKeyPath, 0o600, true)
+	validKey, err := os.ReadFile(validKeyPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		privateKey    string
+		privateKeyB64 string
+		wantMessage   string
+	}{
+		{
+			name:        "inline pem",
+			privateKey:  string(validKey),
+			wantMessage: "ASC_PRIVATE_KEY cannot be materialized as a temporary private key",
+		},
+		{
+			name:          "base64 pem",
+			privateKeyB64: base64.StdEncoding.EncodeToString(validKey),
+			wantMessage:   "ASC_PRIVATE_KEY_B64 cannot be materialized as a temporary private key",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			blockedTemp := filepath.Join(tempDir, "not-a-directory")
+			if err := os.WriteFile(blockedTemp, []byte("blocked"), 0o600); err != nil {
+				t.Fatalf("WriteFile() error: %v", err)
+			}
+
+			t.Setenv("TMPDIR", blockedTemp)
+			t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+			t.Setenv("ASC_KEY_ID", "ENVKEY")
+			t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")
+			t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+			t.Setenv("ASC_PRIVATE_KEY", test.privateKey)
+			t.Setenv("ASC_PRIVATE_KEY_B64", test.privateKeyB64)
+
+			report := Doctor(DoctorOptions{})
+			section := findDoctorSection(t, report, "Environment")
+			if !sectionHasStatus(section, DoctorFail, test.wantMessage) {
+				t.Fatalf("expected temp-key materialization failure, got %#v", section.Checks)
+			}
+			if report.Summary.Errors == 0 {
+				t.Fatalf("expected materialization failure in summary, got %#v", report.Summary)
+			}
+		})
+	}
+}
+
 func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
 	t.Run("selected profile", func(t *testing.T) {
 		tempDir := t.TempDir()
@@ -453,6 +508,108 @@ func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
 		section := findDoctorSection(t, report, "Environment")
 		if !sectionHasStatus(section, DoctorFail, "Default stored credentials require mixed stored and environment credential sources while strict authentication is enabled") {
 			t.Fatalf("expected strict mixed-source failure for default credentials, got %#v", section.Checks)
+		}
+	})
+
+	t.Run("default profile preserves unsupported stored key type", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+
+		if err := StoreCredentialsWithKeyType("doctor-default-unsupported-key-type", "STOREDKEY", "", storedKeyPath, "personal"); err != nil {
+			t.Fatalf("StoreCredentialsWithKeyType() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-default-unsupported-key-type"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "")
+		t.Setenv("ASC_ISSUER_ID", "")
+		t.Setenv("ASC_KEY_TYPE", config.CredentialKeyTypeIndividual)
+		t.Setenv("ASC_PRIVATE_KEY", "")
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+
+		report := Doctor(DoctorOptions{})
+		section := findDoctorSection(t, report, "Environment")
+		if !sectionHasStatus(section, DoctorFail, "Default stored credentials are incomplete after environment fallback (missing issuer ID)") {
+			t.Fatalf("expected stored key type to prevent default environment type fallback, got %#v", section.Checks)
+		}
+	})
+
+	t.Run("default profile rejects invalid environment key type", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+
+		if err := StoreCredentials("doctor-default-invalid-env-key-type", "STOREDKEY", "", storedKeyPath); err != nil {
+			t.Fatalf("StoreCredentials() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-default-invalid-env-key-type"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "")
+		t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")
+		t.Setenv("ASC_KEY_TYPE", "invalid")
+		t.Setenv("ASC_PRIVATE_KEY", "")
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+
+		report := Doctor(DoctorOptions{})
+		section := findDoctorSection(t, report, "Environment")
+		if !sectionHasStatus(section, DoctorFail, "Default stored credentials cannot use environment fallback: ASC_KEY_TYPE must be team or individual") {
+			t.Fatalf("expected invalid default fallback key type failure, got %#v", section.Checks)
+		}
+	})
+
+	t.Run("default strict auth checks failed environment materialization", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+		rawKey, err := os.ReadFile(storedKeyPath)
+		if err != nil {
+			t.Fatalf("ReadFile() error: %v", err)
+		}
+		blockedTemp := filepath.Join(tempDir, "not-a-directory")
+		if err := os.WriteFile(blockedTemp, []byte("blocked"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error: %v", err)
+		}
+
+		if err := StoreCredentials("doctor-default-materialization-strict", "STOREDKEY", "", storedKeyPath); err != nil {
+			t.Fatalf("StoreCredentials() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-default-materialization-strict"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		t.Setenv("TMPDIR", blockedTemp)
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "ENVKEY")
+		t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")
+		t.Setenv("ASC_KEY_TYPE", "")
+		t.Setenv("ASC_PRIVATE_KEY", string(rawKey))
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+
+		report := Doctor(DoctorOptions{StrictAuth: true})
+		section := findDoctorSection(t, report, "Environment")
+		if !sectionHasStatus(section, DoctorFail, "Default stored credentials require mixed stored and environment credential sources while strict authentication is enabled") {
+			t.Fatalf("expected strict fallback check after environment materialization failure, got %#v", section.Checks)
 		}
 	})
 
