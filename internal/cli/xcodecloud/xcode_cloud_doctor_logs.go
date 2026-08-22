@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -76,6 +77,9 @@ func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result
 				bundleResult, inspectErr = downloadAndAnalyzeDoctorLogBundle(ctx, client, action.ID, artifact)
 			}
 			if inspectErr != nil {
+				if errors.Is(inspectErr, context.Canceled) || errors.Is(inspectErr, context.DeadlineExceeded) {
+					return inspectErr
+				}
 				result.LogBundles = append(result.LogBundles, bundleResult)
 				remediation := fmt.Sprintf("Download artifact %s with asc xcode-cloud artifacts download and inspect it locally.", artifact.ID)
 				if bundleResult.SavedPath != "" {
@@ -256,10 +260,10 @@ func analyzeDoctorLogBundle(data []byte) (doctorLogBundleAnalysis, error) {
 		if len(contents) > maxDoctorLogEntryBytes {
 			return doctorLogBundleAnalysis{}, fmt.Errorf("log entry %q exceeds the %d-byte inspection limit", file.Name, maxDoctorLogEntryBytes)
 		}
+		total += int64(len(contents))
 		if bytes.IndexByte(contents, 0) >= 0 {
 			continue
 		}
-		total += int64(len(contents))
 		readableEntries++
 		analyzeDoctorLogText(&analysis, file.Name, string(contents))
 	}

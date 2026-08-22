@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -368,6 +369,32 @@ func TestAnalyzeDoctorLogBundleRejectsArchiveWithoutReadableTextEntries(t *testi
 	}
 }
 
+func TestAnalyzeDoctorLogBundleCountsBinaryCandidatesTowardAggregateLimit(t *testing.T) {
+	var buffer bytes.Buffer
+	archive := zip.NewWriter(&buffer)
+	for index := 0; index <= maxDoctorLogUncompressedBytes/maxDoctorLogEntryBytes; index++ {
+		entry, err := archive.Create(fmt.Sprintf("Build/%d.log", index))
+		if err != nil {
+			t.Fatalf("create binary log entry: %v", err)
+		}
+		size := int64(maxDoctorLogEntryBytes)
+		if index == maxDoctorLogUncompressedBytes/maxDoctorLogEntryBytes {
+			size = 1
+		}
+		if _, err := io.CopyN(entry, doctorZeroReader{}, size); err != nil {
+			t.Fatalf("write binary log entry: %v", err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatalf("close binary log archive: %v", err)
+	}
+
+	_, err := analyzeDoctorLogBundle(buffer.Bytes())
+	if err == nil || !strings.Contains(err.Error(), "uncompressed inspection limit") {
+		t.Fatalf("analyzeDoctorLogBundle() error = %v, want aggregate limit error", err)
+	}
+}
+
 func TestInspectXcodeCloudDoctorLogsContinuesAfterSaveFailure(t *testing.T) {
 	directory := t.TempDir()
 	artifacts := []asc.XcodeCloudDoctorArtifact{
@@ -409,6 +436,28 @@ func TestInspectXcodeCloudDoctorLogsContinuesAfterSaveFailure(t *testing.T) {
 	}
 	if len(result.CoverageWarnings) != 1 || result.CoverageWarnings[0].ID != "log_bundle_inspection_failed" {
 		t.Fatalf("coverage warnings = %+v, want save failure warning", result.CoverageWarnings)
+	}
+}
+
+func TestInspectXcodeCloudDoctorLogsPropagatesCancellation(t *testing.T) {
+	client := newDoctorLogTestClient(t, doctorLogRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, context.Canceled
+	}))
+	result := &asc.XcodeCloudDoctorResult{Actions: []asc.XcodeCloudDoctorAction{{
+		ID:               "failed-action",
+		CompletionStatus: "FAILED",
+		Artifacts: []asc.XcodeCloudDoctorArtifact{{
+			ID:       "artifact-1",
+			FileType: "LOG_BUNDLE",
+		}},
+	}}}
+
+	err := inspectXcodeCloudDoctorLogs(context.Background(), client, result, xcodeCloudDoctorOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("inspectXcodeCloudDoctorLogs() error = %v, want context cancellation", err)
+	}
+	if len(result.CoverageWarnings) != 0 {
+		t.Fatalf("coverage warnings = %+v, must not downgrade cancellation", result.CoverageWarnings)
 	}
 }
 
