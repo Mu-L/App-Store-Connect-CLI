@@ -58,8 +58,16 @@ invented value:
                authentication is required, and this source alone is enough to
                produce a difficulty score.
   Popularity   Official Apple Ads country-and-genre search demand. It requires
-               --genre plus Apple Ads credentials through --ad-account or
-               --ads-profile. It reads the latest complete week.
+               --genre, a selected ad account, and Apple Ads authentication.
+               Apple Ads authentication is resolved independently from ad-account selection:
+               use --ads-profile or ASC_ADS_PROFILE,
+               ASC_ADS_ACCESS_TOKEN, ASC_ADS_CLIENT_ID/ASC_ADS_TEAM_ID/
+               ASC_ADS_KEY_ID plus ASC_ADS_PRIVATE_KEY_PATH,
+               ASC_ADS_PRIVATE_KEY, or ASC_ADS_PRIVATE_KEY_B64, or the stored
+               default Ads profile. The account is selected by
+               --ad-account or ASC_ADS_AD_ACCOUNT_ID, the selected profile's
+               ad_account_id, or local ads.ad_account_id configuration. It
+               reads the latest complete week.
   Rank         This app's position in the public result window, added when
                --app or ASC_APP_ID is set.
 
@@ -223,7 +231,12 @@ func collectKeywordCompetition(
 				ranked++
 			}
 		}
-		sources = append(sources, keywordSourceStatus(keywordSourceRank, ranked, nil))
+		sources = append(sources, keywordPartialSourceStatus(
+			keywordSourceRank,
+			ranked,
+			len(competition)-searchedKeywords,
+			competitionSourceError(competition),
+		))
 	} else {
 		sources = append(sources, ads.SearchOptimizationSourceStatus{
 			Name:   keywordSourceRank,
