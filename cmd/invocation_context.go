@@ -134,6 +134,10 @@ func printConciseUnknownCommand(analysis invocationAnalysis, commandName string)
 		for _, suggestion := range suggestions {
 			fmt.Fprintf(os.Stderr, "  %s %s\n", commandName, shared.SanitizeTerminal(suggestion))
 		}
+	} else {
+		// A near match already answers the caller. Curated task hints are for the
+		// other case: a plausible verb this group never had.
+		printUnknownChildTaskHints(commandName)
 	}
 	fmt.Fprintln(os.Stderr, "For help:")
 	fmt.Fprintf(os.Stderr, "  %s --help\n", commandName)
