@@ -53,7 +53,7 @@ Do not call the PR ready until all of the following are true:
 - Relevant focused and GitHub-required checks pass. Non-required checks may still be pending.
 - No actionable unresolved review thread remains.
 - Required reviews are satisfied.
-- GitHub reports the PR mergeable with a clean merge state.
+- GitHub reports the PR mergeable without conflicts. Interpret `BLOCKED` or `UNSTABLE` through the required-check, required-review, and thread gates above; do not require a `CLEAN` merge state when only advisory jobs remain.
 - Live or deterministic verification supports the claimed behavior.
 
 Use `$watch-asc-pr` after the first push when required checks, required reviews, or actionable reviewers are still pending. When the user asked to loop until green, keep running watch passes after each push and fresh review result until the latest head is clean or materially blocked; do not hand off merely because required checks or reviews are pending. Do not start or continue a watch loop only for advisory jobs.
