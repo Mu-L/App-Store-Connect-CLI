@@ -78,6 +78,23 @@ func SetMigrateKeychainToConfig(fn func(authsvc.MigrateKeychainToConfigOptions) 
 	}
 }
 
+// SetLogoutCredentialRemovers replaces the credential removal hooks for tests.
+// It returns a restore function to reset the previous handlers.
+func SetLogoutCredentialRemovers(remove func(string) error, removeAll func() error) func() {
+	previousRemove := removeStoredCredential
+	previousRemoveAll := removeStoredCredentials
+	if remove != nil {
+		removeStoredCredential = remove
+	}
+	if removeAll != nil {
+		removeStoredCredentials = removeAll
+	}
+	return func() {
+		removeStoredCredential = previousRemove
+		removeStoredCredentials = previousRemoveAll
+	}
+}
+
 // NewPermissionWarning builds a permission warning error for tests.
 func NewPermissionWarning(err error) error {
 	if err == nil {

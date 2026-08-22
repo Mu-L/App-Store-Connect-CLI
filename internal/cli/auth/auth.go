@@ -28,6 +28,8 @@ var (
 	listCredentialSummaries  = authsvc.ListCredentialSummaries
 	keychainAvailable        = authsvc.KeychainAvailable
 	migrateKeychainToConfig  = authsvc.MigrateKeychainToConfig
+	removeStoredCredential   = authsvc.RemoveCredentials
+	removeStoredCredentials  = authsvc.RemoveAllCredentials
 )
 
 // Auth command factory
@@ -809,25 +811,42 @@ Examples:
 	}
 }
 
+const authLogoutConfirmDeprecationWarning = "Warning: auth logout without --confirm is deprecated and will be rejected in 5.0.0; pass --confirm to acknowledge credential removal."
+
 // AuthLogout command factory
 func AuthLogoutCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("auth logout", flag.ExitOnError)
-	all := fs.Bool("all", false, "Remove all stored credentials (default)")
+	all := fs.Bool("all", false, "Remove all stored credentials")
 	name := fs.String("name", "", "Remove a named credential")
+	confirm := fs.Bool("confirm", false, "Confirm credential removal (required in 5.0.0)")
 
 	return &ffcli.Command{
 		Name:       "logout",
-		ShortUsage: "asc auth logout [flags]",
+		ShortUsage: "asc auth logout [--name NAME | --all] [--confirm]",
 		ShortHelp:  "Remove stored API credentials.",
 		LongHelp: `Remove stored API credentials.
 
+Omitting --name continues to remove all credentials during the compatibility
+window. Pass --confirm now; it will be required in 5.0.0.
+
 Examples:
-  asc auth logout
-  asc auth logout --all
-  asc auth logout --name "MyKey"`,
+  asc auth logout --all --confirm
+  asc auth logout --name "MyKey" --confirm`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			if err := shared.RejectPositionalArgs(args); err != nil {
+				return err
+			}
+			confirmProvided := false
+			fs.Visit(func(f *flag.Flag) {
+				if f.Name == "confirm" {
+					confirmProvided = true
+				}
+			})
+			if confirmProvided && !*confirm {
+				return shared.UsageError("--confirm must be true when specified")
+			}
 			trimmedName := strings.TrimSpace(*name)
 			if trimmedName == "" && *name != "" {
 				return shared.UsageError("--name cannot be blank")
@@ -835,16 +854,19 @@ Examples:
 			if trimmedName != "" && *all {
 				return shared.UsageError("--all and --name are mutually exclusive")
 			}
+			if !*confirm {
+				fmt.Fprintln(os.Stderr, authLogoutConfirmDeprecationWarning)
+			}
 
 			if trimmedName != "" {
-				if err := authsvc.RemoveCredentials(trimmedName); err != nil {
+				if err := removeStoredCredential(trimmedName); err != nil {
 					return fmt.Errorf("auth logout: failed to remove credentials: %w", err)
 				}
 				fmt.Printf("Successfully removed stored credential '%s'\n", trimmedName)
 				return nil
 			}
 
-			if err := authsvc.RemoveAllCredentials(); err != nil {
+			if err := removeStoredCredentials(); err != nil {
 				return fmt.Errorf("auth logout: failed to remove credentials: %w", err)
 			}
 
