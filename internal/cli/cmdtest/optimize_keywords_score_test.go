@@ -265,7 +265,7 @@ func TestOptimizeKeywordsScoreJSONShipsRawSignalsAndDegradesPopularity(t *testin
 		t.Fatalf("rank source = %+v", got)
 	}
 	if got := sources["competitor_metadata"]; got.Status != "available" || got.Count != 1 ||
-		!strings.Contains(got.Error, "lookup omitted required release metadata") ||
+		!strings.Contains(got.Error, "lookup returned incomplete required release metadata") ||
 		!strings.Contains(got.Error, "4 of 5 requested app IDs") {
 		t.Fatalf("metadata source = %+v, want partial coverage to be explicit", got)
 	}

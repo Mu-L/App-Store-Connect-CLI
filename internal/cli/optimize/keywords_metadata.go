@@ -49,8 +49,9 @@ type publicLookupResponse struct {
 }
 
 // fetchPublicAppMetadata reads release dates for a batch of app IDs from
-// Apple's public lookup endpoint. It returns only rows with both required
-// dates parseable, keyed by app ID, so callers can report incomplete coverage.
+// Apple's public lookup endpoint. It returns requested rows keyed by app ID;
+// invalid date fields are blanked while individually valid dates are retained
+// so callers can preserve partial scoring inputs and report incomplete coverage.
 func fetchPublicAppMetadata(
 	ctx context.Context,
 	client *itunes.Client,
@@ -99,31 +100,42 @@ func fetchPublicAppMetadata(
 		return nil, fmt.Errorf("failed to parse lookup response: %w", err)
 	}
 
+	requested := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			requested[trimmed] = struct{}{}
+		}
+	}
 	metadata := make(map[string]publicAppMetadata, len(payload.Results))
 	for _, result := range payload.Results {
 		if result.TrackID == 0 {
 			continue
 		}
+		appID := strconv.FormatInt(result.TrackID, 10)
+		if _, ok := requested[appID]; !ok {
+			continue
+		}
 		releaseDate := strings.TrimSpace(result.ReleaseDate)
 		currentVersionReleaseDate := strings.TrimSpace(result.CurrentVersionReleaseDate)
-		if _, ok := parsePublicDate(releaseDate); !ok {
-			continue
-		}
-		if _, ok := parsePublicDate(currentVersionReleaseDate); !ok {
-			continue
-		}
-		appID := strconv.FormatInt(result.TrackID, 10)
 		metadata[appID] = publicAppMetadata{
 			AppID:                     appID,
 			Name:                      strings.TrimSpace(result.TrackName),
 			PublisherName:             strings.TrimSpace(result.SellerName),
 			AverageUserRating:         result.AverageUserRating,
 			UserRatingCount:           result.UserRatingCount,
-			ReleaseDate:               releaseDate,
-			CurrentVersionReleaseDate: currentVersionReleaseDate,
+			ReleaseDate:               validPublicDate(releaseDate),
+			CurrentVersionReleaseDate: validPublicDate(currentVersionReleaseDate),
 		}
 	}
 	return metadata, nil
+}
+
+func validPublicDate(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if _, ok := parsePublicDate(trimmed); !ok {
+		return ""
+	}
+	return trimmed
 }
 
 // chunkAppIDs splits deduplicated app IDs into lookup-sized batches.

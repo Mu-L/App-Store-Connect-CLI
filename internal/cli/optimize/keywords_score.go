@@ -324,6 +324,8 @@ func hydrateCompetitorMetadata(
 	failures := make([]error, 0, len(results))
 	failedChunks := 0
 	omittedIDs := 0
+	incompleteMetadata := 0
+	completeMetadata := 0
 	for _, result := range results {
 		if result.Err != nil {
 			failedChunks++
@@ -332,6 +334,11 @@ func hydrateCompetitorMetadata(
 		}
 		for appID, app := range result.Value {
 			metadata[appID] = app
+			if app.ReleaseDate != "" && app.CurrentVersionReleaseDate != "" {
+				completeMetadata++
+			} else {
+				incompleteMetadata++
+			}
 		}
 		for _, appID := range strings.Split(result.Keyword, ",") {
 			if _, ok := result.Value[appID]; !ok {
@@ -341,22 +348,23 @@ func hydrateCompetitorMetadata(
 	}
 	coverageErr := representativeKeywordError(failures)
 	incompleteBatches := failedChunks
-	if omittedIDs > 0 {
+	incompleteIDs := omittedIDs + incompleteMetadata
+	if incompleteIDs > 0 {
 		incompleteBatches++
-		omissionErr := fmt.Errorf(
-			"lookup omitted required release metadata (both releaseDate and currentVersionReleaseDate must be valid) for %d of %d requested app IDs",
-			omittedIDs,
+		incompleteErr := fmt.Errorf(
+			"lookup returned incomplete required release metadata (both releaseDate and currentVersionReleaseDate must be valid) for %d of %d requested app IDs",
+			incompleteIDs,
 			len(ids),
 		)
 		if coverageErr == nil {
-			coverageErr = omissionErr
+			coverageErr = incompleteErr
 		} else {
-			coverageErr = fmt.Errorf("%w; %w", omissionErr, coverageErr)
+			coverageErr = fmt.Errorf("%w; %w", incompleteErr, coverageErr)
 		}
 	}
 	return metadata, keywordPartialSourceStatus(
 		keywordSourceMetadata,
-		len(metadata),
+		completeMetadata,
 		incompleteBatches,
 		coverageErr,
 	)

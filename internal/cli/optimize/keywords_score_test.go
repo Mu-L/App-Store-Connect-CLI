@@ -180,6 +180,44 @@ func TestKeywordScoreReportUsesRegisteredOutput(t *testing.T) {
 	}
 }
 
+func TestKeywordScoreReportRendersFallbackState(t *testing.T) {
+	difficulty := 1.0
+	minimum := 1.0
+	report := asc.KeywordScoreReport{
+		Country: "US",
+		Summary: asc.KeywordScoreSummary{Keywords: 1, Scored: 1},
+		Rows: []asc.KeywordScoreRow{{
+			Keyword:            "thin result",
+			Status:             keywordStatusAvailable,
+			DifficultyScore:    &difficulty,
+			MinDifficultyScore: &minimum,
+			Fallback:           true,
+		}},
+	}
+
+	for _, format := range []string{"json", "table", "markdown"} {
+		t.Run(format, func(t *testing.T) {
+			stdout := captureSearchPlanStdout(t, func() error {
+				return shared.PrintOutput(&report, format, false)
+			})
+			if format == "json" {
+				if !strings.Contains(stdout, `"fallback":true`) {
+					t.Fatalf("JSON output missing fallback state:\n%s", stdout)
+				}
+				return
+			}
+			if strings.HasPrefix(strings.TrimSpace(stdout), "{") {
+				t.Fatalf("%s output fell back to JSON:\n%s", format, stdout)
+			}
+			for _, want := range []string{"Fallback", "true", "thin result"} {
+				if !strings.Contains(stdout, want) {
+					t.Fatalf("%s output missing %q:\n%s", format, want, stdout)
+				}
+			}
+		})
+	}
+}
+
 func TestKeywordsScoreComposesCompetitionRankAndDegradesPopularity(t *testing.T) {
 	var lookupIDs []string
 	var mu sync.Mutex
@@ -347,6 +385,7 @@ func TestKeywordsScoreReportsIncompleteCompetitorMetadata(t *testing.T) {
 				scoreLookupApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000, Release: daysAgo(900), Updated: daysAgo(10)},
 				scoreLookupApp{ID: 222, Name: "Deep Work", Seller: "Beta Labs", Rating: 4.2, Count: 4000, Updated: daysAgo(20)},
 				scoreLookupApp{ID: 333, Name: "Timer Buddy", Seller: "Gamma Labs", Rating: 3.9, Count: 900, Release: daysAgo(300), Updated: "not-a-date"},
+				scoreLookupApp{ID: 999, Name: "Unrequested", Seller: "Extra Labs", Rating: 5, Count: 10000, Release: daysAgo(10), Updated: daysAgo(1)},
 			)
 		default:
 			t.Errorf("unexpected path %q", r.URL.Path)
@@ -374,8 +413,25 @@ func TestKeywordsScoreReportsIncompleteCompetitorMetadata(t *testing.T) {
 	if !ok {
 		t.Fatalf("report is missing the %s source: %+v", keywordSourceMetadata, report.Sources)
 	}
-	if metadata.Status != keywordStatusAvailable || metadata.Count != 1 || !strings.Contains(metadata.Error, "required release metadata") {
+	if metadata.Status != keywordStatusAvailable || metadata.Count != 1 ||
+		!strings.Contains(metadata.Error, "lookup returned incomplete required release metadata") ||
+		!strings.Contains(metadata.Error, "2 of 3 requested app IDs") {
 		t.Fatalf("metadata source = %+v, want one complete row plus an incomplete-metadata diagnostic", metadata)
+	}
+	if len(report.Rows) != 1 || len(report.Rows[0].RawSignals) != 3 {
+		t.Fatalf("raw signals = %+v, want all three competitors", report.Rows)
+	}
+	if report.Rows[0].RawSignals[1].ReleaseDate != "" || report.Rows[0].RawSignals[1].CurrentVersionReleaseDate == "" {
+		t.Fatalf("partial metadata must preserve the valid update date: %+v", report.Rows[0].RawSignals[1])
+	}
+	if report.Rows[0].RawSignals[1].DaysSinceFirstRelease != keywordMissingDateDays || report.Rows[0].RawSignals[1].DaysSinceLastRelease >= keywordMissingDateDays {
+		t.Fatalf("partial metadata must use the valid update date while degrading the missing release date: %+v", report.Rows[0].RawSignals[1])
+	}
+	if report.Rows[0].RawSignals[2].ReleaseDate == "" || report.Rows[0].RawSignals[2].CurrentVersionReleaseDate != "" {
+		t.Fatalf("partial metadata must preserve the valid release date: %+v", report.Rows[0].RawSignals[2])
+	}
+	if report.Rows[0].RawSignals[2].DaysSinceFirstRelease >= keywordMissingDateDays || report.Rows[0].RawSignals[2].DaysSinceLastRelease != keywordMissingDateDays {
+		t.Fatalf("partial metadata must use the valid release date while degrading the missing update date: %+v", report.Rows[0].RawSignals[2])
 	}
 }
 
