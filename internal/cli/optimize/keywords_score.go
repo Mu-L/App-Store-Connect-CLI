@@ -35,13 +35,13 @@ var collectSearchPopularityForKeywords = ads.CollectSearchPopularity
 // KeywordsScoreCommand returns the composed keyword scoring command.
 func KeywordsScoreCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("score", flag.ExitOnError)
-	keywords := shared.BindOnceCSVFlag(fs, "keywords", "Comma-separated keyword candidates to score (required)")
-	country := fs.String("country", "us", "ISO alpha-2 App Store storefront country or region")
-	appID := fs.String("app", "", "App Store app ID; adds this app's rank (or ASC_APP_ID env)")
-	genre := fs.String("genre", "", "Apple Ads search popularity genre; enables the popularity source")
-	adAccount := fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID/profile default)")
-	adsProfile := fs.String("ads-profile", "", "Use named Apple Ads authentication profile")
-	workers := fs.Int("workers", 10, "Number of parallel keyword lookups")
+	keywords := shared.BindOnceCSVFlag(fs, "keywords", "Comma-separated keyword candidates to score (required) [experimental]")
+	country := fs.String("country", "us", "ISO alpha-2 App Store storefront country or region [experimental]")
+	appID := fs.String("app", "", "App Store app ID; adds this app's rank (or ASC_APP_ID env) [experimental]")
+	genre := fs.String("genre", "", "Apple Ads search popularity genre; enables the popularity source [experimental]")
+	adAccount := fs.String("ad-account", "", "Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID/profile default) [experimental]")
+	adsProfile := fs.String("ads-profile", "", "Use named Apple Ads authentication profile [experimental]")
+	workers := fs.Int("workers", 10, "Number of parallel keyword lookups [experimental]")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
