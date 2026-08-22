@@ -219,6 +219,9 @@ func openDoctorLogBundle(ctx context.Context, client *asc.Client, artifactID str
 }
 
 func analyzeDoctorLogBundle(data []byte) (doctorLogBundleAnalysis, error) {
+	if len(data) == 0 {
+		return doctorLogBundleAnalysis{}, fmt.Errorf("log bundle is empty")
+	}
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		if bytes.IndexByte(data, 0) >= 0 {
@@ -261,6 +264,9 @@ func analyzeDoctorLogBundle(data []byte) (doctorLogBundleAnalysis, error) {
 			return doctorLogBundleAnalysis{}, fmt.Errorf("log entry %q exceeds the %d-byte inspection limit", file.Name, maxDoctorLogEntryBytes)
 		}
 		total += int64(len(contents))
+		if len(contents) == 0 {
+			continue
+		}
 		if bytes.IndexByte(contents, 0) >= 0 {
 			continue
 		}

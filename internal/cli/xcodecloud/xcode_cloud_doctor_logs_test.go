@@ -266,7 +266,7 @@ func TestFinishXcodeCloudDoctorResultUsesFailedActionInspectionCount(t *testing.
 
 	finishXcodeCloudDoctorResult(result)
 
-	if !strings.Contains(result.Conclusion, "available log bundles were not inspected") {
+	if !strings.Contains(result.Conclusion, "failed-action log bundles were not inspected") {
 		t.Fatalf("Conclusion = %q, want failed-action inspection gap", result.Conclusion)
 	}
 	if len(result.CoverageWarnings) != 1 || strings.Contains(result.CoverageWarnings[0].Message, "inspected log bundles") {
@@ -314,6 +314,41 @@ func TestFinishXcodeCloudDoctorResultDoesNotRepeatFailedInspection(t *testing.T)
 
 	if !strings.Contains(result.NextAction, "inspection remediation") || strings.Contains(result.NextAction, "Re-run") {
 		t.Fatalf("NextAction = %q, want existing inspection failure remediation", result.NextAction)
+	}
+}
+
+func TestFinishXcodeCloudDoctorResultReportsPartialFailedBundleCoverage(t *testing.T) {
+	result := &asc.XcodeCloudDoctorResult{
+		Run: &asc.XcodeCloudStatusResult{ExecutionProgress: "COMPLETE", CompletionStatus: "FAILED"},
+		Actions: []asc.XcodeCloudDoctorAction{{
+			ID:               "failed-archive",
+			CompletionStatus: "FAILED",
+			Issues: []asc.XcodeCloudDoctorIssue{{
+				IssueType: "ERROR",
+				Message:   "Preparing build for App Store Connect failed",
+			}},
+			Artifacts: []asc.XcodeCloudDoctorArtifact{
+				{ID: "log-1", FileType: "LOG_BUNDLE"},
+				{ID: "log-2", FileType: "LOG_BUNDLE"},
+			},
+		}},
+		LogBundles: []asc.XcodeCloudDoctorLogBundle{
+			{ArtifactID: "log-1", ActionID: "failed-archive", Inspected: true, ExportStatus: "SUCCEEDED"},
+			{ArtifactID: "log-2", ActionID: "failed-archive"},
+		},
+		CoverageWarnings: []asc.XcodeCloudDoctorCoverageWarning{{ID: "log_bundle_inspection_failed"}},
+	}
+
+	finishXcodeCloudDoctorResult(result)
+
+	if !strings.Contains(result.Conclusion, "one or more failed-action log bundles were not inspected") {
+		t.Fatalf("Conclusion = %q, want partial inspection caveat", result.Conclusion)
+	}
+	if !strings.Contains(result.NextAction, "inspection remediation") || strings.Contains(result.NextAction, "server-side import rejection") {
+		t.Fatalf("NextAction = %q, want inspection-first guidance", result.NextAction)
+	}
+	if len(result.CoverageWarnings) != 2 || result.CoverageWarnings[1].ID != "app_store_import_detail_unavailable" || !strings.Contains(result.CoverageWarnings[1].Message, "not inspected") {
+		t.Fatalf("coverage warnings = %+v, want explicit partial App Store coverage", result.CoverageWarnings)
 	}
 }
 
@@ -366,6 +401,21 @@ func TestAnalyzeDoctorLogBundleRejectsArchiveWithoutReadableTextEntries(t *testi
 	_, err := analyzeDoctorLogBundle(data)
 	if err == nil || !strings.Contains(err.Error(), "no readable text entries") {
 		t.Fatalf("analyzeDoctorLogBundle() error = %v, want readable-text coverage error", err)
+	}
+}
+
+func TestAnalyzeDoctorLogBundleRejectsEmptyContent(t *testing.T) {
+	tests := map[string][]byte{
+		"plain": nil,
+		"zip":   doctorLogBundleFixture(t, map[string]string{"Build/empty.log": ""}),
+	}
+	for name, data := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := analyzeDoctorLogBundle(data)
+			if err == nil {
+				t.Fatal("analyzeDoctorLogBundle() error = nil, want empty-content error")
+			}
+		})
 	}
 }
 

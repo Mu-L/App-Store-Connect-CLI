@@ -338,6 +338,7 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 	hasSuccessfulExport := false
 	failedActionLogBundles := doctorFailedActionLogBundleCount(result)
 	failedActionLogBundlesInspected := doctorFailedActionLogBundlesInspected(result)
+	failedActionLogBundlesPartiallyInspected := failedActionLogBundlesInspected < failedActionLogBundles
 	failedActionLogBundlesSaved := doctorFailedActionLogBundlesSaved(result)
 	failedActionLogBundleInspectionFailed := doctorHasCoverageWarning(result, "log_bundle_inspection_failed")
 	failedActionIDs := doctorFailedActionIDs(result)
@@ -357,41 +358,50 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 		result.NextAction = "Resolve the reported ITMS diagnostics, then start a new build run."
 		return
 	}
-	if hasSuccessfulExport || doctorHasAppStorePreparationIssue(result) {
-		if hasSuccessfulExport {
-			result.Conclusion = "The archive export succeeded, but Xcode Cloud reported a later failure without an ITMS-level import diagnostic."
-			result.NextAction = "Check the App Store Connect delivery notification or build processing state for the server-side import rejection."
-		} else if failedActionLogBundles > 0 && failedActionLogBundlesInspected == 0 {
-			result.Conclusion = "Xcode Cloud reported an App Store Connect preparation failure, but its available log bundles were not inspected."
-			if failedActionLogBundlesSaved > 0 {
+	hasAppStorePreparationIssue := doctorHasAppStorePreparationIssue(result)
+	if hasSuccessfulExport || hasAppStorePreparationIssue {
+		if failedActionLogBundlesPartiallyInspected {
+			if hasAppStorePreparationIssue {
+				result.Conclusion = "Xcode Cloud reported an App Store Connect preparation failure, but one or more failed-action log bundles were not inspected."
+			} else {
+				result.Conclusion = "The archive export succeeded, but one or more failed-action log bundles were not inspected."
+			}
+			if failedActionLogBundleInspectionFailed {
+				result.NextAction = "Follow the log bundle inspection remediation in this report, then check App Store Connect if the available logs contain no import detail."
+			} else if failedActionLogBundlesSaved > 0 {
 				result.NextAction = "Inspect the saved failed-action log bundles, then check App Store Connect if they contain no import detail."
-			} else if failedActionLogBundleInspectionFailed {
-				result.NextAction = "Follow the log bundle inspection remediation in this report, then check App Store Connect if the bundle contains no import detail."
 			} else {
 				result.NextAction = "Re-run without --skip-logs, then check App Store Connect if the logs still contain no import detail."
 			}
+		} else if hasSuccessfulExport {
+			result.Conclusion = "The archive export succeeded, but Xcode Cloud reported a later failure without an ITMS-level import diagnostic."
+			result.NextAction = "Check the App Store Connect delivery notification or build processing state for the server-side import rejection."
 		} else {
 			result.Conclusion = "Xcode Cloud reported an App Store Connect preparation failure without an ITMS-level import diagnostic."
 			result.NextAction = "Check the App Store Connect delivery notification or build processing state for the server-side import rejection."
 		}
 		coverageMessage := "The Xcode Cloud API did not expose a detailed App Store import rejection."
-		if failedActionLogBundlesInspected > 0 {
+		coverageRemediation := "Check the App Store Connect delivery notification or build processing state; do not infer an ITMS root cause from the generic Xcode Cloud issue."
+		if failedActionLogBundlesPartiallyInspected {
+			coverageMessage = "One or more failed-action log bundles were not inspected, so a detailed App Store import rejection may be missing."
+			coverageRemediation = "Complete the log bundle inspection remediation in this report before checking the App Store Connect delivery notification or build processing state."
+		} else if failedActionLogBundlesInspected > 0 {
 			coverageMessage = "The Xcode Cloud API and inspected log bundles did not expose a detailed App Store import rejection."
 		}
 		result.CoverageWarnings = append(result.CoverageWarnings, asc.XcodeCloudDoctorCoverageWarning{
 			ID:          "app_store_import_detail_unavailable",
 			Message:     coverageMessage,
-			Remediation: "Check the App Store Connect delivery notification or build processing state; do not infer an ITMS root cause from the generic Xcode Cloud issue.",
+			Remediation: coverageRemediation,
 		})
 		return
 	}
 
-	if failedActionLogBundles > 0 && failedActionLogBundlesInspected == 0 {
-		result.Conclusion = "The Xcode Cloud build run failed, but its available log bundles were not inspected."
-		if failedActionLogBundlesSaved > 0 {
-			result.NextAction = "Inspect the saved failed-action log bundles for the underlying failure."
-		} else if failedActionLogBundleInspectionFailed {
+	if failedActionLogBundlesPartiallyInspected {
+		result.Conclusion = "The Xcode Cloud build run failed, but one or more failed-action log bundles were not inspected."
+		if failedActionLogBundleInspectionFailed {
 			result.NextAction = "Follow the log bundle inspection remediation in this report to inspect the failed-action logs locally."
+		} else if failedActionLogBundlesSaved > 0 {
+			result.NextAction = "Inspect the saved failed-action log bundles for the underlying failure."
 		} else {
 			result.NextAction = "Re-run without --skip-logs or download the listed log bundle artifacts for inspection."
 		}
