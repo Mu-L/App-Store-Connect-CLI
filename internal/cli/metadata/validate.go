@@ -79,7 +79,7 @@ Examples:
 
 			dirValue := strings.TrimSpace(*dir)
 			if dirValue == "" {
-				return shared.UsageError("--dir is required")
+				return metadataRequiredInputError("--dir", "--dir is required")
 			}
 
 			result, err := validateDir(dirValue, *subscriptionApp)

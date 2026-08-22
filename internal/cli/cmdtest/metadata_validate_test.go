@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 func TestMetadataValidateRequiresDir(t *testing.T) {
@@ -24,14 +26,18 @@ func TestMetadataValidateRequiresDir(t *testing.T) {
 		runErr = root.Run(context.Background())
 	})
 
-	if !errors.Is(runErr, flag.ErrHelp) {
-		t.Fatalf("expected ErrHelp, got %v", runErr)
+	if errors.Is(runErr, flag.ErrHelp) || !shared.IsReportedUsageError(runErr) {
+		t.Fatalf("expected reported usage error without ErrHelp, got %v", runErr)
 	}
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "Error: --dir is required") {
-		t.Fatalf("expected missing dir error, got %q", stderr)
+	if stderr != "Error: --dir is required\n" {
+		t.Fatalf("stderr = %q, want concise missing-dir error", stderr)
+	}
+	diagnostic, ok := shared.DiagnosticFromError(runErr)
+	if !ok || diagnostic.Code != shared.DiagnosticRequiredInputMissing || diagnostic.Parameter != "--dir" {
+		t.Fatalf("diagnostic = %+v, found=%t", diagnostic, ok)
 	}
 }
 
