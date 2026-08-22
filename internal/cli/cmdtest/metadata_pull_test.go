@@ -33,7 +33,7 @@ func TestMetadataPullValidationErrors(t *testing.T) {
 		{
 			name:         "missing version",
 			args:         []string{"metadata", "pull", "--app", "app-1", "--dir", "./metadata"},
-			wantErr:      "Error: --version is required\nFind versions:\n  asc versions list --app \"APP_ID\"\n",
+			wantErr:      "Error: --version is required\nFind versions:\n  asc versions list --app \"APP_ID\" --paginate\n",
 			wantReported: true,
 		},
 		{

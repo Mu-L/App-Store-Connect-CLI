@@ -222,7 +222,7 @@ func missingMetadataPullVersionError() error {
 	const message = "--version is required"
 	fmt.Fprintln(os.Stderr, "Error: "+message)
 	fmt.Fprintln(os.Stderr, "Find versions:")
-	fmt.Fprintln(os.Stderr, `  asc versions list --app "APP_ID"`)
+	fmt.Fprintln(os.Stderr, `  asc versions list --app "APP_ID" --paginate`)
 	return shared.WithDiagnostic(
 		shared.NewReportedUsageError(shared.UsageErrorMissingRequired, message),
 		shared.DiagnosticRequiredInputMissing,

@@ -1491,6 +1491,8 @@ func TestRun_MetadataValidateUnsupportedFlagsExplainDirectoryWorkflow(t *testing
 		{name: "app", args: []string{"metadata", "validate", "--app", "PRIVATE_VALUE"}, unsupportedFlag: "--app"},
 		{name: "spaced version", args: []string{"metadata", "validate", "--version", "PRIVATE_VALUE"}, unsupportedFlag: "--version"},
 		{name: "equals version", args: []string{"metadata", "validate", "--version=PRIVATE_VALUE"}, unsupportedFlag: "--version"},
+		{name: "spaced numeric version", args: []string{"metadata", "validate", "--version", "1"}, unsupportedFlag: "--version"},
+		{name: "equals numeric version", args: []string{"metadata", "validate", "--version=1"}, unsupportedFlag: "--version"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1572,7 +1574,7 @@ func TestRun_MetadataPullMissingVersionPointsToDiscovery(t *testing.T) {
 	}
 	want := "Error: --version is required\n" +
 		"Find versions:\n" +
-		"  asc versions list --app \"APP_ID\"\n"
+		"  asc versions list --app \"APP_ID\" --paginate\n"
 	if stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}

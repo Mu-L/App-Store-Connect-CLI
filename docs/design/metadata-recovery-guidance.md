@@ -10,7 +10,8 @@ metadata must be fetched first.
 `asc metadata pull --version` remains required. The CLI does not select a
 version implicitly because that could fetch or overwrite metadata for the wrong
 App Store version. A missing value now returns a concise usage error and points
-to `asc versions list --app "APP_ID"` for discovery.
+to `asc versions list --app "APP_ID" --paginate` for discovery, so versions on
+later API pages are included.
 
 ## Compatibility
 

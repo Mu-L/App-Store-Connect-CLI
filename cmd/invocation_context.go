@@ -215,6 +215,12 @@ func isMetadataVersionValue(value string) bool {
 	if value == "" || strings.HasPrefix(value, "-") {
 		return false
 	}
+	// flag.ParseBool accepts 1 and 0, but both are also valid app-version
+	// components. Treat numeric spellings as metadata values and reserve the
+	// global-flag recovery for textual booleans.
+	if value == "1" || value == "0" {
+		return true
+	}
 	_, boolErr := strconv.ParseBool(value)
 	return boolErr != nil
 }
