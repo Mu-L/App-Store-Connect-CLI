@@ -334,6 +334,7 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 	hasImportDiagnostic := false
 	hasSuccessfulExport := false
 	failedActionLogBundles := doctorFailedActionLogBundleCount(result)
+	failedActionLogBundlesInspected := doctorFailedActionLogBundlesInspected(result)
 	failedActionIDs := doctorFailedActionIDs(result)
 	for _, bundle := range result.LogBundles {
 		if _, failed := failedActionIDs[bundle.ActionID]; !failed {
@@ -355,7 +356,7 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 		if hasSuccessfulExport {
 			result.Conclusion = "The archive export succeeded, but Xcode Cloud reported a later failure without an ITMS-level import diagnostic."
 			result.NextAction = "Check the App Store Connect delivery notification or build processing state for the server-side import rejection."
-		} else if failedActionLogBundles > 0 && result.Summary.LogBundlesInspected == 0 {
+		} else if failedActionLogBundles > 0 && failedActionLogBundlesInspected == 0 {
 			result.Conclusion = "Xcode Cloud reported an App Store Connect preparation failure, but its available log bundles were not inspected."
 			result.NextAction = "Re-run without --skip-logs, then check App Store Connect if the logs still contain no import detail."
 		} else {
@@ -363,7 +364,7 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 			result.NextAction = "Check the App Store Connect delivery notification or build processing state for the server-side import rejection."
 		}
 		coverageMessage := "The Xcode Cloud API did not expose a detailed App Store import rejection."
-		if result.Summary.LogBundlesInspected > 0 {
+		if failedActionLogBundlesInspected > 0 {
 			coverageMessage = "The Xcode Cloud API and inspected log bundles did not expose a detailed App Store import rejection."
 		}
 		result.CoverageWarnings = append(result.CoverageWarnings, asc.XcodeCloudDoctorCoverageWarning{
@@ -374,7 +375,7 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 		return
 	}
 
-	if failedActionLogBundles > 0 && result.Summary.LogBundlesInspected == 0 {
+	if failedActionLogBundles > 0 && failedActionLogBundlesInspected == 0 {
 		result.Conclusion = "The Xcode Cloud build run failed, but its available log bundles were not inspected."
 		result.NextAction = "Re-run without --skip-logs or download the listed log bundle artifacts for inspection."
 	} else if result.Summary.Errors > 0 {
@@ -415,6 +416,17 @@ func doctorFailedActionIDs(result *asc.XcodeCloudDoctorResult) map[string]struct
 		}
 	}
 	return failed
+}
+
+func doctorFailedActionLogBundlesInspected(result *asc.XcodeCloudDoctorResult) int {
+	failedActionIDs := doctorFailedActionIDs(result)
+	count := 0
+	for _, bundle := range result.LogBundles {
+		if _, failed := failedActionIDs[bundle.ActionID]; failed && bundle.Inspected {
+			count++
+		}
+	}
+	return count
 }
 
 func doctorRunFailed(result *asc.XcodeCloudDoctorResult) bool {

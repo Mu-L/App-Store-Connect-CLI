@@ -195,7 +195,7 @@ func TestFinishXcodeCloudDoctorResultIgnoresSuccessfulActionLogBundles(t *testin
 				Artifacts:        []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}},
 			},
 		},
-		Summary: asc.XcodeCloudDoctorSummary{LogBundles: 1, Errors: 1},
+		Summary: asc.XcodeCloudDoctorSummary{LogBundles: 1, LogBundlesInspected: 1, Errors: 1},
 		LogBundles: []asc.XcodeCloudDoctorLogBundle{{
 			ActionID:     "successful-archive",
 			Inspected:    true,
@@ -211,6 +211,39 @@ func TestFinishXcodeCloudDoctorResultIgnoresSuccessfulActionLogBundles(t *testin
 
 	if !strings.Contains(result.Conclusion, "reported actionable issues") {
 		t.Fatalf("successful-action bundle changed diagnosis: conclusion=%q nextAction=%q", result.Conclusion, result.NextAction)
+	}
+}
+
+func TestFinishXcodeCloudDoctorResultUsesFailedActionInspectionCount(t *testing.T) {
+	result := &asc.XcodeCloudDoctorResult{
+		Run: &asc.XcodeCloudStatusResult{ExecutionProgress: "COMPLETE", CompletionStatus: "FAILED"},
+		Actions: []asc.XcodeCloudDoctorAction{
+			{
+				ID:               "failed-archive",
+				CompletionStatus: "FAILED",
+				Issues: []asc.XcodeCloudDoctorIssue{{
+					IssueType: "ERROR",
+					Message:   "Preparing build for App Store Connect failed",
+				}},
+				Artifacts: []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}},
+			},
+			{ID: "successful-archive", CompletionStatus: "SUCCEEDED"},
+		},
+		Summary: asc.XcodeCloudDoctorSummary{LogBundles: 2, LogBundlesInspected: 1, Errors: 1},
+		LogBundles: []asc.XcodeCloudDoctorLogBundle{{
+			ActionID:  "successful-archive",
+			Inspected: true,
+		}},
+		CoverageWarnings: []asc.XcodeCloudDoctorCoverageWarning{},
+	}
+
+	finishXcodeCloudDoctorResult(result)
+
+	if !strings.Contains(result.Conclusion, "available log bundles were not inspected") {
+		t.Fatalf("Conclusion = %q, want failed-action inspection gap", result.Conclusion)
+	}
+	if len(result.CoverageWarnings) != 1 || strings.Contains(result.CoverageWarnings[0].Message, "inspected log bundles") {
+		t.Fatalf("coverage warnings = %+v, must not count successful-action inspection", result.CoverageWarnings)
 	}
 }
 
