@@ -319,16 +319,18 @@ This can:
 ### Remove a specific profile
 
 ```bash  theme={null}
-asc auth logout --name "WorkApp"
+asc auth logout --name "WorkApp" --confirm
 ```
 
 ### Remove all credentials
 
 ```bash  theme={null}
-asc auth logout --all
+asc auth logout --all --confirm
 ```
 
-This removes credentials from both keychain and config files.
+`--all` always attempts config cleanup and also attempts keychain cleanup. If config cleanup succeeds, a keychain cleanup error is treated as non-fatal.
+
+For compatibility, logout still runs without `--confirm` after printing a deprecation warning. Confirmation will be required in 5.0.0.
 
 ## Security best practices
 
