@@ -200,6 +200,7 @@ func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
 
 		t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
 		t.Setenv("ASC_CONFIG_PATH", configPath)
+		t.Setenv("ASC_PROFILE", "")
 		t.Setenv("ASC_KEY_ID", "ENVKEY")
 		t.Setenv("ASC_ISSUER_ID", "87654321-abcd-1234-abcd-123456789012")
 		t.Setenv("ASC_PRIVATE_KEY_PATH", filepath.Join(tempDir, "missing-env.p8"))
@@ -213,6 +214,54 @@ func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
 			t.Fatalf("expected bypass config ignore note, got %#v", section.Checks)
 		}
 	})
+
+	t.Run("complete default keychain credentials", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "")
+		t.Setenv("ASC_ISSUER_ID", "")
+		t.Setenv("ASC_KEY_TYPE", "")
+		t.Setenv("ASC_PRIVATE_KEY", "")
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", filepath.Join(tempDir, "missing-env.p8"))
+		if err := StoreCredentials("doctor-default-keychain", "STOREDKEY", "12345678-abcd-1234-abcd-123456789012", storedKeyPath); err != nil {
+			t.Fatalf("StoreCredentials() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-default-keychain"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		report := Doctor(DoctorOptions{})
+		section := findDoctorSection(t, report, "Environment")
+		if sectionHasStatus(section, DoctorFail, "ASC_PRIVATE_KEY_PATH") {
+			t.Fatalf("expected complete default keychain credentials to suppress ignored environment key failure, got %#v", section.Checks)
+		}
+		if !sectionHasStatus(section, DoctorInfo, "ignored because complete default stored credentials are selected") {
+			t.Fatalf("expected default stored credentials ignore note, got %#v", section.Checks)
+		}
+	})
+}
+
+func TestDoctorEnvironmentPrivateKeyPathRedactsEveryOccurrence(t *testing.T) {
+	path := "/private/ci/AuthKey.p8"
+	check := DoctorCheck{
+		Message:        path + " - failed to read: open " + path + ": permission denied",
+		Recommendation: "Inspect " + path + " before retrying " + path,
+	}
+	redactEnvironmentPrivateKeyPath(&check, path)
+	if strings.Contains(check.Message, path) || strings.Contains(check.Recommendation, path) {
+		t.Fatalf("expected every private key path occurrence to be redacted, got %#v", check)
+	}
+	if strings.Count(check.Message, "ASC_PRIVATE_KEY_PATH") != 2 || strings.Count(check.Recommendation, "$ASC_PRIVATE_KEY_PATH") != 2 {
+		t.Fatalf("expected repeated path occurrences to remain understandable after redaction, got %#v", check)
+	}
 }
 
 func TestDoctorEnvironmentWarnsForInvalidKeyType(t *testing.T) {

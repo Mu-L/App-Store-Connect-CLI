@@ -472,7 +472,7 @@ func ignoredEnvironmentPrivateKeyReason(options DoctorOptions) string {
 	if profile != "" {
 		return fmt.Sprintf("profile %q is selected", profile)
 	}
-	if !shouldBypassKeychain() {
+	if !shouldBypassKeychain() && completeEnvironmentCredentialsPreemptStored() {
 		return ""
 	}
 
@@ -481,19 +481,43 @@ func ignoredEnvironmentPrivateKeyReason(options DoctorOptions) string {
 		return ""
 	}
 	hasIssuer := strings.TrimSpace(credentials.IssuerID) != "" || config.IsIndividualCredentialKeyType(credentials.KeyType)
-	if strings.TrimSpace(credentials.KeyID) != "" && hasIssuer && strings.TrimSpace(credentials.PrivateKeyPath) != "" {
+	hasPrivateKey := strings.TrimSpace(credentials.PrivateKeyPath) != "" || strings.TrimSpace(credentials.PrivateKeyPEM) != ""
+	if strings.TrimSpace(credentials.KeyID) == "" || !hasIssuer || !hasPrivateKey {
+		return ""
+	}
+	if shouldBypassKeychain() {
 		return "complete stored config credentials are selected in keychain bypass mode"
 	}
-	return ""
+	return "complete default stored credentials are selected"
+}
+
+func completeEnvironmentCredentialsPreemptStored() bool {
+	keyID := strings.TrimSpace(os.Getenv("ASC_KEY_ID"))
+	issuerID := strings.TrimSpace(os.Getenv("ASC_ISSUER_ID"))
+	keyType := config.NormalizeCredentialKeyType(os.Getenv("ASC_KEY_TYPE"))
+	if keyID == "" || !config.IsValidCredentialKeyType(keyType) ||
+		(issuerID == "" && !config.IsIndividualCredentialKeyType(keyType)) {
+		return false
+	}
+
+	switch {
+	case strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_PATH")) != "":
+		return true
+	case strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_B64")) != "":
+		compact := strings.Join(strings.Fields(os.Getenv("ASC_PRIVATE_KEY_B64")), "")
+		decoded, err := base64.StdEncoding.DecodeString(compact)
+		return err == nil && len(decoded) > 0
+	case strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY")) != "":
+		return true
+	default:
+		return false
+	}
 }
 
 func inspectEnvironmentPrivateKey(options DoctorOptions) *DoctorCheck {
 	if path := strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_PATH")); path != "" {
 		check := inspectPrivateKeyPath(path, options)
-		check.Message = strings.Replace(check.Message, path, "ASC_PRIVATE_KEY_PATH", 1)
-		if check.Recommendation != "" {
-			check.Recommendation = strings.Replace(check.Recommendation, path, "$ASC_PRIVATE_KEY_PATH", 1)
-		}
+		redactEnvironmentPrivateKeyPath(&check, path)
 		return &check
 	}
 
@@ -538,6 +562,14 @@ func inspectEnvironmentPrivateKey(options DoctorOptions) *DoctorCheck {
 	}
 
 	return nil
+}
+
+func redactEnvironmentPrivateKeyPath(check *DoctorCheck, path string) {
+	if check == nil || path == "" {
+		return
+	}
+	check.Message = strings.ReplaceAll(check.Message, path, "ASC_PRIVATE_KEY_PATH")
+	check.Recommendation = strings.ReplaceAll(check.Recommendation, path, "$ASC_PRIVATE_KEY_PATH")
 }
 
 func inspectTempKeys(options DoctorOptions) DoctorSection {
