@@ -1016,10 +1016,7 @@ func decodeBase64Secret(value string) ([]byte, error) {
 }
 
 func normalizePrivateKeyValue(value string) string {
-	if strings.Contains(value, "\\n") && !strings.Contains(value, "\n") {
-		return strings.ReplaceAll(value, "\\n", "\n")
-	}
-	return value
+	return strings.ReplaceAll(value, "\\n", "\n")
 }
 
 func writeTempPrivateKey(data []byte, cacheKey string) (string, error) {

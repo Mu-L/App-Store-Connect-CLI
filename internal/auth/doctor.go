@@ -394,6 +394,9 @@ func inspectEnvironment(options DoctorOptions) DoctorSection {
 			})
 		}
 	}
+	if selectedProfileCheck := inspectSelectedProfile(options); selectedProfileCheck != nil {
+		checks = append(checks, *selectedProfileCheck)
+	}
 
 	keyID := strings.TrimSpace(os.Getenv("ASC_KEY_ID"))
 	issuerID := strings.TrimSpace(os.Getenv("ASC_ISSUER_ID"))
@@ -466,10 +469,7 @@ func inspectEnvironment(options DoctorOptions) DoctorSection {
 }
 
 func ignoredEnvironmentPrivateKeyReason(options DoctorOptions) string {
-	profile := strings.TrimSpace(options.Profile)
-	if profile == "" {
-		profile = strings.TrimSpace(os.Getenv("ASC_PROFILE"))
-	}
+	profile := selectedDoctorProfile(options)
 	if profile != "" {
 		return fmt.Sprintf("profile %q is selected", profile)
 	}
@@ -495,6 +495,28 @@ func ignoredEnvironmentPrivateKeyReason(options DoctorOptions) string {
 		return "default stored private key is selected"
 	}
 	return "complete default stored credentials are selected"
+}
+
+func selectedDoctorProfile(options DoctorOptions) string {
+	if profile := strings.TrimSpace(options.Profile); profile != "" {
+		return profile
+	}
+	return strings.TrimSpace(os.Getenv("ASC_PROFILE"))
+}
+
+func inspectSelectedProfile(options DoctorOptions) *DoctorCheck {
+	profile := selectedDoctorProfile(options)
+	if profile == "" {
+		return nil
+	}
+	if _, err := GetCredentials(profile); err != nil {
+		return &DoctorCheck{
+			Status:         DoctorFail,
+			Message:        fmt.Sprintf("Selected profile %q could not be resolved: %v", profile, err),
+			Recommendation: "Choose an existing complete profile or update the selected profile credentials",
+		}
+	}
+	return nil
 }
 
 func completeEnvironmentCredentialsPreemptStored() bool {
@@ -551,9 +573,7 @@ func inspectEnvironmentPrivateKey(options DoctorOptions) *DoctorCheck {
 	}
 
 	if value := strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY")); value != "" {
-		if strings.Contains(value, `\n`) && !strings.Contains(value, "\n") {
-			value = strings.ReplaceAll(value, `\n`, "\n")
-		}
+		value = strings.ReplaceAll(value, `\n`, "\n")
 		if _, err := LoadPrivateKeyFromPEM([]byte(value)); err != nil {
 			return &DoctorCheck{
 				Status:         DoctorFail,

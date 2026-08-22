@@ -1,9 +1,16 @@
 package account
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"os"
 	"path/filepath"
 	"testing"
 
+	authsvc "github.com/rudrankriyam/App-Store-Connect-CLI/internal/auth"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
@@ -13,7 +20,25 @@ func TestAuthHealthCheckHonorsRootProfileSelection(t *testing.T) {
 	t.Cleanup(func() { shared.SetSelectedProfile(previousProfile) })
 
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
-	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "config.json")
+	keyPath := filepath.Join(configDir, "work.p8")
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("MarshalPKCS8PrivateKey() error: %v", err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	if err := authsvc.StoreCredentialsConfigAt("work", "WORKKEY", "12345678-abcd-1234-abcd-123456789012", keyPath, configPath); err != nil {
+		t.Fatalf("StoreCredentialsConfigAt() error: %v", err)
+	}
+
+	t.Setenv("ASC_CONFIG_PATH", configPath)
 	t.Setenv("ASC_PROFILE", "")
 	t.Setenv("ASC_KEY_ID", "ENVKEY")
 	t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")

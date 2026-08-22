@@ -1010,7 +1010,7 @@ func TestResolvePrivateKeyPathFromRawValue(t *testing.T) {
 	t.Setenv("ASC_PRIVATE_KEY_PATH", "")
 	t.Setenv("ASC_PRIVATE_KEY_B64", "")
 
-	t.Setenv("ASC_PRIVATE_KEY", "line1\\nline2")
+	t.Setenv("ASC_PRIVATE_KEY", "line1\nline2\\nline3")
 	path, err := resolvePrivateKeyPath()
 	if err != nil {
 		t.Fatalf("resolvePrivateKeyPath() error: %v", err)
@@ -1019,7 +1019,7 @@ func TestResolvePrivateKeyPathFromRawValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile() error: %v", err)
 	}
-	if string(data) != "line1\nline2" {
+	if string(data) != "line1\nline2\nline3" {
 		t.Fatalf("expected newline expansion, got %q", string(data))
 	}
 }
