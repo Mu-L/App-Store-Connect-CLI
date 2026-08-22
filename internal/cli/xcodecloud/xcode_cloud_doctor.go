@@ -303,8 +303,7 @@ func shouldInspectDoctorLogs(result *asc.XcodeCloudDoctorResult, options xcodeCl
 	if strings.TrimSpace(options.SaveLogs) != "" {
 		return true
 	}
-	return !strings.EqualFold(strings.TrimSpace(result.Run.CompletionStatus), string(asc.CiBuildRunCompletionStatusSucceeded)) &&
-		asc.IsBuildRunComplete(asc.CiBuildRunExecutionProgress(result.Run.ExecutionProgress))
+	return doctorRunFailed(result)
 }
 
 func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
@@ -384,8 +383,12 @@ func doctorRunFailed(result *asc.XcodeCloudDoctorResult) bool {
 	if result == nil || result.Run == nil {
 		return false
 	}
-	return asc.IsBuildRunComplete(asc.CiBuildRunExecutionProgress(result.Run.ExecutionProgress)) &&
-		!strings.EqualFold(strings.TrimSpace(result.Run.CompletionStatus), string(asc.CiBuildRunCompletionStatusSucceeded))
+	if !asc.IsBuildRunComplete(asc.CiBuildRunExecutionProgress(result.Run.ExecutionProgress)) {
+		return false
+	}
+	status := strings.ToUpper(strings.TrimSpace(result.Run.CompletionStatus))
+	return status == string(asc.CiBuildRunCompletionStatusFailed) ||
+		status == string(asc.CiBuildRunCompletionStatusErrored)
 }
 
 func doctorHasAppStorePreparationIssue(result *asc.XcodeCloudDoctorResult) bool {

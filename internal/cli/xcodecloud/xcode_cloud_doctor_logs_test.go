@@ -111,6 +111,38 @@ func TestFinishXcodeCloudDoctorResultReportsCanceledAndSkippedRuns(t *testing.T)
 	}
 }
 
+func TestShouldInspectDoctorLogsOnlyForFailuresUnlessSaving(t *testing.T) {
+	tests := []struct {
+		status  string
+		options xcodeCloudDoctorOptions
+		want    bool
+	}{
+		{status: "FAILED", want: true},
+		{status: "ERRORED", want: true},
+		{status: "SUCCEEDED", want: false},
+		{status: "CANCELED", want: false},
+		{status: "SKIPPED", want: false},
+		{status: "CANCELED", options: xcodeCloudDoctorOptions{SaveLogs: "logs"}, want: true},
+		{status: "SKIPPED", options: xcodeCloudDoctorOptions{SaveLogs: "logs"}, want: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.status+test.options.SaveLogs, func(t *testing.T) {
+			result := &asc.XcodeCloudDoctorResult{
+				Run: &asc.XcodeCloudStatusResult{
+					ExecutionProgress: "COMPLETE",
+					CompletionStatus:  test.status,
+				},
+				Summary: asc.XcodeCloudDoctorSummary{LogBundles: 1},
+			}
+
+			if got := shouldInspectDoctorLogs(result, test.options); got != test.want {
+				t.Fatalf("shouldInspectDoctorLogs(%s, %+v) = %t, want %t", test.status, test.options, got, test.want)
+			}
+		})
+	}
+}
+
 func TestAnalyzeDoctorLogBundleRejectsUnknownBinary(t *testing.T) {
 	if _, err := analyzeDoctorLogBundle([]byte{'P', 'K', 0, 1, 2}); err == nil {
 		t.Fatal("analyzeDoctorLogBundle() error = nil, want binary format error")
