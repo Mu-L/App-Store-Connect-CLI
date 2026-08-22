@@ -12,15 +12,18 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 func TestMetadataPullValidationErrors(t *testing.T) {
 	t.Setenv("ASC_APP_ID", "")
 
 	tests := []struct {
-		name    string
-		args    []string
-		wantErr string
+		name         string
+		args         []string
+		wantErr      string
+		wantReported bool
 	}{
 		{
 			name:    "missing app",
@@ -28,9 +31,10 @@ func TestMetadataPullValidationErrors(t *testing.T) {
 			wantErr: "Error: --app is required (or set ASC_APP_ID)",
 		},
 		{
-			name:    "missing version",
-			args:    []string{"metadata", "pull", "--app", "app-1", "--dir", "./metadata"},
-			wantErr: "Error: --version is required",
+			name:         "missing version",
+			args:         []string{"metadata", "pull", "--app", "app-1", "--dir", "./metadata"},
+			wantErr:      "Error: --version is required\nFind versions:\n  asc versions list --app \"APP_ID\" --paginate\n",
+			wantReported: true,
 		},
 		{
 			name:    "missing dir",
@@ -57,13 +61,27 @@ func TestMetadataPullValidationErrors(t *testing.T) {
 				runErr = root.Run(context.Background())
 			})
 
-			if !errors.Is(runErr, flag.ErrHelp) {
+			if test.wantReported {
+				if !shared.IsReportedUsageError(runErr) {
+					t.Fatalf("expected reported usage error, got %v", runErr)
+				}
+				if errors.Is(runErr, flag.ErrHelp) {
+					t.Fatalf("reported usage error must not trigger full help: %v", runErr)
+				}
+				if got := runErr.Error(); got != "--version is required" {
+					t.Fatalf("error = %q, want %q", got, "--version is required")
+				}
+			} else if !errors.Is(runErr, flag.ErrHelp) {
 				t.Fatalf("expected ErrHelp, got %v", runErr)
 			}
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if !strings.Contains(stderr, test.wantErr) {
+			if test.wantReported {
+				if stderr != test.wantErr {
+					t.Fatalf("stderr = %q, want %q", stderr, test.wantErr)
+				}
+			} else if !strings.Contains(stderr, test.wantErr) {
 				t.Fatalf("expected %q in stderr, got %q", test.wantErr, stderr)
 			}
 		})
