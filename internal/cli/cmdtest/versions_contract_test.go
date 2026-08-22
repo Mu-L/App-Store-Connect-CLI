@@ -23,6 +23,7 @@ const appStoreVersionIncludeValues = "ageRatingDeclaration, app, appStoreVersion
 
 func clearASCAuth(t *testing.T) {
 	t.Helper()
+	t.Setenv("ASC_APP_ID", "")
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 	t.Setenv("ASC_PROFILE", "")
