@@ -246,12 +246,12 @@ These are properties of the data, not defects to be papered over.
   results, and the difficulty normalization saturates at the same point, so
   keywords with more than 200 competing apps are indistinguishable on that
   signal.
-- **The discovery read is broader than it needs to be.** `discover` goes
-  through the shared Apple Ads optimization collection path, which also fetches
-  campaign, eligibility, reporting, and recommendation data that keyword
-  discovery ignores. A narrower exported suggestion path would remove those
-  requests. Passing `--genre` is optional and only narrows an unrelated
-  sub-request; it does not affect the suggestions themselves.
+- **Discovery is suggestion-scoped.** `discover` calls only the documented
+  keyword and phrase suggestion endpoints. Each request asks Apple to order
+  results by popularity descending and uses the requested `--limit` as its
+  page size, stopping once that bounded prefix is collected. Campaign,
+  eligibility, reporting, and recommendation data are not fetched, and
+  `--genre` remains an optional report label that does not affect suggestions.
 - **Release dates are read directly.** The shared public client type in
   `internal/itunes` does not expose `releaseDate` or
   `currentVersionReleaseDate`, so `internal/cli/optimize/keywords_metadata.go`

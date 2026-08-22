@@ -22,7 +22,7 @@ const (
 	keywordSuggestionSourcePhrase  = "phrase_suggestions"
 )
 
-var collectSearchDataForDiscover = ads.CollectSearchOptimizationData
+var collectSearchDataForDiscover = ads.CollectSearchSuggestions
 
 // KeywordsDiscoverCommand returns the official Apple Ads keyword suggestion
 // command.
@@ -30,7 +30,7 @@ func KeywordsDiscoverCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("discover", flag.ExitOnError)
 	appID := fs.String("app", "", "[experimental] App Store app ID (required, or ASC_APP_ID env)")
 	country := fs.String("country", "us", "[experimental] ISO alpha-2 Apple Ads country or region")
-	genre := fs.String("genre", "", "[experimental] Apple Ads genre; optional, and only narrows the shared Apple Ads collection")
+	genre := fs.String("genre", "", "[experimental] Apple Ads genre; optional report label (does not affect suggestions)")
 	adAccount := fs.String("ad-account", "", "[experimental] Apple Ads ad account ID (or ASC_ADS_AD_ACCOUNT_ID/profile default)")
 	adsProfile := fs.String("ads-profile", "", "[experimental] Use named Apple Ads authentication profile")
 	limit := fs.Int("limit", keywordDiscoverDefaultLimit, "[experimental] Maximum suggestions to return")
@@ -85,20 +85,13 @@ Examples:
 				return shared.UsageError("--limit must be at least 1")
 			}
 
-			window, err := resolveSearchPlanWindow(keywordScorePopularityWindow, time.Now())
-			if err != nil {
-				return shared.UsageError(err.Error())
-			}
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 			data, err := collectSearchDataForDiscover(requestCtx, *adsProfile, *adAccount, ads.SearchOptimizationRequest{
-				AppID:           resolvedAppID,
-				Country:         strings.ToUpper(normalizedCountry),
-				Genre:           normalizedGenre,
-				Start:           window.Start,
-				End:             window.End,
-				PopularityStart: window.PopularityStart,
-				PopularityEnd:   window.PopularityEnd,
+				AppID:   resolvedAppID,
+				Country: strings.ToUpper(normalizedCountry),
+				Genre:   normalizedGenre,
+				Limit:   *limit,
 			})
 			if err != nil {
 				return keywordDiscoverUnavailableError(err.Error())
@@ -112,6 +105,7 @@ Examples:
 				Limit:       *limit,
 				Sources:     suggestionSources(data.Sources),
 				Suggestions: data.Suggestions,
+				Truncated:   data.SuggestionsTruncated,
 			})
 			if len(report.Keywords) == 0 {
 				if cause := unavailableSuggestionCause(report.Sources); cause != "" {
@@ -132,6 +126,7 @@ type keywordDiscoverBuildInput struct {
 	Limit       int
 	Sources     []asc.KeywordDiscoverSourceStatus
 	Suggestions []ads.SearchSuggestion
+	Truncated   bool
 }
 
 func buildKeywordDiscoverReport(input keywordDiscoverBuildInput) asc.KeywordDiscoverReport {
@@ -157,7 +152,7 @@ func buildKeywordDiscoverReport(input keywordDiscoverBuildInput) asc.KeywordDisc
 	}
 
 	summary := asc.KeywordDiscoverSummary{Available: len(suggestions)}
-	truncated := false
+	truncated := input.Truncated
 	if input.Limit > 0 && len(suggestions) > input.Limit {
 		suggestions = suggestions[:input.Limit]
 		truncated = true

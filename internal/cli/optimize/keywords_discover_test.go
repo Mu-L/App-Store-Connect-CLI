@@ -142,7 +142,7 @@ func TestKeywordsDiscoverFlattensDedupesAndPreparesScoreInput(t *testing.T) {
 		if profile != "Ads" || account != "987654321" {
 			t.Fatalf("ads credentials = (%q, %q)", profile, account)
 		}
-		if request.AppID != "1234567890" || request.Country != "US" {
+		if request.AppID != "1234567890" || request.Country != "US" || request.Limit != keywordDiscoverDefaultLimit {
 			t.Fatalf("ads request = %+v", request)
 		}
 		return ads.SearchOptimizationData{
@@ -272,7 +272,10 @@ func TestKeywordsDiscoverAppliesLimitAndReportsTruncation(t *testing.T) {
 	for index := range 6 {
 		suggestions = append(suggestions, ads.SearchSuggestion{Text: fmt.Sprintf("keyword%03d", index), Kind: "keyword"})
 	}
-	stubKeywordsAdsCollector(t, func(context.Context, string, string, ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error) {
+	stubKeywordsAdsCollector(t, func(_ context.Context, _, _ string, request ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error) {
+		if request.Limit != 2 {
+			t.Fatalf("ads request limit = %d, want 2", request.Limit)
+		}
 		return ads.SearchOptimizationData{Suggestions: suggestions}, nil
 	})
 

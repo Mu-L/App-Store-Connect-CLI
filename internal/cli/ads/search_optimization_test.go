@@ -274,6 +274,58 @@ func TestFetchOptimizationPhraseSuggestionsReadsPhraseField(t *testing.T) {
 	}
 }
 
+func TestFetchSearchSuggestionsSortsByPopularityAndHonorsLimit(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path)
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode suggestion request: %v", err)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
+		}
+		assertSorting(t, body, "popularity", "order", "DESC")
+		pagination, ok := body["pagination"].(map[string]any)
+		if !ok || pagination["offset"] != float64(0) || pagination["pageSize"] != float64(2) {
+			t.Errorf("pagination = %#v, want offset 0/pageSize 2", body["pagination"])
+		}
+		if r.URL.Path == "/v1/suggestions/keywords/query" {
+			writeJSON(t, w, `{"result":[{"text":"keyword one","popularity":90},{"text":"keyword two","popularity":80}],"pagination":{"offset":0,"pageSize":2,"totalCount":10}}`)
+			return
+		}
+		if r.URL.Path == "/v1/suggestions/phrases/query" {
+			writeJSON(t, w, `{"result":[{"phrase":"phrase one","popularity":70},{"phrase":"phrase two","popularity":60}],"pagination":{"offset":0,"pageSize":2,"totalCount":10}}`)
+			return
+		}
+		t.Errorf("unexpected path %s", r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	client, err := appleads.NewClient(
+		appleads.Credentials{AccessToken: "token", AdAccountID: "account-1"},
+		appleads.WithPlatformBaseURL(server.URL+"/v1/"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := fetchSearchSuggestions(context.Background(), client, SearchOptimizationRequest{
+		AppID: "123456789", Country: "US", Limit: 2,
+	})
+	if err != nil {
+		t.Fatalf("fetchSearchSuggestions() error = %v", err)
+	}
+	if len(requests) != 2 || requests[0] != "/v1/suggestions/keywords/query" || requests[1] != "/v1/suggestions/phrases/query" {
+		t.Fatalf("suggestion requests = %v, want one keyword and one phrase request", requests)
+	}
+	if len(data.Suggestions) != 4 {
+		t.Fatalf("suggestions = %+v, want two results from each endpoint", data.Suggestions)
+	}
+	if !data.SuggestionsTruncated {
+		t.Fatal("suggestions should report that both endpoints have more results beyond the bounded prefix")
+	}
+}
+
 func hasOptimizationFilter(body map[string]any, field string) bool {
 	filters, _ := body["filters"].([]any)
 	for _, raw := range filters {
