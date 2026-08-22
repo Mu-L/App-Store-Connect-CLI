@@ -56,7 +56,7 @@ Do not call the PR ready until all of the following are true:
 - GitHub reports the PR mergeable with a clean merge state.
 - Live or deterministic verification supports the claimed behavior.
 
-Use `$watch-asc-pr` after the first push when required checks or actionable reviewers are still pending. When the user asked to loop until green, keep running watch passes after each push and fresh review result until the latest head is clean or materially blocked; do not hand off merely because required checks are pending. Do not start or continue a watch loop only for advisory jobs.
+Use `$watch-asc-pr` after the first push when required checks, required reviews, or actionable reviewers are still pending. When the user asked to loop until green, keep running watch passes after each push and fresh review result until the latest head is clean or materially blocked; do not hand off merely because required checks or reviews are pending. Do not start or continue a watch loop only for advisory jobs.
 
 Approve or merge only when the user asked for that action. When merge is authorized, preserve the PR commits with a regular merge commit such as `gh pr merge --merge --match-head-commit <sha>`. Do not squash unless the user explicitly requests squash for that PR.
 
