@@ -184,7 +184,10 @@ Examples:
 			}
 
 			report := authsvc.DoctorWithMigrationResolver(
-				authsvc.DoctorOptions{Fix: *fix && *confirm},
+				authsvc.DoctorOptions{
+					Fix:     *fix && *confirm,
+					Profile: shared.ResolveProfileName(),
+				},
 				doctorMigrationSuggestionResolver(),
 			)
 			if normalizedOutput == "json" {

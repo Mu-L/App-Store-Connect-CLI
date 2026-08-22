@@ -48,7 +48,8 @@ type DoctorReport struct {
 }
 
 type DoctorOptions struct {
-	Fix bool
+	Fix     bool
+	Profile string
 }
 
 func Doctor(options DoctorOptions) DoctorReport {
@@ -420,7 +421,12 @@ func inspectEnvironment(options DoctorOptions) DoctorSection {
 			Recommendation: "Set missing ASC_* variables or clear partial values",
 		})
 	}
-	if privateKeyCheck := inspectEnvironmentPrivateKey(options); privateKeyCheck != nil {
+	if ignoredReason := ignoredEnvironmentPrivateKeyReason(options); hasKeyPath && ignoredReason != "" {
+		checks = append(checks, DoctorCheck{
+			Status:  DoctorInfo,
+			Message: fmt.Sprintf("Environment private key is set but ignored because %s; key material was not validated", ignoredReason),
+		})
+	} else if privateKeyCheck := inspectEnvironmentPrivateKey(options); privateKeyCheck != nil {
 		checks = append(checks, *privateKeyCheck)
 	}
 
@@ -456,6 +462,29 @@ func inspectEnvironment(options DoctorOptions) DoctorSection {
 	}
 
 	return DoctorSection{Title: "Environment", Checks: checks}
+}
+
+func ignoredEnvironmentPrivateKeyReason(options DoctorOptions) string {
+	profile := strings.TrimSpace(options.Profile)
+	if profile == "" {
+		profile = strings.TrimSpace(os.Getenv("ASC_PROFILE"))
+	}
+	if profile != "" {
+		return fmt.Sprintf("profile %q is selected", profile)
+	}
+	if !shouldBypassKeychain() {
+		return ""
+	}
+
+	credentials, err := GetDefaultCredentials()
+	if err != nil || credentials == nil {
+		return ""
+	}
+	hasIssuer := strings.TrimSpace(credentials.IssuerID) != "" || config.IsIndividualCredentialKeyType(credentials.KeyType)
+	if strings.TrimSpace(credentials.KeyID) != "" && hasIssuer && strings.TrimSpace(credentials.PrivateKeyPath) != "" {
+		return "complete stored config credentials are selected in keychain bypass mode"
+	}
+	return ""
 }
 
 func inspectEnvironmentPrivateKey(options DoctorOptions) *DoctorCheck {

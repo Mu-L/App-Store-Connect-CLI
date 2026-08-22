@@ -163,6 +163,58 @@ func TestDoctorEnvironmentValidatesSelectedPrivateKey(t *testing.T) {
 	}
 }
 
+func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
+	t.Run("selected profile", func(t *testing.T) {
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+		t.Setenv("ASC_KEY_ID", "ENVKEY")
+		t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", filepath.Join(t.TempDir(), "missing.p8"))
+
+		report := Doctor(DoctorOptions{Profile: "stored"})
+		section := findDoctorSection(t, report, "Environment")
+		if sectionHasStatus(section, DoctorFail, "ASC_PRIVATE_KEY_PATH") {
+			t.Fatalf("expected selected profile to suppress ignored environment key failure, got %#v", section.Checks)
+		}
+		if !sectionHasStatus(section, DoctorInfo, "ignored because profile \"stored\" is selected") {
+			t.Fatalf("expected ignored environment key note, got %#v", section.Checks)
+		}
+	})
+
+	t.Run("complete bypass config", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+		configPath := filepath.Join(tempDir, "config.json")
+		if err := config.SaveAt(configPath, &config.Config{
+			DefaultKeyName: "stored",
+			Keys: []config.Credential{{
+				Name:           "stored",
+				KeyID:          "STOREDKEY",
+				IssuerID:       "12345678-abcd-1234-abcd-123456789012",
+				PrivateKeyPath: storedKeyPath,
+			}},
+		}); err != nil {
+			t.Fatalf("SaveAt() error: %v", err)
+		}
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+		t.Setenv("ASC_CONFIG_PATH", configPath)
+		t.Setenv("ASC_KEY_ID", "ENVKEY")
+		t.Setenv("ASC_ISSUER_ID", "87654321-abcd-1234-abcd-123456789012")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", filepath.Join(tempDir, "missing-env.p8"))
+
+		report := Doctor(DoctorOptions{})
+		section := findDoctorSection(t, report, "Environment")
+		if sectionHasStatus(section, DoctorFail, "ASC_PRIVATE_KEY_PATH") {
+			t.Fatalf("expected complete bypass config to suppress ignored environment key failure, got %#v", section.Checks)
+		}
+		if !sectionHasStatus(section, DoctorInfo, "ignored because complete stored config credentials are selected") {
+			t.Fatalf("expected bypass config ignore note, got %#v", section.Checks)
+		}
+	})
+}
+
 func TestDoctorEnvironmentWarnsForInvalidKeyType(t *testing.T) {
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
