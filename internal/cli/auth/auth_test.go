@@ -1304,6 +1304,14 @@ func TestAuthStatusCommand(t *testing.T) {
 	})
 }
 
+func TestAuthStatusEnvironmentNoteReportsCompleteEnvironmentPrecedence(t *testing.T) {
+	note := authStatusEnvironmentNote("", false, true, true, true)
+	want := "Complete environment credential fields take precedence when no profile is selected; stored credential lookup is skipped."
+	if note != want {
+		t.Fatalf("authStatusEnvironmentNote() = %q, want %q", note, want)
+	}
+}
+
 func TestCredentialStorageLabel(t *testing.T) {
 	if got := credentialStorageLabel(authsvc.Credential{}); got != "unknown" {
 		t.Fatalf("credentialStorageLabel(empty) = %q, want unknown", got)

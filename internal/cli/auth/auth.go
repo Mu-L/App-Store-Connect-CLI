@@ -26,6 +26,7 @@ var (
 	statusValidateCredential = validateStoredCredential
 	listStoredCredentials    = authsvc.ListCredentials
 	listCredentialSummaries  = authsvc.ListCredentialSummaries
+	keychainAvailable        = authsvc.KeychainAvailable
 	migrateKeychainToConfig  = authsvc.MigrateKeychainToConfig
 )
 
@@ -893,7 +894,7 @@ Examples:
 			}
 
 			bypassKeychain := authsvc.ShouldBypassKeychain()
-			keychainAvailable, keychainErr := authsvc.KeychainAvailable()
+			isKeychainAvailable, keychainErr := keychainAvailable()
 			configPath, configErr := config.Path()
 			storageBackend := "System Keychain"
 			storageLocation := "system keychain"
@@ -909,7 +910,7 @@ Examples:
 					storageLocation = configPath
 				}
 				warnings = append(warnings, "Keychain bypassed via ASC_BYPASS_KEYCHAIN (truthy values: 1/true/yes/on).")
-			} else if !keychainAvailable {
+			} else if !isKeychainAvailable {
 				storageBackend = "Config File"
 				storageLocation = "unknown"
 				if configErr == nil {
@@ -929,7 +930,7 @@ Examples:
 					break
 				}
 			}
-			if hasConfigCreds && keychainAvailable && !bypassKeychain {
+			if hasConfigCreds && isKeychainAvailable && !bypassKeychain {
 				warnings = append(warnings, "Some credentials are stored in config file (less secure).")
 			}
 
@@ -940,7 +941,7 @@ Examples:
 					fmt.Printf("Warning: %s\n", warning)
 				}
 				if *verbose {
-					fmt.Printf("Keychain available: %t\n", keychainAvailable)
+					fmt.Printf("Keychain available: %t\n", isKeychainAvailable)
 					if keychainErr != nil {
 						fmt.Printf("Keychain error: %v\n", keychainErr)
 					}
@@ -951,6 +952,24 @@ Examples:
 				fmt.Println()
 			}
 
+			profile := shared.ResolveProfileName()
+			envKeyID := strings.TrimSpace(os.Getenv("ASC_KEY_ID"))
+			envIssuerID := strings.TrimSpace(os.Getenv("ASC_ISSUER_ID"))
+			envKeyTypeRaw := strings.TrimSpace(os.Getenv("ASC_KEY_TYPE"))
+			envKeyType := config.NormalizeCredentialKeyType(envKeyTypeRaw)
+			envKeyTypeValid := envKeyTypeRaw == "" || config.IsValidCredentialKeyType(envKeyType)
+			hasKeyEnv := strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_PATH")) != "" ||
+				strings.TrimSpace(os.Getenv(shared.PrivateKeyEnvVar)) != "" ||
+				strings.TrimSpace(os.Getenv(shared.PrivateKeyBase64EnvVar)) != ""
+			envProvided := envKeyID != "" || envIssuerID != "" || hasKeyEnv || envKeyTypeRaw != ""
+			envComplete := shared.HasCompleteEnvironmentCredentials()
+			envUsable := envComplete
+			if profile == "" && !bypassKeychain && envComplete {
+				envUsable = shared.CanResolveCompleteEnvironmentCredentials()
+			}
+			environmentNote := authStatusEnvironmentNote(profile, bypassKeychain, envProvided, envUsable, envKeyTypeValid)
+			activeEnvironmentSource := profile == "" && !bypassKeychain && envUsable && envKeyTypeValid
+
 			validationFailures := 0
 			var validationDiagnostic shared.Diagnostic
 			hasValidationDiagnostic := false
@@ -958,7 +977,11 @@ Examples:
 			credentialOutput := make([]authStatusCredentialOutput, 0, len(credentials))
 			if len(credentials) == 0 {
 				if normalizedOutput == "table" {
-					fmt.Println("No credentials stored. Run 'asc auth login' to get started.")
+					if activeEnvironmentSource {
+						fmt.Println("No stored credentials found.")
+					} else {
+						fmt.Println("No credentials stored. Run 'asc auth login' to get started.")
+					}
 				}
 			} else {
 				if normalizedOutput == "table" {
@@ -1012,21 +1035,6 @@ Examples:
 				}
 			}
 
-			profile := shared.ResolveProfileName()
-			envKeyID := strings.TrimSpace(os.Getenv("ASC_KEY_ID"))
-			envIssuerID := strings.TrimSpace(os.Getenv("ASC_ISSUER_ID"))
-			envKeyTypeRaw := strings.TrimSpace(os.Getenv("ASC_KEY_TYPE"))
-			envKeyType := config.NormalizeCredentialKeyType(envKeyTypeRaw)
-			envKeyTypeValid := envKeyTypeRaw == "" || config.IsValidCredentialKeyType(envKeyType)
-			hasKeyEnv := strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_PATH")) != "" ||
-				strings.TrimSpace(os.Getenv(shared.PrivateKeyEnvVar)) != "" ||
-				strings.TrimSpace(os.Getenv(shared.PrivateKeyBase64EnvVar)) != ""
-			envProvided := envKeyID != "" || envIssuerID != "" || hasKeyEnv || envKeyTypeRaw != ""
-			envComplete := envKeyID != "" && hasKeyEnv &&
-				envKeyTypeValid &&
-				(envIssuerID != "" || config.IsIndividualCredentialKeyType(envKeyType))
-
-			environmentNote := authStatusEnvironmentNote(profile, bypassKeychain, envProvided, envComplete, envKeyTypeValid)
 			if normalizedOutput == "table" && environmentNote != "" {
 				fmt.Println(environmentNote)
 			}
@@ -1044,7 +1052,7 @@ Examples:
 					ValidationFailures:             validationFailures,
 				}
 				if *verbose {
-					payload.KeychainAvailable = boolPointer(keychainAvailable)
+					payload.KeychainAvailable = boolPointer(isKeychainAvailable)
 					if keychainErr != nil {
 						payload.KeychainError = keychainErr.Error()
 					}
@@ -1132,7 +1140,13 @@ func authStatusEnvironmentNote(profile string, bypassKeychain, envProvided, envC
 	if profile != "" && envProvided {
 		return fmt.Sprintf("Profile %q selected; environment credentials will be ignored.", profile)
 	}
-	if !bypassKeychain || !envProvided {
+	if !envProvided {
+		return ""
+	}
+	if !bypassKeychain {
+		if envComplete && envKeyTypeValid {
+			return "Complete environment credential fields take precedence when no profile is selected; stored credential lookup is skipped."
+		}
 		return ""
 	}
 	if !envKeyTypeValid {

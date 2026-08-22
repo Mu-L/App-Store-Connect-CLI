@@ -2182,6 +2182,19 @@ func TestResolveCompleteEnvCredentialMetadataDoesNotMaterializeInlineKey(t *test
 	}
 }
 
+func TestHasCompleteEnvironmentCredentialsRejectsInvalidBase64(t *testing.T) {
+	t.Setenv("ASC_KEY_ID", "ENVKEY")
+	t.Setenv("ASC_ISSUER_ID", "ENVISS")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+	t.Setenv("ASC_PRIVATE_KEY", "")
+	t.Setenv("ASC_PRIVATE_KEY_B64", "not-base64")
+	t.Setenv(keyTypeEnvVar, "")
+
+	if HasCompleteEnvironmentCredentials() {
+		t.Fatal("expected invalid base64 key material to be ineligible for the environment fast path")
+	}
+}
+
 func TestResolveAuthCredentialsMetadata_PrefersKeychainMetadataOverConfigDuplicate(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
