@@ -1761,6 +1761,50 @@ func TestResolveCredentials_PartialEnvStillMergesStoredKeyMaterial(t *testing.T)
 	}
 }
 
+func TestResolveCredentials_PartialStoredCredentialIgnoresUnusedMalformedEnvPrivateKey(t *testing.T) {
+	resetPrivateKeyTemp(t)
+	storedKeyPath := filepath.Join(t.TempDir(), "AuthKey-Stored.p8")
+	writeECDSAPEM(t, storedKeyPath)
+
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+	t.Setenv("ASC_PROFILE", "")
+	t.Setenv("ASC_KEY_ID", "")
+	t.Setenv("ASC_ISSUER_ID", "ENVISS")
+	t.Setenv("ASC_KEY_TYPE", "")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+	t.Setenv("ASC_PRIVATE_KEY_B64", "not-base64")
+	t.Setenv("ASC_PRIVATE_KEY", "")
+
+	previousProfile := selectedProfile
+	selectedProfile = ""
+	t.Cleanup(func() { selectedProfile = previousProfile })
+
+	previousStrict := strictAuth
+	strictAuth = false
+	t.Cleanup(func() { strictAuth = previousStrict })
+	t.Setenv(strictAuthEnvVar, "")
+
+	previous := getCredentialsWithSourceFn
+	getCredentialsWithSourceFn = func(string) (*config.Config, string, error) {
+		return &config.Config{
+			KeyID:          "STOREDKEY",
+			PrivateKeyPath: storedKeyPath,
+		}, "keychain", nil
+	}
+	t.Cleanup(func() { getCredentialsWithSourceFn = previous })
+
+	creds, err := resolveCredentials()
+	if err != nil {
+		t.Fatalf("resolveCredentials() error: %v", err)
+	}
+	if creds.keyID != "STOREDKEY" || creds.issuerID != "ENVISS" || creds.keyPath != storedKeyPath {
+		t.Fatalf("expected stored credentials completed by environment issuer, got %+v", creds)
+	}
+	if privateKeyTempPath != "" || len(privateKeyTempPaths) != 0 {
+		t.Fatalf("unused malformed environment key materialized private key files: %q %#v", privateKeyTempPath, privateKeyTempPaths)
+	}
+}
+
 func TestResolveCredentials_ProfileFlagStillPrefersStoredOverCompleteEnv(t *testing.T) {
 	resetPrivateKeyTemp(t)
 
