@@ -959,8 +959,12 @@ Examples:
 				strings.TrimSpace(os.Getenv(shared.PrivateKeyBase64EnvVar)) != ""
 			envProvided := envKeyID != "" || envIssuerID != "" || hasKeyEnv || envKeyTypeRaw != ""
 			envComplete := shared.HasCompleteEnvironmentCredentials()
-			environmentNote := authStatusEnvironmentNote(profile, bypassKeychain, envProvided, envComplete, envKeyTypeValid)
-			activeEnvironmentSource := profile == "" && !bypassKeychain && envComplete && envKeyTypeValid
+			envUsable := envComplete
+			if profile == "" && !bypassKeychain && envComplete {
+				envUsable = shared.CanResolveCompleteEnvironmentCredentials()
+			}
+			environmentNote := authStatusEnvironmentNote(profile, bypassKeychain, envProvided, envUsable, envKeyTypeValid)
+			activeEnvironmentSource := profile == "" && !bypassKeychain && envUsable && envKeyTypeValid
 
 			validationFailures := 0
 			var validationDiagnostic shared.Diagnostic

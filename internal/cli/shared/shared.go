@@ -630,6 +630,14 @@ func HasCompleteEnvironmentCredentials() bool {
 	return complete
 }
 
+// CanResolveCompleteEnvironmentCredentials reports whether complete environment
+// credentials can be selected by the no-profile, no-bypass fast path. Inline
+// key material is materialized the same way it is during credential resolution.
+func CanResolveCompleteEnvironmentCredentials() bool {
+	resolved, err := resolveEnvCredentials()
+	return err == nil && resolved.complete
+}
+
 func resolveStoredCredentialsMetadataFallback(profile string) (ResolvedAuthCredentials, error) {
 	credentials, err := listCredentialSummariesFn()
 	if err != nil {
