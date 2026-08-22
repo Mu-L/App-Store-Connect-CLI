@@ -249,7 +249,8 @@ These are properties of the data, not defects to be papered over.
 - **Discovery is suggestion-scoped.** `discover` calls only the documented
   keyword and phrase suggestion endpoints. Each request asks Apple to order
   results by popularity descending and uses the requested `--limit` as its
-  page size, stopping once that bounded prefix is collected. Campaign,
+  bounded page size (subject to Apple's platform page-size cap), stopping once
+  that bounded prefix is collected. Campaign,
   eligibility, reporting, and recommendation data are not fetched, and
   `--genre` remains an optional report label that does not affect suggestions.
 - **Release dates are read directly.** The shared public client type in
@@ -271,10 +272,11 @@ suggests. It reads Apple's two official Ads suggestion endpoints:
 | App phrase discovery | `POST /v1/suggestions/phrases/query` |
 
 Neither requires an existing campaign. Terms from both endpoints are lowercased
-and whitespace-collapsed, deduplicated across the two sources with the first
-occurrence winning, and reported with the endpoint each came from and any
-popularity Apple attached. `--limit` caps the returned list and sets
-`truncated` when Apple offered more.
+and whitespace-collapsed, deduplicated across the two sources by retaining the
+highest popularity occurrence (ties retain the first occurrence), then sorted
+globally by popularity descending with missing popularity last. Each term is
+reported with the endpoint it came from and any popularity Apple attached.
+`--limit` caps the returned list and sets `truncated` when Apple offered more.
 
 The report also carries `scoreKeywords`: a comma-separated list of the
 suggestions that satisfy the keyword hygiene rules above, ready to pass
