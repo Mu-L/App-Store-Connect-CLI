@@ -21,7 +21,7 @@ asc --profile staging builds upload --app "123456789" --ipa "MyApp.ipa"
 
 ### `--strict-auth`
 
-Fail when credentials are resolved from multiple sources (e.g., both environment variables and keychain).
+Fail when the resolved credential takes required fields from multiple sources.
 
 ```bash  theme={null}
 asc --strict-auth apps list
@@ -31,7 +31,7 @@ asc --strict-auth apps list
 
 **Environment variable**: `ASC_STRICT_AUTH` (accepts `true/false`, `1/0`, `yes/no`, `y/n`, `on/off`)
 
-This flag helps catch configuration issues where credentials might be coming from unexpected sources.
+Unused values in another source do not trigger strict mode. See the [credential resolution matrix](/authentication#credential-resolution) for field-level behavior.
 
 ## Debug and Logging Flags
 
@@ -150,13 +150,15 @@ asc --profile production apps list
 
 ### Flag Priority
 
-When the same setting is configured in multiple places, the CLI uses this priority order (highest to lowest):
+For non-authentication settings, the CLI generally uses this priority order (highest to lowest):
 
 1. Explicit command-line flags
 2. Environment variables
 3. Profile-specific config file settings
 4. Global config file settings
 5. Built-in defaults
+
+Authentication credentials use conditional precedence instead. See the [credential resolution matrix](/authentication#credential-resolution).
 
 ### Boolean Flags
 
@@ -194,7 +196,9 @@ These environment variables don't have corresponding flags but control global be
 | `ASC_UPLOAD_TIMEOUT_SECONDS` | Upload timeout in seconds       | `300`                             |
 | `ASC_APP_ID`                 | Default app ID                  | App Store Connect app ID          |
 | `ASC_VENDOR_NUMBER`          | Vendor number for reports       | Sales/finance vendor number       |
-| `ASC_BYPASS_KEYCHAIN`        | Ignore keychain, use config/env | `true/false`, `1/0`               |
+| `ASC_BYPASS_KEYCHAIN`        | Ignore keychain, use config/env | `true/false`, `1/0`, `yes/no`, `on/off` |
+| `ASC_CONFIG_PATH`            | Select an absolute config path  | `/path/to/config.json`             |
+| `ASC_KEY_TYPE`               | API key type                    | `team`, `individual`               |
 
 ## Examples
 
@@ -211,16 +215,18 @@ asc --profile production --strict-auth validate --app "123456789" --version "1.2
 ### CI Pipeline
 
 ```bash  theme={null}
+# Set environment before every authenticated command. The "ci" profile must
+# already exist in the selected keychain or default config store.
+export ASC_PROFILE=ci
+unset ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+export ASC_STRICT_AUTH=true
+export ASC_DEFAULT_OUTPUT=json
+
 # Run validation with JUnit report
 asc --report junit --report-file validation-results.xml \
   validate \
   --app "$APP_ID" \
   --version "$VERSION"
-
-# Set environment for all commands in CI
-export ASC_PROFILE=ci
-export ASC_STRICT_AUTH=true
-export ASC_DEFAULT_OUTPUT=json
 
 asc apps list
 asc builds list --app "$APP_ID"

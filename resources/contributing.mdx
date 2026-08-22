@@ -57,6 +57,8 @@ Integration tests hit the real App Store Connect API and are **skipped by defaul
 To run integration tests, set credentials in your environment:
 
 ```bash  theme={null}
+unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+export ASC_KEY_TYPE="team"
 export ASC_KEY_ID="YOUR_KEY_ID"
 export ASC_ISSUER_ID="YOUR_ISSUER_ID"
 export ASC_PRIVATE_KEY_PATH="/path/to/AuthKey.p8"
@@ -70,6 +72,7 @@ make test-integration
 For CI/CD or headless environments, use base64-encoded keys:
 
 ```bash  theme={null}
+unset ASC_PRIVATE_KEY_PATH ASC_PRIVATE_KEY
 export ASC_PRIVATE_KEY_B64="BASE64_ENCODED_KEY"
 ```
 
@@ -78,6 +81,8 @@ export ASC_PRIVATE_KEY_B64="BASE64_ENCODED_KEY"
 If you have App Store Connect API credentials, you can run real API calls locally:
 
 ```bash  theme={null}
+unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+export ASC_KEY_TYPE="team"
 export ASC_KEY_ID="YOUR_KEY_ID"
 export ASC_ISSUER_ID="YOUR_ISSUER_ID"
 export ASC_PRIVATE_KEY_PATH="/path/to/AuthKey.p8"
@@ -88,15 +93,17 @@ asc testflight crashes list --app "$ASC_APP_ID"
 asc reviews --app "$ASC_APP_ID"
 ```
 
-### Credential Storage
+### Credential storage
 
-Credentials are stored:
+Credential storage locations include:
 
 1. **macOS**: System keychain (when available)
 2. **Fallback**: Config file at `~/.asc/config.json` (restricted permissions)
 3. **Repo-local**: `./.asc/config.json` (also supported)
 
 **Important**: Do not commit secrets or `.p8` files to the repository.
+
+Storage location is not the same as credential precedence. See the [credential resolution matrix](/authentication#credential-resolution) before live testing with multiple sources.
 
 ## Local Validation
 
