@@ -343,7 +343,11 @@ func hydrateCompetitorMetadata(
 	incompleteBatches := failedChunks
 	if omittedIDs > 0 {
 		incompleteBatches++
-		omissionErr := fmt.Errorf("lookup omitted metadata for %d of %d requested app IDs", omittedIDs, len(ids))
+		omissionErr := fmt.Errorf(
+			"lookup omitted required release metadata (both releaseDate and currentVersionReleaseDate must be valid) for %d of %d requested app IDs",
+			omittedIDs,
+			len(ids),
+		)
 		if coverageErr == nil {
 			coverageErr = omissionErr
 		} else {

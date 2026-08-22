@@ -49,7 +49,8 @@ type publicLookupResponse struct {
 }
 
 // fetchPublicAppMetadata reads release dates for a batch of app IDs from
-// Apple's public lookup endpoint. It returns metadata keyed by app ID.
+// Apple's public lookup endpoint. It returns only rows with both required
+// dates parseable, keyed by app ID, so callers can report incomplete coverage.
 func fetchPublicAppMetadata(
 	ctx context.Context,
 	client *itunes.Client,
@@ -103,6 +104,14 @@ func fetchPublicAppMetadata(
 		if result.TrackID == 0 {
 			continue
 		}
+		releaseDate := strings.TrimSpace(result.ReleaseDate)
+		currentVersionReleaseDate := strings.TrimSpace(result.CurrentVersionReleaseDate)
+		if _, ok := parsePublicDate(releaseDate); !ok {
+			continue
+		}
+		if _, ok := parsePublicDate(currentVersionReleaseDate); !ok {
+			continue
+		}
 		appID := strconv.FormatInt(result.TrackID, 10)
 		metadata[appID] = publicAppMetadata{
 			AppID:                     appID,
@@ -110,8 +119,8 @@ func fetchPublicAppMetadata(
 			PublisherName:             strings.TrimSpace(result.SellerName),
 			AverageUserRating:         result.AverageUserRating,
 			UserRatingCount:           result.UserRatingCount,
-			ReleaseDate:               strings.TrimSpace(result.ReleaseDate),
-			CurrentVersionReleaseDate: strings.TrimSpace(result.CurrentVersionReleaseDate),
+			ReleaseDate:               releaseDate,
+			CurrentVersionReleaseDate: currentVersionReleaseDate,
 		}
 	}
 	return metadata, nil
