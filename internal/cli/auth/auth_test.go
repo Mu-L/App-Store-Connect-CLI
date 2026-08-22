@@ -61,6 +61,20 @@ func TestAuthHelpHighlightsStatusDiscoverability(t *testing.T) {
 	}
 }
 
+func TestAuthHelpExplainsCredentialResolutionBranches(t *testing.T) {
+	longHelp := AuthCommand().LongHelp
+	for _, expected := range []string{
+		"--profile or ASC_PROFILE selects a stored profile and disables the env-only fast path.",
+		"With no profile and keychain bypass disabled, a complete environment set skips stored lookup.",
+		"ASC_BYPASS_KEYCHAIN skips keychain; env fallback follows only missing/default-selection config errors.",
+		"Config selection: ASC_CONFIG_PATH; otherwise nearest ancestor .asc/config.json; otherwise ~/.asc/config.json.",
+	} {
+		if !strings.Contains(longHelp, expected) {
+			t.Fatalf("expected AuthCommand().LongHelp to contain %q, got %q", expected, longHelp)
+		}
+	}
+}
+
 func TestAuthCommandUnknownSubcommand(t *testing.T) {
 	cmd := AuthCommand()
 	_, stderr := captureAuthOutput(t, func() {

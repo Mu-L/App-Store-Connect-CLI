@@ -45,14 +45,17 @@ func AuthCommand() *ffcli.Command {
 Authentication is handled via App Store Connect API keys. Generate keys at:
 https://appstoreconnect.apple.com/access/integrations/api
 
-Credentials are stored in the system keychain when available, with a config fallback.
-A repo-local ./.asc/config.json (if present) takes precedence.
+Credentials can come from the system keychain, the active config file, or environment variables.
 
-Credential resolution order:
-  1) Selected profile (keychain/config)
-  2) Environment variables (fallback for missing fields)
+Credential resolution:
+  - --profile or ASC_PROFILE selects a stored profile and disables the env-only fast path.
+  - With no profile and keychain bypass disabled, a complete environment set skips stored lookup.
+  - After stored selection succeeds, environment variables can fill eligible missing fields.
+  - ASC_BYPASS_KEYCHAIN skips keychain; env fallback follows only missing/default-selection config errors.
 
-Use --strict-auth or ASC_STRICT_AUTH=true (also: 1, yes, y, on) to fail when sources are mixed.
+Config selection: ASC_CONFIG_PATH; otherwise nearest ancestor .asc/config.json; otherwise ~/.asc/config.json.
+
+Use --strict-auth or ASC_STRICT_AUTH=true (also: 1, yes, y, on) to reject split-source fields.
 Set ASC_BYPASS_KEYCHAIN to 1/true/yes/on to bypass keychain.
 
 Use "asc auth status" to see which credentials/profile are currently active.
@@ -60,6 +63,7 @@ Use "asc auth status" to see which credentials/profile are currently active.
 Examples:
   asc auth status
   asc auth status --verbose
+  asc --profile work apps list
   asc auth switch --name work
   asc auth export-to-config --confirm`,
 		FlagSet:   fs,
