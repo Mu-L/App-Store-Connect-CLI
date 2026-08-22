@@ -36,6 +36,15 @@ func TestKeywordsRankCommandHelpDescribesPublicZeroAuthWorkflow(t *testing.T) {
 	if !strings.HasSuffix(command.ShortHelp, "[experimental]") {
 		t.Fatalf("ShortHelp = %q, want experimental suffix", command.ShortHelp)
 	}
+	for _, name := range []string{"app", "keywords", "country", "platform", "workers"} {
+		flagDef := command.FlagSet.Lookup(name)
+		if flagDef == nil {
+			t.Fatalf("flag --%s is not registered", name)
+		}
+		if !strings.HasSuffix(flagDef.Usage, "[experimental]") {
+			t.Fatalf("--%s usage = %q, want experimental suffix", name, flagDef.Usage)
+		}
+	}
 }
 
 func TestKeywordsRankCommandRejectsPositionalArguments(t *testing.T) {
@@ -341,6 +350,31 @@ func TestKeywordsRankBoundsConcurrentRequestsWithWorkers(t *testing.T) {
 	}
 	if observed < 2 {
 		t.Fatalf("max concurrent requests = %d, want parallel execution", observed)
+	}
+}
+
+func TestKeywordsRankReportsEffectiveWorkerCount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeSearchResults(w, 1234567890)
+	}))
+	defer server.Close()
+	stubKeywordsClient(t, server.URL)
+
+	stdout := captureSearchPlanStdout(t, func() error {
+		return KeywordsRankCommand().ParseAndRun(context.Background(), []string{
+			"--app", "1234567890",
+			"--keywords", "focus timer,habit tracker",
+			"--workers", "10",
+			"--output", "json",
+		})
+	})
+
+	var report asc.KeywordRankReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if report.Workers != 2 {
+		t.Fatalf("report.Workers = %d, want effective keyword count 2", report.Workers)
 	}
 }
 

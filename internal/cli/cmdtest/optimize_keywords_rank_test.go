@@ -8,30 +8,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
-
-type keywordRankRowPayload struct {
-	Keyword      string `json:"keyword"`
-	Rank         *int   `json:"rank"`
-	TotalResults *int   `json:"totalResults,omitempty"`
-	Status       string `json:"status"`
-	Error        string `json:"error,omitempty"`
-}
-
-type keywordRankPayload struct {
-	SchemaVersion string `json:"schemaVersion"`
-	AppID         string `json:"appId"`
-	Country       string `json:"country"`
-	Platform      string `json:"platform"`
-	Workers       int    `json:"workers"`
-	Summary       struct {
-		Keywords    int `json:"keywords"`
-		Ranked      int `json:"ranked"`
-		Absent      int `json:"absent"`
-		Unavailable int `json:"unavailable"`
-	} `json:"summary"`
-	Rows []keywordRankRowPayload `json:"rows"`
-}
 
 func TestOptimizeKeywordsHelpShowsRankSubcommand(t *testing.T) {
 	root := RootCommand("1.2.3")
@@ -178,7 +157,7 @@ func TestOptimizeKeywordsRankJSONComposesPublicSearchWindow(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", stderr)
 	}
 
-	var payload keywordRankPayload
+	var payload asc.KeywordRankReport
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
 	}

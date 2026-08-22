@@ -19,11 +19,11 @@ const keywordRankSchemaVersion = "1"
 // KeywordsRankCommand returns the public keyword ranking command.
 func KeywordsRankCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("rank", flag.ExitOnError)
-	appID := fs.String("app", "", "App Store app ID (required, or ASC_APP_ID env)")
-	keywords := shared.BindOnceCSVFlag(fs, "keywords", "Comma-separated keyword candidates to rank (required)")
-	country := fs.String("country", "us", "ISO alpha-2 App Store storefront country or region")
-	platform := fs.String("platform", "IOS", "Public App Store platform: IOS or TV_OS")
-	workers := fs.Int("workers", 10, "Number of parallel keyword lookups")
+	appID := fs.String("app", "", "App Store app ID (required, or ASC_APP_ID env) [experimental]")
+	keywords := shared.BindOnceCSVFlag(fs, "keywords", "Comma-separated keyword candidates to rank (required) [experimental]")
+	country := fs.String("country", "us", "ISO alpha-2 App Store storefront country or region [experimental]")
+	platform := fs.String("platform", "IOS", "Public App Store platform: IOS or TV_OS [experimental]")
+	workers := fs.Int("workers", 10, "Number of parallel keyword lookups [experimental]")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -36,6 +36,8 @@ for each keyword candidate. [experimental]
 No authentication is required. Keywords are normalized to lowercase, collapsed
 whitespace, and deduplicated. Each invocation accepts at most 100 keywords of
 2-60 characters and at most 4 space-separated words.
+The effective worker count is capped at the normalized keyword count and is
+recorded in the report.
 
 A keyword whose lookup fails is reported as an unavailable row instead of being
 dropped or scored as absent. The command fails only when every keyword lookup
@@ -70,6 +72,10 @@ Examples:
 			if *workers < 1 {
 				return shared.UsageError("--workers must be at least 1")
 			}
+			effectiveWorkers := *workers
+			if effectiveWorkers > len(normalizedKeywords) {
+				effectiveWorkers = len(normalizedKeywords)
+			}
 			normalizedCountry, err := normalizeKeywordCountry(*country)
 			if err != nil {
 				return err
@@ -87,7 +93,7 @@ Examples:
 			}
 
 			client := newKeywordsItunesClient()
-			results := fanOutKeywords(ctx, normalizedKeywords, *workers, func(ctx context.Context, keyword string) (itunes.PublicRankResult, error) {
+			results := fanOutKeywords(ctx, normalizedKeywords, effectiveWorkers, func(ctx context.Context, keyword string) (itunes.PublicRankResult, error) {
 				requestCtx, cancel := shared.ContextWithTimeout(ctx)
 				defer cancel()
 				return client.RankApp(requestCtx, resolvedAppID, keyword, normalizedCountry, normalizedPlatform)
@@ -101,7 +107,7 @@ Examples:
 				AppID:       resolvedAppID,
 				Country:     strings.ToUpper(normalizedCountry),
 				Platform:    string(normalizedPlatform),
-				Workers:     *workers,
+				Workers:     effectiveWorkers,
 				Results:     results,
 			})
 			if report.Summary.Unavailable == report.Summary.Keywords {
