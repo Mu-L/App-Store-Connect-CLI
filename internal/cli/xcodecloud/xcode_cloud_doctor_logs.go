@@ -233,6 +233,7 @@ func analyzeDoctorLogBundle(data []byte) (doctorLogBundleAnalysis, error) {
 
 	analysis := doctorLogBundleAnalysis{Diagnostics: make([]asc.XcodeCloudDoctorLogDiagnostic, 0)}
 	var total int64
+	readableEntries := 0
 	for _, file := range reader.File {
 		if file.FileInfo().IsDir() || !isDoctorLogTextFile(file.Name) {
 			continue
@@ -262,7 +263,11 @@ func analyzeDoctorLogBundle(data []byte) (doctorLogBundleAnalysis, error) {
 			continue
 		}
 		total += int64(len(contents))
+		readableEntries++
 		analyzeDoctorLogText(&analysis, file.Name, string(contents))
+	}
+	if readableEntries == 0 {
+		return doctorLogBundleAnalysis{}, fmt.Errorf("log bundle contains no readable text entries")
 	}
 	return analysis, nil
 }

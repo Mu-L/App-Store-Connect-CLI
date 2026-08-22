@@ -349,6 +349,18 @@ func TestAnalyzeDoctorLogBundleRejectsOversizedTextEntry(t *testing.T) {
 	}
 }
 
+func TestAnalyzeDoctorLogBundleRejectsArchiveWithoutReadableTextEntries(t *testing.T) {
+	data := doctorLogBundleFixture(t, map[string]string{
+		"Build/Build.xcactivitylog": "binary activity log",
+		"Export/binary.log":         "ignored\x00binary",
+	})
+
+	_, err := analyzeDoctorLogBundle(data)
+	if err == nil || !strings.Contains(err.Error(), "no readable text entries") {
+		t.Fatalf("analyzeDoctorLogBundle() error = %v, want readable-text coverage error", err)
+	}
+}
+
 func TestSaveAndAnalyzeDoctorLogBundleKeepsOversizedFile(t *testing.T) {
 	directory := t.TempDir()
 	root, err := rootfs.New(directory)
