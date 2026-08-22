@@ -15,7 +15,7 @@ Produce a current, evidence-backed verdict and leave the issue with complete rep
 4. For API claims, verify the exact method and endpoint in `docs/openapi/latest.json`; use the `sosumi.ai` documentation mirror for explanatory context.
 5. Check whether the report is already fixed on current `origin/main`, duplicated, unsupported by the public API, or blocked by Apple/platform behavior.
 
-Run independent issue, source, help, API, duplicate, and linked-PR checks in parallel or with isolated subagents when available. Keep labels, issue comments, and implementation handoffs coordinated and serialized.
+Run independent read-only or dry-run issue, source, help, API, duplicate, and linked-PR checks in parallel or with isolated subagents when available. Serialize mutation-capable reproductions, use disposable resources with cleanup, and keep labels, issue comments, and implementation handoffs coordinated and serialized.
 
 ## Classify the outcome
 

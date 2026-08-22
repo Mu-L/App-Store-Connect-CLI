@@ -37,13 +37,14 @@ approve-and-merge authority. Immediately before acting, confirm:
 - The latest head contains only the legitimate Wall change.
 - `make check-wall-of-apps` and required GitHub checks pass.
 - No actionable unresolved review thread remains.
+- Required reviews are satisfied.
 - The PR is mergeable against current `main`.
 
 Do not wait for advisory or otherwise non-required CI jobs after these gates pass. A pending non-required job does not make the exact-head evidence stale.
 
 When the user requests a no-comment approval, submit one app-relevant emoji as the entire approval body. Do not add a generic summary comment; reply only when an actionable thread needs an explanation or the user asks for a comment. Merge one PR at a time and prefer the repository's normal squash strategy.
 
-After each merge, confirm the merge commit and entry reached `origin/main`. When the user asks whether the app appears on the live Wall, verify the rendered `asccli.sh` page separately; source presence is not deployment proof, and advisory CI is not a reason to delay the live check.
+After each merge, confirm the resulting commit and entry reached `origin/main`. When the user asks whether the app appears on the live Wall, verify the rendered `asccli.sh` page separately; source presence is not deployment proof, and advisory CI is not a reason to delay the live check.
 
 ## Automation contract
 
@@ -51,8 +52,9 @@ A standalone automation may approve and merge unattended only when its
 persisted prompt explicitly grants that authority and every approval-and-merge
 gate above passes on the latest head. Immediately before acting, run
 `make check-wall-of-apps` locally on that exact head and verify required GitHub
-checks and review threads again. Do not wait for non-required CI jobs. Approve
-and merge one PR at a time using the repository's normal strategy.
+checks, required reviews, and review threads again. Do not wait for non-required
+CI jobs. Approve and merge one PR at a time using the repository's normal
+strategy.
 
 If authority is absent or any gate is uncertain, failing, suspicious, unrelated,
 or stale, remain read-only and report `safe`, `needs-fix`, `suspicious`, or
