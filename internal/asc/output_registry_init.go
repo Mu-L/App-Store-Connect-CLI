@@ -6,6 +6,20 @@ package asc
 // commands that never render registry output (for example `asc --version`)
 // do not pay the ~450-type registration cost at process start.
 func registerAllOutputRenderers() {
+	registerDirect(func(v *DeveloperSystemStatusReport, render func([]string, [][]string)) error {
+		h, r := developerSystemStatusSummaryRows(v)
+		render(h, r)
+		sh, sr := developerSystemStatusServiceRows(v)
+		render(sh, sr)
+		return nil
+	})
+	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {
+		h, r := keywordRankSummaryRows(v)
+		render(h, r)
+		kh, kr := keywordRankRows(v)
+		render(kh, kr)
+		return nil
+	})
 	registerDirect(keywordScoreTables)
 	registerRows(feedbackRows)
 	registerRows(crashesRows)
