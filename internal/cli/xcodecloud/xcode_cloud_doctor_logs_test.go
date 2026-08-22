@@ -3,6 +3,7 @@ package xcodecloud
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -33,6 +34,21 @@ func TestAnalyzeDoctorLogBundleFindsITMSDiagnosticsAndExportStatus(t *testing.T)
 	}
 	if analysis.Diagnostics[0].Code != "ITMS-90478" {
 		t.Fatalf("diagnostic code = %q, want ITMS-90478", analysis.Diagnostics[0].Code)
+	}
+}
+
+func TestAnalyzeDoctorLogBundleReportsDiagnosticTruncation(t *testing.T) {
+	lines := make([]string, 0, maxDoctorDiagnostics+1)
+	for index := 0; index <= maxDoctorDiagnostics; index++ {
+		lines = append(lines, fmt.Sprintf("error: ITMS-%05d: diagnostic %d", index, index))
+	}
+
+	analysis, err := analyzeDoctorLogBundle([]byte(strings.Join(lines, "\n")))
+	if err != nil {
+		t.Fatalf("analyzeDoctorLogBundle() error = %v", err)
+	}
+	if len(analysis.Diagnostics) != maxDoctorDiagnostics || !analysis.DiagnosticsTruncated {
+		t.Fatalf("analysis = %+v, want %d diagnostics and explicit truncation", analysis, maxDoctorDiagnostics)
 	}
 }
 

@@ -68,14 +68,15 @@ type XcodeCloudDoctorCoverageWarning struct {
 
 // XcodeCloudDoctorLogBundle records inspection results for a log bundle.
 type XcodeCloudDoctorLogBundle struct {
-	ArtifactID   string                          `json:"artifactId"`
-	ActionID     string                          `json:"actionId"`
-	FileName     string                          `json:"fileName,omitempty"`
-	FileSize     int                             `json:"fileSize,omitempty"`
-	Inspected    bool                            `json:"inspected"`
-	SavedPath    string                          `json:"savedPath,omitempty"`
-	ExportStatus string                          `json:"exportStatus,omitempty"`
-	Diagnostics  []XcodeCloudDoctorLogDiagnostic `json:"diagnostics"`
+	ArtifactID           string                          `json:"artifactId"`
+	ActionID             string                          `json:"actionId"`
+	FileName             string                          `json:"fileName,omitempty"`
+	FileSize             int                             `json:"fileSize,omitempty"`
+	Inspected            bool                            `json:"inspected"`
+	SavedPath            string                          `json:"savedPath,omitempty"`
+	ExportStatus         string                          `json:"exportStatus,omitempty"`
+	Diagnostics          []XcodeCloudDoctorLogDiagnostic `json:"diagnostics"`
+	DiagnosticsTruncated bool                            `json:"diagnosticsTruncated,omitempty"`
 }
 
 // XcodeCloudDoctorLogDiagnostic is an App Store import diagnostic extracted from a log bundle.
@@ -166,6 +167,7 @@ func xcodeCloudDoctorResultTables(result *XcodeCloudDoctorResult, render func([]
 			strconv.FormatBool(bundle.Inspected),
 			xcodeCloudDoctorOrNA(bundle.ExportStatus),
 			strings.Join(codes, ","),
+			strconv.FormatBool(bundle.DiagnosticsTruncated),
 			bundle.SavedPath,
 		})
 		for _, diagnostic := range bundle.Diagnostics {
@@ -178,7 +180,7 @@ func xcodeCloudDoctorResultTables(result *XcodeCloudDoctorResult, render func([]
 			})
 		}
 	}
-	render([]string{"Log bundles action ID", "Artifact ID", "Inspected", "Export status", "Diagnostics", "Saved path"}, logRows)
+	render([]string{"Log bundles action ID", "Artifact ID", "Inspected", "Export status", "Diagnostics", "Diagnostics truncated", "Saved path"}, logRows)
 	render([]string{"Log diagnostics action ID", "Artifact ID", "Code", "Message", "Source file"}, diagnosticRows)
 
 	coverageRows := make([][]string, 0, len(result.CoverageWarnings))

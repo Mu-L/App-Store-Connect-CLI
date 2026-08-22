@@ -28,8 +28,9 @@ const (
 var doctorITMSCodePattern = regexp.MustCompile(`(?i)\bITMS-[0-9]+\b`)
 
 type doctorLogBundleAnalysis struct {
-	ExportStatus string
-	Diagnostics  []asc.XcodeCloudDoctorLogDiagnostic
+	ExportStatus         string
+	Diagnostics          []asc.XcodeCloudDoctorLogDiagnostic
+	DiagnosticsTruncated bool
 }
 
 func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result *asc.XcodeCloudDoctorResult, options xcodeCloudDoctorOptions) error {
@@ -91,6 +92,17 @@ func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result
 				continue
 			}
 			result.LogBundles = append(result.LogBundles, bundleResult)
+			if bundleResult.DiagnosticsTruncated {
+				remediation := fmt.Sprintf("Re-run with --save-logs and inspect artifact %s locally for additional diagnostics.", artifact.ID)
+				if bundleResult.SavedPath != "" {
+					remediation = fmt.Sprintf("Inspect the saved bundle %s locally for additional diagnostics.", asc.SanitizeTerminalText(bundleResult.SavedPath))
+				}
+				result.CoverageWarnings = append(result.CoverageWarnings, asc.XcodeCloudDoctorCoverageWarning{
+					ID:          "log_diagnostics_truncated",
+					Message:     fmt.Sprintf("Log bundle %s contains more than %d distinct ITMS diagnostics; only the first %d are reported.", artifact.ID, maxDoctorDiagnostics, maxDoctorDiagnostics),
+					Remediation: remediation,
+				})
+			}
 			if bundleResult.Inspected {
 				result.Summary.LogBundlesInspected++
 			}
@@ -136,6 +148,7 @@ func downloadAndAnalyzeDoctorLogBundle(ctx context.Context, client *asc.Client, 
 	result.Inspected = true
 	result.ExportStatus = analysis.ExportStatus
 	result.Diagnostics = analysis.Diagnostics
+	result.DiagnosticsTruncated = analysis.DiagnosticsTruncated
 	return result, nil
 }
 
@@ -184,6 +197,7 @@ func saveAndAnalyzeDoctorLogBundle(
 	result.Inspected = true
 	result.ExportStatus = analysis.ExportStatus
 	result.Diagnostics = analysis.Diagnostics
+	result.DiagnosticsTruncated = analysis.DiagnosticsTruncated
 	return result, nil
 }
 
@@ -266,9 +280,6 @@ func analyzeDoctorLogText(analysis *doctorLogBundleAnalysis, sourceFile, content
 		seen[diagnostic.Code+"\x00"+diagnostic.Message] = struct{}{}
 	}
 	for _, line := range strings.Split(contents, "\n") {
-		if len(analysis.Diagnostics) >= maxDoctorDiagnostics {
-			return
-		}
 		code := strings.ToUpper(doctorITMSCodePattern.FindString(line))
 		if code == "" {
 			continue
@@ -284,6 +295,10 @@ func analyzeDoctorLogText(analysis *doctorLogBundleAnalysis, sourceFile, content
 		key := code + "\x00" + message
 		if _, exists := seen[key]; exists {
 			continue
+		}
+		if len(analysis.Diagnostics) >= maxDoctorDiagnostics {
+			analysis.DiagnosticsTruncated = true
+			return
 		}
 		seen[key] = struct{}{}
 		analysis.Diagnostics = append(analysis.Diagnostics, asc.XcodeCloudDoctorLogDiagnostic{

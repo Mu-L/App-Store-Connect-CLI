@@ -77,6 +77,9 @@ Examples:
 			if flagWasSet(fs, "save-logs") && strings.TrimSpace(*saveLogs) == "" {
 				return shared.UsageError("--save-logs must not be empty")
 			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return err
+			}
 
 			client, err := shared.GetASCClient()
 			if err != nil {
