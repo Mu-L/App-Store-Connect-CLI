@@ -114,6 +114,7 @@ func keywordScoreTables(report *KeywordScoreReport, render func([]string, [][]st
 			row.Keyword,
 			formatKeywordScoreFloat(row.DifficultyScore),
 			formatKeywordScoreFloat(row.MinDifficultyScore),
+			strconv.FormatBool(row.Fallback),
 			formatKeywordScorePopularity(row.Popularity),
 			formatKeywordScoreInt(row.AppCount),
 			formatKeywordScoreInt(row.Rank),
@@ -124,7 +125,7 @@ func keywordScoreTables(report *KeywordScoreReport, render func([]string, [][]st
 		})
 	}
 	render(
-		[]string{"Keyword", "Difficulty", "Min Difficulty", "Popularity", "Apps", "Rank", "Match", "Brand", "Status", "Error"},
+		[]string{"Keyword", "Difficulty", "Min Difficulty", "Fallback", "Popularity", "Apps", "Rank", "Match", "Brand", "Status", "Error"},
 		rows,
 	)
 
