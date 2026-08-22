@@ -218,6 +218,7 @@ func registerAllOutputRenderers() {
 	registerRowsWithSingleToListAdapter[BetaLicenseAgreementResponse, BetaLicenseAgreementsResponse](betaLicenseAgreementsRows)
 	registerRows(buildBetaNotificationRows)
 	registerRows(ageRatingDeclarationRows)
+	registerRows(ageRatingAuditResultRows)
 	registerRows(accessibilityDeclarationsRows)
 	registerRows(accessibilityDeclarationRows)
 	registerRows(appStoreReviewDetailRows)
