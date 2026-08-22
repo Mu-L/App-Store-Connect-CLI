@@ -6,8 +6,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -306,6 +308,86 @@ func TestKeywordsScoreComposesCompetitionRankAndDegradesPopularity(t *testing.T)
 		if string(raw.Rows[2][key]) != "null" {
 			t.Fatalf("unavailable row %q = %s, want an explicit null", key, raw.Rows[2][key])
 		}
+	}
+}
+
+func TestKeywordsScoreReturnsParentCancellationAfterPartialSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		writeScoreSearchResults(w)
+	}))
+	defer server.Close()
+	stubKeywordsClient(t, server.URL)
+	previousCollector := collectSearchPopularityForKeywords
+	t.Cleanup(func() { collectSearchPopularityForKeywords = previousCollector })
+	collectSearchPopularityForKeywords = func(context.Context, string, string, ads.SearchOptimizationRequest) ([]ads.SearchPopularity, error) {
+		cancel()
+		return nil, context.Canceled
+	}
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousStdout := os.Stdout
+	os.Stdout = writer
+	runErr := KeywordsScoreCommand().ParseAndRun(ctx, []string{
+		"--keywords", "focus timer",
+		"--genre", "PRODUCTIVITY_UTILITIES",
+		"--output", "json",
+	})
+	_ = writer.Close()
+	os.Stdout = previousStdout
+	stdout, readErr := io.ReadAll(reader)
+	_ = reader.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", runErr)
+	}
+	if len(stdout) != 0 {
+		t.Fatalf("stdout = %q, want no partial report", stdout)
+	}
+}
+
+func TestKeywordsScoreReportsEffectiveWorkerCount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search":
+			writeScoreSearchResults(w, scoreSearchApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000})
+		case "/lookup":
+			writeScoreLookupResults(w, scoreLookupApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000, Release: daysAgo(900), Updated: daysAgo(10)})
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	stubKeywordsClient(t, server.URL)
+	failKeywordsAdsCollector(t)
+
+	stdout := captureSearchPlanStdout(t, func() error {
+		return KeywordsScoreCommand().ParseAndRun(context.Background(), []string{
+			"--keywords", "focus timer",
+			"--workers", "10",
+			"--output", "json",
+		})
+	})
+
+	var report asc.KeywordScoreReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if report.Workers != 1 {
+		t.Fatalf("report.Workers = %d, want effective keyword count 1", report.Workers)
 	}
 }
 
