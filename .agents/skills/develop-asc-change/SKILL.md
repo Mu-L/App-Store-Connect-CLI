@@ -49,7 +49,7 @@ Read [references/test-matrix.md](references/test-matrix.md) for mandatory CLI, o
 - Write data to stdout and diagnostics to stderr. Never silently ignore accepted flags.
 - Use long-form flags in documentation, tests, and examples.
 - Require `--confirm` for destructive operations; do not add interactive prompts.
-- Keep one logical change per commit and remove helpers made obsolete by the change.
+- Keep one logical change per commit and remove helpers made obsolete by the change. Add review fixes as new commits; do not squash, rebase, force-push, or otherwise rewrite PR history unless the user explicitly requests it.
 - Deprecate stable commands or flags before removal, with warning text, transition tests, and an upgrade path.
 
 ## Reach GREEN and verify

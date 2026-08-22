@@ -38,7 +38,7 @@ Fetch independent read-only metadata, diff, check, schema, and review-thread evi
 
 1. Reproduce each defect before changing code.
 2. Add or adjust a failing regression test, confirm the failure, implement the smallest coherent fix, and rerun the focused test.
-3. Keep commits logical and traceable to findings or review threads.
+3. Keep commits logical and traceable to findings or review threads. Add fixes as new commits; do not squash, rebase, force-push, or otherwise rewrite the PR history unless the user explicitly requests it.
 4. Push to the PR head when permitted. If the contributor branch cannot accept maintainer pushes, report the exact limitation and prepare a separate fix PR only when authorized.
 5. Reply to and resolve only threads fully addressed by the pushed change.
 6. Re-fetch the head SHA, checks, reviews, and GraphQL threads after every push.
@@ -56,7 +56,9 @@ Do not call the PR ready until all of the following are true:
 - GitHub reports the PR mergeable with a clean merge state.
 - Live or deterministic verification supports the claimed behavior.
 
-Use `$watch-asc-pr` after the first push when required checks or actionable reviewers are still pending. Do not start or continue a watch loop only for advisory jobs. Approve or merge only when the user asked for that action.
+Use `$watch-asc-pr` after the first push when required checks or actionable reviewers are still pending. When the user asked to loop until green, keep running watch passes after each push and fresh review result until the latest head is clean or materially blocked; do not hand off merely because required checks are pending. Do not start or continue a watch loop only for advisory jobs.
+
+Approve or merge only when the user asked for that action. When merge is authorized, preserve the PR commits with a regular merge commit such as `gh pr merge --merge --match-head-commit <sha>`. Do not squash unless the user explicitly requests squash for that PR.
 
 ## Hand off
 
