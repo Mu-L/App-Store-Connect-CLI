@@ -51,11 +51,16 @@
   Yes. The CLI supports multiple authentication methods:
 
   ```bash  theme={null}
+  unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+  unset ASC_PRIVATE_KEY ASC_PRIVATE_KEY_B64
+  export ASC_KEY_TYPE="team"
   export ASC_KEY_ID="YOUR_KEY_ID"
   export ASC_ISSUER_ID="YOUR_ISSUER_ID"
   export ASC_PRIVATE_KEY_PATH="/path/to/AuthKey.p8"
 
   # Or use base64-encoded key for CI/CD
+  unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+  unset ASC_PRIVATE_KEY_PATH ASC_PRIVATE_KEY
   export ASC_PRIVATE_KEY_B64="BASE64_ENCODED_KEY"
   ```
 
@@ -65,7 +70,7 @@
   export ASC_BYPASS_KEYCHAIN=1
   ```
 
-  Priority order: Environment variables > Config file > Keychain
+  Authentication precedence is conditional. A selected profile wins, a complete environment set can skip stored lookup when no profile is selected and keychain bypass is disabled, and keychain bypass makes config the first stored source. See the [credential resolution matrix](/authentication#credential-resolution) for the complete behavior.
 </Accordion>
 
 <Accordion title="What permissions does my API key need?">
