@@ -36,6 +36,7 @@ func TestXcodeCloudRunValidatesOutputBeforeTriggerSideEffects(t *testing.T) {
 	t.Setenv("ASC_KEY_ID", "")
 	t.Setenv("ASC_ISSUER_ID", "")
 	t.Setenv("ASC_PRIVATE_KEY", "")
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
 
 	command := XcodeCloudRunCommand()
 	command.FlagSet.SetOutput(io.Discard)
