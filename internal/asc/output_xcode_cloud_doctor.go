@@ -21,6 +21,7 @@ type XcodeCloudDoctorResult struct {
 type XcodeCloudDoctorSummary struct {
 	TotalActions        int `json:"totalActions"`
 	FailedActions       int `json:"failedActions"`
+	CanceledActions     int `json:"canceledActions"`
 	SkippedActions      int `json:"skippedActions"`
 	Errors              int `json:"errors"`
 	Warnings            int `json:"warnings"`
@@ -104,6 +105,7 @@ func xcodeCloudDoctorResultTables(result *XcodeCloudDoctorResult, render func([]
 		{"completionStatus", xcodeCloudDoctorOrNA(run.CompletionStatus)},
 		{"totalActions", strconv.Itoa(result.Summary.TotalActions)},
 		{"failedActions", strconv.Itoa(result.Summary.FailedActions)},
+		{"canceledActions", strconv.Itoa(result.Summary.CanceledActions)},
 		{"skippedActions", strconv.Itoa(result.Summary.SkippedActions)},
 		{"errors", strconv.Itoa(result.Summary.Errors)},
 		{"warnings", strconv.Itoa(result.Summary.Warnings)},

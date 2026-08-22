@@ -145,7 +145,7 @@ func diagnoseXcodeCloudRun(ctx context.Context, client *asc.Client, runID string
 	}
 
 	summarizeXcodeCloudDoctorResult(result)
-	if options.SkipLogs && result.Summary.LogBundles > 0 && doctorRunFailed(result) {
+	if options.SkipLogs && doctorFailedActionLogBundleCount(result) > 0 && doctorRunFailed(result) {
 		result.CoverageWarnings = append(result.CoverageWarnings, asc.XcodeCloudDoctorCoverageWarning{
 			ID:          "log_bundle_inspection_skipped",
 			Message:     "Log bundle inspection was disabled with --skip-logs.",
@@ -274,8 +274,10 @@ func summarizeXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 	result.Summary.TotalActions = len(result.Actions)
 	for _, action := range result.Actions {
 		switch strings.ToUpper(strings.TrimSpace(action.CompletionStatus)) {
-		case "FAILED", "ERRORED", "CANCELED":
+		case "FAILED", "ERRORED":
 			result.Summary.FailedActions++
+		case "CANCELED":
+			result.Summary.CanceledActions++
 		case "SKIPPED":
 			result.Summary.SkippedActions++
 		}
@@ -297,13 +299,13 @@ func summarizeXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 }
 
 func shouldInspectDoctorLogs(result *asc.XcodeCloudDoctorResult, options xcodeCloudDoctorOptions) bool {
-	if options.SkipLogs || result.Summary.LogBundles == 0 {
+	if options.SkipLogs || result == nil {
 		return false
 	}
 	if strings.TrimSpace(options.SaveLogs) != "" {
-		return true
+		return result.Summary.LogBundles > 0
 	}
-	return doctorRunFailed(result)
+	return doctorRunFailed(result) && doctorFailedActionLogBundleCount(result) > 0
 }
 
 func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
@@ -331,6 +333,7 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 
 	hasImportDiagnostic := false
 	hasSuccessfulExport := false
+	failedActionLogBundles := doctorFailedActionLogBundleCount(result)
 	for _, bundle := range result.LogBundles {
 		if bundle.ExportStatus == "SUCCEEDED" {
 			hasSuccessfulExport = true
@@ -348,7 +351,7 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 		if hasSuccessfulExport {
 			result.Conclusion = "The archive export succeeded, but Xcode Cloud reported a later failure without an ITMS-level import diagnostic."
 			result.NextAction = "Check the App Store Connect delivery notification or build processing state for the server-side import rejection."
-		} else if result.Summary.LogBundles > 0 && result.Summary.LogBundlesInspected == 0 {
+		} else if failedActionLogBundles > 0 && result.Summary.LogBundlesInspected == 0 {
 			result.Conclusion = "Xcode Cloud reported an App Store Connect preparation failure, but its available log bundles were not inspected."
 			result.NextAction = "Re-run without --skip-logs, then check App Store Connect if the logs still contain no import detail."
 		} else {
@@ -367,7 +370,7 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 		return
 	}
 
-	if result.Summary.LogBundles > 0 && result.Summary.LogBundlesInspected == 0 {
+	if failedActionLogBundles > 0 && result.Summary.LogBundlesInspected == 0 {
 		result.Conclusion = "The Xcode Cloud build run failed, but its available log bundles were not inspected."
 		result.NextAction = "Re-run without --skip-logs or download the listed log bundle artifacts for inspection."
 	} else if result.Summary.Errors > 0 {
@@ -377,6 +380,24 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 		result.Conclusion = "The Xcode Cloud build run failed without a more specific diagnostic."
 		result.NextAction = "Review the available issues and artifacts in the report."
 	}
+}
+
+func doctorFailedActionLogBundleCount(result *asc.XcodeCloudDoctorResult) int {
+	if result == nil {
+		return 0
+	}
+	count := 0
+	for _, action := range result.Actions {
+		if !isFailedDoctorAction(action.CompletionStatus) {
+			continue
+		}
+		for _, artifact := range action.Artifacts {
+			if strings.EqualFold(strings.TrimSpace(artifact.FileType), "LOG_BUNDLE") {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func doctorRunFailed(result *asc.XcodeCloudDoctorResult) bool {

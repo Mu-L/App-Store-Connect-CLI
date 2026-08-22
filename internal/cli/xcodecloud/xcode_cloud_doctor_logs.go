@@ -40,7 +40,7 @@ func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result
 		}
 	}
 
-	inspectAll := strings.TrimSpace(options.SaveLogs) != "" || len(failedActions) == 0
+	inspectAll := strings.TrimSpace(options.SaveLogs) != ""
 	var saveRoot rootfs.Root
 	if strings.TrimSpace(options.SaveLogs) != "" {
 		var err error
@@ -158,7 +158,7 @@ func analyzeDoctorLogBundle(data []byte) (doctorLogBundleAnalysis, error) {
 			continue
 		}
 		if file.UncompressedSize64 > maxDoctorLogEntryBytes {
-			continue
+			return doctorLogBundleAnalysis{}, fmt.Errorf("log entry %q exceeds the %d-byte inspection limit", file.Name, maxDoctorLogEntryBytes)
 		}
 		if file.UncompressedSize64 > uint64(maxDoctorLogUncompressedBytes-int(total)) {
 			return doctorLogBundleAnalysis{}, fmt.Errorf("log bundle exceeds the %d-byte uncompressed inspection limit", maxDoctorLogUncompressedBytes)
@@ -175,7 +175,10 @@ func analyzeDoctorLogBundle(data []byte) (doctorLogBundleAnalysis, error) {
 		if closeErr != nil {
 			return doctorLogBundleAnalysis{}, fmt.Errorf("close log entry %q: %w", file.Name, closeErr)
 		}
-		if len(contents) > maxDoctorLogEntryBytes || bytes.IndexByte(contents, 0) >= 0 {
+		if len(contents) > maxDoctorLogEntryBytes {
+			return doctorLogBundleAnalysis{}, fmt.Errorf("log entry %q exceeds the %d-byte inspection limit", file.Name, maxDoctorLogEntryBytes)
+		}
+		if bytes.IndexByte(contents, 0) >= 0 {
 			continue
 		}
 		total += int64(len(contents))
@@ -236,7 +239,7 @@ func isDoctorLogTextFile(name string) bool {
 
 func isFailedDoctorAction(status string) bool {
 	switch strings.ToUpper(strings.TrimSpace(status)) {
-	case "FAILED", "ERRORED", "CANCELED":
+	case "FAILED", "ERRORED":
 		return true
 	default:
 		return false

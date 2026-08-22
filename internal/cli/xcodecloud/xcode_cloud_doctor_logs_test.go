@@ -113,12 +113,14 @@ func TestFinishXcodeCloudDoctorResultReportsCanceledAndSkippedRuns(t *testing.T)
 
 func TestShouldInspectDoctorLogsOnlyForFailuresUnlessSaving(t *testing.T) {
 	tests := []struct {
-		status  string
-		options xcodeCloudDoctorOptions
-		want    bool
+		status            string
+		executionProgress string
+		options           xcodeCloudDoctorOptions
+		want              bool
 	}{
 		{status: "FAILED", want: true},
 		{status: "ERRORED", want: true},
+		{status: "FAILED", executionProgress: "RUNNING", want: false},
 		{status: "SUCCEEDED", want: false},
 		{status: "CANCELED", want: false},
 		{status: "SKIPPED", want: false},
@@ -127,19 +129,72 @@ func TestShouldInspectDoctorLogsOnlyForFailuresUnlessSaving(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		t.Run(test.status+test.options.SaveLogs, func(t *testing.T) {
+		t.Run(test.status+test.executionProgress+test.options.SaveLogs, func(t *testing.T) {
+			executionProgress := test.executionProgress
+			if executionProgress == "" {
+				executionProgress = "COMPLETE"
+			}
 			result := &asc.XcodeCloudDoctorResult{
 				Run: &asc.XcodeCloudStatusResult{
-					ExecutionProgress: "COMPLETE",
+					ExecutionProgress: executionProgress,
 					CompletionStatus:  test.status,
 				},
 				Summary: asc.XcodeCloudDoctorSummary{LogBundles: 1},
+				Actions: []asc.XcodeCloudDoctorAction{{
+					CompletionStatus: "FAILED",
+					Artifacts:        []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}},
+				}},
 			}
 
 			if got := shouldInspectDoctorLogs(result, test.options); got != test.want {
 				t.Fatalf("shouldInspectDoctorLogs(%s, %+v) = %t, want %t", test.status, test.options, got, test.want)
 			}
 		})
+	}
+}
+
+func TestDoctorFailureAggregationExcludesCanceledActions(t *testing.T) {
+	result := &asc.XcodeCloudDoctorResult{Actions: []asc.XcodeCloudDoctorAction{
+		{ID: "failed", CompletionStatus: "FAILED", Artifacts: []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}}},
+		{ID: "errored", CompletionStatus: "ERRORED", Artifacts: []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}}},
+		{ID: "canceled", CompletionStatus: "CANCELED", Artifacts: []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}}},
+	}}
+
+	summarizeXcodeCloudDoctorResult(result)
+
+	if result.Summary.FailedActions != 2 || result.Summary.CanceledActions != 1 {
+		t.Fatalf("summary = %+v, want 2 failed and 1 canceled action", result.Summary)
+	}
+	if got := doctorFailedActionLogBundleCount(result); got != 2 {
+		t.Fatalf("doctorFailedActionLogBundleCount() = %d, want 2", got)
+	}
+}
+
+func TestFinishXcodeCloudDoctorResultIgnoresSuccessfulActionLogBundles(t *testing.T) {
+	result := &asc.XcodeCloudDoctorResult{
+		Run: &asc.XcodeCloudStatusResult{ExecutionProgress: "COMPLETE", CompletionStatus: "FAILED"},
+		Actions: []asc.XcodeCloudDoctorAction{{
+			CompletionStatus: "SUCCEEDED",
+			Artifacts:        []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}},
+		}},
+		Summary: asc.XcodeCloudDoctorSummary{LogBundles: 1, Errors: 1},
+	}
+
+	finishXcodeCloudDoctorResult(result)
+
+	if strings.Contains(result.Conclusion, "not inspected") || strings.Contains(result.NextAction, "--skip-logs") {
+		t.Fatalf("successful-action bundle produced misleading remediation: conclusion=%q nextAction=%q", result.Conclusion, result.NextAction)
+	}
+}
+
+func TestAnalyzeDoctorLogBundleRejectsOversizedTextEntry(t *testing.T) {
+	data := doctorLogBundleFixture(t, map[string]string{
+		"Export/IDEDistribution.standard.log": strings.Repeat("x", maxDoctorLogEntryBytes+1),
+	})
+
+	_, err := analyzeDoctorLogBundle(data)
+	if err == nil || !strings.Contains(err.Error(), "IDEDistribution.standard.log") {
+		t.Fatalf("analyzeDoctorLogBundle() error = %v, want oversized entry error", err)
 	}
 }
 
