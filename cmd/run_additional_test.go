@@ -1479,6 +1479,70 @@ func TestRun_UnknownFlagReturnsConciseRecovery(t *testing.T) {
 	}
 }
 
+func TestRun_MetadataValidateUnsupportedFlagsExplainDirectoryWorkflow(t *testing.T) {
+	resetReportFlags(t)
+
+	for _, unsupportedFlag := range []string{"--app", "--version"} {
+		t.Run(unsupportedFlag, func(t *testing.T) {
+			stdout, stderr := captureCommandOutput(t, func() {
+				if code := Run([]string{"metadata", "validate", unsupportedFlag, "PRIVATE_VALUE"}, "1.0.0"); code != ExitUsage {
+					t.Fatalf("exit code = %d, want %d", code, ExitUsage)
+				}
+			})
+
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			want := "Error: unknown flag `" + unsupportedFlag + "` for `asc metadata validate`\n" +
+				"`asc metadata validate` reads from `--dir`; omit `--app` and `--version`. Run `asc metadata pull` first if needed.\n" +
+				"Try:\n" +
+				"  asc metadata validate --dir \"./metadata\"\n" +
+				"  asc metadata pull --app \"APP_ID\" --version \"1.2.3\" --dir \"./metadata\"\n" +
+				"For help:\n" +
+				"  asc metadata validate --help\n"
+			if stderr != want {
+				t.Fatalf("stderr = %q, want %q", stderr, want)
+			}
+			if strings.Contains(stderr, "PRIVATE_VALUE") {
+				t.Fatalf("stderr leaked unsupported flag value: %q", stderr)
+			}
+		})
+	}
+}
+
+func TestRun_MetadataPullMissingVersionPointsToDiscovery(t *testing.T) {
+	resetReportFlags(t)
+	originalEmitTelemetry := emitTelemetry
+	t.Cleanup(func() { emitTelemetry = originalEmitTelemetry })
+
+	var gotContext telemetry.EventContext
+	emitTelemetry = func(_ string, _ string, _ time.Duration, _ int, eventContext telemetry.EventContext) {
+		gotContext = eventContext
+	}
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{"metadata", "pull", "--app", "app-1", "--dir", "./metadata"}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	want := "Error: --version is required\n" +
+		"Find versions:\n" +
+		"  asc versions list --app \"APP_ID\"\n"
+	if stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
+	}
+	if gotContext.FailureParameter != "--version" ||
+		gotContext.DiagnosticCode != string(shared.DiagnosticRequiredInputMissing) ||
+		gotContext.ErrorKind != telemetry.ErrorKindMissingRequired ||
+		gotContext.FailureStage != telemetry.FailureStageValidation ||
+		gotContext.OutcomeKind != telemetry.OutcomeUsageError {
+		t.Fatalf("telemetry context = %+v, want missing --version validation", gotContext)
+	}
+}
+
 func TestRun_CommonWrongCommandPathsRecoverInOneStep(t *testing.T) {
 	resetReportFlags(t)
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")

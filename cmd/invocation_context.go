@@ -142,6 +142,9 @@ func printConciseUnknownCommand(analysis invocationAnalysis, commandName string)
 func printConciseUnknownFlag(root *ffcli.Command, analysis invocationAnalysis, commandName string) {
 	flagName := unknownFlagName(analysis)
 	fmt.Fprintf(os.Stderr, "Error: %s\n", unknownFlagError(analysis, commandName))
+	if printMetadataValidateFlagRecovery(flagName, commandName) {
+		return
+	}
 	if name, ok := flagLookupName(flagName); ok && root != nil && root.FlagSet != nil && root.FlagSet.Lookup(name) != nil {
 		fmt.Fprintf(
 			os.Stderr,
@@ -171,6 +174,20 @@ func printConciseUnknownFlag(root *ffcli.Command, analysis invocationAnalysis, c
 	}
 	fmt.Fprintln(os.Stderr, "For help:")
 	fmt.Fprintf(os.Stderr, "  %s --help\n", commandName)
+}
+
+func printMetadataValidateFlagRecovery(flagName, commandName string) bool {
+	if commandName != "asc metadata validate" || (flagName != "--app" && flagName != "--version") {
+		return false
+	}
+
+	fmt.Fprintln(os.Stderr, "`asc metadata validate` reads from `--dir`; omit `--app` and `--version`. Run `asc metadata pull` first if needed.")
+	fmt.Fprintln(os.Stderr, "Try:")
+	fmt.Fprintln(os.Stderr, `  asc metadata validate --dir "./metadata"`)
+	fmt.Fprintln(os.Stderr, `  asc metadata pull --app "APP_ID" --version "1.2.3" --dir "./metadata"`)
+	fmt.Fprintln(os.Stderr, "For help:")
+	fmt.Fprintln(os.Stderr, "  asc metadata validate --help")
+	return true
 }
 
 func flagLookupName(token string) (string, bool) {
