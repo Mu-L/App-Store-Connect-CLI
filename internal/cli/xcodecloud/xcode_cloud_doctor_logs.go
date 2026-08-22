@@ -64,23 +64,29 @@ func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result
 			if !strings.EqualFold(strings.TrimSpace(artifact.FileType), "LOG_BUNDLE") {
 				continue
 			}
-			bundleResult, data, inspectErr := downloadAndAnalyzeDoctorLogBundle(ctx, client, action.ID, artifact)
+			var (
+				bundleResult asc.XcodeCloudDoctorLogBundle
+				inspectErr   error
+			)
 			if strings.TrimSpace(options.SaveLogs) != "" {
-				if len(data) == 0 && inspectErr != nil {
+				name := doctorSavedLogBundleName(artifact)
+				bundleResult, inspectErr = downloadSaveAndAnalyzeDoctorLogBundle(ctx, client, action.ID, artifact, saveRoot, options.SaveLogs, name)
+				if inspectErr != nil && bundleResult.SavedPath == "" {
 					return fmt.Errorf("download log bundle %s for --save-logs: %w", artifact.ID, inspectErr)
 				}
-				name := doctorSavedLogBundleName(artifact)
-				if err := saveRoot.CreateNewFileAtomic(name, data, 0o600); err != nil {
-					return fmt.Errorf("save log bundle %q: %w", filepath.Join(options.SaveLogs, name), err)
-				}
-				bundleResult.SavedPath = filepath.Join(options.SaveLogs, name)
+			} else {
+				bundleResult, inspectErr = downloadAndAnalyzeDoctorLogBundle(ctx, client, action.ID, artifact)
 			}
 			if inspectErr != nil {
 				result.LogBundles = append(result.LogBundles, bundleResult)
+				remediation := fmt.Sprintf("Download artifact %s with asc xcode-cloud artifacts download and inspect it locally.", artifact.ID)
+				if bundleResult.SavedPath != "" {
+					remediation = fmt.Sprintf("Inspect the saved bundle %s locally.", asc.SanitizeTerminalText(bundleResult.SavedPath))
+				}
 				result.CoverageWarnings = append(result.CoverageWarnings, asc.XcodeCloudDoctorCoverageWarning{
 					ID:          "log_bundle_inspection_failed",
 					Message:     fmt.Sprintf("Could not inspect log bundle %s: %s", artifact.ID, asc.SanitizeTerminalText(inspectErr.Error())),
-					Remediation: fmt.Sprintf("Download artifact %s with asc xcode-cloud artifacts download and inspect it locally.", artifact.ID),
+					Remediation: remediation,
 				})
 				continue
 			}
@@ -93,48 +99,108 @@ func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result
 	return nil
 }
 
-func downloadAndAnalyzeDoctorLogBundle(ctx context.Context, client *asc.Client, actionID string, artifact asc.XcodeCloudDoctorArtifact) (asc.XcodeCloudDoctorLogBundle, []byte, error) {
-	result := asc.XcodeCloudDoctorLogBundle{
+func newDoctorLogBundleResult(actionID string, artifact asc.XcodeCloudDoctorArtifact) asc.XcodeCloudDoctorLogBundle {
+	return asc.XcodeCloudDoctorLogBundle{
 		ArtifactID:  artifact.ID,
 		ActionID:    actionID,
 		FileName:    artifact.FileName,
 		FileSize:    artifact.FileSize,
 		Diagnostics: make([]asc.XcodeCloudDoctorLogDiagnostic, 0),
 	}
+}
+
+func downloadAndAnalyzeDoctorLogBundle(ctx context.Context, client *asc.Client, actionID string, artifact asc.XcodeCloudDoctorArtifact) (asc.XcodeCloudDoctorLogBundle, error) {
+	result := newDoctorLogBundleResult(actionID, artifact)
 	if artifact.FileSize > maxDoctorLogBundleBytes {
-		return result, nil, fmt.Errorf("bundle size %d exceeds the %d-byte inspection limit", artifact.FileSize, maxDoctorLogBundleBytes)
+		return result, fmt.Errorf("bundle size %d exceeds the %d-byte inspection limit", artifact.FileSize, maxDoctorLogBundleBytes)
 	}
 
-	detail, err := client.GetCiArtifact(ctx, artifact.ID)
+	body, err := openDoctorLogBundle(ctx, client, artifact.ID)
 	if err != nil {
-		return result, nil, fmt.Errorf("fetch artifact details: %w", err)
+		return result, err
 	}
-	downloadURL := strings.TrimSpace(detail.Data.Attributes.DownloadURL)
-	if downloadURL == "" {
-		return result, nil, fmt.Errorf("artifact has no download URL")
-	}
-	download, err := client.DownloadCiArtifact(ctx, downloadURL)
-	if err != nil {
-		return result, nil, fmt.Errorf("download artifact: %w", err)
-	}
-	defer download.Body.Close()
+	defer body.Close()
 
-	data, err := io.ReadAll(io.LimitReader(download.Body, maxDoctorLogBundleBytes+1))
+	data, err := io.ReadAll(io.LimitReader(body, maxDoctorLogBundleBytes+1))
 	if err != nil {
-		return result, nil, fmt.Errorf("read artifact: %w", err)
+		return result, fmt.Errorf("read artifact: %w", err)
 	}
 	if len(data) > maxDoctorLogBundleBytes {
-		return result, nil, fmt.Errorf("download exceeds the %d-byte inspection limit", maxDoctorLogBundleBytes)
+		return result, fmt.Errorf("download exceeds the %d-byte inspection limit", maxDoctorLogBundleBytes)
 	}
 
 	analysis, err := analyzeDoctorLogBundle(data)
 	if err != nil {
-		return result, data, err
+		return result, err
 	}
 	result.Inspected = true
 	result.ExportStatus = analysis.ExportStatus
 	result.Diagnostics = analysis.Diagnostics
-	return result, data, nil
+	return result, nil
+}
+
+func downloadSaveAndAnalyzeDoctorLogBundle(
+	ctx context.Context,
+	client *asc.Client,
+	actionID string,
+	artifact asc.XcodeCloudDoctorArtifact,
+	saveRoot rootfs.Root,
+	saveDirectory string,
+	name string,
+) (asc.XcodeCloudDoctorLogBundle, error) {
+	result := newDoctorLogBundleResult(actionID, artifact)
+	body, err := openDoctorLogBundle(ctx, client, artifact.ID)
+	if err != nil {
+		return result, err
+	}
+	defer body.Close()
+	return saveAndAnalyzeDoctorLogBundle(saveRoot, saveDirectory, name, result, body, maxDoctorLogBundleBytes)
+}
+
+func saveAndAnalyzeDoctorLogBundle(
+	saveRoot rootfs.Root,
+	saveDirectory string,
+	name string,
+	result asc.XcodeCloudDoctorLogBundle,
+	reader io.Reader,
+	inspectionLimit int64,
+) (asc.XcodeCloudDoctorLogBundle, error) {
+	written, err := saveRoot.CreateNewFrom(name, reader, 0o600)
+	if err != nil {
+		return result, fmt.Errorf("save log bundle %q: %w", filepath.Join(saveDirectory, name), err)
+	}
+	result.SavedPath = filepath.Join(saveDirectory, name)
+	if written > inspectionLimit {
+		return result, fmt.Errorf("saved bundle size %d exceeds the %d-byte inspection limit", written, inspectionLimit)
+	}
+	data, err := saveRoot.ReadFileLimited(name, inspectionLimit)
+	if err != nil {
+		return result, fmt.Errorf("read saved log bundle: %w", err)
+	}
+	analysis, err := analyzeDoctorLogBundle(data)
+	if err != nil {
+		return result, err
+	}
+	result.Inspected = true
+	result.ExportStatus = analysis.ExportStatus
+	result.Diagnostics = analysis.Diagnostics
+	return result, nil
+}
+
+func openDoctorLogBundle(ctx context.Context, client *asc.Client, artifactID string) (io.ReadCloser, error) {
+	detail, err := client.GetCiArtifact(ctx, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch artifact details: %w", err)
+	}
+	downloadURL := strings.TrimSpace(detail.Data.Attributes.DownloadURL)
+	if downloadURL == "" {
+		return nil, fmt.Errorf("artifact has no download URL")
+	}
+	download, err := client.DownloadCiArtifact(ctx, downloadURL)
+	if err != nil {
+		return nil, fmt.Errorf("download artifact: %w", err)
+	}
+	return download.Body, nil
 }
 
 func analyzeDoctorLogBundle(data []byte) (doctorLogBundleAnalysis, error) {

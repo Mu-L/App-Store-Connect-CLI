@@ -4,11 +4,14 @@ import (
 	"archive/zip"
 	"bytes"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 func TestAnalyzeDoctorLogBundleFindsITMSDiagnosticsAndExportStatus(t *testing.T) {
@@ -247,6 +250,27 @@ func TestFinishXcodeCloudDoctorResultUsesFailedActionInspectionCount(t *testing.
 	}
 }
 
+func TestFinishXcodeCloudDoctorResultPointsToSavedFailedActionLogs(t *testing.T) {
+	result := &asc.XcodeCloudDoctorResult{
+		Run: &asc.XcodeCloudStatusResult{ExecutionProgress: "COMPLETE", CompletionStatus: "FAILED"},
+		Actions: []asc.XcodeCloudDoctorAction{{
+			ID:               "failed-archive",
+			CompletionStatus: "FAILED",
+			Artifacts:        []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}},
+		}},
+		LogBundles: []asc.XcodeCloudDoctorLogBundle{{
+			ActionID:  "failed-archive",
+			SavedPath: "/tmp/logs/failed.zip",
+		}},
+	}
+
+	finishXcodeCloudDoctorResult(result)
+
+	if !strings.Contains(result.NextAction, "saved failed-action log bundles") {
+		t.Fatalf("NextAction = %q, want saved bundle guidance", result.NextAction)
+	}
+}
+
 func TestDoctorHasAppStorePreparationIssueUsesFailedErrorActions(t *testing.T) {
 	result := &asc.XcodeCloudDoctorResult{Actions: []asc.XcodeCloudDoctorAction{
 		{
@@ -285,6 +309,48 @@ func TestAnalyzeDoctorLogBundleRejectsOversizedTextEntry(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "IDEDistribution.standard.log") {
 		t.Fatalf("analyzeDoctorLogBundle() error = %v, want oversized entry error", err)
 	}
+}
+
+func TestSaveAndAnalyzeDoctorLogBundleKeepsOversizedFile(t *testing.T) {
+	directory := t.TempDir()
+	root, err := rootfs.New(directory)
+	if err != nil {
+		t.Fatalf("rootfs.New() error = %v", err)
+	}
+	defer root.Close()
+
+	const inspectionLimit = int64(32)
+	name := "large-log-bundle.zip"
+	result := asc.XcodeCloudDoctorLogBundle{}
+
+	result, err = saveAndAnalyzeDoctorLogBundle(
+		root,
+		directory,
+		name,
+		result,
+		io.LimitReader(doctorZeroReader{}, inspectionLimit+1),
+		inspectionLimit,
+	)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("saveAndAnalyzeDoctorLogBundle() error = %v, want inspection limit error", err)
+	}
+	if result.SavedPath == "" || result.Inspected {
+		t.Fatalf("result = %+v, want saved but not inspected", result)
+	}
+	info, statErr := os.Stat(filepath.Join(directory, name))
+	if statErr != nil {
+		t.Fatalf("saved bundle stat error = %v", statErr)
+	}
+	if info.Size() != inspectionLimit+1 || info.Mode().Perm() != 0o600 {
+		t.Fatalf("saved bundle info = size %d mode %o", info.Size(), info.Mode().Perm())
+	}
+}
+
+type doctorZeroReader struct{}
+
+func (doctorZeroReader) Read(buffer []byte) (int, error) {
+	clear(buffer)
+	return len(buffer), nil
 }
 
 func TestAnalyzeDoctorLogBundleRejectsUnknownBinary(t *testing.T) {

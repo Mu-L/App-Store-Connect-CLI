@@ -154,6 +154,7 @@ func xcodeCloudDoctorResultTables(result *XcodeCloudDoctorResult, render func([]
 	render([]string{"Artifacts action ID", "ID", "Type", "Name", "Bytes"}, artifactRows)
 
 	logRows := make([][]string, 0, len(result.LogBundles))
+	diagnosticRows := make([][]string, 0)
 	for _, bundle := range result.LogBundles {
 		codes := make([]string, 0, len(bundle.Diagnostics))
 		for _, diagnostic := range bundle.Diagnostics {
@@ -167,8 +168,18 @@ func xcodeCloudDoctorResultTables(result *XcodeCloudDoctorResult, render func([]
 			strings.Join(codes, ","),
 			bundle.SavedPath,
 		})
+		for _, diagnostic := range bundle.Diagnostics {
+			diagnosticRows = append(diagnosticRows, []string{
+				bundle.ActionID,
+				bundle.ArtifactID,
+				diagnostic.Code,
+				diagnostic.Message,
+				diagnostic.SourceFile,
+			})
+		}
 	}
 	render([]string{"Log bundles action ID", "Artifact ID", "Inspected", "Export status", "Diagnostics", "Saved path"}, logRows)
+	render([]string{"Log diagnostics action ID", "Artifact ID", "Code", "Message", "Source file"}, diagnosticRows)
 
 	coverageRows := make([][]string, 0, len(result.CoverageWarnings))
 	for _, warning := range result.CoverageWarnings {
