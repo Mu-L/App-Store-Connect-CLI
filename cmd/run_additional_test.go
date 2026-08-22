@@ -1479,6 +1479,46 @@ func TestRun_UnknownFlagReturnsConciseRecovery(t *testing.T) {
 	}
 }
 
+func TestRun_XcodeCloudStatusIDAliasHelpAndConflictTelemetry(t *testing.T) {
+	resetReportFlags(t)
+	originalEmitTelemetry := emitTelemetry
+	t.Cleanup(func() { emitTelemetry = originalEmitTelemetry })
+
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{"xcode-cloud", "status", "--help"}, "1.0.0"); code != ExitSuccess {
+			t.Fatalf("help exit code = %d, want %d", code, ExitSuccess)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("help stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "--id") || !strings.Contains(stdout, "DEPRECATED: use --run-id") {
+		t.Fatalf("help does not mark --id deprecated: %q", stdout)
+	}
+
+	var gotContext telemetry.EventContext
+	emitTelemetry = func(_ string, _ string, _ time.Duration, _ int, eventContext telemetry.EventContext) {
+		gotContext = eventContext
+	}
+	stdout, stderr = captureCommandOutput(t, func() {
+		if code := Run([]string{"xcode-cloud", "status", "--run-id", "run-1", "--id", "run-1"}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("conflict exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("conflict stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "--id conflicts with --run-id; use only --run-id") {
+		t.Fatalf("conflict stderr = %q", stderr)
+	}
+	if gotContext.FailureParameter != "--run-id" ||
+		gotContext.DiagnosticCode != string(shared.DiagnosticConflictingInput) ||
+		gotContext.FailureStage != telemetry.FailureStageValidation ||
+		gotContext.OutcomeKind != telemetry.OutcomeUsageError {
+		t.Fatalf("telemetry context = %+v, want canonical --run-id conflict", gotContext)
+	}
+}
+
 func TestRun_CommonWrongCommandPathsRecoverInOneStep(t *testing.T) {
 	resetReportFlags(t)
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
