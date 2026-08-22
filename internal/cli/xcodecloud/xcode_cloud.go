@@ -46,12 +46,14 @@ Examples:
   asc xcode-cloud run --source-run-id "BUILD_RUN_ID" --clean
   asc xcode-cloud run --app "APP_ID" --workflow "Deploy" --branch "main" --wait
   asc xcode-cloud status --run-id "BUILD_RUN_ID"
-  asc xcode-cloud status --run-id "BUILD_RUN_ID" --wait`,
+  asc xcode-cloud status --run-id "BUILD_RUN_ID" --wait
+  asc xcode-cloud doctor --run-id "BUILD_RUN_ID" --wait`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
 			XcodeCloudRunCommand(),
 			XcodeCloudStatusCommand(),
+			XcodeCloudDoctorCommand(),
 			XcodeCloudProductsCommand(),
 			XcodeCloudWorkflowsCommand(),
 			XcodeCloudScmCommand(),
