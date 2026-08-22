@@ -23,6 +23,7 @@ type invocationAnalysis struct {
 	command      *ffcli.Command
 	shape        telemetry.InvocationShape
 	unknownToken string
+	unknownIndex int
 	unknownFlag  bool
 }
 
@@ -85,6 +86,7 @@ func analyzeInvocation(root *ffcli.Command, args []string) invocationAnalysis {
 				command:      current,
 				shape:        shapeForCommand(current, true),
 				unknownToken: token,
+				unknownIndex: i,
 				unknownFlag:  true,
 			}
 		}
@@ -143,9 +145,12 @@ func printConciseUnknownCommand(analysis invocationAnalysis, commandName string)
 	fmt.Fprintf(os.Stderr, "  %s --help\n", commandName)
 }
 
-func printConciseUnknownFlag(root *ffcli.Command, analysis invocationAnalysis, commandName string) {
+func printConciseUnknownFlag(root *ffcli.Command, analysis invocationAnalysis, commandName string, args []string) {
 	flagName := unknownFlagName(analysis)
 	fmt.Fprintf(os.Stderr, "Error: %s\n", unknownFlagError(analysis, commandName))
+	if printMetadataValidateFlagRecovery(flagName, commandName, analysis, args) {
+		return
+	}
 	if name, ok := flagLookupName(flagName); ok && root != nil && root.FlagSet != nil && root.FlagSet.Lookup(name) != nil {
 		fmt.Fprintf(
 			os.Stderr,
@@ -175,6 +180,49 @@ func printConciseUnknownFlag(root *ffcli.Command, analysis invocationAnalysis, c
 	}
 	fmt.Fprintln(os.Stderr, "For help:")
 	fmt.Fprintf(os.Stderr, "  %s --help\n", commandName)
+}
+
+func printMetadataValidateFlagRecovery(flagName, commandName string, analysis invocationAnalysis, args []string) bool {
+	if commandName != "asc metadata validate" || (flagName != "--app" && flagName != "--version") {
+		return false
+	}
+	if flagName == "--version" && !metadataVersionValueProvided(analysis, args) {
+		return false
+	}
+
+	fmt.Fprintln(os.Stderr, "`asc metadata validate` reads from `--dir`; omit `--app` and `--version`. Run `asc metadata pull` first if needed.")
+	fmt.Fprintln(os.Stderr, "Try:")
+	fmt.Fprintln(os.Stderr, `  asc metadata validate --dir "./metadata"`)
+	fmt.Fprintln(os.Stderr, `  asc metadata pull --app "APP_ID" --version "1.2.3" --dir "./metadata"`)
+	fmt.Fprintln(os.Stderr, "For help:")
+	fmt.Fprintln(os.Stderr, "  asc metadata validate --help")
+	return true
+}
+
+func metadataVersionValueProvided(analysis invocationAnalysis, args []string) bool {
+	if _, value, found := strings.Cut(analysis.unknownToken, "="); found {
+		return isMetadataVersionValue(value)
+	}
+	nextIndex := analysis.unknownIndex + 1
+	if nextIndex < 0 || nextIndex >= len(args) {
+		return false
+	}
+	return isMetadataVersionValue(args[nextIndex])
+}
+
+func isMetadataVersionValue(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, "-") {
+		return false
+	}
+	// flag.ParseBool accepts 1 and 0, but both are also valid app-version
+	// components. Treat numeric spellings as metadata values and reserve the
+	// global-flag recovery for textual booleans.
+	if value == "1" || value == "0" {
+		return true
+	}
+	_, boolErr := strconv.ParseBool(value)
+	return boolErr != nil
 }
 
 func flagLookupName(token string) (string, bool) {
