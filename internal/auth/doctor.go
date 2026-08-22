@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
@@ -569,6 +570,7 @@ func redactEnvironmentPrivateKeyPath(check *DoctorCheck, path string) {
 		return
 	}
 	check.Message = strings.ReplaceAll(check.Message, path, "ASC_PRIVATE_KEY_PATH")
+	check.Recommendation = strings.ReplaceAll(check.Recommendation, strconv.Quote(path), `"$ASC_PRIVATE_KEY_PATH"`)
 	check.Recommendation = strings.ReplaceAll(check.Recommendation, path, "$ASC_PRIVATE_KEY_PATH")
 }
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -250,16 +251,16 @@ func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
 }
 
 func TestDoctorEnvironmentPrivateKeyPathRedactsEveryOccurrence(t *testing.T) {
-	path := "/private/ci/AuthKey.p8"
+	path := `/private/ci/secret\AuthKey.p8`
 	check := DoctorCheck{
 		Message:        path + " - failed to read: open " + path + ": permission denied",
-		Recommendation: "Inspect " + path + " before retrying " + path,
+		Recommendation: "Run: chmod 600 " + strconv.Quote(path),
 	}
 	redactEnvironmentPrivateKeyPath(&check, path)
 	if strings.Contains(check.Message, path) || strings.Contains(check.Recommendation, path) {
 		t.Fatalf("expected every private key path occurrence to be redacted, got %#v", check)
 	}
-	if strings.Count(check.Message, "ASC_PRIVATE_KEY_PATH") != 2 || strings.Count(check.Recommendation, "$ASC_PRIVATE_KEY_PATH") != 2 {
+	if strings.Count(check.Message, "ASC_PRIVATE_KEY_PATH") != 2 || check.Recommendation != `Run: chmod 600 "$ASC_PRIVATE_KEY_PATH"` {
 		t.Fatalf("expected repeated path occurrences to remain understandable after redaction, got %#v", check)
 	}
 }
