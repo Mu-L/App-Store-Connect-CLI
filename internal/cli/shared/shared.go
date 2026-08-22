@@ -387,6 +387,10 @@ type credentialSource struct {
 }
 
 func resolveEnvCredentials() (envCredentials, error) {
+	return resolveEnvCredentialsWithPrivateKey(true)
+}
+
+func resolveEnvCredentialsWithPrivateKey(includePrivateKey bool) (envCredentials, error) {
 	keyID := strings.TrimSpace(os.Getenv("ASC_KEY_ID"))
 	issuerID := strings.TrimSpace(os.Getenv("ASC_ISSUER_ID"))
 	keyType := config.NormalizeCredentialKeyType(os.Getenv(keyTypeEnvVar))
@@ -401,9 +405,13 @@ func resolveEnvCredentials() (envCredentials, error) {
 		return envCredentials{}, fmt.Errorf("%s must be one of: team, individual", keyTypeEnvVar)
 	}
 
-	keyPath, err := resolvePrivateKeyPath()
-	if err != nil {
-		return envCredentials{}, err
+	keyPath := ""
+	if includePrivateKey {
+		var err error
+		keyPath, err = resolvePrivateKeyPath()
+		if err != nil {
+			return envCredentials{}, err
+		}
 	}
 
 	creds := envCredentials{
@@ -429,8 +437,6 @@ func resolveCredentialsForProfile(profileOverride string) (resolvedCredentials, 
 	if profile == "" {
 		profile = resolveProfileName()
 	}
-	var envCreds envCredentials
-	envResolved := false
 	sources := credentialSource{}
 
 	// Fast path: complete environment credentials skip the keychain lookup
@@ -490,12 +496,10 @@ func resolveCredentialsForProfile(profileOverride string) (resolvedCredentials, 
 	if actualKeyID == "" ||
 		(actualIssuerID == "" && !config.IsIndividualCredentialKeyType(actualKeyType)) ||
 		(actualKeyPath == "" && actualKeyPEM == "") {
-		if !envResolved {
-			resolved, err := resolveEnvCredentials()
-			if err != nil {
-				return resolvedCredentials{}, fmt.Errorf("invalid private key environment: %w", err)
-			}
-			envCreds = resolved
+		needsPrivateKey := actualKeyPath == "" && actualKeyPEM == ""
+		envCreds, err := resolveEnvCredentialsWithPrivateKey(needsPrivateKey)
+		if err != nil {
+			return resolvedCredentials{}, fmt.Errorf("invalid private key environment: %w", err)
 		}
 		if actualKeyID == "" && envCreds.keyID != "" {
 			actualKeyID = envCreds.keyID
@@ -1016,10 +1020,7 @@ func decodeBase64Secret(value string) ([]byte, error) {
 }
 
 func normalizePrivateKeyValue(value string) string {
-	if strings.Contains(value, "\\n") && !strings.Contains(value, "\n") {
-		return strings.ReplaceAll(value, "\\n", "\n")
-	}
-	return value
+	return strings.ReplaceAll(value, "\\n", "\n")
 }
 
 func writeTempPrivateKey(data []byte, cacheKey string) (string, error) {
@@ -1105,6 +1106,11 @@ func strictAuthEnabled() bool {
 		warnInvalidStrictAuthValueOnce(value)
 		return false
 	}
+}
+
+// StrictAuthEnabled reports whether mixed credential sources must fail.
+func StrictAuthEnabled() bool {
+	return strictAuthEnabled()
 }
 
 func warnInvalidStrictAuthValueOnce(value string) {
