@@ -307,9 +307,9 @@ func BetaTestersRemoveCommand() *ffcli.Command {
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	email := fs.String("email", "", "Tester email address")
 	confirm := fs.Bool("confirm", false, "Confirm removal")
-	wait := fs.Bool("wait", false, "Wait until the removal is visible (tester is gone or reports REVOKED)")
-	pollInterval := fs.Duration("poll-interval", betaTesterRemoveDefaultPollInterval, "Polling interval while waiting for removal visibility")
-	timeout := fs.Duration("timeout", betaTesterRemoveDefaultWaitTimeout, "Maximum time to wait for removal visibility")
+	wait := fs.Bool("wait", false, "[experimental] Wait until the removal is visible (tester is gone or reports REVOKED)")
+	pollInterval := fs.Duration("poll-interval", betaTesterRemoveDefaultPollInterval, "[experimental] Polling interval while waiting for removal visibility")
+	timeout := fs.Duration("timeout", betaTesterRemoveDefaultWaitTimeout, "[experimental] Maximum time to wait for removal visibility")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{

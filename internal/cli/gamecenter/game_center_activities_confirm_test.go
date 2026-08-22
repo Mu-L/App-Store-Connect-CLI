@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
@@ -102,6 +103,26 @@ func TestGameCenterActivitySetCommandsRequireConfirmForRemove(t *testing.T) {
 			err := cmd.Exec(context.Background(), []string{})
 			if errors.Is(err, flag.ErrHelp) {
 				t.Fatalf("additive set should pass validation without --confirm, got %v", err)
+			}
+		})
+	}
+}
+
+func TestGameCenterActivitySetConfirmFlagsAreExperimental(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cmd  *ffcli.Command
+	}{
+		{name: "achievements", cmd: GameCenterActivityAchievementsSetCommand()},
+		{name: "leaderboards", cmd: GameCenterActivityLeaderboardsSetCommand()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			confirm := tc.cmd.FlagSet.Lookup("confirm")
+			if confirm == nil {
+				t.Fatal("--confirm is not registered")
+			}
+			if !strings.HasPrefix(confirm.Usage, "[experimental] ") {
+				t.Fatalf("--confirm usage = %q, want [experimental] prefix", confirm.Usage)
 			}
 		})
 	}

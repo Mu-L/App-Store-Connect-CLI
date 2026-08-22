@@ -2,6 +2,8 @@ package cmdtest
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -149,34 +151,34 @@ func TestBetaTestersRemoveWaitTimesOutButPrintsReceipt(t *testing.T) {
 
 func TestBetaTestersRemoveWaitValidatesDurations(t *testing.T) {
 	cases := []struct {
-		name     string
-		args     []string
-		wantFlag string
+		name      string
+		args      []string
+		wantError string
 	}{
 		{
-			name:     "zero poll interval",
-			args:     []string{"--wait", "--poll-interval", "0s"},
-			wantFlag: "--poll-interval",
+			name:      "zero poll interval",
+			args:      []string{"--wait", "--poll-interval", "0s"},
+			wantError: "--poll-interval must be greater than 0",
 		},
 		{
-			name:     "zero timeout",
-			args:     []string{"--wait", "--timeout", "0s"},
-			wantFlag: "--timeout",
+			name:      "zero timeout",
+			args:      []string{"--wait", "--timeout", "0s"},
+			wantError: "--timeout must be greater than 0",
 		},
 		{
-			name:     "poll interval without wait",
-			args:     []string{"--poll-interval", "10s"},
-			wantFlag: "--poll-interval requires --wait",
+			name:      "poll interval without wait",
+			args:      []string{"--poll-interval", "10s"},
+			wantError: "--poll-interval requires --wait",
 		},
 		{
-			name:     "timeout without wait",
-			args:     []string{"--timeout", "1m"},
-			wantFlag: "--timeout requires --wait",
+			name:      "timeout without wait",
+			args:      []string{"--timeout", "1m"},
+			wantError: "--timeout requires --wait",
 		},
 		{
-			name:     "both wait flags without wait",
-			args:     []string{"--poll-interval", "10s", "--timeout", "1m"},
-			wantFlag: "--poll-interval and --timeout require --wait",
+			name:      "both wait flags without wait",
+			args:      []string{"--poll-interval", "10s", "--timeout", "1m"},
+			wantError: "--poll-interval and --timeout require --wait",
 		},
 	}
 
@@ -194,9 +196,25 @@ func TestBetaTestersRemoveWaitValidatesDurations(t *testing.T) {
 			if err := root.Parse(args); err != nil {
 				t.Fatalf("parse error: %v", err)
 			}
-			err := root.Run(context.Background())
-			if err == nil || !strings.Contains(err.Error(), tc.wantFlag) {
-				t.Fatalf("expected usage error mentioning %q, got %v", tc.wantFlag, err)
+			var runErr error
+			stdout, stderr := captureOutput(t, func() {
+				runErr = root.Run(context.Background())
+			})
+			if runErr == nil {
+				t.Fatal("expected usage error")
+			}
+			if !errors.Is(runErr, flag.ErrHelp) {
+				t.Fatalf("expected flag.ErrHelp, got %v", runErr)
+			}
+			if runErr.Error() != tc.wantError {
+				t.Fatalf("error = %q, want %q", runErr.Error(), tc.wantError)
+			}
+			wantDiagnostic := "Error: " + tc.wantError + "\n"
+			if !strings.HasPrefix(stderr, wantDiagnostic) {
+				t.Fatalf("stderr = %q, want prefix %q", stderr, wantDiagnostic)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty output", stdout)
 			}
 		})
 	}
