@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	cmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
+	authsvc "github.com/rudrankriyam/App-Store-Connect-CLI/internal/auth"
+	authcmd "github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/auth"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
 )
 
@@ -133,6 +135,66 @@ func TestAuthStatusDefaultOutputRespectsASCDefaultOutputJSON(t *testing.T) {
 	}
 	if len(payload.Credentials) != 1 || payload.Credentials[0].Name != "default" {
 		t.Fatalf("unexpected credentials payload: %+v", payload.Credentials)
+	}
+}
+
+func TestAuthStatusShowsActiveEnvironmentSourceWithoutStoredCredentials(t *testing.T) {
+	restoreSummaries := authcmd.SetListCredentialSummaries(func() ([]authsvc.Credential, error) {
+		return []authsvc.Credential{}, nil
+	})
+	t.Cleanup(restoreSummaries)
+	restoreKeychain := authcmd.SetKeychainAvailable(func() (bool, error) {
+		return true, nil
+	})
+	t.Cleanup(restoreKeychain)
+
+	keyPath := filepath.Join(t.TempDir(), "AuthKey.p8")
+	writeECDSAPEM(t, keyPath)
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	t.Setenv("ASC_PROFILE", "")
+	t.Setenv("ASC_KEY_ID", "ENVKEY")
+	t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", keyPath)
+	t.Setenv("ASC_PRIVATE_KEY", "")
+	t.Setenv("ASC_PRIVATE_KEY_B64", "")
+
+	const wantNote = "A complete environment credential set is the active source; with no profile selected, stored credential lookup is skipped."
+
+	var jsonCode int
+	jsonOutput, jsonStderr := captureOutput(t, func() {
+		jsonCode = cmd.Run([]string{"auth", "status", "--output", "json"}, "1.0.0")
+	})
+	if jsonCode != cmd.ExitSuccess || jsonStderr != "" {
+		t.Fatalf("json status: exit=%d stderr=%q", jsonCode, jsonStderr)
+	}
+	var payload struct {
+		Credentials                    []json.RawMessage `json:"credentials"`
+		EnvironmentCredentialsComplete bool              `json:"environmentCredentialsComplete"`
+		EnvironmentNote                string            `json:"environmentNote"`
+	}
+	if err := json.Unmarshal([]byte(jsonOutput), &payload); err != nil {
+		t.Fatalf("failed to unmarshal auth status json: %v; stdout=%q", err, jsonOutput)
+	}
+	if len(payload.Credentials) != 0 || !payload.EnvironmentCredentialsComplete || payload.EnvironmentNote != wantNote {
+		t.Fatalf("unexpected environment status payload: %+v", payload)
+	}
+
+	var tableCode int
+	tableOutput, tableStderr := captureOutput(t, func() {
+		tableCode = cmd.Run([]string{"auth", "status", "--output", "table"}, "1.0.0")
+	})
+	if tableCode != cmd.ExitSuccess || tableStderr != "" {
+		t.Fatalf("table status: exit=%d stderr=%q", tableCode, tableStderr)
+	}
+	if !strings.Contains(tableOutput, "No stored credentials found.") || !strings.Contains(tableOutput, wantNote) {
+		t.Fatalf("expected active environment source in table output, got %q", tableOutput)
+	}
+	if strings.Contains(tableOutput, "Run 'asc auth login'") {
+		t.Fatalf("active environment credentials should not prompt for login: %q", tableOutput)
+	}
+	if strings.Contains(tableOutput, "ENVKEY") {
+		t.Fatalf("expected environment key ID to stay redacted: %q", tableOutput)
 	}
 }
 
