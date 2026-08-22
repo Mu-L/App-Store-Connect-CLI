@@ -3,6 +3,7 @@ package ads
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -454,6 +455,83 @@ func TestFetchSearchSuggestionsDetectsMoreWhenTotalCountIsOmitted(t *testing.T) 
 		if got := requests[path]; len(got) != 2 || got[0] != [2]int{0, 2} || got[1] != [2]int{2, 1} {
 			t.Fatalf("%s requests = %v, want initial page and one-record probe", path, got)
 		}
+	}
+}
+
+func TestFetchSearchSuggestionsMarksOvershotBoundedPageAsTruncated(t *testing.T) {
+	requests := make(map[string][][2]int)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Pagination struct {
+				Offset   int `json:"offset"`
+				PageSize int `json:"pageSize"`
+			} `json:"pagination"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode suggestion request: %v", err)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
+		}
+		requests[r.URL.Path] = append(requests[r.URL.Path], [2]int{body.Pagination.Offset, body.Pagination.PageSize})
+
+		count := 0
+		switch {
+		case r.URL.Path == "/v1/suggestions/keywords/query" && body.Pagination.Offset == 0:
+			count = 1000
+		case r.URL.Path == "/v1/suggestions/keywords/query" && body.Pagination.Offset == 1000:
+			count = 800
+		case r.URL.Path == "/v1/suggestions/phrases/query":
+			writeJSON(t, w, `{"result":[],"pagination":{"offset":0,"pageSize":1000,"totalCount":0}}`)
+			return
+		default:
+			t.Errorf("unexpected %s pagination %+v", r.URL.Path, body.Pagination)
+			http.Error(w, "unexpected pagination", http.StatusBadRequest)
+			return
+		}
+
+		result := make([]map[string]any, count)
+		for index := range result {
+			result[index] = map[string]any{
+				"text":       fmt.Sprintf("keyword-%d", body.Pagination.Offset+index),
+				"popularity": count - index,
+			}
+		}
+		payload := map[string]any{
+			"result": result,
+			"pagination": map[string]any{
+				"offset":     body.Pagination.Offset,
+				"pageSize":   body.Pagination.PageSize,
+				"totalCount": 1800,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Errorf("encode suggestion response: %v", err)
+		}
+	}))
+	defer server.Close()
+	client, err := appleads.NewClient(
+		appleads.Credentials{AccessToken: "token", AdAccountID: "account-1"},
+		appleads.WithPlatformBaseURL(server.URL+"/v1/"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := fetchSearchSuggestions(context.Background(), client, SearchOptimizationRequest{
+		AppID: "123456789", Country: "US", Limit: 1500,
+	})
+	if err != nil {
+		t.Fatalf("fetchSearchSuggestions() error = %v", err)
+	}
+	if !data.SuggestionsTruncated {
+		t.Fatal("suggestions should report truncation when an overshot page contains results beyond the limit")
+	}
+	if len(data.Suggestions) != 1500 {
+		t.Fatalf("suggestions = %d, want the requested limit", len(data.Suggestions))
+	}
+	if got := requests["/v1/suggestions/keywords/query"]; len(got) != 2 || got[0] != [2]int{0, 1000} || got[1] != [2]int{1000, 1000} {
+		t.Fatalf("keyword requests = %v, want two bounded pages", got)
 	}
 }
 

@@ -41,7 +41,7 @@ type KeywordDiscoverReport struct {
 	Truncated     bool                          `json:"truncated"`
 	Sources       []KeywordDiscoverSourceStatus `json:"sources"`
 	Summary       KeywordDiscoverSummary        `json:"summary"`
-	ScoreKeywords string                        `json:"scoreKeywords,omitempty"`
+	ScoreKeywords string                        `json:"scoreKeywords"`
 	Keywords      []KeywordSuggestion           `json:"keywords"`
 }
 

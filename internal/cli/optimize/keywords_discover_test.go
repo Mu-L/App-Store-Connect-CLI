@@ -267,6 +267,34 @@ func TestKeywordDiscoverReportUsesRegisteredOutput(t *testing.T) {
 	}
 }
 
+func TestKeywordDiscoverJSONKeepsEmptyScoreKeywords(t *testing.T) {
+	report := asc.KeywordDiscoverReport{
+		AppID:   "1234567890",
+		Country: "US",
+		Summary: asc.KeywordDiscoverSummary{Available: 1, Suggestions: 1},
+		Keywords: []asc.KeywordSuggestion{{
+			Keyword: "a",
+			Source:  "keyword",
+		}},
+	}
+
+	payload, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	value, present := decoded["scoreKeywords"]
+	if !present {
+		t.Fatalf("JSON = %s, want an explicit scoreKeywords handoff field", payload)
+	}
+	if value != "" {
+		t.Fatalf("scoreKeywords = %#v, want an empty string", value)
+	}
+}
+
 func TestKeywordsDiscoverAppliesLimitAndReportsTruncation(t *testing.T) {
 	suggestions := make([]ads.SearchSuggestion, 0, 6)
 	for index := range 6 {
