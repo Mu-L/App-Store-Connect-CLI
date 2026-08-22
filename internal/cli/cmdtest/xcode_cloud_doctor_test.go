@@ -234,11 +234,23 @@ func TestXcodeCloudDoctorSavesLogBundleWithoutOverwriting(t *testing.T) {
 		t.Fatal("saved log bundle does not match download")
 	}
 	var secondRunErr error
-	captureOutput(t, func() {
+	secondStdout, _ := captureOutput(t, func() {
 		secondRunErr = runDoctor()
 	})
-	if secondRunErr == nil || !strings.Contains(secondRunErr.Error(), "exist") {
-		t.Fatalf("second doctor run error = %v, want existing-file refusal", secondRunErr)
+	if secondRunErr != nil {
+		t.Fatalf("second doctor run error = %v, want completed report", secondRunErr)
+	}
+	var secondResult struct {
+		CoverageWarnings []struct {
+			ID      string `json:"id"`
+			Message string `json:"message"`
+		} `json:"coverageWarnings"`
+	}
+	if err := json.Unmarshal([]byte(secondStdout), &secondResult); err != nil {
+		t.Fatalf("decode second doctor output %q: %v", secondStdout, err)
+	}
+	if len(secondResult.CoverageWarnings) != 1 || secondResult.CoverageWarnings[0].ID != "log_bundle_inspection_failed" || !strings.Contains(secondResult.CoverageWarnings[0].Message, "exist") {
+		t.Fatalf("second doctor warnings = %+v, want existing-file coverage warning", secondResult.CoverageWarnings)
 	}
 }
 

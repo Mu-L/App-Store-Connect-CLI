@@ -72,9 +72,6 @@ func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result
 			if strings.TrimSpace(options.SaveLogs) != "" {
 				name := doctorSavedLogBundleName(artifact)
 				bundleResult, inspectErr = downloadSaveAndAnalyzeDoctorLogBundle(ctx, client, action.ID, artifact, saveRoot, options.SaveLogs, name)
-				if inspectErr != nil && bundleResult.SavedPath == "" {
-					return fmt.Errorf("download log bundle %s for --save-logs: %w", artifact.ID, inspectErr)
-				}
 			} else {
 				bundleResult, inspectErr = downloadAndAnalyzeDoctorLogBundle(ctx, client, action.ID, artifact)
 			}

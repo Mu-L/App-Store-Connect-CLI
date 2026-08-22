@@ -3,8 +3,15 @@ package xcodecloud
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -361,6 +368,50 @@ func TestAnalyzeDoctorLogBundleRejectsArchiveWithoutReadableTextEntries(t *testi
 	}
 }
 
+func TestInspectXcodeCloudDoctorLogsContinuesAfterSaveFailure(t *testing.T) {
+	directory := t.TempDir()
+	artifacts := []asc.XcodeCloudDoctorArtifact{
+		{ID: "artifact-1", FileName: "first.zip", FileType: "LOG_BUNDLE"},
+		{ID: "artifact-2", FileName: "second.zip", FileType: "LOG_BUNDLE"},
+	}
+	blockedPath := filepath.Join(directory, doctorSavedLogBundleName(artifacts[1]))
+	if err := os.WriteFile(blockedPath, []byte("existing"), 0o600); err != nil {
+		t.Fatalf("write blocked destination: %v", err)
+	}
+	bundle := doctorLogBundleFixture(t, map[string]string{"Export/export.log": "** EXPORT SUCCEEDED **"})
+	client := newDoctorLogTestClient(t, doctorLogRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := bundle
+		contentType := "application/octet-stream"
+		if strings.HasPrefix(request.URL.Path, "/v1/ciArtifacts/") {
+			artifactID := filepath.Base(request.URL.Path)
+			body = []byte(fmt.Sprintf(`{"data":{"type":"ciArtifacts","id":%q,"attributes":{"downloadUrl":"https://appstoreconnect.apple.com/downloads/%s.zip"}}}`, artifactID, artifactID))
+			contentType = "application/json"
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{contentType}},
+			Request:    request,
+		}, nil
+	}))
+	result := &asc.XcodeCloudDoctorResult{Actions: []asc.XcodeCloudDoctorAction{{
+		ID:               "failed-action",
+		CompletionStatus: "FAILED",
+		Artifacts:        artifacts,
+	}}}
+
+	err := inspectXcodeCloudDoctorLogs(context.Background(), client, result, xcodeCloudDoctorOptions{SaveLogs: directory})
+	if err != nil {
+		t.Fatalf("inspectXcodeCloudDoctorLogs() error = %v, want report with coverage warning", err)
+	}
+	if len(result.LogBundles) != 2 || !result.LogBundles[0].Inspected || result.LogBundles[1].SavedPath != "" {
+		t.Fatalf("log bundles = %+v, want first inspected and second reported as unsaved", result.LogBundles)
+	}
+	if len(result.CoverageWarnings) != 1 || result.CoverageWarnings[0].ID != "log_bundle_inspection_failed" {
+		t.Fatalf("coverage warnings = %+v, want save failure warning", result.CoverageWarnings)
+	}
+}
+
 func TestSaveAndAnalyzeDoctorLogBundleKeepsOversizedFile(t *testing.T) {
 	directory := t.TempDir()
 	root, err := rootfs.New(directory)
@@ -437,4 +488,31 @@ func doctorLogBundleFixture(t *testing.T, files map[string]string) []byte {
 		t.Fatalf("close zip: %v", err)
 	}
 	return buffer.Bytes()
+}
+
+type doctorLogRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function doctorLogRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func newDoctorLogTestClient(t *testing.T, transport http.RoundTripper) *asc.Client {
+	t.Helper()
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate private key: %v", err)
+	}
+	encodedKey, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "AuthKey_TEST.p8")
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encodedKey}), 0o600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+	client, err := asc.NewClientWithHTTPClient("KEY123", "ISS456", keyPath, &http.Client{Transport: transport})
+	if err != nil {
+		t.Fatalf("create ASC client: %v", err)
+	}
+	return client
 }
