@@ -71,7 +71,7 @@ Do not commit secrets.
 
 ## Local Validation
 
-Run this checklist before opening a PR:
+Run this checklist before opening a PR that changes CLI behavior, shared code, or release surfaces:
 
 ```bash
 make tools               # Install gofumpt + golangci-lint
@@ -82,6 +82,8 @@ ASC_BYPASS_KEYCHAIN=1 make test  # Run tests (bypasses keychain)
 make build               # Build binary
 ./asc --help             # Smoke-test the binary
 ```
+
+For a narrowly scoped documentation or skill change, run `make check-docs`; it includes the repository and skill validators. For a Wall-only PR, run `make check-wall-of-apps` on the exact head. Use broader checks when the changed surface or repository policy requires them.
 
 ## Pull Request Guidelines
 
