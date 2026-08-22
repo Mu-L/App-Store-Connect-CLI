@@ -14,6 +14,8 @@ Compare the external workflow-skill repository with live CLI behavior and make o
 3. Inventory every skill and identify which commands, flags, environment variables, outputs, or workflows it claims to use.
 4. Run the current CLI's `--help` at each relevant command path. Use `asc search`, `asc schema`, or `asc capabilities` only when their own current help confirms they are appropriate.
 
+Split independent read-only or dry-run skill inventory, help, and example checks across isolated subagents when available. Serialize live mutation-capable examples, use disposable resources with cleanup, and keep shared skill edits, commits, pushes, and PR creation under one coordinated owner.
+
 ## Prove drift
 
 Check for:

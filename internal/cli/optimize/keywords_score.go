@@ -87,6 +87,10 @@ Examples:
 			if *workers < 1 {
 				return shared.UsageError("--workers must be at least 1")
 			}
+			effectiveWorkers := *workers
+			if effectiveWorkers > len(normalizedKeywords) {
+				effectiveWorkers = len(normalizedKeywords)
+			}
 			normalizedCountry, err := normalizeKeywordCountry(*country)
 			if err != nil {
 				return err
@@ -107,7 +111,7 @@ Examples:
 				Keywords: normalizedKeywords,
 				Country:  normalizedCountry,
 				AppID:    resolvedAppID,
-				Workers:  *workers,
+				Workers:  effectiveWorkers,
 			})
 
 			popularity, popularitySource := collectKeywordPopularity(ctx, keywordPopularityRequest{
@@ -118,13 +122,16 @@ Examples:
 				AdsProfile: *adsProfile,
 			})
 			sources = append(sources, popularitySource)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 
 			report := buildKeywordScoreReport(keywordScoreBuildInput{
 				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 				AppID:       resolvedAppID,
 				Country:     strings.ToUpper(normalizedCountry),
 				Genre:       normalizedGenre,
-				Workers:     *workers,
+				Workers:     effectiveWorkers,
 				Now:         time.Now().UTC(),
 				Sources:     sources,
 				Popularity:  popularity,

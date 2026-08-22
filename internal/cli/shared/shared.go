@@ -320,6 +320,7 @@ type OutputFlags struct {
 }
 
 type validatedOutputValue struct {
+	name    string
 	value   *string
 	pretty  *bool
 	allowed []string
@@ -350,7 +351,7 @@ func (v *validatedOutputValue) Validate() error {
 		pretty = *v.pretty
 	}
 
-	_, err := validateOutputFormatAllowed(*v.value, pretty, v.allowed...)
+	_, err := validateOutputFormatAllowed(v.name, *v.value, pretty, v.allowed...)
 	return err
 }
 
@@ -386,6 +387,10 @@ type credentialSource struct {
 }
 
 func resolveEnvCredentials() (envCredentials, error) {
+	return resolveEnvCredentialsWithPrivateKey(true)
+}
+
+func resolveEnvCredentialsWithPrivateKey(includePrivateKey bool) (envCredentials, error) {
 	keyID := strings.TrimSpace(os.Getenv("ASC_KEY_ID"))
 	issuerID := strings.TrimSpace(os.Getenv("ASC_ISSUER_ID"))
 	keyType := config.NormalizeCredentialKeyType(os.Getenv(keyTypeEnvVar))
@@ -400,9 +405,13 @@ func resolveEnvCredentials() (envCredentials, error) {
 		return envCredentials{}, fmt.Errorf("%s must be one of: team, individual", keyTypeEnvVar)
 	}
 
-	keyPath, err := resolvePrivateKeyPath()
-	if err != nil {
-		return envCredentials{}, err
+	keyPath := ""
+	if includePrivateKey {
+		var err error
+		keyPath, err = resolvePrivateKeyPath()
+		if err != nil {
+			return envCredentials{}, err
+		}
 	}
 
 	creds := envCredentials{
@@ -428,8 +437,6 @@ func resolveCredentialsForProfile(profileOverride string) (resolvedCredentials, 
 	if profile == "" {
 		profile = resolveProfileName()
 	}
-	var envCreds envCredentials
-	envResolved := false
 	sources := credentialSource{}
 
 	// Fast path: complete environment credentials skip the keychain lookup
@@ -489,12 +496,10 @@ func resolveCredentialsForProfile(profileOverride string) (resolvedCredentials, 
 	if actualKeyID == "" ||
 		(actualIssuerID == "" && !config.IsIndividualCredentialKeyType(actualKeyType)) ||
 		(actualKeyPath == "" && actualKeyPEM == "") {
-		if !envResolved {
-			resolved, err := resolveEnvCredentials()
-			if err != nil {
-				return resolvedCredentials{}, fmt.Errorf("invalid private key environment: %w", err)
-			}
-			envCreds = resolved
+		needsPrivateKey := actualKeyPath == "" && actualKeyPEM == ""
+		envCreds, err := resolveEnvCredentialsWithPrivateKey(needsPrivateKey)
+		if err != nil {
+			return resolvedCredentials{}, fmt.Errorf("invalid private key environment: %w", err)
 		}
 		if actualKeyID == "" && envCreds.keyID != "" {
 			actualKeyID = envCreds.keyID
@@ -619,6 +624,22 @@ func resolveCompleteEnvCredentialMetadata() (ResolvedAuthCredentials, bool) {
 		IssuerID: issuerID,
 		KeyType:  normalizedResolvedKeyType(keyType),
 	}, true
+}
+
+// HasCompleteEnvironmentCredentials reports whether environment credentials
+// qualify for the no-profile, no-bypass resolution fast path. It validates
+// base64 encoding without materializing private key files.
+func HasCompleteEnvironmentCredentials() bool {
+	_, complete := resolveCompleteEnvCredentialMetadata()
+	return complete
+}
+
+// CanResolveCompleteEnvironmentCredentials reports whether complete environment
+// credentials can be selected by the no-profile, no-bypass fast path. Inline
+// key material is materialized the same way it is during credential resolution.
+func CanResolveCompleteEnvironmentCredentials() bool {
+	resolved, err := resolveEnvCredentials()
+	return err == nil && resolved.complete
 }
 
 func resolveStoredCredentialsMetadataFallback(profile string) (ResolvedAuthCredentials, error) {
@@ -1015,10 +1036,7 @@ func decodeBase64Secret(value string) ([]byte, error) {
 }
 
 func normalizePrivateKeyValue(value string) string {
-	if strings.Contains(value, "\\n") && !strings.Contains(value, "\n") {
-		return strings.ReplaceAll(value, "\\n", "\n")
-	}
-	return value
+	return strings.ReplaceAll(value, "\\n", "\n")
 }
 
 func writeTempPrivateKey(data []byte, cacheKey string) (string, error) {
@@ -1106,6 +1124,11 @@ func strictAuthEnabled() bool {
 	}
 }
 
+// StrictAuthEnabled reports whether mixed credential sources must fail.
+func StrictAuthEnabled() bool {
+	return strictAuthEnabled()
+}
+
 func warnInvalidStrictAuthValueOnce(value string) {
 	if value == "" {
 		return
@@ -1146,7 +1169,7 @@ func printOutput(data any, format string, pretty bool) error {
 	case "table":
 		err = asc.PrintTable(data)
 	default:
-		return fmt.Errorf("unsupported format: %s", format)
+		return outputFormatEnumError("output", format, nil)
 	}
 	if err != nil {
 		return err
@@ -1174,7 +1197,7 @@ func printOutputWithRenderers(data any, format string, pretty bool, tableRendere
 		}
 		err = markdownRenderer()
 	default:
-		return fmt.Errorf("unsupported format: %s", format)
+		return outputFormatEnumError("output", format, nil)
 	}
 	if err != nil {
 		return err
@@ -1233,11 +1256,50 @@ func NormalizeOutputFormat(format string) string {
 	}
 }
 
-func validateOutputFormat(format string, pretty bool) (string, error) {
-	return validateOutputFormatAllowed(format, pretty, "json", "table", "markdown")
+// outputFormatEnumError reports an unsupported output format the way every
+// other enumerated flag reports one: the flag, its valid set, and the value
+// that was rejected. The message is self-sufficient, so callers do not need to
+// follow it with the command's full help page.
+func outputFormatEnumError(flagName, value string, allowed []string) error {
+	name := strings.TrimSpace(flagName)
+	if name == "" {
+		name = "output"
+	}
+	return fmt.Errorf(
+		"--%s must be one of: %s (got %q)",
+		name,
+		strings.Join(canonicalOutputFormats(allowed), ", "),
+		value,
+	)
 }
 
-func validateOutputFormatAllowed(format string, pretty bool, allowed ...string) (string, error) {
+// canonicalOutputFormats resolves aliases and drops duplicates so the advertised
+// set lists each accepted format exactly once, in the order the command declared.
+func canonicalOutputFormats(allowed []string) []string {
+	canonical := make([]string, 0, len(allowed))
+	seen := make(map[string]struct{}, len(allowed))
+	for _, item := range allowed {
+		normalized := NormalizeOutputFormat(item)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		canonical = append(canonical, normalized)
+	}
+	if len(canonical) == 0 {
+		return []string{"json", "table", "markdown"}
+	}
+	return canonical
+}
+
+func validateOutputFormat(format string, pretty bool) (string, error) {
+	return validateOutputFormatAllowed("output", format, pretty, "json", "table", "markdown")
+}
+
+func validateOutputFormatAllowed(flagName, format string, pretty bool, allowed ...string) (string, error) {
 	if len(allowed) == 0 {
 		allowed = []string{"json", "table", "markdown"}
 	}
@@ -1252,7 +1314,7 @@ func validateOutputFormatAllowed(format string, pretty bool, allowed ...string) 
 		}
 	}
 	if _, ok := allowedSet[normalized]; !ok {
-		return "", fmt.Errorf("unsupported format: %s", normalized)
+		return "", outputFormatEnumError(flagName, format, allowed)
 	}
 	if pretty && normalized != "json" {
 		return "", fmt.Errorf("--pretty is only valid with JSON output")
@@ -1386,6 +1448,7 @@ func BindOutputFlagsWithAllowed(fs *flag.FlagSet, flagName, defaultValue, usage 
 	outputValue := defaultValue
 	prettyValue := false
 	fs.Var(&validatedOutputValue{
+		name:    name,
 		value:   &outputValue,
 		pretty:  &prettyValue,
 		allowed: slices.Clone(allowed),
@@ -1480,7 +1543,11 @@ func wrapCommandOutputValidation(cmd *ffcli.Command, parents []*ffcli.Command) {
 	originalExec := cmd.Exec
 	cmd.Exec = func(ctx context.Context, args []string) error {
 		if err := validateCommandOutputPath(path); err != nil {
-			return UsageError(err.Error())
+			// Output-flag diagnostics already name the flag, its valid set,
+			// and the rejected value, so report them without dragging the
+			// command's full help page along.
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+			return NewReportedUsageError(UsageErrorInvalidValue, err.Error())
 		}
 		return originalExec(ctx, args)
 	}
@@ -1796,7 +1863,7 @@ func ValidateOutputFormat(format string, pretty bool) (string, error) {
 }
 
 func ValidateOutputFormatAllowed(format string, pretty bool, allowed ...string) (string, error) {
-	return validateOutputFormatAllowed(format, pretty, allowed...)
+	return validateOutputFormatAllowed("output", format, pretty, allowed...)
 }
 
 func NormalizeDate(value, flagName string) (string, error) {

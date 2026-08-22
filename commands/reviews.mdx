@@ -20,6 +20,7 @@ List customer reviews for an app:
 asc reviews list --app APP_ID
 asc reviews list --app APP_ID --sort -createdDate
 asc reviews list --app APP_ID --stars 1
+asc reviews list --app APP_ID --stars 1,2
 ```
 
 ### Get review
@@ -78,8 +79,8 @@ asc reviews response for-review --review-id "REVIEW_ID"
   Sort order: `createdDate`, `-createdDate`, `rating`, `-rating`
 </ParamField>
 
-<ParamField path="--stars" type="number">
-  Filter by star rating (1-5)
+<ParamField path="--stars" type="string">
+  Filter by star ratings, comma-separated (1-5). Accepts one rating (`--stars 1`) or several (`--stars 1,2`).
 </ParamField>
 
 <ParamField path="--territory" type="string">
@@ -126,7 +127,7 @@ asc reviews response for-review --review-id "REVIEW_ID"
 ```bash  theme={null}
 asc reviews list \
   --app 123456789 \
-  --stars 1 \
+  --stars 1,2 \
   --sort -createdDate \
   --output table
 ```

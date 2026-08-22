@@ -505,7 +505,8 @@ func TestValidateOutputFormat(t *testing.T) {
 		{name: "json allows pretty", input: "json", pretty: true, wantFormat: "json"},
 		{name: "md alias", input: "md", pretty: false, wantFormat: "markdown"},
 		{name: "table pretty rejected", input: "table", pretty: true, wantErr: "--pretty is only valid with JSON output"},
-		{name: "unsupported rejected", input: "yaml", pretty: false, wantErr: "unsupported format: yaml"},
+		{name: "unsupported rejected", input: "yaml", pretty: false, wantErr: `(got "yaml")`},
+		{name: "unsupported preserves whitespace", input: " yaml ", pretty: false, wantErr: `(got " yaml ")`},
 	}
 
 	for _, tc := range tests {
@@ -538,7 +539,7 @@ func TestValidateOutputFormatAllowed(t *testing.T) {
 	}{
 		{name: "text allowed", input: "text", pretty: false, allowed: []string{"text", "json"}, wantFormat: "text"},
 		{name: "json default allowed", input: "", pretty: false, allowed: []string{"text", "json"}, wantFormat: "json"},
-		{name: "md unsupported when not allowed", input: "md", pretty: false, allowed: []string{"text", "json"}, wantErr: "unsupported format: markdown"},
+		{name: "md unsupported when not allowed", input: "md", pretty: false, allowed: []string{"text", "json"}, wantErr: `--output must be one of: text, json (got "md")`},
 		{name: "alias allowed when markdown allowed", input: "md", pretty: false, allowed: []string{"markdown", "json"}, wantFormat: "markdown"},
 		{name: "pretty rejected for text", input: "text", pretty: true, allowed: []string{"text", "json"}, wantErr: "--pretty is only valid with JSON output"},
 	}
@@ -572,7 +573,7 @@ func TestValidateOutputFormatAllowed_EmptyAllowedFallsBackToDefaultSet(t *testin
 	}
 
 	_, err = ValidateOutputFormatAllowed("yaml", false)
-	if err == nil || !strings.Contains(err.Error(), "unsupported format: yaml") {
+	if err == nil || !strings.Contains(err.Error(), `(got "yaml")`) {
 		t.Fatalf("expected unsupported format error, got %v", err)
 	}
 }
@@ -1009,7 +1010,7 @@ func TestResolvePrivateKeyPathFromRawValue(t *testing.T) {
 	t.Setenv("ASC_PRIVATE_KEY_PATH", "")
 	t.Setenv("ASC_PRIVATE_KEY_B64", "")
 
-	t.Setenv("ASC_PRIVATE_KEY", "line1\\nline2")
+	t.Setenv("ASC_PRIVATE_KEY", "line1\nline2\\nline3")
 	path, err := resolvePrivateKeyPath()
 	if err != nil {
 		t.Fatalf("resolvePrivateKeyPath() error: %v", err)
@@ -1018,7 +1019,7 @@ func TestResolvePrivateKeyPathFromRawValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile() error: %v", err)
 	}
-	if string(data) != "line1\nline2" {
+	if string(data) != "line1\nline2\nline3" {
 		t.Fatalf("expected newline expansion, got %q", string(data))
 	}
 }
@@ -1760,6 +1761,50 @@ func TestResolveCredentials_PartialEnvStillMergesStoredKeyMaterial(t *testing.T)
 	}
 }
 
+func TestResolveCredentials_PartialStoredCredentialIgnoresUnusedMalformedEnvPrivateKey(t *testing.T) {
+	resetPrivateKeyTemp(t)
+	storedKeyPath := filepath.Join(t.TempDir(), "AuthKey-Stored.p8")
+	writeECDSAPEM(t, storedKeyPath)
+
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+	t.Setenv("ASC_PROFILE", "")
+	t.Setenv("ASC_KEY_ID", "")
+	t.Setenv("ASC_ISSUER_ID", "ENVISS")
+	t.Setenv("ASC_KEY_TYPE", "")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+	t.Setenv("ASC_PRIVATE_KEY_B64", "not-base64")
+	t.Setenv("ASC_PRIVATE_KEY", "")
+
+	previousProfile := selectedProfile
+	selectedProfile = ""
+	t.Cleanup(func() { selectedProfile = previousProfile })
+
+	previousStrict := strictAuth
+	strictAuth = false
+	t.Cleanup(func() { strictAuth = previousStrict })
+	t.Setenv(strictAuthEnvVar, "")
+
+	previous := getCredentialsWithSourceFn
+	getCredentialsWithSourceFn = func(string) (*config.Config, string, error) {
+		return &config.Config{
+			KeyID:          "STOREDKEY",
+			PrivateKeyPath: storedKeyPath,
+		}, "keychain", nil
+	}
+	t.Cleanup(func() { getCredentialsWithSourceFn = previous })
+
+	creds, err := resolveCredentials()
+	if err != nil {
+		t.Fatalf("resolveCredentials() error: %v", err)
+	}
+	if creds.keyID != "STOREDKEY" || creds.issuerID != "ENVISS" || creds.keyPath != storedKeyPath {
+		t.Fatalf("expected stored credentials completed by environment issuer, got %+v", creds)
+	}
+	if privateKeyTempPath != "" || len(privateKeyTempPaths) != 0 {
+		t.Fatalf("unused malformed environment key materialized private key files: %q %#v", privateKeyTempPath, privateKeyTempPaths)
+	}
+}
+
 func TestResolveCredentials_ProfileFlagStillPrefersStoredOverCompleteEnv(t *testing.T) {
 	resetPrivateKeyTemp(t)
 
@@ -2134,6 +2179,19 @@ func TestResolveCompleteEnvCredentialMetadataDoesNotMaterializeInlineKey(t *test
 	}
 	if privateKeyTempPath != "" || len(privateKeyTempPaths) != 0 {
 		t.Fatalf("metadata resolution materialized private key files: %q %#v", privateKeyTempPath, privateKeyTempPaths)
+	}
+}
+
+func TestHasCompleteEnvironmentCredentialsRejectsInvalidBase64(t *testing.T) {
+	t.Setenv("ASC_KEY_ID", "ENVKEY")
+	t.Setenv("ASC_ISSUER_ID", "ENVISS")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+	t.Setenv("ASC_PRIVATE_KEY", "")
+	t.Setenv("ASC_PRIVATE_KEY_B64", "not-base64")
+	t.Setenv(keyTypeEnvVar, "")
+
+	if HasCompleteEnvironmentCredentials() {
+		t.Fatal("expected invalid base64 key material to be ineligible for the environment fast path")
 	}
 }
 
