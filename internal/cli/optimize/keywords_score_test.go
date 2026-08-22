@@ -331,6 +331,54 @@ func TestKeywordsScoreComposesCompetitionRankAndDegradesPopularity(t *testing.T)
 	}
 }
 
+func TestKeywordsScoreReportsIncompleteCompetitorMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search":
+			writeScoreSearchResults(
+				w,
+				scoreSearchApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000},
+				scoreSearchApp{ID: 222, Name: "Deep Work", Seller: "Beta Labs", Rating: 4.2, Count: 4000},
+				scoreSearchApp{ID: 333, Name: "Timer Buddy", Seller: "Gamma Labs", Rating: 3.9, Count: 900},
+			)
+		case "/lookup":
+			writeScoreLookupResults(
+				w,
+				scoreLookupApp{ID: 111, Name: "Focus Timer", Seller: "Alpha Labs", Rating: 4.6, Count: 8000, Release: daysAgo(900), Updated: daysAgo(10)},
+				scoreLookupApp{ID: 222, Name: "Deep Work", Seller: "Beta Labs", Rating: 4.2, Count: 4000, Updated: daysAgo(20)},
+				scoreLookupApp{ID: 333, Name: "Timer Buddy", Seller: "Gamma Labs", Rating: 3.9, Count: 900, Release: daysAgo(300), Updated: "not-a-date"},
+			)
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	stubKeywordsClient(t, server.URL)
+	failKeywordsAdsCollector(t)
+
+	stdout := captureSearchPlanStdout(t, func() error {
+		return KeywordsScoreCommand().ParseAndRun(context.Background(), []string{
+			"--keywords", "focus timer", "--output", "json",
+		})
+	})
+
+	var report asc.KeywordScoreReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
+	}
+	sources := map[string]asc.KeywordScoreSourceStatus{}
+	for _, source := range report.Sources {
+		sources[source.Name] = source
+	}
+	metadata, ok := sources[keywordSourceMetadata]
+	if !ok {
+		t.Fatalf("report is missing the %s source: %+v", keywordSourceMetadata, report.Sources)
+	}
+	if metadata.Status != keywordStatusAvailable || metadata.Count != 1 || !strings.Contains(metadata.Error, "required release metadata") {
+		t.Fatalf("metadata source = %+v, want one complete row plus an incomplete-metadata diagnostic", metadata)
+	}
+}
+
 func TestKeywordsScoreReturnsParentCancellationAfterPartialSuccess(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
