@@ -22,7 +22,7 @@ Run idempotent follow-up passes while preserving the existing PR context instead
 3. Implement the smallest coherent fix, run the focused check, commit, and push.
 4. Reply to and resolve only the threads fully addressed by that push.
 5. Re-fetch the PR after pushing and confirm the live head, checks, and thread state.
-6. If required checks or an actionable reviewer are still pending, continue from the fresh exact-head state. When new valuable feedback arrives, fix it in another additive commit and repeat.
+6. If required checks, required reviews, or an actionable reviewer are still pending, continue from the fresh exact-head state. When new valuable feedback arrives, fix it in another additive commit and repeat.
 
 Keep fixes, pushes, review replies and resolutions, approvals, and merges serialized even when read-only checks run in parallel.
 
