@@ -61,6 +61,7 @@ Read [references/test-matrix.md](references/test-matrix.md) for mandatory CLI, o
 5. Run focused and affected checks before opening or updating a PR. Run the full repository gate for public CLI behavior, shared code, release surfaces, meaningful defect or security fixes, or when repository policy or the user requires it:
 
 ```bash
+make build
 make format
 make check-docs
 make lint
