@@ -11,8 +11,10 @@
 **Solution**:
 
 ```bash  theme={null}
-# Bypass keychain and use environment variables
-export ASC_BYPASS_KEYCHAIN=1
+# A complete environment set skips keychain when no profile is selected
+unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+unset ASC_PRIVATE_KEY ASC_PRIVATE_KEY_B64
+export ASC_KEY_TYPE="team"
 export ASC_KEY_ID="YOUR_KEY_ID"
 export ASC_ISSUER_ID="YOUR_ISSUER_ID"
 export ASC_PRIVATE_KEY_PATH="/path/to/AuthKey.p8"
@@ -21,21 +23,24 @@ export ASC_PRIVATE_KEY_PATH="/path/to/AuthKey.p8"
 Alternatively, use base64-encoded keys for headless environments:
 
 ```bash  theme={null}
+unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+unset ASC_PRIVATE_KEY_PATH ASC_PRIVATE_KEY
 export ASC_PRIVATE_KEY_B64="BASE64_ENCODED_KEY"
 ```
+
+If you intentionally use config storage, set `ASC_BYPASS_KEYCHAIN=1`. In bypass mode, the active config is tried before environment fallback.
 
 ### Multiple Credential Sources Conflict
 
 **Problem**: Error message about credentials resolving from multiple sources.
 
-**Solution**: Enable strict auth mode to identify the conflict:
+**Solution**: Enable strict auth mode on an authenticated command to identify the conflict:
 
 ```bash  theme={null}
-export ASC_STRICT_AUTH=true
-asc auth status
+ASC_STRICT_AUTH=true asc apps list
 ```
 
-Then choose one credential source (keychain, config file, or environment variables) and remove the others.
+`asc auth doctor` can also report mixed-source conflicts, but an authenticated command exercises the exact runtime credential path. Make sure every required field comes from one source, or remove partial values that are being used as fallback. Values that are present but unused do not trigger strict mode. See the [credential resolution matrix](/authentication#credential-resolution).
 
 ### JWT Token Expiration
 
@@ -162,10 +167,13 @@ Finance reports use Apple fiscal months, not calendar months.
 
 **Problem**: CLI can't find configuration file.
 
-**Solution**: Check config file locations (in priority order):
+**Solution**: Check config selection in this order:
 
-1. `./.asc/config.json` (repo-local)
-2. `~/.asc/config.json` (user home)
+1. `ASC_CONFIG_PATH` (absolute path, when set)
+2. Nearest `.asc/config.json` from the current directory upward
+3. `~/.asc/config.json` (user home)
+
+When `ASC_CONFIG_PATH` is unset, an empty local config can fall back to global credentials. A local config containing credential fields shadows the global store, and incomplete credential data can error instead of falling back. Setting `ASC_CONFIG_PATH` disables global fallback.
 
 Ensure file permissions are restrictive:
 
@@ -177,12 +185,14 @@ chmod 600 ~/.asc/config.json
 
 **Problem**: Settings not taking effect.
 
-**Solution**: Priority order (highest to lowest):
+**Solution**: For non-authentication settings, priority is generally:
 
 1. Command-line flags (e.g., `--output json`)
 2. Environment variables (e.g., `ASC_DEFAULT_OUTPUT`)
 3. Config file settings
 4. Default values (TTY-aware for output)
+
+Authentication credentials use conditional precedence. See the [credential resolution matrix](/authentication#credential-resolution).
 
 ## Debug Mode
 
@@ -221,12 +231,19 @@ ASC_BYPASS_KEYCHAIN=1 make test
 **Solution**: Integration tests are opt-in. Set credentials and use:
 
 ```bash  theme={null}
+unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+unset ASC_PRIVATE_KEY ASC_PRIVATE_KEY_B64
+export ASC_KEY_TYPE="team"
 export ASC_KEY_ID="YOUR_KEY_ID"
 export ASC_ISSUER_ID="YOUR_ISSUER_ID"
 export ASC_PRIVATE_KEY_PATH="/path/to/AuthKey.p8"
 export ASC_APP_ID="YOUR_APP_ID"
 
-make test-integration
+(
+  ASC_TEST_CONFIG_DIR="$(mktemp -d)"
+  trap 'rm -rf "$ASC_TEST_CONFIG_DIR"' EXIT
+  ASC_BYPASS_KEYCHAIN=1 ASC_CONFIG_PATH="$ASC_TEST_CONFIG_DIR/config.json" make test-integration
+)
 ```
 
 ## Platform-Specific Issues

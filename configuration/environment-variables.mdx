@@ -16,6 +16,12 @@ These variables configure API authentication credentials.
   Your App Store Connect API issuer ID
 </ParamField>
 
+<ParamField path="ASC_KEY_TYPE" type="string">
+  App Store Connect API key type: `team` (default) or `individual`
+
+  Individual keys do not require an issuer ID, and `ASC_ISSUER_ID` is ignored.
+</ParamField>
+
 <ParamField path="ASC_PRIVATE_KEY_PATH" type="string">
   Path to your private key (.p8) file
 </ParamField>
@@ -31,11 +37,11 @@ These variables configure API authentication credentials.
 <ParamField path="ASC_BYPASS_KEYCHAIN" type="boolean">
   Ignore keychain and use config/env auth only
 
-  Set to `true`, `1`, `yes`, `y`, or `on` to bypass keychain lookup.
+  Set to `true`, `1`, `yes`, or `on` to bypass keychain lookup. The active config is tried before environment fallback.
 </ParamField>
 
 <ParamField path="ASC_STRICT_AUTH" type="boolean">
-  Fail when credentials resolve from multiple sources
+  Fail when required fields in the resolved credential come from multiple sources
 
   Set to `true`, `1`, `yes`, `y`, or `on` to enable strict mode.
 </ParamField>
@@ -250,17 +256,11 @@ variables to opt out or adjust runtime handling.
 
 ### App Store Connect precedence
 
-App Store Connect credentials and defaults are resolved in this order:
+Non-authentication settings use explicit command flags before environment variables, config values, and built-in defaults.
 
-1. **Command-line flags** (highest priority)
-2. **Environment variables**
-3. **Config file** (`~/.asc/config.json` or `.asc/config.json`)
-4. **Keychain** (for credentials only)
-5. **Built-in defaults** (lowest priority)
+Credentials are conditional rather than a single linear order. A selected profile wins over complete environment credentials; without a profile and with keychain bypass disabled, a complete environment set can skip stored lookup; keychain bypass makes the active config the first stored source. See the [credential resolution matrix](/authentication#credential-resolution) for the authoritative branches and config-path order.
 
-<Note>
-  When `ASC_STRICT_AUTH=true`, the CLI will fail if credentials are found in multiple sources (e.g., both environment variables and keychain).
-</Note>
+`ASC_STRICT_AUTH=true` fails only when the resolved credential combines required fields from multiple sources. Merely defining an environment variable that is not used does not trigger strict mode.
 
 ### Apple Ads precedence
 
@@ -280,6 +280,9 @@ Apple Ads credentials and defaults are resolved in this order:
 ### Basic authentication
 
 ```bash  theme={null}
+unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+unset ASC_PRIVATE_KEY_PATH ASC_PRIVATE_KEY ASC_PRIVATE_KEY_B64
+export ASC_KEY_TYPE="team"
 export ASC_KEY_ID="ABC123"
 export ASC_ISSUER_ID="DEF456"
 export ASC_PRIVATE_KEY_PATH="$HOME/.asc/AuthKey_ABC123.p8"
@@ -290,10 +293,12 @@ asc apps list
 ### CI/CD authentication with base64-encoded key
 
 ```bash  theme={null}
+unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+unset ASC_PRIVATE_KEY_PATH ASC_PRIVATE_KEY
+export ASC_KEY_TYPE="team"
 export ASC_KEY_ID="ABC123"
 export ASC_ISSUER_ID="DEF456"
 export ASC_PRIVATE_KEY_B64="LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t..."
-export ASC_BYPASS_KEYCHAIN="true"
 
 asc builds upload --app 123456789 --ipa MyApp.ipa
 ```

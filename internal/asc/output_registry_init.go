@@ -15,6 +15,13 @@ func registerAllOutputRenderers() {
 	})
 	registerDirect(webAgreementsStatusTables)
 	registerRows(webAgreementsAcceptRows)
+	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {
+		h, r := keywordRankSummaryRows(v)
+		render(h, r)
+		kh, kr := keywordRankRows(v)
+		render(kh, kr)
+		return nil
+	})
 	registerRows(feedbackRows)
 	registerRows(crashesRows)
 	registerRowsWithSingleResourceAdapter(reviewsRows)
@@ -160,16 +167,32 @@ func registerAllOutputRenderers() {
 	})
 	registerRows(winBackOfferDeleteResultRows)
 	registerRows(subscriptionPriceDeleteResultRows)
+	registerDirect(func(v *SubscriptionIntroductoryOfferCreateSummary, render func([]string, [][]string)) error {
+		h, r := subscriptionIntroductoryOfferCreateSummaryRows(v)
+		render(h, r)
+		if len(v.Skips) > 0 {
+			sh, sr := subscriptionIntroductoryOfferCreateSummarySkipRows(v)
+			render(sh, sr)
+		}
+		if len(v.Failures) > 0 {
+			fh, fr := subscriptionIntroductoryOfferCreateSummaryFailureRows(v)
+			render(fh, fr)
+		}
+		return nil
+	})
 	registerRowsErr(offerCodePricesRows)
 	registerRows(appAvailabilityRows)
 	registerRows(territoryAvailabilitiesRows)
 	registerRows(endAppAvailabilityPreOrderRows)
+	registerRows(availabilityPlatformsResultRows)
+	registerRows(availabilityRemoveFromSaleResultRows)
 	registerRowsWithSingleResourceAdapter(appStoreVersionLocalizationsRows)
 	registerRowsWithSingleResourceAdapter(betaAppLocalizationsRows)
 	registerRowsWithSingleResourceAdapter(betaBuildLocalizationsRows)
 	registerRows(appInfoLocalizationsRows)
 	registerRowsWithSingleResourceAdapter(appScreenshotSetsRows)
 	registerRowsWithSingleResourceAdapter(appScreenshotsRows)
+	registerRows(appScreenshotSetListResultRows)
 	registerRowsWithSingleResourceAdapter(appPreviewSetsRows)
 	registerRowsWithSingleResourceAdapter(appPreviewsRows)
 	registerRowsWithSingleResourceAdapter(betaGroupsRows)
@@ -179,6 +202,15 @@ func registerAllOutputRenderers() {
 	registerRowsWithSingleResourceAdapter(actorsRows)
 	registerRowsWithSingleResourceAdapter(devicesRows)
 	registerRows(deviceLocalUDIDRows)
+	registerDirect(func(v *DeviceBatchRegistrationSummary, render func([]string, [][]string)) error {
+		h, r := deviceBatchRegistrationSummaryRows(v)
+		render(h, r)
+		if len(v.Results) > 0 {
+			ih, ir := deviceBatchRegistrationItemRows(v.Results)
+			render(ih, ir)
+		}
+		return nil
+	})
 	registerRowsWithSingleResourceAdapter(userInvitationsRows)
 	registerRows(userDeleteResultRows)
 	registerRows(userInvitationRevokeResultRows)
@@ -462,6 +494,7 @@ func registerAllOutputRenderers() {
 	registerRows(signingFetchResultRows)
 	registerRows(xcodeCloudRunResultRows)
 	registerRows(xcodeCloudStatusResultRows)
+	registerDirect(xcodeCloudDoctorResultTables)
 	registerRowsWithSingleToListAdapter[CiProductResponse, CiProductsResponse](ciProductsRows)
 	registerRowsWithSingleToListAdapter[CiWorkflowResponse, CiWorkflowsResponse](ciWorkflowsRows)
 	registerRowsWithSingleToListAdapter[ScmProviderResponse, ScmProvidersResponse](scmProvidersRows)
