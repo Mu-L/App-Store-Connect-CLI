@@ -623,7 +623,7 @@ func queryOptimizationListBoundedWithMore[T any](ctx context.Context, client *ap
 		}
 		offset += len(envelope.Result)
 	}
-	return items, optimizationPageLimitError(spec)
+	return items, false, optimizationPageLimitError(spec)
 }
 
 func queryOptimizationRows[T any](ctx context.Context, client *appleads.Client, spec appleads.EndpointSpec, body map[string]any, pageSize int) ([]T, error) {
