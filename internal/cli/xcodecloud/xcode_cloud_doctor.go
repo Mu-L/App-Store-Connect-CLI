@@ -22,76 +22,23 @@ type xcodeCloudDoctorOptions struct {
 	SaveLogs     string
 }
 
-type xcodeCloudDoctorResult struct {
-	Run              *asc.XcodeCloudStatusResult       `json:"run"`
-	Summary          xcodeCloudDoctorSummary           `json:"summary"`
-	Actions          []xcodeCloudDoctorAction          `json:"actions"`
-	LogBundles       []xcodeCloudDoctorLogBundle       `json:"logBundles"`
-	CoverageWarnings []xcodeCloudDoctorCoverageWarning `json:"coverageWarnings"`
-	Conclusion       string                            `json:"conclusion"`
-	NextAction       string                            `json:"nextAction"`
-}
-
-type xcodeCloudDoctorSummary struct {
-	TotalActions        int `json:"totalActions"`
-	FailedActions       int `json:"failedActions"`
-	SkippedActions      int `json:"skippedActions"`
-	Errors              int `json:"errors"`
-	Warnings            int `json:"warnings"`
-	Artifacts           int `json:"artifacts"`
-	LogBundles          int `json:"logBundles"`
-	LogBundlesInspected int `json:"logBundlesInspected"`
-}
-
-type xcodeCloudDoctorAction struct {
-	ID                string                     `json:"id"`
-	Name              string                     `json:"name,omitempty"`
-	ActionType        string                     `json:"actionType,omitempty"`
-	ExecutionProgress string                     `json:"executionProgress,omitempty"`
-	CompletionStatus  string                     `json:"completionStatus,omitempty"`
-	IsRequiredToPass  *bool                      `json:"isRequiredToPass,omitempty"`
-	Issues            []xcodeCloudDoctorIssue    `json:"issues"`
-	Artifacts         []xcodeCloudDoctorArtifact `json:"artifacts"`
-}
-
-type xcodeCloudDoctorIssue struct {
-	ID         string            `json:"id"`
-	IssueType  string            `json:"issueType,omitempty"`
-	Category   string            `json:"category,omitempty"`
-	Message    string            `json:"message,omitempty"`
-	FileSource *asc.FileLocation `json:"fileSource,omitempty"`
-}
-
-type xcodeCloudDoctorArtifact struct {
-	ID       string `json:"id"`
-	FileType string `json:"fileType,omitempty"`
-	FileName string `json:"fileName,omitempty"`
-	FileSize int    `json:"fileSize,omitempty"`
-}
-
-type xcodeCloudDoctorCoverageWarning struct {
-	ID          string `json:"id"`
-	Message     string `json:"message"`
-	Remediation string `json:"remediation"`
-}
-
 // XcodeCloudDoctorCommand returns the xcode-cloud doctor subcommand.
 func XcodeCloudDoctorCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 
-	runID := fs.String("run-id", "", "Build run ID to diagnose")
-	wait := fs.Bool("wait", false, "Wait for the build run to complete before diagnosing it")
-	pollInterval := fs.Duration("poll-interval", 10*time.Second, "Poll interval when waiting")
-	timeout := fs.Duration("timeout", 0, "Timeout for Xcode Cloud requests (0 = use ASC_TIMEOUT or 30m default)")
-	skipLogs := fs.Bool("skip-logs", false, "Skip automatic inspection of failed-action log bundles")
-	saveLogs := fs.String("save-logs", "", "Directory in which to retain inspected log bundles")
+	runID := fs.String("run-id", "", "[experimental] Build run ID to diagnose")
+	wait := fs.Bool("wait", false, "[experimental] Wait for the build run to complete before diagnosing it")
+	pollInterval := fs.Duration("poll-interval", 10*time.Second, "[experimental] Poll interval when waiting")
+	timeout := fs.Duration("timeout", 0, "[experimental] Timeout for Xcode Cloud requests (0 = use ASC_TIMEOUT or 30m default)")
+	skipLogs := fs.Bool("skip-logs", false, "[experimental] Skip automatic inspection of failed-action log bundles")
+	saveLogs := fs.String("save-logs", "", "[experimental] Directory in which to retain inspected log bundles")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "doctor",
 		ShortUsage: "asc xcode-cloud doctor --run-id \"BUILD_RUN_ID\" [flags]",
-		ShortHelp:  "Diagnose an Xcode Cloud build run and inspect failure logs.",
-		LongHelp: `Diagnose an Xcode Cloud build run.
+		ShortHelp:  "[experimental] Diagnose an Xcode Cloud build run and inspect failure logs.",
+		LongHelp: `[experimental] Diagnose an Xcode Cloud build run.
 
 The command combines run status, actions, issues, and artifacts into one report.
 For failed runs, it inspects failed-action LOG_BUNDLE artifacts in memory and
@@ -130,6 +77,9 @@ Examples:
 			if flagWasSet(fs, "save-logs") && strings.TrimSpace(*saveLogs) == "" {
 				return shared.UsageError("--save-logs must not be empty")
 			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return err
+			}
 
 			client, err := shared.GetASCClient()
 			if err != nil {
@@ -164,7 +114,7 @@ func flagWasSet(fs *flag.FlagSet, name string) bool {
 	return set
 }
 
-func diagnoseXcodeCloudRun(ctx context.Context, client *asc.Client, runID string, options xcodeCloudDoctorOptions) (*xcodeCloudDoctorResult, error) {
+func diagnoseXcodeCloudRun(ctx context.Context, client *asc.Client, runID string, options xcodeCloudDoctorOptions) (*asc.XcodeCloudDoctorResult, error) {
 	var (
 		run *asc.CiBuildRunResponse
 		err error
@@ -183,11 +133,11 @@ func diagnoseXcodeCloudRun(ctx context.Context, client *asc.Client, runID string
 		return nil, err
 	}
 
-	result := &xcodeCloudDoctorResult{
+	result := &asc.XcodeCloudDoctorResult{
 		Run:              buildStatusResult(run),
-		Actions:          make([]xcodeCloudDoctorAction, 0, len(actions)),
-		LogBundles:       make([]xcodeCloudDoctorLogBundle, 0),
-		CoverageWarnings: make([]xcodeCloudDoctorCoverageWarning, 0),
+		Actions:          make([]asc.XcodeCloudDoctorAction, 0, len(actions)),
+		LogBundles:       make([]asc.XcodeCloudDoctorLogBundle, 0),
+		CoverageWarnings: make([]asc.XcodeCloudDoctorCoverageWarning, 0),
 	}
 	for _, action := range actions {
 		actionResult, err := diagnoseXcodeCloudAction(ctx, client, action)
@@ -198,8 +148,8 @@ func diagnoseXcodeCloudRun(ctx context.Context, client *asc.Client, runID string
 	}
 
 	summarizeXcodeCloudDoctorResult(result)
-	if options.SkipLogs && result.Summary.LogBundles > 0 && doctorRunFailed(result) {
-		result.CoverageWarnings = append(result.CoverageWarnings, xcodeCloudDoctorCoverageWarning{
+	if options.SkipLogs && doctorFailedActionLogBundleCount(result) > 0 && doctorRunFailed(result) {
+		result.CoverageWarnings = append(result.CoverageWarnings, asc.XcodeCloudDoctorCoverageWarning{
 			ID:          "log_bundle_inspection_skipped",
 			Message:     "Log bundle inspection was disabled with --skip-logs.",
 			Remediation: "Re-run without --skip-logs to inspect failed-action log bundles.",
@@ -236,17 +186,17 @@ func waitForBuildRunForDoctor(ctx context.Context, client *asc.Client, runID str
 	return run, nil
 }
 
-func diagnoseXcodeCloudAction(ctx context.Context, client *asc.Client, action asc.CiBuildActionResource) (xcodeCloudDoctorAction, error) {
+func diagnoseXcodeCloudAction(ctx context.Context, client *asc.Client, action asc.CiBuildActionResource) (asc.XcodeCloudDoctorAction, error) {
 	actionID := strings.TrimSpace(action.ID)
-	result := xcodeCloudDoctorAction{
+	result := asc.XcodeCloudDoctorAction{
 		ID:                actionID,
 		Name:              action.Attributes.Name,
 		ActionType:        action.Attributes.ActionType,
 		ExecutionProgress: string(action.Attributes.ExecutionProgress),
 		CompletionStatus:  string(action.Attributes.CompletionStatus),
 		IsRequiredToPass:  action.Attributes.IsRequiredToPass,
-		Issues:            make([]xcodeCloudDoctorIssue, 0),
-		Artifacts:         make([]xcodeCloudDoctorArtifact, 0),
+		Issues:            make([]asc.XcodeCloudDoctorIssue, 0),
+		Artifacts:         make([]asc.XcodeCloudDoctorArtifact, 0),
 	}
 	if actionID == "" {
 		return result, nil
@@ -257,7 +207,7 @@ func diagnoseXcodeCloudAction(ctx context.Context, client *asc.Client, action as
 		return result, fmt.Errorf("list issues for action %q: %w", actionID, err)
 	}
 	for _, issue := range issues {
-		result.Issues = append(result.Issues, xcodeCloudDoctorIssue{
+		result.Issues = append(result.Issues, asc.XcodeCloudDoctorIssue{
 			ID:         issue.ID,
 			IssueType:  issue.Attributes.IssueType,
 			Category:   issue.Attributes.Category,
@@ -271,7 +221,7 @@ func diagnoseXcodeCloudAction(ctx context.Context, client *asc.Client, action as
 		return result, fmt.Errorf("list artifacts for action %q: %w", actionID, err)
 	}
 	for _, artifact := range artifacts {
-		result.Artifacts = append(result.Artifacts, xcodeCloudDoctorArtifact{
+		result.Artifacts = append(result.Artifacts, asc.XcodeCloudDoctorArtifact{
 			ID:       artifact.ID,
 			FileType: artifact.Attributes.FileType,
 			FileName: artifact.Attributes.FileName,
@@ -323,12 +273,14 @@ func listAllXcodeCloudActionArtifacts(ctx context.Context, client *asc.Client, a
 	return allArtifacts.Data, nil
 }
 
-func summarizeXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
+func summarizeXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 	result.Summary.TotalActions = len(result.Actions)
 	for _, action := range result.Actions {
 		switch strings.ToUpper(strings.TrimSpace(action.CompletionStatus)) {
-		case "FAILED", "ERRORED", "CANCELED":
+		case "FAILED", "ERRORED":
 			result.Summary.FailedActions++
+		case "CANCELED":
+			result.Summary.CanceledActions++
 		case "SKIPPED":
 			result.Summary.SkippedActions++
 		}
@@ -349,18 +301,17 @@ func summarizeXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
 	}
 }
 
-func shouldInspectDoctorLogs(result *xcodeCloudDoctorResult, options xcodeCloudDoctorOptions) bool {
-	if options.SkipLogs || result.Summary.LogBundles == 0 {
+func shouldInspectDoctorLogs(result *asc.XcodeCloudDoctorResult, options xcodeCloudDoctorOptions) bool {
+	if options.SkipLogs || result == nil {
 		return false
 	}
 	if strings.TrimSpace(options.SaveLogs) != "" {
-		return true
+		return result.Summary.LogBundles > 0
 	}
-	return !strings.EqualFold(strings.TrimSpace(result.Run.CompletionStatus), string(asc.CiBuildRunCompletionStatusSucceeded)) &&
-		asc.IsBuildRunComplete(asc.CiBuildRunExecutionProgress(result.Run.ExecutionProgress))
+	return doctorRunFailed(result) && doctorFailedActionLogBundleCount(result) > 0
 }
 
-func finishXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
+func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 	status := strings.ToUpper(strings.TrimSpace(result.Run.CompletionStatus))
 	if !strings.EqualFold(result.Run.ExecutionProgress, string(asc.CiBuildRunExecutionProgressComplete)) {
 		result.Conclusion = "The Xcode Cloud build run is not complete."
@@ -372,10 +323,29 @@ func finishXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
 		result.NextAction = "No corrective action is required."
 		return
 	}
+	if status == string(asc.CiBuildRunCompletionStatusCanceled) {
+		result.Conclusion = "The Xcode Cloud build run was canceled."
+		result.NextAction = "Review the cancellation reason and start a new build run when ready."
+		return
+	}
+	if status == string(asc.CiBuildRunCompletionStatusSkipped) {
+		result.Conclusion = "The Xcode Cloud build run was skipped."
+		result.NextAction = "Review the workflow conditions and action results to determine why the run was skipped."
+		return
+	}
 
 	hasImportDiagnostic := false
 	hasSuccessfulExport := false
+	failedActionLogBundles := doctorFailedActionLogBundleCount(result)
+	failedActionLogBundlesInspected := doctorFailedActionLogBundlesInspected(result)
+	failedActionLogBundlesPartiallyInspected := failedActionLogBundlesInspected < failedActionLogBundles
+	failedActionLogBundlesSaved := doctorFailedActionLogBundlesSaved(result)
+	failedActionLogBundleInspectionFailed := doctorHasCoverageWarning(result, "log_bundle_inspection_failed")
+	failedActionIDs := doctorFailedActionIDs(result)
 	for _, bundle := range result.LogBundles {
+		if _, failed := failedActionIDs[bundle.ActionID]; !failed {
+			continue
+		}
 		if bundle.ExportStatus == "SUCCEEDED" {
 			hasSuccessfulExport = true
 		}
@@ -388,32 +358,53 @@ func finishXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
 		result.NextAction = "Resolve the reported ITMS diagnostics, then start a new build run."
 		return
 	}
-	if hasSuccessfulExport || doctorHasAppStorePreparationIssue(result) {
-		if hasSuccessfulExport {
+	hasAppStorePreparationIssue := doctorHasAppStorePreparationIssue(result)
+	if hasSuccessfulExport || hasAppStorePreparationIssue {
+		if failedActionLogBundlesPartiallyInspected {
+			if hasAppStorePreparationIssue {
+				result.Conclusion = "Xcode Cloud reported an App Store Connect preparation failure, but one or more failed-action log bundles were not inspected."
+			} else {
+				result.Conclusion = "The archive export succeeded, but one or more failed-action log bundles were not inspected."
+			}
+			if failedActionLogBundleInspectionFailed {
+				result.NextAction = "Follow the log bundle inspection remediation in this report, then check App Store Connect if the available logs contain no import detail."
+			} else if failedActionLogBundlesSaved > 0 {
+				result.NextAction = "Inspect the saved failed-action log bundles, then check App Store Connect if they contain no import detail."
+			} else {
+				result.NextAction = "Re-run without --skip-logs, then check App Store Connect if the logs still contain no import detail."
+			}
+		} else if hasSuccessfulExport {
 			result.Conclusion = "The archive export succeeded, but Xcode Cloud reported a later failure without an ITMS-level import diagnostic."
 			result.NextAction = "Check the App Store Connect delivery notification or build processing state for the server-side import rejection."
-		} else if result.Summary.LogBundles > 0 && result.Summary.LogBundlesInspected == 0 {
-			result.Conclusion = "Xcode Cloud reported an App Store Connect preparation failure, but its available log bundles were not inspected."
-			result.NextAction = "Re-run without --skip-logs, then check App Store Connect if the logs still contain no import detail."
 		} else {
 			result.Conclusion = "Xcode Cloud reported an App Store Connect preparation failure without an ITMS-level import diagnostic."
 			result.NextAction = "Check the App Store Connect delivery notification or build processing state for the server-side import rejection."
 		}
 		coverageMessage := "The Xcode Cloud API did not expose a detailed App Store import rejection."
-		if result.Summary.LogBundlesInspected > 0 {
+		coverageRemediation := "Check the App Store Connect delivery notification or build processing state; do not infer an ITMS root cause from the generic Xcode Cloud issue."
+		if failedActionLogBundlesPartiallyInspected {
+			coverageMessage = "One or more failed-action log bundles were not inspected, so a detailed App Store import rejection may be missing."
+			coverageRemediation = "Complete the log bundle inspection remediation in this report before checking the App Store Connect delivery notification or build processing state."
+		} else if failedActionLogBundlesInspected > 0 {
 			coverageMessage = "The Xcode Cloud API and inspected log bundles did not expose a detailed App Store import rejection."
 		}
-		result.CoverageWarnings = append(result.CoverageWarnings, xcodeCloudDoctorCoverageWarning{
+		result.CoverageWarnings = append(result.CoverageWarnings, asc.XcodeCloudDoctorCoverageWarning{
 			ID:          "app_store_import_detail_unavailable",
 			Message:     coverageMessage,
-			Remediation: "Check the App Store Connect delivery notification or build processing state; do not infer an ITMS root cause from the generic Xcode Cloud issue.",
+			Remediation: coverageRemediation,
 		})
 		return
 	}
 
-	if result.Summary.LogBundles > 0 && result.Summary.LogBundlesInspected == 0 {
-		result.Conclusion = "The Xcode Cloud build run failed, but its available log bundles were not inspected."
-		result.NextAction = "Re-run without --skip-logs or download the listed log bundle artifacts for inspection."
+	if failedActionLogBundlesPartiallyInspected {
+		result.Conclusion = "The Xcode Cloud build run failed, but one or more failed-action log bundles were not inspected."
+		if failedActionLogBundleInspectionFailed {
+			result.NextAction = "Follow the log bundle inspection remediation in this report to inspect the failed-action logs locally."
+		} else if failedActionLogBundlesSaved > 0 {
+			result.NextAction = "Inspect the saved failed-action log bundles for the underlying failure."
+		} else {
+			result.NextAction = "Re-run without --skip-logs or download the listed log bundle artifacts for inspection."
+		}
 	} else if result.Summary.Errors > 0 {
 		result.Conclusion = "The Xcode Cloud build run failed and reported actionable issues."
 		result.NextAction = "Resolve the reported issues, then start a new build run."
@@ -423,17 +414,94 @@ func finishXcodeCloudDoctorResult(result *xcodeCloudDoctorResult) {
 	}
 }
 
-func doctorRunFailed(result *xcodeCloudDoctorResult) bool {
+func doctorFailedActionLogBundleCount(result *asc.XcodeCloudDoctorResult) int {
+	if result == nil {
+		return 0
+	}
+	count := 0
+	for _, action := range result.Actions {
+		if !isFailedDoctorAction(action.CompletionStatus) {
+			continue
+		}
+		for _, artifact := range action.Artifacts {
+			if strings.EqualFold(strings.TrimSpace(artifact.FileType), "LOG_BUNDLE") {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func doctorFailedActionIDs(result *asc.XcodeCloudDoctorResult) map[string]struct{} {
+	failed := make(map[string]struct{})
+	if result == nil {
+		return failed
+	}
+	for _, action := range result.Actions {
+		if isFailedDoctorAction(action.CompletionStatus) {
+			failed[action.ID] = struct{}{}
+		}
+	}
+	return failed
+}
+
+func doctorFailedActionLogBundlesInspected(result *asc.XcodeCloudDoctorResult) int {
+	failedActionIDs := doctorFailedActionIDs(result)
+	count := 0
+	for _, bundle := range result.LogBundles {
+		if _, failed := failedActionIDs[bundle.ActionID]; failed && bundle.Inspected {
+			count++
+		}
+	}
+	return count
+}
+
+func doctorFailedActionLogBundlesSaved(result *asc.XcodeCloudDoctorResult) int {
+	failedActionIDs := doctorFailedActionIDs(result)
+	count := 0
+	for _, bundle := range result.LogBundles {
+		if _, failed := failedActionIDs[bundle.ActionID]; failed && strings.TrimSpace(bundle.SavedPath) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func doctorHasCoverageWarning(result *asc.XcodeCloudDoctorResult, id string) bool {
+	if result == nil {
+		return false
+	}
+	for _, warning := range result.CoverageWarnings {
+		if warning.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func doctorRunFailed(result *asc.XcodeCloudDoctorResult) bool {
 	if result == nil || result.Run == nil {
 		return false
 	}
-	return asc.IsBuildRunComplete(asc.CiBuildRunExecutionProgress(result.Run.ExecutionProgress)) &&
-		!strings.EqualFold(strings.TrimSpace(result.Run.CompletionStatus), string(asc.CiBuildRunCompletionStatusSucceeded))
+	if !asc.IsBuildRunComplete(asc.CiBuildRunExecutionProgress(result.Run.ExecutionProgress)) {
+		return false
+	}
+	status := strings.ToUpper(strings.TrimSpace(result.Run.CompletionStatus))
+	return status == string(asc.CiBuildRunCompletionStatusFailed) ||
+		status == string(asc.CiBuildRunCompletionStatusErrored)
 }
 
-func doctorHasAppStorePreparationIssue(result *xcodeCloudDoctorResult) bool {
+func doctorHasAppStorePreparationIssue(result *asc.XcodeCloudDoctorResult) bool {
 	for _, action := range result.Actions {
+		if !isFailedDoctorAction(action.CompletionStatus) {
+			continue
+		}
 		for _, issue := range action.Issues {
+			switch strings.ToUpper(strings.TrimSpace(issue.IssueType)) {
+			case "ERROR", "TEST_FAILURE":
+			default:
+				continue
+			}
 			text := strings.ToLower(issue.Category + " " + issue.Message)
 			if strings.Contains(text, "app store connect") || strings.Contains(text, "prepare build for app store") {
 				return true

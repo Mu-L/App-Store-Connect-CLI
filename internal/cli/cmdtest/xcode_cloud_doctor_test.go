@@ -148,6 +148,27 @@ func TestXcodeCloudDoctorRequiresRunID(t *testing.T) {
 	}
 }
 
+func TestXcodeCloudDoctorHelpMarksNewSurfaceExperimental(t *testing.T) {
+	root := RootCommand("1.2.3")
+	doctor := findCommand(root, "xcode-cloud", "doctor")
+	if doctor == nil {
+		t.Fatal("xcode-cloud doctor command is not registered")
+	}
+	if !strings.HasPrefix(doctor.ShortHelp, "[experimental]") {
+		t.Fatalf("ShortHelp = %q, want experimental lifecycle label", doctor.ShortHelp)
+	}
+
+	for _, name := range []string{"run-id", "wait", "poll-interval", "timeout", "skip-logs", "save-logs"} {
+		flagValue := doctor.FlagSet.Lookup(name)
+		if flagValue == nil {
+			t.Fatalf("flag --%s is not registered", name)
+		}
+		if !strings.HasPrefix(flagValue.Usage, "[experimental] ") {
+			t.Fatalf("--%s usage = %q, want experimental lifecycle label", name, flagValue.Usage)
+		}
+	}
+}
+
 func TestXcodeCloudDoctorSavesLogBundleWithoutOverwriting(t *testing.T) {
 	setupAuth(t)
 
@@ -213,11 +234,23 @@ func TestXcodeCloudDoctorSavesLogBundleWithoutOverwriting(t *testing.T) {
 		t.Fatal("saved log bundle does not match download")
 	}
 	var secondRunErr error
-	captureOutput(t, func() {
+	secondStdout, _ := captureOutput(t, func() {
 		secondRunErr = runDoctor()
 	})
-	if secondRunErr == nil || !strings.Contains(secondRunErr.Error(), "exist") {
-		t.Fatalf("second doctor run error = %v, want existing-file refusal", secondRunErr)
+	if secondRunErr != nil {
+		t.Fatalf("second doctor run error = %v, want completed report", secondRunErr)
+	}
+	var secondResult struct {
+		CoverageWarnings []struct {
+			ID      string `json:"id"`
+			Message string `json:"message"`
+		} `json:"coverageWarnings"`
+	}
+	if err := json.Unmarshal([]byte(secondStdout), &secondResult); err != nil {
+		t.Fatalf("decode second doctor output %q: %v", secondStdout, err)
+	}
+	if len(secondResult.CoverageWarnings) != 1 || secondResult.CoverageWarnings[0].ID != "log_bundle_inspection_failed" || !strings.Contains(secondResult.CoverageWarnings[0].Message, "exist") {
+		t.Fatalf("second doctor warnings = %+v, want existing-file coverage warning", secondResult.CoverageWarnings)
 	}
 }
 
@@ -333,7 +366,7 @@ func TestXcodeCloudDoctorWaitsForTerminalRunAndRendersTable(t *testing.T) {
 	if runRequests != 2 {
 		t.Fatalf("run requests = %d, want 2", runRequests)
 	}
-	for _, expected := range []string{"SUMMARY", "completionStatus", "FAILED", "ACTIONS", "Xcode Cloud build run failed"} {
+	for _, expected := range []string{"Summary field", "completionStatus", "FAILED", "Actions ID", "Xcode Cloud build run failed"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("table output missing %q: %s", expected, stdout)
 		}

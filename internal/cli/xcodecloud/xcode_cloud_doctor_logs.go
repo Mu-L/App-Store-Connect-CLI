@@ -4,12 +4,14 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
@@ -26,29 +28,13 @@ const (
 
 var doctorITMSCodePattern = regexp.MustCompile(`(?i)\bITMS-[0-9]+\b`)
 
-type xcodeCloudDoctorLogBundle struct {
-	ArtifactID   string                          `json:"artifactId"`
-	ActionID     string                          `json:"actionId"`
-	FileName     string                          `json:"fileName,omitempty"`
-	FileSize     int                             `json:"fileSize,omitempty"`
-	Inspected    bool                            `json:"inspected"`
-	SavedPath    string                          `json:"savedPath,omitempty"`
-	ExportStatus string                          `json:"exportStatus,omitempty"`
-	Diagnostics  []xcodeCloudDoctorLogDiagnostic `json:"diagnostics"`
-}
-
-type xcodeCloudDoctorLogDiagnostic struct {
-	Code       string `json:"code"`
-	Message    string `json:"message"`
-	SourceFile string `json:"sourceFile,omitempty"`
-}
-
 type doctorLogBundleAnalysis struct {
-	ExportStatus string
-	Diagnostics  []xcodeCloudDoctorLogDiagnostic
+	ExportStatus         string
+	Diagnostics          []asc.XcodeCloudDoctorLogDiagnostic
+	DiagnosticsTruncated bool
 }
 
-func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result *xcodeCloudDoctorResult, options xcodeCloudDoctorOptions) error {
+func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result *asc.XcodeCloudDoctorResult, options xcodeCloudDoctorOptions) error {
 	failedActions := make(map[string]struct{})
 	for _, action := range result.Actions {
 		if isFailedDoctorAction(action.CompletionStatus) {
@@ -56,7 +42,7 @@ func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result
 		}
 	}
 
-	inspectAll := strings.TrimSpace(options.SaveLogs) != "" || len(failedActions) == 0
+	inspectAll := strings.TrimSpace(options.SaveLogs) != ""
 	var saveRoot rootfs.Root
 	if strings.TrimSpace(options.SaveLogs) != "" {
 		var err error
@@ -80,27 +66,44 @@ func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result
 			if !strings.EqualFold(strings.TrimSpace(artifact.FileType), "LOG_BUNDLE") {
 				continue
 			}
-			bundleResult, data, inspectErr := downloadAndAnalyzeDoctorLogBundle(ctx, client, action.ID, artifact)
+			var (
+				bundleResult asc.XcodeCloudDoctorLogBundle
+				inspectErr   error
+			)
 			if strings.TrimSpace(options.SaveLogs) != "" {
-				if len(data) == 0 && inspectErr != nil {
-					return fmt.Errorf("download log bundle %s for --save-logs: %w", artifact.ID, inspectErr)
-				}
 				name := doctorSavedLogBundleName(artifact)
-				if err := saveRoot.CreateNewFileAtomic(name, data, 0o600); err != nil {
-					return fmt.Errorf("save log bundle %q: %w", filepath.Join(options.SaveLogs, name), err)
-				}
-				bundleResult.SavedPath = filepath.Join(options.SaveLogs, name)
+				bundleResult, inspectErr = downloadSaveAndAnalyzeDoctorLogBundle(ctx, client, action.ID, artifact, saveRoot, options.SaveLogs, name)
+			} else {
+				bundleResult, inspectErr = downloadAndAnalyzeDoctorLogBundle(ctx, client, action.ID, artifact)
 			}
 			if inspectErr != nil {
+				if errors.Is(inspectErr, context.Canceled) || errors.Is(inspectErr, context.DeadlineExceeded) {
+					return inspectErr
+				}
 				result.LogBundles = append(result.LogBundles, bundleResult)
-				result.CoverageWarnings = append(result.CoverageWarnings, xcodeCloudDoctorCoverageWarning{
+				remediation := fmt.Sprintf("Download artifact %s with asc xcode-cloud artifacts download and inspect it locally.", artifact.ID)
+				if bundleResult.SavedPath != "" {
+					remediation = fmt.Sprintf("Inspect the saved bundle %s locally.", asc.SanitizeTerminalText(bundleResult.SavedPath))
+				}
+				result.CoverageWarnings = append(result.CoverageWarnings, asc.XcodeCloudDoctorCoverageWarning{
 					ID:          "log_bundle_inspection_failed",
 					Message:     fmt.Sprintf("Could not inspect log bundle %s: %s", artifact.ID, asc.SanitizeTerminalText(inspectErr.Error())),
-					Remediation: fmt.Sprintf("Download artifact %s with asc xcode-cloud artifacts download and inspect it locally.", artifact.ID),
+					Remediation: remediation,
 				})
 				continue
 			}
 			result.LogBundles = append(result.LogBundles, bundleResult)
+			if bundleResult.DiagnosticsTruncated {
+				remediation := fmt.Sprintf("Re-run with --save-logs and inspect artifact %s locally for additional diagnostics.", artifact.ID)
+				if bundleResult.SavedPath != "" {
+					remediation = fmt.Sprintf("Inspect the saved bundle %s locally for additional diagnostics.", asc.SanitizeTerminalText(bundleResult.SavedPath))
+				}
+				result.CoverageWarnings = append(result.CoverageWarnings, asc.XcodeCloudDoctorCoverageWarning{
+					ID:          "log_diagnostics_truncated",
+					Message:     fmt.Sprintf("Log bundle %s contains more than %d distinct ITMS diagnostics; only the first %d are reported.", artifact.ID, maxDoctorDiagnostics, maxDoctorDiagnostics),
+					Remediation: remediation,
+				})
+			}
 			if bundleResult.Inspected {
 				result.Summary.LogBundlesInspected++
 			}
@@ -109,57 +112,122 @@ func inspectXcodeCloudDoctorLogs(ctx context.Context, client *asc.Client, result
 	return nil
 }
 
-func downloadAndAnalyzeDoctorLogBundle(ctx context.Context, client *asc.Client, actionID string, artifact xcodeCloudDoctorArtifact) (xcodeCloudDoctorLogBundle, []byte, error) {
-	result := xcodeCloudDoctorLogBundle{
+func newDoctorLogBundleResult(actionID string, artifact asc.XcodeCloudDoctorArtifact) asc.XcodeCloudDoctorLogBundle {
+	return asc.XcodeCloudDoctorLogBundle{
 		ArtifactID:  artifact.ID,
 		ActionID:    actionID,
 		FileName:    artifact.FileName,
 		FileSize:    artifact.FileSize,
-		Diagnostics: make([]xcodeCloudDoctorLogDiagnostic, 0),
+		Diagnostics: make([]asc.XcodeCloudDoctorLogDiagnostic, 0),
 	}
+}
+
+func downloadAndAnalyzeDoctorLogBundle(ctx context.Context, client *asc.Client, actionID string, artifact asc.XcodeCloudDoctorArtifact) (asc.XcodeCloudDoctorLogBundle, error) {
+	result := newDoctorLogBundleResult(actionID, artifact)
 	if artifact.FileSize > maxDoctorLogBundleBytes {
-		return result, nil, fmt.Errorf("bundle size %d exceeds the %d-byte inspection limit", artifact.FileSize, maxDoctorLogBundleBytes)
+		return result, fmt.Errorf("bundle size %d exceeds the %d-byte inspection limit", artifact.FileSize, maxDoctorLogBundleBytes)
 	}
 
-	detail, err := client.GetCiArtifact(ctx, artifact.ID)
+	body, err := openDoctorLogBundle(ctx, client, artifact.ID)
 	if err != nil {
-		return result, nil, fmt.Errorf("fetch artifact details: %w", err)
+		return result, err
 	}
-	downloadURL := strings.TrimSpace(detail.Data.Attributes.DownloadURL)
-	if downloadURL == "" {
-		return result, nil, fmt.Errorf("artifact has no download URL")
-	}
-	download, err := client.DownloadCiArtifact(ctx, downloadURL)
-	if err != nil {
-		return result, nil, fmt.Errorf("download artifact: %w", err)
-	}
-	defer download.Body.Close()
+	defer body.Close()
 
-	data, err := io.ReadAll(io.LimitReader(download.Body, maxDoctorLogBundleBytes+1))
+	data, err := io.ReadAll(io.LimitReader(body, maxDoctorLogBundleBytes+1))
 	if err != nil {
-		return result, nil, fmt.Errorf("read artifact: %w", err)
+		return result, fmt.Errorf("read artifact: %w", err)
 	}
 	if len(data) > maxDoctorLogBundleBytes {
-		return result, nil, fmt.Errorf("download exceeds the %d-byte inspection limit", maxDoctorLogBundleBytes)
+		return result, fmt.Errorf("download exceeds the %d-byte inspection limit", maxDoctorLogBundleBytes)
 	}
 
 	analysis, err := analyzeDoctorLogBundle(data)
 	if err != nil {
-		return result, data, err
+		return result, err
 	}
 	result.Inspected = true
 	result.ExportStatus = analysis.ExportStatus
 	result.Diagnostics = analysis.Diagnostics
-	return result, data, nil
+	result.DiagnosticsTruncated = analysis.DiagnosticsTruncated
+	return result, nil
+}
+
+func downloadSaveAndAnalyzeDoctorLogBundle(
+	ctx context.Context,
+	client *asc.Client,
+	actionID string,
+	artifact asc.XcodeCloudDoctorArtifact,
+	saveRoot rootfs.Root,
+	saveDirectory string,
+	name string,
+) (asc.XcodeCloudDoctorLogBundle, error) {
+	result := newDoctorLogBundleResult(actionID, artifact)
+	body, err := openDoctorLogBundle(ctx, client, artifact.ID)
+	if err != nil {
+		return result, err
+	}
+	defer body.Close()
+	return saveAndAnalyzeDoctorLogBundle(saveRoot, saveDirectory, name, result, body, maxDoctorLogBundleBytes)
+}
+
+func saveAndAnalyzeDoctorLogBundle(
+	saveRoot rootfs.Root,
+	saveDirectory string,
+	name string,
+	result asc.XcodeCloudDoctorLogBundle,
+	reader io.Reader,
+	inspectionLimit int64,
+) (asc.XcodeCloudDoctorLogBundle, error) {
+	written, err := saveRoot.CreateNewFrom(name, reader, 0o600)
+	if err != nil {
+		return result, fmt.Errorf("save log bundle %q: %w", filepath.Join(saveDirectory, name), err)
+	}
+	result.SavedPath = filepath.Join(saveDirectory, name)
+	if written > inspectionLimit {
+		return result, fmt.Errorf("saved bundle size %d exceeds the %d-byte inspection limit", written, inspectionLimit)
+	}
+	data, err := saveRoot.ReadFileLimited(name, inspectionLimit)
+	if err != nil {
+		return result, fmt.Errorf("read saved log bundle: %w", err)
+	}
+	analysis, err := analyzeDoctorLogBundle(data)
+	if err != nil {
+		return result, err
+	}
+	result.Inspected = true
+	result.ExportStatus = analysis.ExportStatus
+	result.Diagnostics = analysis.Diagnostics
+	result.DiagnosticsTruncated = analysis.DiagnosticsTruncated
+	return result, nil
+}
+
+func openDoctorLogBundle(ctx context.Context, client *asc.Client, artifactID string) (io.ReadCloser, error) {
+	detail, err := client.GetCiArtifact(ctx, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch artifact details: %w", err)
+	}
+	downloadURL := strings.TrimSpace(detail.Data.Attributes.DownloadURL)
+	if downloadURL == "" {
+		return nil, fmt.Errorf("artifact has no download URL")
+	}
+	download, err := client.DownloadCiArtifact(ctx, downloadURL)
+	if err != nil {
+		return nil, fmt.Errorf("download artifact: %w", err)
+	}
+	return download.Body, nil
 }
 
 func analyzeDoctorLogBundle(data []byte) (doctorLogBundleAnalysis, error) {
+	if len(data) == 0 {
+		return doctorLogBundleAnalysis{}, fmt.Errorf("log bundle is empty")
+	}
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		if bytes.IndexByte(data, 0) >= 0 {
 			return doctorLogBundleAnalysis{}, fmt.Errorf("log bundle is neither a ZIP archive nor plain text")
 		}
-		analysis := doctorLogBundleAnalysis{Diagnostics: make([]xcodeCloudDoctorLogDiagnostic, 0)}
+		analysis := doctorLogBundleAnalysis{Diagnostics: make([]asc.XcodeCloudDoctorLogDiagnostic, 0)}
 		analyzeDoctorLogText(&analysis, "", string(data))
 		return analysis, nil
 	}
@@ -167,14 +235,15 @@ func analyzeDoctorLogBundle(data []byte) (doctorLogBundleAnalysis, error) {
 		return doctorLogBundleAnalysis{}, fmt.Errorf("log bundle contains %d entries; limit is %d", len(reader.File), maxDoctorLogEntries)
 	}
 
-	analysis := doctorLogBundleAnalysis{Diagnostics: make([]xcodeCloudDoctorLogDiagnostic, 0)}
+	analysis := doctorLogBundleAnalysis{Diagnostics: make([]asc.XcodeCloudDoctorLogDiagnostic, 0)}
 	var total int64
+	readableEntries := 0
 	for _, file := range reader.File {
 		if file.FileInfo().IsDir() || !isDoctorLogTextFile(file.Name) {
 			continue
 		}
 		if file.UncompressedSize64 > maxDoctorLogEntryBytes {
-			continue
+			return doctorLogBundleAnalysis{}, fmt.Errorf("log entry %q exceeds the %d-byte inspection limit", file.Name, maxDoctorLogEntryBytes)
 		}
 		if file.UncompressedSize64 > uint64(maxDoctorLogUncompressedBytes-int(total)) {
 			return doctorLogBundleAnalysis{}, fmt.Errorf("log bundle exceeds the %d-byte uncompressed inspection limit", maxDoctorLogUncompressedBytes)
@@ -191,11 +260,21 @@ func analyzeDoctorLogBundle(data []byte) (doctorLogBundleAnalysis, error) {
 		if closeErr != nil {
 			return doctorLogBundleAnalysis{}, fmt.Errorf("close log entry %q: %w", file.Name, closeErr)
 		}
-		if len(contents) > maxDoctorLogEntryBytes || bytes.IndexByte(contents, 0) >= 0 {
-			continue
+		if len(contents) > maxDoctorLogEntryBytes {
+			return doctorLogBundleAnalysis{}, fmt.Errorf("log entry %q exceeds the %d-byte inspection limit", file.Name, maxDoctorLogEntryBytes)
 		}
 		total += int64(len(contents))
+		if len(contents) == 0 {
+			continue
+		}
+		if bytes.IndexByte(contents, 0) >= 0 {
+			continue
+		}
+		readableEntries++
 		analyzeDoctorLogText(&analysis, file.Name, string(contents))
+	}
+	if readableEntries == 0 {
+		return doctorLogBundleAnalysis{}, fmt.Errorf("log bundle contains no readable text entries")
 	}
 	return analysis, nil
 }
@@ -213,23 +292,28 @@ func analyzeDoctorLogText(analysis *doctorLogBundleAnalysis, sourceFile, content
 		seen[diagnostic.Code+"\x00"+diagnostic.Message] = struct{}{}
 	}
 	for _, line := range strings.Split(contents, "\n") {
-		if len(analysis.Diagnostics) >= maxDoctorDiagnostics {
-			return
-		}
 		code := strings.ToUpper(doctorITMSCodePattern.FindString(line))
 		if code == "" {
 			continue
 		}
 		message := strings.TrimSpace(asc.SanitizeTerminalText(line))
 		if len(message) > maxDoctorDiagnosticLength {
-			message = message[:maxDoctorDiagnosticLength] + "…"
+			truncated := message[:maxDoctorDiagnosticLength]
+			for len(truncated) > 0 && !utf8.ValidString(truncated) {
+				truncated = truncated[:len(truncated)-1]
+			}
+			message = truncated + "…"
 		}
 		key := code + "\x00" + message
 		if _, exists := seen[key]; exists {
 			continue
 		}
+		if len(analysis.Diagnostics) >= maxDoctorDiagnostics {
+			analysis.DiagnosticsTruncated = true
+			return
+		}
 		seen[key] = struct{}{}
-		analysis.Diagnostics = append(analysis.Diagnostics, xcodeCloudDoctorLogDiagnostic{
+		analysis.Diagnostics = append(analysis.Diagnostics, asc.XcodeCloudDoctorLogDiagnostic{
 			Code:       code,
 			Message:    message,
 			SourceFile: sourceFile,
@@ -248,14 +332,14 @@ func isDoctorLogTextFile(name string) bool {
 
 func isFailedDoctorAction(status string) bool {
 	switch strings.ToUpper(strings.TrimSpace(status)) {
-	case "FAILED", "ERRORED", "CANCELED":
+	case "FAILED", "ERRORED":
 		return true
 	default:
 		return false
 	}
 }
 
-func doctorSavedLogBundleName(artifact xcodeCloudDoctorArtifact) string {
+func doctorSavedLogBundleName(artifact asc.XcodeCloudDoctorArtifact) string {
 	artifactID := sanitizeDoctorFileComponent(artifact.ID)
 	fileName := sanitizeDoctorFileComponent(filepath.Base(strings.TrimSpace(artifact.FileName)))
 	if fileName == "" {
