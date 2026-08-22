@@ -121,7 +121,7 @@ func normalizeKeywordAppID(appID string) (string, error) {
 	}
 	parsed, err := strconv.ParseInt(resolved, 10, 64)
 	if err != nil || parsed <= 0 {
-		return "", shared.UsageError("--app must be a positive App Store app ID within 64-bit range")
+		return "", shared.UsageError("--app must be a positive App Store app ID representable as a 64-bit integer")
 	}
 	return resolved, nil
 }

@@ -9,51 +9,21 @@ import (
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/itunes"
 )
 
 const keywordRankSchemaVersion = "1"
 
-// KeywordRankRow is one keyword's position in the public App Store search
-// result window. Rank is null whenever the app is absent from that window.
-type KeywordRankRow struct {
-	Keyword      string `json:"keyword"`
-	Rank         *int   `json:"rank"`
-	TotalResults *int   `json:"totalResults,omitempty"`
-	Status       string `json:"status"`
-	Error        string `json:"error,omitempty"`
-}
-
-// KeywordRankSummary counts keyword outcomes by status.
-type KeywordRankSummary struct {
-	Keywords    int `json:"keywords"`
-	Ranked      int `json:"ranked"`
-	Absent      int `json:"absent"`
-	Unavailable int `json:"unavailable"`
-}
-
-// KeywordRankReport is the stable JSON contract emitted by
-// `asc optimize keywords rank`.
-type KeywordRankReport struct {
-	SchemaVersion string             `json:"schemaVersion"`
-	GeneratedAt   string             `json:"generatedAt,omitempty"`
-	AppID         string             `json:"appId"`
-	Country       string             `json:"country"`
-	Platform      string             `json:"platform"`
-	Workers       int                `json:"workers"`
-	Summary       KeywordRankSummary `json:"summary"`
-	Rows          []KeywordRankRow   `json:"rows"`
-}
-
 // KeywordsRankCommand returns the public keyword ranking command.
 func KeywordsRankCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("rank", flag.ExitOnError)
-	appID := fs.String("app", "", "App Store app ID (required, or ASC_APP_ID env)")
-	keywords := shared.BindOnceCSVFlag(fs, "keywords", "Comma-separated keyword candidates to rank (required)")
-	country := fs.String("country", "us", "ISO alpha-2 App Store storefront country or region")
-	platform := fs.String("platform", "IOS", "Public App Store platform: IOS or TV_OS")
-	workers := fs.Int("workers", 10, "Number of parallel keyword lookups")
+	appID := fs.String("app", "", "App Store app ID (required, or ASC_APP_ID env) [experimental]")
+	keywords := shared.BindOnceCSVFlag(fs, "keywords", "Comma-separated keyword candidates to rank (required) [experimental]")
+	country := fs.String("country", "us", "ISO alpha-2 App Store storefront country or region [experimental]")
+	platform := fs.String("platform", "IOS", "Public App Store platform: IOS or TV_OS [experimental]")
+	workers := fs.Int("workers", 10, "Number of parallel keyword lookups [experimental]")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -66,6 +36,8 @@ for each keyword candidate. [experimental]
 No authentication is required. Keywords are normalized to lowercase, collapsed
 whitespace, and deduplicated. Each invocation accepts at most 100 keywords of
 2-60 characters and at most 4 space-separated words.
+The effective worker count is capped at the normalized keyword count and is
+recorded in the report.
 
 A keyword whose lookup fails is reported as an unavailable row instead of being
 dropped or scored as absent. The command fails only when every keyword lookup
@@ -100,6 +72,10 @@ Examples:
 			if *workers < 1 {
 				return shared.UsageError("--workers must be at least 1")
 			}
+			effectiveWorkers := *workers
+			if effectiveWorkers > len(normalizedKeywords) {
+				effectiveWorkers = len(normalizedKeywords)
+			}
 			normalizedCountry, err := normalizeKeywordCountry(*country)
 			if err != nil {
 				return err
@@ -117,18 +93,21 @@ Examples:
 			}
 
 			client := newKeywordsItunesClient()
-			results := fanOutKeywords(ctx, normalizedKeywords, *workers, func(ctx context.Context, keyword string) (itunes.PublicRankResult, error) {
+			results := fanOutKeywords(ctx, normalizedKeywords, effectiveWorkers, func(ctx context.Context, keyword string) (itunes.PublicRankResult, error) {
 				requestCtx, cancel := shared.ContextWithTimeout(ctx)
 				defer cancel()
 				return client.RankApp(requestCtx, resolvedAppID, keyword, normalizedCountry, normalizedPlatform)
 			})
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 
 			report := buildKeywordRankReport(keywordRankBuildInput{
 				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 				AppID:       resolvedAppID,
 				Country:     strings.ToUpper(normalizedCountry),
 				Platform:    string(normalizedPlatform),
-				Workers:     *workers,
+				Workers:     effectiveWorkers,
 				Results:     results,
 			})
 			if report.Summary.Unavailable == report.Summary.Keywords {
@@ -139,13 +118,7 @@ Examples:
 				return fmt.Errorf("optimize keywords rank: %w", representativeKeywordError(failures))
 			}
 
-			return shared.PrintOutputWithRenderers(
-				report,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderKeywordRankTable(report) },
-				func() error { return renderKeywordRankMarkdown(report) },
-			)
+			return shared.PrintOutput(&report, *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -159,12 +132,12 @@ type keywordRankBuildInput struct {
 	Results     []keywordFanOutResult[itunes.PublicRankResult]
 }
 
-func buildKeywordRankReport(input keywordRankBuildInput) KeywordRankReport {
-	rows := make([]KeywordRankRow, 0, len(input.Results))
-	summary := KeywordRankSummary{Keywords: len(input.Results)}
+func buildKeywordRankReport(input keywordRankBuildInput) asc.KeywordRankReport {
+	rows := make([]asc.KeywordRankRow, 0, len(input.Results))
+	summary := asc.KeywordRankSummary{Keywords: len(input.Results)}
 
 	for _, result := range input.Results {
-		row := KeywordRankRow{Keyword: result.Keyword}
+		row := asc.KeywordRankRow{Keyword: result.Keyword}
 		switch {
 		case result.Err != nil:
 			row.Status = keywordStatusUnavailable
@@ -185,7 +158,7 @@ func buildKeywordRankReport(input keywordRankBuildInput) KeywordRankReport {
 		rows = append(rows, row)
 	}
 
-	return KeywordRankReport{
+	return asc.KeywordRankReport{
 		SchemaVersion: keywordRankSchemaVersion,
 		GeneratedAt:   input.GeneratedAt,
 		AppID:         input.AppID,

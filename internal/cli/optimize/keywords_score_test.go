@@ -46,6 +46,19 @@ func TestKeywordsScoreCommandHelpDocumentsSourcesAndDesignDoc(t *testing.T) {
 	}
 }
 
+func TestKeywordsScoreCommandFlagsAreExperimental(t *testing.T) {
+	command := KeywordsScoreCommand()
+	for _, name := range []string{"keywords", "country", "app", "genre", "ad-account", "ads-profile", "workers"} {
+		flag := command.FlagSet.Lookup(name)
+		if flag == nil {
+			t.Fatalf("missing score flag --%s", name)
+		}
+		if !strings.Contains(flag.Usage, "[experimental]") {
+			t.Fatalf("--%s usage = %q, want experimental marker", name, flag.Usage)
+		}
+	}
+}
+
 func TestKeywordsScoreCommandValidatesInputBeforeRequests(t *testing.T) {
 	tests := []struct {
 		name string
@@ -361,10 +374,16 @@ func TestKeywordsScoreFlattensApplePopularityWhenAdsIsAvailable(t *testing.T) {
 		popularity.Popularity100 == nil || *popularity.Popularity100 != 61 {
 		t.Fatalf("popularity must flatten the most recent week: %+v", popularity)
 	}
+	sources := map[string]asc.KeywordScoreSourceStatus{}
 	for _, source := range report.Sources {
-		if source.Name == keywordSourcePopularity && source.Status != keywordStatusAvailable {
-			t.Fatalf("popularity source = %+v", source)
-		}
+		sources[source.Name] = source
+	}
+	popularitySource, ok := sources[keywordSourcePopularity]
+	if !ok {
+		t.Fatalf("report is missing the %s source: %+v", keywordSourcePopularity, report.Sources)
+	}
+	if popularitySource.Status != keywordStatusAvailable {
+		t.Fatalf("popularity source = %+v", popularitySource)
 	}
 }
 
@@ -459,13 +478,16 @@ func TestKeywordsScoreDegradesWhenCompetitorMetadataIsUnavailable(t *testing.T) 
 	if row.RawSignals[0].ReleaseDate != "" || row.RawSignals[0].DaysSinceFirstRelease != keywordMissingDateDays {
 		t.Fatalf("missing metadata must degrade to the documented window: %+v", row.RawSignals[0])
 	}
+	sources := map[string]asc.KeywordScoreSourceStatus{}
 	for _, source := range report.Sources {
-		if source.Name != keywordSourceMetadata {
-			continue
-		}
-		if source.Status != keywordStatusUnavailable || !strings.Contains(source.Error, "503") {
-			t.Fatalf("metadata source = %+v", source)
-		}
+		sources[source.Name] = source
+	}
+	metadataSource, ok := sources[keywordSourceMetadata]
+	if !ok {
+		t.Fatalf("report is missing the %s source: %+v", keywordSourceMetadata, report.Sources)
+	}
+	if metadataSource.Status != keywordStatusUnavailable || !strings.Contains(metadataSource.Error, "503") {
+		t.Fatalf("metadata source = %+v", metadataSource)
 	}
 }
 
