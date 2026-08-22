@@ -65,6 +65,12 @@ func TestMetadataPullValidationErrors(t *testing.T) {
 				if !shared.IsReportedUsageError(runErr) {
 					t.Fatalf("expected reported usage error, got %v", runErr)
 				}
+				if errors.Is(runErr, flag.ErrHelp) {
+					t.Fatalf("reported usage error must not trigger full help: %v", runErr)
+				}
+				if got := runErr.Error(); got != "--version is required" {
+					t.Fatalf("error = %q, want %q", got, "--version is required")
+				}
 			} else if !errors.Is(runErr, flag.ErrHelp) {
 				t.Fatalf("expected ErrHelp, got %v", runErr)
 			}

@@ -23,6 +23,7 @@ type invocationAnalysis struct {
 	command      *ffcli.Command
 	shape        telemetry.InvocationShape
 	unknownToken string
+	unknownIndex int
 	unknownFlag  bool
 }
 
@@ -85,6 +86,7 @@ func analyzeInvocation(root *ffcli.Command, args []string) invocationAnalysis {
 				command:      current,
 				shape:        shapeForCommand(current, true),
 				unknownToken: token,
+				unknownIndex: i,
 				unknownFlag:  true,
 			}
 		}
@@ -143,10 +145,10 @@ func printConciseUnknownCommand(analysis invocationAnalysis, commandName string)
 	fmt.Fprintf(os.Stderr, "  %s --help\n", commandName)
 }
 
-func printConciseUnknownFlag(root *ffcli.Command, analysis invocationAnalysis, commandName string) {
+func printConciseUnknownFlag(root *ffcli.Command, analysis invocationAnalysis, commandName string, args []string) {
 	flagName := unknownFlagName(analysis)
 	fmt.Fprintf(os.Stderr, "Error: %s\n", unknownFlagError(analysis, commandName))
-	if printMetadataValidateFlagRecovery(flagName, commandName) {
+	if printMetadataValidateFlagRecovery(flagName, commandName, analysis, args) {
 		return
 	}
 	if name, ok := flagLookupName(flagName); ok && root != nil && root.FlagSet != nil && root.FlagSet.Lookup(name) != nil {
@@ -180,8 +182,11 @@ func printConciseUnknownFlag(root *ffcli.Command, analysis invocationAnalysis, c
 	fmt.Fprintf(os.Stderr, "  %s --help\n", commandName)
 }
 
-func printMetadataValidateFlagRecovery(flagName, commandName string) bool {
+func printMetadataValidateFlagRecovery(flagName, commandName string, analysis invocationAnalysis, args []string) bool {
 	if commandName != "asc metadata validate" || (flagName != "--app" && flagName != "--version") {
+		return false
+	}
+	if flagName == "--version" && !metadataVersionValueProvided(analysis, args) {
 		return false
 	}
 
@@ -192,6 +197,26 @@ func printMetadataValidateFlagRecovery(flagName, commandName string) bool {
 	fmt.Fprintln(os.Stderr, "For help:")
 	fmt.Fprintln(os.Stderr, "  asc metadata validate --help")
 	return true
+}
+
+func metadataVersionValueProvided(analysis invocationAnalysis, args []string) bool {
+	if _, value, found := strings.Cut(analysis.unknownToken, "="); found {
+		return isMetadataVersionValue(value)
+	}
+	nextIndex := analysis.unknownIndex + 1
+	if nextIndex < 0 || nextIndex >= len(args) {
+		return false
+	}
+	return isMetadataVersionValue(args[nextIndex])
+}
+
+func isMetadataVersionValue(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, "-") {
+		return false
+	}
+	_, boolErr := strconv.ParseBool(value)
+	return boolErr != nil
 }
 
 func flagLookupName(token string) (string, bool) {
