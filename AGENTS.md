@@ -56,7 +56,7 @@ Validate attributes against the exact create or update request schema. Validate 
 - Keep one logical change per commit. Do not mix unrelated refactors, fixes, and test rewrites.
 - Re-run the focused failing test after each fix before broad validation.
 - Preserve and report pre-existing failures honestly.
-- Parallel exploration is allowed, but do not concurrently edit the same command group; integrate final changes in one coherent pass.
+- Parallelize independent read-only investigation and validation, using isolated subagents when available. Do not let agents concurrently edit the same branch, files, or command group. Keep edits, pushes, review replies and resolutions, approvals, merges, releases, and cleanup coordinated and serialized.
 
 User-facing commands and flags follow `experimental` -> `stable` -> `deprecated` -> `removed`. Do not delete stable behavior directly. Deprecations require warning text, transition tests, migration guidance, and a release-note entry.
 
@@ -83,7 +83,9 @@ make install-hooks
 
 Every manual test command must use `ASC_BYPASS_KEYCHAIN=1` to prevent host keychain prompts and profile bleed-through. The `make test` target enforces the same environment internally.
 
-Before opening or merging a PR, run `make format`, `make check-docs`, `make lint`, and `ASC_BYPASS_KEYCHAIN=1 make test`. If command help changed, run `make generate-command-docs` and commit `docs/COMMANDS.md` before those checks. Run `make check-wall-of-apps` for Wall changes.
+Before opening or merging a substantive behavior PR, run `make format`, `make check-docs`, `make lint`, and `ASC_BYPASS_KEYCHAIN=1 make test`. If command help changed, run `make generate-command-docs` and commit `docs/COMMANDS.md` before those checks. For a narrowly scoped documentation or skill change, run `make check-docs` and the affected validator instead of the full Go suite unless the changed surface or repository policy requires more. For a Wall-only PR, run `make check-wall-of-apps` on the exact head.
+
+Require GitHub-required checks before merge, but do not wait for advisory or otherwise non-required CI jobs. Inspect and report relevant advisory failures without treating pending or unrelated jobs as blockers.
 
 Do not weaken CI: formatting, documentation, lint, and tests must run on PR and `main` workflows.
 
@@ -91,6 +93,7 @@ Do not weaken CI: formatting, documentation, lint, and tests must run on PR and 
 
 - Inspect thread-aware GitHub review state before declaring a PR clean; flat comments do not prove every thread is resolved.
 - A PR is ready only when the latest head was reviewed, required checks pass, actionable threads are resolved, and GitHub reports it mergeable.
+- If `main` advances, recheck the exact PR head, merge-base diff, duplicate or overlap risk, review threads, required checks, and mergeability against current `main` without changing the branch. Do not update, rebase, or merge `main` into a clean PR merely to refresh its base; update only when an actual merge conflict prevents the merge.
 - Fix-forward is the default for `$audit-asc-pr`; approval and merge still require explicit user intent.
 - Every newly created or triaged issue must end with exactly one type (`bug`, `enhancement`, `question`), one priority (`p0`-`p3`), and one difficulty (`easy`, `medium`, `hard`) label.
 
