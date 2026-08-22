@@ -198,6 +198,44 @@ func TestAuthStatusShowsActiveEnvironmentSourceWithoutStoredCredentials(t *testi
 	}
 }
 
+func TestAuthStatusDoesNotMarkInvalidBase64EnvironmentActive(t *testing.T) {
+	restoreSummaries := authcmd.SetListCredentialSummaries(func() ([]authsvc.Credential, error) {
+		return []authsvc.Credential{}, nil
+	})
+	t.Cleanup(restoreSummaries)
+	restoreKeychain := authcmd.SetKeychainAvailable(func() (bool, error) {
+		return true, nil
+	})
+	t.Cleanup(restoreKeychain)
+
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	t.Setenv("ASC_PROFILE", "")
+	t.Setenv("ASC_KEY_ID", "ENVKEY")
+	t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+	t.Setenv("ASC_PRIVATE_KEY", "")
+	t.Setenv("ASC_PRIVATE_KEY_B64", "not-base64")
+
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{"auth", "status", "--output", "json"}, "1.0.0")
+	})
+	if code != cmd.ExitSuccess || stderr != "" {
+		t.Fatalf("status: exit=%d stderr=%q", code, stderr)
+	}
+	var payload struct {
+		EnvironmentCredentialsComplete bool   `json:"environmentCredentialsComplete"`
+		EnvironmentNote                string `json:"environmentNote"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("failed to unmarshal auth status json: %v; stdout=%q", err, stdout)
+	}
+	if payload.EnvironmentCredentialsComplete || payload.EnvironmentNote != "" {
+		t.Fatalf("invalid base64 must not be reported as an active environment source: %+v", payload)
+	}
+}
+
 func TestAuthStatusTableNotesConfigPrecedenceOverEnv(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.json")

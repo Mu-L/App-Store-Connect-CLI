@@ -622,6 +622,14 @@ func resolveCompleteEnvCredentialMetadata() (ResolvedAuthCredentials, bool) {
 	}, true
 }
 
+// HasCompleteEnvironmentCredentials reports whether environment credentials
+// qualify for the no-profile, no-bypass resolution fast path. It validates
+// base64 encoding without materializing private key files.
+func HasCompleteEnvironmentCredentials() bool {
+	_, complete := resolveCompleteEnvCredentialMetadata()
+	return complete
+}
+
 func resolveStoredCredentialsMetadataFallback(profile string) (ResolvedAuthCredentials, error) {
 	credentials, err := listCredentialSummariesFn()
 	if err != nil {

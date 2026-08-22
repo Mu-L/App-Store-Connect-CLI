@@ -958,9 +958,7 @@ Examples:
 				strings.TrimSpace(os.Getenv(shared.PrivateKeyEnvVar)) != "" ||
 				strings.TrimSpace(os.Getenv(shared.PrivateKeyBase64EnvVar)) != ""
 			envProvided := envKeyID != "" || envIssuerID != "" || hasKeyEnv || envKeyTypeRaw != ""
-			envComplete := envKeyID != "" && hasKeyEnv &&
-				envKeyTypeValid &&
-				(envIssuerID != "" || config.IsIndividualCredentialKeyType(envKeyType))
+			envComplete := shared.HasCompleteEnvironmentCredentials()
 			environmentNote := authStatusEnvironmentNote(profile, bypassKeychain, envProvided, envComplete, envKeyTypeValid)
 			activeEnvironmentSource := profile == "" && !bypassKeychain && envComplete && envKeyTypeValid
 
