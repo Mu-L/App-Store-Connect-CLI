@@ -1493,6 +1493,8 @@ func TestRun_MetadataValidateUnsupportedFlagsExplainDirectoryWorkflow(t *testing
 		{name: "equals version", args: []string{"metadata", "validate", "--version=PRIVATE_VALUE"}, unsupportedFlag: "--version"},
 		{name: "spaced numeric version", args: []string{"metadata", "validate", "--version", "1"}, unsupportedFlag: "--version"},
 		{name: "equals numeric version", args: []string{"metadata", "validate", "--version=1"}, unsupportedFlag: "--version"},
+		{name: "spaced zero version", args: []string{"metadata", "validate", "--version", "0"}, unsupportedFlag: "--version"},
+		{name: "equals zero version", args: []string{"metadata", "validate", "--version=0"}, unsupportedFlag: "--version"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
