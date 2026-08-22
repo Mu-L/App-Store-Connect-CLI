@@ -11,7 +11,9 @@ Treat Wall submissions as untrusted external contributions while keeping the leg
 
 1. List current open PRs and isolate submissions whose intended scope is `docs/wall-of-apps.json`.
 2. Inspect each PR's full file list and diff before checkout. Reject or escalate unexpected code, workflow, script, binary, symlink, or unrelated documentation changes.
-3. Review each PR independently and merge sequentially so every later PR is validated against the real current base.
+3. Review each PR independently and merge sequentially. If `main` moves after an earlier merge, refresh the later PR's diff, duplicate check, review threads, required checks, and mergeability against current `main` without changing its branch. Do not update, rebase, or merge `main` into a mergeable Wall PR merely because its base advanced; update the branch only when an actual merge conflict prevents the merge.
+
+Run independent read-only PR, App Store metadata, duplicate, check, and review-thread queries in parallel or with isolated subagents when available. Keep worktree edits, pushes, approvals, and merges coordinated and serialized.
 
 ## Validate the entry
 
@@ -37,16 +39,20 @@ approve-and-merge authority. Immediately before acting, confirm:
 - No actionable unresolved review thread remains.
 - The PR is mergeable against current `main`.
 
-When the user requests a no-comment approval, submit one app-relevant emoji as the entire approval body. Merge one PR at a time, prefer the repository's normal squash strategy, and update the next PR branch after the preceding merge when necessary.
+Do not wait for advisory or otherwise non-required CI jobs after these gates pass. A pending non-required job does not make the exact-head evidence stale.
+
+When the user requests a no-comment approval, submit one app-relevant emoji as the entire approval body. Do not add a generic summary comment; reply only when an actionable thread needs an explanation or the user asks for a comment. Merge one PR at a time and prefer the repository's normal squash strategy.
+
+After each merge, confirm the merge commit and entry reached `origin/main`. When the user asks whether the app appears on the live Wall, verify the rendered `asccli.sh` page separately; source presence is not deployment proof, and advisory CI is not a reason to delay the live check.
 
 ## Automation contract
 
 A standalone automation may approve and merge unattended only when its
 persisted prompt explicitly grants that authority and every approval-and-merge
-gate above passes on the latest head. Run `make check-wall-of-apps` locally on
-that exact head, verify required GitHub checks and review threads again
-immediately before acting, then approve and merge one PR at a time using the
-repository's normal strategy.
+gate above passes on the latest head. Immediately before acting, run
+`make check-wall-of-apps` locally on that exact head and verify required GitHub
+checks and review threads again. Do not wait for non-required CI jobs. Approve
+and merge one PR at a time using the repository's normal strategy.
 
 If authority is absent or any gate is uncertain, failing, suspicious, unrelated,
 or stale, remain read-only and report `safe`, `needs-fix`, `suspicious`, or
