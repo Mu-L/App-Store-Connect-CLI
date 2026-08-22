@@ -175,6 +175,8 @@ func registerAllOutputRenderers() {
 	registerRows(appAvailabilityRows)
 	registerRows(territoryAvailabilitiesRows)
 	registerRows(endAppAvailabilityPreOrderRows)
+	registerRows(availabilityPlatformsResultRows)
+	registerRows(availabilityRemoveFromSaleResultRows)
 	registerRowsWithSingleResourceAdapter(appStoreVersionLocalizationsRows)
 	registerRowsWithSingleResourceAdapter(betaAppLocalizationsRows)
 	registerRowsWithSingleResourceAdapter(betaBuildLocalizationsRows)

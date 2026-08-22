@@ -363,6 +363,7 @@ var knownFailureParameters = map[string]struct{}{
 	"agreement-text":                    {},
 	"all":                               {},
 	"all-apps":                          {},
+	"all-platforms":                     {},
 	"android-package-name":              {},
 	"app":                               {},
 	"app-clip-id":                       {},
