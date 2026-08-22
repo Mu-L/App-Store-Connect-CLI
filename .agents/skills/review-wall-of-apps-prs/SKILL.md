@@ -32,13 +32,18 @@ Use a worktree only when a fix is required. Push the smallest correction to the 
 
 Approval and merge require explicit user intent. That intent may come from the
 current request or from a persisted automation prompt that clearly grants
-approve-and-merge authority. Immediately before acting, confirm:
+approve-and-merge authority. Immediately before approval, or before a merge
+that does not require a new approval, confirm:
 
 - The latest head contains only the legitimate Wall change.
 - `make check-wall-of-apps` and required GitHub checks pass.
 - No actionable unresolved review thread remains.
-- Required reviews are satisfied.
 - The PR is mergeable against current `main`.
+
+An authorized approval may itself satisfy a required-review rule. After
+submitting any approval and immediately before merging, re-fetch the exact head,
+required reviews, review threads, required checks, and mergeability. Require all
+required reviews to be satisfied at that point.
 
 Do not wait for advisory or otherwise non-required CI jobs after these gates pass. A pending non-required job does not make the exact-head evidence stale.
 
@@ -52,9 +57,12 @@ A standalone automation may approve and merge unattended only when its
 persisted prompt explicitly grants that authority and every approval-and-merge
 gate above passes on the latest head. Immediately before acting, run
 `make check-wall-of-apps` locally on that exact head and verify required GitHub
-checks, required reviews, and review threads again. Do not wait for non-required
-CI jobs. Approve and merge one PR at a time with a regular merge commit; use a
-different strategy only when the persisted prompt explicitly requests it.
+checks, review threads, and mergeability again. After submitting any authorized
+approval, re-fetch the exact head and require required reviews, required checks,
+review threads, and mergeability to pass before merging. Do not wait for
+non-required CI jobs. Approve and merge one PR at a time with a regular merge
+commit; use a different strategy only when the persisted prompt explicitly
+requests it.
 
 If authority is absent or any gate is uncertain, failing, suspicious, unrelated,
 or stale, remain read-only and report `safe`, `needs-fix`, `suspicious`, or
