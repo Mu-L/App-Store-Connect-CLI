@@ -334,6 +334,37 @@ func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
 		}
 	})
 
+	t.Run("selected profile preserves unsupported stored key type", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+
+		if err := StoreCredentialsWithKeyType("doctor-selected-unsupported-key-type", "STOREDKEY", "", storedKeyPath, "personal"); err != nil {
+			t.Fatalf("StoreCredentialsWithKeyType() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-selected-unsupported-key-type"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "")
+		t.Setenv("ASC_ISSUER_ID", "")
+		t.Setenv("ASC_KEY_TYPE", config.CredentialKeyTypeIndividual)
+		t.Setenv("ASC_PRIVATE_KEY", "")
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+
+		report := Doctor(DoctorOptions{Profile: "doctor-selected-unsupported-key-type"})
+		section := findDoctorSection(t, report, "Environment")
+		if !sectionHasStatus(section, DoctorFail, "Selected profile \"doctor-selected-unsupported-key-type\" is incomplete after environment fallback (missing issuer ID)") {
+			t.Fatalf("expected stored key type to prevent environment type fallback, got %#v", section.Checks)
+		}
+	})
+
 	t.Run("selected profile rejects invalid environment key type", func(t *testing.T) {
 		tempDir := t.TempDir()
 		storedKeyPath := filepath.Join(tempDir, "stored.p8")
@@ -391,6 +422,37 @@ func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
 		section := findDoctorSection(t, report, "Environment")
 		if !sectionHasStatus(section, DoctorFail, "Selected profile \"doctor-selected-strict-mixed\" requires mixed stored and environment credential sources while strict authentication is enabled") {
 			t.Fatalf("expected strict mixed-source failure, got %#v", section.Checks)
+		}
+	})
+
+	t.Run("default profile rejects mixed sources in strict auth", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+
+		if err := StoreCredentials("doctor-default-strict-mixed", "STOREDKEY", "", storedKeyPath); err != nil {
+			t.Fatalf("StoreCredentials() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-default-strict-mixed"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "")
+		t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")
+		t.Setenv("ASC_KEY_TYPE", "")
+		t.Setenv("ASC_PRIVATE_KEY", "")
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+
+		report := Doctor(DoctorOptions{StrictAuth: true})
+		section := findDoctorSection(t, report, "Environment")
+		if !sectionHasStatus(section, DoctorFail, "Default stored credentials require mixed stored and environment credential sources while strict authentication is enabled") {
+			t.Fatalf("expected strict mixed-source failure for default credentials, got %#v", section.Checks)
 		}
 	})
 

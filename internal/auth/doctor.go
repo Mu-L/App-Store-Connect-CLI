@@ -398,6 +398,9 @@ func inspectEnvironment(options DoctorOptions) DoctorSection {
 	if selectedProfileCheck := inspectSelectedProfile(options); selectedProfileCheck != nil {
 		checks = append(checks, *selectedProfileCheck)
 	}
+	if defaultStrictAuthCheck := inspectDefaultStrictAuth(options); defaultStrictAuthCheck != nil {
+		checks = append(checks, *defaultStrictAuthCheck)
+	}
 
 	keyID := strings.TrimSpace(os.Getenv("ASC_KEY_ID"))
 	issuerID := strings.TrimSpace(os.Getenv("ASC_ISSUER_ID"))
@@ -555,6 +558,28 @@ func inspectSelectedProfile(options DoctorOptions) *DoctorCheck {
 	return nil
 }
 
+func inspectDefaultStrictAuth(options DoctorOptions) *DoctorCheck {
+	if !options.StrictAuth || selectedDoctorProfile(options) != "" {
+		return nil
+	}
+	if !shouldBypassKeychain() && completeEnvironmentCredentialsPreemptStored() {
+		return nil
+	}
+	credentials, err := GetDefaultCredentials()
+	if err != nil || credentials == nil {
+		return nil
+	}
+	shape := effectiveCredentialShape(credentials)
+	if shape.invalidEnvironmentKeyType || len(shape.missing) > 0 || !shape.mixedSources {
+		return nil
+	}
+	return &DoctorCheck{
+		Status:         DoctorFail,
+		Message:        "Default stored credentials require mixed stored and environment credential sources while strict authentication is enabled",
+		Recommendation: "Store complete default credentials or clear ASC_STRICT_AUTH",
+	}
+}
+
 type credentialShape struct {
 	missing                   []string
 	invalidEnvironmentKeyType bool
@@ -565,6 +590,7 @@ func effectiveCredentialShape(credentials *config.Config) credentialShape {
 	storedKeyID := strings.TrimSpace(credentials.KeyID) != ""
 	storedIssuer := strings.TrimSpace(credentials.IssuerID) != ""
 	storedPrivateKey := strings.TrimSpace(credentials.PrivateKeyPath) != "" || strings.TrimSpace(credentials.PrivateKeyPEM) != ""
+	storedKeyType := config.NormalizeCredentialKeyType(credentials.KeyType)
 	storedIndividual := config.IsIndividualCredentialKeyType(credentials.KeyType)
 	needsFallback := !storedKeyID || (!storedIssuer && !storedIndividual) || !storedPrivateKey
 
@@ -576,7 +602,7 @@ func effectiveCredentialShape(credentials *config.Config) credentialShape {
 			shape.invalidEnvironmentKeyType = true
 			return shape
 		}
-		if !storedIndividual && config.IsIndividualCredentialKeyType(environmentKeyType) {
+		if storedKeyType == config.CredentialKeyTypeTeam && config.IsIndividualCredentialKeyType(environmentKeyType) {
 			effectiveIndividual = true
 		}
 	}
