@@ -1,6 +1,32 @@
 package account
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+)
+
+func TestAuthHealthCheckHonorsRootProfileSelection(t *testing.T) {
+	previousProfile := shared.SelectedProfile()
+	shared.SetSelectedProfile("work")
+	t.Cleanup(func() { shared.SetSelectedProfile(previousProfile) })
+
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	t.Setenv("ASC_PROFILE", "")
+	t.Setenv("ASC_KEY_ID", "ENVKEY")
+	t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")
+	t.Setenv("ASC_KEY_TYPE", "")
+	t.Setenv("ASC_PRIVATE_KEY", "")
+	t.Setenv("ASC_PRIVATE_KEY_B64", "")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", filepath.Join(t.TempDir(), "ignored-missing.p8"))
+
+	check := authHealthCheck()
+	if check.Status == "fail" {
+		t.Fatalf("expected root profile selection to suppress ignored environment key failure, got %#v", check)
+	}
+}
 
 func TestSummarizeAccountChecks(t *testing.T) {
 	red := summarizeAccountChecks([]accountCheck{
