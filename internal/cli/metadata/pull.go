@@ -65,7 +65,7 @@ Examples:
 
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if resolvedAppID == "" {
-				return shared.UsageError("--app is required (or set ASC_APP_ID)")
+				return metadataRequiredInputError("--app", "--app is required (or set ASC_APP_ID)")
 			}
 
 			versionValue := strings.TrimSpace(*version)
@@ -75,7 +75,7 @@ Examples:
 
 			dirValue := strings.TrimSpace(*dir)
 			if dirValue == "" {
-				return shared.UsageError("--dir is required")
+				return metadataRequiredInputError("--dir", "--dir is required")
 			}
 
 			platformValue := strings.TrimSpace(*platform)

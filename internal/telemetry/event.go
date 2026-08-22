@@ -431,6 +431,7 @@ var knownFailureParameters = map[string]struct{}{
 	"devices-file":                      {},
 	"domain":                            {},
 	"domain-id":                         {},
+	"dir":                               {},
 	"dry-run":                           {},
 	"duration":                          {},
 	"end-date":                          {},
