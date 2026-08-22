@@ -39,20 +39,22 @@ func TestAgeRatingAuditResultRows(t *testing.T) {
 				SocialMedia:              "true",
 				SocialMediaAgeRestricted: "true",
 				MessagingAndChat:         "false",
+				UserGeneratedContent:     "true",
 				AgeAssurance:             "true",
 				Ready:                    true,
 			},
 			{
-				AppID:            "app-2",
-				Name:             "Broken App",
-				MissingResponses: []string{"socialMedia", "messagingAndChat"},
-				Error:            "request failed",
+				AppID:                "app-2",
+				Name:                 "Broken App",
+				UserGeneratedContent: "-",
+				MissingResponses:     []string{"socialMedia", "messagingAndChat"},
+				Error:                "request failed",
 			},
 		},
 	}
 
 	headers, rows := ageRatingAuditResultRows(result)
-	wantHeaders := []string{"App ID", "App Info ID", "State", "Name", "Social Media", "Age Restricted", "Messaging & Chat", "Age Assurance", "Ready", "Missing"}
+	wantHeaders := []string{"App ID", "App Info ID", "State", "Name", "Social Media", "Age Restricted", "Messaging & Chat", "User Generated Content", "Age Assurance", "Ready", "Missing"}
 	if !reflect.DeepEqual(headers, wantHeaders) {
 		t.Fatalf("headers = %#v, want %#v", headers, wantHeaders)
 	}
@@ -65,16 +67,25 @@ func TestAgeRatingAuditResultRows(t *testing.T) {
 	if got := rows[0][2]; got != "READY_FOR_DISTRIBUTION" {
 		t.Fatalf("state column = %q, want READY_FOR_DISTRIBUTION", got)
 	}
+	if got := rows[0][7]; got != "true" {
+		t.Fatalf("user-generated content column = %q, want true", got)
+	}
 	if got := rows[0][8]; got != "true" {
+		t.Fatalf("age assurance column = %q, want true", got)
+	}
+	if got := rows[0][9]; got != "true" {
 		t.Fatalf("ready column = %q, want true", got)
 	}
-	if got := rows[0][9]; got != "" {
+	if got := rows[0][10]; got != "" {
 		t.Fatalf("ready missing column = %q, want empty", got)
 	}
-	if got := rows[1][8]; got != "false" {
+	if got := rows[1][9]; got != "false" {
 		t.Fatalf("error ready column = %q, want false", got)
 	}
-	if got := rows[1][9]; got != "error: request failed" {
+	if got := rows[1][7]; got != "-" {
+		t.Fatalf("error user-generated content column = %q, want -", got)
+	}
+	if got := rows[1][10]; got != "error: request failed" {
 		t.Fatalf("error missing column = %q, want error detail", got)
 	}
 	ensureOutputRegistryPopulated()

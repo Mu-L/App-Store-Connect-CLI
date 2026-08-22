@@ -15,6 +15,7 @@ type AgeRatingAuditRow struct {
 	SocialMedia              string   `json:"socialMedia"`
 	SocialMediaAgeRestricted string   `json:"socialMediaAgeRestricted"`
 	MessagingAndChat         string   `json:"messagingAndChat"`
+	UserGeneratedContent     string   `json:"userGeneratedContent"`
 	AgeAssurance             string   `json:"ageAssurance"`
 	MissingResponses         []string `json:"missingResponses"`
 	Ready                    bool     `json:"ready"`
@@ -30,7 +31,7 @@ type AgeRatingAuditResult struct {
 }
 
 func ageRatingAuditResultRows(result *AgeRatingAuditResult) ([]string, [][]string) {
-	headers := []string{"App ID", "App Info ID", "State", "Name", "Social Media", "Age Restricted", "Messaging & Chat", "Age Assurance", "Ready", "Missing"}
+	headers := []string{"App ID", "App Info ID", "State", "Name", "Social Media", "Age Restricted", "Messaging & Chat", "User Generated Content", "Age Assurance", "Ready", "Missing"}
 	rows := make([][]string, 0, len(result.Apps))
 	for _, row := range result.Apps {
 		missing := strings.Join(row.MissingResponses, ", ")
@@ -45,6 +46,7 @@ func ageRatingAuditResultRows(result *AgeRatingAuditResult) ([]string, [][]strin
 			row.SocialMedia,
 			row.SocialMediaAgeRestricted,
 			row.MessagingAndChat,
+			row.UserGeneratedContent,
 			row.AgeAssurance,
 			strconv.FormatBool(row.Ready),
 			missing,

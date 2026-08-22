@@ -142,6 +142,8 @@ func auditTargetApps(ctx context.Context, client *asc.Client, only []string, pag
 
 	apps := []auditApp{}
 	next := ""
+	seenNext := map[string]struct{}{}
+	page := 1
 	for {
 		opts := []asc.AppsOption{asc.WithAppsLimit(200)}
 		if next != "" {
@@ -161,6 +163,11 @@ func auditTargetApps(ctx context.Context, client *asc.Client, only []string, pag
 		if next == "" || !paginate {
 			break
 		}
+		if _, seen := seenNext[next]; seen {
+			return nil, false, fmt.Errorf("page %d: %w", page+1, asc.ErrRepeatedPaginationURL)
+		}
+		seenNext[next] = struct{}{}
+		page++
 	}
 
 	for _, id := range only {
@@ -256,6 +263,7 @@ func auditDeclaration(ctx context.Context, client *asc.Client, app auditApp, app
 	row.SocialMedia = auditBoolStatus(socialMedia)
 	row.SocialMediaAgeRestricted = auditBoolStatus(socialMediaAgeRestricted)
 	row.MessagingAndChat = auditBoolStatus(attrs.MessagingAndChat)
+	row.UserGeneratedContent = auditBoolStatus(attrs.UserGeneratedContent)
 	row.AgeAssurance = auditBoolStatus(attrs.AgeAssurance)
 
 	if socialMedia == nil {
@@ -290,6 +298,7 @@ func newAgeRatingAuditErrorRow(app auditApp, appInfo asc.AppInfoCandidate, err e
 		SocialMedia:              "-",
 		SocialMediaAgeRestricted: "-",
 		MessagingAndChat:         "-",
+		UserGeneratedContent:     "-",
 		AgeAssurance:             "-",
 		MissingResponses:         []string{},
 		Error:                    err.Error(),

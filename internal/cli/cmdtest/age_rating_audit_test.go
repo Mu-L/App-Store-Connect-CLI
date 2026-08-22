@@ -3,6 +3,7 @@ package cmdtest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	cmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
 
 func ageRatingAuditTransport() http.RoundTripper {
@@ -56,10 +58,11 @@ func TestAgeRatingAuditReportsMissingSocialMediaResponses(t *testing.T) {
 
 	var result struct {
 		Apps []struct {
-			AppID            string   `json:"appId"`
-			SocialMedia      string   `json:"socialMedia"`
-			MissingResponses []string `json:"missingResponses"`
-			Ready            bool     `json:"ready"`
+			AppID                string   `json:"appId"`
+			SocialMedia          string   `json:"socialMedia"`
+			UserGeneratedContent string   `json:"userGeneratedContent"`
+			MissingResponses     []string `json:"missingResponses"`
+			Ready                bool     `json:"ready"`
 		} `json:"apps"`
 		ReadyCount   int `json:"readyCount"`
 		MissingCount int `json:"missingCount"`
@@ -72,8 +75,16 @@ func TestAgeRatingAuditReportsMissingSocialMediaResponses(t *testing.T) {
 		t.Fatalf("counts = ready %d missing %d error %d, want 1/2/0", result.ReadyCount, result.MissingCount, result.ErrorCount)
 	}
 	rows := map[string][]string{}
+	userGeneratedContent := map[string]string{}
 	for _, row := range result.Apps {
 		rows[row.AppID] = row.MissingResponses
+		userGeneratedContent[row.AppID] = row.UserGeneratedContent
+	}
+	if got := userGeneratedContent["app-social"]; got != "true" {
+		t.Fatalf("app-social user-generated content = %q, want true", got)
+	}
+	if got := userGeneratedContent["app-unset"]; got != "UNSET" {
+		t.Fatalf("app-unset user-generated content = %q, want UNSET", got)
 	}
 	if len(rows["app-ready"]) != 0 {
 		t.Fatalf("app-ready missing = %v, want none", rows["app-ready"])
@@ -479,5 +490,38 @@ func TestAgeRatingAuditPaginationIsExplicit(t *testing.T) {
 				t.Fatalf("stderr = %q, want pagination warning", stderr)
 			}
 		})
+	}
+}
+
+func TestAgeRatingAuditRejectsRepeatedAppPaginationURL(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_TIMEOUT", "100ms")
+	t.Setenv("ASC_TIMEOUT_SECONDS", "")
+	requests := 0
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.Path != "/v1/apps" {
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+		requests++
+		if requests > 2 {
+			return nil, fmt.Errorf("pagination loop escaped repeated-link guard")
+		}
+		if req.URL.Query().Get("cursor") == "repeat" {
+			return jsonHTTPResponse(http.StatusOK, `{"data":[],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps?cursor=repeat"}}`), nil
+		}
+		return jsonHTTPResponse(http.StatusOK, `{"data":[{"type":"apps","id":"app-1"}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps?cursor=repeat"}}`), nil
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	if err := root.Parse([]string{"age-rating", "audit", "--paginate", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err := root.Run(context.Background())
+	if !errors.Is(err, asc.ErrRepeatedPaginationURL) {
+		t.Fatalf("run error = %v, want ErrRepeatedPaginationURL", err)
+	}
+	if requests != 2 {
+		t.Fatalf("app requests = %d, want 2 before rejecting repeated link", requests)
 	}
 }
