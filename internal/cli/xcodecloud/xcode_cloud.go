@@ -160,6 +160,9 @@ Examples:
 			if *doctor && !*wait {
 				return shared.UsageError("--doctor requires --wait")
 			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return err
+			}
 
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if hasWorkflowName && !hasSourceRunID && resolvedAppID == "" {
