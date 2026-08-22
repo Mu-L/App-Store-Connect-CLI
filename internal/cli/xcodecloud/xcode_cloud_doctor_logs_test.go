@@ -271,6 +271,28 @@ func TestFinishXcodeCloudDoctorResultPointsToSavedFailedActionLogs(t *testing.T)
 	}
 }
 
+func TestFinishXcodeCloudDoctorResultDoesNotRepeatFailedInspection(t *testing.T) {
+	result := &asc.XcodeCloudDoctorResult{
+		Run: &asc.XcodeCloudStatusResult{ExecutionProgress: "COMPLETE", CompletionStatus: "FAILED"},
+		Actions: []asc.XcodeCloudDoctorAction{{
+			ID:               "failed-archive",
+			CompletionStatus: "FAILED",
+			Issues: []asc.XcodeCloudDoctorIssue{{
+				IssueType: "ERROR",
+				Message:   "Preparing build for App Store Connect failed",
+			}},
+			Artifacts: []asc.XcodeCloudDoctorArtifact{{FileType: "LOG_BUNDLE"}},
+		}},
+		CoverageWarnings: []asc.XcodeCloudDoctorCoverageWarning{{ID: "log_bundle_inspection_failed"}},
+	}
+
+	finishXcodeCloudDoctorResult(result)
+
+	if !strings.Contains(result.NextAction, "inspection remediation") || strings.Contains(result.NextAction, "Re-run") {
+		t.Fatalf("NextAction = %q, want existing inspection failure remediation", result.NextAction)
+	}
+}
+
 func TestDoctorHasAppStorePreparationIssueUsesFailedErrorActions(t *testing.T) {
 	result := &asc.XcodeCloudDoctorResult{Actions: []asc.XcodeCloudDoctorAction{
 		{

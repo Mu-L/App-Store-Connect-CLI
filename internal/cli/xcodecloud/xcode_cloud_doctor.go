@@ -336,6 +336,7 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 	failedActionLogBundles := doctorFailedActionLogBundleCount(result)
 	failedActionLogBundlesInspected := doctorFailedActionLogBundlesInspected(result)
 	failedActionLogBundlesSaved := doctorFailedActionLogBundlesSaved(result)
+	failedActionLogBundleInspectionFailed := doctorHasCoverageWarning(result, "log_bundle_inspection_failed")
 	failedActionIDs := doctorFailedActionIDs(result)
 	for _, bundle := range result.LogBundles {
 		if _, failed := failedActionIDs[bundle.ActionID]; !failed {
@@ -361,6 +362,8 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 			result.Conclusion = "Xcode Cloud reported an App Store Connect preparation failure, but its available log bundles were not inspected."
 			if failedActionLogBundlesSaved > 0 {
 				result.NextAction = "Inspect the saved failed-action log bundles, then check App Store Connect if they contain no import detail."
+			} else if failedActionLogBundleInspectionFailed {
+				result.NextAction = "Follow the log bundle inspection remediation in this report, then check App Store Connect if the bundle contains no import detail."
 			} else {
 				result.NextAction = "Re-run without --skip-logs, then check App Store Connect if the logs still contain no import detail."
 			}
@@ -384,6 +387,8 @@ func finishXcodeCloudDoctorResult(result *asc.XcodeCloudDoctorResult) {
 		result.Conclusion = "The Xcode Cloud build run failed, but its available log bundles were not inspected."
 		if failedActionLogBundlesSaved > 0 {
 			result.NextAction = "Inspect the saved failed-action log bundles for the underlying failure."
+		} else if failedActionLogBundleInspectionFailed {
+			result.NextAction = "Follow the log bundle inspection remediation in this report to inspect the failed-action logs locally."
 		} else {
 			result.NextAction = "Re-run without --skip-logs or download the listed log bundle artifacts for inspection."
 		}
@@ -447,6 +452,18 @@ func doctorFailedActionLogBundlesSaved(result *asc.XcodeCloudDoctorResult) int {
 		}
 	}
 	return count
+}
+
+func doctorHasCoverageWarning(result *asc.XcodeCloudDoctorResult, id string) bool {
+	if result == nil {
+		return false
+	}
+	for _, warning := range result.CoverageWarnings {
+		if warning.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func doctorRunFailed(result *asc.XcodeCloudDoctorResult) bool {
