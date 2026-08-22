@@ -100,17 +100,19 @@ Credentials are stored:
 
 ## Local Validation
 
-Run this checklist **before opening a PR**:
+Run this checklist before opening a PR that changes CLI behavior, shared code, or release surfaces:
 
 ```bash  theme={null}
 make tools               # Install gofumpt + golangci-lint
 make format              # Format code
 make lint                # Lint code
-make check-command-docs  # Verify command docs are up to date
+make check-docs          # Verify repository, website, skill, OpenAPI, and command docs
 ASC_BYPASS_KEYCHAIN=1 make test  # Run tests (bypasses keychain)
 make build               # Build binary
 ./asc --help             # Smoke-test the binary
 ```
+
+For a narrowly scoped documentation or skill change, run `make check-docs`; it includes the repository and skill validators. For a Wall-only PR, run `make check-wall-of-apps` on the exact head. Use broader checks when the changed surface or repository policy requires them.
 
 ### Command Documentation
 
@@ -128,18 +130,16 @@ Commit `docs/COMMANDS.md` if it changed.
 ### Before Opening a PR
 
 1. **Keep PRs small and focused**: One logical change per PR
-2. **Add or update tests**: Cover new behavior and edge cases
-3. **Update README**: If behavior or scope changes
-4. **Avoid committing credentials**: No API keys or `.p8` files
-5. **Run validation**: Complete the local validation checklist above
+2. **Preserve additive history**: Maintainers use regular merge commits by default and squash only when explicitly requested
+3. **Add or update tests**: Cover new behavior and edge cases
+4. **Update README**: If behavior or scope changes
+5. **Avoid committing credentials**: No API keys or `.p8` files
+6. **Run validation**: Use the scope-appropriate validation above
 
 ### PR Checklist
 
-* [ ] Code formatted (`make format`)
-* [ ] Linting passes (`make lint`)
-* [ ] Tests pass (`ASC_BYPASS_KEYCHAIN=1 make test`)
-* [ ] Command docs updated (`make generate-command-docs`)
-* [ ] Build succeeds (`make build`)
+* [ ] Scope-appropriate validation passes: full checklist for behavior/shared/release changes, `make check-docs` for docs or skills, or `make check-wall-of-apps` for Wall-only changes
+* [ ] Command docs regenerated when help changed (`make generate-command-docs`)
 * [ ] README updated (if needed)
 * [ ] No secrets committed
 
