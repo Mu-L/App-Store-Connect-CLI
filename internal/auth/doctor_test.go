@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -77,6 +78,88 @@ func TestDoctorEnvironmentRedactsCredentialIdentifiers(t *testing.T) {
 		if strings.Contains(check.Message, "issuer-uuid") {
 			t.Fatalf("ASC_ISSUER_ID leaked in message: %q", check.Message)
 		}
+	}
+}
+
+func TestDoctorEnvironmentValidatesSelectedPrivateKey(t *testing.T) {
+	validKeyPath := filepath.Join(t.TempDir(), "AuthKey.p8")
+	writeECDSAPEM(t, validKeyPath, 0o600, true)
+	validKey, err := os.ReadFile(validKeyPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+
+	tests := []struct {
+		name            string
+		keyPath         string
+		privateKey      string
+		privateKeyB64   string
+		wantStatus      DoctorStatus
+		wantMessage     string
+		forbiddenSecret string
+	}{
+		{
+			name:        "missing path",
+			keyPath:     filepath.Join(t.TempDir(), "missing.p8"),
+			wantStatus:  DoctorFail,
+			wantMessage: "ASC_PRIVATE_KEY_PATH - file not found",
+		},
+		{
+			name:            "invalid base64",
+			privateKeyB64:   "not-base64-secret",
+			wantStatus:      DoctorFail,
+			wantMessage:     "ASC_PRIVATE_KEY_B64 is not valid base64",
+			forbiddenSecret: "not-base64-secret",
+		},
+		{
+			name:            "invalid raw pem",
+			privateKey:      "not-a-private-key-secret",
+			wantStatus:      DoctorFail,
+			wantMessage:     "ASC_PRIVATE_KEY is not a valid private key",
+			forbiddenSecret: "not-a-private-key-secret",
+		},
+		{
+			name:          "valid base64",
+			privateKeyB64: base64.StdEncoding.EncodeToString(validKey),
+			wantStatus:    DoctorOK,
+			wantMessage:   "ASC_PRIVATE_KEY_B64 contains a valid ECDSA private key",
+		},
+		{
+			name:          "path takes precedence",
+			keyPath:       validKeyPath,
+			privateKey:    "ignored-invalid-raw-key",
+			privateKeyB64: "ignored-invalid-base64",
+			wantStatus:    DoctorOK,
+			wantMessage:   "ASC_PRIVATE_KEY_PATH - valid ECDSA key",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
+			t.Setenv("ASC_KEY_ID", "ENVKEY")
+			t.Setenv("ASC_ISSUER_ID", "12345678-abcd-1234-abcd-123456789012")
+			t.Setenv("ASC_PRIVATE_KEY_PATH", test.keyPath)
+			t.Setenv("ASC_PRIVATE_KEY", test.privateKey)
+			t.Setenv("ASC_PRIVATE_KEY_B64", test.privateKeyB64)
+
+			report := Doctor(DoctorOptions{})
+			section := findDoctorSection(t, report, "Environment")
+			if !sectionHasStatus(section, test.wantStatus, test.wantMessage) {
+				t.Fatalf("expected %s check containing %q, got %#v", test.wantStatus, test.wantMessage, section.Checks)
+			}
+			if test.wantStatus == DoctorFail && report.Summary.Errors == 0 {
+				t.Fatalf("expected failed key validation in summary, got %#v", report.Summary)
+			}
+			if test.forbiddenSecret != "" {
+				for _, check := range section.Checks {
+					if strings.Contains(check.Message, test.forbiddenSecret) || strings.Contains(check.Recommendation, test.forbiddenSecret) {
+						t.Fatalf("private key material leaked in check: %#v", check)
+					}
+				}
+			}
+		})
 	}
 }
 

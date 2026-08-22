@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -64,7 +65,7 @@ func doctor(options DoctorOptions, resolver MigrationSuggestionResolver) DoctorR
 		inspectStorage(options),
 		inspectProfiles(),
 		inspectPrivateKeys(options),
-		inspectEnvironment(),
+		inspectEnvironment(options),
 		inspectTempKeys(options),
 		migrationSection,
 	}
@@ -359,7 +360,7 @@ func inspectPrivateKeyPath(path string, options DoctorOptions) DoctorCheck {
 	return check
 }
 
-func inspectEnvironment() DoctorSection {
+func inspectEnvironment(options DoctorOptions) DoctorSection {
 	checks := []DoctorCheck{}
 
 	envVars := []string{
@@ -413,6 +414,9 @@ func inspectEnvironment() DoctorSection {
 			Recommendation: "Set missing ASC_* variables or clear partial values",
 		})
 	}
+	if privateKeyCheck := inspectEnvironmentPrivateKey(options); privateKeyCheck != nil {
+		checks = append(checks, *privateKeyCheck)
+	}
 
 	shapeLabels := CredentialShapeLabels{KeyID: "ASC_KEY_ID", IssuerID: "ASC_ISSUER_ID"}
 	if !individualKey {
@@ -446,6 +450,59 @@ func inspectEnvironment() DoctorSection {
 	}
 
 	return DoctorSection{Title: "Environment", Checks: checks}
+}
+
+func inspectEnvironmentPrivateKey(options DoctorOptions) *DoctorCheck {
+	if path := strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_PATH")); path != "" {
+		check := inspectPrivateKeyPath(path, options)
+		check.Message = strings.Replace(check.Message, path, "ASC_PRIVATE_KEY_PATH", 1)
+		if check.Recommendation != "" {
+			check.Recommendation = strings.Replace(check.Recommendation, path, "$ASC_PRIVATE_KEY_PATH", 1)
+		}
+		return &check
+	}
+
+	if value := strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_B64")); value != "" {
+		compact := strings.Join(strings.Fields(value), "")
+		decoded, err := base64.StdEncoding.DecodeString(compact)
+		if err != nil || len(decoded) == 0 {
+			return &DoctorCheck{
+				Status:         DoctorFail,
+				Message:        "ASC_PRIVATE_KEY_B64 is not valid base64",
+				Recommendation: "Set ASC_PRIVATE_KEY_B64 to a base64-encoded ECDSA P-256 private key",
+			}
+		}
+		if _, err := LoadPrivateKeyFromPEM(decoded); err != nil {
+			return &DoctorCheck{
+				Status:         DoctorFail,
+				Message:        "ASC_PRIVATE_KEY_B64 does not contain a valid private key",
+				Recommendation: "Set ASC_PRIVATE_KEY_B64 to a base64-encoded ECDSA P-256 private key",
+			}
+		}
+		return &DoctorCheck{
+			Status:  DoctorOK,
+			Message: "ASC_PRIVATE_KEY_B64 contains a valid ECDSA private key",
+		}
+	}
+
+	if value := strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY")); value != "" {
+		if strings.Contains(value, `\n`) && !strings.Contains(value, "\n") {
+			value = strings.ReplaceAll(value, `\n`, "\n")
+		}
+		if _, err := LoadPrivateKeyFromPEM([]byte(value)); err != nil {
+			return &DoctorCheck{
+				Status:         DoctorFail,
+				Message:        "ASC_PRIVATE_KEY is not a valid private key",
+				Recommendation: "Set ASC_PRIVATE_KEY to an ECDSA P-256 private key in PEM format",
+			}
+		}
+		return &DoctorCheck{
+			Status:  DoctorOK,
+			Message: "ASC_PRIVATE_KEY contains a valid ECDSA private key",
+		}
+	}
+
+	return nil
 }
 
 func inspectTempKeys(options DoctorOptions) DoctorSection {
