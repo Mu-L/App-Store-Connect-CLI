@@ -141,7 +141,7 @@ func TestAuthStatusDefaultOutputRespectsASCDefaultOutputJSON(t *testing.T) {
 	}
 }
 
-func TestAuthStatusShowsActiveEnvironmentSourceWithoutStoredCredentials(t *testing.T) {
+func TestAuthStatusShowsEnvironmentPrecedenceWithoutValidatingPrivateKey(t *testing.T) {
 	restoreSummaries := authcmd.SetListCredentialSummaries(func() ([]authsvc.Credential, error) {
 		return []authsvc.Credential{}, nil
 	})
@@ -151,8 +151,7 @@ func TestAuthStatusShowsActiveEnvironmentSourceWithoutStoredCredentials(t *testi
 	})
 	t.Cleanup(restoreKeychain)
 
-	keyPath := filepath.Join(t.TempDir(), "AuthKey.p8")
-	writeECDSAPEM(t, keyPath)
+	keyPath := filepath.Join(t.TempDir(), "missing.p8")
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "")
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
 	t.Setenv("ASC_PROFILE", "")
@@ -163,7 +162,7 @@ func TestAuthStatusShowsActiveEnvironmentSourceWithoutStoredCredentials(t *testi
 	t.Setenv("ASC_PRIVATE_KEY", "")
 	t.Setenv("ASC_PRIVATE_KEY_B64", "")
 
-	const wantNote = "A complete environment credential set is the active source; with no profile selected, stored credential lookup is skipped."
+	const wantNote = "Complete environment credential fields take precedence when no profile is selected; stored credential lookup is skipped."
 
 	var jsonCode int
 	jsonOutput, jsonStderr := captureOutput(t, func() {

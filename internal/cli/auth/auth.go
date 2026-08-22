@@ -1141,7 +1141,7 @@ func authStatusEnvironmentNote(profile string, bypassKeychain, envProvided, envC
 	}
 	if !bypassKeychain {
 		if envComplete && envKeyTypeValid {
-			return "A complete environment credential set is the active source; with no profile selected, stored credential lookup is skipped."
+			return "Complete environment credential fields take precedence when no profile is selected; stored credential lookup is skipped."
 		}
 		return ""
 	}

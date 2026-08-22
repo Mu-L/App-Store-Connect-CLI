@@ -1304,9 +1304,9 @@ func TestAuthStatusCommand(t *testing.T) {
 	})
 }
 
-func TestAuthStatusEnvironmentNoteReportsActiveCompleteEnvironmentSource(t *testing.T) {
+func TestAuthStatusEnvironmentNoteReportsCompleteEnvironmentPrecedence(t *testing.T) {
 	note := authStatusEnvironmentNote("", false, true, true, true)
-	want := "A complete environment credential set is the active source; with no profile selected, stored credential lookup is skipped."
+	want := "Complete environment credential fields take precedence when no profile is selected; stored credential lookup is skipped."
 	if note != want {
 		t.Fatalf("authStatusEnvironmentNote() = %q, want %q", note, want)
 	}
