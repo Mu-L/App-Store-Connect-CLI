@@ -23,27 +23,28 @@ func TestMetadataPullValidationErrors(t *testing.T) {
 		name          string
 		args          []string
 		wantErr       string
+		wantStderr    string
 		wantParameter string
 		wantConcise   bool
 	}{
 		{
 			name:          "missing app",
 			args:          []string{"metadata", "pull", "--version", "1.2.3", "--dir", "./metadata"},
-			wantErr:       "Error: --app is required (or set ASC_APP_ID)",
+			wantStderr:    "Error: --app is required (or set ASC_APP_ID)\n",
 			wantParameter: "--app",
 			wantConcise:   true,
 		},
 		{
 			name:          "missing version",
 			args:          []string{"metadata", "pull", "--app", "app-1", "--dir", "./metadata"},
-			wantErr:       "Error: --version is required",
+			wantStderr:    "Error: --version is required\nFind versions:\n  asc versions list --app \"APP_ID\" --paginate\n",
 			wantParameter: "--version",
 			wantConcise:   true,
 		},
 		{
 			name:          "missing dir",
 			args:          []string{"metadata", "pull", "--app", "app-1", "--version", "1.2.3"},
-			wantErr:       "Error: --dir is required",
+			wantStderr:    "Error: --dir is required\n",
 			wantParameter: "--dir",
 			wantConcise:   true,
 		},
@@ -81,8 +82,8 @@ func TestMetadataPullValidationErrors(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if test.wantConcise && stderr != test.wantErr+"\n" {
-				t.Fatalf("stderr = %q, want %q", stderr, test.wantErr+"\n")
+			if test.wantConcise && stderr != test.wantStderr {
+				t.Fatalf("stderr = %q, want %q", stderr, test.wantStderr)
 			}
 			if !test.wantConcise && !strings.Contains(stderr, test.wantErr) {
 				t.Fatalf("expected %q in stderr, got %q", test.wantErr, stderr)

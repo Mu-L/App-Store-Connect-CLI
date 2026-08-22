@@ -39,6 +39,7 @@ func TestRunMetadataRequiredInputsAreConciseAndStructured(t *testing.T) {
 		name          string
 		args          []string
 		wantError     string
+		wantStderr    string
 		wantParameter string
 	}{
 		{
@@ -51,6 +52,7 @@ func TestRunMetadataRequiredInputsAreConciseAndStructured(t *testing.T) {
 			name:          "pull missing version",
 			args:          []string{"metadata", "pull", "--app", "app-1", "--dir", "./metadata"},
 			wantError:     "--version is required",
+			wantStderr:    "Error: --version is required\nFind versions:\n  asc versions list --app \"APP_ID\" --paginate\n",
 			wantParameter: "--version",
 		},
 		{
@@ -142,7 +144,11 @@ func TestRunMetadataRequiredInputsAreConciseAndStructured(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("stdout = %q, want empty", stdout)
 			}
-			if want := "Error: " + test.wantError + "\n"; stderr != want {
+			want := test.wantStderr
+			if want == "" {
+				want = "Error: " + test.wantError + "\n"
+			}
+			if stderr != want {
 				t.Fatalf("stderr = %q, want %q", stderr, want)
 			}
 			if strings.Contains(stderr, "DESCRIPTION") || strings.Contains(stderr, "USAGE") || strings.Contains(stderr, "FLAGS") {
