@@ -220,7 +220,7 @@ When config is consulted, its path is selected in this order:
 
 When `ASC_CONFIG_PATH` is unset, an empty local config can fall back to global credentials. Once the local config contains any credential fields, it intentionally shadows the global credential store; incomplete credential data can therefore error instead of falling back. Setting `ASC_CONFIG_PATH` disables global fallback entirely.
 
-`asc auth login --bypass-keychain` controls where that login writes: global config by default, or local config with `--local`. `ASC_BYPASS_KEYCHAIN` controls how later commands read credentials. The login flag does not persist the read behavior.
+`asc auth login --bypass-keychain` or a truthy `ASC_BYPASS_KEYCHAIN` controls where that login writes: global config by default, or local config with `--local`. The environment variable also controls how later commands read credentials; the login flag does not persist the read behavior.
 
 Within stored credentials, an explicitly selected profile wins. Without one, `asc` uses the stored default, or the only stored credential when exactly one exists. Multiple credentials without a default are never selected arbitrarily; resolution either errors or uses an allowed environment fallback.
 

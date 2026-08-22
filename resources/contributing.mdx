@@ -58,23 +58,19 @@ To run integration tests, set credentials in your environment:
 
 ```bash  theme={null}
 unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+unset ASC_PRIVATE_KEY ASC_PRIVATE_KEY_B64
 export ASC_KEY_TYPE="team"
 export ASC_KEY_ID="YOUR_KEY_ID"
 export ASC_ISSUER_ID="YOUR_ISSUER_ID"
 export ASC_PRIVATE_KEY_PATH="/path/to/AuthKey.p8"
 export ASC_APP_ID="YOUR_APP_ID"
 
-make test-integration
+ASC_BYPASS_KEYCHAIN=1 ASC_CONFIG_PATH="$(mktemp -d)/config.json" make test-integration
 ```
 
 ### Headless Alternative
 
-For CI/CD or headless environments, use base64-encoded keys:
-
-```bash  theme={null}
-unset ASC_PRIVATE_KEY_PATH ASC_PRIVATE_KEY
-export ASC_PRIVATE_KEY_B64="BASE64_ENCODED_KEY"
-```
+The integration harness requires `ASC_PRIVATE_KEY_PATH`. In headless CI, decode the private-key secret to a restricted temporary `.p8` file and export its path before running the target. CLI commands support `ASC_PRIVATE_KEY_B64`, but these integration tests do not consume it directly.
 
 ## Local API Testing (Optional)
 
@@ -82,15 +78,17 @@ If you have App Store Connect API credentials, you can run real API calls locall
 
 ```bash  theme={null}
 unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+unset ASC_PRIVATE_KEY ASC_PRIVATE_KEY_B64
 export ASC_KEY_TYPE="team"
 export ASC_KEY_ID="YOUR_KEY_ID"
 export ASC_ISSUER_ID="YOUR_ISSUER_ID"
 export ASC_PRIVATE_KEY_PATH="/path/to/AuthKey.p8"
 export ASC_APP_ID="YOUR_APP_ID"
 
-asc testflight feedback list --app "$ASC_APP_ID"
-asc testflight crashes list --app "$ASC_APP_ID"
-asc reviews --app "$ASC_APP_ID"
+ASC_TEST_CONFIG_PATH="$(mktemp -d)/config.json"
+ASC_BYPASS_KEYCHAIN=1 ASC_CONFIG_PATH="$ASC_TEST_CONFIG_PATH" asc testflight feedback list --app "$ASC_APP_ID"
+ASC_BYPASS_KEYCHAIN=1 ASC_CONFIG_PATH="$ASC_TEST_CONFIG_PATH" asc testflight crashes list --app "$ASC_APP_ID"
+ASC_BYPASS_KEYCHAIN=1 ASC_CONFIG_PATH="$ASC_TEST_CONFIG_PATH" asc reviews --app "$ASC_APP_ID"
 ```
 
 ### Credential storage

@@ -13,6 +13,7 @@
 ```bash  theme={null}
 # A complete environment set skips keychain when no profile is selected
 unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+unset ASC_PRIVATE_KEY ASC_PRIVATE_KEY_B64
 export ASC_KEY_TYPE="team"
 export ASC_KEY_ID="YOUR_KEY_ID"
 export ASC_ISSUER_ID="YOUR_ISSUER_ID"
@@ -22,6 +23,7 @@ export ASC_PRIVATE_KEY_PATH="/path/to/AuthKey.p8"
 Alternatively, use base64-encoded keys for headless environments:
 
 ```bash  theme={null}
+unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
 unset ASC_PRIVATE_KEY_PATH ASC_PRIVATE_KEY
 export ASC_PRIVATE_KEY_B64="BASE64_ENCODED_KEY"
 ```
@@ -230,13 +232,14 @@ ASC_BYPASS_KEYCHAIN=1 make test
 
 ```bash  theme={null}
 unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+unset ASC_PRIVATE_KEY ASC_PRIVATE_KEY_B64
 export ASC_KEY_TYPE="team"
 export ASC_KEY_ID="YOUR_KEY_ID"
 export ASC_ISSUER_ID="YOUR_ISSUER_ID"
 export ASC_PRIVATE_KEY_PATH="/path/to/AuthKey.p8"
 export ASC_APP_ID="YOUR_APP_ID"
 
-make test-integration
+ASC_BYPASS_KEYCHAIN=1 ASC_CONFIG_PATH="$(mktemp -d)/config.json" make test-integration
 ```
 
 ## Platform-Specific Issues
