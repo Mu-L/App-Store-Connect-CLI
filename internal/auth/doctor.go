@@ -404,9 +404,7 @@ func inspectEnvironment(options DoctorOptions) DoctorSection {
 	keyType := config.NormalizeCredentialKeyType(keyTypeRaw)
 	keyTypeValid := keyTypeRaw == "" || config.IsValidCredentialKeyType(keyType)
 	individualKey := keyTypeValid && config.IsIndividualCredentialKeyType(keyType)
-	hasKeyPath := strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_PATH")) != "" ||
-		strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY")) != "" ||
-		strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_B64")) != ""
+	hasKeyPath := hasEnvironmentPrivateKey()
 	envProvided := keyID != "" || issuerID != "" || hasKeyPath || keyTypeRaw != ""
 	envComplete := keyID != "" && hasKeyPath &&
 		keyTypeValid &&
@@ -471,7 +469,14 @@ func inspectEnvironment(options DoctorOptions) DoctorSection {
 func ignoredEnvironmentPrivateKeyReason(options DoctorOptions) string {
 	profile := selectedDoctorProfile(options)
 	if profile != "" {
-		return fmt.Sprintf("profile %q is selected", profile)
+		credentials, err := GetCredentials(profile)
+		if err != nil || credentials == nil {
+			return fmt.Sprintf("profile %q is selected", profile)
+		}
+		if strings.TrimSpace(credentials.PrivateKeyPath) != "" || strings.TrimSpace(credentials.PrivateKeyPEM) != "" {
+			return fmt.Sprintf("profile %q provides stored private key material", profile)
+		}
+		return ""
 	}
 	if !shouldBypassKeychain() && completeEnvironmentCredentialsPreemptStored() {
 		return ""
@@ -509,14 +514,54 @@ func inspectSelectedProfile(options DoctorOptions) *DoctorCheck {
 	if profile == "" {
 		return nil
 	}
-	if _, err := GetCredentials(profile); err != nil {
+	credentials, err := GetCredentials(profile)
+	if err != nil {
 		return &DoctorCheck{
 			Status:         DoctorFail,
 			Message:        fmt.Sprintf("Selected profile %q could not be resolved: %v", profile, err),
 			Recommendation: "Choose an existing complete profile or update the selected profile credentials",
 		}
 	}
+	if credentials == nil {
+		return &DoctorCheck{
+			Status:         DoctorFail,
+			Message:        fmt.Sprintf("Selected profile %q could not be resolved", profile),
+			Recommendation: "Choose an existing complete profile or update the selected profile credentials",
+		}
+	}
+	missing := effectiveCredentialMissingFields(credentials)
+	if len(missing) > 0 {
+		return &DoctorCheck{
+			Status:         DoctorFail,
+			Message:        fmt.Sprintf("Selected profile %q is incomplete after environment fallback (missing %s)", profile, strings.Join(missing, ", ")),
+			Recommendation: "Update the selected profile or set the missing ASC_* environment fields",
+		}
+	}
 	return nil
+}
+
+func effectiveCredentialMissingFields(credentials *config.Config) []string {
+	missing := []string{}
+	if strings.TrimSpace(credentials.KeyID) == "" && strings.TrimSpace(os.Getenv("ASC_KEY_ID")) == "" {
+		missing = append(missing, "key ID")
+	}
+	if !config.IsIndividualCredentialKeyType(credentials.KeyType) &&
+		strings.TrimSpace(credentials.IssuerID) == "" &&
+		strings.TrimSpace(os.Getenv("ASC_ISSUER_ID")) == "" {
+		missing = append(missing, "issuer ID")
+	}
+	if strings.TrimSpace(credentials.PrivateKeyPath) == "" &&
+		strings.TrimSpace(credentials.PrivateKeyPEM) == "" &&
+		!hasEnvironmentPrivateKey() {
+		missing = append(missing, "private key")
+	}
+	return missing
+}
+
+func hasEnvironmentPrivateKey() bool {
+	return strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_PATH")) != "" ||
+		strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY")) != "" ||
+		strings.TrimSpace(os.Getenv("ASC_PRIVATE_KEY_B64")) != ""
 }
 
 func completeEnvironmentCredentialsPreemptStored() bool {

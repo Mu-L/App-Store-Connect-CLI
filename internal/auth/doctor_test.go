@@ -199,7 +199,7 @@ func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
 		if sectionHasStatus(section, DoctorFail, "ASC_PRIVATE_KEY_PATH") {
 			t.Fatalf("expected selected profile to suppress ignored environment key failure, got %#v", section.Checks)
 		}
-		if !sectionHasStatus(section, DoctorInfo, "ignored because profile \"stored\" is selected") {
+		if !sectionHasStatus(section, DoctorInfo, "ignored because profile \"stored\" provides stored private key material") {
 			t.Fatalf("expected ignored environment key note, got %#v", section.Checks)
 		}
 	})
@@ -237,6 +237,67 @@ func TestDoctorEnvironmentSkipsIgnoredPrivateKeys(t *testing.T) {
 		}
 		if report.Summary.Errors == 0 {
 			t.Fatalf("expected missing selected profile in error summary, got %#v", report.Summary)
+		}
+	})
+
+	t.Run("incomplete selected profile without environment fallback", func(t *testing.T) {
+		tempDir := t.TempDir()
+		storedKeyPath := filepath.Join(tempDir, "stored.p8")
+		writeECDSAPEM(t, storedKeyPath, 0o600, true)
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "")
+		t.Setenv("ASC_ISSUER_ID", "")
+		t.Setenv("ASC_KEY_TYPE", "")
+		t.Setenv("ASC_PRIVATE_KEY", "")
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+		if err := StoreCredentials("doctor-incomplete-selected", "STOREDKEY", "", storedKeyPath); err != nil {
+			t.Fatalf("StoreCredentials() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-incomplete-selected"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		report := Doctor(DoctorOptions{Profile: "doctor-incomplete-selected"})
+		section := findDoctorSection(t, report, "Environment")
+		if !sectionHasStatus(section, DoctorFail, "Selected profile \"doctor-incomplete-selected\" is incomplete after environment fallback (missing issuer ID)") {
+			t.Fatalf("expected incomplete selected profile failure, got %#v", section.Checks)
+		}
+		if report.Summary.Errors == 0 {
+			t.Fatalf("expected incomplete selected profile in error summary, got %#v", report.Summary)
+		}
+	})
+
+	t.Run("selected profile validates required environment private key", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		t.Setenv("ASC_BYPASS_KEYCHAIN", "")
+		t.Setenv("ASC_CONFIG_PATH", filepath.Join(tempDir, "config.json"))
+		t.Setenv("ASC_PROFILE", "")
+		t.Setenv("ASC_KEY_ID", "")
+		t.Setenv("ASC_ISSUER_ID", "")
+		t.Setenv("ASC_KEY_TYPE", "")
+		t.Setenv("ASC_PRIVATE_KEY", "")
+		t.Setenv("ASC_PRIVATE_KEY_B64", "")
+		t.Setenv("ASC_PRIVATE_KEY_PATH", filepath.Join(tempDir, "missing-env.p8"))
+		if err := StoreCredentials("doctor-selected-needs-key", "STOREDKEY", "12345678-abcd-1234-abcd-123456789012", ""); err != nil {
+			t.Fatalf("StoreCredentials() error: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := RemoveCredentials("doctor-selected-needs-key"); err != nil {
+				t.Errorf("RemoveCredentials() error: %v", err)
+			}
+		})
+
+		report := Doctor(DoctorOptions{Profile: "doctor-selected-needs-key"})
+		section := findDoctorSection(t, report, "Environment")
+		if !sectionHasStatus(section, DoctorFail, "ASC_PRIVATE_KEY_PATH - file not found") {
+			t.Fatalf("expected required environment key validation, got %#v", section.Checks)
 		}
 	})
 
