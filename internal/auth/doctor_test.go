@@ -299,6 +299,21 @@ func TestDoctorTempFilesWarns(t *testing.T) {
 	}
 }
 
+func TestDoctorPrivateKeyPathRejectsSpecialFiles(t *testing.T) {
+	info, err := os.Stat(os.DevNull)
+	if err != nil {
+		t.Fatalf("Stat(%q) error: %v", os.DevNull, err)
+	}
+	if info.Mode().IsRegular() {
+		t.Skipf("%s is a regular file on this platform", os.DevNull)
+	}
+
+	check := inspectPrivateKeyPath(os.DevNull, DoctorOptions{})
+	if check.Status != DoctorFail || !strings.Contains(check.Message, "not a regular file") {
+		t.Fatalf("expected special-file rejection, got %#v", check)
+	}
+}
+
 func TestDoctorPrivateKeyPermissionsFix(t *testing.T) {
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
 

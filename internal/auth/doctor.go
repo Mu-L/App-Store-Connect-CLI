@@ -326,6 +326,12 @@ func inspectPrivateKeyPath(path string, options DoctorOptions) DoctorCheck {
 			Message: fmt.Sprintf("%s - path is a directory", path),
 		}
 	}
+	if !info.Mode().IsRegular() {
+		return DoctorCheck{
+			Status:  DoctorFail,
+			Message: fmt.Sprintf("%s - not a regular file", path),
+		}
+	}
 
 	check := DoctorCheck{
 		Status:  DoctorOK,
