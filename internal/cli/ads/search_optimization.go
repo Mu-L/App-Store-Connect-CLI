@@ -615,7 +615,16 @@ func queryOptimizationListBoundedWithMore[T any](ctx context.Context, client *ap
 		}
 		items = append(items, envelope.Result...)
 		if maxItems > 0 && len(items) >= maxItems {
-			more := envelope.Pagination.TotalCount > offset+len(envelope.Result)
+			more := len(items) > maxItems
+			if !more && envelope.Pagination.TotalCountPresent {
+				more = envelope.Pagination.TotalCount > offset+len(envelope.Result)
+			}
+			if !more && !envelope.Pagination.TotalCountPresent && len(envelope.Result) >= pageSize {
+				more, err = probeOptimizationListHasMore(ctx, client, spec, body, offset+len(envelope.Result))
+				if err != nil {
+					return items[:maxItems], false, err
+				}
+			}
 			return items[:maxItems], more, nil
 		}
 		if optimizationPageComplete(offset, pageSize, len(envelope.Result), envelope.Pagination.TotalCount) {
@@ -624,6 +633,25 @@ func queryOptimizationListBoundedWithMore[T any](ctx context.Context, client *ap
 		offset += len(envelope.Result)
 	}
 	return items, false, optimizationPageLimitError(spec)
+}
+
+// probeOptimizationListHasMore checks one record beyond a bounded prefix when
+// Apple omits pagination.totalCount. The probe is deliberately one item wide
+// so bounded callers do not silently turn into an unbounded collection.
+func probeOptimizationListHasMore(ctx context.Context, client *appleads.Client, spec appleads.EndpointSpec, body map[string]any, offset int) (bool, error) {
+	pageBody := cloneOptimizationBody(body)
+	pageBody["pagination"] = optimizationRequestPagination(spec, offset, 1)
+	raw, err := executeOptimizationQuery(ctx, client, spec, pageBody)
+	if err != nil {
+		return false, err
+	}
+	var envelope struct {
+		Result []json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return false, fmt.Errorf("decode %s probe response: %w", strings.Join(spec.CommandPath, " "), err)
+	}
+	return len(envelope.Result) > 0, nil
 }
 
 func queryOptimizationRows[T any](ctx context.Context, client *appleads.Client, spec appleads.EndpointSpec, body map[string]any, pageSize int) ([]T, error) {
@@ -752,7 +780,23 @@ func (value *flexibleInt64) UnmarshalJSON(data []byte) error {
 func (value flexibleInt64) Int64() int64 { return int64(value) }
 
 type optimizationPagination struct {
-	TotalCount int `json:"totalCount"`
+	TotalCount        int  `json:"totalCount"`
+	TotalCountPresent bool `json:"-"`
+}
+
+func (pagination *optimizationPagination) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		TotalCount *int `json:"totalCount"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	pagination.TotalCount = 0
+	pagination.TotalCountPresent = raw.TotalCount != nil
+	if raw.TotalCount != nil {
+		pagination.TotalCount = *raw.TotalCount
+	}
+	return nil
 }
 
 type suggestionResponse struct {

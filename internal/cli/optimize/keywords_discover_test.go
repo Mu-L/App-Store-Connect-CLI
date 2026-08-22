@@ -183,9 +183,9 @@ func TestKeywordsDiscoverFlattensDedupesAndPreparesScoreInput(t *testing.T) {
 	want := []asc.KeywordSuggestion{
 		{Keyword: "focus timer", Source: "keyword", Popularity: intPtr(61)},
 		{Keyword: "habit tracker", Source: "keyword", Popularity: intPtr(44)},
+		{Keyword: "pomodoro", Source: "phrase", Popularity: intPtr(20)},
 		{Keyword: "a", Source: "keyword"},
 		{Keyword: "deep work sessions for focus", Source: "phrase"},
-		{Keyword: "pomodoro", Source: "phrase", Popularity: intPtr(20)},
 	}
 	if len(report.Keywords) != len(want) {
 		t.Fatalf("keywords = %+v, want %d entries", report.Keywords, len(want))
@@ -297,6 +297,25 @@ func TestKeywordsDiscoverAppliesLimitAndReportsTruncation(t *testing.T) {
 	}
 	if report.ScoreKeywords != "keyword000,keyword001" {
 		t.Fatalf("scoreKeywords = %q", report.ScoreKeywords)
+	}
+}
+
+func TestKeywordDiscoverSortsBothSuggestionStreamsBeforeLimit(t *testing.T) {
+	report := buildKeywordDiscoverReport(keywordDiscoverBuildInput{
+		Limit: 2,
+		Suggestions: []ads.SearchSuggestion{
+			{Text: "keyword lower", Popularity: intPtr(50), Kind: "keyword"},
+			{Text: "phrase higher", Popularity: intPtr(90), Kind: "phrase"},
+			{Text: "keyword higher", Popularity: intPtr(80), Kind: "keyword"},
+			{Text: "phrase lower", Popularity: intPtr(40), Kind: "phrase"},
+		},
+	})
+
+	if !report.Truncated || report.Summary.Available != 4 || report.Summary.Suggestions != 2 {
+		t.Fatalf("summary = %+v, truncated = %t", report.Summary, report.Truncated)
+	}
+	if len(report.Keywords) != 2 || report.Keywords[0].Keyword != "phrase higher" || report.Keywords[1].Keyword != "keyword higher" {
+		t.Fatalf("keywords = %+v, want the highest-popularity terms across both endpoints", report.Keywords)
 	}
 }
 

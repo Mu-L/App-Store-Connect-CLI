@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -130,7 +131,7 @@ type keywordDiscoverBuildInput struct {
 }
 
 func buildKeywordDiscoverReport(input keywordDiscoverBuildInput) asc.KeywordDiscoverReport {
-	seen := make(map[string]struct{}, len(input.Suggestions))
+	seen := make(map[string]int, len(input.Suggestions))
 	suggestions := make([]asc.KeywordSuggestion, 0, len(input.Suggestions))
 	duplicates := 0
 
@@ -139,17 +140,28 @@ func buildKeywordDiscoverReport(input keywordDiscoverBuildInput) asc.KeywordDisc
 		if keyword == "" {
 			continue
 		}
-		if _, duplicate := seen[keyword]; duplicate {
-			duplicates++
-			continue
-		}
-		seen[keyword] = struct{}{}
-		suggestions = append(suggestions, asc.KeywordSuggestion{
+		candidate := asc.KeywordSuggestion{
 			Keyword:    keyword,
 			Source:     strings.TrimSpace(suggestion.Kind),
 			Popularity: suggestion.Popularity,
-		})
+		}
+		if index, duplicate := seen[keyword]; duplicate {
+			duplicates++
+			if greaterIntPointer(candidate.Popularity, suggestions[index].Popularity) {
+				suggestions[index] = candidate
+			}
+			continue
+		}
+		seen[keyword] = len(suggestions)
+		suggestions = append(suggestions, candidate)
 	}
+
+	// The keyword and phrase endpoints are independently bounded, so merge
+	// their deduplicated results by popularity before applying the report's
+	// global limit.
+	sort.SliceStable(suggestions, func(left, right int) bool {
+		return pointerIntValue(suggestions[left].Popularity, -1) > pointerIntValue(suggestions[right].Popularity, -1)
+	})
 
 	summary := asc.KeywordDiscoverSummary{Available: len(suggestions)}
 	truncated := input.Truncated

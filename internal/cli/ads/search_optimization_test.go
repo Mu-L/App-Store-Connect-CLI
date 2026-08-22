@@ -392,6 +392,71 @@ func TestFetchSearchSuggestionsSortsByPopularityAndHonorsLimit(t *testing.T) {
 	}
 }
 
+func TestFetchSearchSuggestionsDetectsMoreWhenTotalCountIsOmitted(t *testing.T) {
+	requests := make(map[string][][2]int)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode suggestion request: %v", err)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
+		}
+		pagination, ok := body["pagination"].(map[string]any)
+		if !ok {
+			t.Errorf("pagination = %#v, want an object", body["pagination"])
+			http.Error(w, "missing pagination", http.StatusBadRequest)
+			return
+		}
+		offset := int(pagination["offset"].(float64))
+		pageSize := int(pagination["pageSize"].(float64))
+		requests[r.URL.Path] = append(requests[r.URL.Path], [2]int{offset, pageSize})
+		if offset == 0 {
+			if r.URL.Path == "/v1/suggestions/keywords/query" {
+				writeJSON(t, w, `{"result":[{"text":"keyword one","popularity":90},{"text":"keyword two","popularity":80}],"pagination":{"offset":0,"pageSize":2}}`)
+				return
+			}
+			writeJSON(t, w, `{"result":[{"phrase":"phrase one","popularity":70},{"phrase":"phrase two","popularity":60}],"pagination":{"offset":0,"pageSize":2}}`)
+			return
+		}
+		if offset == 2 && pageSize == 1 {
+			if r.URL.Path == "/v1/suggestions/keywords/query" {
+				writeJSON(t, w, `{"result":[{"text":"keyword three","popularity":50}],"pagination":{"offset":2,"pageSize":1}}`)
+				return
+			}
+			writeJSON(t, w, `{"result":[{"phrase":"phrase three","popularity":40}],"pagination":{"offset":2,"pageSize":1}}`)
+			return
+		}
+		t.Errorf("unexpected %s pagination offset=%d pageSize=%d", r.URL.Path, offset, pageSize)
+		http.Error(w, "unexpected pagination", http.StatusBadRequest)
+	}))
+	defer server.Close()
+	client, err := appleads.NewClient(
+		appleads.Credentials{AccessToken: "token", AdAccountID: "account-1"},
+		appleads.WithPlatformBaseURL(server.URL+"/v1/"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := fetchSearchSuggestions(context.Background(), client, SearchOptimizationRequest{
+		AppID: "123456789", Country: "US", Limit: 2,
+	})
+	if err != nil {
+		t.Fatalf("fetchSearchSuggestions() error = %v", err)
+	}
+	if !data.SuggestionsTruncated {
+		t.Fatal("suggestions should report more results when the probe finds another record")
+	}
+	if len(data.Suggestions) != 4 {
+		t.Fatalf("suggestions = %+v, want bounded first pages only", data.Suggestions)
+	}
+	for _, path := range []string{"/v1/suggestions/keywords/query", "/v1/suggestions/phrases/query"} {
+		if got := requests[path]; len(got) != 2 || got[0] != [2]int{0, 2} || got[1] != [2]int{2, 1} {
+			t.Fatalf("%s requests = %v, want initial page and one-record probe", path, got)
+		}
+	}
+}
+
 func hasOptimizationFilter(body map[string]any, field string) bool {
 	filters, _ := body["filters"].([]any)
 	for _, raw := range filters {
