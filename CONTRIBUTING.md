@@ -88,6 +88,7 @@ For a narrowly scoped documentation or skill change, run `make check-docs`; it i
 ## Pull Request Guidelines
 
 - Keep PRs small and focused.
+- Preserve additive commit history on shared PRs. Maintainers use regular merge commits by default and squash only when explicitly requested.
 - Add or update tests for new behavior.
 - When pruning repetitive tests, prefer grouped/table-driven suites, but keep representative high-signal assertions for response decoding and user-facing output formatting.
 - Update `README.md` if behavior or scope changes.

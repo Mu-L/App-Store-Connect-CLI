@@ -9,7 +9,8 @@ This file covers patterns for AI agents working on the codebase.
 - Branch from `main` and keep one logical change per branch
 - Do not commit directly to `main` unless explicitly instructed; prefer PRs
 - Prefer `git worktree add` for parallel tasks; remove with `git worktree remove` when done
-- Compare the branch with current `main` before merging. Do not rebase or merge `main` into a clean branch merely because `main` advanced; update only when an actual merge conflict prevents the merge. Avoid merge commits
+- Compare the branch with current `main` before merging. Do not rebase or merge `main` into a clean branch merely because `main` advanced; update only when an actual merge conflict prevents the merge
+- Preserve additive PR commits. Do not force-push, rebase, squash, or otherwise rewrite shared history unless the user explicitly requests it. When merging, use a regular merge commit by default
 - Commit small, coherent changes; no WIP commits on shared branches
 - Use concise, present-tense commit messages that match repo style
 - Never commit secrets or local config files (keys, `.env`, `.asc/config.json`)
