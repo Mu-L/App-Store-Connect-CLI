@@ -61,6 +61,26 @@ func TestKeywordsScoreCommandFlagsAreExperimental(t *testing.T) {
 	}
 }
 
+func TestKeywordsScoreHelpSeparatesAdsAuthenticationFromAccountSelection(t *testing.T) {
+	help := KeywordsScoreCommand().LongHelp
+	for _, want := range []string{
+		"Apple Ads authentication is resolved independently from ad-account selection",
+		"--ads-profile or ASC_ADS_PROFILE",
+		"ASC_ADS_ACCESS_TOKEN",
+		"ASC_ADS_CLIENT_ID",
+		"ASC_ADS_PRIVATE_KEY_PATH",
+		"--ad-account or ASC_ADS_AD_ACCOUNT_ID",
+		"ads.ad_account_id",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help missing %q:\n%s", want, help)
+		}
+	}
+	if strings.Contains(help, "credentials through --ad-account") {
+		t.Fatalf("help conflates Ads authentication with account selection:\n%s", help)
+	}
+}
+
 func TestKeywordsScoreCommandValidatesInputBeforeRequests(t *testing.T) {
 	tests := []struct {
 		name string
@@ -285,7 +305,7 @@ func TestKeywordsScoreComposesCompetitionRankAndDegradesPopularity(t *testing.T)
 	if got := sources[keywordSourceMetadata]; got.Status != keywordStatusAvailable {
 		t.Fatalf("metadata source = %+v", got)
 	}
-	if got := sources[keywordSourceRank]; got.Status != keywordStatusAvailable || got.Count != 1 {
+	if got := sources[keywordSourceRank]; got.Status != keywordStatusAvailable || got.Count != 1 || !strings.Contains(got.Error, "429") {
 		t.Fatalf("rank source = %+v", got)
 	}
 
