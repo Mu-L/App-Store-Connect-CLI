@@ -1344,6 +1344,7 @@ func TestRun_UnknownCommandsReturnConciseRecovery(t *testing.T) {
 			name: "no close match",
 			args: []string{"builds", "qqqqq"},
 			wantStderr: "Error: unknown command `asc builds qqqqq`\n" +
+				buildsTaskHintBlock +
 				"For help:\n" +
 				"  asc builds --help\n",
 		},
@@ -1766,6 +1767,7 @@ func TestRun_CommonWrongCommandPathDoesNotCopyUnsupportedSuffix(t *testing.T) {
 		{"versions", "info", "--version-id", "VERSION_ID", "--include-build=maybe"},
 	}
 	want := "Error: unknown command `asc versions info`\n" +
+		versionsTaskHintBlock +
 		"For help:\n" +
 		"  asc versions --help\n"
 
