@@ -27,13 +27,20 @@ can audit and re-derive every number without leaving this repository.
 ## Commands
 
 ```bash
-asc optimize keywords rank  --app APP_ID --keywords LIST [--country us] [--platform IOS|TV_OS] [--workers N]
-asc optimize keywords score --keywords LIST [--country us] [--app APP_ID] [--genre GENRE] [--ad-account ID] [--ads-profile NAME] [--workers N]
+asc optimize keywords rank     --app APP_ID --keywords LIST [--country us] [--platform IOS|TV_OS] [--workers N]
+asc optimize keywords score    --keywords LIST [--country us] [--app APP_ID] [--genre GENRE] [--ad-account ID] [--ads-profile NAME] [--workers N]
+asc optimize keywords discover --app APP_ID [--country us] [--genre GENRE] [--ad-account ID] [--ads-profile NAME] [--limit N]
 ```
 
 `rank` needs no authentication at all. `score` needs no authentication for its
 competition and rank sources, and needs Apple Ads credentials only for the
-optional popularity source.
+optional popularity source. `discover` needs Apple Ads credentials, because
+Apple Ads is its only source.
+
+The intended loop is `discover` to collect official candidates, `score` to
+decide which are worth pursuing, and `rank` to track the ones that were
+adopted. `discover` emits a `scoreKeywords` field that feeds straight into
+`score --keywords`.
 
 ## Keyword hygiene
 
@@ -239,6 +246,13 @@ These are properties of the data, not defects to be papered over.
   results, and the difficulty normalization saturates at the same point, so
   keywords with more than 200 competing apps are indistinguishable on that
   signal.
+- **Discovery is suggestion-scoped.** `discover` calls only the documented
+  keyword and phrase suggestion endpoints. Each request asks Apple to order
+  results by popularity descending and uses the requested `--limit` as its
+  bounded page size (subject to Apple's platform page-size cap), stopping once
+  that bounded prefix is collected. Campaign,
+  eligibility, reporting, and recommendation data are not fetched, and
+  `--genre` remains an optional report label that does not affect suggestions.
 - **Release dates are read directly.** The shared public client type in
   `internal/itunes` does not expose `releaseDate` or
   `currentVersionReleaseDate`, so `internal/cli/optimize/keywords_metadata.go`
@@ -246,16 +260,49 @@ These are properties of the data, not defects to be papered over.
   client's base URL and HTTP client. Folding them into the shared type is the
   natural follow-up.
 
+## Keyword discovery
+
+`discover` is the one command in this group that produces candidates rather
+than evaluating them, and it does so only by reporting what Apple itself
+suggests. It reads Apple's two official Ads suggestion endpoints:
+
+| Purpose | Method and endpoint |
+| --- | --- |
+| App keyword discovery | `POST /v1/suggestions/keywords/query` |
+| App phrase discovery | `POST /v1/suggestions/phrases/query` |
+
+Neither requires an existing campaign. Terms from both endpoints are lowercased
+and whitespace-collapsed, deduplicated across the two sources by retaining the
+highest popularity occurrence (ties retain the first occurrence), then sorted
+globally by popularity descending with missing popularity last. Each term is
+reported with the endpoint it came from and any popularity Apple attached.
+`--limit` caps the returned list and sets `truncated` when Apple offered more.
+
+The report also carries `scoreKeywords`: a comma-separated list of the
+suggestions that satisfy the keyword hygiene rules above, ready to pass
+straight to `score --keywords`. Suggestions that are too short, too long, or
+too many words, or contain the comma delimiter stay listed under `keywords`
+but are excluded from that field, so nothing is silently dropped and nothing
+that would be split into different keywords is handed onward.
+
+Apple Ads is the only source for `discover`, so it is the only command in this
+group that fails rather than degrades when its source is unavailable. The
+failure names the credential flags and `asc ads auth login` so the fix is
+actionable.
+
 ## Out of scope
 
 Undocumented Apple endpoints are out of scope for this group. In particular,
-the iTunes search autocomplete endpoint is not used for keyword discovery; only
-Apple's official, documented Ads suggestion endpoints are.
+the iTunes search **autocomplete** endpoint is not used for keyword discovery,
+even though it would return more candidates: it is undocumented, unversioned,
+and carries no compatibility commitment, which is exactly the kind of source
+this tree's design position rules out. Only Apple's official, documented Ads
+suggestion endpoints are used.
 
 ## Output contract
 
-`score` emits a registered output contract from `internal/asc`, with table and
-Markdown renderers alongside JSON. `rank` remains a computed camelCase result
-from `internal/cli/optimize`. These are computed results, not App Store Connect
-envelopes and not mutation receipts. Added fields are additive; removals follow
-the stability ladder.
+`score` and `discover` emit registered output contracts from `internal/asc`,
+with table and Markdown renderers alongside JSON. `rank` remains a computed
+camelCase result from `internal/cli/optimize`. These are computed results, not
+App Store Connect envelopes and not mutation receipts. Added fields are
+additive; removals follow the stability ladder.

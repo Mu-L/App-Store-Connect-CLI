@@ -226,6 +226,13 @@ func TestKeywordsGroupReturnsHelpAndRegistersRank(t *testing.T) {
 	if !strings.HasSuffix(group.ShortHelp, "[experimental]") {
 		t.Fatalf("ShortHelp = %q, want experimental suffix", group.ShortHelp)
 	}
+	normalizedHelp := strings.Join(strings.Fields(group.LongHelp), " ")
+	if !strings.Contains(normalizedHelp, "The rank and score commands evaluate keywords you already have") {
+		t.Fatalf("LongHelp must distinguish evaluation from discovery:\n%s", group.LongHelp)
+	}
+	if !strings.Contains(normalizedHelp, "The discover command produces only") {
+		t.Fatalf("LongHelp must describe discovery separately:\n%s", group.LongHelp)
+	}
 
 	var names []string
 	for _, sub := range group.Subcommands {
@@ -234,8 +241,8 @@ func TestKeywordsGroupReturnsHelpAndRegistersRank(t *testing.T) {
 			t.Fatalf("subcommand %q is missing UsageFunc", sub.Name)
 		}
 	}
-	if len(names) != 2 || names[0] != "rank" || names[1] != "score" {
-		t.Fatalf("keywords subcommands = %v, want [rank score]", names)
+	if len(names) != 3 || names[0] != "rank" || names[1] != "score" || names[2] != "discover" {
+		t.Fatalf("keywords subcommands = %v, want [rank score discover]", names)
 	}
 }
 

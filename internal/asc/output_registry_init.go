@@ -22,6 +22,7 @@ func registerAllOutputRenderers() {
 		render(kh, kr)
 		return nil
 	})
+	registerDirect(keywordDiscoverTables)
 	registerDirect(keywordScoreTables)
 	registerRows(feedbackRows)
 	registerRows(crashesRows)
