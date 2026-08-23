@@ -203,6 +203,54 @@ func TestSubscriptionsPricingDeriveValidationErrors(t *testing.T) {
 	}
 }
 
+func TestSubscriptionsPricingDeriveRequiresAppForLookupSelectorBeforeAuth(t *testing.T) {
+	t.Setenv("ASC_APP_ID", "")
+	t.Setenv("ASC_PROFILE", "")
+	t.Setenv("ASC_KEY_ID", "")
+	t.Setenv("ASC_ISSUER_ID", "")
+	t.Setenv("ASC_PRIVATE_KEY_PATH", "")
+	t.Setenv("ASC_PRIVATE_KEY", "")
+	t.Setenv("ASC_PRIVATE_KEY_B64", "")
+	t.Setenv("ASC_CONFIG_PATH", t.TempDir()+"/missing.json")
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+
+	assertUsageExit(t, []string{
+		"subscriptions", "pricing", "derive",
+		"--source-subscription-id", "com.example.monthly",
+		"--target-subscription-id", "8000000002",
+		"--multiplier", "10",
+		"--dry-run",
+	}, "--app is required (or set ASC_APP_ID) when --source-subscription-id is a product ID or name")
+}
+
+func TestSubscriptionsPricingDeriveHelpMarksNewSurfaceExperimental(t *testing.T) {
+	root := RootCommand("1.2.3")
+	derive := findCommand(root, "subscriptions", "pricing", "derive")
+	if derive == nil {
+		t.Fatal("subscriptions pricing derive command is not registered")
+	}
+	if !strings.HasPrefix(derive.ShortHelp, "[experimental]") {
+		t.Fatalf("ShortHelp = %q, want experimental lifecycle label", derive.ShortHelp)
+	}
+	if !strings.HasPrefix(derive.LongHelp, "[experimental]") {
+		t.Fatalf("LongHelp = %q, want experimental lifecycle label", derive.LongHelp)
+	}
+
+	for _, name := range []string{
+		"source-subscription-id", "target-subscription-id", "app", "multiplier",
+		"round", "territory", "start-date", "preserved", "auto-start-date",
+		"dry-run", "confirm", "workers",
+	} {
+		flagValue := derive.FlagSet.Lookup(name)
+		if flagValue == nil {
+			t.Fatalf("flag --%s is not registered", name)
+		}
+		if !strings.HasPrefix(flagValue.Usage, "[experimental] ") {
+			t.Fatalf("--%s usage = %q, want experimental lifecycle label", name, flagValue.Usage)
+		}
+	}
+}
+
 func TestSubscriptionsPricingDeriveBooleanFlagExitCodes(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -348,6 +396,83 @@ func TestSubscriptionsPricingDeriveDryRunResolvesUnevenTerritoryLadders(t *testi
 	}
 	if swe.TargetPricePointID != "target-pp-swe-89" || swe.RequestedMultiple != "10" || swe.AchievedMultiple != "9.888889" || swe.Action != "update" || swe.Status != "planned" {
 		t.Fatalf("unexpected SWE resolution metadata: %+v", swe)
+	}
+}
+
+func TestSubscriptionsPricingDeriveTerritoryDryRunPlansMissingCurrentTargetPrice(t *testing.T) {
+	setupAuth(t)
+
+	const sourceID = "8000000001"
+	const targetID = "8000000002"
+
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/subscriptions/"+sourceID+"/prices":
+			if got := req.URL.Query().Get("filter[territory]"); got != "SWE" {
+				t.Fatalf("source territory filter = %q, want SWE", got)
+			}
+			return jsonResponse(http.StatusOK, subscriptionPriceDerivePricesFixture([]deriveHTTPPrice{
+				{priceID: "source-price-swe", pricePointID: "source-pp-swe", territory: "SWE", currency: "SEK", customerPrice: "9"},
+			}))
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/subscriptions/"+targetID+"/prices":
+			if got := req.URL.Query().Get("filter[territory]"); got != "SWE" {
+				t.Fatalf("target territory filter = %q, want SWE", got)
+			}
+			return jsonResponse(http.StatusOK, subscriptionPriceDerivePricesFixture(nil))
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/subscriptions/"+targetID+"/pricePoints":
+			return jsonResponse(http.StatusOK, subscriptionPriceDerivePricePointsFixture([]deriveHTTPPricePoint{
+				{id: "target-pp-swe-89", territory: "SWE", customerPrice: "89"},
+				{id: "target-pp-swe-99", territory: "SWE", customerPrice: "99"},
+			}))
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, _ := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"subscriptions", "pricing", "derive",
+			"--source-subscription-id", sourceID,
+			"--target-subscription-id", targetID,
+			"--multiplier", "10",
+			"--round", "nearest",
+			"--territory", "SWE",
+			"--workers", "1",
+			"--auto-start-date=false",
+			"--dry-run",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	var result struct {
+		Summary struct {
+			Planned    int `json:"planned"`
+			Unresolved int `json:"unresolved"`
+		} `json:"summary"`
+		Rows []struct {
+			Territory          string `json:"territory"`
+			CurrentTargetPrice string `json:"currentTargetPrice"`
+			TargetPrice        string `json:"targetPrice"`
+			Action             string `json:"action"`
+			Status             string `json:"status"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON output: %v\nstdout=%s", err, stdout)
+	}
+	if result.Summary.Planned != 1 || result.Summary.Unresolved != 0 || len(result.Rows) != 1 {
+		t.Fatalf("unexpected missing-target-price plan: %+v", result)
+	}
+	row := result.Rows[0]
+	if row.Territory != "SWE" || row.CurrentTargetPrice != "" || row.TargetPrice != "89" || row.Action != "update" || row.Status != "planned" {
+		t.Fatalf("unexpected missing-target-price row: %+v", row)
 	}
 }
 

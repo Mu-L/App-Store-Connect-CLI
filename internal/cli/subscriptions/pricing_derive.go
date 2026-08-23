@@ -42,25 +42,25 @@ type subscriptionPriceDeriveResolution struct {
 func SubscriptionsPricingDeriveCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("subscriptions pricing derive", flag.ExitOnError)
 
-	sourceSubscriptionID := fs.String("source-subscription-id", "", "Source subscription ID, product ID, or exact current name (required)")
-	targetSubscriptionID := fs.String("target-subscription-id", "", "Target subscription ID, product ID, or exact current name (required)")
-	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env; required when either subscription selector is a product ID or name)")
-	multiplier := fs.String("multiplier", "", "Positive decimal multiplied by each source territory price (required)")
-	rounding := fs.String("round", string(subscriptionPriceDeriveNearest), "Price-point resolution: exact, nearest, up, or down")
-	territory := fs.String("territory", "", "Limit derivation to one territory ID, 2-letter code, or name")
-	startDate := fs.String("start-date", "", "Start date (YYYY-MM-DD) for scheduled target price changes")
-	preserved := fs.Bool("preserved", false, "Preserve current target prices for existing subscribers")
-	autoStartDate := fs.Bool("auto-start-date", true, "Automatically schedule approved/live target subscriptions for tomorrow when --start-date is omitted")
-	dryRun := fs.Bool("dry-run", false, "Show derived target prices without applying them")
-	confirm := fs.Bool("confirm", false, "Confirm applying derived target prices (required unless --dry-run)")
-	workers := fs.Int("workers", defaultEqualizeWorkers, "Number of concurrent planning workers and price mutations")
+	sourceSubscriptionID := fs.String("source-subscription-id", "", "[experimental] Source subscription ID, product ID, or exact current name (required)")
+	targetSubscriptionID := fs.String("target-subscription-id", "", "[experimental] Target subscription ID, product ID, or exact current name (required)")
+	appID := fs.String("app", "", "[experimental] App Store Connect app ID (or ASC_APP_ID env; required when either subscription selector is a product ID or name)")
+	multiplier := fs.String("multiplier", "", "[experimental] Positive decimal multiplied by each source territory price (required)")
+	rounding := fs.String("round", string(subscriptionPriceDeriveNearest), "[experimental] Price-point resolution: exact, nearest, up, or down")
+	territory := fs.String("territory", "", "[experimental] Limit derivation to one territory ID, 2-letter code, or name")
+	startDate := fs.String("start-date", "", "[experimental] Start date (YYYY-MM-DD) for scheduled target price changes")
+	preserved := fs.Bool("preserved", false, "[experimental] Preserve current target prices for existing subscribers")
+	autoStartDate := fs.Bool("auto-start-date", true, "[experimental] Automatically schedule approved/live target subscriptions for tomorrow when --start-date is omitted")
+	dryRun := fs.Bool("dry-run", false, "[experimental] Show derived target prices without applying them")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm applying derived target prices (required unless --dry-run)")
+	workers := fs.Int("workers", defaultEqualizeWorkers, "[experimental] Number of concurrent planning workers and price mutations")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "derive",
 		ShortUsage: "asc subscriptions pricing derive [flags]",
-		ShortHelp:  "Derive one subscription's territory prices from another.",
-		LongHelp: `Derive one subscription's standard territory prices from another.
+		ShortHelp:  "[experimental] Derive one subscription's territory prices from another.",
+		LongHelp: `[experimental] Derive one subscription's standard territory prices from another.
 
 For every territory with a current source price, multiplies that local price by
 --multiplier and resolves the result against the target subscription's Apple
@@ -136,6 +136,13 @@ Examples:
 			if err != nil {
 				return err
 			}
+			resolvedAppID := shared.ResolveAppID(*appID)
+			if err := shared.RequireAppForStableSelector(resolvedAppID, sourceID, "--source-subscription-id"); err != nil {
+				return err
+			}
+			if err := shared.RequireAppForStableSelector(resolvedAppID, targetID, "--target-subscription-id"); err != nil {
+				return err
+			}
 
 			client, err := shared.GetASCClient()
 			if err != nil {
@@ -184,7 +191,7 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("subscriptions pricing derive: fetch target prices: %w", err)
 			}
-			if len(targetPrices.Prices) == 0 {
+			if len(targetPrices.Prices) == 0 && territoryID == "" {
 				return fmt.Errorf("subscriptions pricing derive: target subscription has no current UPFRONT prices; initialize its pricing before deriving changes")
 			}
 
@@ -801,6 +808,22 @@ func formatSubscriptionPriceDeriveDecimal(value *big.Rat, precision int) string 
 	}
 	if precision < 0 {
 		precision = 0
+	}
+	if value.Sign() != 0 {
+		absoluteNumerator := new(big.Int).Abs(new(big.Int).Set(value.Num()))
+		denominator := new(big.Int).Abs(new(big.Int).Set(value.Denom()))
+		digitEstimate := len(denominator.String()) - len(absoluteNumerator.String()) - 1
+		if digitEstimate > precision {
+			precision = digitEstimate
+		}
+		scaledTwice := new(big.Int).Mul(absoluteNumerator, big.NewInt(2))
+		if precision > 0 {
+			scaledTwice.Mul(scaledTwice, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil))
+		}
+		for scaledTwice.Cmp(denominator) < 0 {
+			precision++
+			scaledTwice.Mul(scaledTwice, big.NewInt(10))
+		}
 	}
 	formatted := value.FloatString(precision)
 	formatted = strings.TrimRight(formatted, "0")

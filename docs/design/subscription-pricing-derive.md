@@ -97,13 +97,15 @@ The behavior is client-side orchestration over existing public API surfaces:
 1. Resolve both subscription selectors.
 2. Read current source and target `UPFRONT` prices with
    `GET /v1/subscriptions/{id}/prices`, including territory and price point.
-3. Require the target subscription to have an existing pricing configuration.
+3. Require the target subscription to have an existing pricing configuration
+   for an unfiltered run. A focused `--territory` run may plan a new price when
+   that territory does not yet have a current target price.
 4. Read candidate target price points with a batched territory filter,
    `include=territory`, the endpoint's 8,000-resource page limit, and full
    pagination. Group the returned ladder by territory locally; do not issue a
    separately paginated ladder request for every territory.
-5. Produce a complete plan and remove no-op rows whose current target price
-   point already matches.
+5. Produce a complete plan and mark rows whose current target price point
+   already matches as `noop`. Report them, but exclude them from mutation.
 6. For apply, create changes with `POST /v1/subscriptionPrices`. The request
    uses `SubscriptionPriceCreateRequest`: optional `startDate`,
    `preserveCurrentPrice`, and `planType`, plus relationships to the target

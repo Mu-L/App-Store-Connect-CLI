@@ -209,6 +209,33 @@ func TestFormatSubscriptionPriceDeriveExactDecimalPreservesInputPrecision(t *tes
 	}
 }
 
+func TestFormatSubscriptionPriceDeriveDecimalPreservesNonzeroValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		precision int
+		want      string
+	}{
+		{name: "positive below requested precision", value: "0.0000001", precision: 6, want: "0.0000001"},
+		{name: "negative below requested precision", value: "-0.0000001", precision: 6, want: "-0.0000001"},
+		{name: "small recurring rational", value: "1/30000000", precision: 6, want: "0.00000003"},
+		{name: "exact zero", value: "0", precision: 6, want: "0"},
+		{name: "ordinary rounding remains bounded", value: "1/9", precision: 6, want: "0.111111"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value, ok := new(big.Rat).SetString(test.value)
+			if !ok {
+				t.Fatalf("parse test value %q", test.value)
+			}
+			if got := formatSubscriptionPriceDeriveDecimal(value, test.precision); got != test.want {
+				t.Fatalf("formatted decimal = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestFetchSubscriptionPriceDeriveCandidatesBatchesTerritoriesAndPaginates(t *testing.T) {
 	originalTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
