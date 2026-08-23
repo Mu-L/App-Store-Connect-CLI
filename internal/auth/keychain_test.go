@@ -1625,6 +1625,55 @@ func TestStoreCredentials_TrimsKeychainProfileNameBeforeSelectingDefault(t *test
 	}
 }
 
+func TestStoreCredentials_RemovesPreNormalizedProfileFromLegacyKeychain(t *testing.T) {
+	newKr, legacyKr := withSeparateKeyrings(t)
+	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "OLDKEY", "OLDISSUER", "/tmp/OldAuthKey.p8")
+
+	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8"); err != nil {
+		t.Fatalf("StoreCredentials() error: %v", err)
+	}
+	if _, err := legacyKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("legacy raw credential error = %v, want ErrKeyNotFound", err)
+	}
+	item, err := newKr.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("normalized credential error: %v", err)
+	}
+	var payload credentialPayload
+	if err := json.Unmarshal(item.Data, &payload); err != nil {
+		t.Fatalf("decode normalized credential: %v", err)
+	}
+	if payload.KeyID != "KEY123" || payload.IssuerID != "ISS456" {
+		t.Fatalf("normalized payload = %+v", payload)
+	}
+}
+
+func TestStoreCredentials_RejectsDistinctNormalizedProfileCollisionBeforeMutation(t *testing.T) {
+	newKr, legacyKr := withSeparateKeyrings(t)
+	storeCredentialInKeyring(t, newKr, "spaced", "CANONICAL", "ISSUER-CANONICAL", "/tmp/canonical.p8")
+	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "RAW", "ISSUER-RAW", "/tmp/raw.p8")
+
+	err := StoreCredentials("  spaced  ", "NEW", "ISSUER-NEW", "/tmp/new.p8")
+	if err == nil || !strings.Contains(err.Error(), "conflicts with existing normalized profile") {
+		t.Fatalf("StoreCredentials() error = %v, want normalized-profile collision", err)
+	}
+
+	canonical, err := newKr.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("canonical credential error: %v", err)
+	}
+	var canonicalPayload credentialPayload
+	if err := json.Unmarshal(canonical.Data, &canonicalPayload); err != nil {
+		t.Fatalf("decode canonical credential: %v", err)
+	}
+	if canonicalPayload.KeyID != "CANONICAL" {
+		t.Fatalf("canonical credential was mutated: %+v", canonicalPayload)
+	}
+	if _, err := legacyKr.Get(keyringKey("  spaced  ")); err != nil {
+		t.Fatalf("raw legacy credential was removed: %v", err)
+	}
+}
+
 func TestStoreCredentials_RejectsWhitespaceOnlyProfileName(t *testing.T) {
 	newKr, _ := withSeparateKeyrings(t)
 

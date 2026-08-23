@@ -386,6 +386,9 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	if name == "" {
 		return fmt.Errorf("credential name is required")
 	}
+	if err := rejectNormalizedCredentialCollision(originalName, name); err != nil {
+		return err
+	}
 	payload := credentialPayload{
 		KeyID:          keyID,
 		IssuerID:       issuerID,
@@ -401,6 +404,10 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 			if err := removeFromKeychain(originalName); err != nil && !errors.Is(err, keyring.ErrKeyNotFound) {
 				return fmt.Errorf("remove pre-normalized keychain credential %q: %w", originalName, err)
 			}
+			if err := removeFromLegacyKeychain(originalName); err != nil &&
+				!errors.Is(err, keyring.ErrKeyNotFound) && !isKeyringUnavailable(err) {
+				return fmt.Errorf("remove pre-normalized legacy keychain credential %q: %w", originalName, err)
+			}
 		}
 		// Successfully stored in keychain - remove matching config entry for security
 		if err := removeFromConfigIfPresent(name); err != nil && !errors.Is(err, config.ErrNotFound) {
@@ -413,6 +420,70 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	}
 
 	return storeInConfig(name, payload)
+}
+
+func rejectNormalizedCredentialCollision(originalName, normalizedName string) error {
+	if originalName == normalizedName {
+		return nil
+	}
+
+	current, err := keyringOpener()
+	if err != nil {
+		if isKeyringUnavailable(err) {
+			return nil
+		}
+		return err
+	}
+	keyrings := []keyring.Keyring{current}
+	legacy, err := legacyKeyringOpener()
+	if err == nil {
+		keyrings = append(keyrings, legacy)
+	} else if !isKeyringUnavailable(err) {
+		return err
+	}
+
+	var canonicalPayloads []credentialPayload
+	var originalPayloads []credentialPayload
+	for _, kr := range keyrings {
+		if payload, found, err := credentialPayloadFromKeyring(kr, normalizedName); err != nil {
+			return err
+		} else if found {
+			canonicalPayloads = append(canonicalPayloads, payload)
+		}
+		if payload, found, err := credentialPayloadFromKeyring(kr, originalName); err != nil {
+			return err
+		} else if found {
+			originalPayloads = append(originalPayloads, payload)
+		}
+	}
+
+	for _, canonical := range canonicalPayloads {
+		for _, original := range originalPayloads {
+			if canonical != original {
+				return fmt.Errorf(
+					"credential profile name %q conflicts with existing normalized profile %q; remove one before retrying",
+					originalName,
+					normalizedName,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+func credentialPayloadFromKeyring(kr keyring.Keyring, name string) (credentialPayload, bool, error) {
+	item, err := kr.Get(keyringKey(name))
+	if errors.Is(err, keyring.ErrKeyNotFound) {
+		return credentialPayload{}, false, nil
+	}
+	if err != nil {
+		return credentialPayload{}, false, err
+	}
+	var payload credentialPayload
+	if err := json.Unmarshal(item.Data, &payload); err != nil {
+		return credentialPayload{}, false, fmt.Errorf("invalid keychain entry %q: %w", item.Key, err)
+	}
+	return payload, true, nil
 }
 
 func loadPrivateKeyPEMForStorage(path string) (string, error) {
