@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
@@ -89,15 +91,85 @@ func (e *TestNotesRecoveryError) Error() string {
 }
 
 func redactTestNotes(message, notes string) string {
-	for _, candidate := range []string{
-		asc.SanitizeTerminalText(notes),
-		asc.SanitizeTerminalText(strings.TrimSpace(notes)),
-	} {
-		if candidate != "" {
-			message = strings.ReplaceAll(message, candidate, "(original notes omitted)")
+	const redacted = "(original notes omitted)"
+
+	sanitizedNotes := asc.SanitizeTerminalText(notes)
+	candidate := strings.TrimSpace(sanitizedNotes)
+	if candidate == "" {
+		return message
+	}
+
+	// A cause that consists of the submitted value is unambiguous, even for
+	// short notes such as "a" or "invalid".
+	if strings.TrimSpace(message) == candidate {
+		return redacted
+	}
+
+	// Quoted values are also unambiguous. Keep the surrounding quotes so the
+	// shape of Apple's diagnostic remains useful to the operator.
+	for _, quote := range []string{`"`, `'`, "`"} {
+		if strings.Contains(candidate, quote) {
+			continue
 		}
+		message = strings.ReplaceAll(message, quote+candidate+quote, quote+redacted+quote)
+	}
+
+	// Terminal-sensitive notes can be echoed after sanitization turns their
+	// separators into spaces. Redact only a whole phrase in that case; plain
+	// short notes are intentionally not treated as secrets inside arbitrary
+	// diagnostic text because there is no reliable way to distinguish an echo
+	// from normal prose.
+	if asc.HasInterpretedTerminalSequence(notes) && hasTestNotesBoundary(candidate) {
+		message = replaceWholeTestNotes(message, candidate, redacted)
 	}
 	return message
+}
+
+func hasTestNotesBoundary(candidate string) bool {
+	for _, r := range candidate {
+		if unicode.IsSpace(r) || !isTestNotesWordRune(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTestNotesWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsMark(r) || r == '_'
+}
+
+func replaceWholeTestNotes(message, candidate, replacement string) string {
+	for offset := 0; offset < len(message); {
+		relativeStart := strings.Index(message[offset:], candidate)
+		if relativeStart < 0 {
+			break
+		}
+		start := offset + relativeStart
+		end := start + len(candidate)
+		if testNotesBoundaryAt(message, start, end) {
+			message = message[:start] + replacement + message[end:]
+			offset = start + len(replacement)
+			continue
+		}
+		offset = end
+	}
+	return message
+}
+
+func testNotesBoundaryAt(message string, start, end int) bool {
+	if start > 0 {
+		before, _ := utf8.DecodeLastRuneInString(message[:start])
+		if isTestNotesWordRune(before) {
+			return false
+		}
+	}
+	if end < len(message) {
+		after, _ := utf8.DecodeRuneInString(message[end:])
+		if isTestNotesWordRune(after) {
+			return false
+		}
+	}
+	return true
 }
 
 // Unwrap preserves API error status and exit classification.

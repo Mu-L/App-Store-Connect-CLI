@@ -59,12 +59,61 @@ func TestNewTestNotesRecoveryErrorSeparatesHumanAndMachineRecovery(t *testing.T)
 }
 
 func TestNewTestNotesRecoveryErrorDoesNotEchoNotesFromServerDetail(t *testing.T) {
-	notes := "First line\nSecond line"
+	notes := "First line\nSecond line\x1b[31m"
 	cause := errors.New("server rejected value: " + notes)
 
 	err := NewTestNotesRecoveryError("build-1", "en-US", notes, cause)
 	human := err.Error()
-	if strings.Contains(human, "First line") || strings.Contains(human, "Second line") {
+	if !strings.Contains(human, "server rejected value: (original notes omitted)") {
+		t.Fatalf("human recovery error lost the non-sensitive server diagnostic: %q", human)
+	}
+	if strings.Contains(human, "First line") || strings.Contains(human, "Second line") || strings.Contains(human, "[31m") {
 		t.Fatalf("human recovery error must not echo submitted notes from server detail: %q", human)
+	}
+}
+
+func TestNewTestNotesRecoveryErrorRedactsExactEchoesWithoutCorruptingDiagnostics(t *testing.T) {
+	tests := []struct {
+		name   string
+		notes  string
+		cause  string
+		redact bool
+	}{
+		{
+			name:   "short exact echo",
+			notes:  "invalid",
+			cause:  "invalid",
+			redact: true,
+		},
+		{
+			name:   "short quoted echo",
+			notes:  "invalid",
+			cause:  `value "invalid" is not accepted`,
+			redact: true,
+		},
+		{
+			name:  "short diagnostic word",
+			notes: "invalid",
+			cause: "invalid attribute",
+		},
+		{
+			name:  "single-letter substring collision",
+			notes: "a",
+			cause: "request failed while validating an attribute",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := NewTestNotesRecoveryError("build-1", "en-US", tt.notes, errors.New(tt.cause))
+			human := err.Error()
+			gotRedaction := strings.Contains(human, "(original notes omitted)")
+			if gotRedaction != tt.redact {
+				t.Fatalf("redaction = %t, want %t: %q", gotRedaction, tt.redact, human)
+			}
+			if !tt.redact && !strings.Contains(human, tt.cause) {
+				t.Fatalf("normal diagnostic was rewritten: %q", human)
+			}
+		})
 	}
 }
