@@ -207,7 +207,9 @@ func resolvedProjectDir(projectDir string) string {
 		return "."
 	}
 	if strings.HasSuffix(projectDir, ".xcodeproj") {
-		projectDir = resolveExistingProjectPath(projectDir)
+		if resolved, err := resolveProjectParentTraversal(projectDir); err == nil {
+			projectDir = resolved
+		}
 		return filepath.Dir(projectDir)
 	}
 	return projectDir
@@ -740,9 +742,18 @@ func findXcodeproj(projectDir string) (string, error) {
 		if !info.IsDir() {
 			return "", fmt.Errorf("%s is not an .xcodeproj directory", projectDir)
 		}
-		return resolveExistingProjectPath(projectDir), nil
+		resolved, err := resolveProjectParentTraversal(projectDir)
+		if err != nil {
+			return "", fmt.Errorf("resolve Xcode project path %s: %w", projectDir, err)
+		}
+		return resolved, nil
 	}
 
+	resolvedProjectDir, err := resolveProjectParentTraversal(projectDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve Xcode project directory %s: %w", projectDir, err)
+	}
+	projectDir = resolvedProjectDir
 	entries, err := os.ReadDir(projectDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to read project directory: %w", err)
@@ -757,28 +768,35 @@ func findXcodeproj(projectDir string) (string, error) {
 	case 0:
 		return "", fmt.Errorf("no .xcodeproj found in %s", projectDir)
 	case 1:
-		return resolveExistingProjectPath(filepath.Join(projectDir, matches[0])), nil
+		return filepath.Join(projectDir, matches[0]), nil
 	default:
 		return "", fmt.Errorf("multiple .xcodeproj found in %s (%s); use --project to pick one", projectDir, strings.Join(matches, ", "))
 	}
 }
 
-func resolveExistingProjectPath(path string) string {
-	containsParentTraversal := false
-	for _, component := range strings.Split(filepath.ToSlash(path), "/") {
+func resolveProjectParentTraversal(path string) (string, error) {
+	slashPath := filepath.ToSlash(path)
+	components := strings.Split(slashPath, "/")
+	lastParent := -1
+	for index, component := range components {
 		if component == ".." {
-			containsParentTraversal = true
-			break
+			lastParent = index
 		}
 	}
-	if !containsParentTraversal {
-		return path
+	if lastParent == -1 {
+		return path, nil
 	}
-	resolved, err := filepath.EvalSymlinks(path)
+
+	prefix := filepath.FromSlash(strings.Join(components[:lastParent+1], "/"))
+	resolvedPrefix, err := filepath.EvalSymlinks(prefix)
 	if err != nil {
-		return path
+		return "", err
 	}
-	return resolved
+	suffix := filepath.FromSlash(strings.Join(components[lastParent+1:], "/"))
+	if suffix == "" {
+		return resolvedPrefix, nil
+	}
+	return filepath.Join(resolvedPrefix, suffix), nil
 }
 
 func trimTrailingPathSeparators(path string) string {
