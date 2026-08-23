@@ -118,15 +118,12 @@ func publicRetryDelayFromSeconds(seconds int64, maxDelay time.Duration) time.Dur
 	if seconds <= 0 {
 		return 0
 	}
-	if maxDelay > 0 && seconds > int64(maxDelay/time.Second) {
-		return maxDelay
-	}
 
 	const maxDuration = time.Duration(1<<63 - 1)
 	if seconds > int64(maxDuration/time.Second) {
-		return maxDuration
+		return capPublicRetryDelay(maxDuration, maxDelay)
 	}
-	return time.Duration(seconds) * time.Second
+	return capPublicRetryDelay(time.Duration(seconds)*time.Second, maxDelay)
 }
 
 func capPublicRetryDelay(delay, maxDelay time.Duration) time.Duration {
