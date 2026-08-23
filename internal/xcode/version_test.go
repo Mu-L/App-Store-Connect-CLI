@@ -254,6 +254,31 @@ func TestFindXcodeprojAcceptsExplicitProjectPath(t *testing.T) {
 	}
 }
 
+func TestFindXcodeprojAcceptsExplicitProjectPathWithTrailingSeparator(t *testing.T) {
+	tempDir := t.TempDir()
+	projectPath := filepath.Join(tempDir, "App.xcodeproj")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	got, err := findXcodeproj(projectPath + string(os.PathSeparator))
+	if err != nil {
+		t.Fatalf("expected trailing separator project path to succeed, got %v", err)
+	}
+	if got != projectPath {
+		t.Fatalf("findXcodeproj() = %q, want %q", got, projectPath)
+	}
+}
+
+func TestResolvedProjectDirNormalizesExplicitProjectPathWithTrailingSeparator(t *testing.T) {
+	projectPath := filepath.Join(t.TempDir(), "App.xcodeproj")
+	got := resolvedProjectDir(projectPath + string(os.PathSeparator))
+	want := filepath.Dir(projectPath)
+	if got != want {
+		t.Fatalf("resolvedProjectDir() = %q, want %q", got, want)
+	}
+}
+
 func TestFindXcodeprojDoesNotRetargetTrailingWhitespaceProjectPath(t *testing.T) {
 	tempDir := t.TempDir()
 	exactProject := filepath.Join(tempDir, "Foo.xcodeproj")

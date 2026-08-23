@@ -202,6 +202,7 @@ type BumpVersionResult struct {
 }
 
 func resolvedProjectDir(projectDir string) string {
+	projectDir = filepath.Clean(projectDir)
 	if projectDir == "" {
 		return "."
 	}
@@ -729,6 +730,7 @@ func findXcodeproj(projectDir string) (string, error) {
 	if projectDir == "" {
 		projectDir = "."
 	}
+	projectDir = filepath.Clean(projectDir)
 	if strings.HasSuffix(projectDir, ".xcodeproj") {
 		info, err := os.Stat(projectDir)
 		if err != nil {
