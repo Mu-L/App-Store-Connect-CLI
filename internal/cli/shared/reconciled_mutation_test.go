@@ -134,6 +134,18 @@ func TestRunReconciledMutationNoReplayDoesNotReadRateLimitRejection(t *testing.T
 	}
 }
 
+func TestMutationReadbackDelayCapsRetryAfter(t *testing.T) {
+	opts := asc.RetryOptions{BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}
+	err := &asc.RetryableError{
+		RetryAfter: time.Hour,
+		Err:        &asc.APIError{StatusCode: http.StatusBadGateway},
+	}
+
+	if got := mutationReadbackDelay(opts, 0, err); got != opts.MaxDelay {
+		t.Fatalf("mutationReadbackDelay() = %s, want %s", got, opts.MaxDelay)
+	}
+}
+
 func TestRunReconciledMutationDoesNotRetryRateLimitRejection(t *testing.T) {
 	t.Setenv("ASC_MAX_RETRIES", "1")
 	t.Setenv("ASC_BASE_DELAY", "1ms")

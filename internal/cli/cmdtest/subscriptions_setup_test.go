@@ -1896,15 +1896,20 @@ func TestSubscriptionsSetupReportsVerificationFailureAfterReconciledPricePatch(t
 	runSubscriptionsSetupPriceFailureCase(t, subscriptionsSetupPriceFailureVerification)
 }
 
+func TestSubscriptionsSetupDoesNotInferForcedRepairFromUnchangedMatrix(t *testing.T) {
+	runSubscriptionsSetupPriceFailureCase(t, subscriptionsSetupPriceFailureForcedRepairUnchanged)
+}
+
 type subscriptionsSetupPriceFailureMode string
 
 const (
-	subscriptionsSetupPriceFailureAppliedEOF        subscriptionsSetupPriceFailureMode = "applied-eof"
-	subscriptionsSetupPriceFailureAppliedDelayedEOF subscriptionsSetupPriceFailureMode = "applied-delayed-eof"
-	subscriptionsSetupPriceFailureApplied5xx        subscriptionsSetupPriceFailureMode = "applied-5xx"
-	subscriptionsSetupPriceFailureUnappliedEOF      subscriptionsSetupPriceFailureMode = "unapplied-eof"
-	subscriptionsSetupPriceFailureDeterministic     subscriptionsSetupPriceFailureMode = "deterministic"
-	subscriptionsSetupPriceFailureVerification      subscriptionsSetupPriceFailureMode = "verification"
+	subscriptionsSetupPriceFailureAppliedEOF            subscriptionsSetupPriceFailureMode = "applied-eof"
+	subscriptionsSetupPriceFailureAppliedDelayedEOF     subscriptionsSetupPriceFailureMode = "applied-delayed-eof"
+	subscriptionsSetupPriceFailureApplied5xx            subscriptionsSetupPriceFailureMode = "applied-5xx"
+	subscriptionsSetupPriceFailureUnappliedEOF          subscriptionsSetupPriceFailureMode = "unapplied-eof"
+	subscriptionsSetupPriceFailureDeterministic         subscriptionsSetupPriceFailureMode = "deterministic"
+	subscriptionsSetupPriceFailureVerification          subscriptionsSetupPriceFailureMode = "verification"
+	subscriptionsSetupPriceFailureForcedRepairUnchanged subscriptionsSetupPriceFailureMode = "forced-repair-unchanged"
 )
 
 func runSubscriptionsSetupPriceFailureCase(t *testing.T, mode subscriptionsSetupPriceFailureMode) {
@@ -1938,6 +1943,10 @@ func runSubscriptionsSetupPriceFailureCase(t *testing.T, mode subscriptionsSetup
 			respond(http.StatusOK, `{"data":[{"type":"territories","id":"USA"}],"links":{"next":""}}`)
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/subscriptions/sub-1/prices" && req.URL.Query().Get("filter[planType]") == "UPFRONT":
 			matrixReads++
+			if mode == subscriptionsSetupPriceFailureForcedRepairUnchanged {
+				respond(http.StatusOK, `{"data":[{"type":"subscriptionPrices","id":"price-can","attributes":{"startDate":"2026-08-01","planType":"UPFRONT"},"relationships":{"subscriptionPricePoint":{"data":{"type":"subscriptionPricePoints","id":"pp-can"}},"territory":{"data":{"type":"territories","id":"CAN"}}}},{"type":"subscriptionPrices","id":"price-usa","attributes":{"startDate":"2026-08-01","planType":"UPFRONT"},"relationships":{"subscriptionPricePoint":{"data":{"type":"subscriptionPricePoints","id":"pp-usa"}},"territory":{"data":{"type":"territories","id":"USA"}}}}],"links":{"next":""}}`)
+				return
+			}
 			if applied && (mode != subscriptionsSetupPriceFailureAppliedDelayedEOF || matrixReads != 2) {
 				respond(http.StatusOK, `{"data":[{"type":"subscriptionPrices","id":"price-can","attributes":{"startDate":"2026-08-01","planType":"UPFRONT"},"relationships":{"subscriptionPricePoint":{"data":{"type":"subscriptionPricePoints","id":"pp-can"}},"territory":{"data":{"type":"territories","id":"CAN"}}}},{"type":"subscriptionPrices","id":"price-usa","attributes":{"startDate":"2026-08-01","planType":"UPFRONT"},"relationships":{"subscriptionPricePoint":{"data":{"type":"subscriptionPricePoints","id":"pp-usa"}},"territory":{"data":{"type":"territories","id":"USA"}}}}],"links":{"next":""}}`)
 				return
@@ -1966,7 +1975,7 @@ func runSubscriptionsSetupPriceFailureCase(t *testing.T, mode subscriptionsSetup
 				applied = true
 			}
 			switch mode {
-			case subscriptionsSetupPriceFailureAppliedEOF, subscriptionsSetupPriceFailureAppliedDelayedEOF, subscriptionsSetupPriceFailureUnappliedEOF, subscriptionsSetupPriceFailureVerification:
+			case subscriptionsSetupPriceFailureAppliedEOF, subscriptionsSetupPriceFailureAppliedDelayedEOF, subscriptionsSetupPriceFailureUnappliedEOF, subscriptionsSetupPriceFailureVerification, subscriptionsSetupPriceFailureForcedRepairUnchanged:
 				panic(http.ErrAbortHandler)
 			case subscriptionsSetupPriceFailureApplied5xx:
 				respond(http.StatusBadGateway, `{"errors":[{"status":"502","code":"SERVER_ERROR","title":"Bad Gateway","detail":"upstream unavailable"}]}`)
@@ -2024,6 +2033,9 @@ func runSubscriptionsSetupPriceFailureCase(t *testing.T, mode subscriptionsSetup
 	if !verify {
 		args = append(args, "--no-verify")
 	}
+	if mode == subscriptionsSetupPriceFailureForcedRepairUnchanged {
+		args = append(args, "--repair")
+	}
 
 	var runErr error
 	var result subscriptionsSetupOutput
@@ -2060,7 +2072,7 @@ func runSubscriptionsSetupPriceFailureCase(t *testing.T, mode subscriptionsSetup
 		if result.Verification.Status != "skipped" {
 			t.Fatalf("expected skipped verification, got %+v", result.Verification)
 		}
-	case subscriptionsSetupPriceFailureUnappliedEOF:
+	case subscriptionsSetupPriceFailureUnappliedEOF, subscriptionsSetupPriceFailureForcedRepairUnchanged:
 		if runErr == nil || result.Status != "error" || result.FailedStep != "set_price" {
 			t.Fatalf("expected unreconciled set_price failure, err=%v result=%+v", runErr, result)
 		}
@@ -2082,7 +2094,7 @@ func runSubscriptionsSetupPriceFailureCase(t *testing.T, mode subscriptionsSetup
 	}
 	wantMatrixReads := 1
 	switch mode {
-	case subscriptionsSetupPriceFailureAppliedDelayedEOF, subscriptionsSetupPriceFailureUnappliedEOF:
+	case subscriptionsSetupPriceFailureAppliedDelayedEOF, subscriptionsSetupPriceFailureUnappliedEOF, subscriptionsSetupPriceFailureForcedRepairUnchanged:
 		wantMatrixReads = 3
 	case subscriptionsSetupPriceFailureAppliedEOF, subscriptionsSetupPriceFailureApplied5xx, subscriptionsSetupPriceFailureVerification:
 		wantMatrixReads = 2

@@ -1400,7 +1400,8 @@ func ensureSubscriptionsSetupPriceMatrix(ctx context.Context, client *asc.Client
 	if err != nil {
 		return nil, false, err
 	}
-	if subscriptionSetupPriceMatrixMatches(state, matrix) && !repair {
+	preMutationMatched := subscriptionSetupPriceMatrixMatches(state, matrix)
+	if preMutationMatched && !repair {
 		return territories, false, nil
 	}
 	// The complete matrix PATCH may apply before a transport/5xx response is
@@ -1416,7 +1417,8 @@ func ensureSubscriptionsSetupPriceMatrix(ctx context.Context, client *asc.Client
 			if readbackErr != nil {
 				return struct{}{}, false, readbackErr
 			}
-			return struct{}{}, subscriptionSetupPriceMatrixMatches(readbackState, matrix), nil
+			matches := subscriptionSetupPriceMatrixMatches(readbackState, matrix)
+			return struct{}{}, matches && (!repair || !preMutationMatched), nil
 		},
 	)
 	if err != nil {

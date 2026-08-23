@@ -79,7 +79,7 @@ func runReconciledMutation[T any](
 			if retry >= retryOpts.MaxRetries {
 				return zero, "", mutationErr
 			}
-			if err := sleepForMutationRetry(ctx, mutationRetryDelay(retryOpts, retry, mutationErr)); err != nil {
+			if err := sleepForMutationRetry(ctx, mutationReadbackDelay(retryOpts, retry, mutationErr)); err != nil {
 				return zero, "", err
 			}
 
@@ -156,6 +156,14 @@ func mutationRetryDelay(opts asc.RetryOptions, retry int, err error) time.Durati
 		delay *= time.Duration(1 << retry)
 	}
 	if opts.MaxDelay > 0 && (delay > opts.MaxDelay || delay <= 0) {
+		return opts.MaxDelay
+	}
+	return delay
+}
+
+func mutationReadbackDelay(opts asc.RetryOptions, retry int, err error) time.Duration {
+	delay := mutationRetryDelay(opts, retry, err)
+	if opts.MaxDelay > 0 && delay > opts.MaxDelay {
 		return opts.MaxDelay
 	}
 	return delay
