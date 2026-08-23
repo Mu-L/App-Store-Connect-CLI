@@ -460,6 +460,9 @@ GitHub: https://github.com/bitomule/koubou
 Simulator UI automation for screenshot capture and interactions uses AXe CLI.
 GitHub: https://github.com/cameroncooke/AXe
 
+The keyword difficulty methodology used by `asc optimize keywords score` is adapted from semihcihan's App Store Optimization CLI (MIT licensed).
+GitHub: https://github.com/semihcihan/App-Store-Optimization-CLI
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.

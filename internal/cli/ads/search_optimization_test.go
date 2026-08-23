@@ -158,6 +158,49 @@ func TestFetchSearchOptimizationDataUsesOfficialEndpointsAndPreservesPartialFail
 	}
 }
 
+func TestFetchOptimizationPopularityDoesNotRequireAppScope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/insights/apps/search-term-popularity/query" {
+			t.Errorf("path = %q", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode popularity request: %v", err)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
+		}
+		if hasOptimizationFilter(body, "promotedObjectId") {
+			t.Errorf("popularity request unexpectedly contains app scope: %#v", body)
+		}
+		assertFilter(t, body, "countryOrRegion", "US")
+		assertFilter(t, body, "genre", "PRODUCTIVITY_UTILITIES")
+		writeJSON(t, w, `{"result":{"rows":[{"week":"2026-08-09","countryOrRegion":"US","genre":"PRODUCTIVITY_UTILITIES","searchTerm":"habit tracker","searchPopularity1to5":5}]},"pagination":{"offset":0,"pageSize":5000,"totalCount":1}}`)
+	}))
+	defer server.Close()
+
+	client, err := appleads.NewClient(
+		appleads.Credentials{AccessToken: "token", AdAccountID: "account-1"},
+		appleads.WithPlatformBaseURL(server.URL+"/v1/"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := fetchOptimizationPopularity(context.Background(), client, SearchOptimizationRequest{
+		Country:         "US",
+		Genre:           "PRODUCTIVITY_UTILITIES",
+		PopularityStart: "2026-08-09",
+		PopularityEnd:   "2026-08-15",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Term != "habit tracker" {
+		t.Fatalf("popularity rows = %+v", rows)
+	}
+}
+
 func TestQueryOptimizationListPaginatesRequestBody(t *testing.T) {
 	var offsets []int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
