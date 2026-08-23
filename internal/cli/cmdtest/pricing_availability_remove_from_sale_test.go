@@ -3,6 +3,7 @@ package cmdtest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -474,6 +475,7 @@ func TestPricingAvailabilityRemoveFromSaleFailsClosedWhenPlatformStateIsUnverifi
 
 func TestPricingAvailabilityRemoveFromSaleAllPlatformsAcknowledged(t *testing.T) {
 	setupAuth(t)
+	fixture := handlertest.New(t)
 	originalTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 
@@ -489,7 +491,7 @@ func TestPricingAvailabilityRemoveFromSaleAllPlatformsAcknowledged(t *testing.T)
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
 			mu.Lock()
 			defer mu.Unlock()
-			return territoryAvailabilityResponse(t, states), nil
+			return territoryAvailabilityResponse(fixture, states), nil
 		case req.Method == http.MethodPatch && req.URL.Path == "/v1/territoryAvailabilities/ta-usa":
 			patches.Add(1)
 			mu.Lock()
@@ -551,6 +553,7 @@ func TestPricingAvailabilityRemoveFromSaleAllPlatformsAcknowledged(t *testing.T)
 
 func TestPricingAvailabilityRemoveFromSaleAllPlatformsAcknowledgedReportsUnverifiedListings(t *testing.T) {
 	setupAuth(t)
+	fixture := handlertest.New(t)
 	originalTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 
@@ -562,7 +565,7 @@ func TestPricingAvailabilityRemoveFromSaleAllPlatformsAcknowledgedReportsUnverif
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/apps/app-1/appAvailabilityV2":
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"appAvailabilities","id":"availability-1","attributes":{"availableInNewTerritories":false}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v2/appAvailabilities/availability-1/territoryAvailabilities":
-			return territoryAvailabilityResponse(t, states), nil
+			return territoryAvailabilityResponse(fixture, states), nil
 		case req.Method == http.MethodPatch && req.URL.Path == "/v1/territoryAvailabilities/ta-usa":
 			states["USA"] = false
 			return jsonHTTPResponse(http.StatusOK, `{"data":{"type":"territoryAvailabilities","id":"ta-usa","attributes":{"available":false}}}`), nil
