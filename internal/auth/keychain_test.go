@@ -1881,10 +1881,14 @@ func TestStoreCredentials_CleansRawEntryWhenCanonicalKeyWasRelocated(t *testing.
 	keyDir := t.TempDir()
 	canonicalPath := filepath.Join(keyDir, "Original.p8")
 	relocatedPath := filepath.Join(keyDir, "Relocated.p8")
-	for _, path := range []string{canonicalPath, relocatedPath} {
-		if err := os.WriteFile(path, []byte("SAME PRIVATE KEY"), 0o600); err != nil {
-			t.Fatalf("write private key %q: %v", path, err)
-		}
+	writeECDSAPEM(t, canonicalPath, 0o600, true)
+	canonicalPEM, err := os.ReadFile(canonicalPath)
+	if err != nil {
+		t.Fatalf("read canonical private key: %v", err)
+	}
+	relocatedPEM := append(append([]byte(nil), canonicalPEM...), '\n')
+	if err := os.WriteFile(relocatedPath, relocatedPEM, 0o600); err != nil {
+		t.Fatalf("write relocated private key: %v", err)
 	}
 	storeCredentialInKeyring(t, newKr, "spaced", "KEY123", "ISS456", canonicalPath)
 	storeCredentialInKeyring(t, newKr, "  spaced  ", "OTHER", "OTHER-ISSUER", "/tmp/Other.p8")
@@ -1903,7 +1907,7 @@ func TestStoreCredentials_CleansRawEntryWhenCanonicalKeyWasRelocated(t *testing.
 	if err := json.Unmarshal(item.Data, &payload); err != nil {
 		t.Fatalf("decode normalized credential: %v", err)
 	}
-	if payload.PrivateKeyPath != relocatedPath || payload.PrivateKeyPEM != "SAME PRIVATE KEY" {
+	if payload.PrivateKeyPath != relocatedPath || payload.PrivateKeyPEM != string(relocatedPEM) {
 		t.Fatalf("normalized credential = %+v, want relocated key enrichment", payload)
 	}
 }

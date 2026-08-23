@@ -518,6 +518,11 @@ func credentialPayloadsMatch(first, second credentialPayload) bool {
 	firstPEM := credentialPrivateKeyForComparison(first)
 	secondPEM := credentialPrivateKeyForComparison(second)
 	if firstPEM != "" && secondPEM != "" {
+		firstKey, firstErr := LoadPrivateKeyFromPEM([]byte(firstPEM))
+		secondKey, secondErr := LoadPrivateKeyFromPEM([]byte(secondPEM))
+		if firstErr == nil && secondErr == nil {
+			return firstKey.Equal(secondKey)
+		}
 		return firstPEM == secondPEM
 	}
 	return first.PrivateKeyPath == second.PrivateKeyPath
