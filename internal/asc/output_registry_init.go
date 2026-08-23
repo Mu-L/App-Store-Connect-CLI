@@ -299,6 +299,10 @@ func registerAllOutputRenderers() {
 			ih, ir := assetUploadResultItemRows(v.Results)
 			render(ih, ir)
 		}
+		if len(v.Failures) > 0 {
+			fh, fr := assetUploadFailureItemRows(v.Failures)
+			render(fh, fr)
+		}
 		return nil
 	})
 	registerDirect(func(v *CustomProductPageScreenshotUploadResult, render func([]string, [][]string)) error {
