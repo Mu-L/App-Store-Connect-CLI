@@ -1817,6 +1817,7 @@ func TestStoreCredentials_ReplacesIncompletePreNormalizedEntry(t *testing.T) {
 		`{"key_id":"BROKEN"}`,
 		`{"key_id":"BROKEN","issuer_id":"ISSUER"}`,
 		`{"key_id":"BROKEN","private_key_path":"/tmp/Broken.p8"}`,
+		`{"key_id":"BROKEN","issuer_id":"ISSUER","private_key_path":"   "}`,
 		`{"key_id":"BROKEN","issuer_id":"ISSUER","private_key_path":"/tmp/Broken.p8","key_type":"unsupported"}`,
 	} {
 		t.Run(data, func(t *testing.T) {
@@ -1844,6 +1845,34 @@ func TestStoreCredentials_ReplacesIncompletePreNormalizedEntry(t *testing.T) {
 				t.Fatalf("normalized credential = %+v", payload)
 			}
 		})
+	}
+}
+
+func TestStoreCredentials_CleansRawEntryWhenCanonicalLacksPEMEnrichment(t *testing.T) {
+	newKr, _ := withSeparateKeyrings(t)
+	keyPath := filepath.Join(t.TempDir(), "AuthKey.p8")
+	if err := os.WriteFile(keyPath, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+	storeCredentialInKeyring(t, newKr, "spaced", "KEY123", "ISS456", keyPath)
+	storeCredentialInKeyring(t, newKr, "  spaced  ", "OTHER", "OTHER-ISSUER", "/tmp/Other.p8")
+
+	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", keyPath); err != nil {
+		t.Fatalf("StoreCredentials() error = %v", err)
+	}
+	if _, err := newKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("raw credential error = %v, want ErrKeyNotFound", err)
+	}
+	item, err := newKr.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("normalized credential error = %v", err)
+	}
+	var payload credentialPayload
+	if err := json.Unmarshal(item.Data, &payload); err != nil {
+		t.Fatalf("decode normalized credential: %v", err)
+	}
+	if payload.PrivateKeyPEM != "PRIVATE KEY" {
+		t.Fatalf("normalized credential PEM = %q, want enrichment", payload.PrivateKeyPEM)
 	}
 }
 

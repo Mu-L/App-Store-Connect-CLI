@@ -468,7 +468,9 @@ func rejectNormalizedCredentialCollision(originalName, normalizedName string, in
 		}
 	}
 
-	if canonicalFound && originalFound && canonical != original && canonical != incoming {
+	if canonicalFound && originalFound &&
+		!credentialPayloadsMatch(canonical, original) &&
+		!credentialPayloadsMatch(canonical, incoming) {
 		return fmt.Errorf(
 			"credential profile name %q conflicts with existing normalized profile %q; remove one before retrying",
 			originalName,
@@ -503,7 +505,22 @@ func completeCredentialPayload(payload credentialPayload) bool {
 	if !config.IsIndividualCredentialKeyType(payload.KeyType) && strings.TrimSpace(payload.IssuerID) == "" {
 		return false
 	}
-	return payload.PrivateKeyPath != "" || strings.TrimSpace(payload.PrivateKeyPEM) != ""
+	return strings.TrimSpace(payload.PrivateKeyPath) != "" || strings.TrimSpace(payload.PrivateKeyPEM) != ""
+}
+
+func credentialPayloadsMatch(first, second credentialPayload) bool {
+	if first.KeyID != second.KeyID ||
+		first.IssuerID != second.IssuerID ||
+		config.NormalizeCredentialKeyType(first.KeyType) != config.NormalizeCredentialKeyType(second.KeyType) {
+		return false
+	}
+
+	firstPEM := strings.TrimSpace(first.PrivateKeyPEM)
+	secondPEM := strings.TrimSpace(second.PrivateKeyPEM)
+	if firstPEM != "" && secondPEM != "" {
+		return first.PrivateKeyPEM == second.PrivateKeyPEM
+	}
+	return first.PrivateKeyPath == second.PrivateKeyPath
 }
 
 func loadPrivateKeyPEMForStorage(path string) (string, error) {
