@@ -283,18 +283,32 @@ func TestBuildsListRejectsQueryFlagsCombinedWithNext(t *testing.T) {
 		{name: "beta review state", flag: "--beta-review-state", args: []string{"--beta-review-state", "APPROVED"}},
 		{name: "include", flag: "--include", args: []string{"--include", "betaGroups"}},
 		{name: "sort", flag: "--sort", args: []string{"--sort", "version"}},
+		{name: "platform", flag: "--platform", args: []string{"--platform", "IOS"}},
+		{name: "processing state", flag: "--processing-state", args: []string{"--processing-state", "VALID"}},
+		{name: "version", flag: "--version", args: []string{"--version", "1.2.3"}},
+		{name: "build number", flag: "--build-number", args: []string{"--build-number", "77"}},
+		{name: "limit", flag: "--limit", args: []string{"--limit", "10"}},
+		{name: "exclude expired", flag: "--exclude-expired", args: []string{"--exclude-expired"}},
+		{name: "not expired alias", flag: "--not-expired", args: []string{"--not-expired"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			captured := buildsListQuerySurfaceStub(t)
 
 			args := append([]string{"builds", "list", "--next", nextURL}, testCase.args...)
-			_, stderr, err := runBuildsListQuerySurface(t, args...)
+			stdout, stderr, err := runBuildsListQuerySurface(t, args...)
 
 			if got := rootcmd.ExitCodeFromError(err); got != rootcmd.ExitUsage {
 				t.Fatalf("exit code = %d, want %d (err=%v)", got, rootcmd.ExitUsage, err)
 			}
-			if !strings.Contains(stderr, "--next cannot be combined with "+testCase.flag) {
-				t.Fatalf("expected stderr to reject %s with --next, got %q", testCase.flag, stderr)
+			wantError := "builds list: --next cannot be combined with " + testCase.flag
+			if err == nil || !errors.Is(err, flag.ErrHelp) || err.Error() != wantError {
+				t.Fatalf("error = %v, want usage error %q", err, wantError)
+			}
+			if stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", stdout)
+			}
+			if firstLine := strings.SplitN(stderr, "\n", 2)[0]; firstLine != "Error: "+wantError {
+				t.Fatalf("expected concise first stderr line %q, got %q", "Error: "+wantError, firstLine)
 			}
 			captured.assertNoRequest(t)
 		})

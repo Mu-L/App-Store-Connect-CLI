@@ -627,6 +627,27 @@ Examples:
 				if strings.TrimSpace(*sort) != "" {
 					return shared.UsageError("builds list: --next cannot be combined with --sort")
 				}
+				if platformValue != "" {
+					return shared.UsageError("builds list: --next cannot be combined with --platform")
+				}
+				if len(processingStateValues) > 0 {
+					return shared.UsageError("builds list: --next cannot be combined with --processing-state")
+				}
+				if versionValue != "" {
+					return shared.UsageError("builds list: --next cannot be combined with --version")
+				}
+				if buildNumberValue != "" {
+					return shared.UsageError("builds list: --next cannot be combined with --build-number")
+				}
+				if *limit != 0 {
+					return shared.UsageError("builds list: --next cannot be combined with --limit")
+				}
+				if *excludeExpired {
+					return shared.UsageError("builds list: --next cannot be combined with --exclude-expired")
+				}
+				if *notExpired {
+					return shared.UsageError("builds list: --next cannot be combined with --not-expired")
+				}
 			}
 
 			betaReviewStateValues, err := normalizeBuildsListBetaReviewStates(*betaReviewState)
