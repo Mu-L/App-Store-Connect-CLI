@@ -434,44 +434,51 @@ func rejectNormalizedCredentialCollision(originalName, normalizedName string, in
 		}
 		return err
 	}
-	keyrings := []keyring.Keyring{current}
 	legacy, err := legacyKeyringOpener()
-	if err == nil {
-		keyrings = append(keyrings, legacy)
-	} else if !isKeyringUnavailable(err) {
+	if err != nil && !isKeyringUnavailable(err) {
 		return err
 	}
 
-	var canonicalPayloads []credentialPayload
-	var originalPayloads []credentialPayload
-	for _, kr := range keyrings {
-		if payload, found, err := credentialPayloadFromKeyring(kr, normalizedName); err != nil {
-			return err
-		} else if found {
-			canonicalPayloads = append(canonicalPayloads, payload)
+	canonical, canonicalFound, err := credentialPayloadForCollision(current, normalizedName)
+	if err != nil {
+		if isKeyringUnavailable(err) {
+			return nil
 		}
-		if payload, found, err := credentialPayloadFromKeyring(kr, originalName); err != nil {
-			return err
-		} else if found {
-			originalPayloads = append(originalPayloads, payload)
+		return err
+	}
+	original, originalFound, err := credentialPayloadForCollision(current, originalName)
+	if err != nil {
+		if isKeyringUnavailable(err) {
+			return nil
+		}
+		return err
+	}
+	if err == nil && legacy != nil {
+		if !canonicalFound {
+			canonical, canonicalFound, err = credentialPayloadForCollision(legacy, normalizedName)
+			if err != nil && !isKeyringUnavailable(err) {
+				return err
+			}
+		}
+		if !originalFound {
+			original, originalFound, err = credentialPayloadForCollision(legacy, originalName)
+			if err != nil && !isKeyringUnavailable(err) {
+				return err
+			}
 		}
 	}
 
-	for _, canonical := range canonicalPayloads {
-		for _, original := range originalPayloads {
-			if canonical != original && canonical != incoming {
-				return fmt.Errorf(
-					"credential profile name %q conflicts with existing normalized profile %q; remove one before retrying",
-					originalName,
-					normalizedName,
-				)
-			}
-		}
+	if canonicalFound && originalFound && canonical != original && canonical != incoming {
+		return fmt.Errorf(
+			"credential profile name %q conflicts with existing normalized profile %q; remove one before retrying",
+			originalName,
+			normalizedName,
+		)
 	}
 	return nil
 }
 
-func credentialPayloadFromKeyring(kr keyring.Keyring, name string) (credentialPayload, bool, error) {
+func credentialPayloadForCollision(kr keyring.Keyring, name string) (credentialPayload, bool, error) {
 	item, err := kr.Get(keyringKey(name))
 	if errors.Is(err, keyring.ErrKeyNotFound) {
 		return credentialPayload{}, false, nil
@@ -481,7 +488,7 @@ func credentialPayloadFromKeyring(kr keyring.Keyring, name string) (credentialPa
 	}
 	var payload credentialPayload
 	if err := json.Unmarshal(item.Data, &payload); err != nil {
-		return credentialPayload{}, false, fmt.Errorf("invalid keychain entry %q: %w", item.Key, err)
+		return credentialPayload{}, false, nil
 	}
 	return payload, true, nil
 }

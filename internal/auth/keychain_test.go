@@ -1715,6 +1715,73 @@ func TestStoreCredentials_RetryCompletesPartialLegacyCleanup(t *testing.T) {
 	}
 }
 
+func TestStoreCredentials_NormalizedCollisionUsesCurrentKeyringPrecedence(t *testing.T) {
+	newKr, legacyKr := withSeparateKeyrings(t)
+	storeCredentialInKeyring(t, newKr, "spaced", "KEY123", "ISS456", "/tmp/AuthKey.p8")
+	storeCredentialInKeyring(t, newKr, "  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8")
+	storeCredentialInKeyring(t, legacyKr, "spaced", "STALE", "STALE-ISSUER", "/tmp/Stale.p8")
+
+	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8"); err != nil {
+		t.Fatalf("StoreCredentials() error = %v", err)
+	}
+	if _, err := newKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("raw current credential error = %v, want ErrKeyNotFound", err)
+	}
+}
+
+func TestStoreCredentials_NormalizedPreflightPreservesUnavailableKeyringFallback(t *testing.T) {
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "0")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
+	previousCurrent := keyringOpener
+	previousLegacy := legacyKeyringOpener
+	keyringOpener = func() (keyring.Keyring, error) {
+		return failingKeyring{err: keyring.ErrNoAvailImpl}, nil
+	}
+	legacyKeyringOpener = func() (keyring.Keyring, error) {
+		return nil, keyring.ErrNoAvailImpl
+	}
+	t.Cleanup(func() {
+		keyringOpener = previousCurrent
+		legacyKeyringOpener = previousLegacy
+	})
+
+	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8"); err != nil {
+		t.Fatalf("StoreCredentials() error = %v", err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	if len(cfg.Keys) != 1 || cfg.Keys[0].Name != "spaced" || cfg.Keys[0].KeyID != "KEY123" {
+		t.Fatalf("fallback credentials = %+v", cfg.Keys)
+	}
+}
+
+func TestStoreCredentials_ReplacesMalformedPreNormalizedEntry(t *testing.T) {
+	newKr, _ := withSeparateKeyrings(t)
+	if err := newKr.Set(keyring.Item{Key: keyringKey("  spaced  "), Data: []byte("not-json")}); err != nil {
+		t.Fatalf("seed malformed keyring entry: %v", err)
+	}
+
+	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8"); err != nil {
+		t.Fatalf("StoreCredentials() error = %v", err)
+	}
+	if _, err := newKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("malformed raw credential error = %v, want ErrKeyNotFound", err)
+	}
+	item, err := newKr.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("normalized credential error = %v", err)
+	}
+	var payload credentialPayload
+	if err := json.Unmarshal(item.Data, &payload); err != nil {
+		t.Fatalf("decode normalized credential: %v", err)
+	}
+	if payload.KeyID != "KEY123" {
+		t.Fatalf("normalized credential = %+v", payload)
+	}
+}
+
 func TestStoreCredentials_RejectsWhitespaceOnlyProfileName(t *testing.T) {
 	newKr, _ := withSeparateKeyrings(t)
 
