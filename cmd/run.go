@@ -78,7 +78,7 @@ func Run(args []string, versionInfo string) int {
 		} else if strings.HasPrefix(badFlagSyntax, "bad flag syntax:") {
 			fmt.Fprintf(os.Stderr, "Error: %s\nFor help:\n  asc --help\n", shared.SanitizeTerminal(badFlagSyntax))
 		} else {
-			printParseFailure(parseErr, parseOutput.String(), analysis, getCommandName(root, args))
+			printParseFailure(parseErr, parseOutput.String(), analysis, parseFailureHelpCommand(root, args, parseOutput.String()))
 		}
 		// Every non-help error returned by command-tree parsing is invalid usage,
 		// including NoExecError cases that do not write flag output.
@@ -432,6 +432,40 @@ func printParseFailure(parseErr error, parseOutput string, analysis invocationAn
 	if parseOutput != "" {
 		fmt.Fprint(os.Stderr, parseOutput)
 	}
+}
+
+func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput string) string {
+	flagName := parseFailureFlagName(parseOutput)
+	for index := 0; flagName != "" && index < len(args); {
+		token := args[index]
+		if findDirectSubcommand(root, token) != nil {
+			break
+		}
+		trimmed := strings.TrimLeft(token, "-")
+		name, _ := splitFlagToken(trimmed)
+		if name == flagName && root.FlagSet.Lookup(name) != nil {
+			return root.Name
+		}
+		next, consumed := consumeFlagToken(root.FlagSet, token, args, index)
+		if !consumed {
+			break
+		}
+		index = next
+	}
+	return getCommandName(root, args)
+}
+
+func parseFailureFlagName(parseOutput string) string {
+	firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
+	for _, marker := range []string{" for flag -", " for -", "argument: -"} {
+		_, remainder, found := strings.Cut(firstLine, marker)
+		if !found {
+			continue
+		}
+		name, _, _ := strings.Cut(remainder, ":")
+		return strings.TrimSpace(name)
+	}
+	return ""
 }
 
 func isUnknownFlagParseFailure(parseErr error, parseOutput string) bool {
