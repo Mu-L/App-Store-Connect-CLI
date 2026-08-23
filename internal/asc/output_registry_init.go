@@ -130,6 +130,15 @@ func registerAllOutputRenderers() {
 	registerRowsWithSingleResourceAdapter(promotedPurchasesRows)
 	registerRowsErr(subscriptionPricesRows)
 	registerRows(subscriptionPriceRows)
+	registerDirect(func(v *SubscriptionPricingDeriveResult, render func([]string, [][]string)) error {
+		h, r := subscriptionPricingDeriveSummaryRows(v)
+		render(h, r)
+		if len(v.Rows) > 0 {
+			rh, rr := subscriptionPricingDeriveRowRows(v)
+			render(rh, rr)
+		}
+		return nil
+	})
 	registerRows(subscriptionAvailabilityRows)
 	registerRowsWithSingleResourceAdapter(subscriptionPlanAvailabilitiesRows)
 	registerRows(subscriptionGracePeriodRows)
