@@ -185,6 +185,26 @@ func TestRunRepeatedCustomFlagReasonDoesNotReplaceParserSuffix(t *testing.T) {
 	}
 }
 
+func TestRunRepeatedFlagValuePointsToFailingLeaf(t *testing.T) {
+	resetReportFlags(t)
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{
+			"reviews", "--stars", "1", "list", "--stars", "2", "--stars", "1",
+		}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "asc reviews list --help") {
+		t.Fatalf("stderr = %q, want reviews list help guidance", stderr)
+	}
+	if strings.Contains(stderr, "\n  asc reviews --help") {
+		t.Fatalf("stderr = %q, earlier equal value must not replace the failing leaf owner", stderr)
+	}
+}
+
 func TestRunParseFailurePreservesJSONAndJUnitContracts(t *testing.T) {
 	resetReportFlags(t)
 	stdout, stderr := captureCommandOutput(t, func() {

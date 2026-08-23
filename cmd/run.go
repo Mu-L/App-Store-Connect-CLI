@@ -46,7 +46,7 @@ func Run(args []string, versionInfo string) int {
 	runCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stopSignals()
 
-	parseOutput := &bytes.Buffer{}
+	parseOutput := &parseOutputBuffer{}
 	restoreFlagOutputs := prepareFlagParsing(root, args, parseOutput)
 	parseErr := root.Parse(args)
 	restoreFlagOutputs()
@@ -78,7 +78,7 @@ func Run(args []string, versionInfo string) int {
 		} else if strings.HasPrefix(badFlagSyntax, "bad flag syntax:") {
 			fmt.Fprintf(os.Stderr, "Error: %s\nFor help:\n  asc --help\n", shared.SanitizeTerminal(badFlagSyntax))
 		} else {
-			printParseFailure(parseErr, parseOutput.String(), analysis, parseFailureHelpCommand(root, args, parseOutput.String()))
+			printParseFailure(parseErr, parseOutput.String(), analysis, parseFailureHelpCommand(root, args, parseOutput.String(), parseOutput.owner))
 		}
 		// Every non-help error returned by command-tree parsing is invalid usage,
 		// including NoExecError cases that do not write flag output.
@@ -434,7 +434,10 @@ func printParseFailure(parseErr error, parseOutput string, analysis invocationAn
 	}
 }
 
-func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput string) string {
+func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput, parseOwner string) string {
+	if parseOwner != "" {
+		return parseOwner
+	}
 	flagName := parseFailureFlagName(parseOutput)
 	invalidValue, hasInvalidValue := parseFailureInvalidValue(parseOutput)
 	firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
@@ -572,12 +575,30 @@ func emitImmediateTelemetry(
 	emitTelemetry(getCommandName(root, args), versionInfo, 0, ExitUsage, eventContext)
 }
 
-func prepareFlagParsing(command *ffcli.Command, args []string, output *bytes.Buffer) func() {
+type parseOutputBuffer struct {
+	bytes.Buffer
+	owner string
+}
+
+type scopedParseWriter struct {
+	output *parseOutputBuffer
+	owner  string
+}
+
+func (w scopedParseWriter) Write(data []byte) (int, error) {
+	if len(data) > 0 {
+		w.output.owner = w.owner
+	}
+	return w.output.Write(data)
+}
+
+func prepareFlagParsing(command *ffcli.Command, args []string, output *parseOutputBuffer) func() {
 	type preparedFlagSet struct {
 		flagSet *flag.FlagSet
 		output  io.Writer
 	}
 	prepared := []preparedFlagSet{}
+	path := []string{command.Name}
 
 	for command != nil {
 		if command.FlagSet == nil {
@@ -588,7 +609,7 @@ func prepareFlagParsing(command *ffcli.Command, args []string, output *bytes.Buf
 			output:  command.FlagSet.Output(),
 		})
 		command.FlagSet.Init(command.FlagSet.Name(), flag.ContinueOnError)
-		command.FlagSet.SetOutput(output)
+		command.FlagSet.SetOutput(scopedParseWriter{output: output, owner: strings.Join(path, " ")})
 
 		var next *ffcli.Command
 		var remaining []string
@@ -600,6 +621,7 @@ func prepareFlagParsing(command *ffcli.Command, args []string, output *bytes.Buf
 			}
 			if sub := findDirectSubcommand(command, token); sub != nil {
 				next = sub
+				path = append(path, sub.Name)
 				remaining = args[i+1:]
 				break
 			}
