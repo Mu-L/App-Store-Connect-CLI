@@ -1593,6 +1593,7 @@ func TestStoreCredentialsFallbackToConfig(t *testing.T) {
 
 func TestStoreCredentials_TrimsKeychainProfileNameBeforeSelectingDefault(t *testing.T) {
 	newKr, _ := withSeparateKeyrings(t)
+	storeCredentialInKeyring(t, newKr, "  spaced  ", "OLDKEY", "OLDISSUER", "/tmp/OldAuthKey.p8")
 
 	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8"); err != nil {
 		t.Fatalf("StoreCredentials() error: %v", err)
@@ -1621,6 +1622,22 @@ func TestStoreCredentials_TrimsKeychainProfileNameBeforeSelectingDefault(t *test
 		if strings.Contains(item, "  spaced  ") {
 			t.Fatalf("expected keychain profile key to use trimmed name, got %q", item)
 		}
+	}
+}
+
+func TestStoreCredentials_RejectsWhitespaceOnlyProfileName(t *testing.T) {
+	newKr, _ := withSeparateKeyrings(t)
+
+	err := StoreCredentials("   ", "KEY123", "ISS456", "/tmp/AuthKey.p8")
+	if err == nil || err.Error() != "credential name is required" {
+		t.Fatalf("StoreCredentials() error = %v, want credential name is required", err)
+	}
+	items, keysErr := newKr.Keys()
+	if keysErr != nil {
+		t.Fatalf("keychain Keys() error: %v", keysErr)
+	}
+	if len(items) != 0 {
+		t.Fatalf("keychain items = %q, want none", items)
 	}
 }
 

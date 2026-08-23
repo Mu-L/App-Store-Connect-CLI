@@ -381,7 +381,11 @@ func StoreCredentials(name, keyID, issuerID, keyPath string) error {
 
 // StoreCredentialsWithKeyType stores credentials with an explicit App Store Connect key type.
 func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string) error {
+	originalName := name
 	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("credential name is required")
+	}
 	payload := credentialPayload{
 		KeyID:          keyID,
 		IssuerID:       issuerID,
@@ -393,6 +397,11 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	}
 
 	if err := storeInKeychain(name, payload); err == nil {
+		if originalName != name {
+			if err := removeFromKeychain(originalName); err != nil && !errors.Is(err, keyring.ErrKeyNotFound) {
+				return fmt.Errorf("remove pre-normalized keychain credential %q: %w", originalName, err)
+			}
+		}
 		// Successfully stored in keychain - remove matching config entry for security
 		if err := removeFromConfigIfPresent(name); err != nil && !errors.Is(err, config.ErrNotFound) {
 			// Log but don't fail - keychain is the authoritative storage
