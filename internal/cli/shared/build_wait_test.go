@@ -44,6 +44,36 @@ func newBuildWaitTestClient(t *testing.T, transport buildWaitRoundTripFunc) *asc
 	return client
 }
 
+func newBuildWaitServerTestClient(t *testing.T, server *httptest.Server) *asc.Client {
+	t.Helper()
+
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("url.Parse() error: %v", err)
+	}
+
+	httpClient := server.Client()
+	serverTransport := httpClient.Transport
+	httpClient.Transport = buildWaitRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		routedReq := req.Clone(req.Context())
+		routedURL := *req.URL
+		routedURL.Scheme = serverURL.Scheme
+		routedURL.Host = serverURL.Host
+		routedReq.URL = &routedURL
+		routedReq.Host = serverURL.Host
+		return serverTransport.RoundTrip(routedReq)
+	})
+
+	keyPath := filepath.Join(t.TempDir(), "key.p8")
+	writeECDSAPEM(t, keyPath)
+
+	client, err := asc.NewClientWithHTTPClient("KEY123", "ISS456", keyPath, httpClient)
+	if err != nil {
+		t.Fatalf("NewClientWithHTTPClient() error: %v", err)
+	}
+	return client
+}
+
 func buildWaitJSONResponse(body string) (*http.Response, error) {
 	return buildWaitJSONStatusResponse(http.StatusOK, body)
 }
@@ -776,6 +806,216 @@ func TestWaitForBuildByNumberOrUploadFailureFailsAfterConsecutiveTransientLimit(
 	}
 	if preReleaseCalls != asc.DefaultMaxConsecutivePollFailures+1 {
 		t.Fatalf("expected %d lookups, got %d", asc.DefaultMaxConsecutivePollFailures+1, preReleaseCalls)
+	}
+}
+
+func TestWaitForBuildByNumberOrUploadFailureMatchesEquivalentVersionFormat(t *testing.T) {
+	resetEquivalentVersionNotes()
+
+	var versionFilters []string
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			return nil, fmt.Errorf("expected GET, got %s", req.Method)
+		}
+
+		switch req.URL.Path {
+		case "/v1/preReleaseVersions":
+			requested := req.URL.Query().Get("filter[version]")
+			versionFilters = append(versionFilters, requested)
+			if requested != "1.2" {
+				return buildWaitJSONResponse(`{"data": [], "links": {}}`)
+			}
+			return buildWaitJSONResponse(`{
+				"data": [
+					{
+						"type": "preReleaseVersions",
+						"id": "prv-1",
+						"attributes": {
+							"version": "1.2",
+							"platform": "IOS"
+						}
+					}
+				],
+				"links": {}
+			}`)
+		case "/v1/builds":
+			return buildWaitJSONResponse(`{
+				"data": [
+					{
+						"type": "builds",
+						"id": "build-123",
+						"attributes": {
+							"version": "42",
+							"processingState": "PROCESSING"
+						}
+					}
+				],
+				"links": {}
+			}`)
+		default:
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+	})
+
+	var buildResp *asc.BuildResponse
+	var err error
+	stderr := captureStderr(t, func() {
+		buildResp, err = WaitForBuildByNumberOrUploadFailure(context.Background(), client, "app-1", "", "1.2.0", "42", "IOS", time.Millisecond)
+	})
+	if err != nil {
+		t.Fatalf("WaitForBuildByNumberOrUploadFailure() error: %v", err)
+	}
+	if buildResp == nil {
+		t.Fatal("expected build response for equivalent version format")
+		return
+	}
+	if buildResp.Data.ID != "build-123" {
+		t.Fatalf("expected build ID build-123, got %q", buildResp.Data.ID)
+	}
+	if len(versionFilters) != 2 || versionFilters[0] != "1.2.0" || versionFilters[1] != "1.2" {
+		t.Fatalf("expected requested format to be queried before the equivalent form, got %v", versionFilters)
+	}
+	if !strings.Contains(stderr, `note: matched version "1.2" for requested "1.2.0"`) {
+		t.Fatalf("expected equivalent version note, got %q", stderr)
+	}
+}
+
+func TestWaitForBuildByNumberOrUploadFailureFiltersNearMatchesAcrossPages(t *testing.T) {
+	resetEquivalentVersionNotes()
+
+	var buildFilters []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", req.Method)
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+			return
+		}
+
+		switch req.URL.Path {
+		case "/v1/preReleaseVersions":
+			if got := req.URL.Query().Get("filter[version]"); got != "1.2.0" && req.URL.Query().Get("cursor") == "" {
+				t.Errorf("filter[version] = %q, want 1.2.0", got)
+			}
+			if req.URL.Query().Get("cursor") == "page-2" {
+				_, _ = io.WriteString(w, `{
+					"data": [
+						{
+							"type": "preReleaseVersions",
+							"id": "prv-exact",
+							"attributes": {"version": "1.2.0", "platform": "IOS"}
+						}
+					],
+					"links": {}
+				}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{
+				"data": [
+					{
+						"type": "preReleaseVersions",
+						"id": "prv-near-match",
+						"attributes": {"version": "1.2", "platform": "IOS"}
+					}
+				],
+				"links": {"next": "https://api.appstoreconnect.apple.com/v1/preReleaseVersions?cursor=page-2"}
+			}`)
+		case "/v1/builds":
+			buildFilters = append(buildFilters, req.URL.Query().Get("filter[preReleaseVersion]"))
+			_, _ = io.WriteString(w, `{
+				"data": [
+					{
+						"type": "builds",
+						"id": "build-exact",
+						"attributes": {"version": "42", "processingState": "PROCESSING"}
+					}
+				],
+				"links": {}
+			}`)
+		default:
+			t.Errorf("unexpected path: %s", req.URL.Path)
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newBuildWaitServerTestClient(t, server)
+
+	buildResp, err := WaitForBuildByNumberOrUploadFailure(context.Background(), client, "app-1", "", "1.2.0", "42", "IOS", time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForBuildByNumberOrUploadFailure() error: %v", err)
+	}
+	if buildResp == nil || buildResp.Data.ID != "build-exact" {
+		t.Fatalf("expected build-exact, got %#v", buildResp)
+	}
+	if len(buildFilters) != 1 || buildFilters[0] != "prv-exact" {
+		t.Fatalf("expected exact pre-release version filter, got %v", buildFilters)
+	}
+}
+
+func TestWaitForBuildByNumberOrUploadFailurePrefersRequestedVersionFormat(t *testing.T) {
+	resetEquivalentVersionNotes()
+
+	var versionFilters []string
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			return nil, fmt.Errorf("expected GET, got %s", req.Method)
+		}
+
+		switch req.URL.Path {
+		case "/v1/preReleaseVersions":
+			requested := req.URL.Query().Get("filter[version]")
+			versionFilters = append(versionFilters, requested)
+			if requested != "1.2.0" {
+				return buildWaitJSONResponse(`{"data": [], "links": {}}`)
+			}
+			return buildWaitJSONResponse(`{
+				"data": [
+					{
+						"type": "preReleaseVersions",
+						"id": "prv-1",
+						"attributes": {
+							"version": "1.2.0",
+							"platform": "IOS"
+						}
+					}
+				],
+				"links": {}
+			}`)
+		case "/v1/builds":
+			return buildWaitJSONResponse(`{
+				"data": [
+					{
+						"type": "builds",
+						"id": "build-123",
+						"attributes": {
+							"version": "42",
+							"processingState": "PROCESSING"
+						}
+					}
+				],
+				"links": {}
+			}`)
+		default:
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+	})
+
+	var buildResp *asc.BuildResponse
+	var err error
+	stderr := captureStderr(t, func() {
+		buildResp, err = WaitForBuildByNumberOrUploadFailure(context.Background(), client, "app-1", "", "1.2.0", "42", "IOS", time.Millisecond)
+	})
+	if err != nil {
+		t.Fatalf("WaitForBuildByNumberOrUploadFailure() error: %v", err)
+	}
+	if buildResp == nil || buildResp.Data.ID != "build-123" {
+		t.Fatalf("expected build-123, got %#v", buildResp)
+	}
+	if len(versionFilters) != 1 || versionFilters[0] != "1.2.0" {
+		t.Fatalf("expected only the requested format to be queried, got %v", versionFilters)
+	}
+	if strings.Contains(stderr, "note: matched version") {
+		t.Fatalf("did not expect an equivalent version note, got %q", stderr)
 	}
 }
 

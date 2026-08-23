@@ -154,23 +154,14 @@ func VerifyBuildUploadAfterCommit(ctx context.Context, client *asc.Client, appID
 }
 
 func findBuildByNumber(ctx context.Context, client *asc.Client, appID, version, buildNumber, platform, uploadID string) (*asc.BuildResponse, error) {
-	preReleaseResp, err := client.GetPreReleaseVersions(
-		ctx, appID,
-		asc.WithPreReleaseVersionsVersion(version),
-		asc.WithPreReleaseVersionsPlatform(platform),
-		asc.WithPreReleaseVersionsLimit(10),
-	)
+	preReleaseID, err := findPreReleaseVersionIDForBuildWait(ctx, client, appID, version, platform)
 	if err != nil {
 		return nil, err
 	}
-	if len(preReleaseResp.Data) == 0 {
+	if preReleaseID == "" {
 		return nil, nil
 	}
-	if len(preReleaseResp.Data) > 1 {
-		return nil, fmt.Errorf("multiple pre-release versions found for version %q and platform %q", version, platform)
-	}
 
-	preReleaseID := preReleaseResp.Data[0].ID
 	buildOpts := []asc.BuildsOption{
 		asc.WithBuildsPreReleaseVersion(preReleaseID),
 		asc.WithBuildsSort("-uploadedDate"),
@@ -199,6 +190,37 @@ func findBuildByNumber(ctx context.Context, client *asc.Client, appID, version, 
 		return &asc.BuildResponse{Data: build}, nil
 	}
 	return nil, nil
+}
+
+// findPreReleaseVersionIDForBuildWait resolves the pre-release version train a
+// build wait should watch. App Store Connect treats "1.2" and "1.2.0" as the
+// same version but only makes the first-uploaded format queryable, so the
+// requested format is tried first and the equivalent format only when it
+// matches nothing. An empty ID means no matching train exists yet.
+func findPreReleaseVersionIDForBuildWait(ctx context.Context, client *asc.Client, appID, version, platform string) (string, error) {
+	requestedVersion := strings.TrimSpace(version)
+
+	variants := versionQueryVariants(requestedVersion)
+	if len(variants) == 0 {
+		variants = []string{""}
+	}
+
+	for _, variant := range variants {
+		ids, _, err := findPreReleaseVersionIDsForVersions(ctx, client, appID, []string{variant}, platform)
+		if err != nil {
+			return "", err
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if len(ids) > 1 {
+			return "", fmt.Errorf("multiple pre-release versions found for version %q and platform %q", version, platform)
+		}
+		noteEquivalentVersionMatch(requestedVersion, variant)
+		return ids[0], nil
+	}
+
+	return "", nil
 }
 
 type buildRelationships struct {
