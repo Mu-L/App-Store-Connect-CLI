@@ -93,6 +93,24 @@ func TestRunIntermediateFlagParseFailurePointsToOwningGroupHelp(t *testing.T) {
 	}
 }
 
+func TestRunRepeatedFlagNameParseFailurePointsToFailingLeaf(t *testing.T) {
+	resetReportFlags(t)
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{"--profile", "work", "signing", "run", "--profile"}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "asc signing run --help") {
+		t.Fatalf("stderr = %q, want signing run help guidance", stderr)
+	}
+	if strings.Contains(stderr, "\n  asc --help") {
+		t.Fatalf("stderr = %q, must not point to root help for the leaf flag", stderr)
+	}
+}
+
 func TestRunRootFlagParseFailureIgnoresFlagMarkerInsideInvalidValue(t *testing.T) {
 	resetReportFlags(t)
 	stdout, stderr := captureCommandOutput(t, func() {

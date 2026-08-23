@@ -438,6 +438,7 @@ func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput str
 	flagName := parseFailureFlagName(parseOutput)
 	command := root
 	path := []string{root.Name}
+	owner := ""
 	for index := 0; flagName != "" && index < len(args); {
 		token := args[index]
 		if subcommand := findDirectSubcommand(command, token); subcommand != nil {
@@ -449,13 +450,16 @@ func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput str
 		trimmed := strings.TrimLeft(token, "-")
 		name, _ := splitFlagToken(trimmed)
 		if name == flagName && command.FlagSet.Lookup(name) != nil {
-			return strings.Join(path, " ")
+			owner = strings.Join(path, " ")
 		}
 		next, consumed := consumeFlagToken(command.FlagSet, token, args, index)
 		if !consumed {
 			break
 		}
 		index = next
+	}
+	if owner != "" {
+		return owner
 	}
 	return getCommandName(root, args)
 }
