@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,33 +23,6 @@ const (
 )
 
 var appsPublishedClientFactory = shared.GetASCClient
-
-// PublishedApp describes an App Store Connect app with live published territory coverage.
-type PublishedApp struct {
-	ID                      string `json:"id"`
-	Name                    string `json:"name"`
-	BundleID                string `json:"bundleId"`
-	SKU                     string `json:"sku"`
-	PrimaryLocale           string `json:"primaryLocale,omitempty"`
-	AvailabilityID          string `json:"availabilityId"`
-	PublishedTerritoryCount int    `json:"publishedTerritoryCount"`
-}
-
-// PublishedAppFailure describes an app whose availability audit could not be completed.
-type PublishedAppFailure struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Error string `json:"error"`
-}
-
-// AppsPublishedReport summarizes an account-wide published-app audit, retaining
-// successful rows when individual app audits fail.
-type AppsPublishedReport struct {
-	AuditedAppCount   int                   `json:"auditedAppCount"`
-	PublishedAppCount int                   `json:"publishedAppCount"`
-	Apps              []PublishedApp        `json:"apps"`
-	Failures          []PublishedAppFailure `json:"failures,omitempty"`
-}
 
 // AppsPublishedCommand returns the account-wide published-app audit command.
 func AppsPublishedCommand() *ffcli.Command {
@@ -97,16 +69,10 @@ Examples:
 				fmt.Fprintf(
 					os.Stderr,
 					"%s\n",
-					publishedAppsSummary(report),
+					asc.PublishedAppsSummary(report),
 				)
 			}
-			if err := shared.PrintOutputWithRenderers(
-				report,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderAppsPublishedReport(report, false) },
-				func() error { return renderAppsPublishedReport(report, true) },
-			); err != nil {
+			if err := shared.PrintOutput(&report, *output.Output, *output.Pretty); err != nil {
 				return err
 			}
 			if auditErr != nil {
@@ -144,10 +110,10 @@ type publishedAppAuditResult struct {
 }
 
 // auditPublishedApps audits app availability concurrently and returns published apps.
-func auditPublishedApps(ctx context.Context, client *asc.Client, appResources []asc.Resource[asc.AppAttributes]) (AppsPublishedReport, error) {
-	report := AppsPublishedReport{
+func auditPublishedApps(ctx context.Context, client *asc.Client, appResources []asc.Resource[asc.AppAttributes]) (asc.AppsPublishedReport, error) {
+	report := asc.AppsPublishedReport{
 		AuditedAppCount: len(appResources),
-		Apps:            make([]PublishedApp, 0),
+		Apps:            make([]asc.PublishedApp, 0),
 	}
 	if len(appResources) == 0 {
 		return report, nil
@@ -181,10 +147,10 @@ func auditPublishedApps(ctx context.Context, client *asc.Client, appResources []
 		close(results)
 	}()
 
-	failures := make([]PublishedAppFailure, 0)
+	failures := make([]asc.PublishedAppFailure, 0)
 	for result := range results {
 		if result.Err != nil {
-			failures = append(failures, PublishedAppFailure{
+			failures = append(failures, asc.PublishedAppFailure{
 				ID:    result.App.ID,
 				Name:  result.App.Attributes.Name,
 				Error: result.Err.Error(),
@@ -194,7 +160,7 @@ func auditPublishedApps(ctx context.Context, client *asc.Client, appResources []
 		if result.TerritoryCount == 0 {
 			continue
 		}
-		report.Apps = append(report.Apps, PublishedApp{
+		report.Apps = append(report.Apps, asc.PublishedApp{
 			ID:                      result.App.ID,
 			Name:                    result.App.Attributes.Name,
 			BundleID:                result.App.Attributes.BundleID,
@@ -225,7 +191,7 @@ func auditPublishedApps(ctx context.Context, client *asc.Client, appResources []
 	return report, nil
 }
 
-func sortPublishedAppFailures(failures []PublishedAppFailure) {
+func sortPublishedAppFailures(failures []asc.PublishedAppFailure) {
 	sort.Slice(failures, func(i, j int) bool {
 		left := strings.ToLower(strings.TrimSpace(failures[i].Name))
 		right := strings.ToLower(strings.TrimSpace(failures[j].Name))
@@ -297,65 +263,4 @@ func hasAvailableContentStatus(statuses []string) bool {
 		}
 	}
 	return false
-}
-
-// renderAppsPublishedReport writes table or Markdown rows and their audit totals.
-func renderAppsPublishedReport(report AppsPublishedReport, markdown bool) error {
-	headers := []string{"ID", "Name", "Bundle ID", "SKU", "Availability ID", "Published Territories"}
-	rows := make([][]string, 0, len(report.Apps))
-	for _, app := range report.Apps {
-		rows = append(rows, []string{
-			app.ID,
-			app.Name,
-			app.BundleID,
-			app.SKU,
-			app.AvailabilityID,
-			strconv.Itoa(app.PublishedTerritoryCount),
-		})
-	}
-	if markdown {
-		asc.RenderMarkdown(headers, rows)
-	} else {
-		asc.RenderTable(headers, rows)
-	}
-	if len(report.Failures) > 0 {
-		failureRows := make([][]string, 0, len(report.Failures))
-		for _, failure := range report.Failures {
-			failureRows = append(failureRows, []string{failure.ID, failure.Name, failure.Error})
-		}
-		fmt.Fprintln(os.Stdout, "\nFailed app audits:")
-		failureHeaders := []string{"ID", "Name", "Error"}
-		if markdown {
-			asc.RenderMarkdown(failureHeaders, failureRows)
-		} else {
-			asc.RenderTable(failureHeaders, failureRows)
-		}
-	}
-	fmt.Fprintf(
-		os.Stdout,
-		"\n%s\n",
-		publishedAppsSummary(report),
-	)
-	return nil
-}
-
-func publishedAppsSummary(report AppsPublishedReport) string {
-	summary := fmt.Sprintf(
-		"Audited %d app records; found %d published %s.",
-		report.AuditedAppCount,
-		report.PublishedAppCount,
-		pluralizeApp(report.PublishedAppCount),
-	)
-	if len(report.Failures) > 0 {
-		summary += fmt.Sprintf(" %d app audit(s) failed.", len(report.Failures))
-	}
-	return summary
-}
-
-// pluralizeApp returns the singular or plural app label for a count.
-func pluralizeApp(count int) string {
-	if count == 1 {
-		return "app"
-	}
-	return "apps"
 }
