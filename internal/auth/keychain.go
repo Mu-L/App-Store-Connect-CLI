@@ -490,6 +490,9 @@ func credentialPayloadForCollision(kr keyring.Keyring, name string) (credentialP
 	if err := json.Unmarshal(item.Data, &payload); err != nil {
 		return credentialPayload{}, false, nil
 	}
+	if payload == (credentialPayload{}) {
+		return credentialPayload{}, false, nil
+	}
 	return payload, true, nil
 }
 
