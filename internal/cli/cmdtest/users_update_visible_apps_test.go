@@ -221,7 +221,7 @@ func TestUsersUpdateConfirmRequiresVisibleAppsBeforeHTTP(t *testing.T) {
 		exitCode = rootcmd.Run([]string{
 			"users", "update",
 			"--id", "user-1",
-			"--roles", "developer",
+			"--roles", "access_to_reports",
 			"--confirm",
 			"--output", "json",
 		}, "1.2.3")

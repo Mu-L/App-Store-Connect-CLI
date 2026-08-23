@@ -227,8 +227,6 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --roles is required")
 				return shared.MissingRequiredUsageError("--roles")
 			}
-			warnDeprecatedUserRoles(roleValues)
-
 			visibleAppIDs := shared.SplitCSV(visibleApps.String())
 			if len(visibleAppIDs) == 0 && *confirm {
 				message := "--confirm requires --visible-app"
@@ -248,6 +246,7 @@ Examples:
 					"--confirm",
 				)
 			}
+			warnDeprecatedUserRoles(roleValues)
 
 			client, err := shared.GetASCClient()
 			if err != nil {
