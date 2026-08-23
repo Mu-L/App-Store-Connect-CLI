@@ -191,7 +191,17 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("subscriptions pricing derive: fetch target prices: %w", err)
 			}
-			if len(targetPrices.Prices) == 0 && territoryID == "" {
+			targetHasPricing := len(targetPrices.Prices) > 0
+			if !targetHasPricing && territoryID != "" {
+				globalTargetPrices, preflightErr := fetchResolvedSubscriptionPrices(
+					ctx, client, targetID, 200, "", effectiveAt, asc.SubscriptionPlanTypeUpfront, "",
+				)
+				if preflightErr != nil {
+					return fmt.Errorf("subscriptions pricing derive: fetch target pricing preflight: %w", preflightErr)
+				}
+				targetHasPricing = len(globalTargetPrices.Prices) > 0
+			}
+			if !targetHasPricing {
 				return fmt.Errorf("subscriptions pricing derive: target subscription has no current UPFRONT prices; initialize its pricing before deriving changes")
 			}
 

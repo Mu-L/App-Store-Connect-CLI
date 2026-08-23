@@ -97,9 +97,10 @@ The behavior is client-side orchestration over existing public API surfaces:
 1. Resolve both subscription selectors.
 2. Read current source and target `UPFRONT` prices with
    `GET /v1/subscriptions/{id}/prices`, including territory and price point.
-3. Require the target subscription to have an existing pricing configuration
-   for an unfiltered run. A focused `--territory` run may plan a new price when
-   that territory does not yet have a current target price.
+3. Require the target subscription to have an existing pricing configuration.
+   When a focused `--territory` read has no current target price, perform an
+   unfiltered preflight to distinguish a missing territory price from an
+   entirely unpriced target. Only the former may proceed with a planned update.
 4. Read candidate target price points with a batched territory filter,
    `include=territory`, the endpoint's 8,000-resource page limit, and full
    pagination. Group the returned ladder by territory locally; do not issue a

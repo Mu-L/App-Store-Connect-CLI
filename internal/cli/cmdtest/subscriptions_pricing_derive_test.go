@@ -404,6 +404,7 @@ func TestSubscriptionsPricingDeriveTerritoryDryRunPlansMissingCurrentTargetPrice
 
 	const sourceID = "8000000001"
 	const targetID = "8000000002"
+	targetPriceReads := 0
 
 	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
@@ -415,10 +416,18 @@ func TestSubscriptionsPricingDeriveTerritoryDryRunPlansMissingCurrentTargetPrice
 				{priceID: "source-price-swe", pricePointID: "source-pp-swe", territory: "SWE", currency: "SEK", customerPrice: "9"},
 			}))
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/subscriptions/"+targetID+"/prices":
-			if got := req.URL.Query().Get("filter[territory]"); got != "SWE" {
-				t.Fatalf("target territory filter = %q, want SWE", got)
+			targetPriceReads++
+			switch got := req.URL.Query().Get("filter[territory]"); got {
+			case "SWE":
+				return jsonResponse(http.StatusOK, subscriptionPriceDerivePricesFixture(nil))
+			case "":
+				return jsonResponse(http.StatusOK, subscriptionPriceDerivePricesFixture([]deriveHTTPPrice{
+					{priceID: "target-price-usa", pricePointID: "target-pp-usa", territory: "USA", currency: "USD", customerPrice: "9.99"},
+				}))
+			default:
+				t.Fatalf("target territory filter = %q, want SWE or empty global preflight", got)
+				return nil, nil
 			}
-			return jsonResponse(http.StatusOK, subscriptionPriceDerivePricesFixture(nil))
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/subscriptions/"+targetID+"/pricePoints":
 			return jsonResponse(http.StatusOK, subscriptionPriceDerivePricePointsFixture([]deriveHTTPPricePoint{
 				{id: "target-pp-swe-89", territory: "SWE", customerPrice: "89"},
@@ -454,6 +463,9 @@ func TestSubscriptionsPricingDeriveTerritoryDryRunPlansMissingCurrentTargetPrice
 		!strings.Contains(stderr, "Resolving target price points for 1 territory") {
 		t.Fatalf("missing dry-run progress diagnostics, stderr=%q", stderr)
 	}
+	if targetPriceReads != 2 {
+		t.Fatalf("target price reads = %d, want scoped read plus global pricing preflight", targetPriceReads)
+	}
 
 	var result struct {
 		Summary struct {
@@ -477,6 +489,60 @@ func TestSubscriptionsPricingDeriveTerritoryDryRunPlansMissingCurrentTargetPrice
 	row := result.Rows[0]
 	if row.Territory != "SWE" || row.CurrentTargetPrice != "" || row.TargetPrice != "89" || row.Action != "update" || row.Status != "planned" {
 		t.Fatalf("unexpected missing-target-price row: %+v", row)
+	}
+}
+
+func TestSubscriptionsPricingDeriveTerritoryDryRunRejectsEntirelyUnpricedTarget(t *testing.T) {
+	setupAuth(t)
+
+	const sourceID = "8000000001"
+	const targetID = "8000000002"
+	targetPriceReads := 0
+
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/subscriptions/"+sourceID+"/prices":
+			return jsonResponse(http.StatusOK, subscriptionPriceDerivePricesFixture([]deriveHTTPPrice{
+				{priceID: "source-price-swe", pricePointID: "source-pp-swe", territory: "SWE", currency: "SEK", customerPrice: "9"},
+			}))
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/subscriptions/"+targetID+"/prices":
+			targetPriceReads++
+			territoryFilter := req.URL.Query().Get("filter[territory]")
+			if territoryFilter != "SWE" && territoryFilter != "" {
+				t.Fatalf("target territory filter = %q, want SWE or empty global preflight", territoryFilter)
+			}
+			return jsonResponse(http.StatusOK, subscriptionPriceDerivePricesFixture(nil))
+		default:
+			t.Fatalf("unpriced target should fail before request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	var runErr error
+	stdout, _ := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"subscriptions", "pricing", "derive",
+			"--source-subscription-id", sourceID,
+			"--target-subscription-id", targetID,
+			"--multiplier", "10",
+			"--territory", "SWE",
+			"--auto-start-date=false",
+			"--dry-run",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+	if runErr == nil || !strings.Contains(runErr.Error(), "target subscription has no current UPFRONT prices; initialize its pricing before deriving changes") {
+		t.Fatalf("expected unpriced target error, got %v", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty output before planning", stdout)
+	}
+	if targetPriceReads != 2 {
+		t.Fatalf("target price reads = %d, want scoped read plus global pricing preflight", targetPriceReads)
 	}
 }
 
