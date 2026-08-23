@@ -36,11 +36,20 @@ type PublishedApp struct {
 	PublishedTerritoryCount int    `json:"publishedTerritoryCount"`
 }
 
-// AppsPublishedReport summarizes a complete account-wide published-app audit.
+// PublishedAppFailure describes an app whose availability audit could not be completed.
+type PublishedAppFailure struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Error string `json:"error"`
+}
+
+// AppsPublishedReport summarizes an account-wide published-app audit, retaining
+// successful rows when individual app audits fail.
 type AppsPublishedReport struct {
-	AuditedAppCount   int            `json:"auditedAppCount"`
-	PublishedAppCount int            `json:"publishedAppCount"`
-	Apps              []PublishedApp `json:"apps"`
+	AuditedAppCount   int                   `json:"auditedAppCount"`
+	PublishedAppCount int                   `json:"publishedAppCount"`
+	Apps              []PublishedApp        `json:"apps"`
+	Failures          []PublishedAppFailure `json:"failures,omitempty"`
 }
 
 // AppsPublishedCommand returns the account-wide published-app audit command.
@@ -83,26 +92,27 @@ Examples:
 				return fmt.Errorf("apps published: fetch apps: %w", err)
 			}
 
-			report, err := auditPublishedApps(requestCtx, client, appsResponse.Data)
-			if err != nil {
-				return fmt.Errorf("apps published: %w", err)
-			}
+			report, auditErr := auditPublishedApps(requestCtx, client, appsResponse.Data)
 			if strings.EqualFold(strings.TrimSpace(*output.Output), "json") {
 				fmt.Fprintf(
 					os.Stderr,
-					"Audited %d app records; found %d published %s.\n",
-					report.AuditedAppCount,
-					report.PublishedAppCount,
-					pluralizeApp(report.PublishedAppCount),
+					"%s\n",
+					publishedAppsSummary(report),
 				)
 			}
-			return shared.PrintOutputWithRenderers(
+			if err := shared.PrintOutputWithRenderers(
 				report,
 				*output.Output,
 				*output.Pretty,
 				func() error { return renderAppsPublishedReport(report, false) },
 				func() error { return renderAppsPublishedReport(report, true) },
-			)
+			); err != nil {
+				return err
+			}
+			if auditErr != nil {
+				return fmt.Errorf("apps published: %w", auditErr)
+			}
+			return nil
 		},
 	}
 }
@@ -171,10 +181,14 @@ func auditPublishedApps(ctx context.Context, client *asc.Client, appResources []
 		close(results)
 	}()
 
-	failures := make([]string, 0)
+	failures := make([]PublishedAppFailure, 0)
 	for result := range results {
 		if result.Err != nil {
-			failures = append(failures, fmt.Sprintf("%s (%s): %v", result.App.Attributes.Name, result.App.ID, result.Err))
+			failures = append(failures, PublishedAppFailure{
+				ID:    result.App.ID,
+				Name:  result.App.Attributes.Name,
+				Error: result.Err.Error(),
+			})
 			continue
 		}
 		if result.TerritoryCount == 0 {
@@ -190,11 +204,6 @@ func auditPublishedApps(ctx context.Context, client *asc.Client, appResources []
 			PublishedTerritoryCount: result.TerritoryCount,
 		})
 	}
-	if len(failures) > 0 {
-		sort.Strings(failures)
-		return AppsPublishedReport{}, fmt.Errorf("audit failed for %d of %d apps: %s", len(failures), len(appResources), strings.Join(failures, "; "))
-	}
-
 	sort.Slice(report.Apps, func(i, j int) bool {
 		left := strings.ToLower(strings.TrimSpace(report.Apps[i].Name))
 		right := strings.ToLower(strings.TrimSpace(report.Apps[j].Name))
@@ -203,8 +212,28 @@ func auditPublishedApps(ctx context.Context, client *asc.Client, appResources []
 		}
 		return report.Apps[i].ID < report.Apps[j].ID
 	})
+	sortPublishedAppFailures(failures)
+	report.Failures = failures
 	report.PublishedAppCount = len(report.Apps)
+	if len(failures) > 0 {
+		details := make([]string, 0, len(failures))
+		for _, failure := range failures {
+			details = append(details, fmt.Sprintf("%s (%s): %s", failure.Name, failure.ID, failure.Error))
+		}
+		return report, fmt.Errorf("audit failed for %d of %d apps: %s", len(failures), len(appResources), strings.Join(details, "; "))
+	}
 	return report, nil
+}
+
+func sortPublishedAppFailures(failures []PublishedAppFailure) {
+	sort.Slice(failures, func(i, j int) bool {
+		left := strings.ToLower(strings.TrimSpace(failures[i].Name))
+		right := strings.ToLower(strings.TrimSpace(failures[j].Name))
+		if left != right {
+			return left < right
+		}
+		return failures[i].ID < failures[j].ID
+	})
 }
 
 // auditPublishedApp returns an app's availability ID and published-territory count.
@@ -289,14 +318,38 @@ func renderAppsPublishedReport(report AppsPublishedReport, markdown bool) error 
 	} else {
 		asc.RenderTable(headers, rows)
 	}
+	if len(report.Failures) > 0 {
+		failureRows := make([][]string, 0, len(report.Failures))
+		for _, failure := range report.Failures {
+			failureRows = append(failureRows, []string{failure.ID, failure.Name, failure.Error})
+		}
+		fmt.Fprintln(os.Stdout, "\nFailed app audits:")
+		failureHeaders := []string{"ID", "Name", "Error"}
+		if markdown {
+			asc.RenderMarkdown(failureHeaders, failureRows)
+		} else {
+			asc.RenderTable(failureHeaders, failureRows)
+		}
+	}
 	fmt.Fprintf(
 		os.Stdout,
-		"\nAudited %d app records; found %d published %s.\n",
+		"\n%s\n",
+		publishedAppsSummary(report),
+	)
+	return nil
+}
+
+func publishedAppsSummary(report AppsPublishedReport) string {
+	summary := fmt.Sprintf(
+		"Audited %d app records; found %d published %s.",
 		report.AuditedAppCount,
 		report.PublishedAppCount,
 		pluralizeApp(report.PublishedAppCount),
 	)
-	return nil
+	if len(report.Failures) > 0 {
+		summary += fmt.Sprintf(" %d app audit(s) failed.", len(report.Failures))
+	}
+	return summary
 }
 
 // pluralizeApp returns the singular or plural app label for a count.
