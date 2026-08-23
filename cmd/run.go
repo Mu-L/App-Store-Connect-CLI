@@ -436,17 +436,22 @@ func printParseFailure(parseErr error, parseOutput string, analysis invocationAn
 
 func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput string) string {
 	flagName := parseFailureFlagName(parseOutput)
+	command := root
+	path := []string{root.Name}
 	for index := 0; flagName != "" && index < len(args); {
 		token := args[index]
-		if findDirectSubcommand(root, token) != nil {
-			break
+		if subcommand := findDirectSubcommand(command, token); subcommand != nil {
+			command = subcommand
+			path = append(path, subcommand.Name)
+			index++
+			continue
 		}
 		trimmed := strings.TrimLeft(token, "-")
 		name, _ := splitFlagToken(trimmed)
-		if name == flagName && root.FlagSet.Lookup(name) != nil {
-			return root.Name
+		if name == flagName && command.FlagSet.Lookup(name) != nil {
+			return strings.Join(path, " ")
 		}
-		next, consumed := consumeFlagToken(root.FlagSet, token, args, index)
+		next, consumed := consumeFlagToken(command.FlagSet, token, args, index)
 		if !consumed {
 			break
 		}
@@ -458,10 +463,11 @@ func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput str
 func parseFailureFlagName(parseOutput string) string {
 	firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
 	for _, marker := range []string{" for flag -", " for -", "argument: -"} {
-		_, remainder, found := strings.Cut(firstLine, marker)
-		if !found {
+		markerIndex := strings.LastIndex(firstLine, marker)
+		if markerIndex == -1 {
 			continue
 		}
+		remainder := firstLine[markerIndex+len(marker):]
 		name, _, _ := strings.Cut(remainder, ":")
 		return strings.TrimSpace(name)
 	}

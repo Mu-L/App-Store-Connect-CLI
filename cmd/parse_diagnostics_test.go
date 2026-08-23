@@ -75,6 +75,42 @@ func TestRunRootFlagParseFailurePointsToRootHelp(t *testing.T) {
 	}
 }
 
+func TestRunIntermediateFlagParseFailurePointsToOwningGroupHelp(t *testing.T) {
+	resetReportFlags(t)
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{"reviews", "--limit", "nope", "view"}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "asc reviews --help") {
+		t.Fatalf("stderr = %q, want reviews group help guidance", stderr)
+	}
+	if strings.Contains(stderr, "asc reviews view --help") {
+		t.Fatalf("stderr = %q, must not point to leaf help for a group flag", stderr)
+	}
+}
+
+func TestRunRootFlagParseFailureIgnoresFlagMarkerInsideInvalidValue(t *testing.T) {
+	resetReportFlags(t)
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{"--strict-auth=foo for -other", "builds", "list"}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "asc --help") {
+		t.Fatalf("stderr = %q, want root help guidance", stderr)
+	}
+	if strings.Contains(stderr, "asc builds list --help") {
+		t.Fatalf("stderr = %q, must not point to leaf help for a root flag", stderr)
+	}
+}
+
 func TestRunParseFailurePreservesJSONAndJUnitContracts(t *testing.T) {
 	resetReportFlags(t)
 	stdout, stderr := captureCommandOutput(t, func() {
