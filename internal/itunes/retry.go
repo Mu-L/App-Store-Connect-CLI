@@ -57,8 +57,9 @@ func (c *Client) doOnce(
 			drainPublicRetryResponse(resp.Body)
 			retryAfter := publicRetryDelay(resp.Header, time.Now(), maxDelay)
 			return &asc.RetryableError{
-				Err:        statusErr,
-				RetryAfter: retryAfter,
+				Err:                     statusErr,
+				RetryAfter:              retryAfter,
+				PreserveErrorOnDeadline: true,
 			}
 		}
 		return statusErr

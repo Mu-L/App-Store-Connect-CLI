@@ -329,8 +329,8 @@ func TestPublicRetryStopsWhenRetryAfterOutlastsDeadline(t *testing.T) {
 	if got := state.requests.Load(); got != 1 {
 		t.Fatalf("requests = %d, want 1 (Retry-After outlasts the deadline)", got)
 	}
-	if elapsed > time.Second {
-		t.Fatalf("elapsed = %s, want the call to fail without waiting out the deadline", elapsed)
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("elapsed = %s, want the call to fail materially before the deadline", elapsed)
 	}
 }
 
@@ -366,7 +366,9 @@ func TestPublicRetryStopsWhenFallbackBackoffOutlastsDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 
+	start := time.Now()
 	_, err := retryTestClient(server).SearchApps(ctx, "focus", "us", 20)
+	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatal("expected rate limit failure")
@@ -376,6 +378,9 @@ func TestPublicRetryStopsWhenFallbackBackoffOutlastsDeadline(t *testing.T) {
 	}
 	if got := state.requests.Load(); got != 1 {
 		t.Fatalf("requests = %d, want 1 (fallback backoff outlasts the deadline)", got)
+	}
+	if elapsed >= 100*time.Millisecond {
+		t.Fatalf("elapsed = %s, want the fallback backoff to fail materially before the deadline", elapsed)
 	}
 }
 
