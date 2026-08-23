@@ -432,7 +432,7 @@ func TestSubscriptionsPricingDeriveTerritoryDryRunPlansMissingCurrentTargetPrice
 
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
-	stdout, _ := captureOutput(t, func() {
+	stdout, stderr := captureOutput(t, func() {
 		if err := root.Parse([]string{
 			"subscriptions", "pricing", "derive",
 			"--source-subscription-id", sourceID,
@@ -450,6 +450,10 @@ func TestSubscriptionsPricingDeriveTerritoryDryRunPlansMissingCurrentTargetPrice
 			t.Fatalf("run error: %v", err)
 		}
 	})
+	if !strings.Contains(stderr, "Fetching current source and target subscription prices") ||
+		!strings.Contains(stderr, "Resolving target price points for 1 territory") {
+		t.Fatalf("missing dry-run progress diagnostics, stderr=%q", stderr)
+	}
 
 	var result struct {
 		Summary struct {
