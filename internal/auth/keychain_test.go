@@ -1876,6 +1876,38 @@ func TestStoreCredentials_CleansRawEntryWhenCanonicalLacksPEMEnrichment(t *testi
 	}
 }
 
+func TestStoreCredentials_CleansRawEntryWhenCanonicalKeyWasRelocated(t *testing.T) {
+	newKr, _ := withSeparateKeyrings(t)
+	keyDir := t.TempDir()
+	canonicalPath := filepath.Join(keyDir, "Original.p8")
+	relocatedPath := filepath.Join(keyDir, "Relocated.p8")
+	for _, path := range []string{canonicalPath, relocatedPath} {
+		if err := os.WriteFile(path, []byte("SAME PRIVATE KEY"), 0o600); err != nil {
+			t.Fatalf("write private key %q: %v", path, err)
+		}
+	}
+	storeCredentialInKeyring(t, newKr, "spaced", "KEY123", "ISS456", canonicalPath)
+	storeCredentialInKeyring(t, newKr, "  spaced  ", "OTHER", "OTHER-ISSUER", "/tmp/Other.p8")
+
+	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", relocatedPath); err != nil {
+		t.Fatalf("StoreCredentials() error = %v", err)
+	}
+	if _, err := newKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("raw credential error = %v, want ErrKeyNotFound", err)
+	}
+	item, err := newKr.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("normalized credential error = %v", err)
+	}
+	var payload credentialPayload
+	if err := json.Unmarshal(item.Data, &payload); err != nil {
+		t.Fatalf("decode normalized credential: %v", err)
+	}
+	if payload.PrivateKeyPath != relocatedPath || payload.PrivateKeyPEM != "SAME PRIVATE KEY" {
+		t.Fatalf("normalized credential = %+v, want relocated key enrichment", payload)
+	}
+}
+
 func TestStoreCredentials_RejectsWhitespaceOnlyProfileName(t *testing.T) {
 	newKr, _ := withSeparateKeyrings(t)
 

@@ -515,12 +515,23 @@ func credentialPayloadsMatch(first, second credentialPayload) bool {
 		return false
 	}
 
-	firstPEM := strings.TrimSpace(first.PrivateKeyPEM)
-	secondPEM := strings.TrimSpace(second.PrivateKeyPEM)
+	firstPEM := credentialPrivateKeyForComparison(first)
+	secondPEM := credentialPrivateKeyForComparison(second)
 	if firstPEM != "" && secondPEM != "" {
-		return first.PrivateKeyPEM == second.PrivateKeyPEM
+		return firstPEM == secondPEM
 	}
 	return first.PrivateKeyPath == second.PrivateKeyPath
+}
+
+func credentialPrivateKeyForComparison(payload credentialPayload) string {
+	if strings.TrimSpace(payload.PrivateKeyPEM) != "" {
+		return payload.PrivateKeyPEM
+	}
+	privateKeyPEM, err := loadPrivateKeyPEMForStorage(payload.PrivateKeyPath)
+	if err != nil || strings.TrimSpace(privateKeyPEM) == "" {
+		return ""
+	}
+	return privateKeyPEM
 }
 
 func loadPrivateKeyPEMForStorage(path string) (string, error) {
