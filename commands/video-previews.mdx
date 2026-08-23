@@ -92,6 +92,46 @@ The CLI handles the multi-step upload process automatically:
 }
 ```
 
+### Partial Upload Results
+
+If a later file fails, the command still prints the receipt for the work that
+completed and exits non-zero. The `results` array contains successful files and
+the failed file when Apple created a reservation; `failures` adds the failed
+file path and error without removing the existing receipt fields:
+
+```json  theme={null}
+{
+  "versionLocalizationId": "LOC_ID",
+  "setId": "SET_ID",
+  "previewType": "IPHONE_69",
+  "results": [
+    {
+      "fileName": "01-first.mov",
+      "filePath": "./01-first.mov",
+      "assetId": "PREVIEW_1",
+      "state": "COMPLETE"
+    },
+    {
+      "fileName": "02-second.mov",
+      "filePath": "./02-second.mov",
+      "assetId": "PREVIEW_2",
+      "state": "failed"
+    }
+  ],
+  "failures": [
+    {
+      "fileName": "02-second.mov",
+      "filePath": "./02-second.mov",
+      "error": "preview reservation failed"
+    }
+  ]
+}
+```
+
+The `failures` field is additive and omitted when every upload succeeds. A
+failed run does not reorder the preview set around a partially completed upload;
+rerun with the receipt's asset IDs available for cleanup or diagnosis.
+
 ## Download Video Previews
 
 Download existing app preview videos from App Store Connect:
