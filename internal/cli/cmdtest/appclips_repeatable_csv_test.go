@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -116,36 +118,39 @@ func TestAppClipsReviewDetailsCSVValuesPreserveOrder(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method != test.method || req.URL.Path != test.path {
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+				}
+
+				var payload struct {
+					Data struct {
+						Attributes struct {
+							InvocationURLs []string `json:"invocationUrls"`
+						} `json:"attributes"`
+					} `json:"data"`
+				}
+				if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				want := []string{"https://example.com/one", "https://example.com/two"}
+				if len(payload.Data.Attributes.InvocationURLs) != len(want) {
+					t.Fatalf("invocation URL count = %d, want %d", len(payload.Data.Attributes.InvocationURLs), len(want))
+				}
+				for index, value := range want {
+					if payload.Data.Attributes.InvocationURLs[index] != value {
+						t.Fatalf("invocation URL %d = %q, want %q", index, payload.Data.Attributes.InvocationURLs[index], value)
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, `{"data":{"type":"appClipAppStoreReviewDetails","id":"detail-1","attributes":{"invocationUrls":["https://example.com/one","https://example.com/two"]}}}`)
+			}))
+			t.Cleanup(server.Close)
+
 			keyPath := t.TempDir() + "/AuthKey.p8"
 			writeECDSAPEM(t, keyPath)
-			client, err := asc.NewClientWithHTTPClient("TEST_KEY", "TEST_ISSUER", keyPath, &http.Client{
-				Transport: appClipsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-					if req.Method != test.method || req.URL.Path != test.path {
-						t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
-					}
-
-					var payload struct {
-						Data struct {
-							Attributes struct {
-								InvocationURLs []string `json:"invocationUrls"`
-							} `json:"attributes"`
-						} `json:"data"`
-					}
-					if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
-						t.Fatalf("decode request: %v", err)
-					}
-					want := []string{"https://example.com/one", "https://example.com/two"}
-					if len(payload.Data.Attributes.InvocationURLs) != len(want) {
-						t.Fatalf("invocation URL count = %d, want %d", len(payload.Data.Attributes.InvocationURLs), len(want))
-					}
-					for index, value := range want {
-						if payload.Data.Attributes.InvocationURLs[index] != value {
-							t.Fatalf("invocation URL %d = %q, want %q", index, payload.Data.Attributes.InvocationURLs[index], value)
-						}
-					}
-					return jsonResponse(test.status, `{"data":{"type":"appClipAppStoreReviewDetails","id":"detail-1","attributes":{"invocationUrls":["https://example.com/one","https://example.com/two"]}}}`)
-				}),
-			})
+			client, err := newAppClipsTestServerClient(t, server, keyPath)
 			if err != nil {
 				t.Fatalf("new client: %v", err)
 			}
@@ -175,26 +180,27 @@ func TestAppClipsReviewDetailsCSVValuesPreserveOrder(t *testing.T) {
 }
 
 func TestAppClipsInvocationsCreateCSVValuesRemainCompatible(t *testing.T) {
-	client, err := asc.NewClientWithHTTPClient("TEST_KEY", "TEST_ISSUER", func() string {
-		path := t.TempDir() + "/AuthKey.p8"
-		writeECDSAPEM(t, path)
-		return path
-	}(), &http.Client{
-		Transport: appClipsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.Method != http.MethodPost || req.URL.Path != "/v1/betaAppClipInvocations" {
-				t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
-			}
-			var payload asc.BetaAppClipInvocationCreateRequest
-			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
-				t.Fatalf("decode request: %v", err)
-			}
-			ids := payload.Data.Relationships.BetaAppClipInvocationLocalizations.Data
-			if len(ids) != 2 || ids[0].ID != "loc-1" || ids[1].ID != "loc-2" {
-				t.Fatalf("localization IDs = %#v, want loc-1, loc-2", ids)
-			}
-			return jsonResponse(http.StatusCreated, `{"data":{"type":"betaAppClipInvocations","id":"inv-1","attributes":{"url":"https://example.com/clip"}}}`)
-		}),
-	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost || req.URL.Path != "/v1/betaAppClipInvocations" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+		var payload asc.BetaAppClipInvocationCreateRequest
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		ids := payload.Data.Relationships.BetaAppClipInvocationLocalizations.Data
+		if len(ids) != 2 || ids[0].ID != "loc-1" || ids[1].ID != "loc-2" {
+			t.Fatalf("localization IDs = %#v, want loc-1, loc-2", ids)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"data":{"type":"betaAppClipInvocations","id":"inv-1","attributes":{"url":"https://example.com/clip"}}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	keyPath := t.TempDir() + "/AuthKey.p8"
+	writeECDSAPEM(t, keyPath)
+	client, err := newAppClipsTestServerClient(t, server, keyPath)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -224,4 +230,19 @@ func TestAppClipsInvocationsCreateCSVValuesRemainCompatible(t *testing.T) {
 	if !strings.Contains(stdout, `"id":"inv-1"`) {
 		t.Fatalf("expected invocation ID in stdout, got %q", stdout)
 	}
+}
+
+func newAppClipsTestServerClient(t *testing.T, server *httptest.Server, keyPath string) (*asc.Client, error) {
+	t.Helper()
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		return nil, err
+	}
+	transport := appClipsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		cloned := req.Clone(req.Context())
+		cloned.URL.Scheme = serverURL.Scheme
+		cloned.URL.Host = serverURL.Host
+		return server.Client().Transport.RoundTrip(cloned)
+	})
+	return asc.NewClientWithHTTPClient("TEST_KEY", "TEST_ISSUER", keyPath, &http.Client{Transport: transport})
 }
