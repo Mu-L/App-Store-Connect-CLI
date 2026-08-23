@@ -30,6 +30,8 @@ func TestVideoPreviewsUploadReportsUploadedPreviewsWhenALaterFileFails(t *testin
 		switch {
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/appStoreVersionLocalizations/LOC_123/appPreviewSets":
 			return statusJSONResponse(`{"data":[{"type":"appPreviewSets","id":"set-1","attributes":{"previewType":"IPHONE_65"}}],"links":{}}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/appPreviewSets/set-1/appPreviews":
+			return statusJSONResponse(`{"data":[],"links":{}}`), nil
 		case req.Method == http.MethodPost && req.URL.Path == "/v1/appPreviews":
 			body, err := io.ReadAll(req.Body)
 			if err != nil {
@@ -61,6 +63,12 @@ func TestVideoPreviewsUploadReportsUploadedPreviewsWhenALaterFileFails(t *testin
 			return statusJSONResponse(`{"data":{"type":"appPreviews","id":"preview-first","attributes":{"uploaded":true}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/appPreviews/preview-first":
 			return statusJSONResponse(`{"data":{"type":"appPreviews","id":"preview-first","attributes":{"assetDeliveryState":{"state":"COMPLETE"}}}}`), nil
+		case req.Method == http.MethodDelete && (req.URL.Path == "/v1/appPreviews/preview-first" || req.URL.Path == "/v1/appPreviews/preview-second"):
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     http.Header{},
+			}, nil
 		default:
 			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
 			return nil, nil

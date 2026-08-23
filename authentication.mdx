@@ -30,11 +30,13 @@ Before using `asc`, you need to create an API key in App Store Connect:
   </Step>
 
   <Step title="Note your credentials">
-    You'll need three values:
+    Team API keys use three values:
 
     * **Key ID**: 10-character alphanumeric (e.g., `ABC123DEFG`)
     * **Issuer ID**: UUID format (e.g., `12345678-abcd-1234-abcd-123456789012`)
     * **Private Key**: The `.p8` file you just downloaded
+
+    Individual API keys use the key ID and private key with key type `individual`; they do not use an issuer ID.
   </Step>
 </Steps>
 
@@ -98,6 +100,8 @@ This creates `~/.asc/config.json` with `0600` permissions.
   Config file storage is less secure than keychain. Use keychain when possible, especially on shared systems.
 </Warning>
 
+If keychain credentials also exist, set `ASC_BYPASS_KEYCHAIN=1` for commands that should use this config instead.
+
 #### Local (per-project) config
 
 For project-specific credentials:
@@ -123,6 +127,9 @@ This creates `./.asc/config.json` in your current directory.
 For CI/CD pipelines or ephemeral environments:
 
 ```bash  theme={null}
+unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+unset ASC_PRIVATE_KEY ASC_PRIVATE_KEY_B64
+export ASC_KEY_TYPE="team"
 export ASC_KEY_ID="ABC123DEFG"
 export ASC_ISSUER_ID="12345678-abcd-1234-abcd-123456789012"
 export ASC_PRIVATE_KEY_PATH="$HOME/.asc/AuthKey_ABC123.p8"
@@ -132,10 +139,12 @@ Alternatively, pass the key content directly:
 
 <CodeGroup>
   ```bash Base64-encoded key theme={null}
+  unset ASC_PRIVATE_KEY_PATH ASC_PRIVATE_KEY
   export ASC_PRIVATE_KEY_B64="LS0tLS1CRUdJTi..."
   ```
 
   ```bash Raw PEM content theme={null}
+  unset ASC_PRIVATE_KEY_PATH ASC_PRIVATE_KEY_B64
   export ASC_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----
   MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHk...
   -----END PRIVATE KEY-----"
@@ -189,18 +198,70 @@ Override the default with `--profile`:
 asc --profile "WorkApp" apps list
 ```
 
-## Credential resolution order
+## Credential resolution
 
-`asc` resolves credentials in this order:
+Authentication does not use one universal `environment > config > keychain` order. Profile selection, environment completeness, and keychain bypass change which source is consulted first. This matrix is the source of truth for App Store Connect API credentials:
 
-1. **Explicit profile flag**: `--profile "ProfileName"`
-2. **Environment variables**: `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_PRIVATE_KEY_PATH` (or `ASC_PRIVATE_KEY`, `ASC_PRIVATE_KEY_B64`)
-3. **Default profile**: The profile marked as default in keychain/config
-4. **Single stored credential**: If only one profile exists, use it automatically
+| Selector and bypass state | First source | Environment behavior |
+| --- | --- | --- |
+| No `--profile` or `ASC_PROFILE`; keychain enabled; complete environment metadata | Environment | Supplies the whole credential and skips stored lookup |
+| No profile; keychain enabled; incomplete environment metadata | Keychain selection, with config fallback when keychain is unavailable, empty, or its selected default is stored in config | Fills only fields missing from the returned stored credential. Missing/default-selection errors may fall back to environment; keychain denial and other lookup errors do not. |
+| `--profile NAME` or `ASC_PROFILE=NAME`; keychain enabled | Named stored profile, keychain first and then config | Complete environment credentials do not replace the profile. Environment can fill missing fields only after stored resolution returns that profile. |
+| No profile; `ASC_BYPASS_KEYCHAIN` enabled | Default or single complete credential from the active config | Uses that config credential. Environment fallback follows only missing-config or permitted default-selection errors; incomplete credential-bearing config errors. |
+| Profile selected; `ASC_BYPASS_KEYCHAIN` enabled | Named complete profile in the active config | Uses that profile. Environment is not a replacement for a missing or incomplete named config profile. |
 
-<Note>
-  Use `--strict-auth` or `ASC_STRICT_AUTH=true` to fail when credentials are resolved from multiple sources (helps catch mixed-source errors).
-</Note>
+A complete team-key environment set has `ASC_KEY_ID`, `ASC_ISSUER_ID`, a valid `ASC_KEY_TYPE` (unset defaults to `team`), and one private-key source: `ASC_PRIVATE_KEY_PATH`, `ASC_PRIVATE_KEY`, or `ASC_PRIVATE_KEY_B64`. An individual-key set uses `ASC_KEY_TYPE=individual`, `ASC_KEY_ID`, and one private-key source; `ASC_ISSUER_ID` is ignored. Base64 must decode before the environment fast path is selected. Key paths and PEM contents are still read and validated when a command creates the API client.
+
+When config is consulted, its path is selected in this order:
+
+1. `ASC_CONFIG_PATH` (must be absolute)
+2. The nearest `.asc/config.json` found from the current directory upward
+3. `~/.asc/config.json`
+
+When `ASC_CONFIG_PATH` is unset, an empty local config can fall back to global credentials. Once the local config contains any credential fields, it intentionally shadows the global credential store; incomplete credential data can therefore error instead of falling back. Setting `ASC_CONFIG_PATH` disables global fallback entirely.
+
+`asc auth login --bypass-keychain` or a truthy `ASC_BYPASS_KEYCHAIN` controls where that login writes: global config by default, or local config with `--local`. The environment variable also controls how later commands read credentials; the login flag does not persist the read behavior.
+
+Within stored credentials, an explicitly selected profile wins. Without one, `asc` uses the stored default, or the only stored credential when exactly one exists. Multiple credentials without a default are never selected arbitrarily; resolution either errors or uses an allowed environment fallback.
+
+<Warning>
+  If keychain access is explicitly denied, `asc` stops instead of silently switching sources. Set `ASC_BYPASS_KEYCHAIN=1` for intentional config-backed authentication. For environment-only authentication, clear `ASC_PROFILE`, `ASC_BYPASS_KEYCHAIN`, and `ASC_CONFIG_PATH`, then provide a complete environment credential set so stored lookup is skipped.
+</Warning>
+
+### Mixed sources and strict authentication
+
+Environment variables that are present but unused do not count as mixed authentication. A mix occurs when the final credential takes required fields from different sources, such as a key ID from config and an issuer ID from the environment.
+
+By default, `asc` warns and continues with a mixed credential. Use `--strict-auth` or `ASC_STRICT_AUTH=true` to fail instead.
+
+### Common patterns
+
+<CodeGroup>
+  ```bash CI with environment credentials theme={null}
+  unset ASC_PROFILE ASC_BYPASS_KEYCHAIN ASC_CONFIG_PATH
+  unset ASC_PRIVATE_KEY_PATH ASC_PRIVATE_KEY
+  export ASC_KEY_TYPE="team"
+  export ASC_KEY_ID="ABC123DEFG"
+  export ASC_ISSUER_ID="12345678-abcd-1234-abcd-123456789012"
+  export ASC_PRIVATE_KEY_B64="BASE64_ENCODED_KEY"
+
+  # No profile selected: the complete environment set skips stored lookup.
+  asc apps list
+  ```
+
+  ```bash Force a stored profile theme={null}
+  # Root flags appear before the command group.
+  asc --profile "WorkApp" apps list
+  ```
+
+  ```bash Config or environment only theme={null}
+  # After creating or restoring this config file:
+  unset ASC_PROFILE
+  export ASC_BYPASS_KEYCHAIN=1
+  export ASC_CONFIG_PATH="$PWD/.asc/config.json"
+  asc apps list
+  ```
+</CodeGroup>
 
 ## Apple Ads authentication
 
@@ -319,16 +380,18 @@ This can:
 ### Remove a specific profile
 
 ```bash  theme={null}
-asc auth logout --name "WorkApp"
+asc auth logout --name "WorkApp" --confirm
 ```
 
 ### Remove all credentials
 
 ```bash  theme={null}
-asc auth logout --all
+asc auth logout --all --confirm
 ```
 
-This removes credentials from both keychain and config files.
+`--all` always attempts config cleanup and also attempts keychain cleanup. If config cleanup succeeds, a keychain cleanup error is treated as non-fatal.
+
+For compatibility, logout still runs without `--confirm` after printing a deprecation warning. Confirmation will be required in 5.0.0.
 
 ## Security best practices
 
@@ -371,9 +434,11 @@ This removes credentials from both keychain and config files.
 | `ASC_PRIVATE_KEY_PATH` | Path to `.p8` file            | `/path/to/AuthKey.p8`                  |
 | `ASC_PRIVATE_KEY`      | Raw PEM content               | `-----BEGIN PRIVATE KEY-----\n...`     |
 | `ASC_PRIVATE_KEY_B64`  | Base64-encoded PEM            | `LS0tLS1CRUdJTi...`                    |
+| `ASC_KEY_TYPE`         | API key type (`team` or `individual`) | `team`                         |
 | `ASC_PROFILE`          | Named profile to use          | `MyApp`                                |
 | `ASC_BYPASS_KEYCHAIN`  | Skip keychain, use config/env | `1`, `true`, `yes`, `on`               |
-| `ASC_STRICT_AUTH`      | Fail on mixed sources         | `1`, `true`, `yes`, `on`               |
+| `ASC_STRICT_AUTH`      | Fail when required fields mix sources | `1`, `true`, `yes`, `y`, `on`   |
+| `ASC_CONFIG_PATH`      | Absolute config path          | `/path/to/config.json`                 |
 
 ### Apple Ads environment variables
 

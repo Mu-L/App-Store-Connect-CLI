@@ -72,6 +72,8 @@ func previewUploadTransport(t *testing.T, sizes map[string]int64, remoteOrder []
 				`{"data":{"type":"appPreviews","id":"%s","attributes":{"fileName":"%s","uploadOperations":[{"method":"PUT","url":"https://upload.example/%s","length":%d,"offset":0}]}}}`,
 				id, fileName, id, sizes[fileName],
 			)), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/appPreviewSets/set-1/appPreviews":
+			return statusJSONResponse(`{"data":[],"links":{}}`), nil
 		case req.Method == http.MethodPut && req.URL.Host == "upload.example":
 			return &http.Response{
 				StatusCode: http.StatusOK,
