@@ -198,23 +198,18 @@ func findPreReleaseVersionIDForBuildWait(ctx context.Context, client *asc.Client
 	}
 
 	for _, variant := range variants {
-		preReleaseResp, err := client.GetPreReleaseVersions(
-			ctx, appID,
-			asc.WithPreReleaseVersionsVersion(variant),
-			asc.WithPreReleaseVersionsPlatform(platform),
-			asc.WithPreReleaseVersionsLimit(10),
-		)
+		ids, _, err := findPreReleaseVersionIDsForVersions(ctx, client, appID, []string{variant}, platform)
 		if err != nil {
 			return "", err
 		}
-		if len(preReleaseResp.Data) == 0 {
+		if len(ids) == 0 {
 			continue
 		}
-		if len(preReleaseResp.Data) > 1 {
+		if len(ids) > 1 {
 			return "", fmt.Errorf("multiple pre-release versions found for version %q and platform %q", version, platform)
 		}
 		noteEquivalentVersionMatch(requestedVersion, variant)
-		return preReleaseResp.Data[0].ID, nil
+		return ids[0], nil
 	}
 
 	return "", nil

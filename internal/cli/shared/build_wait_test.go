@@ -655,6 +655,71 @@ func TestWaitForBuildByNumberOrUploadFailureMatchesEquivalentVersionFormat(t *te
 	}
 }
 
+func TestWaitForBuildByNumberOrUploadFailureFiltersNearMatchesAcrossPages(t *testing.T) {
+	resetEquivalentVersionNotes()
+
+	var buildFilters []string
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			return nil, fmt.Errorf("expected GET, got %s", req.Method)
+		}
+
+		switch req.URL.Path {
+		case "/v1/preReleaseVersions":
+			if got := req.URL.Query().Get("filter[version]"); got != "1.2.0" && req.URL.Query().Get("cursor") == "" {
+				return nil, fmt.Errorf("filter[version] = %q, want 1.2.0", got)
+			}
+			if req.URL.Query().Get("cursor") == "page-2" {
+				return buildWaitJSONResponse(`{
+					"data": [
+						{
+							"type": "preReleaseVersions",
+							"id": "prv-exact",
+							"attributes": {"version": "1.2.0", "platform": "IOS"}
+						}
+					],
+					"links": {}
+				}`)
+			}
+			return buildWaitJSONResponse(`{
+				"data": [
+					{
+						"type": "preReleaseVersions",
+						"id": "prv-near-match",
+						"attributes": {"version": "1.2", "platform": "IOS"}
+					}
+				],
+				"links": {"next": "https://api.appstoreconnect.apple.com/v1/preReleaseVersions?cursor=page-2"}
+			}`)
+		case "/v1/builds":
+			buildFilters = append(buildFilters, req.URL.Query().Get("filter[preReleaseVersion]"))
+			return buildWaitJSONResponse(`{
+				"data": [
+					{
+						"type": "builds",
+						"id": "build-exact",
+						"attributes": {"version": "42", "processingState": "PROCESSING"}
+					}
+				],
+				"links": {}
+			}`)
+		default:
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+	})
+
+	buildResp, err := WaitForBuildByNumberOrUploadFailure(context.Background(), client, "app-1", "", "1.2.0", "42", "IOS", time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForBuildByNumberOrUploadFailure() error: %v", err)
+	}
+	if buildResp == nil || buildResp.Data.ID != "build-exact" {
+		t.Fatalf("expected build-exact, got %#v", buildResp)
+	}
+	if len(buildFilters) != 1 || buildFilters[0] != "prv-exact" {
+		t.Fatalf("expected exact pre-release version filter, got %v", buildFilters)
+	}
+}
+
 func TestWaitForBuildByNumberOrUploadFailurePrefersRequestedVersionFormat(t *testing.T) {
 	resetEquivalentVersionNotes()
 
