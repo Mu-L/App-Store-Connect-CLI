@@ -409,6 +409,11 @@
     "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/c3/12/31/c31231ef-8a43-d6dd-84e2-23728b669d59/AppIcon-0-0-1x_U007epad-0-0-0-1-0-0-85-220-0.png/512x512bb.jpg"
   },
   {
+    "app": "DuoCam Multicam Video Camera",
+    "link": "https://apps.apple.com/us/app/duocam-multicam-video-camera/id1482277903?uo=4",
+    "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/f5/49/21/f5492122-83dc-594c-82ae-3010784cb984/AppIcon-0-0-1x_U007ephone-0-1-0-sRGB-85-220.png/512x512bb.jpg"
+  },
+  {
     "app": "Echo Sleep: AI Sleep Sounds",
     "link": "https://apps.apple.com/us/app/echo-sleep-ai-sleep-sounds/id6746497347?uo=4",
     "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/98/d0/fe/98d0feb7-d137-eb25-a475-9c06caf643ed/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/512x512bb.jpg"
@@ -422,6 +427,11 @@
     "app": "EduSwipe: AI Flashcards & SRS",
     "link": "https://apps.apple.com/us/app/eduswipe-ai-flashcards-srs/id6744727106?uo=4",
     "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/23/60/71/236071d7-7827-efd9-4c8f-03db0cee6aa9/AppIcon-0-0-1x_U007epad-0-1-85-220.png/512x512bb.jpg"
+  },
+  {
+    "app": "Elite Soccer Tactic Board",
+    "link": "https://apps.apple.com/us/app/elite-soccer-tactic-board/id6476522645?uo=4",
+    "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/22/e0/85/22e085b9-1969-da7c-4d35-3bfe75009463/SoccerIcon-0-0-1x_U007epad-0-0-0-1-0-0-sRGB-85-220.png/512x512bb.jpg"
   },
   {
     "app": "Embers to Dyson",
@@ -1321,6 +1331,11 @@
     "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/52/db/cc/52dbcc8f-c4aa-2cf0-36f9-bdeacf943fd7/AppIcon-0-1x_U007epad-0-11-0-85-220-0.png/512x512bb.jpg"
   },
   {
+    "app": "Ring Widget",
+    "link": "https://apps.apple.com/us/app/ring-widget/id1663323988?uo=4",
+    "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/f9/a4/20/f9a420ea-1b6b-83f4-25b5-488aef5a11db/AppIcon-0-0-1x_U007epad-0-1-sRGB-85-220.png/512x512bb.jpg"
+  },
+  {
     "app": "Ripple News - AI Personal News",
     "link": "https://apps.apple.com/us/app/ripple-news-ai-personal-news/id6758356024?uo=4",
     "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/19/33/17/193317c5-5112-6151-9fd9-5b98ac41b52d/AppIcon-0-0-1x_U007ephone-0-1-85-220.png/512x512bb.jpg"
@@ -1369,6 +1384,11 @@
     "app": "Scooter Tools",
     "link": "https://apps.apple.com/us/app/scooter-tools/id6452079114?uo=4",
     "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/cf/8e/88/cf8e88b7-50bc-e82f-f37b-734549d82fcd/AppIcon-0-1x_U007epad-0-1-85-220-0.png/512x512bb.jpg"
+  },
+  {
+    "app": "Secure Storage: Private Vault",
+    "link": "https://apps.apple.com/us/app/secure-storage-private-vault/id6794763277?uo=4",
+    "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/02/4e/89/024e8960-34e7-b77b-3da3-d293b7da39b5/SecureStorage-0-0-1x_U007ephone-0-1-0-sRGB-85-220.png/512x512bb.jpg"
   },
   {
     "app": "Set - Strength Log",
@@ -1574,6 +1594,11 @@
     "app": "Sunbreak: Nightly App Blocker",
     "link": "https://apps.apple.com/us/app/sunbreak-nightly-app-blocker/id6752121964",
     "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/6d/87/66/6d87668f-1acf-38dc-9242-4e571ea81a0e/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/512x512bb.jpg"
+  },
+  {
+    "app": "Sunrise Sunset Time SolarWatch",
+    "link": "https://apps.apple.com/us/app/sunrise-sunset-time-solarwatch/id1191365122?uo=4",
+    "icon": "https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/07/93/2e/07932e05-1ccc-04ea-7dc9-65ed5dffcf1c/AppIcon-0-0-1x_U007epad-0-0-0-1-0-0-sRGB-85-220.png/512x512bb.jpg"
   },
   {
     "app": "Super Shot: EXIF Photo Frame",

@@ -57,9 +57,8 @@ func (c *Client) doOnce(
 			drainPublicRetryResponse(resp.Body)
 			retryAfter := publicRetryDelay(resp.Header, time.Now(), maxDelay)
 			return &asc.RetryableError{
-				Err:                     statusErr,
-				RetryAfter:              retryAfter,
-				PreserveErrorOnDeadline: true,
+				Err:        statusErr,
+				RetryAfter: retryAfter,
 			}
 		}
 		return statusErr
@@ -82,6 +81,12 @@ func drainPublicRetryResponse(body io.Reader) {
 func unwrapRetryableError(err error) error {
 	if err == nil {
 		return nil
+	}
+	// An explicit cancellation is operator intent, not an exhausted storefront
+	// retry. Keep the shared cancellation wrapper so errors.Is still observes
+	// context.Canceled instead of reducing it to Apple's last HTTP status.
+	if errors.Is(err, context.Canceled) {
+		return err
 	}
 	if retryErr, ok := errors.AsType[*asc.RetryableError](err); ok {
 		return retryErr.Err

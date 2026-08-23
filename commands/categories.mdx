@@ -13,7 +13,15 @@ Category commands manage App Store categories for your app, including primary an
 List available App Store categories.
 
 <ParamField path="--limit" type="integer" default="200">
-  Maximum results to fetch (1-200)
+  Maximum results per page (1-200)
+</ParamField>
+
+<ParamField path="--next" type="string">
+  Fetch the next page using a `links.next` URL
+</ParamField>
+
+<ParamField path="--paginate" type="boolean" default="false">
+  Automatically fetch all pages (aggregate results)
 </ParamField>
 
 <ParamField path="--output" type="string" default="json">
@@ -25,7 +33,14 @@ List available App Store categories.
 ```bash  theme={null}
 asc categories list
 asc categories list --output table
+asc categories list --paginate
+asc categories list --next "<links.next>"
+asc categories list --paginate --next "<links.next>"
 ```
+
+Use `--next` with the `links.next` URL from a previous response to resume from
+that page. Do not combine `--next` with `--limit`; the cursor already carries
+the page size.
 
 **Response:**
 
@@ -53,7 +68,11 @@ asc categories list --output table
         "platforms": ["IOS", "MAC_OS"]
       }
     }
-  ]
+  ],
+  "links": {
+    "self": "https://api.appstoreconnect.apple.com/v1/appCategories?limit=200",
+    "next": "https://api.appstoreconnect.apple.com/v1/appCategories?cursor=NEXT_CURSOR&limit=200"
+  }
 }
 ```
 
