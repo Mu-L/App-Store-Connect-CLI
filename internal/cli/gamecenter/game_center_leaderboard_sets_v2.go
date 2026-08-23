@@ -487,12 +487,12 @@ func GameCenterLeaderboardSetMembersV2SetCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "set",
-		ShortUsage: "asc game-center leaderboard-sets v2 members set --set-id \"SET_ID\" --leaderboard-ids \"id1,id2,id3\" --confirm",
+		ShortUsage: "asc game-center leaderboard-sets v2 members set --set-id \"SET_ID\" --leaderboard-ids \"id1,id2,id3\" [--confirm]",
 		ShortHelp:  "Replace all leaderboard members in a leaderboard set (v2).",
 		LongHelp: `Replace all leaderboard members in a leaderboard set (v2).
 
 This command replaces ALL members of a leaderboard set with the specified leaderboard IDs.
-Because replacement can remove existing members, --confirm is required.
+Because replacement can remove existing members, pass --confirm now; it will be required in 5.0.0.
 To remove all members, pass an empty string for --leaderboard-ids with --confirm.
 
 Examples:
@@ -518,9 +518,8 @@ Examples:
 				return shared.MissingRequiredUsageError("--leaderboard-ids")
 			}
 
-			if !*confirm {
-				fmt.Fprintln(os.Stderr, "Error: --confirm is required to replace all members")
-				return shared.MissingRequiredUsageError("--confirm")
+			if err := validateGameCenterReplacementConfirm(fs, *confirm); err != nil {
+				return err
 			}
 
 			ids := shared.SplitUniqueCSV(leaderboardIDs.String())

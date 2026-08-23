@@ -10,7 +10,7 @@ import (
 	"github.com/peterbourgon/ff/v3/ffcli"
 )
 
-func TestGameCenterGroupRelationshipReplacementsRequireConfirm(t *testing.T) {
+func TestGameCenterGroupRelationshipReplacementsWarnWithoutConfirmDuringCompatibilityWindow(t *testing.T) {
 	isolateGameCenterAuthEnv(t)
 
 	commands := map[string]func() *ffcli.Command{
@@ -34,13 +34,10 @@ func TestGameCenterGroupRelationshipReplacementsRequireConfirm(t *testing.T) {
 				stderr := captureGameCenterStderr(t, func() {
 					err = cmd.Exec(context.Background(), []string{})
 				})
-				if !errors.Is(err, flag.ErrHelp) {
-					t.Fatalf("replacement without --confirm should fail validation before auth, got %v", err)
+				if errors.Is(err, flag.ErrHelp) {
+					t.Fatalf("replacement without --confirm must remain compatible before 5.0.0, got %v", err)
 				}
-				if err.Error() != "--confirm" {
-					t.Fatalf("error = %q, want missing parameter %q", err.Error(), "--confirm")
-				}
-				want := "Error: --confirm is required to replace group " + name + " relationships\n"
+				want := gameCenterReplacementConfirmWarning + "\n"
 				if stderr != want {
 					t.Fatalf("stderr = %q, want %q", stderr, want)
 				}
@@ -93,6 +90,51 @@ func TestGameCenterRelationshipReplacementConfirmFlagsAreExperimental(t *testing
 			}
 			if !strings.HasPrefix(confirm.Usage, "[experimental] ") {
 				t.Fatalf("--confirm usage = %q, want [experimental] prefix", confirm.Usage)
+			}
+		})
+	}
+}
+
+func TestGameCenterRelationshipReplacementRejectsExplicitFalseConfirm(t *testing.T) {
+	isolateGameCenterAuthEnv(t)
+	commands := map[string]struct {
+		command func() *ffcli.Command
+		args    []string
+	}{
+		"group achievements": {
+			command: GameCenterGroupAchievementsSetCommand,
+			args:    []string{"--group-id", "group-1", "--ids", "achievement-1"},
+		},
+		"group leaderboards": {
+			command: GameCenterGroupLeaderboardsSetCommand,
+			args:    []string{"--group-id", "group-1", "--ids", "leaderboard-1"},
+		},
+		"leaderboard-set members": {
+			command: GameCenterLeaderboardSetMembersSetCommand,
+			args:    []string{"--set-id", "set-1", "--leaderboard-ids", "leaderboard-1"},
+		},
+		"leaderboard-set v2 members": {
+			command: GameCenterLeaderboardSetMembersV2SetCommand,
+			args:    []string{"--set-id", "set-1", "--leaderboard-ids", "leaderboard-1"},
+		},
+	}
+
+	for name, test := range commands {
+		t.Run(name, func(t *testing.T) {
+			cmd := test.command()
+			args := append(append([]string{}, test.args...), "--confirm=false")
+			if err := cmd.FlagSet.Parse(args); err != nil {
+				t.Fatalf("parse flags: %v", err)
+			}
+			var err error
+			stderr := captureGameCenterStderr(t, func() {
+				err = cmd.Exec(context.Background(), nil)
+			})
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("explicit false --confirm should fail validation before auth, got %v", err)
+			}
+			if stderr != "Error: --confirm must be true when specified\n" {
+				t.Fatalf("stderr = %q", stderr)
 			}
 		})
 	}

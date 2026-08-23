@@ -337,7 +337,7 @@ func GameCenterGroupAchievementsCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "achievements",
-		ShortUsage: "asc game-center groups achievements set --group-id \"GROUP_ID\" --ids \"ACH_1,ACH_2\" --confirm",
+		ShortUsage: "asc game-center groups achievements set --group-id \"GROUP_ID\" --ids \"ACH_1,ACH_2\" [--confirm]",
 		ShortHelp:  "Manage group achievements relationships.",
 		LongHelp: `Manage group achievements relationships.
 
@@ -465,7 +465,7 @@ func GameCenterGroupAchievementsSetCommand() *ffcli.Command {
 		ShortHelp:  "Replace group achievements relationships.",
 		LongHelp: `Replace group achievements relationships.
 
-Because replacement can remove existing relationships, --confirm is required.
+Because replacement can remove existing relationships, pass --confirm now; it will be required in 5.0.0.
 
 Examples:
   asc game-center groups achievements set --group-id "GROUP_ID" --ids "ACH_1,ACH_2" --confirm
@@ -483,9 +483,8 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --ids is required")
 				return shared.MissingRequiredUsageError("--ids")
 			}
-			if !*confirm {
-				fmt.Fprintln(os.Stderr, "Error: --confirm is required to replace group achievements relationships")
-				return shared.MissingRequiredUsageError("--confirm")
+			if err := validateGameCenterReplacementConfirm(fs, *confirm); err != nil {
+				return err
 			}
 
 			client, err := shared.GetASCClient()
@@ -518,7 +517,7 @@ func GameCenterGroupLeaderboardsCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "leaderboards",
-		ShortUsage: "asc game-center groups leaderboards set --group-id \"GROUP_ID\" --ids \"LB_1,LB_2\" --confirm",
+		ShortUsage: "asc game-center groups leaderboards set --group-id \"GROUP_ID\" --ids \"LB_1,LB_2\" [--confirm]",
 		ShortHelp:  "Manage group leaderboards relationships.",
 		LongHelp: `Manage group leaderboards relationships.
 
@@ -646,7 +645,7 @@ func GameCenterGroupLeaderboardsSetCommand() *ffcli.Command {
 		ShortHelp:  "Replace group leaderboards relationships.",
 		LongHelp: `Replace group leaderboards relationships.
 
-Because replacement can remove existing relationships, --confirm is required.
+Because replacement can remove existing relationships, pass --confirm now; it will be required in 5.0.0.
 
 Examples:
   asc game-center groups leaderboards set --group-id "GROUP_ID" --ids "LB_1,LB_2" --confirm
@@ -664,9 +663,8 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --ids is required")
 				return shared.MissingRequiredUsageError("--ids")
 			}
-			if !*confirm {
-				fmt.Fprintln(os.Stderr, "Error: --confirm is required to replace group leaderboards relationships")
-				return shared.MissingRequiredUsageError("--confirm")
+			if err := validateGameCenterReplacementConfirm(fs, *confirm); err != nil {
+				return err
 			}
 
 			client, err := shared.GetASCClient()

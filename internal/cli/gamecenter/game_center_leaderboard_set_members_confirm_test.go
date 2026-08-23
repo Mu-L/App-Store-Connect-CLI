@@ -9,7 +9,7 @@ import (
 	"github.com/peterbourgon/ff/v3/ffcli"
 )
 
-func TestGameCenterLeaderboardSetMembersReplacementRequiresConfirm(t *testing.T) {
+func TestGameCenterLeaderboardSetMembersReplacementWarnsWithoutConfirmDuringCompatibilityWindow(t *testing.T) {
 	isolateGameCenterAuthEnv(t)
 
 	commands := map[string]func() *ffcli.Command{
@@ -31,14 +31,12 @@ func TestGameCenterLeaderboardSetMembersReplacementRequiresConfirm(t *testing.T)
 				stderr := captureGameCenterStderr(t, func() {
 					err = cmd.Exec(context.Background(), []string{})
 				})
-				if !errors.Is(err, flag.ErrHelp) {
-					t.Fatalf("replacement without --confirm should fail validation before auth, got %v", err)
+				if errors.Is(err, flag.ErrHelp) {
+					t.Fatalf("replacement without --confirm must remain compatible before 5.0.0, got %v", err)
 				}
-				if err.Error() != "--confirm" {
-					t.Fatalf("error = %q, want missing parameter %q", err.Error(), "--confirm")
-				}
-				if stderr != "Error: --confirm is required to replace all members\n" {
-					t.Fatalf("stderr = %q, want exact missing-confirm diagnostic", stderr)
+				want := gameCenterReplacementConfirmWarning + "\n"
+				if stderr != want {
+					t.Fatalf("stderr = %q, want %q", stderr, want)
 				}
 			})
 		}
