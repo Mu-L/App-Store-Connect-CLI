@@ -1591,6 +1591,39 @@ func TestStoreCredentialsFallbackToConfig(t *testing.T) {
 	}
 }
 
+func TestStoreCredentials_TrimsKeychainProfileNameBeforeSelectingDefault(t *testing.T) {
+	newKr, _ := withSeparateKeyrings(t)
+
+	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8"); err != nil {
+		t.Fatalf("StoreCredentials() error: %v", err)
+	}
+
+	creds, err := GetCredentials("spaced")
+	if err != nil {
+		t.Fatalf("GetCredentials(trimmed profile) error: %v", err)
+	}
+	if creds.KeyID != "KEY123" || creds.IssuerID != "ISS456" {
+		t.Fatalf("expected trimmed keychain profile credentials, got %+v", creds)
+	}
+	defaultCreds, err := GetCredentials("")
+	if err != nil {
+		t.Fatalf("GetCredentials(default) error: %v", err)
+	}
+	if defaultCreds.KeyID != "KEY123" || defaultCreds.IssuerID != "ISS456" {
+		t.Fatalf("expected trimmed profile to remain default, got %+v", defaultCreds)
+	}
+
+	items, err := newKr.Keys()
+	if err != nil {
+		t.Fatalf("keychain Keys() error: %v", err)
+	}
+	for _, item := range items {
+		if strings.Contains(item, "  spaced  ") {
+			t.Fatalf("expected keychain profile key to use trimmed name, got %q", item)
+		}
+	}
+}
+
 func TestStoreCredentials_RemovesStaleGlobalCredentialWhenLocalConfigActive(t *testing.T) {
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "0")
 

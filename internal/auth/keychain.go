@@ -381,6 +381,7 @@ func StoreCredentials(name, keyID, issuerID, keyPath string) error {
 
 // StoreCredentialsWithKeyType stores credentials with an explicit App Store Connect key type.
 func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string) error {
+	name = strings.TrimSpace(name)
 	payload := credentialPayload{
 		KeyID:          keyID,
 		IssuerID:       issuerID,
