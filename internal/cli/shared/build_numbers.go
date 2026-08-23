@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -538,9 +537,9 @@ func findPreReleaseVersionIDsForVersions(ctx context.Context, client *asc.Client
 // "1.2" and "1.2.0" as the same version but only exposes the format that was
 // uploaded first through filter[version], so a lookup that finds nothing under
 // the requested format has to retry the equivalent one before concluding the
-// version does not exist. Leading zeros are normalized the same way ("1.02.0"
-// also matches "1.2.0"), and versions that are not purely numeric are returned
-// unchanged.
+// version does not exist. Only the trailing ".0" equivalence is inferred;
+// other spellings, including leading-zero variants, are preserved. Versions
+// that are not purely numeric are returned unchanged.
 func versionQueryVariants(version string) []string {
 	trimmed := strings.TrimSpace(version)
 	if trimmed == "" {
@@ -560,43 +559,26 @@ func versionQueryVariants(version string) []string {
 		variants = append(variants, candidate)
 	}
 
-	segments, ok := normalizedVersionSegments(trimmed)
-	if !ok {
-		return variants
+	segments := strings.Split(trimmed, ".")
+	for _, segment := range segments {
+		if segment == "" {
+			return variants
+		}
+		for _, ch := range segment {
+			if ch < '0' || ch > '9' {
+				return variants
+			}
+		}
 	}
-	appendVariant(strings.Join(segments, "."))
 
 	switch {
 	case len(segments) == 2:
-		appendVariant(strings.Join(append(slices.Clone(segments), "0"), "."))
+		appendVariant(trimmed + ".0")
 	case len(segments) == 3 && segments[2] == "0":
 		appendVariant(strings.Join(segments[:2], "."))
 	}
 
 	return variants
-}
-
-// normalizedVersionSegments strips insignificant leading zeros from each
-// numeric segment. It reports false for versions that are not purely numeric.
-func normalizedVersionSegments(version string) ([]string, bool) {
-	segments := strings.Split(version, ".")
-	normalized := make([]string, 0, len(segments))
-	for _, segment := range segments {
-		if segment == "" {
-			return nil, false
-		}
-		for _, ch := range segment {
-			if ch < '0' || ch > '9' {
-				return nil, false
-			}
-		}
-		trimmed := strings.TrimLeft(segment, "0")
-		if trimmed == "" {
-			trimmed = "0"
-		}
-		normalized = append(normalized, trimmed)
-	}
-	return normalized, true
 }
 
 var (
