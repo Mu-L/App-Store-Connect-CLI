@@ -111,6 +111,24 @@ func TestRunRepeatedFlagNameParseFailurePointsToFailingLeaf(t *testing.T) {
 	}
 }
 
+func TestRunEarlierRepeatedFlagParseFailureKeepsEarlierOwner(t *testing.T) {
+	resetReportFlags(t)
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{"--version=maybe", "builds", "list", "--version", "1.2.3"}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "asc --help") {
+		t.Fatalf("stderr = %q, want root help guidance", stderr)
+	}
+	if strings.Contains(stderr, "asc builds list --help") {
+		t.Fatalf("stderr = %q, later flag must not replace failing root owner", stderr)
+	}
+}
+
 func TestRunRootFlagParseFailureIgnoresFlagMarkerInsideInvalidValue(t *testing.T) {
 	resetReportFlags(t)
 	stdout, stderr := captureCommandOutput(t, func() {
@@ -126,6 +144,24 @@ func TestRunRootFlagParseFailureIgnoresFlagMarkerInsideInvalidValue(t *testing.T
 	}
 	if strings.Contains(stderr, "asc builds list --help") {
 		t.Fatalf("stderr = %q, must not point to leaf help for a root flag", stderr)
+	}
+}
+
+func TestRunRootFlagParseFailureUsesRightmostMixedMarker(t *testing.T) {
+	resetReportFlags(t)
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{"--strict-auth=foo for flag -limit: x", "builds", "list"}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "asc --help") {
+		t.Fatalf("stderr = %q, want root help guidance", stderr)
+	}
+	if strings.Contains(stderr, "asc builds list --help") {
+		t.Fatalf("stderr = %q, embedded marker must not replace the diagnostic suffix", stderr)
 	}
 }
 

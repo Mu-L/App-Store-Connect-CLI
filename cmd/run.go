@@ -436,6 +436,9 @@ func printParseFailure(parseErr error, parseOutput string, analysis invocationAn
 
 func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput string) string {
 	flagName := parseFailureFlagName(parseOutput)
+	invalidValue, hasInvalidValue := parseFailureInvalidValue(parseOutput)
+	firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
+	missingArgument := strings.HasPrefix(firstLine, "flag needs an argument:")
 	command := root
 	path := []string{root.Name}
 	owner := ""
@@ -448,9 +451,25 @@ func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput str
 			continue
 		}
 		trimmed := strings.TrimLeft(token, "-")
-		name, _ := splitFlagToken(trimmed)
+		name, hasInlineValue := splitFlagToken(trimmed)
 		if name == flagName && command.FlagSet.Lookup(name) != nil {
-			owner = strings.Join(path, " ")
+			currentOwner := strings.Join(path, " ")
+			if owner == "" {
+				owner = currentOwner
+			}
+			if hasInvalidValue {
+				providedValue := ""
+				if hasInlineValue {
+					_, providedValue, _ = strings.Cut(trimmed, "=")
+				} else if index+1 < len(args) {
+					providedValue = args[index+1]
+				}
+				if providedValue == invalidValue {
+					return currentOwner
+				}
+			} else if missingArgument && !hasInlineValue && index+1 >= len(args) {
+				return currentOwner
+			}
 		}
 		next, consumed := consumeFlagToken(command.FlagSet, token, args, index)
 		if !consumed {
@@ -466,16 +485,43 @@ func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput str
 
 func parseFailureFlagName(parseOutput string) string {
 	firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
-	for _, marker := range []string{" for flag -", " for -", "argument: -"} {
-		markerIndex := strings.LastIndex(firstLine, marker)
-		if markerIndex == -1 {
+	markerIndex, marker := rightmostParseFailureMarker(firstLine)
+	if markerIndex == -1 {
+		return ""
+	}
+	remainder := firstLine[markerIndex+len(marker):]
+	name, _, _ := strings.Cut(remainder, ":")
+	return strings.TrimSpace(name)
+}
+
+func parseFailureInvalidValue(parseOutput string) (string, bool) {
+	firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
+	markerIndex, _ := rightmostParseFailureMarker(firstLine)
+	if markerIndex == -1 {
+		return "", false
+	}
+	prefix := strings.TrimSpace(firstLine[:markerIndex])
+	for _, diagnosticPrefix := range []string{"invalid boolean value ", "invalid value "} {
+		quotedValue, found := strings.CutPrefix(prefix, diagnosticPrefix)
+		if !found {
 			continue
 		}
-		remainder := firstLine[markerIndex+len(marker):]
-		name, _, _ := strings.Cut(remainder, ":")
-		return strings.TrimSpace(name)
+		value, err := strconv.Unquote(quotedValue)
+		return value, err == nil
 	}
-	return ""
+	return "", false
+}
+
+func rightmostParseFailureMarker(firstLine string) (int, string) {
+	rightmostIndex := -1
+	rightmostMarker := ""
+	for _, marker := range []string{" for flag -", " for -", "argument: -"} {
+		if markerIndex := strings.LastIndex(firstLine, marker); markerIndex > rightmostIndex {
+			rightmostIndex = markerIndex
+			rightmostMarker = marker
+		}
+	}
+	return rightmostIndex, rightmostMarker
 }
 
 func isUnknownFlagParseFailure(parseErr error, parseOutput string) bool {
