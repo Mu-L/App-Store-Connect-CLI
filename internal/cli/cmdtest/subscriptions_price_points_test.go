@@ -244,7 +244,7 @@ func TestSubscriptionsPricePointsListStreamOutput(t *testing.T) {
 	}
 }
 
-func TestSubscriptionsPricePointsListStreamAcceptsCaseInsensitiveJSONOutput(t *testing.T) {
+func TestSubscriptionsPricePointsListStreamAcceptsNormalizedJSONOutput(t *testing.T) {
 	setupAuth(t)
 
 	originalTransport := http.DefaultTransport
@@ -260,28 +260,39 @@ func TestSubscriptionsPricePointsListStreamAcceptsCaseInsensitiveJSONOutput(t *t
 		}, nil
 	})
 
-	root := RootCommand("1.2.3")
-	root.FlagSet.SetOutput(io.Discard)
-	stdout, stderr := captureOutput(t, func() {
-		if err := root.Parse([]string{
-			"subscriptions", "pricing", "price-points", "list",
-			"--subscription-id", "8000000001",
-			"--paginate",
-			"--stream",
-			"--output", "JSON",
-		}); err != nil {
-			t.Fatalf("parse error: %v", err)
-		}
-		if err := root.Run(context.Background()); err != nil {
-			t.Fatalf("run error: %v", err)
-		}
-	})
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{name: "uppercase", value: "JSON"},
+		{name: "padded", value: " json "},
+		{name: "empty fallback", value: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := RootCommand("1.2.3")
+			root.FlagSet.SetOutput(io.Discard)
+			stdout, stderr := captureOutput(t, func() {
+				if err := root.Parse([]string{
+					"subscriptions", "pricing", "price-points", "list",
+					"--subscription-id", "8000000001",
+					"--paginate",
+					"--stream",
+					"--output", tc.value,
+				}); err != nil {
+					t.Fatalf("parse error: %v", err)
+				}
+				if err := root.Run(context.Background()); err != nil {
+					t.Fatalf("run error: %v", err)
+				}
+			})
 
-	if stderr != "" {
-		t.Fatalf("expected empty stderr, got %q", stderr)
-	}
-	if !strings.Contains(stdout, `"id":"pp-1"`) {
-		t.Fatalf("stdout = %q, want streamed JSON output", stdout)
+			if stderr != "" {
+				t.Fatalf("expected empty stderr, got %q", stderr)
+			}
+			if !strings.Contains(stdout, `"id":"pp-1"`) {
+				t.Fatalf("stdout = %q, want streamed JSON output", stdout)
+			}
+		})
 	}
 }
 
