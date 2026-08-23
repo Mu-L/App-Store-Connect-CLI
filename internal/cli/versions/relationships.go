@@ -34,6 +34,23 @@ var appStoreVersionRelationshipKinds = map[string]relationshipKind{
 	"gameCenterAppVersion":           relationshipSingle,
 }
 
+func paginationConflictParameter(limit int, next string, paginate bool) string {
+	parameters := make([]string, 0, 3)
+	if limit != 0 {
+		parameters = append(parameters, "--limit")
+	}
+	if strings.TrimSpace(next) != "" {
+		parameters = append(parameters, "--next")
+	}
+	if paginate {
+		parameters = append(parameters, "--paginate")
+	}
+	if len(parameters) == 1 {
+		return parameters[0]
+	}
+	return ""
+}
+
 // VersionsRelationshipsCommand returns the links subcommand.
 func VersionsRelationshipsCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("versions links", flag.ExitOnError)
@@ -93,7 +110,11 @@ Examples:
 
 			if kind == relationshipSingle && (trimmedNext != "" || *paginate || *limit != 0) {
 				fmt.Fprintln(os.Stderr, "Error: --limit, --next, and --paginate are only valid for to-many relationships")
-				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "")
+				return shared.WithDiagnostic(
+					flag.ErrHelp,
+					shared.DiagnosticConflictingInput,
+					paginationConflictParameter(*limit, trimmedNext, *paginate),
+				)
 			}
 
 			client, err := shared.GetASCClient()
