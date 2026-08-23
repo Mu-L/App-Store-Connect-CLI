@@ -485,7 +485,7 @@ func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput str
 
 func parseFailureFlagName(parseOutput string) string {
 	firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
-	markerIndex, marker := rightmostParseFailureMarker(firstLine)
+	markerIndex, marker := parseFailureMarker(firstLine)
 	if markerIndex == -1 {
 		return ""
 	}
@@ -496,11 +496,15 @@ func parseFailureFlagName(parseOutput string) string {
 
 func parseFailureInvalidValue(parseOutput string) (string, bool) {
 	firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
-	markerIndex, _ := rightmostParseFailureMarker(firstLine)
+	markerIndex, _ := parseFailureMarker(firstLine)
 	if markerIndex == -1 {
 		return "", false
 	}
-	prefix := strings.TrimSpace(firstLine[:markerIndex])
+	return invalidValueFromDiagnosticPrefix(firstLine[:markerIndex])
+}
+
+func invalidValueFromDiagnosticPrefix(prefix string) (string, bool) {
+	prefix = strings.TrimSpace(prefix)
 	for _, diagnosticPrefix := range []string{"invalid boolean value ", "invalid value "} {
 		quotedValue, found := strings.CutPrefix(prefix, diagnosticPrefix)
 		if !found {
@@ -512,7 +516,29 @@ func parseFailureInvalidValue(parseOutput string) (string, bool) {
 	return "", false
 }
 
-func rightmostParseFailureMarker(firstLine string) (int, string) {
+func parseFailureMarker(firstLine string) (int, string) {
+	if strings.HasPrefix(firstLine, "invalid boolean value ") || strings.HasPrefix(firstLine, "invalid value ") {
+		bestIndex := -1
+		bestMarker := ""
+		for _, marker := range []string{" for flag -", " for -"} {
+			searchFrom := 0
+			for searchFrom < len(firstLine) {
+				relativeIndex := strings.Index(firstLine[searchFrom:], marker)
+				if relativeIndex == -1 {
+					break
+				}
+				markerIndex := searchFrom + relativeIndex
+				if _, valid := invalidValueFromDiagnosticPrefix(firstLine[:markerIndex]); valid &&
+					(bestIndex == -1 || markerIndex < bestIndex) {
+					bestIndex = markerIndex
+					bestMarker = marker
+				}
+				searchFrom = markerIndex + len(marker)
+			}
+		}
+		return bestIndex, bestMarker
+	}
+
 	rightmostIndex := -1
 	rightmostMarker := ""
 	for _, marker := range []string{" for flag -", " for -", "argument: -"} {

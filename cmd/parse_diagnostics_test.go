@@ -165,6 +165,26 @@ func TestRunRootFlagParseFailureUsesRightmostMixedMarker(t *testing.T) {
 	}
 }
 
+func TestRunRepeatedCustomFlagReasonDoesNotReplaceParserSuffix(t *testing.T) {
+	resetReportFlags(t)
+	stdout, stderr := captureCommandOutput(t, func() {
+		if code := Run([]string{
+			"reviews", "--stars", "1", "--stars", "2 for flag -version: x", "view",
+		}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "asc reviews --help") {
+		t.Fatalf("stderr = %q, want reviews group help guidance", stderr)
+	}
+	if strings.Contains(stderr, "asc reviews view --help") {
+		t.Fatalf("stderr = %q, reason text must not replace the parser suffix", stderr)
+	}
+}
+
 func TestRunParseFailurePreservesJSONAndJUnitContracts(t *testing.T) {
 	resetReportFlags(t)
 	stdout, stderr := captureCommandOutput(t, func() {
