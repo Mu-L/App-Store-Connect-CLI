@@ -81,15 +81,21 @@ const requiredAgreementRemediation = "Your team has an unaccepted or expired agr
 // remediationForAPIError returns operator guidance for an App Store Connect
 // error code, or an empty string when the code has no account-level cause.
 //
-// Apple returns the same cause under more than one prefix (FORBIDDEN and
-// FORBIDDEN_ERROR), so the match is on the final segment of the code.
+// Apple returns the same cause under the FORBIDDEN and FORBIDDEN_ERROR
+// prefixes, so accept either known prefix while matching the final segment.
 func remediationForAPIError(code string) string {
-	segment := strings.TrimSpace(code)
-	if index := strings.LastIndex(segment, "."); index >= 0 {
-		segment = segment[index+1:]
+	code = strings.TrimSpace(code)
+	index := strings.LastIndex(code, ".")
+	if index < 0 {
+		return ""
 	}
+	prefix := strings.ToUpper(strings.TrimSpace(code[:index]))
+	if prefix != "FORBIDDEN" && prefix != "FORBIDDEN_ERROR" {
+		return ""
+	}
+	segment := strings.ToUpper(strings.TrimSpace(code[index+1:]))
 
-	switch strings.ToUpper(segment) {
+	switch segment {
 	case "REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED", "PLA_NOT_VALID":
 		return requiredAgreementRemediation
 	default:
@@ -192,7 +198,7 @@ func (e *APIError) Is(target error) bool {
 		// status code as well as the canonical code string.
 		return strings.EqualFold(e.Code, "UNAUTHORIZED") || e.StatusCode == 401
 	case ErrForbidden:
-		return strings.EqualFold(e.Code, "FORBIDDEN") || e.StatusCode == 403
+		return hasAPIErrorCodePrefix(e.Code, "FORBIDDEN", "FORBIDDEN_ERROR") || e.StatusCode == 403
 	case ErrBadRequest:
 		return strings.EqualFold(e.Code, "BAD_REQUEST")
 	case ErrConflict:
@@ -200,4 +206,14 @@ func (e *APIError) Is(target error) bool {
 	default:
 		return false
 	}
+}
+
+func hasAPIErrorCodePrefix(code string, prefixes ...string) bool {
+	normalized := strings.ToUpper(strings.TrimSpace(code))
+	for _, prefix := range prefixes {
+		if normalized == prefix || strings.HasPrefix(normalized, prefix+".") {
+			return true
+		}
+	}
+	return false
 }

@@ -101,6 +101,8 @@ func TestRemediationForAPIError(t *testing.T) {
 		{name: "alternate prefix", code: "FORBIDDEN_ERROR.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED", wantAgreement: true},
 		{name: "program license agreement not valid", code: "FORBIDDEN_ERROR.PLA_NOT_VALID", wantAgreement: true},
 		{name: "lowercase", code: "forbidden.required_agreements_missing_or_expired", wantAgreement: true},
+		{name: "unrelated prefix", code: "STATE_ERROR.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED", wantAgreement: false},
+		{name: "similar forbidden prefix", code: "FORBIDDENISH.PLA_NOT_VALID", wantAgreement: false},
 		{name: "generic forbidden", code: "FORBIDDEN_ERROR", wantAgreement: false},
 		{name: "unauthorized", code: "NOT_AUTHORIZED", wantAgreement: false},
 		{name: "empty", code: "", wantAgreement: false},
@@ -116,6 +118,17 @@ func TestRemediationForAPIError(t *testing.T) {
 				t.Fatalf("expected no remediation for code %q, got %q", tt.code, remediation)
 			}
 		})
+	}
+}
+
+func TestAPIErrorIs_ForbiddenByQualifiedCodeWithoutStatus(t *testing.T) {
+	for _, code := range []string{
+		"FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED",
+		"FORBIDDEN_ERROR.PLA_NOT_VALID",
+	} {
+		if !errors.Is(&APIError{Code: code}, ErrForbidden) {
+			t.Fatalf("expected qualified code %q to match ErrForbidden without status", code)
+		}
 	}
 }
 
