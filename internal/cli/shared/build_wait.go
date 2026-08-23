@@ -541,7 +541,10 @@ func buildUploadStateDetails(details []asc.StateDetail) string {
 	parts := make([]string, 0, len(details))
 	for _, detail := range details {
 		code := strings.TrimSpace(detail.Code)
-		message := strings.TrimSpace(detail.Message)
+		message := strings.TrimSpace(detail.Description)
+		if message == "" {
+			message = strings.TrimSpace(detail.Message)
+		}
 		switch {
 		case code != "" && message != "":
 			parts = append(parts, fmt.Sprintf("%s (%s)", code, message))

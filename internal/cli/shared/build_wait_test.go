@@ -393,6 +393,24 @@ func TestBuildUploadFailureErrorLeavesUnknownFailuresUnchanged(t *testing.T) {
 	}
 }
 
+func TestBuildUploadFailureErrorPreservesDescriptionWhenMessageIsEmpty(t *testing.T) {
+	state := "FAILED"
+	upload := &asc.BuildUploadResponse{}
+	upload.Data.ID = "upload-1"
+	upload.Data.Attributes.State = &asc.AppMediaAssetState{
+		State:  &state,
+		Errors: []asc.StateDetail{{Code: "90054", Description: "raw App Store Connect description"}},
+	}
+
+	err := buildUploadFailureError(upload)
+	if err == nil {
+		t.Fatal("expected failure error")
+	}
+	if !strings.Contains(err.Error(), "raw App Store Connect description") {
+		t.Fatalf("expected raw description in %q", err)
+	}
+}
+
 func TestBuildUploadFailureErrorDoesNotGuessForMixedCodes(t *testing.T) {
 	state := "FAILED"
 	upload := &asc.BuildUploadResponse{}
