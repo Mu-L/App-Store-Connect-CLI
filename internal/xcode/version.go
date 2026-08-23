@@ -202,7 +202,7 @@ type BumpVersionResult struct {
 }
 
 func resolvedProjectDir(projectDir string) string {
-	projectDir = filepath.Clean(projectDir)
+	projectDir = trimTrailingPathSeparators(projectDir)
 	if projectDir == "" {
 		return "."
 	}
@@ -730,7 +730,7 @@ func findXcodeproj(projectDir string) (string, error) {
 	if projectDir == "" {
 		projectDir = "."
 	}
-	projectDir = filepath.Clean(projectDir)
+	projectDir = trimTrailingPathSeparators(projectDir)
 	if strings.HasSuffix(projectDir, ".xcodeproj") {
 		info, err := os.Stat(projectDir)
 		if err != nil {
@@ -760,6 +760,14 @@ func findXcodeproj(projectDir string) (string, error) {
 	default:
 		return "", fmt.Errorf("multiple .xcodeproj found in %s (%s); use --project to pick one", projectDir, strings.Join(matches, ", "))
 	}
+}
+
+func trimTrailingPathSeparators(path string) string {
+	minimumLength := len(filepath.VolumeName(path)) + 1
+	for len(path) > minimumLength && os.IsPathSeparator(path[len(path)-1]) {
+		path = path[:len(path)-1]
+	}
+	return path
 }
 
 // isVariableReference checks if a value is an Xcode variable like $(MARKETING_VERSION).
