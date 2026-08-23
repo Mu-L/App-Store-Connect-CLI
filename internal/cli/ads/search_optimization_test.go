@@ -458,6 +458,64 @@ func TestFetchSearchSuggestionsDetectsMoreWhenTotalCountIsOmitted(t *testing.T) 
 	}
 }
 
+func TestFetchSearchSuggestionsPreservesPrefixWhenTruncationProbeFails(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Pagination struct {
+				Offset   int `json:"offset"`
+				PageSize int `json:"pageSize"`
+			} `json:"pagination"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode suggestion request: %v", err)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, fmt.Sprintf("%s offset=%d pageSize=%d", r.URL.Path, body.Pagination.Offset, body.Pagination.PageSize))
+
+		switch {
+		case r.URL.Path == "/v1/suggestions/keywords/query" && body.Pagination.Offset == 0:
+			writeJSON(t, w, `{"result":[{"text":"keyword one","popularity":90},{"text":"keyword two","popularity":80}],"pagination":{"offset":0,"pageSize":2}}`)
+		case r.URL.Path == "/v1/suggestions/keywords/query" && body.Pagination.Offset == 2:
+			http.Error(w, "probe unavailable", http.StatusBadGateway)
+		case r.URL.Path == "/v1/suggestions/phrases/query":
+			writeJSON(t, w, `{"result":[{"phrase":"phrase one","popularity":70}],"pagination":{"offset":0,"pageSize":2,"totalCount":1}}`)
+		default:
+			t.Errorf("unexpected suggestion request: %s", requests[len(requests)-1])
+			http.Error(w, "unexpected pagination", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	client, err := appleads.NewClient(
+		appleads.Credentials{AccessToken: "token", AdAccountID: "account-1"},
+		appleads.WithPlatformBaseURL(server.URL+"/v1/"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := fetchSearchSuggestions(context.Background(), client, SearchOptimizationRequest{
+		AppID: "123456789", Country: "US", Limit: 2,
+	})
+	if err != nil {
+		t.Fatalf("fetchSearchSuggestions() error = %v", err)
+	}
+	if len(data.Suggestions) != 3 {
+		t.Fatalf("suggestions = %+v, want the bounded prefix plus the phrase result", data.Suggestions)
+	}
+	if !data.SuggestionsTruncated {
+		t.Fatal("suggestions should be conservatively marked truncated when the probe fails")
+	}
+	keywordSource := findOptimizationSource(t, data.Sources, "keyword_suggestions")
+	if keywordSource.Status != "unavailable" || keywordSource.Count != 2 {
+		t.Fatalf("keyword source = %+v, want unavailable with preserved prefix count", keywordSource)
+	}
+	if !strings.Contains(keywordSource.Error, "pagination truncation probe") || !strings.Contains(keywordSource.Error, "probe unavailable") {
+		t.Fatalf("keyword source diagnostic = %q, want the probe failure", keywordSource.Error)
+	}
+}
+
 func TestFetchSearchSuggestionsMarksOvershotBoundedPageAsTruncated(t *testing.T) {
 	requests := make(map[string][][2]int)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -393,9 +393,6 @@ func fetchOptimizationSuggestionsLimitedWithMore(ctx context.Context, client *ap
 		"sorting": []any{map[string]any{"field": "popularity", "order": "DESC"}},
 	}
 	items, more, err := queryOptimizationListBoundedWithMore[suggestionResponse](ctx, client, spec, body, 1000, limit)
-	if err != nil {
-		return nil, more, err
-	}
 	result := make([]SearchSuggestion, 0, len(items))
 	for _, item := range items {
 		text := strings.TrimSpace(item.Text)
@@ -406,7 +403,7 @@ func fetchOptimizationSuggestionsLimitedWithMore(ctx context.Context, client *ap
 			result = append(result, SearchSuggestion{Text: text, Popularity: item.Popularity, Kind: kind})
 		}
 	}
-	return result, more, nil
+	return result, more, err
 }
 
 func fetchOptimizationPopularity(ctx context.Context, client *appleads.Client, request SearchOptimizationRequest) ([]SearchPopularity, error) {
@@ -622,7 +619,7 @@ func queryOptimizationListBoundedWithMore[T any](ctx context.Context, client *ap
 			if !more && !envelope.Pagination.TotalCountPresent && len(envelope.Result) >= pageSize {
 				more, err = probeOptimizationListHasMore(ctx, client, spec, body, offset+len(envelope.Result))
 				if err != nil {
-					return items[:maxItems], false, err
+					return items[:maxItems], true, fmt.Errorf("pagination truncation probe for %s failed: %w", strings.Join(spec.CommandPath, " "), err)
 				}
 			}
 			return items[:maxItems], more, nil
