@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
 )
 
 func TestSubscriptionsPricePointsListPaginateUsesPerPageTimeout(t *testing.T) {
@@ -119,8 +121,62 @@ func TestSubscriptionsPricePointsListStreamRequiresPaginate(t *testing.T) {
 	}
 }
 
+func TestSubscriptionsPricePointsListStreamRejectsIncompatibleOutputFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "table output",
+			args:    []string{"--output", "table"},
+			wantErr: "--stream requires --output json",
+		},
+		{
+			name:    "markdown output",
+			args:    []string{"--output", "markdown"},
+			wantErr: "--stream requires --output json",
+		},
+		{
+			name:    "pretty JSON",
+			args:    []string{"--pretty"},
+			wantErr: "--stream cannot be combined with --pretty",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			args := []string{
+				"subscriptions", "pricing", "price-points", "list",
+				"--subscription-id", "8000000001",
+				"--paginate",
+				"--stream",
+			}
+			args = append(args, test.args...)
+
+			stdout, stderr, runErr := runRootCommand(t, args)
+			if runErr == nil {
+				t.Fatal("expected usage error, got nil")
+			}
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
+			}
+			if !strings.Contains(runErr.Error(), test.wantErr) {
+				t.Fatalf("error = %q, want it to contain %q", runErr, test.wantErr)
+			}
+			if stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", stdout)
+			}
+			if !strings.Contains(stderr, test.wantErr) {
+				t.Fatalf("stderr = %q, want it to contain %q", stderr, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestSubscriptionsPricePointsListStreamOutput(t *testing.T) {
 	setupAuth(t)
+	t.Setenv("ASC_DEFAULT_OUTPUT", "table")
 
 	originalTransport := http.DefaultTransport
 	t.Cleanup(func() {
