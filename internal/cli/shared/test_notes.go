@@ -78,7 +78,7 @@ func (e *TestNotesRecoveryError) Error() string {
 	locale := asc.SanitizeTerminalText(e.locale)
 	cause := "unknown error"
 	if e.cause != nil {
-		cause = asc.SanitizeTerminalText(e.cause.Error())
+		cause = redactTestNotes(asc.SanitizeTerminalText(e.cause.Error()), e.notes)
 	}
 	return fmt.Sprintf(
 		"build %q is available, but setting What to Test notes for locale %q failed: %s; retry without uploading the build again and reuse the original notes: asc builds test-notes create --build-id BUILD_ID --locale LOCALE --whats-new NOTES",
@@ -86,6 +86,18 @@ func (e *TestNotesRecoveryError) Error() string {
 		locale,
 		cause,
 	)
+}
+
+func redactTestNotes(message, notes string) string {
+	for _, candidate := range []string{
+		asc.SanitizeTerminalText(notes),
+		asc.SanitizeTerminalText(strings.TrimSpace(notes)),
+	} {
+		if candidate != "" {
+			message = strings.ReplaceAll(message, candidate, "(original notes omitted)")
+		}
+	}
+	return message
 }
 
 // Unwrap preserves API error status and exit classification.

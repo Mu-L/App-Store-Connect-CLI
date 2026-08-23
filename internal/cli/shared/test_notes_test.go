@@ -57,3 +57,14 @@ func TestNewTestNotesRecoveryErrorSeparatesHumanAndMachineRecovery(t *testing.T)
 		}
 	}
 }
+
+func TestNewTestNotesRecoveryErrorDoesNotEchoNotesFromServerDetail(t *testing.T) {
+	notes := "First line\nSecond line"
+	cause := errors.New("server rejected value: " + notes)
+
+	err := NewTestNotesRecoveryError("build-1", "en-US", notes, cause)
+	human := err.Error()
+	if strings.Contains(human, "First line") || strings.Contains(human, "Second line") {
+		t.Fatalf("human recovery error must not echo submitted notes from server detail: %q", human)
+	}
+}
