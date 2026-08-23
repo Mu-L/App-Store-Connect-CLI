@@ -10267,7 +10267,7 @@ func TestGetBetaGroupPublicLinkUsages(t *testing.T) {
 }
 
 func TestGetBetaGroupTesterUsages(t *testing.T) {
-	response := jsonResponse(http.StatusOK, `{"data":[{"type":"betaGroupMetrics","id":"metric-1","attributes":{"testerCount":12}}]}`)
+	response := jsonResponse(http.StatusOK, `{"data":[{"type":"appsBetaTesterUsages","dataPoints":[{"start":"2026-08-01T00:00:00Z","end":"2026-08-02T00:00:00Z","values":{"sessionCount":12,"crashCount":1,"feedbackCount":2}}],"dimensions":{"betaTesters":{"data":{"type":"betaTesters","id":"tester-1"}}}}],"links":{"self":"https://api.example.test/metrics"}}`)
 	client := newTestClient(t, func(req *http.Request) {
 		if req.Method != http.MethodGet {
 			t.Fatalf("expected GET, got %s", req.Method)
@@ -10281,8 +10281,22 @@ func TestGetBetaGroupTesterUsages(t *testing.T) {
 		assertAuthorized(t, req)
 	}, response)
 
-	if _, err := client.GetBetaGroupTesterUsages(context.Background(), "group-1"); err != nil {
+	metrics, err := client.GetBetaGroupTesterUsages(context.Background(), "group-1")
+	if err != nil {
 		t.Fatalf("GetBetaGroupTesterUsages() error: %v", err)
+	}
+	if len(metrics.Data) != 1 || len(metrics.Data[0].DataPoints) != 1 || metrics.Data[0].Dimensions == nil || metrics.Data[0].Dimensions.BetaTesters == nil || metrics.Data[0].Dimensions.BetaTesters.Data == nil || metrics.Data[0].Dimensions.BetaTesters.Data.ID != "tester-1" {
+		t.Fatalf("unexpected decoded metrics: %+v", metrics)
+	}
+}
+
+func TestBetaGroupTesterUsageDimensionDataAcceptsSchemaString(t *testing.T) {
+	var response BetaGroupTesterUsagesResponse
+	if err := json.Unmarshal([]byte(`{"data":[{"dimensions":{"betaTesters":{"data":"tester-1"}}}],"links":{}}`), &response); err != nil {
+		t.Fatalf("unexpected schema-shaped response error: %v", err)
+	}
+	if response.Data[0].Dimensions.BetaTesters.Data.ID != "tester-1" {
+		t.Fatalf("unexpected tester ID: %+v", response.Data[0].Dimensions.BetaTesters.Data)
 	}
 }
 
