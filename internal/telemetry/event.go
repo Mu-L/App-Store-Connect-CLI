@@ -489,6 +489,7 @@ var knownFailureParameters = map[string]struct{}{
 	"language":                          {},
 	"last-name":                         {},
 	"leaderboard-id":                    {},
+	"leaderboard-ids":                   {},
 	"leaderboard-set-id":                {},
 	"limit":                             {},
 	"link":                              {},
