@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +37,36 @@ func newBuildWaitTestClient(t *testing.T, transport buildWaitRoundTripFunc) *asc
 	writeECDSAPEM(t, keyPath)
 
 	httpClient := &http.Client{Transport: transport}
+	client, err := asc.NewClientWithHTTPClient("KEY123", "ISS456", keyPath, httpClient)
+	if err != nil {
+		t.Fatalf("NewClientWithHTTPClient() error: %v", err)
+	}
+	return client
+}
+
+func newBuildWaitServerTestClient(t *testing.T, server *httptest.Server) *asc.Client {
+	t.Helper()
+
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("url.Parse() error: %v", err)
+	}
+
+	httpClient := server.Client()
+	serverTransport := httpClient.Transport
+	httpClient.Transport = buildWaitRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		routedReq := req.Clone(req.Context())
+		routedURL := *req.URL
+		routedURL.Scheme = serverURL.Scheme
+		routedURL.Host = serverURL.Host
+		routedReq.URL = &routedURL
+		routedReq.Host = serverURL.Host
+		return serverTransport.RoundTrip(routedReq)
+	})
+
+	keyPath := filepath.Join(t.TempDir(), "key.p8")
+	writeECDSAPEM(t, keyPath)
+
 	client, err := asc.NewClientWithHTTPClient("KEY123", "ISS456", keyPath, httpClient)
 	if err != nil {
 		t.Fatalf("NewClientWithHTTPClient() error: %v", err)
@@ -659,18 +691,21 @@ func TestWaitForBuildByNumberOrUploadFailureFiltersNearMatchesAcrossPages(t *tes
 	resetEquivalentVersionNotes()
 
 	var buildFilters []string
-	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		if req.Method != http.MethodGet {
-			return nil, fmt.Errorf("expected GET, got %s", req.Method)
+			t.Errorf("expected GET, got %s", req.Method)
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+			return
 		}
 
 		switch req.URL.Path {
 		case "/v1/preReleaseVersions":
 			if got := req.URL.Query().Get("filter[version]"); got != "1.2.0" && req.URL.Query().Get("cursor") == "" {
-				return nil, fmt.Errorf("filter[version] = %q, want 1.2.0", got)
+				t.Errorf("filter[version] = %q, want 1.2.0", got)
 			}
 			if req.URL.Query().Get("cursor") == "page-2" {
-				return buildWaitJSONResponse(`{
+				_, _ = io.WriteString(w, `{
 					"data": [
 						{
 							"type": "preReleaseVersions",
@@ -680,8 +715,9 @@ func TestWaitForBuildByNumberOrUploadFailureFiltersNearMatchesAcrossPages(t *tes
 					],
 					"links": {}
 				}`)
+				return
 			}
-			return buildWaitJSONResponse(`{
+			_, _ = io.WriteString(w, `{
 				"data": [
 					{
 						"type": "preReleaseVersions",
@@ -693,7 +729,7 @@ func TestWaitForBuildByNumberOrUploadFailureFiltersNearMatchesAcrossPages(t *tes
 			}`)
 		case "/v1/builds":
 			buildFilters = append(buildFilters, req.URL.Query().Get("filter[preReleaseVersion]"))
-			return buildWaitJSONResponse(`{
+			_, _ = io.WriteString(w, `{
 				"data": [
 					{
 						"type": "builds",
@@ -704,9 +740,12 @@ func TestWaitForBuildByNumberOrUploadFailureFiltersNearMatchesAcrossPages(t *tes
 				"links": {}
 			}`)
 		default:
-			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+			t.Errorf("unexpected path: %s", req.URL.Path)
+			http.NotFound(w, req)
 		}
-	})
+	}))
+	t.Cleanup(server.Close)
+	client := newBuildWaitServerTestClient(t, server)
 
 	buildResp, err := WaitForBuildByNumberOrUploadFailure(context.Background(), client, "app-1", "", "1.2.0", "42", "IOS", time.Millisecond)
 	if err != nil {
