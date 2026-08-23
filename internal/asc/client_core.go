@@ -512,6 +512,9 @@ func withRetry[T any](ctx context.Context, fn func() (T, error), opts RetryOptio
 		// remain terminal to outer recovery loops instead of being hidden by
 		// the retry-budget marker.
 		if retryCount >= opts.MaxRetries {
+			if contextErr := ctx.Err(); contextErr != nil {
+				return zero, &retryCancelledError{contextErr: contextErr, err: err}
+			}
 			return zero, &retryBudgetExceededError{retries: retryCount + 1, err: err}
 		}
 

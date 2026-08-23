@@ -302,6 +302,64 @@ func TestWithRetry_ExplicitCancellationWinsWhenOptedInFallbackExceedsContextBudg
 	}
 }
 
+func TestWithRetry_FinalFallbackAttemptPreservesExplicitCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var attempts atomic.Int32
+	_, err := WithRetry(ctx, func() (struct{}, error) {
+		if attempts.Add(1) == 2 {
+			cancel()
+		}
+		return struct{}{}, &RetryableError{
+			Err:                     buildRetryableError(http.StatusTooManyRequests, 0, nil),
+			PreserveErrorOnDeadline: true,
+		}
+	}, RetryOptions{MaxRetries: 1, BaseDelay: time.Millisecond, MaxDelay: time.Second})
+
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("expected the final allowed attempt, got %d attempts", got)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want explicit context cancellation", err)
+	}
+	apiErr, ok := errors.AsType[*APIError](err)
+	if !ok {
+		t.Fatalf("expected *APIError in chain, got %v", err)
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected status %d, got %d", http.StatusTooManyRequests, apiErr.StatusCode)
+	}
+}
+
+func TestWithRetry_FinalFallbackAttemptRetainsBudgetWithoutCancellation(t *testing.T) {
+	var attempts atomic.Int32
+	_, err := WithRetry(context.Background(), func() (struct{}, error) {
+		attempts.Add(1)
+		return struct{}{}, &RetryableError{
+			Err:                     buildRetryableError(http.StatusTooManyRequests, 0, nil),
+			PreserveErrorOnDeadline: true,
+		}
+	}, RetryOptions{MaxRetries: 1, BaseDelay: time.Millisecond, MaxDelay: time.Second})
+
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("expected the final allowed attempt, got %d attempts", got)
+	}
+	if !IsRetryBudgetExhausted(err) {
+		t.Fatalf("expected retry budget exhaustion, got %v", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("did not expect cancellation without a canceled context, got %v", err)
+	}
+	apiErr, ok := errors.AsType[*APIError](err)
+	if !ok {
+		t.Fatalf("expected *APIError in chain, got %v", err)
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected status %d, got %d", http.StatusTooManyRequests, apiErr.StatusCode)
+	}
+}
+
 func TestWithRetry_ClassifiesOverCapHintBeforeFinalRetryBudget(t *testing.T) {
 	var attempts atomic.Int32
 

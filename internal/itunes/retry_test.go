@@ -384,6 +384,37 @@ func TestPublicRetryStopsWhenFallbackBackoffOutlastsDeadline(t *testing.T) {
 	}
 }
 
+func TestPublicRetryFinalFallbackCancellationWins(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "1")
+	t.Setenv("ASC_BASE_DELAY", "1ms")
+	t.Setenv("ASC_MAX_DELAY", "5ms")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var requests atomic.Int32
+	client := &Client{
+		BaseURL: "https://example.test",
+		HTTPClient: &http.Client{Transport: retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if requests.Add(1) == 2 {
+				cancel()
+			}
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(strings.NewReader("rate limited")),
+				Request:    req,
+			}, nil
+		})},
+	}
+
+	_, err := client.SearchApps(ctx, "focus", "us", 20)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want explicit context cancellation", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests = %d, want the final allowed retry", got)
+	}
+}
+
 func TestPublicRetryDrainsFailureBodyForConnectionReuse(t *testing.T) {
 	useFastRetries(t, "1")
 
