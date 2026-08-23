@@ -109,6 +109,14 @@ func (r *BetaGroupTesterUsagesResponse) GetLinks() *Links {
 	return &r.Links
 }
 
+// GetMeta returns the raw metadata field for pagination warnings.
+func (r *BetaGroupTesterUsagesResponse) GetMeta() json.RawMessage {
+	if r == nil {
+		return nil
+	}
+	return r.Meta
+}
+
 // GetData returns the metric data for aggregation.
 func (r *BetaGroupTesterUsagesResponse) GetData() any {
 	if r == nil {
