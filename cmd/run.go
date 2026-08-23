@@ -78,7 +78,7 @@ func Run(args []string, versionInfo string) int {
 		} else if strings.HasPrefix(badFlagSyntax, "bad flag syntax:") {
 			fmt.Fprintf(os.Stderr, "Error: %s\nFor help:\n  asc --help\n", shared.SanitizeTerminal(badFlagSyntax))
 		} else {
-			printParseFailure(parseErr, parseOutput.String(), analysis)
+			printParseFailure(parseErr, parseOutput.String(), analysis, getCommandName(root, args))
 		}
 		// Every non-help error returned by command-tree parsing is invalid usage,
 		// including NoExecError cases that do not write flag output.
@@ -404,10 +404,18 @@ func requestedHelp(root *ffcli.Command, args []string) bool {
 	return false
 }
 
-func printParseFailure(parseErr error, parseOutput string, analysis invocationAnalysis) {
+func printParseFailure(parseErr error, parseOutput string, analysis invocationAnalysis, commandName string) {
 	if !analysis.unknownFlag || !isUnknownFlagParseFailure(parseErr, parseOutput) {
 		if parseOutput != "" {
-			fmt.Fprint(os.Stderr, parseOutput)
+			firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
+			if firstLine != "" {
+				fmt.Fprintf(
+					os.Stderr,
+					"Error: %s\nFor help:\n  %s --help\n",
+					shared.SanitizeTerminal(firstLine),
+					commandName,
+				)
+			}
 			return
 		}
 		fmt.Fprint(os.Stderr, errfmt.FormatStderr(parseErr))
