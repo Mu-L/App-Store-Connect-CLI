@@ -241,6 +241,199 @@ func TestWaitForBuildByNumberOrUploadFailureIncludesProcessingDiagnostics(t *tes
 	}
 }
 
+func TestBuildUploadFailureErrorIncludesRecoveryGuidance(t *testing.T) {
+	tests := []struct {
+		name        string
+		codes       []string
+		message     string
+		description string
+		want        []string
+	}{
+		{
+			name:  "closed version train",
+			codes: []string{"90062", "90186", "90478"},
+			want:  []string{"increase the marketing version", "CFBundleShortVersionString"},
+		},
+		{
+			name:  "duplicate build number",
+			codes: []string{"90189"},
+			want:  []string{"increase the build number", "CFBundleVersion"},
+		},
+		{
+			name:        "bundle identifier mismatch",
+			codes:       []string{"90054", "90055"},
+			description: "The bundle identifier does not match the selected app.",
+			want:        []string{"bundle identifier", "selected app"},
+		},
+		{
+			name:        "invalid build number format",
+			codes:       []string{"90054"},
+			description: "The value for CFBundleVersion must be a period-separated list of at most three non-negative integers.",
+			want:        []string{"CFBundleVersion", "period-separated list"},
+		},
+		{
+			name:        "missing privacy purpose string",
+			codes:       []string{"90683"},
+			message:     "Privacy validation failed.",
+			description: "Missing Info.plist value. A value for NSCameraUsageDescription must be present.",
+			want:        []string{"NSCameraUsageDescription", "Info.plist"},
+		},
+		{
+			name:  "unsupported SDK",
+			codes: []string{"90725"},
+			want:  []string{"supported SDK", "toolchain"},
+		},
+		{
+			name:  "missing background task identifiers",
+			codes: []string{"90771"},
+			want:  []string{"BGTaskSchedulerPermittedIdentifiers", "Info.plist"},
+		},
+		{
+			name:  "missing app icons",
+			codes: []string{"90391", "90713"},
+			want:  []string{"required app icons", "CFBundleIconName"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := "FAILED"
+			details := make([]asc.StateDetail, 0, len(tt.codes))
+			for _, code := range tt.codes {
+				details = append(details, asc.StateDetail{
+					Code:        code,
+					Description: tt.description,
+					Message:     tt.message,
+				})
+			}
+			upload := &asc.BuildUploadResponse{}
+			upload.Data.ID = "upload-1"
+			upload.Data.Attributes.State = &asc.AppMediaAssetState{State: &state, Errors: details}
+
+			err := buildUploadFailureError(upload)
+			if err == nil {
+				t.Fatal("expected failure error")
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("expected %q in %q", want, err)
+				}
+			}
+			for _, code := range tt.codes {
+				if !strings.Contains(err.Error(), code) {
+					t.Fatalf("expected original code %q in %q", code, err)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildUploadFailureErrorCombinesIndependentVersionRecoveries(t *testing.T) {
+	state := "FAILED"
+	upload := &asc.BuildUploadResponse{}
+	upload.Data.ID = "upload-1"
+	upload.Data.Attributes.State = &asc.AppMediaAssetState{
+		State: &state,
+		Errors: []asc.StateDetail{
+			{
+				Code:        "90054",
+				Description: "The value for CFBundleVersion must be a period-separated list of at most three non-negative integers.",
+			},
+			{
+				Code:        "90055",
+				Description: "The bundle identifier does not match the selected app.",
+			},
+		},
+	}
+
+	err := buildUploadFailureError(upload)
+	if err == nil {
+		t.Fatal("expected failure error")
+	}
+	for _, want := range []string{"CFBundleVersion", "period-separated list", "bundle identifier", "selected app"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected %q in %q", want, err)
+		}
+	}
+}
+
+func TestBuildUploadFailureErrorRecognizesIndividualCodeFromFamily(t *testing.T) {
+	for _, code := range []string{"90062", "90186", "90478"} {
+		t.Run(code, func(t *testing.T) {
+			state := "FAILED"
+			upload := &asc.BuildUploadResponse{}
+			upload.Data.ID = "upload-1"
+			upload.Data.Attributes.State = &asc.AppMediaAssetState{
+				State:  &state,
+				Errors: []asc.StateDetail{{Code: code}},
+			}
+
+			err := buildUploadFailureError(upload)
+			if err == nil || !strings.Contains(err.Error(), "increase the marketing version") {
+				t.Fatalf("expected closed-version guidance for %s, got %v", code, err)
+			}
+		})
+	}
+}
+
+func TestBuildUploadFailureErrorLeavesUnknownFailuresUnchanged(t *testing.T) {
+	state := "FAILED"
+	upload := &asc.BuildUploadResponse{}
+	upload.Data.ID = "upload-1"
+	upload.Data.Attributes.State = &asc.AppMediaAssetState{
+		State:  &state,
+		Errors: []asc.StateDetail{{Code: "UNKNOWN", Description: "Server-provided detail", Message: "Server-provided detail"}},
+	}
+
+	err := buildUploadFailureError(upload)
+	if err == nil {
+		t.Fatal("expected failure error")
+	}
+	want := `build upload "upload-1" failed with state FAILED: UNKNOWN (Server-provided detail)`
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+func TestBuildUploadFailureErrorPreservesDescriptionWhenMessageIsEmpty(t *testing.T) {
+	state := "FAILED"
+	upload := &asc.BuildUploadResponse{}
+	upload.Data.ID = "upload-1"
+	upload.Data.Attributes.State = &asc.AppMediaAssetState{
+		State:  &state,
+		Errors: []asc.StateDetail{{Code: "90054", Description: "raw App Store Connect description"}},
+	}
+
+	err := buildUploadFailureError(upload)
+	if err == nil {
+		t.Fatal("expected failure error")
+	}
+	if !strings.Contains(err.Error(), "raw App Store Connect description") {
+		t.Fatalf("expected raw description in %q", err)
+	}
+}
+
+func TestBuildUploadFailureErrorDoesNotGuessForMixedCodes(t *testing.T) {
+	state := "FAILED"
+	upload := &asc.BuildUploadResponse{}
+	upload.Data.ID = "upload-1"
+	upload.Data.Attributes.State = &asc.AppMediaAssetState{
+		State: &state,
+		Errors: []asc.StateDetail{
+			{Code: "90189"},
+			{Code: "UNKNOWN"},
+		},
+	}
+
+	err := buildUploadFailureError(upload)
+	if err == nil {
+		t.Fatal("expected failure error")
+	}
+	if strings.Contains(err.Error(), "recovery:") {
+		t.Fatalf("mixed errors must not receive speculative guidance: %v", err)
+	}
+}
+
 func TestWaitForBuildByNumberOrUploadFailureFallsBackWhenUploadLookupFails(t *testing.T) {
 	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
 		if req.Method != http.MethodGet {
