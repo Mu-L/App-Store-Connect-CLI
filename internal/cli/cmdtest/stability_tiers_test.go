@@ -17,6 +17,7 @@ func TestExperimentalCommandsHaveStabilityLabel(t *testing.T) {
 	cases := []struct {
 		path []string // subcommand path from root
 	}{
+		{[]string{"system-status"}},
 		{[]string{"screenshots", "run"}},
 		{[]string{"screenshots", "capture"}},
 		{[]string{"screenshots", "frame"}},
@@ -31,6 +32,9 @@ func TestExperimentalCommandsHaveStabilityLabel(t *testing.T) {
 		{[]string{"signing", "reconcile", "plan"}},
 		{[]string{"signing", "reconcile", "apply"}},
 		{[]string{"apps", "rename"}},
+		{[]string{"web", "agreements"}},
+		{[]string{"web", "agreements", "status"}},
+		{[]string{"web", "agreements", "accept"}},
 	}
 
 	for _, tc := range cases {
@@ -46,7 +50,13 @@ func TestWebCommandsDoNotHaveExperimentalStabilityLabel(t *testing.T) {
 	if webCmd == nil {
 		t.Fatal("command [web] not found")
 	}
-	assertCommandTreeDoesNotMentionExperimental(t, webCmd, []string{"web"})
+	assertCommandDoesNotMentionExperimental(t, webCmd, []string{"web"})
+	for _, sub := range webCmd.Subcommands {
+		if sub.Name == "agreements" {
+			continue
+		}
+		assertCommandTreeDoesNotMentionExperimental(t, sub, []string{"web", sub.Name})
+	}
 }
 
 func TestWebCommandsDoNotHaveEndpointWarningLabels(t *testing.T) {

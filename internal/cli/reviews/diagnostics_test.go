@@ -38,7 +38,7 @@ func TestReviewValidationDiagnosticsPreserveErrorContracts(t *testing.T) {
 		{
 			name: "reviews invalid limit",
 			run: func() error {
-				return executeReviewsList(context.Background(), "app-1", "json", false, 0, "", "", 201, "", false, "any", false, false, "")
+				return executeReviewsList(context.Background(), "app-1", "json", false, &ReviewFilterFlags{ResponseState: reviewResponseStateAny}, 201, "", false)
 			},
 			wantError: "reviews: --limit must be between 1 and 200",
 			wantCode:  shared.DiagnosticInvalidInput,
@@ -137,34 +137,34 @@ func TestReviewSubmitInputFailuresKeepStructuredDiagnostics(t *testing.T) {
 		{
 			name:       "missing build",
 			args:       []string{"--app", "123456789"},
-			wantStderr: "Error: --build is required\n",
+			wantStderr: "Error: --build-id is required\n",
 			wantCode:   shared.DiagnosticRequiredInputMissing,
-			wantParam:  "--build",
+			wantParam:  "--build-id",
 		},
 		{
 			name:       "missing version selector",
-			args:       []string{"--app", "123456789", "--build", "BUILD_ID"},
+			args:       []string{"--app", "123456789", "--build-id", "BUILD_ID"},
 			wantStderr: "Error: --version or --version-id is required\n",
 			wantCode:   shared.DiagnosticRequiredInputMissing,
 			wantParam:  "",
 		},
 		{
 			name:       "conflicting version selectors",
-			args:       []string{"--app", "123456789", "--build", "BUILD_ID", "--version", "1.2.3", "--version-id", "VERSION_ID"},
+			args:       []string{"--app", "123456789", "--build-id", "BUILD_ID", "--version", "1.2.3", "--version-id", "VERSION_ID"},
 			wantStderr: "Error: --version and --version-id are mutually exclusive\n",
 			wantCode:   shared.DiagnosticConflictingInput,
 			wantParam:  "",
 		},
 		{
 			name:       "missing confirm",
-			args:       []string{"--app", "123456789", "--build", "BUILD_ID", "--version", "1.2.3"},
+			args:       []string{"--app", "123456789", "--build-id", "BUILD_ID", "--version", "1.2.3"},
 			wantStderr: "Error: --confirm is required unless --dry-run is set\n",
 			wantCode:   shared.DiagnosticRequiredInputMissing,
 			wantParam:  "--confirm",
 		},
 		{
 			name:       "unsupported platform",
-			args:       []string{"--app", "123456789", "--build", "BUILD_ID", "--version", "1.2.3", "--dry-run", "--platform", "WATCH_OS"},
+			args:       []string{"--app", "123456789", "--build-id", "BUILD_ID", "--version", "1.2.3", "--dry-run", "--platform", "WATCH_OS"},
 			wantStderr: "Error: --platform must be one of: IOS, MAC_OS, TV_OS, VISION_OS\n",
 			wantCode:   shared.DiagnosticInvalidInput,
 			wantParam:  "--platform",
