@@ -516,6 +516,71 @@ func TestFetchSearchSuggestionsPreservesPrefixWhenTruncationProbeFails(t *testin
 	}
 }
 
+func TestFetchSearchSuggestionsMarksPrefixTruncatedWhenPaginationFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Pagination struct {
+				Offset   int `json:"offset"`
+				PageSize int `json:"pageSize"`
+			} `json:"pagination"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode suggestion request: %v", err)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path == "/v1/suggestions/phrases/query" {
+			writeJSON(t, w, `{"result":[],"pagination":{"offset":0,"pageSize":1000,"totalCount":0}}`)
+			return
+		}
+		if body.Pagination.Offset == 1000 {
+			http.Error(w, "page unavailable", http.StatusBadGateway)
+			return
+		}
+		result := make([]map[string]any, 1000)
+		for index := range result {
+			result[index] = map[string]any{"text": fmt.Sprintf("keyword-%d", index), "popularity": 1000 - index}
+		}
+		payload := map[string]any{
+			"result": result,
+			"pagination": map[string]any{
+				"offset":     body.Pagination.Offset,
+				"pageSize":   body.Pagination.PageSize,
+				"totalCount": 1800,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Errorf("encode suggestion response: %v", err)
+		}
+	}))
+	defer server.Close()
+	client, err := appleads.NewClient(
+		appleads.Credentials{AccessToken: "token", AdAccountID: "account-1"},
+		appleads.WithPlatformBaseURL(server.URL+"/v1/"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := fetchSearchSuggestions(context.Background(), client, SearchOptimizationRequest{
+		AppID: "123456789", Country: "US", Limit: 1500,
+	})
+	if err != nil {
+		t.Fatalf("fetchSearchSuggestions() error = %v", err)
+	}
+	if len(data.Suggestions) != 1000 {
+		t.Fatalf("suggestions = %d, want the successfully fetched prefix", len(data.Suggestions))
+	}
+	if !data.SuggestionsTruncated {
+		t.Fatal("suggestions should be conservatively marked truncated after a later page fails")
+	}
+	keywordSource := findOptimizationSource(t, data.Sources, "keyword_suggestions")
+	if keywordSource.Status != "unavailable" || keywordSource.Count != 1000 {
+		t.Fatalf("keyword source = %+v, want unavailable with the preserved prefix", keywordSource)
+	}
+}
+
 func TestFetchSearchSuggestionsMarksOvershotBoundedPageAsTruncated(t *testing.T) {
 	requests := make(map[string][][2]int)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

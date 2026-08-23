@@ -16,6 +16,7 @@ type KeywordDiscoverSourceStatus struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Count  int    `json:"count"`
+	Scope  string `json:"scope,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
 
@@ -79,10 +80,11 @@ func keywordDiscoverTables(report *KeywordDiscoverReport, render func([]string, 
 			formatKeywordScoreSourceName(source.Name),
 			source.Status,
 			strconv.Itoa(source.Count),
+			source.Scope,
 			compactKeywordScoreDiagnostic(source.Error),
 		})
 	}
-	render([]string{"Sources", "Status", "Count", "Notes"}, sourceRows)
+	render([]string{"Sources", "Status", "Count", "Scope", "Notes"}, sourceRows)
 
 	if report.ScoreKeywords != "" {
 		render([]string{"Score Input", "Value"}, [][]string{{"--keywords", report.ScoreKeywords}})

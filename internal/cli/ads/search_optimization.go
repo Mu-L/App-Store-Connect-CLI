@@ -601,6 +601,12 @@ func queryOptimizationListBoundedWithMore[T any](ctx context.Context, client *ap
 		pageBody["pagination"] = optimizationRequestPagination(spec, offset, pageSize)
 		raw, err := executeOptimizationQuery(ctx, client, spec, pageBody)
 		if err != nil {
+			if maxItems > 0 && len(items) > 0 {
+				if len(items) > maxItems {
+					items = items[:maxItems]
+				}
+				return items, true, err
+			}
 			return items, false, err
 		}
 		var envelope struct {
@@ -608,6 +614,12 @@ func queryOptimizationListBoundedWithMore[T any](ctx context.Context, client *ap
 			Pagination optimizationPagination `json:"pagination"`
 		}
 		if err := json.Unmarshal(raw, &envelope); err != nil {
+			if maxItems > 0 && len(items) > 0 {
+				if len(items) > maxItems {
+					items = items[:maxItems]
+				}
+				return items, true, fmt.Errorf("decode %s response: %w", strings.Join(spec.CommandPath, " "), err)
+			}
 			return items, false, fmt.Errorf("decode %s response: %w", strings.Join(spec.CommandPath, " "), err)
 		}
 		items = append(items, envelope.Result...)
@@ -628,6 +640,12 @@ func queryOptimizationListBoundedWithMore[T any](ctx context.Context, client *ap
 			return items, false, nil
 		}
 		offset += len(envelope.Result)
+	}
+	if maxItems > 0 && len(items) > 0 {
+		if len(items) > maxItems {
+			items = items[:maxItems]
+		}
+		return items, true, optimizationPageLimitError(spec)
 	}
 	return items, false, optimizationPageLimitError(spec)
 }

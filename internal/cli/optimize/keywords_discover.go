@@ -47,6 +47,10 @@ Suggestions come only from Apple's documented keyword and phrase suggestion
 endpoints. No campaign is required. Undocumented endpoints, including the
 iTunes search autocomplete endpoint, are deliberately out of scope.
 
+--country scopes keyword suggestions. Apple's phrase suggestion endpoint is
+country-unscoped; the report's country is the requested keyword market and
+report context, and each source declares its scope.
+
 Terms are normalized, deduplicated across both endpoints, and reported with the
 endpoint each one came from. Apple Ads is the only source for this command, so
 unlike the other keyword commands it fails when that source is unavailable
@@ -220,6 +224,7 @@ func suggestionSources(sources []ads.SearchOptimizationSourceStatus) []asc.Keywo
 				Name:   source.Name,
 				Status: source.Status,
 				Count:  source.Count,
+				Scope:  suggestionScope(source.Name),
 				Error:  source.Error,
 			})
 		}
@@ -230,15 +235,24 @@ func suggestionSources(sources []ads.SearchOptimizationSourceStatus) []asc.Keywo
 func unavailableSuggestionCause(sources []asc.KeywordDiscoverSourceStatus) string {
 	causes := make([]string, 0, len(sources))
 	for _, source := range sources {
-		if source.Status != keywordStatusUnavailable {
-			return ""
+		if source.Status == keywordStatusUnavailable {
+			causes = append(causes, source.Name+": "+source.Error)
 		}
-		causes = append(causes, source.Name+": "+source.Error)
 	}
 	if len(causes) == 0 {
 		return ""
 	}
 	return strings.Join(causes, "; ")
+}
+
+func suggestionScope(name string) string {
+	if name == keywordSuggestionSourceKeyword {
+		return "country"
+	}
+	if name == keywordSuggestionSourcePhrase {
+		return "unscoped"
+	}
+	return ""
 }
 
 func keywordDiscoverUnavailableError(cause string) error {

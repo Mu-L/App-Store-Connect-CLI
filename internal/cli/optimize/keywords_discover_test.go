@@ -389,6 +389,55 @@ func TestKeywordsDiscoverFailsWhenAppleReturnsNoSuggestions(t *testing.T) {
 	}
 }
 
+func TestKeywordsDiscoverFailsWhenOneSuggestionSourceIsUnavailable(t *testing.T) {
+	stubKeywordsAdsCollector(t, func(context.Context, string, string, ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error) {
+		return ads.SearchOptimizationData{
+			Sources: []ads.SearchOptimizationSourceStatus{
+				{Name: "keyword_suggestions", Status: "unavailable", Error: "forbidden"},
+				{Name: "phrase_suggestions", Status: "empty"},
+			},
+		}, nil
+	})
+
+	err := KeywordsDiscoverCommand().ParseAndRun(context.Background(), []string{
+		"--app", "1234567890", "--output", "json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Fatalf("error = %v, want the unavailable source diagnostic", err)
+	}
+}
+
+func TestKeywordsDiscoverReportsSourceScopes(t *testing.T) {
+	stubKeywordsAdsCollector(t, func(context.Context, string, string, ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error) {
+		return ads.SearchOptimizationData{
+			Sources: []ads.SearchOptimizationSourceStatus{
+				{Name: "keyword_suggestions", Status: "available", Count: 1},
+				{Name: "phrase_suggestions", Status: "available", Count: 1},
+			},
+			Suggestions: []ads.SearchSuggestion{
+				{Text: "keyword one", Kind: "keyword"},
+				{Text: "phrase one", Kind: "phrase"},
+			},
+		}, nil
+	})
+
+	stdout := captureSearchPlanStdout(t, func() error {
+		return KeywordsDiscoverCommand().ParseAndRun(context.Background(), []string{
+			"--app", "1234567890", "--country", "GB", "--output", "json",
+		})
+	})
+	var report asc.KeywordDiscoverReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("unmarshal report: %v\n%s", err, stdout)
+	}
+	if len(report.Sources) != 2 {
+		t.Fatalf("sources = %+v", report.Sources)
+	}
+	if report.Sources[0].Scope != "country" || report.Sources[1].Scope != "unscoped" {
+		t.Fatalf("source scopes = %+v, want country and unscoped", report.Sources)
+	}
+}
+
 func TestKeywordsDiscoverReportsEmptySuggestionsWithoutFailing(t *testing.T) {
 	stubKeywordsAdsCollector(t, func(context.Context, string, string, ads.SearchOptimizationRequest) (ads.SearchOptimizationData, error) {
 		return ads.SearchOptimizationData{
@@ -412,10 +461,22 @@ func TestKeywordsDiscoverReportsEmptySuggestionsWithoutFailing(t *testing.T) {
 	if len(report.Keywords) != 0 || report.ScoreKeywords != "" {
 		t.Fatalf("report = %+v", report)
 	}
+	wantSources := map[string]string{
+		"keyword_suggestions": keywordStatusEmpty,
+		"phrase_suggestions":  keywordStatusEmpty,
+	}
+	if len(report.Sources) != len(wantSources) {
+		t.Fatalf("sources = %+v, want %d entries", report.Sources, len(wantSources))
+	}
 	for _, source := range report.Sources {
-		if source.Status != keywordStatusEmpty {
-			t.Fatalf("source = %+v, want an empty status", source)
+		wantStatus, ok := wantSources[source.Name]
+		if !ok || source.Status != wantStatus {
+			t.Fatalf("source = %+v, want an expected empty source", source)
 		}
+		delete(wantSources, source.Name)
+	}
+	if len(wantSources) != 0 {
+		t.Fatalf("sources = %+v, missing expected entries", report.Sources)
 	}
 }
 
