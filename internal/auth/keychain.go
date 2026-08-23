@@ -490,10 +490,20 @@ func credentialPayloadForCollision(kr keyring.Keyring, name string) (credentialP
 	if err := json.Unmarshal(item.Data, &payload); err != nil {
 		return credentialPayload{}, false, nil
 	}
-	if payload == (credentialPayload{}) {
+	if !completeCredentialPayload(payload) {
 		return credentialPayload{}, false, nil
 	}
 	return payload, true, nil
+}
+
+func completeCredentialPayload(payload credentialPayload) bool {
+	if strings.TrimSpace(payload.KeyID) == "" || !config.IsValidCredentialKeyType(payload.KeyType) {
+		return false
+	}
+	if !config.IsIndividualCredentialKeyType(payload.KeyType) && strings.TrimSpace(payload.IssuerID) == "" {
+		return false
+	}
+	return payload.PrivateKeyPath != "" || strings.TrimSpace(payload.PrivateKeyPEM) != ""
 }
 
 func loadPrivateKeyPEMForStorage(path string) (string, error) {
