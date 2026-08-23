@@ -1848,6 +1848,42 @@ func TestStoreCredentials_ReplacesIncompletePreNormalizedEntry(t *testing.T) {
 	}
 }
 
+func TestStoreCredentials_ReplacesPreNormalizedEntryWithInvalidEmbeddedKey(t *testing.T) {
+	newKr, _ := withSeparateKeyrings(t)
+	storeCredentialInKeyring(t, newKr, "spaced", "OLD", "OLD-ISSUER", "/tmp/Old.p8")
+	invalid := credentialPayload{
+		KeyID:         "BROKEN",
+		IssuerID:      "BROKEN-ISSUER",
+		PrivateKeyPEM: "not-pem",
+		KeyType:       config.CredentialKeyTypeTeam,
+	}
+	data, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatalf("encode invalid embedded-key credential: %v", err)
+	}
+	if err := newKr.Set(keyring.Item{Key: keyringKey("  spaced  "), Data: data}); err != nil {
+		t.Fatalf("seed invalid embedded-key credential: %v", err)
+	}
+
+	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8"); err != nil {
+		t.Fatalf("StoreCredentials() error: %v", err)
+	}
+	if _, err := newKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("invalid raw credential error = %v, want ErrKeyNotFound", err)
+	}
+	item, err := newKr.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("normalized credential error: %v", err)
+	}
+	var payload credentialPayload
+	if err := json.Unmarshal(item.Data, &payload); err != nil {
+		t.Fatalf("decode normalized credential: %v", err)
+	}
+	if payload.KeyID != "KEY123" {
+		t.Fatalf("normalized credential = %+v", payload)
+	}
+}
+
 func TestStoreCredentials_CleansRawEntryWhenCanonicalLacksPEMEnrichment(t *testing.T) {
 	newKr, _ := withSeparateKeyrings(t)
 	keyPath := filepath.Join(t.TempDir(), "AuthKey.p8")

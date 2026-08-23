@@ -505,7 +505,14 @@ func completeCredentialPayload(payload credentialPayload) bool {
 	if !config.IsIndividualCredentialKeyType(payload.KeyType) && strings.TrimSpace(payload.IssuerID) == "" {
 		return false
 	}
-	return strings.TrimSpace(payload.PrivateKeyPath) != "" || strings.TrimSpace(payload.PrivateKeyPEM) != ""
+	if strings.TrimSpace(payload.PrivateKeyPath) != "" {
+		return true
+	}
+	if strings.TrimSpace(payload.PrivateKeyPEM) == "" {
+		return false
+	}
+	_, err := LoadPrivateKeyFromPEM([]byte(payload.PrivateKeyPEM))
+	return err == nil
 }
 
 func credentialPayloadsMatch(first, second credentialPayload) bool {
