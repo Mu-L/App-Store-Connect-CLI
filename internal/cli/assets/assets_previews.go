@@ -1047,7 +1047,8 @@ func uploadPreviewFiles(uploadCtx, rollbackBase context.Context, client *asc.Cli
 				rollbackItems = append(rollbackItems, item)
 			}
 			if len(rollbackItems) > 0 {
-				rollbackErr := func() error {
+				var rollbackErr error
+				rollbackItems, rollbackErr = func() ([]asc.AssetUploadResultItem, error) {
 					rollbackParent := context.WithoutCancel(shared.ContextWithoutTimeout(rollbackBase))
 					rollbackCtx, rollbackCancel := shared.ContextWithTimeout(rollbackParent)
 					defer rollbackCancel()
@@ -1128,18 +1129,22 @@ func syncPreviewOrder(ctx context.Context, client *asc.Client, setID string, fil
 	return setOrderedAppPreviews(ctx, client, setID, orderedIDs)
 }
 
-func deleteUploadedPreviews(ctx context.Context, client *asc.Client, previews []asc.AssetUploadResultItem) error {
+func deleteUploadedPreviews(ctx context.Context, client *asc.Client, previews []asc.AssetUploadResultItem) ([]asc.AssetUploadResultItem, error) {
+	results := append([]asc.AssetUploadResultItem(nil), previews...)
 	var rollbackErrs []error
-	for i := len(previews) - 1; i >= 0; i-- {
-		previewID := strings.TrimSpace(previews[i].AssetID)
+	for i := len(results) - 1; i >= 0; i-- {
+		previewID := strings.TrimSpace(results[i].AssetID)
 		if previewID == "" {
 			continue
 		}
 		if err := client.DeleteAppPreview(ctx, previewID); err != nil {
+			results[i].State = "rollback-failed"
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("delete preview %q: %w", previewID, err))
+			continue
 		}
+		results[i].State = "rolled-back"
 	}
-	return errors.Join(rollbackErrs...)
+	return results, errors.Join(rollbackErrs...)
 }
 
 func deleteExistingPreviews(ctx context.Context, client *asc.Client, previews []asc.Resource[asc.AppPreviewAttributes]) error {

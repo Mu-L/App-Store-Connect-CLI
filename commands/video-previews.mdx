@@ -109,13 +109,13 @@ file path and error without removing the existing receipt fields:
       "fileName": "01-first.mov",
       "filePath": "./01-first.mov",
       "assetId": "PREVIEW_1",
-      "state": "COMPLETE"
+      "state": "rolled-back"
     },
     {
       "fileName": "02-second.mov",
       "filePath": "./02-second.mov",
       "assetId": "PREVIEW_2",
-      "state": "failed"
+      "state": "rolled-back"
     }
   ],
   "failures": [
@@ -128,9 +128,15 @@ file path and error without removing the existing receipt fields:
 }
 ```
 
-The `failures` field is additive and omitted when every upload succeeds. A
+The `failures` field is additive and omitted when every upload succeeds. After a
+later upload fails, asc attempts to delete every preview reserved during that
+run before returning the receipt. When all cleanup deletes succeed, the receipt
+keeps the asset IDs for diagnosis but marks those items `rolled-back`; the IDs
+no longer refer to live previews. If a cleanup delete fails, the affected item
+is marked `rollback-failed` and its asset ID remains a cleanup candidate. A
 failed run does not reorder the preview set around a partially completed upload;
-rerun with the receipt's asset IDs available for cleanup or diagnosis.
+use the receipt's IDs for diagnosis and clean up only items that remain or are
+marked `rollback-failed`.
 
 ## Download Video Previews
 

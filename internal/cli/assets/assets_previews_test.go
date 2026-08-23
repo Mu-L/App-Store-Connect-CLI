@@ -656,6 +656,9 @@ func TestUploadPreviewFilesRollsBackAllCreatedItemsOnPostCreateConflict(t *testi
 	if results[0].AssetID != "created-1" || results[1].AssetID != "created-2" {
 		t.Fatalf("uploadPreviewFiles() results = %#v, want created asset IDs", results)
 	}
+	if results[0].State != "rolled-back" || results[1].State != "rolled-back" {
+		t.Fatalf("uploadPreviewFiles() states = %#v, want rolled-back results", results)
+	}
 	wantRequests := []string{
 		"DELETE /v1/appPreviews/created-2",
 		"DELETE /v1/appPreviews/created-1",
@@ -702,6 +705,9 @@ func TestUploadPreviewFilesPreservesResultsWhenRollbackFails(t *testing.T) {
 	}
 	if results[0].AssetID != "created-1" || results[1].AssetID != "created-2" {
 		t.Fatalf("uploadPreviewFiles() results = %#v, want created asset IDs", results)
+	}
+	if results[0].State != "rollback-failed" || results[1].State != "rollback-failed" {
+		t.Fatalf("uploadPreviewFiles() states = %#v, want rollback-failed results", results)
 	}
 }
 

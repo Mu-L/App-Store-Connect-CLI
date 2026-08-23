@@ -135,13 +135,13 @@ func TestVideoPreviewsUploadReportsUploadedPreviewsWhenALaterFileFails(t *testin
 		t.Fatalf("expected a failure message, got %s", stdout)
 	}
 
-	failedStates := 0
+	rolledBackStates := 0
 	for _, item := range payload.Results {
-		if item.FileName == "02-second.mov" && item.AssetID == "preview-second" && item.State == "AWAITING_UPLOAD" {
-			failedStates++
+		if (item.AssetID == "preview-first" || item.AssetID == "preview-second") && item.State == "rolled-back" {
+			rolledBackStates++
 		}
 	}
-	if failedStates != 1 {
-		t.Fatalf("expected the failing file to retain its reservation ID and last known state, got %s", stdout)
+	if rolledBackStates != 2 {
+		t.Fatalf("expected both receipt items to be marked rolled-back after cleanup, got %s", stdout)
 	}
 }
