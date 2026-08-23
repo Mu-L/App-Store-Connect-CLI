@@ -456,7 +456,7 @@ func GameCenterGroupAchievementsSetCommand() *ffcli.Command {
 	groupID := fs.String("group-id", "", "Game Center group ID")
 	ids := shared.BindOnceCSVFlag(fs, "ids", "Comma-separated achievement IDs")
 	v2 := fs.Bool("v2", false, "Use v2 relationships endpoint")
-	confirm := fs.Bool("confirm", false, "Confirm replacing all relationships")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm replacing all relationships")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -637,7 +637,7 @@ func GameCenterGroupLeaderboardsSetCommand() *ffcli.Command {
 	groupID := fs.String("group-id", "", "Game Center group ID")
 	ids := shared.BindOnceCSVFlag(fs, "ids", "Comma-separated leaderboard IDs")
 	v2 := fs.Bool("v2", false, "Use v2 relationships endpoint")
-	confirm := fs.Bool("confirm", false, "Confirm replacing all relationships")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm replacing all relationships")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{

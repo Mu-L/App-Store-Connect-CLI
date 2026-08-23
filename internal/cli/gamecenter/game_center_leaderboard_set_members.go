@@ -120,7 +120,7 @@ func GameCenterLeaderboardSetMembersSetCommand() *ffcli.Command {
 
 	setID := fs.String("set-id", "", "Game Center leaderboard set ID")
 	leaderboardIDs := shared.BindOnceCSVFlag(fs, "leaderboard-ids", "Comma-separated list of leaderboard IDs to set as members")
-	confirm := fs.Bool("confirm", false, "Confirm replacing all members")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm replacing all members")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{

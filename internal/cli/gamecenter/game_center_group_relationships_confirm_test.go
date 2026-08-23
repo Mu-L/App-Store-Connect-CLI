@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"strings"
 	"testing"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
@@ -74,6 +75,26 @@ func TestGameCenterGroupRelationshipReplacementConfirmPassesValidation(t *testin
 				}
 			})
 		}
+	}
+}
+
+func TestGameCenterRelationshipReplacementConfirmFlagsAreExperimental(t *testing.T) {
+	commands := map[string]*ffcli.Command{
+		"group achievements":         GameCenterGroupAchievementsSetCommand(),
+		"group leaderboards":         GameCenterGroupLeaderboardsSetCommand(),
+		"leaderboard-set members":    GameCenterLeaderboardSetMembersSetCommand(),
+		"leaderboard-set v2 members": GameCenterLeaderboardSetMembersV2SetCommand(),
+	}
+	for name, command := range commands {
+		t.Run(name, func(t *testing.T) {
+			confirm := command.FlagSet.Lookup("confirm")
+			if confirm == nil {
+				t.Fatal("--confirm is not registered")
+			}
+			if !strings.HasPrefix(confirm.Usage, "[experimental] ") {
+				t.Fatalf("--confirm usage = %q, want [experimental] prefix", confirm.Usage)
+			}
+		})
 	}
 }
 
