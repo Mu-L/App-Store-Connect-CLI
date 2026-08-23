@@ -117,7 +117,7 @@ Examples:
 			if *stream && !*paginate {
 				return shared.UsageError("--stream requires --paginate")
 			}
-			if *stream && flagWasProvided(fs, "output") && *output.Output != "json" {
+			if *stream && flagWasProvided(fs, "output") && shared.NormalizeOutputFormat(*output.Output) != "json" {
 				return shared.UsageError("--stream requires --output json")
 			}
 			if *stream && *output.Pretty {

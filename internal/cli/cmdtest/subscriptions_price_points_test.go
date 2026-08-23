@@ -244,6 +244,47 @@ func TestSubscriptionsPricePointsListStreamOutput(t *testing.T) {
 	}
 }
 
+func TestSubscriptionsPricePointsListStreamAcceptsCaseInsensitiveJSONOutput(t *testing.T) {
+	setupAuth(t)
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{"data":[{"type":"subscriptionPricePoints","id":"pp-1"}],"links":{}}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"subscriptions", "pricing", "price-points", "list",
+			"--subscription-id", "8000000001",
+			"--paginate",
+			"--stream",
+			"--output", "JSON",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if !strings.Contains(stdout, `"id":"pp-1"`) {
+		t.Fatalf("stdout = %q, want streamed JSON output", stdout)
+	}
+}
+
 func TestSubscriptionsPricePointsListStreamRejectsRepeatedNextURL(t *testing.T) {
 	setupAuth(t)
 
