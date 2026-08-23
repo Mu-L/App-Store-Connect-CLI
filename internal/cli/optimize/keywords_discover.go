@@ -258,7 +258,8 @@ func suggestionScope(name string) string {
 func keywordDiscoverUnavailableError(cause string) error {
 	return fmt.Errorf(
 		"optimize keywords discover: Apple Ads keyword suggestions are unavailable: %s. "+
-			"Provide Apple Ads credentials with --ad-account or --ads-profile, or run `asc ads auth login`",
+			"Check Apple Ads authentication, ad-account access, and service/network availability, then retry. "+
+			"Diagnose access with `asc ads auth status --validate`; select credentials with --ad-account or --ads-profile",
 		cause,
 	)
 }

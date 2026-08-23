@@ -363,7 +363,7 @@ func TestKeywordsDiscoverFailsActionablyWhenAppleAdsIsUnavailable(t *testing.T) 
 		"no Apple Ads credentials found",
 		"--ad-account",
 		"--ads-profile",
-		"asc ads auth login",
+		"asc ads auth status --validate",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %v, want it to mention %q", err, want)
@@ -386,6 +386,14 @@ func TestKeywordsDiscoverFailsWhenAppleReturnsNoSuggestions(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "forbidden") {
 		t.Fatalf("error = %v, want the reported suggestion failure", err)
+	}
+	for _, want := range []string{"service/network availability", "then retry", "asc ads auth status --validate"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want neutral recovery guidance containing %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "auth login") {
+		t.Fatalf("error = %v, must not prescribe reauthentication for service failures", err)
 	}
 }
 
