@@ -301,7 +301,10 @@ func TestFindXcodeprojPreservesSymlinkParentTraversal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findXcodeproj() error = %v", err)
 	}
-	want := strings.TrimSuffix(input, string(os.PathSeparator))
+	want, err := filepath.EvalSymlinks(projectPath)
+	if err != nil {
+		t.Fatalf("resolve project path: %v", err)
+	}
 	if got != want {
 		t.Fatalf("findXcodeproj() = %q, want %q", got, want)
 	}
