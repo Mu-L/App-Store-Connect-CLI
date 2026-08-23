@@ -386,9 +386,6 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	if name == "" {
 		return fmt.Errorf("credential name is required")
 	}
-	if err := rejectNormalizedCredentialCollision(originalName, name); err != nil {
-		return err
-	}
 	payload := credentialPayload{
 		KeyID:          keyID,
 		IssuerID:       issuerID,
@@ -397,6 +394,9 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	}
 	if privateKeyPEM, err := loadPrivateKeyPEMForStorage(keyPath); err == nil && strings.TrimSpace(privateKeyPEM) != "" {
 		payload.PrivateKeyPEM = privateKeyPEM
+	}
+	if err := rejectNormalizedCredentialCollision(originalName, name, payload); err != nil {
+		return err
 	}
 
 	if err := storeInKeychain(name, payload); err == nil {
@@ -422,7 +422,7 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	return storeInConfig(name, payload)
 }
 
-func rejectNormalizedCredentialCollision(originalName, normalizedName string) error {
+func rejectNormalizedCredentialCollision(originalName, normalizedName string, incoming credentialPayload) error {
 	if originalName == normalizedName {
 		return nil
 	}
@@ -459,7 +459,7 @@ func rejectNormalizedCredentialCollision(originalName, normalizedName string) er
 
 	for _, canonical := range canonicalPayloads {
 		for _, original := range originalPayloads {
-			if canonical != original {
+			if canonical != original && canonical != incoming {
 				return fmt.Errorf(
 					"credential profile name %q conflicts with existing normalized profile %q; remove one before retrying",
 					originalName,

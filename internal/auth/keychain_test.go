@@ -1674,6 +1674,47 @@ func TestStoreCredentials_RejectsDistinctNormalizedProfileCollisionBeforeMutatio
 	}
 }
 
+func TestStoreCredentials_RetryCompletesPartialLegacyCleanup(t *testing.T) {
+	newKr, legacyKr := withSeparateKeyrings(t)
+	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "OLDKEY", "OLDISSUER", "/tmp/OldAuthKey.p8")
+
+	previousLegacy := legacyKeyringOpener
+	transientLegacy := &transientRemoveFailingKeyring{
+		inner:             legacyKr,
+		remainingFailures: 1,
+		err:               errors.New("legacy keyring locked"),
+	}
+	legacyKeyringOpener = func() (keyring.Keyring, error) {
+		return transientLegacy, nil
+	}
+	t.Cleanup(func() { legacyKeyringOpener = previousLegacy })
+
+	firstErr := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8")
+	if firstErr == nil || !strings.Contains(firstErr.Error(), "legacy keyring locked") {
+		t.Fatalf("first StoreCredentials() error = %v, want legacy cleanup failure", firstErr)
+	}
+	if _, err := newKr.Get(keyringKey("spaced")); err != nil {
+		t.Fatalf("canonical credential should survive partial cleanup: %v", err)
+	}
+	if _, err := legacyKr.Get(keyringKey("  spaced  ")); err != nil {
+		t.Fatalf("legacy credential should remain after failed removal: %v", err)
+	}
+
+	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8"); err != nil {
+		t.Fatalf("retry StoreCredentials() error = %v", err)
+	}
+	if _, err := legacyKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("legacy credential after retry error = %v, want ErrKeyNotFound", err)
+	}
+	defaultCreds, err := GetCredentials("")
+	if err != nil {
+		t.Fatalf("GetCredentials(default) error = %v", err)
+	}
+	if defaultCreds.KeyID != "KEY123" || defaultCreds.IssuerID != "ISS456" {
+		t.Fatalf("default credentials after retry = %+v", defaultCreds)
+	}
+}
+
 func TestStoreCredentials_RejectsWhitespaceOnlyProfileName(t *testing.T) {
 	newKr, _ := withSeparateKeyrings(t)
 
@@ -2148,6 +2189,29 @@ func (k *removeFailingKeyring) GetMetadata(key string) (keyring.Metadata, error)
 func (k *removeFailingKeyring) Set(item keyring.Item) error { return k.inner.Set(item) }
 func (k *removeFailingKeyring) Remove(string) error         { return k.err }
 func (k *removeFailingKeyring) Keys() ([]string, error)     { return k.inner.Keys() }
+
+type transientRemoveFailingKeyring struct {
+	inner             keyring.Keyring
+	remainingFailures int
+	err               error
+}
+
+func (k *transientRemoveFailingKeyring) Get(key string) (keyring.Item, error) {
+	return k.inner.Get(key)
+}
+
+func (k *transientRemoveFailingKeyring) GetMetadata(key string) (keyring.Metadata, error) {
+	return k.inner.GetMetadata(key)
+}
+func (k *transientRemoveFailingKeyring) Set(item keyring.Item) error { return k.inner.Set(item) }
+func (k *transientRemoveFailingKeyring) Remove(key string) error {
+	if k.remainingFailures > 0 {
+		k.remainingFailures--
+		return k.err
+	}
+	return k.inner.Remove(key)
+}
+func (k *transientRemoveFailingKeyring) Keys() ([]string, error) { return k.inner.Keys() }
 
 func TestGetCredentialsWithSource_KeychainAccessDeniedReturnsSentinel(t *testing.T) {
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "")
