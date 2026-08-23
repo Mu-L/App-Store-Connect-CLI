@@ -195,17 +195,21 @@ func UsersUpdateCommand() *ffcli.Command {
 	id := fs.String("id", "", "User ID")
 	roles := shared.BindOnceCSVFlag(fs, "roles", "Comma-separated UserRole values: "+strings.Join(userRoleList(), ", "))
 	visibleApps := shared.BindOnceCSVFlag(fs, "visible-app", "Comma-separated app IDs for visible apps")
+	confirm := fs.Bool("confirm", false, "Confirm replacing visible apps (required with --visible-app)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "update",
-		ShortUsage: "asc users update --id USER_ID --roles ROLE_ID[,ROLE_ID...] [--visible-app APP_ID[,APP_ID...]]",
+		ShortUsage: "asc users update --id USER_ID --roles ROLE_ID[,ROLE_ID...] [--visible-app APP_ID[,APP_ID...]] [--confirm]",
 		ShortHelp:  "Update a user.",
 		LongHelp: `Update a user by ID.
 
+The --visible-app list replaces the user's existing visible-app relationship;
+use --confirm when --visible-app is supplied.
+
 Examples:
   asc users update --id "USER_ID" --roles "ADMIN"
-  asc users update --id "USER_ID" --roles "ADMIN" --visible-app "APP_ID"`,
+  asc users update --id "USER_ID" --roles "ADMIN" --visible-app "APP_ID" --confirm`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -226,6 +230,15 @@ Examples:
 			warnDeprecatedUserRoles(roleValues)
 
 			visibleAppIDs := shared.SplitCSV(visibleApps.String())
+			if len(visibleAppIDs) > 0 && !*confirm {
+				message := "--confirm is required when --visible-app is set"
+				fmt.Fprintln(os.Stderr, "Error:", message)
+				return shared.WithDiagnostic(
+					shared.NewReportedUsageError(shared.UsageErrorMissingRequired, message),
+					shared.DiagnosticRequiredInputMissing,
+					"--confirm",
+				)
+			}
 
 			client, err := shared.GetASCClient()
 			if err != nil {
