@@ -195,7 +195,7 @@ func UsersUpdateCommand() *ffcli.Command {
 	id := fs.String("id", "", "User ID")
 	roles := shared.BindOnceCSVFlag(fs, "roles", "Comma-separated UserRole values: "+strings.Join(userRoleList(), ", "))
 	visibleApps := shared.BindOnceCSVFlag(fs, "visible-app", "Comma-separated app IDs for visible apps")
-	confirm := fs.Bool("confirm", false, "Confirm replacing visible apps (required with --visible-app)")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm replacing visible apps (required with --visible-app)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -230,6 +230,15 @@ Examples:
 			warnDeprecatedUserRoles(roleValues)
 
 			visibleAppIDs := shared.SplitCSV(visibleApps.String())
+			if len(visibleAppIDs) == 0 && *confirm {
+				message := "--confirm requires --visible-app"
+				fmt.Fprintln(os.Stderr, "Error:", message)
+				return shared.WithDiagnostic(
+					shared.NewReportedUsageError(shared.UsageErrorInvalidValue, message),
+					shared.DiagnosticConflictingInput,
+					"--confirm",
+				)
+			}
 			if len(visibleAppIDs) > 0 && !*confirm {
 				message := "--confirm is required when --visible-app is set"
 				fmt.Fprintln(os.Stderr, "Error:", message)
