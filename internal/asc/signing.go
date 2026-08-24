@@ -1,5 +1,7 @@
 package asc
 
+import "encoding/json"
+
 // BundleIDPlatform represents the platform of a bundle ID or registered device.
 type BundleIDPlatform string
 
@@ -15,6 +17,21 @@ type BundleIDAttributes struct {
 	Identifier string           `json:"identifier"`
 	Platform   BundleIDPlatform `json:"platform"`
 	SeedID     string           `json:"seedId,omitempty"`
+
+	attributesPresent bool
+}
+
+// UnmarshalJSON records whether the API supplied an attributes object so the
+// bundle IDs list response can preserve relationship-only sparse resources.
+func (a *BundleIDAttributes) UnmarshalJSON(data []byte) error {
+	type alias BundleIDAttributes
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*a = BundleIDAttributes(decoded)
+	a.attributesPresent = true
+	return nil
 }
 
 // BundleIDCreateAttributes describes attributes for creating a bundle ID.
@@ -122,7 +139,54 @@ type BundleIDCapabilityUpdateRequest struct {
 }
 
 // BundleIDsResponse is the response from bundle IDs list endpoint.
-type BundleIDsResponse = Response[BundleIDAttributes]
+type BundleIDsResponse struct {
+	Data     []Resource[BundleIDAttributes] `json:"data"`
+	Links    Links                          `json:"links"`
+	Included json.RawMessage                `json:"included,omitempty"`
+	Meta     json.RawMessage                `json:"meta,omitempty"`
+}
+
+func (r BundleIDsResponse) MarshalJSON() ([]byte, error) {
+	type resourceJSON struct {
+		Type          ResourceType        `json:"type"`
+		ID            string              `json:"id"`
+		Attributes    *BundleIDAttributes `json:"attributes,omitempty"`
+		Relationships json.RawMessage     `json:"relationships,omitempty"`
+		Links         json.RawMessage     `json:"links,omitempty"`
+	}
+	var data []resourceJSON
+	if r.Data != nil {
+		data = make([]resourceJSON, len(r.Data))
+	}
+	for i, resource := range r.Data {
+		var attributes *BundleIDAttributes
+		if resource.Attributes.attributesPresent || resource.Attributes != (BundleIDAttributes{}) {
+			attributes = &resource.Attributes
+		}
+		data[i] = resourceJSON{resource.Type, resource.ID, attributes, resource.Relationships, resource.Links}
+	}
+	return json.Marshal(struct {
+		Data     any             `json:"data"`
+		Links    Links           `json:"links"`
+		Included json.RawMessage `json:"included,omitempty"`
+		Meta     json.RawMessage `json:"meta,omitempty"`
+	}{data, r.Links, r.Included, r.Meta})
+}
+
+// GetLinks returns the links field for pagination.
+func (r *BundleIDsResponse) GetLinks() *Links {
+	return &r.Links
+}
+
+// GetMeta returns the raw metadata field.
+func (r *BundleIDsResponse) GetMeta() json.RawMessage {
+	return r.Meta
+}
+
+// GetData returns the data field for aggregation.
+func (r *BundleIDsResponse) GetData() any {
+	return r.Data
+}
 
 // BundleIDResponse is the response from bundle ID detail endpoint.
 type BundleIDResponse = SingleResponse[BundleIDAttributes]

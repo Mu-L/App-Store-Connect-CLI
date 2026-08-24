@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -93,6 +94,33 @@ func newTestClientWithResponses(t *testing.T, check func(*http.Request), respons
 		return responses[i], nil
 	})
 
+	return &Client{
+		httpClient: &http.Client{Transport: transport},
+		keyID:      "KEY123",
+		issuerID:   "ISS456",
+		privateKey: key,
+	}
+}
+
+func newTestServerClient(t *testing.T, handler http.HandlerFunc) *Client {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
+	}
+	serverClient := server.Client()
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		forwarded := req.Clone(req.Context())
+		forwarded.URL.Scheme = serverURL.Scheme
+		forwarded.URL.Host = serverURL.Host
+		return serverClient.Transport.RoundTrip(forwarded)
+	})
 	return &Client{
 		httpClient: &http.Client{Transport: transport},
 		keyID:      "KEY123",
@@ -7140,38 +7168,40 @@ func TestGetBundleIDs_SplitsLongIdentifierFilter(t *testing.T) {
 	}
 
 	requests := 0
-	client := newTestClient(
-		t, func(req *http.Request) {
-			requests++
-			if req.Method != http.MethodGet {
-				t.Fatalf("expected GET, got %s", req.Method)
-			}
-			if req.URL.Path != "/v1/bundleIds" {
-				t.Fatalf("expected path /v1/bundleIds, got %s", req.URL.Path)
-			}
-			if requests == 1 && req.URL.Query().Get("include") != "profiles" {
-				t.Fatalf("expected include=profiles on the first split request, got %q", req.URL.Query().Get("include"))
-			}
-			if requests == 2 {
-				if req.URL.Query().Get("cursor") != "chunk-one-next" {
-					t.Fatalf("expected next page cursor, got query %q", req.URL.RawQuery)
-				}
-				assertAuthorized(t, req)
-				return
-			}
-			filter := req.URL.Query().Get("filter[identifier]")
-			if filter == "" {
-				t.Fatal("expected filter[identifier]")
-			}
-			if len(req.URL.RequestURI()) > bundleIDsIdentifierFilterMaxLength {
-				t.Fatalf("expected encoded request URI to be chunked below %d chars, got %d", bundleIDsIdentifierFilterMaxLength, len(req.URL.RequestURI()))
+	client := newTestServerClient(t, func(w http.ResponseWriter, req *http.Request) {
+		requests++
+		if req.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", req.Method)
+		}
+		if req.URL.Path != "/v1/bundleIds" {
+			t.Fatalf("expected path /v1/bundleIds, got %s", req.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 && req.URL.Query().Get("include") != "profiles" {
+			t.Fatalf("expected include=profiles on the first split request, got %q", req.URL.Query().Get("include"))
+		}
+		if requests == 2 {
+			if req.URL.Query().Get("cursor") != "chunk-one-next" {
+				t.Fatalf("expected next page cursor, got query %q", req.URL.RawQuery)
 			}
 			assertAuthorized(t, req)
-		},
-		jsonResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bid-1","attributes":{"identifier":"com.example.one"}}],"included":[{"type":"profiles","id":"profile-1","attributes":{"name":"First"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/bundleIds?cursor=chunk-one-next"}}`),
-		jsonResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bid-2","attributes":{"identifier":"com.example.one.more"}}],"included":[{"type":"profiles","id":"profile-1","attributes":{"name":"First"}},{"type":"profiles","id":"profile-2","attributes":{"name":"Second"}}]}`),
-		jsonResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bid-3","attributes":{"identifier":"com.example.two"}}],"included":[{"type":"profiles","id":"profile-2","attributes":{"name":"Second"}},{"type":"apps","id":"app-1","attributes":{"name":"Example"}}]}`),
-	)
+			_, _ = io.WriteString(w, `{"data":[{"type":"bundleIds","id":"bid-2","attributes":{"identifier":"com.example.one.more"}}],"included":[{"type":"profiles","id":"profile-1","attributes":{"name":"First"}},{"type":"profiles","id":"profile-2","attributes":{"name":"Second"}}]}`)
+			return
+		}
+		filter := req.URL.Query().Get("filter[identifier]")
+		if filter == "" {
+			t.Fatal("expected filter[identifier]")
+		}
+		if len(req.URL.RequestURI()) > bundleIDsIdentifierFilterMaxLength {
+			t.Fatalf("expected encoded request URI to be chunked below %d chars, got %d", bundleIDsIdentifierFilterMaxLength, len(req.URL.RequestURI()))
+		}
+		assertAuthorized(t, req)
+		if requests == 3 {
+			_, _ = io.WriteString(w, `{"data":[{"type":"bundleIds","id":"bid-3","attributes":{"identifier":"com.example.two"}}],"included":[{"type":"profiles","id":"profile-2","attributes":{"name":"Second"}},{"type":"apps","id":"app-1","attributes":{"name":"Example"}}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":[{"type":"bundleIds","id":"bid-1","attributes":{"identifier":"com.example.one"}}],"included":[{"type":"profiles","id":"profile-1","attributes":{"name":"First"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/bundleIds?cursor=chunk-one-next"}}`)
+	})
 
 	resp, err := client.GetBundleIDs(context.Background(), WithBundleIDsFilterIdentifier(rawIdentifierFilter), WithBundleIDsInclude([]string{"profiles"}))
 	if err != nil {
@@ -7202,6 +7232,30 @@ func TestGetBundleIDs_SplitsLongIdentifierFilter(t *testing.T) {
 		if included[i].Type != ResourceType(want.typeName) || included[i].ID != want.id {
 			t.Fatalf("included[%d] = %s/%s, want %s/%s", i, included[i].Type, included[i].ID, want.typeName, want.id)
 		}
+	}
+}
+
+func TestGetBundleIDs_RejectsExplicitSplitPaginationDisabled(t *testing.T) {
+	identifiers := make([]string, 0, 1500)
+	for range 1500 {
+		identifiers = append(identifiers, "a")
+	}
+	requests := 0
+	client := newTestClient(t, func(req *http.Request) {
+		requests++
+		t.Fatalf("split pagination rejection should happen before HTTP: %s", req.URL.String())
+	}, jsonResponse(http.StatusOK, `{"data":[]}`))
+
+	_, err := client.GetBundleIDs(
+		context.Background(),
+		WithBundleIDsFilterIdentifier(strings.Join(identifiers, ",")),
+		WithBundleIDsSplitPagination(false),
+	)
+	if err == nil || !strings.Contains(err.Error(), "requires --paginate") {
+		t.Fatalf("GetBundleIDs() error = %v, want pagination requirement", err)
+	}
+	if requests != 0 {
+		t.Fatalf("request count = %d, want no HTTP request", requests)
 	}
 }
 
@@ -7241,23 +7295,15 @@ func TestGetBundleIDs_SplitIdentifierFilterAccountsForModerateQueryOverhead(t *t
 		t.Fatalf("moderate query overhead produced %d chunks, baseline produced %d; want smaller chunks", len(overheadChunks), len(baseChunks))
 	}
 
-	responses := make([]*http.Response, 0, len(overheadChunks))
 	idByIdentifier := make(map[string]string, len(identifiers))
 	for index, identifier := range identifiers {
 		idByIdentifier[identifier] = fmt.Sprintf("bundle-%03d", index)
 	}
-	for _, chunk := range overheadChunks {
-		resources := make([]string, 0, len(chunk))
-		for _, identifier := range chunk {
-			resources = append(resources, fmt.Sprintf(`{"type":"bundleIds","id":"%s","attributes":{"identifier":"%s"}}`, idByIdentifier[identifier], identifier))
-		}
-		responses = append(responses, jsonResponse(http.StatusOK, `{"data":[`+strings.Join(resources, ",")+`]} `))
-	}
-
 	covered := make(map[string]struct{}, len(identifiers))
 	requests := 0
-	client := newTestClient(t, func(req *http.Request) {
+	client := newTestServerClient(t, func(w http.ResponseWriter, req *http.Request) {
 		requests++
+		w.Header().Set("Content-Type", "application/json")
 		if len(req.URL.RequestURI()) > bundleIDsIdentifierFilterMaxLength {
 			t.Fatalf("request %d URI length = %d, want <= %d: %s", requests, len(req.URL.RequestURI()), bundleIDsIdentifierFilterMaxLength, req.URL.RequestURI())
 		}
@@ -7277,7 +7323,12 @@ func TestGetBundleIDs_SplitIdentifierFilterAccountsForModerateQueryOverhead(t *t
 			}
 			covered[identifier] = struct{}{}
 		}
-	}, responses...)
+		resources := make([]string, 0)
+		for _, identifier := range strings.Split(values.Get("filter[identifier]"), ",") {
+			resources = append(resources, fmt.Sprintf(`{"type":"bundleIds","id":"%s","attributes":{"identifier":"%s"}}`, idByIdentifier[identifier], identifier))
+		}
+		_, _ = io.WriteString(w, `{"data":[`+strings.Join(resources, ",")+`]}`)
+	})
 
 	resp, err := client.GetBundleIDs(
 		context.Background(),
@@ -7307,14 +7358,16 @@ func TestGetBundleIDs_SplitIdentifierFilterRejectsRepeatedNextURL(t *testing.T) 
 	nextURL := "https://api.appstoreconnect.apple.com/v1/bundleIds?cursor=repeat"
 
 	requests := 0
-	client := newTestClient(
-		t, func(req *http.Request) {
-			requests++
-			assertAuthorized(t, req)
-		},
-		jsonResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bid-1","attributes":{"identifier":"com.example.one"}}],"links":{"next":"`+nextURL+`"}}`),
-		jsonResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bid-2","attributes":{"identifier":"com.example.two"}}],"links":{"next":"`+nextURL+`"}}`),
-	)
+	client := newTestServerClient(t, func(w http.ResponseWriter, req *http.Request) {
+		requests++
+		assertAuthorized(t, req)
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			_, _ = io.WriteString(w, `{"data":[{"type":"bundleIds","id":"bid-1","attributes":{"identifier":"com.example.one"}}],"links":{"next":"`+nextURL+`"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":[{"type":"bundleIds","id":"bid-2","attributes":{"identifier":"com.example.two"}}],"links":{"next":"`+nextURL+`"}}`)
+	})
 
 	_, err := client.GetBundleIDs(context.Background(), WithBundleIDsFilterIdentifier(strings.Join(identifiers, ",")))
 	if !errors.Is(err, ErrRepeatedPaginationURL) {
@@ -7352,20 +7405,22 @@ func TestGetBundleIDs_SortsAfterSplitIdentifierFilter(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			requests := 0
-			client := newTestClient(
-				t, func(req *http.Request) {
-					requests++
-					if req.URL.Query().Get("sort") != test.sort {
-						t.Fatalf("request %d sort = %q, want %q", requests, req.URL.Query().Get("sort"), test.sort)
-					}
-					if req.URL.Query().Get("filter[identifier]") == "" {
-						t.Fatalf("request %d missing filter[identifier]", requests)
-					}
-					assertAuthorized(t, req)
-				},
-				jsonResponse(http.StatusOK, firstPage),
-				jsonResponse(http.StatusOK, secondPage),
-			)
+			client := newTestServerClient(t, func(w http.ResponseWriter, req *http.Request) {
+				requests++
+				if req.URL.Query().Get("sort") != test.sort {
+					t.Fatalf("request %d sort = %q, want %q", requests, req.URL.Query().Get("sort"), test.sort)
+				}
+				if req.URL.Query().Get("filter[identifier]") == "" {
+					t.Fatalf("request %d missing filter[identifier]", requests)
+				}
+				assertAuthorized(t, req)
+				w.Header().Set("Content-Type", "application/json")
+				if requests == 1 {
+					_, _ = io.WriteString(w, firstPage)
+					return
+				}
+				_, _ = io.WriteString(w, secondPage)
+			})
 
 			resp, err := client.GetBundleIDs(
 				context.Background(),
@@ -7392,22 +7447,26 @@ func TestGetBundleIDs_DeduplicatesSplitIdentifierFilterData(t *testing.T) {
 	}
 	rawIdentifierFilter := strings.Join(identifiers, ",")
 
-	client := newTestClient(
-		t, func(req *http.Request) {
-			assertAuthorized(t, req)
-			if req.URL.Query().Get("filter[identifier]") == "" {
-				t.Fatal("expected split identifier filter")
-			}
-		},
-		jsonResponse(http.StatusOK, `{"data":[
+	requests := 0
+	client := newTestServerClient(t, func(w http.ResponseWriter, req *http.Request) {
+		requests++
+		assertAuthorized(t, req)
+		if req.URL.Query().Get("filter[identifier]") == "" {
+			t.Fatal("expected split identifier filter")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			_, _ = io.WriteString(w, `{"data":[
 			{"type":"bundleIds","id":"bundle-z","attributes":{"name":"Zulu","identifier":"com.example.z","platform":"MAC_OS"}},
 			{"type":"bundleIds","id":"bundle-a","attributes":{"name":"Original","identifier":"com.example.a","platform":"IOS"}}
-		]}`),
-		jsonResponse(http.StatusOK, `{"data":[
+		]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":[
 			{"type":"bundleIds","id":"bundle-a","attributes":{"name":"Duplicate","identifier":"com.example.a","platform":"IOS"}},
 			{"type":"bundleIds","id":"bundle-m","attributes":{"name":"Bravo","identifier":"com.example.m","platform":"IOS"}}
-		]}`),
-	)
+		]}`)
+	})
 
 	resp, err := client.GetBundleIDs(
 		context.Background(),

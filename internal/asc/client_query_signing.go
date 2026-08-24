@@ -22,6 +22,7 @@ type bundleIDsQuery struct {
 	profilesLimit              int
 	bundleIDCapabilitiesLimit  int
 	splitPagination            bool
+	splitPaginationSet         bool
 }
 
 type merchantIDsQuery struct {
@@ -453,6 +454,7 @@ func WithBundleIDsNextURL(next string) BundleIDsOption {
 func WithBundleIDsSplitPagination(enabled bool) BundleIDsOption {
 	return func(q *bundleIDsQuery) {
 		q.splitPagination = enabled
+		q.splitPaginationSet = true
 	}
 }
 

@@ -22,6 +22,9 @@ func (c *Client) GetBundleIDs(ctx context.Context, opts ...BundleIDsOption) (*Bu
 	}
 
 	if query.nextURL == "" && shouldSplitBundleIDsIdentifierFilter(query) {
+		if query.splitPaginationSet && !query.splitPagination {
+			return nil, fmt.Errorf("bundleIds: split identifier filter requires --paginate because multiple continuation URLs cannot be represented; use pagination")
+		}
 		if err := validateBundleIDsSplitSort(query); err != nil {
 			return nil, err
 		}
@@ -48,6 +51,67 @@ func (c *Client) GetBundleIDs(ctx context.Context, opts ...BundleIDsOption) (*Bu
 	}
 
 	return &response, nil
+}
+
+// PaginateBundleIDs fetches and aggregates bundle ID pages while preserving
+// unique included resources. It is intentionally endpoint-specific because
+// generic pagination cannot know how to merge an Included JSON:API member.
+func PaginateBundleIDs(ctx context.Context, firstPage *BundleIDsResponse, fetchNext func(context.Context, string) (*BundleIDsResponse, error)) (*BundleIDsResponse, error) {
+	if firstPage == nil {
+		return nil, nil
+	}
+	if fetchNext == nil {
+		return nil, fmt.Errorf("bundleIds pagination requires a next-page fetcher")
+	}
+
+	result := &BundleIDsResponse{
+		Data:  make([]Resource[BundleIDAttributes], 0, len(firstPage.Data)),
+		Links: firstPage.Links,
+		Meta:  firstPage.Meta,
+	}
+	included := make([]json.RawMessage, 0)
+	includedSeen := make(map[string]struct{})
+	page := firstPage
+	pageNumber := 1
+	seenNext := make(map[string]struct{})
+
+	for {
+		result.Data = append(result.Data, page.Data...)
+		if err := appendBundleIDsIncluded(&included, includedSeen, page.Included); err != nil {
+			return result, fmt.Errorf("page %d: %w", pageNumber, err)
+		}
+
+		next := strings.TrimSpace(page.Links.Next)
+		if next == "" {
+			break
+		}
+		if _, ok := seenNext[next]; ok {
+			return result, fmt.Errorf("page %d: %w", pageNumber+1, ErrRepeatedPaginationURL)
+		}
+		seenNext[next] = struct{}{}
+		pageNumber++
+
+		nextPage, err := fetchNext(ctx, next)
+		if err != nil {
+			return result, fmt.Errorf("page %d: %w", pageNumber, err)
+		}
+		if nextPage == nil {
+			return result, fmt.Errorf("page %d: received nil response", pageNumber)
+		}
+		page = nextPage
+		result.Links = Links{}
+		result.Meta = nil
+	}
+
+	result.Links.Next = ""
+	if len(included) > 0 {
+		mergedIncluded, err := json.Marshal(included)
+		if err != nil {
+			return result, fmt.Errorf("failed to merge included resources: %w", err)
+		}
+		result.Included = mergedIncluded
+	}
+	return result, nil
 }
 
 func shouldSplitBundleIDsIdentifierFilter(query *bundleIDsQuery) bool {

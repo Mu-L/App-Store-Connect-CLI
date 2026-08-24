@@ -190,7 +190,7 @@ Examples:
 					return fmt.Errorf("bundle-ids list: failed to fetch: %w", err)
 				}
 
-				paginated, err := asc.PaginateAll(requestCtx, firstPage, func(ctx context.Context, nextURL string) (asc.PaginatedResponse, error) {
+				paginated, err := asc.PaginateBundleIDs(requestCtx, firstPage, func(ctx context.Context, nextURL string) (*asc.BundleIDsResponse, error) {
 					return client.GetBundleIDs(ctx, asc.WithBundleIDsNextURL(nextURL))
 				})
 				if err != nil {
