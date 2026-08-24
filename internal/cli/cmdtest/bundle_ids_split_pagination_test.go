@@ -97,6 +97,33 @@ func TestBundleIDsListPaginatePreservesIncludedAcrossPages(t *testing.T) {
 	}
 }
 
+func TestBundleIDsListPaginatePreservesEmptyIncluded(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	setBundleIDPlatformTestServer(t, func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[],"included":[],"links":{}}`)
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	if err := root.Parse([]string{"bundle-ids", "list", "--include", "profiles", "--paginate", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	want := `{"data":[],"links":{},"included":[]}`
+	if strings.TrimSpace(stdout) != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
 func TestBundleIDsListSparseRelationshipResponseOmitsAttributes(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))

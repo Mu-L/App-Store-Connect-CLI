@@ -71,12 +71,14 @@ func PaginateBundleIDs(ctx context.Context, firstPage *BundleIDsResponse, fetchN
 	}
 	included := make([]json.RawMessage, 0)
 	includedSeen := make(map[string]struct{})
+	includedPresent := false
 	page := firstPage
 	pageNumber := 1
 	seenNext := make(map[string]struct{})
 
 	for {
 		result.Data = append(result.Data, page.Data...)
+		includedPresent = includedPresent || bundleIDsIncludedArrayPresent(page.Included)
 		if err := appendBundleIDsIncluded(&included, includedSeen, page.Included); err != nil {
 			return result, fmt.Errorf("page %d: %w", pageNumber, err)
 		}
@@ -104,7 +106,7 @@ func PaginateBundleIDs(ctx context.Context, firstPage *BundleIDsResponse, fetchN
 	}
 
 	result.Links.Next = ""
-	if len(included) > 0 {
+	if includedPresent {
 		mergedIncluded, err := json.Marshal(included)
 		if err != nil {
 			return result, fmt.Errorf("failed to merge included resources: %w", err)
@@ -149,6 +151,7 @@ func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, quer
 	combined := &BundleIDsResponse{}
 	included := make([]json.RawMessage, 0)
 	includedSeen := make(map[string]struct{})
+	includedPresent := false
 	dataSeen := make(map[string]struct{})
 
 	for _, chunk := range chunks {
@@ -163,6 +166,7 @@ func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, quer
 				return nil, err
 			}
 			appendBundleIDsData(&combined.Data, dataSeen, resp.Data)
+			includedPresent = includedPresent || bundleIDsIncludedArrayPresent(resp.Included)
 			if err := appendBundleIDsIncluded(&included, includedSeen, resp.Included); err != nil {
 				return nil, err
 			}
@@ -181,7 +185,7 @@ func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, quer
 	// Each identifier chunk is sorted independently by ASC. Re-sort the merged
 	// resources so a large filter keeps the endpoint's documented ordering.
 	sortBundleIDsData(combined.Data, query.sort)
-	if len(included) > 0 {
+	if includedPresent {
 		mergedIncluded, err := json.Marshal(included)
 		if err != nil {
 			return nil, fmt.Errorf("failed to merge included resources: %w", err)
@@ -299,6 +303,11 @@ func appendBundleIDsIncluded(resources *[]json.RawMessage, seen map[string]struc
 		*resources = append(*resources, resource)
 	}
 	return nil
+}
+
+func bundleIDsIncludedArrayPresent(included json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(included))
+	return trimmed != "" && trimmed != "null"
 }
 
 func (c *Client) getBundleIDsPage(ctx context.Context, query *bundleIDsQuery) (*BundleIDsResponse, error) {
