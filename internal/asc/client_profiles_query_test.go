@@ -2,9 +2,41 @@ package asc
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 )
+
+func TestProfileAttributesJSONPreservesSparseFields(t *testing.T) {
+	var attributes ProfileAttributes
+	if err := json.Unmarshal([]byte(`{"expirationDate":"2026-08-24T00:00:00Z"}`), &attributes); err != nil {
+		t.Fatalf("unmarshal sparse profile attributes: %v", err)
+	}
+
+	encoded, err := json.Marshal(attributes)
+	if err != nil {
+		t.Fatalf("marshal sparse profile attributes: %v", err)
+	}
+	if got, want := string(encoded), `{"expirationDate":"2026-08-24T00:00:00Z"}`; got != want {
+		t.Fatalf("sparse profile attributes JSON = %s, want %s", got, want)
+	}
+}
+
+func TestProfileAttributesJSONKeepsFullResponseFields(t *testing.T) {
+	attributes := ProfileAttributes{
+		Name:           "Development",
+		ProfileType:    "IOS_APP_DEVELOPMENT",
+		ExpirationDate: "2026-08-24T00:00:00Z",
+	}
+
+	encoded, err := json.Marshal(attributes)
+	if err != nil {
+		t.Fatalf("marshal full profile attributes: %v", err)
+	}
+	if got, want := string(encoded), `{"name":"Development","profileType":"IOS_APP_DEVELOPMENT","expirationDate":"2026-08-24T00:00:00Z"}`; got != want {
+		t.Fatalf("full profile attributes JSON = %s, want %s", got, want)
+	}
+}
 
 func TestGetProfiles_WithQuerySurface(t *testing.T) {
 	response := jsonResponse(http.StatusOK, `{"data":[]}`)

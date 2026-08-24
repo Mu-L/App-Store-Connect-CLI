@@ -106,10 +106,10 @@ Examples:
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return shared.UsageError("profiles list: --limit must be between 1 and 200")
 			}
-			if *devicesLimit != 0 && (*devicesLimit < 1 || *devicesLimit > 50) {
+			if profilesListFlagWasProvided(fs, "limit-devices") && (*devicesLimit < 1 || *devicesLimit > 50) {
 				return shared.UsageError("profiles list: --limit-devices must be between 1 and 50")
 			}
-			if *certificatesLimit != 0 && (*certificatesLimit < 1 || *certificatesLimit > 50) {
+			if profilesListFlagWasProvided(fs, "limit-certificates") && (*certificatesLimit < 1 || *certificatesLimit > 50) {
 				return shared.UsageError("profiles list: --limit-certificates must be between 1 and 50")
 			}
 
@@ -242,6 +242,16 @@ Examples:
 			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+func profilesListFlagWasProvided(fs *flag.FlagSet, name string) bool {
+	provided := false
+	fs.Visit(func(parsed *flag.Flag) {
+		if parsed.Name == name {
+			provided = true
+		}
+	})
+	return provided
 }
 
 // ProfilesGetCommand returns the profiles view subcommand.

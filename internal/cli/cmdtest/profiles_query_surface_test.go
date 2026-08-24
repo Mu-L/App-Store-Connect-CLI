@@ -148,6 +148,42 @@ func TestProfilesListQuerySurfacePaginatesFromServerNextURL(t *testing.T) {
 	}
 }
 
+func TestProfilesListSparseFieldsPreserveAttributePresence(t *testing.T) {
+	setupAuth(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet || req.URL.Path != "/v1/profiles" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+		if got := req.URL.Query().Get("fields[profiles]"); got != "expirationDate" {
+			t.Fatalf("fields[profiles] = %q, want expirationDate", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"type":"profiles","id":"profile-1","attributes":{"expirationDate":"2026-08-24T00:00:00Z"}}]}`)
+	}))
+	t.Cleanup(server.Close)
+	installProfilesQueryTestClient(t, server)
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"profiles", "list", "--fields", "expirationDate", "--output", "json"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	const want = `{"data":[{"type":"profiles","id":"profile-1","attributes":{"expirationDate":"2026-08-24T00:00:00Z"}}],"links":{}}` + "\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want sparse profile JSON %q", stdout, want)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+}
+
 func TestProfilesListRejectsInvalidQueryValuesBeforeAuth(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -162,7 +198,9 @@ func TestProfilesListRejectsInvalidQueryValuesBeforeAuth(t *testing.T) {
 		{name: "certificate fields", args: []string{"profiles", "list", "--certificate-fields", "uuid"}, want: "--certificate-fields must be one of:"},
 		{name: "include", args: []string{"profiles", "list", "--include", "app"}, want: "--include must be one of:"},
 		{name: "device limit", args: []string{"profiles", "list", "--limit-devices", "51"}, want: "--limit-devices must be between 1 and 50"},
+		{name: "explicit zero device limit", args: []string{"profiles", "list", "--limit-devices", "0"}, want: "--limit-devices must be between 1 and 50"},
 		{name: "certificate limit", args: []string{"profiles", "list", "--limit-certificates", "51"}, want: "--limit-certificates must be between 1 and 50"},
+		{name: "explicit zero certificate limit", args: []string{"profiles", "list", "--limit-certificates", "0"}, want: "--limit-certificates must be between 1 and 50"},
 		{name: "bundle fields dependency", args: []string{"profiles", "list", "--bundle-id-fields", "identifier"}, want: "--bundle-id-fields requires --include bundleId", concise: true},
 		{name: "device fields dependency", args: []string{"profiles", "list", "--device-fields", "name"}, want: "--device-fields requires --include devices", concise: true},
 		{name: "certificate fields dependency", args: []string{"profiles", "list", "--certificate-fields", "name"}, want: "--certificate-fields requires --include certificates", concise: true},

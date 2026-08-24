@@ -201,9 +201,9 @@ const (
 
 // ProfileAttributes describes a profile resource.
 type ProfileAttributes struct {
-	Name           string       `json:"name"`
+	Name           string       `json:"name,omitempty"`
 	Platform       Platform     `json:"platform,omitempty"`
-	ProfileType    string       `json:"profileType"`
+	ProfileType    string       `json:"profileType,omitempty"`
 	ProfileState   ProfileState `json:"profileState,omitempty"`
 	ProfileContent string       `json:"profileContent,omitempty"`
 	UUID           string       `json:"uuid,omitempty"`
