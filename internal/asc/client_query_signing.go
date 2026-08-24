@@ -8,7 +8,19 @@ import (
 
 type bundleIDsQuery struct {
 	listQuery
-	identifier string
+	names                      []string
+	platforms                  []string
+	identifier                 string
+	seedIDs                    []string
+	ids                        []string
+	sort                       string
+	fields                     []string
+	profilesFields             []string
+	bundleIDCapabilitiesFields []string
+	appFields                  []string
+	include                    []string
+	profilesLimit              int
+	bundleIDCapabilitiesLimit  int
 }
 
 type merchantIDsQuery struct {
@@ -133,8 +145,26 @@ type userInvitationsQuery struct {
 
 func buildBundleIDsQuery(query *bundleIDsQuery) string {
 	values := url.Values{}
+	addCSV(values, "filter[name]", query.names)
+	addCSV(values, "filter[platform]", query.platforms)
 	if strings.TrimSpace(query.identifier) != "" {
 		values.Set("filter[identifier]", strings.TrimSpace(query.identifier))
+	}
+	addCSV(values, "filter[seedId]", query.seedIDs)
+	addCSV(values, "filter[id]", query.ids)
+	if strings.TrimSpace(query.sort) != "" {
+		values.Set("sort", strings.TrimSpace(query.sort))
+	}
+	addCSV(values, "fields[bundleIds]", query.fields)
+	addCSV(values, "fields[profiles]", query.profilesFields)
+	addCSV(values, "fields[bundleIdCapabilities]", query.bundleIDCapabilitiesFields)
+	addCSV(values, "fields[apps]", query.appFields)
+	addCSV(values, "include", query.include)
+	if query.profilesLimit > 0 {
+		values.Set("limit[profiles]", strconv.Itoa(query.profilesLimit))
+	}
+	if query.bundleIDCapabilitiesLimit > 0 {
+		values.Set("limit[bundleIdCapabilities]", strconv.Itoa(query.bundleIDCapabilitiesLimit))
 	}
 	addLimit(values, query.limit)
 	return values.Encode()
@@ -441,6 +471,96 @@ func WithBundleIDsFilterIdentifier(identifier string) BundleIDsOption {
 		normalized := normalizeCSVString(identifier)
 		if normalized != "" {
 			q.identifier = normalized
+		}
+	}
+}
+
+// WithBundleIDsFilterNames filters bundle IDs by name(s).
+func WithBundleIDsFilterNames(names []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.names = normalizeList(names)
+	}
+}
+
+// WithBundleIDsFilterPlatforms filters bundle IDs by platform(s).
+func WithBundleIDsFilterPlatforms(platforms []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.platforms = normalizeUpperList(platforms)
+	}
+}
+
+// WithBundleIDsFilterSeedIDs filters bundle IDs by seed ID(s).
+func WithBundleIDsFilterSeedIDs(seedIDs []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.seedIDs = normalizeList(seedIDs)
+	}
+}
+
+// WithBundleIDsFilterIDs filters bundle IDs by ID(s).
+func WithBundleIDsFilterIDs(ids []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.ids = normalizeList(ids)
+	}
+}
+
+// WithBundleIDsSort sets the sort order for bundle IDs.
+func WithBundleIDsSort(sort string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		if strings.TrimSpace(sort) != "" {
+			q.sort = strings.TrimSpace(sort)
+		}
+	}
+}
+
+// WithBundleIDsFields sets fields[bundleIds] for bundle ID responses.
+func WithBundleIDsFields(fields []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.fields = normalizeList(fields)
+	}
+}
+
+// WithBundleIDsProfilesFields sets fields[profiles] for included profiles.
+func WithBundleIDsProfilesFields(fields []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.profilesFields = normalizeList(fields)
+	}
+}
+
+// WithBundleIDsCapabilitiesFields sets fields[bundleIdCapabilities] for included capabilities.
+func WithBundleIDsCapabilitiesFields(fields []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.bundleIDCapabilitiesFields = normalizeList(fields)
+	}
+}
+
+// WithBundleIDsAppFields sets fields[apps] for the included app.
+func WithBundleIDsAppFields(fields []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.appFields = normalizeList(fields)
+	}
+}
+
+// WithBundleIDsInclude sets include for bundle ID responses.
+func WithBundleIDsInclude(include []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.include = normalizeList(include)
+	}
+}
+
+// WithBundleIDsProfilesLimit sets the maximum number of included profiles.
+func WithBundleIDsProfilesLimit(limit int) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		if limit > 0 {
+			q.profilesLimit = limit
+		}
+	}
+}
+
+// WithBundleIDsCapabilitiesLimit sets the maximum number of included capabilities.
+func WithBundleIDsCapabilitiesLimit(limit int) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		if limit > 0 {
+			q.bundleIDCapabilitiesLimit = limit
 		}
 	}
 }
