@@ -268,6 +268,11 @@ func buildProfilesQuery(query *profilesQuery) string {
 
 func buildUsersQuery(query *usersQuery) string {
 	values := url.Values{}
+	include := normalizeUniqueList(query.include)
+	fields := query.fields
+	if len(fields) > 0 {
+		fields = normalizeUniqueList(append(append([]string{}, fields...), include...))
+	}
 	if strings.TrimSpace(query.email) != "" {
 		values.Set("filter[username]", strings.TrimSpace(query.email))
 	}
@@ -276,9 +281,9 @@ func buildUsersQuery(query *usersQuery) string {
 	if strings.TrimSpace(query.sort) != "" {
 		values.Set("sort", strings.TrimSpace(query.sort))
 	}
-	addCSV(values, "fields[users]", query.fields)
+	addCSV(values, "fields[users]", fields)
 	addCSV(values, "fields[apps]", query.appFields)
-	addCSV(values, "include", query.include)
+	addCSV(values, "include", include)
 	if query.visibleAppsLimit > 0 {
 		values.Set("limit[visibleApps]", strconv.Itoa(query.visibleAppsLimit))
 	}

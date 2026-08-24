@@ -101,7 +101,11 @@ Examples:
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return fmt.Errorf("users list: --limit must be between 1 and 200")
 			}
-			if *visibleAppsLimit != 0 && (*visibleAppsLimit < 1 || *visibleAppsLimit > 50) {
+			visibleAppsLimitProvided := false
+			fs.Visit(func(f *flag.Flag) {
+				visibleAppsLimitProvided = visibleAppsLimitProvided || f.Name == "visible-apps-limit"
+			})
+			if visibleAppsLimitProvided && (*visibleAppsLimit < 1 || *visibleAppsLimit > 50) {
 				return shared.UsageErrorf("users list: --visible-apps-limit must be between 1 and 50")
 			}
 			roleValues, err := normalizeUserRoles(*role, "--role")

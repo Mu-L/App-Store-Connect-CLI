@@ -32,10 +32,45 @@ func TestGetUsers_WithQueryParityOptions(t *testing.T) {
 		context.Background(),
 		WithUsersVisibleAppIDs([]string{"app-1", " app-2 "}),
 		WithUsersSort("-lastName"),
-		WithUsersFields([]string{"username", "lastName", "visibleApps"}),
+		WithUsersFields([]string{"username", "lastName"}),
 		WithUsersAppFields([]string{"name", "bundleId"}),
 		WithUsersInclude([]string{"visibleApps"}),
 		WithUsersVisibleAppsLimit(25),
+	); err != nil {
+		t.Fatalf("GetUsers() error: %v", err)
+	}
+}
+
+func TestGetUsers_IncludeVisibleAppsDeduplicatesPrimaryField(t *testing.T) {
+	response := jsonResponse(http.StatusOK, `{"data":[]}`)
+	client := newTestClient(t, func(req *http.Request) {
+		want := "fields%5Busers%5D=username%2CvisibleApps&include=visibleApps"
+		if got := req.URL.RawQuery; got != want {
+			t.Fatalf("raw query = %q, want %q", got, want)
+		}
+	}, response)
+
+	if _, err := client.GetUsers(
+		context.Background(),
+		WithUsersFields([]string{"username", "visibleApps", "username"}),
+		WithUsersInclude([]string{"visibleApps", "visibleApps"}),
+	); err != nil {
+		t.Fatalf("GetUsers() error: %v", err)
+	}
+}
+
+func TestGetUsers_FieldOnlyPreservesSparseFieldset(t *testing.T) {
+	response := jsonResponse(http.StatusOK, `{"data":[]}`)
+	client := newTestClient(t, func(req *http.Request) {
+		want := "fields%5Busers%5D=username%2ClastName"
+		if got := req.URL.RawQuery; got != want {
+			t.Fatalf("raw query = %q, want %q", got, want)
+		}
+	}, response)
+
+	if _, err := client.GetUsers(
+		context.Background(),
+		WithUsersFields([]string{"username", "lastName"}),
 	); err != nil {
 		t.Fatalf("GetUsers() error: %v", err)
 	}

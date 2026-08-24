@@ -144,6 +144,7 @@ func TestUsersListRejectsInvalidQueryValuesBeforeClient(t *testing.T) {
 		{name: "user fields", args: []string{"--fields", "createdDate"}, want: "users list: --fields must be one of"},
 		{name: "app fields", args: []string{"--app-fields", "createdDate"}, want: "users list: --app-fields must be one of"},
 		{name: "include", args: []string{"--include", "apps"}, want: "users list: --include must be one of"},
+		{name: "visible apps limit zero", args: []string{"--visible-apps-limit", "0"}, want: "users list: --visible-apps-limit must be between 1 and 50"},
 		{name: "visible apps limit", args: []string{"--visible-apps-limit", "51"}, want: "users list: --visible-apps-limit must be between 1 and 50"},
 	}
 
