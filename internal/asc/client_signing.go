@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -17,6 +18,9 @@ func (c *Client) GetBundleIDs(ctx context.Context, opts ...BundleIDsOption) (*Bu
 	}
 
 	if query.nextURL == "" && shouldSplitBundleIDsIdentifierFilter(query) {
+		if err := validateBundleIDsSplitSort(query); err != nil {
+			return nil, err
+		}
 		return c.getBundleIDsWithSplitIdentifierFilter(ctx, query)
 	}
 
@@ -45,6 +49,28 @@ func (c *Client) GetBundleIDs(ctx context.Context, opts ...BundleIDsOption) (*Bu
 func shouldSplitBundleIDsIdentifierFilter(query *bundleIDsQuery) bool {
 	identifier := strings.TrimSpace(query.identifier)
 	return strings.Contains(identifier, ",") && len(bundleIDsRequestPath(query)) > bundleIDsIdentifierFilterMaxLength
+}
+
+func validateBundleIDsSplitSort(query *bundleIDsQuery) error {
+	terms, ok := parseBundleIDSort(query.sort)
+	if !ok || len(terms) == 0 || len(query.fields) == 0 {
+		return nil
+	}
+
+	// Sparse fieldsets can omit sort keys, so local reordering would be wrong.
+	fields := make(map[string]struct{}, len(query.fields))
+	for _, field := range query.fields {
+		fields[strings.TrimSpace(field)] = struct{}{}
+	}
+	for _, term := range terms {
+		if term.field == "id" {
+			continue
+		}
+		if _, ok := fields[term.field]; !ok {
+			return fmt.Errorf("bundleIds: cannot preserve sort %q across split identifier requests because fields[bundleIds] omits %q", strings.TrimSpace(query.sort), term.field)
+		}
+	}
+	return nil
 }
 
 func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, query *bundleIDsQuery) (*BundleIDsResponse, error) {
@@ -80,6 +106,9 @@ func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, quer
 			chunkQuery = bundleIDsQuery{listQuery: listQuery{nextURL: next}}
 		}
 	}
+	// Each identifier chunk is sorted independently by ASC. Re-sort the merged
+	// resources so a large filter keeps the endpoint's documented ordering.
+	sortBundleIDsData(combined.Data, query.sort)
 	if len(included) > 0 {
 		mergedIncluded, err := json.Marshal(included)
 		if err != nil {
@@ -89,6 +118,69 @@ func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, quer
 	}
 
 	return combined, nil
+}
+
+type bundleIDSortTerm struct {
+	field      string
+	descending bool
+}
+
+func sortBundleIDsData(resources []Resource[BundleIDAttributes], sortValue string) {
+	terms, ok := parseBundleIDSort(sortValue)
+	if !ok || len(terms) == 0 {
+		return
+	}
+
+	sort.SliceStable(resources, func(i, j int) bool {
+		for _, term := range terms {
+			left := bundleIDSortFieldValue(resources[i], term.field)
+			right := bundleIDSortFieldValue(resources[j], term.field)
+			if left == right {
+				continue
+			}
+			if term.descending {
+				return left > right
+			}
+			return left < right
+		}
+		return false
+	})
+}
+
+func parseBundleIDSort(value string) ([]bundleIDSortTerm, bool) {
+	terms := make([]bundleIDSortTerm, 0)
+	for _, expression := range strings.Split(value, ",") {
+		expression = strings.TrimSpace(expression)
+		if expression == "" {
+			continue
+		}
+		descending := strings.HasPrefix(expression, "-")
+		field := strings.TrimPrefix(expression, "-")
+		switch field {
+		case "name", "platform", "identifier", "seedId", "id":
+			terms = append(terms, bundleIDSortTerm{field: field, descending: descending})
+		default:
+			return nil, false
+		}
+	}
+	return terms, true
+}
+
+func bundleIDSortFieldValue(resource Resource[BundleIDAttributes], field string) string {
+	switch field {
+	case "name":
+		return resource.Attributes.Name
+	case "platform":
+		return string(resource.Attributes.Platform)
+	case "identifier":
+		return resource.Attributes.Identifier
+	case "seedId":
+		return resource.Attributes.SeedID
+	case "id":
+		return resource.ID
+	default:
+		return ""
+	}
 }
 
 func appendBundleIDsIncluded(resources *[]json.RawMessage, seen map[string]struct{}, included json.RawMessage) error {

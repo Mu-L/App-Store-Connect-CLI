@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -7227,6 +7228,97 @@ func TestGetBundleIDs_SplitIdentifierFilterRejectsRepeatedNextURL(t *testing.T) 
 	}
 	if requests != 2 {
 		t.Fatalf("expected repeated next URL to stop after two requests, got %d", requests)
+	}
+}
+
+func TestGetBundleIDs_SortsAfterSplitIdentifierFilter(t *testing.T) {
+	identifiers := make([]string, 0, 250)
+	for i := 0; i < 250; i++ {
+		identifiers = append(identifiers, fmt.Sprintf("com.example.%012d", i))
+	}
+	rawIdentifierFilter := strings.Join(identifiers, ",")
+
+	const firstPage = `{"data":[
+		{"type":"bundleIds","id":"bundle-z","attributes":{"name":"Zulu","identifier":"com.example.z","platform":"MAC_OS","seedId":"seed-z"}},
+		{"type":"bundleIds","id":"bundle-a","attributes":{"name":"Alpha","identifier":"com.example.a","platform":"IOS","seedId":"seed-a"}}
+	]}`
+	const secondPage = `{"data":[
+		{"type":"bundleIds","id":"bundle-m","attributes":{"name":"Bravo","identifier":"com.example.m","platform":"IOS","seedId":"seed-m"}},
+		{"type":"bundleIds","id":"bundle-b","attributes":{"name":"Beta","identifier":"com.example.b","platform":"MAC_OS","seedId":"seed-b"}}
+	]}`
+	tests := []struct {
+		name string
+		sort string
+		want []string
+	}{
+		{name: "descending identifier", sort: "-identifier", want: []string{"bundle-z", "bundle-m", "bundle-b", "bundle-a"}},
+		{name: "multi-key platform then descending name", sort: "platform,-name", want: []string{"bundle-m", "bundle-a", "bundle-z", "bundle-b"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			requests := 0
+			client := newTestClient(
+				t, func(req *http.Request) {
+					requests++
+					if req.URL.Query().Get("sort") != test.sort {
+						t.Fatalf("request %d sort = %q, want %q", requests, req.URL.Query().Get("sort"), test.sort)
+					}
+					if req.URL.Query().Get("filter[identifier]") == "" {
+						t.Fatalf("request %d missing filter[identifier]", requests)
+					}
+					assertAuthorized(t, req)
+				},
+				jsonResponse(http.StatusOK, firstPage),
+				jsonResponse(http.StatusOK, secondPage),
+			)
+
+			resp, err := client.GetBundleIDs(
+				context.Background(),
+				WithBundleIDsFilterIdentifier(rawIdentifierFilter),
+				WithBundleIDsSort(test.sort),
+			)
+			if err != nil {
+				t.Fatalf("GetBundleIDs() error: %v", err)
+			}
+			if requests != 2 {
+				t.Fatalf("expected two split requests, got %d", requests)
+			}
+			if got := bundleIDResourceIDs(resp.Data); !slices.Equal(got, test.want) {
+				t.Fatalf("bundle ID order = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func bundleIDResourceIDs(resources []Resource[BundleIDAttributes]) []string {
+	ids := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		ids = append(ids, resource.ID)
+	}
+	return ids
+}
+
+func TestGetBundleIDs_RejectsSplitSortWhenSparseFieldsOmitSortField(t *testing.T) {
+	identifiers := make([]string, 0, 250)
+	for i := 0; i < 250; i++ {
+		identifiers = append(identifiers, fmt.Sprintf("com.example.%012d", i))
+	}
+	client := newTestClient(
+		t, func(req *http.Request) {
+			t.Fatalf("sparse split sort should be rejected before HTTP: %s", req.URL.String())
+		},
+		jsonResponse(http.StatusOK, `{"data":[]}`),
+	)
+
+	_, err := client.GetBundleIDs(
+		context.Background(),
+		WithBundleIDsFilterIdentifier(strings.Join(identifiers, ",")),
+		WithBundleIDsSort("platform,-name"),
+		WithBundleIDsFields([]string{"name", "identifier"}),
+	)
+	if err == nil || !strings.Contains(err.Error(), `fields[bundleIds] omits "platform"`) {
+		t.Fatalf("GetBundleIDs() error = %v, want sparse sort validation error", err)
 	}
 }
 
