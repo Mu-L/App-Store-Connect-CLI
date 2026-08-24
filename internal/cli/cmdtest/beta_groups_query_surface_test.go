@@ -167,6 +167,8 @@ func TestBetaGroupsListQuerySurfaceRejectsInvalidValuesBeforeAuth(t *testing.T) 
 		{name: "build fields", args: []string{"--build-fields", "notAField"}, want: "--build-fields must be one of"},
 		{name: "tester fields", args: []string{"--tester-fields", "notAField"}, want: "--tester-fields must be one of"},
 		{name: "recruitment criteria fields", args: []string{"--recruitment-criteria-fields", "notAField"}, want: "--recruitment-criteria-fields must be one of"},
+		{name: "explicit zero testers limit", args: []string{"--testers-limit", "0"}, want: "--testers-limit must be between 1 and 50"},
+		{name: "explicit zero builds limit", args: []string{"--builds-limit", "0"}, want: "--builds-limit must be between 1 and 1000"},
 		{name: "public link limit", args: []string{"--testers-limit", "51"}, want: "--testers-limit must be between 1 and 50"},
 		{name: "builds limit", args: []string{"--builds-limit", "1001"}, want: "--builds-limit must be between 1 and 1000"},
 		{name: "include", args: []string{"--include", "invalid"}, want: "--include must be one of"},

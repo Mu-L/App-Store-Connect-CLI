@@ -478,16 +478,16 @@ Examples:
 			if (len(recruitmentCriteriaFieldsValue) > 0 || recruitmentCriteriaFieldsSet) && !slices.Contains(includeValue, "betaRecruitmentCriteria") {
 				return shared.UsageError("beta-groups list: --recruitment-criteria-fields requires --include betaRecruitmentCriteria")
 			}
-			if *testersLimit != 0 && (*testersLimit < 1 || *testersLimit > 50) {
+			if testersLimitSet && (*testersLimit < 1 || *testersLimit > 50) {
 				return shared.UsageError("beta-groups list: --testers-limit must be between 1 and 50")
 			}
-			if *buildsLimit != 0 && (*buildsLimit < 1 || *buildsLimit > 1000) {
+			if buildsLimitSet && (*buildsLimit < 1 || *buildsLimit > 1000) {
 				return shared.UsageError("beta-groups list: --builds-limit must be between 1 and 1000")
 			}
-			if *testersLimit != 0 && !slices.Contains(includeValue, "betaTesters") {
+			if testersLimitSet && !slices.Contains(includeValue, "betaTesters") {
 				return shared.UsageError("beta-groups list: --testers-limit requires --include betaTesters")
 			}
-			if *buildsLimit != 0 && !slices.Contains(includeValue, "builds") {
+			if buildsLimitSet && !slices.Contains(includeValue, "builds") {
 				return shared.UsageError("beta-groups list: --builds-limit requires --include builds")
 			}
 
