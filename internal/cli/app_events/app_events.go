@@ -88,7 +88,6 @@ Examples:
 				fs,
 				*next,
 				"app-events list",
-				"app",
 				"event-state",
 				"id",
 				"fields",
@@ -99,10 +98,16 @@ Examples:
 			); err != nil {
 				return err
 			}
+			localizationsLimitProvided := false
+			fs.Visit(func(f *flag.Flag) {
+				if f.Name == "localizations-limit" {
+					localizationsLimitProvided = true
+				}
+			})
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return shared.UsageErrorf("app-events list: --limit must be between 1 and 200")
 			}
-			if *localizationsLimit != 0 && (*localizationsLimit < 1 || *localizationsLimit > 50) {
+			if localizationsLimitProvided && (*localizationsLimit < 1 || *localizationsLimit > 50) {
 				return shared.UsageErrorf("app-events list: --localizations-limit must be between 1 and 50")
 			}
 

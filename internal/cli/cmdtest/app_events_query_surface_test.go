@@ -156,7 +156,12 @@ func TestAppEventsListQuerySurfaceRejectsInvalidValuesBeforeAuth(t *testing.T) {
 		{
 			name: "localization limit",
 			args: []string{"--localizations-limit", "51"},
-			want: "--localizations-limit",
+			want: "--localizations-limit must be between 1 and 50",
+		},
+		{
+			name: "explicit zero localization limit",
+			args: []string{"--localizations-limit", "0"},
+			want: "--localizations-limit must be between 1 and 50",
 		},
 		{
 			name: "localization fields require include",
@@ -204,7 +209,6 @@ func TestAppEventsListQuerySurfaceRejectsNextConflictsBeforeAuth(t *testing.T) {
 		flag  string
 		value string
 	}{
-		{name: "app", flag: "--app", value: "app-123"},
 		{name: "event state", flag: "--event-state", value: "APPROVED"},
 		{name: "id", flag: "--id", value: "event-1"},
 		{name: "fields", flag: "--fields", value: "referenceName"},
@@ -240,5 +244,41 @@ func TestAppEventsListQuerySurfaceRejectsNextConflictsBeforeAuth(t *testing.T) {
 				t.Fatal("client factory ran before --next conflict validation")
 			}
 		})
+	}
+}
+
+func TestAppEventsListQuerySurfaceAllowsAppWithNextAndUsesOpaqueURL(t *testing.T) {
+	const nextURL = "https://api.appstoreconnect.apple.com/v1/apps/app-123/appEvents?cursor=opaque&limit=42&unexpected=kept"
+	captured := appEventsListQueryStub(t)
+
+	stdout, stderr, err := runAppEventsListQuerySurface(
+		t,
+		"app-events", "list",
+		"--app", "app-123",
+		"--next", nextURL,
+		"--output", "json",
+	)
+	if err != nil {
+		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if captured.calls != 1 {
+		t.Fatalf("request count = %d, want 1", captured.calls)
+	}
+	if captured.path != "/v1/apps/app-123/appEvents" {
+		t.Fatalf("path = %q, want /v1/apps/app-123/appEvents", captured.path)
+	}
+	want := url.Values{
+		"cursor":     {"opaque"},
+		"limit":      {"42"},
+		"unexpected": {"kept"},
+	}
+	if got := captured.query.Encode(); got != want.Encode() {
+		t.Fatalf("query = %q, want opaque next query %q", got, want.Encode())
+	}
+	if !strings.Contains(stdout, `"data":[]`) {
+		t.Fatalf("stdout = %q, want response from next URL", stdout)
 	}
 }
