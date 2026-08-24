@@ -50,6 +50,8 @@ func shouldSplitBundleIDsIdentifierFilter(query *bundleIDsQuery) bool {
 func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, query *bundleIDsQuery) (*BundleIDsResponse, error) {
 	chunks := splitBundleIDsIdentifierFilter(query, bundleIDsIdentifierFilterMaxLength)
 	combined := &BundleIDsResponse{}
+	included := make([]json.RawMessage, 0)
+	includedSeen := make(map[string]struct{})
 
 	for _, chunk := range chunks {
 		chunkQuery := *query
@@ -63,6 +65,9 @@ func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, quer
 				return nil, err
 			}
 			combined.Data = append(combined.Data, resp.Data...)
+			if err := appendBundleIDsIncluded(&included, includedSeen, resp.Included); err != nil {
+				return nil, err
+			}
 			next := strings.TrimSpace(resp.Links.Next)
 			if next == "" {
 				break
@@ -75,8 +80,46 @@ func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, quer
 			chunkQuery = bundleIDsQuery{listQuery: listQuery{nextURL: next}}
 		}
 	}
+	if len(included) > 0 {
+		mergedIncluded, err := json.Marshal(included)
+		if err != nil {
+			return nil, fmt.Errorf("failed to merge included resources: %w", err)
+		}
+		combined.Included = mergedIncluded
+	}
 
 	return combined, nil
+}
+
+func appendBundleIDsIncluded(resources *[]json.RawMessage, seen map[string]struct{}, included json.RawMessage) error {
+	trimmed := strings.TrimSpace(string(included))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+
+	var next []json.RawMessage
+	if err := json.Unmarshal(included, &next); err != nil {
+		return fmt.Errorf("failed to parse included resources: %w", err)
+	}
+	for _, resource := range next {
+		var identity struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		}
+		if err := json.Unmarshal(resource, &identity); err != nil {
+			return fmt.Errorf("failed to parse included resource: %w", err)
+		}
+		key := identity.Type + "\x00" + identity.ID
+		if identity.Type == "" || identity.ID == "" {
+			key = string(resource)
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		*resources = append(*resources, resource)
+	}
+	return nil
 }
 
 func (c *Client) getBundleIDsPage(ctx context.Context, query *bundleIDsQuery) (*BundleIDsResponse, error) {

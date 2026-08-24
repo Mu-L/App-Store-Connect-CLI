@@ -29,7 +29,7 @@ func TestBundleIDsListEmitsQuerySurface(t *testing.T) {
 			"filter[identifier]":           "com.example.app,com.example.other",
 			"filter[seedId]":               "seed-1,seed-2",
 			"filter[id]":                   "bundle-1,bundle-2",
-			"sort":                         "-identifier",
+			"sort":                         "name,-identifier",
 			"fields[bundleIds]":            "name,identifier,app",
 			"fields[profiles]":             "name,expirationDate",
 			"fields[bundleIdCapabilities]": "capabilityType,settings",
@@ -58,7 +58,7 @@ func TestBundleIDsListEmitsQuerySurface(t *testing.T) {
 		"--identifier", "com.example.app,com.example.other",
 		"--seed-id", "seed-1,seed-2",
 		"--id", "bundle-1,bundle-2",
-		"--sort", "-identifier",
+		"--sort", "name,-identifier",
 		"--fields", "name,identifier,app",
 		"--profile-fields", "name,expirationDate",
 		"--capability-fields", "capabilityType,settings",
@@ -101,13 +101,16 @@ func TestBundleIDsListRejectsInvalidQueryBeforeClient(t *testing.T) {
 		want string
 	}{
 		{name: "platform", args: []string{"--platform", "TV_OS"}, want: "--platform must be one of"},
-		{name: "sort", args: []string{"--sort", "createdDate"}, want: "--sort must be one of"},
+		{name: "sort", args: []string{"--sort", "name,createdDate"}, want: "--sort must be one of"},
 		{name: "bundle fields", args: []string{"--fields", "invalid"}, want: "--fields must be one of"},
 		{name: "include", args: []string{"--include", "invalid"}, want: "--include must be one of"},
 		{name: "profile fields require include", args: []string{"--profile-fields", "name"}, want: "--profile-fields requires --include profiles"},
 		{name: "capability fields require include", args: []string{"--capability-fields", "settings"}, want: "--capability-fields requires --include bundleIdCapabilities"},
 		{name: "app fields require include", args: []string{"--app-fields", "name"}, want: "--app-fields requires --include app"},
+		{name: "profile limit zero", args: []string{"--profiles-limit", "0"}, want: "--profiles-limit must be between 1 and 50"},
 		{name: "profile limit range", args: []string{"--profiles-limit", "51"}, want: "--profiles-limit must be between 1 and 50"},
+		{name: "capability limit zero", args: []string{"--capabilities-limit", "0"}, want: "--capabilities-limit must be between 1 and 50"},
+		{name: "capability limit range", args: []string{"--capabilities-limit", "51"}, want: "--capabilities-limit must be between 1 and 50"},
 		{name: "next conflict", args: []string{"--next", "https://api.appstoreconnect.apple.com/v1/bundleIds?cursor=AQ", "--name", "Example"}, want: "--next cannot be combined with --name"},
 	}
 

@@ -7148,6 +7148,9 @@ func TestGetBundleIDs_SplitsLongIdentifierFilter(t *testing.T) {
 			if req.URL.Path != "/v1/bundleIds" {
 				t.Fatalf("expected path /v1/bundleIds, got %s", req.URL.Path)
 			}
+			if requests == 1 && req.URL.Query().Get("include") != "profiles" {
+				t.Fatalf("expected include=profiles on the first split request, got %q", req.URL.Query().Get("include"))
+			}
 			if requests == 2 {
 				if req.URL.Query().Get("cursor") != "chunk-one-next" {
 					t.Fatalf("expected next page cursor, got query %q", req.URL.RawQuery)
@@ -7164,12 +7167,12 @@ func TestGetBundleIDs_SplitsLongIdentifierFilter(t *testing.T) {
 			}
 			assertAuthorized(t, req)
 		},
-		jsonResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bid-1","attributes":{"identifier":"com.example.one"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/bundleIds?cursor=chunk-one-next"}}`),
-		jsonResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bid-2","attributes":{"identifier":"com.example.one.more"}}]}`),
-		jsonResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bid-3","attributes":{"identifier":"com.example.two"}}]}`),
+		jsonResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bid-1","attributes":{"identifier":"com.example.one"}}],"included":[{"type":"profiles","id":"profile-1","attributes":{"name":"First"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/bundleIds?cursor=chunk-one-next"}}`),
+		jsonResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bid-2","attributes":{"identifier":"com.example.one.more"}}],"included":[{"type":"profiles","id":"profile-1","attributes":{"name":"First"}},{"type":"profiles","id":"profile-2","attributes":{"name":"Second"}}]}`),
+		jsonResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bid-3","attributes":{"identifier":"com.example.two"}}],"included":[{"type":"profiles","id":"profile-2","attributes":{"name":"Second"}},{"type":"apps","id":"app-1","attributes":{"name":"Example"}}]}`),
 	)
 
-	resp, err := client.GetBundleIDs(context.Background(), WithBundleIDsFilterIdentifier(rawIdentifierFilter))
+	resp, err := client.GetBundleIDs(context.Background(), WithBundleIDsFilterIdentifier(rawIdentifierFilter), WithBundleIDsInclude([]string{"profiles"}))
 	if err != nil {
 		t.Fatalf("GetBundleIDs() error: %v", err)
 	}
@@ -7178,6 +7181,26 @@ func TestGetBundleIDs_SplitsLongIdentifierFilter(t *testing.T) {
 	}
 	if len(resp.Data) != 3 {
 		t.Fatalf("expected aggregated bundle IDs from split requests, got %d", len(resp.Data))
+	}
+	var included []Resource[json.RawMessage]
+	if err := json.Unmarshal(resp.Included, &included); err != nil {
+		t.Fatalf("decode aggregated included resources: %v", err)
+	}
+	if len(included) != 3 {
+		t.Fatalf("expected three unique included resources, got %d", len(included))
+	}
+	wantIncluded := []struct {
+		typeName string
+		id       string
+	}{
+		{typeName: "profiles", id: "profile-1"},
+		{typeName: "profiles", id: "profile-2"},
+		{typeName: "apps", id: "app-1"},
+	}
+	for i, want := range wantIncluded {
+		if included[i].Type != ResourceType(want.typeName) || included[i].ID != want.id {
+			t.Fatalf("included[%d] = %s/%s, want %s/%s", i, included[i].Type, included[i].ID, want.typeName, want.id)
+		}
 	}
 }
 

@@ -59,7 +59,7 @@ func BundleIDsListCommand() *ffcli.Command {
 	identifier := fs.String("identifier", "", "[experimental] Filter by identifier(s), comma-separated")
 	seedID := fs.String("seed-id", "", "[experimental] Filter by seed ID(s), comma-separated")
 	ids := fs.String("id", "", "[experimental] Filter by bundle ID(s), comma-separated")
-	sort := fs.String("sort", "", "[experimental] Sort by: "+strings.Join(bundleIDSortValues(), ", "))
+	sort := fs.String("sort", "", "[experimental] Sort by (comma-separated): "+strings.Join(bundleIDSortValues(), ", "))
 	fields := fs.String("fields", "", "[experimental] Fields to include: "+strings.Join(bundleIDFieldsList(), ", "))
 	profileFields := fs.String("profile-fields", "", "[experimental] Profile fields to include: "+strings.Join(bundleIDProfileFieldsList(), ", "))
 	capabilityFields := fs.String("capability-fields", "", "[experimental] Capability fields to include: "+strings.Join(bundleIDCapabilityFieldsList(), ", "))
@@ -89,6 +89,8 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			profilesLimitSet := bundleIDsListFlagWasSet(fs, "profiles-limit")
+			capabilitiesLimitSet := bundleIDsListFlagWasSet(fs, "capabilities-limit")
 			if err := shared.ValidateNextURL(*next); err != nil {
 				return fmt.Errorf("bundle-ids list: %w", err)
 			}
@@ -103,13 +105,14 @@ Examples:
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return fmt.Errorf("bundle-ids list: %w", shared.UsageError("--limit must be between 1 and 200"))
 			}
-			if *profilesLimit != 0 && (*profilesLimit < 1 || *profilesLimit > 50) {
+			if profilesLimitSet && (*profilesLimit < 1 || *profilesLimit > 50) {
 				return fmt.Errorf("bundle-ids list: %w", shared.UsageError("--profiles-limit must be between 1 and 50"))
 			}
-			if *capabilitiesLimit != 0 && (*capabilitiesLimit < 1 || *capabilitiesLimit > 50) {
+			if capabilitiesLimitSet && (*capabilitiesLimit < 1 || *capabilitiesLimit > 50) {
 				return fmt.Errorf("bundle-ids list: %w", shared.UsageError("--capabilities-limit must be between 1 and 50"))
 			}
-			if err := shared.ValidateSort(*sort, bundleIDSortValues()...); err != nil {
+			sortValue, err := normalizeBundleIDSort(*sort)
+			if err != nil {
 				return fmt.Errorf("bundle-ids list: %w", shared.UsageError(err.Error()))
 			}
 
@@ -146,10 +149,10 @@ Examples:
 			if len(appFieldValues) > 0 && !shared.HasInclude(includeValues, "app") {
 				return bundleIDsListIncludeRequirementUsageError("--app-fields", "--app-fields requires --include app")
 			}
-			if *profilesLimit != 0 && !shared.HasInclude(includeValues, "profiles") {
+			if profilesLimitSet && !shared.HasInclude(includeValues, "profiles") {
 				return bundleIDsListIncludeRequirementUsageError("--profiles-limit", "--profiles-limit requires --include profiles")
 			}
-			if *capabilitiesLimit != 0 && !shared.HasInclude(includeValues, "bundleIdCapabilities") {
+			if capabilitiesLimitSet && !shared.HasInclude(includeValues, "bundleIdCapabilities") {
 				return bundleIDsListIncludeRequirementUsageError("--capabilities-limit", "--capabilities-limit requires --include bundleIdCapabilities")
 			}
 
@@ -167,7 +170,7 @@ Examples:
 				asc.WithBundleIDsFilterIdentifier(*identifier),
 				asc.WithBundleIDsFilterSeedIDs(shared.SplitCSV(*seedID)),
 				asc.WithBundleIDsFilterIDs(shared.SplitCSV(*ids)),
-				asc.WithBundleIDsSort(*sort),
+				asc.WithBundleIDsSort(sortValue),
 				asc.WithBundleIDsFields(fieldValues),
 				asc.WithBundleIDsProfilesFields(profileFieldValues),
 				asc.WithBundleIDsCapabilitiesFields(capabilityFieldValues),
@@ -213,6 +216,14 @@ func bundleIDsListIncludeRequirementUsageError(parameter, message string) error 
 		shared.DiagnosticInvalidInput,
 		parameter,
 	)
+}
+
+func bundleIDsListFlagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(value *flag.Flag) {
+		set = set || value.Name == name
+	})
+	return set
 }
 
 // BundleIDsGetCommand returns the bundle IDs get subcommand.
@@ -437,6 +448,16 @@ func normalizeBundleIDListPlatforms(values []string) ([]string, error) {
 		normalized = append(normalized, string(platform))
 	}
 	return normalized, nil
+}
+
+func normalizeBundleIDSort(value string) (string, error) {
+	values := shared.SplitCSV(value)
+	for _, item := range values {
+		if err := shared.ValidateSort(item, bundleIDSortValues()...); err != nil {
+			return "", err
+		}
+	}
+	return strings.Join(values, ","), nil
 }
 
 func normalizeBundleIDSelection(value string, allowed []string, flagName string) ([]string, error) {
