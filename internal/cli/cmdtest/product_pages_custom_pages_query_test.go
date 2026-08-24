@@ -189,10 +189,15 @@ func TestCustomPagesListRejectsExplicitEmptyQueryFlagsBeforeAuth(t *testing.T) {
 		want string
 	}{
 		{name: "visible empty", args: []string{"--visible", ""}, want: "--visible must not be empty"},
+		{name: "visible delimiters", args: []string{"--visible", ","}, want: "--visible must not be empty"},
 		{name: "fields empty", args: []string{"--fields", ""}, want: "--fields must not be empty"},
+		{name: "fields delimiters", args: []string{"--fields", ","}, want: "--fields must not be empty"},
 		{name: "app fields whitespace", args: []string{"--app-fields", " \t"}, want: "--app-fields must not be empty"},
+		{name: "app fields delimiters", args: []string{"--app-fields", ","}, want: "--app-fields must not be empty"},
 		{name: "version fields empty", args: []string{"--version-fields", ""}, want: "--version-fields must not be empty"},
+		{name: "version fields delimiters", args: []string{"--version-fields", ","}, want: "--version-fields must not be empty"},
 		{name: "include whitespace", args: []string{"--include", " \t"}, want: "--include must not be empty"},
+		{name: "include delimiters", args: []string{"--include", ","}, want: "--include must not be empty"},
 	}
 
 	for _, test := range tests {

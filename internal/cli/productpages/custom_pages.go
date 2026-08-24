@@ -103,7 +103,7 @@ Examples:
 				{name: "version-fields", value: *versionFields},
 				{name: "include", value: *include},
 			} {
-				if providedQueryFlags[queryFlag.name] && strings.TrimSpace(queryFlag.value) == "" {
+				if providedQueryFlags[queryFlag.name] && len(shared.SplitCSV(queryFlag.value)) == 0 {
 					return shared.UsageError(fmt.Sprintf("custom-pages list: --%s must not be empty", queryFlag.name))
 				}
 			}
