@@ -96,7 +96,7 @@ func TestGetAppCustomProductPages_SendsQuerySurface(t *testing.T) {
 		query := req.URL.Query()
 		want := map[string]string{
 			"filter[visible]":                      "false,true",
-			"fields[appCustomProductPages]":        "name,visible,app",
+			"fields[appCustomProductPages]":        "name,visible,app,appCustomProductPageVersions",
 			"fields[apps]":                         "name,bundleId",
 			"fields[appCustomProductPageVersions]": "version,state",
 			"include":                              "app,appCustomProductPageVersions",

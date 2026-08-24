@@ -85,14 +85,32 @@ Examples:
 				fs,
 				*next,
 				"custom-pages list",
-				"app", "visible", "fields", "app-fields", "version-fields", "include", "versions-limit", "limit",
+				"visible", "fields", "app-fields", "version-fields", "include", "versions-limit", "limit",
 			); err != nil {
 				return err
+			}
+			providedQueryFlags := make(map[string]bool)
+			fs.Visit(func(f *flag.Flag) {
+				providedQueryFlags[f.Name] = true
+			})
+			for _, queryFlag := range []struct {
+				name  string
+				value string
+			}{
+				{name: "visible", value: *visible},
+				{name: "fields", value: *fields},
+				{name: "app-fields", value: *appFields},
+				{name: "version-fields", value: *versionFields},
+				{name: "include", value: *include},
+			} {
+				if providedQueryFlags[queryFlag.name] && strings.TrimSpace(queryFlag.value) == "" {
+					return shared.UsageError(fmt.Sprintf("custom-pages list: --%s must not be empty", queryFlag.name))
+				}
 			}
 			if *limit != 0 && (*limit < 1 || *limit > productPagesMaxLimit) {
 				return fmt.Errorf("custom-pages list: --limit must be between 1 and %d", productPagesMaxLimit)
 			}
-			if *versionsLimit != 0 && (*versionsLimit < 1 || *versionsLimit > customPagesMaxVersionsLimit) {
+			if providedQueryFlags["versions-limit"] && (*versionsLimit < 1 || *versionsLimit > customPagesMaxVersionsLimit) {
 				return shared.UsageError(fmt.Sprintf("custom-pages list: --versions-limit must be between 1 and %d", customPagesMaxVersionsLimit))
 			}
 

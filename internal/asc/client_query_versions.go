@@ -295,11 +295,18 @@ func buildTerritoryAgeRatingsQuery(query *territoryAgeRatingsQuery) string {
 
 func buildAppCustomProductPagesQuery(query *appCustomProductPagesQuery) string {
 	values := url.Values{}
+	include := normalizeUniqueList(query.include)
+	fields := normalizeUniqueList(query.fields)
+	if len(fields) > 0 {
+		// A primary sparse fieldset must retain every included relationship or
+		// ASC can omit the linkage and included resource from the response.
+		fields = normalizeUniqueList(append(fields, include...))
+	}
 	addCSV(values, "filter[visible]", query.visible)
-	addCSV(values, "fields[appCustomProductPages]", query.fields)
+	addCSV(values, "fields[appCustomProductPages]", fields)
 	addCSV(values, "fields[apps]", query.appFields)
 	addCSV(values, "fields[appCustomProductPageVersions]", query.versionFields)
-	addCSV(values, "include", query.include)
+	addCSV(values, "include", include)
 	addLimit(values, query.limit)
 	if query.versionsLimit > 0 {
 		values.Set("limit[appCustomProductPageVersions]", strconv.Itoa(query.versionsLimit))

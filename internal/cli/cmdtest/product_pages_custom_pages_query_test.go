@@ -59,7 +59,7 @@ func TestCustomPagesListEmitsQuerySurface(t *testing.T) {
 		}
 		want := url.Values{
 			"filter[visible]":                      {"false,true"},
-			"fields[appCustomProductPages]":        {"name,visible,app"},
+			"fields[appCustomProductPages]":        {"name,visible,app,appCustomProductPageVersions"},
 			"fields[apps]":                         {"name,bundleId"},
 			"fields[appCustomProductPageVersions]": {"version,state"},
 			"include":                              {"app,appCustomProductPageVersions"},
@@ -122,7 +122,6 @@ func TestCustomPagesListRejectsNextQueryFlagsBeforeAuth(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "app", args: []string{"--app", "app-1"}, want: "--next cannot be combined with --app"},
 		{name: "visible", args: []string{"--visible", "true"}, want: "--next cannot be combined with --visible"},
 		{name: "fields", args: []string{"--fields", "name"}, want: "--next cannot be combined with --fields"},
 		{name: "app fields", args: []string{"--app-fields", "name"}, want: "--next cannot be combined with --app-fields"},
@@ -161,6 +160,7 @@ func TestCustomPagesListRejectsInvalidQueryValuesBeforeAuth(t *testing.T) {
 		{name: "app fields", args: []string{"--app-fields", "invalid"}, want: "--app-fields must be one of"},
 		{name: "version fields", args: []string{"--version-fields", "invalid"}, want: "--version-fields must be one of"},
 		{name: "include", args: []string{"--include", "invalid"}, want: "--include must be one of"},
+		{name: "versions limit explicitly zero", args: []string{"--versions-limit", "0"}, want: "--versions-limit must be between 1 and 50"},
 		{name: "versions limit", args: []string{"--versions-limit", "51"}, want: "--versions-limit must be between 1 and 50"},
 	}
 
@@ -177,6 +177,37 @@ func TestCustomPagesListRejectsInvalidQueryValuesBeforeAuth(t *testing.T) {
 			assertUsageExit(t, args, "custom-pages list: "+test.want)
 			if clientFactoryCalled {
 				t.Fatal("client factory ran before query validation")
+			}
+		})
+	}
+}
+
+func TestCustomPagesListRejectsExplicitEmptyQueryFlagsBeforeAuth(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "visible empty", args: []string{"--visible", ""}, want: "--visible must not be empty"},
+		{name: "fields empty", args: []string{"--fields", ""}, want: "--fields must not be empty"},
+		{name: "app fields whitespace", args: []string{"--app-fields", " \t"}, want: "--app-fields must not be empty"},
+		{name: "version fields empty", args: []string{"--version-fields", ""}, want: "--version-fields must not be empty"},
+		{name: "include whitespace", args: []string{"--include", " \t"}, want: "--include must not be empty"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clientFactoryCalled := false
+			restore := shared.SetASCClientFactoryForTesting(func() (*asc.Client, error) {
+				clientFactoryCalled = true
+				return nil, errors.New("client factory must not run during empty-value validation")
+			})
+			defer restore()
+
+			args := append([]string{"product-pages", "custom-pages", "list", "--app", "app-1"}, test.args...)
+			assertUsageExit(t, args, "custom-pages list: "+test.want)
+			if clientFactoryCalled {
+				t.Fatal("client factory ran before empty-value validation")
 			}
 		})
 	}
@@ -280,5 +311,33 @@ func TestCustomPagesListAllowsNextWithoutApp(t *testing.T) {
 	}
 	if !strings.Contains(stdout, `"id":"page-next"`) {
 		t.Fatalf("stdout = %q, want page-next", stdout)
+	}
+}
+
+func TestCustomPagesListAllowsNextWithApp(t *testing.T) {
+	const nextURL = "https://api.appstoreconnect.apple.com/v1/apps/app-1/appCustomProductPages?cursor=opaque%2Btoken&limit=17"
+	installCustomPagesQueryTestClient(t, func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/v1/apps/app-1/appCustomProductPages" || req.URL.RawQuery != "cursor=opaque%2Btoken&limit=17" {
+			t.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"type":"appCustomProductPages","id":"page-opaque"}],"links":{"next":""}}`)
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"product-pages", "custom-pages", "list", "--app", "app-compat", "--next", nextURL, "--output", "json"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, `"id":"page-opaque"`) {
+		t.Fatalf("stdout = %q, want page-opaque", stdout)
 	}
 }
