@@ -100,6 +100,11 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - `--api-debug` and `ASC_DEBUG=api` log each response's raw `X-Rate-Limit` value to stderr without changing stdout.
 - Some endpoints return 403 when the API key role lacks permission (e.g., finance reports, reviews).
 
+## Builds
+
+- `GET /v1/apps/{id}/builds` has no documented default order and rejects `sort` with 400 `PARAMETER_ERROR.ILLEGAL`; with `limit=1` it can return a weeks-stale build that reads as "latest". Use the top-level collection instead: `GET /v1/builds?filter[app]={id}&sort=-uploadedDate&limit=1`.
+- General shape of the trap: a relationship endpoint (`/v1/{parent}/{id}/{children}`) and its top-level collection (`/v1/{children}?filter[{parent}]=`) accept different query parameters, so a `sort` or `filter` that works on one can 400 on the other.
+
 ## Devices
 
 - No DELETE endpoint; devices can only be enabled/disabled via PATCH.
