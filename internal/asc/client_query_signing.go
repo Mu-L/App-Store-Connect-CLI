@@ -21,6 +21,7 @@ type bundleIDsQuery struct {
 	include                    []string
 	profilesLimit              int
 	bundleIDCapabilitiesLimit  int
+	splitPagination            bool
 }
 
 type merchantIDsQuery struct {
@@ -444,6 +445,14 @@ func WithBundleIDsNextURL(next string) BundleIDsOption {
 		if strings.TrimSpace(next) != "" {
 			q.nextURL = strings.TrimSpace(next)
 		}
+	}
+}
+
+// WithBundleIDsSplitPagination controls whether split identifier requests follow links.next.
+// It defaults to enabled for direct client callers.
+func WithBundleIDsSplitPagination(enabled bool) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.splitPagination = enabled
 	}
 }
 

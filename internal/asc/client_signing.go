@@ -12,9 +12,13 @@ const bundleIDsIdentifierFilterMaxLength = 3900
 
 // GetBundleIDs retrieves the list of bundle IDs.
 func (c *Client) GetBundleIDs(ctx context.Context, opts ...BundleIDsOption) (*BundleIDsResponse, error) {
-	query := &bundleIDsQuery{}
+	query := &bundleIDsQuery{splitPagination: true}
 	for _, opt := range opts {
 		opt(query)
+	}
+
+	if query.nextURL == "" && len(bundleIDsRequestPath(query)) > bundleIDsIdentifierFilterMaxLength && !strings.Contains(strings.TrimSpace(query.identifier), ",") {
+		return nil, fmt.Errorf("bundleIds: request exceeds %d-byte URL limit and cannot be split without multiple filter[identifier] values", bundleIDsIdentifierFilterMaxLength)
 	}
 
 	if query.nextURL == "" && shouldSplitBundleIDsIdentifierFilter(query) {
@@ -74,10 +78,14 @@ func validateBundleIDsSplitSort(query *bundleIDsQuery) error {
 }
 
 func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, query *bundleIDsQuery) (*BundleIDsResponse, error) {
-	chunks := splitBundleIDsIdentifierFilter(query, bundleIDsIdentifierFilterMaxLength)
+	chunks, err := splitBundleIDsIdentifierFilter(query, bundleIDsIdentifierFilterMaxLength)
+	if err != nil {
+		return nil, err
+	}
 	combined := &BundleIDsResponse{}
 	included := make([]json.RawMessage, 0)
 	includedSeen := make(map[string]struct{})
+	dataSeen := make(map[string]struct{})
 
 	for _, chunk := range chunks {
 		chunkQuery := *query
@@ -90,12 +98,12 @@ func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, quer
 			if err != nil {
 				return nil, err
 			}
-			combined.Data = append(combined.Data, resp.Data...)
+			appendBundleIDsData(&combined.Data, dataSeen, resp.Data)
 			if err := appendBundleIDsIncluded(&included, includedSeen, resp.Included); err != nil {
 				return nil, err
 			}
 			next := strings.TrimSpace(resp.Links.Next)
-			if next == "" {
+			if next == "" || !query.splitPagination {
 				break
 			}
 			if _, ok := seenNext[next]; ok {
@@ -118,6 +126,21 @@ func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, quer
 	}
 
 	return combined, nil
+}
+
+func appendBundleIDsData(resources *[]Resource[BundleIDAttributes], seen map[string]struct{}, page []Resource[BundleIDAttributes]) {
+	for _, resource := range page {
+		if resource.Type == "" || resource.ID == "" {
+			*resources = append(*resources, resource)
+			continue
+		}
+		key := string(resource.Type) + "\x00" + resource.ID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		*resources = append(*resources, resource)
+	}
 }
 
 type bundleIDSortTerm struct {
@@ -244,7 +267,7 @@ func bundleIDsRequestPath(query *bundleIDsQuery) string {
 	return path
 }
 
-func splitBundleIDsIdentifierFilter(query *bundleIDsQuery, maxLength int) [][]string {
+func splitBundleIDsIdentifierFilter(query *bundleIDsQuery, maxLength int) ([][]string, error) {
 	parts := strings.Split(query.identifier, ",")
 	chunks := make([][]string, 0, 1)
 	current := make([]string, 0)
@@ -261,7 +284,15 @@ func splitBundleIDsIdentifierFilter(query *bundleIDsQuery, maxLength int) [][]st
 		if len(current) > 0 && len(bundleIDsRequestPath(&candidateQuery)) > maxLength {
 			chunks = append(chunks, current)
 			current = []string{part}
+			singleQuery := *query
+			singleQuery.identifier = part
+			if len(bundleIDsRequestPath(&singleQuery)) > maxLength {
+				return nil, fmt.Errorf("bundleIds: cannot split bundleIds identifier filter because fixed query parameters leave no room for a single identifier under the %d-byte URL limit", maxLength)
+			}
 			continue
+		}
+		if len(current) == 0 && len(bundleIDsRequestPath(&candidateQuery)) > maxLength {
+			return nil, fmt.Errorf("bundleIds: cannot split bundleIds identifier filter because fixed query parameters leave no room for a single identifier under the %d-byte URL limit", maxLength)
 		}
 
 		current = candidate
@@ -270,7 +301,7 @@ func splitBundleIDsIdentifierFilter(query *bundleIDsQuery, maxLength int) [][]st
 	if len(current) > 0 {
 		chunks = append(chunks, current)
 	}
-	return chunks
+	return chunks, nil
 }
 
 // GetBundleID retrieves a single bundle ID by ID.

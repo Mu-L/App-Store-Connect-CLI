@@ -180,6 +180,7 @@ Examples:
 				asc.WithBundleIDsCapabilitiesLimit(*capabilitiesLimit),
 				asc.WithBundleIDsLimit(*limit),
 				asc.WithBundleIDsNextURL(*next),
+				asc.WithBundleIDsSplitPagination(*paginate),
 			}
 
 			if *paginate {

@@ -7205,6 +7205,100 @@ func TestGetBundleIDs_SplitsLongIdentifierFilter(t *testing.T) {
 	}
 }
 
+func TestGetBundleIDs_SplitIdentifierFilterAccountsForModerateQueryOverhead(t *testing.T) {
+	identifiers := make([]string, 0, 400)
+	for i := 0; i < 400; i++ {
+		identifiers = append(identifiers, fmt.Sprintf("com.example.%012d", i))
+	}
+	rawIdentifierFilter := strings.Join(identifiers, ",")
+	names := []string{"Example One", "Example Two", "Example Three", "Example Four", "Example Five"}
+	fields := []string{"name", "identifier", "platform"}
+	profileFields := []string{"name", "expirationDate"}
+	capabilityFields := []string{"capabilityType", "settings"}
+	appFields := []string{"name", "bundleId"}
+	include := []string{"profiles", "bundleIdCapabilities", "app"}
+
+	baseChunks, err := splitBundleIDsIdentifierFilter(&bundleIDsQuery{identifier: rawIdentifierFilter}, bundleIDsIdentifierFilterMaxLength)
+	if err != nil {
+		t.Fatalf("split baseline identifier filter: %v", err)
+	}
+	query := &bundleIDsQuery{
+		identifier:                 rawIdentifierFilter,
+		names:                      names,
+		fields:                     fields,
+		profilesFields:             profileFields,
+		bundleIDCapabilitiesFields: capabilityFields,
+		appFields:                  appFields,
+		include:                    include,
+		profilesLimit:              50,
+		bundleIDCapabilitiesLimit:  50,
+	}
+	overheadChunks, err := splitBundleIDsIdentifierFilter(query, bundleIDsIdentifierFilterMaxLength)
+	if err != nil {
+		t.Fatalf("split identifier filter with query overhead: %v", err)
+	}
+	if len(overheadChunks) <= len(baseChunks) {
+		t.Fatalf("moderate query overhead produced %d chunks, baseline produced %d; want smaller chunks", len(overheadChunks), len(baseChunks))
+	}
+
+	responses := make([]*http.Response, 0, len(overheadChunks))
+	idByIdentifier := make(map[string]string, len(identifiers))
+	for index, identifier := range identifiers {
+		idByIdentifier[identifier] = fmt.Sprintf("bundle-%03d", index)
+	}
+	for _, chunk := range overheadChunks {
+		resources := make([]string, 0, len(chunk))
+		for _, identifier := range chunk {
+			resources = append(resources, fmt.Sprintf(`{"type":"bundleIds","id":"%s","attributes":{"identifier":"%s"}}`, idByIdentifier[identifier], identifier))
+		}
+		responses = append(responses, jsonResponse(http.StatusOK, `{"data":[`+strings.Join(resources, ",")+`]} `))
+	}
+
+	covered := make(map[string]struct{}, len(identifiers))
+	requests := 0
+	client := newTestClient(t, func(req *http.Request) {
+		requests++
+		if len(req.URL.RequestURI()) > bundleIDsIdentifierFilterMaxLength {
+			t.Fatalf("request %d URI length = %d, want <= %d: %s", requests, len(req.URL.RequestURI()), bundleIDsIdentifierFilterMaxLength, req.URL.RequestURI())
+		}
+		values := req.URL.Query()
+		if values.Get("filter[name]") != strings.Join(names, ",") || values.Get("fields[bundleIds]") != strings.Join(fields, ",") || values.Get("fields[profiles]") != strings.Join(profileFields, ",") || values.Get("fields[bundleIdCapabilities]") != strings.Join(capabilityFields, ",") || values.Get("fields[apps]") != strings.Join(appFields, ",") || values.Get("include") != strings.Join(include, ",") {
+			t.Fatalf("request %d lost query overhead: %s", requests, req.URL.RequestURI())
+		}
+		for _, identifier := range strings.Split(values.Get("filter[identifier]"), ",") {
+			if identifier == "" {
+				t.Fatal("split request missing identifier")
+			}
+			if _, ok := idByIdentifier[identifier]; !ok {
+				t.Fatalf("split request contained unexpected identifier %q", identifier)
+			}
+			if _, ok := covered[identifier]; ok {
+				t.Fatalf("identifier %q appeared in multiple chunks", identifier)
+			}
+			covered[identifier] = struct{}{}
+		}
+	}, responses...)
+
+	resp, err := client.GetBundleIDs(
+		context.Background(),
+		WithBundleIDsFilterIdentifier(rawIdentifierFilter),
+		WithBundleIDsFilterNames(names),
+		WithBundleIDsFields(fields),
+		WithBundleIDsProfilesFields(profileFields),
+		WithBundleIDsCapabilitiesFields(capabilityFields),
+		WithBundleIDsAppFields(appFields),
+		WithBundleIDsInclude(include),
+		WithBundleIDsProfilesLimit(50),
+		WithBundleIDsCapabilitiesLimit(50),
+	)
+	if err != nil {
+		t.Fatalf("GetBundleIDs() error: %v", err)
+	}
+	if requests != len(overheadChunks) || len(resp.Data) != len(identifiers) || len(covered) != len(identifiers) {
+		t.Fatalf("split coverage = requests %d/%d, data %d/%d, identifiers %d/%d; want every identifier covered once", requests, len(overheadChunks), len(resp.Data), len(identifiers), len(covered), len(identifiers))
+	}
+}
+
 func TestGetBundleIDs_SplitIdentifierFilterRejectsRepeatedNextURL(t *testing.T) {
 	identifiers := make([]string, 0, 1500)
 	for range 1500 {
@@ -7288,6 +7382,69 @@ func TestGetBundleIDs_SortsAfterSplitIdentifierFilter(t *testing.T) {
 				t.Fatalf("bundle ID order = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestGetBundleIDs_DeduplicatesSplitIdentifierFilterData(t *testing.T) {
+	identifiers := make([]string, 0, 250)
+	for i := 0; i < 250; i++ {
+		identifiers = append(identifiers, fmt.Sprintf("com.example.%012d", i))
+	}
+	rawIdentifierFilter := strings.Join(identifiers, ",")
+
+	client := newTestClient(
+		t, func(req *http.Request) {
+			assertAuthorized(t, req)
+			if req.URL.Query().Get("filter[identifier]") == "" {
+				t.Fatal("expected split identifier filter")
+			}
+		},
+		jsonResponse(http.StatusOK, `{"data":[
+			{"type":"bundleIds","id":"bundle-z","attributes":{"name":"Zulu","identifier":"com.example.z","platform":"MAC_OS"}},
+			{"type":"bundleIds","id":"bundle-a","attributes":{"name":"Original","identifier":"com.example.a","platform":"IOS"}}
+		]}`),
+		jsonResponse(http.StatusOK, `{"data":[
+			{"type":"bundleIds","id":"bundle-a","attributes":{"name":"Duplicate","identifier":"com.example.a","platform":"IOS"}},
+			{"type":"bundleIds","id":"bundle-m","attributes":{"name":"Bravo","identifier":"com.example.m","platform":"IOS"}}
+		]}`),
+	)
+
+	resp, err := client.GetBundleIDs(
+		context.Background(),
+		WithBundleIDsFilterIdentifier(rawIdentifierFilter),
+		WithBundleIDsSort("name"),
+	)
+	if err != nil {
+		t.Fatalf("GetBundleIDs() error: %v", err)
+	}
+	if got := bundleIDResourceIDs(resp.Data); !slices.Equal(got, []string{"bundle-m", "bundle-a", "bundle-z"}) {
+		t.Fatalf("bundle ID order = %v, want stable deduplicated order", got)
+	}
+	if len(resp.Data) != 3 || resp.Data[1].Attributes.Name != "Original" {
+		t.Fatalf("deduplicated data = %+v, want first-seen bundle-a resource", resp.Data)
+	}
+}
+
+func TestGetBundleIDs_RejectsSplitWhenFixedQueryExceedsURLLimit(t *testing.T) {
+	identifiers := []string{"com.example.a", "com.example.b"}
+	names := make([]string, 0, 300)
+	for i := 0; i < 300; i++ {
+		names = append(names, fmt.Sprintf("name-%03d-%s", i, strings.Repeat("x", 12)))
+	}
+	client := newTestClient(
+		t, func(req *http.Request) {
+			t.Fatalf("fixed query overhead should be rejected before HTTP: %s", req.URL.String())
+		},
+		jsonResponse(http.StatusOK, `{"data":[]}`),
+	)
+
+	_, err := client.GetBundleIDs(
+		context.Background(),
+		WithBundleIDsFilterIdentifier(strings.Join(identifiers, ",")),
+		WithBundleIDsFilterNames(names),
+	)
+	if err == nil || !strings.Contains(err.Error(), "cannot split bundleIds identifier filter") || !strings.Contains(err.Error(), "3900") {
+		t.Fatalf("GetBundleIDs() error = %v, want clear URL-capacity error", err)
 	}
 }
 
