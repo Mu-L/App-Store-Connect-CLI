@@ -156,14 +156,6 @@ Examples:
 				return bundleIDsListIncludeRequirementUsageError("--capabilities-limit", "--capabilities-limit requires --include bundleIdCapabilities")
 			}
 
-			client, err := shared.GetASCClient()
-			if err != nil {
-				return fmt.Errorf("bundle-ids list: %w", err)
-			}
-
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
-			defer cancel()
-
 			opts := []asc.BundleIDsOption{
 				asc.WithBundleIDsFilterNames(shared.SplitCSV(*name)),
 				asc.WithBundleIDsFilterPlatforms(platformValues),
@@ -182,6 +174,17 @@ Examples:
 				asc.WithBundleIDsNextURL(*next),
 				asc.WithBundleIDsSplitPagination(*paginate),
 			}
+			if !*paginate && asc.BundleIDsRequestRequiresSplit(opts...) {
+				return bundleIDsListPaginateRequirementUsageError()
+			}
+
+			client, err := shared.GetASCClient()
+			if err != nil {
+				return fmt.Errorf("bundle-ids list: %w", err)
+			}
+
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
 
 			if *paginate {
 				paginateOpts := append(opts, asc.WithBundleIDsLimit(200))
@@ -216,6 +219,16 @@ func bundleIDsListIncludeRequirementUsageError(parameter, message string) error 
 		shared.NewReportedUsageError(shared.UsageErrorInvalidValue, message),
 		shared.DiagnosticInvalidInput,
 		parameter,
+	)
+}
+
+func bundleIDsListPaginateRequirementUsageError() error {
+	const message = "split identifier filter requires --paginate because multiple continuation URLs cannot be represented"
+	fmt.Fprintln(os.Stderr, "Error: "+message)
+	return shared.WithDiagnostic(
+		shared.NewReportedUsageError(shared.UsageErrorMissingRequired, message),
+		shared.DiagnosticRequiredInputMissing,
+		"--paginate",
 	)
 }
 

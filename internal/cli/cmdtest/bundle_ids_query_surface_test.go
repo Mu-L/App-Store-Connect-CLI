@@ -111,6 +111,7 @@ func TestBundleIDsListRejectsInvalidQueryBeforeClient(t *testing.T) {
 		{name: "profile limit range", args: []string{"--profiles-limit", "51"}, want: "--profiles-limit must be between 1 and 50"},
 		{name: "capability limit zero", args: []string{"--capabilities-limit", "0"}, want: "--capabilities-limit must be between 1 and 50"},
 		{name: "capability limit range", args: []string{"--capabilities-limit", "51"}, want: "--capabilities-limit must be between 1 and 50"},
+		{name: "split identifiers require pagination", args: []string{"--identifier", makeLongBundleIDIdentifierFilter()}, want: "split identifier filter requires --paginate"},
 		{name: "next conflict", args: []string{"--next", "https://api.appstoreconnect.apple.com/v1/bundleIds?cursor=AQ", "--name", "Example"}, want: "--next cannot be combined with --name"},
 	}
 

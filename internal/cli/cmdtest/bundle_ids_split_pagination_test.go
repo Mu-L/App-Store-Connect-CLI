@@ -41,8 +41,12 @@ func TestBundleIDsListSplitRequiresPaginate(t *testing.T) {
 	if runErr == nil || !strings.Contains(runErr.Error(), "split identifier filter requires --paginate") {
 		t.Fatalf("run error = %v, want pagination requirement", runErr)
 	}
-	if stdout != "" || stderr != "" {
-		t.Fatalf("output = stdout %q, stderr %q; want no output", stdout, stderr)
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	wantStderr := "Error: split identifier filter requires --paginate because multiple continuation URLs cannot be represented\n"
+	if stderr != wantStderr {
+		t.Fatalf("stderr = %q, want %q", stderr, wantStderr)
 	}
 	if requestCount != 0 {
 		t.Fatalf("request count = %d, want no HTTP request", requestCount)
