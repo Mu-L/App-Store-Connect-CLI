@@ -24,6 +24,21 @@ asc testflight groups create --app APP_ID --name "Internal Testers" --internal
 asc testflight groups view --id GROUP_ID
 ```
 
+The experimental collection surface also supports exact ID and public-link filters:
+
+```bash  theme={null}
+asc testflight groups list --global --id GROUP_ID
+asc testflight groups list --app APP_ID --public-link-enabled true
+asc testflight groups list --global --public-link-limit-enabled false
+asc testflight groups list --global --public-link PUBLIC_LINK
+```
+
+Use experimental `--include` with `--fields`, `--app-fields`, `--build-fields`,
+`--tester-fields`, and `--recruitment-criteria-fields` to control related
+resources. `--testers-limit` and `--builds-limit` cap included relationship
+results. Query-shaping flags cannot be combined with `--next`, because the
+continuation URL already contains the original query.
+
 ### Find the groups that contain a build (experimental)
 
 The `--build-id` lookup is experimental. Use an App Store Connect build ID to

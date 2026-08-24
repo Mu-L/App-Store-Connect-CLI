@@ -29,6 +29,140 @@ var betaGroupSortValues = []string{
 	"-publicLinkLimit",
 }
 
+var betaGroupIncludeValues = []string{
+	"app",
+	"builds",
+	"betaTesters",
+	"betaRecruitmentCriteria",
+}
+
+// These sparse-field values mirror the exact GET /v1/betaGroups OpenAPI
+// enums. Keep relationship fields separate because Apple validates each
+// resource type independently.
+var betaGroupFieldsValues = []string{
+	"name",
+	"createdDate",
+	"isInternalGroup",
+	"hasAccessToAllBuilds",
+	"publicLinkEnabled",
+	"publicLinkId",
+	"publicLinkLimitEnabled",
+	"publicLinkLimit",
+	"publicLink",
+	"feedbackEnabled",
+	"iosBuildsAvailableForAppleSiliconMac",
+	"iosBuildsAvailableForAppleVision",
+	"app",
+	"builds",
+	"betaTesters",
+	"betaRecruitmentCriteria",
+	"betaRecruitmentCriterionCompatibleBuildCheck",
+}
+
+var betaGroupAppFieldsValues = []string{
+	"accessibilityUrl",
+	"name",
+	"bundleId",
+	"sku",
+	"primaryLocale",
+	"isOrEverWasMadeForKids",
+	"subscriptionStatusUrl",
+	"subscriptionStatusUrlVersion",
+	"subscriptionStatusUrlForSandbox",
+	"subscriptionStatusUrlVersionForSandbox",
+	"contentRightsDeclaration",
+	"streamlinedPurchasingEnabled",
+	"accessibilityDeclarations",
+	"appEncryptionDeclarations",
+	"appStoreIcon",
+	"ciProduct",
+	"betaTesters",
+	"betaGroups",
+	"appStoreVersions",
+	"appTags",
+	"preReleaseVersions",
+	"betaAppLocalizations",
+	"builds",
+	"betaLicenseAgreement",
+	"betaAppReviewDetail",
+	"appInfos",
+	"appClips",
+	"appPricePoints",
+	"endUserLicenseAgreement",
+	"appPriceSchedule",
+	"appAvailabilityV2",
+	"inAppPurchases",
+	"subscriptionGroups",
+	"gameCenterEnabledVersions",
+	"perfPowerMetrics",
+	"appCustomProductPages",
+	"inAppPurchasesV2",
+	"promotedPurchases",
+	"appEvents",
+	"reviewSubmissions",
+	"subscriptionGracePeriod",
+	"customerReviews",
+	"customerReviewSummarizations",
+	"gameCenterDetail",
+	"appStoreVersionExperimentsV2",
+	"alternativeDistributionKey",
+	"analyticsReportRequests",
+	"marketplaceSearchDetail",
+	"buildUploads",
+	"backgroundAssets",
+	"betaFeedbackScreenshotSubmissions",
+	"betaFeedbackCrashSubmissions",
+	"searchKeywords",
+	"webhooks",
+	"androidToIosAppMappingDetails",
+}
+
+var betaGroupBuildFieldsValues = []string{
+	"version",
+	"uploadedDate",
+	"expirationDate",
+	"expired",
+	"minOsVersion",
+	"lsMinimumSystemVersion",
+	"computedMinMacOsVersion",
+	"computedMinVisionOsVersion",
+	"iconAssetToken",
+	"processingState",
+	"buildAudienceType",
+	"usesNonExemptEncryption",
+	"preReleaseVersion",
+	"individualTesters",
+	"betaGroups",
+	"betaBuildLocalizations",
+	"appEncryptionDeclaration",
+	"betaAppReviewSubmission",
+	"app",
+	"buildBetaDetail",
+	"appStoreVersion",
+	"icons",
+	"buildBundles",
+	"buildUpload",
+	"perfPowerMetrics",
+	"diagnosticSignatures",
+}
+
+var betaGroupTesterFieldsValues = []string{
+	"firstName",
+	"lastName",
+	"email",
+	"inviteType",
+	"state",
+	"appDevices",
+	"apps",
+	"betaGroups",
+	"builds",
+}
+
+var betaGroupRecruitmentCriteriaFieldsValues = []string{
+	"lastModifiedDate",
+	"deviceFamilyOsVersionFilters",
+}
+
 // BetaGroupsCommand returns the beta groups command with subcommands.
 func BetaGroupsCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("beta-groups", flag.ExitOnError)
@@ -81,6 +215,18 @@ func BetaGroupsListCommand() *ffcli.Command {
 	external := fs.Bool("external", false, "Filter to external groups only")
 	name := fs.String("name", "", "[experimental] Filter to beta groups with this exact name")
 	sort := fs.String("sort", "", "[experimental] Sort order ("+strings.Join(betaGroupSortValues, ", ")+")")
+	id := fs.String("id", "", "[experimental] Filter by beta group ID(s), comma-separated")
+	publicLinkEnabled := fs.String("public-link-enabled", "", "[experimental] Filter by public link enabled state (true or false)")
+	publicLinkLimitEnabled := fs.String("public-link-limit-enabled", "", "[experimental] Filter by public link limit enabled state (true or false)")
+	publicLink := fs.String("public-link", "", "[experimental] Filter by public link value")
+	fields := fs.String("fields", "", "[experimental] Fields to include for beta groups, comma-separated")
+	appFields := fs.String("app-fields", "", "[experimental] Fields to include for related apps, comma-separated")
+	buildFields := fs.String("build-fields", "", "[experimental] Fields to include for related builds, comma-separated")
+	testerFields := fs.String("tester-fields", "", "[experimental] Fields to include for related beta testers, comma-separated")
+	recruitmentCriteriaFields := fs.String("recruitment-criteria-fields", "", "[experimental] Fields to include for related beta recruitment criteria, comma-separated")
+	include := fs.String("include", "", "[experimental] Include related resources: "+strings.Join(betaGroupIncludeValues, ", "))
+	testersLimit := fs.Int("testers-limit", 0, "[experimental] Maximum included beta testers (1-50)")
+	buildsLimit := fs.Int("builds-limit", 0, "[experimental] Maximum included builds (1-1000)")
 	output := shared.BindOutputFlags(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
@@ -117,6 +263,11 @@ one-page filtered and global listings, --limit is the page size. The stable
 app-scoped --internal/--external aggregate fetches with the maximum page size
 of 200 before applying --limit as the final cap. The --name and --sort flags
 are experimental; --name matches the exact group name.
+The top-level endpoint also supports --id, --public-link-enabled,
+--public-link-limit-enabled, and --public-link filters. Use --include with
+--fields, --app-fields, --build-fields, --tester-fields, or
+--recruitment-criteria-fields to shape related resources. --testers-limit and
+--builds-limit cap included beta testers and builds respectively.
 --build-id membership lookup accepts neither --name nor --sort.
 
 App-scoped --internal and --external continue to collect every matching page
@@ -129,7 +280,10 @@ app-scoped --internal/--external behavior, --limit still caps the final
 aggregate after every page is fetched.
 
 A links.next URL already carries the query it came from, so --next cannot be
-combined with --internal, --external, --name, or --sort.
+combined with query-shaping flags such as --internal, --external, --name,
+--sort, --id, --public-link-enabled, --public-link-limit-enabled,
+--public-link, --fields, --app-fields, --build-fields, --tester-fields,
+--recruitment-criteria-fields, --include, --testers-limit, or --builds-limit.
 
 Examples:
   asc testflight beta-groups list --app "APP_ID"
@@ -139,6 +293,8 @@ Examples:
   asc testflight beta-groups list --app "APP_ID" --external
   asc testflight beta-groups list --app "APP_ID" --name "Beta Testers"
   asc testflight beta-groups list --app "APP_ID" --sort "-createdDate"
+  asc testflight beta-groups list --global --public-link-enabled true
+  asc testflight beta-groups list --global --include app,builds --builds-limit 100
   asc testflight beta-groups list --app "APP_ID" --limit 10
   asc testflight beta-groups list --app "APP_ID" --paginate
   asc testflight beta-groups list --global
@@ -163,6 +319,18 @@ Examples:
 			buildIDSet := false
 			nameSet := false
 			sortSet := false
+			idSet := false
+			publicLinkEnabledSet := false
+			publicLinkLimitEnabledSet := false
+			publicLinkSet := false
+			fieldsSet := false
+			appFieldsSet := false
+			buildFieldsSet := false
+			testerFieldsSet := false
+			recruitmentCriteriaFieldsSet := false
+			includeSet := false
+			testersLimitSet := false
+			buildsLimitSet := false
 			membershipPageControlSet := false
 			fs.Visit(func(value *flag.Flag) {
 				switch value.Name {
@@ -174,6 +342,30 @@ Examples:
 					nameSet = true
 				case "sort":
 					sortSet = true
+				case "id":
+					idSet = true
+				case "public-link-enabled":
+					publicLinkEnabledSet = true
+				case "public-link-limit-enabled":
+					publicLinkLimitEnabledSet = true
+				case "public-link":
+					publicLinkSet = true
+				case "fields":
+					fieldsSet = true
+				case "app-fields":
+					appFieldsSet = true
+				case "build-fields":
+					buildFieldsSet = true
+				case "tester-fields":
+					testerFieldsSet = true
+				case "recruitment-criteria-fields":
+					recruitmentCriteriaFieldsSet = true
+				case "include":
+					includeSet = true
+				case "testers-limit":
+					testersLimitSet = true
+				case "builds-limit":
+					buildsLimitSet = true
 				case "global", "limit", "next", "paginate":
 					membershipPageControlSet = true
 				}
@@ -196,6 +388,25 @@ Examples:
 			// without a trace. Reject the combination instead: the cursor URL
 			// already carries the filters and sort of the query it came from.
 			if strings.TrimSpace(*next) != "" {
+				if err := shared.RejectNextFlagConflicts(
+					fs,
+					*next,
+					"beta-groups list",
+					"id",
+					"public-link-enabled",
+					"public-link-limit-enabled",
+					"public-link",
+					"fields",
+					"app-fields",
+					"build-fields",
+					"tester-fields",
+					"recruitment-criteria-fields",
+					"include",
+					"testers-limit",
+					"builds-limit",
+				); err != nil {
+					return err
+				}
 				for _, conflict := range []struct {
 					set  bool
 					name string
@@ -211,8 +422,80 @@ Examples:
 				}
 			}
 
+			publicLinkEnabledValue, err := parseBetaGroupsListBool("--public-link-enabled", *publicLinkEnabled, publicLinkEnabledSet)
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
+			publicLinkLimitEnabledValue, err := parseBetaGroupsListBool("--public-link-limit-enabled", *publicLinkLimitEnabled, publicLinkLimitEnabledSet)
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
+
+			idValues, err := parseBetaGroupsListCSV("--id", *id, idSet)
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
+			publicLinkValue := strings.TrimSpace(*publicLink)
+			if publicLinkSet && publicLinkValue == "" {
+				return shared.UsageError("beta-groups list: --public-link cannot be empty")
+			}
+			fieldsValue, err := parseBetaGroupsListFields("--fields", *fields, fieldsSet, betaGroupFieldsValues)
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
+			appFieldsValue, err := parseBetaGroupsListFields("--app-fields", *appFields, appFieldsSet, betaGroupAppFieldsValues)
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
+			buildFieldsValue, err := parseBetaGroupsListFields("--build-fields", *buildFields, buildFieldsSet, betaGroupBuildFieldsValues)
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
+			testerFieldsValue, err := parseBetaGroupsListFields("--tester-fields", *testerFields, testerFieldsSet, betaGroupTesterFieldsValues)
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
+			recruitmentCriteriaFieldsValue, err := parseBetaGroupsListFields("--recruitment-criteria-fields", *recruitmentCriteriaFields, recruitmentCriteriaFieldsSet, betaGroupRecruitmentCriteriaFieldsValues)
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
+			includeValue, err := shared.NormalizeSelection(*include, betaGroupIncludeValues, "--include")
+			if err != nil {
+				return shared.UsageError("beta-groups list: " + err.Error())
+			}
+			if includeSet && len(includeValue) == 0 {
+				return shared.UsageError("beta-groups list: --include cannot be empty")
+			}
+			if (len(appFieldsValue) > 0 || appFieldsSet) && !slices.Contains(includeValue, "app") {
+				return shared.UsageError("beta-groups list: --app-fields requires --include app")
+			}
+			if (len(buildFieldsValue) > 0 || buildFieldsSet) && !slices.Contains(includeValue, "builds") {
+				return shared.UsageError("beta-groups list: --build-fields requires --include builds")
+			}
+			if (len(testerFieldsValue) > 0 || testerFieldsSet) && !slices.Contains(includeValue, "betaTesters") {
+				return shared.UsageError("beta-groups list: --tester-fields requires --include betaTesters")
+			}
+			if (len(recruitmentCriteriaFieldsValue) > 0 || recruitmentCriteriaFieldsSet) && !slices.Contains(includeValue, "betaRecruitmentCriteria") {
+				return shared.UsageError("beta-groups list: --recruitment-criteria-fields requires --include betaRecruitmentCriteria")
+			}
+			if *testersLimit != 0 && (*testersLimit < 1 || *testersLimit > 50) {
+				return shared.UsageError("beta-groups list: --testers-limit must be between 1 and 50")
+			}
+			if *buildsLimit != 0 && (*buildsLimit < 1 || *buildsLimit > 1000) {
+				return shared.UsageError("beta-groups list: --builds-limit must be between 1 and 1000")
+			}
+			if *testersLimit != 0 && !slices.Contains(includeValue, "betaTesters") {
+				return shared.UsageError("beta-groups list: --testers-limit requires --include betaTesters")
+			}
+			if *buildsLimit != 0 && !slices.Contains(includeValue, "builds") {
+				return shared.UsageError("beta-groups list: --builds-limit requires --include builds")
+			}
+
 			resolvedAppID := shared.ResolveAppID(*appID)
 			resolvedBuildID := strings.TrimSpace(*buildID)
+			querySurfaceSet := idSet || publicLinkEnabledSet || publicLinkLimitEnabledSet || publicLinkSet ||
+				fieldsSet || appFieldsSet || buildFieldsSet || testerFieldsSet || recruitmentCriteriaFieldsSet ||
+				includeSet || testersLimitSet || buildsLimitSet
 
 			if *internal && *external {
 				fmt.Fprintln(os.Stderr, "Error: --internal and --external are mutually exclusive")
@@ -232,6 +515,10 @@ Examples:
 			}
 			if resolvedBuildID != "" && (nameSet || sortSet) {
 				fmt.Fprintln(os.Stderr, "Error: --name and --sort cannot be used with --build-id; membership lookup queries the build's app relationships directly")
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "")
+			}
+			if resolvedBuildID != "" && querySurfaceSet {
+				fmt.Fprintln(os.Stderr, "Error: beta-group query filters, sparse fields, includes, and relationship limits cannot be used with --build-id; membership lookup queries the build's app relationships directly")
 				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "")
 			}
 
@@ -302,13 +589,39 @@ Examples:
 			if sortValue != "" {
 				opts = append(opts, asc.WithBetaGroupsSort(sortValue))
 			}
+			if publicLinkEnabledValue != nil {
+				opts = append(opts, asc.WithBetaGroupsPublicLinkEnabled(*publicLinkEnabledValue))
+			}
+			if publicLinkLimitEnabledValue != nil {
+				opts = append(opts, asc.WithBetaGroupsPublicLinkLimitEnabled(*publicLinkLimitEnabledValue))
+			}
+			if len(idValues) > 0 {
+				opts = append(opts, asc.WithBetaGroupsIDs(idValues))
+			}
+			if publicLinkValue != "" {
+				opts = append(opts, asc.WithBetaGroupsPublicLink(publicLinkValue))
+			}
+			opts = append(
+				opts,
+				asc.WithBetaGroupsFields(fieldsValue),
+				asc.WithBetaGroupsAppFields(appFieldsValue),
+				asc.WithBetaGroupsBuildFields(buildFieldsValue),
+				asc.WithBetaGroupsBetaTesterFields(testerFieldsValue),
+				asc.WithBetaGroupsBetaRecruitmentCriteriaFields(recruitmentCriteriaFieldsValue),
+				asc.WithBetaGroupsInclude(includeValue),
+				asc.WithBetaGroupsBetaTestersLimit(*testersLimit),
+				asc.WithBetaGroupsBuildsLimit(*buildsLimit),
+			)
 
 			// GET /v1/apps/{id}/betaGroups accepts only limit and
 			// fields[betaGroups]. GET /v1/betaGroups accepts filter[app]
 			// alongside filter[isInternalGroup], filter[name], and sort, so any
 			// request that needs one of those is routed there instead of being
 			// narrowed client-side after walking every page.
-			useTopLevelEndpoint := *global || internalFilter != nil || nameValue != "" || sortValue != ""
+			useTopLevelEndpoint := *global || internalFilter != nil || nameValue != "" || sortValue != "" ||
+				len(idValues) > 0 || publicLinkEnabledValue != nil || publicLinkLimitEnabledValue != nil || publicLinkValue != "" ||
+				len(appFieldsValue) > 0 || len(buildFieldsValue) > 0 || len(testerFieldsValue) > 0 ||
+				len(recruitmentCriteriaFieldsValue) > 0 || len(includeValue) > 0 || *testersLimit > 0 || *buildsLimit > 0
 			if useTopLevelEndpoint && !*global && resolvedAppID != "" {
 				opts = append(opts, asc.WithBetaGroupsApps([]string{resolvedAppID}))
 			}
@@ -324,7 +637,7 @@ Examples:
 			// matching page without requiring --paginate. Keep that stable behavior
 			// while moving the filtering itself to the top-level endpoint. The new
 			// experimental name/sort flags retain the normal one-page default.
-			stableAppScopedFilter := !*global && resolvedAppID != "" && internalFilter != nil && nameValue == "" && sortValue == ""
+			stableAppScopedFilter := !*global && resolvedAppID != "" && internalFilter != nil && nameValue == "" && sortValue == "" && !querySurfaceSet
 			if stableAppScopedFilter && !*paginate {
 				// Fetch with Apple's maximum page size before applying the
 				// stable client-side cap. Passing a small --limit here would
@@ -397,6 +710,39 @@ func preserveFilteredBetaGroupsLimit(groups asc.PaginatedResponse, limit int) er
 	response.Data = response.Data[:limit]
 	fmt.Fprintf(os.Stderr, "Warning: showing %d of %d filtered groups (--limit %d); rerun without --limit for all\n", limit, total, limit)
 	return nil
+}
+
+func parseBetaGroupsListBool(flagName, value string, set bool) (*bool, error) {
+	if !set {
+		return nil, nil
+	}
+	parsed, err := shared.ParseOptionalBoolFlag(flagName, value)
+	if err != nil {
+		return nil, err
+	}
+	if parsed == nil {
+		return nil, fmt.Errorf("%s must be true or false", flagName)
+	}
+	return parsed, nil
+}
+
+func parseBetaGroupsListCSV(flagName, value string, set bool) ([]string, error) {
+	values := shared.SplitCSV(value)
+	if set && len(values) == 0 {
+		return nil, fmt.Errorf("beta-groups list: %s cannot be empty", flagName)
+	}
+	return values, nil
+}
+
+func parseBetaGroupsListFields(flagName, value string, set bool, allowed []string) ([]string, error) {
+	values, err := shared.NormalizeSelection(value, allowed, flagName)
+	if err != nil {
+		return nil, err
+	}
+	if set && len(values) == 0 {
+		return nil, fmt.Errorf("beta-groups list: %s cannot be empty", flagName)
+	}
+	return values, nil
 }
 
 // BuildGroupsListCommandConfig configures the build-centric beta-group lookup
