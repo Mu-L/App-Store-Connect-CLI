@@ -3,6 +3,7 @@ package asc
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +52,41 @@ func TestGetCertificates_SendsQuerySurface(t *testing.T) {
 	}
 }
 
+func TestGetCertificate_RejectsCollectionQueryOptionsBeforeRequest(t *testing.T) {
+	tests := []struct {
+		name   string
+		option CertificatesOption
+		want   string
+	}{
+		{name: "limit", option: WithCertificatesLimit(5), want: "limit option cannot be used with GetCertificate"},
+		{name: "next URL", option: WithCertificatesNextURL("https://api.appstoreconnect.apple.com/v1/certificates?cursor=next"), want: "next URL option cannot be used with GetCertificate"},
+		{name: "certificate type", option: WithCertificatesTypes([]string{"IOS_DISTRIBUTION"}), want: "certificate type option cannot be used with GetCertificate"},
+		{name: "display name", option: WithCertificatesFilterDisplayNames([]string{"Alpha"}), want: "display name option cannot be used with GetCertificate"},
+		{name: "serial number", option: WithCertificatesFilterSerialNumbers([]string{"SN1"}), want: "serial number option cannot be used with GetCertificate"},
+		{name: "ID", option: WithCertificatesFilterIDs([]string{"cert-1"}), want: "ID option cannot be used with GetCertificate"},
+		{name: "sort", option: WithCertificatesSort("-displayName"), want: "sort option cannot be used with GetCertificate"},
+		{name: "certificate type CSV", option: WithCertificatesFilterType("IOS_DISTRIBUTION"), want: "certificate type option cannot be used with GetCertificate"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			requests := 0
+			client := newTestClient(t, func(*http.Request) {
+				requests++
+			}, jsonResponse(http.StatusOK, `{"data":null}`))
+
+			if _, err := client.GetCertificate(context.Background(), "cert-1", test.option); err == nil {
+				t.Fatal("GetCertificate() error = nil, want unsupported option error")
+			} else if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("GetCertificate() error = %q, want substring %q", err, test.want)
+			}
+			if requests != 0 {
+				t.Fatalf("request count = %d, want 0", requests)
+			}
+		})
+	}
+}
+
 func TestGetCertificate_DetailQueryOnlyAllowsSparseFieldsAndInclude(t *testing.T) {
 	response := jsonResponse(http.StatusOK, `{"data":{"type":"certificates","id":"cert-1","attributes":{"name":"Certificate","certificateType":"IOS_DISTRIBUTION"}}}`)
 	client := newTestClient(t, func(req *http.Request) {
@@ -77,15 +113,9 @@ func TestGetCertificate_DetailQueryOnlyAllowsSparseFieldsAndInclude(t *testing.T
 	if _, err := client.GetCertificate(
 		context.Background(),
 		"cert-1",
-		WithCertificatesFilterDisplayNames([]string{"Alpha"}),
-		WithCertificatesTypes([]string{"IOS_DISTRIBUTION"}),
-		WithCertificatesFilterSerialNumbers([]string{"SN1"}),
-		WithCertificatesFilterIDs([]string{"cert-1"}),
-		WithCertificatesSort("-displayName"),
 		WithCertificatesFields([]string{"displayName", "serialNumber"}),
 		WithCertificatesPassTypeIDFields([]string{"name", "identifier"}),
 		WithCertificatesInclude([]string{"passTypeId"}),
-		WithCertificatesLimit(5),
 	); err != nil {
 		t.Fatalf("GetCertificate() error: %v", err)
 	}
