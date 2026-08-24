@@ -59,7 +59,13 @@ type passTypeIDCertificatesQuery struct {
 
 type certificatesQuery struct {
 	listQuery
+	displayNames     []string
 	certificateTypes []string
+	serialNumbers    []string
+	ids              []string
+	sort             string
+	fields           []string
+	passTypeIDFields []string
 	include          []string
 }
 
@@ -203,7 +209,15 @@ func buildBundleIDCapabilitiesQuery(_ *bundleIDCapabilitiesQuery) string {
 
 func buildCertificatesQuery(query *certificatesQuery) string {
 	values := url.Values{}
+	addCSV(values, "filter[displayName]", query.displayNames)
 	addCSV(values, "filter[certificateType]", query.certificateTypes)
+	addCSV(values, "filter[serialNumber]", query.serialNumbers)
+	addCSV(values, "filter[id]", query.ids)
+	if strings.TrimSpace(query.sort) != "" {
+		values.Set("sort", strings.TrimSpace(query.sort))
+	}
+	addCSV(values, "fields[certificates]", query.fields)
+	addCSV(values, "fields[passTypeIds]", query.passTypeIDFields)
 	addCSV(values, "include", query.include)
 	addLimit(values, query.limit)
 	return values.Encode()
@@ -834,6 +848,48 @@ func WithCertificatesNextURL(next string) CertificatesOption {
 func WithCertificatesTypes(types []string) CertificatesOption {
 	return func(q *certificatesQuery) {
 		q.certificateTypes = normalizeUpperList(types)
+	}
+}
+
+// WithCertificatesFilterDisplayNames filters certificates by display name(s).
+func WithCertificatesFilterDisplayNames(names []string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.displayNames = normalizeList(names)
+	}
+}
+
+// WithCertificatesFilterSerialNumbers filters certificates by serial number(s).
+func WithCertificatesFilterSerialNumbers(serialNumbers []string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.serialNumbers = normalizeList(serialNumbers)
+	}
+}
+
+// WithCertificatesFilterIDs filters certificates by ID(s).
+func WithCertificatesFilterIDs(ids []string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.ids = normalizeList(ids)
+	}
+}
+
+// WithCertificatesSort sets the certificate sort expression.
+func WithCertificatesSort(sort string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.sort = strings.TrimSpace(sort)
+	}
+}
+
+// WithCertificatesFields sets fields[certificates] for certificate responses.
+func WithCertificatesFields(fields []string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.fields = normalizeList(fields)
+	}
+}
+
+// WithCertificatesPassTypeIDFields sets fields[passTypeIds] for included pass type IDs.
+func WithCertificatesPassTypeIDFields(fields []string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.passTypeIDFields = normalizeList(fields)
 	}
 }
 
