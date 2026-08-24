@@ -367,7 +367,7 @@ func (c *Client) GetCertificate(ctx context.Context, id string, opts ...Certific
 	}
 
 	path := fmt.Sprintf("/v1/certificates/%s", id)
-	if queryString := buildCertificatesQuery(query); queryString != "" {
+	if queryString := buildCertificateDetailQuery(query); queryString != "" {
 		path += "?" + queryString
 	}
 	data, err := c.do(ctx, "GET", path, nil)

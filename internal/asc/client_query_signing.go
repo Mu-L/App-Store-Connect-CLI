@@ -223,6 +223,14 @@ func buildCertificatesQuery(query *certificatesQuery) string {
 	return values.Encode()
 }
 
+func buildCertificateDetailQuery(query *certificatesQuery) string {
+	values := url.Values{}
+	addCSV(values, "fields[certificates]", query.fields)
+	addCSV(values, "fields[passTypeIds]", query.passTypeIDFields)
+	addCSV(values, "include", query.include)
+	return values.Encode()
+}
+
 func buildMerchantIDCertificatesQuery(query *merchantIDCertificatesQuery) string {
 	values := url.Values{}
 	if strings.TrimSpace(query.displayName) != "" {
