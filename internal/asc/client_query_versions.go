@@ -84,6 +84,12 @@ type territoryAgeRatingsQuery struct {
 
 type appCustomProductPagesQuery struct {
 	listQuery
+	visible       []string
+	fields        []string
+	appFields     []string
+	versionFields []string
+	include       []string
+	versionsLimit int
 }
 
 type appCustomProductPageVersionsQuery struct {
@@ -289,7 +295,15 @@ func buildTerritoryAgeRatingsQuery(query *territoryAgeRatingsQuery) string {
 
 func buildAppCustomProductPagesQuery(query *appCustomProductPagesQuery) string {
 	values := url.Values{}
+	addCSV(values, "filter[visible]", query.visible)
+	addCSV(values, "fields[appCustomProductPages]", query.fields)
+	addCSV(values, "fields[apps]", query.appFields)
+	addCSV(values, "fields[appCustomProductPageVersions]", query.versionFields)
+	addCSV(values, "include", query.include)
 	addLimit(values, query.limit)
+	if query.versionsLimit > 0 {
+		values.Set("limit[appCustomProductPageVersions]", strconv.Itoa(query.versionsLimit))
+	}
 	return values.Encode()
 }
 
@@ -989,6 +1003,50 @@ func WithAppCustomProductPagesLimit(limit int) AppCustomProductPagesOption {
 	return func(q *appCustomProductPagesQuery) {
 		if limit > 0 {
 			q.limit = limit
+		}
+	}
+}
+
+// WithAppCustomProductPagesVisible filters custom product pages by visibility.
+func WithAppCustomProductPagesVisible(values []string) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		q.visible = normalizeList(values)
+	}
+}
+
+// WithAppCustomProductPagesFields sets fields[appCustomProductPages] for responses.
+func WithAppCustomProductPagesFields(fields []string) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		q.fields = normalizeList(fields)
+	}
+}
+
+// WithAppCustomProductPagesAppFields sets fields[apps] for included apps.
+func WithAppCustomProductPagesAppFields(fields []string) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		q.appFields = normalizeList(fields)
+	}
+}
+
+// WithAppCustomProductPagesVersionFields sets fields[appCustomProductPageVersions] for included versions.
+func WithAppCustomProductPagesVersionFields(fields []string) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		q.versionFields = normalizeList(fields)
+	}
+}
+
+// WithAppCustomProductPagesInclude sets relationships to include in responses.
+func WithAppCustomProductPagesInclude(include []string) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		q.include = normalizeList(include)
+	}
+}
+
+// WithAppCustomProductPagesVersionsLimit sets the max number of included versions.
+func WithAppCustomProductPagesVersionsLimit(limit int) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		if limit > 0 {
+			q.versionsLimit = limit
 		}
 	}
 }
