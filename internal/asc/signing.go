@@ -1,6 +1,9 @@
 package asc
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // BundleIDPlatform represents the platform of a bundle ID or registered device.
 type BundleIDPlatform string
@@ -19,6 +22,11 @@ type BundleIDAttributes struct {
 	SeedID     string           `json:"seedId,omitempty"`
 
 	attributesPresent bool
+	attributesNull    bool
+	nameJSON          json.RawMessage
+	identifierJSON    json.RawMessage
+	platformJSON      json.RawMessage
+	seedIDJSON        json.RawMessage
 }
 
 // UnmarshalJSON records whether the API supplied an attributes object so the
@@ -29,8 +37,17 @@ func (a *BundleIDAttributes) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
 	*a = BundleIDAttributes(decoded)
 	a.attributesPresent = true
+	a.attributesNull = strings.TrimSpace(string(data)) == "null"
+	a.nameJSON = fields["name"]
+	a.identifierJSON = fields["identifier"]
+	a.platformJSON = fields["platform"]
+	a.seedIDJSON = fields["seedId"]
 	return nil
 }
 
@@ -147,21 +164,61 @@ type BundleIDsResponse struct {
 }
 
 func (r BundleIDsResponse) MarshalJSON() ([]byte, error) {
+	type attributesJSON struct {
+		Name       json.RawMessage `json:"name,omitempty"`
+		Identifier json.RawMessage `json:"identifier,omitempty"`
+		Platform   json.RawMessage `json:"platform,omitempty"`
+		SeedID     json.RawMessage `json:"seedId,omitempty"`
+	}
 	type resourceJSON struct {
-		Type          ResourceType        `json:"type"`
-		ID            string              `json:"id"`
-		Attributes    *BundleIDAttributes `json:"attributes,omitempty"`
-		Relationships json.RawMessage     `json:"relationships,omitempty"`
-		Links         json.RawMessage     `json:"links,omitempty"`
+		Type          ResourceType    `json:"type"`
+		ID            string          `json:"id"`
+		Attributes    json.RawMessage `json:"attributes,omitempty"`
+		Relationships json.RawMessage `json:"relationships,omitempty"`
+		Links         json.RawMessage `json:"links,omitempty"`
 	}
 	var data []resourceJSON
 	if r.Data != nil {
 		data = make([]resourceJSON, len(r.Data))
 	}
 	for i, resource := range r.Data {
-		var attributes *BundleIDAttributes
-		if resource.Attributes.attributesPresent || resource.Attributes != (BundleIDAttributes{}) {
-			attributes = &resource.Attributes
+		var attributes json.RawMessage
+		if bundleIDAttributesShouldMarshal(resource.Attributes) {
+			if resource.Attributes.attributesNull {
+				attributes = json.RawMessage("null")
+			} else {
+				fields := attributesJSON{}
+				var err error
+				if len(resource.Attributes.nameJSON) > 0 || resource.Attributes.Name != "" {
+					fields.Name, err = bundleIDAttributeJSON(resource.Attributes.nameJSON, resource.Attributes.Name)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if len(resource.Attributes.identifierJSON) > 0 || resource.Attributes.Identifier != "" {
+					fields.Identifier, err = bundleIDAttributeJSON(resource.Attributes.identifierJSON, resource.Attributes.Identifier)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if len(resource.Attributes.platformJSON) > 0 || resource.Attributes.Platform != "" {
+					fields.Platform, err = bundleIDAttributeJSON(resource.Attributes.platformJSON, resource.Attributes.Platform)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if len(resource.Attributes.seedIDJSON) > 0 || resource.Attributes.SeedID != "" {
+					fields.SeedID, err = bundleIDAttributeJSON(resource.Attributes.seedIDJSON, resource.Attributes.SeedID)
+					if err != nil {
+						return nil, err
+					}
+				}
+				encoded, err := json.Marshal(fields)
+				if err != nil {
+					return nil, err
+				}
+				attributes = encoded
+			}
 		}
 		data[i] = resourceJSON{resource.Type, resource.ID, attributes, resource.Relationships, resource.Links}
 	}
@@ -171,6 +228,17 @@ func (r BundleIDsResponse) MarshalJSON() ([]byte, error) {
 		Included json.RawMessage `json:"included,omitempty"`
 		Meta     json.RawMessage `json:"meta,omitempty"`
 	}{data, r.Links, r.Included, r.Meta})
+}
+
+func bundleIDAttributesShouldMarshal(attributes BundleIDAttributes) bool {
+	return attributes.attributesPresent || attributes.Name != "" || attributes.Identifier != "" || attributes.Platform != "" || attributes.SeedID != ""
+}
+
+func bundleIDAttributeJSON(raw json.RawMessage, value any) (json.RawMessage, error) {
+	if len(raw) > 0 {
+		return raw, nil
+	}
+	return json.Marshal(value)
 }
 
 // GetLinks returns the links field for pagination.

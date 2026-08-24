@@ -61,3 +61,43 @@ func TestBundleIDsResponseMarshalPreservesDataNullability(t *testing.T) {
 		})
 	}
 }
+
+func TestBundleIDsResponseMarshalPreservesSparseAttributeFields(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "null", input: `null`, want: `null`},
+		{name: "empty object", input: `{}`, want: `{}`},
+		{name: "name only", input: `{"name":"Example"}`, want: `{"name":"Example"}`},
+		{name: "explicit empty identifier", input: `{"identifier":""}`, want: `{"identifier":""}`},
+		{name: "null seed ID", input: `{"seedId":null}`, want: `{"seedId":null}`},
+		{name: "platform and empty seed ID", input: `{"platform":"IOS","seedId":""}`, want: `{"platform":"IOS","seedId":""}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var response BundleIDsResponse
+			input := `{"data":[{"type":"bundleIds","id":"bundle-1","attributes":` + test.input + `}],"links":{}}`
+			if err := json.Unmarshal([]byte(input), &response); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			encoded, err := json.Marshal(response)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var payload struct {
+				Data []struct {
+					Attributes json.RawMessage `json:"attributes"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(encoded, &payload); err != nil {
+				t.Fatalf("decode encoded response: %v", err)
+			}
+			if got := string(payload.Data[0].Attributes); got != test.want {
+				t.Fatalf("attributes = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
