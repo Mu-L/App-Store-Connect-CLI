@@ -38,6 +38,41 @@ func TestProfileAttributesJSONKeepsFullResponseFields(t *testing.T) {
 	}
 }
 
+func TestProfilesResponseJSONPreservesRelationshipOnlyAttributes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "attributes omitted",
+			body: `{"data":[{"type":"profiles","id":"profile-1","relationships":{"devices":{"data":[]}}}],"links":{},"included":[]}`,
+			want: `{"data":[{"type":"profiles","id":"profile-1","relationships":{"devices":{"data":[]}}}],"links":{},"included":[]}`,
+		},
+		{
+			name: "attributes explicitly empty",
+			body: `{"data":[{"type":"profiles","id":"profile-1","attributes":{},"relationships":{"devices":{"data":[]}}}],"links":{},"included":[]}`,
+			want: `{"data":[{"type":"profiles","id":"profile-1","attributes":{},"relationships":{"devices":{"data":[]}}}],"links":{},"included":[]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var response ProfilesResponse
+			if err := json.Unmarshal([]byte(test.body), &response); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			encoded, err := json.Marshal(response)
+			if err != nil {
+				t.Fatalf("marshal response: %v", err)
+			}
+			if got := string(encoded); got != test.want {
+				t.Fatalf("response JSON = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
 func TestGetProfiles_WithQuerySurface(t *testing.T) {
 	response := jsonResponse(http.StatusOK, `{"data":[]}`)
 	client := newTestClient(t, func(req *http.Request) {

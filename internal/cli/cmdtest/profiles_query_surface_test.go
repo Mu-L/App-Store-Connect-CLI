@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -181,6 +182,48 @@ func TestProfilesListSparseFieldsPreserveAttributePresence(t *testing.T) {
 	}
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+}
+
+func TestProfilesListRelationshipOnlySparseResponsePreservesAttributeAbsence(t *testing.T) {
+	for _, relationship := range []string{"devices", "bundleId", "certificates"} {
+		t.Run(relationship, func(t *testing.T) {
+			setupAuth(t)
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method != http.MethodGet || req.URL.Path != "/v1/profiles" {
+					t.Errorf("unexpected request: %s %s", req.Method, req.URL.Path)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if got := req.URL.Query().Get("fields[profiles]"); got != relationship {
+					t.Errorf("fields[profiles] = %q, want %q", got, relationship)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, fmt.Sprintf(`{"data":[{"type":"profiles","id":"profile-1","relationships":{"%s":{"data":[]}}}],"included":[]}`, relationship))
+			}))
+			t.Cleanup(server.Close)
+			installProfilesQueryTestClient(t, server)
+
+			root := RootCommand("1.2.3")
+			root.FlagSet.SetOutput(io.Discard)
+			stdout, stderr := captureOutput(t, func() {
+				if err := root.Parse([]string{"profiles", "list", "--fields", relationship, "--output", "json"}); err != nil {
+					t.Fatalf("parse error: %v", err)
+				}
+				if err := root.Run(context.Background()); err != nil {
+					t.Fatalf("run error: %v", err)
+				}
+			})
+
+			want := fmt.Sprintf(`{"data":[{"type":"profiles","id":"profile-1","relationships":{"%s":{"data":[]}}}],"links":{},"included":[]}`+"\n", relationship)
+			if stdout != want {
+				t.Fatalf("stdout = %q, want relationship-only sparse profile JSON %q", stdout, want)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+		})
 	}
 }
 

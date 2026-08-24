@@ -201,14 +201,15 @@ const (
 
 // ProfileAttributes describes a profile resource.
 type ProfileAttributes struct {
-	Name           string       `json:"name,omitempty"`
-	Platform       Platform     `json:"platform,omitempty"`
-	ProfileType    string       `json:"profileType,omitempty"`
-	ProfileState   ProfileState `json:"profileState,omitempty"`
-	ProfileContent string       `json:"profileContent,omitempty"`
-	UUID           string       `json:"uuid,omitempty"`
-	CreatedDate    string       `json:"createdDate,omitempty"`
-	ExpirationDate string       `json:"expirationDate,omitempty"`
+	Name              string       `json:"name,omitempty"`
+	Platform          Platform     `json:"platform,omitempty"`
+	ProfileType       string       `json:"profileType,omitempty"`
+	ProfileState      ProfileState `json:"profileState,omitempty"`
+	ProfileContent    string       `json:"profileContent,omitempty"`
+	UUID              string       `json:"uuid,omitempty"`
+	CreatedDate       string       `json:"createdDate,omitempty"`
+	ExpirationDate    string       `json:"expirationDate,omitempty"`
+	attributesPresent bool
 }
 
 // ProfileCreateAttributes describes attributes for creating a profile.
@@ -238,7 +239,7 @@ type ProfileCreateRequest struct {
 }
 
 // ProfilesResponse is the response from profiles list endpoint.
-type ProfilesResponse = Response[ProfileAttributes]
+type ProfilesResponse Response[ProfileAttributes]
 
 // ProfileResponse is the response from profile detail endpoint.
 type ProfileResponse = SingleResponse[ProfileAttributes]
