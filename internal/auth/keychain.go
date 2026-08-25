@@ -564,7 +564,13 @@ func completeCredentialPayload(payload credentialPayload) bool {
 		_, err := LoadPrivateKeyFromPEM([]byte(payload.PrivateKeyPEM))
 		return err == nil
 	}
-	return strings.TrimSpace(payload.PrivateKeyPath) != ""
+	if strings.TrimSpace(payload.PrivateKeyPath) == "" {
+		return false
+	}
+	// A path-only entry is usable only if resolution's loader can read and
+	// parse the referenced key file.
+	_, err := LoadPrivateKey(payload.PrivateKeyPath)
+	return err == nil
 }
 
 func credentialPayloadsMatch(first, second credentialPayload) bool {

@@ -1650,8 +1650,13 @@ func TestStoreCredentials_RemovesPreNormalizedProfileFromLegacyKeychain(t *testi
 
 func TestStoreCredentials_RejectsDistinctNormalizedProfileCollisionBeforeMutation(t *testing.T) {
 	newKr, legacyKr := withSeparateKeyrings(t)
-	storeCredentialInKeyring(t, newKr, "spaced", "CANONICAL", "ISSUER-CANONICAL", "/tmp/canonical.p8")
-	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "RAW", "ISSUER-RAW", "/tmp/raw.p8")
+	keyDir := t.TempDir()
+	canonicalPath := filepath.Join(keyDir, "Canonical.p8")
+	writeECDSAPEM(t, canonicalPath, 0o600, true)
+	rawPath := filepath.Join(keyDir, "Raw.p8")
+	writeECDSAPEM(t, rawPath, 0o600, true)
+	storeCredentialInKeyring(t, newKr, "spaced", "CANONICAL", "ISSUER-CANONICAL", canonicalPath)
+	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "RAW", "ISSUER-RAW", rawPath)
 
 	err := StoreCredentials("  spaced  ", "NEW", "ISSUER-NEW", "/tmp/new.p8")
 	wantErr := `credential profile name "  spaced  " conflicts with existing normalized profile "spaced"; ` +
@@ -1925,6 +1930,35 @@ func TestStoreCredentials_ReplacesCanonicalEntryWithValidPathAndInvalidEmbeddedK
 		t.Fatalf("decode normalized credential: %v", err)
 	}
 	if payload.KeyID != "KEY123" {
+		t.Fatalf("normalized credential = %+v", payload)
+	}
+}
+
+func TestStoreCredentials_ReplacesRawEntryWithUnloadableKeyPath(t *testing.T) {
+	newKr, legacyKr := withSeparateKeyrings(t)
+	canonicalPath := filepath.Join(t.TempDir(), "Canonical.p8")
+	writeECDSAPEM(t, canonicalPath, 0o600, true)
+	storeCredentialInKeyring(t, newKr, "spaced", "CANONICAL", "ISSUER-CANONICAL", canonicalPath)
+	// The raw entry has complete IDs but its key file was deleted, so
+	// credential resolution cannot authenticate with it; it must not stay
+	// collision-authoritative and block a padded-name login.
+	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "RAW", "ISSUER-RAW", filepath.Join(t.TempDir(), "Deleted.p8"))
+
+	if err := StoreCredentials("  spaced  ", "NEW", "ISSUER-NEW", "/tmp/new.p8"); err != nil {
+		t.Fatalf("StoreCredentials() error: %v", err)
+	}
+	if _, err := legacyKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("legacy raw credential error = %v, want ErrKeyNotFound", err)
+	}
+	item, err := newKr.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("normalized credential error: %v", err)
+	}
+	var payload credentialPayload
+	if err := json.Unmarshal(item.Data, &payload); err != nil {
+		t.Fatalf("decode normalized credential: %v", err)
+	}
+	if payload.KeyID != "NEW" {
 		t.Fatalf("normalized credential = %+v", payload)
 	}
 }
