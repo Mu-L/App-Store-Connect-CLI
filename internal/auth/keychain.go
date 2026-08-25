@@ -505,14 +505,14 @@ func completeCredentialPayload(payload credentialPayload) bool {
 	if !config.IsIndividualCredentialKeyType(payload.KeyType) && strings.TrimSpace(payload.IssuerID) == "" {
 		return false
 	}
-	if strings.TrimSpace(payload.PrivateKeyPath) != "" {
-		return true
+	// Credential resolution prefers embedded key material over the key path,
+	// so a present-but-invalid PEM makes the entry unusable at auth time even
+	// when a key path is also stored.
+	if strings.TrimSpace(payload.PrivateKeyPEM) != "" {
+		_, err := LoadPrivateKeyFromPEM([]byte(payload.PrivateKeyPEM))
+		return err == nil
 	}
-	if strings.TrimSpace(payload.PrivateKeyPEM) == "" {
-		return false
-	}
-	_, err := LoadPrivateKeyFromPEM([]byte(payload.PrivateKeyPEM))
-	return err == nil
+	return strings.TrimSpace(payload.PrivateKeyPath) != ""
 }
 
 func credentialPayloadsMatch(first, second credentialPayload) bool {

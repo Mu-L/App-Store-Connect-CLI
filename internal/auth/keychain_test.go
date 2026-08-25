@@ -1884,6 +1884,48 @@ func TestStoreCredentials_ReplacesPreNormalizedEntryWithInvalidEmbeddedKey(t *te
 	}
 }
 
+func TestStoreCredentials_ReplacesCanonicalEntryWithValidPathAndInvalidEmbeddedKey(t *testing.T) {
+	newKr, _ := withSeparateKeyrings(t)
+	canonicalPath := filepath.Join(t.TempDir(), "Canonical.p8")
+	writeECDSAPEM(t, canonicalPath, 0o600, true)
+	// Credential resolution prefers the embedded PEM over the key path, so
+	// this canonical entry is unusable at auth time despite its valid path
+	// and must not be collision-authoritative.
+	broken := credentialPayload{
+		KeyID:          "BROKEN",
+		IssuerID:       "BROKEN-ISSUER",
+		PrivateKeyPath: canonicalPath,
+		PrivateKeyPEM:  "not-pem",
+		KeyType:        config.CredentialKeyTypeTeam,
+	}
+	data, err := json.Marshal(broken)
+	if err != nil {
+		t.Fatalf("encode invalid embedded-key credential: %v", err)
+	}
+	if err := newKr.Set(keyring.Item{Key: keyringKey("spaced"), Data: data}); err != nil {
+		t.Fatalf("seed invalid embedded-key credential: %v", err)
+	}
+	storeCredentialInKeyring(t, newKr, "  spaced  ", "RAW", "ISSUER-RAW", "/tmp/raw.p8")
+
+	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8"); err != nil {
+		t.Fatalf("StoreCredentials() error: %v", err)
+	}
+	if _, err := newKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("raw credential error = %v, want ErrKeyNotFound", err)
+	}
+	item, err := newKr.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("normalized credential error: %v", err)
+	}
+	var payload credentialPayload
+	if err := json.Unmarshal(item.Data, &payload); err != nil {
+		t.Fatalf("decode normalized credential: %v", err)
+	}
+	if payload.KeyID != "KEY123" {
+		t.Fatalf("normalized credential = %+v", payload)
+	}
+}
+
 func TestStoreCredentials_CleansRawEntryWhenCanonicalLacksPEMEnrichment(t *testing.T) {
 	newKr, _ := withSeparateKeyrings(t)
 	keyPath := filepath.Join(t.TempDir(), "AuthKey.p8")
