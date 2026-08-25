@@ -617,16 +617,14 @@ Examples:
 
 			// A links.next URL already carries the query that produced it, and
 			// GetBuilds follows it verbatim, so these flags would be discarded.
-			if nextValue != "" {
-				if strings.TrimSpace(*betaReviewState) != "" {
-					return shared.UsageError("builds list: --next cannot be combined with --beta-review-state")
-				}
-				if strings.TrimSpace(*include) != "" {
-					return shared.UsageError("builds list: --next cannot be combined with --include")
-				}
-				if strings.TrimSpace(*sort) != "" {
-					return shared.UsageError("builds list: --next cannot be combined with --sort")
-				}
+			if err := shared.RejectNextFlagConflicts(
+				fs,
+				nextValue,
+				"builds list",
+				"beta-review-state", "include", "sort", "platform", "processing-state",
+				"version", "build-number", "limit", "exclude-expired", "not-expired",
+			); err != nil {
+				return err
 			}
 
 			betaReviewStateValues, err := normalizeBuildsListBetaReviewStates(*betaReviewState)
