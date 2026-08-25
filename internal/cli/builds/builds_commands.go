@@ -617,37 +617,14 @@ Examples:
 
 			// A links.next URL already carries the query that produced it, and
 			// GetBuilds follows it verbatim, so these flags would be discarded.
-			if nextValue != "" {
-				if strings.TrimSpace(*betaReviewState) != "" {
-					return shared.UsageError("builds list: --next cannot be combined with --beta-review-state")
-				}
-				if strings.TrimSpace(*include) != "" {
-					return shared.UsageError("builds list: --next cannot be combined with --include")
-				}
-				if strings.TrimSpace(*sort) != "" {
-					return shared.UsageError("builds list: --next cannot be combined with --sort")
-				}
-				if platformValue != "" {
-					return shared.UsageError("builds list: --next cannot be combined with --platform")
-				}
-				if len(processingStateValues) > 0 {
-					return shared.UsageError("builds list: --next cannot be combined with --processing-state")
-				}
-				if versionValue != "" {
-					return shared.UsageError("builds list: --next cannot be combined with --version")
-				}
-				if buildNumberValue != "" {
-					return shared.UsageError("builds list: --next cannot be combined with --build-number")
-				}
-				if *limit != 0 {
-					return shared.UsageError("builds list: --next cannot be combined with --limit")
-				}
-				if *excludeExpired {
-					return shared.UsageError("builds list: --next cannot be combined with --exclude-expired")
-				}
-				if *notExpired {
-					return shared.UsageError("builds list: --next cannot be combined with --not-expired")
-				}
+			if err := shared.RejectNextFlagConflicts(
+				fs,
+				nextValue,
+				"builds list",
+				"beta-review-state", "include", "sort", "platform", "processing-state",
+				"version", "build-number", "limit", "exclude-expired", "not-expired",
+			); err != nil {
+				return err
 			}
 
 			betaReviewStateValues, err := normalizeBuildsListBetaReviewStates(*betaReviewState)

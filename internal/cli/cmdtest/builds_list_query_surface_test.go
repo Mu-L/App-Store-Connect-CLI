@@ -311,6 +311,7 @@ func TestBuildsListRejectsQueryFlagsCombinedWithNext(t *testing.T) {
 		{name: "version", flag: "--version", args: []string{"--version", "1.2.3"}},
 		{name: "build number", flag: "--build-number", args: []string{"--build-number", "77"}},
 		{name: "limit", flag: "--limit", args: []string{"--limit", "10"}},
+		{name: "limit explicit zero", flag: "--limit", args: []string{"--limit", "0"}},
 		{name: "exclude expired", flag: "--exclude-expired", args: []string{"--exclude-expired"}},
 		{name: "not expired alias", flag: "--not-expired", args: []string{"--not-expired"}},
 	} {
