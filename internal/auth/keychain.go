@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -400,14 +401,8 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	}
 
 	if err := storeInKeychain(name, payload); err == nil {
-		if originalName != name {
-			if err := removeFromKeychain(originalName); err != nil && !errors.Is(err, keyring.ErrKeyNotFound) {
-				return fmt.Errorf("remove pre-normalized keychain credential %q: %w", originalName, err)
-			}
-			if err := removeFromLegacyKeychain(originalName); err != nil &&
-				!errors.Is(err, keyring.ErrKeyNotFound) && !isKeyringUnavailable(err) {
-				return fmt.Errorf("remove pre-normalized legacy keychain credential %q: %w", originalName, err)
-			}
+		if err := removePreNormalizedKeychainEntries(name, originalName); err != nil {
+			return err
 		}
 		// Successfully stored in keychain - remove matching config entry for security
 		if err := removeFromConfigIfPresent(name); err != nil && !errors.Is(err, config.ErrNotFound) {
@@ -420,6 +415,59 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	}
 
 	return storeInConfig(name, payload)
+}
+
+// removePreNormalizedKeychainEntries removes stored spellings whose trimmed
+// form equals the just-stored canonical profile name. Sweeping both keychains
+// on every successful store keeps canonical-name logins effective at clearing
+// orphaned pre-normalized entries, which RemoveCredentials cannot target
+// because it trims its argument.
+func removePreNormalizedKeychainEntries(normalizedName, originalName string) error {
+	variants := make(map[string]struct{})
+	if originalName != normalizedName {
+		variants[originalName] = struct{}{}
+	}
+	collectPreNormalizedKeychainNames(keyringOpener, normalizedName, variants)
+	collectPreNormalizedKeychainNames(legacyKeyringOpener, normalizedName, variants)
+
+	names := make([]string, 0, len(variants))
+	for variant := range variants {
+		names = append(names, variant)
+	}
+	sort.Strings(names)
+	for _, variant := range names {
+		if err := removeFromKeychain(variant); err != nil && !errors.Is(err, keyring.ErrKeyNotFound) {
+			return fmt.Errorf("remove pre-normalized keychain credential %q: %w", variant, err)
+		}
+		if err := removeFromLegacyKeychain(variant); err != nil &&
+			!errors.Is(err, keyring.ErrKeyNotFound) && !isKeyringUnavailable(err) {
+			return fmt.Errorf("remove pre-normalized legacy keychain credential %q: %w", variant, err)
+		}
+	}
+	return nil
+}
+
+// collectPreNormalizedKeychainNames gathers stored profile names that trim to
+// the canonical name. Enumeration is best-effort: failures leave the
+// deterministic originalName cleanup contract intact.
+func collectPreNormalizedKeychainNames(opener func() (keyring.Keyring, error), normalizedName string, variants map[string]struct{}) {
+	kr, err := opener()
+	if err != nil {
+		return
+	}
+	keys, err := kr.Keys()
+	if err != nil {
+		return
+	}
+	for _, key := range keys {
+		if !strings.HasPrefix(key, keyringItemPrefix) {
+			continue
+		}
+		name := strings.TrimPrefix(key, keyringItemPrefix)
+		if name != normalizedName && strings.TrimSpace(name) == normalizedName {
+			variants[name] = struct{}{}
+		}
+	}
 }
 
 func rejectNormalizedCredentialCollision(originalName, normalizedName string, incoming credentialPayload) error {

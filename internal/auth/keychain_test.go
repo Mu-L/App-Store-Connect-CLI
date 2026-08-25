@@ -1929,6 +1929,41 @@ func TestStoreCredentials_ReplacesCanonicalEntryWithValidPathAndInvalidEmbeddedK
 	}
 }
 
+func TestStoreCredentials_CanonicalNameLoginCleansOrphanedPaddedEntries(t *testing.T) {
+	newKr, legacyKr := withSeparateKeyrings(t)
+	storeCredentialInKeyring(t, newKr, "spaced", "CANONICAL", "ISSUER-CANONICAL", "/tmp/canonical.p8")
+	storeCredentialInKeyring(t, newKr, "  spaced  ", "RAW", "ISSUER-RAW", "/tmp/raw.p8")
+	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "RAW", "ISSUER-RAW", "/tmp/raw.p8")
+	storeCredentialInKeyring(t, legacyKr, "\tspaced ", "RAW-LEGACY", "ISSUER-RAW-LEGACY", "/tmp/raw-legacy.p8")
+
+	// Logging in with the canonical name is the advertised collision
+	// remediation, so it must also clear orphaned pre-normalized entries
+	// that RemoveCredentials cannot target.
+	if err := StoreCredentials("spaced", "KEY123", "ISS456", "/tmp/AuthKey.p8"); err != nil {
+		t.Fatalf("StoreCredentials() error: %v", err)
+	}
+	if _, err := newKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("raw credential error = %v, want ErrKeyNotFound", err)
+	}
+	if _, err := legacyKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("legacy raw credential error = %v, want ErrKeyNotFound", err)
+	}
+	if _, err := legacyKr.Get(keyringKey("\tspaced ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("legacy tabbed credential error = %v, want ErrKeyNotFound", err)
+	}
+	item, err := newKr.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("normalized credential error: %v", err)
+	}
+	var payload credentialPayload
+	if err := json.Unmarshal(item.Data, &payload); err != nil {
+		t.Fatalf("decode normalized credential: %v", err)
+	}
+	if payload.KeyID != "KEY123" {
+		t.Fatalf("normalized credential = %+v", payload)
+	}
+}
+
 func TestStoreCredentials_CleansRawEntryWhenCanonicalLacksPEMEnrichment(t *testing.T) {
 	newKr, _ := withSeparateKeyrings(t)
 	keyPath := filepath.Join(t.TempDir(), "AuthKey.p8")
