@@ -1654,8 +1654,11 @@ func TestStoreCredentials_RejectsDistinctNormalizedProfileCollisionBeforeMutatio
 	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "RAW", "ISSUER-RAW", "/tmp/raw.p8")
 
 	err := StoreCredentials("  spaced  ", "NEW", "ISSUER-NEW", "/tmp/new.p8")
-	if err == nil || !strings.Contains(err.Error(), "conflicts with existing normalized profile") {
-		t.Fatalf("StoreCredentials() error = %v, want normalized-profile collision", err)
+	wantErr := `credential profile name "  spaced  " conflicts with existing normalized profile "spaced"; ` +
+		`remove the existing profile with 'asc auth logout --name "spaced"' and retry, ` +
+		`or re-run 'asc auth login' with --name "spaced" to overwrite it`
+	if err == nil || err.Error() != wantErr {
+		t.Fatalf("StoreCredentials() error = %v, want %q", err, wantErr)
 	}
 
 	canonical, err := newKr.Get(keyringKey("spaced"))
