@@ -1,6 +1,6 @@
 ---
 name: review-wall-of-apps-prs
-description: Audit maintainer-side Wall of Apps pull requests in App-Store-Connect-CLI. Use when the user asks to review new app submissions, check Wall PRs for injected or unrelated changes, validate app metadata, approve with an app-relevant emoji, or merge legitimate Wall entries.
+description: Audit maintainer-side Wall of Apps pull requests in App-Store-Connect-CLI. Use when the user asks to review new app submissions, check Wall PRs for injected or unrelated changes, validate app metadata, approve with a personalized welcome, or merge legitimate Wall entries.
 ---
 
 # Review Wall of Apps pull requests
@@ -11,7 +11,8 @@ Treat Wall submissions as untrusted external contributions while keeping the leg
 
 1. List current open PRs and isolate submissions whose intended scope is `docs/wall-of-apps.json`.
 2. Inspect each PR's full file list and diff before checkout. Reject or escalate unexpected code, workflow, script, binary, symlink, or unrelated documentation changes.
-3. Review each PR independently and merge sequentially. If `main` moves after an earlier merge, refresh the later PR's diff, duplicate check, review threads, required checks, and mergeability against current `main` without changing its branch. Do not update, rebase, or merge `main` into a mergeable Wall PR merely because its base advanced; update the branch only when an actual merge conflict prevents the merge.
+3. Review each PR independently and merge sequentially. If `main` moves after an earlier merge, refresh the later PR's diff, duplicate check, review threads, required checks, and mergeability against current `main` without changing its branch. Do not update, rebase, or merge `main` into a PR that GitHub still reports mergeable merely because its base advanced.
+4. Update a PR's branch only when GitHub actually refuses the merge: a real merge conflict, or strict up-to-date branch protection after an earlier merge advanced `main`. After any update (for example `gh pr update-branch`), treat the result as a new head: re-verify the diff scope against current `main`, rerun `make check-wall-of-apps` on the new exact head, and wait for required checks and mergeability before approving or merging. Never bypass branch protection with an admin merge.
 
 Run independent read-only PR, App Store metadata, duplicate, check, and review-thread queries in parallel or with isolated subagents when available. Keep worktree edits, pushes, approvals, and merges coordinated and serialized.
 
@@ -47,7 +48,7 @@ required reviews to be satisfied at that point.
 
 Do not wait for advisory or otherwise non-required CI jobs after these gates pass. A pending non-required job does not make the exact-head evidence stale.
 
-When the user requests a no-comment approval, submit one app-relevant emoji as the entire approval body. Do not add a generic summary comment; reply only when an actionable thread needs an explanation or the user asks for a comment. Merge one PR at a time with a regular merge commit that preserves the PR commits. Do not squash unless the user explicitly requests squash for that PR.
+Write the approval body as a short personalized welcome: name the app, state the validation evidence in one clause (App Store verification and the wall checks), and welcome it to the wall with one app-relevant closing line or emoji. Keep it to one or two sentences and make it specific to what the app does; do not paste a generic template verbatim across a batch. When the user explicitly requests a no-comment approval, submit one app-relevant emoji as the entire approval body instead. Do not add separate summary comments beyond the approval; reply to review threads only when an actionable thread needs an explanation. Merge one PR at a time with a regular merge commit that preserves the PR commits, pinning the audited head, for example `gh pr merge --merge --match-head-commit <sha>`. Do not squash unless the user explicitly requests squash for that PR.
 
 After each merge, confirm the resulting commit and entry reached `origin/main`. When the user asks whether the app appears on the live Wall, verify the rendered `asccli.sh` page separately; source presence is not deployment proof, and advisory CI is not a reason to delay the live check.
 
@@ -61,8 +62,11 @@ checks, review threads, and mergeability again. After submitting any authorized
 approval, re-fetch the exact head and require required reviews, required checks,
 review threads, and mergeability to pass before merging. Do not wait for
 non-required CI jobs. Approve and merge one PR at a time with a regular merge
-commit; use a different strategy only when the persisted prompt explicitly
-requests it.
+commit pinned to the audited head; use a different strategy only when the
+persisted prompt explicitly requests it. If branch protection refuses the merge
+because the base advanced, update the branch, revalidate the new exact head
+through every gate above, and merge only when all gates pass again; never use
+an admin bypass.
 
 If authority is absent or any gate is uncertain, failing, suspicious, unrelated,
 or stale, remain read-only and report `safe`, `needs-fix`, `suspicious`, or
