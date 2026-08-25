@@ -78,7 +78,7 @@ func Run(args []string, versionInfo string) int {
 		} else if strings.HasPrefix(badFlagSyntax, "bad flag syntax:") {
 			fmt.Fprintf(os.Stderr, "Error: %s\nFor help:\n  asc --help\n", shared.SanitizeTerminal(badFlagSyntax))
 		} else {
-			printParseFailure(parseErr, parseOutput.String(), analysis, parseFailureHelpCommand(root, args, parseOutput.String(), parseOutput.owner))
+			printParseFailure(parseErr, parseOutput.String(), analysis, parseFailureHelpCommand(root, args, parseOutput.owner))
 		}
 		// Every non-help error returned by command-tree parsing is invalid usage,
 		// including NoExecError cases that do not write flag output.
@@ -434,123 +434,16 @@ func printParseFailure(parseErr error, parseOutput string, analysis invocationAn
 	}
 }
 
-func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOutput, parseOwner string) string {
+// parseFailureHelpCommand names the command whose help a parse failure should
+// point to. The scoped parse writers record which command's flag set produced
+// diagnostics during Parse; when nothing was written there is no diagnostic to
+// attribute, so the help target falls back to the deepest command named by the
+// invocation.
+func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOwner string) string {
 	if parseOwner != "" {
 		return parseOwner
 	}
-	flagName := parseFailureFlagName(parseOutput)
-	invalidValue, hasInvalidValue := parseFailureInvalidValue(parseOutput)
-	firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
-	missingArgument := strings.HasPrefix(firstLine, "flag needs an argument:")
-	command := root
-	path := []string{root.Name}
-	owner := ""
-	for index := 0; flagName != "" && index < len(args); {
-		token := args[index]
-		if subcommand := findDirectSubcommand(command, token); subcommand != nil {
-			command = subcommand
-			path = append(path, subcommand.Name)
-			index++
-			continue
-		}
-		trimmed := strings.TrimLeft(token, "-")
-		name, hasInlineValue := splitFlagToken(trimmed)
-		if name == flagName && command.FlagSet.Lookup(name) != nil {
-			currentOwner := strings.Join(path, " ")
-			if owner == "" {
-				owner = currentOwner
-			}
-			if hasInvalidValue {
-				providedValue := ""
-				if hasInlineValue {
-					_, providedValue, _ = strings.Cut(trimmed, "=")
-				} else if index+1 < len(args) {
-					providedValue = args[index+1]
-				}
-				if providedValue == invalidValue {
-					return currentOwner
-				}
-			} else if missingArgument && !hasInlineValue && index+1 >= len(args) {
-				return currentOwner
-			}
-		}
-		next, consumed := consumeFlagToken(command.FlagSet, token, args, index)
-		if !consumed {
-			break
-		}
-		index = next
-	}
-	if owner != "" {
-		return owner
-	}
 	return getCommandName(root, args)
-}
-
-func parseFailureFlagName(parseOutput string) string {
-	firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
-	markerIndex, marker := parseFailureMarker(firstLine)
-	if markerIndex == -1 {
-		return ""
-	}
-	remainder := firstLine[markerIndex+len(marker):]
-	name, _, _ := strings.Cut(remainder, ":")
-	return strings.TrimSpace(name)
-}
-
-func parseFailureInvalidValue(parseOutput string) (string, bool) {
-	firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
-	markerIndex, _ := parseFailureMarker(firstLine)
-	if markerIndex == -1 {
-		return "", false
-	}
-	return invalidValueFromDiagnosticPrefix(firstLine[:markerIndex])
-}
-
-func invalidValueFromDiagnosticPrefix(prefix string) (string, bool) {
-	prefix = strings.TrimSpace(prefix)
-	for _, diagnosticPrefix := range []string{"invalid boolean value ", "invalid value "} {
-		quotedValue, found := strings.CutPrefix(prefix, diagnosticPrefix)
-		if !found {
-			continue
-		}
-		value, err := strconv.Unquote(quotedValue)
-		return value, err == nil
-	}
-	return "", false
-}
-
-func parseFailureMarker(firstLine string) (int, string) {
-	if strings.HasPrefix(firstLine, "invalid boolean value ") || strings.HasPrefix(firstLine, "invalid value ") {
-		bestIndex := -1
-		bestMarker := ""
-		for _, marker := range []string{" for flag -", " for -"} {
-			searchFrom := 0
-			for searchFrom < len(firstLine) {
-				relativeIndex := strings.Index(firstLine[searchFrom:], marker)
-				if relativeIndex == -1 {
-					break
-				}
-				markerIndex := searchFrom + relativeIndex
-				if _, valid := invalidValueFromDiagnosticPrefix(firstLine[:markerIndex]); valid &&
-					(bestIndex == -1 || markerIndex < bestIndex) {
-					bestIndex = markerIndex
-					bestMarker = marker
-				}
-				searchFrom = markerIndex + len(marker)
-			}
-		}
-		return bestIndex, bestMarker
-	}
-
-	rightmostIndex := -1
-	rightmostMarker := ""
-	for _, marker := range []string{" for flag -", " for -", "argument: -"} {
-		if markerIndex := strings.LastIndex(firstLine, marker); markerIndex > rightmostIndex {
-			rightmostIndex = markerIndex
-			rightmostMarker = marker
-		}
-	}
-	return rightmostIndex, rightmostMarker
 }
 
 func isUnknownFlagParseFailure(parseErr error, parseOutput string) bool {
