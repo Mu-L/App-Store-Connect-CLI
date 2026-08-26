@@ -1962,6 +1962,103 @@ func TestStoreCredentials_NormalizedPreflightPreservesUnavailableKeyringFallback
 	}
 }
 
+func TestStoreCredentials_UnavailablePreflightDoesNotResumeKeychainMutation(t *testing.T) {
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "0")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
+	keyDir := t.TempDir()
+	existingPath := filepath.Join(keyDir, "Existing.p8")
+	writeECDSAPEM(t, existingPath, 0o600, true)
+	incomingPath := filepath.Join(keyDir, "Incoming.p8")
+	writeECDSAPEM(t, incomingPath, 0o600, true)
+
+	inner := keyring.NewArrayKeyring([]keyring.Item{})
+	storeCredentialInKeyring(t, inner, "spaced", "EXISTING", "EXISTING-ISSUER", existingPath)
+	storeCredentialInKeyring(t, inner, "  spaced  ", "CONFLICT", "CONFLICT-ISSUER", existingPath)
+	flaky := &transientKeysFailingKeyring{
+		inner:             inner,
+		remainingFailures: 1,
+		err:               keyring.ErrNoAvailImpl,
+	}
+	previousCurrent := keyringOpener
+	previousLegacy := legacyKeyringOpener
+	keyringOpener = func() (keyring.Keyring, error) { return flaky, nil }
+	legacyKeyringOpener = func() (keyring.Keyring, error) { return nil, keyring.ErrNoAvailImpl }
+	t.Cleanup(func() {
+		keyringOpener = previousCurrent
+		legacyKeyringOpener = previousLegacy
+	})
+
+	if err := StoreCredentials("  spaced  ", "INCOMING", "INCOMING-ISSUER", incomingPath); err != nil {
+		t.Fatalf("StoreCredentials() error: %v", err)
+	}
+	for _, name := range []string{"spaced", "  spaced  "} {
+		if _, err := inner.Get(keyringKey(name)); err != nil {
+			t.Fatalf("keychain credential %q should remain after unavailable preflight: %v", name, err)
+		}
+	}
+	item, err := inner.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("get canonical keychain credential: %v", err)
+	}
+	var stored credentialPayload
+	if err := json.Unmarshal(item.Data, &stored); err != nil {
+		t.Fatalf("decode canonical keychain credential: %v", err)
+	}
+	if stored.KeyID != "EXISTING" {
+		t.Fatalf("canonical keychain KeyID = %q, want EXISTING", stored.KeyID)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load() error: %v", err)
+	}
+	if len(cfg.Keys) != 1 || cfg.Keys[0].Name != "spaced" || cfg.Keys[0].KeyID != "INCOMING" {
+		t.Fatalf("fallback credentials = %+v", cfg.Keys)
+	}
+}
+
+func TestStoreCredentials_LegacyUnavailableDoesNotBypassCurrentKeychain(t *testing.T) {
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "0")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "config.json"))
+	keyDir := t.TempDir()
+	existingPath := filepath.Join(keyDir, "Existing.p8")
+	writeECDSAPEM(t, existingPath, 0o600, true)
+	incomingPath := filepath.Join(keyDir, "Incoming.p8")
+	writeECDSAPEM(t, incomingPath, 0o600, true)
+
+	current := keyring.NewArrayKeyring([]keyring.Item{})
+	storeCredentialInKeyring(t, current, "spaced", "EXISTING", "EXISTING-ISSUER", existingPath)
+	previousCurrent := keyringOpener
+	previousLegacy := legacyKeyringOpener
+	keyringOpener = func() (keyring.Keyring, error) { return current, nil }
+	legacyKeyringOpener = func() (keyring.Keyring, error) { return nil, keyring.ErrNoAvailImpl }
+	t.Cleanup(func() {
+		keyringOpener = previousCurrent
+		legacyKeyringOpener = previousLegacy
+	})
+
+	if err := StoreCredentials("spaced", "INCOMING", "INCOMING-ISSUER", incomingPath); err != nil {
+		t.Fatalf("StoreCredentials() error: %v", err)
+	}
+	item, err := current.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("get current keychain credential: %v", err)
+	}
+	var stored credentialPayload
+	if err := json.Unmarshal(item.Data, &stored); err != nil {
+		t.Fatalf("decode current keychain credential: %v", err)
+	}
+	if stored.KeyID != "INCOMING" {
+		t.Fatalf("current keychain KeyID = %q, want INCOMING", stored.KeyID)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load() error: %v", err)
+	}
+	if len(cfg.Keys) != 0 {
+		t.Fatalf("config credentials = %+v, want none", cfg.Keys)
+	}
+}
+
 func TestStoreCredentials_ReplacesMalformedPreNormalizedEntry(t *testing.T) {
 	newKr, _ := withSeparateKeyrings(t)
 	if err := newKr.Set(keyring.Item{Key: keyringKey("  spaced  "), Data: []byte("not-json")}); err != nil {
@@ -2551,6 +2648,112 @@ func TestRemoveCredentials_RemovesAllNormalizedSpellings(t *testing.T) {
 	}
 }
 
+func TestRemoveCredentials_PreservesCurrentWhenLegacyListingFails(t *testing.T) {
+	newKr, _ := withSeparateKeyrings(t)
+	storeCredentialInKeyring(t, newKr, "trim-key", "KEY123", "ISS456", "/tmp/AuthKey.p8")
+
+	previousLegacy := legacyKeyringOpener
+	legacyKeyringOpener = func() (keyring.Keyring, error) {
+		return failingKeyring{err: errors.New("legacy keyring locked")}, nil
+	}
+	t.Cleanup(func() { legacyKeyringOpener = previousLegacy })
+
+	err := RemoveCredentials("trim-key")
+	if err == nil || !strings.Contains(err.Error(), "legacy keyring locked") {
+		t.Fatalf("RemoveCredentials() error = %v, want legacy listing failure", err)
+	}
+	if _, err := newKr.Get(keyringKey("trim-key")); err != nil {
+		t.Fatalf("current credential should remain after legacy listing failure: %v", err)
+	}
+}
+
+func TestRemoveCredentials_UnavailableCurrentDoesNotMutateOtherStores(t *testing.T) {
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "0")
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("ASC_CONFIG_PATH", configPath)
+	current := keyring.NewArrayKeyring([]keyring.Item{})
+	legacy := keyring.NewArrayKeyring([]keyring.Item{})
+	storeCredentialInKeyring(t, current, "trim-key", "CURRENT", "CURRENT-ISSUER", "/tmp/Current.p8")
+	storeCredentialInKeyring(t, legacy, "trim-key", "LEGACY", "LEGACY-ISSUER", "/tmp/Legacy.p8")
+	if err := config.SaveAt(configPath, &config.Config{
+		DefaultKeyName: "trim-key",
+		Keys: []config.Credential{{
+			Name:           "trim-key",
+			KeyID:          "CONFIG",
+			IssuerID:       "CONFIG-ISSUER",
+			PrivateKeyPath: "/tmp/Config.p8",
+		}},
+	}); err != nil {
+		t.Fatalf("config.SaveAt() error: %v", err)
+	}
+
+	flakyCurrent := &transientKeysFailingKeyring{
+		inner:             current,
+		remainingFailures: 1,
+		err:               keyring.ErrNoAvailImpl,
+	}
+	previousCurrent := keyringOpener
+	previousLegacy := legacyKeyringOpener
+	keyringOpener = func() (keyring.Keyring, error) { return flakyCurrent, nil }
+	legacyKeyringOpener = func() (keyring.Keyring, error) { return legacy, nil }
+	t.Cleanup(func() {
+		keyringOpener = previousCurrent
+		legacyKeyringOpener = previousLegacy
+	})
+
+	err := RemoveCredentials("trim-key")
+	if err == nil || !isKeyringUnavailable(err) {
+		t.Fatalf("RemoveCredentials() error = %v, want keyring unavailable", err)
+	}
+	for source, kr := range map[string]keyring.Keyring{"current": current, "legacy": legacy} {
+		if _, err := kr.Get(keyringKey("trim-key")); err != nil {
+			t.Fatalf("%s credential should remain after unavailable preflight: %v", source, err)
+		}
+	}
+	cfg, err := config.LoadAt(configPath)
+	if err != nil {
+		t.Fatalf("config.LoadAt() error: %v", err)
+	}
+	if len(cfg.Keys) != 1 || cfg.Keys[0].KeyID != "CONFIG" || cfg.DefaultKeyName != "trim-key" {
+		t.Fatalf("config changed after unavailable preflight: %+v", cfg)
+	}
+}
+
+func TestRemoveCredentials_RestoresEarlierConfigWhenLaterPathFails(t *testing.T) {
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	overridePath := filepath.Join(t.TempDir(), "override", "config.json")
+	t.Setenv("ASC_CONFIG_PATH", overridePath)
+	if err := config.SaveAt(overridePath, &config.Config{
+		DefaultKeyName: "trim-key",
+		Keys: []config.Credential{{
+			Name:           "trim-key",
+			KeyID:          "CONFIG",
+			IssuerID:       "CONFIG-ISSUER",
+			PrivateKeyPath: "/tmp/Config.p8",
+		}},
+	}); err != nil {
+		t.Fatalf("config.SaveAt(override) error: %v", err)
+	}
+	globalPath := filepath.Join(homeDir, ".asc", "config.json")
+	if err := os.MkdirAll(globalPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll(global config path) error: %v", err)
+	}
+
+	err := RemoveCredentials("trim-key")
+	if err == nil {
+		t.Fatal("RemoveCredentials() error = nil, want later config path failure")
+	}
+	cfg, err := config.LoadAt(overridePath)
+	if err != nil {
+		t.Fatalf("config.LoadAt(override) error: %v", err)
+	}
+	if len(cfg.Keys) != 1 || cfg.Keys[0].KeyID != "CONFIG" || cfg.DefaultKeyName != "trim-key" {
+		t.Fatalf("override config changed after later path failure: %+v", cfg)
+	}
+}
+
 func TestRemoveCredentials_ClearsStoredKeychainMetadata(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	newKr, _ := withSeparateKeyrings(t)
@@ -2590,6 +2793,7 @@ func TestRemoveCredentials_MissingReturnsErr(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.json")
 	t.Setenv("ASC_CONFIG_PATH", configPath)
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
 
 	previous := keyringOpener
 	previousLegacy := legacyKeyringOpener
@@ -2805,6 +3009,29 @@ func (k *nthRemoveFailingKeyring) Remove(key string) error {
 	return k.inner.Remove(key)
 }
 func (k *nthRemoveFailingKeyring) Keys() ([]string, error) { return k.inner.Keys() }
+
+type transientKeysFailingKeyring struct {
+	inner             keyring.Keyring
+	remainingFailures int
+	err               error
+}
+
+func (k *transientKeysFailingKeyring) Get(key string) (keyring.Item, error) {
+	return k.inner.Get(key)
+}
+
+func (k *transientKeysFailingKeyring) GetMetadata(key string) (keyring.Metadata, error) {
+	return k.inner.GetMetadata(key)
+}
+func (k *transientKeysFailingKeyring) Set(item keyring.Item) error { return k.inner.Set(item) }
+func (k *transientKeysFailingKeyring) Remove(key string) error     { return k.inner.Remove(key) }
+func (k *transientKeysFailingKeyring) Keys() ([]string, error) {
+	if k.remainingFailures > 0 {
+		k.remainingFailures--
+		return nil, k.err
+	}
+	return k.inner.Keys()
+}
 
 func TestGetCredentialsWithSource_KeychainAccessDeniedReturnsSentinel(t *testing.T) {
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "")

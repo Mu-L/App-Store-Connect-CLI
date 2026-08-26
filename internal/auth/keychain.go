@@ -396,16 +396,23 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	if privateKeyPEM, err := loadPrivateKeyPEMForStorage(keyPath); err == nil && strings.TrimSpace(privateKeyPEM) != "" {
 		payload.PrivateKeyPEM = privateKeyPEM
 	}
-	if err := rejectNormalizedCredentialCollision(originalName, name); err != nil {
+	currentAvailable, legacyAvailable, err := rejectNormalizedCredentialCollision(originalName, name)
+	if err != nil {
 		return err
 	}
+	if !currentAvailable {
+		return storeInConfig(name, payload)
+	}
 	previousCanonical, previousCanonicalFound, err := currentKeychainItem(name)
-	if err != nil && !isKeyringUnavailable(err) {
+	if err != nil {
+		if isKeyringUnavailable(err) {
+			return storeInConfig(name, payload)
+		}
 		return err
 	}
 
 	if err := storeInKeychain(name, payload); err == nil {
-		if err := removePreNormalizedKeychainEntries(name); err != nil {
+		if err := removePreNormalizedKeychainEntries(name, legacyAvailable); err != nil {
 			if rollbackErr := restoreCurrentKeychainItem(name, previousCanonical, previousCanonicalFound); rollbackErr != nil {
 				return fmt.Errorf("%w; restore canonical credential: %w", err, rollbackErr)
 			}
@@ -464,32 +471,40 @@ type keychainItemSnapshot struct {
 // Collision preflight has already established that no distinct usable
 // credential will be discarded. If any removal fails, already-removed entries
 // are restored so callers can safely retry the normalization.
-func removePreNormalizedKeychainEntries(normalizedName string) error {
+func removePreNormalizedKeychainEntries(normalizedName string, includeLegacy bool) error {
 	current, err := preNormalizedKeychainItems(keyringOpener, normalizedName, "keychain")
 	if err != nil {
 		return err
 	}
-	legacy, err := preNormalizedKeychainItems(legacyKeyringOpener, normalizedName, "legacy keychain")
-	if err != nil {
-		return err
+	items := current
+	if includeLegacy {
+		legacy, err := preNormalizedKeychainItems(legacyKeyringOpener, normalizedName, "legacy keychain")
+		if err != nil {
+			return err
+		}
+		items = append(items, legacy...)
 	}
 
-	items := append(current, legacy...)
+	_, err = removeKeychainItems(items)
+	return err
+}
+
+func removeKeychainItems(items []keychainItemSnapshot) ([]keychainItemSnapshot, error) {
 	removed := make([]keychainItemSnapshot, 0, len(items))
 	for _, snapshot := range items {
 		if err := snapshot.store.Remove(snapshot.item.Key); err != nil {
 			if errors.Is(err, keyring.ErrKeyNotFound) {
 				continue
 			}
-			removeErr := fmt.Errorf("remove pre-normalized %s credentials: %w", snapshot.source, err)
+			removeErr := fmt.Errorf("remove %s credential %q: %w", snapshot.source, snapshot.item.Key, err)
 			if rollbackErr := restoreKeychainItems(removed); rollbackErr != nil {
-				return fmt.Errorf("%w; restore removed credentials: %w", removeErr, rollbackErr)
+				return removed, fmt.Errorf("%w; restore removed credentials: %w", removeErr, rollbackErr)
 			}
-			return removeErr
+			return nil, removeErr
 		}
 		removed = append(removed, snapshot)
 	}
-	return nil
+	return removed, nil
 }
 
 func preNormalizedKeychainItems(
@@ -497,19 +512,22 @@ func preNormalizedKeychainItems(
 	normalizedName string,
 	source string,
 ) ([]keychainItemSnapshot, error) {
+	return normalizedKeychainItems(opener, normalizedName, false, source)
+}
+
+func normalizedKeychainItems(
+	opener func() (keyring.Keyring, error),
+	normalizedName string,
+	includeCanonical bool,
+	source string,
+) ([]keychainItemSnapshot, error) {
 	kr, err := opener()
 	if err != nil {
-		if isKeyringUnavailable(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("list pre-normalized %s credentials: %w", source, err)
+		return nil, fmt.Errorf("list %s credentials: %w", source, err)
 	}
 	keys, err := kr.Keys()
 	if err != nil {
-		if isKeyringUnavailable(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("list pre-normalized %s credentials: %w", source, err)
+		return nil, fmt.Errorf("list %s credentials: %w", source, err)
 	}
 	sort.Strings(keys)
 
@@ -519,7 +537,7 @@ func preNormalizedKeychainItems(
 			continue
 		}
 		name := strings.TrimPrefix(key, keyringItemPrefix)
-		if name == normalizedName || strings.TrimSpace(name) != normalizedName {
+		if strings.TrimSpace(name) != normalizedName || (!includeCanonical && name == normalizedName) {
 			continue
 		}
 		item, err := kr.Get(key)
@@ -527,7 +545,7 @@ func preNormalizedKeychainItems(
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read pre-normalized %s credential %q: %w", source, name, err)
+			return nil, fmt.Errorf("read %s credential %q: %w", source, name, err)
 		}
 		items = append(items, keychainItemSnapshot{store: kr, item: item, source: source})
 	}
@@ -545,55 +563,10 @@ func restoreKeychainItems(items []keychainItemSnapshot) error {
 	return errors.Join(errs...)
 }
 
-func removeNormalizedKeychainEntries(
-	opener func() (keyring.Keyring, error),
-	normalizedName string,
-	includeCanonical bool,
-) (bool, error) {
-	kr, err := opener()
+func rejectNormalizedCredentialCollision(originalName, normalizedName string) (bool, bool, error) {
+	payloads, currentAvailable, legacyAvailable, err := normalizedCredentialPayloads(normalizedName)
 	if err != nil {
-		if isKeyringUnavailable(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	keys, err := kr.Keys()
-	if err != nil {
-		if isKeyringUnavailable(err) {
-			return false, nil
-		}
-		return false, err
-	}
-
-	names := make([]string, 0)
-	for _, key := range keys {
-		if !strings.HasPrefix(key, keyringItemPrefix) {
-			continue
-		}
-		name := strings.TrimPrefix(key, keyringItemPrefix)
-		if strings.TrimSpace(name) != normalizedName || (!includeCanonical && name == normalizedName) {
-			continue
-		}
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	removed := false
-	for _, name := range names {
-		if err := kr.Remove(keyringKey(name)); err != nil {
-			if errors.Is(err, keyring.ErrKeyNotFound) {
-				continue
-			}
-			return removed, err
-		}
-		removed = true
-	}
-	return removed, nil
-}
-
-func rejectNormalizedCredentialCollision(originalName, normalizedName string) error {
-	payloads, err := normalizedCredentialPayloads(normalizedName)
-	if err != nil {
-		return err
+		return false, false, err
 	}
 	names := make([]string, 0, len(payloads))
 	for name := range payloads {
@@ -601,7 +574,7 @@ func rejectNormalizedCredentialCollision(originalName, normalizedName string) er
 	}
 	sort.Strings(names)
 	if len(names) < 2 {
-		return nil
+		return currentAvailable, legacyAvailable, nil
 	}
 
 	first := payloads[names[0]]
@@ -609,7 +582,7 @@ func rejectNormalizedCredentialCollision(originalName, normalizedName string) er
 		if credentialPayloadsMatch(first, payloads[name]) {
 			continue
 		}
-		return fmt.Errorf(
+		return currentAvailable, legacyAvailable, fmt.Errorf(
 			"credential profile name %q conflicts with existing normalized profile %q; "+
 				"remove the existing profile with 'asc auth logout --name %q' and retry",
 			originalName,
@@ -617,38 +590,41 @@ func rejectNormalizedCredentialCollision(originalName, normalizedName string) er
 			normalizedName,
 		)
 	}
-	return nil
+	return currentAvailable, legacyAvailable, nil
 }
 
-func normalizedCredentialPayloads(normalizedName string) (map[string]credentialPayload, error) {
+func normalizedCredentialPayloads(normalizedName string) (map[string]credentialPayload, bool, bool, error) {
 	payloads := make(map[string]credentialPayload)
 	seen := make(map[string]struct{})
 
 	current, err := keyringOpener()
 	if err != nil {
 		if isKeyringUnavailable(err) {
-			return payloads, nil
+			return payloads, false, false, nil
 		}
-		return nil, err
+		return nil, false, false, err
 	}
 	if err := collectNormalizedCredentialPayloads(current, normalizedName, payloads, seen); err != nil {
 		if isKeyringUnavailable(err) {
-			return payloads, nil
+			return payloads, false, false, nil
 		}
-		return nil, err
+		return nil, false, false, err
 	}
 
 	legacy, err := legacyKeyringOpener()
 	if err != nil {
 		if isKeyringUnavailable(err) {
-			return payloads, nil
+			return payloads, true, false, nil
 		}
-		return nil, err
+		return nil, false, false, err
 	}
-	if err := collectNormalizedCredentialPayloads(legacy, normalizedName, payloads, seen); err != nil && !isKeyringUnavailable(err) {
-		return nil, err
+	if err := collectNormalizedCredentialPayloads(legacy, normalizedName, payloads, seen); err != nil {
+		if isKeyringUnavailable(err) {
+			return payloads, true, false, nil
+		}
+		return nil, false, false, err
 	}
-	return payloads, nil
+	return payloads, true, true, nil
 }
 
 func collectNormalizedCredentialPayloads(
@@ -1272,22 +1248,32 @@ func RemoveCredentials(name string) error {
 	if name == "" {
 		return fmt.Errorf("credential name is required")
 	}
-	removedCurrent, err := removeNormalizedKeychainEntries(keyringOpener, name, true)
-	if err != nil {
-		return err
-	}
-	removedLegacy, err := removeNormalizedKeychainEntries(legacyKeyringOpener, name, true)
-	if err != nil {
-		return err
+	removed := make([]keychainItemSnapshot, 0)
+	if !shouldBypassKeychain() {
+		current, err := normalizedKeychainItems(keyringOpener, name, true, "keychain")
+		if err != nil {
+			return err
+		}
+		legacy, err := normalizedKeychainItems(legacyKeyringOpener, name, true, "legacy keychain")
+		if err != nil {
+			return err
+		}
+		removed, err = removeKeychainItems(append(current, legacy...))
+		if err != nil {
+			return err
+		}
 	}
 
 	configErr := removeFromConfigIfPresent(name)
 	if configErr != nil &&
 		!errors.Is(configErr, config.ErrNotFound) &&
 		!errors.Is(configErr, keyring.ErrKeyNotFound) {
+		if rollbackErr := restoreKeychainItems(removed); rollbackErr != nil {
+			return fmt.Errorf("%w; restore removed credentials: %w", configErr, rollbackErr)
+		}
 		return configErr
 	}
-	if removedCurrent || removedLegacy || configErr == nil {
+	if len(removed) > 0 || configErr == nil {
 		return clearDefaultNameIf(name)
 	}
 	return configErr
@@ -1896,29 +1882,107 @@ func removeFromConfigIfPresent(name string) error {
 		return err
 	}
 
-	removed := false
+	type configRemoval struct {
+		path     string
+		original *config.Config
+		updated  *config.Config
+	}
+	removals := make([]configRemoval, 0, len(paths))
 	missingCredential := false
 	for _, path := range paths {
-		err := removeFromConfigAt(name, path)
-		switch {
-		case err == nil:
-			removed = true
-		case errors.Is(err, config.ErrNotFound):
+		cfg, err := config.LoadAt(path)
+		if errors.Is(err, config.ErrNotFound) {
 			continue
-		case errors.Is(err, keyring.ErrKeyNotFound):
+		}
+		if err != nil {
+			return err
+		}
+		updated := cloneConfigForCredentialRemoval(cfg)
+		if !removeCredentialFromConfig(updated, name) {
 			missingCredential = true
-		default:
+			continue
+		}
+		removals = append(removals, configRemoval{path: path, original: cfg, updated: updated})
+	}
+
+	for index, removal := range removals {
+		if err := config.SaveAt(removal.path, removal.updated); err != nil {
+			rollbackErrors := make([]error, 0, index+1)
+			for rollbackIndex := index; rollbackIndex >= 0; rollbackIndex-- {
+				prior := removals[rollbackIndex]
+				if rollbackErr := config.SaveAt(prior.path, prior.original); rollbackErr != nil {
+					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore config %q: %w", prior.path, rollbackErr))
+				}
+			}
+			if rollbackErr := errors.Join(rollbackErrors...); rollbackErr != nil {
+				return fmt.Errorf("%w; restore earlier config credentials: %w", err, rollbackErr)
+			}
 			return err
 		}
 	}
 
-	if removed {
+	if len(removals) > 0 {
 		return nil
 	}
 	if missingCredential {
 		return keyring.ErrKeyNotFound
 	}
 	return nil
+}
+
+func cloneConfigForCredentialRemoval(cfg *config.Config) *config.Config {
+	cloned := *cfg
+	cloned.Keys = append([]config.Credential(nil), cfg.Keys...)
+	cloned.KeychainMetadata = append([]config.KeychainMetadata(nil), cfg.KeychainMetadata...)
+	return &cloned
+}
+
+func removeCredentialFromConfig(cfg *config.Config, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		cfg.KeyID = ""
+		cfg.IssuerID = ""
+		cfg.PrivateKeyPath = ""
+		cfg.KeyType = ""
+		cfg.DefaultKeyName = ""
+		cfg.Keys = nil
+		cfg.KeychainMetadata = nil
+		return true
+	}
+
+	removed := false
+	if len(cfg.Keys) > 0 {
+		filtered := cfg.Keys[:0]
+		for _, cred := range cfg.Keys {
+			if strings.TrimSpace(cred.Name) == name {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, cred)
+		}
+		cfg.Keys = filtered
+	}
+	if len(cfg.KeychainMetadata) > 0 {
+		filteredMetadata := cfg.KeychainMetadata[:0]
+		for _, entry := range cfg.KeychainMetadata {
+			if strings.TrimSpace(entry.Name) == name {
+				removed = true
+				continue
+			}
+			filteredMetadata = append(filteredMetadata, entry)
+		}
+		cfg.KeychainMetadata = filteredMetadata
+	}
+
+	if strings.TrimSpace(cfg.DefaultKeyName) == name {
+		cfg.KeyID = ""
+		cfg.IssuerID = ""
+		cfg.PrivateKeyPath = ""
+		cfg.KeyType = ""
+		cfg.DefaultKeyName = ""
+		removed = true
+	}
+	return removed
 }
 
 func removeFromKeychain(name string) error {
@@ -2321,61 +2385,6 @@ func clearDefaultNameIf(name string) error {
 		return config.Save(cfg)
 	}
 	return nil
-}
-
-func removeFromConfigAt(name, path string) error {
-	cfg, err := config.LoadAt(path)
-	if err != nil {
-		return err
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		cfg.KeyID = ""
-		cfg.IssuerID = ""
-		cfg.PrivateKeyPath = ""
-		cfg.KeyType = ""
-		cfg.DefaultKeyName = ""
-		cfg.Keys = nil
-		cfg.KeychainMetadata = nil
-		return config.SaveAt(path, cfg)
-	}
-
-	removed := false
-	if len(cfg.Keys) > 0 {
-		filtered := cfg.Keys[:0]
-		for _, cred := range cfg.Keys {
-			if strings.TrimSpace(cred.Name) == name {
-				removed = true
-				continue
-			}
-			filtered = append(filtered, cred)
-		}
-		cfg.Keys = filtered
-	}
-	if len(cfg.KeychainMetadata) > 0 {
-		filteredMetadata := cfg.KeychainMetadata[:0]
-		for _, entry := range cfg.KeychainMetadata {
-			if strings.TrimSpace(entry.Name) == name {
-				removed = true
-				continue
-			}
-			filteredMetadata = append(filteredMetadata, entry)
-		}
-		cfg.KeychainMetadata = filteredMetadata
-	}
-
-	if strings.TrimSpace(cfg.DefaultKeyName) == name {
-		cfg.KeyID = ""
-		cfg.IssuerID = ""
-		cfg.PrivateKeyPath = ""
-		cfg.KeyType = ""
-		cfg.DefaultKeyName = ""
-		removed = true
-	}
-	if !removed {
-		return keyring.ErrKeyNotFound
-	}
-	return config.SaveAt(path, cfg)
 }
 
 func configCleanupPaths() ([]string, error) {
