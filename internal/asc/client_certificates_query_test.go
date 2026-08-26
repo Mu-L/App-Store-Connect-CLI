@@ -2,10 +2,48 @@ package asc
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+func TestCertificatesResponsePreservesSparseAttributeFields(t *testing.T) {
+	input := []byte(`{"data":[{"type":"certificates","id":"cert-1","attributes":{"displayName":"Example","serialNumber":""}}],"links":{}}`)
+	var response CertificatesResponse
+	if err := json.Unmarshal(input, &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	output, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var envelope struct {
+		Data []struct {
+			Attributes map[string]json.RawMessage `json:"attributes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(output, &envelope); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if len(envelope.Data) != 1 {
+		t.Fatalf("data count = %d, want 1", len(envelope.Data))
+	}
+	attributes := envelope.Data[0].Attributes
+	if len(attributes) != 2 {
+		t.Fatalf("attributes = %s, want only displayName and serialNumber", output)
+	}
+	if string(attributes["displayName"]) != `"Example"` || string(attributes["serialNumber"]) != `""` {
+		t.Fatalf("attributes = %s", output)
+	}
+	if _, present := attributes["name"]; present {
+		t.Fatalf("output invented name: %s", output)
+	}
+	if _, present := attributes["certificateType"]; present {
+		t.Fatalf("output invented certificateType: %s", output)
+	}
+}
 
 func TestGetCertificates_SendsQuerySurface(t *testing.T) {
 	response := jsonResponse(http.StatusOK, `{"data":[]}`)

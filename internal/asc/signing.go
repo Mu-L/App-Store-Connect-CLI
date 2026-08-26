@@ -1,5 +1,10 @@
 package asc
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 // BundleIDPlatform represents the platform of a bundle ID or registered device.
 type BundleIDPlatform string
 
@@ -143,6 +148,74 @@ type CertificateAttributes struct {
 	ExpirationDate     string `json:"expirationDate,omitempty"`
 	CertificateContent string `json:"certificateContent,omitempty"`
 	Activated          *bool  `json:"activated,omitempty"`
+
+	attributesDecoded      bool
+	attributesNull         bool
+	nameJSON               json.RawMessage
+	certificateTypeJSON    json.RawMessage
+	displayNameJSON        json.RawMessage
+	serialNumberJSON       json.RawMessage
+	platformJSON           json.RawMessage
+	expirationDateJSON     json.RawMessage
+	certificateContentJSON json.RawMessage
+	activatedJSON          json.RawMessage
+}
+
+// UnmarshalJSON retains sparse field presence so list responses can be
+// rendered without filling omitted certificate fields with zero values.
+func (a *CertificateAttributes) UnmarshalJSON(data []byte) error {
+	type alias CertificateAttributes
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*a = CertificateAttributes(decoded)
+	a.attributesDecoded = true
+	a.attributesNull = bytes.Equal(bytes.TrimSpace(data), []byte("null"))
+	a.nameJSON = fields["name"]
+	a.certificateTypeJSON = fields["certificateType"]
+	a.displayNameJSON = fields["displayName"]
+	a.serialNumberJSON = fields["serialNumber"]
+	a.platformJSON = fields["platform"]
+	a.expirationDateJSON = fields["expirationDate"]
+	a.certificateContentJSON = fields["certificateContent"]
+	a.activatedJSON = fields["activated"]
+	return nil
+}
+
+// MarshalJSON preserves the fields Apple supplied for decoded sparse
+// responses while keeping ordinary struct construction unchanged.
+func (a CertificateAttributes) MarshalJSON() ([]byte, error) {
+	if !a.attributesDecoded {
+		type alias CertificateAttributes
+		return json.Marshal(alias(a))
+	}
+	if a.attributesNull {
+		return []byte("null"), nil
+	}
+	return json.Marshal(struct {
+		Name               json.RawMessage `json:"name,omitempty"`
+		CertificateType    json.RawMessage `json:"certificateType,omitempty"`
+		DisplayName        json.RawMessage `json:"displayName,omitempty"`
+		SerialNumber       json.RawMessage `json:"serialNumber,omitempty"`
+		Platform           json.RawMessage `json:"platform,omitempty"`
+		ExpirationDate     json.RawMessage `json:"expirationDate,omitempty"`
+		CertificateContent json.RawMessage `json:"certificateContent,omitempty"`
+		Activated          json.RawMessage `json:"activated,omitempty"`
+	}{
+		Name:               a.nameJSON,
+		CertificateType:    a.certificateTypeJSON,
+		DisplayName:        a.displayNameJSON,
+		SerialNumber:       a.serialNumberJSON,
+		Platform:           a.platformJSON,
+		ExpirationDate:     a.expirationDateJSON,
+		CertificateContent: a.certificateContentJSON,
+		Activated:          a.activatedJSON,
+	})
 }
 
 // CertificateCreateAttributes describes attributes for creating a certificate.
