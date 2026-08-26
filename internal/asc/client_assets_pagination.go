@@ -10,10 +10,14 @@ import (
 // these endpoints return full resources and accept their own links.next URLs.
 type appScreenshotSetsQuery struct {
 	listQuery
+	limitSet       bool
+	requestContext RequestContextFunc
 }
 
 type appScreenshotsQuery struct {
 	listQuery
+	limitSet       bool
+	requestContext RequestContextFunc
 }
 
 // AppScreenshotSetsOption configures screenshot-set collection requests.
@@ -33,9 +37,8 @@ func buildAppScreenshotsQuery(query *appScreenshotsQuery) string {
 // WithAppScreenshotSetsLimit sets the maximum number of screenshot sets to return.
 func WithAppScreenshotSetsLimit(limit int) AppScreenshotSetsOption {
 	return func(query *appScreenshotSetsQuery) {
-		if limit > 0 {
-			query.limit = limit
-		}
+		query.limit = limit
+		query.limitSet = true
 	}
 }
 
@@ -48,12 +51,19 @@ func WithAppScreenshotSetsNextURL(next string) AppScreenshotSetsOption {
 	}
 }
 
+// WithAppScreenshotSetsRequestContext creates a fresh context for each page
+// fetched by GetAllAppScreenshotSets.
+func WithAppScreenshotSetsRequestContext(factory RequestContextFunc) AppScreenshotSetsOption {
+	return func(query *appScreenshotSetsQuery) {
+		query.requestContext = factory
+	}
+}
+
 // WithAppScreenshotsLimit sets the maximum number of screenshots to return.
 func WithAppScreenshotsLimit(limit int) AppScreenshotsOption {
 	return func(query *appScreenshotsQuery) {
-		if limit > 0 {
-			query.limit = limit
-		}
+		query.limit = limit
+		query.limitSet = true
 	}
 }
 
@@ -66,15 +76,58 @@ func WithAppScreenshotsNextURL(next string) AppScreenshotsOption {
 	}
 }
 
+// WithAppScreenshotsRequestContext creates a fresh context for each page
+// fetched by GetAllAppScreenshots.
+func WithAppScreenshotsRequestContext(factory RequestContextFunc) AppScreenshotsOption {
+	return func(query *appScreenshotsQuery) {
+		query.requestContext = factory
+	}
+}
+
+// WithAppStoreVersionLocalizationScreenshotSetsRequestContext creates a fresh
+// context for each page fetched by
+// GetAllAppStoreVersionLocalizationScreenshotSets.
+func WithAppStoreVersionLocalizationScreenshotSetsRequestContext(factory RequestContextFunc) AppStoreVersionLocalizationScreenshotSetsOption {
+	return func(query *appStoreVersionLocalizationScreenshotSetsQuery) {
+		query.requestContext = factory
+	}
+}
+
+// WithAppCustomProductPageLocalizationScreenshotSetsRequestContext creates a
+// fresh context for each page fetched by
+// GetAllAppCustomProductPageLocalizationScreenshotSets.
+func WithAppCustomProductPageLocalizationScreenshotSetsRequestContext(factory RequestContextFunc) AppCustomProductPageLocalizationScreenshotSetsOption {
+	return func(query *appCustomProductPageLocalizationScreenshotSetsQuery) {
+		query.requestContext = factory
+	}
+}
+
+// WithAppStoreVersionExperimentTreatmentLocalizationScreenshotSetsRequestContext creates a fresh
+// context for each page fetched by
+// GetAllAppStoreVersionExperimentTreatmentLocalizationScreenshotSets.
+func WithAppStoreVersionExperimentTreatmentLocalizationScreenshotSetsRequestContext(factory RequestContextFunc) AppStoreVersionExperimentTreatmentLocalizationScreenshotSetsOption {
+	return func(query *appStoreVersionExperimentTreatmentLocalizationScreenshotSetsQuery) {
+		query.requestContext = factory
+	}
+}
+
 // GetAllAppScreenshotSets retrieves every screenshot set using automatic pagination.
 func (c *Client) GetAllAppScreenshotSets(ctx context.Context, localizationID string, opts ...AppScreenshotSetsOption) (*AppScreenshotSetsResponse, error) {
-	firstPage, err := c.GetAppScreenshotSets(ctx, localizationID, opts...)
+	query := &appScreenshotSetsQuery{}
+	for _, opt := range opts {
+		opt(query)
+	}
+	requestCtx, cancel := requestContextFor(ctx, query.requestContext)
+	firstPage, err := c.GetAppScreenshotSets(requestCtx, localizationID, opts...)
+	cancel()
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := paginateAssetResponse(ctx, firstPage, func(ctx context.Context, nextURL string) (PaginatedResponse, error) {
-		return c.GetAppScreenshotSets(ctx, "", WithAppScreenshotSetsNextURL(nextURL))
+	result, err := paginateAssetResponse(ctx, firstPage, func(parentCtx context.Context, nextURL string) (PaginatedResponse, error) {
+		nextCtx, nextCancel := requestContextFor(parentCtx, query.requestContext)
+		defer nextCancel()
+		return c.GetAppScreenshotSets(nextCtx, "", WithAppScreenshotSetsNextURL(nextURL))
 	})
 	if err != nil {
 		return nil, err
@@ -84,13 +137,21 @@ func (c *Client) GetAllAppScreenshotSets(ctx context.Context, localizationID str
 
 // GetAllAppScreenshots retrieves every screenshot for a set using automatic pagination.
 func (c *Client) GetAllAppScreenshots(ctx context.Context, setID string, opts ...AppScreenshotsOption) (*AppScreenshotsResponse, error) {
-	firstPage, err := c.GetAppScreenshots(ctx, setID, opts...)
+	query := &appScreenshotsQuery{}
+	for _, opt := range opts {
+		opt(query)
+	}
+	requestCtx, cancel := requestContextFor(ctx, query.requestContext)
+	firstPage, err := c.GetAppScreenshots(requestCtx, setID, opts...)
+	cancel()
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := paginateAssetResponse(ctx, firstPage, func(ctx context.Context, nextURL string) (PaginatedResponse, error) {
-		return c.GetAppScreenshots(ctx, "", WithAppScreenshotsNextURL(nextURL))
+	result, err := paginateAssetResponse(ctx, firstPage, func(parentCtx context.Context, nextURL string) (PaginatedResponse, error) {
+		nextCtx, nextCancel := requestContextFor(parentCtx, query.requestContext)
+		defer nextCancel()
+		return c.GetAppScreenshots(nextCtx, "", WithAppScreenshotsNextURL(nextURL))
 	})
 	if err != nil {
 		return nil, err
@@ -115,13 +176,21 @@ func paginateAssetResponse[T any](ctx context.Context, firstPage *Response[T], f
 // GetAllAppStoreVersionLocalizationScreenshotSets retrieves every screenshot
 // set for an App Store version localization.
 func (c *Client) GetAllAppStoreVersionLocalizationScreenshotSets(ctx context.Context, localizationID string, opts ...AppStoreVersionLocalizationScreenshotSetsOption) (*AppScreenshotSetsResponse, error) {
-	firstPage, err := c.GetAppStoreVersionLocalizationScreenshotSets(ctx, localizationID, opts...)
+	query := &appStoreVersionLocalizationScreenshotSetsQuery{}
+	for _, opt := range opts {
+		opt(query)
+	}
+	requestCtx, cancel := requestContextFor(ctx, query.requestContext)
+	firstPage, err := c.GetAppStoreVersionLocalizationScreenshotSets(requestCtx, localizationID, opts...)
+	cancel()
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := paginateAssetResponse(ctx, firstPage, func(ctx context.Context, nextURL string) (PaginatedResponse, error) {
-		return c.GetAppStoreVersionLocalizationScreenshotSets(ctx, "", WithAppStoreVersionLocalizationScreenshotSetsNextURL(nextURL))
+	result, err := paginateAssetResponse(ctx, firstPage, func(parentCtx context.Context, nextURL string) (PaginatedResponse, error) {
+		nextCtx, nextCancel := requestContextFor(parentCtx, query.requestContext)
+		defer nextCancel()
+		return c.GetAppStoreVersionLocalizationScreenshotSets(nextCtx, "", WithAppStoreVersionLocalizationScreenshotSetsNextURL(nextURL))
 	})
 	if err != nil {
 		return nil, err
@@ -132,13 +201,21 @@ func (c *Client) GetAllAppStoreVersionLocalizationScreenshotSets(ctx context.Con
 // GetAllAppCustomProductPageLocalizationScreenshotSets retrieves every
 // screenshot set for a custom product page localization.
 func (c *Client) GetAllAppCustomProductPageLocalizationScreenshotSets(ctx context.Context, localizationID string, opts ...AppCustomProductPageLocalizationScreenshotSetsOption) (*AppScreenshotSetsResponse, error) {
-	firstPage, err := c.GetAppCustomProductPageLocalizationScreenshotSets(ctx, localizationID, opts...)
+	query := &appCustomProductPageLocalizationScreenshotSetsQuery{}
+	for _, opt := range opts {
+		opt(query)
+	}
+	requestCtx, cancel := requestContextFor(ctx, query.requestContext)
+	firstPage, err := c.GetAppCustomProductPageLocalizationScreenshotSets(requestCtx, localizationID, opts...)
+	cancel()
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := paginateAssetResponse(ctx, firstPage, func(ctx context.Context, nextURL string) (PaginatedResponse, error) {
-		return c.GetAppCustomProductPageLocalizationScreenshotSets(ctx, "", WithAppCustomProductPageLocalizationScreenshotSetsNextURL(nextURL))
+	result, err := paginateAssetResponse(ctx, firstPage, func(parentCtx context.Context, nextURL string) (PaginatedResponse, error) {
+		nextCtx, nextCancel := requestContextFor(parentCtx, query.requestContext)
+		defer nextCancel()
+		return c.GetAppCustomProductPageLocalizationScreenshotSets(nextCtx, "", WithAppCustomProductPageLocalizationScreenshotSetsNextURL(nextURL))
 	})
 	if err != nil {
 		return nil, err
@@ -149,13 +226,21 @@ func (c *Client) GetAllAppCustomProductPageLocalizationScreenshotSets(ctx contex
 // GetAllAppStoreVersionExperimentTreatmentLocalizationScreenshotSets retrieves
 // every screenshot set for an experiment treatment localization.
 func (c *Client) GetAllAppStoreVersionExperimentTreatmentLocalizationScreenshotSets(ctx context.Context, localizationID string, opts ...AppStoreVersionExperimentTreatmentLocalizationScreenshotSetsOption) (*AppScreenshotSetsResponse, error) {
-	firstPage, err := c.GetAppStoreVersionExperimentTreatmentLocalizationScreenshotSets(ctx, localizationID, opts...)
+	query := &appStoreVersionExperimentTreatmentLocalizationScreenshotSetsQuery{}
+	for _, opt := range opts {
+		opt(query)
+	}
+	requestCtx, cancel := requestContextFor(ctx, query.requestContext)
+	firstPage, err := c.GetAppStoreVersionExperimentTreatmentLocalizationScreenshotSets(requestCtx, localizationID, opts...)
+	cancel()
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := paginateAssetResponse(ctx, firstPage, func(ctx context.Context, nextURL string) (PaginatedResponse, error) {
-		return c.GetAppStoreVersionExperimentTreatmentLocalizationScreenshotSets(ctx, "", WithAppStoreVersionExperimentTreatmentLocalizationScreenshotSetsNextURL(nextURL))
+	result, err := paginateAssetResponse(ctx, firstPage, func(parentCtx context.Context, nextURL string) (PaginatedResponse, error) {
+		nextCtx, nextCancel := requestContextFor(parentCtx, query.requestContext)
+		defer nextCancel()
+		return c.GetAppStoreVersionExperimentTreatmentLocalizationScreenshotSets(nextCtx, "", WithAppStoreVersionExperimentTreatmentLocalizationScreenshotSetsNextURL(nextURL))
 	})
 	if err != nil {
 		return nil, err

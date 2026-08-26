@@ -3,8 +3,10 @@ package asc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestGetAllAppScreenshotSetsFollowsNextURL(t *testing.T) {
@@ -91,5 +93,88 @@ func TestGetAllAppScreenshotsRejectsRepeatedNextURL(t *testing.T) {
 	_, err := client.GetAllAppScreenshots(context.Background(), "set-1")
 	if !errors.Is(err, ErrRepeatedPaginationURL) {
 		t.Fatalf("error = %v, want ErrRepeatedPaginationURL", err)
+	}
+}
+
+func TestGetAllAppScreenshotsUsesFreshRequestTimeoutPerPage(t *testing.T) {
+	const next = BaseURL + "/v1/appScreenshotSets/set-1/appScreenshots?cursor=slow-2"
+	requestCount := 0
+	requestContextCalls := 0
+	requestParents := make([]context.Context, 0, 2)
+	client := newTestClient(
+		t, func(req *http.Request) {
+			requestCount++
+			timer := time.NewTimer(60 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-req.Context().Done():
+				t.Fatalf("request %d used an expired request context: %v", requestCount, req.Context().Err())
+			}
+		},
+		jsonResponse(http.StatusOK, `{"data":[{"type":"appScreenshots","id":"shot-1"}],"links":{"next":"`+next+`"}}`),
+		jsonResponse(http.StatusOK, `{"data":[{"type":"appScreenshots","id":"shot-2"}],"links":{}}`),
+	)
+
+	parent, cancelParent := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancelParent()
+	requestContext := func(parent context.Context) (context.Context, context.CancelFunc) {
+		requestContextCalls++
+		requestParents = append(requestParents, parent)
+		return context.WithTimeout(parent, 100*time.Millisecond)
+	}
+
+	response, err := client.GetAllAppScreenshots(parent, "set-1", WithAppScreenshotsRequestContext(requestContext))
+	if err != nil {
+		t.Fatalf("GetAllAppScreenshots() error: %v", err)
+	}
+	if requestCount != 2 || requestContextCalls != 2 || len(response.Data) != 2 {
+		t.Fatalf("request count/context calls/data = %d/%d/%d, want 2/2/2", requestCount, requestContextCalls, len(response.Data))
+	}
+	for index, requestParent := range requestParents {
+		if requestParent != parent {
+			t.Fatalf("request %d factory parent = %v, want operation parent", index+1, requestParent)
+		}
+	}
+}
+
+func TestScreenshotCollectionRejectsNonPositiveLimitsBeforeRequest(t *testing.T) {
+	tests := []struct {
+		name    string
+		request func(*Client, int) error
+		wantErr string
+	}{
+		{
+			name: "screenshot sets",
+			request: func(client *Client, limit int) error {
+				_, err := client.GetAppScreenshotSets(context.Background(), "loc-1", WithAppScreenshotSetsLimit(limit))
+				return err
+			},
+			wantErr: "appScreenshotSets: limit must be greater than zero",
+		},
+		{
+			name: "screenshots",
+			request: func(client *Client, limit int) error {
+				_, err := client.GetAppScreenshots(context.Background(), "set-1", WithAppScreenshotsLimit(limit))
+				return err
+			},
+			wantErr: "appScreenshots: limit must be greater than zero",
+		},
+	}
+
+	for _, test := range tests {
+		for _, limit := range []int{0, -1} {
+			t.Run(fmt.Sprintf("%s/%d", test.name, limit), func(t *testing.T) {
+				requestCount := 0
+				client := newTestClient(t, func(*http.Request) { requestCount++ }, jsonResponse(http.StatusOK, `{"data":[]}`))
+				err := test.request(client, limit)
+				if err == nil || err.Error() != test.wantErr {
+					t.Fatalf("error = %v, want %q", err, test.wantErr)
+				}
+				if requestCount != 0 {
+					t.Fatalf("request count = %d, want 0", requestCount)
+				}
+			})
+		}
 	}
 }

@@ -100,6 +100,7 @@ type appCustomProductPageLocalizationPreviewSetsQuery struct {
 
 type appCustomProductPageLocalizationScreenshotSetsQuery struct {
 	listQuery
+	requestContext RequestContextFunc
 }
 
 type appStoreVersionLocalizationPreviewSetsQuery struct {
@@ -108,6 +109,7 @@ type appStoreVersionLocalizationPreviewSetsQuery struct {
 
 type appStoreVersionLocalizationScreenshotSetsQuery struct {
 	listQuery
+	requestContext RequestContextFunc
 }
 
 type appStoreVersionExperimentsQuery struct {
@@ -134,6 +136,7 @@ type appStoreVersionExperimentTreatmentLocalizationPreviewSetsQuery struct {
 
 type appStoreVersionExperimentTreatmentLocalizationScreenshotSetsQuery struct {
 	listQuery
+	requestContext RequestContextFunc
 }
 
 type endUserLicenseAgreementTerritoriesQuery struct {
