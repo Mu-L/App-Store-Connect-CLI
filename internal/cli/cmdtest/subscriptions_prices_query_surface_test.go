@@ -142,6 +142,31 @@ func TestSubscriptionsPricingPricesListSendsQueryControls(t *testing.T) {
 	}
 }
 
+func TestSubscriptionsPricingPricesListPreservesExplicitFalseFields(t *testing.T) {
+	captured := subscriptionPricesListQuerySurfaceStub(t)
+	captured.response = func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"type":"subscriptionPrices","id":"price-1","attributes":{"preserved":false}}],"links":{"next":""}}`)
+	}
+
+	stdout, stderr, err := runSubscriptionPricesListQuerySurface(
+		t,
+		"subscriptions", "pricing", "prices", "list",
+		"--subscription-id", "8000000001",
+		"--fields", "preserved",
+		"--output", "json",
+	)
+	if err != nil {
+		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if !strings.Contains(stdout, `"preserved":false`) {
+		t.Fatalf("expected explicit false preserved field in output, got %q", stdout)
+	}
+}
+
 func TestSubscriptionsPricingPricesListPaginatePreservesQueryControls(t *testing.T) {
 	captured := subscriptionPricesListQuerySurfaceStub(t)
 	captured.response = func(w http.ResponseWriter, req *http.Request) {
