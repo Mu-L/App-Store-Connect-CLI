@@ -535,13 +535,29 @@ List current prices for a subscription.
 ```bash  theme={null}
 asc subscriptions pricing prices list --subscription-id "SUB_ID"
 asc subscriptions pricing prices list --subscription-id "SUB_ID" --plan-type MONTHLY
+asc subscriptions pricing prices list --subscription-id "SUB_ID" --price-point-id "PRICE_POINT_ID"
+asc subscriptions pricing prices list --subscription-id "SUB_ID" \
+  --include territory,subscriptionPricePoint \
+  --fields startDate,preserved \
+  --territory-fields currency \
+  --price-point-fields customerPrice,proceeds
 ```
 
 **Optional Flags:**
 
 * `--plan-type` - Filter by `MONTHLY` or `UPFRONT` billing plan prices
+* `--territory` - Filter by a single territory
+* `--price-point-id` - Filter by subscription price point IDs (comma-separated)
+* `--fields` - Sparse fields for returned subscription prices
+* `--territory-fields` - Sparse fields for included territories (`currency`)
+* `--price-point-fields` - Sparse fields for included subscription price points
+* `--include` - Include `territory` and/or `subscriptionPricePoint`
 * `--limit` - Results per page (1-200)
 * `--paginate` - Fetch all pages
+
+The `--resolved` form keeps its fixed effective-price projection and accepts
+only its existing `--plan-type` and `--territory` filters. It cannot be
+combined with `--price-point-id`, sparse-field flags, or `--include`.
 
 ### Set Price
 
