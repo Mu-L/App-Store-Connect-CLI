@@ -69,7 +69,9 @@ func UploadAssetFromFile(ctx context.Context, file *os.File, fileSize int64, ope
 		if op.Offset+op.Length > fileSize {
 			return fmt.Errorf("upload operation %d exceeds file size", i)
 		}
+	}
 
+	for i, op := range operations {
 		if err := executeUploadOperation(ctx, file, uploadTask{index: i, op: op}, uploadOpts); err != nil {
 			return err
 		}
