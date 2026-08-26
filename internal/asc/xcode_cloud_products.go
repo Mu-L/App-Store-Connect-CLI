@@ -58,6 +58,7 @@ type CiProductsResponse struct {
 	Data     []CiProductResource `json:"data"`
 	Links    Links               `json:"links"`
 	Included json.RawMessage     `json:"included,omitempty"`
+	Meta     json.RawMessage     `json:"meta,omitempty"`
 }
 
 // GetLinks returns the links field for pagination.
@@ -68,6 +69,11 @@ func (r *CiProductsResponse) GetLinks() *Links {
 // GetData returns the data field for aggregation.
 func (r *CiProductsResponse) GetData() any {
 	return r.Data
+}
+
+// GetMeta returns the raw paging metadata for CI product responses.
+func (r *CiProductsResponse) GetMeta() json.RawMessage {
+	return r.Meta
 }
 
 // CiProductResponse is the response from CI product detail endpoints.

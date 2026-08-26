@@ -108,7 +108,8 @@ func TestBuildCiProductsQueryDeduplicatesIncludedRelationshipFields(t *testing.T
 func TestGetCiProductsPreservesIncludedResources(t *testing.T) {
 	response := jsonResponse(http.StatusOK, `{
 		"data": [{"type":"ciProducts","id":"product-1"}],
-		"included": [{"type":"apps","id":"app-1","attributes":{"name":"Example"}}]
+		"included": [{"type":"apps","id":"app-1","attributes":{"name":"Example"}}],
+		"meta": {"paging":{"total":1}}
 	}`)
 	client := newTestClient(t, func(req *http.Request) {
 		if req.URL.Path != "/v1/ciProducts" {
@@ -130,6 +131,9 @@ func TestGetCiProductsPreservesIncludedResources(t *testing.T) {
 	}
 	if len(included) != 1 || included[0].Type != ResourceTypeApps || included[0].ID != "app-1" {
 		t.Fatalf("included = %+v, want apps/app-1", included)
+	}
+	if string(got.Meta) != `{"paging":{"total":1}}` {
+		t.Fatalf("meta = %s, want paging total", got.Meta)
 	}
 }
 

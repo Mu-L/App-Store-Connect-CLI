@@ -296,12 +296,12 @@ func TestXcodeCloudProductsListPreservesServerNextQueryDuringPagination(t *testi
 			if req.URL.RawQuery != firstQuery.Encode() {
 				t.Errorf("first query = %q, want %q", req.URL.RawQuery, firstQuery.Encode())
 			}
-			writeCiProductsResponse(w, `{"data":[{"type":"ciProducts","id":"product-1"}],"links":{"next":"`+nextURL+`"}}`)
+			writeCiProductsResponse(w, `{"data":[{"type":"ciProducts","id":"product-1"}],"included":[{"type":"apps","id":"app-1","attributes":{"name":"Example"}}],"links":{"next":"`+nextURL+`"}}`)
 		case 2:
 			if req.URL.Path != "/v1/ciProducts" || req.URL.RawQuery != nextQuery.Encode() {
 				t.Errorf("continuation request = %s?%s, want /v1/ciProducts?%s", req.URL.Path, req.URL.RawQuery, nextQuery.Encode())
 			}
-			writeCiProductsResponse(w, `{"data":[{"type":"ciProducts","id":"product-2"}],"links":{"next":""}}`)
+			writeCiProductsResponse(w, `{"data":[{"type":"ciProducts","id":"product-2"}],"included":[{"type":"bundleIds","id":"bundle-1","attributes":{"identifier":"com.example.app"}}],"links":{"next":""}}`)
 		default:
 			t.Errorf("unexpected request count %d", requestNumber)
 			writeCiProductsResponse(w, `{"data":[]}`)
@@ -333,6 +333,16 @@ func TestXcodeCloudProductsListPreservesServerNextQueryDuringPagination(t *testi
 	}
 	if len(response.Data) != 2 || response.Data[0].ID != "product-1" || response.Data[1].ID != "product-2" {
 		t.Fatalf("response IDs = %+v, want product-1 and product-2", response.Data)
+	}
+	var included []struct {
+		Type asc.ResourceType `json:"type"`
+		ID   string           `json:"id"`
+	}
+	if err := json.Unmarshal(response.Included, &included); err != nil {
+		t.Fatalf("decode included: %v (included=%s)", err, response.Included)
+	}
+	if len(included) != 2 || included[0].Type != asc.ResourceTypeApps || included[0].ID != "app-1" || included[1].Type != asc.ResourceTypeBundleIds || included[1].ID != "bundle-1" {
+		t.Fatalf("included = %+v, want apps/app-1 and bundleIds/bundle-1", included)
 	}
 }
 
