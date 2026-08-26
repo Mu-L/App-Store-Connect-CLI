@@ -167,6 +167,53 @@ func TestSubscriptionsPricingPricesListPreservesExplicitFalseFields(t *testing.T
 	}
 }
 
+func TestSubscriptionsPricingPricesListRendersIncludedPricePointRelationships(t *testing.T) {
+	for _, outputFormat := range []string{"table", "markdown", "json"} {
+		t.Run(outputFormat, func(t *testing.T) {
+			captured := subscriptionPricesListQuerySurfaceStub(t)
+			captured.response = func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"data":[{"type":"subscriptionPrices","id":"price-1","relationships":{"territory":{"data":{"type":"territories","id":"USA"}},"subscriptionPricePoint":{"data":{"type":"subscriptionPricePoints","id":"PRICE_POINT_1"}}}}],"included":[{"type":"subscriptionPricePoints","id":"PRICE_POINT_1","attributes":{"customerPrice":"9.99"},"relationships":{"territory":{"data":{"type":"territories","id":"GBR"}},"equalizations":{"links":{"related":"/v1/subscriptionPricePoints/PRICE_POINT_1/equalizations"}},"adjustedEqualizations":{"links":{"self":"/v1/subscriptionPricePoints/PRICE_POINT_1/adjustedEqualizations"}}}}],"links":{"next":""}}`)
+			}
+
+			stdout, stderr, err := runSubscriptionPricesListQuerySurface(
+				t,
+				"subscriptions", "pricing", "prices", "list",
+				"--subscription-id", "8000000001",
+				"--price-point-fields", "territory,equalizations,adjustedEqualizations",
+				"--output", outputFormat,
+			)
+			if err != nil {
+				t.Fatalf("run error: %v (stderr=%q)", err, stderr)
+			}
+			if stderr != "" {
+				t.Fatalf("expected empty stderr, got %q", stderr)
+			}
+
+			for _, want := range []string{
+				"Price Point Territory ID", "GBR",
+				"Equalizations URL", "/v1/subscriptionPricePoints/PRICE_POINT_1/equalizations",
+				"Adjusted Equalizations URL", "/v1/subscriptionPricePoints/PRICE_POINT_1/adjustedEqualizations",
+			} {
+				if outputFormat != "json" && !strings.Contains(stdout, want) {
+					t.Fatalf("expected %q in %s output, got %q", want, outputFormat, stdout)
+				}
+			}
+			if outputFormat == "json" {
+				for _, want := range []string{
+					`"territory":{"data":{"type":"territories","id":"GBR"}}`,
+					`"equalizations":{"links":{"related":"/v1/subscriptionPricePoints/PRICE_POINT_1/equalizations"}}`,
+					`"adjustedEqualizations":{"links":{"self":"/v1/subscriptionPricePoints/PRICE_POINT_1/adjustedEqualizations"}}`,
+				} {
+					if !strings.Contains(stdout, want) {
+						t.Fatalf("expected raw relationship %q in JSON output, got %q", want, stdout)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestSubscriptionsPricingPricesListPaginatePreservesQueryControls(t *testing.T) {
 	captured := subscriptionPricesListQuerySurfaceStub(t)
 	captured.response = func(w http.ResponseWriter, req *http.Request) {

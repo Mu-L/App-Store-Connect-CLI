@@ -73,6 +73,76 @@ func TestPrintMarkdown_SubscriptionPrices(t *testing.T) {
 	}
 }
 
+func TestPrintTable_SubscriptionPricesIncludesPricePointRelationships(t *testing.T) {
+	relationships := json.RawMessage(`{"territory":{"data":{"type":"territories","id":"USA"}},"subscriptionPricePoint":{"data":{"type":"subscriptionPricePoints","id":"PRICE_POINT_1"}}}`)
+	resp := &SubscriptionPricesResponse{
+		Data: []Resource[SubscriptionPriceAttributes]{
+			{
+				ID:            "price-1",
+				Relationships: relationships,
+				Attributes: SubscriptionPriceAttributes{
+					StartDate: "2026-01-01",
+				},
+			},
+		},
+		Included: json.RawMessage(`[
+			{"type":"subscriptionPricePoints","id":"PRICE_POINT_1","relationships":{
+				"territory":{"data":{"type":"territories","id":"GBR"}},
+				"equalizations":{"links":{"self":"/v1/subscriptionPricePoints/PRICE_POINT_1/relationships/equalizations","related":"/v1/subscriptionPricePoints/PRICE_POINT_1/equalizations"}},
+				"adjustedEqualizations":{"links":{"self":"/v1/subscriptionPricePoints/PRICE_POINT_1/adjustedEqualizations"}}
+			}}
+		]`),
+	}
+
+	output := captureStdout(t, func() error {
+		return PrintTable(resp)
+	})
+
+	for _, want := range []string{
+		"Price Point Territory ID", "GBR",
+		"Equalizations URL", "/v1/subscriptionPricePoints/PRICE_POINT_1/equalizations",
+		"Adjusted Equalizations URL", "/v1/subscriptionPricePoints/PRICE_POINT_1/adjustedEqualizations",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in table output, got: %s", want, output)
+		}
+	}
+}
+
+func TestPrintMarkdown_SubscriptionPricesIncludesPricePointRelationships(t *testing.T) {
+	relationships := json.RawMessage(`{"territory":{"data":{"type":"territories","id":"USA"}},"subscriptionPricePoint":{"data":{"type":"subscriptionPricePoints","id":"PRICE_POINT_1"}}}`)
+	resp := &SubscriptionPricesResponse{
+		Data: []Resource[SubscriptionPriceAttributes]{
+			{
+				ID:            "price-1",
+				Relationships: relationships,
+				Attributes:    SubscriptionPriceAttributes{StartDate: "2026-01-01"},
+			},
+		},
+		Included: json.RawMessage(`[
+			{"type":"subscriptionPricePoints","id":"PRICE_POINT_1","relationships":{
+				"territory":{"data":{"type":"territories","id":"GBR"}},
+				"equalizations":{"links":{"related":"/v1/subscriptionPricePoints/PRICE_POINT_1/equalizations"}},
+				"adjustedEqualizations":{"links":{"self":"/v1/subscriptionPricePoints/PRICE_POINT_1/adjustedEqualizations"}}
+			}}
+		]`),
+	}
+
+	output := captureStdout(t, func() error {
+		return PrintMarkdown(resp)
+	})
+
+	for _, want := range []string{
+		"Price Point Territory ID", "GBR",
+		"Equalizations URL", "/v1/subscriptionPricePoints/PRICE_POINT_1/equalizations",
+		"Adjusted Equalizations URL", "/v1/subscriptionPricePoints/PRICE_POINT_1/adjustedEqualizations",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in markdown output, got: %s", want, output)
+		}
+	}
+}
+
 func TestSubscriptionPricesRowsLeavesOmittedPreservedBlank(t *testing.T) {
 	var resp SubscriptionPricesResponse
 	if err := json.Unmarshal([]byte(`{"data":[{"type":"subscriptionPrices","id":"price-1","attributes":{"startDate":"2026-01-01"}}],"links":{}}`), &resp); err != nil {
