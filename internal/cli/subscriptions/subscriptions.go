@@ -1002,11 +1002,11 @@ func SubscriptionsPricesListCommand() *ffcli.Command {
 	appID := addSubscriptionLookupAppFlag(fs)
 	planType := fs.String("plan-type", "", "Filter by plan type: MONTHLY or UPFRONT")
 	territory := fs.String("territory", "", "Filter by territory (accepts alpha-2, alpha-3, or exact English country name; e.g., US, USA, United States)")
-	pricePointIDs := fs.String("price-point-id", "", "Filter by subscription price point IDs (comma-separated)")
-	fields := fs.String("fields", "", "Subscription price fields (comma-separated)")
-	territoryFields := fs.String("territory-fields", "", "Included territory fields (comma-separated): currency")
-	pricePointFields := fs.String("price-point-fields", "", "Included subscription price point fields (comma-separated)")
-	include := fs.String("include", "", "Relationships to include (comma-separated): territory, subscriptionPricePoint")
+	pricePointIDs := fs.String("price-point-id", "", "[experimental] Filter by subscription price point IDs (comma-separated)")
+	fields := fs.String("fields", "", "[experimental] Subscription price fields (comma-separated)")
+	territoryFields := fs.String("territory-fields", "", "[experimental] Included territory fields (comma-separated): currency")
+	pricePointFields := fs.String("price-point-fields", "", "[experimental] Included subscription price point fields (comma-separated)")
+	include := fs.String("include", "", "[experimental] Relationships to include (comma-separated): territory, subscriptionPricePoint")
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
@@ -1123,6 +1123,13 @@ Examples:
 			}
 			if containsString(selectedPriceFields, "subscriptionPricePoint") || len(selectedPricePointFields) != 0 {
 				selectedIncludes = appendIncludeForFields(selectedIncludes, []string{"subscriptionPricePoint"}, "subscriptionPricePoint")
+			}
+			if len(selectedPriceFields) > 0 {
+				for _, relationship := range selectedIncludes {
+					if !containsString(selectedPriceFields, relationship) {
+						selectedPriceFields = append(selectedPriceFields, relationship)
+					}
+				}
 			}
 
 			client, err := shared.GetASCClient()

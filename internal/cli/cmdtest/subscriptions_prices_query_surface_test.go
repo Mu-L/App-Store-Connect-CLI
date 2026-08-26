@@ -128,7 +128,7 @@ func TestSubscriptionsPricingPricesListSendsQueryControls(t *testing.T) {
 		"filter[planType]":                {"MONTHLY"},
 		"filter[subscriptionPricePoint]":  {"point-1,point-2"},
 		"filter[territory]":               {"USA"},
-		"fields[subscriptionPrices]":      {"startDate,preserved"},
+		"fields[subscriptionPrices]":      {"startDate,preserved,territory,subscriptionPricePoint"},
 		"fields[territories]":             {"currency"},
 		"fields[subscriptionPricePoints]": {"customerPrice,proceeds"},
 		"include":                         {"territory,subscriptionPricePoint"},
@@ -158,7 +158,7 @@ func TestSubscriptionsPricingPricesListPaginatePreservesQueryControls(t *testing
 		}
 		wantQuery := url.Values{
 			"cursor":                     {"next"},
-			"fields[subscriptionPrices]": {"startDate,preserved"},
+			"fields[subscriptionPrices]": {"startDate,preserved,territory"},
 			"fields[territories]":        {"currency"},
 			"include":                    {"territory"},
 		}
