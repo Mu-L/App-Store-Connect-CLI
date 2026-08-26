@@ -26,9 +26,6 @@ func (b *OptionalBool) Set(value string) error {
 
 func (b *OptionalBool) String() string {
 	if !b.set {
-		if b.boolFlag {
-			return "false"
-		}
 		return ""
 	}
 	return strconv.FormatBool(b.value)

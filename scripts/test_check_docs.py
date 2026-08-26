@@ -264,6 +264,14 @@ class WebsiteDocsChecksTest(unittest.TestCase):
 
 
 class WebsiteCommandChecksTest(unittest.TestCase):
+    def test_help_parser_recognizes_presence_aware_boolean_without_false_default(self) -> None:
+        spec = check_website_commands.parse_help_text(
+            "FLAGS\n  --internal  Create as internal group\n  --profile  Use named profile\n",
+            is_root=False,
+        )
+
+        self.assertEqual(spec.flags, {"--internal": True, "--profile": False})
+
     def test_help_subprocesses_disable_telemetry(self) -> None:
         run = mock.Mock(return_value=mock.Mock(stderr="", stdout=""))
 

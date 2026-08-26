@@ -23,12 +23,12 @@ asc <subcommand> [flags]
 
 ## Global Flags
 
-- `--api-debug` - Enable HTTP debug logging to stderr (redacts sensitive values) (default: false)
-- `--debug` - Enable debug logging to stderr (default: false)
+- `--api-debug` - Enable HTTP debug logging to stderr (redacts sensitive values)
+- `--debug` - Enable debug logging to stderr
 - `--profile` - Use named authentication profile
 - `--report` - Report format for CI output (e.g., junit)
 - `--report-file` - Path to write CI report file
-- `--retry-log` - Enable retry logging to stderr (overrides ASC_RETRY_LOG/config when set) (default: false)
+- `--retry-log` - Enable retry logging to stderr (overrides ASC_RETRY_LOG/config when set)
 - `--strict-auth` - Fail when credentials are resolved from multiple sources (default: false)
 - `--version` - Print version and exit (default: false)
 

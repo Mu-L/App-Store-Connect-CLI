@@ -36,8 +36,8 @@ func TestOptionalBool_EnableBoolFlagAllowsBareFlag(t *testing.T) {
 	fs.SetOutput(io.Discard)
 	fs.Var(&value, "flag", "test flag")
 
-	if got := fs.Lookup("flag").DefValue; got != "false" {
-		t.Fatalf("expected bool-compatible default metadata, got %q", got)
+	if got := fs.Lookup("flag").DefValue; got != "" {
+		t.Fatalf("expected unset default metadata, got %q", got)
 	}
 	if !value.IsBoolFlag() {
 		t.Fatal("expected bool flag mode to be enabled")
