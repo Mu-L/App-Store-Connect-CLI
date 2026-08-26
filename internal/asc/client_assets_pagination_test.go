@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 )
 
 func TestGetAllAppScreenshotSetsFollowsNextURL(t *testing.T) {
@@ -96,45 +95,65 @@ func TestGetAllAppScreenshotsRejectsRepeatedNextURL(t *testing.T) {
 	}
 }
 
-func TestGetAllAppScreenshotsUsesFreshRequestTimeoutPerPage(t *testing.T) {
+func TestGetAllAppScreenshotsUsesFreshRequestContextPerPage(t *testing.T) {
 	const next = BaseURL + "/v1/appScreenshotSets/set-1/appScreenshots?cursor=slow-2"
 	requestCount := 0
 	requestContextCalls := 0
 	requestParents := make([]context.Context, 0, 2)
+	requestContexts := make([]context.Context, 0, 2)
+	var firstRequestContext context.Context
 	client := newTestClient(
 		t, func(req *http.Request) {
-			requestCount++
-			timer := time.NewTimer(60 * time.Millisecond)
-			defer timer.Stop()
-			select {
-			case <-timer.C:
-			case <-req.Context().Done():
-				t.Fatalf("request %d used an expired request context: %v", requestCount, req.Context().Err())
+			switch requestCount {
+			case 0:
+				firstRequestContext = req.Context()
+				if err := firstRequestContext.Err(); err != nil {
+					t.Fatalf("first request context is already done: %v", err)
+				}
+			case 1:
+				if firstRequestContext == nil {
+					t.Fatal("continuation request arrived before first request")
+				}
+				select {
+				case <-firstRequestContext.Done():
+				default:
+					t.Fatal("first request context was not canceled before continuation")
+				}
+				if err := req.Context().Err(); err != nil {
+					t.Fatalf("continuation request context is already done: %v", err)
+				}
+			default:
+				t.Fatalf("unexpected request %d: %s", requestCount+1, req.URL)
 			}
+			requestCount++
 		},
 		jsonResponse(http.StatusOK, `{"data":[{"type":"appScreenshots","id":"shot-1"}],"links":{"next":"`+next+`"}}`),
 		jsonResponse(http.StatusOK, `{"data":[{"type":"appScreenshots","id":"shot-2"}],"links":{}}`),
 	)
 
-	parent, cancelParent := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancelParent()
+	parent := context.Background()
 	requestContext := func(parent context.Context) (context.Context, context.CancelFunc) {
 		requestContextCalls++
 		requestParents = append(requestParents, parent)
-		return context.WithTimeout(parent, 100*time.Millisecond)
+		requestCtx, cancel := context.WithCancel(parent)
+		requestContexts = append(requestContexts, requestCtx)
+		return requestCtx, cancel
 	}
 
 	response, err := client.GetAllAppScreenshots(parent, "set-1", WithAppScreenshotsRequestContext(requestContext))
 	if err != nil {
 		t.Fatalf("GetAllAppScreenshots() error: %v", err)
 	}
-	if requestCount != 2 || requestContextCalls != 2 || len(response.Data) != 2 {
-		t.Fatalf("request count/context calls/data = %d/%d/%d, want 2/2/2", requestCount, requestContextCalls, len(response.Data))
+	if requestCount != 2 || requestContextCalls != 2 || len(requestContexts) != 2 || len(response.Data) != 2 {
+		t.Fatalf("request count/context calls/contexts/data = %d/%d/%d/%d, want 2/2/2/2", requestCount, requestContextCalls, len(requestContexts), len(response.Data))
 	}
 	for index, requestParent := range requestParents {
 		if requestParent != parent {
 			t.Fatalf("request %d factory parent = %v, want operation parent", index+1, requestParent)
 		}
+	}
+	if requestContexts[0] == requestContexts[1] {
+		t.Fatal("continuation reused the first request context")
 	}
 }
 
