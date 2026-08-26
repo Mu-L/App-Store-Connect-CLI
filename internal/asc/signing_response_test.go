@@ -101,3 +101,20 @@ func TestBundleIDsResponseMarshalPreservesSparseAttributeFields(t *testing.T) {
 		})
 	}
 }
+
+func TestBundleIDsResponseMarshalUsesMutatedSparseAttributeValues(t *testing.T) {
+	var response BundleIDsResponse
+	input := `{"data":[{"type":"bundleIds","id":"bundle-1","attributes":{"name":"Before"}}],"links":{}}`
+	if err := json.Unmarshal([]byte(input), &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	response.Data[0].Attributes.Name = "After"
+
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"attributes":{"name":"After"}`) {
+		t.Fatalf("encoded = %s, want mutated sparse attributes", encoded)
+	}
+}
