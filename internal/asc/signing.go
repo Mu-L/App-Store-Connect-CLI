@@ -1,5 +1,10 @@
 package asc
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // BundleIDPlatform represents the platform of a bundle ID or registered device.
 type BundleIDPlatform string
 
@@ -15,6 +20,35 @@ type BundleIDAttributes struct {
 	Identifier string           `json:"identifier"`
 	Platform   BundleIDPlatform `json:"platform"`
 	SeedID     string           `json:"seedId,omitempty"`
+
+	attributesPresent bool
+	attributesNull    bool
+	nameJSON          json.RawMessage
+	identifierJSON    json.RawMessage
+	platformJSON      json.RawMessage
+	seedIDJSON        json.RawMessage
+}
+
+// UnmarshalJSON records whether the API supplied an attributes object so the
+// bundle IDs list response can preserve relationship-only sparse resources.
+func (a *BundleIDAttributes) UnmarshalJSON(data []byte) error {
+	type alias BundleIDAttributes
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*a = BundleIDAttributes(decoded)
+	a.attributesPresent = true
+	a.attributesNull = strings.TrimSpace(string(data)) == "null"
+	a.nameJSON = fields["name"]
+	a.identifierJSON = fields["identifier"]
+	a.platformJSON = fields["platform"]
+	a.seedIDJSON = fields["seedId"]
+	return nil
 }
 
 // BundleIDCreateAttributes describes attributes for creating a bundle ID.
@@ -122,7 +156,105 @@ type BundleIDCapabilityUpdateRequest struct {
 }
 
 // BundleIDsResponse is the response from bundle IDs list endpoint.
-type BundleIDsResponse = Response[BundleIDAttributes]
+type BundleIDsResponse struct {
+	Data     []Resource[BundleIDAttributes] `json:"data"`
+	Links    Links                          `json:"links"`
+	Included json.RawMessage                `json:"included,omitempty"`
+	Meta     json.RawMessage                `json:"meta,omitempty"`
+}
+
+func (r BundleIDsResponse) MarshalJSON() ([]byte, error) {
+	type attributesJSON struct {
+		Name       json.RawMessage `json:"name,omitempty"`
+		Identifier json.RawMessage `json:"identifier,omitempty"`
+		Platform   json.RawMessage `json:"platform,omitempty"`
+		SeedID     json.RawMessage `json:"seedId,omitempty"`
+	}
+	type resourceJSON struct {
+		Type          ResourceType    `json:"type"`
+		ID            string          `json:"id"`
+		Attributes    json.RawMessage `json:"attributes,omitempty"`
+		Relationships json.RawMessage `json:"relationships,omitempty"`
+		Links         json.RawMessage `json:"links,omitempty"`
+	}
+	var data []resourceJSON
+	if r.Data != nil {
+		data = make([]resourceJSON, len(r.Data))
+	}
+	for i, resource := range r.Data {
+		var attributes json.RawMessage
+		if bundleIDAttributesShouldMarshal(resource.Attributes) {
+			if resource.Attributes.attributesNull {
+				attributes = json.RawMessage("null")
+			} else {
+				fields := attributesJSON{}
+				var err error
+				if len(resource.Attributes.nameJSON) > 0 || resource.Attributes.Name != "" {
+					fields.Name, err = bundleIDAttributeJSON(resource.Attributes.nameJSON, resource.Attributes.Name)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if len(resource.Attributes.identifierJSON) > 0 || resource.Attributes.Identifier != "" {
+					fields.Identifier, err = bundleIDAttributeJSON(resource.Attributes.identifierJSON, resource.Attributes.Identifier)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if len(resource.Attributes.platformJSON) > 0 || resource.Attributes.Platform != "" {
+					fields.Platform, err = bundleIDAttributeJSON(resource.Attributes.platformJSON, resource.Attributes.Platform)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if len(resource.Attributes.seedIDJSON) > 0 || resource.Attributes.SeedID != "" {
+					fields.SeedID, err = bundleIDAttributeJSON(resource.Attributes.seedIDJSON, resource.Attributes.SeedID)
+					if err != nil {
+						return nil, err
+					}
+				}
+				encoded, err := json.Marshal(fields)
+				if err != nil {
+					return nil, err
+				}
+				attributes = encoded
+			}
+		}
+		data[i] = resourceJSON{resource.Type, resource.ID, attributes, resource.Relationships, resource.Links}
+	}
+	return json.Marshal(struct {
+		Data     any             `json:"data"`
+		Links    Links           `json:"links"`
+		Included json.RawMessage `json:"included,omitempty"`
+		Meta     json.RawMessage `json:"meta,omitempty"`
+	}{data, r.Links, r.Included, r.Meta})
+}
+
+func bundleIDAttributesShouldMarshal(attributes BundleIDAttributes) bool {
+	return attributes.attributesPresent || attributes.Name != "" || attributes.Identifier != "" || attributes.Platform != "" || attributes.SeedID != ""
+}
+
+func bundleIDAttributeJSON(raw json.RawMessage, value any) (json.RawMessage, error) {
+	if len(raw) > 0 {
+		return raw, nil
+	}
+	return json.Marshal(value)
+}
+
+// GetLinks returns the links field for pagination.
+func (r *BundleIDsResponse) GetLinks() *Links {
+	return &r.Links
+}
+
+// GetMeta returns the raw metadata field.
+func (r *BundleIDsResponse) GetMeta() json.RawMessage {
+	return r.Meta
+}
+
+// GetData returns the data field for aggregation.
+func (r *BundleIDsResponse) GetData() any {
+	return r.Data
+}
 
 // BundleIDResponse is the response from bundle ID detail endpoint.
 type BundleIDResponse = SingleResponse[BundleIDAttributes]
