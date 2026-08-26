@@ -65,7 +65,6 @@ func TestLocalizationFetchesUseFreshDeadlinePerPage(t *testing.T) {
 					if !ok {
 						t.Fatal("expected first-page request deadline")
 					}
-					time.Sleep(60 * time.Millisecond)
 					return metadataFetchJSONResponse(test.firstBody), nil
 				}
 				deadline, ok := req.Context().Deadline()
