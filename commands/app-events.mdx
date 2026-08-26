@@ -28,15 +28,41 @@ asc app-events list --app "APP_ID"
 
 **Optional Flags:**
 
+* `--event-state` - Filter by lifecycle state(s), comma-separated: `DRAFT`,
+  `READY_FOR_REVIEW`, `WAITING_FOR_REVIEW`, `IN_REVIEW`, `REJECTED`,
+  `ACCEPTED`, `APPROVED`, `PUBLISHED`, `PAST`, `ARCHIVED`
+* `--id` - Filter by app event ID(s), comma-separated
+* `--fields` - Sparse fields for app events: `referenceName`, `badge`,
+  `eventState`, `deepLink`, `purchaseRequirement`, `primaryLocale`, `priority`,
+  `purpose`, `territorySchedules`, `archivedTerritorySchedules`, `localizations`
+* `--localization-fields` - Sparse fields for included localizations: `locale`,
+  `name`, `shortDescription`, `longDescription`, `appEvent`,
+  `appEventScreenshots`, `appEventVideoClips`
+* `--include` - Related resources to include: `localizations`
+* `--localizations-limit` - Maximum included localizations (1-50); requires
+  `--include localizations`
 * `--limit` - Results per page (1-200)
 * `--paginate` - Fetch all pages
 * `--next` - Pagination URL
+
+The query controls are experimental and follow the App Store Connect endpoint
+schema. `--localization-fields` also requires `--include localizations`. Do not
+combine query controls with `--next`, because a continuation URL already carries
+the query that produced it; `--app` remains compatible with `--next` for existing
+pagination scripts.
 
 **Example:**
 
 ```bash  theme={null}
 # List all events
 asc app-events list --app "123456789"
+
+# List published events with their localizations
+asc app-events list \
+  --app "123456789" \
+  --event-state PUBLISHED \
+  --include localizations \
+  --localizations-limit 10
 
 # Fetch all pages
 asc app-events list \
