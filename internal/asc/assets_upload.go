@@ -63,6 +63,9 @@ func UploadAssetFromFile(ctx context.Context, file *os.File, fileSize int64, ope
 		if op.Offset < 0 || op.Length < 0 {
 			return fmt.Errorf("upload operation %d has negative offset/length", i)
 		}
+		if op.Length <= 0 {
+			return fmt.Errorf("upload operation %d has non-positive length", i)
+		}
 		if op.Offset+op.Length > fileSize {
 			return fmt.Errorf("upload operation %d exceeds file size", i)
 		}
