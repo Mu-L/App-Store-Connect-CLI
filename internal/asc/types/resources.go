@@ -234,7 +234,7 @@ func (r *Resource[T]) UnmarshalJSON(data []byte) error {
 		attributesPresent: decoded.Attributes != nil,
 		attributesNull:    bytes.Equal(bytes.TrimSpace(decoded.Attributes), []byte("null")),
 	}
-	if !r.attributesPresent || r.attributesNull {
+	if !r.attributesPresent {
 		return nil
 	}
 	return json.Unmarshal(decoded.Attributes, &r.Attributes)

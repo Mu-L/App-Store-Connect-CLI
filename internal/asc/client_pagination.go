@@ -10,6 +10,17 @@ import (
 // PaginateFunc is a function that fetches a page of results
 type PaginateFunc func(ctx context.Context, nextURL string) (PaginatedResponse, error)
 
+// RequestContextFunc creates a fresh context for one outbound request while
+// retaining the caller's parent context and cancellation.
+type RequestContextFunc func(context.Context) (context.Context, context.CancelFunc)
+
+func requestContextFor(parent context.Context, factory RequestContextFunc) (context.Context, context.CancelFunc) {
+	if factory == nil {
+		return parent, func() {}
+	}
+	return factory(parent)
+}
+
 // PageConsumer handles one pagination page.
 type PageConsumer func(page PaginatedResponse) error
 
