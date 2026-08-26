@@ -493,7 +493,8 @@ Examples:
 
 			resolvedAppID := shared.ResolveAppID(*appID)
 			resolvedBuildID := strings.TrimSpace(*buildID)
-			querySurfaceSet := idSet || publicLinkEnabledSet || publicLinkLimitEnabledSet || publicLinkSet ||
+			queryFilterSet := idSet || publicLinkEnabledSet || publicLinkLimitEnabledSet || publicLinkSet
+			querySurfaceSet := queryFilterSet ||
 				fieldsSet || appFieldsSet || buildFieldsSet || testerFieldsSet || recruitmentCriteriaFieldsSet ||
 				includeSet || testersLimitSet || buildsLimitSet
 
@@ -637,7 +638,7 @@ Examples:
 			// matching page without requiring --paginate. Keep that stable behavior
 			// while moving the filtering itself to the top-level endpoint. The new
 			// experimental name/sort flags retain the normal one-page default.
-			stableAppScopedFilter := !*global && resolvedAppID != "" && internalFilter != nil && nameValue == "" && sortValue == "" && !querySurfaceSet
+			stableAppScopedFilter := !*global && resolvedAppID != "" && internalFilter != nil && nameValue == "" && sortValue == "" && !queryFilterSet
 			if stableAppScopedFilter && !*paginate {
 				// Fetch with Apple's maximum page size before applying the
 				// stable client-side cap. Passing a small --limit here would
