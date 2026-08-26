@@ -1660,8 +1660,7 @@ func TestStoreCredentials_RejectsDistinctNormalizedProfileCollisionBeforeMutatio
 
 	err := StoreCredentials("  spaced  ", "NEW", "ISSUER-NEW", "/tmp/new.p8")
 	wantErr := `credential profile name "  spaced  " conflicts with existing normalized profile "spaced"; ` +
-		`remove the existing profile with 'asc auth logout --name "spaced"' and retry, ` +
-		`or re-run 'asc auth login' with --name "spaced" to overwrite it`
+		`remove the existing profile with 'asc auth logout --name "spaced"' and retry`
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("StoreCredentials() error = %v, want %q", err, wantErr)
 	}
@@ -1679,6 +1678,140 @@ func TestStoreCredentials_RejectsDistinctNormalizedProfileCollisionBeforeMutatio
 	}
 	if _, err := legacyKr.Get(keyringKey("  spaced  ")); err != nil {
 		t.Fatalf("raw legacy credential was removed: %v", err)
+	}
+}
+
+func TestStoreCredentials_RejectsDistinctThirdNormalizedSpellingBeforeMutation(t *testing.T) {
+	newKr, legacyKr := withSeparateKeyrings(t)
+	keyDir := t.TempDir()
+	canonicalPath := filepath.Join(keyDir, "Canonical.p8")
+	writeECDSAPEM(t, canonicalPath, 0o600, true)
+	thirdPath := filepath.Join(keyDir, "Third.p8")
+	writeECDSAPEM(t, thirdPath, 0o600, true)
+	incomingPath := filepath.Join(keyDir, "Incoming.p8")
+	writeECDSAPEM(t, incomingPath, 0o600, true)
+	storeCredentialInKeyring(t, newKr, "spaced", "CANONICAL", "ISSUER-CANONICAL", canonicalPath)
+	storeCredentialInKeyring(t, legacyKr, "\tspaced ", "THIRD", "ISSUER-THIRD", thirdPath)
+
+	err := StoreCredentials("  spaced  ", "INCOMING", "ISSUER-INCOMING", incomingPath)
+	if err == nil || !strings.Contains(err.Error(), "conflicts with existing normalized profile") {
+		t.Fatalf("StoreCredentials() error = %v, want normalized profile collision", err)
+	}
+
+	canonical, err := newKr.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("canonical credential error: %v", err)
+	}
+	var canonicalPayload credentialPayload
+	if err := json.Unmarshal(canonical.Data, &canonicalPayload); err != nil {
+		t.Fatalf("decode canonical credential: %v", err)
+	}
+	if canonicalPayload.KeyID != "CANONICAL" {
+		t.Fatalf("canonical credential was mutated: %+v", canonicalPayload)
+	}
+	if _, err := legacyKr.Get(keyringKey("\tspaced ")); err != nil {
+		t.Fatalf("third spelling was removed: %v", err)
+	}
+}
+
+func TestStoreCredentials_CanonicalLoginRejectsDistinctNormalizedSpellingBeforeMutation(t *testing.T) {
+	newKr, legacyKr := withSeparateKeyrings(t)
+	keyDir := t.TempDir()
+	canonicalPath := filepath.Join(keyDir, "Canonical.p8")
+	writeECDSAPEM(t, canonicalPath, 0o600, true)
+	rawPath := filepath.Join(keyDir, "Raw.p8")
+	writeECDSAPEM(t, rawPath, 0o600, true)
+	incomingPath := filepath.Join(keyDir, "Incoming.p8")
+	writeECDSAPEM(t, incomingPath, 0o600, true)
+	storeCredentialInKeyring(t, newKr, "spaced", "CANONICAL", "ISSUER-CANONICAL", canonicalPath)
+	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "RAW", "ISSUER-RAW", rawPath)
+
+	err := StoreCredentials("spaced", "INCOMING", "ISSUER-INCOMING", incomingPath)
+	if err == nil || !strings.Contains(err.Error(), "conflicts with existing normalized profile") {
+		t.Fatalf("StoreCredentials() error = %v, want normalized profile collision", err)
+	}
+
+	canonical, err := newKr.Get(keyringKey("spaced"))
+	if err != nil {
+		t.Fatalf("canonical credential error: %v", err)
+	}
+	var canonicalPayload credentialPayload
+	if err := json.Unmarshal(canonical.Data, &canonicalPayload); err != nil {
+		t.Fatalf("decode canonical credential: %v", err)
+	}
+	if canonicalPayload.KeyID != "CANONICAL" {
+		t.Fatalf("canonical credential was mutated: %+v", canonicalPayload)
+	}
+	if _, err := legacyKr.Get(keyringKey("  spaced  ")); err != nil {
+		t.Fatalf("raw credential was removed: %v", err)
+	}
+}
+
+func TestStoreCredentials_UnusableCurrentSpellingDoesNotHideUsableLegacyCollision(t *testing.T) {
+	newKr, legacyKr := withSeparateKeyrings(t)
+	keyDir := t.TempDir()
+	canonicalPath := filepath.Join(keyDir, "Canonical.p8")
+	writeECDSAPEM(t, canonicalPath, 0o600, true)
+	legacyPath := filepath.Join(keyDir, "Legacy.p8")
+	writeECDSAPEM(t, legacyPath, 0o600, true)
+	incomingPath := filepath.Join(keyDir, "Incoming.p8")
+	writeECDSAPEM(t, incomingPath, 0o600, true)
+	storeCredentialInKeyring(t, newKr, "spaced", "CANONICAL", "ISSUER-CANONICAL", canonicalPath)
+	if err := newKr.Set(keyring.Item{Key: keyringKey("  spaced  "), Data: []byte("not-json")}); err != nil {
+		t.Fatalf("seed unusable current credential: %v", err)
+	}
+	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "LEGACY", "ISSUER-LEGACY", legacyPath)
+
+	err := StoreCredentials("spaced", "INCOMING", "ISSUER-INCOMING", incomingPath)
+	if err == nil || !strings.Contains(err.Error(), "conflicts with existing normalized profile") {
+		t.Fatalf("StoreCredentials() error = %v, want normalized profile collision", err)
+	}
+	if _, err := legacyKr.Get(keyringKey("  spaced  ")); err != nil {
+		t.Fatalf("usable legacy credential was removed: %v", err)
+	}
+}
+
+func TestStoreCredentials_IndividualCollisionIgnoresStaleIssuer(t *testing.T) {
+	newKr, legacyKr := withSeparateKeyrings(t)
+	keyPath := filepath.Join(t.TempDir(), "Individual.p8")
+	writeECDSAPEM(t, keyPath, 0o600, true)
+	privateKeyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read private key: %v", err)
+	}
+	for kr, entry := range map[keyring.Keyring]struct {
+		name     string
+		issuerID string
+	}{
+		newKr:    {name: "spaced", issuerID: "STALE-ISSUER"},
+		legacyKr: {name: "  spaced  ", issuerID: ""},
+	} {
+		item, err := keyringItemForCredential(entry.name, credentialPayload{
+			KeyID:          "INDIVIDUAL-KEY",
+			IssuerID:       entry.issuerID,
+			PrivateKeyPath: keyPath,
+			PrivateKeyPEM:  string(privateKeyPEM),
+			KeyType:        config.CredentialKeyTypeIndividual,
+		})
+		if err != nil {
+			t.Fatalf("credential item: %v", err)
+		}
+		if err := kr.Set(item); err != nil {
+			t.Fatalf("seed credential %q: %v", entry.name, err)
+		}
+	}
+
+	if err := StoreCredentialsWithKeyType(
+		"  spaced  ",
+		"INDIVIDUAL-KEY",
+		"",
+		keyPath,
+		config.CredentialKeyTypeIndividual,
+	); err != nil {
+		t.Fatalf("StoreCredentialsWithKeyType() error: %v", err)
+	}
+	if _, err := legacyKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("equivalent individual credential error = %v, want ErrKeyNotFound", err)
 	}
 }
 
@@ -2326,6 +2459,31 @@ func TestRemoveCredentials_TrimsName(t *testing.T) {
 	}
 	if _, err := newKr.Get(keyringKey("trim-key")); !errors.Is(err, keyring.ErrKeyNotFound) {
 		t.Fatalf("expected credential to be removed, got %v", err)
+	}
+}
+
+func TestRemoveCredentials_RemovesAllNormalizedSpellings(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	newKr, legacyKr := withSeparateKeyrings(t)
+
+	storeCredentialInKeyring(t, newKr, "trim-key", "KEY123", "ISS456", "/tmp/AuthKey.p8")
+	storeCredentialInKeyring(t, newKr, "  trim-key  ", "OTHER", "OTHER-ISSUER", "/tmp/Other.p8")
+	storeCredentialInKeyring(t, legacyKr, "\ttrim-key ", "LEGACY", "LEGACY-ISSUER", "/tmp/Legacy.p8")
+
+	if err := RemoveCredentials("trim-key"); err != nil {
+		t.Fatalf("RemoveCredentials() error: %v", err)
+	}
+	for _, check := range []struct {
+		kr   keyring.Keyring
+		name string
+	}{
+		{kr: newKr, name: "trim-key"},
+		{kr: newKr, name: "  trim-key  "},
+		{kr: legacyKr, name: "\ttrim-key "},
+	} {
+		if _, err := check.kr.Get(keyringKey(check.name)); !errors.Is(err, keyring.ErrKeyNotFound) {
+			t.Fatalf("credential %q error = %v, want ErrKeyNotFound", check.name, err)
+		}
 	}
 }
 

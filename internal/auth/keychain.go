@@ -396,12 +396,12 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	if privateKeyPEM, err := loadPrivateKeyPEMForStorage(keyPath); err == nil && strings.TrimSpace(privateKeyPEM) != "" {
 		payload.PrivateKeyPEM = privateKeyPEM
 	}
-	if err := rejectNormalizedCredentialCollision(originalName, name, payload); err != nil {
+	if err := rejectNormalizedCredentialCollision(originalName, name); err != nil {
 		return err
 	}
 
 	if err := storeInKeychain(name, payload); err == nil {
-		if err := removePreNormalizedKeychainEntries(name, originalName); err != nil {
+		if err := removePreNormalizedKeychainEntries(name); err != nil {
 			return err
 		}
 		// Successfully stored in keychain - remove matching config entry for security
@@ -417,117 +417,155 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	return storeInConfig(name, payload)
 }
 
-// removePreNormalizedKeychainEntries removes stored spellings whose trimmed
-// form equals the just-stored canonical profile name. Sweeping both keychains
-// on every successful store keeps canonical-name logins effective at clearing
-// orphaned pre-normalized entries, which RemoveCredentials cannot target
-// because it trims its argument.
-func removePreNormalizedKeychainEntries(normalizedName, originalName string) error {
-	variants := make(map[string]struct{})
-	if originalName != normalizedName {
-		variants[originalName] = struct{}{}
+// removePreNormalizedKeychainEntries removes every non-canonical spelling from
+// the current and legacy keychains.
+// Collision preflight has already established that no distinct usable
+// credential will be discarded.
+func removePreNormalizedKeychainEntries(normalizedName string) error {
+	if _, err := removeNormalizedKeychainEntries(keyringOpener, normalizedName, false); err != nil {
+		return fmt.Errorf("remove pre-normalized keychain credentials: %w", err)
 	}
-	collectPreNormalizedKeychainNames(keyringOpener, normalizedName, variants)
-	collectPreNormalizedKeychainNames(legacyKeyringOpener, normalizedName, variants)
-
-	names := make([]string, 0, len(variants))
-	for variant := range variants {
-		names = append(names, variant)
-	}
-	sort.Strings(names)
-	for _, variant := range names {
-		if err := removeFromKeychain(variant); err != nil && !errors.Is(err, keyring.ErrKeyNotFound) {
-			return fmt.Errorf("remove pre-normalized keychain credential %q: %w", variant, err)
-		}
-		if err := removeFromLegacyKeychain(variant); err != nil &&
-			!errors.Is(err, keyring.ErrKeyNotFound) && !isKeyringUnavailable(err) {
-			return fmt.Errorf("remove pre-normalized legacy keychain credential %q: %w", variant, err)
-		}
+	if _, err := removeNormalizedKeychainEntries(legacyKeyringOpener, normalizedName, false); err != nil {
+		return fmt.Errorf("remove pre-normalized legacy keychain credentials: %w", err)
 	}
 	return nil
 }
 
-// collectPreNormalizedKeychainNames gathers stored profile names that trim to
-// the canonical name. Enumeration is best-effort: failures leave the
-// deterministic originalName cleanup contract intact.
-func collectPreNormalizedKeychainNames(opener func() (keyring.Keyring, error), normalizedName string, variants map[string]struct{}) {
+func removeNormalizedKeychainEntries(
+	opener func() (keyring.Keyring, error),
+	normalizedName string,
+	includeCanonical bool,
+) (bool, error) {
 	kr, err := opener()
 	if err != nil {
-		return
+		if isKeyringUnavailable(err) {
+			return false, nil
+		}
+		return false, err
 	}
 	keys, err := kr.Keys()
 	if err != nil {
-		return
+		if isKeyringUnavailable(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	names := make([]string, 0)
+	for _, key := range keys {
+		if !strings.HasPrefix(key, keyringItemPrefix) {
+			continue
+		}
+		name := strings.TrimPrefix(key, keyringItemPrefix)
+		if strings.TrimSpace(name) != normalizedName || (!includeCanonical && name == normalizedName) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	removed := false
+	for _, name := range names {
+		if err := kr.Remove(keyringKey(name)); err != nil {
+			if errors.Is(err, keyring.ErrKeyNotFound) {
+				continue
+			}
+			return removed, err
+		}
+		removed = true
+	}
+	return removed, nil
+}
+
+func rejectNormalizedCredentialCollision(originalName, normalizedName string) error {
+	payloads, err := normalizedCredentialPayloads(normalizedName)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(payloads))
+	for name := range payloads {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) < 2 {
+		return nil
+	}
+
+	first := payloads[names[0]]
+	for _, name := range names[1:] {
+		if credentialPayloadsMatch(first, payloads[name]) {
+			continue
+		}
+		return fmt.Errorf(
+			"credential profile name %q conflicts with existing normalized profile %q; "+
+				"remove the existing profile with 'asc auth logout --name %q' and retry",
+			originalName,
+			normalizedName,
+			normalizedName,
+		)
+	}
+	return nil
+}
+
+func normalizedCredentialPayloads(normalizedName string) (map[string]credentialPayload, error) {
+	payloads := make(map[string]credentialPayload)
+	seen := make(map[string]struct{})
+
+	current, err := keyringOpener()
+	if err != nil {
+		if isKeyringUnavailable(err) {
+			return payloads, nil
+		}
+		return nil, err
+	}
+	if err := collectNormalizedCredentialPayloads(current, normalizedName, payloads, seen); err != nil {
+		if isKeyringUnavailable(err) {
+			return payloads, nil
+		}
+		return nil, err
+	}
+
+	legacy, err := legacyKeyringOpener()
+	if err != nil {
+		if isKeyringUnavailable(err) {
+			return payloads, nil
+		}
+		return nil, err
+	}
+	if err := collectNormalizedCredentialPayloads(legacy, normalizedName, payloads, seen); err != nil && !isKeyringUnavailable(err) {
+		return nil, err
+	}
+	return payloads, nil
+}
+
+func collectNormalizedCredentialPayloads(
+	kr keyring.Keyring,
+	normalizedName string,
+	payloads map[string]credentialPayload,
+	seen map[string]struct{},
+) error {
+	keys, err := kr.Keys()
+	if err != nil {
+		return err
 	}
 	for _, key := range keys {
 		if !strings.HasPrefix(key, keyringItemPrefix) {
 			continue
 		}
 		name := strings.TrimPrefix(key, keyringItemPrefix)
-		if name != normalizedName && strings.TrimSpace(name) == normalizedName {
-			variants[name] = struct{}{}
+		if strings.TrimSpace(name) != normalizedName {
+			continue
 		}
-	}
-}
-
-func rejectNormalizedCredentialCollision(originalName, normalizedName string, incoming credentialPayload) error {
-	if originalName == normalizedName {
-		return nil
-	}
-
-	current, err := keyringOpener()
-	if err != nil {
-		if isKeyringUnavailable(err) {
-			return nil
+		if _, exists := seen[name]; exists {
+			continue
 		}
-		return err
-	}
-	legacy, err := legacyKeyringOpener()
-	if err != nil && !isKeyringUnavailable(err) {
-		return err
-	}
-
-	canonical, canonicalFound, err := credentialPayloadForCollision(current, normalizedName)
-	if err != nil {
-		if isKeyringUnavailable(err) {
-			return nil
+		payload, found, err := credentialPayloadForCollision(kr, name)
+		if err != nil {
+			return err
 		}
-		return err
-	}
-	original, originalFound, err := credentialPayloadForCollision(current, originalName)
-	if err != nil {
-		if isKeyringUnavailable(err) {
-			return nil
+		if found {
+			seen[name] = struct{}{}
+			payloads[name] = payload
 		}
-		return err
-	}
-	if err == nil && legacy != nil {
-		if !canonicalFound {
-			canonical, canonicalFound, err = credentialPayloadForCollision(legacy, normalizedName)
-			if err != nil && !isKeyringUnavailable(err) {
-				return err
-			}
-		}
-		if !originalFound {
-			original, originalFound, err = credentialPayloadForCollision(legacy, originalName)
-			if err != nil && !isKeyringUnavailable(err) {
-				return err
-			}
-		}
-	}
-
-	if canonicalFound && originalFound &&
-		!credentialPayloadsMatch(canonical, original) &&
-		!credentialPayloadsMatch(canonical, incoming) {
-		return fmt.Errorf(
-			"credential profile name %q conflicts with existing normalized profile %q; "+
-				"remove the existing profile with 'asc auth logout --name %q' and retry, "+
-				"or re-run 'asc auth login' with --name %q to overwrite it",
-			originalName,
-			normalizedName,
-			normalizedName,
-			normalizedName,
-		)
 	}
 	return nil
 }
@@ -574,9 +612,12 @@ func completeCredentialPayload(payload credentialPayload) bool {
 }
 
 func credentialPayloadsMatch(first, second credentialPayload) bool {
-	if first.KeyID != second.KeyID ||
-		first.IssuerID != second.IssuerID ||
-		config.NormalizeCredentialKeyType(first.KeyType) != config.NormalizeCredentialKeyType(second.KeyType) {
+	firstKeyType := config.NormalizeCredentialKeyType(first.KeyType)
+	secondKeyType := config.NormalizeCredentialKeyType(second.KeyType)
+	if first.KeyID != second.KeyID || firstKeyType != secondKeyType {
+		return false
+	}
+	if firstKeyType != config.CredentialKeyTypeIndividual && first.IssuerID != second.IssuerID {
 		return false
 	}
 
@@ -1118,41 +1159,25 @@ func RemoveCredentials(name string) error {
 	if name == "" {
 		return fmt.Errorf("credential name is required")
 	}
-	err := removeFromKeychain(name)
-	if err == nil {
-		if configErr := removeFromConfigIfPresent(name); configErr != nil &&
-			!errors.Is(configErr, config.ErrNotFound) &&
-			!errors.Is(configErr, keyring.ErrKeyNotFound) {
-			return configErr
-		}
-		_ = removeFromLegacyKeychain(name)
+	removedCurrent, err := removeNormalizedKeychainEntries(keyringOpener, name, true)
+	if err != nil {
+		return err
+	}
+	removedLegacy, err := removeNormalizedKeychainEntries(legacyKeyringOpener, name, true)
+	if err != nil {
+		return err
+	}
+
+	configErr := removeFromConfigIfPresent(name)
+	if configErr != nil &&
+		!errors.Is(configErr, config.ErrNotFound) &&
+		!errors.Is(configErr, keyring.ErrKeyNotFound) {
+		return configErr
+	}
+	if removedCurrent || removedLegacy || configErr == nil {
 		return clearDefaultNameIf(name)
 	}
-	if isKeyringUnavailable(err) {
-		return removeFromConfigIfPresent(name)
-	}
-	if errors.Is(err, keyring.ErrKeyNotFound) {
-		legacyErr := removeFromLegacyKeychain(name)
-		if legacyErr == nil {
-			if configErr := removeFromConfigIfPresent(name); configErr != nil &&
-				!errors.Is(configErr, config.ErrNotFound) &&
-				!errors.Is(configErr, keyring.ErrKeyNotFound) {
-				return configErr
-			}
-			return clearDefaultNameIf(name)
-		}
-		if isKeyringUnavailable(legacyErr) {
-			return removeFromConfigIfPresent(name)
-		}
-		if errors.Is(legacyErr, keyring.ErrKeyNotFound) {
-			if err := removeFromConfigIfPresent(name); err != nil {
-				return err
-			}
-			return nil
-		}
-		return legacyErr
-	}
-	return err
+	return configErr
 }
 
 // RemoveAllCredentials removes all stored credentials
