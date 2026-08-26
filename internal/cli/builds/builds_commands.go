@@ -589,11 +589,11 @@ Examples:
 				return err
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("builds: --limit must be between 1 and 200")
+				return shared.UsageErrorf("builds: --limit must be between 1 and 200")
 			}
 			nextValue := strings.TrimSpace(*next)
 			if err := shared.ValidateNextURL(nextValue); err != nil {
-				return fmt.Errorf("builds: %w", err)
+				return shared.UsageErrorf("builds: %v", err)
 			}
 			if err := shared.ValidateSort(*sort, buildsListSortValues...); err != nil {
 				return shared.UsageErrorf("builds: %v", err)
