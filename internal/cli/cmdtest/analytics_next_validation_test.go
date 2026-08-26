@@ -332,3 +332,88 @@ func TestAnalyticsViewPaginateFromNextWithoutRequestID(t *testing.T) {
 		t.Fatalf("expected report and instance IDs in output, got %q", stdout)
 	}
 }
+
+func TestAnalyticsViewPaginateFromNextFollowsReportPages(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	const (
+		firstReportsURL    = "https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/request-1/reports?cursor=AQ&limit=200"
+		secondReportsURL   = "https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/request-1/reports?cursor=BQ&limit=200"
+		firstInstancesURL  = "https://api.appstoreconnect.apple.com/v1/analyticsReports/analytics-report-next-1/instances?limit=200"
+		secondInstancesURL = "https://api.appstoreconnect.apple.com/v1/analyticsReports/analytics-report-next-2/instances?limit=200"
+	)
+
+	requestCount := 0
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		var body string
+		switch requestCount {
+		case 1:
+			if req.Method != http.MethodGet || req.URL.String() != firstReportsURL {
+				t.Fatalf("unexpected first request: %s %s", req.Method, req.URL.String())
+			}
+			body = `{"data":[{"type":"analyticsReports","id":"analytics-report-next-1","attributes":{"name":"Retention","category":"APP_USAGE","granularity":"DAILY"}}],"links":{"first":"https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/request-1/reports","prev":"https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/request-1/reports?cursor=9w","next":"` + secondReportsURL + `"}}`
+		case 2:
+			if req.Method != http.MethodGet || req.URL.String() != secondReportsURL {
+				t.Fatalf("unexpected second request: %s %s", req.Method, req.URL.String())
+			}
+			body = `{"data":[{"type":"analyticsReports","id":"analytics-report-next-2","attributes":{"name":"Acquisition","category":"APP_STORE","granularity":"DAILY"}}],"links":{"next":""}}`
+		case 3:
+			if req.Method != http.MethodGet || req.URL.String() != firstInstancesURL {
+				t.Fatalf("unexpected third request: %s %s", req.Method, req.URL.String())
+			}
+			body = `{"data":[{"type":"analyticsReportInstances","id":"analytics-instance-next-1","attributes":{"reportDate":"2024-01-01","processingDate":"2024-01-02T00:00:00Z","granularity":"DAILY","version":"1"}}],"links":{"next":""}}`
+		case 4:
+			if req.Method != http.MethodGet || req.URL.String() != secondInstancesURL {
+				t.Fatalf("unexpected fourth request: %s %s", req.Method, req.URL.String())
+			}
+			body = `{"data":[{"type":"analyticsReportInstances","id":"analytics-instance-next-2","attributes":{"reportDate":"2024-01-03","processingDate":"2024-01-04T00:00:00Z","granularity":"DAILY","version":"1"}}],"links":{"next":""}}`
+		default:
+			t.Fatalf("unexpected extra request: %s %s", req.Method, req.URL.String())
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+	setAnalyticsTimeoutTestClient(t, transport)
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"analytics", "view", "--paginate", "--next", firstReportsURL}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if requestCount != 4 {
+		t.Fatalf("request count = %d, want 4", requestCount)
+	}
+	for _, link := range []string{
+		`"first":"https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/request-1/reports"`,
+		`"prev":"https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/request-1/reports?cursor=9w"`,
+	} {
+		if !strings.Contains(stdout, link) {
+			t.Fatalf("expected output to contain %q, got %q", link, stdout)
+		}
+	}
+	for _, id := range []string{
+		"analytics-report-next-1",
+		"analytics-report-next-2",
+		"analytics-instance-next-1",
+		"analytics-instance-next-2",
+	} {
+		if !strings.Contains(stdout, `"id":"`+id+`"`) {
+			t.Fatalf("expected output to contain %q, got %q", id, stdout)
+		}
+	}
+}

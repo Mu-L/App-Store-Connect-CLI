@@ -435,7 +435,7 @@ Examples:
 				return fmt.Errorf("analytics view: %w", err)
 			}
 
-			paginateReports := strings.TrimSpace(*next) == "" && (strings.TrimSpace(*instanceID) != "" || *paginate)
+			paginateReports := *paginate || (strings.TrimSpace(*next) == "" && strings.TrimSpace(*instanceID) != "")
 			reports, links, err := fetchAnalyticsReports(ctx, client, strings.TrimSpace(*requestID), *limit, *next, paginateReports)
 			if err != nil {
 				return fmt.Errorf("analytics view: failed to fetch reports: %w", err)
