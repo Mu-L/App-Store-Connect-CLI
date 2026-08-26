@@ -45,6 +45,25 @@ func TestCertificatesResponsePreservesSparseAttributeFields(t *testing.T) {
 	}
 }
 
+func TestCertificatesResponseUsesMutatedSparseAttributeValues(t *testing.T) {
+	input := []byte(`{"data":[{"type":"certificates","id":"cert-1","attributes":{"displayName":"Before","activated":false}}],"links":{}}`)
+	var response CertificatesResponse
+	if err := json.Unmarshal(input, &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	response.Data[0].Attributes.DisplayName = "After"
+	activated := true
+	response.Data[0].Attributes.Activated = &activated
+
+	output, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(output), `"attributes":{"displayName":"After","activated":true}`) {
+		t.Fatalf("output = %s, want mutated sparse attributes", output)
+	}
+}
+
 func TestGetCertificates_SendsQuerySurface(t *testing.T) {
 	response := jsonResponse(http.StatusOK, `{"data":[]}`)
 	client := newTestClient(t, func(req *http.Request) {

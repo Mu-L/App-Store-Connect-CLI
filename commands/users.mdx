@@ -69,7 +69,7 @@ Update a user:
 
 ```bash  theme={null}
 asc users update --id "USER_ID" --roles "ADMIN"
-asc users update --id "USER_ID" --roles "DEVELOPER" --visible-app "APP_ID"
+asc users update --id "USER_ID" --roles "DEVELOPER" --visible-app "APP_ID" --confirm
 ```
 
 **Flags:**
@@ -77,6 +77,7 @@ asc users update --id "USER_ID" --roles "DEVELOPER" --visible-app "APP_ID"
 * `--id` - User ID (required)
 * `--roles` - Comma-separated role IDs (required)
 * `--visible-app` - Comma-separated app IDs for visible apps
+* `--confirm` - Confirm replacing the user's existing visible-app relationship (required with `--visible-app`)
 * `--output` - Output format: `json`, `table`, `markdown`
 * `--pretty` - Pretty-print JSON output
 
@@ -282,7 +283,8 @@ asc users update --id "USER_ID" --roles "APP_MANAGER"
 asc users update \
   --id "USER_ID" \
   --roles "DEVELOPER" \
-  --visible-app "123456789,987654321"
+  --visible-app "123456789,987654321" \
+  --confirm
 ```
 
 ### List All Admins
