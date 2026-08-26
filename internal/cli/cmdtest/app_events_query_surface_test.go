@@ -265,7 +265,6 @@ func TestAppEventsListQuerySurfaceRejectsNextConflictsBeforeAuth(t *testing.T) {
 		{name: "localization fields", flag: "--localization-fields", value: "locale"},
 		{name: "include", flag: "--include", value: "localizations"},
 		{name: "localization limit", flag: "--localizations-limit", value: "10"},
-		{name: "limit", flag: "--limit", value: "10"},
 	}
 
 	for _, test := range tests {
@@ -306,6 +305,7 @@ func TestAppEventsListQuerySurfaceAllowsAppWithNextAndUsesOpaqueURL(t *testing.T
 		"app-events", "list",
 		"--app", "app-123",
 		"--next", nextURL,
+		"--limit", "10",
 		"--output", "json",
 	)
 	if err != nil {

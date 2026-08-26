@@ -94,7 +94,6 @@ Examples:
 				"localization-fields",
 				"include",
 				"localizations-limit",
-				"limit",
 			); err != nil {
 				return err
 			}
