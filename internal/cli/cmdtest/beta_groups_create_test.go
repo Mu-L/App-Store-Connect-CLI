@@ -13,6 +13,28 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
+func TestBetaGroupsCreateDistributionFlagsAreExperimental(t *testing.T) {
+	cmd := findSubcommand(RootCommand("1.2.3"), "testflight", "groups", "create")
+	if cmd == nil {
+		t.Fatal("command [testflight groups create] not found")
+	}
+	for _, name := range []string{
+		"access-all-builds",
+		"public-link-enabled",
+		"public-link-limit-enabled",
+		"public-link-limit",
+		"feedback-enabled",
+	} {
+		flagValue := cmd.FlagSet.Lookup(name)
+		if flagValue == nil {
+			t.Fatalf("--%s flag not found", name)
+		}
+		if !strings.HasPrefix(flagValue.Usage, "[experimental] ") {
+			t.Fatalf("--%s usage = %q, want experimental prefix", name, flagValue.Usage)
+		}
+	}
+}
+
 func TestBetaGroupsCreateInternalSetsAttributeOnCreate(t *testing.T) {
 	setupAuth(t)
 	t.Setenv("ASC_APP_ID", "")

@@ -44,20 +44,36 @@ def parse_help(help_text: str) -> tuple[str, list[tuple[str, str]], list[tuple[s
     groups: list[tuple[str, list[tuple[str, str]]]] = []
 
     in_flags = False
+    in_usage = False
     current_group_index: int | None = None
 
     for line in help_text.splitlines():
-        if line.startswith("  asc "):
-            usage = line.strip()
-
         stripped = line.strip()
+
+        # Only the USAGE section defines the usage pattern; sample invocations
+        # elsewhere in the help text must not overwrite it. Any unindented
+        # heading ends the section, even one this parser does not model.
+        if in_usage:
+            if line.startswith("  asc "):
+                usage = stripped
+                in_usage = False
+            elif stripped and not line.startswith(" "):
+                in_usage = False
+
+        if stripped == "USAGE":
+            in_usage = True
+            in_flags = False
+            current_group_index = None
+            continue
         if stripped == "FLAGS":
+            in_usage = False
             in_flags = True
             current_group_index = None
             continue
 
         group_match = re.match(r"^([A-Z0-9 &/-]+) COMMANDS$", stripped)
         if group_match:
+            in_usage = False
             in_flags = False
             groups.append((group_match.group(0), []))
             current_group_index = len(groups) - 1
@@ -162,7 +178,7 @@ def render(usage: str, flags: list[tuple[str, str]], groups: list[tuple[str, lis
             "asc distribute verify --run RUN_ID --state-dir .asc/distribution/runs --timeout 30s --output json",
             "",
             "# Stage an App Store version before submission",
-            "asc release stage --app \"123456789\" --version \"1.2.3\" --build \"BUILD_ID\" --copy-metadata-from \"1.2.2\" --dry-run",
+            "asc release stage --app \"123456789\" --version \"1.2.3\" --build-id \"BUILD_ID\" --copy-metadata-from \"1.2.2\" --dry-run",
             "",
             "# Publish an App Store version (high-level)",
             "asc publish appstore --app \"123456789\" --ipa \"/path/to/MyApp.ipa\" --version \"1.2.3\"",

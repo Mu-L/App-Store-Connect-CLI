@@ -22,6 +22,7 @@ func BuildsCountCommand() *ffcli.Command {
 	buildNumber := fs.String("build-number", "", "Filter by build number (CFBundleVersion)")
 	platform := fs.String("platform", "", "Filter by platform: IOS, MAC_OS, TV_OS, VISION_OS")
 	processingState := fs.String("processing-state", "", "Filter by processing state: VALID, PROCESSING, FAILED, INVALID, or all")
+	betaReviewState := fs.String("beta-review-state", "", "[experimental] Filter by beta app review state, comma-separated ("+strings.Join(buildsListBetaReviewStates, ", ")+")")
 	excludeExpired := fs.Bool("exclude-expired", false, "Exclude expired builds")
 	notExpired := fs.Bool("not-expired", false, "Alias for --exclude-expired")
 	output := shared.BindOutputFlags(fs)
@@ -46,6 +47,7 @@ Examples:
   asc builds count --app "123456789" --platform IOS
   asc builds count --app "123456789" --processing-state VALID
   asc builds count --app "123456789" --processing-state all
+  asc builds count --app "123456789" --beta-review-state "WAITING_FOR_REVIEW,IN_REVIEW"
   asc builds count --app "123456789" --exclude-expired
   asc builds count --app "123456789" --version "2.1.0" --platform IOS --output json`,
 		FlagSet:   fs,
@@ -72,6 +74,11 @@ Examples:
 				return err
 			}
 
+			betaReviewStateValues, err := normalizeBuildsListBetaReviewStates(*betaReviewState)
+			if err != nil {
+				return err
+			}
+
 			client, err := shared.GetASCClient()
 			if err != nil {
 				return fmt.Errorf("builds count: %w", err)
@@ -90,7 +97,7 @@ Examples:
 			var preReleaseVersionIDs []string
 			versionValue := strings.TrimSpace(*version)
 			if versionValue != "" {
-				preReleaseVersionIDs, err = findPreReleaseVersionIDsForBuildsList(requestCtx, client, resolvedAppID, versionValue)
+				preReleaseVersionIDs, err = shared.FindPreReleaseVersionIDs(requestCtx, client, resolvedAppID, versionValue, platformValue)
 				if err != nil {
 					return fmt.Errorf("builds count: %w", err)
 				}
@@ -109,6 +116,9 @@ Examples:
 			}
 			if len(processingStateValues) > 0 {
 				filterOpts = append(filterOpts, asc.WithBuildsProcessingStates(processingStateValues))
+			}
+			if len(betaReviewStateValues) > 0 {
+				filterOpts = append(filterOpts, asc.WithBuildsBetaReviewStates(betaReviewStateValues))
 			}
 			if *excludeExpired || *notExpired {
 				filterOpts = append(filterOpts, asc.WithBuildsExpired(false))

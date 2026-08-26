@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -43,7 +44,7 @@ func WaitForBuildByNumberOrUploadFailure(ctx context.Context, client *asc.Client
 	}
 	uploadID = strings.TrimSpace(uploadID)
 
-	return asc.PollUntil(ctx, pollInterval, func(ctx context.Context) (*asc.BuildResponse, bool, error) {
+	return asc.PollUntilTolerant(ctx, pollInterval, func(ctx context.Context) (*asc.BuildResponse, bool, error) {
 		if uploadID != "" {
 			upload, err := client.GetBuildUpload(ctx, uploadID)
 			if err != nil {
@@ -80,7 +81,7 @@ func WaitForBuildByNumberOrUploadFailure(ctx context.Context, client *asc.Client
 			return build, true, nil
 		}
 		return nil, false, nil
-	})
+	}, asc.PollOptions{Tolerate: asc.IsTransientWaitError})
 }
 
 // VerifyBuildUploadAfterCommit briefly watches a newly committed upload for
@@ -113,10 +114,20 @@ func VerifyBuildUploadAfterCommit(ctx context.Context, client *asc.Client, appID
 		effectiveInterval = time.Millisecond
 	}
 
+	callerCtx := ctx
 	_, err := asc.PollUntil(verifyCtx, effectiveInterval, func(ctx context.Context) (*asc.BuildUploadResponse, bool, error) {
 		upload, err := client.GetBuildUpload(ctx, uploadID)
 		if err != nil {
-			if shouldIgnoreBuildWaitLookupError(err) || shouldIgnorePostCommitBuildUploadLookupError(ctx, err) {
+			// A retry delay that cannot fit in this bounded verification window
+			// is already a terminal best-effort outcome: stop probing now and
+			// preserve the caller's asynchronous-success behavior.
+			if asc.IsRetryDelayExceeded(err) {
+				return nil, true, nil
+			}
+			// Transient lookup errors stay ignorable for the whole verification
+			// window: expiry of the bounded window itself is reported by the
+			// poll context, not by this predicate.
+			if shouldIgnoreBuildWaitLookupError(err) || asc.IsRetryDelayExceeded(err) || asc.IsTransientWaitError(callerCtx, err) {
 				return nil, false, nil
 			}
 			return nil, false, err
@@ -142,58 +153,15 @@ func VerifyBuildUploadAfterCommit(ctx context.Context, client *asc.Client, appID
 	return err
 }
 
-func shouldIgnorePostCommitBuildUploadLookupError(ctx context.Context, err error) bool {
-	if err == nil {
-		return false
-	}
-	if asc.IsRetryable(err) {
-		return true
-	}
-
-	var apiErr *asc.APIError
-	if errors.As(err, &apiErr) && apiErr.StatusCode >= 500 {
-		return true
-	}
-
-	if errors.Is(err, context.DeadlineExceeded) && ctx != nil && ctx.Err() == nil {
-		return true
-	}
-
-	var netErr net.Error
-	if errors.As(err, &netErr) && (netErr.Timeout() || isTemporaryNetError(netErr)) {
-		return true
-	}
-
-	return false
-}
-
-type temporaryNetError interface {
-	Temporary() bool
-}
-
-func isTemporaryNetError(err net.Error) bool {
-	tempErr, ok := err.(temporaryNetError)
-	return ok && tempErr.Temporary()
-}
-
 func findBuildByNumber(ctx context.Context, client *asc.Client, appID, version, buildNumber, platform, uploadID string) (*asc.BuildResponse, error) {
-	preReleaseResp, err := client.GetPreReleaseVersions(
-		ctx, appID,
-		asc.WithPreReleaseVersionsVersion(version),
-		asc.WithPreReleaseVersionsPlatform(platform),
-		asc.WithPreReleaseVersionsLimit(10),
-	)
+	preReleaseID, err := findPreReleaseVersionIDForBuildWait(ctx, client, appID, version, platform)
 	if err != nil {
 		return nil, err
 	}
-	if len(preReleaseResp.Data) == 0 {
+	if preReleaseID == "" {
 		return nil, nil
 	}
-	if len(preReleaseResp.Data) > 1 {
-		return nil, fmt.Errorf("multiple pre-release versions found for version %q and platform %q", version, platform)
-	}
 
-	preReleaseID := preReleaseResp.Data[0].ID
 	buildOpts := []asc.BuildsOption{
 		asc.WithBuildsPreReleaseVersion(preReleaseID),
 		asc.WithBuildsSort("-uploadedDate"),
@@ -222,6 +190,37 @@ func findBuildByNumber(ctx context.Context, client *asc.Client, appID, version, 
 		return &asc.BuildResponse{Data: build}, nil
 	}
 	return nil, nil
+}
+
+// findPreReleaseVersionIDForBuildWait resolves the pre-release version train a
+// build wait should watch. App Store Connect treats "1.2" and "1.2.0" as the
+// same version but only makes the first-uploaded format queryable, so the
+// requested format is tried first and the equivalent format only when it
+// matches nothing. An empty ID means no matching train exists yet.
+func findPreReleaseVersionIDForBuildWait(ctx context.Context, client *asc.Client, appID, version, platform string) (string, error) {
+	requestedVersion := strings.TrimSpace(version)
+
+	variants := versionQueryVariants(requestedVersion)
+	if len(variants) == 0 {
+		variants = []string{""}
+	}
+
+	for _, variant := range variants {
+		ids, _, err := findPreReleaseVersionIDsForVersions(ctx, client, appID, []string{variant}, platform)
+		if err != nil {
+			return "", err
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if len(ids) > 1 {
+			return "", fmt.Errorf("multiple pre-release versions found for version %q and platform %q", version, platform)
+		}
+		noteEquivalentVersionMatch(requestedVersion, variant)
+		return ids[0], nil
+	}
+
+	return "", nil
 }
 
 type buildRelationships struct {
@@ -273,10 +272,127 @@ func buildUploadFailureError(upload *asc.BuildUploadResponse) error {
 	}
 
 	details := buildUploadStateDetails(upload.Data.Attributes.State.Errors)
+	recovery := buildUploadRecoveryGuidance(upload.Data.Attributes.State.Errors)
 	if details == "" {
+		if recovery != "" {
+			return fmt.Errorf("build upload %q failed with state %s; recovery: %s", upload.Data.ID, state, recovery)
+		}
 		return fmt.Errorf("build upload %q failed with state %s", upload.Data.ID, state)
 	}
+	if recovery != "" {
+		return fmt.Errorf("build upload %q failed with state %s: %s; recovery: %s", upload.Data.ID, state, details, recovery)
+	}
 	return fmt.Errorf("build upload %q failed with state %s: %s", upload.Data.ID, state, details)
+}
+
+var usageDescriptionKeyPattern = regexp.MustCompile(`\b[A-Za-z0-9_]+UsageDescription\b`)
+
+func buildUploadRecoveryGuidance(details []asc.StateDetail) string {
+	if recovery, ok := buildUploadVersionRecoveryGuidance(details); ok {
+		return recovery
+	}
+
+	switch {
+	case allStateDetailCodesIn(details, "90062", "90186", "90478"):
+		return "increase the marketing version (CFBundleShortVersionString), rebuild, and upload again"
+	case allStateDetailCodesIn(details, "90189"):
+		return "increase the build number (CFBundleVersion), rebuild, and upload again"
+	case allStateDetailCodesIn(details, "90683"):
+		keys := missingUsageDescriptionKeys(details)
+		if len(keys) > 0 {
+			return fmt.Sprintf("add the missing privacy purpose strings to Info.plist (%s), rebuild, and upload again", strings.Join(keys, ", "))
+		}
+		return "add the missing privacy purpose strings to Info.plist, rebuild, and upload again"
+	case allStateDetailCodesIn(details, "90725"):
+		return "rebuild with a currently supported SDK and toolchain, then upload again"
+	case allStateDetailCodesIn(details, "90771"):
+		return "add BGTaskSchedulerPermittedIdentifiers to Info.plist with every scheduled background task identifier, rebuild, and upload again"
+	case allStateDetailCodesIn(details, "90391", "90713"):
+		return "add the required app icons and icon metadata (such as CFBundleIconName or CFBundleIconFiles) to every failing bundle, rebuild, and upload again"
+	default:
+		return ""
+	}
+}
+
+func buildUploadVersionRecoveryGuidance(details []asc.StateDetail) (string, bool) {
+	if !allStateDetailCodesIn(details, "90054", "90055") {
+		return "", false
+	}
+
+	invalidBuildNumber := false
+	bundleIdentifierMismatch := false
+	for _, detail := range details {
+		switch {
+		case strings.TrimSpace(detail.Code) == "90054" && stateDetailTextContains([]asc.StateDetail{detail}, "cfbundleversion"):
+			invalidBuildNumber = true
+		case stateDetailTextContains([]asc.StateDetail{detail}, "bundle identifier"):
+			bundleIdentifierMismatch = true
+		default:
+			return "", false
+		}
+	}
+
+	recoveries := make([]string, 0, 2)
+	if invalidBuildNumber {
+		recoveries = append(recoveries, "format CFBundleVersion as a period-separated list of at most three non-negative integers, rebuild, and upload again")
+	}
+	if bundleIdentifierMismatch {
+		recoveries = append(recoveries, "verify that the artifact's bundle identifier matches the selected app; rebuild with the correct identifier or select the intended app")
+	}
+	return strings.Join(recoveries, "; "), len(recoveries) > 0
+}
+
+// allStateDetailCodesIn reports whether every received error belongs to one
+// known code family. Codes in a family are alternatives and need not all occur.
+func allStateDetailCodesIn(details []asc.StateDetail, allowed ...string) bool {
+	if len(details) == 0 {
+		return false
+	}
+
+	allowedCodes := make(map[string]struct{}, len(allowed))
+	for _, code := range allowed {
+		allowedCodes[code] = struct{}{}
+	}
+	for _, detail := range details {
+		code := strings.TrimSpace(detail.Code)
+		if _, ok := allowedCodes[code]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func stateDetailTextContains(details []asc.StateDetail, fragment string) bool {
+	fragment = strings.ToLower(strings.TrimSpace(fragment))
+	if fragment == "" {
+		return false
+	}
+	for _, detail := range details {
+		for _, text := range []string{detail.Message, detail.Description} {
+			if strings.Contains(strings.ToLower(text), fragment) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func missingUsageDescriptionKeys(details []asc.StateDetail) []string {
+	keys := make(map[string]struct{})
+	for _, detail := range details {
+		for _, text := range []string{detail.Message, detail.Description} {
+			for _, key := range usageDescriptionKeyPattern.FindAllString(strings.TrimSpace(text), -1) {
+				keys[key] = struct{}{}
+			}
+		}
+	}
+
+	result := make([]string, 0, len(keys))
+	for key := range keys {
+		result = append(result, key)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func enrichBuildUploadFailure(ctx context.Context, client *asc.Client, appID string, upload *asc.BuildUploadResponse, baseErr error) error {
@@ -422,7 +538,10 @@ func buildUploadStateDetails(details []asc.StateDetail) string {
 	parts := make([]string, 0, len(details))
 	for _, detail := range details {
 		code := strings.TrimSpace(detail.Code)
-		message := strings.TrimSpace(detail.Message)
+		message := strings.TrimSpace(detail.Description)
+		if message == "" {
+			message = strings.TrimSpace(detail.Message)
+		}
 		switch {
 		case code != "" && message != "":
 			parts = append(parts, fmt.Sprintf("%s (%s)", code, message))

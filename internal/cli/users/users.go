@@ -78,11 +78,14 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("users list: --limit must be between 1 and 200")
-			}
 			if err := shared.ValidateNextURL(*next); err != nil {
 				return fmt.Errorf("users list: %w", err)
+			}
+			if err := shared.RejectNextFlagConflicts(fs, *next, "users list", "email", "role", "limit"); err != nil {
+				return err
+			}
+			if *limit != 0 && (*limit < 1 || *limit > 200) {
+				return fmt.Errorf("users list: --limit must be between 1 and 200")
 			}
 			roleValues, err := normalizeUserRoles(*role, "--role")
 			if err != nil {
@@ -192,17 +195,21 @@ func UsersUpdateCommand() *ffcli.Command {
 	id := fs.String("id", "", "User ID")
 	roles := shared.BindOnceCSVFlag(fs, "roles", "Comma-separated UserRole values: "+strings.Join(userRoleList(), ", "))
 	visibleApps := shared.BindOnceCSVFlag(fs, "visible-app", "Comma-separated app IDs for visible apps")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm replacing visible apps (required with --visible-app)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "update",
-		ShortUsage: "asc users update --id USER_ID --roles ROLE_ID[,ROLE_ID...] [--visible-app APP_ID[,APP_ID...]]",
+		ShortUsage: "asc users update --id USER_ID --roles ROLE_ID[,ROLE_ID...] [--visible-app APP_ID[,APP_ID...]] [--confirm]",
 		ShortHelp:  "Update a user.",
 		LongHelp: `Update a user by ID.
 
+The --visible-app list replaces the user's existing visible-app relationship;
+use --confirm when --visible-app is supplied.
+
 Examples:
   asc users update --id "USER_ID" --roles "ADMIN"
-  asc users update --id "USER_ID" --roles "ADMIN" --visible-app "APP_ID"`,
+  asc users update --id "USER_ID" --roles "ADMIN" --visible-app "APP_ID" --confirm`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -220,9 +227,32 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --roles is required")
 				return shared.MissingRequiredUsageError("--roles")
 			}
-			warnDeprecatedUserRoles(roleValues)
-
 			visibleAppIDs := shared.SplitCSV(visibleApps.String())
+			confirmSet := false
+			fs.Visit(func(parsed *flag.Flag) {
+				if parsed.Name == "confirm" {
+					confirmSet = true
+				}
+			})
+			if len(visibleAppIDs) == 0 && confirmSet {
+				message := "--confirm requires --visible-app"
+				fmt.Fprintln(os.Stderr, "Error:", message)
+				return shared.WithDiagnostic(
+					shared.NewReportedUsageError(shared.UsageErrorInvalidValue, message),
+					shared.DiagnosticConflictingInput,
+					"--confirm",
+				)
+			}
+			if len(visibleAppIDs) > 0 && !*confirm {
+				message := "--confirm is required when --visible-app is set"
+				fmt.Fprintln(os.Stderr, "Error:", message)
+				return shared.WithDiagnostic(
+					shared.NewReportedUsageError(shared.UsageErrorMissingRequired, message),
+					shared.DiagnosticRequiredInputMissing,
+					"--confirm",
+				)
+			}
+			warnDeprecatedUserRoles(roleValues)
 
 			client, err := shared.GetASCClient()
 			if err != nil {
