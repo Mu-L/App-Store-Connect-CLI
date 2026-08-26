@@ -123,10 +123,18 @@ Examples:
 			}
 
 			if len(territoryFieldsValue) > 0 && !shared.HasInclude(includeValues, "territories") {
-				return shared.UsageErrorf("--territory-fields requires --include territories")
+				return shared.WithDiagnostic(
+					shared.UsageErrorf("--territory-fields requires --include territories"),
+					shared.DiagnosticConflictingInput,
+					"--territory-fields",
+				)
 			}
 			if *territoryLimit != 0 && !shared.HasInclude(includeValues, "territories") {
-				return shared.UsageErrorf("--territory-limit requires --include territories")
+				return shared.WithDiagnostic(
+					shared.UsageErrorf("--territory-limit requires --include territories"),
+					shared.DiagnosticConflictingInput,
+					"--territory-limit",
+				)
 			}
 
 			resolvedAppID := shared.ResolveAppID(*appID)

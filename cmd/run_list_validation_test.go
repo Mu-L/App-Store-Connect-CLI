@@ -38,6 +38,20 @@ func TestRunListValidationErrorsAreUsageAndSkipASCClient(t *testing.T) {
 			wantParameter: "--visible-in-app-store",
 		},
 		{
+			name:               "app tags territory fields without include",
+			args:               []string{"app-tags", "list", "--territory-fields", "currency"},
+			wantError:          "--territory-fields requires --include territories",
+			wantParameter:      "--territory-fields",
+			wantDiagnosticCode: string(shared.DiagnosticConflictingInput),
+		},
+		{
+			name:               "app tags territory limit without include",
+			args:               []string{"app-tags", "list", "--territory-limit", "5"},
+			wantError:          "--territory-limit requires --include territories",
+			wantParameter:      "--territory-limit",
+			wantDiagnosticCode: string(shared.DiagnosticConflictingInput),
+		},
+		{
 			name:          "apps invalid limit",
 			args:          []string{"apps", "list", "--limit", "201"},
 			wantError:     "apps: --limit must be between 1 and 200",
