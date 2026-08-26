@@ -16,6 +16,7 @@ func TestPrintTable_SubscriptionPrices(t *testing.T) {
 				Attributes: SubscriptionPriceAttributes{
 					StartDate: "2026-01-01",
 					Preserved: true,
+					PlanType:  SubscriptionPlanTypeMonthly,
 				},
 			},
 		},
@@ -30,6 +31,9 @@ func TestPrintTable_SubscriptionPrices(t *testing.T) {
 	}
 	if !strings.Contains(output, "USA") {
 		t.Fatalf("expected territory in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Plan Type") || !strings.Contains(output, string(SubscriptionPlanTypeMonthly)) {
+		t.Fatalf("expected plan type in output, got: %s", output)
 	}
 }
 
@@ -70,7 +74,7 @@ func TestSubscriptionPricesRowsLeavesOmittedPreservedBlank(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscriptionPricesRows() error: %v", err)
 	}
-	if got := rows[0][4]; got != "" {
+	if got := rows[0][5]; got != "" {
 		t.Fatalf("preserved = %q, want blank for an omitted attribute", got)
 	}
 }
@@ -85,7 +89,7 @@ func TestSubscriptionPricesRowsPreservesExplicitFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscriptionPricesRows() error: %v", err)
 	}
-	if got := rows[0][4]; got != "false" {
+	if got := rows[0][5]; got != "false" {
 		t.Fatalf("preserved = %q, want explicit false", got)
 	}
 }

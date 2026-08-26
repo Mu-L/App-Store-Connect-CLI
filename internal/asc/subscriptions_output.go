@@ -159,7 +159,7 @@ func subscriptionPriceRows(resp *SubscriptionPriceResponse) ([]string, [][]strin
 }
 
 func subscriptionPricesRows(resp *SubscriptionPricesResponse) ([]string, [][]string, error) {
-	headers := []string{"ID", "Territory", "Price Point", "Start Date", "Preserved"}
+	headers := []string{"ID", "Territory", "Price Point", "Plan Type", "Start Date", "Preserved"}
 	rows := make([][]string, 0, len(resp.Data))
 	for _, item := range resp.Data {
 		territoryID, pricePointID, err := subscriptionPriceRelationshipIDs(item.Relationships)
@@ -174,6 +174,7 @@ func subscriptionPricesRows(resp *SubscriptionPricesResponse) ([]string, [][]str
 			item.ID,
 			territoryID,
 			pricePointID,
+			string(item.Attributes.PlanType),
 			item.Attributes.StartDate,
 			preserved,
 		})
