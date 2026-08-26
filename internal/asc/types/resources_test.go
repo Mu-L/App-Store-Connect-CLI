@@ -118,6 +118,33 @@ func TestResourcePreservesDecodedAttributesPresence(t *testing.T) {
 	}
 }
 
+type nullAwareResourceAttributes struct {
+	sawNull bool
+}
+
+func (a *nullAwareResourceAttributes) UnmarshalJSON(data []byte) error {
+	a.sawNull = string(data) == "null"
+	return nil
+}
+
+func TestResourceDecodesPresentNullAttributesIntoTypedValue(t *testing.T) {
+	var resource Resource[nullAwareResourceAttributes]
+	if err := json.Unmarshal([]byte(`{"type":"apps","id":"app-1","attributes":null}`), &resource); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resource.Attributes.sawNull {
+		t.Fatal("expected the typed attributes decoder to receive null")
+	}
+
+	got, err := json.Marshal(resource)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(got) != `{"type":"apps","id":"app-1","attributes":null}` {
+		t.Fatalf("output = %s", got)
+	}
+}
+
 func TestResourceConstructedByCallerKeepsAttributes(t *testing.T) {
 	resource := Resource[struct{}]{
 		Type:       ResourceTypeApps,
