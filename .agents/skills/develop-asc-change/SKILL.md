@@ -21,6 +21,8 @@ Before implementation, record:
 
 Stop and align before coding if the public command shape or compatibility decision remains materially ambiguous.
 
+Parallelize independent read-only help, schema, architecture, and test discovery with isolated subagents when available. Keep implementation, shared-file edits, commits, and pushes under one coordinated owner.
+
 ## Establish RED
 
 - For a bug, reproduce it first and add the smallest regression test that fails for the expected reason.
@@ -47,7 +49,7 @@ Read [references/test-matrix.md](references/test-matrix.md) for mandatory CLI, o
 - Write data to stdout and diagnostics to stderr. Never silently ignore accepted flags.
 - Use long-form flags in documentation, tests, and examples.
 - Require `--confirm` for destructive operations; do not add interactive prompts.
-- Keep one logical change per commit and remove helpers made obsolete by the change.
+- Keep one logical change per commit and remove helpers made obsolete by the change. Add review fixes as new commits; do not squash, rebase, force-push, or otherwise rewrite PR history unless the user explicitly requests it.
 - Deprecate stable commands or flags before removal, with warning text, transition tests, and an upgrade path.
 
 ## Reach GREEN and verify
@@ -56,9 +58,10 @@ Read [references/test-matrix.md](references/test-matrix.md) for mandatory CLI, o
 2. Run adjacent package and command tests.
 3. Build `/tmp/asc` and verify realistic invocations, output streams, and exit codes against the built binary.
 4. Run a minimal live smoke test when behavior depends on App Store Connect quirks. Prefer read-only calls; use disposable resources and clean them up for mutations.
-5. Run the repository gate before opening or updating a PR:
+5. Run focused and affected checks before opening or updating a PR. Run the full repository gate for public CLI behavior, shared code, release surfaces, meaningful defect or security fixes, or when repository policy or the user requires it:
 
 ```bash
+make build
 make format
 make check-docs
 make lint
@@ -66,6 +69,8 @@ ASC_BYPASS_KEYCHAIN=1 make test
 ```
 
 If command help changed, run `make generate-command-docs` and commit the resulting `docs/COMMANDS.md` update before the gate.
+
+Before handoff, compare the exact branch head with current `main` read-only. Do not update, rebase, or merge `main` into a clean branch merely because `main` advanced; update only when an actual merge conflict prevents the merge.
 
 ## Hand off
 

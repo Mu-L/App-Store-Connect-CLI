@@ -196,6 +196,7 @@ generate-command-docs:
 .PHONY: check-command-docs
 check-command-docs:
 	@echo "$(BLUE)Checking command docs sync...$(NC)"
+	python3 ./scripts/test_generate_command_docs.py
 	python3 ./scripts/generate-command-docs.py --check
 	python3 ./scripts/check-commands-docs.py
 

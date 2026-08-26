@@ -35,7 +35,7 @@ func DevicesRegisterBatchCommand() *ffcli.Command {
 	platform := fs.String("platform", "", "Default platform when a row omits it: "+strings.Join(devicePlatformList(), ", "))
 	dryRun := fs.Bool("dry-run", false, "Validate and show the registration plan without creating devices")
 	confirm := fs.Bool("confirm", false, "Confirm device registration mutations")
-	continueOnError := fs.Bool("continue-on-error", true, "Continue registering after an API failure (default true)")
+	continueOnError := fs.Bool("continue-on-error", true, "Continue registering after an API failure")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{

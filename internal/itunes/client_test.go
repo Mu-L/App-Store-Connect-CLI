@@ -3,6 +3,8 @@ package itunes
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -207,6 +209,50 @@ func TestGetRatings_HistogramFailureIsNonFatal(t *testing.T) {
 	}
 }
 
+func TestGetRatings_PropagatesHistogramCancellation(t *testing.T) {
+	lookupBody := `{"resultCount":1,"results":[{"trackId":123,"trackName":"Canceled Histogram","averageUserRating":4.0,"userRatingCount":10}]}`
+	histogramStarted := make(chan struct{})
+	client := &Client{
+		BaseURL: "https://example.test",
+		HTTPClient: &http.Client{Transport: ratingsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/lookup":
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(lookupBody)), Request: req}, nil
+			case "/us/customer-reviews/id123":
+				close(histogramStarted)
+				<-req.Context().Done()
+				return nil, req.Context().Err()
+			default:
+				return nil, fmt.Errorf("unexpected request path %s", req.URL.Path)
+			}
+		})},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := client.GetRatings(ctx, "123", "us")
+		resultCh <- err
+	}()
+
+	select {
+	case <-histogramStarted:
+		cancel()
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for histogram request")
+	}
+
+	select {
+	case err := <-resultCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("GetRatings() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for GetRatings()")
+	}
+}
+
 func TestGetRatings_DefaultCountry(t *testing.T) {
 	lookupResponse := `{
 		"resultCount": 1,
@@ -408,6 +454,42 @@ func TestGetAllRatings_AllStorefrontHTTPFailuresRetainStatus(t *testing.T) {
 	}
 	if got := statusError.HTTPStatusCode(); got != http.StatusServiceUnavailable {
 		t.Fatalf("HTTPStatusCode() = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
+func TestGetAllRatings_PreservesStorefrontFailureWhenFallbackOutlastsCountryDeadline(t *testing.T) {
+	client := &Client{
+		BaseURL: "https://example.test",
+		HTTPClient: &http.Client{
+			Transport: ratingsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Body:       http.NoBody,
+					Request:    req,
+				}, nil
+			}),
+		},
+	}
+	t.Setenv("ASC_MAX_RETRIES", "1")
+	t.Setenv("ASC_BASE_DELAY", "1s")
+	t.Setenv("ASC_MAX_DELAY", "1s")
+
+	newCountryContext := func(parent context.Context) (context.Context, context.CancelFunc) {
+		return context.WithTimeout(parent, 50*time.Millisecond)
+	}
+	_, err := client.GetAllRatings(context.Background(), "123", len(AllCountries()), newCountryContext)
+	if err == nil {
+		t.Fatal("expected all-storefront failure")
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want the storefront failure rather than a country deadline", err)
+	}
+	var statusError interface{ HTTPStatusCode() int }
+	if !errors.As(err, &statusError) {
+		t.Fatalf("error %T does not retain HTTP status", err)
+	}
+	if got := statusError.HTTPStatusCode(); got != http.StatusTooManyRequests {
+		t.Fatalf("HTTPStatusCode() = %d, want %d", got, http.StatusTooManyRequests)
 	}
 }
 

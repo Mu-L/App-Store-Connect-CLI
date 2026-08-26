@@ -94,6 +94,16 @@ func normalizeAppsCreateRunOptions(opts AppsCreateRunOptions) AppsCreateRunOptio
 	return opts
 }
 
+func explainAppsCreateError(err error) error {
+	if webcore.IsMissingCompanyNameError(err) {
+		return fmt.Errorf(
+			"web apps create failed: Apple requires a company name for this account; retry with --company-name \"Your Company\": %w",
+			err,
+		)
+	}
+	return fmt.Errorf("web apps create failed: %w", err)
+}
+
 func promptAppsCreateFields(opts *AppsCreateRunOptions) error {
 	if opts == nil {
 		return fmt.Errorf("app create options are required")
@@ -203,9 +213,23 @@ func promptAppsCreatePassword(password *string) error {
 
 func promptAppsCreateSessionAppleID(appleID *string) error {
 	if !appCreateCanPromptInteractivelyFn() {
-		return shared.UsageError("--apple-id is required when no cached web session is available")
+		return shared.WithDiagnostic(
+			shared.UsageError("--apple-id is required when no cached web session is available"),
+			shared.DiagnosticRequiredInputMissing,
+			"--apple-id",
+		)
 	}
 	return promptAppsCreateAppleID(appleID)
+}
+
+// soleMissingFlag names the failing parameter only when exactly one required
+// flag is absent. Multi-parameter requirements stay unattributed so the
+// telemetry dimension never guesses which flag the caller meant to pass.
+func soleMissingFlag(missingFlags []string) string {
+	if len(missingFlags) != 1 {
+		return ""
+	}
+	return missingFlags[0]
 }
 
 func appCreatePasswordInputProvided(password string) bool {
@@ -291,7 +315,11 @@ func RunAppsCreate(ctx context.Context, opts AppsCreateRunOptions) error {
 			if missingSKU {
 				missingFlags = append(missingFlags, "--sku")
 			}
-			return shared.UsageError(fmt.Sprintf("missing required flags: %s", strings.Join(missingFlags, ", ")))
+			return shared.WithDiagnostic(
+				shared.UsageError(fmt.Sprintf("missing required flags: %s", strings.Join(missingFlags, ", "))),
+				shared.DiagnosticRequiredInputMissing,
+				soleMissingFlag(missingFlags),
+			)
 		}
 		if err := promptAppsCreateFields(&opts); err != nil {
 			return err
@@ -398,7 +426,7 @@ func RunAppsCreate(ctx context.Context, opts AppsCreateRunOptions) error {
 				err = errors.Join(err, fmt.Errorf("failed to roll back created bundle id %q: %w", opts.BundleID, rollbackErr))
 			}
 		}
-		return fmt.Errorf("web apps create failed: %w", err)
+		return explainAppsCreateError(err)
 	}
 
 	fmt.Fprintf(os.Stderr, "Created app successfully (id=%s)\n", strings.TrimSpace(app.Data.ID))
