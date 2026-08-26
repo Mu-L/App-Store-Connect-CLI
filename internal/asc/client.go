@@ -1,6 +1,7 @@
 package asc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -197,6 +198,177 @@ type BetaGroupAttributes struct {
 	FeedbackEnabled                      bool   `json:"feedbackEnabled,omitempty"`
 	IOSBuildsAvailableForAppleSiliconMac *bool  `json:"iosBuildsAvailableForAppleSiliconMac,omitempty"`
 	IOSBuildsAvailableForAppleVision     *bool  `json:"iosBuildsAvailableForAppleVision,omitempty"`
+
+	attributesDecoded                         bool
+	attributesNull                            bool
+	nameJSON                                  json.RawMessage
+	createdDateJSON                           json.RawMessage
+	isInternalGroupJSON                       json.RawMessage
+	hasAccessToAllBuildsJSON                  json.RawMessage
+	publicLinkEnabledJSON                     json.RawMessage
+	publicLinkIDJSON                          json.RawMessage
+	publicLinkLimitEnabledJSON                json.RawMessage
+	publicLinkLimitJSON                       json.RawMessage
+	publicLinkJSON                            json.RawMessage
+	feedbackEnabledJSON                       json.RawMessage
+	iosBuildsAvailableForAppleSiliconMacJSON  json.RawMessage
+	iosBuildsAvailableForAppleVisionJSON      json.RawMessage
+	nameValue                                 string
+	createdDateValue                          string
+	isInternalGroupValue                      bool
+	hasAccessToAllBuildsValue                 bool
+	publicLinkEnabledValue                    bool
+	publicLinkIDValue                         string
+	publicLinkLimitEnabledValue               bool
+	publicLinkLimitValue                      int
+	publicLinkValue                           string
+	feedbackEnabledValue                      bool
+	iosBuildsAvailableForAppleSiliconMacValue *bool
+	iosBuildsAvailableForAppleVisionValue     *bool
+}
+
+// UnmarshalJSON retains sparse field presence without changing the public,
+// value-shaped BetaGroupAttributes API.
+func (a *BetaGroupAttributes) UnmarshalJSON(data []byte) error {
+	type alias BetaGroupAttributes
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*a = BetaGroupAttributes(decoded)
+	a.attributesDecoded = true
+	a.attributesNull = bytes.Equal(bytes.TrimSpace(data), []byte("null"))
+	a.nameJSON = fields["name"]
+	a.createdDateJSON = fields["createdDate"]
+	a.isInternalGroupJSON = fields["isInternalGroup"]
+	a.hasAccessToAllBuildsJSON = fields["hasAccessToAllBuilds"]
+	a.publicLinkEnabledJSON = fields["publicLinkEnabled"]
+	a.publicLinkIDJSON = fields["publicLinkId"]
+	a.publicLinkLimitEnabledJSON = fields["publicLinkLimitEnabled"]
+	a.publicLinkLimitJSON = fields["publicLinkLimit"]
+	a.publicLinkJSON = fields["publicLink"]
+	a.feedbackEnabledJSON = fields["feedbackEnabled"]
+	a.iosBuildsAvailableForAppleSiliconMacJSON = fields["iosBuildsAvailableForAppleSiliconMac"]
+	a.iosBuildsAvailableForAppleVisionJSON = fields["iosBuildsAvailableForAppleVision"]
+	a.nameValue = a.Name
+	a.createdDateValue = a.CreatedDate
+	a.isInternalGroupValue = a.IsInternalGroup
+	a.hasAccessToAllBuildsValue = a.HasAccessToAllBuilds
+	a.publicLinkEnabledValue = a.PublicLinkEnabled
+	a.publicLinkIDValue = a.PublicLinkID
+	a.publicLinkLimitEnabledValue = a.PublicLinkLimitEnabled
+	a.publicLinkLimitValue = a.PublicLinkLimit
+	a.publicLinkValue = a.PublicLink
+	a.feedbackEnabledValue = a.FeedbackEnabled
+	a.iosBuildsAvailableForAppleSiliconMacValue = cloneBool(a.IOSBuildsAvailableForAppleSiliconMac)
+	a.iosBuildsAvailableForAppleVisionValue = cloneBool(a.IOSBuildsAvailableForAppleVision)
+	return nil
+}
+
+// MarshalJSON preserves fields Apple supplied in sparse responses while still
+// serializing values changed by callers after decoding.
+func (a BetaGroupAttributes) MarshalJSON() ([]byte, error) {
+	if !a.attributesDecoded {
+		type alias BetaGroupAttributes
+		return json.Marshal(alias(a))
+	}
+	if a.attributesNull {
+		return []byte("null"), nil
+	}
+
+	type attributesJSON struct {
+		Name                                 json.RawMessage `json:"name,omitempty"`
+		CreatedDate                          json.RawMessage `json:"createdDate,omitempty"`
+		IsInternalGroup                      json.RawMessage `json:"isInternalGroup,omitempty"`
+		HasAccessToAllBuilds                 json.RawMessage `json:"hasAccessToAllBuilds,omitempty"`
+		PublicLinkEnabled                    json.RawMessage `json:"publicLinkEnabled,omitempty"`
+		PublicLinkID                         json.RawMessage `json:"publicLinkId,omitempty"`
+		PublicLinkLimitEnabled               json.RawMessage `json:"publicLinkLimitEnabled,omitempty"`
+		PublicLinkLimit                      json.RawMessage `json:"publicLinkLimit,omitempty"`
+		PublicLink                           json.RawMessage `json:"publicLink,omitempty"`
+		FeedbackEnabled                      json.RawMessage `json:"feedbackEnabled,omitempty"`
+		IOSBuildsAvailableForAppleSiliconMac json.RawMessage `json:"iosBuildsAvailableForAppleSiliconMac,omitempty"`
+		IOSBuildsAvailableForAppleVision     json.RawMessage `json:"iosBuildsAvailableForAppleVision,omitempty"`
+	}
+	fields := attributesJSON{}
+	var err error
+	if len(a.nameJSON) > 0 || a.Name != "" {
+		fields.Name, err = sparseAttributeJSON(a.nameJSON, a.nameValue, a.Name)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.createdDateJSON) > 0 || a.CreatedDate != "" {
+		fields.CreatedDate, err = sparseAttributeJSON(a.createdDateJSON, a.createdDateValue, a.CreatedDate)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.isInternalGroupJSON) > 0 || a.IsInternalGroup {
+		fields.IsInternalGroup, err = sparseAttributeJSON(a.isInternalGroupJSON, a.isInternalGroupValue, a.IsInternalGroup)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.hasAccessToAllBuildsJSON) > 0 || a.HasAccessToAllBuilds {
+		fields.HasAccessToAllBuilds, err = sparseAttributeJSON(a.hasAccessToAllBuildsJSON, a.hasAccessToAllBuildsValue, a.HasAccessToAllBuilds)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.publicLinkEnabledJSON) > 0 || a.PublicLinkEnabled {
+		fields.PublicLinkEnabled, err = sparseAttributeJSON(a.publicLinkEnabledJSON, a.publicLinkEnabledValue, a.PublicLinkEnabled)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.publicLinkIDJSON) > 0 || a.PublicLinkID != "" {
+		fields.PublicLinkID, err = sparseAttributeJSON(a.publicLinkIDJSON, a.publicLinkIDValue, a.PublicLinkID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.publicLinkLimitEnabledJSON) > 0 || a.PublicLinkLimitEnabled {
+		fields.PublicLinkLimitEnabled, err = sparseAttributeJSON(a.publicLinkLimitEnabledJSON, a.publicLinkLimitEnabledValue, a.PublicLinkLimitEnabled)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.publicLinkLimitJSON) > 0 || a.PublicLinkLimit != 0 {
+		fields.PublicLinkLimit, err = sparseAttributeJSON(a.publicLinkLimitJSON, a.publicLinkLimitValue, a.PublicLinkLimit)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.publicLinkJSON) > 0 || a.PublicLink != "" {
+		fields.PublicLink, err = sparseAttributeJSON(a.publicLinkJSON, a.publicLinkValue, a.PublicLink)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.feedbackEnabledJSON) > 0 || a.FeedbackEnabled {
+		fields.FeedbackEnabled, err = sparseAttributeJSON(a.feedbackEnabledJSON, a.feedbackEnabledValue, a.FeedbackEnabled)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.iosBuildsAvailableForAppleSiliconMacJSON) > 0 || a.IOSBuildsAvailableForAppleSiliconMac != nil {
+		fields.IOSBuildsAvailableForAppleSiliconMac, err = sparseAttributeJSON(a.iosBuildsAvailableForAppleSiliconMacJSON, a.iosBuildsAvailableForAppleSiliconMacValue, a.IOSBuildsAvailableForAppleSiliconMac)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.iosBuildsAvailableForAppleVisionJSON) > 0 || a.IOSBuildsAvailableForAppleVision != nil {
+		fields.IOSBuildsAvailableForAppleVision, err = sparseAttributeJSON(a.iosBuildsAvailableForAppleVisionJSON, a.iosBuildsAvailableForAppleVisionValue, a.IOSBuildsAvailableForAppleVision)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(fields)
 }
 
 // BetaTesterAttributes describes a beta tester resource.
