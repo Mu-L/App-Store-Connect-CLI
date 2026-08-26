@@ -15,7 +15,7 @@ func screenshotSetListResult(ctx context.Context, client *asc.Client, localizati
 	}
 	for _, set := range response.Data {
 		requestCtx, cancel := shared.ContextWithTimeout(ctx)
-		screenshots, err := client.GetAppScreenshots(requestCtx, set.ID)
+		screenshots, err := client.GetAllAppScreenshots(requestCtx, set.ID)
 		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch screenshots for set %s: %w", set.ID, err)

@@ -336,7 +336,7 @@ func executeExperimentTreatmentLocalizationScreenshotUpload(
 		UploadContext:            assets.ContextWithAssetUploadTimeout,
 		Access: assets.ScreenshotSetAccess{
 			List: func(ctx context.Context, client *asc.Client, localizationID string) (*asc.AppScreenshotSetsResponse, error) {
-				return client.GetAppStoreVersionExperimentTreatmentLocalizationScreenshotSets(ctx, localizationID)
+				return client.GetAllAppStoreVersionExperimentTreatmentLocalizationScreenshotSets(ctx, localizationID)
 			},
 			Create: func(ctx context.Context, client *asc.Client, localizationID, displayType string) (*asc.AppScreenshotSetResponse, error) {
 				return client.CreateAppScreenshotSetForExperimentTreatmentLocalization(ctx, localizationID, displayType)

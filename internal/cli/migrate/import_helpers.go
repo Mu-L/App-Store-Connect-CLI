@@ -570,7 +570,7 @@ func uploadScreenshots(ctx context.Context, client *asc.Client, versionID string
 		}
 
 		setsCtx, setsCancel := migrateRequestContext(ctx)
-		existingSets, err := client.GetAppScreenshotSets(setsCtx, localizationID)
+		existingSets, err := client.GetAllAppScreenshotSets(setsCtx, localizationID)
 		setsCancel()
 		if err != nil {
 			return sortedScreenshotResults(results), fmt.Errorf("migrate import: failed to fetch screenshot sets for %s: %w", locale, err)
@@ -589,7 +589,7 @@ func uploadScreenshots(ctx context.Context, client *asc.Client, versionID string
 			}
 			existingOrderByType[set.Attributes.ScreenshotDisplayType] = orderedIDs
 			screenshotsCtx, screenshotsCancel := migrateRequestContext(ctx)
-			screenshots, err := client.GetAppScreenshots(screenshotsCtx, set.ID)
+			screenshots, err := client.GetAllAppScreenshots(screenshotsCtx, set.ID)
 			screenshotsCancel()
 			if err != nil {
 				return sortedScreenshotResults(results), fmt.Errorf("migrate import: failed to fetch screenshots for %s: %w", set.ID, err)

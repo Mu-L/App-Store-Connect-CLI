@@ -257,7 +257,7 @@ func fetchScreenshotSets(ctx context.Context, client *asc.Client, localizations 
 		setTasks = append(setTasks, func(taskCtx context.Context) error {
 			localization := localizations[index]
 			response, err := doReadinessRequest(taskCtx, func(requestCtx context.Context) (*asc.AppScreenshotSetsResponse, error) {
-				return client.GetAppStoreVersionLocalizationScreenshotSets(requestCtx, localization.ID)
+				return client.GetAllAppStoreVersionLocalizationScreenshotSets(requestCtx, localization.ID)
 			})
 			if err != nil {
 				return fmt.Errorf("validate: failed to fetch screenshot sets for %s: %w", localization.ID, err)
@@ -291,7 +291,7 @@ func fetchScreenshotSets(ctx context.Context, client *asc.Client, localizations 
 		screenshotTasks = append(screenshotTasks, func(taskCtx context.Context) error {
 			set := setRefs[index].set
 			response, err := doReadinessRequest(taskCtx, func(requestCtx context.Context) (*asc.AppScreenshotsResponse, error) {
-				return client.GetAppScreenshots(requestCtx, set.ID)
+				return client.GetAllAppScreenshots(requestCtx, set.ID)
 			})
 			if err != nil {
 				return fmt.Errorf("validate: failed to fetch screenshots for %s: %w", set.ID, err)

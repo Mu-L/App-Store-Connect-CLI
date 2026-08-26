@@ -143,7 +143,7 @@ type screenshotLocaleAssetFiles struct {
 
 var appStoreVersionScreenshotSetAccess = ScreenshotSetAccess{
 	List: func(ctx context.Context, client *asc.Client, localizationID string) (*asc.AppScreenshotSetsResponse, error) {
-		return client.GetAppScreenshotSets(ctx, localizationID)
+		return client.GetAllAppScreenshotSets(ctx, localizationID)
 	},
 	Create: func(ctx context.Context, client *asc.Client, localizationID, displayType string) (*asc.AppScreenshotSetResponse, error) {
 		return client.CreateAppScreenshotSet(ctx, localizationID, displayType)
@@ -518,7 +518,7 @@ func fetchScreenshotList(
 	requestContext func(context.Context) (context.Context, context.CancelFunc),
 ) (*asc.AppScreenshotListResult, error) {
 	requestCtx, cancel := requestContext(ctx)
-	setsResp, err := client.GetAppScreenshotSets(requestCtx, localizationID)
+	setsResp, err := client.GetAllAppScreenshotSets(requestCtx, localizationID)
 	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch sets: %w", err)
@@ -531,7 +531,7 @@ func fetchScreenshotList(
 
 	for _, set := range setsResp.Data {
 		requestCtx, cancel := requestContext(ctx)
-		screenshots, err := client.GetAppScreenshots(requestCtx, set.ID)
+		screenshots, err := client.GetAllAppScreenshots(requestCtx, set.ID)
 		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch screenshots for set %s: %w", set.ID, err)

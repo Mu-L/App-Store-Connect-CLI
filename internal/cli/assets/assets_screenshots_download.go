@@ -168,7 +168,7 @@ Examples:
 				})
 			} else {
 				requestCtx, cancel := shared.ContextWithTimeout(ctx)
-				setsResp, err := client.GetAppScreenshotSets(requestCtx, locID)
+				setsResp, err := client.GetAllAppScreenshotSets(requestCtx, locID)
 				cancel()
 				if err != nil {
 					return fmt.Errorf("screenshots download: failed to fetch sets: %w", err)
@@ -189,7 +189,7 @@ Examples:
 					displayType := strings.TrimSpace(set.Attributes.ScreenshotDisplayType)
 
 					requestCtx, cancel := shared.ContextWithTimeout(ctx)
-					shotsResp, err := client.GetAppScreenshots(requestCtx, set.ID)
+					shotsResp, err := client.GetAllAppScreenshots(requestCtx, set.ID)
 					cancel()
 					if err != nil {
 						return fmt.Errorf("screenshots download: failed to fetch screenshots for set %s: %w", set.ID, err)
