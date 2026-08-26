@@ -404,12 +404,12 @@ type BetaGroupCreateData struct {
 // BetaGroupCreateAttributes describes attributes accepted when creating a beta group.
 type BetaGroupCreateAttributes struct {
 	Name                   string `json:"name"`
-	IsInternalGroup        bool   `json:"isInternalGroup,omitempty"`
-	HasAccessToAllBuilds   bool   `json:"hasAccessToAllBuilds,omitempty"`
-	PublicLinkEnabled      bool   `json:"publicLinkEnabled,omitempty"`
-	PublicLinkLimitEnabled bool   `json:"publicLinkLimitEnabled,omitempty"`
-	PublicLinkLimit        int    `json:"publicLinkLimit,omitempty"`
-	FeedbackEnabled        bool   `json:"feedbackEnabled,omitempty"`
+	IsInternalGroup        *bool  `json:"isInternalGroup,omitempty"`
+	HasAccessToAllBuilds   *bool  `json:"hasAccessToAllBuilds,omitempty"`
+	PublicLinkEnabled      *bool  `json:"publicLinkEnabled,omitempty"`
+	PublicLinkLimitEnabled *bool  `json:"publicLinkLimitEnabled,omitempty"`
+	PublicLinkLimit        *int   `json:"publicLinkLimit,omitempty"`
+	FeedbackEnabled        *bool  `json:"feedbackEnabled,omitempty"`
 }
 
 // BetaGroupCreateRequest is a request to create a beta group.
@@ -723,26 +723,18 @@ func (c *Client) GetBetaGroupTesters(ctx context.Context, groupID string, opts .
 
 // CreateBetaGroup creates a beta group for an app.
 func (c *Client) CreateBetaGroup(ctx context.Context, appID, name string) (*BetaGroupResponse, error) {
-	return c.CreateBetaGroupWithAttributes(ctx, appID, BetaGroupAttributes{
+	return c.CreateBetaGroupWithAttributes(ctx, appID, BetaGroupCreateAttributes{
 		Name: name,
 	})
 }
 
 // CreateBetaGroupWithAttributes creates a beta group for an app with explicit attributes.
 // Note: some attributes (e.g., isInternalGroup) are create-only in the ASC API.
-func (c *Client) CreateBetaGroupWithAttributes(ctx context.Context, appID string, attrs BetaGroupAttributes) (*BetaGroupResponse, error) {
+func (c *Client) CreateBetaGroupWithAttributes(ctx context.Context, appID string, attrs BetaGroupCreateAttributes) (*BetaGroupResponse, error) {
 	payload := BetaGroupCreateRequest{
 		Data: BetaGroupCreateData{
-			Type: ResourceTypeBetaGroups,
-			Attributes: BetaGroupCreateAttributes{
-				Name:                   attrs.Name,
-				IsInternalGroup:        attrs.IsInternalGroup,
-				HasAccessToAllBuilds:   attrs.HasAccessToAllBuilds,
-				PublicLinkEnabled:      attrs.PublicLinkEnabled,
-				PublicLinkLimitEnabled: attrs.PublicLinkLimitEnabled,
-				PublicLinkLimit:        attrs.PublicLinkLimit,
-				FeedbackEnabled:        attrs.FeedbackEnabled,
-			},
+			Type:       ResourceTypeBetaGroups,
+			Attributes: attrs,
 			Relationships: &BetaGroupRelationships{
 				App: &Relationship{
 					Data: ResourceData{

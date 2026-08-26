@@ -149,6 +149,37 @@ asc xcode-cloud build-runs builds --run-id "BUILD_RUN_ID"
 * `--output` - Output format: `json`, `table`, `markdown`
 * `--pretty` - Pretty-print JSON output
 
+### xcode-cloud products
+
+List and manage Xcode Cloud products:
+
+```bash  theme={null}
+asc xcode-cloud products
+asc xcode-cloud products list --app "APP_ID"
+asc xcode-cloud products list --product-type APP --include app --app-fields name,bundleId
+asc xcode-cloud products list --fields "name,productType" --output json
+asc xcode-cloud products view --id "PRODUCT_ID"
+```
+
+**Flags (list):**
+
+* `--app` - App Store Connect app ID, bundle ID, or exact app name (or `ASC_APP_ID`)
+* `--product-type` - **[experimental]** Filter by `APP` or `FRAMEWORK`
+* `--fields` - **[experimental]** Sparse fields for CI products
+* `--app-fields` - **[experimental]** Sparse fields for included apps; requires `--include app`
+* `--bundle-id-fields` - **[experimental]** Sparse fields for included bundle IDs; requires `--include bundleId`
+* `--scm-repository-fields` - **[experimental]** Sparse fields for included SCM repositories; requires `--include primaryRepositories`
+* `--include` - **[experimental]** Include `app`, `bundleId`, or `primaryRepositories`
+* `--primary-repositories-limit` - **[experimental]** Maximum included primary repositories (1-50); requires `--include primaryRepositories`
+* `--limit` - Maximum results per page (1-200)
+* `--next` - Fetch next page using a links.next URL
+* `--paginate` - Automatically fetch all pages
+* `--output` - Output format: `json`, `table`, `markdown`
+* `--pretty` - Pretty-print JSON output
+
+Query-shaping flags cannot be combined with `--next`; Apple's continuation URL
+already contains the complete request query.
+
 ### xcode-cloud products app
 
 Get the app related to an Xcode Cloud product. API 4.4.1 can expose the new

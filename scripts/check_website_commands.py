@@ -30,7 +30,19 @@ ELLIPSIS_TOKENS = {"...", "…"}
 REQUIRED_FLAGS_BY_COMMAND: dict[tuple[str, ...], set[str]] = {
     ("submit", "create"): {"--build", "--confirm"},
 }
-BOOLEAN_FLAG_OVERRIDES = {"--api-debug", "--debug", "--retry-log"}
+# Presence-aware booleans intentionally omit a displayed default because
+# unset and explicit false have different behavior, but they still accept the
+# ergonomic bare --flag form in documented commands.
+BOOLEAN_FLAG_OVERRIDES = {
+    "--access-all-builds",
+    "--api-debug",
+    "--debug",
+    "--feedback-enabled",
+    "--internal",
+    "--public-link-enabled",
+    "--public-link-limit-enabled",
+    "--retry-log",
+}
 HIDDEN_DEPRECATED_ALIAS_FLAGS: dict[tuple[str, ...], dict[str, bool]] = {
     # DeprecatedUsageFunc intentionally hides FLAGS in help output for
     # compatibility aliases, but we still need accurate flag validation so docs
