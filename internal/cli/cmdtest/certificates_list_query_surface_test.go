@@ -186,6 +186,34 @@ func TestCertificatesListRejectsInvalidQuerySelections(t *testing.T) {
 	}
 }
 
+func TestCertificatesListRejectsExplicitlyEmptySelectors(t *testing.T) {
+	for _, name := range []string{
+		"certificate-type",
+		"display-name",
+		"serial-number",
+		"id",
+		"sort",
+		"fields",
+		"pass-type-id-fields",
+		"include",
+	} {
+		t.Run(name, func(t *testing.T) {
+			captured := certificatesListQuerySurfaceValidationStub(t)
+			_, stderr, err := runCertificatesListQuerySurface(t, "certificates", "list", "--"+name, ",")
+			if got := rootcmd.ExitCodeFromError(err); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d (err=%v)", got, rootcmd.ExitUsage, err)
+			}
+			want := "certificates list: --" + name + " must not be empty"
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("stderr = %q, want %q", stderr, want)
+			}
+			if captured.calls != 0 {
+				t.Fatalf("validation made %d client-factory call(s)", captured.calls)
+			}
+		})
+	}
+}
+
 func TestCertificatesListPassTypeIDFieldsRequiresInclude(t *testing.T) {
 	captured := certificatesListQuerySurfaceValidationStub(t)
 

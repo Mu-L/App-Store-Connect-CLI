@@ -106,6 +106,27 @@ Examples:
 			); err != nil {
 				return err
 			}
+			provided := map[string]bool{}
+			fs.Visit(func(f *flag.Flag) {
+				provided[f.Name] = true
+			})
+			for _, selector := range []struct {
+				name  string
+				value string
+			}{
+				{name: "certificate-type", value: *certificateType},
+				{name: "display-name", value: *displayName},
+				{name: "serial-number", value: *serialNumber},
+				{name: "id", value: *ids},
+				{name: "sort", value: *sort},
+				{name: "fields", value: *fields},
+				{name: "pass-type-id-fields", value: *passTypeIDFields},
+				{name: "include", value: *include},
+			} {
+				if provided[selector.name] && len(shared.SplitCSV(selector.value)) == 0 {
+					return shared.UsageErrorf("certificates list: --%s must not be empty", selector.name)
+				}
+			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return fmt.Errorf("certificates list: --limit must be between 1 and 200")
 			}
