@@ -60,6 +60,36 @@ func TestPrintMarkdown_SubscriptionPrices(t *testing.T) {
 	}
 }
 
+func TestSubscriptionPricesRowsLeavesOmittedPreservedBlank(t *testing.T) {
+	var resp SubscriptionPricesResponse
+	if err := json.Unmarshal([]byte(`{"data":[{"type":"subscriptionPrices","id":"price-1","attributes":{"startDate":"2026-01-01"}}],"links":{}}`), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	_, rows, err := subscriptionPricesRows(&resp)
+	if err != nil {
+		t.Fatalf("subscriptionPricesRows() error: %v", err)
+	}
+	if got := rows[0][4]; got != "" {
+		t.Fatalf("preserved = %q, want blank for an omitted attribute", got)
+	}
+}
+
+func TestSubscriptionPricesRowsPreservesExplicitFalse(t *testing.T) {
+	var resp SubscriptionPricesResponse
+	if err := json.Unmarshal([]byte(`{"data":[{"type":"subscriptionPrices","id":"price-1","attributes":{"preserved":false}}],"links":{}}`), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	_, rows, err := subscriptionPricesRows(&resp)
+	if err != nil {
+		t.Fatalf("subscriptionPricesRows() error: %v", err)
+	}
+	if got := rows[0][4]; got != "false" {
+		t.Fatalf("preserved = %q, want explicit false", got)
+	}
+}
+
 func TestPrintTable_SubscriptionPriceDeleteResult(t *testing.T) {
 	result := &SubscriptionPriceDeleteResult{ID: "price-1", Deleted: true}
 

@@ -207,6 +207,13 @@ func (a SubscriptionPriceAttributes) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// PreservedValue reports the preserved value and whether App Store Connect
+// supplied the attribute. The presence result keeps sparse table output from
+// treating an omitted boolean as an explicit false value.
+func (a SubscriptionPriceAttributes) PreservedValue() (bool, bool) {
+	return a.Preserved, a.preservedSet || a.Preserved
+}
+
 // SubscriptionPriceCreateAttributes describes attributes for creating a price.
 type SubscriptionPriceCreateAttributes struct {
 	StartDate string               `json:"startDate,omitempty"`

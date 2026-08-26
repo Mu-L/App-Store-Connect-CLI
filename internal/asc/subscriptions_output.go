@@ -146,10 +146,14 @@ func subscriptionImagesV2Rows(resp *SubscriptionImagesV2Response) ([]string, [][
 
 func subscriptionPriceRows(resp *SubscriptionPriceResponse) ([]string, [][]string) {
 	headers := []string{"ID", "Start Date", "Preserved"}
+	preserved := ""
+	if value, ok := resp.Data.Attributes.PreservedValue(); ok {
+		preserved = fmt.Sprintf("%t", value)
+	}
 	rows := [][]string{{
 		resp.Data.ID,
 		resp.Data.Attributes.StartDate,
-		fmt.Sprintf("%t", resp.Data.Attributes.Preserved),
+		preserved,
 	}}
 	return headers, rows
 }
@@ -162,12 +166,16 @@ func subscriptionPricesRows(resp *SubscriptionPricesResponse) ([]string, [][]str
 		if err != nil {
 			return nil, nil, err
 		}
+		preserved := ""
+		if value, ok := item.Attributes.PreservedValue(); ok {
+			preserved = fmt.Sprintf("%t", value)
+		}
 		rows = append(rows, []string{
 			item.ID,
 			territoryID,
 			pricePointID,
 			item.Attributes.StartDate,
-			fmt.Sprintf("%t", item.Attributes.Preserved),
+			preserved,
 		})
 	}
 	return headers, rows, nil
