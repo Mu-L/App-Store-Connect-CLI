@@ -122,8 +122,8 @@ func (c *Client) GetAppScreenshotSets(ctx context.Context, localizationID string
 	for _, opt := range opts {
 		opt(query)
 	}
-	if query.limitSet && query.limit <= 0 {
-		return nil, fmt.Errorf("appScreenshotSets: limit must be greater than zero")
+	if query.limitSet && (query.limit < 1 || query.limit > appScreenshotCollectionLimitMax) {
+		return nil, fmt.Errorf("appScreenshotSets: limit must be between 1 and %d", appScreenshotCollectionLimitMax)
 	}
 
 	path := fmt.Sprintf("/v1/appStoreVersionLocalizations/%s/appScreenshotSets", localizationID)
@@ -240,8 +240,8 @@ func (c *Client) GetAppScreenshots(ctx context.Context, setID string, opts ...Ap
 	for _, opt := range opts {
 		opt(query)
 	}
-	if query.limitSet && query.limit <= 0 {
-		return nil, fmt.Errorf("appScreenshots: limit must be greater than zero")
+	if query.limitSet && (query.limit < 1 || query.limit > appScreenshotCollectionLimitMax) {
+		return nil, fmt.Errorf("appScreenshots: limit must be between 1 and %d", appScreenshotCollectionLimitMax)
 	}
 
 	path := fmt.Sprintf("/v1/appScreenshotSets/%s/appScreenshots", setID)

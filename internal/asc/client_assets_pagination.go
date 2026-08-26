@@ -20,6 +20,8 @@ type appScreenshotsQuery struct {
 	requestContext RequestContextFunc
 }
 
+const appScreenshotCollectionLimitMax = 200
+
 // AppScreenshotSetsOption configures screenshot-set collection requests.
 type AppScreenshotSetsOption func(*appScreenshotSetsQuery)
 

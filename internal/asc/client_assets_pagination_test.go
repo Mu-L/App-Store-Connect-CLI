@@ -138,7 +138,7 @@ func TestGetAllAppScreenshotsUsesFreshRequestTimeoutPerPage(t *testing.T) {
 	}
 }
 
-func TestScreenshotCollectionRejectsNonPositiveLimitsBeforeRequest(t *testing.T) {
+func TestScreenshotCollectionRejectsOutOfRangeLimitsBeforeRequest(t *testing.T) {
 	tests := []struct {
 		name    string
 		request func(*Client, int) error
@@ -150,7 +150,7 @@ func TestScreenshotCollectionRejectsNonPositiveLimitsBeforeRequest(t *testing.T)
 				_, err := client.GetAppScreenshotSets(context.Background(), "loc-1", WithAppScreenshotSetsLimit(limit))
 				return err
 			},
-			wantErr: "appScreenshotSets: limit must be greater than zero",
+			wantErr: "appScreenshotSets: limit must be between 1 and 200",
 		},
 		{
 			name: "screenshots",
@@ -158,12 +158,12 @@ func TestScreenshotCollectionRejectsNonPositiveLimitsBeforeRequest(t *testing.T)
 				_, err := client.GetAppScreenshots(context.Background(), "set-1", WithAppScreenshotsLimit(limit))
 				return err
 			},
-			wantErr: "appScreenshots: limit must be greater than zero",
+			wantErr: "appScreenshots: limit must be between 1 and 200",
 		},
 	}
 
 	for _, test := range tests {
-		for _, limit := range []int{0, -1} {
+		for _, limit := range []int{0, -1, appScreenshotCollectionLimitMax + 1} {
 			t.Run(fmt.Sprintf("%s/%d", test.name, limit), func(t *testing.T) {
 				requestCount := 0
 				client := newTestClient(t, func(*http.Request) { requestCount++ }, jsonResponse(http.StatusOK, `{"data":[]}`))
