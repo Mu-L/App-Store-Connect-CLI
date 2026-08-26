@@ -338,7 +338,11 @@ func appsList(ctx context.Context, fs *flag.FlagSet, output string, pretty bool,
 			"bundle-id", "name", "sku", "version-state", "review-submission-state", "sort", "limit",
 			"app-info-fields", "iap-fields", "subscription-group-fields",
 		); ok {
-			return shared.UsageErrorf("--next cannot be combined with %s", flagName)
+			return shared.WithDiagnostic(
+				shared.UsageErrorf("--next cannot be combined with %s", flagName),
+				shared.DiagnosticConflictingInput,
+				flagName,
+			)
 		}
 	}
 	versionStateValues := shared.SplitCSVUpper(versionState)

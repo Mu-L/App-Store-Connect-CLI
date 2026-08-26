@@ -13,10 +13,11 @@ import (
 
 func TestRunListValidationErrorsAreUsageAndSkipASCClient(t *testing.T) {
 	tests := []struct {
-		name          string
-		args          []string
-		wantError     string
-		wantParameter string
+		name               string
+		args               []string
+		wantError          string
+		wantParameter      string
+		wantDiagnosticCode string
 	}{
 		{
 			name:          "categories invalid limit",
@@ -47,6 +48,13 @@ func TestRunListValidationErrorsAreUsageAndSkipASCClient(t *testing.T) {
 			args:          []string{"builds", "list", "--limit", "201"},
 			wantError:     "builds: --limit must be between 1 and 200",
 			wantParameter: "--limit",
+		},
+		{
+			name:               "apps next conflict",
+			args:               []string{"apps", "list", "--next", "https://api.appstoreconnect.apple.com/v1/apps?cursor=next", "--limit", "50"},
+			wantError:          "--next cannot be combined with --limit",
+			wantParameter:      "--limit",
+			wantDiagnosticCode: string(shared.DiagnosticConflictingInput),
 		},
 	}
 	for _, test := range tests {
@@ -87,7 +95,8 @@ func TestRunListValidationErrorsAreUsageAndSkipASCClient(t *testing.T) {
 			if gotContext.ErrorKind != telemetry.ErrorKindInvalidValue ||
 				gotContext.FailureStage != telemetry.FailureStageValidation ||
 				gotContext.OutcomeKind != telemetry.OutcomeUsageError ||
-				gotContext.FailureParameter != test.wantParameter {
+				gotContext.FailureParameter != test.wantParameter ||
+				gotContext.DiagnosticCode != test.wantDiagnosticCode {
 				t.Fatalf("unexpected telemetry context: %+v", gotContext)
 			}
 			if clientFactoryCalled {
