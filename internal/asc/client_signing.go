@@ -204,7 +204,9 @@ func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, quer
 	if err != nil {
 		return nil, err
 	}
-	combined := &BundleIDsResponse{}
+	combined := &BundleIDsResponse{
+		Data: make([]Resource[BundleIDAttributes], 0),
+	}
 	included := make([]json.RawMessage, 0)
 	includedSeen := make(map[string]struct{})
 	includedPresent := false

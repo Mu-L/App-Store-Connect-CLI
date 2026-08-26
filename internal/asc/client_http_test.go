@@ -7235,6 +7235,30 @@ func TestGetBundleIDs_SplitsLongIdentifierFilter(t *testing.T) {
 	}
 }
 
+func TestGetBundleIDs_SplitIdentifierFilterPreservesEmptyDataArray(t *testing.T) {
+	identifiers := make([]string, 0, 1500)
+	for range 1500 {
+		identifiers = append(identifiers, "a")
+	}
+
+	client := newTestServerClient(t, func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[]}`)
+	})
+
+	resp, err := client.GetBundleIDs(context.Background(), WithBundleIDsFilterIdentifier(strings.Join(identifiers, ",")))
+	if err != nil {
+		t.Fatalf("GetBundleIDs() error: %v", err)
+	}
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"data":[]`) {
+		t.Fatalf("encoded response = %s, want an empty data array", encoded)
+	}
+}
+
 func TestGetBundleIDs_RejectsExplicitSplitPaginationDisabled(t *testing.T) {
 	identifiers := make([]string, 0, 1500)
 	for range 1500 {
