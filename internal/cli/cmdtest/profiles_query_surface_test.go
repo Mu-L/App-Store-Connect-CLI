@@ -259,6 +259,16 @@ func TestProfilesListRejectsInvalidQueryValuesBeforeAuth(t *testing.T) {
 		concise bool
 	}{
 		{name: "sort", args: []string{"profiles", "list", "--sort", "createdDate"}, want: "--sort must be one of:"},
+		{name: "empty name", args: []string{"profiles", "list", "--name", ","}, want: "--name must not be empty"},
+		{name: "empty id", args: []string{"profiles", "list", "--id", " \t"}, want: "--id must not be empty"},
+		{name: "empty profile type", args: []string{"profiles", "list", "--profile-type", ","}, want: "--profile-type must not be empty"},
+		{name: "empty profile state", args: []string{"profiles", "list", "--profile-state", ""}, want: "--profile-state must not be empty"},
+		{name: "empty sort", args: []string{"profiles", "list", "--sort", ","}, want: "--sort must not be empty"},
+		{name: "empty profile fields", args: []string{"profiles", "list", "--fields", ","}, want: "--fields must not be empty"},
+		{name: "empty bundle fields", args: []string{"profiles", "list", "--bundle-id-fields", " \t"}, want: "--bundle-id-fields must not be empty"},
+		{name: "empty device fields", args: []string{"profiles", "list", "--device-fields", ""}, want: "--device-fields must not be empty"},
+		{name: "empty certificate fields", args: []string{"profiles", "list", "--certificate-fields", ","}, want: "--certificate-fields must not be empty"},
+		{name: "empty include", args: []string{"profiles", "list", "--include", ","}, want: "--include must not be empty"},
 		{name: "profile fields", args: []string{"profiles", "list", "--fields", "notAField"}, want: "--fields must be one of:"},
 		{name: "bundle fields", args: []string{"profiles", "list", "--bundle-id-fields", "uuid"}, want: "--bundle-id-fields must be one of:"},
 		{name: "device fields", args: []string{"profiles", "list", "--device-fields", "uuid"}, want: "--device-fields must be one of:"},
