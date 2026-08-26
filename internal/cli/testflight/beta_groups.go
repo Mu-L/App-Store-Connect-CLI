@@ -508,12 +508,22 @@ func BetaGroupsCreateCommand() *ffcli.Command {
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	name := fs.String("name", "", "Beta group name")
-	internal := fs.Bool("internal", false, "Create as internal group")
-	accessAllBuilds := fs.Bool("access-all-builds", false, "[experimental] Give the group access to all builds")
-	publicLinkEnabled := fs.Bool("public-link-enabled", false, "[experimental] Enable the public link")
-	publicLinkLimitEnabled := fs.Bool("public-link-limit-enabled", false, "[experimental] Enable the public link tester limit")
+	var internal shared.OptionalBool
+	internal.EnableBoolFlag()
+	fs.Var(&internal, "internal", "Create as internal group")
+	var accessAllBuilds shared.OptionalBool
+	accessAllBuilds.EnableBoolFlag()
+	fs.Var(&accessAllBuilds, "access-all-builds", "[experimental] Give the group access to all builds")
+	var publicLinkEnabled shared.OptionalBool
+	publicLinkEnabled.EnableBoolFlag()
+	fs.Var(&publicLinkEnabled, "public-link-enabled", "[experimental] Enable the public link")
+	var publicLinkLimitEnabled shared.OptionalBool
+	publicLinkLimitEnabled.EnableBoolFlag()
+	fs.Var(&publicLinkLimitEnabled, "public-link-limit-enabled", "[experimental] Enable the public link tester limit")
 	publicLinkLimit := fs.Int("public-link-limit", 0, "[experimental] Public link tester limit (1-10000)")
-	feedbackEnabled := fs.Bool("feedback-enabled", false, "[experimental] Enable tester feedback")
+	var feedbackEnabled shared.OptionalBool
+	feedbackEnabled.EnableBoolFlag()
+	fs.Var(&feedbackEnabled, "feedback-enabled", "[experimental] Enable tester feedback")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -543,7 +553,7 @@ Examples:
 			fs.Visit(func(f *flag.Flag) {
 				visited[f.Name] = true
 			})
-			if *internal && (visited["public-link-enabled"] || visited["public-link-limit-enabled"] || visited["public-link-limit"]) {
+			if internal.Value() && (publicLinkEnabled.IsSet() || publicLinkLimitEnabled.IsSet() || visited["public-link-limit"]) {
 				fmt.Fprintln(os.Stderr, "Error: --internal cannot be combined with public link controls")
 				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "--internal")
 			}
@@ -551,7 +561,7 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --public-link-limit must be between 1 and 10000")
 				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--public-link-limit")
 			}
-			if visited["public-link-limit-enabled"] && *publicLinkLimitEnabled && !visited["public-link-limit"] {
+			if publicLinkLimitEnabled.IsSet() && publicLinkLimitEnabled.Value() && !visited["public-link-limit"] {
 				fmt.Fprintln(os.Stderr, "Error: --public-link-limit is required when enabling public link limit")
 				return shared.MissingRequiredUsageError("--public-link-limit")
 			}
@@ -564,14 +574,18 @@ Examples:
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 
-			attrs := asc.BetaGroupAttributes{
+			var publicLinkLimitAttr *int
+			if visited["public-link-limit"] {
+				publicLinkLimitAttr = publicLinkLimit
+			}
+			attrs := asc.BetaGroupCreateAttributes{
 				Name:                   strings.TrimSpace(*name),
-				IsInternalGroup:        *internal,
-				HasAccessToAllBuilds:   *accessAllBuilds,
-				PublicLinkEnabled:      *publicLinkEnabled,
-				PublicLinkLimitEnabled: *publicLinkLimitEnabled,
-				PublicLinkLimit:        *publicLinkLimit,
-				FeedbackEnabled:        *feedbackEnabled,
+				IsInternalGroup:        optionalBetaGroupCreateBool(internal),
+				HasAccessToAllBuilds:   optionalBetaGroupCreateBool(accessAllBuilds),
+				PublicLinkEnabled:      optionalBetaGroupCreateBool(publicLinkEnabled),
+				PublicLinkLimitEnabled: optionalBetaGroupCreateBool(publicLinkLimitEnabled),
+				PublicLinkLimit:        publicLinkLimitAttr,
+				FeedbackEnabled:        optionalBetaGroupCreateBool(feedbackEnabled),
 			}
 
 			group, err := client.CreateBetaGroupWithAttributes(requestCtx, resolvedAppID, attrs)
@@ -582,6 +596,14 @@ Examples:
 			return shared.PrintOutput(group, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+func optionalBetaGroupCreateBool(value shared.OptionalBool) *bool {
+	if !value.IsSet() {
+		return nil
+	}
+	result := value.Value()
+	return &result
 }
 
 // BetaGroupsGetCommand returns the beta groups get subcommand.
