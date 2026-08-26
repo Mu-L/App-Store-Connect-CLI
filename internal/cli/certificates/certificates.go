@@ -63,7 +63,7 @@ func CertificatesListCommand() *ffcli.Command {
 	displayName := fs.String("display-name", "", "[experimental] Filter by display name(s), comma-separated")
 	serialNumber := fs.String("serial-number", "", "[experimental] Filter by serial number(s), comma-separated")
 	ids := fs.String("id", "", "[experimental] Filter by certificate ID(s), comma-separated")
-	sort := fs.String("sort", "", "[experimental] Sort by: "+strings.Join(certificateSortList(), ", "))
+	sort := fs.String("sort", "", "[experimental] Sort by key(s), comma-separated: "+strings.Join(certificateSortList(), ", "))
 	fields := fs.String("fields", "", "[experimental] Fields to include: "+strings.Join(certificateFieldsList(), ", "))
 	passTypeIDFields := fs.String("pass-type-id-fields", "", "[experimental] Fields to include for pass type IDs: "+strings.Join(certificatePassTypeIDFieldsList(), ", "))
 	include := fs.String("include", "", "[experimental] Include relationships: "+strings.Join(certificateIncludeList(), ", "))
@@ -109,7 +109,8 @@ Examples:
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return fmt.Errorf("certificates list: --limit must be between 1 and 200")
 			}
-			if err := shared.ValidateSort(*sort, certificateSortList()...); err != nil {
+			sortValue, err := normalizeCertificateSort(*sort)
+			if err != nil {
 				return shared.UsageErrorf("certificates list: %v", err)
 			}
 			fieldsValue, err := normalizeCertificateFields(*fields, "--fields")
@@ -162,8 +163,8 @@ Examples:
 			if len(idsValue) > 0 {
 				opts = append(opts, asc.WithCertificatesFilterIDs(idsValue))
 			}
-			if strings.TrimSpace(*sort) != "" {
-				opts = append(opts, asc.WithCertificatesSort(*sort))
+			if sortValue != "" {
+				opts = append(opts, asc.WithCertificatesSort(sortValue))
 			}
 			if len(fieldsValue) > 0 {
 				opts = append(opts, asc.WithCertificatesFields(fieldsValue))
@@ -517,6 +518,27 @@ func encodeCSRContent(data []byte) (string, error) {
 		return "", fmt.Errorf("CSR file is empty")
 	}
 	return normalized, nil
+}
+
+func normalizeCertificateSort(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+
+	allowed := certificateSortList()
+	parts := strings.Split(value, ",")
+	for index, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return "", fmt.Errorf("--sort must be one of: %s", strings.Join(allowed, ", "))
+		}
+		if err := shared.ValidateSort(part, allowed...); err != nil {
+			return "", err
+		}
+		parts[index] = part
+	}
+	return strings.Join(parts, ","), nil
 }
 
 func normalizeCertificatesInclude(value string) ([]string, error) {

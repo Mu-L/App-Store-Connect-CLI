@@ -82,7 +82,7 @@ func TestCertificatesListQuerySurfaceEmitsDocumentedParameters(t *testing.T) {
 		"--certificate-type", "ios_distribution,pass_type_id",
 		"--serial-number", "SN1,SN2",
 		"--id", "cert-1,cert-2",
-		"--sort=-displayName",
+		"--sort=-displayName, serialNumber",
 		"--fields", "displayName,serialNumber",
 		"--pass-type-id-fields", "name,identifier",
 		"--include", "passTypeId",
@@ -103,7 +103,7 @@ func TestCertificatesListQuerySurfaceEmitsDocumentedParameters(t *testing.T) {
 		"filter[certificateType]": "IOS_DISTRIBUTION,PASS_TYPE_ID",
 		"filter[serialNumber]":    "SN1,SN2",
 		"filter[id]":              "cert-1,cert-2",
-		"sort":                    "-displayName",
+		"sort":                    "-displayName,serialNumber",
 		"fields[certificates]":    "displayName,serialNumber",
 		"fields[passTypeIds]":     "name,identifier",
 		"include":                 "passTypeId",
@@ -165,6 +165,7 @@ func TestCertificatesListRejectsInvalidQuerySelections(t *testing.T) {
 		want string
 	}{
 		{name: "sort", args: []string{"--sort", "createdDate"}, want: "--sort must be one of"},
+		{name: "sort list", args: []string{"--sort", "displayName,createdDate"}, want: "--sort must be one of"},
 		{name: "fields", args: []string{"--fields", "createdDate"}, want: "--fields must be one of"},
 		{name: "pass type ID fields", args: []string{"--pass-type-id-fields", "createdDate"}, want: "--pass-type-id-fields must be one of"},
 		{name: "include", args: []string{"--include", "profiles"}, want: "--include must be one of"},
