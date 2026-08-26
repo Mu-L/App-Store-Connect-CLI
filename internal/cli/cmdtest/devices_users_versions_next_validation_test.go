@@ -2,6 +2,8 @@ package cmdtest
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -49,7 +51,11 @@ func TestDevicesListRejectsInvalidNextURL(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if stderr != "" {
+			if errors.Is(runErr, flag.ErrHelp) {
+				if !strings.Contains(stderr, test.wantErr) {
+					t.Fatalf("expected stderr to contain %q, got %q", test.wantErr, stderr)
+				}
+			} else if stderr != "" {
 				t.Fatalf("expected empty stderr, got %q", stderr)
 			}
 		})

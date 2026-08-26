@@ -2,6 +2,8 @@ package cmdtest
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -57,7 +59,13 @@ func runGameCenterAchievementsInvalidNextURLCases(
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			assertOnlyDeprecatedCommandWarnings(t, stderr)
+			if errors.Is(runErr, flag.ErrHelp) {
+				if !strings.Contains(stderr, test.wantErr) {
+					t.Fatalf("expected stderr to contain %q, got %q", test.wantErr, stderr)
+				}
+			} else {
+				assertOnlyDeprecatedCommandWarnings(t, stderr)
+			}
 		})
 	}
 }
