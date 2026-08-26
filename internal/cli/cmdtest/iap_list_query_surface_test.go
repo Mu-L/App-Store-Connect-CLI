@@ -204,6 +204,23 @@ func TestIAPListQuerySurfaceRejectsInvalidSelectorsBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestIAPListQuerySurfaceRejectsExplicitlyEmptySelectors(t *testing.T) {
+	for _, name := range []string{"product-id", "name", "state", "type", "sort"} {
+		t.Run(name, func(t *testing.T) {
+			captured := iapListQuerySurfaceStub(t)
+			_, stderr, err := runIAPListQuerySurface(t, "iap", "list", "--app", "app-1", "--"+name, "")
+			if got := rootcmd.ExitCodeFromError(err); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d (err=%v)", got, rootcmd.ExitUsage, err)
+			}
+			want := "--" + name + " must not be empty"
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("expected stderr to contain %q, got %q", want, stderr)
+			}
+			captured.assertNoRequest(t)
+		})
+	}
+}
+
 func TestIAPListQuerySurfaceRejectsNextWithSelectors(t *testing.T) {
 	next := "https://api.appstoreconnect.apple.com/v1/apps/app-1/inAppPurchasesV2?cursor=next"
 	flags := []string{"product-id", "name", "state", "type", "sort"}

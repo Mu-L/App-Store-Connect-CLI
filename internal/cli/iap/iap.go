@@ -146,6 +146,20 @@ Examples:
 					return shared.UsageErrorf("iap list: --%s requires the v2 endpoint", name)
 				}
 			}
+			for _, selector := range []struct {
+				name  string
+				value string
+			}{
+				{"product-id", *productID},
+				{"name", *name},
+				{"state", *state},
+				{"type", *iapType},
+				{"sort", *sort},
+			} {
+				if flagSet(fs, selector.name) && strings.TrimSpace(selector.value) == "" {
+					return shared.UsageErrorf("iap list: --%s must not be empty", selector.name)
+				}
+			}
 
 			productIDValues, err := normalizeIAPListCSV(*productID, "--product-id")
 			if err != nil {
