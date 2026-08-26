@@ -98,12 +98,24 @@ Examples:
 			); err != nil {
 				return err
 			}
-			localizationsLimitProvided := false
-			fs.Visit(func(f *flag.Flag) {
-				if f.Name == "localizations-limit" {
-					localizationsLimitProvided = true
+			for _, selection := range []struct {
+				name  string
+				value string
+			}{
+				{name: "event-state", value: *eventState},
+				{name: "id", value: *ids},
+				{name: "fields", value: *fields},
+				{name: "localization-fields", value: *localizationFields},
+				{name: "include", value: *include},
+			} {
+				if !appEventFlagWasProvided(fs, selection.name) {
+					continue
 				}
-			})
+				if err := validateAppEventCSV(selection.value, "--"+selection.name); err != nil {
+					return shared.UsageErrorf("app-events list: %v", err)
+				}
+			}
+			localizationsLimitProvided := appEventFlagWasProvided(fs, "localizations-limit")
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return shared.UsageErrorf("app-events list: --limit must be between 1 and 200")
 			}

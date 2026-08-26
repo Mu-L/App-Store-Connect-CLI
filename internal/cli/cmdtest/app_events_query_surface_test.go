@@ -139,9 +139,39 @@ func TestAppEventsListQuerySurfaceRejectsInvalidValuesBeforeAuth(t *testing.T) {
 			want: "--event-state",
 		},
 		{
+			name: "event state explicitly empty",
+			args: []string{"--event-state", ""},
+			want: "--event-state must not be empty",
+		},
+		{
+			name: "event state contains empty value",
+			args: []string{"--event-state", "APPROVED,"},
+			want: "--event-state must not contain empty values",
+		},
+		{
+			name: "id explicitly empty",
+			args: []string{"--id", ""},
+			want: "--id must not be empty",
+		},
+		{
+			name: "id contains empty value",
+			args: []string{"--id", "event-1,"},
+			want: "--id must not contain empty values",
+		},
+		{
 			name: "event fields",
 			args: []string{"--fields", "notAField"},
 			want: "--fields",
+		},
+		{
+			name: "event fields explicitly empty",
+			args: []string{"--fields", "  "},
+			want: "--fields must not be empty",
+		},
+		{
+			name: "event fields contains empty value",
+			args: []string{"--fields", "referenceName,,eventState"},
+			want: "--fields must not contain empty values",
 		},
 		{
 			name: "localization fields",
@@ -149,9 +179,29 @@ func TestAppEventsListQuerySurfaceRejectsInvalidValuesBeforeAuth(t *testing.T) {
 			want: "--localization-fields",
 		},
 		{
+			name: "localization fields explicitly empty",
+			args: []string{"--localization-fields", ""},
+			want: "--localization-fields must not be empty",
+		},
+		{
+			name: "localization fields contains empty value",
+			args: []string{"--localization-fields", "locale,,name"},
+			want: "--localization-fields must not contain empty values",
+		},
+		{
 			name: "include",
 			args: []string{"--include", "notARelationship"},
 			want: "--include",
+		},
+		{
+			name: "include explicitly empty",
+			args: []string{"--include", ""},
+			want: "--include must not be empty",
+		},
+		{
+			name: "include contains empty value",
+			args: []string{"--include", "localizations,"},
+			want: "--include must not contain empty values",
 		},
 		{
 			name: "localization limit",
