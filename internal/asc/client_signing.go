@@ -662,9 +662,12 @@ func (c *Client) GetCertificate(ctx context.Context, id string, opts ...Certific
 	for _, opt := range opts {
 		opt(query)
 	}
+	if err := validateCertificateDetailQuery(query); err != nil {
+		return nil, err
+	}
 
 	path := fmt.Sprintf("/v1/certificates/%s", id)
-	if queryString := buildCertificatesQuery(query); queryString != "" {
+	if queryString := buildCertificateDetailQuery(query); queryString != "" {
 		path += "?" + queryString
 	}
 	data, err := c.do(ctx, "GET", path, nil)
@@ -678,6 +681,27 @@ func (c *Client) GetCertificate(ctx context.Context, id string, opts ...Certific
 	}
 
 	return &response, nil
+}
+
+func validateCertificateDetailQuery(query *certificatesQuery) error {
+	switch {
+	case query.limit > 0:
+		return fmt.Errorf("certificates: limit option cannot be used with GetCertificate")
+	case query.nextURL != "":
+		return fmt.Errorf("certificates: next URL option cannot be used with GetCertificate")
+	case len(query.certificateTypes) > 0:
+		return fmt.Errorf("certificates: certificate type option cannot be used with GetCertificate")
+	case len(query.displayNames) > 0:
+		return fmt.Errorf("certificates: display name option cannot be used with GetCertificate")
+	case len(query.serialNumbers) > 0:
+		return fmt.Errorf("certificates: serial number option cannot be used with GetCertificate")
+	case len(query.ids) > 0:
+		return fmt.Errorf("certificates: ID option cannot be used with GetCertificate")
+	case strings.TrimSpace(query.sort) != "":
+		return fmt.Errorf("certificates: sort option cannot be used with GetCertificate")
+	default:
+		return nil
+	}
 }
 
 type certificateCreateOptions struct {
