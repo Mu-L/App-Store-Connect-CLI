@@ -8,7 +8,21 @@ import (
 
 type bundleIDsQuery struct {
 	listQuery
-	identifier string
+	names                      []string
+	platforms                  []string
+	identifier                 string
+	seedIDs                    []string
+	ids                        []string
+	sort                       string
+	fields                     []string
+	profilesFields             []string
+	bundleIDCapabilitiesFields []string
+	appFields                  []string
+	include                    []string
+	profilesLimit              int
+	bundleIDCapabilitiesLimit  int
+	splitPagination            bool
+	splitPaginationSet         bool
 }
 
 type merchantIDsQuery struct {
@@ -59,7 +73,13 @@ type passTypeIDCertificatesQuery struct {
 
 type certificatesQuery struct {
 	listQuery
+	displayNames     []string
 	certificateTypes []string
+	serialNumbers    []string
+	ids              []string
+	sort             string
+	fields           []string
+	passTypeIDFields []string
 	include          []string
 }
 
@@ -142,8 +162,26 @@ type userInvitationsQuery struct {
 
 func buildBundleIDsQuery(query *bundleIDsQuery) string {
 	values := url.Values{}
+	addCSV(values, "filter[name]", query.names)
+	addCSV(values, "filter[platform]", query.platforms)
 	if strings.TrimSpace(query.identifier) != "" {
 		values.Set("filter[identifier]", strings.TrimSpace(query.identifier))
+	}
+	addCSV(values, "filter[seedId]", query.seedIDs)
+	addCSV(values, "filter[id]", query.ids)
+	if strings.TrimSpace(query.sort) != "" {
+		values.Set("sort", strings.TrimSpace(query.sort))
+	}
+	addCSV(values, "fields[bundleIds]", query.fields)
+	addCSV(values, "fields[profiles]", query.profilesFields)
+	addCSV(values, "fields[bundleIdCapabilities]", query.bundleIDCapabilitiesFields)
+	addCSV(values, "fields[apps]", query.appFields)
+	addCSV(values, "include", query.include)
+	if query.profilesLimit > 0 {
+		values.Set("limit[profiles]", strconv.Itoa(query.profilesLimit))
+	}
+	if query.bundleIDCapabilitiesLimit > 0 {
+		values.Set("limit[bundleIdCapabilities]", strconv.Itoa(query.bundleIDCapabilitiesLimit))
 	}
 	addLimit(values, query.limit)
 	return values.Encode()
@@ -212,9 +250,25 @@ func buildBundleIDCapabilitiesQuery(_ *bundleIDCapabilitiesQuery) string {
 
 func buildCertificatesQuery(query *certificatesQuery) string {
 	values := url.Values{}
+	addCSV(values, "filter[displayName]", query.displayNames)
 	addCSV(values, "filter[certificateType]", query.certificateTypes)
+	addCSV(values, "filter[serialNumber]", query.serialNumbers)
+	addCSV(values, "filter[id]", query.ids)
+	if strings.TrimSpace(query.sort) != "" {
+		values.Set("sort", strings.TrimSpace(query.sort))
+	}
+	addCSV(values, "fields[certificates]", query.fields)
+	addCSV(values, "fields[passTypeIds]", query.passTypeIDFields)
 	addCSV(values, "include", query.include)
 	addLimit(values, query.limit)
+	return values.Encode()
+}
+
+func buildCertificateDetailQuery(query *certificatesQuery) string {
+	values := url.Values{}
+	addCSV(values, "fields[certificates]", query.fields)
+	addCSV(values, "fields[passTypeIds]", query.passTypeIDFields)
+	addCSV(values, "include", query.include)
 	return values.Encode()
 }
 
@@ -445,6 +499,15 @@ func WithBundleIDsNextURL(next string) BundleIDsOption {
 	}
 }
 
+// WithBundleIDsSplitPagination controls whether split identifier requests follow links.next.
+// It defaults to enabled for direct client callers.
+func WithBundleIDsSplitPagination(enabled bool) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.splitPagination = enabled
+		q.splitPaginationSet = true
+	}
+}
+
 // WithBundleIDProfilesLimit sets the max number of bundle ID profiles to return.
 func WithBundleIDProfilesLimit(limit int) BundleIDProfilesOption {
 	return func(q *bundleIDProfilesQuery) {
@@ -469,6 +532,96 @@ func WithBundleIDsFilterIdentifier(identifier string) BundleIDsOption {
 		normalized := normalizeCSVString(identifier)
 		if normalized != "" {
 			q.identifier = normalized
+		}
+	}
+}
+
+// WithBundleIDsFilterNames filters bundle IDs by name(s).
+func WithBundleIDsFilterNames(names []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.names = normalizeList(names)
+	}
+}
+
+// WithBundleIDsFilterPlatforms filters bundle IDs by platform(s).
+func WithBundleIDsFilterPlatforms(platforms []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.platforms = normalizeUpperList(platforms)
+	}
+}
+
+// WithBundleIDsFilterSeedIDs filters bundle IDs by seed ID(s).
+func WithBundleIDsFilterSeedIDs(seedIDs []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.seedIDs = normalizeList(seedIDs)
+	}
+}
+
+// WithBundleIDsFilterIDs filters bundle IDs by ID(s).
+func WithBundleIDsFilterIDs(ids []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.ids = normalizeList(ids)
+	}
+}
+
+// WithBundleIDsSort sets the sort order for bundle IDs.
+func WithBundleIDsSort(sort string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		if strings.TrimSpace(sort) != "" {
+			q.sort = strings.TrimSpace(sort)
+		}
+	}
+}
+
+// WithBundleIDsFields sets fields[bundleIds] for bundle ID responses.
+func WithBundleIDsFields(fields []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.fields = normalizeList(fields)
+	}
+}
+
+// WithBundleIDsProfilesFields sets fields[profiles] for included profiles.
+func WithBundleIDsProfilesFields(fields []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.profilesFields = normalizeList(fields)
+	}
+}
+
+// WithBundleIDsCapabilitiesFields sets fields[bundleIdCapabilities] for included capabilities.
+func WithBundleIDsCapabilitiesFields(fields []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.bundleIDCapabilitiesFields = normalizeList(fields)
+	}
+}
+
+// WithBundleIDsAppFields sets fields[apps] for the included app.
+func WithBundleIDsAppFields(fields []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.appFields = normalizeList(fields)
+	}
+}
+
+// WithBundleIDsInclude sets include for bundle ID responses.
+func WithBundleIDsInclude(include []string) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		q.include = normalizeList(include)
+	}
+}
+
+// WithBundleIDsProfilesLimit sets the maximum number of included profiles.
+func WithBundleIDsProfilesLimit(limit int) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		if limit > 0 {
+			q.profilesLimit = limit
+		}
+	}
+}
+
+// WithBundleIDsCapabilitiesLimit sets the maximum number of included capabilities.
+func WithBundleIDsCapabilitiesLimit(limit int) BundleIDsOption {
+	return func(q *bundleIDsQuery) {
+		if limit > 0 {
+			q.bundleIDCapabilitiesLimit = limit
 		}
 	}
 }
@@ -862,6 +1015,48 @@ func WithCertificatesNextURL(next string) CertificatesOption {
 func WithCertificatesTypes(types []string) CertificatesOption {
 	return func(q *certificatesQuery) {
 		q.certificateTypes = normalizeUpperList(types)
+	}
+}
+
+// WithCertificatesFilterDisplayNames filters certificates by display name(s).
+func WithCertificatesFilterDisplayNames(names []string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.displayNames = normalizeList(names)
+	}
+}
+
+// WithCertificatesFilterSerialNumbers filters certificates by serial number(s).
+func WithCertificatesFilterSerialNumbers(serialNumbers []string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.serialNumbers = normalizeList(serialNumbers)
+	}
+}
+
+// WithCertificatesFilterIDs filters certificates by ID(s).
+func WithCertificatesFilterIDs(ids []string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.ids = normalizeList(ids)
+	}
+}
+
+// WithCertificatesSort sets the certificate sort expression.
+func WithCertificatesSort(sort string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.sort = strings.TrimSpace(sort)
+	}
+}
+
+// WithCertificatesFields sets fields[certificates] for certificate responses.
+func WithCertificatesFields(fields []string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.fields = normalizeList(fields)
+	}
+}
+
+// WithCertificatesPassTypeIDFields sets fields[passTypeIds] for included pass type IDs.
+func WithCertificatesPassTypeIDFields(fields []string) CertificatesOption {
+	return func(q *certificatesQuery) {
+		q.passTypeIDFields = normalizeList(fields)
 	}
 }
 
