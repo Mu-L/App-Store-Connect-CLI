@@ -87,11 +87,11 @@ func IAPListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
-	productID := fs.String("product-id", "", "Filter by product ID(s), comma-separated")
-	name := fs.String("name", "", "Filter by name(s), comma-separated")
-	state := fs.String("state", "", "Filter by state(s), comma-separated: "+strings.Join(iapListStates, ", "))
-	iapType := fs.String("type", "", "Filter by type(s), comma-separated: "+strings.Join(asc.ValidIAPTypes, ", "))
-	sort := fs.String("sort", "", "Sort by (comma-separated): "+strings.Join(iapListSortValues, ", "))
+	productID := fs.String("product-id", "", "[experimental] Filter by product ID(s), comma-separated")
+	name := fs.String("name", "", "[experimental] Filter by name(s), comma-separated")
+	state := fs.String("state", "", "[experimental] Filter by state(s), comma-separated: "+strings.Join(iapListStates, ", "))
+	iapType := fs.String("type", "", "[experimental] Filter by type(s), comma-separated: "+strings.Join(asc.ValidIAPTypes, ", "))
+	sort := fs.String("sort", "", "[experimental] Sort by (comma-separated): "+strings.Join(iapListSortValues, ", "))
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
@@ -690,11 +690,10 @@ func normalizeIAPListEnum(value, flagName string, allowed []string) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	for i := range values {
-		values[i] = strings.ToUpper(values[i])
-	}
 	seen := make(map[string]struct{}, len(values))
+	normalized := make([]string, 0, len(values))
 	for _, value := range values {
+		value = strings.ToUpper(value)
 		if _, ok := seen[value]; ok {
 			continue
 		}
@@ -702,8 +701,9 @@ func normalizeIAPListEnum(value, flagName string, allowed []string) ([]string, e
 		if !slices.Contains(allowed, value) {
 			return nil, fmt.Errorf("%s must be one of: %s", flagName, strings.Join(allowed, ", "))
 		}
+		normalized = append(normalized, value)
 	}
-	return values, nil
+	return normalized, nil
 }
 
 func normalizeIAPListSort(value string) ([]string, error) {

@@ -13,6 +13,7 @@ import (
 
 	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	iapcli "github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/iap"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
@@ -126,6 +127,42 @@ func TestIAPListQuerySurfaceEmitsDocumentedSelectors(t *testing.T) {
 	}
 	if !strings.Contains(stdout, `"id":"iap-1"`) {
 		t.Fatalf("expected IAP envelope, got %q", stdout)
+	}
+}
+
+func TestIAPListQuerySurfaceDeduplicatesNormalizedEnumValues(t *testing.T) {
+	captured := iapListQuerySurfaceStub(t)
+
+	_, stderr, err := runIAPListQuerySurface(
+		t,
+		"iap", "list",
+		"--app", "app-1",
+		"--state", "ready_to_submit,READY_TO_SUBMIT",
+		"--type", "consumable,CONSUMABLE",
+		"--output", "json",
+	)
+	if err != nil {
+		t.Fatalf("run error: %v (stderr=%q)", err, stderr)
+	}
+
+	if got := captured.query.Get("filter[state]"); got != "READY_TO_SUBMIT" {
+		t.Fatalf("filter[state] = %q, want READY_TO_SUBMIT", got)
+	}
+	if got := captured.query.Get("filter[inAppPurchaseType]"); got != "CONSUMABLE" {
+		t.Fatalf("filter[inAppPurchaseType] = %q, want CONSUMABLE", got)
+	}
+}
+
+func TestIAPListQueryFlagsAreExperimental(t *testing.T) {
+	command := iapcli.IAPListCommand()
+	for _, name := range []string{"product-id", "name", "state", "type", "sort"} {
+		flagValue := command.FlagSet.Lookup(name)
+		if flagValue == nil {
+			t.Fatalf("--%s is not registered", name)
+		}
+		if !strings.HasPrefix(flagValue.Usage, "[experimental] ") {
+			t.Errorf("--%s usage = %q, want [experimental] prefix", name, flagValue.Usage)
+		}
 	}
 }
 
