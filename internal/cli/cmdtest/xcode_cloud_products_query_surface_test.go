@@ -136,7 +136,7 @@ func TestXcodeCloudProductsListQuerySurface(t *testing.T) {
 	want := url.Values{
 		"filter[app]":                {"123456789"},
 		"filter[productType]":        {"APP,FRAMEWORK"},
-		"fields[ciProducts]":         {"name,productType,primaryRepositories"},
+		"fields[ciProducts]":         {"name,productType,primaryRepositories,app,bundleId"},
 		"fields[apps]":               {"name,bundleId"},
 		"fields[bundleIds]":          {"identifier,platform"},
 		"fields[scmRepositories]":    {"repositoryName,ownerName"},
@@ -270,7 +270,7 @@ func TestXcodeCloudProductsListPreservesServerNextQueryDuringPagination(t *testi
 	firstQuery := url.Values{
 		"filter[app]":                {"123456789"},
 		"filter[productType]":        {"APP"},
-		"fields[ciProducts]":         {"name,primaryRepositories"},
+		"fields[ciProducts]":         {"name,primaryRepositories,app"},
 		"fields[apps]":               {"name"},
 		"include":                    {"app,primaryRepositories"},
 		"limit[primaryRepositories]": {"25"},
@@ -280,7 +280,7 @@ func TestXcodeCloudProductsListPreservesServerNextQueryDuringPagination(t *testi
 		"cursor":                     {"PAGE2"},
 		"filter[app]":                {"123456789"},
 		"filter[productType]":        {"APP"},
-		"fields[ciProducts]":         {"name,primaryRepositories"},
+		"fields[ciProducts]":         {"name,primaryRepositories,app"},
 		"fields[apps]":               {"name"},
 		"include":                    {"app,primaryRepositories"},
 		"limit[primaryRepositories]": {"25"},

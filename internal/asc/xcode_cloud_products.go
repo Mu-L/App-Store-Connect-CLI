@@ -55,8 +55,9 @@ type CiProductResource struct {
 
 // CiProductsResponse is the response from CI products endpoints.
 type CiProductsResponse struct {
-	Data  []CiProductResource `json:"data"`
-	Links Links               `json:"links"`
+	Data     []CiProductResource `json:"data"`
+	Links    Links               `json:"links"`
+	Included json.RawMessage     `json:"included,omitempty"`
 }
 
 // GetLinks returns the links field for pagination.
@@ -352,7 +353,7 @@ func buildCiProductsQuery(query *ciProductsQuery) string {
 	if query.appID != "" {
 		values.Set("filter[app]", query.appID)
 	}
-	addCSV(values, "fields[ciProducts]", query.fields)
+	addCSV(values, "fields[ciProducts]", ciProductsFieldsWithIncludes(query.fields, query.include))
 	addCSV(values, "fields[apps]", query.appFields)
 	addCSV(values, "fields[bundleIds]", query.bundleIDFields)
 	addCSV(values, "fields[scmRepositories]", query.scmRepositoryFields)
@@ -362,6 +363,27 @@ func buildCiProductsQuery(query *ciProductsQuery) string {
 		values.Set("limit[primaryRepositories]", strconv.Itoa(query.primaryRepositoriesLimit))
 	}
 	return values.Encode()
+}
+
+func ciProductsFieldsWithIncludes(fields, include []string) []string {
+	fields = normalizeUniqueList(fields)
+	if len(fields) == 0 || len(include) == 0 {
+		return fields
+	}
+
+	seen := make(map[string]struct{}, len(fields)+len(include))
+	for _, field := range fields {
+		seen[field] = struct{}{}
+	}
+	combined := append([]string(nil), fields...)
+	for _, relationship := range normalizeUniqueList(include) {
+		if _, ok := seen[relationship]; ok {
+			continue
+		}
+		seen[relationship] = struct{}{}
+		combined = append(combined, relationship)
+	}
+	return combined
 }
 
 type ciWorkflowsQuery struct {
