@@ -604,6 +604,8 @@ var knownFailureParameters = map[string]struct{}{
 	"term":                              {},
 	"territories":                       {},
 	"territory":                         {},
+	"territory-fields":                  {},
+	"territory-limit":                   {},
 	"territory-availability":            {},
 	"test-notes":                        {},
 	"tester":                            {},
