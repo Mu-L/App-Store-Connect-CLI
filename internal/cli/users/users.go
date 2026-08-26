@@ -228,7 +228,13 @@ Examples:
 				return shared.MissingRequiredUsageError("--roles")
 			}
 			visibleAppIDs := shared.SplitCSV(visibleApps.String())
-			if len(visibleAppIDs) == 0 && *confirm {
+			confirmSet := false
+			fs.Visit(func(parsed *flag.Flag) {
+				if parsed.Name == "confirm" {
+					confirmSet = true
+				}
+			})
+			if len(visibleAppIDs) == 0 && confirmSet {
 				message := "--confirm requires --visible-app"
 				fmt.Fprintln(os.Stderr, "Error:", message)
 				return shared.WithDiagnostic(

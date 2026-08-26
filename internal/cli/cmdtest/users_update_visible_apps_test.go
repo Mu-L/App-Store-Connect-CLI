@@ -245,6 +245,47 @@ func TestUsersUpdateConfirmRequiresVisibleAppsBeforeHTTP(t *testing.T) {
 	}
 }
 
+func TestUsersUpdateExplicitFalseConfirmRequiresVisibleAppsBeforeHTTP(t *testing.T) {
+	var mu sync.Mutex
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		requestCount++
+		mu.Unlock()
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	setUsersUpdateTestClient(t, server)
+
+	var exitCode int
+	stdout, stderr := captureOutput(t, func() {
+		exitCode = rootcmd.Run([]string{
+			"users", "update",
+			"--id", "user-1",
+			"--roles", "access_to_reports",
+			"--confirm=false",
+			"--output", "json",
+		}, "1.2.3")
+	})
+
+	mu.Lock()
+	gotRequestCount := requestCount
+	mu.Unlock()
+
+	if exitCode != rootcmd.ExitUsage {
+		t.Fatalf("exit code = %d, want %d; stdout=%q stderr=%q", exitCode, rootcmd.ExitUsage, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if stderr != "Error: --confirm requires --visible-app\n" {
+		t.Fatalf("stderr = %q, want stray-confirm diagnostic", stderr)
+	}
+	if gotRequestCount != 0 {
+		t.Fatalf("request count = %d, want zero without visible apps", gotRequestCount)
+	}
+}
+
 func TestUsersUpdateRejectedRequestDoesNotChangeAccess(t *testing.T) {
 	type accessState struct {
 		Role       string
