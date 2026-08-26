@@ -7272,7 +7272,7 @@ func TestGetBundleIDs_SplitIdentifierFilterAccountsForModerateQueryOverhead(t *t
 	appFields := []string{"name", "bundleId"}
 	include := []string{"profiles", "bundleIdCapabilities", "app"}
 
-	baseChunks, err := splitBundleIDsIdentifierFilter(&bundleIDsQuery{identifier: rawIdentifierFilter}, bundleIDsIdentifierFilterMaxLength)
+	baseChunks, err := splitBundleIDsIdentifierFilter(&bundleIDsQuery{identifier: rawIdentifierFilter})
 	if err != nil {
 		t.Fatalf("split baseline identifier filter: %v", err)
 	}
@@ -7287,7 +7287,7 @@ func TestGetBundleIDs_SplitIdentifierFilterAccountsForModerateQueryOverhead(t *t
 		profilesLimit:              50,
 		bundleIDCapabilitiesLimit:  50,
 	}
-	overheadChunks, err := splitBundleIDsIdentifierFilter(query, bundleIDsIdentifierFilterMaxLength)
+	overheadChunks, err := splitBundleIDsIdentifierFilter(query)
 	if err != nil {
 		t.Fatalf("split identifier filter with query overhead: %v", err)
 	}

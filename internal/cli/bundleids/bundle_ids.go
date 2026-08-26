@@ -174,8 +174,11 @@ Examples:
 				asc.WithBundleIDsNextURL(*next),
 				asc.WithBundleIDsSplitPagination(*paginate),
 			}
-			if !*paginate && asc.BundleIDsRequestRequiresSplit(opts...) {
-				return bundleIDsListPaginateRequirementUsageError()
+			if err := asc.ValidateBundleIDsRequest(opts...); err != nil {
+				if asc.IsBundleIDsPaginationRequired(err) {
+					return bundleIDsListPaginateRequirementUsageError()
+				}
+				return bundleIDsListRequestValidationUsageError(err)
 			}
 
 			client, err := shared.GetASCClient()
@@ -229,6 +232,16 @@ func bundleIDsListPaginateRequirementUsageError() error {
 		shared.NewReportedUsageError(shared.UsageErrorMissingRequired, message),
 		shared.DiagnosticRequiredInputMissing,
 		"--paginate",
+	)
+}
+
+func bundleIDsListRequestValidationUsageError(err error) error {
+	message := strings.TrimPrefix(strings.TrimSpace(err.Error()), "bundleIds: ")
+	fmt.Fprintln(os.Stderr, "Error: "+message)
+	return shared.WithDiagnostic(
+		shared.NewReportedUsageError(shared.UsageErrorInvalidValue, message),
+		shared.DiagnosticInvalidInput,
+		"",
 	)
 }
 

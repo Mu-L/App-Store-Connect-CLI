@@ -3,12 +3,64 @@ package asc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 )
 
 const bundleIDsIdentifierFilterMaxLength = 3900
+
+type bundleIDsPaginationRequiredError struct {
+	err error
+}
+
+func (e *bundleIDsPaginationRequiredError) Error() string {
+	return e.err.Error()
+}
+
+func (e *bundleIDsPaginationRequiredError) Unwrap() error {
+	return e.err
+}
+
+// IsBundleIDsPaginationRequired reports whether a request can only be
+// represented by following multiple continuation URLs.
+func IsBundleIDsPaginationRequired(err error) bool {
+	var paginationErr *bundleIDsPaginationRequiredError
+	return errors.As(err, &paginationErr)
+}
+
+// ValidateBundleIDsRequest validates URL capacity and split-request behavior
+// without requiring an authenticated client.
+func ValidateBundleIDsRequest(opts ...BundleIDsOption) error {
+	query := &bundleIDsQuery{splitPagination: true}
+	for _, opt := range opts {
+		opt(query)
+	}
+	return validateBundleIDsRequest(query)
+}
+
+func validateBundleIDsRequest(query *bundleIDsQuery) error {
+	if query.nextURL != "" {
+		return nil
+	}
+
+	if len(bundleIDsRequestPath(query)) > bundleIDsIdentifierFilterMaxLength && !strings.Contains(strings.TrimSpace(query.identifier), ",") {
+		return fmt.Errorf("bundleIds: request exceeds %d-byte URL limit and cannot be split without multiple filter[identifier] values", bundleIDsIdentifierFilterMaxLength)
+	}
+
+	if !shouldSplitBundleIDsIdentifierFilter(query) {
+		return nil
+	}
+	if query.splitPaginationSet && !query.splitPagination {
+		return &bundleIDsPaginationRequiredError{err: fmt.Errorf("bundleIds: split identifier filter requires --paginate because multiple continuation URLs cannot be represented; use pagination")}
+	}
+	if err := validateBundleIDsSplitSort(query); err != nil {
+		return err
+	}
+	_, err := splitBundleIDsIdentifierFilter(query)
+	return err
+}
 
 // BundleIDsRequestRequiresSplit reports whether the request must split its
 // identifier filter to stay within the supported request URL length.
@@ -27,17 +79,11 @@ func (c *Client) GetBundleIDs(ctx context.Context, opts ...BundleIDsOption) (*Bu
 		opt(query)
 	}
 
-	if query.nextURL == "" && len(bundleIDsRequestPath(query)) > bundleIDsIdentifierFilterMaxLength && !strings.Contains(strings.TrimSpace(query.identifier), ",") {
-		return nil, fmt.Errorf("bundleIds: request exceeds %d-byte URL limit and cannot be split without multiple filter[identifier] values", bundleIDsIdentifierFilterMaxLength)
+	if err := validateBundleIDsRequest(query); err != nil {
+		return nil, err
 	}
 
-	if query.nextURL == "" && shouldSplitBundleIDsIdentifierFilter(query) {
-		if query.splitPaginationSet && !query.splitPagination {
-			return nil, fmt.Errorf("bundleIds: split identifier filter requires --paginate because multiple continuation URLs cannot be represented; use pagination")
-		}
-		if err := validateBundleIDsSplitSort(query); err != nil {
-			return nil, err
-		}
+	if shouldSplitBundleIDsIdentifierFilter(query) {
 		return c.getBundleIDsWithSplitIdentifierFilter(ctx, query)
 	}
 
@@ -154,7 +200,7 @@ func validateBundleIDsSplitSort(query *bundleIDsQuery) error {
 }
 
 func (c *Client) getBundleIDsWithSplitIdentifierFilter(ctx context.Context, query *bundleIDsQuery) (*BundleIDsResponse, error) {
-	chunks, err := splitBundleIDsIdentifierFilter(query, bundleIDsIdentifierFilterMaxLength)
+	chunks, err := splitBundleIDsIdentifierFilter(query)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +396,7 @@ func bundleIDsRequestPath(query *bundleIDsQuery) string {
 	return path
 }
 
-func splitBundleIDsIdentifierFilter(query *bundleIDsQuery, maxLength int) ([][]string, error) {
+func splitBundleIDsIdentifierFilter(query *bundleIDsQuery) ([][]string, error) {
 	parts := strings.Split(query.identifier, ",")
 	chunks := make([][]string, 0, 1)
 	current := make([]string, 0)
@@ -364,18 +410,18 @@ func splitBundleIDsIdentifierFilter(query *bundleIDsQuery, maxLength int) ([][]s
 		candidate := append(append([]string{}, current...), part)
 		candidateQuery := *query
 		candidateQuery.identifier = strings.Join(candidate, ",")
-		if len(current) > 0 && len(bundleIDsRequestPath(&candidateQuery)) > maxLength {
+		if len(current) > 0 && len(bundleIDsRequestPath(&candidateQuery)) > bundleIDsIdentifierFilterMaxLength {
 			chunks = append(chunks, current)
 			current = []string{part}
 			singleQuery := *query
 			singleQuery.identifier = part
-			if len(bundleIDsRequestPath(&singleQuery)) > maxLength {
-				return nil, fmt.Errorf("bundleIds: cannot split bundleIds identifier filter because fixed query parameters leave no room for a single identifier under the %d-byte URL limit", maxLength)
+			if len(bundleIDsRequestPath(&singleQuery)) > bundleIDsIdentifierFilterMaxLength {
+				return nil, fmt.Errorf("bundleIds: cannot split bundleIds identifier filter because fixed query parameters leave no room for a single identifier under the %d-byte URL limit", bundleIDsIdentifierFilterMaxLength)
 			}
 			continue
 		}
-		if len(current) == 0 && len(bundleIDsRequestPath(&candidateQuery)) > maxLength {
-			return nil, fmt.Errorf("bundleIds: cannot split bundleIds identifier filter because fixed query parameters leave no room for a single identifier under the %d-byte URL limit", maxLength)
+		if len(current) == 0 && len(bundleIDsRequestPath(&candidateQuery)) > bundleIDsIdentifierFilterMaxLength {
+			return nil, fmt.Errorf("bundleIds: cannot split bundleIds identifier filter because fixed query parameters leave no room for a single identifier under the %d-byte URL limit", bundleIDsIdentifierFilterMaxLength)
 		}
 
 		current = candidate
