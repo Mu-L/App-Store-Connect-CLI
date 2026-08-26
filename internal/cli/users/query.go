@@ -10,6 +10,10 @@ func normalizeUsersAppFields(value, flagName string) ([]string, error) {
 	return shared.NormalizeSelection(value, usersAppFieldsList(), flagName)
 }
 
+func normalizeUsersSort(value, flagName string) ([]string, error) {
+	return shared.NormalizeSelection(value, usersSortList(), flagName)
+}
+
 func usersSortList() []string {
 	return []string{"username", "-username", "lastName", "-lastName"}
 }

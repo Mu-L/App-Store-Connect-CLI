@@ -34,7 +34,7 @@ asc users list --email "user@example.com"
 asc users list --role "ADMIN"
 asc users list --role "DEVELOPER,APP_MANAGER"
 asc users list --visible-app "APP_ID"
-asc users list --sort lastName
+asc users list --sort "username,-lastName"
 asc users list --fields "username,lastName" --include visibleApps --app-fields "name,bundleId"
 asc users list --limit 50
 asc users list --paginate
@@ -45,7 +45,7 @@ asc users list --paginate
 * `--email` - Filter by email/username
 * `--role` - Filter by role (comma-separated): `ADMIN`, `DEVELOPER`, `APP_MANAGER`, etc.
 * `--visible-app` - [experimental] Filter by visible app ID(s), comma-separated
-* `--sort` - [experimental] Sort by `username`, `-username`, `lastName`, or `-lastName`
+* `--sort` - [experimental] Sort by one or more comma-separated expressions: `username`, `-username`, `lastName`, or `-lastName`
 * `--fields` - [experimental] User fields to include: `username`, `firstName`, `lastName`, `roles`, `allAppsVisible`, `provisioningAllowed`, `visibleApps`
 * `--app-fields` - [experimental] Fields to include for related apps (requires `--include visibleApps`)
 * `--include` - [experimental] Include related resources: `visibleApps`

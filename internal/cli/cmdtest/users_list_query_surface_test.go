@@ -84,6 +84,50 @@ func TestUsersListQuerySurfaceEmitsSupportedParameters(t *testing.T) {
 	}
 }
 
+func TestUsersListQuerySurfaceAcceptsCommaSeparatedSort(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	var gotQuery url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet || req.URL.Path != "/v1/users" {
+			t.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		gotQuery = req.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"type":"users","id":"user-sort"}],"links":{"next":""}}`)
+	}))
+	t.Cleanup(server.Close)
+	setUsersListTestClient(t, server)
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	var parseErr, runErr error
+	stdout, stderr := captureOutput(t, func() {
+		parseErr = root.Parse([]string{"users", "list", "--sort", " username, -lastName ", "--output", "json"})
+		if parseErr == nil {
+			runErr = root.Run(context.Background())
+		}
+	})
+
+	if parseErr != nil {
+		t.Fatalf("parse error: %v; stderr=%q", parseErr, stderr)
+	}
+	if runErr != nil {
+		t.Fatalf("run error: %v; stderr=%q", runErr, stderr)
+	}
+	if !strings.Contains(stdout, `"id":"user-sort"`) {
+		t.Fatalf("stdout = %q, want user response", stdout)
+	}
+
+	want := url.Values{"sort": {"username,-lastName"}}
+	if gotQuery.Encode() != want.Encode() {
+		t.Fatalf("query = %q, want %q", gotQuery.Encode(), want.Encode())
+	}
+}
+
 func TestUsersListRejectsNextQueryFlagConflictsBeforeClient(t *testing.T) {
 	const nextURL = "https://api.appstoreconnect.apple.com/v1/users?cursor=next"
 	tests := []struct {
@@ -141,9 +185,12 @@ func TestUsersListRejectsInvalidQueryValuesBeforeClient(t *testing.T) {
 		want string
 	}{
 		{name: "sort", args: []string{"--sort", "createdDate"}, want: "users list: --sort must be one of"},
+		{name: "sort mixed", args: []string{"--sort", "username,createdDate"}, want: "users list: --sort must be one of"},
 		{name: "user fields", args: []string{"--fields", "createdDate"}, want: "users list: --fields must be one of"},
 		{name: "app fields", args: []string{"--app-fields", "createdDate"}, want: "users list: --app-fields must be one of"},
 		{name: "include", args: []string{"--include", "apps"}, want: "users list: --include must be one of"},
+		{name: "visible app empty", args: []string{"--visible-app", ""}, want: "users list: --visible-app must not be empty"},
+		{name: "visible app separators only", args: []string{"--visible-app", ","}, want: "users list: --visible-app must not be empty"},
 		{name: "visible apps limit zero", args: []string{"--visible-apps-limit", "0"}, want: "users list: --visible-apps-limit must be between 1 and 50"},
 		{name: "visible apps limit", args: []string{"--visible-apps-limit", "51"}, want: "users list: --visible-apps-limit must be between 1 and 50"},
 	}

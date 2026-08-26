@@ -58,7 +58,7 @@ func UsersListCommand() *ffcli.Command {
 	email := fs.String("email", "", "Filter by email/username")
 	role := fs.String("role", "", "Filter by UserRole (comma-separated): "+strings.Join(userRoleList(), ", "))
 	visibleApp := fs.String("visible-app", "", "[experimental] Filter by visible app ID(s), comma-separated")
-	sort := fs.String("sort", "", "[experimental] Sort by username, -username, lastName, or -lastName")
+	sort := fs.String("sort", "", "[experimental] Sort by one or more comma-separated expressions: username, -username, lastName, or -lastName")
 	fields := fs.String("fields", "", "[experimental] User fields to include: "+strings.Join(usersFieldsList(), ", "))
 	appFields := fs.String("app-fields", "", "[experimental] Fields to include for related apps, comma-separated")
 	include := fs.String("include", "", "[experimental] Include related resources: visibleApps")
@@ -80,7 +80,7 @@ Examples:
   asc users list --role "ADMIN"
   asc users list --role "DEVELOPER,APP_MANAGER"
   asc users list --visible-app "APP_ID"
-  asc users list --sort lastName
+  asc users list --sort "username,-lastName"
   asc users list --fields "username,lastName" --include visibleApps --app-fields "name,bundleId"
   asc users list --limit 50
   asc users list --paginate`,
@@ -102,17 +102,24 @@ Examples:
 				return fmt.Errorf("users list: --limit must be between 1 and 200")
 			}
 			visibleAppsLimitProvided := false
+			visibleAppProvided := false
 			fs.Visit(func(f *flag.Flag) {
 				visibleAppsLimitProvided = visibleAppsLimitProvided || f.Name == "visible-apps-limit"
+				visibleAppProvided = visibleAppProvided || f.Name == "visible-app"
 			})
 			if visibleAppsLimitProvided && (*visibleAppsLimit < 1 || *visibleAppsLimit > 50) {
 				return shared.UsageErrorf("users list: --visible-apps-limit must be between 1 and 50")
+			}
+			visibleAppValues := shared.SplitCSV(*visibleApp)
+			if visibleAppProvided && len(visibleAppValues) == 0 {
+				return shared.UsageErrorf("users list: --visible-app must not be empty")
 			}
 			roleValues, err := normalizeUserRoles(*role, "--role")
 			if err != nil {
 				return shared.UsageErrorf("users list: %v", err)
 			}
-			if err := shared.ValidateSort(*sort, usersSortList()...); err != nil {
+			sortValues, err := normalizeUsersSort(*sort, "--sort")
+			if err != nil {
 				return shared.UsageErrorf("users list: %v", err)
 			}
 			fieldsValue, err := normalizeUsersFields(*fields, "--fields")
@@ -145,8 +152,8 @@ Examples:
 			opts := []asc.UsersOption{
 				asc.WithUsersEmail(*email),
 				asc.WithUsersRoles(roleValues),
-				asc.WithUsersVisibleAppIDs(shared.SplitCSV(*visibleApp)),
-				asc.WithUsersSort(*sort),
+				asc.WithUsersVisibleAppIDs(visibleAppValues),
+				asc.WithUsersSort(strings.Join(sortValues, ",")),
 				asc.WithUsersFields(fieldsValue),
 				asc.WithUsersAppFields(appFieldsValue),
 				asc.WithUsersInclude(includeValue),
