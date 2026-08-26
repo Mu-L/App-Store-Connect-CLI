@@ -360,7 +360,7 @@ func xcodeCloudProductsList(ctx context.Context, flags ciProductsListFlags) erro
 	if err != nil {
 		return shared.UsageErrorf("xcode-cloud products: %v", err)
 	}
-	if *flags.primaryRepositoriesLimit != 0 && (*flags.primaryRepositoriesLimit < 1 || *flags.primaryRepositoriesLimit > 50) {
+	if ciProductsFlagProvided(flags.flagSet, "primary-repositories-limit") && (*flags.primaryRepositoriesLimit < 1 || *flags.primaryRepositoriesLimit > 50) {
 		return shared.UsageError("xcode-cloud products: --primary-repositories-limit must be between 1 and 50")
 	}
 	if len(appFields) > 0 && !shared.HasInclude(include, "app") {

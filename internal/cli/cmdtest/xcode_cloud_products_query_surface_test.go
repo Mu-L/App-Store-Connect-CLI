@@ -195,6 +195,7 @@ func TestXcodeCloudProductsListRejectsInvalidQueryValuesBeforeAuth(t *testing.T)
 		{name: "bundle ID fields", args: []string{"--bundle-id-fields", "notAField"}, want: "--bundle-id-fields must be one of"},
 		{name: "SCM repository fields", args: []string{"--scm-repository-fields", "notAField"}, want: "--scm-repository-fields must be one of"},
 		{name: "include", args: []string{"--include", "notARelationship"}, want: "--include must be one of"},
+		{name: "primary repositories zero limit", args: []string{"--primary-repositories-limit", "0"}, want: "--primary-repositories-limit must be between 1 and 50"},
 		{name: "primary repositories limit", args: []string{"--primary-repositories-limit", "51"}, want: "--primary-repositories-limit must be between 1 and 50"},
 		{name: "app fields prerequisite", args: []string{"--app-fields", "name"}, want: "--app-fields requires --include app"},
 		{name: "bundle ID fields prerequisite", args: []string{"--bundle-id-fields", "identifier"}, want: "--bundle-id-fields requires --include bundleId"},
