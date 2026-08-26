@@ -51,6 +51,66 @@ type CiProductResource struct {
 	ID            string                  `json:"id"`
 	Attributes    CiProductAttributes     `json:"attributes"`
 	Relationships *CiProductRelationships `json:"relationships,omitempty"`
+
+	attributesDecoded bool
+	attributesPresent bool
+	attributesNull    bool
+}
+
+// UnmarshalJSON records whether the API supplied attributes so relationship-only
+// sparse resources can be rendered without inventing an attributes object.
+func (r *CiProductResource) UnmarshalJSON(data []byte) error {
+	var decoded struct {
+		Type          ResourceType            `json:"type"`
+		ID            string                  `json:"id"`
+		Attributes    json.RawMessage         `json:"attributes"`
+		Relationships *CiProductRelationships `json:"relationships,omitempty"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	*r = CiProductResource{
+		Type:              decoded.Type,
+		ID:                decoded.ID,
+		Relationships:     decoded.Relationships,
+		attributesDecoded: true,
+		attributesPresent: decoded.Attributes != nil,
+		attributesNull:    bytes.Equal(bytes.TrimSpace(decoded.Attributes), []byte("null")),
+	}
+	if !r.attributesPresent || r.attributesNull {
+		return nil
+	}
+	return json.Unmarshal(decoded.Attributes, &r.Attributes)
+}
+
+// MarshalJSON preserves decoded attribute presence while keeping the existing
+// behavior for resources constructed directly by callers.
+func (r CiProductResource) MarshalJSON() ([]byte, error) {
+	var attributes json.RawMessage
+	if !r.attributesDecoded || r.attributesPresent || r.attributesNull || r.Attributes != (CiProductAttributes{}) {
+		if r.attributesNull {
+			attributes = json.RawMessage("null")
+		} else {
+			encoded, err := json.Marshal(r.Attributes)
+			if err != nil {
+				return nil, err
+			}
+			attributes = encoded
+		}
+	}
+
+	return json.Marshal(struct {
+		Type          ResourceType            `json:"type"`
+		ID            string                  `json:"id"`
+		Attributes    json.RawMessage         `json:"attributes,omitempty"`
+		Relationships *CiProductRelationships `json:"relationships,omitempty"`
+	}{
+		Type:          r.Type,
+		ID:            r.ID,
+		Attributes:    attributes,
+		Relationships: r.Relationships,
+	})
 }
 
 // CiProductsResponse is the response from CI products endpoints.

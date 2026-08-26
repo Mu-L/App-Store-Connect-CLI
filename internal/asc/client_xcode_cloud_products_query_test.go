@@ -137,6 +137,41 @@ func TestGetCiProductsPreservesIncludedResources(t *testing.T) {
 	}
 }
 
+func TestGetCiProductsPreservesOmittedAttributesForRelationshipOnlyFields(t *testing.T) {
+	response := jsonResponse(http.StatusOK, `{
+		"data": [{
+			"type": "ciProducts",
+			"id": "product-1",
+			"relationships": {"app": {"data": {"type": "apps", "id": "app-1"}}}
+		}],
+		"links": {"next": ""}
+	}`)
+	client := newTestClient(t, func(req *http.Request) {
+		if req.URL.Path != "/v1/ciProducts" {
+			t.Fatalf("path = %q, want /v1/ciProducts", req.URL.Path)
+		}
+	}, response)
+
+	got, err := client.GetCiProducts(context.Background(), WithCiProductsFields([]string{"app"}))
+	if err != nil {
+		t.Fatalf("GetCiProducts() error: %v", err)
+	}
+
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	var payload struct {
+		Data []map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, present := payload.Data[0]["attributes"]; present {
+		t.Fatalf("encoded relationship-only resource synthesized attributes: %s", encoded)
+	}
+}
+
 func TestPaginateCiProductsPreservesIncludedResourcesAcrossPages(t *testing.T) {
 	const nextURL = "https://api.appstoreconnect.apple.com/v1/ciProducts?cursor=PAGE2"
 	requestCount := 0
