@@ -82,12 +82,26 @@ func TestEnsureInstallIDReportsStateReaderContention(t *testing.T) {
 	}
 	reader := openStateFileWithoutDeleteSharing(t, path)
 
-	_, err = ensureInstallID(0)
-	if err == nil {
+	// Leave enough margin for hosted-runner scheduling variance while keeping
+	// the bound below lockTimeout so an accidental retry is still observable.
+	const promptDeadline = 1500 * time.Millisecond
+	result := make(chan error, 1)
+	go func() {
+		_, err := ensureInstallID(0)
+		result <- err
+	}()
+	var ensureErr error
+	select {
+	case ensureErr = <-result:
+	case <-time.After(promptDeadline):
+		_ = reader.Close()
+		t.Fatalf("ensureInstallID(0) did not return within %s", promptDeadline)
+	}
+	if ensureErr == nil {
 		t.Fatal("ensureInstallID(0) succeeded while state reader blocked replacement")
 	}
-	if !isRetryableStateReplaceError(err) {
-		t.Fatalf("ensureInstallID(0) error = %v, want retryable replacement error", err)
+	if !isRetryableStateReplaceError(ensureErr) {
+		t.Fatalf("ensureInstallID(0) error = %v, want retryable replacement error", ensureErr)
 	}
 	if err := reader.Close(); err != nil {
 		t.Fatalf("close state reader: %v", err)
