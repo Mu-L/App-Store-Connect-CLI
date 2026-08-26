@@ -1,6 +1,9 @@
 package asc
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // UnmarshalJSON records that the profile attributes member was present while
 // retaining the existing value-shaped ProfileAttributes API.
@@ -10,9 +13,99 @@ func (a *ProfileAttributes) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
 	*a = ProfileAttributes(decoded)
 	a.attributesPresent = true
+	a.attributesNull = strings.TrimSpace(string(data)) == "null"
+	a.nameJSON = fields["name"]
+	a.platformJSON = fields["platform"]
+	a.profileTypeJSON = fields["profileType"]
+	a.profileStateJSON = fields["profileState"]
+	a.profileContentJSON = fields["profileContent"]
+	a.uuidJSON = fields["uuid"]
+	a.createdDateJSON = fields["createdDate"]
+	a.expirationDateJSON = fields["expirationDate"]
 	return nil
+}
+
+// MarshalJSON preserves explicitly returned empty and null profile attributes
+// while retaining the value-shaped ProfileAttributes API.
+func (a ProfileAttributes) MarshalJSON() ([]byte, error) {
+	if a.attributesNull {
+		return []byte("null"), nil
+	}
+
+	type attributesJSON struct {
+		Name           json.RawMessage `json:"name,omitempty"`
+		Platform       json.RawMessage `json:"platform,omitempty"`
+		ProfileType    json.RawMessage `json:"profileType,omitempty"`
+		ProfileState   json.RawMessage `json:"profileState,omitempty"`
+		ProfileContent json.RawMessage `json:"profileContent,omitempty"`
+		UUID           json.RawMessage `json:"uuid,omitempty"`
+		CreatedDate    json.RawMessage `json:"createdDate,omitempty"`
+		ExpirationDate json.RawMessage `json:"expirationDate,omitempty"`
+	}
+	attributes := attributesJSON{}
+	var err error
+	if len(a.nameJSON) > 0 || a.Name != "" {
+		attributes.Name, err = profileAttributeJSON(a.nameJSON, a.Name)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.platformJSON) > 0 || a.Platform != "" {
+		attributes.Platform, err = profileAttributeJSON(a.platformJSON, a.Platform)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.profileTypeJSON) > 0 || a.ProfileType != "" {
+		attributes.ProfileType, err = profileAttributeJSON(a.profileTypeJSON, a.ProfileType)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.profileStateJSON) > 0 || a.ProfileState != "" {
+		attributes.ProfileState, err = profileAttributeJSON(a.profileStateJSON, a.ProfileState)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.profileContentJSON) > 0 || a.ProfileContent != "" {
+		attributes.ProfileContent, err = profileAttributeJSON(a.profileContentJSON, a.ProfileContent)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.uuidJSON) > 0 || a.UUID != "" {
+		attributes.UUID, err = profileAttributeJSON(a.uuidJSON, a.UUID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.createdDateJSON) > 0 || a.CreatedDate != "" {
+		attributes.CreatedDate, err = profileAttributeJSON(a.createdDateJSON, a.CreatedDate)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(a.expirationDateJSON) > 0 || a.ExpirationDate != "" {
+		attributes.ExpirationDate, err = profileAttributeJSON(a.expirationDateJSON, a.ExpirationDate)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(attributes)
+}
+
+func profileAttributeJSON(raw json.RawMessage, value any) (json.RawMessage, error) {
+	if len(raw) > 0 {
+		return raw, nil
+	}
+	return json.Marshal(value)
 }
 
 // GetLinks returns the links field for pagination.

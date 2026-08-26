@@ -1,5 +1,7 @@
 package asc
 
+import "encoding/json"
+
 // BundleIDPlatform represents the platform of a bundle ID or registered device.
 type BundleIDPlatform string
 
@@ -201,15 +203,24 @@ const (
 
 // ProfileAttributes describes a profile resource.
 type ProfileAttributes struct {
-	Name              string       `json:"name,omitempty"`
-	Platform          Platform     `json:"platform,omitempty"`
-	ProfileType       string       `json:"profileType,omitempty"`
-	ProfileState      ProfileState `json:"profileState,omitempty"`
-	ProfileContent    string       `json:"profileContent,omitempty"`
-	UUID              string       `json:"uuid,omitempty"`
-	CreatedDate       string       `json:"createdDate,omitempty"`
-	ExpirationDate    string       `json:"expirationDate,omitempty"`
-	attributesPresent bool
+	Name               string       `json:"name,omitempty"`
+	Platform           Platform     `json:"platform,omitempty"`
+	ProfileType        string       `json:"profileType,omitempty"`
+	ProfileState       ProfileState `json:"profileState,omitempty"`
+	ProfileContent     string       `json:"profileContent,omitempty"`
+	UUID               string       `json:"uuid,omitempty"`
+	CreatedDate        string       `json:"createdDate,omitempty"`
+	ExpirationDate     string       `json:"expirationDate,omitempty"`
+	attributesPresent  bool
+	attributesNull     bool
+	nameJSON           json.RawMessage
+	platformJSON       json.RawMessage
+	profileTypeJSON    json.RawMessage
+	profileStateJSON   json.RawMessage
+	profileContentJSON json.RawMessage
+	uuidJSON           json.RawMessage
+	createdDateJSON    json.RawMessage
+	expirationDateJSON json.RawMessage
 }
 
 // ProfileCreateAttributes describes attributes for creating a profile.

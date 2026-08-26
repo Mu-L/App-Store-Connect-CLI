@@ -38,6 +38,34 @@ func TestProfileAttributesJSONKeepsFullResponseFields(t *testing.T) {
 	}
 }
 
+func TestProfileAttributesJSONPreservesExplicitEmptyFields(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "empty name", input: `{"name":""}`, want: `{"name":""}`},
+		{name: "empty profile type", input: `{"profileType":""}`, want: `{"profileType":""}`},
+		{name: "null platform", input: `{"platform":null}`, want: `{"platform":null}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var attributes ProfileAttributes
+			if err := json.Unmarshal([]byte(test.input), &attributes); err != nil {
+				t.Fatalf("unmarshal profile attributes: %v", err)
+			}
+			encoded, err := json.Marshal(attributes)
+			if err != nil {
+				t.Fatalf("marshal profile attributes: %v", err)
+			}
+			if got := string(encoded); got != test.want {
+				t.Fatalf("profile attributes JSON = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
 func TestProfilesResponseJSONPreservesRelationshipOnlyAttributes(t *testing.T) {
 	tests := []struct {
 		name string

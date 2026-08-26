@@ -23,7 +23,9 @@ func TestProfilesListSendsQuerySurface(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet || req.URL.Path != "/v1/profiles" {
-			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			t.Errorf("unexpected request: %s %s", req.Method, req.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		values := req.URL.Query()
 		checks := map[string]string{
@@ -44,6 +46,8 @@ func TestProfilesListSendsQuerySurface(t *testing.T) {
 		for key, want := range checks {
 			if got := values.Get(key); got != want {
 				t.Errorf("%s = %q, want %q", key, got, want)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -94,31 +98,45 @@ func TestProfilesListQuerySurfacePaginatesFromServerNextURL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		requestCount++
 		if req.Method != http.MethodGet || req.URL.Path != "/v1/profiles" {
-			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			t.Errorf("unexpected request: %s %s", req.Method, req.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		if requestCount == 1 {
 			if got := req.URL.Query().Get("filter[name]"); got != "Development" {
-				t.Fatalf("first filter[name] = %q, want Development", got)
+				t.Errorf("first filter[name] = %q, want Development", got)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			if got := req.URL.Query().Get("include"); got != "devices" {
-				t.Fatalf("first include = %q, want devices", got)
+				t.Errorf("first include = %q, want devices", got)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			if got := req.URL.Query().Get("fields[devices]"); got != "name" {
-				t.Fatalf("first fields[devices] = %q, want name", got)
+				t.Errorf("first fields[devices] = %q, want name", got)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			if got := req.URL.Query().Get("limit[devices]"); got != "3" {
-				t.Fatalf("first limit[devices] = %q, want 3", got)
+				t.Errorf("first limit[devices] = %q, want 3", got)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"data":[{"type":"profiles","id":"profile-1"}],"links":{"next":"`+nextURL+`"}}`)
 			return
 		}
 		if requestCount != 2 {
-			t.Fatalf("unexpected request count: %d", requestCount)
+			t.Errorf("unexpected request count: %d", requestCount)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		const wantContinuation = "/v1/profiles?cursor=next&limit=200"
 		if got := req.URL.String(); got != wantContinuation {
-			t.Fatalf("continuation URL = %q, want %q", got, wantContinuation)
+			t.Errorf("continuation URL = %q, want %q", got, wantContinuation)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"data":[{"type":"profiles","id":"profile-2"}],"links":{"next":""}}`)
@@ -154,10 +172,14 @@ func TestProfilesListSparseFieldsPreserveAttributePresence(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet || req.URL.Path != "/v1/profiles" {
-			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			t.Errorf("unexpected request: %s %s", req.Method, req.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		if got := req.URL.Query().Get("fields[profiles]"); got != "expirationDate" {
-			t.Fatalf("fields[profiles] = %q, want expirationDate", got)
+			t.Errorf("fields[profiles] = %q, want expirationDate", got)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"data":[{"type":"profiles","id":"profile-1","attributes":{"expirationDate":"2026-08-24T00:00:00Z"}}]}`)
@@ -198,6 +220,8 @@ func TestProfilesListRelationshipOnlySparseResponsePreservesAttributeAbsence(t *
 				}
 				if got := req.URL.Query().Get("fields[profiles]"); got != relationship {
 					t.Errorf("fields[profiles] = %q, want %q", got, relationship)
+					w.WriteHeader(http.StatusBadRequest)
+					return
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, fmt.Sprintf(`{"data":[{"type":"profiles","id":"profile-1","relationships":{"%s":{"data":[]}}}],"included":[]}`, relationship))
