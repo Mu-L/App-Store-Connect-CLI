@@ -379,7 +379,7 @@ func TestBuildBetaGroupsQueryOpenAPIParity(t *testing.T) {
 		"filter[publicLinkEnabled]":       "true",
 		"filter[publicLinkLimitEnabled]":  "false",
 		"filter[publicLink]":              "https://example.com/public",
-		"fields[betaGroups]":              "name,publicLink",
+		"fields[betaGroups]":              "name,publicLink,app,builds,betaTesters,betaRecruitmentCriteria",
 		"fields[apps]":                    "name,bundleId",
 		"fields[builds]":                  "version",
 		"fields[betaTesters]":             "email",
@@ -391,6 +391,20 @@ func TestBuildBetaGroupsQueryOpenAPIParity(t *testing.T) {
 		if got := values.Get(key); got != want {
 			t.Errorf("%s = %q, want %q", key, got, want)
 		}
+	}
+}
+
+func TestBuildBetaGroupsQueryAddsIncludedRelationshipsToSparseFields(t *testing.T) {
+	query := &betaGroupsQuery{}
+	WithBetaGroupsFields([]string{"name"})(query)
+	WithBetaGroupsInclude([]string{"app", "builds"})(query)
+
+	values, err := url.ParseQuery(buildBetaGroupsQuery(query))
+	if err != nil {
+		t.Fatalf("failed to parse query: %v", err)
+	}
+	if got := values.Get("fields[betaGroups]"); got != "name,app,builds" {
+		t.Fatalf("fields[betaGroups] = %q, want included relationships retained", got)
 	}
 }
 

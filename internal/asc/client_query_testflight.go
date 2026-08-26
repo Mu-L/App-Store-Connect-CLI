@@ -193,12 +193,19 @@ func buildCrashQuery(query *crashQuery) string {
 
 func buildBetaGroupsQuery(query *betaGroupsQuery) string {
 	values := url.Values{}
+	fields := normalizeList(query.fields)
+	if len(fields) > 0 {
+		// A primary sparse fieldset must retain every included relationship or
+		// App Store Connect can omit the linkage and leave included resources
+		// unreachable from the primary data.
+		fields = normalizeUniqueList(append(fields, query.include...))
+	}
 	addCSV(values, "filter[app]", query.appIDs)
 	addCSV(values, "filter[builds]", query.buildIDs)
 	addCSV(values, "filter[id]", query.ids)
 	addValue(values, "filter[name]", query.name)
 	addValue(values, "filter[publicLink]", query.publicLink)
-	addCSV(values, "fields[betaGroups]", query.fields)
+	addCSV(values, "fields[betaGroups]", fields)
 	addCSV(values, "fields[apps]", query.appFields)
 	addCSV(values, "fields[builds]", query.buildFields)
 	addCSV(values, "fields[betaTesters]", query.betaTesterFields)

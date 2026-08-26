@@ -64,7 +64,7 @@ func TestBetaGroupsListQuerySurfacePropagatesOpenAPIFiltersAndIncludes(t *testin
 			"filter[publicLinkEnabled]":       {"true"},
 			"filter[publicLinkLimitEnabled]":  {"false"},
 			"filter[publicLink]":              {"https://example.com/public"},
-			"fields[betaGroups]":              {"name,publicLink"},
+			"fields[betaGroups]":              {"name,publicLink,app,builds,betaTesters,betaRecruitmentCriteria"},
 			"fields[apps]":                    {"name,bundleId"},
 			"fields[builds]":                  {"version"},
 			"fields[betaTesters]":             {"email"},
