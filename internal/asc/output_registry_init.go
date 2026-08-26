@@ -29,6 +29,7 @@ func registerAllOutputRenderers() {
 	registerRowsWithSingleResourceAdapter(reviewsRows)
 	registerRows(customerReviewSummarizationsRows)
 	registerRowsWithSingleResourceAdapter(appsRows)
+	registerDirect(appsPublishedReportTables)
 	registerRows(appRenameResultRows)
 	registerRows(appsWallRows)
 	registerRowsWithSingleResourceAdapter(appClipsRows)
