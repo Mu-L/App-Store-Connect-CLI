@@ -2893,14 +2893,8 @@ func TestCreateBetaGroup_SendsRequest(t *testing.T) {
 		assertAuthorized(t, req)
 	}, response)
 
-	available := true
-	if _, err := client.CreateBetaGroupWithAttributes(context.Background(), "app-1", BetaGroupAttributes{
-		Name:                                 "Beta",
-		CreatedDate:                          "2026-08-06T00:00:00Z",
-		PublicLinkID:                         "public-1",
-		PublicLink:                           "https://testflight.apple.com/join/example",
-		IOSBuildsAvailableForAppleSiliconMac: &available,
-		IOSBuildsAvailableForAppleVision:     &available,
+	if _, err := client.CreateBetaGroupWithAttributes(context.Background(), "app-1", BetaGroupCreateAttributes{
+		Name: "Beta",
 	}); err != nil {
 		t.Fatalf("CreateBetaGroup() error: %v", err)
 	}

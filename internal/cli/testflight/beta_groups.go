@@ -508,7 +508,22 @@ func BetaGroupsCreateCommand() *ffcli.Command {
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	name := fs.String("name", "", "Beta group name")
-	internal := fs.Bool("internal", false, "Create as internal group")
+	var internal shared.OptionalBool
+	internal.EnableBoolFlag()
+	fs.Var(&internal, "internal", "Create as internal group")
+	var accessAllBuilds shared.OptionalBool
+	accessAllBuilds.EnableBoolFlag()
+	fs.Var(&accessAllBuilds, "access-all-builds", "[experimental] Give the group access to all builds")
+	var publicLinkEnabled shared.OptionalBool
+	publicLinkEnabled.EnableBoolFlag()
+	fs.Var(&publicLinkEnabled, "public-link-enabled", "[experimental] Enable the public link")
+	var publicLinkLimitEnabled shared.OptionalBool
+	publicLinkLimitEnabled.EnableBoolFlag()
+	fs.Var(&publicLinkLimitEnabled, "public-link-limit-enabled", "[experimental] Enable the public link tester limit")
+	publicLinkLimit := fs.Int("public-link-limit", 0, "[experimental] Public link tester limit (1-10000)")
+	var feedbackEnabled shared.OptionalBool
+	feedbackEnabled.EnableBoolFlag()
+	fs.Var(&feedbackEnabled, "feedback-enabled", "[experimental] Enable tester feedback")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -519,7 +534,8 @@ func BetaGroupsCreateCommand() *ffcli.Command {
 
 Examples:
   asc testflight beta-groups create --app "APP_ID" --name "Beta Testers"
-  asc testflight beta-groups create --app "APP_ID" --name "Internal Testers" --internal`,
+  asc testflight beta-groups create --app "APP_ID" --name "Internal Testers" --internal --access-all-builds
+  asc testflight beta-groups create --app "APP_ID" --name "Public Beta" --public-link-enabled --public-link-limit-enabled --public-link-limit 250 --feedback-enabled`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -533,6 +549,23 @@ Examples:
 				return shared.MissingRequiredUsageError("--name")
 			}
 
+			visited := map[string]bool{}
+			fs.Visit(func(f *flag.Flag) {
+				visited[f.Name] = true
+			})
+			if internal.Value() && (publicLinkEnabled.IsSet() || publicLinkLimitEnabled.IsSet() || visited["public-link-limit"]) {
+				fmt.Fprintln(os.Stderr, "Error: --internal cannot be combined with public link controls")
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticConflictingInput, "--internal")
+			}
+			if visited["public-link-limit"] && (*publicLinkLimit < 1 || *publicLinkLimit > 10000) {
+				fmt.Fprintln(os.Stderr, "Error: --public-link-limit must be between 1 and 10000")
+				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--public-link-limit")
+			}
+			if publicLinkLimitEnabled.IsSet() && publicLinkLimitEnabled.Value() && !visited["public-link-limit"] {
+				fmt.Fprintln(os.Stderr, "Error: --public-link-limit is required when enabling public link limit")
+				return shared.MissingRequiredUsageError("--public-link-limit")
+			}
+
 			client, err := shared.GetASCClient()
 			if err != nil {
 				return fmt.Errorf("beta-groups create: %w", err)
@@ -541,11 +574,18 @@ Examples:
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 
-			attrs := asc.BetaGroupAttributes{
-				Name: strings.TrimSpace(*name),
+			var publicLinkLimitAttr *int
+			if visited["public-link-limit"] {
+				publicLinkLimitAttr = publicLinkLimit
 			}
-			if *internal {
-				attrs.IsInternalGroup = true
+			attrs := asc.BetaGroupCreateAttributes{
+				Name:                   strings.TrimSpace(*name),
+				IsInternalGroup:        optionalBetaGroupCreateBool(internal),
+				HasAccessToAllBuilds:   optionalBetaGroupCreateBool(accessAllBuilds),
+				PublicLinkEnabled:      optionalBetaGroupCreateBool(publicLinkEnabled),
+				PublicLinkLimitEnabled: optionalBetaGroupCreateBool(publicLinkLimitEnabled),
+				PublicLinkLimit:        publicLinkLimitAttr,
+				FeedbackEnabled:        optionalBetaGroupCreateBool(feedbackEnabled),
 			}
 
 			group, err := client.CreateBetaGroupWithAttributes(requestCtx, resolvedAppID, attrs)
@@ -556,6 +596,14 @@ Examples:
 			return shared.PrintOutput(group, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+func optionalBetaGroupCreateBool(value shared.OptionalBool) *bool {
+	if !value.IsSet() {
+		return nil
+	}
+	result := value.Value()
+	return &result
 }
 
 // BetaGroupsGetCommand returns the beta groups get subcommand.
