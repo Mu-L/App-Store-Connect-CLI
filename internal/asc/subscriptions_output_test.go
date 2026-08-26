@@ -20,6 +20,10 @@ func TestPrintTable_SubscriptionPrices(t *testing.T) {
 				},
 			},
 		},
+		Included: json.RawMessage(`[
+			{"type":"territories","id":"USA","attributes":{"currency":"USD"}},
+			{"type":"subscriptionPricePoints","id":"PRICE_POINT_1","attributes":{"customerPrice":"9.99","proceeds":"6.99","proceedsYear2":"5.99"}}
+		]`),
 	}
 
 	output := captureStdout(t, func() error {
@@ -34,6 +38,11 @@ func TestPrintTable_SubscriptionPrices(t *testing.T) {
 	}
 	if !strings.Contains(output, "Plan Type") || !strings.Contains(output, string(SubscriptionPlanTypeMonthly)) {
 		t.Fatalf("expected plan type in output, got: %s", output)
+	}
+	for _, want := range []string{"Currency", "USD", "Customer Price", "9.99", "Proceeds", "6.99", "Proceeds Y2", "5.99"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected included value %q in output, got: %s", want, output)
+		}
 	}
 }
 

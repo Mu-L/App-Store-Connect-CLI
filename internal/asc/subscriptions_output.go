@@ -159,7 +159,29 @@ func subscriptionPriceRows(resp *SubscriptionPriceResponse) ([]string, [][]strin
 }
 
 func subscriptionPricesRows(resp *SubscriptionPricesResponse) ([]string, [][]string, error) {
+	included, err := subscriptionPriceIncludedAttributes(resp.Included)
+	if err != nil {
+		return nil, nil, err
+	}
+	showCurrency := includedHasAttribute(included, ResourceTypeTerritories, "currency")
+	showCustomerPrice := includedHasAttribute(included, ResourceTypeSubscriptionPricePoints, "customerPrice")
+	showProceeds := includedHasAttribute(included, ResourceTypeSubscriptionPricePoints, "proceeds")
+	showProceedsYear2 := includedHasAttribute(included, ResourceTypeSubscriptionPricePoints, "proceedsYear2")
+
 	headers := []string{"ID", "Territory", "Price Point", "Plan Type", "Start Date", "Preserved"}
+	if showCurrency {
+		headers = append(headers, "Currency")
+	}
+	if showCustomerPrice {
+		headers = append(headers, "Customer Price")
+	}
+	if showProceeds {
+		headers = append(headers, "Proceeds")
+	}
+	if showProceedsYear2 {
+		headers = append(headers, "Proceeds Y2")
+	}
+
 	rows := make([][]string, 0, len(resp.Data))
 	for _, item := range resp.Data {
 		territoryID, pricePointID, err := subscriptionPriceRelationshipIDs(item.Relationships)
@@ -170,14 +192,27 @@ func subscriptionPricesRows(resp *SubscriptionPricesResponse) ([]string, [][]str
 		if value, ok := item.Attributes.PreservedValue(); ok {
 			preserved = fmt.Sprintf("%t", value)
 		}
-		rows = append(rows, []string{
+		row := []string{
 			item.ID,
 			territoryID,
 			pricePointID,
 			string(item.Attributes.PlanType),
 			item.Attributes.StartDate,
 			preserved,
-		})
+		}
+		if showCurrency {
+			row = append(row, includedAttributeValue(included, ResourceTypeTerritories, territoryID, "currency"))
+		}
+		if showCustomerPrice {
+			row = append(row, includedAttributeValue(included, ResourceTypeSubscriptionPricePoints, pricePointID, "customerPrice"))
+		}
+		if showProceeds {
+			row = append(row, includedAttributeValue(included, ResourceTypeSubscriptionPricePoints, pricePointID, "proceeds"))
+		}
+		if showProceedsYear2 {
+			row = append(row, includedAttributeValue(included, ResourceTypeSubscriptionPricePoints, pricePointID, "proceedsYear2"))
+		}
+		rows = append(rows, row)
 	}
 	return headers, rows, nil
 }
@@ -277,4 +312,54 @@ func subscriptionPriceRelationshipIDs(raw json.RawMessage) (string, string, erro
 		pricePointID = relationships.SubscriptionPricePoint.Data.ID
 	}
 	return territoryID, pricePointID, nil
+}
+
+// subscriptionPriceIncludedAttributes indexes included resource attributes by
+// resource type and ID so human-readable output can retain fields requested
+// for included territories and price points.
+type subscriptionPriceIncludedAttributesMap map[ResourceType]map[string]map[string]json.RawMessage
+
+func subscriptionPriceIncludedAttributes(raw json.RawMessage) (subscriptionPriceIncludedAttributesMap, error) {
+	resources := make(subscriptionPriceIncludedAttributesMap)
+	if len(raw) == 0 {
+		return resources, nil
+	}
+
+	var included []struct {
+		Type       ResourceType               `json:"type"`
+		ID         string                     `json:"id"`
+		Attributes map[string]json.RawMessage `json:"attributes"`
+	}
+	if err := json.Unmarshal(raw, &included); err != nil {
+		return nil, fmt.Errorf("decode subscription price included resources: %w", err)
+	}
+	for _, resource := range included {
+		if _, ok := resources[resource.Type]; !ok {
+			resources[resource.Type] = make(map[string]map[string]json.RawMessage)
+		}
+		resources[resource.Type][resource.ID] = resource.Attributes
+	}
+	return resources, nil
+}
+
+func includedHasAttribute(included subscriptionPriceIncludedAttributesMap, resourceType ResourceType, name string) bool {
+	for _, attributes := range included[resourceType] {
+		if _, ok := attributes[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func includedAttributeValue(included subscriptionPriceIncludedAttributesMap, resourceType ResourceType, id, name string) string {
+	attributes := included[resourceType][id]
+	raw, ok := attributes[name]
+	if !ok {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return value
 }
