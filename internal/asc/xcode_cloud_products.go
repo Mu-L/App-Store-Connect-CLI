@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -254,7 +255,14 @@ type CiWorkflowResponse struct {
 
 type ciProductsQuery struct {
 	listQuery
-	appID string
+	appID                    string
+	productTypes             []string
+	fields                   []string
+	appFields                []string
+	bundleIDFields           []string
+	scmRepositoryFields      []string
+	include                  []string
+	primaryRepositoriesLimit int
 }
 
 // CiProductsOption is a functional option for GetCiProducts.
@@ -287,12 +295,72 @@ func WithCiProductsAppID(appID string) CiProductsOption {
 	}
 }
 
+// WithCiProductsProductTypes filters CI products by product type.
+func WithCiProductsProductTypes(productTypes []string) CiProductsOption {
+	return func(q *ciProductsQuery) {
+		q.productTypes = normalizeUpperList(productTypes)
+	}
+}
+
+// WithCiProductsFields sets fields[ciProducts] for CI product responses.
+func WithCiProductsFields(fields []string) CiProductsOption {
+	return func(q *ciProductsQuery) {
+		q.fields = normalizeList(fields)
+	}
+}
+
+// WithCiProductsAppFields sets fields[apps] for included apps.
+func WithCiProductsAppFields(fields []string) CiProductsOption {
+	return func(q *ciProductsQuery) {
+		q.appFields = normalizeList(fields)
+	}
+}
+
+// WithCiProductsBundleIDFields sets fields[bundleIds] for included bundle IDs.
+func WithCiProductsBundleIDFields(fields []string) CiProductsOption {
+	return func(q *ciProductsQuery) {
+		q.bundleIDFields = normalizeList(fields)
+	}
+}
+
+// WithCiProductsScmRepositoryFields sets fields[scmRepositories] for included repositories.
+func WithCiProductsScmRepositoryFields(fields []string) CiProductsOption {
+	return func(q *ciProductsQuery) {
+		q.scmRepositoryFields = normalizeList(fields)
+	}
+}
+
+// WithCiProductsInclude includes related resources in CI product responses.
+func WithCiProductsInclude(include []string) CiProductsOption {
+	return func(q *ciProductsQuery) {
+		q.include = normalizeList(include)
+	}
+}
+
+// WithCiProductsPrimaryRepositoriesLimit sets the maximum included primary repositories.
+func WithCiProductsPrimaryRepositoriesLimit(limit int) CiProductsOption {
+	return func(q *ciProductsQuery) {
+		if limit > 0 {
+			q.primaryRepositoriesLimit = limit
+		}
+	}
+}
+
 func buildCiProductsQuery(query *ciProductsQuery) string {
 	values := url.Values{}
+	addCSV(values, "filter[productType]", query.productTypes)
 	if query.appID != "" {
 		values.Set("filter[app]", query.appID)
 	}
+	addCSV(values, "fields[ciProducts]", query.fields)
+	addCSV(values, "fields[apps]", query.appFields)
+	addCSV(values, "fields[bundleIds]", query.bundleIDFields)
+	addCSV(values, "fields[scmRepositories]", query.scmRepositoryFields)
+	addCSV(values, "include", query.include)
 	addLimit(values, query.limit)
+	if query.primaryRepositoriesLimit > 0 {
+		values.Set("limit[primaryRepositories]", strconv.Itoa(query.primaryRepositoriesLimit))
+	}
 	return values.Encode()
 }
 
@@ -358,7 +426,7 @@ func buildCiProductRepositoriesQuery(query *ciProductRepositoriesQuery) string {
 	return values.Encode()
 }
 
-// GetCiProducts retrieves CI products, optionally filtered by app ID.
+// GetCiProducts retrieves CI products with optional filters, sparse fields, includes, and pagination.
 func (c *Client) GetCiProducts(ctx context.Context, opts ...CiProductsOption) (*CiProductsResponse, error) {
 	query := &ciProductsQuery{}
 	for _, opt := range opts {
