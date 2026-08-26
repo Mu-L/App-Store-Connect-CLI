@@ -186,9 +186,13 @@ func TestUsersListRejectsInvalidQueryValuesBeforeClient(t *testing.T) {
 	}{
 		{name: "sort", args: []string{"--sort", "createdDate"}, want: "users list: --sort must be one of"},
 		{name: "sort mixed", args: []string{"--sort", "username,createdDate"}, want: "users list: --sort must be one of"},
+		{name: "sort empty", args: []string{"--sort", ""}, want: "users list: --sort must not be empty"},
 		{name: "user fields", args: []string{"--fields", "createdDate"}, want: "users list: --fields must be one of"},
+		{name: "user fields separators only", args: []string{"--fields", ","}, want: "users list: --fields must not be empty"},
 		{name: "app fields", args: []string{"--app-fields", "createdDate"}, want: "users list: --app-fields must be one of"},
+		{name: "app fields whitespace", args: []string{"--app-fields", " \t"}, want: "users list: --app-fields must not be empty"},
 		{name: "include", args: []string{"--include", "apps"}, want: "users list: --include must be one of"},
+		{name: "include separators only", args: []string{"--include", ","}, want: "users list: --include must not be empty"},
 		{name: "visible app empty", args: []string{"--visible-app", ""}, want: "users list: --visible-app must not be empty"},
 		{name: "visible app separators only", args: []string{"--visible-app", ","}, want: "users list: --visible-app must not be empty"},
 		{name: "visible apps limit zero", args: []string{"--visible-apps-limit", "0"}, want: "users list: --visible-apps-limit must be between 1 and 50"},

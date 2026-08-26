@@ -101,17 +101,15 @@ Examples:
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return fmt.Errorf("users list: --limit must be between 1 and 200")
 			}
-			visibleAppsLimitProvided := false
-			visibleAppProvided := false
+			provided := make(map[string]bool)
 			fs.Visit(func(f *flag.Flag) {
-				visibleAppsLimitProvided = visibleAppsLimitProvided || f.Name == "visible-apps-limit"
-				visibleAppProvided = visibleAppProvided || f.Name == "visible-app"
+				provided[f.Name] = true
 			})
-			if visibleAppsLimitProvided && (*visibleAppsLimit < 1 || *visibleAppsLimit > 50) {
+			if provided["visible-apps-limit"] && (*visibleAppsLimit < 1 || *visibleAppsLimit > 50) {
 				return shared.UsageErrorf("users list: --visible-apps-limit must be between 1 and 50")
 			}
 			visibleAppValues := shared.SplitCSV(*visibleApp)
-			if visibleAppProvided && len(visibleAppValues) == 0 {
+			if provided["visible-app"] && len(visibleAppValues) == 0 {
 				return shared.UsageErrorf("users list: --visible-app must not be empty")
 			}
 			roleValues, err := normalizeUserRoles(*role, "--role")
@@ -122,17 +120,29 @@ Examples:
 			if err != nil {
 				return shared.UsageErrorf("users list: %v", err)
 			}
+			if provided["sort"] && len(sortValues) == 0 {
+				return shared.UsageErrorf("users list: --sort must not be empty")
+			}
 			fieldsValue, err := normalizeUsersFields(*fields, "--fields")
 			if err != nil {
 				return shared.UsageErrorf("users list: %v", err)
+			}
+			if provided["fields"] && len(fieldsValue) == 0 {
+				return shared.UsageErrorf("users list: --fields must not be empty")
 			}
 			appFieldsValue, err := normalizeUsersAppFields(*appFields, "--app-fields")
 			if err != nil {
 				return shared.UsageErrorf("users list: %v", err)
 			}
+			if provided["app-fields"] && len(appFieldsValue) == 0 {
+				return shared.UsageErrorf("users list: --app-fields must not be empty")
+			}
 			includeValue, err := normalizeUsersInclude(*include)
 			if err != nil {
 				return shared.UsageErrorf("users list: %v", err)
+			}
+			if provided["include"] && len(includeValue) == 0 {
+				return shared.UsageErrorf("users list: --include must not be empty")
 			}
 			if len(appFieldsValue) > 0 && !shared.HasInclude(includeValue, "visibleApps") {
 				return shared.UsageErrorf("users list: --app-fields requires --include visibleApps")
