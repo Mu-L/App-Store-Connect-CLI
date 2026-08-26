@@ -53,6 +53,30 @@ func TestAppClipsMutationsRejectRepeatedCSVFlags(t *testing.T) {
 			},
 			flagName: "localization-id",
 		},
+		{
+			name: "advanced experience create localization ids",
+			args: []string{
+				"app-clips", "advanced-experiences", "create",
+				"--app-clip-id", "clip-1",
+				"--link", "https://example.com/clip",
+				"--default-language", "EN",
+				"--is-powered-by",
+				"--header-image-id", "image-1",
+				"--localization-id", "loc-1",
+				"--localization-id", "loc-2",
+			},
+			flagName: "localization-id",
+		},
+		{
+			name: "advanced experience update localization ids",
+			args: []string{
+				"app-clips", "advanced-experiences", "update",
+				"--experience-id", "experience-1",
+				"--localization-id", "loc-1",
+				"--localization-id", "loc-2",
+			},
+			flagName: "localization-id",
+		},
 	}
 
 	for _, test := range tests {
