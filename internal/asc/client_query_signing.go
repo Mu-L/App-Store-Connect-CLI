@@ -114,9 +114,14 @@ type profilesQuery struct {
 
 type usersQuery struct {
 	listQuery
-	email   string
-	roles   []string
-	include []string
+	email            string
+	roles            []string
+	visibleAppIDs    []string
+	sort             string
+	fields           []string
+	appFields        []string
+	include          []string
+	visibleAppsLimit int
 }
 
 type profileCertificatesQuery struct {
@@ -345,11 +350,25 @@ func buildProfilesQuery(query *profilesQuery) string {
 
 func buildUsersQuery(query *usersQuery) string {
 	values := url.Values{}
+	include := normalizeUniqueList(query.include)
+	fields := query.fields
+	if len(fields) > 0 {
+		fields = normalizeUniqueList(append(append([]string{}, fields...), include...))
+	}
 	if strings.TrimSpace(query.email) != "" {
 		values.Set("filter[username]", strings.TrimSpace(query.email))
 	}
 	addCSV(values, "filter[roles]", query.roles)
-	addCSV(values, "include", query.include)
+	addCSV(values, "filter[visibleApps]", query.visibleAppIDs)
+	if strings.TrimSpace(query.sort) != "" {
+		values.Set("sort", strings.TrimSpace(query.sort))
+	}
+	addCSV(values, "fields[users]", fields)
+	addCSV(values, "fields[apps]", query.appFields)
+	addCSV(values, "include", include)
+	if query.visibleAppsLimit > 0 {
+		values.Set("limit[visibleApps]", strconv.Itoa(query.visibleAppsLimit))
+	}
 	addLimit(values, query.limit)
 	return values.Encode()
 }
@@ -1271,10 +1290,49 @@ func WithUsersRoles(roles []string) UsersOption {
 	}
 }
 
+// WithUsersVisibleAppIDs filters users by visible app ID(s).
+func WithUsersVisibleAppIDs(appIDs []string) UsersOption {
+	return func(q *usersQuery) {
+		q.visibleAppIDs = normalizeList(appIDs)
+	}
+}
+
+// WithUsersSort sets the user list sort order.
+func WithUsersSort(sort string) UsersOption {
+	return func(q *usersQuery) {
+		if strings.TrimSpace(sort) != "" {
+			q.sort = strings.TrimSpace(sort)
+		}
+	}
+}
+
+// WithUsersFields sets fields[users] for user responses.
+func WithUsersFields(fields []string) UsersOption {
+	return func(q *usersQuery) {
+		q.fields = normalizeList(fields)
+	}
+}
+
+// WithUsersAppFields sets fields[apps] for included app responses.
+func WithUsersAppFields(fields []string) UsersOption {
+	return func(q *usersQuery) {
+		q.appFields = normalizeList(fields)
+	}
+}
+
 // WithUsersInclude sets include for user responses.
 func WithUsersInclude(include []string) UsersOption {
 	return func(q *usersQuery) {
 		q.include = normalizeList(include)
+	}
+}
+
+// WithUsersVisibleAppsLimit sets the maximum number of included visible apps.
+func WithUsersVisibleAppsLimit(limit int) UsersOption {
+	return func(q *usersQuery) {
+		if limit > 0 {
+			q.visibleAppsLimit = limit
+		}
 	}
 }
 

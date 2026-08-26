@@ -57,6 +57,12 @@ func UsersListCommand() *ffcli.Command {
 
 	email := fs.String("email", "", "Filter by email/username")
 	role := fs.String("role", "", "Filter by UserRole (comma-separated): "+strings.Join(userRoleList(), ", "))
+	visibleApp := fs.String("visible-app", "", "[experimental] Filter by visible app ID(s), comma-separated")
+	sort := fs.String("sort", "", "[experimental] Sort by one or more comma-separated expressions: username, -username, lastName, or -lastName")
+	fields := fs.String("fields", "", "[experimental] User fields to include: "+strings.Join(usersFieldsList(), ", "))
+	appFields := fs.String("app-fields", "", "[experimental] Fields to include for related apps, comma-separated")
+	include := fs.String("include", "", "[experimental] Include related resources: visibleApps")
+	visibleAppsLimit := fs.Int("visible-apps-limit", 0, "[experimental] Maximum included visible apps (1-50)")
 	output := shared.BindOutputFlags(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
@@ -73,6 +79,9 @@ Examples:
   asc users list --email "user@example.com"
   asc users list --role "ADMIN"
   asc users list --role "DEVELOPER,APP_MANAGER"
+  asc users list --visible-app "APP_ID"
+  asc users list --sort "username,-lastName"
+  asc users list --fields "username,lastName" --include visibleApps --app-fields "name,bundleId"
   asc users list --limit 50
   asc users list --paginate`,
 		FlagSet:   fs,
@@ -81,15 +90,65 @@ Examples:
 			if err := shared.ValidateNextURL(*next); err != nil {
 				return fmt.Errorf("users list: %w", err)
 			}
-			if err := shared.RejectNextFlagConflicts(fs, *next, "users list", "email", "role", "limit"); err != nil {
+			if err := shared.RejectNextFlagConflicts(
+				fs,
+				*next,
+				"users list",
+				"email", "role", "visible-app", "sort", "fields", "app-fields", "include", "visible-apps-limit", "limit",
+			); err != nil {
 				return err
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return fmt.Errorf("users list: --limit must be between 1 and 200")
 			}
+			provided := make(map[string]bool)
+			fs.Visit(func(f *flag.Flag) {
+				provided[f.Name] = true
+			})
+			if provided["visible-apps-limit"] && (*visibleAppsLimit < 1 || *visibleAppsLimit > 50) {
+				return shared.UsageErrorf("users list: --visible-apps-limit must be between 1 and 50")
+			}
+			visibleAppValues := shared.SplitCSV(*visibleApp)
+			if provided["visible-app"] && len(visibleAppValues) == 0 {
+				return shared.UsageErrorf("users list: --visible-app must not be empty")
+			}
 			roleValues, err := normalizeUserRoles(*role, "--role")
 			if err != nil {
 				return shared.UsageErrorf("users list: %v", err)
+			}
+			sortValues, err := normalizeUsersSort(*sort, "--sort")
+			if err != nil {
+				return shared.UsageErrorf("users list: %v", err)
+			}
+			if provided["sort"] && len(sortValues) == 0 {
+				return shared.UsageErrorf("users list: --sort must not be empty")
+			}
+			fieldsValue, err := normalizeUsersFields(*fields, "--fields")
+			if err != nil {
+				return shared.UsageErrorf("users list: %v", err)
+			}
+			if provided["fields"] && len(fieldsValue) == 0 {
+				return shared.UsageErrorf("users list: --fields must not be empty")
+			}
+			appFieldsValue, err := normalizeUsersAppFields(*appFields, "--app-fields")
+			if err != nil {
+				return shared.UsageErrorf("users list: %v", err)
+			}
+			if provided["app-fields"] && len(appFieldsValue) == 0 {
+				return shared.UsageErrorf("users list: --app-fields must not be empty")
+			}
+			includeValue, err := normalizeUsersInclude(*include)
+			if err != nil {
+				return shared.UsageErrorf("users list: %v", err)
+			}
+			if provided["include"] && len(includeValue) == 0 {
+				return shared.UsageErrorf("users list: --include must not be empty")
+			}
+			if len(appFieldsValue) > 0 && !shared.HasInclude(includeValue, "visibleApps") {
+				return shared.UsageErrorf("users list: --app-fields requires --include visibleApps")
+			}
+			if *visibleAppsLimit > 0 && !shared.HasInclude(includeValue, "visibleApps") {
+				return shared.UsageErrorf("users list: --visible-apps-limit requires --include visibleApps")
 			}
 
 			client, err := shared.GetASCClient()
@@ -103,6 +162,12 @@ Examples:
 			opts := []asc.UsersOption{
 				asc.WithUsersEmail(*email),
 				asc.WithUsersRoles(roleValues),
+				asc.WithUsersVisibleAppIDs(visibleAppValues),
+				asc.WithUsersSort(strings.Join(sortValues, ",")),
+				asc.WithUsersFields(fieldsValue),
+				asc.WithUsersAppFields(appFieldsValue),
+				asc.WithUsersInclude(includeValue),
+				asc.WithUsersVisibleAppsLimit(*visibleAppsLimit),
 				asc.WithUsersLimit(*limit),
 				asc.WithUsersNextURL(*next),
 			}
