@@ -2,6 +2,7 @@ package asc
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 )
@@ -73,5 +74,52 @@ func TestGetUsers_FieldOnlyPreservesSparseFieldset(t *testing.T) {
 		WithUsersFields([]string{"username", "lastName"}),
 	); err != nil {
 		t.Fatalf("GetUsers() error: %v", err)
+	}
+}
+
+func TestGetUsers_SparseAttributesPreserveIncludedResources(t *testing.T) {
+	response := jsonResponse(http.StatusOK, `{"data":[{"type":"users","id":"user-1","attributes":{"username":"user@example.com","lastName":"Doe"},"relationships":{"visibleApps":{"data":[{"type":"apps","id":"app-1"}]}}}],"included":[{"type":"apps","id":"app-1","attributes":{"name":"Example"}}],"links":{"next":""}}`)
+	client := newTestClient(t, nil, response)
+
+	users, err := client.GetUsers(
+		context.Background(),
+		WithUsersFields([]string{"username", "lastName"}),
+		WithUsersInclude([]string{"visibleApps"}),
+	)
+	if err != nil {
+		t.Fatalf("GetUsers() error: %v", err)
+	}
+
+	encoded, err := json.Marshal(users)
+	if err != nil {
+		t.Fatalf("json.Marshal() error: %v", err)
+	}
+	var got struct {
+		Data []struct {
+			Attributes    map[string]json.RawMessage `json:"attributes"`
+			Relationships json.RawMessage            `json:"relationships"`
+		} `json:"data"`
+		Included json.RawMessage `json:"included"`
+	}
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(got.Data) != 1 {
+		t.Fatalf("data length = %d, want 1", len(got.Data))
+	}
+	if len(got.Data[0].Attributes) != 2 {
+		t.Fatalf("sparse attributes = %s, want only username and lastName", got.Data[0].Attributes)
+	}
+	if string(got.Data[0].Attributes["username"]) != `"user@example.com"` {
+		t.Fatalf("username = %s, want user@example.com", got.Data[0].Attributes["username"])
+	}
+	if string(got.Data[0].Attributes["lastName"]) != `"Doe"` {
+		t.Fatalf("lastName = %s, want Doe", got.Data[0].Attributes["lastName"])
+	}
+	if string(got.Data[0].Relationships) != `{"visibleApps":{"data":[{"type":"apps","id":"app-1"}]}}` {
+		t.Fatalf("relationships = %s, want visibleApps linkage", got.Data[0].Relationships)
+	}
+	if string(got.Included) != `[{"type":"apps","id":"app-1","attributes":{"name":"Example"}}]` {
+		t.Fatalf("included = %s, want included app", got.Included)
 	}
 }
