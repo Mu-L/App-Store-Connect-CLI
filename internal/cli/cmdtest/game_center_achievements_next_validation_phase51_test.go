@@ -15,8 +15,10 @@ func runGameCenterAchievementsInvalidNextURLCases(
 	t *testing.T,
 	argsPrefix []string,
 	wantErrPrefix string,
+	expectUsage ...bool,
 ) {
 	t.Helper()
+	usageExpected := len(expectUsage) > 0 && expectUsage[0]
 
 	tests := []struct {
 		name    string
@@ -59,7 +61,14 @@ func runGameCenterAchievementsInvalidNextURLCases(
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if errors.Is(runErr, flag.ErrHelp) {
+			if usageExpected {
+				if !errors.Is(runErr, flag.ErrHelp) {
+					t.Fatalf("expected ErrHelp, got %v", runErr)
+				}
+				if !strings.Contains(stderr, test.wantErr) {
+					t.Fatalf("expected stderr to contain %q, got %q", test.wantErr, stderr)
+				}
+			} else if errors.Is(runErr, flag.ErrHelp) {
 				if !strings.Contains(stderr, test.wantErr) {
 					t.Fatalf("expected stderr to contain %q, got %q", test.wantErr, stderr)
 				}
