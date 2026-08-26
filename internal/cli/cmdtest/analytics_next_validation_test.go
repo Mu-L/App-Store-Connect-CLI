@@ -4,9 +4,15 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 func runAnalyticsInvalidNextURLCases(
@@ -344,41 +350,75 @@ func TestAnalyticsViewPaginateFromNextFollowsReportPages(t *testing.T) {
 		secondInstancesURL = "https://api.appstoreconnect.apple.com/v1/analyticsReports/analytics-report-next-2/instances?limit=200"
 	)
 
+	pages := []struct {
+		url  string
+		body string
+	}{
+		{
+			url:  firstReportsURL,
+			body: `{"data":[{"type":"analyticsReports","id":"analytics-report-next-1","attributes":{"name":"Retention","category":"APP_USAGE","granularity":"DAILY"}}],"links":{"first":"https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/request-1/reports","prev":"https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/request-1/reports?cursor=9w","next":"` + secondReportsURL + `"}}`,
+		},
+		{
+			url:  secondReportsURL,
+			body: `{"data":[{"type":"analyticsReports","id":"analytics-report-next-2","attributes":{"name":"Acquisition","category":"APP_STORE","granularity":"DAILY"}}],"links":{"next":""}}`,
+		},
+		{
+			url:  firstInstancesURL,
+			body: `{"data":[{"type":"analyticsReportInstances","id":"analytics-instance-next-1","attributes":{"reportDate":"2024-01-01","processingDate":"2024-01-02T00:00:00Z","granularity":"DAILY","version":"1"}}],"links":{"next":""}}`,
+		},
+		{
+			url:  secondInstancesURL,
+			body: `{"data":[{"type":"analyticsReportInstances","id":"analytics-instance-next-2","attributes":{"reportDate":"2024-01-03","processingDate":"2024-01-04T00:00:00Z","granularity":"DAILY","version":"1"}}],"links":{"next":""}}`,
+		},
+	}
+
 	requestCount := 0
-	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		requestCount++
-		var body string
-		switch requestCount {
-		case 1:
-			if req.Method != http.MethodGet || req.URL.String() != firstReportsURL {
-				t.Fatalf("unexpected first request: %s %s", req.Method, req.URL.String())
-			}
-			body = `{"data":[{"type":"analyticsReports","id":"analytics-report-next-1","attributes":{"name":"Retention","category":"APP_USAGE","granularity":"DAILY"}}],"links":{"first":"https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/request-1/reports","prev":"https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/request-1/reports?cursor=9w","next":"` + secondReportsURL + `"}}`
-		case 2:
-			if req.Method != http.MethodGet || req.URL.String() != secondReportsURL {
-				t.Fatalf("unexpected second request: %s %s", req.Method, req.URL.String())
-			}
-			body = `{"data":[{"type":"analyticsReports","id":"analytics-report-next-2","attributes":{"name":"Acquisition","category":"APP_STORE","granularity":"DAILY"}}],"links":{"next":""}}`
-		case 3:
-			if req.Method != http.MethodGet || req.URL.String() != firstInstancesURL {
-				t.Fatalf("unexpected third request: %s %s", req.Method, req.URL.String())
-			}
-			body = `{"data":[{"type":"analyticsReportInstances","id":"analytics-instance-next-1","attributes":{"reportDate":"2024-01-01","processingDate":"2024-01-02T00:00:00Z","granularity":"DAILY","version":"1"}}],"links":{"next":""}}`
-		case 4:
-			if req.Method != http.MethodGet || req.URL.String() != secondInstancesURL {
-				t.Fatalf("unexpected fourth request: %s %s", req.Method, req.URL.String())
-			}
-			body = `{"data":[{"type":"analyticsReportInstances","id":"analytics-instance-next-2","attributes":{"reportDate":"2024-01-03","processingDate":"2024-01-04T00:00:00Z","granularity":"DAILY","version":"1"}}],"links":{"next":""}}`
-		default:
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if requestCount < 1 || requestCount > len(pages) {
 			t.Fatalf("unexpected extra request: %s %s", req.Method, req.URL.String())
 		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-		}, nil
+		expectedURL, err := url.Parse(pages[requestCount-1].url)
+		if err != nil {
+			t.Fatalf("parse expected URL: %v", err)
+		}
+		if req.Method != http.MethodGet || req.URL.RequestURI() != expectedURL.RequestURI() {
+			t.Fatalf("unexpected server request: %s %s", req.Method, req.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, pages[requestCount-1].body)
+	}))
+	t.Cleanup(server.Close)
+
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
+	}
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		if requestCount > len(pages) {
+			t.Fatalf("unexpected extra request: %s %s", req.Method, req.URL.String())
+		}
+		if req.Method != http.MethodGet || req.URL.String() != pages[requestCount-1].url {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+		routed := req.Clone(req.Context())
+		routed.URL.Scheme = serverURL.Scheme
+		routed.URL.Host = serverURL.Host
+		routed.Host = serverURL.Host
+		return server.Client().Transport.RoundTrip(routed)
 	})
-	setAnalyticsTimeoutTestClient(t, transport)
+	client, err := asc.NewClientWithHTTPClient(
+		"TEST_KEY",
+		"TEST_ISSUER",
+		os.Getenv("ASC_PRIVATE_KEY_PATH"),
+		&http.Client{Transport: transport},
+	)
+	if err != nil {
+		t.Fatalf("create analytics pagination test client: %v", err)
+	}
+	t.Cleanup(shared.SetASCClientFactoryForTesting(func() (*asc.Client, error) {
+		return client, nil
+	}))
 
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
