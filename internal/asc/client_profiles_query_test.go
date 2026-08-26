@@ -66,6 +66,22 @@ func TestProfileAttributesJSONPreservesExplicitEmptyFields(t *testing.T) {
 	}
 }
 
+func TestProfileAttributesJSONUsesModifiedValues(t *testing.T) {
+	var attributes ProfileAttributes
+	if err := json.Unmarshal([]byte(`{"name":"Old","platform":null}`), &attributes); err != nil {
+		t.Fatalf("unmarshal profile attributes: %v", err)
+	}
+	attributes.Name = "New"
+
+	encoded, err := json.Marshal(attributes)
+	if err != nil {
+		t.Fatalf("marshal profile attributes: %v", err)
+	}
+	if got, want := string(encoded), `{"name":"New","platform":null}`; got != want {
+		t.Fatalf("profile attributes JSON = %s, want %s", got, want)
+	}
+}
+
 func TestProfilesResponseJSONPreservesRelationshipOnlyAttributes(t *testing.T) {
 	tests := []struct {
 		name string

@@ -2,6 +2,7 @@ package asc
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 )
 
@@ -28,6 +29,14 @@ func (a *ProfileAttributes) UnmarshalJSON(data []byte) error {
 	a.uuidJSON = fields["uuid"]
 	a.createdDateJSON = fields["createdDate"]
 	a.expirationDateJSON = fields["expirationDate"]
+	a.nameValue = a.Name
+	a.platformValue = a.Platform
+	a.profileTypeValue = a.ProfileType
+	a.profileStateValue = a.ProfileState
+	a.profileContentValue = a.ProfileContent
+	a.uuidValue = a.UUID
+	a.createdDateValue = a.CreatedDate
+	a.expirationDateValue = a.ExpirationDate
 	return nil
 }
 
@@ -51,49 +60,49 @@ func (a ProfileAttributes) MarshalJSON() ([]byte, error) {
 	attributes := attributesJSON{}
 	var err error
 	if len(a.nameJSON) > 0 || a.Name != "" {
-		attributes.Name, err = profileAttributeJSON(a.nameJSON, a.Name)
+		attributes.Name, err = profileAttributeJSON(a.nameJSON, a.nameValue, a.Name)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if len(a.platformJSON) > 0 || a.Platform != "" {
-		attributes.Platform, err = profileAttributeJSON(a.platformJSON, a.Platform)
+		attributes.Platform, err = profileAttributeJSON(a.platformJSON, a.platformValue, a.Platform)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if len(a.profileTypeJSON) > 0 || a.ProfileType != "" {
-		attributes.ProfileType, err = profileAttributeJSON(a.profileTypeJSON, a.ProfileType)
+		attributes.ProfileType, err = profileAttributeJSON(a.profileTypeJSON, a.profileTypeValue, a.ProfileType)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if len(a.profileStateJSON) > 0 || a.ProfileState != "" {
-		attributes.ProfileState, err = profileAttributeJSON(a.profileStateJSON, a.ProfileState)
+		attributes.ProfileState, err = profileAttributeJSON(a.profileStateJSON, a.profileStateValue, a.ProfileState)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if len(a.profileContentJSON) > 0 || a.ProfileContent != "" {
-		attributes.ProfileContent, err = profileAttributeJSON(a.profileContentJSON, a.ProfileContent)
+		attributes.ProfileContent, err = profileAttributeJSON(a.profileContentJSON, a.profileContentValue, a.ProfileContent)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if len(a.uuidJSON) > 0 || a.UUID != "" {
-		attributes.UUID, err = profileAttributeJSON(a.uuidJSON, a.UUID)
+		attributes.UUID, err = profileAttributeJSON(a.uuidJSON, a.uuidValue, a.UUID)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if len(a.createdDateJSON) > 0 || a.CreatedDate != "" {
-		attributes.CreatedDate, err = profileAttributeJSON(a.createdDateJSON, a.CreatedDate)
+		attributes.CreatedDate, err = profileAttributeJSON(a.createdDateJSON, a.createdDateValue, a.CreatedDate)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if len(a.expirationDateJSON) > 0 || a.ExpirationDate != "" {
-		attributes.ExpirationDate, err = profileAttributeJSON(a.expirationDateJSON, a.ExpirationDate)
+		attributes.ExpirationDate, err = profileAttributeJSON(a.expirationDateJSON, a.expirationDateValue, a.ExpirationDate)
 		if err != nil {
 			return nil, err
 		}
@@ -101,11 +110,11 @@ func (a ProfileAttributes) MarshalJSON() ([]byte, error) {
 	return json.Marshal(attributes)
 }
 
-func profileAttributeJSON(raw json.RawMessage, value any) (json.RawMessage, error) {
-	if len(raw) > 0 {
+func profileAttributeJSON(raw json.RawMessage, decoded, current any) (json.RawMessage, error) {
+	if len(raw) > 0 && reflect.DeepEqual(decoded, current) {
 		return raw, nil
 	}
-	return json.Marshal(value)
+	return json.Marshal(current)
 }
 
 // GetLinks returns the links field for pagination.
