@@ -110,6 +110,82 @@ func TestVersionsListLatestRejectsInvalidCreatedDate(t *testing.T) {
 	}
 }
 
+func TestVersionsListLatestKeepsOnlySelectedIncludesAndRedactsSecrets(t *testing.T) {
+	setupAuth(t)
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.Path != "/v1/apps/app-1/appStoreVersions" {
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+		if got := req.URL.Query().Get("include"); got != "build,appStoreReviewDetail" {
+			return nil, fmt.Errorf("include = %q, want build,appStoreReviewDetail", got)
+		}
+		return jsonHTTPResponse(http.StatusOK, `{
+			"data":[
+				{"type":"appStoreVersions","id":"old","attributes":{"platform":"IOS","versionString":"1.0","createdDate":"2025-01-01T00:00:00Z"},"relationships":{"build":{"data":{"type":"builds","id":"build-old"}},"appStoreReviewDetail":{"data":{"type":"appStoreReviewDetails","id":"review-old"}}}},
+				{"type":"appStoreVersions","id":"new","attributes":{"platform":"IOS","versionString":"2.0","createdDate":"2026-01-01T00:00:00Z"},"relationships":{"build":{"data":{"type":"builds","id":"build-new"}},"appStoreReviewDetail":{"data":{"type":"appStoreReviewDetails","id":"review-new"}}}}
+			],
+			"included":[
+				{"type":"builds","id":"build-old","attributes":{"version":"1"}},
+				{"type":"appStoreReviewDetails","id":"review-old","attributes":{"demoAccountPassword":"old-secret"}},
+				{"type":"builds","id":"build-new","attributes":{"version":"2"}},
+				{"type":"appStoreReviewDetails","id":"review-new","attributes":{"demoAccountPassword":"new-secret"}}
+			],
+			"links":{}
+		}`), nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, _ := captureOutput(t, func() {
+		if err := root.Parse([]string{"versions", "list", "--app", "app-1", "--latest", "--include", "build,appStoreReviewDetail", "--output", "json"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+
+	var result struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		Included []struct {
+			ID         string `json:"id"`
+			Attributes struct {
+				DemoAccountPassword string `json:"demoAccountPassword"`
+			} `json:"attributes"`
+		} `json:"included"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("unmarshal output: %v (%q)", err, stdout)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "new" {
+		t.Fatalf("items = %#v, want only new version", result.Items)
+	}
+	if len(result.Included) != 2 {
+		t.Fatalf("included = %#v, want only resources linked to new version", result.Included)
+	}
+	byID := map[string]string{}
+	for _, resource := range result.Included {
+		byID[resource.ID] = resource.Attributes.DemoAccountPassword
+	}
+	if _, ok := byID["build-old"]; ok {
+		t.Fatalf("included retained old build: %#v", result.Included)
+	}
+	if _, ok := byID["review-old"]; ok {
+		t.Fatalf("included retained old review detail: %#v", result.Included)
+	}
+	if _, ok := byID["build-new"]; !ok {
+		t.Fatalf("included omitted selected build: %#v", result.Included)
+	}
+	if got := byID["review-new"]; got != "(redacted)" {
+		t.Fatalf("review password = %q, want redacted", got)
+	}
+}
+
 func TestVersionsListLatestRejectsNextURL(t *testing.T) {
 	stdout, stderr := captureOutput(t, func() {
 		if code := rootcmd.Run([]string{"versions", "list", "--app", "app-1", "--latest", "--next", "https://api.appstoreconnect.apple.com/v1/apps/app-1/appStoreVersions?cursor=x"}, "1.2.3"); code != rootcmd.ExitUsage {

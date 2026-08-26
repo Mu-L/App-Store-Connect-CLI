@@ -1,6 +1,9 @@
 package asc
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // AppStoreVersionSubmissionResult represents CLI output for submissions.
 type AppStoreVersionSubmissionResult struct {
@@ -72,6 +75,7 @@ type AppStoreVersionReleaseRequestResult struct {
 // items and cannot retain stale metadata from the aggregated source pages.
 type AppStoreVersionsLatestResult struct {
 	Items      []Resource[AppStoreVersionAttributes] `json:"items"`
+	Included   json.RawMessage                       `json:"included,omitempty"`
 	TotalCount int                                   `json:"totalCount"`
 	HasMore    bool                                  `json:"hasMore"`
 }

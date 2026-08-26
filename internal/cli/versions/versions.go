@@ -1,6 +1,7 @@
 package versions
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -178,8 +179,22 @@ Examples:
 					if err != nil {
 						return fmt.Errorf("versions list: %w", err)
 					}
+					included, err := latestVersionsIncluded(selected, versionsResponse.Included)
+					if err != nil {
+						return fmt.Errorf("versions list: %w", err)
+					}
+					selectedResponse := &asc.AppStoreVersionsResponse{Data: selected, Included: included}
+					if *includeSensitive {
+						shared.WarnIncludeSensitive(os.Stderr, true)
+					} else {
+						selectedResponse, err = asc.RedactAppStoreReviewDetailIncludesInListResponse(selectedResponse)
+						if err != nil {
+							return fmt.Errorf("versions list: %w", err)
+						}
+					}
 					result := &asc.AppStoreVersionsLatestResult{
 						Items:      selected,
+						Included:   selectedResponse.Included,
 						TotalCount: len(selected),
 						HasMore:    false,
 					}
@@ -230,6 +245,70 @@ func latestVersionsPerPlatform(data []asc.Resource[asc.AppStoreVersionAttributes
 		result = append(result, data[newest[platform].index])
 	}
 	return result, nil
+}
+
+func latestVersionsIncluded(selected []asc.Resource[asc.AppStoreVersionAttributes], included json.RawMessage) (json.RawMessage, error) {
+	if len(included) == 0 {
+		return nil, nil
+	}
+
+	type linkage struct {
+		Type asc.ResourceType `json:"type"`
+		ID   string           `json:"id"`
+	}
+	linked := map[linkage]struct{}{}
+	for _, version := range selected {
+		if len(version.Relationships) == 0 {
+			continue
+		}
+		var relationships map[string]struct {
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(version.Relationships, &relationships); err != nil {
+			return nil, fmt.Errorf("decode selected version %q relationships: %w", version.ID, err)
+		}
+		for _, relationship := range relationships {
+			raw := bytes.TrimSpace(relationship.Data)
+			if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+				continue
+			}
+			if raw[0] == '[' {
+				var items []linkage
+				if err := json.Unmarshal(raw, &items); err != nil {
+					return nil, fmt.Errorf("decode selected version %q relationship linkage: %w", version.ID, err)
+				}
+				for _, item := range items {
+					linked[item] = struct{}{}
+				}
+				continue
+			}
+			var item linkage
+			if err := json.Unmarshal(raw, &item); err != nil {
+				return nil, fmt.Errorf("decode selected version %q relationship linkage: %w", version.ID, err)
+			}
+			linked[item] = struct{}{}
+		}
+	}
+
+	var resources []json.RawMessage
+	if err := json.Unmarshal(included, &resources); err != nil {
+		return nil, fmt.Errorf("decode included resources: %w", err)
+	}
+	filtered := make([]json.RawMessage, 0, len(resources))
+	for _, resource := range resources {
+		var item linkage
+		if err := json.Unmarshal(resource, &item); err != nil {
+			return nil, fmt.Errorf("decode included resource: %w", err)
+		}
+		if _, ok := linked[item]; ok {
+			filtered = append(filtered, resource)
+		}
+	}
+	encoded, err := json.Marshal(filtered)
+	if err != nil {
+		return nil, fmt.Errorf("encode selected included resources: %w", err)
+	}
+	return encoded, nil
 }
 
 func printAppStoreVersionsList(versions *asc.AppStoreVersionsResponse, includeSensitive bool, output string, pretty bool) error {
