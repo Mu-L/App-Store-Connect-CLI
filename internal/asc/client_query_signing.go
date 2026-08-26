@@ -97,10 +97,19 @@ type merchantIDCertificatesQuery struct {
 
 type profilesQuery struct {
 	listQuery
-	bundleID      string
-	profileTypes  []string
-	profileStates []string
-	include       []string
+	bundleID          string
+	name              string
+	ids               string
+	profileTypes      []string
+	profileStates     []string
+	sort              string
+	fields            []string
+	bundleIDFields    []string
+	deviceFields      []string
+	certificateFields []string
+	include           []string
+	devicesLimit      int
+	certificatesLimit int
 }
 
 type usersQuery struct {
@@ -305,12 +314,31 @@ func buildPassTypeIDCertificatesQuery(query *passTypeIDCertificatesQuery) string
 
 func buildProfilesQuery(query *profilesQuery) string {
 	values := url.Values{}
+	if strings.TrimSpace(query.name) != "" {
+		values.Set("filter[name]", strings.TrimSpace(query.name))
+	}
+	if strings.TrimSpace(query.ids) != "" {
+		values.Set("filter[id]", strings.TrimSpace(query.ids))
+	}
 	if strings.TrimSpace(query.bundleID) != "" {
 		values.Set("filter[bundleId]", strings.TrimSpace(query.bundleID))
 	}
 	addCSV(values, "filter[profileType]", query.profileTypes)
 	addCSV(values, "filter[profileState]", query.profileStates)
+	if strings.TrimSpace(query.sort) != "" {
+		values.Set("sort", strings.TrimSpace(query.sort))
+	}
+	addCSV(values, "fields[profiles]", query.fields)
+	addCSV(values, "fields[bundleIds]", query.bundleIDFields)
+	addCSV(values, "fields[devices]", query.deviceFields)
+	addCSV(values, "fields[certificates]", query.certificateFields)
 	addCSV(values, "include", query.include)
+	if query.devicesLimit > 0 {
+		values.Set("limit[devices]", strconv.Itoa(query.devicesLimit))
+	}
+	if query.certificatesLimit > 0 {
+		values.Set("limit[certificates]", strconv.Itoa(query.certificatesLimit))
+	}
 	addLimit(values, query.limit)
 	return values.Encode()
 }
@@ -1068,6 +1096,26 @@ func WithProfilesNextURL(next string) ProfilesOption {
 	}
 }
 
+// WithProfilesFilterName filters profiles by name (supports CSV).
+func WithProfilesFilterName(name string) ProfilesOption {
+	return func(q *profilesQuery) {
+		normalized := normalizeCSVString(name)
+		if normalized != "" {
+			q.name = normalized
+		}
+	}
+}
+
+// WithProfilesFilterIDs filters profiles by ID(s).
+func WithProfilesFilterIDs(ids []string) ProfilesOption {
+	return func(q *profilesQuery) {
+		normalized := normalizeList(ids)
+		if len(normalized) > 0 {
+			q.ids = strings.Join(normalized, ",")
+		}
+	}
+}
+
 // WithProfilesTypes filters profiles by profile type.
 func WithProfilesTypes(types []string) ProfilesOption {
 	return func(q *profilesQuery) {
@@ -1082,10 +1130,65 @@ func WithProfilesStates(states []string) ProfilesOption {
 	}
 }
 
+// WithProfilesSort sets the sort order for profiles.
+func WithProfilesSort(sort string) ProfilesOption {
+	return func(q *profilesQuery) {
+		if strings.TrimSpace(sort) != "" {
+			q.sort = strings.TrimSpace(sort)
+		}
+	}
+}
+
+// WithProfilesFields sets fields[profiles] for profile responses.
+func WithProfilesFields(fields []string) ProfilesOption {
+	return func(q *profilesQuery) {
+		q.fields = normalizeList(fields)
+	}
+}
+
+// WithProfilesBundleIDFields sets fields[bundleIds] for included bundle IDs.
+func WithProfilesBundleIDFields(fields []string) ProfilesOption {
+	return func(q *profilesQuery) {
+		q.bundleIDFields = normalizeList(fields)
+	}
+}
+
+// WithProfilesDeviceFields sets fields[devices] for included devices.
+func WithProfilesDeviceFields(fields []string) ProfilesOption {
+	return func(q *profilesQuery) {
+		q.deviceFields = normalizeList(fields)
+	}
+}
+
+// WithProfilesCertificateFields sets fields[certificates] for included certificates.
+func WithProfilesCertificateFields(fields []string) ProfilesOption {
+	return func(q *profilesQuery) {
+		q.certificateFields = normalizeList(fields)
+	}
+}
+
 // WithProfilesInclude sets include for profile responses.
 func WithProfilesInclude(include []string) ProfilesOption {
 	return func(q *profilesQuery) {
 		q.include = normalizeList(include)
+	}
+}
+
+// WithProfilesDevicesLimit sets limit[devices] for included devices.
+func WithProfilesDevicesLimit(limit int) ProfilesOption {
+	return func(q *profilesQuery) {
+		if limit > 0 {
+			q.devicesLimit = limit
+		}
+	}
+}
+
+// WithProfilesCertificatesLimit sets limit[certificates] for included certificates.
+func WithProfilesCertificatesLimit(limit int) ProfilesOption {
+	return func(q *profilesQuery) {
+		if limit > 0 {
+			q.certificatesLimit = limit
+		}
 	}
 }
 

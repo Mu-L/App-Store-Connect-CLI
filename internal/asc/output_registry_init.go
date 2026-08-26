@@ -100,7 +100,16 @@ func registerAllOutputRenderers() {
 	registerRowsWithSingleResourceAdapter(merchantIDsRows)
 	registerRowsWithSingleResourceAdapter(passTypeIDsRows)
 	registerRowsWithSingleResourceAdapter(certificatesRows)
-	registerRowsWithSingleResourceAdapter(profilesRows)
+	registerRows(profilesRows)
+	registerRows(func(v *ProfileResponse) ([]string, [][]string) {
+		single := ptrOrZero(v)
+		return profilesRows(&ProfilesResponse{
+			Data:     []Resource[ProfileAttributes]{single.Data},
+			Links:    single.Links,
+			Included: single.Included,
+			Meta:     single.Meta,
+		})
+	})
 	registerRowsWithSingleResourceAdapter(legacyInAppPurchasesRows)
 	registerRowsWithSingleResourceAdapter(inAppPurchasesRows)
 	registerRowsWithSingleResourceAdapter(inAppPurchaseVersionsRows)
