@@ -399,9 +399,16 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	if err := rejectNormalizedCredentialCollision(originalName, name); err != nil {
 		return err
 	}
+	previousCanonical, previousCanonicalFound, err := currentKeychainItem(name)
+	if err != nil && !isKeyringUnavailable(err) {
+		return err
+	}
 
 	if err := storeInKeychain(name, payload); err == nil {
 		if err := removePreNormalizedKeychainEntries(name); err != nil {
+			if rollbackErr := restoreCurrentKeychainItem(name, previousCanonical, previousCanonicalFound); rollbackErr != nil {
+				return fmt.Errorf("%w; restore canonical credential: %w", err, rollbackErr)
+			}
 			return err
 		}
 		// Successfully stored in keychain - remove matching config entry for security
@@ -417,18 +424,125 @@ func StoreCredentialsWithKeyType(name, keyID, issuerID, keyPath, keyType string)
 	return storeInConfig(name, payload)
 }
 
+func currentKeychainItem(name string) (keyring.Item, bool, error) {
+	kr, err := keyringOpener()
+	if err != nil {
+		return keyring.Item{}, false, err
+	}
+	item, err := kr.Get(keyringKey(name))
+	if errors.Is(err, keyring.ErrKeyNotFound) {
+		return keyring.Item{}, false, nil
+	}
+	if err != nil {
+		return keyring.Item{}, false, err
+	}
+	return item, true, nil
+}
+
+func restoreCurrentKeychainItem(name string, previous keyring.Item, found bool) error {
+	kr, err := keyringOpener()
+	if err != nil {
+		return err
+	}
+	if found {
+		return kr.Set(previous)
+	}
+	if err := kr.Remove(keyringKey(name)); err != nil && !errors.Is(err, keyring.ErrKeyNotFound) {
+		return err
+	}
+	return nil
+}
+
+type keychainItemSnapshot struct {
+	store  keyring.Keyring
+	item   keyring.Item
+	source string
+}
+
 // removePreNormalizedKeychainEntries removes every non-canonical spelling from
 // the current and legacy keychains.
 // Collision preflight has already established that no distinct usable
-// credential will be discarded.
+// credential will be discarded. If any removal fails, already-removed entries
+// are restored so callers can safely retry the normalization.
 func removePreNormalizedKeychainEntries(normalizedName string) error {
-	if _, err := removeNormalizedKeychainEntries(keyringOpener, normalizedName, false); err != nil {
-		return fmt.Errorf("remove pre-normalized keychain credentials: %w", err)
+	current, err := preNormalizedKeychainItems(keyringOpener, normalizedName, "keychain")
+	if err != nil {
+		return err
 	}
-	if _, err := removeNormalizedKeychainEntries(legacyKeyringOpener, normalizedName, false); err != nil {
-		return fmt.Errorf("remove pre-normalized legacy keychain credentials: %w", err)
+	legacy, err := preNormalizedKeychainItems(legacyKeyringOpener, normalizedName, "legacy keychain")
+	if err != nil {
+		return err
+	}
+
+	items := append(current, legacy...)
+	removed := make([]keychainItemSnapshot, 0, len(items))
+	for _, snapshot := range items {
+		if err := snapshot.store.Remove(snapshot.item.Key); err != nil {
+			if errors.Is(err, keyring.ErrKeyNotFound) {
+				continue
+			}
+			removeErr := fmt.Errorf("remove pre-normalized %s credentials: %w", snapshot.source, err)
+			if rollbackErr := restoreKeychainItems(removed); rollbackErr != nil {
+				return fmt.Errorf("%w; restore removed credentials: %w", removeErr, rollbackErr)
+			}
+			return removeErr
+		}
+		removed = append(removed, snapshot)
 	}
 	return nil
+}
+
+func preNormalizedKeychainItems(
+	opener func() (keyring.Keyring, error),
+	normalizedName string,
+	source string,
+) ([]keychainItemSnapshot, error) {
+	kr, err := opener()
+	if err != nil {
+		if isKeyringUnavailable(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list pre-normalized %s credentials: %w", source, err)
+	}
+	keys, err := kr.Keys()
+	if err != nil {
+		if isKeyringUnavailable(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list pre-normalized %s credentials: %w", source, err)
+	}
+	sort.Strings(keys)
+
+	items := make([]keychainItemSnapshot, 0)
+	for _, key := range keys {
+		if !strings.HasPrefix(key, keyringItemPrefix) {
+			continue
+		}
+		name := strings.TrimPrefix(key, keyringItemPrefix)
+		if name == normalizedName || strings.TrimSpace(name) != normalizedName {
+			continue
+		}
+		item, err := kr.Get(key)
+		if errors.Is(err, keyring.ErrKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read pre-normalized %s credential %q: %w", source, name, err)
+		}
+		items = append(items, keychainItemSnapshot{store: kr, item: item, source: source})
+	}
+	return items, nil
+}
+
+func restoreKeychainItems(items []keychainItemSnapshot) error {
+	errs := make([]error, 0)
+	for index := len(items) - 1; index >= 0; index-- {
+		snapshot := items[index]
+		if err := snapshot.store.Set(snapshot.item); err != nil {
+			errs = append(errs, fmt.Errorf("%s credential %q: %w", snapshot.source, snapshot.item.Key, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func removeNormalizedKeychainEntries(
@@ -605,10 +719,9 @@ func completeCredentialPayload(payload credentialPayload) bool {
 	if strings.TrimSpace(payload.PrivateKeyPath) == "" {
 		return false
 	}
-	// A path-only entry is usable only if resolution's loader can read and
-	// parse the referenced key file.
-	_, err := LoadPrivateKey(payload.PrivateKeyPath)
-	return err == nil
+	// Path-only entries must satisfy the same parsing and permission checks as
+	// production client creation before they can block normalization repair.
+	return ValidateKeyFile(payload.PrivateKeyPath) == nil
 }
 
 func credentialPayloadsMatch(first, second credentialPayload) bool {

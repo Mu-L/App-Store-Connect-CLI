@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1817,7 +1818,12 @@ func TestStoreCredentials_IndividualCollisionIgnoresStaleIssuer(t *testing.T) {
 
 func TestStoreCredentials_RetryCompletesPartialLegacyCleanup(t *testing.T) {
 	newKr, legacyKr := withSeparateKeyrings(t)
-	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "OLDKEY", "OLDISSUER", "/tmp/OldAuthKey.p8")
+	keyDir := t.TempDir()
+	oldPath := filepath.Join(keyDir, "OldAuthKey.p8")
+	writeECDSAPEM(t, oldPath, 0o600, true)
+	newPath := filepath.Join(keyDir, "AuthKey.p8")
+	writeECDSAPEM(t, newPath, 0o600, true)
+	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "OLDKEY", "OLDISSUER", oldPath)
 
 	previousLegacy := legacyKeyringOpener
 	transientLegacy := &transientRemoveFailingKeyring{
@@ -1830,18 +1836,18 @@ func TestStoreCredentials_RetryCompletesPartialLegacyCleanup(t *testing.T) {
 	}
 	t.Cleanup(func() { legacyKeyringOpener = previousLegacy })
 
-	firstErr := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8")
+	firstErr := StoreCredentials("  spaced  ", "KEY123", "ISS456", newPath)
 	if firstErr == nil || !strings.Contains(firstErr.Error(), "legacy keyring locked") {
 		t.Fatalf("first StoreCredentials() error = %v, want legacy cleanup failure", firstErr)
 	}
-	if _, err := newKr.Get(keyringKey("spaced")); err != nil {
-		t.Fatalf("canonical credential should survive partial cleanup: %v", err)
+	if _, err := newKr.Get(keyringKey("spaced")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("canonical credential after rollback error = %v, want ErrKeyNotFound", err)
 	}
 	if _, err := legacyKr.Get(keyringKey("  spaced  ")); err != nil {
 		t.Fatalf("legacy credential should remain after failed removal: %v", err)
 	}
 
-	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", "/tmp/AuthKey.p8"); err != nil {
+	if err := StoreCredentials("  spaced  ", "KEY123", "ISS456", newPath); err != nil {
 		t.Fatalf("retry StoreCredentials() error = %v", err)
 	}
 	if _, err := legacyKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
@@ -1853,6 +1859,64 @@ func TestStoreCredentials_RetryCompletesPartialLegacyCleanup(t *testing.T) {
 	}
 	if defaultCreds.KeyID != "KEY123" || defaultCreds.IssuerID != "ISS456" {
 		t.Fatalf("default credentials after retry = %+v", defaultCreds)
+	}
+}
+
+func TestStoreCredentials_RestoresEarlierVariantsWhenLaterCleanupFails(t *testing.T) {
+	newKr, legacyKr := withSeparateKeyrings(t)
+	keyDir := t.TempDir()
+	oldPath := filepath.Join(keyDir, "OldAuthKey.p8")
+	writeECDSAPEM(t, oldPath, 0o600, true)
+	newPath := filepath.Join(keyDir, "AuthKey.p8")
+	writeECDSAPEM(t, newPath, 0o600, true)
+	storeCredentialInKeyring(t, legacyKr, "  spaced", "OLDKEY", "OLDISSUER", oldPath)
+	storeCredentialInKeyring(t, legacyKr, " spaced ", "OLDKEY", "OLDISSUER", oldPath)
+
+	previousLegacy := legacyKeyringOpener
+	failingLegacy := &nthRemoveFailingKeyring{
+		inner:      legacyKr,
+		failOnCall: 2,
+		err:        errors.New("legacy keyring locked"),
+	}
+	legacyKeyringOpener = func() (keyring.Keyring, error) {
+		return failingLegacy, nil
+	}
+	t.Cleanup(func() { legacyKeyringOpener = previousLegacy })
+
+	err := StoreCredentials("spaced", "KEY123", "ISS456", newPath)
+	if err == nil || !strings.Contains(err.Error(), "legacy keyring locked") {
+		t.Fatalf("StoreCredentials() error = %v, want legacy cleanup failure", err)
+	}
+	if _, err := newKr.Get(keyringKey("spaced")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("canonical credential after rollback error = %v, want ErrKeyNotFound", err)
+	}
+	for _, name := range []string{"  spaced", " spaced "} {
+		if _, err := legacyKr.Get(keyringKey(name)); err != nil {
+			t.Fatalf("legacy credential %q should be restored after failed cleanup: %v", name, err)
+		}
+	}
+}
+
+func TestStoreCredentials_IgnoresPathOnlyCollisionWithInsecurePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce Unix private-key permission bits")
+	}
+	newKr, legacyKr := withSeparateKeyrings(t)
+	keyDir := t.TempDir()
+	canonicalPath := filepath.Join(keyDir, "Canonical.p8")
+	writeECDSAPEM(t, canonicalPath, 0o600, true)
+	insecurePath := filepath.Join(keyDir, "Insecure.p8")
+	writeECDSAPEM(t, insecurePath, 0o644, true)
+	incomingPath := filepath.Join(keyDir, "Incoming.p8")
+	writeECDSAPEM(t, incomingPath, 0o600, true)
+	storeCredentialInKeyring(t, newKr, "spaced", "CANONICAL", "ISSUER-CANONICAL", canonicalPath)
+	storeCredentialInKeyring(t, legacyKr, "  spaced  ", "INSECURE", "ISSUER-INSECURE", insecurePath)
+
+	if err := StoreCredentials("  spaced  ", "INCOMING", "ISSUER-INCOMING", incomingPath); err != nil {
+		t.Fatalf("StoreCredentials() error: %v", err)
+	}
+	if _, err := legacyKr.Get(keyringKey("  spaced  ")); !errors.Is(err, keyring.ErrKeyNotFound) {
+		t.Fatalf("unusable legacy credential error = %v, want ErrKeyNotFound", err)
 	}
 }
 
@@ -2717,6 +2781,30 @@ func (k *transientRemoveFailingKeyring) Remove(key string) error {
 	return k.inner.Remove(key)
 }
 func (k *transientRemoveFailingKeyring) Keys() ([]string, error) { return k.inner.Keys() }
+
+type nthRemoveFailingKeyring struct {
+	inner       keyring.Keyring
+	removeCalls int
+	failOnCall  int
+	err         error
+}
+
+func (k *nthRemoveFailingKeyring) Get(key string) (keyring.Item, error) {
+	return k.inner.Get(key)
+}
+
+func (k *nthRemoveFailingKeyring) GetMetadata(key string) (keyring.Metadata, error) {
+	return k.inner.GetMetadata(key)
+}
+func (k *nthRemoveFailingKeyring) Set(item keyring.Item) error { return k.inner.Set(item) }
+func (k *nthRemoveFailingKeyring) Remove(key string) error {
+	k.removeCalls++
+	if k.removeCalls == k.failOnCall {
+		return k.err
+	}
+	return k.inner.Remove(key)
+}
+func (k *nthRemoveFailingKeyring) Keys() ([]string, error) { return k.inner.Keys() }
 
 func TestGetCredentialsWithSource_KeychainAccessDeniedReturnsSentinel(t *testing.T) {
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "")
