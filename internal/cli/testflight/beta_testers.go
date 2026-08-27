@@ -229,7 +229,7 @@ Examples:
 			requestHasIncludes := len(includeValues) > 0 || betaTestersNextURLHasInclude(*next)
 			if requestHasIncludes {
 				fmt.Fprintln(os.Stderr, betaTesterIncludedRelationshipsWarning)
-				if *output.Output != "json" {
+				if shared.NormalizeOutputFormat(*output.Output) != "json" {
 					fmt.Fprintln(os.Stderr, "Note: included resources are only rendered in JSON output; re-run with --output json to see them.")
 				}
 			}

@@ -108,6 +108,7 @@ func TestTestFlightBetaTestersListNotesIncludeIsJSONOnly(t *testing.T) {
 		{name: "table drops included", format: "table", wantNote: true},
 		{name: "markdown drops included", format: "markdown", wantNote: true},
 		{name: "json renders included", format: "json", wantNote: false},
+		{name: "uppercase json renders included", format: "JSON", wantNote: false},
 	}
 
 	for _, test := range tests {
