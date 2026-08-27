@@ -535,13 +535,29 @@ List current prices for a subscription.
 ```bash  theme={null}
 asc subscriptions pricing prices list --subscription-id "SUB_ID"
 asc subscriptions pricing prices list --subscription-id "SUB_ID" --plan-type MONTHLY
+asc subscriptions pricing prices list --subscription-id "SUB_ID" --price-point-id "PRICE_POINT_ID"
+asc subscriptions pricing prices list --subscription-id "SUB_ID" \
+  --include territory,subscriptionPricePoint \
+  --fields startDate,preserved \
+  --territory-fields currency \
+  --price-point-fields customerPrice,proceeds
 ```
 
 **Optional Flags:**
 
 * `--plan-type` - Filter by `MONTHLY` or `UPFRONT` billing plan prices
+* `--territory` - Filter by a single territory
+* `--price-point-id` - [experimental] Filter by subscription price point IDs (comma-separated)
+* `--fields` - [experimental] Sparse fields for returned subscription prices
+* `--territory-fields` - [experimental] Sparse fields for included territories (`currency`)
+* `--price-point-fields` - [experimental] Sparse fields for included subscription price points
+* `--include` - [experimental] Include `territory` and/or `subscriptionPricePoint`
 * `--limit` - Results per page (1-200)
 * `--paginate` - Fetch all pages
+
+The `--resolved` form keeps its fixed effective-price projection and accepts
+only its existing `--plan-type` and `--territory` filters. It cannot be
+combined with `--price-point-id`, sparse-field flags, or `--include`.
 
 ### Set Price
 
@@ -895,6 +911,11 @@ Offer discounted pricing to new subscribers.
 `--all-territories` and prints a migration warning. Use `--all-territories` in
 new scripts; combining both spellings is invalid.
 
+`--dry-run` prints a summary and creates nothing, in either territory mode.
+Single-territory dry runs normalize the territory locally and make no network
+requests; the `subscriptionId` field echoes the selector supplied on the command
+line and `created: 1` is the planned create count, not an existing-offer check.
+
 ```bash  theme={null}
 # Create introductory offer
 asc subscriptions offers introductory create \
@@ -916,6 +937,15 @@ asc subscriptions offers introductory create \
 asc subscriptions offers introductory create \
   --subscription-id "SUB_ID" \
   --all-territories \
+  --dry-run \
+  --offer-duration ONE_MONTH \
+  --offer-mode FREE_TRIAL \
+  --number-of-periods 1
+
+# Preview a single-territory introductory offer without mutating ASC
+asc subscriptions offers introductory create \
+  --subscription-id "SUB_ID" \
+  --territory "USA" \
   --dry-run \
   --offer-duration ONE_MONTH \
   --offer-mode FREE_TRIAL \

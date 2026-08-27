@@ -45,6 +45,7 @@ Examples:
   asc devices view --id "DEVICE_ID"
   asc devices local-udid
   asc devices register --name "iPhone 15" --udid "UDID" --platform IOS
+  asc devices register-batch --file "./devices.txt" --confirm
   asc devices update --id "DEVICE_ID" --status DISABLED`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -53,6 +54,7 @@ Examples:
 			DevicesGetCommand(),
 			DevicesLocalUDIDCommand(),
 			DevicesRegisterCommand(),
+			DevicesRegisterBatchCommand(),
 			DevicesUpdateCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
@@ -95,13 +97,13 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("devices list: --limit must be between 1 and 200")
+				return shared.UsageErrorf("devices list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("devices list: %w", err)
+				return shared.UsageErrorf("devices list: %v", err)
 			}
 			if err := shared.ValidateSort(*sort, "id", "-id", "name", "-name", "platform", "-platform", "status", "-status", "udid", "-udid"); err != nil {
-				return fmt.Errorf("devices list: %w", err)
+				return shared.UsageErrorf("devices list: %v", err)
 			}
 
 			platformValues, err := normalizeDevicePlatforms(shared.SplitCSV(*platform))
@@ -111,12 +113,12 @@ Examples:
 
 			statusValue, err := normalizeDeviceStatus(*status)
 			if err != nil {
-				return fmt.Errorf("devices list: %w", err)
+				return shared.UsageErrorf("devices list: %v", err)
 			}
 
 			fieldsValue, err := normalizeDeviceFields(*fields)
 			if err != nil {
-				return fmt.Errorf("devices list: %w", err)
+				return shared.UsageErrorf("devices list: %v", err)
 			}
 
 			client, err := shared.GetASCClient()

@@ -46,14 +46,22 @@ func Run(args []string, versionInfo string) int {
 	runCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stopSignals()
 
-	parseOutput := &bytes.Buffer{}
+	parseOutput := &parseOutputBuffer{}
 	restoreFlagOutputs := prepareFlagParsing(root, args, parseOutput)
 	parseErr := root.Parse(args)
 	restoreFlagOutputs()
 	if parseErr != nil {
 		if errors.Is(parseErr, flag.ErrHelp) {
+			// Explicitly requested help is the command's result, not a
+			// diagnostic: agents pipe and redirect it, so it belongs on stdout
+			// with a success exit code. Help raised by any other parse path is
+			// a usage failure and stays on stderr.
+			if requestedHelp(root, args) {
+				fmt.Fprint(os.Stdout, parseOutput.String())
+				return ExitSuccess
+			}
 			fmt.Fprint(os.Stderr, parseOutput.String())
-			return ExitSuccess
+			return ExitUsage
 		}
 		recoverCIReportFlags(root, args)
 		if err := shared.ValidateReportFlags(); err != nil {
@@ -66,11 +74,11 @@ func Run(args []string, versionInfo string) int {
 			badFlagSyntax = firstLine
 		}
 		if analysis.unknownFlag && isUnknownFlagParseFailure(parseErr, parseOutput.String()) {
-			printConciseUnknownFlag(analysis, getCommandName(root, args))
+			printConciseUnknownFlag(root, analysis, getCommandName(root, args), args)
 		} else if strings.HasPrefix(badFlagSyntax, "bad flag syntax:") {
 			fmt.Fprintf(os.Stderr, "Error: %s\nFor help:\n  asc --help\n", shared.SanitizeTerminal(badFlagSyntax))
 		} else {
-			printParseFailure(parseErr, parseOutput.String(), analysis)
+			printParseFailure(parseErr, parseOutput.String(), analysis, parseFailureHelpCommand(root, args, parseOutput.owner))
 		}
 		// Every non-help error returned by command-tree parsing is invalid usage,
 		// including NoExecError cases that do not write flag output.
@@ -361,10 +369,53 @@ func commandAcceptsPositionalPayload(commandPath []string) bool {
 	}
 }
 
-func printParseFailure(parseErr error, parseOutput string, analysis invocationAnalysis) {
+// requestedHelp reports whether the invocation explicitly asked for help with
+// any -h or -help spelling accepted by the standard flag package. That package
+// raises flag.ErrHelp for an undefined help token, so the token itself is the
+// only reliable signal that the operator asked for the help page instead of
+// tripping over a usage failure.
+func requestedHelp(root *ffcli.Command, args []string) bool {
+	command := root
+	for i := 0; i < len(args); {
+		token := args[i]
+		if token == "" {
+			i++
+			continue
+		}
+		// Everything after the terminator is positional and never parsed as a
+		// help request.
+		if token == "--" {
+			return false
+		}
+		if subcommand := findDirectSubcommand(command, token); subcommand != nil {
+			command = subcommand
+			i++
+			continue
+		}
+		if isHelpToken(token) {
+			return true
+		}
+		next, consumed := consumeFlagToken(command.FlagSet, token, args, i)
+		if !consumed {
+			return false
+		}
+		i = next
+	}
+	return false
+}
+
+func printParseFailure(parseErr error, parseOutput string, analysis invocationAnalysis, commandName string) {
 	if !analysis.unknownFlag || !isUnknownFlagParseFailure(parseErr, parseOutput) {
 		if parseOutput != "" {
-			fmt.Fprint(os.Stderr, parseOutput)
+			firstLine, _, _ := strings.Cut(strings.TrimSpace(parseOutput), "\n")
+			if firstLine != "" {
+				fmt.Fprintf(
+					os.Stderr,
+					"Error: %s\nFor help:\n  %s --help\n",
+					shared.SanitizeTerminal(firstLine),
+					commandName,
+				)
+			}
 			return
 		}
 		fmt.Fprint(os.Stderr, errfmt.FormatStderr(parseErr))
@@ -381,6 +432,18 @@ func printParseFailure(parseErr error, parseOutput string, analysis invocationAn
 	if parseOutput != "" {
 		fmt.Fprint(os.Stderr, parseOutput)
 	}
+}
+
+// parseFailureHelpCommand names the command whose help a parse failure should
+// point to. The scoped parse writers record which command's flag set produced
+// diagnostics during Parse; when nothing was written there is no diagnostic to
+// attribute, so the help target falls back to the deepest command named by the
+// invocation.
+func parseFailureHelpCommand(root *ffcli.Command, args []string, parseOwner string) string {
+	if parseOwner != "" {
+		return parseOwner
+	}
+	return getCommandName(root, args)
 }
 
 func isUnknownFlagParseFailure(parseErr error, parseOutput string) bool {
@@ -405,12 +468,30 @@ func emitImmediateTelemetry(
 	emitTelemetry(getCommandName(root, args), versionInfo, 0, ExitUsage, eventContext)
 }
 
-func prepareFlagParsing(command *ffcli.Command, args []string, output *bytes.Buffer) func() {
+type parseOutputBuffer struct {
+	bytes.Buffer
+	owner string
+}
+
+type scopedParseWriter struct {
+	output *parseOutputBuffer
+	owner  string
+}
+
+func (w scopedParseWriter) Write(data []byte) (int, error) {
+	if len(data) > 0 {
+		w.output.owner = w.owner
+	}
+	return w.output.Write(data)
+}
+
+func prepareFlagParsing(command *ffcli.Command, args []string, output *parseOutputBuffer) func() {
 	type preparedFlagSet struct {
 		flagSet *flag.FlagSet
 		output  io.Writer
 	}
 	prepared := []preparedFlagSet{}
+	path := []string{command.Name}
 
 	for command != nil {
 		if command.FlagSet == nil {
@@ -421,7 +502,7 @@ func prepareFlagParsing(command *ffcli.Command, args []string, output *bytes.Buf
 			output:  command.FlagSet.Output(),
 		})
 		command.FlagSet.Init(command.FlagSet.Name(), flag.ContinueOnError)
-		command.FlagSet.SetOutput(output)
+		command.FlagSet.SetOutput(scopedParseWriter{output: output, owner: strings.Join(path, " ")})
 
 		var next *ffcli.Command
 		var remaining []string
@@ -433,6 +514,7 @@ func prepareFlagParsing(command *ffcli.Command, args []string, output *bytes.Buf
 			}
 			if sub := findDirectSubcommand(command, token); sub != nil {
 				next = sub
+				path = append(path, sub.Name)
 				remaining = args[i+1:]
 				break
 			}

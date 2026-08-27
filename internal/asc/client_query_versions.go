@@ -1,15 +1,15 @@
 package asc
 
 import (
-	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
 
 type reviewQuery struct {
 	listQuery
-	rating                  int
+	ratings                 []int
 	territory               string
 	sort                    string
 	publishedResponseExists *bool
@@ -57,6 +57,7 @@ type reviewSubmissionItemsQuery struct {
 type appStoreVersionLocalizationsQuery struct {
 	listQuery
 	locales []string
+	include []string
 }
 
 type appInfoLocalizationsQuery struct {
@@ -67,6 +68,7 @@ type appInfoLocalizationsQuery struct {
 }
 
 type appInfoQuery struct {
+	listQuery
 	fields                     []string
 	ageRatingDeclarationFields []string
 	include                    []string
@@ -82,6 +84,12 @@ type territoryAgeRatingsQuery struct {
 
 type appCustomProductPagesQuery struct {
 	listQuery
+	visible       []string
+	fields        []string
+	appFields     []string
+	versionFields []string
+	include       []string
+	versionsLimit int
 }
 
 type appCustomProductPageVersionsQuery struct {
@@ -98,6 +106,7 @@ type appCustomProductPageLocalizationPreviewSetsQuery struct {
 
 type appCustomProductPageLocalizationScreenshotSetsQuery struct {
 	listQuery
+	requestContext RequestContextFunc
 }
 
 type appStoreVersionLocalizationPreviewSetsQuery struct {
@@ -106,6 +115,7 @@ type appStoreVersionLocalizationPreviewSetsQuery struct {
 
 type appStoreVersionLocalizationScreenshotSetsQuery struct {
 	listQuery
+	requestContext RequestContextFunc
 }
 
 type appStoreVersionExperimentsQuery struct {
@@ -132,6 +142,7 @@ type appStoreVersionExperimentTreatmentLocalizationPreviewSetsQuery struct {
 
 type appStoreVersionExperimentTreatmentLocalizationScreenshotSetsQuery struct {
 	listQuery
+	requestContext RequestContextFunc
 }
 
 type endUserLicenseAgreementTerritoriesQuery struct {
@@ -160,8 +171,12 @@ func buildReviewQuery(opts []ReviewOption) string {
 	if query.territory != "" {
 		values.Set("filter[territory]", query.territory)
 	}
-	if query.rating >= 1 && query.rating <= 5 {
-		values.Set("filter[rating]", fmt.Sprintf("%d", query.rating))
+	if len(query.ratings) > 0 {
+		ratings := make([]string, 0, len(query.ratings))
+		for _, rating := range query.ratings {
+			ratings = append(ratings, strconv.Itoa(rating))
+		}
+		values.Set("filter[rating]", strings.Join(ratings, ","))
 	}
 	if query.sort != "" {
 		values.Set("sort", query.sort)
@@ -239,6 +254,7 @@ func buildReviewSubmissionItemsQuery(query *reviewSubmissionItemsQuery) string {
 func buildAppStoreVersionLocalizationsQuery(query *appStoreVersionLocalizationsQuery) string {
 	values := url.Values{}
 	addCSV(values, "filter[locale]", query.locales)
+	addCSV(values, "include", query.include)
 	addLimit(values, query.limit)
 	return values.Encode()
 }
@@ -264,6 +280,7 @@ func buildAppInfoQuery(query *appInfoQuery) string {
 	addCSV(values, "fields[appInfos]", fields)
 	addCSV(values, "fields[ageRatingDeclarations]", query.ageRatingDeclarationFields)
 	addCSV(values, "include", include)
+	addLimit(values, query.limit)
 	if query.localizationsLimit > 0 {
 		values.Set("limit[appInfoLocalizations]", strconv.Itoa(query.localizationsLimit))
 	}
@@ -281,7 +298,22 @@ func buildTerritoryAgeRatingsQuery(query *territoryAgeRatingsQuery) string {
 
 func buildAppCustomProductPagesQuery(query *appCustomProductPagesQuery) string {
 	values := url.Values{}
+	include := normalizeUniqueList(query.include)
+	fields := normalizeUniqueList(query.fields)
+	if len(fields) > 0 {
+		// A primary sparse fieldset must retain every included relationship or
+		// ASC can omit the linkage and included resource from the response.
+		fields = normalizeUniqueList(append(fields, include...))
+	}
+	addCSV(values, "filter[visible]", query.visible)
+	addCSV(values, "fields[appCustomProductPages]", fields)
+	addCSV(values, "fields[apps]", query.appFields)
+	addCSV(values, "fields[appCustomProductPageVersions]", query.versionFields)
+	addCSV(values, "include", include)
 	addLimit(values, query.limit)
+	if query.versionsLimit > 0 {
+		values.Set("limit[appCustomProductPageVersions]", strconv.Itoa(query.versionsLimit))
+	}
 	return values.Encode()
 }
 
@@ -489,16 +521,29 @@ func WithAppStoreReviewAttachmentsNextURL(next string) AppStoreReviewAttachments
 	}
 }
 
-// WithRating filters reviews by star rating (1-5).
+// WithRating filters reviews by a single star rating (1-5).
 func WithRating(rating int) ReviewOption {
+	return WithRatings([]int{rating})
+}
+
+// WithRatings filters reviews by one or more star ratings (1-5). Apple models
+// filter[rating] as a comma-separated array parameter, so several ratings match
+// with OR semantics. Ratings outside 1-5 and repeats are dropped.
+func WithRatings(ratings []int) ReviewOption {
 	return func(r *reviewQuery) {
-		if rating >= 1 && rating <= 5 {
-			r.rating = rating
+		for _, rating := range ratings {
+			if rating < 1 || rating > 5 {
+				continue
+			}
+			if slices.Contains(r.ratings, rating) {
+				continue
+			}
+			r.ratings = append(r.ratings, rating)
 		}
 	}
 }
 
-// WithTerritory filters reviews by territory code (e.g. US, GBR).
+// WithTerritory filters reviews by App Store territory code (e.g. USA, GBR).
 func WithTerritory(territory string) ReviewOption {
 	return func(r *reviewQuery) {
 		if territory != "" {
@@ -784,6 +829,15 @@ func WithAppStoreVersionLocalizationLocales(locales []string) AppStoreVersionLoc
 	}
 }
 
+// WithAppStoreVersionLocalizationsInclude includes related resources for
+// version localizations (appStoreVersion, appScreenshotSets, appPreviewSets,
+// searchKeywords).
+func WithAppStoreVersionLocalizationsInclude(include []string) AppStoreVersionLocalizationsOption {
+	return func(q *appStoreVersionLocalizationsQuery) {
+		q.include = normalizeList(include)
+	}
+}
+
 // WithAppInfoLocalizationsLimit sets the max number of app info localizations to return.
 func WithAppInfoLocalizationsLimit(limit int) AppInfoLocalizationsOption {
 	return func(q *appInfoLocalizationsQuery) {
@@ -827,6 +881,24 @@ func WithAppInfoLocalizationsInclude(include []string) AppInfoLocalizationsOptio
 func WithAppInfoFields(fields []string) AppInfoOption {
 	return func(q *appInfoQuery) {
 		q.fields = normalizeList(fields)
+	}
+}
+
+// WithAppInfosLimit sets the maximum number of app info records to return.
+func WithAppInfosLimit(limit int) AppInfoOption {
+	return func(q *appInfoQuery) {
+		if limit > 0 {
+			q.limit = limit
+		}
+	}
+}
+
+// WithAppInfosNextURL uses an app info continuation URL directly.
+func WithAppInfosNextURL(next string) AppInfoOption {
+	return func(q *appInfoQuery) {
+		if strings.TrimSpace(next) != "" {
+			q.nextURL = strings.TrimSpace(next)
+		}
 	}
 }
 
@@ -941,6 +1013,50 @@ func WithAppCustomProductPagesLimit(limit int) AppCustomProductPagesOption {
 	return func(q *appCustomProductPagesQuery) {
 		if limit > 0 {
 			q.limit = limit
+		}
+	}
+}
+
+// WithAppCustomProductPagesVisible filters custom product pages by visibility.
+func WithAppCustomProductPagesVisible(values []string) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		q.visible = normalizeList(values)
+	}
+}
+
+// WithAppCustomProductPagesFields sets fields[appCustomProductPages] for responses.
+func WithAppCustomProductPagesFields(fields []string) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		q.fields = normalizeList(fields)
+	}
+}
+
+// WithAppCustomProductPagesAppFields sets fields[apps] for included apps.
+func WithAppCustomProductPagesAppFields(fields []string) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		q.appFields = normalizeList(fields)
+	}
+}
+
+// WithAppCustomProductPagesVersionFields sets fields[appCustomProductPageVersions] for included versions.
+func WithAppCustomProductPagesVersionFields(fields []string) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		q.versionFields = normalizeList(fields)
+	}
+}
+
+// WithAppCustomProductPagesInclude sets relationships to include in responses.
+func WithAppCustomProductPagesInclude(include []string) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		q.include = normalizeList(include)
+	}
+}
+
+// WithAppCustomProductPagesVersionsLimit sets the max number of included versions.
+func WithAppCustomProductPagesVersionsLimit(limit int) AppCustomProductPagesOption {
+	return func(q *appCustomProductPagesQuery) {
+		if limit > 0 {
+			q.versionsLimit = limit
 		}
 	}
 }

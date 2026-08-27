@@ -18,6 +18,7 @@ type ClassifiedError struct {
 const (
 	requestTimeoutHint = "Increase the request timeout (e.g. set `ASC_TIMEOUT=90s`)."
 	uploadTimeoutHint  = "Increase the upload timeout (e.g. set `ASC_UPLOAD_TIMEOUT=600s`)."
+	systemStatusHint   = "Check Apple's service health with `asc system-status --service \"App Store Connect\"`."
 )
 
 func Classify(err error) ClassifiedError {
@@ -43,11 +44,27 @@ func Classify(err error) ClassifiedError {
 		}
 	}
 
+	var apiErr *asc.APIError
+	if errors.As(err, &apiErr) && apiErr.HTTPStatusCode() >= 500 {
+		return ClassifiedError{
+			Message: err.Error(),
+			Hint:    systemStatusHint,
+		}
+	}
+
 	if containsPrivacyError(err) {
 		return ClassifiedError{
 			Message: err.Error(),
 			Hint:    "App privacy declarations (data usages) are not available via the public API. Use `asc web privacy pull|plan|apply|publish` or complete App Privacy in the App Store Connect web UI: https://appstoreconnect.apple.com",
 		}
+	}
+
+	// API-level remediation is already part of the rendered error. Do not add
+	// the generic permission hint as well: agreement-blocked 403s are account
+	// state, not an API-key role problem, and the two messages conflict.
+	var remediationErr *asc.APIError
+	if errors.As(err, &remediationErr) && strings.TrimSpace(remediationErr.Remediation) != "" {
+		return ClassifiedError{Message: err.Error()}
 	}
 
 	if errors.Is(err, asc.ErrForbidden) {

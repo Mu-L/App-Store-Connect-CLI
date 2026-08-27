@@ -21,6 +21,7 @@ type screenshotDownloadItem struct {
 	FileName    string `json:"fileName,omitempty"`
 	URL         string `json:"url,omitempty"`
 	OutputPath  string `json:"outputPath"`
+	Unchanged   bool   `json:"unchanged"`
 
 	ContentType  string `json:"contentType,omitempty"`
 	BytesWritten int64  `json:"bytesWritten,omitempty"`
@@ -41,6 +42,7 @@ type screenshotDownloadResult struct {
 
 	Total      int `json:"total"`
 	Downloaded int `json:"downloaded"`
+	Unchanged  int `json:"unchanged"`
 	Failed     int `json:"failed"`
 
 	Items    []screenshotDownloadItem    `json:"items,omitempty"`
@@ -165,9 +167,7 @@ Examples:
 					OutputPath: outputFile,
 				})
 			} else {
-				requestCtx, cancel := shared.ContextWithTimeout(ctx)
-				setsResp, err := client.GetAppScreenshotSets(requestCtx, locID)
-				cancel()
+				setsResp, err := client.GetAllAppScreenshotSets(ctx, locID, asc.WithAppScreenshotSetsRequestContext(shared.ContextWithTimeout))
 				if err != nil {
 					return fmt.Errorf("screenshots download: failed to fetch sets: %w", err)
 				}
@@ -186,14 +186,12 @@ Examples:
 				for _, set := range sets {
 					displayType := strings.TrimSpace(set.Attributes.ScreenshotDisplayType)
 
-					requestCtx, cancel := shared.ContextWithTimeout(ctx)
-					shotsResp, err := client.GetAppScreenshots(requestCtx, set.ID)
-					cancel()
+					shotsResp, err := client.GetAllAppScreenshots(ctx, set.ID, asc.WithAppScreenshotsRequestContext(shared.ContextWithTimeout))
 					if err != nil {
 						return fmt.Errorf("screenshots download: failed to fetch screenshots for set %s: %w", set.ID, err)
 					}
 
-					requestCtx, cancel = shared.ContextWithTimeout(ctx)
+					requestCtx, cancel := shared.ContextWithTimeout(ctx)
 					orderedIDs, err := GetOrderedAppScreenshotIDs(requestCtx, client, set.ID)
 					cancel()
 					if err != nil {
@@ -251,7 +249,7 @@ Examples:
 				}
 
 				downloadCtx, cancel := shared.ContextWithTimeout(ctx)
-				written, contentType, err := downloadURLToFile(downloadCtx, item.URL, item.OutputPath, *overwrite)
+				written, contentType, unchanged, err := downloadScreenshotURLToFile(downloadCtx, item.URL, item.OutputPath, *overwrite)
 				cancel()
 				if err != nil {
 					result.Failures = append(result.Failures, screenshotDownloadFailure{
@@ -266,7 +264,11 @@ Examples:
 
 				item.BytesWritten = written
 				item.ContentType = contentType
+				item.Unchanged = unchanged
 				result.Downloaded++
+				if unchanged {
+					result.Unchanged++
+				}
 			}
 
 			result.Items = items
@@ -351,13 +353,14 @@ func renderScreenshotDownloadResult(result *screenshotDownloadResult, markdown b
 	}
 
 	render(
-		[]string{"Version Localization", "Output Dir", "Overwrite", "Total", "Downloaded", "Failed"},
+		[]string{"Version Localization", "Output Dir", "Overwrite", "Total", "Downloaded", "Unchanged", "Failed"},
 		[][]string{{
 			result.VersionLocalizationID,
 			result.OutputDir,
 			fmt.Sprintf("%t", result.Overwrite),
 			fmt.Sprintf("%d", result.Total),
 			fmt.Sprintf("%d", result.Downloaded),
+			fmt.Sprintf("%d", result.Unchanged),
 			fmt.Sprintf("%d", result.Failed),
 		}},
 	)
@@ -370,10 +373,11 @@ func renderScreenshotDownloadResult(result *screenshotDownloadResult, markdown b
 				item.DisplayType,
 				item.FileName,
 				item.OutputPath,
+				fmt.Sprintf("%t", item.Unchanged),
 				fmt.Sprintf("%d", item.BytesWritten),
 			})
 		}
-		render([]string{"ID", "Display Type", "File Name", "Output Path", "Bytes"}, rows)
+		render([]string{"ID", "Display Type", "File Name", "Output Path", "Unchanged", "Bytes"}, rows)
 	}
 
 	if len(result.Failures) > 0 {

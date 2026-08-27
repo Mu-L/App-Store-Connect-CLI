@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/kballard/go-shellquote"
 	"github.com/peterbourgon/ff/v3/ffcli"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
@@ -155,17 +156,22 @@ func executeCustomPageScreenshotUpload(
 	localizationID, path, deviceType string,
 	sync bool,
 ) (*asc.CustomProductPageScreenshotUploadResult, error) {
+	trimmedLocalizationID := strings.TrimSpace(localizationID)
+	trimmedPath := strings.TrimSpace(path)
+	trimmedDeviceType := strings.TrimSpace(deviceType)
 	return assets.ExecuteScreenshotSetUpload(ctx, assets.ScreenshotSetUploadOptions[*asc.CustomProductPageScreenshotUploadResult]{
 		LocalizationID: localizationID,
 		Path:           path,
 		DeviceType:     deviceType,
 		Replace:        sync,
+		InspectCommand: fmt.Sprintf("asc product-pages custom-pages localizations screenshot-sets list --localization-id %q --include-screenshots --paginate --output json", trimmedLocalizationID),
+		ReplaceCommand: shellquote.Join("asc", "product-pages", "custom-pages", "localizations", "screenshot-sets", "sync", "--localization-id", trimmedLocalizationID, "--path", trimmedPath, "--device-type", trimmedDeviceType, "--confirm"),
 		ClientFactory:  customPageMediaClientFactory,
 		RequestContext: contextWithCustomPageMediaUploadTimeout,
 		UploadContext:  contextWithCustomPageMediaUploadTimeout,
 		Access: assets.ScreenshotSetAccess{
-			List: func(ctx context.Context, client *asc.Client, localizationID string) (*asc.AppScreenshotSetsResponse, error) {
-				return client.GetAppCustomProductPageLocalizationScreenshotSets(ctx, localizationID)
+			List: func(ctx context.Context, client *asc.Client, localizationID string, requestContext asc.RequestContextFunc) (*asc.AppScreenshotSetsResponse, error) {
+				return client.GetAllAppCustomProductPageLocalizationScreenshotSets(ctx, localizationID, asc.WithAppCustomProductPageLocalizationScreenshotSetsRequestContext(requestContext))
 			},
 			Create: func(ctx context.Context, client *asc.Client, localizationID, displayType string) (*asc.AppScreenshotSetResponse, error) {
 				return client.CreateAppScreenshotSetForCustomProductPageLocalization(ctx, localizationID, displayType)

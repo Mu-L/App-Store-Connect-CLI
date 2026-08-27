@@ -33,6 +33,9 @@ asc users list
 asc users list --email "user@example.com"
 asc users list --role "ADMIN"
 asc users list --role "DEVELOPER,APP_MANAGER"
+asc users list --visible-app "APP_ID"
+asc users list --sort "username,-lastName"
+asc users list --fields "username,lastName" --include visibleApps --app-fields "name,bundleId"
 asc users list --limit 50
 asc users list --paginate
 ```
@@ -41,6 +44,12 @@ asc users list --paginate
 
 * `--email` - Filter by email/username
 * `--role` - Filter by role (comma-separated): `ADMIN`, `DEVELOPER`, `APP_MANAGER`, etc.
+* `--visible-app` - [experimental] Filter by visible app ID(s), comma-separated
+* `--sort` - [experimental] Sort by one or more comma-separated expressions: `username`, `-username`, `lastName`, or `-lastName`
+* `--fields` - [experimental] User fields to include: `username`, `firstName`, `lastName`, `roles`, `allAppsVisible`, `provisioningAllowed`, `visibleApps`
+* `--app-fields` - [experimental] Fields to include for related apps (requires `--include visibleApps`)
+* `--include` - [experimental] Include related resources: `visibleApps`
+* `--visible-apps-limit` - [experimental] Maximum included visible apps (1-50; requires `--include visibleApps`)
 * `--limit` - Maximum results per page (1-200)
 * `--next` - Fetch next page using a links.next URL
 * `--paginate` - Automatically fetch all pages
@@ -69,7 +78,7 @@ Update a user:
 
 ```bash  theme={null}
 asc users update --id "USER_ID" --roles "ADMIN"
-asc users update --id "USER_ID" --roles "DEVELOPER" --visible-app "APP_ID"
+asc users update --id "USER_ID" --roles "DEVELOPER" --visible-app "APP_ID" --confirm
 ```
 
 **Flags:**
@@ -77,6 +86,7 @@ asc users update --id "USER_ID" --roles "DEVELOPER" --visible-app "APP_ID"
 * `--id` - User ID (required)
 * `--roles` - Comma-separated role IDs (required)
 * `--visible-app` - Comma-separated app IDs for visible apps
+* `--confirm` - Confirm replacing the user's existing visible-app relationship (required with `--visible-app`)
 * `--output` - Output format: `json`, `table`, `markdown`
 * `--pretty` - Pretty-print JSON output
 
@@ -282,7 +292,8 @@ asc users update --id "USER_ID" --roles "APP_MANAGER"
 asc users update \
   --id "USER_ID" \
   --roles "DEVELOPER" \
-  --visible-app "123456789,987654321"
+  --visible-app "123456789,987654321" \
+  --confirm
 ```
 
 ### List All Admins

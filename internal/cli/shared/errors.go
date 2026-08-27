@@ -213,7 +213,7 @@ func IsValidationError(err error) bool {
 // UsageError prints a CLI validation error and returns flag.ErrHelp so callers
 // map the failure to usage exit code semantics.
 func UsageError(message string) error {
-	trimmed := strings.TrimSpace(message)
+	trimmed := strings.TrimSpace(SanitizeTerminal(message))
 	if trimmed != "" {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", trimmed)
 	}
@@ -252,6 +252,18 @@ func InvalidValueUsageError(parameters ...string) error {
 		DiagnosticInvalidInput,
 		parameter,
 	)
+}
+
+// reportedUsageErrHelp preserves the flag.ErrHelp usage contract for a
+// validation failure whose message has already been written to stderr, while
+// forwarding any structured diagnostic the validator attached so telemetry
+// keeps the failing parameter.
+func reportedUsageErrHelp(err error) error {
+	diagnostic, ok := DiagnosticFromError(err)
+	if !ok {
+		return flag.ErrHelp
+	}
+	return WithDiagnostic(flag.ErrHelp, diagnostic.Code, diagnostic.Parameter)
 }
 
 func ClassifyUsageError(err error) UsageErrorKind {

@@ -155,8 +155,8 @@ asc analytics view --request-id "REQUEST_ID"
 * `--granularity` - Filter instances by `DAILY`, `WEEKLY`, or `MONTHLY` (comma-separated)
 * `--include-segments` - Include download URLs for report segments
 * `--limit` - Results per page (1-200)
-* `--paginate` - Fetch all reports (recommended with `--processing-date`)
-* `--next` - Pagination URL
+* `--paginate` - Fetch all reports (recommended with `--processing-date` or `--next`)
+* `--next` - Report-page `links.next` URL; combine with `--paginate` to resume and fetch every remaining page
 
 **Examples:**
 
@@ -179,6 +179,11 @@ asc analytics view \
 asc analytics view \
   --request-id "REQUEST_ID" \
   --instance-id "INSTANCE_ID"
+
+# Resume from a saved report-page link and fetch the remaining pages
+asc analytics view \
+  --next "<links.next>" \
+  --paginate
 ```
 
 ### Download Report Data

@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 func TestBundleIDsGetCommand_MissingID(t *testing.T) {
@@ -73,6 +77,22 @@ func TestBundleIDsCreateCommand_UsesBundleIDPlatformContract(t *testing.T) {
 	}
 }
 
+func TestBundleIDsListQueryFlagsAreExperimental(t *testing.T) {
+	cmd := BundleIDsListCommand()
+	for _, name := range []string{
+		"name", "platform", "identifier", "seed-id", "id", "sort", "fields",
+		"profile-fields", "capability-fields", "app-fields", "include", "profiles-limit", "capabilities-limit",
+	} {
+		flagValue := cmd.FlagSet.Lookup(name)
+		if flagValue == nil {
+			t.Fatalf("--%s is not registered", name)
+		}
+		if !strings.HasPrefix(flagValue.Usage, "[experimental] ") {
+			t.Fatalf("--%s usage = %q, want experimental lifecycle label", name, flagValue.Usage)
+		}
+	}
+}
+
 func TestBundleIDsUpdateCommand_MissingID(t *testing.T) {
 	cmd := BundleIDsUpdateCommand()
 
@@ -106,6 +126,70 @@ func TestBundleIDsDeleteCommand_MissingConfirm(t *testing.T) {
 
 	if err := cmd.Exec(context.Background(), []string{}); !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("expected flag.ErrHelp when --confirm is missing, got %v", err)
+	}
+}
+
+func TestBundleIDMutationsRejectPositionalArgsBeforeAuth(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  func() *ffcli.Command
+		args []string
+	}{
+		{
+			name: "create",
+			cmd:  BundleIDsCreateCommand,
+			args: []string{"--identifier", "com.example.app", "--name", "Example", "stray", "extra"},
+		},
+		{
+			name: "update",
+			cmd:  BundleIDsUpdateCommand,
+			args: []string{"--id", "bundle-1", "--name", "Example", "stray", "extra"},
+		},
+		{
+			name: "delete",
+			cmd:  BundleIDsDeleteCommand,
+			args: []string{"--id", "bundle-1", "--confirm", "stray", "extra"},
+		},
+		{
+			name: "capabilities add",
+			cmd:  BundleIDsCapabilitiesAddCommand,
+			args: []string{"--bundle", "bundle-1", "--capability", "ICLOUD", "stray", "extra"},
+		},
+		{
+			name: "capabilities update",
+			cmd:  BundleIDsCapabilitiesUpdateCommand,
+			args: []string{"--id", "capability-1", "--capability", "ICLOUD", "stray", "extra"},
+		},
+		{
+			name: "capabilities remove",
+			cmd:  BundleIDsCapabilitiesRemoveCommand,
+			args: []string{"--id", "capability-1", "--confirm=true", "stray", "extra"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clientFactoryCalls := 0
+			t.Cleanup(shared.SetASCClientFactoryForTesting(func() (*asc.Client, error) {
+				clientFactoryCalls++
+				return nil, fmt.Errorf("client should not be created")
+			}))
+
+			cmd := test.cmd()
+			if err := cmd.FlagSet.Parse(test.args); err != nil {
+				t.Fatalf("parse flags: %v", err)
+			}
+			err := cmd.Exec(context.Background(), cmd.FlagSet.Args())
+			if err == nil || err.Error() != "unexpected argument(s): stray extra" {
+				t.Fatalf("Exec() error = %v, want exact unexpected-arguments error", err)
+			}
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("Exec() error = %v, want usage error", err)
+			}
+			if clientFactoryCalls != 0 {
+				t.Fatalf("client factory calls = %d, want 0", clientFactoryCalls)
+			}
+		})
 	}
 }
 

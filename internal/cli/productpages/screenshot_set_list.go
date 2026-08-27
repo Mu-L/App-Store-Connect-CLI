@@ -1,0 +1,27 @@
+package productpages
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+)
+
+func screenshotSetListResult(ctx context.Context, client *asc.Client, localizationID string, response *asc.AppScreenshotSetsResponse) (*asc.AppScreenshotSetListResult, error) {
+	result := &asc.AppScreenshotSetListResult{
+		LocalizationID: localizationID,
+		Sets:           make([]asc.AppScreenshotSetWithScreenshots, 0, len(response.Data)),
+	}
+	for _, set := range response.Data {
+		screenshots, err := client.GetAllAppScreenshots(ctx, set.ID, asc.WithAppScreenshotsRequestContext(shared.ContextWithTimeout))
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch screenshots for set %s: %w", set.ID, err)
+		}
+		result.Sets = append(result.Sets, asc.AppScreenshotSetWithScreenshots{
+			Set:         set,
+			Screenshots: screenshots.Data,
+		})
+	}
+	return result, nil
+}
