@@ -104,7 +104,7 @@ func TestValidateDirCheckURLsWarnsForStatusAndRequestFailure(t *testing.T) {
 	checker := &fakeMetadataURLChecker{
 		results: map[string]metadataURLCheckResult{
 			"https://support.example.com/help": {
-				FinalURL:   mustParseMetadataURL(t, "https://support.example.com/missing"),
+				FinalURL:   mustParseMetadataURL(t, "https://parked.example.com/missing"),
 				StatusCode: 404,
 			},
 		},
@@ -120,11 +120,14 @@ func TestValidateDirCheckURLsWarnsForStatusAndRequestFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateDirWithOptions() error: %v", err)
 	}
-	if result.WarningCount != 2 || result.ErrorCount != 0 || !result.Valid {
-		t.Fatalf("expected 2 warning-only findings, got %+v", result)
+	if result.WarningCount != 3 || result.ErrorCount != 0 || !result.Valid {
+		t.Fatalf("expected 3 warning-only findings, got %+v", result)
 	}
 	if !hasMetadataURLWarning(result.Issues, "support URL returned HTTP 404") {
 		t.Fatalf("missing status warning in %+v", result.Issues)
+	}
+	if !hasMetadataURLWarning(result.Issues, "support URL redirects to a different host (support.example.com -> parked.example.com)") {
+		t.Fatalf("missing redirect warning in %+v", result.Issues)
 	}
 	if !hasMetadataURLWarning(result.Issues, "privacy policy URL could not be checked: request failed") {
 		t.Fatalf("missing generic request warning in %+v", result.Issues)
@@ -330,6 +333,8 @@ func TestIsPublicMetadataIP(t *testing.T) {
 		"100.64.0.1":         false,
 		"127.0.0.1":          false,
 		"169.254.1.1":        false,
+		"192.0.0.9":          true,
+		"192.0.0.10":         true,
 		"192.0.2.1":          false,
 		"192.88.99.1":        false,
 		"198.18.0.1":         false,
@@ -340,8 +345,15 @@ func TestIsPublicMetadataIP(t *testing.T) {
 		"fc00::1":            false,
 		"fe80::1":            false,
 		"64:ff9b::a9fe:a9fe": false,
+		"100:0:0:1::1":       false,
 		"2001::1":            false,
+		"2001:1::1":          true,
 		"2001:2::1":          false,
+		"2001:3::1":          true,
+		"2001:4:112::1":      true,
+		"2001:20::1":         true,
+		"2001:30::1":         true,
+		"2001:100::1":        false,
 		"2002:a9fe:a9fe::1":  false,
 		"2001:db8::1":        false,
 		"3fff::1":            false,

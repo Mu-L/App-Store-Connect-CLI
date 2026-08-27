@@ -140,9 +140,6 @@ func metadataURLCheckMessages(target metadataURLTarget, outcome metadataURLCheck
 		}
 		return []string{fmt.Sprintf("%s could not be checked: %s", target.label, reason)}
 	}
-	if outcome.result.StatusCode < http.StatusOK || outcome.result.StatusCode >= http.StatusMultipleChoices {
-		return []string{fmt.Sprintf("%s returned HTTP %d", target.label, outcome.result.StatusCode)}
-	}
 	if outcome.result.FinalURL == nil {
 		return []string{fmt.Sprintf("%s could not be checked: request failed", target.label)}
 	}
@@ -156,6 +153,9 @@ func metadataURLCheckMessages(target metadataURLTarget, outcome metadataURLCheck
 	finalHost := strings.ToLower(outcome.result.FinalURL.Hostname())
 	if initialHost != finalHost {
 		messages = append(messages, fmt.Sprintf("%s redirects to a different host (%s -> %s)", target.label, initialHost, finalHost))
+	}
+	if outcome.result.StatusCode < http.StatusOK || outcome.result.StatusCode >= http.StatusMultipleChoices {
+		return append(messages, fmt.Sprintf("%s returned HTTP %d", target.label, outcome.result.StatusCode))
 	}
 	finalPath := outcome.result.FinalURL.EscapedPath()
 	if (finalPath == "" || finalPath == "/") && outcome.result.FinalURL.RawQuery == "" && outcome.result.FinalURL.Fragment == "" {
@@ -246,6 +246,8 @@ func publicMetadataURLDialControl(_ context.Context, _, address string, _ syscal
 	return nil
 }
 
+// These IANA special-purpose ranges can still satisfy netip.Addr.IsGlobalUnicast.
+// Translation prefixes stay blocked because they can encode non-public IPv4 targets.
 var reservedMetadataIPPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("100.64.0.0/10"),
@@ -259,10 +261,11 @@ var reservedMetadataIPPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("64:ff9b::/96"),
 	netip.MustParsePrefix("64:ff9b:1::/48"),
 	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("100:0:0:1::/64"),
+	netip.MustParsePrefix("2001::/23"),
 	netip.MustParsePrefix("2001::/32"),
 	netip.MustParsePrefix("2001:2::/48"),
 	netip.MustParsePrefix("2001:10::/28"),
-	netip.MustParsePrefix("2001:20::/28"),
 	netip.MustParsePrefix("2001:db8::/32"),
 	netip.MustParsePrefix("2002::/16"),
 	netip.MustParsePrefix("3fff::/20"),
@@ -270,10 +273,28 @@ var reservedMetadataIPPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("fec0::/10"),
 }
 
+// Check these IANA globally reachable allocations before their broader parent ranges.
+var globallyReachableMetadataIPExceptions = []netip.Prefix{
+	netip.MustParsePrefix("192.0.0.9/32"),
+	netip.MustParsePrefix("192.0.0.10/32"),
+	netip.MustParsePrefix("2001:1::1/128"),
+	netip.MustParsePrefix("2001:1::2/128"),
+	netip.MustParsePrefix("2001:1::3/128"),
+	netip.MustParsePrefix("2001:3::/32"),
+	netip.MustParsePrefix("2001:4:112::/48"),
+	netip.MustParsePrefix("2001:20::/28"),
+	netip.MustParsePrefix("2001:30::/28"),
+}
+
 func isPublicMetadataIP(address netip.Addr) bool {
 	address = address.Unmap()
 	if !address.IsValid() || !address.IsGlobalUnicast() || address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() {
 		return false
+	}
+	for _, prefix := range globallyReachableMetadataIPExceptions {
+		if prefix.Contains(address) {
+			return true
+		}
 	}
 	for _, prefix := range reservedMetadataIPPrefixes {
 		if prefix.Contains(address) {
