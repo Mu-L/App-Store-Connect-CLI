@@ -157,7 +157,8 @@ func metadataURLCheckMessages(target metadataURLTarget, outcome metadataURLCheck
 	if initialHost != finalHost {
 		messages = append(messages, fmt.Sprintf("%s redirects to a different host (%s -> %s)", target.label, initialHost, finalHost))
 	}
-	if outcome.result.FinalURL.EscapedPath() == "" || outcome.result.FinalURL.EscapedPath() == "/" {
+	finalPath := outcome.result.FinalURL.EscapedPath()
+	if (finalPath == "" || finalPath == "/") && outcome.result.FinalURL.RawQuery == "" && outcome.result.FinalURL.Fragment == "" {
 		messages = append(messages, fmt.Sprintf("%s resolves to a site root instead of a dedicated page", target.label))
 	}
 	return messages
@@ -203,7 +204,6 @@ func (c *httpMetadataURLChecker) Check(ctx context.Context, rawURL string) (meta
 	if err != nil {
 		return metadataURLCheckResult{}, err
 	}
-	req.Header.Set("Range", "bytes=0-0")
 	req.Header.Set("User-Agent", "asc metadata validate")
 
 	resp, err := c.client.Do(req)

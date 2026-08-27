@@ -245,7 +245,7 @@ func TestMetadataValidateCommandPrintsWarningsAndExitsSuccessfully(t *testing.T)
 	}
 }
 
-func TestHTTPMetadataURLCheckerUsesBoundedGET(t *testing.T) {
+func TestHTTPMetadataURLCheckerUsesOrdinaryGET(t *testing.T) {
 	var request *http.Request
 	checker := &httpMetadataURLChecker{client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		request = req
@@ -263,11 +263,29 @@ func TestHTTPMetadataURLCheckerUsesBoundedGET(t *testing.T) {
 	if request == nil || request.Method != http.MethodGet {
 		t.Fatalf("expected GET request, got %+v", request)
 	}
-	if request.Header.Get("Range") != "bytes=0-0" {
-		t.Fatalf("expected bounded range request, got %q", request.Header.Get("Range"))
+	if request.Header.Get("Range") != "" {
+		t.Fatalf("expected an ordinary GET without a Range header, got %q", request.Header.Get("Range"))
 	}
 	if result.StatusCode != http.StatusOK || result.FinalURL.String() != "https://example.com/support" {
 		t.Fatalf("unexpected check result: %+v", result)
+	}
+}
+
+func TestMetadataURLCheckMessagesAllowsQueryAndFragmentRoutes(t *testing.T) {
+	target := metadataURLTarget{rawURL: "https://example.com/support", label: "support URL"}
+	for _, finalURL := range []string{
+		"https://example.com/?page=support",
+		"https://example.com/#/support",
+	} {
+		t.Run(finalURL, func(t *testing.T) {
+			messages := metadataURLCheckMessages(target, metadataURLCheckOutcome{result: metadataURLCheckResult{
+				FinalURL:   mustParseMetadataURL(t, finalURL),
+				StatusCode: http.StatusOK,
+			}})
+			if len(messages) != 0 {
+				t.Fatalf("expected routed root URL to pass, got %v", messages)
+			}
+		})
 	}
 }
 
@@ -323,6 +341,7 @@ func TestIsPublicMetadataIP(t *testing.T) {
 		"fe80::1":            false,
 		"64:ff9b::a9fe:a9fe": false,
 		"2001::1":            false,
+		"2001:2::1":          false,
 		"2002:a9fe:a9fe::1":  false,
 		"2001:db8::1":        false,
 		"3fff::1":            false,
