@@ -29,6 +29,17 @@ The validation process checks:
 * Age rating is configured
 * App categories are assigned
 * Pricing and availability are configured
+* Localized listing fields do not contain unmistakable template markers such as
+  `Lorem ipsum`, `TODO`, `TBD`, or `FIXME`
+
+Placeholder findings cover app names, subtitles, descriptions, keywords,
+promotional text, and What's New copy. The canonical `Lorem ipsum dolor sit
+amet` sequence is matched without regard to letter case. `TODO`, `TBD`, and
+`FIXME` are uppercase-only; `TODO` additionally requires following marker
+punctuation such as a colon or dash so ordinary localized wording is not
+flagged. Findings include the locale, field, matched text, resource type and ID,
+and a remediation step. They are warnings by default and become blocking with
+`--strict`.
 
 ## Output
 
@@ -59,6 +70,10 @@ Validation failed for version 1.2.0:
 
 <ParamField path="--output" type="string">
   Output format: `json`, `table`, or `markdown`
+</ParamField>
+
+<ParamField path="--strict" type="boolean">
+  Treat warnings, including placeholder findings, as blocking validation issues
 </ParamField>
 
 ## Example workflows

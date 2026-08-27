@@ -56,8 +56,13 @@ Use it instead of ` + "`asc submit preflight`" + `.
 
 The default validate response includes an ordered remediation plan, so the first step is the next thing to fix.
 
+Placeholder checks preserve shorter Lorem Ipsum product wording and ordinary
+localized TODO copy without marker punctuation; only template-like residue is
+reported.
+
 Checks:
   - Metadata length limits
+  - Placeholder copy in localized listing fields (warning; --strict to block)
   - Required fields and localizations
   - App Store review details completeness
   - Primary category configured
