@@ -13,7 +13,7 @@ import (
 // template copy while leaving product, platform, roadmap, and beta wording to
 // App Review instead of guessing at editorial intent.
 var placeholderPhrases = []string{
-	"lorem ipsum",
+	"lorem ipsum dolor sit amet",
 }
 
 // These markers are case-sensitive because their lowercase spellings can be
@@ -115,6 +115,9 @@ func findContentMatches(value string, patterns []*regexp.Regexp) []string {
 	matches := make([]string, 0, len(ranges))
 	for _, location := range ranges {
 		phrase := strings.Join(strings.Fields(value[location.start:location.end]), " ")
+		if !shouldReportContentMatch(value, location, phrase) {
+			continue
+		}
 		key := strings.ToLower(phrase)
 		if _, duplicate := seen[key]; duplicate {
 			continue
@@ -123,6 +126,25 @@ func findContentMatches(value string, patterns []*regexp.Regexp) []string {
 		matches = append(matches, phrase)
 	}
 	return matches
+}
+
+// shouldReportContentMatch requires marker punctuation for TODO because the
+// same uppercase word is ordinary localized copy and can be a product name.
+// TBD and FIXME remain unambiguous standalone markers.
+func shouldReportContentMatch(value string, location contentMatch, phrase string) bool {
+	if phrase != "TODO" {
+		return true
+	}
+	end := location.end
+	for end < len(value) {
+		runeValue, size := utf8.DecodeRuneInString(value[end:])
+		if unicode.IsSpace(runeValue) {
+			end += size
+			continue
+		}
+		return runeValue == ':' || runeValue == '\uff1a' || runeValue == '-' || runeValue == '\u2013' || runeValue == '\u2014'
+	}
+	return false
 }
 
 func quoteContentMatches(matches []string) string {

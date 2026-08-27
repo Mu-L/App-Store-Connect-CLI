@@ -11,7 +11,7 @@ func TestContentChecksFlagUnmistakablePlaceholderCopy(t *testing.T) {
 		value      string
 		wantQuoted string
 	}{
-		{name: "lorem ipsum", value: "Lorem ipsum dolor sit amet.", wantQuoted: "Lorem ipsum"},
+		{name: "lorem ipsum sequence", value: "Lorem ipsum dolor sit amet.", wantQuoted: "Lorem ipsum dolor sit amet"},
 		{name: "todo marker", value: "TODO: write the final description.", wantQuoted: "TODO"},
 		{name: "tbd marker", value: "Pricing details TBD.", wantQuoted: "TBD"},
 		{name: "fixme marker", value: "FIXME before submission.", wantQuoted: "FIXME"},
@@ -63,6 +63,50 @@ func TestContentChecksIgnoreEditoriallyAmbiguousMetadata(t *testing.T) {
 	}
 }
 
+func TestContentChecksIgnoreLocalizedAndProductUsesOfPlaceholderPhrases(t *testing.T) {
+	tests := []struct {
+		name        string
+		versionLocs []VersionLocalization
+		appInfoLocs []AppInfoLocalization
+	}{
+		{
+			name:        "Spanish todo phrase",
+			versionLocs: []VersionLocalization{{ID: "loc-1", Locale: "es-ES", Description: "TODO EN UN SOLO LUGAR"}},
+		},
+		{
+			name:        "TODO product name",
+			appInfoLocs: []AppInfoLocalization{{ID: "info-1", Locale: "en-US", Name: "TODO Planner"}},
+		},
+		{
+			name:        "Lorem Ipsum product name",
+			appInfoLocs: []AppInfoLocalization{{ID: "info-1", Locale: "en-US", Name: "Lorem Ipsum Generator"}},
+		},
+		{
+			name:        "Lorem Ipsum text creation",
+			versionLocs: []VersionLocalization{{ID: "loc-1", Locale: "en-US", Description: "Create Lorem ipsum text"}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			checks := contentChecks(test.versionLocs, test.appInfoLocs)
+			if len(checks) != 0 {
+				t.Fatalf("checks = %+v, want no placeholder warning for legitimate copy", checks)
+			}
+		})
+	}
+}
+
+func TestContentChecksKeepExplicitLocalizedMarkerWarnings(t *testing.T) {
+	checks := contentChecks(
+		[]VersionLocalization{{ID: "loc-1", Locale: "es-ES", Description: "TODO: completar la descripción"}},
+		nil,
+	)
+	if len(checks) != 1 || checks[0].ID != "content.placeholder_text" {
+		t.Fatalf("checks = %+v, want explicit placeholder marker warning", checks)
+	}
+}
+
 func TestContentChecksUseUnicodeAwarePlaceholderBoundaries(t *testing.T) {
 	for _, value := range []string{
 		"MÉTODO helps you organize research.",
@@ -83,7 +127,7 @@ func TestContentChecksUseUnicodeAwarePlaceholderBoundaries(t *testing.T) {
 	}
 
 	checks := contentChecks(
-		[]VersionLocalization{{ID: "loc-1", Locale: "ja", Description: "（TODO）finalize the copy"}},
+		[]VersionLocalization{{ID: "loc-1", Locale: "ja", Description: "（TODO：finalize the copy）"}},
 		nil,
 	)
 	if len(checks) != 1 || checks[0].ID != "content.placeholder_text" {
@@ -93,7 +137,7 @@ func TestContentChecksUseUnicodeAwarePlaceholderBoundaries(t *testing.T) {
 
 func TestContentChecksPreservePlaceholderSourceOrderAcrossPatternGroups(t *testing.T) {
 	checks := contentChecks(
-		[]VersionLocalization{{ID: "loc-1", Locale: "en-US", Description: "TODO before lorem ipsum and FIXME"}},
+		[]VersionLocalization{{ID: "loc-1", Locale: "en-US", Description: "TODO: before lorem ipsum dolor sit amet and FIXME"}},
 		nil,
 	)
 	if len(checks) != 1 {
@@ -101,7 +145,7 @@ func TestContentChecksPreservePlaceholderSourceOrderAcrossPatternGroups(t *testi
 	}
 	message := checks[0].Message
 	todo := strings.Index(message, `"TODO"`)
-	lorem := strings.Index(message, `"lorem ipsum"`)
+	lorem := strings.Index(message, `"lorem ipsum dolor sit amet"`)
 	fixme := strings.Index(message, `"FIXME"`)
 	if todo < 0 || lorem < 0 || fixme < 0 || todo >= lorem || lorem >= fixme {
 		t.Fatalf("placeholder order = %q, want TODO, lorem ipsum, FIXME", message)
@@ -112,13 +156,13 @@ func TestContentChecksMatchPlaceholderAcrossWhitespaceSeparators(t *testing.T) {
 	separators := []string{"  ", "\n", "\v", "\u0085", "\u2028", "\u2029"}
 	for _, separator := range separators {
 		checks := contentChecks(
-			[]VersionLocalization{{ID: "loc-1", Locale: "en-US", Description: "lorem" + separator + "ipsum"}},
+			[]VersionLocalization{{ID: "loc-1", Locale: "en-US", Description: "lorem" + separator + "ipsum dolor sit amet"}},
 			nil,
 		)
 		if len(checks) != 1 || checks[0].ID != "content.placeholder_text" {
 			t.Fatalf("separator %q checks = %+v, want placeholder warning", separator, checks)
 		}
-		if !strings.Contains(checks[0].Message, "lorem ipsum") {
+		if !strings.Contains(checks[0].Message, "lorem ipsum dolor sit amet") {
 			t.Fatalf("separator %q message = %q, want normalized phrase", separator, checks[0].Message)
 		}
 	}
@@ -128,15 +172,15 @@ func TestContentChecksCoverEveryLocalizedTextField(t *testing.T) {
 	version := VersionLocalization{
 		ID:              "version-loc",
 		Locale:          "en-US",
-		Description:     "TODO",
+		Description:     "TODO:",
 		Keywords:        "TBD",
 		WhatsNew:        "FIXME",
-		PromotionalText: "Lorem ipsum",
+		PromotionalText: "Lorem ipsum dolor sit amet",
 	}
 	appInfo := AppInfoLocalization{
 		ID:       "info-loc",
 		Locale:   "en-US",
-		Name:     "TODO",
+		Name:     "TODO:",
 		Subtitle: "TBD",
 	}
 	checks := contentChecks([]VersionLocalization{version}, []AppInfoLocalization{appInfo})
@@ -161,13 +205,13 @@ func TestContentChecksCoverEveryLocalizedTextField(t *testing.T) {
 
 func TestContentChecksCollapseRepeatedMatches(t *testing.T) {
 	checks := contentChecks(
-		[]VersionLocalization{{ID: "loc-1", Locale: "en-US", Description: "TODO then TODO and lorem ipsum"}},
+		[]VersionLocalization{{ID: "loc-1", Locale: "en-US", Description: "TODO: then TODO — and lorem ipsum dolor sit amet"}},
 		nil,
 	)
 	if len(checks) != 1 {
 		t.Fatalf("checks = %+v, want one warning", checks)
 	}
-	if strings.Count(checks[0].Message, `"TODO"`) != 1 || !strings.Contains(checks[0].Message, `"lorem ipsum"`) {
+	if strings.Count(checks[0].Message, `"TODO"`) != 1 || !strings.Contains(checks[0].Message, `"lorem ipsum dolor sit amet"`) {
 		t.Fatalf("message = %q, want distinct matches once", checks[0].Message)
 	}
 }

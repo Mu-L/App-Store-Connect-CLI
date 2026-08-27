@@ -313,7 +313,9 @@ asc validate --app "123456789" --version "1.2.3" --strict
 
 This lint intentionally does not judge platform names, roadmap language, or
 beta/demo wording because those phrases can be legitimate product copy and
-cannot be classified reliably offline.
+cannot be classified reliably offline. It also leaves shorter Lorem Ipsum
+product wording and ordinary localized `TODO` copy without marker punctuation
+unflagged; only template-like residue is reported.
 
 ### Review status and blockers
 
