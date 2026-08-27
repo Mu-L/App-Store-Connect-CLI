@@ -92,17 +92,29 @@ fish_update_completions
 
 The completion script provides tab completion for:
 
-* Top-level commands (e.g., `builds`, `testflight`, `metadata`)
-* Common flags (basic support)
+* Top-level and nested subcommands (for example, `builds list` and `apps info view`)
+* Flags accepted by the command at the current path
 
-**Example:**
+Deprecated compatibility commands and hidden flag aliases are not suggested. Completion tracks flags that consume a value, so a flag value that matches a subcommand name does not move completion into the wrong command path. It does not query App Store Connect for remote resource IDs or other flag values.
+
+**Abbreviated examples:**
 
 ```bash  theme={null}
 $ asc <TAB>
-auth          builds        completion    devices       
-migrate       metadata      notify        profiles      
-submit        testflight    users         webhooks      
-workflow      xcode-cloud
+--api-debug   --debug       --profile     --report
+apps          auth          builds        completion
+devices       metadata      profiles      testflight
+...           users         webhooks      xcode-cloud
+
+$ asc builds <TAB>
+count         info          list          upload        wait
+
+$ asc builds list <TAB>
+--app                 --build-number        --exclude-expired
+--limit               --next                --not-expired
+--output              --paginate            --platform
+--pretty              --processing-state    --sort
+--version
 ```
 
 ## Manual Installation
@@ -160,7 +172,11 @@ Test that completion is working:
 # Type the command and press TAB
 asc <TAB>
 
-# Should show available commands
+# Nested commands and flags are also completed
+asc builds <TAB>
+asc builds list <TAB>
+
+# These should show commands and flags valid at the current path
 ```
 
 If completion doesn't work:
