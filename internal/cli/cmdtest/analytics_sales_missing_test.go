@@ -112,7 +112,41 @@ func TestAnalyticsSalesMissingReportFailsByDefault(t *testing.T) {
 	}
 }
 
+func TestAnalyticsSalesAllowMissingDoesNotSwallowUnrelatedNotFound(t *testing.T) {
+	setSalesReportNotFoundTestClient(t, "The requested vendor account was not found.")
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	if err := root.Parse([]string{
+		"analytics", "sales",
+		"--vendor", "12345678",
+		"--type", "SALES",
+		"--subtype", "SUMMARY",
+		"--frequency", "DAILY",
+		"--date", "2026-08-18",
+		"--output-format", "json",
+		"--allow-missing",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var runErr error
+	stdout, _ := captureOutput(t, func() {
+		runErr = root.Run(context.Background())
+	})
+	if runErr == nil || !strings.Contains(runErr.Error(), "requested vendor account was not found") {
+		t.Fatalf("run error = %v, want unrelated not-found error", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+}
+
 func setMissingSalesReportTestClient(t *testing.T) *int {
+	return setSalesReportNotFoundTestClient(t, "There were no sales for the date specified.")
+}
+
+func setSalesReportNotFoundTestClient(t *testing.T, detail string) *int {
 	t.Helper()
 	setupAuth(t)
 	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
@@ -125,7 +159,7 @@ func setMissingSalesReportTestClient(t *testing.T) *int {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, `{"errors":[{"status":"404","code":"NOT_FOUND","title":"Not Found","detail":"There were no sales for the date specified."}]}`)
+		_, _ = io.WriteString(w, `{"errors":[{"status":"404","code":"NOT_FOUND","title":"Not Found","detail":"`+detail+`"}]}`)
 	}))
 	t.Cleanup(server.Close)
 	serverURL, err := url.Parse(server.URL)

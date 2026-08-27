@@ -108,7 +108,7 @@ Examples:
 				Version:       reportVersion,
 			})
 			if err != nil {
-				if *allowMissing && errors.Is(err, asc.ErrNotFound) {
+				if *allowMissing && isMissingSalesReportError(err) {
 					available := false
 					return shared.PrintOutput(&asc.SalesReportResult{
 						VendorNumber:  vendorNumber,
@@ -154,4 +154,17 @@ Examples:
 			return shared.PrintOutput(result, *outputFlags.OutputFormat, *outputFlags.Pretty)
 		},
 	}
+}
+
+func isMissingSalesReportError(err error) bool {
+	if !errors.Is(err, asc.ErrNotFound) {
+		return false
+	}
+
+	var apiErr *asc.APIError
+	if !errors.As(err, &apiErr) || apiErr == nil {
+		return false
+	}
+
+	return strings.Contains(strings.ToLower(apiErr.Detail), "no sales for the date specified")
 }
