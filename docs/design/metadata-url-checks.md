@@ -11,8 +11,9 @@ The opt-in check follows redirects and reports warnings when:
 
 - the request fails or the final response is not successful;
 - the final host differs from the declared host; or
-- a successful response ends at an empty path or `/`, which is unlikely to be
-  a dedicated support or privacy page.
+- a successful response ends at a bare site root (an empty path or `/` without
+  a query or fragment route), which is unlikely to be a dedicated support or
+  privacy page.
 
 Warnings keep `valid: true` and exit status 0 when no ordinary metadata errors
 exist. Existing syntax and length checks continue to run before network work.
