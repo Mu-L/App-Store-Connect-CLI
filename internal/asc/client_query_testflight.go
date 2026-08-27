@@ -96,6 +96,9 @@ type betaTestersQuery struct {
 	ids          []string
 	groupIDs     []string
 	filterBuilds string
+	inviteTypes  []string
+	sort         string
+	include      []string
 }
 
 type betaAppReviewDetailsQuery struct {
@@ -269,6 +272,9 @@ func buildBetaTestersQuery(appID string, query *betaTestersQuery) (string, error
 		values.Set("filter[lastName]", strings.TrimSpace(query.lastName))
 	}
 	addCSV(values, "filter[id]", query.ids)
+	addCSV(values, "filter[inviteType]", query.inviteTypes)
+	addCSV(values, "include", query.include)
+	addValue(values, "sort", query.sort)
 	addLimit(values, query.limit)
 	return values.Encode(), nil
 }
@@ -822,6 +828,35 @@ func WithBetaTestersGroupIDs(ids []string) BetaTestersOption {
 func WithBetaTestersBuildID(buildID string) BetaTestersOption {
 	return func(q *betaTestersQuery) {
 		q.filterBuilds = strings.TrimSpace(buildID)
+	}
+}
+
+// WithBetaTestersInviteTypes filters beta testers by invite type
+// (EMAIL, PUBLIC_LINK). Unlike the relationship filters, filter[inviteType]
+// combines freely with the app, group, and build filters.
+func WithBetaTestersInviteTypes(inviteTypes []string) BetaTestersOption {
+	return func(q *betaTestersQuery) {
+		q.inviteTypes = normalizeList(inviteTypes)
+	}
+}
+
+// WithBetaTestersSort sets the sort order for beta testers.
+func WithBetaTestersSort(sort string) BetaTestersOption {
+	return func(q *betaTestersQuery) {
+		if strings.TrimSpace(sort) != "" {
+			q.sort = strings.TrimSpace(sort)
+		}
+	}
+}
+
+// WithBetaTestersInclude specifies related resources to include in beta tester
+// responses (apps, betaGroups, builds). Including betaGroups returns each
+// tester's group memberships in one call instead of a per-tester lookup.
+func WithBetaTestersInclude(include []string) BetaTestersOption {
+	return func(q *betaTestersQuery) {
+		if normalized := normalizeList(include); len(normalized) > 0 {
+			q.include = normalized
+		}
 	}
 }
 

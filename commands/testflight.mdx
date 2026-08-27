@@ -74,17 +74,48 @@ build page. A partial lookup prints the matches and per-group failures with
 ### Testers
 
 List testers, add new testers, and manage their group/build access. `list`
-accepts `--email`, `--first-name`, and `--last-name` exact-match filters, and
-`testers groups list` shows the groups a tester belongs to:
+accepts `--email`, `--first-name`, and `--last-name` exact-match filters plus
+`--invite-type` (`EMAIL`, `PUBLIC_LINK`) and `--sort`, and `testers groups list`
+shows the groups a tester belongs to:
 
 ```bash  theme={null}
 asc testflight testers list --app APP_ID
 asc testflight testers list --app APP_ID --first-name "Ada" --last-name "Lovelace"
+asc testflight testers list --app APP_ID --invite-type PUBLIC_LINK --sort -lastName
 asc testflight testers add --app APP_ID --email user@example.com --group "Beta"
 asc testflight testers view --id TESTER_ID
 asc testflight testers groups list --id TESTER_ID
 asc testflight testers add-groups --id TESTER_ID --group GROUP_ID
 ```
+
+The `--invite-type`, `--sort`, and `--include` flags are experimental. `--sort`
+accepts `firstName`, `lastName`, `email`, `inviteType`, or `state`; prefix the
+field with `-` for descending order.
+
+`--include` adds related resources (`apps`, `betaGroups`, `builds`) to the
+response's top-level `included` array. App Store Connect returns at most 50
+related resources per included relationship. `--paginate` pages the tester
+collection and merges the included resources that those pages return; it does
+not page an individual tester's included relationships. Only JSON output
+renders the `included` array, so pass `--output json` when running
+interactively:
+
+```bash  theme={null}
+asc testflight testers list --app APP_ID --include betaGroups --paginate --output json
+```
+
+For complete group membership, page the relationship for each tester:
+
+```bash  theme={null}
+asc testflight testers groups list --id TESTER_ID --paginate
+```
+
+`--invite-type`, `--sort`, and `--include` cannot be combined with `--next`. A
+`links.next` URL already carries the query it came from, so those values would
+never reach the request; the command fails instead of dropping them. When the
+URL carries `include`, use `--output json` to render its included resources.
+Invalid `--invite-type`, `--sort`, or `--include` values, and these incompatible
+`--next` combinations, exit `2` before making a request.
 
 ### Feedback and crashes
 
