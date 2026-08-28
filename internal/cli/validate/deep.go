@@ -391,7 +391,7 @@ func collectAgreementsDeepCheck(ctx context.Context, client deepWebClient, requi
 	requestCtx, cancel := shared.ContextWithTimeout(ctx)
 	defer cancel()
 	status, err := client.GetAgreementsStatus(requestCtx)
-	if err != nil || status == nil {
+	if status == nil {
 		check := unverifiedWebCheck(validation.DeepCheckAgreementsActive, "Required agreements could not be verified through the cached Apple web session", agreementsAppStoreConnectURL)
 		return check, unverifiedFinding("deep.agreements.active.unverified", check.Message, "Retry after confirming the cached Apple web session has access to agreements", "agreement", "", check.Resolution)
 	}
@@ -459,6 +459,9 @@ func collectAgreementsDeepCheck(ctx context.Context, client deepWebClient, requi
 		}
 	}
 	if !hasRelevantEvidence {
+		hasUnknown = true
+	}
+	if err != nil {
 		hasUnknown = true
 	}
 	if !hasPending && !hasUnknown {

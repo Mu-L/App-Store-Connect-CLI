@@ -177,7 +177,7 @@ func appPriceActiveOn(attributes asc.AppPriceAttributes, now time.Time) (bool, b
 		if _, err := time.Parse("2006-01-02", end); err != nil {
 			return false, false
 		}
-		if end < today {
+		if end <= today {
 			return false, true
 		}
 	}

@@ -120,8 +120,8 @@ func TestDecodeReviewSubscriptionsDistinguishesMissingAttachmentAttribute(t *tes
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	if strings.Contains(string(encoded), "submitWithNextAppStoreVersionKnown") {
-		t.Fatalf("internal presence bit leaked into stable web JSON: %s", encoded)
+	if !strings.Contains(string(encoded), `"submitWithNextAppStoreVersionKnown":false`) {
+		t.Fatalf("unknown attachment presence is missing from JSON: %s", encoded)
 	}
 }
 
@@ -277,6 +277,9 @@ func TestReviewSubscriptionJSONPreservesFalseBooleans(t *testing.T) {
 	}
 	if !strings.Contains(text, `"submitWithNextAppStoreVersion":false`) {
 		t.Fatalf("expected false attach flag in JSON, got %s", text)
+	}
+	if !strings.Contains(text, `"submitWithNextAppStoreVersionKnown":false`) {
+		t.Fatalf("expected false attach presence flag in JSON, got %s", text)
 	}
 }
 

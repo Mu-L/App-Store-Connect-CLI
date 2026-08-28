@@ -89,6 +89,11 @@ validation sends no mutation request. App Privacy publication and subscription
 attachment mutations remain separate commands that require explicit
 confirmation where applicable.
 
+The subscription web model exposes
+`submitWithNextAppStoreVersionKnown` additively in JSON. A false presence bit
+means Apple omitted the attachment attribute; consumers must not interpret the
+companion boolean as definitively unattached.
+
 ## Output and exit contract
 
 JSON remains the default for pipes and CI; table remains the terminal default.

@@ -54,3 +54,13 @@ func TestCurrentAppPaidPricingEvidenceFailsClosedOnIncompleteCurrentPrice(t *tes
 		t.Fatalf("pricing evidence = paid %t known %t, want unknown", paid, known)
 	}
 }
+
+func TestAppPriceActiveOnExcludesPriceOnEndDate(t *testing.T) {
+	active, known := appPriceActiveOn(
+		asc.AppPriceAttributes{StartDate: "2026-01-01", EndDate: "2026-08-29"},
+		time.Date(2026, time.August, 29, 0, 0, 0, 0, time.UTC),
+	)
+	if !known || active {
+		t.Fatalf("active = %t known = %t, want inactive and known on end date", active, known)
+	}
+}

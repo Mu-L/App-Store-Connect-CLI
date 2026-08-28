@@ -338,6 +338,36 @@ func TestBuildDeepValidationChecksSubscriptionAttachmentInReadyForReview(t *test
 	}
 }
 
+func TestBuildDeepValidationPreservesAgreementBannerWhenHistoryFails(t *testing.T) {
+	client := &stubDeepWebClient{
+		privacy:       &webcore.AppDataUsagesPublishState{ID: "publish-1", Published: true, PublishedKnown: true},
+		subscriptions: []webcore.ReviewSubscription{},
+		agreements: &asc.WebAgreementsStatusResult{
+			Pending: true,
+			ContractMessages: []asc.WebAgreementContractMessage{{
+				Subject: "Apple Developer Program License Agreement Updated",
+				Message: "The agreement needs to be reviewed.",
+			}},
+		},
+		agreementsErr: errors.New("agreement history unavailable"),
+	}
+
+	deep, findings := buildDeepValidation(context.Background(), validation.Report{AppID: "app-1", VersionState: "PREPARE_FOR_SUBMISSION"}, client, validation.DeepSessionCached)
+	if got := deepCheckByID(t, deep, validation.DeepCheckAgreementsActive); got.Status != validation.DeepStatusBlocked {
+		t.Fatalf("agreement check = %#v, want preserved blocker", got)
+	}
+	found := false
+	for _, finding := range findings {
+		if finding.ID == "agreements.pending" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("findings = %#v, want agreements.pending", findings)
+	}
+}
+
 func TestBuildDeepValidationDoesNotInspectNextVersionAttachmentForTerminalSelectedVersion(t *testing.T) {
 	client := &stubDeepWebClient{
 		privacy:       &webcore.AppDataUsagesPublishState{ID: "publish-1", Published: true, PublishedKnown: true},

@@ -21,7 +21,7 @@ type ReviewSubscription struct {
 	State                              string `json:"state,omitempty"`
 	IsAppStoreReviewInProgress         bool   `json:"isAppStoreReviewInProgress"`
 	SubmitWithNextAppStoreVersion      bool   `json:"submitWithNextAppStoreVersion"`
-	SubmitWithNextAppStoreVersionKnown bool   `json:"-"`
+	SubmitWithNextAppStoreVersionKnown bool   `json:"submitWithNextAppStoreVersionKnown"`
 }
 
 // ReviewSubscriptionSubmission captures the hidden submission resource returned by the web attach flow.
