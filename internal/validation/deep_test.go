@@ -64,6 +64,30 @@ func TestApplyDeepValidationReplacesPrivacyAdvisoryAndRebuildsDerivedFields(t *t
 	}
 }
 
+func TestApplyDeepValidationClassifiesKnownPublicAPIRemediation(t *testing.T) {
+	report := Report{
+		AppID:     "app-1",
+		VersionID: "version-1",
+		Checks: []CheckResult{{
+			ID:           "legal.required.copyright",
+			Severity:     SeverityError,
+			Field:        "copyright",
+			ResourceType: "appStoreVersion",
+			Message:      "copyright is required",
+			Remediation:  "Set copyright",
+		}},
+	}
+
+	got := ApplyDeepValidation(report, DeepReport{}, nil)
+	resolution := got.Checks[0].Resolution
+	if resolution == nil || resolution.Fixability != FixabilityAPIFixable {
+		t.Fatalf("copyright resolution = %#v, want api-fixable", resolution)
+	}
+	if len(resolution.Commands) != 1 || !strings.Contains(resolution.Commands[0], `--version-id "version-1"`) || !strings.Contains(resolution.Commands[0], "--copyright") {
+		t.Fatalf("copyright commands = %#v, want exact version update command", resolution.Commands)
+	}
+}
+
 func TestDeepValidationJSONIsAdditiveAndCamelCase(t *testing.T) {
 	report := Report{
 		AppID: "app-1",

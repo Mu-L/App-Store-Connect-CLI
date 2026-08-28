@@ -228,6 +228,7 @@ func runValidate(ctx context.Context, opts validateOptions) error {
 		VersionID: opts.VersionID,
 		Platform:  opts.Platform,
 		Strict:    opts.Strict,
+		Deep:      opts.Deep,
 	})
 	if err != nil {
 		if !opts.Deep || !asc.IsRequiredAgreementError(err) {

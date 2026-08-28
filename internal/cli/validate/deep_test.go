@@ -227,6 +227,8 @@ func TestBuildDeepValidationUsesAgreementStatusAndMonetizationRelevance(t *testi
 	tests := []struct {
 		name                  string
 		hasActiveMonetization bool
+		hasPaidAppPrice       bool
+		appPricingKnown       bool
 		monetizationUnknown   bool
 		status                *asc.WebAgreementsStatusResult
 		want                  validation.DeepStatus
@@ -268,15 +270,23 @@ func TestBuildDeepValidationUsesAgreementStatusAndMonetizationRelevance(t *testi
 			want: validation.DeepStatusBlocked,
 		},
 		{
-			name:   "paid agreement is irrelevant for free app",
-			status: &asc.WebAgreementsStatusResult{Agreements: []asc.WebAgreement{{AgreementID: "pla", Status: "active", IsProgramLicenseAgreement: true}}, ContractMessages: []asc.WebAgreementContractMessage{{Subject: "Paid Apps Agreement update"}}},
-			want:   validation.DeepStatusPassed,
+			name:            "paid agreement is irrelevant for free app",
+			status:          &asc.WebAgreementsStatusResult{Agreements: []asc.WebAgreement{{AgreementID: "pla", Status: "active", IsProgramLicenseAgreement: true}}, ContractMessages: []asc.WebAgreementContractMessage{{Subject: "Paid Apps Agreement update"}}},
+			appPricingKnown: true,
+			want:            validation.DeepStatusPassed,
 		},
 		{
-			name:                "paid agreement remains relevant when API access hid monetization",
+			name:            "paid agreement remains relevant for upfront paid app",
+			hasPaidAppPrice: true,
+			appPricingKnown: true,
+			status:          &asc.WebAgreementsStatusResult{Agreements: []asc.WebAgreement{{AgreementID: "pla", Status: "active", IsProgramLicenseAgreement: true}}, ContractMessages: []asc.WebAgreementContractMessage{{Subject: "Paid Apps Agreement update"}}},
+			want:            validation.DeepStatusBlocked,
+		},
+		{
+			name:                "paid agreement relevance is unverified when pricing or monetization is unknown",
 			monetizationUnknown: true,
 			status:              &asc.WebAgreementsStatusResult{Agreements: []asc.WebAgreement{{AgreementID: "pla", Status: "active", IsProgramLicenseAgreement: true}}, ContractMessages: []asc.WebAgreementContractMessage{{Subject: "Paid Apps Agreement update"}}},
-			want:                validation.DeepStatusBlocked,
+			want:                validation.DeepStatusUnverified,
 		},
 		{
 			name:                  "paid agreement blocks monetized app",
@@ -293,12 +303,38 @@ func TestBuildDeepValidationUsesAgreementStatusAndMonetizationRelevance(t *testi
 				subscriptions: []webcore.ReviewSubscription{},
 				agreements:    test.status,
 			}
-			report := validation.Report{AppID: "app-1", VersionState: "PREPARE_FOR_SUBMISSION", HasActiveMonetization: test.hasActiveMonetization, MonetizationKnown: !test.monetizationUnknown}
+			report := validation.Report{
+				AppID:                 "app-1",
+				VersionState:          "PREPARE_FOR_SUBMISSION",
+				HasActiveMonetization: test.hasActiveMonetization,
+				MonetizationKnown:     !test.monetizationUnknown,
+				HasPaidAppPrice:       test.hasPaidAppPrice,
+				AppPricingKnown:       test.appPricingKnown,
+			}
 			deep, _ := buildDeepValidation(context.Background(), report, client, validation.DeepSessionCached)
 			if got := deepCheckByID(t, deep, validation.DeepCheckAgreementsActive); got.Status != test.want {
 				t.Fatalf("agreement check = %#v, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestBuildDeepValidationChecksSubscriptionAttachmentInReadyForReview(t *testing.T) {
+	client := &stubDeepWebClient{
+		privacy:       &webcore.AppDataUsagesPublishState{ID: "publish-1", Published: true, PublishedKnown: true},
+		subscriptions: []webcore.ReviewSubscription{{ID: "sub-1", State: "READY_TO_SUBMIT", SubmitWithNextAppStoreVersionKnown: true}},
+		agreements:    &asc.WebAgreementsStatusResult{Agreements: []asc.WebAgreement{{Status: "active", IsProgramLicenseAgreement: true}}},
+	}
+
+	deep, _ := buildDeepValidation(context.Background(), validation.Report{AppID: "app-1", VersionState: "READY_FOR_REVIEW"}, client, validation.DeepSessionCached)
+	got := deepCheckByID(t, deep, validation.DeepCheckSubscriptionAttachment)
+	if got.Status != validation.DeepStatusBlocked || got.Resolution == nil || got.Resolution.Fixability != validation.FixabilityManual {
+		t.Fatalf("READY_FOR_REVIEW subscription check = %#v, want manual blocker", got)
+	}
+	for _, command := range got.Resolution.Commands {
+		if strings.Contains(command, " attach ") {
+			t.Fatalf("READY_FOR_REVIEW resolution offers unsafe mutation: %#v", got.Resolution.Commands)
+		}
 	}
 }
 

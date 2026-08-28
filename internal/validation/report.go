@@ -60,6 +60,8 @@ func Validate(input Input, strict bool) Report {
 		Strict:                strict,
 		HasActiveMonetization: activeMonetization,
 		MonetizationKnown:     strings.TrimSpace(input.SubscriptionFetchSkipReason) == "" && strings.TrimSpace(input.IAPFetchSkipReason) == "",
+		HasPaidAppPrice:       input.HasPaidAppPrice,
+		AppPricingKnown:       input.AppPricingKnown,
 	}
 }
 

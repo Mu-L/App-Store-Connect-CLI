@@ -129,7 +129,9 @@ func buildDeepValidation(ctx context.Context, report validation.Report, client d
 			findings = append(findings, *subscriptionFinding)
 		}
 
-		agreements, agreementFinding := collectAgreementsDeepCheck(ctx, client, report.HasActiveMonetization, report.MonetizationKnown)
+		requiresPaidAgreement := report.HasActiveMonetization || report.HasPaidAppPrice
+		paidAgreementRelevanceKnown := requiresPaidAgreement || (report.MonetizationKnown && report.AppPricingKnown)
+		agreements, agreementFinding := collectAgreementsDeepCheck(ctx, client, requiresPaidAgreement, paidAgreementRelevanceKnown)
 		deep.Checks = append(deep.Checks, agreements)
 		if agreementFinding != nil {
 			findings = append(findings, *agreementFinding)
@@ -369,7 +371,7 @@ func collectSubscriptionDeepCheck(ctx context.Context, client deepWebClient, app
 
 func isSubscriptionAttachmentVersionState(state string) bool {
 	switch strings.ToUpper(strings.TrimSpace(state)) {
-	case "PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED", "METADATA_REJECTED", "INVALID_BINARY", "WAITING_FOR_REVIEW", "IN_REVIEW":
+	case "PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED", "METADATA_REJECTED", "INVALID_BINARY", "READY_FOR_REVIEW", "WAITING_FOR_REVIEW", "IN_REVIEW":
 		return true
 	default:
 		return false
@@ -385,7 +387,7 @@ func isSubscriptionAttachmentEditableVersionState(state string) bool {
 	}
 }
 
-func collectAgreementsDeepCheck(ctx context.Context, client deepWebClient, hasActiveMonetization, monetizationKnown bool) (validation.DeepCheck, *validation.CheckResult) {
+func collectAgreementsDeepCheck(ctx context.Context, client deepWebClient, requiresPaidAgreement, paidAgreementRelevanceKnown bool) (validation.DeepCheck, *validation.CheckResult) {
 	requestCtx, cancel := shared.ContextWithTimeout(ctx)
 	defer cancel()
 	status, err := client.GetAgreementsStatus(requestCtx)
@@ -400,8 +402,15 @@ func collectAgreementsDeepCheck(ctx context.Context, client deepWebClient, hasAc
 	hasRelevantEvidence := false
 	for _, message := range status.ContractMessages {
 		messageText := strings.ToLower(strings.Join([]string{message.Group, message.Subject, message.Message}, " "))
-		if strings.Contains(messageText, "paid") && monetizationKnown && !hasActiveMonetization {
-			continue
+		if strings.Contains(messageText, "paid") {
+			switch {
+			case paidAgreementRelevanceKnown && !requiresPaidAgreement:
+				continue
+			case !paidAgreementRelevanceKnown:
+				hasRelevantEvidence = true
+				hasUnknown = true
+				continue
+			}
 		}
 		if strings.Contains(messageText, "agreement") || strings.Contains(messageText, "contract") {
 			hasRelevantEvidence = true
@@ -413,8 +422,15 @@ func collectAgreementsDeepCheck(ctx context.Context, client deepWebClient, hasAc
 	}
 	seenIDs := map[string]struct{}{}
 	for _, agreement := range currentAgreementHistory(status.Agreements) {
-		if !agreement.IsProgramLicenseAgreement && monetizationKnown && !hasActiveMonetization {
-			continue
+		if !agreement.IsProgramLicenseAgreement {
+			switch {
+			case paidAgreementRelevanceKnown && !requiresPaidAgreement:
+				continue
+			case !paidAgreementRelevanceKnown:
+				hasRelevantEvidence = true
+				hasUnknown = true
+				continue
+			}
 		}
 		hasRelevantEvidence = true
 		agreementStatus := strings.ToLower(strings.TrimSpace(agreement.Status))

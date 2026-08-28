@@ -78,11 +78,20 @@ auto-renewable subscription is approved, later subscriptions don't need an app
 version and this check returns `notApplicable`. The web attachment field applies
 to the app's next review candidate, so validating an older, terminal version
 also returns `notApplicable` instead of borrowing the next version's state.
+`READY_FOR_REVIEW` is still checked, but deep mode won't offer an attachment
+mutation after the version has left an editable state.
+
+Agreement relevance includes active subscriptions, IAPs, and the app's current
+upfront download price. If current pricing can't be read completely, deep mode
+reports Paid Apps Agreement relevance as `unverified` instead of assuming the
+app is free or inventing a blocker.
 
 Every deep-mode error or warning includes a `resolution` classification:
 `api-fixable`, `web-fixable`, or `manual`. When the report has enough facts to
 produce a safe command, it returns that command alongside the relevant App
-Store Connect link. Commands that change web-only state still require
+Store Connect link. Public API commands contain the exact resource ID and flag;
+values such as missing metadata text remain visibly named placeholders for the
+operator to replace. Commands that change web-only state still require
 `--confirm` and validation never runs them for you.
 
 Remediation commands are pinned to the Apple Account that deep validation

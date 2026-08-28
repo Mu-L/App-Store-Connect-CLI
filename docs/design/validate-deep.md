@@ -35,8 +35,15 @@ repository already has read clients:
 
 The private subscription field describes attachment to the app's next version,
 not an arbitrary selected version. Deep mode evaluates it only when the selected
-public version is a current review candidate. A terminal historical version is
-`notApplicable`; a missing public version state is `unverified`.
+public version is a current review candidate, including `READY_FOR_REVIEW`. A
+terminal historical version is `notApplicable`; a missing public version state
+is `unverified`.
+
+Paid Apps Agreement relevance includes an app's current upfront download price,
+not only active IAPs and subscriptions. Deep mode reads the current manual app
+price from the existing public price schedule. If that evidence is incomplete,
+it reports paid-agreement relevance as unverified instead of assuming the app
+is free or inventing a blocker.
 
 The existing public readiness report remains authoritative for review-detail
 completeness, initial app availability, pricing, metadata, screenshots, build
@@ -46,9 +53,11 @@ existing actionable findings rather than fetching them twice.
 Every actionable deep-mode finding receives an additive resolution object with
 one repair channel (`api-fixable`, `web-fixable`, or `manual`), zero or more
 exact long-form `asc` commands, and a relevant App Store Connect URL when one is
-stable. The same fields flow into the ordered remediation plan and appear as
-extra columns in table and Markdown output only when deep mode supplies
-resolution data.
+stable. API-fixable public findings carry the resolved resource ID and flag;
+commands use an explicit placeholder only when the missing content still needs
+an operator decision. The same fields flow into the ordered remediation plan
+and appear as extra columns in table and Markdown output only when deep mode
+supplies resolution data.
 
 Deep mode also adds a structured `deep` section. It reports the cached-session
 status and one deterministic result for privacy publication, subscription
@@ -61,6 +70,9 @@ not trigger duplicate requests or duplicate root findings.
 ## Endpoint and response contracts
 
 No public App Store Connect OpenAPI endpoint or request schema changes.
+Deep mode also reads the current manual price under the app's public price
+schedule to distinguish free from upfront-paid apps when deciding whether the
+Paid Apps Agreement is relevant.
 Deep mode reuses the existing private web-session readers:
 
 - `GET /apps/{id}/dataUsagePublishState`, decoded as
@@ -122,10 +134,13 @@ RED coverage precedes implementation for:
 - cached-session missing and expired behavior without an interactive prompt.
 - published and unpublished App Privacy states.
 - active and pending agreement states.
+- free, upfront-paid, and incomplete app-pricing evidence for agreement scope.
 - no subscriptions, no ready subscriptions, attached ready subscriptions, and
-  ready-but-unattached first-of-type subscriptions.
+  ready-but-unattached first-of-type subscriptions, including a selected
+  `READY_FOR_REVIEW` version without offering an unsafe attachment mutation.
 - one private endpoint failing while the other deep checks still complete.
-- additive JSON resolution fields and conditional table/Markdown columns.
+- additive JSON resolution fields, API-fixable public commands, and conditional
+  table/Markdown columns.
 - stable blocking counts, ordered remediation, stdout/stderr, and exit codes.
 
 Focused package tests, command-level tests, generated command docs, and a built

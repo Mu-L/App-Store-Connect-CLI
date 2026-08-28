@@ -127,6 +127,8 @@ type Report struct {
 	Deep                  *DeepReport   `json:"deep,omitempty"`
 	HasActiveMonetization bool          `json:"-"`
 	MonetizationKnown     bool          `json:"-"`
+	HasPaidAppPrice       bool          `json:"-"`
+	AppPricingKnown       bool          `json:"-"`
 }
 
 // Input collects the validation inputs.
@@ -162,6 +164,8 @@ type Input struct {
 	ReleaseType                 string
 	EarliestReleaseDate         string
 	Copyright                   string
+	HasPaidAppPrice             bool
+	AppPricingKnown             bool
 }
 
 // VersionLocalization represents version-level metadata.
