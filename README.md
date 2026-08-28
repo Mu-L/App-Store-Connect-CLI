@@ -311,6 +311,22 @@ asc validate --app "123456789" --version "1.2.3" --output json
 asc validate --app "123456789" --version "1.2.3" --strict
 ```
 
+Add `--deep` when a release needs checks that Apple exposes only through its
+signed-in web app:
+
+```bash
+asc web auth login --apple-id "user@example.com"
+asc validate --app "123456789" --version "1.2.3" --deep
+```
+
+Deep validation reuses the file-backed cache without opening a login, Keychain,
+password, or 2FA prompt. It checks App Privacy publication, relevant agreements,
+and the first auto-renewable subscription attachment; availability and required
+App Review fields still come from the public API. The private Apple endpoints
+can change without notice, so an unavailable or changed response is
+`unverified`, not a false blocker. Add `--strict` if CI must fail when a requested
+deep check can't be verified.
+
 This lint intentionally does not judge platform names, roadmap language, or
 beta/demo wording because those phrases can be legitimate product copy and
 cannot be classified reliably offline. It also leaves shorter Lorem Ipsum
