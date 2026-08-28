@@ -35,7 +35,9 @@ def run_help_text() -> str:
         capture_output=True,
         text=True,
     )
-    return proc.stderr or proc.stdout
+    # ffcli writes successful help output to stdout. A cold Go module cache can
+    # add download diagnostics to stderr, which must not replace that output.
+    return proc.stdout or proc.stderr
 
 
 def parse_help(help_text: str) -> tuple[str, list[tuple[str, str]], list[tuple[str, list[tuple[str, str]]]]]:

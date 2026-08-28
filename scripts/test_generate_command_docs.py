@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 MODULE_PATH = Path(__file__).with_name("generate-command-docs.py")
@@ -32,6 +33,12 @@ FLAGS
 
 
 class ParseHelpTests(unittest.TestCase):
+    @patch.object(generate_command_docs.subprocess, "run")
+    def test_help_stdout_wins_over_go_download_diagnostics(self, run: Mock) -> None:
+        run.return_value = Mock(stdout=HELP_WITH_SAMPLES, stderr="go: downloading example.com/module\n")
+
+        self.assertEqual(generate_command_docs.run_help_text(), HELP_WITH_SAMPLES)
+
     def test_usage_comes_from_the_usage_section(self) -> None:
         usage, _, _ = generate_command_docs.parse_help(HELP_WITH_SAMPLES)
         self.assertEqual(usage, "asc <subcommand> [flags]")
