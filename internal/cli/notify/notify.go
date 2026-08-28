@@ -161,7 +161,15 @@ Examples:
 			if releasePayload == nil && (visited["pretext"] || visited["success"]) {
 				const message = "--pretext and --success require --payload-json or --payload-file"
 				fmt.Fprintln(os.Stderr, "Error:", message)
-				return shared.NewReportedUsageError(shared.UsageErrorInvalidValue, message)
+				parameter := "--pretext"
+				if !visited["pretext"] {
+					parameter = "--success"
+				}
+				return shared.WithDiagnostic(
+					shared.NewReportedUsageError(shared.UsageErrorInvalidValue, message),
+					shared.DiagnosticInvalidInput,
+					parameter,
+				)
 			}
 
 			payload := map[string]any{}

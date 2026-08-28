@@ -40,6 +40,12 @@ func TestRunNotifySlackSemanticValidationIsConciseUsageError(t *testing.T) {
 			wantParameter: "--pretext",
 		},
 		{
+			name:          "success option without payload",
+			args:          []string{"notify", "slack", "--message", "hello", "--success=false"},
+			wantError:     "Error: --pretext and --success require --payload-json or --payload-file\n",
+			wantParameter: "--success",
+		},
+		{
 			name:          "invalid thread timestamp",
 			args:          []string{"notify", "slack", "--message", "hello", "--thread-ts", "invalid"},
 			wantError:     "Error: --thread-ts must be in Slack ts format (e.g. 1733977745.12345)\n",
