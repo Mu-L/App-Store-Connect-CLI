@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -23,14 +22,14 @@ func TestRunNotifySlackSemanticValidationIsConciseUsageError(t *testing.T) {
 		},
 		{
 			name:          "invalid blocks JSON",
-			args:          []string{"notify", "slack", "--message", "hello", "--blocks-json", "not-json"},
-			wantError:     "Error: --blocks-json must contain a JSON array",
+			args:          []string{"notify", "slack", "--message", "hello", "--blocks-json", "null"},
+			wantError:     "Error: --blocks-json must contain a JSON array\n",
 			wantParameter: "--blocks-json",
 		},
 		{
 			name:          "invalid payload JSON",
-			args:          []string{"notify", "slack", "--message", "hello", "--payload-json", "not-json"},
-			wantError:     "Error: --payload-json must contain a JSON object",
+			args:          []string{"notify", "slack", "--message", "hello", "--payload-json", "null"},
+			wantError:     "Error: --payload-json must contain a JSON object\n",
 			wantParameter: "--payload-json",
 		},
 		{
@@ -78,11 +77,8 @@ func TestRunNotifySlackSemanticValidationIsConciseUsageError(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("stdout = %q, want empty", stdout)
 			}
-			if !strings.HasPrefix(stderr, test.wantError) {
-				t.Fatalf("stderr = %q, want prefix %q", stderr, test.wantError)
-			}
-			if strings.Contains(stderr, "DESCRIPTION") || strings.Contains(stderr, "USAGE") {
-				t.Fatalf("stderr includes full command help: %q", stderr)
+			if stderr != test.wantError {
+				t.Fatalf("stderr = %q, want %q", stderr, test.wantError)
 			}
 			if gotExitCode != ExitUsage {
 				t.Fatalf("telemetry exit code = %d, want %d", gotExitCode, ExitUsage)
