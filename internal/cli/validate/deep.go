@@ -322,7 +322,7 @@ func collectSubscriptionDeepCheck(ctx context.Context, client deepWebClient, app
 		}, nil
 	}
 	sort.SliceStable(ready, func(i, j int) bool { return strings.TrimSpace(ready[i].ID) < strings.TrimSpace(ready[j].ID) })
-	unknown := false
+	unknown := hasUnknownState
 	for _, subscription := range ready {
 		if !subscription.SubmitWithNextAppStoreVersionKnown || strings.TrimSpace(subscription.ID) == "" {
 			unknown = true
@@ -412,7 +412,7 @@ func collectAgreementsDeepCheck(ctx context.Context, client deepWebClient, hasAc
 		hasUnknown = true
 	}
 	seenIDs := map[string]struct{}{}
-	for _, agreement := range status.Agreements {
+	for _, agreement := range currentAgreementHistory(status.Agreements) {
 		if !agreement.IsProgramLicenseAgreement && monetizationKnown && !hasActiveMonetization {
 			continue
 		}
@@ -485,6 +485,71 @@ func collectAgreementsDeepCheck(ctx context.Context, client deepWebClient, hasAc
 		Remediation:  "Have the Account Holder review and accept the pending agreement",
 		ResourceType: "agreement",
 		Resolution:   resolution,
+	}
+}
+
+func currentAgreementHistory(agreements []asc.WebAgreement) []asc.WebAgreement {
+	current := make(map[string]asc.WebAgreement)
+	order := make([]string, 0, len(agreements))
+	for index, agreement := range agreements {
+		key := strings.ToLower(strings.TrimSpace(agreement.Title))
+		if agreement.IsProgramLicenseAgreement {
+			key = "program-license-agreement"
+		}
+		if key == "" {
+			agreementID := strings.TrimSpace(agreement.AgreementID)
+			if agreementID == "" {
+				key = fmt.Sprintf("unknown-agreement:%d", index)
+			} else {
+				key = "agreement-id:" + agreementID
+			}
+		}
+		candidate, ok := current[key]
+		if !ok {
+			current[key] = agreement
+			order = append(order, key)
+			continue
+		}
+		if agreementHistoryRecordIsNewer(agreement, candidate) {
+			current[key] = agreement
+		}
+	}
+
+	result := make([]asc.WebAgreement, 0, len(order))
+	for _, key := range order {
+		result = append(result, current[key])
+	}
+	return result
+}
+
+func agreementHistoryRecordIsNewer(candidate, current asc.WebAgreement) bool {
+	candidateEffective := strings.TrimSpace(candidate.DateEffective)
+	currentEffective := strings.TrimSpace(current.DateEffective)
+	if candidateEffective != currentEffective {
+		return candidateEffective > currentEffective
+	}
+	candidateVersion := strings.TrimSpace(candidate.Version)
+	currentVersion := strings.TrimSpace(current.Version)
+	if candidateVersion != currentVersion {
+		if len(candidateVersion) != len(currentVersion) {
+			return len(candidateVersion) > len(currentVersion)
+		}
+		return candidateVersion > currentVersion
+	}
+	return agreementCurrentStatusRank(candidate.Status) > agreementCurrentStatusRank(current.Status)
+}
+
+func agreementCurrentStatusRank(status string) int {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	switch {
+	case normalized == "new", strings.Contains(normalized, "new agreement available"):
+		return 3
+	case normalized == "active", normalized == "active (pending user)":
+		return 2
+	case normalized == "pending user info", normalized == "processing", normalized == "verifying", strings.HasPrefix(normalized, "pending ("):
+		return 1
+	default:
+		return 0
 	}
 }
 

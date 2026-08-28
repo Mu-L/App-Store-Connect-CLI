@@ -207,6 +207,22 @@ func TestBuildDeepValidationTreatsUnknownSubscriptionIdentityOrStateAsUnverified
 	}
 }
 
+func TestBuildDeepValidationTreatsAnyIncompleteSubscriptionRowAsUnverified(t *testing.T) {
+	client := &stubDeepWebClient{
+		privacy: &webcore.AppDataUsagesPublishState{ID: "publish-1", Published: true, PublishedKnown: true},
+		subscriptions: []webcore.ReviewSubscription{
+			{},
+			{ID: "sub-1", State: "READY_TO_SUBMIT", SubmitWithNextAppStoreVersionKnown: true},
+		},
+		agreements: &asc.WebAgreementsStatusResult{Agreements: []asc.WebAgreement{{Status: "active", IsProgramLicenseAgreement: true}}},
+	}
+
+	deep, _ := buildDeepValidation(context.Background(), validation.Report{AppID: "app-1", VersionState: "PREPARE_FOR_SUBMISSION"}, client, validation.DeepSessionCached)
+	if got := deepCheckByID(t, deep, validation.DeepCheckSubscriptionAttachment); got.Status != validation.DeepStatusUnverified {
+		t.Fatalf("subscription check = %#v, want unverified with any incomplete row", got)
+	}
+}
+
 func TestBuildDeepValidationUsesAgreementStatusAndMonetizationRelevance(t *testing.T) {
 	tests := []struct {
 		name                  string
@@ -234,6 +250,22 @@ func TestBuildDeepValidationUsesAgreementStatusAndMonetizationRelevance(t *testi
 			name:   "processing is a manual blocker",
 			status: &asc.WebAgreementsStatusResult{Agreements: []asc.WebAgreement{{AgreementID: "paid", Status: "Processing", IsProgramLicenseAgreement: true}}},
 			want:   validation.DeepStatusBlocked,
+		},
+		{
+			name: "superseded expired agreement does not block current active agreement",
+			status: &asc.WebAgreementsStatusResult{Agreements: []asc.WebAgreement{
+				{AgreementID: "current", Title: "Apple Developer Program License Agreement", Version: "5031", DateEffective: "2026-08-01T00:00:00Z", Status: "Active", IsProgramLicenseAgreement: true},
+				{AgreementID: "old", Title: "Apple Developer Program License Agreement", Version: "5030", DateEffective: "2026-01-01T00:00:00Z", Status: "Expired", IsProgramLicenseAgreement: true},
+			}},
+			want: validation.DeepStatusPassed,
+		},
+		{
+			name: "new agreement supersedes active agreement",
+			status: &asc.WebAgreementsStatusResult{Agreements: []asc.WebAgreement{
+				{AgreementID: "old", Title: "Apple Developer Program License Agreement", Version: "5030", DateEffective: "2026-01-01T00:00:00Z", Status: "Active", IsProgramLicenseAgreement: true},
+				{AgreementID: "new", Title: "Apple Developer Program License Agreement", Version: "5031", DateEffective: "2026-08-01T00:00:00Z", Status: "New", IsProgramLicenseAgreement: true},
+			}},
+			want: validation.DeepStatusBlocked,
 		},
 		{
 			name:   "paid agreement is irrelevant for free app",

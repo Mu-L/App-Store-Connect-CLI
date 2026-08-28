@@ -3,7 +3,7 @@
 ## Decision
 
 Extend the stable top-level App Store readiness command with an explicit,
-additive deep mode:
+additive experimental deep mode:
 
 ```bash
 asc validate --app "APP_ID" --version "1.0.0" --deep
@@ -104,10 +104,10 @@ cached account.
 ## Compatibility and lifecycle
 
 The change is additive and keeps all existing default invocations, JSON shapes,
-exit behavior, and subcommands. `--deep` is stable because it strengthens the
-stable validation command without introducing a competing readiness surface.
-The private Apple endpoints remain an implementation detail and their failures
-are represented as unverified checks rather than silently treated as success.
+exit behavior, and subcommands. `--deep` and `--apple-id` start as experimental
+because they rely on private Apple endpoints and must complete the repository's
+normal lifecycle before promotion. Private endpoint failures are represented as
+unverified checks rather than silently treated as success.
 
 Top-level-only flags remain rejected before `validate testflight`, `validate
 iap`, and `validate subscriptions`; no subcommand silently ignores `--deep` or

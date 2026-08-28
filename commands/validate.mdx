@@ -50,10 +50,10 @@ and a remediation step. They are warnings by default and become blocking with
 
 ## Check Apple's web-only blockers
 
-`--deep` keeps every public-API check above, then reads an existing file-backed
-Apple web session, including the legacy IRIS file cache. It doesn't open a login
-or Keychain prompt, accept agreements, publish privacy answers, or attach
-subscriptions.
+The experimental `--deep` mode keeps every public-API check above, then reads an
+existing file-backed Apple web session, including the legacy IRIS file cache. It
+doesn't open a login or Keychain prompt, accept agreements, publish privacy
+answers, or attach subscriptions.
 
 ```bash  theme={null}
 asc validate --app "123456789" --version "1.2.0" --deep
@@ -131,13 +131,13 @@ table or Markdown output. The ordinary output shape doesn't change when
 </ParamField>
 
 <ParamField path="--deep" type="boolean">
-  Verify blockers that require an existing cached Apple web session and classify
-  actionable findings
+  Experimental. Verify blockers that require an existing cached Apple web
+  session and classify actionable findings
 </ParamField>
 
 <ParamField path="--apple-id" type="string">
-  Select a cached Apple web session for `--deep`. This flag doesn't log in and
-  isn't valid without `--deep`.
+  Experimental. Select a cached Apple web session for `--deep`. This flag
+  doesn't log in and isn't valid without `--deep`.
 </ParamField>
 
 ## Example workflows

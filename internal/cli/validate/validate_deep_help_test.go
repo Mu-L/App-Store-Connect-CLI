@@ -7,9 +7,18 @@ import (
 
 func TestValidateHelpDocumentsDeepCachedSessionContract(t *testing.T) {
 	cmd := ValidateCommand()
-	for _, want := range []string{"--deep", "--apple-id", "cached Apple web session", "App Privacy", "agreements", "subscription"} {
+	for _, want := range []string{"--deep", "--apple-id", "Experimental deep validation", "cached Apple web session", "App Privacy", "agreements", "subscription"} {
 		if !strings.Contains(cmd.LongHelp, want) {
 			t.Fatalf("validate help missing %q:\n%s", want, cmd.LongHelp)
+		}
+	}
+	for _, name := range []string{"deep", "apple-id"} {
+		flagDef := cmd.FlagSet.Lookup(name)
+		if flagDef == nil {
+			t.Fatalf("--%s flag is not registered", name)
+		}
+		if !strings.HasPrefix(flagDef.Usage, "[experimental] ") {
+			t.Fatalf("--%s usage = %q, want [experimental] prefix", name, flagDef.Usage)
 		}
 	}
 }

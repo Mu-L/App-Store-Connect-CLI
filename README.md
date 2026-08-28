@@ -311,8 +311,8 @@ asc validate --app "123456789" --version "1.2.3" --output json
 asc validate --app "123456789" --version "1.2.3" --strict
 ```
 
-Add `--deep` when a release needs checks that Apple exposes only through its
-signed-in web app:
+Add the experimental `--deep` mode when a release needs checks that Apple
+exposes only through its signed-in web app:
 
 ```bash
 asc web auth login --apple-id "user@example.com"
