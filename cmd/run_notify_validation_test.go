@@ -1,0 +1,92 @@
+package cmd
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/telemetry"
+)
+
+func TestRunNotifySlackSemanticValidationIsConciseUsageError(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          []string
+		wantError     string
+		wantParameter string
+	}{
+		{
+			name:          "invalid webhook",
+			args:          []string{"notify", "slack", "--webhook", "https://example.com/services/test", "--message", "hello"},
+			wantError:     "Error: --webhook must target hooks.slack.com or hooks.slack-gov.com\n",
+			wantParameter: "--webhook",
+		},
+		{
+			name:          "invalid blocks JSON",
+			args:          []string{"notify", "slack", "--message", "hello", "--blocks-json", "not-json"},
+			wantError:     "Error: --blocks-json must contain a JSON array",
+			wantParameter: "--blocks-json",
+		},
+		{
+			name:          "invalid payload JSON",
+			args:          []string{"notify", "slack", "--message", "hello", "--payload-json", "not-json"},
+			wantError:     "Error: --payload-json must contain a JSON object",
+			wantParameter: "--payload-json",
+		},
+		{
+			name:          "attachment option without payload",
+			args:          []string{"notify", "slack", "--message", "hello", "--pretext", "release"},
+			wantError:     "Error: --pretext and --success require --payload-json or --payload-file\n",
+			wantParameter: "--pretext",
+		},
+		{
+			name:          "invalid thread timestamp",
+			args:          []string{"notify", "slack", "--message", "hello", "--thread-ts", "invalid"},
+			wantError:     "Error: --thread-ts must be in Slack ts format (e.g. 1733977745.12345)\n",
+			wantParameter: "--thread-ts",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resetReportFlags(t)
+			t.Setenv("ASC_SLACK_WEBHOOK", "https://hooks.slack.com/services/test")
+			t.Setenv("ASC_SLACK_WEBHOOK_ALLOW_LOCALHOST", "")
+
+			originalEmitTelemetry := emitTelemetry
+			t.Cleanup(func() { emitTelemetry = originalEmitTelemetry })
+
+			var gotExitCode int
+			var gotContext telemetry.EventContext
+			emitTelemetry = func(_ string, _ string, _ time.Duration, exitCode int, eventContext telemetry.EventContext) {
+				gotExitCode = exitCode
+				gotContext = eventContext
+			}
+
+			stdout, stderr := captureCommandOutput(t, func() {
+				if code := Run(test.args, "4.10.0"); code != ExitUsage {
+					t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+				}
+			})
+
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.HasPrefix(stderr, test.wantError) {
+				t.Fatalf("stderr = %q, want prefix %q", stderr, test.wantError)
+			}
+			if strings.Contains(stderr, "DESCRIPTION") || strings.Contains(stderr, "USAGE") {
+				t.Fatalf("stderr includes full command help: %q", stderr)
+			}
+			if gotExitCode != ExitUsage {
+				t.Fatalf("telemetry exit code = %d, want %d", gotExitCode, ExitUsage)
+			}
+			if gotContext.ErrorKind != telemetry.ErrorKindInvalidValue ||
+				gotContext.FailureStage != telemetry.FailureStageValidation ||
+				gotContext.OutcomeKind != telemetry.OutcomeUsageError ||
+				gotContext.FailureParameter != test.wantParameter {
+				t.Fatalf("unexpected telemetry context: %+v", gotContext)
+			}
+		})
+	}
+}
