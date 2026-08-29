@@ -1,5 +1,7 @@
 package validation
 
+import "strings"
+
 // Validate runs all validation rules and returns a report.
 func Validate(input Input, strict bool) Report {
 	activeMonetization := hasActiveMonetization(input.Subscriptions, input.IAPs)
@@ -47,14 +49,19 @@ func Validate(input Input, strict bool) Report {
 	summary := summarize(checks, strict)
 
 	return Report{
-		AppID:         input.AppID,
-		VersionID:     input.VersionID,
-		VersionString: input.VersionString,
-		Platform:      input.Platform,
-		Summary:       summary,
-		Remediation:   BuildRemediation(checks, strict),
-		Checks:        checks,
-		Strict:        strict,
+		AppID:                 input.AppID,
+		VersionID:             input.VersionID,
+		VersionString:         input.VersionString,
+		VersionState:          input.VersionState,
+		Platform:              input.Platform,
+		Summary:               summary,
+		Remediation:           BuildRemediation(checks, strict),
+		Checks:                checks,
+		Strict:                strict,
+		HasActiveMonetization: activeMonetization,
+		MonetizationKnown:     strings.TrimSpace(input.SubscriptionFetchSkipReason) == "" && strings.TrimSpace(input.IAPFetchSkipReason) == "",
+		HasPaidAppPrice:       input.HasPaidAppPrice,
+		AppPricingKnown:       input.AppPricingKnown,
 	}
 }
 
@@ -75,4 +82,10 @@ func summarize(checks []CheckResult, strict bool) Summary {
 		summary.Blocking += summary.Warnings
 	}
 	return summary
+}
+
+// SummarizeChecks aggregates validation checks for callers constructing a
+// partial report after a known upstream blocker.
+func SummarizeChecks(checks []CheckResult, strict bool) Summary {
+	return summarize(checks, strict)
 }

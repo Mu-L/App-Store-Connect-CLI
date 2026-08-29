@@ -6,7 +6,16 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/validation"
+	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
+
+// DeepValidationWebClient exposes the read-only deep validation calls to
+// command-level tests.
+type DeepValidationWebClient interface {
+	GetAppDataUsagesPublishState(context.Context, string) (*webcore.AppDataUsagesPublishState, error)
+	ListReviewSubscriptions(context.Context, string) ([]webcore.ReviewSubscription, error)
+	GetAgreementsStatus(context.Context) (*asc.WebAgreementsStatusResult, error)
+}
 
 // SetClientFactory replaces the ASC client factory for tests.
 // It returns a restore function to reset the previous handler.
@@ -19,6 +28,26 @@ func SetClientFactory(fn func() (*asc.Client, error)) func() {
 	}
 	return func() {
 		clientFactory = previous
+	}
+}
+
+// SetDeepValidationTestHooks replaces cached-session loading and the web client
+// for command-level tests. It returns a restore function.
+func SetDeepValidationTestHooks(
+	loader func(context.Context, string) (*webcore.AuthSession, bool, error),
+	client DeepValidationWebClient,
+) func() {
+	previousLoader := loadDeepSessionFn
+	previousFactory := deepWebClientFactory
+	if loader != nil {
+		loadDeepSessionFn = loader
+	}
+	if client != nil {
+		deepWebClientFactory = func(*webcore.AuthSession) deepWebClient { return client }
+	}
+	return func() {
+		loadDeepSessionFn = previousLoader
+		deepWebClientFactory = previousFactory
 	}
 }
 

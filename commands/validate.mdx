@@ -2,21 +2,26 @@
 
 > Validate App Store version readiness before submission
 
-The `validate` command performs preflight validation to check if an App Store version is ready for submission.
+The `validate` command builds the canonical App Store submission-readiness
+report for one version. Its normal mode uses the public App Store Connect API.
+Add `--deep` when you also need checks that Apple exposes only through a signed-in
+web session.
 
 ## Usage
 
 ```bash  theme={null}
-asc validate [flags]
+asc validate --app "APP_ID" --version "VERSION" [flags]
 ```
+
+Pass exactly one version selector: `--version` or `--version-id`.
 
 ## Validate a version
 
 Check if a version is ready for submission:
 
 ```bash  theme={null}
-asc validate --app APP_ID --version VERSION_STRING
-asc validate --app 123456789 --version 1.2.0
+asc validate --app "123456789" --version "1.2.0"
+asc validate --app "123456789" --version-id "VERSION_ID"
 ```
 
 ## What it checks
@@ -29,6 +34,8 @@ The validation process checks:
 * Age rating is configured
 * App categories are assigned
 * Pricing and availability are configured
+* App Review contact information and required demo credentials are present
+* An eligible build is attached, processed, and ready for encryption review
 * Localized listing fields do not contain unmistakable template markers such as
   `Lorem ipsum`, `TODO`, `TBD`, or `FIXME`
 
@@ -41,22 +48,64 @@ flagged. Findings include the locale, field, matched text, resource type and ID,
 and a remediation step. They are warnings by default and become blocking with
 `--strict`.
 
+## Check Apple's web-only blockers
+
+The experimental `--deep` mode keeps every public-API check above, then reads an
+existing file-backed Apple web session, including the legacy IRIS file cache. It
+doesn't open a login or Keychain prompt, accept agreements, publish privacy
+answers, or attach subscriptions.
+
+```bash  theme={null}
+asc validate --app "123456789" --version "1.2.0" --deep
+asc validate --app "123456789" --version-id "VERSION_ID" --deep --apple-id "user@example.com"
+```
+
+Deep mode reports one result for each of these release gates:
+
+* App Privacy answers are published
+* The app's first auto-renewable subscription is attached to a new app version
+* Required agreements are active
+* Initial availability is configured
+* Required App Review fields are present
+
+The first three checks use Apple's web session. Availability and review
+information stay on the public API, so deep mode doesn't fetch the same data
+twice. If no cached session exists, the web-only checks return `unverified` and
+the command adds a warning. Use `--strict` if an unverified result must fail CI.
+
+The subscription check follows Apple's first-of-type rule. Once an
+auto-renewable subscription is approved, later subscriptions don't need an app
+version and this check returns `notApplicable`. The web attachment field applies
+to the app's next review candidate, so validating an older, terminal version
+also returns `notApplicable` instead of borrowing the next version's state.
+`READY_FOR_REVIEW` is still checked, but deep mode won't offer an attachment
+mutation after the version has left an editable state.
+
+Agreement relevance includes active subscriptions, IAPs, and the app's current
+upfront download price. If current pricing can't be read completely, deep mode
+reports Paid Apps Agreement relevance as `unverified` instead of assuming the
+app is free or inventing a blocker.
+
+Every deep-mode error or warning includes a `resolution` classification:
+`api-fixable`, `web-fixable`, or `manual`. When the report has enough facts to
+produce a safe command, it returns that command alongside the relevant App
+Store Connect link. Public API commands contain the exact resource ID and flag;
+values such as missing metadata text remain visibly named placeholders for the
+operator to replace. Commands that change web-only state still require
+`--confirm` and validation never runs them for you.
+
+Remediation commands are pinned to the Apple Account that deep validation
+checked. If several subscriptions are ready and the intended one is ambiguous,
+the finding stays `manual` and returns the safe list command instead of guessing
+which subscription to attach.
+
 ## Output
 
-**Success:**
-
-```
-Version 1.2.0 is ready for submission
-```
-
-**Validation errors:**
-
-```
-Validation failed for version 1.2.0:
-  - No build attached to version
-  - Missing screenshots for iPhone 6.5"
-  - Description is empty for en-US
-```
+JSON is the default for pipes and CI; terminals default to a table. Both forms
+include the severity summary, ordered remediation steps, and individual
+findings. Deep mode adds a `deep` section to JSON and resolution columns to
+table or Markdown output. The ordinary output shape doesn't change when
+`--deep` is absent.
 
 ## Flags
 
@@ -64,16 +113,40 @@ Validation failed for version 1.2.0:
   App ID to validate
 </ParamField>
 
-<ParamField path="--version" type="string" required>
-  Version string to validate (e.g., `1.2.0`)
+<ParamField path="--version" type="string">
+  Version string to validate (for example, `1.2.0`). Mutually exclusive with
+  `--version-id`.
+</ParamField>
+
+<ParamField path="--version-id" type="string">
+  App Store version ID to validate. Mutually exclusive with `--version`.
+</ParamField>
+
+<ParamField path="--platform" type="string">
+  Platform used with `--version` when an app has the same version on more than
+  one platform
 </ParamField>
 
 <ParamField path="--output" type="string">
   Output format: `json`, `table`, or `markdown`
 </ParamField>
 
+<ParamField path="--pretty" type="boolean">
+  Pretty-print JSON output
+</ParamField>
+
 <ParamField path="--strict" type="boolean">
   Treat warnings, including placeholder findings, as blocking validation issues
+</ParamField>
+
+<ParamField path="--deep" type="boolean">
+  Experimental. Verify blockers that require an existing cached Apple web
+  session and classify actionable findings
+</ParamField>
+
+<ParamField path="--apple-id" type="string">
+  Experimental. Select a cached Apple web session for `--deep`. This flag
+  doesn't log in and isn't valid without `--deep`.
 </ParamField>
 
 ## Example workflows
@@ -82,9 +155,9 @@ Validation failed for version 1.2.0:
 
 ```bash  theme={null}
 # Validate version
-if asc validate --app 123456789 --version 1.2.0; then
+if asc validate --app "123456789" --version "1.2.0"; then
   echo "Version is ready, running the release pipeline..."
-  asc publish appstore --app 123456789 --ipa ./build/MyApp.ipa --version 1.2.0 --submit --confirm
+  asc publish appstore --app "123456789" --ipa "./build/MyApp.ipa" --version "1.2.0" --submit --confirm
 else
   echo "Validation failed, fix issues before publishing"
   exit 1

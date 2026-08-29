@@ -195,6 +195,10 @@ Available commands:
 * `asc web review show` - inspect one submission and related messages/screenshots
 * `asc web review subscriptions` - inspect and mutate next-version subscription review selection
 
+Subscription JSON includes both `submitWithNextAppStoreVersion` and
+`submitWithNextAppStoreVersionKnown`. When the presence field is `false`, Apple
+omitted the attachment attribute and the boolean value is not authoritative.
+
 ### `asc web subscriptions`
 
 Subscription sale availability and pricing workflows over Apple web-session
