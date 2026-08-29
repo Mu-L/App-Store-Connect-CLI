@@ -2101,6 +2101,15 @@ func TestRun_SnitchPreservesPositionalDescription(t *testing.T) {
 	resetReportFlags(t)
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
+	originalEmitTelemetry := emitTelemetry
+	t.Cleanup(func() { emitTelemetry = originalEmitTelemetry })
+
+	var gotExitCode int
+	var gotContext telemetry.EventContext
+	emitTelemetry = func(_ string, _ string, _ time.Duration, exitCode int, eventContext telemetry.EventContext) {
+		gotExitCode = exitCode
+		gotContext = eventContext
+	}
 
 	_, stderr := captureCommandOutput(t, func() {
 		if code := Run([]string{"snitch", "--dry-run", "status command needs bundle ID support"}, "1.0.0"); code != ExitSuccess {
@@ -2110,6 +2119,9 @@ func TestRun_SnitchPreservesPositionalDescription(t *testing.T) {
 
 	if !strings.Contains(stderr, "status command needs bundle ID support") {
 		t.Fatalf("expected snitch preview to preserve description, got %q", stderr)
+	}
+	if gotExitCode != ExitSuccess || gotContext.InvocationShape != telemetry.InvocationShapeLeaf {
+		t.Fatalf("unexpected telemetry for successful positional snitch: exit=%d context=%+v", gotExitCode, gotContext)
 	}
 }
 
