@@ -6,30 +6,16 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
-	"syscall"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/metadataurl"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/validation"
 )
 
-const (
-	metadataURLCheckConcurrency = metadataurl.CheckConcurrency
-	metadataURLCheckTimeout     = metadataurl.CheckTimeout
-	metadataURLMaxRedirects     = metadataurl.MaxRedirects
-)
-
-var errUnsafeMetadataURLTarget = metadataurl.ErrUnsafeTarget
-
-var newMetadataURLChecker = func() metadataURLChecker {
+var newMetadataURLChecker = func() metadataurl.Checker {
 	return newHTTPMetadataURLChecker()
 }
-
-type metadataURLCheckResult = metadataurl.Result
-
-type metadataURLChecker = metadataurl.Checker
 
 type metadataURLTarget struct {
 	rawURL  string
@@ -42,7 +28,7 @@ type metadataURLTarget struct {
 }
 
 type metadataURLCheckOutcome struct {
-	result metadataURLCheckResult
+	result metadataurl.Result
 	err    error
 }
 
@@ -66,7 +52,7 @@ func metadataURLTargets(scope, file, locale, version string, fields []metadataUR
 	return targets
 }
 
-func metadataURLCheckIssues(ctx context.Context, checker metadataURLChecker, targets []metadataURLTarget) ([]ValidateIssue, error) {
+func metadataURLCheckIssues(ctx context.Context, checker metadataurl.Checker, targets []metadataURLTarget) ([]ValidateIssue, error) {
 	urls := make([]string, 0, len(targets))
 	for _, target := range targets {
 		urls = append(urls, target.rawURL)
@@ -98,7 +84,7 @@ func metadataURLCheckIssues(ctx context.Context, checker metadataURLChecker, tar
 func metadataURLCheckMessages(target metadataURLTarget, outcome metadataURLCheckOutcome) []string {
 	if outcome.err != nil {
 		reason := "request failed"
-		if errors.Is(outcome.err, errUnsafeMetadataURLTarget) {
+		if errors.Is(outcome.err, metadataurl.ErrUnsafeTarget) {
 			reason = "target is not a public internet address"
 		} else if errors.Is(outcome.err, context.DeadlineExceeded) || isTimeoutError(outcome.err) {
 			reason = "request timed out"
@@ -142,18 +128,6 @@ func newHTTPMetadataURLChecker() *httpMetadataURLChecker {
 	return &httpMetadataURLChecker{client: metadataurl.NewHTTPClient()}
 }
 
-func (c *httpMetadataURLChecker) Check(ctx context.Context, rawURL string) (metadataURLCheckResult, error) {
+func (c *httpMetadataURLChecker) Check(ctx context.Context, rawURL string) (metadataurl.Result, error) {
 	return metadataurl.CheckWithClient(ctx, c.client, rawURL)
-}
-
-func metadataURLRedirectPolicy(req *http.Request, via []*http.Request) error {
-	return metadataurl.RedirectPolicy(req, via)
-}
-
-func publicMetadataURLDialControl(ctx context.Context, network, address string, conn syscall.RawConn) error {
-	return metadataurl.PublicDialControl(ctx, network, address, conn)
-}
-
-func isPublicMetadataIP(address netip.Addr) bool {
-	return metadataurl.IsPublicIP(address)
 }
