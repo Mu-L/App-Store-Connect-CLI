@@ -208,6 +208,9 @@ func TestXcodeDoctorCommandRendersHumanOutput(t *testing.T) {
 			if !strings.Contains(stdout, "summary") || !strings.Contains(stdout, "warn") {
 				t.Fatalf("%s output missing final warning summary: %s", format, stdout)
 			}
+			if got := strings.Count(stdout, "selected developer directory appears to be a beta Xcode build"); got != 1 {
+				t.Fatalf("%s output rendered the beta warning %d times, want exactly once: %s", format, got, stdout)
+			}
 		})
 	}
 }

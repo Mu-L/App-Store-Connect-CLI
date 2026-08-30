@@ -44,11 +44,22 @@ func xcodeToolchainDoctorResultRows(result *XcodeToolchainDoctorResult) ([]strin
 		{"developer_dir", "selected", result.DeveloperDir, "effective developer directory"},
 		{"xcode_path", "selected", result.XcodePath, "Xcode application, when identified"},
 		{"xcode_version", "selected", result.XcodeVersion, result.XcodeBuild},
-		{"beta", betaStatus, "", betaMessage},
+	}
+	if !hasXcodeToolchainBetaCheck(result.Checks) {
+		rows = append(rows, []string{"beta", betaStatus, "", betaMessage})
 	}
 	for _, check := range result.Checks {
 		rows = append(rows, []string{check.Name, check.Status, check.Path, check.Message})
 	}
 	rows = append(rows, []string{"summary", result.Status, "", "overall toolchain status"})
 	return []string{"check", "status", "path", "message"}, rows
+}
+
+func hasXcodeToolchainBetaCheck(checks []XcodeToolchainDoctorCheck) bool {
+	for _, check := range checks {
+		if check.Name == "beta" {
+			return true
+		}
+	}
+	return false
 }

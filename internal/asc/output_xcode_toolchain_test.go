@@ -65,3 +65,27 @@ func TestPrintTable_XcodeToolchainDoctorResultUsesRegisteredRenderer(t *testing.
 		}
 	}
 }
+
+func TestXcodeToolchainDoctorResultRowsDoesNotDuplicateBetaCheck(t *testing.T) {
+	beta := true
+	result := &XcodeToolchainDoctorResult{
+		Status: "warn",
+		Beta:   &beta,
+		Checks: []XcodeToolchainDoctorCheck{{
+			Name:    "beta",
+			Status:  "warn",
+			Message: "selected developer directory appears to be a beta Xcode build",
+		}},
+	}
+
+	_, rows := xcodeToolchainDoctorResultRows(result)
+	betaRows := 0
+	for _, row := range rows {
+		if len(row) > 0 && row[0] == "beta" {
+			betaRows++
+		}
+	}
+	if betaRows != 1 {
+		t.Fatalf("xcodeToolchainDoctorResultRows() emitted %d beta rows, want exactly one: %v", betaRows, rows)
+	}
+}
