@@ -32,6 +32,42 @@ var (
 	signingBundleIDPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$`)
 )
 
+// signingInputError marks deterministic manifest or artifact-shape failures
+// that the CLI can report as usage errors. Filesystem, parser, and staging
+// failures intentionally remain ordinary runtime errors.
+type signingInputError struct {
+	err error
+}
+
+func (e signingInputError) Error() string {
+	return e.err.Error()
+}
+
+func (e signingInputError) Unwrap() error {
+	return e.err
+}
+
+func newSigningInputError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return signingInputError{err: err}
+}
+
+// NewSigningInputError adapts a deterministic signing-input failure for a
+// command boundary. It is primarily useful to keep adapters and tests aligned
+// with the same usage classification as the built-in manifest validator.
+func NewSigningInputError(err error) error {
+	return newSigningInputError(err)
+}
+
+// IsSigningInputError reports whether err is a deterministic signing-manifest
+// or signing-artifact validation failure suitable for usage classification.
+func IsSigningInputError(err error) bool {
+	var inputErr signingInputError
+	return errors.As(err, &inputErr)
+}
+
 // SigningPlanOptions controls generation of a deterministic local Xcode
 // signing-settings plan. Paths are operator-selected; no remote input is
 // consulted by this workflow.
@@ -235,12 +271,12 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		return nil, err
 	}
 	if err := validateSigningArtifactPaths(planPath, receiptPath, project.pbxprojPath, settingsPath); err != nil {
-		return nil, err
+		return nil, newSigningInputError(err)
 	}
 
 	requests, desired, err := normalizeSigningRequests(settings)
 	if err != nil {
-		return nil, err
+		return nil, newSigningInputError(err)
 	}
 	selectedIDs := make(map[string]bool, len(requests))
 	for _, request := range requests {
@@ -385,20 +421,20 @@ func readSigningSettingsManifest(path string) (*signingSettingsManifest, error) 
 	decoder.DisallowUnknownFields()
 	var manifest signingSettingsManifest
 	if err := decoder.Decode(&manifest); err != nil {
-		return nil, fmt.Errorf("decode settings file %s: %w", path, err)
+		return nil, newSigningInputError(fmt.Errorf("decode settings file %s: %w", path, err))
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return nil, fmt.Errorf("decode settings file %s: multiple JSON values", path)
+			return nil, newSigningInputError(fmt.Errorf("decode settings file %s: multiple JSON values", path))
 		}
-		return nil, fmt.Errorf("decode settings file %s: %w", path, err)
+		return nil, newSigningInputError(fmt.Errorf("decode settings file %s: %w", path, err))
 	}
 	if manifest.SchemaVersion != signingPlanSchemaVersion {
-		return nil, fmt.Errorf("settings file schemaVersion must be %d", signingPlanSchemaVersion)
+		return nil, newSigningInputError(fmt.Errorf("settings file schemaVersion must be %d", signingPlanSchemaVersion))
 	}
 	if len(manifest.Targets) == 0 {
-		return nil, fmt.Errorf("settings file targets must not be empty")
+		return nil, newSigningInputError(fmt.Errorf("settings file targets must not be empty"))
 	}
 	return &manifest, nil
 }
@@ -612,6 +648,11 @@ func inspectSigningCandidate(
 	allowExternal bool,
 ) (signingCandidate, string, string) {
 	candidate := signingCandidate{configuration: configuration, setting: setting.key, desired: cloneSigningString(setting.value)}
+	if setting.key == "CODE_SIGN_ENTITLEMENTS" && setting.value != nil {
+		if err := validateSigningEntitlementsPath(project, *setting.value); err != nil {
+			return candidate, signingSettingBlocker(configuration, setting.key, fmt.Errorf("validate path %q: %w", *setting.value, err)), ""
+		}
+	}
 	keys := matchingBuildSettingKeys(configuration.buildSettings, setting.key)
 	if len(keys) > 0 {
 		old, _, err := project.resolveSetting(configuration, setting.key)
@@ -660,6 +701,7 @@ func inspectSigningCandidate(
 			candidate.mode = "pbxproj"
 			return candidate, "", "shared xcconfig is consumed by an unselected configuration; using a target-level override for " + setting.key
 		}
+		warning := ""
 		for _, path := range assignmentFiles {
 			if err := project.checkXCConfigWritable(path, allowExternal); err != nil {
 				return candidate, fmt.Sprintf("target %q configuration %q cannot update %s in xcconfig %s: %v", configuration.target, configuration.name, setting.key, path, err), ""
@@ -668,18 +710,36 @@ func inspectSigningCandidate(
 				return candidate, fmt.Sprintf("target %q configuration %q cannot update xcconfig %s: %v", configuration.target, configuration.name, path, err), ""
 			}
 			if allowExternal && !signingPathContained(project, path) {
-				return candidate, "", fmt.Sprintf("external xcconfig %s is authorized for %s", path, setting.key)
+				if warning == "" {
+					warning = fmt.Sprintf("external xcconfig %s is authorized for %s", path, setting.key)
+				}
 			}
 		}
 		candidate.mode = "xcconfig"
 		candidate.paths = append(candidate.paths, assignmentFiles...)
-		return candidate, "", ""
+		return candidate, "", warning
 	}
 
 	// Project-level inheritance is deliberately shadowed at the selected
 	// target/configuration. This avoids widening a change to other targets.
 	candidate.mode = "pbxproj"
 	return candidate, "", ""
+}
+
+// validateSigningEntitlementsPath binds a non-null CODE_SIGN_ENTITLEMENTS
+// value to the selected project root. It requires an existing regular file
+// and rejects symlinked parent or final components before a plan is ready.
+func validateSigningEntitlementsPath(project *structuredVersionProject, path string) error {
+	root, err := rootfs.New(project.rootDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	file, err := root.OpenFile(path)
+	if err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func resolveSigningSharedCandidates(candidates []signingCandidate) {
@@ -982,20 +1042,20 @@ func readSigningPlanArtifact(path string) (*SigningPlan, error) {
 	decoder.DisallowUnknownFields()
 	var plan SigningPlan
 	if err := decoder.Decode(&plan); err != nil {
-		return nil, fmt.Errorf("decode signing plan %s: %w", path, err)
+		return nil, newSigningInputError(fmt.Errorf("decode signing plan %s: %w", path, err))
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return nil, fmt.Errorf("decode signing plan %s: multiple JSON values", path)
+			return nil, newSigningInputError(fmt.Errorf("decode signing plan %s: multiple JSON values", path))
 		}
-		return nil, fmt.Errorf("decode signing plan %s: %w", path, err)
+		return nil, newSigningInputError(fmt.Errorf("decode signing plan %s: %w", path, err))
 	}
 	if plan.SchemaVersion != signingPlanSchemaVersion {
-		return nil, fmt.Errorf("plan schemaVersion must be %d", signingPlanSchemaVersion)
+		return nil, newSigningInputError(fmt.Errorf("plan schemaVersion must be %d", signingPlanSchemaVersion))
 	}
 	if plan.Command != signingPlanCommand {
-		return nil, fmt.Errorf("plan command is not %q", signingPlanCommand)
+		return nil, newSigningInputError(fmt.Errorf("plan command is not %q", signingPlanCommand))
 	}
 	return &plan, nil
 }

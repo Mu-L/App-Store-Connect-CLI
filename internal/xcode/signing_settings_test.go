@@ -98,7 +98,10 @@ func TestSigningPlanRejectsStaleProjectBeforeMutation(t *testing.T) {
 	settingsPath := filepath.Join(root, "settings.json")
 	writeSigningSettingsTestFile(t, settingsPath, `{
 		"schemaVersion": 1,
-		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}},
+			{"name":"Release","settings":{"CODE_SIGN_STYLE":"manual"}}
+		]}]
 	}`)
 	plan, err := BuildSigningPlan(SigningPlanOptions{
 		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
@@ -167,6 +170,137 @@ func TestSigningPlanUsesExclusiveXCConfigWhenSelected(t *testing.T) {
 	}
 }
 
+func TestSigningPlanExternalXCConfigRequiresOptInForPlanAndApply(t *testing.T) {
+	project, externalDir := externalXCConfigProject(t)
+	externalPath := filepath.Join(externalDir, "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, externalPath)
+	if err := os.WriteFile(externalPath, []byte("CODE_SIGN_STYLE = Automatic\r\n"+shared), 0o640); err != nil {
+		t.Fatalf("write external shared xcconfig error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}},
+			{"name":"Release","settings":{"CODE_SIGN_STYLE":"manual"}}
+		]}]
+	}`)
+
+	blocked, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "blocked"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() without opt-in error = %v", err)
+	}
+	if blocked.Ready || len(blocked.Changes) != 0 {
+		t.Fatalf("external xcconfig without opt-in = ready=%t changes=%#v blockers=%#v", blocked.Ready, blocked.Changes, blocked.Blockers)
+	}
+	if !strings.Contains(strings.Join(blocked.Blockers, "\n"), "allow-external-xcconfig") {
+		t.Fatalf("external xcconfig blocker = %#v, want opt-in guidance", blocked.Blockers)
+	}
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "authorized"),
+		AllowExternalXCConfig: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() with opt-in error = %v", err)
+	}
+	if !plan.Ready || len(plan.Changes) != 2 {
+		t.Fatalf("external xcconfig with opt-in = ready=%t changes=%#v blockers=%#v", plan.Ready, plan.Changes, plan.Blockers)
+	}
+	for _, change := range plan.Changes {
+		if change.Source != "xcconfig" || change.Path != externalPath {
+			t.Fatalf("authorized external change = %#v, want xcconfig %s", change, externalPath)
+		}
+	}
+	if len(plan.Warnings) == 0 || !strings.Contains(strings.Join(plan.Warnings, "\n"), "external xcconfig") {
+		t.Fatalf("authorized external warnings = %#v, want explicit warning", plan.Warnings)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+
+	before := mustReadVersionTestFile(t, externalPath)
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err == nil || !strings.Contains(err.Error(), "allow-external-xcconfig") {
+		t.Fatalf("ApplySigningPlan() without opt-in error = %v, want opt-in rejection", err)
+	}
+	if after := mustReadVersionTestFile(t, externalPath); after != before {
+		t.Fatal("external xcconfig changed when apply opt-in was omitted")
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath, AllowExternalXCConfig: true}); err != nil {
+		t.Fatalf("ApplySigningPlan() with opt-in error = %v", err)
+	}
+	if after := mustReadVersionTestFile(t, externalPath); !strings.Contains(after, "CODE_SIGN_STYLE = Manual") {
+		t.Fatalf("authorized external xcconfig = %q, want Manual", after)
+	}
+}
+
+func TestSigningPlanAnchorsEntitlementsToProjectRoot(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T, projectRoot string) string
+		wantBlocker string
+	}{
+		{
+			name:        "missing",
+			setup:       func(_ *testing.T, _ string) string { return "App.entitlements" },
+			wantBlocker: "no such file",
+		},
+		{
+			name: "directory",
+			setup: func(t *testing.T, projectRoot string) string {
+				if err := os.Mkdir(filepath.Join(projectRoot, "App.entitlements"), 0o755); err != nil {
+					t.Fatalf("Mkdir() error = %v", err)
+				}
+				return "App.entitlements"
+			},
+			wantBlocker: "not a regular file",
+		},
+		{
+			name: "symlink",
+			setup: func(t *testing.T, projectRoot string) string {
+				target := filepath.Join(t.TempDir(), "real.entitlements")
+				if err := os.WriteFile(target, []byte("{}\n"), 0o644); err != nil {
+					t.Fatalf("WriteFile(target) error = %v", err)
+				}
+				link := filepath.Join(projectRoot, "App.entitlements")
+				if err := os.Symlink(target, link); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				return "App.entitlements"
+			},
+			wantBlocker: "symlink",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			project := writeStructuredVersionProject(t, false)
+			projectRoot := filepath.Dir(project)
+			entitlements := test.setup(t, projectRoot)
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			writeSigningSettingsTestFile(t, settingsPath, `{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_ENTITLEMENTS":"`+entitlements+`"}}]}]
+			}`)
+			plan, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+			})
+			if err != nil {
+				t.Fatalf("BuildSigningPlan() error = %v", err)
+			}
+			if plan.Ready {
+				t.Fatalf("entitlements %s unexpectedly produced ready plan: %#v", test.name, plan)
+			}
+			if !strings.Contains(strings.Join(plan.Blockers, "\n"), test.wantBlocker) {
+				t.Fatalf("entitlements blockers = %#v, want %q", plan.Blockers, test.wantBlocker)
+			}
+		})
+	}
+}
+
 func TestSigningSettingsManifestIsStrictAndValidatesValues(t *testing.T) {
 	tests := []struct {
 		name string
@@ -199,6 +333,32 @@ func TestSigningSettingsManifestIsStrictAndValidatesValues(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("readSigningSettingsManifest() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildSigningPlanMarksDeterministicManifestValidationErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "malformed JSON", body: `{"schemaVersion":1,"targets": [`},
+		{name: "wrong schema", body: `{"schemaVersion":2,"targets":[]}`},
+		{name: "unsupported setting", body: `{"schemaVersion":1,"targets":[{"name":"App","configurations":[{"name":"Debug","settings":{"OTHER":"x"}}]}]}`},
+		{name: "invalid team ID", body: `{"schemaVersion":1,"targets":[{"name":"App","configurations":[{"name":"Debug","settings":{"DEVELOPMENT_TEAM":"short"}}]}]}`},
+		{name: "invalid entitlements path", body: `{"schemaVersion":1,"targets":[{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_ENTITLEMENTS":"../App.entitlements"}}]}]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			project := writeStructuredVersionProject(t, false)
+			settingsPath := filepath.Join(t.TempDir(), "settings.json")
+			writeSigningSettingsTestFile(t, settingsPath, test.body)
+			_, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath,
+			})
+			if err == nil || !IsSigningInputError(err) {
+				t.Fatalf("BuildSigningPlan() error = %v, want signing input classification", err)
 			}
 		})
 	}

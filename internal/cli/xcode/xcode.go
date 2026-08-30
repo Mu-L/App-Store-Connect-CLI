@@ -52,7 +52,7 @@ func XcodeCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "xcode",
 		ShortUsage: "asc xcode <subcommand> [flags]",
-		ShortHelp:  "Local Xcode build/archive/export helpers (macOS only).",
+		ShortHelp:  "Local Xcode build/archive/export and signing-settings helpers (macOS only).",
 		LongHelp: `Local Xcode build/archive/export helpers.
 
 These commands wrap local xcodebuild flows and are visible on every platform so
@@ -69,7 +69,8 @@ Examples:
   asc xcode export-options generate --archive-path .asc/artifacts/App.xcarchive
   asc xcode version view
   asc xcode version bump --type patch
-  asc xcode version edit --version "1.3.0" --build-number "42"`,
+  asc xcode version edit --version "1.3.0" --build-number "42"
+  asc xcode signing plan --project App.xcodeproj --settings-file .asc/xcode-signing.json`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{

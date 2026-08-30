@@ -88,6 +88,9 @@ Examples:
 			if strings.TrimSpace(*settingsFile) == "" {
 				return shared.MissingRequiredUsageError("--settings-file")
 			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageError(err.Error())
+			}
 			plan, err := runBuildSigningPlan(localxcode.SigningPlanOptions{
 				ProjectPath:           strings.TrimSpace(*project),
 				SettingsFilePath:      strings.TrimSpace(*settingsFile),
@@ -95,6 +98,9 @@ Examples:
 				AllowExternalXCConfig: *allowExternalXCConfig,
 			})
 			if err != nil {
+				if localxcode.IsSigningInputError(err) {
+					return xcodeSigningInputUsageError("xcode signing plan", err)
+				}
 				return fmt.Errorf("xcode signing plan: %w", err)
 			}
 			if err := writeSigningPlanArtifact(plan, *overwrite); err != nil {
@@ -152,11 +158,17 @@ Examples:
 			if !*confirm {
 				return shared.MissingRequiredUsageError("--confirm")
 			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageError(err.Error())
+			}
 			result, err := runApplySigningPlan(localxcode.SigningApplyOptions{
 				PlanPath:              strings.TrimSpace(*planPath),
 				AllowExternalXCConfig: *allowExternalXCConfig,
 			})
 			if err != nil {
+				if localxcode.IsSigningInputError(err) {
+					return xcodeSigningInputUsageError("xcode signing apply", err)
+				}
 				return fmt.Errorf("xcode signing apply: %w", err)
 			}
 			return shared.PrintOutputWithRenderers(
@@ -174,6 +186,16 @@ Examples:
 			)
 		},
 	}
+}
+
+func xcodeSigningInputUsageError(command string, err error) error {
+	message := fmt.Sprintf("%s: %v", command, err)
+	fmt.Fprintln(os.Stderr, "Error: "+message)
+	return shared.WithDiagnostic(
+		shared.NewReportedUsageError(shared.UsageErrorInvalidValue, message),
+		shared.DiagnosticInvalidInput,
+		"",
+	)
 }
 
 func signingPlanRows(plan *localxcode.SigningPlan) [][]string {
