@@ -282,7 +282,14 @@ func copyStagedFileNoReplace(root *os.Root, temporaryName, destinationName strin
 	if err := destination.Sync(); err != nil {
 		return errors.Join(err, destination.Close(), removeRootedFile(root, destinationName))
 	}
-	return destination.Close()
+	// A failed close can report a delayed write error, so the visible
+	// destination is removed like every other failure path; leaving it behind
+	// would make retries fail with an already-exists error against an invalid
+	// output.
+	if err := destination.Close(); err != nil {
+		return errors.Join(err, removeRootedFile(root, destinationName))
+	}
+	return nil
 }
 
 func writeNewFileNoSymlink(path string, file *os.File, write func(*os.File) (int64, error), ops newFileWriteOps) (int64, error) {
