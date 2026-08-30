@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
@@ -283,6 +284,7 @@ func testResultJUnitReport(result *localxcode.TestResult, commandErr error) *sha
 		missingPassed := max(0, summary.Passed+summary.ExpectedFailures-actualPassed)
 		missingFailed := max(0, summary.Failed-actualFailed)
 		missingSkipped := max(0, summary.Skipped-actualSkipped)
+		syntheticStart := len(tests)
 		syntheticCount := 0
 		for index := 0; index < missingPassed && len(tests) < maxJUnitAggregateCases; index++ {
 			tests = append(tests, syntheticJUnitTestCase("passed", syntheticCount, ""))
@@ -296,28 +298,26 @@ func testResultJUnitReport(result *localxcode.TestResult, commandErr error) *sha
 			tests = append(tests, syntheticJUnitTestCase("skipped", syntheticCount, ""))
 			syntheticCount++
 		}
-		if len(summary.Cases) == 0 && len(tests) > 0 {
-			// Count-only summaries have no case durations. Keep the aggregate
-			// duration in the first synthetic case without multiplying it by the
-			// number of synthesized status entries.
-			tests[0].Time = durationFromMilliseconds(summary.DurationMS)
+		if len(tests) > syntheticStart {
+			// JUnit derives suite time by summing testcase durations. Preserve
+			// the aggregate Xcode duration in synthesized cases while retaining
+			// every parsed case's own duration.
+			aggregateDuration := durationFromMilliseconds(summary.DurationMS)
+			parsedDuration := totalJUnitDuration(tests[:syntheticStart])
+			if remaining := aggregateDuration - parsedDuration; remaining > 0 {
+				tests[syntheticStart].Time = remaining
+			}
 		}
 	}
 
-	if !hasJUnitFailure(tests) {
-		infrastructureFailure := !result.Success
-		if result.ExitStatus != nil && *result.ExitStatus != 0 {
-			infrastructureFailure = true
+	if shouldAddJUnitInfrastructureFailure(result, summary, commandErr) {
+		message := "xcode test did not complete successfully"
+		if commandErr != nil {
+			message = boundJUnitFailureMessage(commandErr.Error())
+		} else if result.ExitStatus != nil && *result.ExitStatus != 0 {
+			message = fmt.Sprintf("xcodebuild exited with status %d", *result.ExitStatus)
 		}
-		if infrastructureFailure {
-			message := "xcode test did not complete successfully"
-			if commandErr != nil {
-				message = boundJUnitFailureMessage(commandErr.Error())
-			} else if result.ExitStatus != nil && *result.ExitStatus != 0 {
-				message = fmt.Sprintf("xcodebuild exited with status %d", *result.ExitStatus)
-			}
-			tests = append(tests, syntheticJUnitTestCase("failed", len(tests), message))
-		}
+		tests = append(tests, syntheticJUnitTestCase("failed", len(tests), message))
 	}
 	report.Tests = tests
 	return report
@@ -344,6 +344,31 @@ func junitStatusCounts(tests []shared.JUnitTestCase) (passed, failed, skipped in
 	return passed, failed, skipped
 }
 
+func totalJUnitDuration(tests []shared.JUnitTestCase) time.Duration {
+	var total time.Duration
+	for _, testCase := range tests {
+		total += testCase.Time
+	}
+	return total
+}
+
+func shouldAddJUnitInfrastructureFailure(result *localxcode.TestResult, summary *localxcode.TestSummary, commandErr error) bool {
+	if result == nil || result.Success {
+		return false
+	}
+	if summary == nil {
+		return true
+	}
+	if result.ExitStatus != nil && *result.ExitStatus != 0 {
+		return true
+	}
+	if errors.Is(commandErr, context.Canceled) || errors.Is(commandErr, context.DeadlineExceeded) {
+		return true
+	}
+	var exitErr *exec.ExitError
+	return errors.As(commandErr, &exitErr) && exitErr.ExitCode() != 0
+}
+
 func syntheticJUnitTestCase(status string, index int, message string) shared.JUnitTestCase {
 	testCase := shared.JUnitTestCase{
 		Name:      fmt.Sprintf("aggregate-%s-%d", status, index+1),
@@ -357,15 +382,6 @@ func syntheticJUnitTestCase(status string, index int, message string) shared.JUn
 		testCase.Skipped = true
 	}
 	return testCase
-}
-
-func hasJUnitFailure(tests []shared.JUnitTestCase) bool {
-	for _, testCase := range tests {
-		if testCase.Failure != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func testFailureMessage(summary *localxcode.TestSummary, identifier string) string {
@@ -389,5 +405,9 @@ func boundJUnitFailureMessage(value string) string {
 	if len(value) <= maxJUnitFailureMessage {
 		return value
 	}
-	return value[:maxJUnitFailureMessage]
+	value = value[:maxJUnitFailureMessage]
+	for len(value) > 0 && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }

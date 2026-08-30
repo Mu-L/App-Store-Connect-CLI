@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
@@ -402,6 +403,28 @@ func TestXcodeTestJUnitReconcilesSummaryCountsWithoutDroppingCases(t *testing.T)
 	}
 }
 
+func TestXcodeTestJUnitPreservesAggregateDurationWithFlattenedCases(t *testing.T) {
+	report := testResultJUnitReport(&localxcode.TestResult{
+		Success: true,
+		Tests: &localxcode.TestSummary{
+			Total:      3,
+			Passed:     3,
+			DurationMS: 1000,
+			Cases: []localxcode.TestCase{
+				{Identifier: "DemoTests/Smoke/testA", Name: "testA", Status: "passed", DurationMS: 100},
+				{Identifier: "DemoTests/Smoke/testB", Name: "testB", Status: "passed", DurationMS: 100},
+			},
+		},
+	}, nil)
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("JUnit Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), `time="1.000"`) {
+		t.Fatalf("JUnit output = %s, want aggregate duration preserved", data)
+	}
+}
+
 func TestXcodeTestJUnitZeroSummaryProducesNoSyntheticCase(t *testing.T) {
 	report := testResultJUnitReport(&localxcode.TestResult{
 		Success: true,
@@ -442,6 +465,40 @@ func TestXcodeTestJUnitPreservesInfrastructureFailureWithPassingCases(t *testing
 	}
 }
 
+func TestXcodeTestJUnitPreservesInfrastructureFailureWithFailedCases(t *testing.T) {
+	tests := []struct {
+		name       string
+		exitStatus *int
+		cause      error
+	}{
+		{name: "nonzero exit", exitStatus: func() *int { value := 65; return &value }(), cause: errors.New("xcodebuild stopped after a failing test")},
+		{name: "cancellation", cause: context.Canceled},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report := testResultJUnitReport(&localxcode.TestResult{
+				Success:    false,
+				ExitStatus: test.exitStatus,
+				Tests: &localxcode.TestSummary{
+					Total:  1,
+					Failed: 1,
+					Cases:  []localxcode.TestCase{{Identifier: "DemoTests/Smoke/testFail", Name: "testFail", Status: "failed", Message: "assertion failed"}},
+				},
+			}, test.cause)
+			data, err := report.Marshal()
+			if err != nil {
+				t.Fatalf("JUnit Marshal() error = %v", err)
+			}
+			if !strings.Contains(string(data), "testFail") || !strings.Contains(string(data), test.cause.Error()) {
+				t.Fatalf("JUnit output = %s, want test and infrastructure causes", data)
+			}
+			if !strings.Contains(string(data), `failures="2"`) {
+				t.Fatalf("JUnit output = %s, want test plus infrastructure failures", data)
+			}
+		})
+	}
+}
+
 func TestXcodeTestJUnitFallbackMarksSummaryFailure(t *testing.T) {
 	report := testResultJUnitReport(&localxcode.TestResult{
 		Success: true,
@@ -466,6 +523,14 @@ func TestXcodeTestJUnitPreservesPreflightCause(t *testing.T) {
 	}
 	if !strings.Contains(string(data), cause.Error()) {
 		t.Fatalf("JUnit output = %s, want actionable preflight cause", data)
+	}
+}
+
+func TestXcodeTestJUnitFailureTruncationPreservesUTF8(t *testing.T) {
+	message := strings.Repeat("a", maxJUnitFailureMessage-1) + "é"
+	got := boundJUnitFailureMessage(message)
+	if len(got) != maxJUnitFailureMessage-1 || !utf8.ValidString(got) {
+		t.Fatalf("bounded message length/encoding = %d/%v, want %d/valid UTF-8", len(got), utf8.ValidString(got), maxJUnitFailureMessage-1)
 	}
 }
 

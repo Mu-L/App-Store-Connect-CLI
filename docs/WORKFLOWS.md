@@ -60,8 +60,9 @@ asc xcode test \
 
 Use `--action build-for-testing` to produce test products, then pass the safely
 discovered `.xctestrun` path to `--action test-without-building`. Each action
-requires an explicit `--destination`; the command never boots simulators,
-changes project files, uploads artifacts, or calls App Store Connect.
+requires an explicit `--destination`; Xcode may boot or launch the selected
+simulator or device. The command does not change project files, upload
+artifacts, or call App Store Connect.
 
 Device builds retain Xcode's signing behavior unless `--no-code-signing` is
 provided explicitly.

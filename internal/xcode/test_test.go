@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -401,23 +402,47 @@ func TestParseTestResultSummaryAllowsExpectedFailures(t *testing.T) {
 }
 
 func TestParseTestResultCasesAcceptsExpectedFailureStatus(t *testing.T) {
-	data := []byte(`{
+	for _, status := range []string{"Expected Failure", "expectedFailure", "expected-failure", "expected_failure"} {
+		t.Run(status, func(t *testing.T) {
+			data := []byte(fmt.Sprintf(`{
   "testNodes":[{
     "nodeType":"Test Suite",
     "children":[{
       "nodeType":"Test Case",
       "nodeIdentifier":"DemoTests/Smoke/testKnownIssue",
-      "result":"expectedFailure"
+      "result":%q
     }]
   }]
-}`)
+}`, status))
 
-	cases, err := ParseTestResultCases(data)
-	if err != nil {
-		t.Fatalf("ParseTestResultCases() error = %v, want expected failure status accepted", err)
+			cases, err := ParseTestResultCases(data)
+			if err != nil {
+				t.Fatalf("ParseTestResultCases() error = %v, want expected failure status accepted", err)
+			}
+			if len(cases) != 1 || cases[0].Status != "expected-failure" {
+				t.Fatalf("expected-failure cases = %+v, want normalized nonfailing status", cases)
+			}
+		})
 	}
-	if len(cases) != 1 || cases[0].Status != "expected-failure" {
-		t.Fatalf("expected-failure cases = %+v, want normalized nonfailing status", cases)
+}
+
+func TestParseTestResultSummaryAcceptsExpectedFailureCountForms(t *testing.T) {
+	data := []byte(`{
+  "passedTests":1,
+  "failedTests":0,
+  "skippedTests":0,
+  "expectedFailures":"1",
+  "tests":[
+    {"testIdentifier":"DemoTests/Smoke/testPass","status":"passed"},
+    {"testIdentifier":"DemoTests/Smoke/testKnownIssue","status":"expectedFailure"}
+  ]
+}`)
+	got, err := ParseTestResultSummary(data)
+	if err != nil {
+		t.Fatalf("ParseTestResultSummary() error = %v, want string expected-failure count accepted", err)
+	}
+	if got.Total != 2 || got.ExpectedFailures != 1 || len(got.Cases) != 2 {
+		t.Fatalf("summary = %+v, want inferred total and expected-failure count", got)
 	}
 }
 
@@ -468,6 +493,31 @@ func TestReadTestResultSummaryBoundsMergedCaseFailures(t *testing.T) {
 	}
 	if len(got.Failures) != maxTestFailureCount {
 		t.Fatalf("failure count = %d, want cap %d", len(got.Failures), maxTestFailureCount)
+	}
+}
+
+func TestParseTestResultCasesAllowsStructuralNodesAfterCaseLimit(t *testing.T) {
+	cases := make([]rawTestNode, maxTestCaseCount)
+	for index := range cases {
+		cases[index] = rawTestNode{
+			NodeType:   "Test Case",
+			Identifier: "DemoTests/Smoke/test" + strconv.Itoa(index),
+			Result:     "passed",
+		}
+	}
+	data, err := json.Marshal(rawTestResults{TestNodes: []rawTestNode{
+		{NodeType: "Test Suite", Children: cases},
+		{NodeType: "Test Suite"},
+	}})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	got, err := ParseTestResultCases(data)
+	if err != nil {
+		t.Fatalf("ParseTestResultCases() error = %v, want structural nodes after cap accepted", err)
+	}
+	if len(got) != maxTestCaseCount {
+		t.Fatalf("case count = %d, want %d", len(got), maxTestCaseCount)
 	}
 }
 

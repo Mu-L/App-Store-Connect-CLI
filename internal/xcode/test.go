@@ -968,10 +968,10 @@ func ParseTestResultCases(data []byte) ([]TestCase, error) {
 }
 
 func appendTestCases(cases *[]TestCase, node rawTestNode) error {
-	if len(*cases) >= maxTestCaseCount {
-		return fmt.Errorf("xcresulttool tests output exceeds %d test cases", maxTestCaseCount)
-	}
 	if strings.EqualFold(strings.TrimSpace(node.NodeType), "test case") {
+		if len(*cases) >= maxTestCaseCount {
+			return fmt.Errorf("xcresulttool tests output exceeds %d test cases", maxTestCaseCount)
+		}
 		testCase, err := parseRawTestNode(node)
 		if err != nil {
 			return err

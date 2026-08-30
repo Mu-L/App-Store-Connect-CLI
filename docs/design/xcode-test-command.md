@@ -5,8 +5,9 @@
 `asc xcode test` is an experimental leaf beneath the existing local `asc xcode`
 group. It runs an explicitly selected local `xcodebuild` test action and reads
 the resulting `.xcresult` bundle through the active Xcode command-line tools.
-It never calls App Store Connect, uploads an artifact, mutates an Xcode project,
-or provisions a simulator or device.
+It never calls App Store Connect, uploads an artifact, or mutates an Xcode
+project. Xcode may boot or launch the simulator or device selected by the
+destination.
 
 The command supports three Xcode actions through one typed option:
 

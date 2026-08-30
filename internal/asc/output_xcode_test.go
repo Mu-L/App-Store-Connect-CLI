@@ -1,6 +1,10 @@
 package asc
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 func TestPrintHumanOutput_XcodeTestIncludesCasesAndFailures(t *testing.T) {
 	result := &XcodeTestResult{
@@ -32,5 +36,19 @@ func TestPrintHumanOutput_XcodeTestIncludesCasesAndFailures(t *testing.T) {
 			assertRenderedNonJSONContains(t, renderer.fn, result,
 				"DemoTests/Smoke/testFail", "failed", "assertion failed")
 		})
+	}
+}
+
+func TestFormatXcodeTestFailureTruncatesAtUTF8Boundary(t *testing.T) {
+	message := strings.Repeat("a", maxXcodeTestHumanMessage-1) + "é"
+	got := formatXcodeTestFailure(XcodeTestFailure{Identifier: "Demo/test", Message: message})
+	if !utf8.ValidString(got) {
+		t.Fatalf("formatted failure is invalid UTF-8: %q", got)
+	}
+	if strings.Contains(got, "é") {
+		t.Fatalf("formatted failure = %q, want incomplete trailing rune removed", got)
+	}
+	if !strings.HasSuffix(got, strings.Repeat("a", maxXcodeTestHumanMessage-1)) {
+		t.Fatalf("formatted failure does not preserve complete prefix: %q", got)
 	}
 }
