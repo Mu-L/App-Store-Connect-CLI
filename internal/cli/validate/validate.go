@@ -22,14 +22,16 @@ type validateOptions struct {
 	Platform  string
 	Strict    bool
 	Deep      bool
+	CheckURLs bool
 	AppleID   string
 	Output    string
 	Pretty    bool
 }
 
 var (
-	clientFactory         = shared.GetASCClient
-	fetchScreenshotSetsFn = fetchScreenshotSets
+	clientFactory          = shared.GetASCClient
+	fetchScreenshotSetsFn  = fetchScreenshotSets
+	buildReadinessReportFn = BuildReadinessReport
 )
 
 // ValidateCommand returns the asc validate command.
@@ -42,6 +44,7 @@ func ValidateCommand() *ffcli.Command {
 	platform := fs.String("platform", "", "Platform: IOS, MAC_OS, TV_OS, VISION_OS")
 	strict := fs.Bool("strict", false, "Treat warnings as errors (exit non-zero)")
 	deep := fs.Bool("deep", false, "[experimental] Verify blockers that require a cached Apple web session")
+	checkURLs := fs.Bool("check-urls", false, "[experimental] Check metadata URL destinations with bounded public HTTP requests")
 	appleID := fs.String("apple-id", "", "[experimental] Cached Apple web session to use with --deep")
 	output := shared.BindOutputFlags(fs)
 
@@ -67,6 +70,8 @@ reported.
 Checks:
   - Metadata length limits
   - Placeholder copy in localized listing fields (warning; --strict to block)
+  - Deterministic metadata content and keyword hygiene warnings
+  - Optional bounded checks for public metadata URL destinations (--check-urls)
   - Required fields and localizations
   - App Store review details completeness
   - Primary category configured
@@ -91,6 +96,7 @@ Examples:
   asc validate --app "APP_ID" --version-id "VERSION_ID" --platform IOS --output table
   asc validate --app "APP_ID" --version-id "VERSION_ID" --strict
   asc validate --app "APP_ID" --version-id "VERSION_ID" --deep
+  asc validate --app "APP_ID" --version-id "VERSION_ID" --check-urls
   asc validate --app "APP_ID" --version "1.0.0" --deep --apple-id "user@example.com"
 
 TestFlight:
@@ -147,6 +153,7 @@ Subscriptions:
 				Platform:  normalizedPlatform,
 				Strict:    *strict,
 				Deep:      *deep,
+				CheckURLs: *checkURLs,
 				AppleID:   trimmedAppleID,
 				Output:    *output.Output,
 				Pretty:    *output.Pretty,
@@ -176,12 +183,12 @@ func validateParentFlagUsageMessage(parentFlags *flag.FlagSet) string {
 	}
 
 	moveAfterSubcommand := make([]string, 0, 4)
-	topLevelOnly := make([]string, 0, 7)
+	topLevelOnly := make([]string, 0, 8)
 	parentFlags.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "app", "output", "pretty", "strict":
 			moveAfterSubcommand = append(moveAfterSubcommand, "--"+f.Name)
-		case "version", "version-id", "platform", "deep", "apple-id":
+		case "version", "version-id", "platform", "deep", "check-urls", "apple-id":
 			topLevelOnly = append(topLevelOnly, "--"+f.Name)
 		}
 	})
@@ -222,13 +229,14 @@ func validateFlagVerb(flags []string) string {
 }
 
 func runValidate(ctx context.Context, opts validateOptions) error {
-	report, err := BuildReadinessReport(ctx, ReadinessOptions{
+	report, err := buildReadinessReportFn(ctx, ReadinessOptions{
 		AppID:     opts.AppID,
 		Version:   opts.Version,
 		VersionID: opts.VersionID,
 		Platform:  opts.Platform,
 		Strict:    opts.Strict,
 		Deep:      opts.Deep,
+		CheckURLs: opts.CheckURLs,
 	})
 	if err != nil {
 		if !opts.Deep || !asc.IsRequiredAgreementError(err) {
