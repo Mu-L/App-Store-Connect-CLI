@@ -306,6 +306,81 @@ func TestRunMatrixRejectsOutputAliasesResolvedFromMatrixPlanDirectory(t *testing
 	}
 }
 
+func TestRunMatrixWritesReviewAfterOutputRootSetupFailure(t *testing.T) {
+	tests := []struct {
+		name      string
+		rawDir    string
+		framedDir string
+		frame     MatrixFrame
+		badPath   string
+	}{
+		{
+			name:    "raw root",
+			rawDir:  "raw-file",
+			badPath: "raw-file",
+		},
+		{
+			name:      "framed root",
+			rawDir:    "raw",
+			framedDir: "framed-file",
+			frame: MatrixFrame{
+				Enabled:              true,
+				DeviceByMatrixDevice: map[string]string{"phone": "iphone-17-pro"},
+			},
+			badPath: "framed-file",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			basePath := filepath.Join(dir, "base.json")
+			matrixPath := filepath.Join(dir, "matrix.json")
+			writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+			if err := os.WriteFile(filepath.Join(dir, tc.badPath), []byte("not a directory"), 0o600); err != nil {
+				t.Fatalf("write unusable output root: %v", err)
+			}
+			matrixPlan := &MatrixPlan{
+				Version:         1,
+				BasePlan:        "base.json",
+				Devices:         []MatrixDevice{{ID: "phone", UDID: "SIM-UDID"}},
+				Locales:         []string{"en-US"},
+				Appearances:     []string{"light"},
+				ContentVariants: []MatrixContentVariant{{ID: "default"}},
+				Output: MatrixOutput{
+					RawDir:    tc.rawDir,
+					FramedDir: tc.framedDir,
+					ReviewDir: "review",
+					Frame:     tc.frame,
+				},
+				sourcePath: matrixPath,
+			}
+			result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+				CheckDevice: func(context.Context, MatrixDevice) error { return nil },
+			})
+			if runErr == nil {
+				t.Fatal("RunMatrixWithDependencies() error = nil, want output-root failure")
+			}
+			if result == nil {
+				t.Fatal("RunMatrixWithDependencies() result = nil, want partial result")
+			}
+			if result.Review == nil {
+				t.Fatalf("RunMatrixWithDependencies() review = nil, want review after %s failure", tc.name)
+			}
+			if result.Status != MatrixCellFailed || result.Failed != len(result.Cells) {
+				t.Fatalf("unexpected output-root result: %+v", result)
+			}
+			if result.Cells[0].FailureCode != "output_root_failed" {
+				t.Fatalf("cell failure code = %q, want output_root_failed", result.Cells[0].FailureCode)
+			}
+			for _, name := range []string{"manifest.json", "index.html"} {
+				if _, err := os.Stat(filepath.Join(dir, "review", name)); err != nil {
+					t.Fatalf("review %s missing after output-root failure: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
 func TestRunMatrixDoesNotComparePlanRelativeOutputsAgainstWorkingDirectory(t *testing.T) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -427,6 +502,23 @@ func TestValidateMatrixPlanDefersFrameFamilyToSimulator(t *testing.T) {
 	}
 	if err := ValidateMatrixPlan(plan, base); err != nil {
 		t.Fatalf("ValidateMatrixPlan() error = %v, want syntax-only frame validation", err)
+	}
+}
+
+func TestValidateMatrixPlanRejectsMappingsForUndeclaredDevices(t *testing.T) {
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	plan := &MatrixPlan{
+		Version:         1,
+		Devices:         []MatrixDevice{{ID: "phone", UDID: "SIM-UDID"}},
+		Locales:         []string{"en-US"},
+		Appearances:     []string{"light"},
+		ContentVariants: []MatrixContentVariant{{ID: "default"}},
+		Output: MatrixOutput{Frame: MatrixFrame{Enabled: true, DeviceByMatrixDevice: map[string]string{
+			"phone": "iphone-17-pro", "stale-device": "ipad-pro-13",
+		}}},
+	}
+	if err := ValidateMatrixPlan(plan, base); err == nil || !strings.Contains(err.Error(), "undeclared") {
+		t.Fatalf("ValidateMatrixPlan() error = %v, want undeclared frame mapping failure", err)
 	}
 }
 
@@ -955,6 +1047,108 @@ func TestPromoteMatrixArtifactRejectsFinalSymlink(t *testing.T) {
 	}
 	if string(got) != "outside" {
 		t.Fatalf("outside target changed: %q", got)
+	}
+}
+
+func TestPromoteMatrixArtifactPreservesExistingMode(t *testing.T) {
+	dir := t.TempDir()
+	outputDir := filepath.Join(dir, "raw")
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		t.Fatalf("create output directory: %v", err)
+	}
+	source := filepath.Join(outputDir, "source.png")
+	destination := filepath.Join(outputDir, "result.png")
+	writeMatrixPNG(t, source)
+	if err := os.WriteFile(destination, []byte("previous"), 0o600); err != nil {
+		t.Fatalf("write existing destination: %v", err)
+	}
+	root, err := rootfs.New(outputDir)
+	if err != nil {
+		t.Fatalf("open output root: %v", err)
+	}
+	defer root.Close()
+
+	if err := promoteMatrixArtifact(root, outputDir, source, destination); err != nil {
+		t.Fatalf("promoteMatrixArtifact() error = %v", err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		t.Fatalf("stat promoted destination: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("promoted destination mode = %o, want preserved 600", got)
+	}
+}
+
+func TestExecuteMatrixCellPreservesPartiallyPromotedFramedPaths(t *testing.T) {
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	framedDir := filepath.Join(dir, "framed")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw directory: %v", err)
+	}
+	if err := os.MkdirAll(framedDir, 0o755); err != nil {
+		t.Fatalf("create framed directory: %v", err)
+	}
+	cell := MatrixCell{
+		ID:         "phone|en-US|light|default",
+		Device:     "phone",
+		UDID:       "SIM-UDID",
+		Locale:     "en-US",
+		Appearance: "light",
+		Content:    "default",
+		RawDir:     filepath.Join(rawDir, "en-US", "phone", "light", "default"),
+		FramedDir:  filepath.Join(framedDir, "en-US", "phone", "light", "default"),
+		RawPaths: []string{
+			filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png"),
+			filepath.Join(rawDir, "en-US", "phone", "light", "default", "details.png"),
+		},
+		FramedPaths: []string{
+			filepath.Join(framedDir, "en-US", "phone", "light", "default", "home.png"),
+			filepath.Join(framedDir, "en-US", "phone", "light", "default", "details.png"),
+		},
+	}
+	if err := os.MkdirAll(filepath.Dir(cell.FramedPaths[1]), 0o755); err != nil {
+		t.Fatalf("create framed cell directory: %v", err)
+	}
+	if err := os.Mkdir(cell.FramedPaths[1], 0o755); err != nil {
+		t.Fatalf("create blocked second framed destination: %v", err)
+	}
+	rawRoot, err := rootfs.New(rawDir)
+	if err != nil {
+		t.Fatalf("open raw root: %v", err)
+	}
+	defer rawRoot.Close()
+	framedRoot, err := rootfs.New(framedDir)
+	if err != nil {
+		t.Fatalf("open framed root: %v", err)
+	}
+	defer framedRoot.Close()
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{
+		{Action: ActionScreenshot, Name: stringPtr("home")},
+		{Action: ActionScreenshot, Name: stringPtr("details")},
+	}}
+	matrixPlan := &MatrixPlan{Output: MatrixOutput{Frame: MatrixFrame{Enabled: true, DeviceByMatrixDevice: map[string]string{"phone": "iphone-17-pro"}}}}
+	deps := MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "details.png"))
+			return &RunResult{}, nil
+		},
+		Frame: func(_ context.Context, request FrameRequest) (*FrameResult, error) {
+			writeMatrixPNG(t, request.OutputPath)
+			return &FrameResult{}, nil
+		},
+		Appearance: &matrixTestAppearance{},
+	}
+	result := executeMatrixCell(context.Background(), cell, base, matrixPlan, 1, 0, deps, matrixOutputRoots{
+		raw: rawRoot, rawPath: rawDir, framed: framedRoot, framedPath: framedDir, hasFramed: true,
+	}, &matrixSimulatorGuard{})
+	if result.Status != MatrixCellFailed || result.FailureCode != "framed_output_failed" {
+		t.Fatalf("result = %+v, want framed promotion failure", result)
+	}
+	if len(result.FramedPaths) != 1 || result.FramedPaths[0] != cell.FramedPaths[0] {
+		t.Fatalf("framed paths = %v, want first promoted path %q", result.FramedPaths, cell.FramedPaths[0])
 	}
 }
 

@@ -684,6 +684,11 @@ func validateMatrixPlan(plan *MatrixPlan, base *Plan, outputBaseDir string) erro
 		return err
 	}
 	if plan.Output.Frame.Enabled {
+		for matrixDevice := range plan.Output.Frame.DeviceByMatrixDevice {
+			if _, declared := seenIDs[strings.ToLower(matrixDevice)]; !declared {
+				return fmt.Errorf("framing mapping references undeclared device %q", matrixDevice)
+			}
+		}
 		for _, device := range plan.Devices {
 			frame, ok := plan.Output.Frame.DeviceByMatrixDevice[device.ID]
 			if !ok || strings.TrimSpace(frame) == "" {
@@ -945,23 +950,35 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 			setMatrixScreenshotStatuses(&result.Cells[index])
 		}
 	}
-	rawRoot, err := openMatrixOutputRoot(rawDir)
-	if err != nil {
-		return nil, fmt.Errorf("create raw output directory: %w", err)
-	}
-	defer func() { _ = rawRoot.Close() }()
-	outputRoots := matrixOutputRoots{raw: rawRoot, rawPath: rawDir}
-	if matrixPlan.Output.Frame.Enabled {
-		framedRoot, rootErr := openMatrixOutputRoot(framedDir)
-		if rootErr != nil {
-			return nil, fmt.Errorf("create framed output directory: %w", rootErr)
-		}
-		defer func() { _ = framedRoot.Close() }()
-		outputRoots.framed = framedRoot
-		outputRoots.framedPath = framedDir
-		outputRoots.hasFramed = true
-	}
 	runErr := preflightErr
+	var outputRoots matrixOutputRoots
+	var outputRootErr error
+	rawRoot, rawRootErr := openMatrixOutputRoot(rawDir)
+	if rawRootErr != nil {
+		outputRootErr = fmt.Errorf("create raw output directory: %w", rawRootErr)
+	} else {
+		defer func() { _ = rawRoot.Close() }()
+		outputRoots = matrixOutputRoots{raw: rawRoot, rawPath: rawDir}
+		if matrixPlan.Output.Frame.Enabled {
+			framedRoot, rootErr := openMatrixOutputRoot(framedDir)
+			if rootErr != nil {
+				outputRootErr = fmt.Errorf("create framed output directory: %w", rootErr)
+			} else {
+				defer func() { _ = framedRoot.Close() }()
+				outputRoots.framed = framedRoot
+				outputRoots.framedPath = framedDir
+				outputRoots.hasFramed = true
+			}
+		}
+	}
+	if outputRootErr != nil {
+		markMatrixOutputFailure(result)
+		if runErr == nil {
+			runErr = outputRootErr
+		} else {
+			runErr = errors.Join(runErr, outputRootErr)
+		}
+	}
 	if runErr == nil {
 		runErr = executeMatrixCells(ctx, cells, deviceFailures, base, matrixPlan, concurrency, attempts, backoff, deps, outputRoots, result)
 	}
@@ -1143,12 +1160,14 @@ func executeMatrixCell(ctx context.Context, cell MatrixCell, base *Plan, matrixP
 			result.RawPaths = append([]string(nil), attemptResult.RawPaths...)
 			result.Screenshots = append([]MatrixScreenshotResult(nil), attemptResult.Screenshots...)
 		}
+		if len(attemptResult.FramedPaths) > 0 {
+			result.FramedPaths = append([]string(nil), attemptResult.FramedPaths...)
+		}
 		if attemptErr == nil {
 			result.Status = MatrixCellSuccess
 			result.FailureStage = ""
 			result.FailureCode = ""
 			result.Error = nil
-			result.FramedPaths = append([]string(nil), attemptResult.FramedPaths...)
 			break
 		}
 		if ctx.Err() != nil {
@@ -1421,7 +1440,7 @@ func promoteMatrixArtifact(outputRoot rootfs.Root, outputRootPath, source, desti
 	if err != nil {
 		return err
 	}
-	_, err = outputRoot.WriteFrom(destinationRelative, sourceFile, 0o644)
+	_, err = outputRoot.WriteFromPreservingMode(destinationRelative, sourceFile, 0o644)
 	return err
 }
 
@@ -1477,6 +1496,24 @@ func markMatrixCellsCanceled(result *MatrixResult) {
 		result.Cells[i].FailureStage = "execution"
 		result.Cells[i].FailureCode = "canceled"
 		result.Cells[i].Error = newMatrixCellError("execution", "canceled", "cell canceled")
+		setMatrixScreenshotStatuses(&result.Cells[i])
+	}
+}
+
+func markMatrixOutputFailure(result *MatrixResult) {
+	if result == nil {
+		return
+	}
+	for i := range result.Cells {
+		// Preserve a more specific preflight or cancellation result already known
+		// for this cell; output-root setup is an additional run-level failure.
+		if result.Cells[i].FailureCode != "" {
+			continue
+		}
+		result.Cells[i].Status = MatrixCellFailed
+		result.Cells[i].FailureStage = "execution"
+		result.Cells[i].FailureCode = "output_root_failed"
+		result.Cells[i].Error = newMatrixCellError("execution", "output_root_failed", "matrix output root could not be prepared")
 		setMatrixScreenshotStatuses(&result.Cells[i])
 	}
 }

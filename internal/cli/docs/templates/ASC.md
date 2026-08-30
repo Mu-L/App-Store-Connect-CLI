@@ -178,7 +178,7 @@ Use `asc <command> --help` for subcommands and flags.
 - `pre-orders` - Manage app pre-orders.
 - `localizations` - Manage App Store localization metadata.
 - `metadata` - Pull, validate, push, and keyword-sync canonical metadata workflows.
-- `screenshots` - Upload and manage App Store screenshots; local matrix workflow is `[experimental]`.
+- `screenshots` - Upload and manage App Store screenshots; local capture/frame/matrix workflow is `[experimental]`.
 - `background-assets` - Manage background assets.
 - `build-localizations` - Manage build release notes localizations.
 - `sandbox` - Manage sandbox testers in App Store Connect.

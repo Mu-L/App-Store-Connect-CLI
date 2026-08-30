@@ -125,6 +125,52 @@ cp "$AXE_TEMPLATE_PNG" "$out"
 	}
 }
 
+func TestShotsMatrix_OutputRootFailureStillPrintsReviewResult(t *testing.T) {
+	binDir := t.TempDir()
+	writeShotsMatrixExecutable(t, filepath.Join(binDir, "xcrun"), `#!/bin/sh
+set -eu
+printf '%s\n' '{"devices":{}}'
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	rawPath := filepath.Join(dir, "raw-file")
+	reviewDir := filepath.Join(dir, "review")
+	writeShotsMatrixFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeShotsMatrixFile(t, rawPath, "not a directory")
+	writeShotsMatrixFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"`+rawPath+`","review_dir":"`+reviewDir+`"}}`)
+
+	root := RootCommand("1.2.3")
+	if err := root.Parse([]string{"screenshots", "matrix", "--plan", matrixPath, "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	stdout, _ := captureOutput(t, func() { runErr = root.Run(context.Background()) })
+	if runErr == nil {
+		t.Fatal("root.Run() error = nil, want output-root failure")
+	}
+	var result struct {
+		Status string `json:"status"`
+		Review *struct {
+			ManifestPath string `json:"manifestPath"`
+			HTMLPath     string `json:"htmlPath"`
+		} `json:"review"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("unmarshal structured result: %v\nstdout=%s", err, stdout)
+	}
+	if result.Status != "failed" || result.Review == nil {
+		t.Fatalf("structured result = %+v, want failed result with review", result)
+	}
+	for _, path := range []string{result.Review.ManifestPath, result.Review.HTMLPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("review artifact %q missing after output-root failure: %v", path, err)
+		}
+	}
+}
+
 func writeShotsMatrixFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
