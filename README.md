@@ -389,9 +389,11 @@ asc signing sync pull --repo git@github.com:team/signing.git --password-file ~/.
 usable signing identity also needs the matching private key; `signing sync`
 can verify that local identity and share it through an encrypted Git
 repository. For multi-target release testing, `signing reconcile` plans exact
-device/profile changes and `signing run` provides a temporary macOS keychain.
-See the [signing guide](commands/signing.mdx) for setup, CI, rotation,
-security boundaries, and troubleshooting.
+device/profile changes. `signing run` provides a temporary macOS keychain only
+for single-target archives; multi-target exports must install every reconciled
+profile in a job-scoped keychain. See the
+[signing guide](guides/code-signing.mdx) for setup, CI, rotation, security
+boundaries, and troubleshooting.
 
 ### Workflow automation
 
