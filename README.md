@@ -399,6 +399,9 @@ See [docs/WORKFLOWS.md](docs/WORKFLOWS.md) for local compile validation with
 and `ExportOptions.plist` that use `asc builds next-build-number`,
 `asc xcode inject`, `asc xcode archive`, `asc xcode export --timeout 10m`, and
 `asc publish testflight --group ... --wait`.
+The experimental `asc xcode test` command provides local unit/UI test execution
+with structured results and preserved `.xcresult` bundles; see the same workflow
+guide for an invocation.
 Add `--submit --confirm` when
 distributing to an external TestFlight group that needs beta app review submission.
 

@@ -45,6 +45,24 @@ asc xcode build \
   --output json
 ```
 
+For local unit or UI test execution, use the experimental typed test command.
+It keeps Xcode diagnostics on stderr, writes a structured result to stdout, and
+retains the `.xcresult` bundle for inspection:
+
+```bash
+asc xcode test \
+  --project App.xcodeproj \
+  --scheme App \
+  --destination 'platform=iOS Simulator,name=iPhone 17 Pro Max,OS=27.0' \
+  --result-bundle-path .asc/artifacts/App-tests.xcresult \
+  --output json
+```
+
+Use `--action build-for-testing` to produce test products, then pass the safely
+discovered `.xctestrun` path to `--action test-without-building`. Each action
+requires an explicit `--destination`; the command never boots simulators,
+changes project files, uploads artifacts, or calls App Store Connect.
+
 Device builds retain Xcode's signing behavior unless `--no-code-signing` is
 provided explicitly.
 

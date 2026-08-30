@@ -109,6 +109,20 @@ func TestJUnitReport_WriteWithFailure(t *testing.T) {
 	}
 }
 
+func TestJUnitReport_WriteWithSkippedTest(t *testing.T) {
+	report := JUnitReport{
+		Tests:     []JUnitTestCase{{Name: "skipped-test", Classname: "tests", Skipped: true}},
+		Timestamp: time.Now(),
+	}
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), "<skipped></skipped>") {
+		t.Fatalf("JUnit output = %s, want skipped element", data)
+	}
+}
+
 func TestJUnitReport_EscapeSpecialChars(t *testing.T) {
 	report := JUnitReport{
 		Tests: []JUnitTestCase{
