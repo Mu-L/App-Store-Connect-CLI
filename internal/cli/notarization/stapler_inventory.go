@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -37,6 +38,11 @@ var errStaplerInventoryChanged = errors.New("artifact directory contents changed
 var readdirStaplerInventoryNamesFn = func(file *os.File, count int) ([]string, error) {
 	return file.Readdirnames(count)
 }
+
+// This narrow seam lets tests place a replacement after the final name
+// snapshot, before the scanner rechecks each retained direct child. Production
+// leaves it nil.
+var afterStaplerInventoryNamesFn func()
 
 // staplerDirectoryInventory is deliberately private. It is comparison
 // evidence for a single invocation, not a public artifact description.
@@ -254,40 +260,11 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 	if err := scanner.checkContext(); err != nil {
 		return err
 	}
-	handle, err := directory.Open(".")
+	names, err := scanner.readDirectoryNames(directory, relative, staplerInventoryMaxEntries-scanner.entryCount)
 	if err != nil {
-		return fmt.Errorf("open inventory directory %q: %w", staplerInventoryDisplayPath(relative), err)
+		return err
 	}
-	var names []string
-	for {
-		if err := scanner.checkContext(); err != nil {
-			_ = handle.Close()
-			return err
-		}
-		batch, readErr := readdirStaplerInventoryNamesFn(handle, staplerInventoryReadBatchSize)
-		remaining := staplerInventoryMaxEntries - scanner.entryCount - len(names)
-		if len(batch) > remaining {
-			_ = handle.Close()
-			return fmt.Errorf("inventory contains more than %d entries", staplerInventoryMaxEntries)
-		}
-		names = append(names, batch...)
-		if readErr != nil {
-			if !errors.Is(readErr, io.EOF) {
-				_ = handle.Close()
-				return fmt.Errorf("read inventory directory %q: %w", staplerInventoryDisplayPath(relative), readErr)
-			}
-			break
-		}
-		if len(batch) == 0 {
-			break
-		}
-	}
-	closeErr := handle.Close()
-	if closeErr != nil {
-		return fmt.Errorf("close inventory directory %q: %w", staplerInventoryDisplayPath(relative), closeErr)
-	}
-	sort.Strings(names)
-
+	initialEntries := make(map[string]os.FileInfo, len(names))
 	for _, name := range names {
 		if err := scanner.checkContext(); err != nil {
 			return err
@@ -303,6 +280,7 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 		if err != nil {
 			return fmt.Errorf("inspect inventory entry %q: %w", entryRelative, err)
 		}
+		initialEntries[name] = info
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("inventory entry %q is a symlink", entryRelative)
 		}
@@ -320,6 +298,48 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 		}
 	}
 
+	// Re-open the directory after every listed entry has been inspected. A
+	// directory's size and mtime are intentionally ignored because unrelated
+	// sibling churn can change them, so a second bounded name enumeration is
+	// the content check for entries added or removed after the first
+	// enumeration reached EOF. The retained first-pass entry metadata is
+	// checked separately below to catch replacement under an unchanged name.
+	finalNames, err := scanner.readDirectoryNames(directory, relative, len(names))
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(names, finalNames) {
+		return errStaplerInventoryChanged
+	}
+	if err := scanner.checkContext(); err != nil {
+		return err
+	}
+	if afterStaplerInventoryNamesFn != nil {
+		afterStaplerInventoryNamesFn()
+	}
+	for _, name := range finalNames {
+		if err := scanner.checkContext(); err != nil {
+			return err
+		}
+		entryRelative := name
+		if relative != "" {
+			entryRelative = path.Join(relative, name)
+		}
+		initial := initialEntries[name]
+		current, err := directory.Lstat(name)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return errStaplerInventoryChanged
+			}
+			return fmt.Errorf("reinspect inventory entry %q: %w", entryRelative, err)
+		}
+		if initial == nil || current.Mode()&os.ModeSymlink != 0 ||
+			initial.IsDir() != current.IsDir() ||
+			initial.Mode().IsRegular() != current.Mode().IsRegular() ||
+			!staplerInventoryInfoStable(initial, current) {
+			return errStaplerInventoryChanged
+		}
+	}
 	final, err := directory.Stat(".")
 	if err != nil {
 		return fmt.Errorf("reinspect inventory directory %q: %w", staplerInventoryDisplayPath(relative), err)
@@ -328,6 +348,47 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 		return errStaplerInventoryChanged
 	}
 	return nil
+}
+
+func (scanner *staplerInventoryScanner) readDirectoryNames(directory *os.Root, relative string, maxNames int) ([]string, error) {
+	if err := scanner.checkContext(); err != nil {
+		return nil, err
+	}
+	if maxNames < 0 {
+		return nil, errStaplerInventoryChanged
+	}
+	handle, err := directory.Open(".")
+	if err != nil {
+		return nil, fmt.Errorf("open inventory directory %q: %w", staplerInventoryDisplayPath(relative), err)
+	}
+	var names []string
+	for {
+		if err := scanner.checkContext(); err != nil {
+			_ = handle.Close()
+			return nil, err
+		}
+		batch, readErr := readdirStaplerInventoryNamesFn(handle, staplerInventoryReadBatchSize)
+		if len(batch) > maxNames-len(names) {
+			_ = handle.Close()
+			return nil, errStaplerInventoryChanged
+		}
+		names = append(names, batch...)
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				_ = handle.Close()
+				return nil, fmt.Errorf("read inventory directory %q: %w", staplerInventoryDisplayPath(relative), readErr)
+			}
+			break
+		}
+		if len(batch) == 0 {
+			break
+		}
+	}
+	if err := handle.Close(); err != nil {
+		return nil, fmt.Errorf("close inventory directory %q: %w", staplerInventoryDisplayPath(relative), err)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func (scanner *staplerInventoryScanner) recordDirectory(parent *os.Root, name, relative string, before os.FileInfo) error {

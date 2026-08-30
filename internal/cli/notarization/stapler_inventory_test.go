@@ -359,3 +359,82 @@ func TestStaplerInventoryRetainsRegularFileMetadataBinding(t *testing.T) {
 		t.Fatal("regular-file size changes must invalidate the bound metadata")
 	}
 }
+
+func TestStaplerDirectoryInventoryRejectsEntryAddedAfterEnumeration(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	nestedPath := filepath.Join(targetPath, "Contents", "Info.plist")
+	if err := os.MkdirAll(filepath.Dir(nestedPath), 0o755); err != nil {
+		t.Fatalf("create bundle contents: %v", err)
+	}
+	if err := os.WriteFile(nestedPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+
+	previous := readdirStaplerInventoryNamesFn
+	injected := false
+	readdirStaplerInventoryNamesFn = func(file *os.File, count int) ([]string, error) {
+		batch, readErr := file.Readdirnames(count)
+		if !injected && errors.Is(readErr, io.EOF) {
+			injected = true
+			if err := os.WriteFile(filepath.Join(targetPath, "added-after-enumeration"), []byte("late"), 0o600); err != nil {
+				t.Fatalf("add late bundle entry: %v", err)
+			}
+		}
+		return batch, readErr
+	}
+	t.Cleanup(func() { readdirStaplerInventoryNamesFn = previous })
+
+	_, err = target.captureDirectoryInventoryAtStage(context.Background(), "before validation")
+	if err == nil {
+		t.Fatal("captureDirectoryInventoryAtStage() = nil, want entry-addition race rejection")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity error", err, err)
+	}
+}
+
+func TestStaplerDirectoryInventoryRejectsSameNameReplacementAfterEnumeration(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	entryPath := filepath.Join(targetPath, "Info.plist")
+	if err := os.Mkdir(targetPath, 0o755); err != nil {
+		t.Fatalf("create bundle: %v", err)
+	}
+	if err := os.WriteFile(entryPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write bundle entry: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+
+	previous := afterStaplerInventoryNamesFn
+	afterStaplerInventoryNamesFn = func() {
+		originalPath := entryPath + ".original"
+		if err := os.Rename(entryPath, originalPath); err != nil {
+			t.Fatalf("move original entry: %v", err)
+		}
+		if err := os.WriteFile(entryPath, []byte("replaced"), 0o600); err != nil {
+			t.Fatalf("replace bundle entry: %v", err)
+		}
+		if err := os.Remove(originalPath); err != nil {
+			t.Fatalf("remove original entry: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterStaplerInventoryNamesFn = previous })
+
+	_, err = target.captureDirectoryInventoryAtStage(context.Background(), "before validation")
+	if err == nil {
+		t.Fatal("captureDirectoryInventoryAtStage() = nil, want same-name replacement rejection")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity error", err, err)
+	}
+}
