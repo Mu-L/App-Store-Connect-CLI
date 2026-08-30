@@ -1,6 +1,7 @@
 package xcode
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1339,6 +1340,32 @@ func consumersSelected(paths []string, consumers map[string]map[string]bool, ide
 	return true
 }
 
+// consumersAuthorizeSetting reports whether every configuration that consumes
+// one of paths explicitly requested the same setting. A shared xcconfig may
+// only be edited when all of its consumers authorize that specific key; merely
+// selecting a configuration is insufficient because another selected consumer
+// may have requested a different signing setting.
+func consumersAuthorizeSetting(
+	paths []string,
+	consumers map[string]map[string]bool,
+	identities map[string]string,
+	requestedSettings map[string]map[string]bool,
+	setting string,
+) bool {
+	for _, path := range paths {
+		identity, ok := identities[path]
+		if !ok {
+			return false
+		}
+		for configurationID := range consumers[identity] {
+			if !requestedSettings[configurationID][setting] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (project *structuredVersionProject) preparePBXProjWrite(projectRoot rootfs.Root) (result preparedVersionWrite, resultErr error) {
 	target, err := project.containedVersionFileTarget(projectRoot, project.pbxprojPath)
 	if err != nil {
@@ -1474,6 +1501,15 @@ func commitVersionWrites(writes []preparedVersionWrite) (resultErr error) {
 	for _, write := range writes {
 		if !write.createOnly && string(write.original) == string(write.updated) {
 			continue
+		}
+		if !write.createOnly {
+			current, _, err := readRegularVersionFile(write)
+			if err != nil {
+				return fmt.Errorf("write %s: verify source before commit: %w", write.path, err)
+			}
+			if !bytes.Equal(current, write.original) {
+				return fmt.Errorf("write %s: source changed before commit", write.path)
+			}
 		}
 		var err error
 		if write.createOnly {

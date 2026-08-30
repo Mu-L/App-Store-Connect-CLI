@@ -52,8 +52,11 @@ func XcodeCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "xcode",
 		ShortUsage: "asc xcode <subcommand> [flags]",
-		ShortHelp:  "Local Xcode build/archive/export and signing-settings helpers (macOS only).",
+		ShortHelp:  "Local Xcode build/archive/export and [experimental] signing-settings helpers (macOS only).",
 		LongHelp: `Local Xcode build/archive/export helpers.
+
+The xcode signing plan/apply helpers are experimental and only modify local
+project build settings; they do not contact App Store Connect.
 
 These commands wrap local xcodebuild flows and are visible on every platform so
 docs and workflows stay consistent, but execution is supported on macOS only.

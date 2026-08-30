@@ -395,6 +395,45 @@ func TestSigningPlanUsesExclusiveXCConfigWhenSelected(t *testing.T) {
 	}
 }
 
+func TestSigningPlanDoesNotAuthorizeSharedXCConfigPerSelectedConfiguration(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	if err := os.WriteFile(sharedPath, []byte("CODE_SIGN_STYLE = Automatic\r\n"+shared), 0o644); err != nil {
+		t.Fatalf("write shared xcconfig error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}},
+			{"name":"Release","settings":{"DEVELOPMENT_TEAM":"ABCDE12345"}}
+		]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got %#v", plan.Blockers)
+	}
+	if len(plan.Changes) != 2 {
+		t.Fatalf("expected one target-level change per requested setting, got %#v", plan.Changes)
+	}
+	for _, change := range plan.Changes {
+		if change.Source != "pbxproj" {
+			t.Fatalf("shared xcconfig change was authorized by unrelated selected configuration: %#v", change)
+		}
+	}
+	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "shared xcconfig") {
+		t.Fatalf("expected shared xcconfig safety warning, got %#v", plan.Warnings)
+	}
+}
+
 func TestSigningPlanExternalXCConfigRequiresOptInForPlanAndApply(t *testing.T) {
 	project, externalDir := externalXCConfigProject(t)
 	externalPath := filepath.Join(externalDir, "Shared.xcconfig")

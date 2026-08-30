@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -280,14 +282,28 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		return nil, newSigningInputError(err)
 	}
 	selectedIDs := make(map[string]bool, len(requests))
+	requestedSettings := make(map[string]map[string]bool, len(requests))
 	for _, request := range requests {
 		configuration, configurationErr := signingConfigurationFor(project, request.target, request.configuration)
 		if configurationErr == nil {
 			selectedIDs[configuration.id] = true
+			if requestedSettings[configuration.id] == nil {
+				requestedSettings[configuration.id] = make(map[string]bool)
+			}
+			for _, setting := range request.settings {
+				requestedSettings[configuration.id][setting.key] = true
+			}
 		}
 	}
 	fileConsumers, configFiles, fileIdentities, uncertainConsumers, err := project.xcconfigConsumers(selectedIDs)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateSigningArtifactAliases(
+		planPath,
+		receiptPath,
+		signingProjectInputPaths(project, settingsPath, configFiles, requests),
+	); err != nil {
 		return nil, err
 	}
 
@@ -321,7 +337,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 				configFiles,
 				fileConsumers,
 				fileIdentities,
-				selectedIDs,
+				requestedSettings,
 				uncertainConsumers,
 				opts.AllowExternalXCConfig,
 			)
@@ -585,19 +601,23 @@ func validateSigningRelativePath(value string) error {
 	if value == "" {
 		return fmt.Errorf("path must not be empty")
 	}
-	if filepath.IsAbs(value) || strings.HasPrefix(value, "~") || strings.Contains(value, "\\") {
+	if pathpkg.IsAbs(value) || strings.HasPrefix(value, "~") || strings.Contains(value, "\\") || isWindowsDrivePath(value) {
 		return fmt.Errorf("path must be relative and use POSIX separators")
 	}
-	clean := filepath.Clean(value)
+	clean := pathpkg.Clean(value)
 	if clean == "." || clean != value {
 		return fmt.Errorf("path must not contain traversal or redundant components")
 	}
-	for _, component := range strings.Split(value, string(filepath.Separator)) {
+	for _, component := range strings.Split(value, "/") {
 		if component == ".." || component == "" {
 			return fmt.Errorf("path must stay within the project")
 		}
 	}
 	return nil
+}
+
+func isWindowsDrivePath(value string) bool {
+	return len(value) >= 2 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':'
 }
 
 func validateSigningName(value, label string) error {
@@ -644,7 +664,7 @@ func inspectSigningCandidate(
 	configFiles map[string][]string,
 	fileConsumers map[string]map[string]bool,
 	fileIdentities map[string]string,
-	selectedIDs map[string]bool,
+	requestedSettings map[string]map[string]bool,
 	uncertainConsumers bool,
 	allowExternal bool,
 ) (signingCandidate, string, string) {
@@ -698,9 +718,9 @@ func inspectSigningCandidate(
 			candidate.mode = "pbxproj"
 			return candidate, "", "xcconfig consumer scope is uncertain; using a target-level override for " + setting.key
 		}
-		if !consumersSelected(assignmentFiles, fileConsumers, fileIdentities, selectedIDs) {
+		if !consumersAuthorizeSetting(assignmentFiles, fileConsumers, fileIdentities, requestedSettings, setting.key) {
 			candidate.mode = "pbxproj"
-			return candidate, "", "shared xcconfig is consumed by an unselected configuration; using a target-level override for " + setting.key
+			return candidate, "", "shared xcconfig is consumed by a configuration that did not request " + setting.key + "; using a target-level override"
 		}
 		warning := ""
 		for _, path := range assignmentFiles {
@@ -858,6 +878,118 @@ func validateSigningArtifactPaths(planPath, receiptPath, projectPath, settingsPa
 	return nil
 }
 
+// validateSigningArtifactAliases rejects an existing plan or receipt that
+// resolves to any source consumed while building the plan. Lexical path
+// comparisons do not catch symlink or hard-link aliases, while os.Stat plus
+// os.SameFile identifies both without mutating the filesystem.
+func validateSigningArtifactAliases(planPath, receiptPath string, inputPaths []string) error {
+	type artifact struct {
+		label string
+		path  string
+	}
+	artifacts := []artifact{{label: "plan", path: planPath}, {label: "receipt", path: receiptPath}}
+	artifactInfos := make(map[string]os.FileInfo, len(artifacts))
+	for _, artifact := range artifacts {
+		info, err := os.Stat(artifact.path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect %s artifact path %s: %w", artifact.label, artifact.path, err)
+		}
+		artifactInfos[artifact.label] = info
+	}
+	if planInfo, planOK := artifactInfos["plan"]; planOK {
+		if receiptInfo, receiptOK := artifactInfos["receipt"]; receiptOK && os.SameFile(planInfo, receiptInfo) {
+			return newSigningInputError(fmt.Errorf("plan and receipt paths must not alias the same file"))
+		}
+	}
+
+	seenInputs := make(map[string]bool, len(inputPaths))
+	for _, inputPath := range inputPaths {
+		inputPath = filepath.Clean(inputPath)
+		if inputPath == "" || seenInputs[inputPath] {
+			continue
+		}
+		seenInputs[inputPath] = true
+		inputInfo, err := os.Stat(inputPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect project input %s: %w", inputPath, err)
+		}
+		for _, artifact := range artifacts {
+			artifactInfo, ok := artifactInfos[artifact.label]
+			if ok && os.SameFile(artifactInfo, inputInfo) {
+				return newSigningInputError(fmt.Errorf("%s path aliases project input %s", artifact.label, inputPath))
+			}
+		}
+	}
+	return nil
+}
+
+func signingProjectInputPaths(
+	project *structuredVersionProject,
+	settingsPath string,
+	configFiles map[string][]string,
+	requests []signingRequest,
+) []string {
+	paths := []string{project.pbxprojPath, settingsPath}
+	appendEntitlements := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if validateSigningRelativePath(value) == nil {
+			paths = append(paths, filepath.Join(project.rootDir, filepath.FromSlash(value)))
+			return
+		}
+		if filepath.IsAbs(value) {
+			paths = append(paths, filepath.Clean(value))
+		}
+	}
+	for _, files := range configFiles {
+		paths = append(paths, files...)
+	}
+	for _, request := range requests {
+		for _, setting := range request.settings {
+			if setting.key == "CODE_SIGN_ENTITLEMENTS" && setting.value != nil {
+				appendEntitlements(*setting.value)
+			}
+		}
+	}
+	for _, configuration := range project.configurations {
+		if value, _, err := project.resolveSetting(configuration, "CODE_SIGN_ENTITLEMENTS"); err == nil {
+			appendEntitlements(value)
+		}
+		for _, key := range matchingBuildSettingKeys(configuration.buildSettings, "CODE_SIGN_ENTITLEMENTS") {
+			value, ok := configuration.buildSettings[key].(string)
+			if ok {
+				appendEntitlements(value)
+			}
+		}
+	}
+	for _, files := range configFiles {
+		for _, filePath := range files {
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				continue
+			}
+			document, err := parseXCConfig(data)
+			if err != nil {
+				continue
+			}
+			for _, assignment := range document.assignments {
+				if assignment.baseKey == "CODE_SIGN_ENTITLEMENTS" {
+					appendEntitlements(assignment.value)
+				}
+			}
+		}
+	}
+	return paths
+}
+
 func validateSigningXCConfigPath(project *structuredVersionProject, path string, allowExternal bool) error {
 	root, err := rootfs.New(project.rootDir)
 	if err != nil {
@@ -999,6 +1131,12 @@ func ApplySigningPlan(opts SigningApplyOptions) (*SigningApplyResult, error) {
 		_ = closeVersionWrites(prepared.writes)
 		_ = prepared.projectRoot.Close()
 	}()
+	if beforeSigningCommitForTest != nil {
+		beforeSigningCommitForTest()
+	}
+	if err := verifySigningPlanSources(plan, prepared.writes); err != nil {
+		return nil, fmt.Errorf("verify signing plan sources: %w", err)
+	}
 	fileChanges, err := signingReceiptFileChanges(plan, prepared.writes, prepared.changedFiles)
 	if err != nil {
 		return nil, fmt.Errorf("prepare signing receipt: %w", err)
@@ -1023,6 +1161,56 @@ func ApplySigningPlan(opts SigningApplyOptions) (*SigningApplyResult, error) {
 		return nil, fmt.Errorf("apply signing settings transaction: %w", err)
 	}
 	return result, nil
+}
+
+var beforeSigningCommitForTest func()
+
+// verifySigningPlanSources closes the gap between re-resolution and staged
+// publication. Every staged original must still match the digest captured in
+// the plan, and every source must still match the bytes used to prepare the
+// update before a receipt is even encoded.
+func verifySigningPlanSources(plan *SigningPlan, writes []preparedVersionWrite) error {
+	if plan == nil {
+		return fmt.Errorf("signing plan is nil")
+	}
+	expected := make(map[string]SigningPlanFile, len(plan.Files))
+	for _, file := range plan.Files {
+		expected[file.Path] = file
+	}
+	staged := make(map[string]preparedVersionWrite, len(writes))
+	for _, write := range writes {
+		if write.createOnly {
+			continue
+		}
+		file, ok := expected[write.path]
+		if !ok {
+			return fmt.Errorf("signing plan is stale; staged source %s is not recorded in plan", write.path)
+		}
+		if signingFileDigestBytes(write.original) != file.SHA256 {
+			return fmt.Errorf("signing plan is stale; staged source %s differs from plan", write.path)
+		}
+		staged[write.path] = write
+	}
+	for _, file := range plan.Files {
+		if write, ok := staged[file.Path]; ok {
+			current, _, err := readRegularVersionFile(write)
+			if err != nil {
+				return fmt.Errorf("signing plan is stale; read source %s: %w", file.Path, err)
+			}
+			if !bytes.Equal(current, write.original) || signingFileDigestBytes(current) != file.SHA256 {
+				return fmt.Errorf("signing plan is stale; source %s changed after preparation", file.Path)
+			}
+			continue
+		}
+		current, err := readSigningRegularFile(file.Path, signingPlanMaxBytes)
+		if err != nil {
+			return fmt.Errorf("signing plan is stale; read source %s: %w", file.Path, err)
+		}
+		if signingFileDigestBytes(current) != file.SHA256 {
+			return fmt.Errorf("signing plan is stale; source %s differs from plan", file.Path)
+		}
+	}
+	return nil
 }
 
 func signingReceiptFileChanges(plan *SigningPlan, writes []preparedVersionWrite, changedFiles []string) ([]SigningFileChange, error) {

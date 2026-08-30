@@ -7,6 +7,13 @@ import (
 
 func TestXcodeSigningPlanApplyCommandsExist(t *testing.T) {
 	root := RootCommand("1.2.3")
+	xcode := findSubcommand(root, "xcode")
+	if xcode == nil {
+		t.Fatal("expected xcode command group")
+	}
+	if !strings.Contains(xcode.ShortHelp+"\n"+xcode.LongHelp, "[experimental] signing-settings") {
+		t.Fatalf("xcode root help = %q, want experimental signing marker", xcode.ShortHelp+"\n"+xcode.LongHelp)
+	}
 
 	group := findSubcommand(root, "xcode", "signing")
 	if group == nil {
