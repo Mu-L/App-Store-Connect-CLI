@@ -74,7 +74,7 @@ static OSStatus asc_signing_keychain_import_pkcs12(
     const void *values[] = { application };
     applications = CFArrayCreate(NULL, values, 1, &kCFTypeArrayCallBacks);
     if (applications == NULL) { status = errSecAllocate; goto cleanup; }
-    status = SecAccessCreate(CFSTR("ASC ephemeral signing"), applications, &access);
+    status = SecAccessCreate(CFSTR("ASC signing identity"), applications, &access);
     if (status != errSecSuccess) goto cleanup;
 
     SecItemImportExportKeyParameters parameters = {
