@@ -458,9 +458,6 @@ func resolveXCConfigSettingRecursiveWithReader(
 		if assignment.baseKey != setting {
 			continue
 		}
-		if assignment.continued {
-			return xcconfigResolvedValue{}, false, fmt.Errorf("%s assignment in %s uses an unsupported line continuation", setting, path)
-		}
 		if assignment.key != setting {
 			conditionalFound = true
 			resolved.conditionals = append(resolved.conditionals, xcconfigConditionalValue{
@@ -509,9 +506,6 @@ func editXCConfig(data []byte, setting, value string) ([]byte, []string, bool, e
 		if assignment.baseKey != setting {
 			continue
 		}
-		if assignment.continued {
-			return nil, nil, false, fmt.Errorf("%s assignment uses an unsupported line continuation", setting)
-		}
 		assignmentsByLine[assignment.lineIndex] = assignment
 		oldValues = append(oldValues, assignment.value)
 	}
@@ -525,12 +519,30 @@ func editXCConfig(data []byte, setting, value string) ([]byte, []string, bool, e
 		if assignment.value == value && assignment.operator == "=" {
 			continue
 		}
-		quotedValue := assignment.quote + value + assignment.quote
+		quotedValue := quoteXCConfigValue(value, assignment.quote)
 		document.lines[index] = line[:assignment.operatorStart] + "=" +
 			line[assignment.operatorEnd:assignment.valueStart] + quotedValue + line[assignment.valueEnd:]
 		changed = true
 	}
 	return []byte(strings.Join(document.lines, "")), oldValues, changed, nil
+}
+
+func quoteXCConfigValue(value, quote string) string {
+	if quote == "" {
+		return value
+	}
+	var encoded strings.Builder
+	encoded.Grow(len(value) + len(quote)*2)
+	encoded.WriteString(quote)
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if character == '\\' || character == quote[0] {
+			encoded.WriteByte('\\')
+		}
+		encoded.WriteByte(character)
+	}
+	encoded.WriteString(quote)
+	return encoded.String()
 }
 
 func clonePathSet(source map[string]bool) map[string]bool {

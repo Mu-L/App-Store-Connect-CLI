@@ -92,6 +92,9 @@ type Root struct {
 	beforeConditionalQuarantineForTest        func(root *os.Root, name string)
 	afterConditionalQuarantineForTest         func(root *os.Root, quarantineName, name string)
 	beforeConditionalQuarantineRemovalForTest func(root *os.Root, quarantineName string)
+	// openExpectedFileForTest injects failures while a conditional operation
+	// verifies the original or quarantined file.
+	openExpectedFileForTest func(root *os.Root, name string, expected os.FileInfo, expectedData []byte) (*os.File, os.FileInfo, error)
 	// postConditionalQuarantineLstatForTest injects an error while checking
 	// the original destination after it has been quarantined. It makes the
 	// cleanup/recovery contract deterministic without widening the public API.
@@ -1224,9 +1227,12 @@ func (r Root) RemoveFileIfSame(name string, expected os.FileInfo, expectedData [
 		resultErr = errors.Join(resultErr, parent.Close())
 	}()
 
-	quarantineName, err := r.quarantineExpectedFile(parent, base, expected, expectedData)
+	quarantineName, quarantine, _, err := r.quarantineExpectedFile(parent, base, expected, expectedData)
 	if err != nil {
 		return err
+	}
+	if err := quarantine.Close(); err != nil {
+		return errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 	}
 	if _, err := r.lstatAfterConditionalQuarantine(parent, base); err == nil {
 		return errors.Join(
@@ -1299,11 +1305,7 @@ func (r Root) writeFileIfSame(
 		resultErr = errors.Join(resultErr, parent.Close())
 	}()
 
-	quarantineName, err := r.quarantineExpectedFile(parent, base, expected, expectedData)
-	if err != nil {
-		return nil, err
-	}
-	quarantine, quarantineInfo, err := openExpectedRootedFile(parent, quarantineName, expected, expectedData)
+	quarantineName, quarantine, quarantineInfo, err := r.quarantineExpectedFile(parent, base, expected, expectedData)
 	if err != nil {
 		return nil, err
 	}
@@ -1503,10 +1505,10 @@ func (r Root) openConditionalFileParent(name string) (*os.Root, string, error) {
 	return r.openParentRooted(resolved)
 }
 
-func (r Root) quarantineExpectedFile(parent *os.Root, base string, expected os.FileInfo, expectedData []byte) (quarantineName string, resultErr error) {
-	file, _, err := openExpectedRootedFile(parent, base, expected, expectedData)
+func (r Root) quarantineExpectedFile(parent *os.Root, base string, expected os.FileInfo, expectedData []byte) (quarantineName string, quarantined *os.File, quarantineInfo os.FileInfo, resultErr error) {
+	file, _, err := r.openExpectedRootedFile(parent, base, expected, expectedData)
 	if err != nil {
-		return "", err
+		return "", nil, nil, err
 	}
 	// Keep the original descriptor live through the rename. If the pathname
 	// was replaced after the initial verification, RenameNoReplace must not
@@ -1529,41 +1531,38 @@ func (r Root) quarantineExpectedFile(parent *os.Root, base string, expected os.F
 	if runtime.GOOS == "windows" {
 		if err := file.Close(); err != nil {
 			fileClosed = true
-			return "", err
+			return "", nil, nil, err
 		}
 		fileClosed = true
 	}
 	quarantineFile, quarantineName, err := secureopen.CreateTempNoFollowInRoot(parent, ".", rollbackFilePattern, 0o600)
 	if err != nil {
-		return "", err
+		return "", nil, nil, err
 	}
 	if err := quarantineFile.Close(); err != nil {
-		return "", errors.Join(err, parent.Remove(quarantineName))
+		return "", nil, nil, errors.Join(err, parent.Remove(quarantineName))
 	}
 	if err := parent.Remove(quarantineName); err != nil {
-		return "", err
+		return "", nil, nil, err
 	}
 	if err := secureopen.RenameNoReplaceInRoot(parent, base, quarantineName); err != nil {
-		return "", err
+		return "", nil, nil, err
 	}
 	if !fileClosed {
 		if err := file.Close(); err != nil {
 			fileClosed = true
-			return "", errors.Join(err, restoreQuarantineEntry(parent, quarantineName, base))
+			return "", nil, nil, errors.Join(err, restoreQuarantineEntry(parent, quarantineName, base))
 		}
 		fileClosed = true
 	}
 	if r.afterConditionalQuarantineForTest != nil {
 		r.afterConditionalQuarantineForTest(parent, quarantineName, base)
 	}
-	quarantined, _, err := openExpectedRootedFile(parent, quarantineName, expected, expectedData)
+	quarantined, quarantineInfo, err = r.openExpectedRootedFile(parent, quarantineName, expected, expectedData)
 	if err != nil {
-		return "", errors.Join(err, restoreQuarantineEntry(parent, quarantineName, base))
+		return "", nil, nil, errors.Join(err, restoreQuarantineEntry(parent, quarantineName, base))
 	}
-	if err := quarantined.Close(); err != nil {
-		return "", errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
-	}
-	return quarantineName, nil
+	return quarantineName, quarantined, quarantineInfo, nil
 }
 
 func openExpectedRootedFile(parent *os.Root, name string, expected os.FileInfo, expectedData []byte) (*os.File, os.FileInfo, error) {
@@ -1604,8 +1603,15 @@ func openExpectedRootedFile(parent *os.Root, name string, expected os.FileInfo, 
 	return file, info, nil
 }
 
+func (r Root) openExpectedRootedFile(parent *os.Root, name string, expected os.FileInfo, expectedData []byte) (*os.File, os.FileInfo, error) {
+	if r.openExpectedFileForTest != nil {
+		return r.openExpectedFileForTest(parent, name, expected, expectedData)
+	}
+	return openExpectedRootedFile(parent, name, expected, expectedData)
+}
+
 func (r Root) removeExpectedQuarantine(parent *os.Root, quarantineName string, expected os.FileInfo, expectedData []byte) error {
-	file, _, err := openExpectedRootedFile(parent, quarantineName, expected, expectedData)
+	file, _, err := r.openExpectedRootedFile(parent, quarantineName, expected, expectedData)
 	if err != nil {
 		return fmt.Errorf("verify quarantined file before removal: %w", err)
 	}
@@ -1659,7 +1665,7 @@ func (r Root) syncConditionalParentDirectory(parent *os.Root) error {
 }
 
 func (r Root) restoreOrRemoveQuarantine(parent *os.Root, quarantineName, base string, expected os.FileInfo, expectedData []byte) error {
-	file, _, err := openExpectedRootedFile(parent, quarantineName, expected, expectedData)
+	file, _, err := r.openExpectedRootedFile(parent, quarantineName, expected, expectedData)
 	if err != nil {
 		return err
 	}

@@ -1517,9 +1517,6 @@ func xcconfigFilesDefiningWithReader(paths []string, setting string, read func(s
 		}
 		for _, assignment := range document.assignments {
 			if assignment.baseKey == setting {
-				if assignment.continued {
-					return nil, fmt.Errorf("%s assignment in %s uses an unsupported line continuation", setting, path)
-				}
 				defining = append(defining, path)
 				break
 			}

@@ -1136,6 +1136,40 @@ func TestWriteFileIfSamePreservesReplacementAfterQuarantine(t *testing.T) {
 	}
 }
 
+func TestWriteFileIfSameKeepsVerifiedQuarantineHandleThroughPreparation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(source) error = %v", err)
+	}
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	quarantineOpens := 0
+	transient := errors.New("injected quarantine reopen failure")
+	root.openExpectedFileForTest = func(parent *os.Root, name string, expected os.FileInfo, expectedData []byte) (*os.File, os.FileInfo, error) {
+		if name != "settings.xcconfig" {
+			quarantineOpens++
+			if quarantineOpens == 2 {
+				if _, statErr := parent.Lstat("settings.xcconfig"); errors.Is(statErr, os.ErrNotExist) {
+					return nil, nil, transient
+				}
+			}
+		}
+		return openExpectedRootedFile(parent, name, expected, expectedData)
+	}
+
+	if err := root.WriteFileIfSame("settings.xcconfig", []byte("new"), 0o640, expected, []byte("old"), true); err != nil {
+		t.Fatalf("WriteFileIfSame() error = %v", err)
+	}
+	if got := mustRead(t, path); got != "new" {
+		t.Fatalf("updated content = %q, want new", got)
+	}
+}
+
 func TestWriteFileIfSameRestoresQuarantineWhenDestinationCheckFails(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)

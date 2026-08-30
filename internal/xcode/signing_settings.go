@@ -522,6 +522,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	// require different values, narrow each operation to its target instead of
 	// rewriting a value that would affect another configuration.
 	resolveSigningSharedCandidates(candidates, fileIdentities)
+	resolver := newSigningSettingResolver(project, configFiles, opts.AllowExternalXCConfig, lexicalConfigPaths)
 	operations := make([]signingPlanOperation, 0, len(candidates))
 	for index := range candidates {
 		candidate := &candidates[index]
@@ -529,6 +530,17 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			continue
 		}
 		if candidate.mode == "xcconfig" {
+			var validationErr error
+			for _, path := range candidate.paths {
+				if err := validateSigningXCConfigWrite(resolver, path, candidate.setting, candidate.desired); err != nil {
+					validationErr = err
+					break
+				}
+			}
+			if validationErr != nil {
+				plan.Blockers = append(plan.Blockers, signingSettingBlocker(candidate.configuration, candidate.setting, validationErr))
+				continue
+			}
 			for _, path := range candidate.paths {
 				operations = append(operations, signingPlanOperation{
 					SigningSettingChange: signingChange(candidate, path, "xcconfig"),
@@ -1824,6 +1836,32 @@ func signingXCConfigOperationKey(path string, fileIdentities map[string]string) 
 
 func signingSettingBlocker(configuration *versionConfiguration, setting string, err error) string {
 	return fmt.Sprintf("target %q configuration %q cannot resolve %s: %v", configuration.target, configuration.name, setting, err)
+}
+
+func validateSigningXCConfigWrite(resolver *signingSettingResolver, path, setting string, desired *string) error {
+	if desired == nil {
+		return nil
+	}
+	if xcconfigValueHasLineContinuation(*desired) {
+		return fmt.Errorf("desired value has a trailing backslash that would continue the xcconfig assignment")
+	}
+	data, err := resolver.readXCConfig(path)
+	if err != nil {
+		return err
+	}
+	document, err := parseXCConfig(data)
+	if err != nil {
+		return err
+	}
+	for _, assignment := range document.assignments {
+		if assignment.baseKey != setting || assignment.quote == "" {
+			continue
+		}
+		if strings.Contains(*desired, assignment.quote) {
+			return fmt.Errorf("desired value contains the quote delimiter used by the xcconfig assignment")
+		}
+	}
+	return nil
 }
 
 func signingValuesEqual(left, right *string) bool {

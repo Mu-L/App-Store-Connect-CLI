@@ -632,6 +632,37 @@ func TestSigningPlanBlocksUnterminatedQuotedSigningValue(t *testing.T) {
 	}
 }
 
+func TestSigningPlanBlocksUnsafeQuotedXCConfigValue(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	before := `PROVISIONING_PROFILE_SPECIFIER = "Old Profile"` + "\r\n" + mustReadVersionTestFile(t, sharedPath)
+	if err := os.WriteFile(sharedPath, []byte(before), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"PROVISIONING_PROFILE_SPECIFIER":"New Profile\\"}},
+			{"name":"Release","settings":{"PROVISIONING_PROFILE_SPECIFIER":"New Profile\\"}}
+		]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want blocked plan", err)
+	}
+	if plan.Ready || !strings.Contains(strings.Join(plan.Blockers, "\n"), "trailing backslash") {
+		t.Fatalf("BuildSigningPlan() = ready %t, blockers %#v", plan.Ready, plan.Blockers)
+	}
+	if after := mustReadVersionTestFile(t, sharedPath); after != before {
+		t.Fatal("planning an unsafe quoted value modified the xcconfig")
+	}
+}
+
 func TestSigningPlanBlocksAmbiguousProjectNames(t *testing.T) {
 	tests := []struct {
 		name   string

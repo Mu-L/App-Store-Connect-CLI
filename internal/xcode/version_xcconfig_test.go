@@ -121,6 +121,37 @@ func TestXCConfigEditorNormalizesOperatorsAndPreservesQuotes(t *testing.T) {
 	}
 }
 
+func TestXCConfigEditorEscapesTrailingBackslashInQuotedValue(t *testing.T) {
+	input := []byte("MARKETING_VERSION = \"1.2.3\"\n")
+	updated, oldValues, changed, err := editXCConfig(input, marketingVersionSetting, "2.0.0\\")
+	if err != nil {
+		t.Fatalf("editXCConfig() error = %v", err)
+	}
+	if !changed || len(oldValues) != 1 || oldValues[0] != "1.2.3" {
+		t.Fatalf("unexpected edit metadata changed=%v old=%#v", changed, oldValues)
+	}
+	if got := string(updated); !strings.Contains(got, `MARKETING_VERSION = "2.0.0\\"`) {
+		t.Fatalf("quoted value did not escape trailing backslash: %q", got)
+	}
+	if _, err := parseXCConfig(updated); err != nil {
+		t.Fatalf("escaped quoted value is not parseable: %v", err)
+	}
+}
+
+func TestXCConfigEditorPreservesStableVersionContinuationSupport(t *testing.T) {
+	input := []byte("MARKETING_VERSION = 1.2.3\\\n 4\n")
+	updated, oldValues, changed, err := editXCConfig(input, marketingVersionSetting, "2.0.0")
+	if err != nil {
+		t.Fatalf("editXCConfig() error = %v, want stable version edit compatibility", err)
+	}
+	if !changed || len(oldValues) != 1 || oldValues[0] != "1.2.3\\" {
+		t.Fatalf("unexpected continuation edit metadata changed=%v old=%#v", changed, oldValues)
+	}
+	if got := string(updated); !strings.Contains(got, "MARKETING_VERSION = 2.0.0\n") {
+		t.Fatalf("continuation assignment was not updated: %q", got)
+	}
+}
+
 func TestXCConfigResolverRejectsConditionalOnlySetting(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Conditional.xcconfig")
 	contents := "CURRENT_PROJECT_VERSION[sdk=iphoneos*] = 41\nCURRENT_PROJECT_VERSION[sdk=macosx*] = 43\n"

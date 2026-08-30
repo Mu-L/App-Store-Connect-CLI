@@ -187,6 +187,24 @@ func TestStructuredVersion_ProjectWideEditUpdatesRecursiveXCConfigLosslessly(t *
 	}
 }
 
+func TestStructuredVersion_ProjectWideEditKeepsContinuedXCConfigCompatibility(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	contents := mustReadVersionTestFile(t, sharedPath)
+	contents = strings.Replace(contents, "MARKETING_VERSION = 1.2.3 // keep this comment\r\n", "MARKETING_VERSION = 1.2.3 \\\r\n \r\n", 1)
+	if err := os.WriteFile(sharedPath, []byte(contents), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+
+	if _, err := SetVersion(context.Background(), SetVersionOptions{ProjectDir: project, Version: "3.4.5"}); err != nil {
+		t.Fatalf("SetVersion() error = %v", err)
+	}
+	updated := mustReadVersionTestFile(t, sharedPath)
+	if !strings.Contains(updated, "MARKETING_VERSION = 3.4.5\r\n \r\n") {
+		t.Fatalf("continued xcconfig compatibility update = %q", updated)
+	}
+}
+
 func containsVersionChange(changes []VersionChange, target, configuration, setting, source string) bool {
 	for _, change := range changes {
 		if change.Target == target && change.Configuration == configuration && change.Setting == setting && change.Source == source {
