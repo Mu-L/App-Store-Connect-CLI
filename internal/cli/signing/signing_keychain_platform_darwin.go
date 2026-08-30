@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
+	"time"
 )
+
+type persistentSigningUtilityRunner func(context.Context, []byte, ...string) ([]byte, []byte, error)
 
 func platformSigningKeychainInstallDeps() signingKeychainInstallDeps {
 	runDeps := platformSigningRunDeps()
@@ -32,10 +34,21 @@ func createPersistentSigningKeychain(ctx context.Context, keychainPath string, p
 	if err := createKeychainWithSecurityFramework(keychainPath, password); err != nil {
 		return err
 	}
-	_, stderr, err := runSigningUtility(ctx, nil, "set-keychain-settings", "-l", keychainPath)
+	return configurePersistentSigningKeychain(ctx, keychainPath, runSigningUtility, deleteSigningRunKeychain)
+}
+
+func configurePersistentSigningKeychain(
+	ctx context.Context,
+	keychainPath string,
+	runUtility persistentSigningUtilityRunner,
+	deleteKeychain func(context.Context, string) error,
+) error {
+	_, stderr, err := runUtility(ctx, nil, "set-keychain-settings", "-l", keychainPath)
 	if err != nil {
 		configureErr := utilityFailure("configure persistent keychain", stderr, err)
-		if cleanupErr := deleteSigningRunKeychain(ctx, keychainPath); cleanupErr != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if cleanupErr := deleteKeychain(cleanupCtx, keychainPath); cleanupErr != nil {
 			return errors.Join(configureErr, fmt.Errorf("remove unconfigured keychain: %w", cleanupErr))
 		}
 		return configureErr
@@ -68,7 +81,37 @@ func importPersistentSigningIdentity(ctx context.Context, keychainPath string, k
 	if err != nil {
 		return utilityFailure("verify imported private key", stderr, err)
 	}
-	return verifySigningRunIdentityUsable(ctx, filepath.Dir(keychainPath), keychainPath, expectedSHA1)
+	return verifyPersistentSigningIdentityUsable(ctx, keychainPath, expectedSHA1)
+}
+
+func verifyPersistentSigningIdentityUsable(ctx context.Context, keychainPath, expectedSHA1 string) (resultErr error) {
+	return withPersistentSigningProbe(
+		ctx,
+		keychainPath,
+		expectedSHA1,
+		createSigningRunTempDir,
+		removeSigningRunTempDir,
+		verifySigningRunIdentityUsable,
+	)
+}
+
+func withPersistentSigningProbe(
+	ctx context.Context,
+	keychainPath, expectedSHA1 string,
+	createTempDir func() (string, error),
+	removeTempDir func(string) error,
+	verify func(context.Context, string, string, string) error,
+) (resultErr error) {
+	probeDir, err := createTempDir()
+	if err != nil {
+		return fmt.Errorf("create private codesign probe directory: %w", err)
+	}
+	defer func() {
+		if err := removeTempDir(probeDir); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("remove private codesign probe directory: %w", err))
+		}
+	}()
+	return verify(ctx, probeDir, keychainPath, expectedSHA1)
 }
 
 func validatePersistentSigningCertificateFingerprints(certificates []string, expectedSHA1 string) error {

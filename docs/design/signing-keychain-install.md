@@ -48,6 +48,11 @@ certificate. The PKCS#12 is decoded and checked for a matching private key,
 current certificate validity, code-signing usage, and the expected digest
 before the keychain is created.
 
+The final codesign usability probe is copied into an ASC-owned private
+temporary directory, never the operator-selected keychain directory. An
+existing file beside the destination keychain is therefore outside the probe's
+write and cleanup scope.
+
 ## Failure and rollback contract
 
 All input, destination, and output-format validation happens before the first
@@ -58,7 +63,9 @@ immediately when `--add-to-search-list` is absent; explicit activation is the
 last operation when the flag is present. If both the primary operation and
 rollback fail, both errors are returned. Rollback uses an independent bounded
 context, so cancellation of the initiating command does not prevent keychain
-deletion or search-list restoration.
+deletion or search-list restoration. The same rule applies when cancellation
+interrupts initial keychain configuration before the outer installer can mark
+creation complete.
 
 The command does not delete, replace, or merge an existing keychain. It does
 not install provisioning profiles; use `asc profiles local install` for that
@@ -132,9 +139,10 @@ Unit coverage verifies command validation, experimental lifecycle markers,
 private input handling, certificate checks, exact output fields, destination
 refusal, search-list isolation and activation, shared-lock ordering,
 independent-context rollback after cancellation, exact search-list restoration,
-and rollback error propagation. Darwin coverage accepts a leaf certificate
-plus its chain while rejecting a missing or duplicated leaf. cgo-disabled,
-Linux, and Windows compile paths verify the platform guard.
+rollback error propagation, configuration-failure cleanup after cancellation,
+and probe isolation from the destination directory. Darwin coverage accepts a
+leaf certificate plus its chain while rejecting a missing or duplicated leaf.
+cgo-disabled, Linux, and Windows compile paths verify the platform guard.
 
 A gated macOS integration test creates a disposable keychain, imports a real
 test PKCS#12 identity, runs the codesign probe, confirms search-list activation,

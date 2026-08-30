@@ -433,28 +433,24 @@ workflow artifact.
       --add-to-search-list \
       --confirm \
       --output json
+
+    asc xcode archive \
+      --workspace Example.xcworkspace \
+      --scheme Example \
+      --archive-path .asc/artifacts/Example.xcarchive
+
+    asc xcode export \
+      --archive-path .asc/artifacts/Example.xcarchive \
+      --ipa-path .asc/artifacts/Example.ipa \
+      --signing-style manual \
+      --team-id TEAM_ID
 ```
 
 For an App Store export, the profile loop reads exact paths from the pull
 receipt instead of guessing the repository layout. Replace `IDENTITY.p12` with
 the identity path reported in `sensitiveFiles`. The generated keychain password
 is independent of the repository password, and the keychain intentionally
-persists until the job-level cleanup trap runs.
-
-Then archive and export with manual signing when the project requires an exact local identity/profile match:
-
-```bash  theme={null}
-asc xcode archive \
-  --workspace Example.xcworkspace \
-  --scheme Example \
-  --archive-path .asc/artifacts/Example.xcarchive
-
-asc xcode export \
-  --archive-path .asc/artifacts/Example.xcarchive \
-  --ipa-path .asc/artifacts/Example.ipa \
-  --signing-style manual \
-  --team-id TEAM_ID
-```
+persists through archive and export, then the shell cleanup trap removes it.
 
 Manual export inspects the archive and matches locally installed profiles for the main app and embedded targets. An explicit `--export-options` file is authoritative and cannot be combined with `--signing-style`, `--team-id`, or `--method`.
 
