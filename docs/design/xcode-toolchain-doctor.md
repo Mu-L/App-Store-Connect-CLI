@@ -27,12 +27,15 @@ checks cannot silently use a different Xcode selection.
 
 ## Checks and output
 
-The command checks the selected directory, runs `xcodebuild -version`, parses
-the Xcode version and build version, resolves `xcodebuild` with `xcrun --find`,
-and optionally resolves one SDK with `xcrun --sdk SDK --show-sdk-path`.
-Beta-looking paths produce an advisory warning. Command Line Tools-only paths
-are identified and cannot report a healthy full-Xcode result when the required
-Xcode commands are unavailable.
+The command checks the selected directory, resolves `xcodebuild` with
+`xcrun --find` under that candidate, validates that the returned absolute
+executable is inside the selected developer directory, and runs `-version` on
+that exact path. This prevents a caller `PATH` shadow from supplying the
+version/build while the report names a different toolchain. It optionally
+resolves one SDK with `xcrun --sdk SDK --show-sdk-path`. Beta-looking paths
+produce an advisory warning. Command Line Tools-only paths are identified and
+are a deterministic failure even if mocked probes happen to return successful
+Xcode-shaped output.
 
 The report uses the existing local `asc xcode` snake_case JSON convention. The
 top-level status is `ok`, `warn`, or `fail`. Checks have stable names, status,
@@ -73,8 +76,10 @@ present; path and SDK values remain local.
 
 RED coverage starts at the CLI boundary for command registration, help, flags,
 output, and exit behavior, followed by core tests for selection precedence,
-version parsing, path normalization, child environment propagation, probe
-failures, beta warnings, SDK checks, cancellation, and bounded diagnostics.
+version parsing, path normalization, child environment propagation, exact
+xcrun-resolved executable selection, PATH-shadow/mismatched-resolution
+failures, Command Line Tools failure, probe failures, beta warnings, SDK
+checks, cancellation, and bounded diagnostics.
 All subprocess and filesystem interactions use injectable seams, so tests do
 not require a real Xcode installation.
 

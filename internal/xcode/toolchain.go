@@ -12,7 +12,10 @@ import (
 	"strings"
 )
 
-const toolchainProbeDiagnosticLimit = 4 * 1024
+const (
+	toolchainProbeDiagnosticLimit = 4 * 1024
+	trustedXcrunPath              = "/usr/bin/xcrun"
+)
 
 // ToolchainStatus is the overall status of a local Xcode toolchain report.
 type ToolchainStatus string
@@ -143,10 +146,10 @@ func InspectToolchain(ctx context.Context, opts ToolchainOptions) (*ToolchainRep
 		addCheck(
 			ToolchainCheck{
 				Name:    "developer_dir",
-				Status:  ToolchainCheckStatusWarn,
-				Message: "selected developer directory is the Command Line Tools package; full Xcode is required for archive and export workflows",
+				Status:  ToolchainCheckStatusFail,
+				Message: "selected developer directory is the Command Line Tools package; full Xcode is required for xcode doctor",
 			},
-			nil,
+			errors.New("full Xcode is required; selected developer directory is the Command Line Tools package"),
 		)
 	} else {
 		addCheck(
@@ -161,91 +164,90 @@ func InspectToolchain(ctx context.Context, opts ToolchainOptions) (*ToolchainRep
 
 	report.Beta = isBetaXcodePath(developerDir) || isBetaXcodePath(xcodePath)
 
-	xcodebuildPath, xcodebuildErr := lookPathFn("xcodebuild")
-	if xcodebuildErr != nil {
-		message := "xcodebuild is not available in PATH"
-		if !errors.Is(xcodebuildErr, exec.ErrNotFound) {
-			message = sanitizeToolchainError(fmt.Errorf("locate xcodebuild: %w", xcodebuildErr))
+	xcrunPath, xcrunLookupErr := resolveToolchainXcrunPath()
+	var resolvedXcodebuildPath string
+	var resolvedXcodebuildErr error
+	var xcrunCheck ToolchainCheck
+	var xcrunCheckErr error
+	if xcrunLookupErr != nil {
+		message := "xcrun is not available in PATH"
+		if !errors.Is(xcrunLookupErr, exec.ErrNotFound) {
+			message = sanitizeToolchainError(fmt.Errorf("locate xcrun: %w", xcrunLookupErr))
 		}
+		xcrunCheck = ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusFail, Message: message}
+		xcrunCheckErr = fmt.Errorf("locate xcrun: %w", xcrunLookupErr)
+		resolvedXcodebuildErr = fmt.Errorf("xcrun is unavailable: %w", xcrunLookupErr)
+	} else {
+		stdout, stderr, probeErr := runToolchainProbe(ctx, xcrunPath, []string{"--find", "xcodebuild"}, developerDir, opts.LogWriter)
+		resolvedXcodebuild := strings.TrimSpace(stdout)
+		switch {
+		case probeErr != nil:
+			message := toolchainProbeFailureMessage("xcrun --find xcodebuild", stderr, probeErr)
+			xcrunCheck = ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusFail, Path: xcrunPath, Message: message}
+			xcrunCheckErr = fmt.Errorf("xcrun --find xcodebuild: %w", probeErr)
+			resolvedXcodebuildErr = xcrunCheckErr
+		case resolvedXcodebuild == "":
+			message := "xcrun did not resolve xcodebuild"
+			xcrunCheck = ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusFail, Path: xcrunPath, Message: message}
+			xcrunCheckErr = errors.New(message)
+			resolvedXcodebuildErr = xcrunCheckErr
+		default:
+			validatedPath, validateErr := validateResolvedXcodebuildPath(resolvedXcodebuild, developerDir)
+			if validateErr != nil {
+				message := sanitizeToolchainError(validateErr)
+				xcrunCheck = ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusFail, Path: xcrunPath, Message: message}
+				xcrunCheckErr = fmt.Errorf("validate xcrun xcodebuild path: %w", validateErr)
+				resolvedXcodebuildErr = xcrunCheckErr
+			} else {
+				resolvedXcodebuildPath = validatedPath
+				xcrunCheck = ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusOK, Path: xcrunPath, Message: "xcrun resolved xcodebuild from the selected toolchain"}
+			}
+		}
+	}
+
+	if resolvedXcodebuildErr != nil {
+		message := "xcodebuild cannot be verified with the selected toolchain: " + sanitizeToolchainError(resolvedXcodebuildErr)
 		addCheck(
-			ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusFail, Message: message},
-			fmt.Errorf("locate xcodebuild: %w", xcodebuildErr),
+			ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusFail, Message: truncateUTF8Prefix(message, 512)},
+			fmt.Errorf("resolve selected xcodebuild: %w", resolvedXcodebuildErr),
 		)
 	} else {
-		stdout, stderr, probeErr := runToolchainProbe(ctx, "xcodebuild", []string{"-version"}, developerDir, opts.LogWriter)
+		stdout, stderr, probeErr := runToolchainProbe(ctx, resolvedXcodebuildPath, []string{"-version"}, developerDir, opts.LogWriter)
 		if probeErr != nil {
 			message := toolchainProbeFailureMessage("xcodebuild -version", stderr, probeErr)
 			addCheck(
-				ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusFail, Path: xcodebuildPath, Message: message},
+				ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusFail, Path: resolvedXcodebuildPath, Message: message},
 				fmt.Errorf("xcodebuild -version: %w", probeErr),
 			)
 		} else {
 			version, parseErr := parseXcodeVersion(stdout)
 			if parseErr != nil {
 				addCheck(
-					ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusFail, Path: xcodebuildPath, Message: sanitizeToolchainError(parseErr)},
+					ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusFail, Path: resolvedXcodebuildPath, Message: sanitizeToolchainError(parseErr)},
 					fmt.Errorf("parse xcodebuild -version: %w", parseErr),
 				)
 			} else {
 				report.XcodeVersion = version.Version
 				report.XcodeBuild = version.Build
 				addCheck(
-					ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusOK, Path: xcodebuildPath, Message: "xcodebuild -version succeeded"},
+					ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusOK, Path: resolvedXcodebuildPath, Message: "xcodebuild -version succeeded"},
 					nil,
 				)
 			}
 		}
 	}
-
-	xcrunPath, xcrunErr := lookPathFn("xcrun")
-	if xcrunErr != nil {
-		message := "xcrun is not available in PATH"
-		if !errors.Is(xcrunErr, exec.ErrNotFound) {
-			message = sanitizeToolchainError(fmt.Errorf("locate xcrun: %w", xcrunErr))
-		}
-		addCheck(
-			ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusFail, Message: message},
-			fmt.Errorf("locate xcrun: %w", xcrunErr),
-		)
-	} else {
-		stdout, stderr, probeErr := runToolchainProbe(ctx, "xcrun", []string{"--find", "xcodebuild"}, developerDir, opts.LogWriter)
-		resolvedXcodebuild := strings.TrimSpace(stdout)
-		if probeErr != nil {
-			message := toolchainProbeFailureMessage("xcrun --find xcodebuild", stderr, probeErr)
-			addCheck(
-				ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusFail, Path: xcrunPath, Message: message},
-				fmt.Errorf("xcrun --find xcodebuild: %w", probeErr),
-			)
-		} else if resolvedXcodebuild == "" {
-			message := "xcrun did not resolve xcodebuild"
-			addCheck(
-				ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusFail, Path: xcrunPath, Message: message},
-				errors.New(message),
-			)
-		} else {
-			addCheck(
-				ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusOK, Path: xcrunPath, Message: "xcrun resolved xcodebuild from the selected toolchain"},
-				nil,
-			)
-			for index := range report.Checks {
-				if report.Checks[index].Name == "xcodebuild" && report.Checks[index].Status == ToolchainCheckStatusOK {
-					report.Checks[index].Path = resolvedXcodebuild
-					break
-				}
-			}
-		}
-	}
+	addCheck(xcrunCheck, xcrunCheckErr)
 
 	if sdk := strings.TrimSpace(opts.SDK); sdk != "" {
 		checkName := "sdk:" + sdk
-		if xcrunErr != nil {
+		if xcrunLookupErr != nil {
 			message := fmt.Sprintf("xcrun is unavailable; cannot resolve SDK %q", sdk)
 			addCheck(
 				ToolchainCheck{Name: checkName, Status: ToolchainCheckStatusFail, Message: message},
-				fmt.Errorf("resolve SDK %q: xcrun unavailable: %w", sdk, xcrunErr),
+				fmt.Errorf("resolve SDK %q: xcrun unavailable: %w", sdk, xcrunLookupErr),
 			)
 		} else {
-			stdout, stderr, probeErr := runToolchainProbe(ctx, "xcrun", []string{"--sdk", sdk, "--show-sdk-path"}, developerDir, opts.LogWriter)
+			stdout, stderr, probeErr := runToolchainProbe(ctx, xcrunPath, []string{"--sdk", sdk, "--show-sdk-path"}, developerDir, opts.LogWriter)
 			sdkPath := strings.TrimSpace(stdout)
 			switch {
 			case probeErr != nil:
@@ -338,6 +340,63 @@ func normalizeToolchainDeveloperDir(value string) (developerDir, xcodePath strin
 	lower := strings.ToLower(filepath.ToSlash(absolute))
 	commandLineTools = strings.HasSuffix(lower, "/library/developer/commandlinetools") || strings.HasSuffix(lower, "/commandlinetools")
 	return absolute, xcodePath, commandLineTools, nil
+}
+
+func resolveToolchainXcrunPath() (string, error) {
+	if info, err := statPathFn(trustedXcrunPath); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+		return trustedXcrunPath, nil
+	}
+
+	pathValue, err := lookPathFn("xcrun")
+	if err != nil {
+		return "", err
+	}
+	pathValue = strings.TrimSpace(pathValue)
+	if pathValue == "" {
+		return "", errors.New("xcrun path is empty")
+	}
+	if !filepath.IsAbs(pathValue) {
+		return "", fmt.Errorf("xcrun path %q is not absolute", pathValue)
+	}
+	pathValue = filepath.Clean(pathValue)
+	if filepath.Base(pathValue) != "xcrun" {
+		return "", fmt.Errorf("xcrun path %q has unexpected executable name", pathValue)
+	}
+	return pathValue, nil
+}
+
+func validateResolvedXcodebuildPath(pathValue, developerDir string) (string, error) {
+	pathValue = strings.TrimSpace(pathValue)
+	if pathValue == "" {
+		return "", errors.New("xcrun returned an empty xcodebuild path")
+	}
+	if !filepath.IsAbs(pathValue) {
+		return "", fmt.Errorf("xcrun returned a non-absolute xcodebuild path %q", pathValue)
+	}
+	pathValue = filepath.Clean(pathValue)
+	if filepath.Base(pathValue) != "xcodebuild" {
+		return "", fmt.Errorf("xcrun returned an unexpected executable path %q", pathValue)
+	}
+
+	relative, err := filepath.Rel(developerDir, pathValue)
+	if err != nil {
+		return "", fmt.Errorf("compare xcodebuild path with developer directory: %w", err)
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("xcrun resolved xcodebuild outside selected developer directory %q", developerDir)
+	}
+
+	info, err := statPathFn(pathValue)
+	if err != nil {
+		return "", fmt.Errorf("resolved xcodebuild path %q is unavailable: %w", pathValue, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("resolved xcodebuild path %q is a directory", pathValue)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("resolved xcodebuild path %q is not executable", pathValue)
+	}
+	return pathValue, nil
 }
 
 func parseXcodeVersion(output string) (XcodeVersion, error) {

@@ -177,6 +177,9 @@ asc builds upload --app "123456789" --ipa "/path/to/MyApp.ipa"
 # Generate local Xcode metadata before archiving
 asc xcode inject --manifest .asc/deployment.json --set version=1.2.3 --set build_number=42 --dry-run --output json
 
+# Inspect the selected local Xcode toolchain without changing host state
+asc xcode doctor --output json
+
 # Plan, confirm, resume, check status, and live-verify a private ad hoc distribution run
 asc distribute plan --archive-path ./App.xcarchive --config .asc/distribution.json --plan .asc/distribution/plan.json --state-dir .asc/distribution/runs --output json
 asc distribute apply --plan .asc/distribution/plan.json --confirm PLAN_HASH --output json
