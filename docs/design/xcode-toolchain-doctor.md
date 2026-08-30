@@ -9,10 +9,10 @@ group:
 asc xcode doctor [--developer-dir PATH] [--sdk SDK] [--output json|table|markdown] [--pretty]
 ```
 
-`asc xcode --help` currently exposes `inject`, `build`, `archive`, `export`,
-`export-options`, `validate`, and `version`; it does not expose a toolchain
-diagnostic. The new command is local-only and does not require App Store
-Connect credentials or an API request.
+`asc xcode --help` exposes `inject`, `build`, `archive`, `export`,
+`export-options`, `validate`, `version`, and the experimental `doctor` leaf.
+The doctor command is local-only and does not require App Store Connect
+credentials or an API request.
 
 The effective developer directory is selected in this order:
 
