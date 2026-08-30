@@ -1,6 +1,7 @@
 package xcode
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // TestAction identifies the xcodebuild operation selected by TestOptions.
@@ -26,6 +29,7 @@ const (
 	maxTestFailureMessage                    = 4096
 	maxTestFailureCount                      = 100
 	maxTestCaseCount                         = 10000
+	maxXcresulttoolOutputBytes               = 16 << 20
 )
 
 // TestOptions describes a local xcodebuild test operation.
@@ -135,6 +139,12 @@ func ValidateTestOptions(opts TestOptions) error {
 		if opts.XctestrunPath == "" {
 			return fmt.Errorf("--xctestrun is required")
 		}
+		if opts.Configuration != "" {
+			return fmt.Errorf("--configuration cannot be used with --action test-without-building")
+		}
+		if opts.DerivedDataPath != "" {
+			return fmt.Errorf("--derived-data-path cannot be used with --action test-without-building")
+		}
 		if !strings.EqualFold(filepath.Ext(opts.XctestrunPath), ".xctestrun") {
 			return fmt.Errorf("--xctestrun must end with .xctestrun")
 		}
@@ -145,8 +155,8 @@ func ValidateTestOptions(opts TestOptions) error {
 		return fmt.Errorf("--destination is required")
 	}
 	for _, destination := range opts.Destinations {
-		if strings.TrimSpace(destination) == "" {
-			return fmt.Errorf("--destination cannot be empty")
+		if err := validateTestValue(destination, "--destination"); err != nil {
+			return err
 		}
 	}
 	if opts.TestPlan != "" && opts.XctestrunPath != "" {
@@ -158,14 +168,19 @@ func ValidateTestOptions(opts TestOptions) error {
 	if opts.NoCodeSigning && TestAction(opts.Action) == TestActionTestWithoutBuilding {
 		return fmt.Errorf("--no-code-signing cannot be used with --action test-without-building")
 	}
-	for _, value := range append(append([]string{}, opts.OnlyTesting...), opts.SkipTesting...) {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("test filter cannot be empty")
+	for _, value := range opts.OnlyTesting {
+		if err := validateTestValue(value, "--only-testing"); err != nil {
+			return err
+		}
+	}
+	for _, value := range opts.SkipTesting {
+		if err := validateTestValue(value, "--skip-testing"); err != nil {
+			return err
 		}
 	}
 	for _, arg := range opts.XcodebuildArgs {
-		if strings.TrimSpace(arg) == "" {
-			return fmt.Errorf("--xcodebuild-flag cannot be empty")
+		if err := validateTestValue(arg, "--xcodebuild-flag"); err != nil {
+			return err
 		}
 	}
 	if reserved := reservedTestPassthroughArgument(opts.XcodebuildArgs); reserved != "" {
@@ -192,7 +207,7 @@ func Test(ctx context.Context, opts TestOptions) (*TestResult, error) {
 		Scheme:        opts.Scheme,
 		Action:        opts.Action,
 		Configuration: opts.Configuration,
-		Destinations:  cloneStrings(opts.Destinations),
+		Destinations:  cloneTestValues(opts.Destinations),
 		TestPlan:      opts.TestPlan,
 		XctestrunPath: opts.XctestrunPath,
 		Clean:         opts.Clean,
@@ -214,13 +229,6 @@ func Test(ctx context.Context, opts TestOptions) (*TestResult, error) {
 		}
 		opts.DerivedDataPath = derivedDataPath
 		result.DerivedDataPath = derivedDataPath
-	} else if opts.DerivedDataPath != "" {
-		derivedDataPath, err := filepath.Abs(opts.DerivedDataPath)
-		if err != nil {
-			return finish(fmt.Errorf("resolve derived data path: %w", err))
-		}
-		opts.DerivedDataPath = filepath.Clean(derivedDataPath)
-		result.DerivedDataPath = opts.DerivedDataPath
 	}
 	if opts.Action != string(TestActionBuildForTesting) {
 		resultBundlePath, err := resolveTestResultBundlePath(opts)
@@ -250,13 +258,16 @@ func Test(ctx context.Context, opts TestOptions) (*TestResult, error) {
 		if err := os.MkdirAll(filepath.Dir(opts.ResultBundlePath), 0o755); err != nil {
 			return finish(fmt.Errorf("create result bundle parent directory: %w", err))
 		}
+		if err := validateTestResultBundlePathComponents(opts.ResultBundlePath); err != nil {
+			return finish(err)
+		}
 	}
 
 	command := buildTestCommand(opts)
 	processErr := runXcodeTestCommand(ctx, command, opts.LogWriter)
 	if processErr != nil {
 		setTestExitStatus(result, processErr)
-		if opts.Action != string(TestActionBuildForTesting) && existingDirectory(opts.ResultBundlePath) {
+		if opts.Action != string(TestActionBuildForTesting) && validateTestResultBundlePathComponents(opts.ResultBundlePath) == nil && existingDirectory(opts.ResultBundlePath) {
 			if summary, summaryErr := readTestResultSummaryFn(ctx, opts.ResultBundlePath); summaryErr == nil {
 				result.Tests = summary
 			}
@@ -270,12 +281,25 @@ func Test(ctx context.Context, opts TestOptions) (*TestResult, error) {
 		result.ExitStatus = &exitStatus
 		return finish(nil)
 	}
+	if err := validateTestResultBundlePathComponents(opts.ResultBundlePath); err != nil {
+		return finish(err)
+	}
 
 	summary, err := readTestResultSummaryFn(ctx, opts.ResultBundlePath)
 	if err != nil {
 		return finish(fmt.Errorf("read test result summary: %w", err))
 	}
 	result.Tests = summary
+	if err := validateTestSummary(summary); err != nil {
+		return finish(fmt.Errorf("validate test result: %w", err))
+	}
+	if summary.Failed > 0 || hasFailedTestCase(summary.Cases) {
+		reportedFailed := summary.Failed
+		if reportedFailed == 0 {
+			_, reportedFailed, _ = countTestCases(summary.Cases)
+		}
+		return finish(fmt.Errorf("xcode test result reported %d failed tests", reportedFailed))
+	}
 	exitStatus := 0
 	result.ExitStatus = &exitStatus
 	return finish(nil)
@@ -287,26 +311,36 @@ func normalizeTestOptions(opts TestOptions) TestOptions {
 	opts.Scheme = strings.TrimSpace(opts.Scheme)
 	opts.Action = strings.TrimSpace(opts.Action)
 	opts.Configuration = strings.TrimSpace(opts.Configuration)
-	opts.Destinations = trimTestValues(opts.Destinations)
+	opts.Destinations = cloneTestValues(opts.Destinations)
 	opts.TestPlan = strings.TrimSpace(opts.TestPlan)
 	opts.XctestrunPath = normalizeDirectoryPath(opts.XctestrunPath)
-	opts.OnlyTesting = trimTestValues(opts.OnlyTesting)
-	opts.SkipTesting = trimTestValues(opts.SkipTesting)
+	opts.OnlyTesting = cloneTestValues(opts.OnlyTesting)
+	opts.SkipTesting = cloneTestValues(opts.SkipTesting)
 	opts.DerivedDataPath = normalizeDirectoryPath(opts.DerivedDataPath)
 	opts.ResultBundlePath = normalizeDirectoryPath(opts.ResultBundlePath)
-	opts.XcodebuildArgs = trimTestValues(opts.XcodebuildArgs)
+	opts.XcodebuildArgs = cloneTestValues(opts.XcodebuildArgs)
 	return opts
 }
 
-func trimTestValues(values []string) []string {
+func cloneTestValues(values []string) []string {
 	if len(values) == 0 {
 		return nil
 	}
-	trimmed := make([]string, 0, len(values))
-	for _, value := range values {
-		trimmed = append(trimmed, strings.TrimSpace(value))
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func validateTestValue(value, flagName string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s cannot be empty", flagName)
 	}
-	return trimmed
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return fmt.Errorf("%s cannot contain control characters", flagName)
+		}
+	}
+	return nil
 }
 
 func validateTestInputPaths(opts TestOptions) error {
@@ -399,7 +433,74 @@ func validateTestResultBundleDestination(pathValue string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect --result-bundle-path: %w", err)
 	}
+	if err := validateTestResultBundlePathComponents(pathValue); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateTestResultBundlePathComponents refuses symlinks in every existing
+// component of a result path. The destination is intentionally checked both
+// before and after xcodebuild because the final path is created by a child
+// process outside this package's control.
+func validateTestResultBundlePathComponents(pathValue string) error {
+	if pathValue == "" {
+		return nil
+	}
+	cleanPath := filepath.Clean(pathValue)
+	volume := filepath.VolumeName(cleanPath)
+	remainder := strings.TrimPrefix(cleanPath, volume)
+	current := volume
+	if strings.HasPrefix(remainder, string(filepath.Separator)) {
+		current += string(filepath.Separator)
+		remainder = strings.TrimPrefix(remainder, string(filepath.Separator))
+	}
+	if current == "" {
+		current = "."
+	}
+	for _, component := range strings.Split(remainder, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		if current == string(filepath.Separator) || strings.HasSuffix(current, string(filepath.Separator)) {
+			current += component
+		} else {
+			current = filepath.Join(current, component)
+		}
+		info, err := os.Lstat(current)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return nil
+		case err != nil:
+			return fmt.Errorf("inspect --result-bundle-path component %q: %w", current, err)
+		case info.Mode()&os.ModeSymlink != 0:
+			if isTrustedDarwinPathAlias(current) {
+				continue
+			}
+			return fmt.Errorf("--result-bundle-path cannot use symlink component: %s", current)
+		}
+	}
+	return nil
+}
+
+func isTrustedDarwinPathAlias(pathValue string) bool {
+	if runtimeGOOS != "darwin" {
+		return false
+	}
+	target, err := os.Readlink(pathValue)
+	if err != nil {
+		return false
+	}
+	switch filepath.Clean(pathValue) {
+	case "/etc":
+		return target == "private/etc"
+	case "/tmp":
+		return target == "private/tmp"
+	case "/var":
+		return target == "private/var"
+	default:
+		return false
+	}
 }
 
 func buildTestCommand(opts TestOptions) []string {
@@ -413,7 +514,7 @@ func buildTestCommand(opts TestOptions) []string {
 	if opts.Scheme != "" {
 		args = append(args, "-scheme", opts.Scheme)
 	}
-	if opts.Configuration != "" {
+	if opts.Configuration != "" && opts.Action != string(TestActionTestWithoutBuilding) {
 		args = append(args, "-configuration", opts.Configuration)
 	}
 	for _, destination := range opts.Destinations {
@@ -425,7 +526,7 @@ func buildTestCommand(opts TestOptions) []string {
 	if opts.XctestrunPath != "" {
 		args = append(args, "-xctestrun", opts.XctestrunPath)
 	}
-	if opts.DerivedDataPath != "" {
+	if opts.DerivedDataPath != "" && opts.Action != string(TestActionTestWithoutBuilding) {
 		args = append(args, "-derivedDataPath", opts.DerivedDataPath)
 	}
 	if opts.ResultBundlePath != "" {
@@ -437,7 +538,7 @@ func buildTestCommand(opts TestOptions) []string {
 	for _, identifier := range opts.SkipTesting {
 		args = append(args, "-skip-testing:"+identifier)
 	}
-	args = append(args, cloneStrings(opts.XcodebuildArgs)...)
+	args = append(args, cloneTestValues(opts.XcodebuildArgs)...)
 	if opts.NoCodeSigning {
 		args = append(args, "CODE_SIGNING_ALLOWED=NO")
 	}
@@ -524,13 +625,10 @@ func readTestResultSummary(ctx context.Context, resultBundlePath string) (*TestS
 	if err != nil {
 		return nil, err
 	}
-	if summary.Total > 0 && len(cases) == 0 {
-		return nil, fmt.Errorf("xcresulttool tests output did not include the %d reported test cases", summary.Total)
-	}
-	if len(cases) > 0 && len(cases) != summary.Total {
-		return nil, fmt.Errorf("xcresulttool test case count %d does not match summary count %d", len(cases), summary.Total)
-	}
 	summary.Cases = cases
+	if err := validateTestSummary(summary); err != nil {
+		return nil, err
+	}
 	for _, testCase := range cases {
 		if normalizeTestStatus(testCase.Status) == "failed" && !containsTestFailure(summary.Failures, testCase.Identifier) {
 			summary.Failures = append(summary.Failures, TestFailure{
@@ -547,11 +645,53 @@ func runXcresulttoolJSON(ctx context.Context, operation, resultBundlePath string
 		ctx = context.Background()
 	}
 	cmd := commandContextFn(ctx, "xcrun", "xcresulttool", "get", "test-results", operation, "--path", resultBundlePath, "--compact")
-	output, err := outputXcodeCommand(cmd)
+	var output boundedXcresulttoolOutput
+	output.limit = maxXcresulttoolOutputBytes
+	cmd.Stdout = &output
+	cmd.Stderr = io.Discard
+	err := runXcodeCommand(cmd)
+	if output.exceeded {
+		if err != nil {
+			return nil, fmt.Errorf("xcresulttool %s output exceeds %d bytes: %w", operation, maxXcresulttoolOutputBytes, err)
+		}
+		return nil, fmt.Errorf("xcresulttool %s output exceeds %d bytes", operation, maxXcresulttoolOutputBytes)
+	}
 	if err != nil {
 		return nil, err
 	}
-	return output, nil
+	return append([]byte(nil), output.Bytes()...), nil
+}
+
+type boundedXcresulttoolOutput struct {
+	buffer   bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (output *boundedXcresulttoolOutput) Bytes() []byte {
+	return output.buffer.Bytes()
+}
+
+func (output *boundedXcresulttoolOutput) Len() int {
+	return output.buffer.Len()
+}
+
+func (output *boundedXcresulttoolOutput) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	remaining := output.limit - output.Len()
+	if remaining <= 0 {
+		output.exceeded = true
+		return len(data), nil
+	}
+	if len(data) > remaining {
+		_, _ = output.buffer.Write(data[:remaining])
+		output.exceeded = true
+		return len(data), nil
+	}
+	_, err := output.buffer.Write(data)
+	return len(data), err
 }
 
 type rawTestResultSummary struct {
@@ -562,6 +702,7 @@ type rawTestResultSummary struct {
 	FailedTests    json.RawMessage `json:"failedTests"`
 	SkippedTests   json.RawMessage `json:"skippedTests"`
 	TestDuration   json.RawMessage `json:"testDuration"`
+	DurationMS     json.RawMessage `json:"durationMs"`
 	Duration       json.RawMessage `json:"duration"`
 	StartTime      json.RawMessage `json:"startTime"`
 	FinishTime     json.RawMessage `json:"finishTime"`
@@ -612,6 +753,7 @@ type rawTestNode struct {
 	Result            string          `json:"result"`
 	Duration          json.RawMessage `json:"duration"`
 	DurationInSeconds json.RawMessage `json:"durationInSeconds"`
+	DurationMS        json.RawMessage `json:"durationMs"`
 	Message           string          `json:"message"`
 	FailureMessage    string          `json:"failureMessage"`
 	Children          []rawTestNode   `json:"children"`
@@ -672,10 +814,11 @@ func ParseTestResultSummary(data []byte) (*TestSummary, error) {
 		skipped = caseSkipped
 	}
 	if !totalSet {
-		total = passed + failed + skipped
-		if total == 0 {
+		if !passedSet && !failedSet && !skippedSet {
 			return nil, fmt.Errorf("xcresulttool summary did not include a test count")
 		}
+		total = passed + failed + skipped
+		totalSet = true
 	}
 	if len(cases) == 0 {
 		missing := make([]string, 0, 4)
@@ -695,20 +838,26 @@ func ParseTestResultSummary(data []byte) (*TestSummary, error) {
 			return nil, fmt.Errorf("xcresulttool summary is missing required test counts: %s", strings.Join(missing, ", "))
 		}
 	}
-	if total < 0 || passed < 0 || failed < 0 || skipped < 0 || passed+failed+skipped > total {
+	if !testCountsMatch(total, passed, failed, skipped) {
 		return nil, fmt.Errorf("xcresulttool summary contains inconsistent test counts")
 	}
-	durationMS, err := decodeDurationMS(raw.TestDuration)
+	durationMS, err := decodeMilliseconds(raw.DurationMS)
 	if err != nil {
 		return nil, fmt.Errorf("decode test duration: %w", err)
 	}
-	if durationMS == 0 {
+	if !hasJSONValue(raw.DurationMS) {
+		durationMS, err = decodeDurationMS(raw.TestDuration)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("decode test duration: %w", err)
+	}
+	if !hasJSONValue(raw.DurationMS) && !hasJSONValue(raw.TestDuration) {
 		durationMS, err = decodeDurationMS(raw.Duration)
 		if err != nil {
 			return nil, fmt.Errorf("decode test duration: %w", err)
 		}
 	}
-	if durationMS == 0 {
+	if !hasJSONValue(raw.DurationMS) && !hasJSONValue(raw.TestDuration) && !hasJSONValue(raw.Duration) {
 		start, startSet, startErr := decodeFloatValue(raw.StartTime)
 		finish, finishSet, finishErr := decodeFloatValue(raw.FinishTime)
 		if startErr != nil || finishErr != nil {
@@ -729,7 +878,7 @@ func ParseTestResultSummary(data []byte) (*TestSummary, error) {
 			}
 		}
 	}
-	return &TestSummary{
+	summary := &TestSummary{
 		Total:      total,
 		Passed:     passed,
 		Failed:     failed,
@@ -737,7 +886,11 @@ func ParseTestResultSummary(data []byte) (*TestSummary, error) {
 		DurationMS: durationMS,
 		Cases:      cases,
 		Failures:   failures,
-	}, nil
+	}
+	if err := validateTestSummary(summary); err != nil {
+		return nil, err
+	}
+	return summary, nil
 }
 
 // ParseTestResultCases parses the recursive test tree returned by
@@ -753,7 +906,14 @@ func ParseTestResultCases(data []byte) ([]TestCase, error) {
 		if err := json.Unmarshal(data, &direct); err != nil {
 			return nil, fmt.Errorf("decode xcresulttool test cases: %w", err)
 		}
-		return parseRawTestCases(direct)
+		cases, err := parseRawTestCases(direct)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateTestCases(cases); err != nil {
+			return nil, err
+		}
+		return cases, nil
 	}
 
 	var payload rawTestResults
@@ -769,6 +929,9 @@ func ParseTestResultCases(data []byte) ([]TestCase, error) {
 			return nil, err
 		}
 	}
+	if err := validateTestCases(cases); err != nil {
+		return nil, err
+	}
 	return cases, nil
 }
 
@@ -777,7 +940,11 @@ func appendTestCases(cases *[]TestCase, node rawTestNode) error {
 		return fmt.Errorf("xcresulttool tests output exceeds %d test cases", maxTestCaseCount)
 	}
 	if strings.EqualFold(strings.TrimSpace(node.NodeType), "test case") {
-		*cases = append(*cases, parseRawTestNode(node))
+		testCase, err := parseRawTestNode(node)
+		if err != nil {
+			return err
+		}
+		*cases = append(*cases, testCase)
 		return nil
 	}
 	for _, child := range node.Children {
@@ -794,17 +961,17 @@ func parseRawTestCases(rawCases []rawTestCase) ([]TestCase, error) {
 	}
 	cases := make([]TestCase, 0, len(rawCases))
 	for _, rawCase := range rawCases {
-		durationMS, err := decodeDurationMS(rawCase.DurationMS)
+		durationMS, err := decodeMilliseconds(rawCase.DurationMS)
 		if err != nil {
 			return nil, err
 		}
-		if durationMS == 0 {
+		if !hasJSONValue(rawCase.DurationMS) {
 			durationMS, err = decodeDurationMS(rawCase.Duration)
 			if err != nil {
 				return nil, err
 			}
 		}
-		if durationMS == 0 {
+		if !hasJSONValue(rawCase.DurationMS) && !hasJSONValue(rawCase.Duration) {
 			durationMS, err = decodeDurationMS(rawCase.DurationInSecs)
 			if err != nil {
 				return nil, err
@@ -842,7 +1009,8 @@ func parseRawTestCases(rawCases []rawTestCase) ([]TestCase, error) {
 }
 
 func parseRawTestCasesPayload(data json.RawMessage) ([]TestCase, error) {
-	if len(data) == 0 || string(data) == "null" {
+	trimmed := strings.TrimSpace(string(data))
+	if len(data) == 0 || trimmed == "null" {
 		return nil, nil
 	}
 	var rawCases []rawTestCase
@@ -850,12 +1018,15 @@ func parseRawTestCasesPayload(data json.RawMessage) ([]TestCase, error) {
 		// A current summary uses no `tests` array, while older shapes may use an
 		// object for that field. Treat an object as an absent case list so the
 		// aggregate fields remain authoritative.
+		if strings.HasPrefix(trimmed, "[") {
+			return nil, fmt.Errorf("decode xcresulttool test cases: %w", err)
+		}
 		return nil, nil
 	}
 	return parseRawTestCases(rawCases)
 }
 
-func parseRawTestNode(node rawTestNode) TestCase {
+func parseRawTestNode(node rawTestNode) (TestCase, error) {
 	identifier := strings.TrimSpace(node.Identifier)
 	if identifier == "" {
 		identifier = strings.TrimSpace(node.IdentifierAlt)
@@ -874,9 +1045,21 @@ func parseRawTestNode(node rawTestNode) TestCase {
 	if status == "" {
 		status = normalizeTestStatus(node.Result)
 	}
-	durationMS, _ := decodeDurationMS(node.Duration)
-	if durationMS == 0 {
-		durationMS, _ = decodeDurationMS(node.DurationInSeconds)
+	durationMS, err := decodeMilliseconds(node.DurationMS)
+	if err != nil {
+		return TestCase{}, fmt.Errorf("decode test case duration: %w", err)
+	}
+	if !hasJSONValue(node.DurationMS) {
+		durationMS, err = decodeDurationMS(node.Duration)
+		if err != nil {
+			return TestCase{}, fmt.Errorf("decode test case duration: %w", err)
+		}
+	}
+	if !hasJSONValue(node.DurationMS) && !hasJSONValue(node.Duration) {
+		durationMS, err = decodeDurationMS(node.DurationInSeconds)
+		if err != nil {
+			return TestCase{}, fmt.Errorf("decode test case duration: %w", err)
+		}
 	}
 	message := node.Message
 	if strings.TrimSpace(message) == "" {
@@ -892,7 +1075,7 @@ func parseRawTestNode(node rawTestNode) TestCase {
 		Status:     status,
 		DurationMS: durationMS,
 		Message:    boundTestMessage(message),
-	}
+	}, nil
 }
 
 func testNodeFailureMessage(children []rawTestNode) string {
@@ -1026,7 +1209,7 @@ func decodeDurationMS(data json.RawMessage) (int64, error) {
 	}
 	var number float64
 	if err := json.Unmarshal(data, &number); err == nil {
-		return max(int64(0), int64(number*1000)), nil
+		return secondsToMilliseconds(number)
 	}
 	var text string
 	if err := json.Unmarshal(data, &text); err != nil {
@@ -1035,13 +1218,62 @@ func decodeDurationMS(data json.RawMessage) (int64, error) {
 	trimmed := strings.TrimSpace(text)
 	value, err := strconv.ParseFloat(trimmed, 64)
 	if err == nil {
-		return max(int64(0), int64(value*1000)), nil
+		return secondsToMilliseconds(value)
 	}
 	parsed, durationErr := time.ParseDuration(strings.ReplaceAll(trimmed, " ", ""))
 	if durationErr != nil {
-		return 0, err
+		return 0, durationErr
 	}
 	return max(int64(0), parsed.Milliseconds()), nil
+}
+
+func decodeMilliseconds(data json.RawMessage) (int64, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return 0, nil
+	}
+	var number float64
+	if err := json.Unmarshal(data, &number); err == nil {
+		return nonNegativeMilliseconds(number)
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return 0, err
+	}
+	number, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+	if err != nil {
+		return 0, err
+	}
+	return nonNegativeMilliseconds(number)
+}
+
+func secondsToMilliseconds(value float64) (int64, error) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, fmt.Errorf("duration is not finite")
+	}
+	if value <= 0 {
+		return 0, nil
+	}
+	if value >= float64(math.MaxInt64)/1000 {
+		return math.MaxInt64, nil
+	}
+	return nonNegativeMilliseconds(value * 1000)
+}
+
+func nonNegativeMilliseconds(value float64) (int64, error) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, fmt.Errorf("duration is not finite")
+	}
+	if value <= 0 {
+		return 0, nil
+	}
+	if value >= float64(math.MaxInt64) {
+		return math.MaxInt64, nil
+	}
+	return int64(value), nil
+}
+
+func hasJSONValue(data json.RawMessage) bool {
+	return len(data) > 0 && strings.TrimSpace(string(data)) != "null"
 }
 
 func normalizeTestStatus(value string) string {
@@ -1069,6 +1301,63 @@ func countTestCases(cases []TestCase) (passed, failed, skipped int) {
 		}
 	}
 	return passed, failed, skipped
+}
+
+func validateTestCases(cases []TestCase) error {
+	for _, testCase := range cases {
+		switch normalizeTestStatus(testCase.Status) {
+		case "passed", "failed", "skipped":
+		default:
+			return fmt.Errorf("xcresulttool test case %q has unsupported status %q", testCase.Identifier, testCase.Status)
+		}
+	}
+	return nil
+}
+
+func validateTestSummary(summary *TestSummary) error {
+	if summary == nil {
+		return fmt.Errorf("xcresulttool summary was empty")
+	}
+	if !testCountsMatch(summary.Total, summary.Passed, summary.Failed, summary.Skipped) {
+		return fmt.Errorf("xcresulttool summary contains inconsistent test counts")
+	}
+	if len(summary.Cases) == 0 {
+		return nil
+	}
+	if err := validateTestCases(summary.Cases); err != nil {
+		return err
+	}
+	// Xcode can report aggregate tests per destination or repetition while the
+	// recursive `tests` operation exposes flattened leaf cases. Only compare
+	// per-case status counts when both operations describe the same unit.
+	if len(summary.Cases) != summary.Total {
+		return nil
+	}
+	passed, failed, skipped := countTestCases(summary.Cases)
+	if passed != summary.Passed || failed != summary.Failed || skipped != summary.Skipped {
+		return fmt.Errorf("xcresulttool test case statuses do not match summary counts")
+	}
+	return nil
+}
+
+func testCountsMatch(total, passed, failed, skipped int) bool {
+	if total < 0 || passed < 0 || failed < 0 || skipped < 0 || passed > total {
+		return false
+	}
+	remaining := total - passed
+	if failed > remaining {
+		return false
+	}
+	return skipped == remaining-failed
+}
+
+func hasFailedTestCase(cases []TestCase) bool {
+	for _, testCase := range cases {
+		if normalizeTestStatus(testCase.Status) == "failed" {
+			return true
+		}
+	}
+	return false
 }
 
 func boundTestMessage(value string) string {

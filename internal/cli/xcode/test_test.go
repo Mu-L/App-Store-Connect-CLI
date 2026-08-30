@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	localxcode "github.com/rudrankriyam/App-Store-Connect-CLI/internal/xcode"
 )
@@ -100,12 +101,66 @@ func TestXcodeTestPassesTypedOptionsAndPrintsJSON(t *testing.T) {
 		t.Fatalf("XcodebuildArgs = %#v, want %#v", gotOpts.XcodebuildArgs, wantRaw)
 	}
 
-	var payload localxcode.TestResult
+	var payload asc.XcodeTestResult
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v\nstdout=%s", err, stdout)
 	}
-	if payload.Action != "test" || payload.Tests == nil || payload.Tests.Total != 2 || payload.Tests.Failed != 1 || payload.DurationMS != 1400 {
+	if payload.Action != "test" || payload.Tests == nil || payload.Tests.Total != 2 || payload.Tests.Failed != 1 || payload.DurationMs != 1400 {
 		t.Fatalf("unexpected JSON payload: %+v", payload)
+	}
+	if strings.Contains(stdout, "duration_ms") || strings.Contains(stdout, "no_code_signing") {
+		t.Fatalf("JSON output used legacy snake_case keys: %s", stdout)
+	}
+}
+
+func TestXcodeTestPreservesSelectorWhitespace(t *testing.T) {
+	originalRunTest := runTest
+	t.Cleanup(func() { runTest = originalRunTest })
+	var gotOpts localxcode.TestOptions
+	runTest = func(_ context.Context, opts localxcode.TestOptions) (*localxcode.TestResult, error) {
+		gotOpts = opts
+		return &localxcode.TestResult{Action: opts.Action, Success: true}, nil
+	}
+
+	wantDestination := " platform=iOS Simulator,name=iPhone 17 Pro "
+	wantOnlyTesting := " DemoTests/Smoke "
+	wantSkipTesting := " DemoTests/Flaky "
+	wantRawFlag := "  OTHER_SWIFT_FLAGS=-D ASC_TEST  "
+	cmd := XcodeTestCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.FlagSet.Parse([]string{
+		"--project", "Demo.xcodeproj",
+		"--scheme", "Demo",
+		"--destination", wantDestination,
+		"--only-testing", wantOnlyTesting,
+		"--skip-testing", wantSkipTesting,
+		"--xcodebuild-flag", wantRawFlag,
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("FlagSet.Parse() error = %v", err)
+	}
+	var runErr error
+	_, stderr := captureCommandOutput(t, func() error {
+		runErr = cmd.Exec(context.Background(), nil)
+		return runErr
+	})
+	if runErr != nil {
+		t.Fatalf("Exec() error = %v", runErr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if len(gotOpts.Destinations) != 1 || gotOpts.Destinations[0] != wantDestination {
+		t.Fatalf("Destinations = %#v, want %#v", gotOpts.Destinations, []string{wantDestination})
+	}
+	if len(gotOpts.OnlyTesting) != 1 || gotOpts.OnlyTesting[0] != wantOnlyTesting {
+		t.Fatalf("OnlyTesting = %#v, want %#v", gotOpts.OnlyTesting, []string{wantOnlyTesting})
+	}
+	if len(gotOpts.SkipTesting) != 1 || gotOpts.SkipTesting[0] != wantSkipTesting {
+		t.Fatalf("SkipTesting = %#v, want %#v", gotOpts.SkipTesting, []string{wantSkipTesting})
+	}
+	if len(gotOpts.XcodebuildArgs) != 1 || gotOpts.XcodebuildArgs[0] != wantRawFlag {
+		t.Fatalf("XcodebuildArgs = %#v, want %#v", gotOpts.XcodebuildArgs, []string{wantRawFlag})
 	}
 }
 
@@ -128,6 +183,8 @@ func TestXcodeTestValidationErrorsAreUsageErrors(t *testing.T) {
 		{name: "missing destination", args: []string{"--project", "Demo.xcodeproj", "--scheme", "Demo"}, want: "--destination is required"},
 		{name: "invalid action", args: []string{"--project", "Demo.xcodeproj", "--scheme", "Demo", "--destination", "generic/platform=iOS", "--action", "archive"}, want: "--action must be one of"},
 		{name: "without building missing xctestrun", args: []string{"--action", "test-without-building", "--destination", "generic/platform=iOS"}, want: "--xctestrun is required"},
+		{name: "without building rejects configuration", args: []string{"--action", "test-without-building", "--xctestrun", "Demo.xctestrun", "--destination", "generic/platform=iOS", "--configuration", "Debug"}, want: "--configuration cannot be used"},
+		{name: "without building rejects derived data path", args: []string{"--action", "test-without-building", "--xctestrun", "Demo.xctestrun", "--destination", "generic/platform=iOS", "--derived-data-path", "/tmp/DerivedData"}, want: "--derived-data-path cannot be used"},
 		{name: "reserved raw action", args: []string{"--project", "Demo.xcodeproj", "--scheme", "Demo", "--destination", "generic/platform=iOS", "--xcodebuild-flag=test"}, want: "cannot override asc-managed argument"},
 	}
 
@@ -246,7 +303,7 @@ func TestXcodeTestPrintsStructuredFailureBeforeReturningError(t *testing.T) {
 	if !strings.Contains(stderr, "Error: xcode test failed with exit status 65") {
 		t.Fatalf("stderr = %q, want concise final test error", stderr)
 	}
-	var payload localxcode.TestResult
+	var payload asc.XcodeTestResult
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v\nstdout=%s", err, stdout)
 	}
@@ -259,9 +316,10 @@ func TestXcodeTestJUnitIncludesStructuredCases(t *testing.T) {
 	report := testResultJUnitReport(&localxcode.TestResult{
 		Success: true,
 		Tests: &localxcode.TestSummary{
-			Total:  3,
-			Passed: 1,
-			Failed: 1,
+			Total:   3,
+			Passed:  1,
+			Failed:  1,
+			Skipped: 1,
 			Cases: []localxcode.TestCase{
 				{Identifier: "DemoTests/Smoke/testPass", Name: "testPass", Classname: "DemoTests", Status: "passed", DurationMS: 250},
 				{Identifier: "DemoTests/Smoke/testFail", Name: "testFail", Classname: "DemoTests", Status: "failed", Message: "assertion failed", DurationMS: 400},
@@ -280,6 +338,74 @@ func TestXcodeTestJUnitIncludesStructuredCases(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("JUnit output = %s, want %q", data, want)
 		}
+	}
+}
+
+func TestXcodeTestJUnitReconcilesSummaryCountsWithoutDroppingCases(t *testing.T) {
+	report := testResultJUnitReport(&localxcode.TestResult{
+		Success: true,
+		Tests: &localxcode.TestSummary{
+			Total:   3,
+			Passed:  1,
+			Failed:  1,
+			Skipped: 1,
+			Cases: []localxcode.TestCase{
+				{Identifier: "DemoTests/Smoke/testPass", Name: "testPass", Status: "passed"},
+				{Identifier: "DemoTests/Smoke/testFail", Name: "testFail", Status: "failed", Message: "assertion failed"},
+			},
+		},
+	})
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("JUnit Marshal() error = %v", err)
+	}
+	if got := strings.Count(string(data), "<testcase "); got != 3 {
+		t.Fatalf("JUnit testcase count = %d, want 3\n%s", got, data)
+	}
+	for _, want := range []string{"testPass", "testFail", "aggregate-skipped", `failures="1"`, "<skipped></skipped>"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("JUnit output = %s, want %q", data, want)
+		}
+	}
+}
+
+func TestXcodeTestJUnitZeroSummaryProducesNoSyntheticCase(t *testing.T) {
+	report := testResultJUnitReport(&localxcode.TestResult{
+		Success: true,
+		Tests:   &localxcode.TestSummary{},
+	})
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("JUnit Marshal() error = %v", err)
+	}
+	if got := strings.Count(string(data), "<testcase "); got != 0 {
+		t.Fatalf("JUnit testcase count = %d, want zero\n%s", got, data)
+	}
+	if !strings.Contains(string(data), `tests="0"`) || !strings.Contains(string(data), `failures="0"`) {
+		t.Fatalf("JUnit output = %s, want zero summary", data)
+	}
+}
+
+func TestXcodeTestJUnitPreservesInfrastructureFailureWithPassingCases(t *testing.T) {
+	exitStatus := 65
+	report := testResultJUnitReport(&localxcode.TestResult{
+		Success:    false,
+		ExitStatus: &exitStatus,
+		Tests: &localxcode.TestSummary{
+			Total:  1,
+			Passed: 1,
+			Cases:  []localxcode.TestCase{{Identifier: "DemoTests/Smoke/testPass", Name: "testPass", Status: "passed"}},
+		},
+	})
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("JUnit Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), "testPass") || !strings.Contains(string(data), "xcodebuild exited with status 65") {
+		t.Fatalf("JUnit output = %s, want passing case and infrastructure failure", data)
+	}
+	if !strings.Contains(string(data), `failures="1"`) {
+		t.Fatalf("JUnit output = %s, want one infrastructure failure", data)
 	}
 }
 

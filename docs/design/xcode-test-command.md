@@ -41,8 +41,12 @@ repeatable `--only-testing`, repeatable `--skip-testing`,
 `--no-code-signing`, repeatable `--xcodebuild-flag`, and the standard output
 flags. Empty values are invalid. Positional arguments are invalid.
 
-`--test-plan` and `--xctestrun` are mutually exclusive. `--clean` and
-`--no-code-signing` are only valid for actions that select a project/workspace.
+`--test-plan` and `--xctestrun` are mutually exclusive. `--clean`,
+`--no-code-signing`, `--configuration`, and `--derived-data-path` are only
+valid for actions that select a project/workspace; `test-without-building`
+rejects all four build-only controls. Repeatable destination and test-filter
+values reject empty or control-character input but otherwise retain their
+literal whitespace.
 Raw passthrough arguments cannot override selectors, destinations, paths,
 actions, or ASC-managed signing settings. Values are passed as individual argv
 entries and retain their user-provided order and whitespace.
@@ -63,11 +67,17 @@ aggregate fields such as `totalTestCount`, `passedTests`, `failedTests`,
 `skippedTests`, and `testFailures`; `xcresulttool get test-results tests
 --path PATH --compact` supplies the recursive `testNodes` tree. The parser
 flattens only `Test Case` nodes and takes bounded failure text from structured
-failure-message children. Unknown fields are ignored. Missing required summary
-fields, malformed JSON, a missing result bundle, or unavailable result tooling
-are explicit post-processing errors; asc must not invent successful test counts.
+failure-message children. It accepts only closed `passed`, `failed`, and
+`skipped` case statuses and requires aggregate counts to sum exactly to the
+total. When the flattened cases represent the same unit as the aggregate,
+their status counts are cross-checked; multi-destination or repetition trees
+are preserved even when their leaf count differs from the aggregate. Unknown
+fields are ignored. Structured output is capped before parsing. Missing
+required summary fields, malformed JSON, a missing result bundle, or
+unavailable result tooling are explicit post-processing errors; asc must not
+invent successful test counts or report success when any test failed.
 
-JSON follows the current local Xcode result naming convention:
+JSON uses the registered exported output receipt with stable camelCase fields:
 
 ```json
 {
@@ -76,21 +86,21 @@ JSON follows the current local Xcode result naming convention:
   "scheme": "App",
   "configuration": "Debug",
   "destinations": ["platform=iOS Simulator,name=iPhone 17 Pro"],
-  "derived_data_path": "/path/to/DerivedData",
-  "result_bundle_path": "/path/to/App-tests.xcresult",
+  "derivedDataPath": "/path/to/DerivedData",
+  "resultBundlePath": "/path/to/App-tests.xcresult",
   "tests": {
     "total": 12,
     "passed": 10,
     "failed": 1,
     "skipped": 1,
-    "duration_ms": 4812,
+    "durationMs": 4812,
     "failures": [
       {"identifier": "AppTests/LoginTests/testInvalidPassword", "message": "assertion failed"}
     ]
   },
   "success": false,
-  "duration_ms": 5120,
-  "exit_status": 65
+  "durationMs": 5120,
+  "exitStatus": 65
 }
 ```
 
@@ -103,9 +113,11 @@ stdout never contains the complete raw log or environment.
 
 When the global `--report junit --report-file PATH` flags are supplied and a
 structured test result exists, the command contributes one JUnit testcase per
-parsed test. Usage and preflight failures retain the existing generic command
-level report. Report files continue to use the repository's no-overwrite and
-restricted-permission writer behavior.
+parsed test and synthesizes bounded aggregate cases when summary counts are not
+fully represented by the flattened tree. A zero-test summary produces no
+passing placeholder. Usage and preflight failures retain the existing generic
+command-level report. Report files continue to use the repository's
+no-overwrite and restricted-permission writer behavior.
 
 ## Validation and failure behavior
 

@@ -69,6 +69,16 @@ func TestValidateTestOptions(t *testing.T) {
 			wantErr: "--clean cannot be used",
 		},
 		{
+			name:    "without building rejects configuration",
+			opts:    TestOptions{Action: string(TestActionTestWithoutBuilding), XctestrunPath: "Demo.xctestrun", Configuration: "Debug", Destinations: []string{"generic/platform=iOS"}},
+			wantErr: "--configuration cannot be used",
+		},
+		{
+			name:    "without building rejects derived data path",
+			opts:    TestOptions{Action: string(TestActionTestWithoutBuilding), XctestrunPath: "Demo.xctestrun", DerivedDataPath: "/tmp/DerivedData", Destinations: []string{"generic/platform=iOS"}},
+			wantErr: "--derived-data-path cannot be used",
+		},
+		{
 			name:    "test action rejects xctestrun",
 			opts:    TestOptions{ProjectPath: "Demo.xcodeproj", Scheme: "Demo", XctestrunPath: "Demo.xctestrun", Destinations: []string{"generic/platform=iOS"}},
 			wantErr: "--xctestrun is only valid",
@@ -92,6 +102,16 @@ func TestValidateTestOptions(t *testing.T) {
 			name:    "empty raw flag",
 			opts:    TestOptions{ProjectPath: "Demo.xcodeproj", Scheme: "Demo", Destinations: []string{"generic/platform=iOS"}, XcodebuildArgs: []string{" "}},
 			wantErr: "--xcodebuild-flag cannot be empty",
+		},
+		{
+			name:    "control character in destination",
+			opts:    TestOptions{ProjectPath: "Demo.xcodeproj", Scheme: "Demo", Destinations: []string{"generic/platform=iOS\x00"}},
+			wantErr: "--destination cannot contain control characters",
+		},
+		{
+			name:    "control character in test filter",
+			opts:    TestOptions{ProjectPath: "Demo.xcodeproj", Scheme: "Demo", Destinations: []string{"generic/platform=iOS"}, OnlyTesting: []string{"DemoTests/Smoke\n"}},
+			wantErr: "--only-testing cannot contain control characters",
 		},
 	}
 
@@ -150,6 +170,151 @@ func TestBuildTestCommandUsesTypedOptionsAndPreservesOrder(t *testing.T) {
 	}
 }
 
+func TestNormalizeTestOptionsPreservesTestSelectorValues(t *testing.T) {
+	wantDestination := " platform=iOS Simulator,name=iPhone 17 Pro "
+	wantOnlyTesting := " DemoTests/Smoke "
+	wantSkipTesting := " DemoTests/Flaky "
+	wantRawFlag := "  OTHER_SWIFT_FLAGS=-D ASC_TEST  "
+	opts := normalizeTestOptions(TestOptions{
+		ProjectPath:    "Demo.xcodeproj",
+		Scheme:         "Demo",
+		Destinations:   []string{wantDestination},
+		OnlyTesting:    []string{wantOnlyTesting},
+		SkipTesting:    []string{wantSkipTesting},
+		XcodebuildArgs: []string{wantRawFlag},
+	})
+	if !reflect.DeepEqual(opts.Destinations, []string{wantDestination}) {
+		t.Fatalf("Destinations = %#v, want literal value %#v", opts.Destinations, wantDestination)
+	}
+	if !reflect.DeepEqual(opts.OnlyTesting, []string{wantOnlyTesting}) {
+		t.Fatalf("OnlyTesting = %#v, want literal value %#v", opts.OnlyTesting, wantOnlyTesting)
+	}
+	if !reflect.DeepEqual(opts.SkipTesting, []string{wantSkipTesting}) {
+		t.Fatalf("SkipTesting = %#v, want literal value %#v", opts.SkipTesting, wantSkipTesting)
+	}
+	if !reflect.DeepEqual(opts.XcodebuildArgs, []string{wantRawFlag}) {
+		t.Fatalf("XcodebuildArgs = %#v, want literal value %#v", opts.XcodebuildArgs, wantRawFlag)
+	}
+	args := buildTestCommand(opts)
+	for _, want := range []string{
+		"-destination", wantDestination,
+		"-only-testing:" + wantOnlyTesting,
+		"-skip-testing:" + wantSkipTesting,
+		wantRawFlag,
+	} {
+		found := false
+		for _, arg := range args {
+			if arg == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("argv = %#v, want literal argument %q", args, want)
+		}
+	}
+}
+
+func TestBuildTestCommandOmitsDerivedDataForTestWithoutBuilding(t *testing.T) {
+	args := buildTestCommand(TestOptions{
+		Action:          string(TestActionTestWithoutBuilding),
+		XctestrunPath:   "Demo.xctestrun",
+		Destinations:    []string{"generic/platform=iOS"},
+		Configuration:   "Debug",
+		DerivedDataPath: "/tmp/DerivedData",
+	})
+	for index, arg := range args {
+		if arg == "-derivedDataPath" || arg == "-configuration" || (index > 0 && (args[index-1] == "-derivedDataPath" || args[index-1] == "-configuration")) {
+			t.Fatalf("argv = %#v, must not include build-only paths for test-without-building", args)
+		}
+	}
+}
+
+func TestParseTestResultCasesRejectsUnknownStatus(t *testing.T) {
+	data := []byte(`[{"identifier":"DemoTests/Smoke/testPending","status":"running"}]`)
+	if _, err := ParseTestResultCases(data); err == nil || !strings.Contains(err.Error(), "unsupported status") {
+		t.Fatalf("ParseTestResultCases() error = %v, want unsupported-status error", err)
+	}
+}
+
+func TestParseTestResultCasesRejectsMalformedNodeDuration(t *testing.T) {
+	data := []byte(`{"testNodes":[{"nodeType":"Test Case","nodeIdentifier":"Demo/test","result":"Passed","durationMs":"not-a-number"}]}`)
+	if _, err := ParseTestResultCases(data); err == nil || !strings.Contains(err.Error(), "duration") {
+		t.Fatalf("ParseTestResultCases() error = %v, want malformed-duration error", err)
+	}
+}
+
+func TestParseTestResultCasesPreservesDurationMilliseconds(t *testing.T) {
+	data := []byte(`[{"identifier":"DemoTests/Smoke/testPass","status":"passed","durationMs":17}]`)
+	cases, err := ParseTestResultCases(data)
+	if err != nil {
+		t.Fatalf("ParseTestResultCases() error = %v", err)
+	}
+	if len(cases) != 1 || cases[0].DurationMS != 17 {
+		t.Fatalf("cases = %+v, want duration 17ms", cases)
+	}
+}
+
+func TestParseTestResultSummaryPreservesDurationMilliseconds(t *testing.T) {
+	data := []byte(`{"totalTestCount":1,"passedTests":1,"failedTests":0,"skippedTests":0,"durationMs":17}`)
+	summary, err := ParseTestResultSummary(data)
+	if err != nil {
+		t.Fatalf("ParseTestResultSummary() error = %v", err)
+	}
+	if summary.DurationMS != 17 {
+		t.Fatalf("DurationMS = %d, want 17", summary.DurationMS)
+	}
+}
+
+func TestParseTestResultDurationsPreferExplicitZeroMilliseconds(t *testing.T) {
+	summary, err := ParseTestResultSummary([]byte(`{"totalTestCount":0,"passedTests":0,"failedTests":0,"skippedTests":0,"durationMs":0,"testDuration":3.5}`))
+	if err != nil {
+		t.Fatalf("ParseTestResultSummary() error = %v", err)
+	}
+	if summary.DurationMS != 0 {
+		t.Fatalf("summary DurationMS = %d, want explicit zero", summary.DurationMS)
+	}
+	cases, err := ParseTestResultCases([]byte(`[{"identifier":"Demo/test","status":"passed","durationMs":0,"duration":0.25}]`))
+	if err != nil {
+		t.Fatalf("ParseTestResultCases() error = %v", err)
+	}
+	if len(cases) != 1 || cases[0].DurationMS != 0 {
+		t.Fatalf("cases = %+v, want explicit zero duration", cases)
+	}
+}
+
+func TestParseTestResultSummaryPreservesFlattenedCasesWhenUnitsDiffer(t *testing.T) {
+	data := []byte(`{
+  "totalTestCount":1,
+  "passedTests":1,
+  "failedTests":0,
+  "skippedTests":0,
+  "tests":[
+    {"identifier":"Demo/testDestinationA","status":"passed"},
+    {"identifier":"Demo/testDestinationB","status":"passed"}
+  ]
+}`)
+	summary, err := ParseTestResultSummary(data)
+	if err != nil {
+		t.Fatalf("ParseTestResultSummary() error = %v, want aggregate/case unit mismatch to remain representable", err)
+	}
+	if summary.Total != 1 || len(summary.Cases) != 2 {
+		t.Fatalf("summary = %+v, want aggregate total 1 and both flattened cases", summary)
+	}
+}
+
+func TestRunXcresulttoolJSONRejectsOversizedOutput(t *testing.T) {
+	originalCommandContext := commandContextFn
+	t.Cleanup(func() { commandContextFn = originalCommandContext })
+	commandContextFn = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "head -c 16777217 /dev/zero")
+	}
+	_, err := runXcresulttoolJSON(context.Background(), "summary", "/tmp/Demo.xcresult")
+	if err == nil || !strings.Contains(err.Error(), "output exceeds") {
+		t.Fatalf("runXcresulttoolJSON() error = %v, want bounded-output error", err)
+	}
+}
+
 func TestBuildTestCommandSupportsWithoutBuilding(t *testing.T) {
 	opts := TestOptions{
 		Action:           string(TestActionTestWithoutBuilding),
@@ -188,7 +353,7 @@ func TestParseTestResultSummaryWithCases(t *testing.T) {
 	if got.Total != 3 || got.Passed != 1 || got.Failed != 1 || got.Skipped != 1 || got.DurationMS != 1250 {
 		t.Fatalf("unexpected summary: %+v", got)
 	}
-	if len(got.Cases) != 3 || got.Cases[1].Status != "failed" || got.Cases[0].DurationMS != 250 {
+	if len(got.Cases) != 3 || got.Cases[1].Status != "failed" || got.Cases[0].DurationMS != 250 || got.Cases[1].DurationMS != 125 {
 		t.Fatalf("unexpected cases: %+v", got.Cases)
 	}
 	if len(got.Failures) != 1 || got.Failures[0].Identifier != "DemoTests/Login/testInvalid" {
@@ -277,8 +442,12 @@ func TestParseTestResultCasesWalksCurrentXcodeTree(t *testing.T) {
 func TestParseTestResultSummaryRejectsInvalidCountsAndMissingCount(t *testing.T) {
 	for _, data := range [][]byte{
 		[]byte(`{"tests":2,"passedTests":2,"failedTests":1}`),
+		[]byte(`{"tests":2,"passedTests":1,"failedTests":0,"skippedTests":0}`),
 		[]byte(`{"totalTestCount":2}`),
 		[]byte(`{"result":"Passed"}`),
+		[]byte(`{"tests":[{"identifier":"DemoTests/Smoke/testPending","status":"running"}]}`),
+		[]byte(`{"totalTestCount":1,"passedTests":1,"failedTests":0,"skippedTests":0,"tests":[1]}`),
+		[]byte(`{"totalTestCount":1,"passedTests":0,"failedTests":1,"skippedTests":0,"tests":[{"identifier":"DemoTests/Smoke/testPass","status":"passed"}]}`),
 	} {
 		if _, err := ParseTestResultSummary(data); err == nil {
 			t.Fatalf("ParseTestResultSummary(%s) succeeded, want error", data)
@@ -400,6 +569,25 @@ func TestValidateTestResultBundleDestination(t *testing.T) {
 	}
 }
 
+func TestValidateTestResultBundleDestinationRejectsSymlinkParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation requires elevated privileges")
+	}
+	root := t.TempDir()
+	realParent := filepath.Join(root, "real")
+	if err := os.Mkdir(realParent, 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	symlinkParent := filepath.Join(root, "link")
+	if err := os.Symlink(realParent, symlinkParent); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	path := filepath.Join(symlinkParent, "new.xcresult")
+	if err := validateTestResultBundleDestination(path); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("validateTestResultBundleDestination() error = %v, want symlink-parent error", err)
+	}
+}
+
 func TestSetTestExitStatusLeavesSignalsWithoutStatus(t *testing.T) {
 	result := &TestResult{}
 	setTestExitStatus(result, errors.New("not an exit error"))
@@ -421,7 +609,7 @@ func TestReadTestResultSummaryUsesCurrentXcodeOperations(t *testing.T) {
 		commands = append(commands, append([]string{name}, args...))
 		output := `{"totalTestCount":1,"passedTests":1,"failedTests":0,"skippedTests":0}`
 		if len(args) > 3 && args[3] == "tests" {
-			output = `{"testNodes":[{"nodeType":"Test Plan","children":[{"nodeType":"Unit test bundle","children":[{"nodeType":"Test Suite","children":[{"nodeType":"Test Case","nodeIdentifier":"DemoTests/Smoke/testPass","name":"testPass","result":"Passed"}]}]}]}]}`
+			output = `{"testNodes":[{"nodeType":"Test Plan","children":[{"nodeType":"Unit test bundle","children":[{"nodeType":"Test Suite","children":[{"nodeType":"Test Case","nodeIdentifier":"DemoTests/Smoke/testPass","name":"testPass","result":"Passed"},{"nodeType":"Test Case","nodeIdentifier":"DemoTests/Smoke/testPassAgain","name":"testPassAgain","result":"Passed"}]}]}]}]}`
 		}
 		return exec.CommandContext(ctx, "printf", "%s", output)
 	}
@@ -430,7 +618,7 @@ func TestReadTestResultSummaryUsesCurrentXcodeOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readTestResultSummary() error = %v", err)
 	}
-	if got.Total != 1 || got.Passed != 1 || len(got.Cases) != 1 || got.Cases[0].Identifier != "DemoTests/Smoke/testPass" {
+	if got.Total != 1 || got.Passed != 1 || len(got.Cases) != 2 || got.Cases[0].Identifier != "DemoTests/Smoke/testPass" || got.Cases[1].Identifier != "DemoTests/Smoke/testPassAgain" {
 		t.Fatalf("unexpected summary: %+v", got)
 	}
 	if len(commands) != 2 {
@@ -481,7 +669,12 @@ func TestTestRunsActionAndParsesResult(t *testing.T) {
 		return nil
 	}
 	readTestResultSummaryFn = func(context.Context, string) (*TestSummary, error) {
-		return &TestSummary{Total: 1, Passed: 1, DurationMS: 250}, nil
+		return &TestSummary{
+			Total:      1,
+			Passed:     1,
+			DurationMS: 250,
+			Cases:      []TestCase{{Identifier: "DemoTests/Smoke/testPass", Status: "passed"}},
+		}, nil
 	}
 
 	result, err := Test(context.Background(), TestOptions{
@@ -500,6 +693,112 @@ func TestTestRunsActionAndParsesResult(t *testing.T) {
 	}
 	if result.ResultBundlePath != resultPath || len(gotArgs) == 0 || gotArgs[len(gotArgs)-1] != "test" {
 		t.Fatalf("result path/argv = %q/%#v, want explicit result path and test action", result.ResultBundlePath, gotArgs)
+	}
+}
+
+func TestTestRejectsFailedPostProcessingSummary(t *testing.T) {
+	originalRuntimeGOOS := runtimeGOOS
+	originalLookPath := lookPathFn
+	originalCommandContext := commandContextFn
+	originalRun := runXcodeTestCommand
+	originalRead := readTestResultSummaryFn
+	t.Cleanup(func() {
+		runtimeGOOS = originalRuntimeGOOS
+		lookPathFn = originalLookPath
+		commandContextFn = originalCommandContext
+		runXcodeTestCommand = originalRun
+		readTestResultSummaryFn = originalRead
+	})
+	runtimeGOOS = "darwin"
+	lookPathFn = func(string) (string, error) { return "/usr/bin/xcodebuild", nil }
+	commandContextFn = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+	projectPath := filepath.Join(t.TempDir(), "Demo.xcodeproj")
+	if err := os.Mkdir(projectPath, 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	resultPath := filepath.Join(t.TempDir(), "Demo-tests.xcresult")
+	runXcodeTestCommand = func(_ context.Context, args []string, _ io.Writer) error {
+		for index, arg := range args {
+			if arg == "-resultBundlePath" && index+1 < len(args) {
+				return os.Mkdir(args[index+1], 0o755)
+			}
+		}
+		return errors.New("result bundle argument missing")
+	}
+	readTestResultSummaryFn = func(context.Context, string) (*TestSummary, error) {
+		return &TestSummary{
+			Total:  1,
+			Failed: 1,
+			Cases:  []TestCase{{Identifier: "DemoTests/Smoke/testFail", Status: "failed"}},
+		}, nil
+	}
+
+	result, err := Test(context.Background(), TestOptions{
+		ProjectPath:      projectPath,
+		Scheme:           "Demo",
+		Action:           string(TestActionTest),
+		Destinations:     []string{"platform=iOS Simulator,name=iPhone 17 Pro"},
+		DerivedDataPath:  filepath.Join(t.TempDir(), "DerivedData"),
+		ResultBundlePath: resultPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "failed tests") {
+		t.Fatalf("Test() error = %v, want failed-test result error", err)
+	}
+	if result.Success || result.Tests == nil || result.Tests.Failed != 1 || result.ExitStatus != nil {
+		t.Fatalf("unexpected failed-result payload: %+v", result)
+	}
+}
+
+func TestTestRejectsResultBundleSymlinkCreatedAfterPreflight(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation requires elevated privileges")
+	}
+	originalRuntimeGOOS := runtimeGOOS
+	originalLookPath := lookPathFn
+	originalCommandContext := commandContextFn
+	originalRun := runXcodeTestCommand
+	originalRead := readTestResultSummaryFn
+	t.Cleanup(func() {
+		runtimeGOOS = originalRuntimeGOOS
+		lookPathFn = originalLookPath
+		commandContextFn = originalCommandContext
+		runXcodeTestCommand = originalRun
+		readTestResultSummaryFn = originalRead
+	})
+	runtimeGOOS = "darwin"
+	lookPathFn = func(string) (string, error) { return "/usr/bin/xcodebuild", nil }
+	commandContextFn = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+	projectPath := filepath.Join(t.TempDir(), "Demo.xcodeproj")
+	if err := os.Mkdir(projectPath, 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	resultPath := filepath.Join(t.TempDir(), "Demo-tests.xcresult")
+	runXcodeTestCommand = func(_ context.Context, _ []string, _ io.Writer) error {
+		return os.Symlink(filepath.Join(filepath.Dir(resultPath), "outside.xcresult"), resultPath)
+	}
+	readCalls := 0
+	readTestResultSummaryFn = func(context.Context, string) (*TestSummary, error) {
+		readCalls++
+		return &TestSummary{Total: 1, Passed: 1, Cases: []TestCase{{Identifier: "DemoTests/Smoke/testPass", Status: "passed"}}}, nil
+	}
+
+	result, err := Test(context.Background(), TestOptions{
+		ProjectPath:      projectPath,
+		Scheme:           "Demo",
+		Action:           string(TestActionTest),
+		Destinations:     []string{"platform=iOS Simulator,name=iPhone 17 Pro"},
+		DerivedDataPath:  filepath.Join(t.TempDir(), "DerivedData"),
+		ResultBundlePath: resultPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Test() error = %v, want result-bundle symlink error", err)
+	}
+	if result.Success || readCalls != 0 {
+		t.Fatalf("unexpected symlink result: %+v, readCalls=%d", result, readCalls)
 	}
 }
 

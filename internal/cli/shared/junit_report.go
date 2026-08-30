@@ -72,9 +72,13 @@ func (r *JUnitReport) Marshal() ([]byte, error) {
 
 	tests := len(r.Tests)
 	failures := 0
+	skipped := 0
 	for _, tc := range r.Tests {
 		if tc.Failure != "" {
 			failures++
+		}
+		if tc.Skipped {
+			skipped++
 		}
 	}
 
@@ -87,6 +91,7 @@ func (r *JUnitReport) Marshal() ([]byte, error) {
 		Name:      name,
 		Tests:     tests,
 		Failures:  failures,
+		Skipped:   skipped,
 		Errors:    0,
 		Time:      formatDuration(totalDuration(r.Tests)),
 		Timestamp: r.Timestamp.Format(time.RFC3339),
@@ -163,6 +168,7 @@ type testsuiteXML struct {
 	Name      string        `xml:"name,attr"`
 	Tests     int           `xml:"tests,attr"`
 	Failures  int           `xml:"failures,attr"`
+	Skipped   int           `xml:"skipped,attr"`
 	Errors    int           `xml:"errors,attr"`
 	Time      string        `xml:"time,attr"`
 	Timestamp string        `xml:"timestamp,attr,omitempty"`

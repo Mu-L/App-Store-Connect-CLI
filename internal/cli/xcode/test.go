@@ -19,6 +19,22 @@ import (
 
 var runTest = localxcode.Test
 
+const maxJUnitAggregateCases = 10000
+
+// exactTestStringFlag keeps Xcode's structured selector syntax byte-for-byte
+// intact. Unlike generic repeatable flags, destination and test identifiers
+// may intentionally contain spaces that must reach xcodebuild unchanged.
+type exactTestStringFlag []string
+
+func (f *exactTestStringFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *exactTestStringFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
 // XcodeTestCommand returns the local Xcode test command.
 func XcodeTestCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("xcode test", flag.ExitOnError)
@@ -28,19 +44,19 @@ func XcodeTestCommand() *ffcli.Command {
 	scheme := fs.String("scheme", "", "Xcode scheme name (required except for test-without-building)")
 	action := fs.String("action", string(localxcode.TestActionTest), "Xcode test action: test, build-for-testing, or test-without-building")
 	configuration := fs.String("configuration", "", "Build configuration (for example Debug or Release)")
-	var destinations shared.MultiStringFlag
+	var destinations exactTestStringFlag
 	fs.Var(&destinations, "destination", "Xcode destination specifier (repeatable; required)")
 	testPlan := fs.String("test-plan", "", "Xcode test plan name")
 	xctestrunPath := fs.String("xctestrun", "", "Path to an existing .xctestrun file for test-without-building")
-	var onlyTesting shared.MultiStringFlag
+	var onlyTesting exactTestStringFlag
 	fs.Var(&onlyTesting, "only-testing", "Run only the selected test target or identifier (repeatable)")
-	var skipTesting shared.MultiStringFlag
+	var skipTesting exactTestStringFlag
 	fs.Var(&skipTesting, "skip-testing", "Skip the selected test target or identifier (repeatable)")
 	derivedDataPath := fs.String("derived-data-path", "", "DerivedData directory (defaults to a stable asc cache path)")
 	resultBundlePath := fs.String("result-bundle-path", "", "Destination for a new Xcode result bundle")
 	clean := fs.Bool("clean", false, "Run clean before the selected Xcode action")
 	noCodeSigning := fs.Bool("no-code-signing", false, "Set CODE_SIGNING_ALLOWED=NO explicitly")
-	var xcodebuildFlags shared.MultiStringFlag
+	var xcodebuildFlags exactTestStringFlag
 	fs.Var(&xcodebuildFlags, "xcodebuild-flag", "Pass a raw argument through to xcodebuild (repeatable)")
 	output := shared.BindOutputFlags(fs)
 
@@ -55,6 +71,8 @@ plus --scheme and at least one --destination. The default action is test. Use
 --action build-for-testing to produce test products, or use
 --action test-without-building with an existing --xctestrun file. Test actions
 write a new .xcresult bundle automatically when --result-bundle-path is omitted.
+The test-without-building action rejects project/build controls, including
+--configuration and --derived-data-path.
 
 Xcode diagnostics are written to stderr and the selected structured result
 format is written to stdout. This command never calls App Store Connect or
@@ -108,7 +126,7 @@ Examples:
 					}
 					return outputErr
 				}
-				if result.Tests != nil && shared.ReportFormat() == shared.ReportFormatJUnit && shared.ReportFile() != "" {
+				if shared.ReportFormat() == shared.ReportFormatJUnit && shared.ReportFile() != "" {
 					shared.SetJUnitReport(testResultJUnitReport(result))
 				}
 			}
@@ -152,80 +170,84 @@ func testInterruptionReason(err error) error {
 }
 
 func printTestResult(result *localxcode.TestResult, output string, pretty bool) error {
-	return shared.PrintOutputWithRenderers(
-		result,
-		output,
-		pretty,
-		func() error {
-			asc.RenderTable([]string{"field", "value"}, testResultRows(result))
-			return nil
-		},
-		func() error {
-			asc.RenderMarkdown([]string{"field", "value"}, testResultRows(result))
-			return nil
-		},
-	)
+	return shared.PrintOutput(toXcodeTestResult(result), output, pretty)
 }
 
-func testResultRows(result *localxcode.TestResult) [][]string {
-	rows := make([][]string, 0, 22)
-	if result.WorkspacePath != "" {
-		rows = append(rows, []string{"workspace", result.WorkspacePath})
+func toXcodeTestResult(result *localxcode.TestResult) *asc.XcodeTestResult {
+	if result == nil {
+		return nil
 	}
-	if result.ProjectPath != "" {
-		rows = append(rows, []string{"project", result.ProjectPath})
+	output := &asc.XcodeTestResult{
+		Workspace:        result.WorkspacePath,
+		Project:          result.ProjectPath,
+		Scheme:           result.Scheme,
+		Action:           result.Action,
+		Configuration:    result.Configuration,
+		Destinations:     append([]string(nil), result.Destinations...),
+		TestPlan:         result.TestPlan,
+		XctestrunPath:    result.XctestrunPath,
+		DerivedDataPath:  result.DerivedDataPath,
+		ResultBundlePath: result.ResultBundlePath,
+		Clean:            result.Clean,
+		NoCodeSigning:    result.NoCodeSigning,
+		Success:          result.Success,
+		DurationMs:       result.DurationMS,
+		ExitStatus:       result.ExitStatus,
 	}
-	if result.Scheme != "" {
-		rows = append(rows, []string{"scheme", result.Scheme})
+	if result.Tests == nil {
+		return output
 	}
-	rows = append(rows, []string{"action", result.Action})
-	if result.Configuration != "" {
-		rows = append(rows, []string{"configuration", result.Configuration})
+	output.Tests = &asc.XcodeTestSummary{
+		Total:      result.Tests.Total,
+		Passed:     result.Tests.Passed,
+		Failed:     result.Tests.Failed,
+		Skipped:    result.Tests.Skipped,
+		DurationMs: result.Tests.DurationMS,
 	}
-	if len(result.Destinations) > 0 {
-		rows = append(rows, []string{"destinations", strings.Join(result.Destinations, "\n")})
+	if len(result.Tests.Cases) > 0 {
+		output.Tests.Cases = make([]asc.XcodeTestCase, 0, len(result.Tests.Cases))
+		for _, testCase := range result.Tests.Cases {
+			output.Tests.Cases = append(output.Tests.Cases, asc.XcodeTestCase{
+				Identifier: testCase.Identifier,
+				Name:       testCase.Name,
+				Classname:  testCase.Classname,
+				Status:     testCase.Status,
+				DurationMs: testCase.DurationMS,
+				Message:    testCase.Message,
+			})
+		}
 	}
-	if result.TestPlan != "" {
-		rows = append(rows, []string{"test_plan", result.TestPlan})
+	if len(result.Tests.Failures) > 0 {
+		output.Tests.Failures = make([]asc.XcodeTestFailure, 0, len(result.Tests.Failures))
+		for _, failure := range result.Tests.Failures {
+			output.Tests.Failures = append(output.Tests.Failures, asc.XcodeTestFailure{
+				Identifier: failure.Identifier,
+				Message:    failure.Message,
+			})
+		}
 	}
-	if result.XctestrunPath != "" {
-		rows = append(rows, []string{"xctestrun_path", result.XctestrunPath})
-	}
-	if result.DerivedDataPath != "" {
-		rows = append(rows, []string{"derived_data_path", result.DerivedDataPath})
-	}
-	if result.ResultBundlePath != "" {
-		rows = append(rows, []string{"result_bundle_path", result.ResultBundlePath})
-	}
-	rows = append(
-		rows,
-		[]string{"clean", fmt.Sprintf("%t", result.Clean)},
-		[]string{"no_code_signing", fmt.Sprintf("%t", result.NoCodeSigning)},
-	)
-	if result.Tests != nil {
-		rows = append(
-			rows,
-			[]string{"tests_total", fmt.Sprintf("%d", result.Tests.Total)},
-			[]string{"tests_passed", fmt.Sprintf("%d", result.Tests.Passed)},
-			[]string{"tests_failed", fmt.Sprintf("%d", result.Tests.Failed)},
-			[]string{"tests_skipped", fmt.Sprintf("%d", result.Tests.Skipped)},
-			[]string{"tests_duration_ms", fmt.Sprintf("%d", result.Tests.DurationMS)},
-		)
-	}
-	rows = append(
-		rows,
-		[]string{"success", fmt.Sprintf("%t", result.Success)},
-		[]string{"duration_ms", fmt.Sprintf("%d", result.DurationMS)},
-	)
-	if result.ExitStatus != nil {
-		rows = append(rows, []string{"exit_status", fmt.Sprintf("%d", *result.ExitStatus)})
-	}
-	return rows
+	return output
 }
 
 func testResultJUnitReport(result *localxcode.TestResult) *shared.JUnitReport {
-	tests := make([]shared.JUnitTestCase, 0, len(result.Tests.Cases))
-	for _, testCase := range result.Tests.Cases {
+	report := &shared.JUnitReport{Timestamp: time.Now(), Name: "asc xcode test"}
+	if result == nil {
+		return report
+	}
+
+	var summary *localxcode.TestSummary
+	if result.Tests != nil {
+		summary = result.Tests
+	}
+	tests := make([]shared.JUnitTestCase, 0)
+	if summary != nil {
+		capacity := len(summary.Cases)
+		if remaining := maxJUnitAggregateCases - capacity; remaining > 0 {
+			capacity += min(remaining, max(0, summary.Total))
+		}
+		tests = make([]shared.JUnitTestCase, 0, capacity)
+	}
+	for _, testCase := range summaryCases(summary) {
 		name := testCase.Name
 		if name == "" {
 			name = testCase.Identifier
@@ -252,22 +274,93 @@ func testResultJUnitReport(result *localxcode.TestResult) *shared.JUnitReport {
 			Message:   message,
 		})
 	}
-	if len(tests) == 0 {
-		name := "asc xcode test"
-		failure := ""
-		message := ""
-		if !result.Success || result.Tests.Failed > 0 {
-			failure = "FAILURE"
-			message = "test action reported failure"
+
+	if summary != nil {
+		actualPassed, actualFailed, actualSkipped := junitStatusCounts(tests)
+		missingPassed := max(0, summary.Passed-actualPassed)
+		missingFailed := max(0, summary.Failed-actualFailed)
+		missingSkipped := max(0, summary.Skipped-actualSkipped)
+		syntheticCount := 0
+		for index := 0; index < missingPassed && len(tests) < maxJUnitAggregateCases; index++ {
+			tests = append(tests, syntheticJUnitTestCase("passed", syntheticCount, ""))
+			syntheticCount++
 		}
-		tests = append(tests, shared.JUnitTestCase{
-			Name:    name,
-			Failure: failure,
-			Message: message,
-			Time:    durationFromMilliseconds(result.Tests.DurationMS),
-		})
+		for index := 0; index < missingFailed && len(tests) < maxJUnitAggregateCases; index++ {
+			tests = append(tests, syntheticJUnitTestCase("failed", syntheticCount, "test action reported failure"))
+			syntheticCount++
+		}
+		for index := 0; index < missingSkipped && len(tests) < maxJUnitAggregateCases; index++ {
+			tests = append(tests, syntheticJUnitTestCase("skipped", syntheticCount, ""))
+			syntheticCount++
+		}
+		if len(summary.Cases) == 0 && len(tests) > 0 {
+			// Count-only summaries have no case durations. Keep the aggregate
+			// duration in the first synthetic case without multiplying it by the
+			// number of synthesized status entries.
+			tests[0].Time = durationFromMilliseconds(summary.DurationMS)
+		}
 	}
-	return &shared.JUnitReport{Tests: tests, Timestamp: time.Now(), Name: "asc xcode test"}
+
+	if !hasJUnitFailure(tests) {
+		infrastructureFailure := !result.Success
+		if result.ExitStatus != nil && *result.ExitStatus != 0 {
+			infrastructureFailure = true
+		}
+		if infrastructureFailure {
+			message := "xcode test did not complete successfully"
+			if result.ExitStatus != nil && *result.ExitStatus != 0 {
+				message = fmt.Sprintf("xcodebuild exited with status %d", *result.ExitStatus)
+			}
+			tests = append(tests, syntheticJUnitTestCase("failed", len(tests), message))
+		}
+	}
+	report.Tests = tests
+	return report
+}
+
+func summaryCases(summary *localxcode.TestSummary) []localxcode.TestCase {
+	if summary == nil {
+		return nil
+	}
+	return summary.Cases
+}
+
+func junitStatusCounts(tests []shared.JUnitTestCase) (passed, failed, skipped int) {
+	for _, testCase := range tests {
+		switch {
+		case testCase.Skipped:
+			skipped++
+		case testCase.Failure != "":
+			failed++
+		default:
+			passed++
+		}
+	}
+	return passed, failed, skipped
+}
+
+func syntheticJUnitTestCase(status string, index int, message string) shared.JUnitTestCase {
+	testCase := shared.JUnitTestCase{
+		Name:      fmt.Sprintf("aggregate-%s-%d", status, index+1),
+		Classname: "asc xcode test",
+		Message:   message,
+	}
+	switch status {
+	case "failed":
+		testCase.Failure = "FAILURE"
+	case "skipped":
+		testCase.Skipped = true
+	}
+	return testCase
+}
+
+func hasJUnitFailure(tests []shared.JUnitTestCase) bool {
+	for _, testCase := range tests {
+		if testCase.Failure != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func testFailureMessage(summary *localxcode.TestSummary, identifier string) string {

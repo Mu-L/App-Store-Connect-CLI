@@ -121,6 +121,9 @@ func TestJUnitReport_WriteWithSkippedTest(t *testing.T) {
 	if !strings.Contains(string(data), "<skipped></skipped>") {
 		t.Fatalf("JUnit output = %s, want skipped element", data)
 	}
+	if !strings.Contains(string(data), `skipped="1"`) {
+		t.Fatalf("JUnit output = %s, want skipped suite count", data)
+	}
 }
 
 func TestJUnitReport_EscapeSpecialChars(t *testing.T) {
