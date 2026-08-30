@@ -179,6 +179,23 @@ func (g *GitStore) WriteEncryptedFile(relPath string, plaintext []byte, password
 	return root.WriteFile(relPath+".enc", encrypted, 0o600)
 }
 
+// ReplaceEncryptedFile atomically creates or replaces a legacy encrypted
+// artifact while preserving its existing file mode when present.
+func (g *GitStore) ReplaceEncryptedFile(relPath string, plaintext []byte, password string) error {
+	if err := validateEncryptedRepositoryPath(filepath.ToSlash(relPath)); err != nil {
+		return err
+	}
+	encrypted, err := Encrypt(plaintext, password)
+	if err != nil {
+		return err
+	}
+	root, err := g.filesystemRoot()
+	if err != nil {
+		return err
+	}
+	return root.WriteFilePreservingMode(relPath+".enc", encrypted, 0o600)
+}
+
 // WriteEncryptedFileWithMetadata writes a versioned encrypted file whose
 // non-secret metadata is authenticated with the ciphertext.
 func (g *GitStore) WriteEncryptedFileWithMetadata(relPath string, plaintext []byte, password string, metadata EncryptedFileMetadata) error {
@@ -198,7 +215,7 @@ func (g *GitStore) WriteEncryptedFileWithMetadata(relPath string, plaintext []by
 }
 
 // ReplaceEncryptedFileWithMetadata atomically creates or replaces a versioned
-// encrypted non-secret index artifact after the caller has validated its scope.
+// encrypted artifact after the caller has validated its scope.
 func (g *GitStore) ReplaceEncryptedFileWithMetadata(relPath string, plaintext []byte, password string, metadata EncryptedFileMetadata) error {
 	if err := validateEncryptedRepositoryPath(filepath.ToSlash(relPath)); err != nil {
 		return err
