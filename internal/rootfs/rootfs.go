@@ -83,6 +83,9 @@ type Root struct {
 	// openPublishedFileForTest injects a transient result from the rooted
 	// published-file reopen without changing production callers.
 	openPublishedFileForTest func(root *os.Root, name string) (*os.File, error)
+	// statPublishedFileForTest injects a transient descriptor Stat result after
+	// publication without changing production callers.
+	statPublishedFileForTest func(file *os.File) (os.FileInfo, error)
 	// postPublicationLstatForTest replaces the first published-entry Lstat in
 	// tests so transient identity-observation failures can be exercised without
 	// widening the production API.
@@ -1929,6 +1932,12 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	if r.openPublishedFileForTest != nil {
 		openPublishedFile = r.openPublishedFileForTest
 	}
+	statPublishedFile := func(file *os.File) (os.FileInfo, error) {
+		if r.statPublishedFileForTest != nil {
+			return r.statPublishedFileForTest(file)
+		}
+		return file.Stat()
+	}
 	closeStaging := func() error {
 		if stagingClosed || stagingRetained {
 			return nil
@@ -1954,7 +1963,7 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 		if openErr != nil {
 			return nil, false
 		}
-		publishedInfo, statErr := publishedFile.Stat()
+		publishedInfo, statErr := statPublishedFile(publishedFile)
 		if statErr != nil || !publishedInfo.Mode().IsRegular() || !os.SameFile(stagedInfo, publishedInfo) {
 			_ = publishedFile.Close()
 			return nil, false
@@ -2072,8 +2081,16 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 			_ = publishedFile.Close()
 		}
 	}()
-	publishedInfo, err := publishedFile.Stat()
+	publishedInfo, err := statPublishedFile(publishedFile)
 	if err != nil {
+		_ = publishedFile.Close()
+		closePublishedFile = false
+		if retainedInfo, retained := retainPublishedDestinationIdentity(); retained {
+			return written, retainedInfo, fmt.Errorf("stat opened published file %q: %w", resolved, err)
+		}
+		if retainStagingIdentity() {
+			return written, stagedInfo, fmt.Errorf("stat opened published file %q: %w", resolved, err)
+		}
 		return written, nil, fmt.Errorf("stat opened published file %q: %w", resolved, err)
 	}
 	if !publishedInfo.Mode().IsRegular() {

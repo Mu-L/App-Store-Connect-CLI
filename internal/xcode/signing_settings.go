@@ -417,7 +417,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	}
 	if err != nil {
 		if len(blockedExternalPaths) > 0 {
-			inputPaths, externalEntitlementPaths, inputPathBlockers, inputErr := signingProjectInputPaths(project, settingsPath, configFiles, requests, opts.AllowExternalXCConfig, lexicalConfigPaths)
+			inputPaths, externalEntitlementPaths, inputPathBlockers, inputErr := signingProjectInputPaths(project, settingsPath, configFiles, fileIdentities, requests, opts.AllowExternalXCConfig, lexicalConfigPaths)
 			if inputErr != nil {
 				return nil, inputErr
 			}
@@ -445,7 +445,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		}
 		return nil, err
 	}
-	inputPaths, externalEntitlementPaths, inputPathBlockers, err := signingProjectInputPaths(project, settingsPath, configFiles, requests, opts.AllowExternalXCConfig, lexicalConfigPaths)
+	inputPaths, externalEntitlementPaths, inputPathBlockers, err := signingProjectInputPaths(project, settingsPath, configFiles, fileIdentities, requests, opts.AllowExternalXCConfig, lexicalConfigPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -580,23 +580,14 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			addFile(operation.Path, "xcconfig")
 		}
 	}
-	// Bind every xcconfig consulted while resolving a selected configuration,
-	// not only the files this plan rewrites. A file that merely supplies or
-	// overrides a resolved value can change between re-resolution and commit,
-	// and without a recorded digest that change would go unnoticed and the
-	// receipt would certify an effective value the project no longer produces.
+	// Bind every successfully collected xcconfig consumer graph, not only the
+	// files this plan rewrites or the selected configuration resolves through.
+	// Consumer analysis uses unselected graphs to decide whether a source is
+	// shared and safe to rewrite, so changing any consulted input must stale the
+	// plan before commit.
 	resolutionInputs := make([]string, 0)
-	for _, configuration := range project.configurations {
-		if !selectedIDs[configuration.id] {
-			continue
-		}
-		for current := configuration; current != nil; {
-			resolutionInputs = append(resolutionInputs, configFiles[current.id]...)
-			if current.projectLevel {
-				break
-			}
-			current = project.projectConfiguration(current.name)
-		}
+	for _, paths := range configFiles {
+		resolutionInputs = append(resolutionInputs, paths...)
 	}
 	sort.Strings(resolutionInputs)
 	for _, path := range resolutionInputs {
@@ -2116,6 +2107,7 @@ func signingProjectInputPaths(
 	project *structuredVersionProject,
 	settingsPath string,
 	configFiles map[string][]string,
+	fileIdentities map[string]string,
 	requests []signingRequest,
 	allowExternal bool,
 	lexicalConfigPaths map[string][]string,
@@ -2132,6 +2124,21 @@ func signingProjectInputPaths(
 		configuration, err := signingConfigurationFor(project, request.target, request.configuration)
 		if err == nil {
 			selectedIDs[configuration.id] = true
+		}
+	}
+	selectedXCConfigSources := make(map[string]bool)
+	for _, configuration := range project.configurations {
+		if !selectedIDs[configuration.id] {
+			continue
+		}
+		for current := configuration; current != nil; {
+			for _, filePath := range configFiles[current.id] {
+				selectedXCConfigSources[signingXCConfigOperationKey(filePath, fileIdentities)] = true
+			}
+			if current.projectLevel {
+				break
+			}
+			current = project.projectConfiguration(current.name)
 		}
 	}
 	appendEntitlements := func(value string) error {
@@ -2276,7 +2283,9 @@ func signingProjectInputPaths(
 				return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("parse xcconfig %s: %w", filePath, err)
 			}
 			for _, assignment := range document.assignments {
-				if assignment.continued && allowedSigningSetting(assignment.baseKey) {
+				selectedSource := selectedXCConfigSources[signingXCConfigOperationKey(filePath, fileIdentities)]
+				if assignment.continued && allowedSigningSetting(assignment.baseKey) &&
+					(assignment.baseKey == "CODE_SIGN_ENTITLEMENTS" || selectedSource) {
 					return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("xcconfig %s uses a line continuation for signing setting %s", filePath, assignment.baseKey)
 				}
 				if assignment.baseKey == "CODE_SIGN_ENTITLEMENTS" {

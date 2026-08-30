@@ -786,6 +786,67 @@ func TestCreateNewFileAtomicWithInfoRetainsIdentityAfterPublishedReopenFailure(t
 	}
 }
 
+func TestCreateNewFileAtomicWithInfoRetainsIdentityAfterPublishedDescriptorStatFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	transient := errors.New("injected published descriptor stat failure")
+	attempts := 0
+	root.statPublishedFileForTest = func(file *os.File) (os.FileInfo, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, transient
+		}
+		return file.Stat()
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
+	if err == nil || !errors.Is(err, transient) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected descriptor Stat failure", err)
+	}
+	if info == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned nil identity after transient descriptor Stat failure")
+	}
+	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
+	if err != nil {
+		t.Fatalf("Stat(receipt) error = %v", err)
+	}
+	if !os.SameFile(info, diskInfo) {
+		t.Fatal("returned identity does not identify the published file")
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoKeepsUnixStagingIdentityWhenPublishedStatStaysUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	transient := errors.New("persistent published descriptor stat failure")
+	root.statPublishedFileForTest = func(*os.File) (os.FileInfo, error) {
+		return nil, transient
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
+	if err == nil || !errors.Is(err, transient) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want persistent descriptor Stat failure", err)
+	}
+	if runtime.GOOS == "windows" {
+		if info != nil {
+			t.Fatal("Windows returned an identity without a verified published descriptor")
+		}
+		return
+	}
+	if info == nil {
+		t.Fatal("Unix lost the retained staging identity after persistent descriptor Stat failure")
+	}
+	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
+	if err != nil {
+		t.Fatalf("Stat(receipt) error = %v", err)
+	}
+	if !os.SameFile(info, diskInfo) {
+		t.Fatal("returned identity does not identify the published file")
+	}
+}
+
 func TestCreateNewFileAtomicWithInfoRetainsStagingIdentityWhilePublishedReopenFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows must close the staging descriptor before publication")

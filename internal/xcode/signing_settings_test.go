@@ -602,6 +602,35 @@ func TestSigningPlanRejectsContinuedXCConfigAssignmentBeforeEditing(t *testing.T
 	}
 }
 
+func TestSigningPlanIgnoresUnselectedSigningContinuation(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	widgetPath := attachSigningWidgetXCConfig(t, project, "CODE_SIGN_STYLE = Automatic \\\n+\tcontinued\n")
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}
+		]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("unselected signing continuation blocked plan: %#v", plan.Blockers)
+	}
+	for _, file := range plan.Files {
+		if file.Path == widgetPath {
+			return
+		}
+	}
+	t.Fatalf("plan omitted unselected consumer input %s: %#v", widgetPath, plan.Files)
+}
+
 func TestSigningPlanBlocksUnterminatedQuotedSigningValue(t *testing.T) {
 	project := writeStructuredVersionProject(t, true)
 	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
@@ -1905,6 +1934,38 @@ func TestSigningPlanDigestsXCConfigsUsedOnlyForResolution(t *testing.T) {
 	}
 }
 
+func TestSigningPlanRevalidatesUnselectedConsumerInput(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	widgetPath := attachSigningWidgetXCConfig(t, project, "CODE_SIGN_STYLE = Automatic\n")
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}
+		]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got %#v", plan.Blockers)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	if err := os.WriteFile(widgetPath, []byte("CODE_SIGN_STYLE = Manual\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(widget xcconfig) error = %v", err)
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("ApplySigningPlan() error = %v, want stale-plan rejection", err)
+	}
+}
+
 func TestSigningPlanRevalidatesNoOpReferenceAfterDependentChange(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")
@@ -3028,7 +3089,7 @@ func TestSigningPlanProtectsResolvedEntitlementsReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openStructuredVersionProject() error = %v", err)
 	}
-	paths, _, _, err := signingProjectInputPaths(structured, settingsPath, nil, []signingRequest{{
+	paths, _, _, err := signingProjectInputPaths(structured, settingsPath, nil, nil, []signingRequest{{
 		target: "App", configuration: "Debug",
 		settings: []signingDesiredSetting{{key: "CODE_SIGN_STYLE", value: stringPtr("manual")}},
 	}}, false, nil)

@@ -135,7 +135,7 @@ func validateXCConfigValueQuotes(value string) error {
 	for index := 0; index < len(value); index++ {
 		character := value[index]
 		if quote == 0 {
-			if character == '"' || character == '\'' {
+			if (character == '"' || character == '\'') && xcconfigQuoteStartsAt(value, index) {
 				quote = character
 			}
 			continue
@@ -156,6 +156,18 @@ func validateXCConfigValueQuotes(value string) error {
 		return fmt.Errorf("unterminated quote %q in xcconfig value", string(quote))
 	}
 	return nil
+}
+
+func xcconfigQuoteStartsAt(value string, index int) bool {
+	if index == 0 {
+		return true
+	}
+	switch value[index-1] {
+	case ' ', '\t', '=':
+		return true
+	default:
+		return false
+	}
 }
 
 func splitLinesPreservingEndings(value string) []string {
@@ -201,7 +213,7 @@ func maskXCConfigComments(line string, inBlockComment bool) (string, bool) {
 			continue
 		}
 
-		if character == '"' || character == '\'' {
+		if (character == '"' || character == '\'') && xcconfigQuoteStartsAt(line, index) {
 			inQuote = character
 			continue
 		}

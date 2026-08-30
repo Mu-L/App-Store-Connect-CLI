@@ -185,6 +185,28 @@ func TestXCConfigParserRejectsUnterminatedQuotedValues(t *testing.T) {
 	}
 }
 
+func TestXCConfigEditorTreatsApostrophesInUnquotedValuesAsLiterals(t *testing.T) {
+	input := "INFOPLIST_KEY_CFBundleDisplayName = Developer's App // keep this comment\nMARKETING_VERSION = 1.2.3\n"
+	document, err := parseXCConfig([]byte(input))
+	if err != nil {
+		t.Fatalf("parseXCConfig() error = %v", err)
+	}
+	if len(document.assignments) != 2 || document.assignments[0].value != "Developer's App" {
+		t.Fatalf("parseXCConfig() assignments = %#v", document.assignments)
+	}
+
+	updated, oldValues, changed, err := editXCConfig([]byte(input), marketingVersionSetting, "2.0.0")
+	if err != nil {
+		t.Fatalf("editXCConfig() error = %v", err)
+	}
+	if !changed || len(oldValues) != 1 || oldValues[0] != "1.2.3" {
+		t.Fatalf("editXCConfig() changed=%t oldValues=%#v", changed, oldValues)
+	}
+	if got := string(updated); !strings.Contains(got, "INFOPLIST_KEY_CFBundleDisplayName = Developer's App // keep this comment\n") {
+		t.Fatalf("editXCConfig() changed unquoted apostrophe value: %q", got)
+	}
+}
+
 func TestXCConfigRequiredMissingIncludeFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Root.xcconfig")
 	if err := os.WriteFile(path, []byte("#include \"Missing.xcconfig\"\n"), 0o644); err != nil {

@@ -317,6 +317,7 @@ func TestSigningProjectInputPathsFailsClosedWhenConfigDisappears(t *testing.T) {
 		settingsPath,
 		map[string][]string{"configuration": {missingPath}},
 		nil,
+		nil,
 		false,
 		nil,
 	)
