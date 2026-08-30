@@ -412,6 +412,15 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	}
 
 	fileConsumers, configFiles, fileIdentities, uncertainConsumers, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, unauthorizedExternal, err := project.signingXCConfigConsumers(selectedIDs, opts.AllowExternalXCConfig)
+	authorizedProtectedConfigPaths := make([]string, 0)
+	for _, protectedPath := range protectedConfigPaths {
+		if !opts.AllowExternalXCConfig && !signingPathLexicallyContained(project, protectedPath) {
+			continue
+		}
+		if validateSigningXCConfigPath(project, protectedPath, opts.AllowExternalXCConfig) == nil {
+			authorizedProtectedConfigPaths = appendUniqueSigningPaths(authorizedProtectedConfigPaths, protectedPath)
+		}
+	}
 	hasUnauthorizedExternal := func(paths []string) bool {
 		return !opts.AllowExternalXCConfig && unauthorizedExternal && len(paths) > 0
 	}
@@ -422,7 +431,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 				return nil, inputErr
 			}
 			protectedConfigPaths = appendUniqueSigningPaths(protectedConfigPaths, externalEntitlementPaths...)
-			if aliasErr := validateSigningArtifactAliases(planPath, receiptPath, inputPaths, protectedConfigPaths); aliasErr != nil {
+			if aliasErr := validateSigningArtifactAliasesWithAuthorizedProtectedPaths(planPath, receiptPath, inputPaths, protectedConfigPaths, authorizedProtectedConfigPaths); aliasErr != nil {
 				return nil, aliasErr
 			}
 			// An unauthorized external xcconfig is not merely an uncertain
@@ -450,11 +459,12 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		return nil, err
 	}
 	protectedConfigPaths = appendUniqueSigningPaths(protectedConfigPaths, externalEntitlementPaths...)
-	if err := validateSigningArtifactAliases(
+	if err := validateSigningArtifactAliasesWithAuthorizedProtectedPaths(
 		planPath,
 		receiptPath,
 		inputPaths,
 		protectedConfigPaths,
+		authorizedProtectedConfigPaths,
 	); err != nil {
 		return nil, err
 	}
@@ -1555,30 +1565,41 @@ func (resolver *signingSettingResolver) authorizeXCConfigPath(path string) error
 }
 
 func (resolver *signingSettingResolver) resolveSetting(configuration *versionConfiguration, setting string) (string, string, error) {
+	return resolver.resolveSettingWithContext(configuration, configuration, setting)
+}
+
+// resolveSettingWithContext locates a value in configuration while expanding
+// references in expansionConfiguration. A target configuration can inherit a
+// value from its project-level configuration, but Xcode evaluates references
+// in that inherited value against the target's effective settings.
+func (resolver *signingSettingResolver) resolveSettingWithContext(
+	configuration, expansionConfiguration *versionConfiguration,
+	setting string,
+) (string, string, error) {
 	value, ok, err := directBuildSetting(configuration.buildSettings, setting)
 	if err != nil {
 		return "", "", err
 	}
 	if ok {
-		return resolver.expandDirectSetting(configuration, setting, value, map[string]bool{setting: true})
+		return resolver.expandDirectSettingWithContext(configuration, expansionConfiguration, setting, value, map[string]bool{setting: true})
 	}
 	if configuration.baseReferenceID != "" {
 		path, err := resolver.project.fileReferencePath(configuration.baseReferenceID)
 		if err != nil {
 			return "", "", err
 		}
-		resolved, err := resolver.resolveConfigurationXCConfig(configuration, path, setting)
+		resolved, err := resolver.resolveConfigurationXCConfigWithContext(configuration, expansionConfiguration, path, setting)
 		if err != nil {
 			return "", "", err
 		}
 		if resolved.found {
-			value, _, err := resolver.expandSettingReferences(configuration, resolved.value, map[string]bool{setting: true})
+			value, _, err := resolver.expandSettingReferences(expansionConfiguration, resolved.value, map[string]bool{setting: true})
 			return value, resolved.path, err
 		}
 	}
 	if !configuration.projectLevel {
 		if projectConfiguration := resolver.project.projectConfiguration(configuration.name); projectConfiguration != nil {
-			return resolver.resolveSetting(projectConfiguration, setting)
+			return resolver.resolveSettingWithContext(projectConfiguration, expansionConfiguration, setting)
 		}
 	}
 	return "", "", fmt.Errorf("%s: %w", setting, errVersionSettingNotFound)
@@ -1589,78 +1610,97 @@ func (resolver *signingSettingResolver) expandDirectSetting(
 	setting, value string,
 	stack map[string]bool,
 ) (string, string, error) {
+	return resolver.expandDirectSettingWithContext(configuration, configuration, setting, value, stack)
+}
+
+func (resolver *signingSettingResolver) expandDirectSettingWithContext(
+	configuration, expansionConfiguration *versionConfiguration,
+	setting, value string,
+	stack map[string]bool,
+) (string, string, error) {
 	if strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}") {
-		inherited, _, err := resolver.resolveLowerSetting(configuration, setting)
+		inherited, _, err := resolver.resolveLowerSettingWithContext(configuration, expansionConfiguration, setting)
 		if err != nil {
 			return "", "", fmt.Errorf("resolve inherited %s: %w", setting, err)
 		}
 		value = strings.ReplaceAll(value, "$(inherited)", inherited)
 		value = strings.ReplaceAll(value, "${inherited}", inherited)
 	}
-	return resolver.expandSettingReferences(configuration, value, stack)
+	return resolver.expandSettingReferences(expansionConfiguration, value, stack)
 }
 
-func (resolver *signingSettingResolver) resolveLowerSetting(configuration *versionConfiguration, setting string) (string, string, error) {
+func (resolver *signingSettingResolver) resolveLowerSettingWithContext(
+	configuration, expansionConfiguration *versionConfiguration,
+	setting string,
+) (string, string, error) {
 	if configuration.baseReferenceID != "" {
 		path, err := resolver.project.fileReferencePath(configuration.baseReferenceID)
 		if err != nil {
 			return "", "", err
 		}
-		resolved, err := resolver.resolveConfigurationXCConfig(configuration, path, setting)
+		resolved, err := resolver.resolveConfigurationXCConfigWithContext(configuration, expansionConfiguration, path, setting)
 		if err != nil {
 			return "", "", err
 		}
 		if resolved.found {
-			value, _, err := resolver.expandSettingReferences(configuration, resolved.value, map[string]bool{setting: true})
+			value, _, err := resolver.expandSettingReferences(expansionConfiguration, resolved.value, map[string]bool{setting: true})
 			return value, resolved.path, err
 		}
 	}
 	if !configuration.projectLevel {
 		if fallback := resolver.project.projectConfiguration(configuration.name); fallback != nil {
-			return resolver.resolveSetting(fallback, setting)
+			return resolver.resolveSettingWithContext(fallback, expansionConfiguration, setting)
 		}
 	}
 	return "", "", fmt.Errorf("%s: %w", setting, errVersionSettingNotFound)
 }
 
 func (resolver *signingSettingResolver) resolveSettingReference(configuration *versionConfiguration, setting string, stack map[string]bool) (string, string, error) {
+	return resolver.resolveSettingReferenceWithContext(configuration, configuration, setting, stack)
+}
+
+func (resolver *signingSettingResolver) resolveSettingReferenceWithContext(
+	configuration, expansionConfiguration *versionConfiguration,
+	setting string,
+	stack map[string]bool,
+) (string, string, error) {
 	value, ok, err := directBuildSetting(configuration.buildSettings, setting)
 	if err != nil {
 		return "", "", err
 	}
 	if ok {
-		return resolver.expandDirectSetting(configuration, setting, value, stack)
+		return resolver.expandDirectSettingWithContext(configuration, expansionConfiguration, setting, value, stack)
 	}
 	if configuration.baseReferenceID != "" {
 		path, err := resolver.project.fileReferencePath(configuration.baseReferenceID)
 		if err != nil {
 			return "", "", err
 		}
-		resolved, err := resolver.resolveConfigurationXCConfig(configuration, path, setting)
+		resolved, err := resolver.resolveConfigurationXCConfigWithContext(configuration, expansionConfiguration, path, setting)
 		if err != nil {
 			return "", "", err
 		}
 		if resolved.found {
-			value, _, err := resolver.expandSettingReferences(configuration, resolved.value, stack)
+			value, _, err := resolver.expandSettingReferences(expansionConfiguration, resolved.value, stack)
 			return value, resolved.path, err
 		}
 	}
 	if !configuration.projectLevel {
 		if fallback := resolver.project.projectConfiguration(configuration.name); fallback != nil {
-			return resolver.resolveSettingReference(fallback, setting, stack)
+			return resolver.resolveSettingReferenceWithContext(fallback, expansionConfiguration, setting, stack)
 		}
 	}
 	return "", "", fmt.Errorf("setting not found")
 }
 
-func (resolver *signingSettingResolver) resolveConfigurationXCConfig(
-	configuration *versionConfiguration,
+func (resolver *signingSettingResolver) resolveConfigurationXCConfigWithContext(
+	configuration, expansionConfiguration *versionConfiguration,
 	path, setting string,
 ) (xcconfigResolvedValue, error) {
 	base := xcconfigResolvedValue{}
 	if !configuration.projectLevel {
 		if fallback := resolver.project.projectConfiguration(configuration.name); fallback != nil {
-			value, source, err := resolver.resolveSetting(fallback, setting)
+			value, source, err := resolver.resolveSettingWithContext(fallback, expansionConfiguration, setting)
 			if err == nil {
 				base = xcconfigResolvedValue{value: value, path: source, found: true}
 			} else if !errors.Is(err, errVersionSettingNotFound) {
@@ -2026,6 +2066,10 @@ func validateSigningArtifactPaths(planPath, receiptPath, projectPath, settingsPa
 // checks plus os.SameFile identify existing aliases without mutating the
 // filesystem; symlink aliases are rejected by the rooted opener.
 func validateSigningArtifactAliases(planPath, receiptPath string, inputPaths, protectedPaths []string) error {
+	return validateSigningArtifactAliasesWithAuthorizedProtectedPaths(planPath, receiptPath, inputPaths, protectedPaths, protectedPaths)
+}
+
+func validateSigningArtifactAliasesWithAuthorizedProtectedPaths(planPath, receiptPath string, inputPaths, protectedPaths, authorizedProtectedPaths []string) error {
 	normalize := func(path string) string {
 		return normalizeSigningLexicalPath(path)
 	}
@@ -2037,6 +2081,10 @@ func validateSigningArtifactAliases(planPath, receiptPath string, inputPaths, pr
 		{label: "plan", path: normalize(planPath)},
 		{label: "receipt", path: normalize(receiptPath)},
 	}
+	// Resolve lexical collisions before inspecting any filesystem path. This
+	// keeps an exact collision with an unauthorized protected path entirely
+	// no-touch while still allowing prospective physical resolution for paths
+	// that are safe to inspect.
 	for _, artifact := range artifacts {
 		for _, protectedPath := range protectedPaths {
 			if signingArtifactLexicalPathEqual(artifact.path, protectedPath) {
@@ -2045,6 +2093,37 @@ func validateSigningArtifactAliases(planPath, receiptPath string, inputPaths, pr
 		}
 	}
 	if signingArtifactLexicalPathEqual(artifacts[0].path, artifacts[1].path) {
+		return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("plan and receipt paths must not alias the same file")))
+	}
+	artifactPhysicalPaths := make(map[string]string, len(artifacts))
+	for _, artifact := range artifacts {
+		physical, err := signingResolveProspectivePathFn(artifact.path)
+		if err != nil {
+			return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("resolve prospective %s path %s: %w", artifact.label, artifact.path, err)))
+		}
+		artifactPhysicalPaths[artifact.label] = physical
+	}
+	protectedPhysicalPaths := make(map[string]string, len(protectedPaths))
+	for _, protectedPath := range protectedPaths {
+		if !protectedPathIsAuthorized(protectedPath, authorizedProtectedPaths) {
+			continue
+		}
+		physical, err := signingResolveProspectivePathFn(protectedPath)
+		if err != nil {
+			return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("resolve prospective protected project input %s: %w", protectedPath, err)))
+		}
+		protectedPhysicalPaths[protectedPath] = physical
+	}
+	for _, artifact := range artifacts {
+		for _, protectedPath := range protectedPaths {
+			protectedPhysicalPath, ok := protectedPhysicalPaths[protectedPath]
+			if ok && signingArtifactLexicalPathEqual(artifactPhysicalPaths[artifact.label], protectedPhysicalPath) {
+				return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("%s path aliases protected project input %s", artifact.label, artifact.path)))
+			}
+		}
+	}
+	if signingArtifactLexicalPathEqual(artifacts[0].path, artifacts[1].path) ||
+		signingArtifactLexicalPathEqual(artifactPhysicalPaths[artifacts[0].label], artifactPhysicalPaths[artifacts[1].label]) {
 		return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("plan and receipt paths must not alias the same file")))
 	}
 	artifactInfos := make(map[string]os.FileInfo, len(artifacts))
@@ -2086,6 +2165,15 @@ func validateSigningArtifactAliases(planPath, receiptPath string, inputPaths, pr
 				return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("%s path aliases project input %s", artifact.label, inputPath)))
 			}
 		}
+		physicalInputPath, err := signingResolveProspectivePathFn(inputPath)
+		if err != nil {
+			return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("resolve prospective project input %s: %w", inputPath, err)))
+		}
+		for _, artifact := range artifacts {
+			if signingArtifactLexicalPathEqual(physicalInputPath, artifactPhysicalPaths[artifact.label]) {
+				return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("%s path aliases project input %s", artifact.label, inputPath)))
+			}
+		}
 		inputInfo, err := signingArtifactPathInfoFn(inputPath)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -2101,6 +2189,15 @@ func validateSigningArtifactAliases(planPath, receiptPath string, inputPaths, pr
 		}
 	}
 	return nil
+}
+
+func protectedPathIsAuthorized(path string, authorizedPaths []string) bool {
+	for _, authorizedPath := range authorizedPaths {
+		if signingLexicalPathEqual(path, authorizedPath) {
+			return true
+		}
+	}
+	return false
 }
 
 func signingProjectInputPaths(
@@ -2427,6 +2524,12 @@ func signingRegularFileInfo(path string) (os.FileInfo, error) {
 // inspection failure at the alias-validation boundary. Production alias
 // checks always use signingRegularFileInfo's rooted, no-follow implementation.
 var signingArtifactPathInfoFn = signingRegularFileInfo
+
+// signingResolveProspectivePathFn keeps future-path alias resolution behind a
+// narrow seam so tests can prove unauthorized external configuration paths are
+// never inspected before opt-in. Production uses rootfs' parent-resolving,
+// no-follow implementation.
+var signingResolveProspectivePathFn = rootfs.ResolveProspectivePath
 
 func signingPlanHash(plan *SigningPlan) string {
 	copyPlan := *plan

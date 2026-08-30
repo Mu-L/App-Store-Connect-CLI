@@ -1231,6 +1231,49 @@ func TestWriteFileIfSameKeepsVerifiedQuarantineHandleThroughPreparation(t *testi
 	}
 }
 
+func TestWriteFileIfSameRestoresQuarantineAfterReopenFailureAndReportsSync(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	const original = "old"
+	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(source) error = %v", err)
+	}
+	transient := errors.New("injected quarantine reopen failure")
+	syncErr := errors.New("injected quarantine restore sync failure")
+	root.openExpectedFileForTest = func(parent *os.Root, name string, _ os.FileInfo, _ []byte) (*os.File, os.FileInfo, error) {
+		if name != "settings.xcconfig" {
+			return nil, nil, transient
+		}
+		return openExpectedRootedFile(parent, name, expected, []byte(original))
+	}
+	root.syncDirectoryForTest = func(_ *os.Root) error {
+		return syncErr
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("new"), 0o640, expected, []byte(original), true)
+	if !errors.Is(err, transient) {
+		t.Fatalf("WriteFileIfSame() error = %v, want reopen failure", err)
+	}
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("WriteFileIfSame() error = %v, want restore sync failure", err)
+	}
+	if got := mustRead(t, path); got != original {
+		t.Fatalf("restored content = %q, want %q", got, original)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("quarantine files remain after reopen failure: %v", matches)
+	}
+}
+
 func TestWriteFileIfSameRestoresQuarantineWhenDestinationCheckFails(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
@@ -1259,6 +1302,44 @@ func TestWriteFileIfSameRestoresQuarantineWhenDestinationCheckFails(t *testing.T
 		t.Fatal(globErr)
 	} else if len(matches) != 0 {
 		t.Fatalf("quarantine files remain after recovery: %v", matches)
+	}
+}
+
+func TestWriteFileIfSameReportsRestoreSyncFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	const original = "original"
+	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicationErr := errors.New("injected publication failure")
+	syncErr := errors.New("injected quarantine restore sync failure")
+	root.renameNoReplaceForTest = func(_ *os.Root, _, _ string) error {
+		return publicationErr
+	}
+	var syncObserved bool
+	root.syncDirectoryForTest = func(_ *os.Root) error {
+		syncObserved = true
+		return syncErr
+	}
+
+	err = root.WriteFileIfSame(path, []byte("updated"), 0o640, expected, []byte(original), true)
+	if !errors.Is(err, publicationErr) {
+		t.Fatalf("WriteFileIfSame() error = %v, want publication failure", err)
+	}
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("WriteFileIfSame() error = %v, want quarantine-restore sync failure", err)
+	}
+	if !syncObserved {
+		t.Fatal("quarantine restore did not sync its parent directory")
+	}
+	if got := mustRead(t, path); got != original {
+		t.Fatalf("restored content = %q, want original", got)
 	}
 }
 

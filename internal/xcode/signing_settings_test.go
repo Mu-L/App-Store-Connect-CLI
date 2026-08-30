@@ -1265,6 +1265,40 @@ func TestSigningPlanRejectsUnselectedExternalXCConfigArtifactCollision(t *testin
 	project, externalDir := externalXCConfigProject(t)
 	externalPath := filepath.Join(externalDir, "App.xcconfig")
 	before := mustReadVersionTestFile(t, externalPath)
+	previousReader := signingXCConfigReadFileFn
+	previousStat := signingXCConfigStatFileFn
+	previousProspective := signingResolveProspectivePathFn
+	previousArtifactInfo := signingArtifactPathInfoFn
+	signingXCConfigReadFileFn = func(path string, limit int64) ([]byte, error) {
+		if signingLexicalPathEqual(path, externalPath) {
+			t.Fatalf("unauthorized external xcconfig read during artifact collision: %s", path)
+		}
+		return previousReader(path, limit)
+	}
+	signingXCConfigStatFileFn = func(path string) (os.FileInfo, error) {
+		if signingLexicalPathEqual(path, externalPath) {
+			t.Fatalf("unauthorized external xcconfig stat/open during artifact collision: %s", path)
+		}
+		return previousStat(path)
+	}
+	signingResolveProspectivePathFn = func(path string) (string, error) {
+		if signingLexicalPathEqual(path, externalPath) {
+			t.Fatalf("unauthorized external xcconfig prospective inspection during artifact collision: %s", path)
+		}
+		return previousProspective(path)
+	}
+	signingArtifactPathInfoFn = func(path string) (os.FileInfo, error) {
+		if signingLexicalPathEqual(path, externalPath) {
+			t.Fatalf("unauthorized external xcconfig artifact inspection: %s", path)
+		}
+		return previousArtifactInfo(path)
+	}
+	t.Cleanup(func() {
+		signingXCConfigReadFileFn = previousReader
+		signingXCConfigStatFileFn = previousStat
+		signingResolveProspectivePathFn = previousProspective
+		signingArtifactPathInfoFn = previousArtifactInfo
+	})
 	root := t.TempDir()
 	settingsPath := filepath.Join(root, "settings.json")
 	writeSigningSettingsTestFile(t, settingsPath, `{
@@ -2363,6 +2397,62 @@ func TestSigningPlanRevalidatesInheritedNoOpXCConfigReferenceAfterDependentChang
 	}
 }
 
+func TestSigningSettingResolverExpandsProjectFallbackInSelectedTargetContext(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	// The project-level identity references a setting that the selected target
+	// overrides. Xcode expands that reference in the target's effective context,
+	// not in the project configuration that supplied the fallback value.
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`PRODUCT_BUNDLE_IDENTIFIER = com.project; CODE_SIGN_IDENTITY = "$(PRODUCT_BUNDLE_IDENTIFIER)";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`PRODUCT_BUNDLE_IDENTIFIER = com.target;`)
+	structured, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("openStructuredVersionProject() error = %v", err)
+	}
+	configuration, err := signingConfigurationFor(structured, "App", "Debug")
+	if err != nil {
+		t.Fatalf("signingConfigurationFor() error = %v", err)
+	}
+	resolved, _, err := newSigningSettingResolver(structured, nil, false, nil).resolveSetting(configuration, "CODE_SIGN_IDENTITY")
+	if err != nil {
+		t.Fatalf("resolveSetting(CODE_SIGN_IDENTITY) error = %v", err)
+	}
+	if resolved != "com.target" {
+		t.Fatalf("resolveSetting(CODE_SIGN_IDENTITY) = %q, want selected-target expansion", resolved)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"com.project"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	for _, change := range plan.Changes {
+		if change.Setting != "CODE_SIGN_IDENTITY" {
+			continue
+		}
+		if change.OldValue == nil || *change.OldValue != "com.target" {
+			t.Fatalf("CODE_SIGN_IDENTITY old value = %#v, want selected-target expansion", change.OldValue)
+		}
+		if change.NewValue == nil || *change.NewValue != "com.project" {
+			t.Fatalf("CODE_SIGN_IDENTITY new value = %#v, want requested project value", change.NewValue)
+		}
+		return
+	}
+	t.Fatalf("plan treated project fallback identity as a no-op: %#v", plan.Changes)
+}
+
 func TestSigningPlanRejectsBuildSettingReferenceModifiers(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	structured, err := openStructuredVersionProject(project)
@@ -2982,6 +3072,7 @@ func TestSigningPlanRejectsHiddenConditionalExternalXCConfigWithoutFilesystemAcc
 
 	previousReader := signingXCConfigReadFileFn
 	previousStat := signingXCConfigStatFileFn
+	previousProspective := signingResolveProspectivePathFn
 	signingXCConfigReadFileFn = func(path string, limit int64) ([]byte, error) {
 		if signingLexicalPathEqual(path, externalPath) {
 			t.Fatalf("unauthorized external xcconfig read: %s", path)
@@ -2994,9 +3085,16 @@ func TestSigningPlanRejectsHiddenConditionalExternalXCConfigWithoutFilesystemAcc
 		}
 		return previousStat(path)
 	}
+	signingResolveProspectivePathFn = func(path string) (string, error) {
+		if signingLexicalPathEqual(path, externalPath) {
+			t.Fatalf("unauthorized external xcconfig prospective path was inspected: %s", path)
+		}
+		return previousProspective(path)
+	}
 	t.Cleanup(func() {
 		signingXCConfigReadFileFn = previousReader
 		signingXCConfigStatFileFn = previousStat
+		signingResolveProspectivePathFn = previousProspective
 	})
 
 	settingsPath := filepath.Join(root, "settings.json")

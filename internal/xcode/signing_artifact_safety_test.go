@@ -120,6 +120,66 @@ func TestBuildSigningPlanRejectsMissingEntitlementArtifactCollision(t *testing.T
 	}
 }
 
+func TestValidateSigningArtifactAliasesRejectsMissingInputThroughSymlinkedArtifactParent(t *testing.T) {
+	root := t.TempDir()
+	realParent := filepath.Join(root, "real")
+	linkedParent := filepath.Join(root, "linked")
+	if err := os.Mkdir(realParent, 0o755); err != nil {
+		t.Fatalf("Mkdir(real parent) error = %v", err)
+	}
+	if err := os.Symlink(realParent, linkedParent); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	protectedPath := filepath.Join(realParent, "protected.json")
+	planPath := filepath.Join(linkedParent, "protected.json")
+	receiptPath := filepath.Join(root, "receipt.json")
+
+	err := validateSigningArtifactAliases(planPath, receiptPath, nil, []string{protectedPath})
+	if err == nil || !strings.Contains(err.Error(), "aliases protected project input") {
+		t.Fatalf("validateSigningArtifactAliases() error = %v, want prospective alias rejection", err)
+	}
+	if _, statErr := os.Lstat(protectedPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("protected path after alias validation = %v, want absent", statErr)
+	}
+}
+
+func TestBuildSigningPlanRejectsMissingOptionalIncludeThroughSymlinkedArtifactParent(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	projectRoot := filepath.Dir(project)
+	realParent := filepath.Join(projectRoot, "real")
+	linkedParent := filepath.Join(projectRoot, "linked")
+	if err := os.Mkdir(realParent, 0o755); err != nil {
+		t.Fatalf("Mkdir(real parent) error = %v", err)
+	}
+	if err := os.Symlink(realParent, linkedParent); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	appXCConfig := filepath.Join(projectRoot, "Configs", "App.xcconfig")
+	contents := mustReadVersionTestFile(t, appXCConfig)
+	contents = "#include? \"../real/protected.json\"\n" + contents
+	if err := os.WriteFile(appXCConfig, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(App.xcconfig) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	planPath := filepath.Join(linkedParent, "protected.json")
+	_, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, PlanPath: planPath,
+		StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "aliases protected project input") {
+		t.Fatalf("BuildSigningPlan() error = %v, want missing optional-include alias rejection", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(realParent, "protected.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("protected path after planning = %v, want absent", statErr)
+	}
+}
+
 func TestBuildSigningPlanRejectsUnprotectableTraversalEntitlement(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")
@@ -297,6 +357,32 @@ func TestValidateSigningArtifactAliasesRejectsMissingCaseVariantOnInsensitiveVol
 		t.Fatalf("validateSigningArtifactAliases() error = %v, want project-input alias rejection", err)
 	}
 	for _, path := range []string{planPath, inputPath} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Lstat(%q) error = %v, want path to remain missing", path, err)
+		}
+	}
+}
+
+func TestValidateSigningArtifactAliasesRejectsMissingSymlinkParentCollision(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real directory: %v", err)
+	}
+	symlinkDir := filepath.Join(root, "alias")
+	if err := os.Symlink(realDir, symlinkDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	inputPath := filepath.Join(realDir, "future.entitlements")
+	planPath := filepath.Join(symlinkDir, "future.entitlements")
+	receiptPath := filepath.Join(root, "receipt.json")
+	if err := validateSigningArtifactAliases(planPath, receiptPath, []string{inputPath}, nil); err == nil {
+		t.Fatal("validateSigningArtifactAliases() accepted missing symlink-parent alias")
+	} else if !strings.Contains(err.Error(), "aliases project input") {
+		t.Fatalf("validateSigningArtifactAliases() error = %v, want project-input alias rejection", err)
+	}
+	for _, path := range []string{inputPath, planPath} {
 		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("Lstat(%q) error = %v, want path to remain missing", path, err)
 		}

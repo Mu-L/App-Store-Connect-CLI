@@ -479,6 +479,34 @@ func (r Root) ContainsPath(path string) (bool, error) {
 	return pathWithinRootIdentity(r.selectedIdentity, physical)
 }
 
+// ResolveProspectivePath returns the physical spelling of a future file path
+// by resolving its parent and appending the final name without opening or
+// following that final entry. Callers can use it to compare publication paths
+// that may reach the same destination through different symlinked parents,
+// including when intermediate directories do not exist yet.
+func ResolveProspectivePath(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("%w: path is empty", ErrEscapesRoot)
+	}
+	if strings.ContainsRune(path, 0) {
+		return "", fmt.Errorf("%w: path contains a NUL byte", ErrEscapesRoot)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve path %q: %w", path, err)
+	}
+	absolute = filepath.Clean(absolute)
+	parent := filepath.Dir(absolute)
+	if parent == absolute {
+		return "", fmt.Errorf("%w: path is a filesystem root", ErrEscapesRoot)
+	}
+	physicalParent, err := resolveProspectivePhysicalPath(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(physicalParent, filepath.Base(absolute)), nil
+}
+
 // ContainsAnchoredPath reports whether an already-open directory is within this
 // root. The lexical path must still resolve to the supplied directory identity;
 // replacements between anchoring and comparison fail closed.
@@ -1554,7 +1582,7 @@ func (r Root) quarantineExpectedFile(parent *os.Root, base string, expected os.F
 	if !fileClosed {
 		if err := file.Close(); err != nil {
 			fileClosed = true
-			return "", nil, nil, errors.Join(err, restoreQuarantineEntry(parent, quarantineName, base))
+			return "", nil, nil, errors.Join(err, r.restoreQuarantineEntry(parent, quarantineName, base))
 		}
 		fileClosed = true
 	}
@@ -1563,7 +1591,7 @@ func (r Root) quarantineExpectedFile(parent *os.Root, base string, expected os.F
 	}
 	quarantined, quarantineInfo, err = r.openExpectedRootedFile(parent, quarantineName, expected, expectedData)
 	if err != nil {
-		return "", nil, nil, errors.Join(err, restoreQuarantineEntry(parent, quarantineName, base))
+		return "", nil, nil, errors.Join(err, r.restoreQuarantineEntry(parent, quarantineName, base))
 	}
 	return quarantineName, quarantined, quarantineInfo, nil
 }
@@ -1676,7 +1704,7 @@ func (r Root) restoreOrRemoveQuarantine(parent *os.Root, quarantineName, base st
 		return err
 	}
 	if err := secureopen.RenameNoReplaceInRoot(parent, quarantineName, base); err == nil {
-		return nil
+		return r.syncConditionalParentDirectory(parent)
 	} else if errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
 		return errors.Join(err, fmt.Errorf("quarantined file %q was left in place", quarantineName))
 	} else if errors.Is(err, os.ErrExist) {
@@ -1695,10 +1723,11 @@ func (r Root) restoreOrRemoveQuarantine(parent *os.Root, quarantineName, base st
 // restoreQuarantineEntry puts a quarantined directory entry back at its
 // original name without validating its contents. It is used only when the
 // entry turned out not to be the expected inode, so preserving that entry is
-// safer than attempting to remove or otherwise interpret it.
-func restoreQuarantineEntry(parent *os.Root, quarantineName, base string) error {
+// safer than attempting to remove or otherwise interpret it. A successful
+// restore is followed by a parent-directory sync so the recovery is durable.
+func (r Root) restoreQuarantineEntry(parent *os.Root, quarantineName, base string) error {
 	if err := secureopen.RenameNoReplaceInRoot(parent, quarantineName, base); err == nil {
-		return nil
+		return r.syncConditionalParentDirectory(parent)
 	} else if errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
 		return errors.Join(err, fmt.Errorf("quarantined replacement %q was left in place", quarantineName))
 	} else if errors.Is(err, os.ErrExist) {
