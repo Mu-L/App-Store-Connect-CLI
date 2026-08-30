@@ -51,6 +51,25 @@ func SafeWriteFileNoSymlinkWithPreparationAndCreator(path string, perm os.FileMo
 	return safeWriteFileNoSymlink(path, perm, overwrite, tempPattern, backupPattern, prepare, create, false, write)
 }
 
+// SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot is the protected
+// writer operating through an already-pinned parent directory handle. Callers
+// that validated the destination's parent chain with a no-follow walk pass the
+// resulting root here, so no path-based directory resolution runs between
+// validation and publication. displayPath is used only for error messages;
+// base must be a single path element inside parent.
+func SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot(parent *os.Root, displayPath, base string, perm os.FileMode, overwrite bool, tempPattern string, backupPattern string, prepare func(*os.File) error, create func(*os.Root, string, os.FileMode) (*os.File, error), write func(*os.File) (int64, error)) (int64, error) {
+	if parent == nil {
+		return 0, fmt.Errorf("output parent for %q is not pinned", displayPath)
+	}
+	if base == "" || base == "." || base == ".." || base != filepath.Base(base) {
+		return 0, fmt.Errorf("output path %q must be a file", displayPath)
+	}
+	if overwrite {
+		return writeFileNoSymlinkOverwriteInRoot(parent, displayPath, base, perm, tempPattern, backupPattern, prepare, create, write)
+	}
+	return writeNewFileNoSymlinkInParent(parent, displayPath, base, perm, tempPattern, prepare, create, false, write)
+}
+
 func safeWriteFileNoSymlink(path string, perm os.FileMode, overwrite bool, tempPattern string, backupPattern string, prepare func(*os.File) error, create func(*os.Root, string, os.FileMode) (*os.File, error), allowCopyFallback bool, write func(*os.File) (int64, error)) (int64, error) {
 	if len(path) > 0 && os.IsPathSeparator(path[len(path)-1]) {
 		return 0, fmt.Errorf("output path %q must be a file", path)
@@ -68,8 +87,14 @@ func safeWriteFileNoSymlink(path string, perm os.FileMode, overwrite bool, tempP
 			return 0, err
 		}
 		defer parent.Close()
+		return writeNewFileNoSymlinkInParent(parent, path, filepath.Base(path), perm, tempPattern, prepare, create, allowCopyFallback, write)
+	}
 
-		base := filepath.Base(path)
+	return writeFileNoSymlinkOverwriteWithPreparationAndCreator(path, perm, tempPattern, backupPattern, prepare, create, write)
+}
+
+func writeNewFileNoSymlinkInParent(parent *os.Root, path, base string, perm os.FileMode, tempPattern string, prepare func(*os.File) error, create func(*os.Root, string, os.FileMode) (*os.File, error), allowCopyFallback bool, write func(*os.File) (int64, error)) (int64, error) {
+	{
 		if _, err := parent.Lstat(base); err == nil {
 			return 0, existingOutputError(path, os.ErrExist)
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -171,8 +196,91 @@ func safeWriteFileNoSymlink(path string, perm os.FileMode, overwrite bool, tempP
 		}
 		return written, nil
 	}
+}
 
-	return writeFileNoSymlinkOverwriteWithPreparationAndCreator(path, perm, tempPattern, backupPattern, prepare, create, write)
+// writeFileNoSymlinkOverwriteInRoot is the overwrite-capable writer operating
+// entirely through a pinned parent directory handle: existence checks, staging,
+// replacement, and backup recovery all use rooted operations so a concurrent
+// swap of the checked parent cannot redirect the publication.
+func writeFileNoSymlinkOverwriteInRoot(parent *os.Root, displayPath, base string, perm os.FileMode, tempPattern string, backupPattern string, prepare func(*os.File) error, create func(*os.Root, string, os.FileMode) (*os.File, error), write func(*os.File) (int64, error)) (int64, error) {
+	hadExisting := false
+	if info, err := parent.Lstat(base); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return 0, fmt.Errorf("refusing to overwrite symlink %q", displayPath)
+		}
+		if info.IsDir() {
+			return 0, fmt.Errorf("output path %q is a directory", displayPath)
+		}
+		hadExisting = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return 0, err
+	}
+
+	tempFile, tempName, err := secureopen.CreateTempNoFollowInRootWithCreator(parent, ".", tempPattern, perm, create)
+	if err != nil {
+		return 0, fmt.Errorf("create output %q: %w", displayPath, replaceErrorPaths(err, displayPath, tempName))
+	}
+	defer tempFile.Close()
+	success := false
+	defer func() {
+		if !success {
+			_ = removeRootedFile(parent, tempName)
+		}
+	}()
+
+	// Ensure final file permissions match caller intent rather than process umask.
+	if err := tempFile.Chmod(perm); err != nil {
+		return 0, err
+	}
+	if prepare != nil {
+		if err := prepare(tempFile); err != nil {
+			return 0, err
+		}
+	}
+
+	written, err := write(tempFile)
+	if err != nil {
+		return 0, err
+	}
+	if err := tempFile.Sync(); err != nil {
+		return 0, err
+	}
+	if err := tempFile.Close(); err != nil {
+		return 0, err
+	}
+
+	// os.Root.Rename replaces the destination atomically where the platform
+	// supports it. Where it refuses because the destination exists, fall back
+	// to the same backup-preserving replace as the path-based writer, still
+	// inside the pinned parent.
+	if err := parent.Rename(tempName, base); err != nil {
+		if !hadExisting {
+			return 0, err
+		}
+
+		backupFile, backupName, backupErr := secureopen.CreateTempNoFollowInRoot(parent, ".", backupPattern, perm)
+		if backupErr != nil {
+			return 0, err
+		}
+		if closeErr := backupFile.Close(); closeErr != nil {
+			return 0, closeErr
+		}
+		if removeErr := removeRootedFile(parent, backupName); removeErr != nil {
+			return 0, removeErr
+		}
+
+		if moveErr := parent.Rename(base, backupName); moveErr != nil {
+			return 0, moveErr
+		}
+		if moveErr := parent.Rename(tempName, base); moveErr != nil {
+			_ = parent.Rename(backupName, base)
+			return 0, moveErr
+		}
+		_ = removeRootedFile(parent, backupName)
+	}
+
+	success = true
+	return written, nil
 }
 
 type newFileWriteOps struct {

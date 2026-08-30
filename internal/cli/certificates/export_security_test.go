@@ -290,3 +290,160 @@ func TestPrepareCertificateExportOutputVerifiesUnixPermissions(t *testing.T) {
 		t.Fatalf("prepareCertificateExportOutput() error = %v, want broad-permission rejection", err)
 	}
 }
+
+func TestRunCertificateExportRejectsParentSwappedForSymlinkAfterPreflight(t *testing.T) {
+	dir := t.TempDir()
+	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	certificatePath := filepath.Join(dir, "push.cer")
+	privateKeyPath := filepath.Join(dir, "push.key")
+	passwordPath := filepath.Join(dir, "password")
+	writeCertificateExportTestFiles(t, certificatePath, privateKeyPath, "", passwordPath, artifacts, []byte("password"))
+
+	outside := filepath.Join(dir, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatalf("create outside directory: %v", err)
+	}
+	parent := filepath.Join(dir, "out")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatalf("create parent directory: %v", err)
+	}
+	p12Path := filepath.Join(parent, "push.p12")
+
+	certificateExportTestHookAfterPreflight = func() {
+		certificateExportTestHookAfterPreflight = nil
+		if err := os.Rename(parent, parent+".real"); err != nil {
+			t.Fatalf("swap parent aside: %v", err)
+		}
+		if err := os.Symlink(outside, parent); err != nil {
+			t.Skipf("symlinks are unavailable: %v", err)
+		}
+	}
+	defer func() { certificateExportTestHookAfterPreflight = nil }()
+
+	_, err := runCertificateExport(context.TODO(), certificateExportOptions{
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+		PasswordPath:    passwordPath,
+		P12Out:          p12Path,
+	})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("runCertificateExport() error = %v, want symlinked-parent refusal after the swap", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(outside, "push.p12")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("identity was published through the swapped parent, stat error = %v", statErr)
+	}
+}
+
+func TestRunCertificateExportRejectsMissingParentUnderSwappedAncestor(t *testing.T) {
+	dir := t.TempDir()
+	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	certificatePath := filepath.Join(dir, "push.cer")
+	privateKeyPath := filepath.Join(dir, "push.key")
+	passwordPath := filepath.Join(dir, "password")
+	writeCertificateExportTestFiles(t, certificatePath, privateKeyPath, "", passwordPath, artifacts, []byte("password"))
+
+	outside := filepath.Join(dir, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatalf("create outside directory: %v", err)
+	}
+	ancestor := filepath.Join(dir, "out")
+	if err := os.Mkdir(ancestor, 0o700); err != nil {
+		t.Fatalf("create ancestor directory: %v", err)
+	}
+	p12Path := filepath.Join(ancestor, "deep", "push.p12")
+
+	certificateExportTestHookAfterPreflight = func() {
+		certificateExportTestHookAfterPreflight = nil
+		if err := os.Rename(ancestor, ancestor+".real"); err != nil {
+			t.Fatalf("swap ancestor aside: %v", err)
+		}
+		if err := os.Symlink(outside, ancestor); err != nil {
+			t.Skipf("symlinks are unavailable: %v", err)
+		}
+	}
+	defer func() { certificateExportTestHookAfterPreflight = nil }()
+
+	_, err := runCertificateExport(context.TODO(), certificateExportOptions{
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+		PasswordPath:    passwordPath,
+		P12Out:          p12Path,
+	})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("runCertificateExport() error = %v, want symlinked-parent refusal after the swap", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(outside, "deep")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("missing parent was created through the swapped ancestor, stat error = %v", statErr)
+	}
+}
+
+func TestRunCertificateExportPublishesIntoPinnedParentAfterSwap(t *testing.T) {
+	dir := t.TempDir()
+	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	certificatePath := filepath.Join(dir, "push.cer")
+	privateKeyPath := filepath.Join(dir, "push.key")
+	passwordPath := filepath.Join(dir, "password")
+	writeCertificateExportTestFiles(t, certificatePath, privateKeyPath, "", passwordPath, artifacts, []byte("password"))
+
+	outside := filepath.Join(dir, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatalf("create outside directory: %v", err)
+	}
+	parent := filepath.Join(dir, "out")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatalf("create parent directory: %v", err)
+	}
+	p12Path := filepath.Join(parent, "push.p12")
+
+	certificateExportTestHookAfterParentPinned = func() {
+		certificateExportTestHookAfterParentPinned = nil
+		if err := os.Rename(parent, parent+".real"); err != nil {
+			t.Fatalf("swap parent aside: %v", err)
+		}
+		if err := os.Symlink(outside, parent); err != nil {
+			t.Skipf("symlinks are unavailable: %v", err)
+		}
+	}
+	defer func() { certificateExportTestHookAfterParentPinned = nil }()
+
+	if _, err := runCertificateExport(context.TODO(), certificateExportOptions{
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+		PasswordPath:    passwordPath,
+		P12Out:          p12Path,
+	}); err != nil {
+		t.Fatalf("runCertificateExport() error = %v, want publication into the pinned parent", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(outside, "push.p12")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("identity was published through the swapped symlink, stat error = %v", statErr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(parent+".real", "push.p12")); statErr != nil {
+		t.Fatalf("identity missing from the pinned original parent: %v", statErr)
+	}
+}
+
+func TestRunCertificateExportCreatesMissingParentsThroughPinnedRoots(t *testing.T) {
+	dir := t.TempDir()
+	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	certificatePath := filepath.Join(dir, "push.cer")
+	privateKeyPath := filepath.Join(dir, "push.key")
+	passwordPath := filepath.Join(dir, "password")
+	writeCertificateExportTestFiles(t, certificatePath, privateKeyPath, "", passwordPath, artifacts, []byte("password"))
+	p12Path := filepath.Join(dir, "new1", "new2", "push.p12")
+
+	if _, err := runCertificateExport(context.TODO(), certificateExportOptions{
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+		PasswordPath:    passwordPath,
+		P12Out:          p12Path,
+	}); err != nil {
+		t.Fatalf("runCertificateExport() error = %v, want rooted creation of missing parents", err)
+	}
+	info, err := os.Lstat(p12Path)
+	if err != nil {
+		t.Fatalf("Lstat(%q) error = %v", p12Path, err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("output mode = %v, want regular file", info.Mode())
+	}
+}

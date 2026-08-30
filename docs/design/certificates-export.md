@@ -112,8 +112,15 @@ certificate subject fields because that cannot be proved from arbitrary input.
 The output path is checked before any input is read or destination directory is
 created. Every existing parent component is inspected through an anchored,
 no-follow traversal; a symlinked parent is rejected even when the final output
-entry does not exist. Missing components may be created normally after that
-check, while the final output remains protected by the shared rooted writer.
+entry does not exist. The destination parent is then pinned as an open
+directory handle before the first input byte is read: missing components are
+created through that pinned traversal rather than a path-based `MkdirAll`, and
+staging, replacement, and publication all run through the held handle. A parent
+component swapped for a symlink after validation therefore either fails the
+pinned walk or is simply ignored, because the identity is published into the
+directory that was validated, not into whatever the path resolves to later.
+Validation failures after the pin may leave newly created empty parent
+directories behind, but never a partial or redirected output.
 
 Publication is fail-closed for this secret artifact. A native no-replace rename
 or atomic hard-link publication is required; filesystems that expose neither

@@ -968,3 +968,195 @@ func TestSafeWriteFileNoSymlinkNoOverwritePreservesExistingFile(t *testing.T) {
 		t.Fatalf("destination content = %q, want %q", got, original)
 	}
 }
+
+func TestSafeWriteFileNoSymlinkInRootWritesThroughPinnedParent(t *testing.T) {
+	for _, overwrite := range []bool{false, true} {
+		t.Run(fmt.Sprintf("overwrite=%t", overwrite), func(t *testing.T) {
+			directory := t.TempDir()
+			destination := filepath.Join(directory, "artifact.bin")
+			if overwrite {
+				if err := os.WriteFile(destination, []byte("old"), 0o600); err != nil {
+					t.Fatalf("seed destination: %v", err)
+				}
+			}
+			parent, err := os.OpenRoot(directory)
+			if err != nil {
+				t.Fatalf("OpenRoot() error = %v", err)
+			}
+			defer parent.Close()
+
+			created := false
+			prepared := false
+			written, err := SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot(
+				parent,
+				destination,
+				"artifact.bin",
+				0o600,
+				overwrite,
+				".safe-write-*",
+				".safe-write-backup-*",
+				func(*os.File) error {
+					if !created {
+						return errors.New("preparation ran before creation")
+					}
+					prepared = true
+					return nil
+				},
+				func(root *os.Root, name string, perm os.FileMode) (*os.File, error) {
+					created = true
+					return secureopen.OpenNewFileNoFollowInRoot(root, name, perm)
+				},
+				func(file *os.File) (int64, error) {
+					if !prepared {
+						return 0, errors.New("write ran before preparation")
+					}
+					n, writeErr := file.Write([]byte("new"))
+					return int64(n), writeErr
+				},
+			)
+			if err != nil {
+				t.Fatalf("SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot() error = %v", err)
+			}
+			if written != int64(len("new")) {
+				t.Fatalf("written = %d, want %d", written, len("new"))
+			}
+			got, err := os.ReadFile(destination)
+			if err != nil {
+				t.Fatalf("read destination: %v", err)
+			}
+			if string(got) != "new" {
+				t.Fatalf("destination = %q, want new", got)
+			}
+			info, err := os.Lstat(destination)
+			if err != nil {
+				t.Fatalf("Lstat() error = %v", err)
+			}
+			if info.Mode().Perm()&0o077 != 0 {
+				t.Fatalf("destination permissions = %v, want owner-only", info.Mode().Perm())
+			}
+			entries, err := os.ReadDir(directory)
+			if err != nil {
+				t.Fatalf("ReadDir() error = %v", err)
+			}
+			if len(entries) != 1 || entries[0].Name() != "artifact.bin" {
+				t.Fatalf("directory entries = %v, want only artifact.bin", entries)
+			}
+		})
+	}
+}
+
+func TestSafeWriteFileNoSymlinkInRootRefusesExistingDestinationWithoutOverwrite(t *testing.T) {
+	directory := t.TempDir()
+	destination := filepath.Join(directory, "artifact.bin")
+	if err := os.WriteFile(destination, []byte("existing"), 0o600); err != nil {
+		t.Fatalf("seed destination: %v", err)
+	}
+	parent, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatalf("OpenRoot() error = %v", err)
+	}
+	defer parent.Close()
+
+	_, err = SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot(
+		parent,
+		destination,
+		"artifact.bin",
+		0o600,
+		false,
+		".safe-write-*",
+		".safe-write-backup-*",
+		nil,
+		nil,
+		func(file *os.File) (int64, error) {
+			n, writeErr := file.Write([]byte("new"))
+			return int64(n), writeErr
+		},
+	)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("error = %v, want os.ErrExist", err)
+	}
+	got, readErr := os.ReadFile(destination)
+	if readErr != nil || string(got) != "existing" {
+		t.Fatalf("destination = %q, %v; want untouched existing content", got, readErr)
+	}
+}
+
+func TestSafeWriteFileNoSymlinkInRootRejectsUnsafeBase(t *testing.T) {
+	directory := t.TempDir()
+	parent, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatalf("OpenRoot() error = %v", err)
+	}
+	defer parent.Close()
+
+	for _, base := range []string{"", ".", "..", filepath.Join("nested", "artifact.bin")} {
+		if _, err := SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot(
+			parent,
+			filepath.Join(directory, base),
+			base,
+			0o600,
+			false,
+			".safe-write-*",
+			".safe-write-backup-*",
+			nil,
+			nil,
+			func(*os.File) (int64, error) { return 0, nil },
+		); err == nil {
+			t.Fatalf("base %q was accepted, want rejection", base)
+		}
+	}
+	if _, err := SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot(
+		nil,
+		filepath.Join(directory, "artifact.bin"),
+		"artifact.bin",
+		0o600,
+		false,
+		".safe-write-*",
+		".safe-write-backup-*",
+		nil,
+		nil,
+		func(*os.File) (int64, error) { return 0, nil },
+	); err == nil {
+		t.Fatal("nil parent was accepted, want rejection")
+	}
+}
+
+func TestSafeWriteFileNoSymlinkInRootOverwriteRefusesSymlinkDestination(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "target.bin")
+	if err := os.WriteFile(target, []byte("target"), 0o600); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	destination := filepath.Join(directory, "artifact.bin")
+	if err := os.Symlink(target, destination); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	parent, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatalf("OpenRoot() error = %v", err)
+	}
+	defer parent.Close()
+
+	_, err = SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot(
+		parent,
+		destination,
+		"artifact.bin",
+		0o600,
+		true,
+		".safe-write-*",
+		".safe-write-backup-*",
+		nil,
+		nil,
+		func(file *os.File) (int64, error) {
+			n, writeErr := file.Write([]byte("new"))
+			return int64(n), writeErr
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error = %v, want symlink refusal", err)
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil || string(got) != "target" {
+		t.Fatalf("target = %q, %v; want untouched content", got, readErr)
+	}
+}

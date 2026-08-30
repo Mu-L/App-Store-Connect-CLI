@@ -32,6 +32,14 @@ import (
 
 const maxCertificateExportFileSize int64 = 32 << 20
 
+// Deterministic race hooks for tests. They run at the two moments a local
+// attacker would race the export: after the advisory preflight and after the
+// destination parent has been pinned. Both are nil outside tests.
+var (
+	certificateExportTestHookAfterPreflight    func()
+	certificateExportTestHookAfterParentPinned func()
+)
+
 type certificateExportOptions struct {
 	CertificatePath string
 	PrivateKeyPath  string
@@ -171,6 +179,21 @@ func runCertificateExport(_ context.Context, opts certificateExportOptions) (*as
 	if err := preflightCertificateExportDestination(p12Out, opts.Force, inputPaths...); err != nil {
 		return nil, err
 	}
+	if certificateExportTestHookAfterPreflight != nil {
+		certificateExportTestHookAfterPreflight()
+	}
+
+	// Pin the destination parent before any input is read so the validated
+	// directory chain cannot be swapped for a symlink while inputs are parsed
+	// or the PKCS#12 is encoded. Publication happens through this handle.
+	outputParent, outputBase, err := pinCertificateExportDestination(p12Out)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = outputParent.Close() }()
+	if certificateExportTestHookAfterParentPinned != nil {
+		certificateExportTestHookAfterParentPinned()
+	}
 
 	certificateInput, err := readCertificateExportInput(certificatePath, "certificate", false)
 	if err != nil {
@@ -236,8 +259,10 @@ func runCertificateExport(_ context.Context, opts certificateExportOptions) (*as
 	}
 	defer clearCertificateExportBytes(p12Data)
 
-	if _, err := shared.SafeWriteFileNoSymlinkWithPreparationAndCreator(
+	if _, err := shared.SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot(
+		outputParent,
 		p12Out,
+		outputBase,
 		0o600,
 		opts.Force,
 		".asc-cert-export-*",
@@ -353,13 +378,49 @@ func preflightCertificateExportDestination(output string, force bool, inputs ...
 }
 
 // rejectCertificateExportSymlinkedParent checks the existing destination
-// parents through a selected, anchored no-follow traversal before MkdirAll or
-// any output file is created. The working directory and temporary-directory
-// anchors preserve normal platform layouts such as macOS's /var alias while
-// still rejecting symlinks introduced below the operator's likely output root.
-// The final output entry is checked separately by preflightCertificateExportDestination
-// and the rooted writer.
+// parents through a selected, anchored no-follow traversal before any input is
+// read. Components below the first missing parent do not exist yet; the
+// pinned write-time walk creates them.
 func rejectCertificateExportSymlinkedParent(output string) error {
+	parent, err := openCertificateExportDestinationParent(output, false)
+	if err != nil {
+		return err
+	}
+	if parent != nil {
+		_ = parent.Close()
+	}
+	return nil
+}
+
+// pinCertificateExportDestination resolves --p12-out and opens its parent
+// directory through the anchored, no-follow traversal, creating missing
+// components through the pinned roots. The returned root is held from before
+// the first input read until publication so a concurrent swap of a checked
+// parent cannot redirect where the identity is written.
+func pinCertificateExportDestination(output string) (*os.Root, string, error) {
+	outputAbs, err := filepath.Abs(output)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve --p12-out: %w", err)
+	}
+	outputAbs = filepath.Clean(outputAbs)
+	parent, err := openCertificateExportDestinationParent(outputAbs, true)
+	if err != nil {
+		return nil, "", err
+	}
+	return parent, filepath.Base(outputAbs), nil
+}
+
+// openCertificateExportDestinationParent walks the destination's parent chain
+// through a selected, anchored no-follow traversal and returns the pinned
+// parent directory root. The working directory and temporary-directory anchors
+// preserve normal platform layouts such as macOS's /var alias while still
+// rejecting symlinks introduced below the operator's likely output root. When
+// createMissing is false the walk stops at the first missing component and
+// returns a nil root; when true, missing components are created through the
+// pinned traversal so no path-based MkdirAll can be redirected by a concurrent
+// symlink swap. The final output entry is checked separately by
+// preflightCertificateExportDestination and the rooted writer.
+func openCertificateExportDestinationParent(output string, createMissing bool) (*os.Root, error) {
 	volumeRoot := filepath.VolumeName(output) + string(filepath.Separator)
 	rootPath := volumeRoot
 	for _, candidate := range []string{certificateExportWorkingDirectory(), os.TempDir()} {
@@ -375,22 +436,22 @@ func rejectCertificateExportSymlinkedParent(output string) error {
 
 	trustedRoot, err := rootfs.New(rootPath)
 	if err != nil {
-		return fmt.Errorf("inspect --p12-out parent: %w", err)
+		return nil, fmt.Errorf("inspect --p12-out parent: %w", err)
 	}
 	defer trustedRoot.Close()
 
 	current, err := trustedRoot.OpenRoot()
 	if err != nil {
-		return fmt.Errorf("inspect --p12-out parent: %w", err)
+		return nil, fmt.Errorf("inspect --p12-out parent: %w", err)
 	}
-	defer func() { _ = current.Close() }()
 
 	relative, err := filepath.Rel(rootPath, filepath.Dir(output))
 	if err != nil {
-		return fmt.Errorf("inspect --p12-out parent: %w", err)
+		_ = current.Close()
+		return nil, fmt.Errorf("inspect --p12-out parent: %w", err)
 	}
 	if relative == "." {
-		return nil
+		return current, nil
 	}
 
 	path := rootPath
@@ -398,28 +459,80 @@ func rejectCertificateExportSymlinkedParent(output string) error {
 		if component == "" || component == "." {
 			continue
 		}
-		info, statErr := current.Lstat(component)
-		if errors.Is(statErr, os.ErrNotExist) {
-			// Components below the first missing parent do not exist yet and
-			// will be created by the writer after this check.
-			return nil
-		}
-		if statErr != nil {
-			return fmt.Errorf("inspect --p12-out parent %q: %w", filepath.Join(path, component), statErr)
-		}
-		path = filepath.Join(path, component)
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to write --p12-out through symlinked parent %q", path)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("--p12-out parent %q is not a directory", path)
-		}
-		next, openErr := current.OpenRoot(component)
-		if openErr != nil {
-			return fmt.Errorf("inspect --p12-out parent %q: %w", path, openErr)
-		}
+		componentPath := filepath.Join(path, component)
+		next, found, descendErr := descendCertificateExportParent(current, component, componentPath, createMissing)
 		_ = current.Close()
+		if descendErr != nil {
+			return nil, descendErr
+		}
+		if !found {
+			// Check-only mode: components below the first missing parent do
+			// not exist yet and are created by the pinned write-time walk.
+			return nil, nil
+		}
 		current = next
+		path = componentPath
+	}
+	return current, nil
+}
+
+// descendCertificateExportParent moves the pinned traversal into component.
+// os.Root.OpenRoot follows symlinks that stay inside the root, so the entry is
+// checked with Lstat before the descent and its identity is verified after,
+// keeping the walk no-follow even against concurrent replacement.
+func descendCertificateExportParent(current *os.Root, component, componentPath string, createMissing bool) (*os.Root, bool, error) {
+	info, statErr := current.Lstat(component)
+	if errors.Is(statErr, os.ErrNotExist) {
+		if !createMissing {
+			return nil, false, nil
+		}
+		if mkdirErr := current.Mkdir(component, 0o755); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
+			return nil, false, fmt.Errorf("create --p12-out parent %q: %w", componentPath, mkdirErr)
+		}
+		info, statErr = current.Lstat(component)
+	}
+	if statErr != nil {
+		return nil, false, fmt.Errorf("inspect --p12-out parent %q: %w", componentPath, statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, false, fmt.Errorf("refusing to write --p12-out through symlinked parent %q", componentPath)
+	}
+	if !info.IsDir() {
+		return nil, false, fmt.Errorf("--p12-out parent %q is not a directory", componentPath)
+	}
+	next, openErr := current.OpenRoot(component)
+	if openErr != nil {
+		return nil, false, fmt.Errorf("inspect --p12-out parent %q: %w", componentPath, openErr)
+	}
+	if err := verifyCertificateExportDescent(current, component, next, componentPath); err != nil {
+		_ = next.Close()
+		return nil, false, err
+	}
+	return next, true, nil
+}
+
+// verifyCertificateExportDescent confirms the opened directory is exactly the
+// non-symlink entry Lstat approved, so an entry swapped between Lstat and
+// OpenRoot cannot smuggle a followed symlink into the pinned traversal.
+func verifyCertificateExportDescent(parent *os.Root, component string, opened *os.Root, componentPath string) error {
+	after, err := parent.Lstat(component)
+	if err != nil {
+		return fmt.Errorf("inspect --p12-out parent %q: %w", componentPath, err)
+	}
+	if after.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to write --p12-out through symlinked parent %q", componentPath)
+	}
+	directory, err := opened.Open(".")
+	if err != nil {
+		return fmt.Errorf("inspect --p12-out parent %q: %w", componentPath, err)
+	}
+	defer directory.Close()
+	openedInfo, err := directory.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect --p12-out parent %q: %w", componentPath, err)
+	}
+	if !os.SameFile(after, openedInfo) {
+		return fmt.Errorf("--p12-out parent %q changed during inspection", componentPath)
 	}
 	return nil
 }
