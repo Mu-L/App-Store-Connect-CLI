@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -564,6 +565,61 @@ func TestXcodeTestJUnitPreservesAggregateDurationWithFlattenedCases(t *testing.T
 	}
 	if !strings.Contains(string(data), `time="1.000"`) {
 		t.Fatalf("JUnit output = %s, want aggregate duration preserved", data)
+	}
+}
+
+func TestXcodeTestJUnitSynthesizesAggregateFailuresBeforeFillingCap(t *testing.T) {
+	// A multi-destination or repeated run can report more aggregate results
+	// than flattened cases. Unrepresented passes must never consume the cap
+	// ahead of unrepresented failures, or a failing run marshals as a passing
+	// JUnit suite.
+	report := testResultJUnitReport(&localxcode.TestResult{
+		Success: false,
+		Tests: &localxcode.TestSummary{
+			Total:  maxJUnitAggregateCases + 1,
+			Passed: maxJUnitAggregateCases,
+			Failed: 1,
+		},
+	}, &localxcode.ReportedTestFailuresError{Failed: 1})
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("JUnit Marshal() error = %v", err)
+	}
+	if strings.Contains(string(data), `failures="0"`) {
+		t.Fatalf("JUnit output reported no failures for a failing run\n%s", string(data)[:min(len(string(data)), 400)])
+	}
+	if !strings.Contains(string(data), "aggregate-failed") {
+		t.Fatalf("JUnit output = %s, want a synthesized failure within the cap", string(data)[:min(len(string(data)), 400)])
+	}
+}
+
+func TestXcodeTestJUnitKeepsInfrastructureRowWhenReportHasNoFailure(t *testing.T) {
+	// If parsed cases alone exhaust the cap and none of them failed, the
+	// summary's failure count cannot be represented. The infrastructure row is
+	// then the only remaining failure signal and must not be suppressed.
+	cases := make([]localxcode.TestCase, maxJUnitAggregateCases)
+	for index := range cases {
+		cases[index] = localxcode.TestCase{
+			Identifier: "DemoTests/Smoke/testPass" + strconv.Itoa(index),
+			Name:       "testPass" + strconv.Itoa(index),
+			Status:     "passed",
+		}
+	}
+	report := testResultJUnitReport(&localxcode.TestResult{
+		Success: false,
+		Tests: &localxcode.TestSummary{
+			Total:  maxJUnitAggregateCases + 1,
+			Passed: maxJUnitAggregateCases,
+			Failed: 1,
+			Cases:  cases,
+		},
+	}, &localxcode.ReportedTestFailuresError{Failed: 1})
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("JUnit Marshal() error = %v", err)
+	}
+	if strings.Contains(string(data), `failures="0"`) {
+		t.Fatalf("JUnit output reported no failures for a failing run\n%s", string(data)[:min(len(string(data)), 400)])
 	}
 }
 

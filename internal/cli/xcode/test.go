@@ -286,16 +286,20 @@ func testResultJUnitReport(result *localxcode.TestResult, commandErr error) *sha
 		missingSkipped := max(0, summary.Skipped-actualSkipped)
 		syntheticStart := len(tests)
 		syntheticCount := 0
-		for index := 0; index < missingPassed && len(tests) < maxJUnitAggregateCases; index++ {
-			tests = append(tests, syntheticJUnitTestCase("passed", syntheticCount, ""))
-			syntheticCount++
-		}
+		// Synthesize failures first. Aggregate counts can exceed the flattened
+		// cases for multi-destination and repeated runs, and unrepresented
+		// passes must never consume the cap ahead of unrepresented failures, or
+		// a failing invocation would marshal as a passing JUnit suite.
 		for index := 0; index < missingFailed && len(tests) < maxJUnitAggregateCases; index++ {
 			tests = append(tests, syntheticJUnitTestCase("failed", syntheticCount, "test action reported failure"))
 			syntheticCount++
 		}
 		for index := 0; index < missingSkipped && len(tests) < maxJUnitAggregateCases; index++ {
 			tests = append(tests, syntheticJUnitTestCase("skipped", syntheticCount, ""))
+			syntheticCount++
+		}
+		for index := 0; index < missingPassed && len(tests) < maxJUnitAggregateCases; index++ {
+			tests = append(tests, syntheticJUnitTestCase("passed", syntheticCount, ""))
 			syntheticCount++
 		}
 		if len(tests) > syntheticStart {
@@ -310,7 +314,7 @@ func testResultJUnitReport(result *localxcode.TestResult, commandErr error) *sha
 		}
 	}
 
-	if shouldAddJUnitInfrastructureFailure(result, summary, commandErr) {
+	if shouldAddJUnitInfrastructureFailure(result, summary, tests, commandErr) {
 		message := "xcode test did not complete successfully"
 		if commandErr != nil {
 			message = boundJUnitFailureMessage(commandErr.Error())
@@ -352,7 +356,7 @@ func totalJUnitDuration(tests []shared.JUnitTestCase) time.Duration {
 	return total
 }
 
-func shouldAddJUnitInfrastructureFailure(result *localxcode.TestResult, summary *localxcode.TestSummary, commandErr error) bool {
+func shouldAddJUnitInfrastructureFailure(result *localxcode.TestResult, summary *localxcode.TestSummary, tests []shared.JUnitTestCase, commandErr error) bool {
 	if result == nil || result.Success {
 		return false
 	}
@@ -368,38 +372,31 @@ func shouldAddJUnitInfrastructureFailure(result *localxcode.TestResult, summary 
 			return true
 		}
 		// A normal nonzero xcodebuild exit is commonly the result of test
-		// failures. When xcresult already represents those failures, adding an
+		// failures. When the report already carries those failures, adding an
 		// infrastructure testcase would double-count the same outcome. Keep a
 		// synthetic testcase only when the exit has no represented failure.
-		return !summaryReportsFailedTest(summary)
+		return !junitReportsFailure(tests)
 	}
 	// xcodebuild can also exit zero while the parsed xcresult reports failures.
 	// That post-processing cause is typed, so it is distinguishable from real
 	// infrastructure errors and must not double-count represented failures.
 	var reportedFailures *localxcode.ReportedTestFailuresError
 	if errors.As(commandErr, &reportedFailures) {
-		return !summaryReportsFailedTest(summary)
+		return !junitReportsFailure(tests)
 	}
 	// Preserve a synthetic row for generic errors and typed infrastructure
 	// failures even when the summary contains ordinary failed test cases.
 	return true
 }
 
-func summaryReportsFailedTest(summary *localxcode.TestSummary) bool {
-	if summary == nil {
-		return false
-	}
-	if summary.Failed > 0 || len(summary.Failures) > 0 {
-		return true
-	}
-	for _, testCase := range summary.Cases {
-		normalized := strings.ToLower(strings.TrimSpace(testCase.Status))
-		switch normalized {
-		case "failed", "failure", "error", "errored":
-			return true
-		}
-	}
-	return false
+// junitReportsFailure asks whether the emitted report already carries a failing
+// testcase. Suppression is deliberately based on the report rather than the
+// summary: the aggregate case cap can leave a summary-reported failure with no
+// row of its own, and in that case the infrastructure row is the only remaining
+// failure signal.
+func junitReportsFailure(tests []shared.JUnitTestCase) bool {
+	_, failed, _ := junitStatusCounts(tests)
+	return failed > 0
 }
 
 func syntheticJUnitTestCase(status string, index int, message string) shared.JUnitTestCase {
