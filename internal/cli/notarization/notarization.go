@@ -406,7 +406,7 @@ func (target *validatedStaplerTarget) verifyIdentity(stage string) error {
 	if err != nil {
 		return &staplerTargetVerifyError{stage: stage, err: err}
 	}
-	if !os.SameFile(target.identity, current) || current.IsDir() != target.directory {
+	if !os.SameFile(target.identity, current) || current.IsDir() != target.directory || (!target.directory && !current.Mode().IsRegular()) {
 		return &staplerTargetIdentityError{stage: stage}
 	}
 	return nil
@@ -425,7 +425,17 @@ func (target *validatedStaplerTarget) classifyStageOpenFailure(stage string, ope
 		}
 		return &staplerTargetVerifyError{stage: stage, err: openErr}
 	}
-	if info == nil || info.IsDir() != target.directory {
+	if info == nil {
+		return &staplerTargetIdentityError{stage: stage}
+	}
+	// A non-directory target was validated as a regular file. If the current
+	// no-follow probe sees a FIFO, socket, device, or symlink instead, that is a
+	// stage-specific replacement rather than an inability to inspect the
+	// filesystem, even when the subsequent open reports an operational error.
+	if !target.directory && !info.Mode().IsRegular() {
+		return &staplerTargetIdentityError{stage: stage}
+	}
+	if info.IsDir() != target.directory {
 		return &staplerTargetIdentityError{stage: stage}
 	}
 	if errors.Is(openErr, rootfs.ErrSymlink) {
@@ -561,6 +571,18 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 	if strings.ContainsRune(pathValue, 0) {
 		return nil, newStaplerTargetUsageError(errors.New("--file must not contain a NUL byte"))
 	}
+	if err := rejectSymlinkedLexicalParentTraversal(pathValue); err != nil {
+		if errors.Is(err, rootfs.ErrSymlink) {
+			return nil, newStaplerTargetUsageError(errors.New("artifact path contains a symlinked component before lexical parent traversal"))
+		}
+		if errors.Is(err, errStaplerMissingLexicalParent) {
+			return nil, newStaplerTargetUsageError(errors.New("artifact path contains a missing component before lexical parent traversal"))
+		}
+		if errors.Is(err, errStaplerNonDirectoryLexicalParent) {
+			return nil, newStaplerTargetUsageError(errors.New("artifact path contains a non-directory component before lexical parent traversal"))
+		}
+		return nil, fmt.Errorf("inspect artifact path: %w", err)
+	}
 	absolute, err := filepath.Abs(pathValue)
 	if err != nil {
 		return nil, fmt.Errorf("resolve --file: %w", err)
@@ -655,6 +677,100 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 		identity: openedInfo,
 		handle:   opened,
 	}, nil
+}
+
+type lexicalStaplerPathComponent struct {
+	path     string
+	provided bool
+}
+
+var errStaplerMissingLexicalParent = errors.New("artifact path contains a missing component before lexical parent traversal")
+
+var errStaplerNonDirectoryLexicalParent = errors.New("artifact path contains a non-directory component before lexical parent traversal")
+
+// rejectSymlinkedLexicalParentTraversal protects the distinction between the
+// user-supplied path and filepath.Clean. A path such as link/../artifact can
+// resolve through link before the kernel applies .., while filepath.Clean
+// erases that component and makes it look like a direct artifact path. Inspect
+// the raw components first and reject a provided symlink only when the current
+// .. would pop that component from the lexical stack.
+func rejectSymlinkedLexicalParentTraversal(pathValue string) error {
+	wasAbsolute := filepath.IsAbs(pathValue)
+	cwd := ""
+	if !wasAbsolute {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return err
+		}
+		pathValue = cwd + string(filepath.Separator) + pathValue
+	}
+	volume := filepath.VolumeName(pathValue)
+	root := volume + string(filepath.Separator)
+	if volume == "" {
+		root = string(filepath.Separator)
+	}
+	if len(pathValue) < len(volume) {
+		return errors.New("invalid absolute path")
+	}
+	components := make([]lexicalStaplerPathComponent, 0, len(pathValue))
+	pathComponents := strings.FieldsFunc(strings.TrimLeftFunc(pathValue[len(volume):], isStaplerPathSeparator), isStaplerPathSeparator)
+	providedFrom := 0
+	if !wasAbsolute {
+		providedFrom = len(strings.FieldsFunc(strings.TrimLeftFunc(cwd[len(volume):], isStaplerPathSeparator), isStaplerPathSeparator))
+	}
+	for index, component := range pathComponents {
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			if len(components) == 0 {
+				continue
+			}
+			popped := components[len(components)-1]
+			if popped.provided {
+				info, err := os.Lstat(popped.path)
+				if err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						return errStaplerMissingLexicalParent
+					}
+					return err
+				}
+				if info.Mode()&os.ModeSymlink != 0 {
+					return rootfs.ErrSymlink
+				}
+				if !info.IsDir() {
+					return errStaplerNonDirectoryLexicalParent
+				}
+			}
+			components = components[:len(components)-1]
+		default:
+			provided := wasAbsolute || index >= providedFrom
+			parent := root
+			if len(components) > 0 {
+				parent = components[len(components)-1].path
+			}
+			components = append(components, lexicalStaplerPathComponent{
+				path:     appendStaplerPathComponent(parent, component),
+				provided: provided,
+			})
+		}
+	}
+	return nil
+}
+
+func isStaplerPathSeparator(r rune) bool {
+	if r == rune(filepath.Separator) {
+		return true
+	}
+	return runtime.GOOS == "windows" && r == '/'
+}
+
+func appendStaplerPathComponent(prefix, component string) string {
+	if strings.HasSuffix(prefix, string(filepath.Separator)) {
+		return prefix + component
+	}
+	return prefix + string(filepath.Separator) + component
 }
 
 func newStaplerTargetRoot(absolute string) (rootfs.Root, string, error) {

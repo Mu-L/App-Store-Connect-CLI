@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -175,6 +176,176 @@ func TestValidateStaplerTargetPreservesTrailingWhitespace(t *testing.T) {
 	}
 	if got != target {
 		t.Fatalf("validateStaplerTarget() = %q, want %q", got, target)
+	}
+}
+
+func TestNotarizationValidateRejectsSymlinkParentBeforeLexicalParentTraversal(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(root, "linked-parent")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	// Build this path without filepath.Join: Join/Clean would erase the
+	// lexical parent traversal that the command must inspect first.
+	pathValue := link + string(filepath.Separator) + ".." + string(filepath.Separator) + "target.pkg"
+
+	previous := runStaplerValidate
+	calls := 0
+	runStaplerValidate = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		calls++
+		return nil, errors.New("stapler runner must not be called")
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", pathValue, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+	})
+	if runErr == nil || !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("command error = %v, want usage error before traversal", runErr)
+	}
+	if calls != 0 {
+		t.Fatalf("stapler runner calls = %d, want 0", calls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty on rejected path", stdout)
+	}
+	if !strings.Contains(stderr, "symlink") {
+		t.Fatalf("stderr = %q, want symlink diagnostic", stderr)
+	}
+}
+
+func TestNotarizationValidateRejectsMissingParentBeforeLexicalParentTraversal(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	pathValue := filepath.Join(root, "missing") + string(filepath.Separator) + ".." + string(filepath.Separator) + "target.pkg"
+
+	previous := runStaplerValidate
+	calls := 0
+	runStaplerValidate = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		calls++
+		return nil, errors.New("stapler runner must not be called")
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", pathValue, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+	})
+	if runErr == nil || !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("command error = %v, want usage error before traversal", runErr)
+	}
+	if calls != 0 {
+		t.Fatalf("stapler runner calls = %d, want 0", calls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty on rejected path", stdout)
+	}
+	if !strings.Contains(stderr, "missing component") {
+		t.Fatalf("stderr = %q, want missing-component diagnostic", stderr)
+	}
+}
+
+func TestNotarizationValidateRejectsNonDirectoryParentBeforeLexicalParentTraversal(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "regular-parent")
+	if err := os.WriteFile(parent, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write regular parent: %v", err)
+	}
+	target := filepath.Join(root, "target.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	pathValue := parent + string(filepath.Separator) + ".." + string(filepath.Separator) + "target.pkg"
+
+	previous := runStaplerValidate
+	calls := 0
+	runStaplerValidate = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		calls++
+		return nil, errors.New("stapler runner must not be called")
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", pathValue, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+	})
+	if runErr == nil || !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("command error = %v, want usage error before traversal", runErr)
+	}
+	if calls != 0 {
+		t.Fatalf("stapler runner calls = %d, want 0", calls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty on rejected path", stdout)
+	}
+	if !strings.Contains(stderr, "non-directory component") {
+		t.Fatalf("stderr = %q, want non-directory diagnostic", stderr)
+	}
+}
+
+func TestValidateStaplerTargetAllowsCleanParentTraversal(t *testing.T) {
+	root := t.TempDir()
+	normal := filepath.Join(root, "normal")
+	if err := os.Mkdir(normal, 0o755); err != nil {
+		t.Fatalf("create normal parent: %v", err)
+	}
+	target := filepath.Join(root, "target.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	pathValue := normal + string(filepath.Separator) + ".." + string(filepath.Separator) + "target.pkg"
+
+	validated, err := validateStaplerTargetDetails(pathValue)
+	if err != nil {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, clean parent traversal should remain valid", err)
+	}
+	validated.close()
+}
+
+func TestRejectSymlinkedLexicalParentTraversalAllowsSymlinkAncestorWhenPoppingChild(t *testing.T) {
+	root := t.TempDir()
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "child"), 0o755); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	pathValue := link + string(filepath.Separator) + "child" + string(filepath.Separator) + ".." + string(filepath.Separator) + "artifact"
+	if err := rejectSymlinkedLexicalParentTraversal(pathValue); err != nil {
+		t.Fatalf("rejectSymlinkedLexicalParentTraversal() = %v, want clean traversal after popping child", err)
+	}
+}
+
+func TestRejectSymlinkedLexicalParentTraversalChecksPoppedMacOSAlias(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("/var alias behavior is specific to macOS")
+	}
+
+	pathValue := "/var" + string(filepath.Separator) + ".." + string(filepath.Separator) + "tmp"
+	if err := rejectSymlinkedLexicalParentTraversal(pathValue); !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("rejectSymlinkedLexicalParentTraversal() = %v, want /var alias symlink rejection", err)
 	}
 }
 
@@ -607,6 +778,72 @@ func TestNotarizationValidateReportsFilesystemFailureWhenIdentityReopenFails(t *
 	}
 	if strings.Contains(stderr, "artifact target changed") {
 		t.Fatalf("stderr = %q, unchanged artifact must not be reported as replaced", stderr)
+	}
+	if strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not expose artifact path", stderr)
+	}
+}
+
+func TestNotarizationValidateReportsNonRegularReplacementAtStage(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	baseInfo, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	previousOpenFile := openStaplerTargetFileFn
+	previousProbe := probeStaplerTargetKindFn
+	previousDetails := validateStaplerDetailsFn
+	previousRunner := runStaplerValidate
+	validateStaplerDetailsFn = func(pathValue string) (*validatedStaplerTarget, error) {
+		validated, err := validateStaplerTargetDetails(pathValue)
+		if err == nil {
+			// Model a FIFO/device/socket replacement through the probe seam without
+			// creating a blocking special file on the test filesystem.
+			probeStaplerTargetKindFn = func(rootfs.Root, string) (os.FileInfo, error) {
+				return staplerModeFileInfo{FileInfo: baseInfo, mode: os.ModeNamedPipe | 0o600}, nil
+			}
+			openStaplerTargetFileFn = func(rootfs.Root, string) (*os.File, error) {
+				return nil, syscall.EACCES
+			}
+		}
+		return validated, err
+	}
+	runStaplerValidate = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		t.Fatal("validation runner should not be called after stage identity failure")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		openStaplerTargetFileFn = previousOpenFile
+		probeStaplerTargetKindFn = previousProbe
+		validateStaplerDetailsFn = previousDetails
+		runStaplerValidate = previousRunner
+	})
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+	})
+	if runErr == nil {
+		t.Fatal("command error = nil, want stage identity failure")
+	}
+	if errors.Is(runErr, flag.ErrHelp) || shared.IsReportedUsageError(runErr) {
+		t.Fatalf("command error = %v, stage replacement must not be usage", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty on stage identity failure", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed before validation") {
+		t.Fatalf("stderr = %q, want stable stage-specific identity diagnostic", stderr)
+	}
+	if strings.Contains(stderr, "could not inspect artifact filesystem") {
+		t.Fatalf("stderr = %q, non-regular replacement must not be generic filesystem failure", stderr)
 	}
 	if strings.Contains(stderr, target) {
 		t.Fatalf("stderr = %q, must not expose artifact path", stderr)
