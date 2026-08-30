@@ -37,8 +37,9 @@ var ErrUnsafeTarget = errors.New("metadata URL target is not a public internet a
 // Result contains the response metadata needed by callers. Response bodies
 // are never retained.
 type Result struct {
-	FinalURL   *url.URL
-	StatusCode int
+	FinalURL       *url.URL
+	StatusCode     int
+	RedirectedHost bool
 }
 
 // Outcome is the result of checking one destination.
@@ -153,22 +154,67 @@ func CheckWithClient(ctx context.Context, client *http.Client, rawURL string) (R
 	requestCtx, cancel := shared.ContextWithTimeout(ctx)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, rawURL, nil)
+	currentURL, err := url.Parse(rawURL)
 	if err != nil {
 		return Result{}, err
 	}
-	req.Header.Set("User-Agent", "asc metadata validate")
+	if err := validateTargetURL(currentURL); err != nil {
+		return Result{}, err
+	}
+	initialHost := strings.ToLower(currentURL.Hostname())
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return Result{}, err
+	// Do not let net/http follow redirects: its automatic path reads a portion
+	// of each redirect body before closing it. Build a fresh request for every
+	// hop so credentials, cookies, and referrer headers cannot cross origins.
+	safeClient := *client
+	safeClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
-	defer resp.Body.Close()
-	finalURL := req.URL
-	if resp.Request != nil && resp.Request.URL != nil {
-		finalURL = resp.Request.URL
+	safeClient.Jar = nil
+
+	redirectedHost := false
+	for redirects := 0; ; {
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, currentURL.String(), nil)
+		if err != nil {
+			return Result{}, err
+		}
+		req.Header.Set("User-Agent", "asc metadata validate")
+
+		resp, err := safeClient.Do(req)
+		if err != nil {
+			return Result{}, err
+		}
+		statusCode := resp.StatusCode
+		location := resp.Header.Get("Location")
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+
+		if !isRedirectStatus(statusCode) || location == "" {
+			finalURL := *currentURL
+			return Result{
+				FinalURL:       &finalURL,
+				StatusCode:     statusCode,
+				RedirectedHost: redirectedHost,
+			}, nil
+		}
+		if redirects >= MaxRedirects {
+			return Result{}, fmt.Errorf("metadata URL exceeded %d redirects", MaxRedirects)
+		}
+
+		nextURL, err := currentURL.Parse(location)
+		if err != nil {
+			return Result{}, err
+		}
+		if err := validateTargetURL(nextURL); err != nil {
+			return Result{}, err
+		}
+		if strings.ToLower(nextURL.Hostname()) != initialHost {
+			redirectedHost = true
+		}
+		currentURL = nextURL
+		redirects++
 	}
-	return Result{FinalURL: finalURL, StatusCode: resp.StatusCode}, nil
 }
 
 type httpChecker struct {
@@ -179,19 +225,37 @@ func (c *httpChecker) Check(ctx context.Context, rawURL string) (Result, error) 
 	return CheckWithClient(ctx, c.client, rawURL)
 }
 
-// RedirectPolicy rejects non-HTTP(S), unsafe literal IP, and excessive
-// redirects. DNS-resolved destinations are checked again by PublicDialControl.
+// RedirectPolicy rejects non-HTTP(S), userinfo, unsafe literal IP, and
+// excessive redirects. DNS-resolved destinations are checked again by
+// PublicDialControl.
 func RedirectPolicy(req *http.Request, via []*http.Request) error {
 	if len(via) >= MaxRedirects {
 		return fmt.Errorf("metadata URL exceeded %d redirects", MaxRedirects)
 	}
-	if !IsHTTPURL(req.URL) {
+	if req == nil {
 		return ErrUnsafeTarget
 	}
-	if ip, err := netip.ParseAddr(req.URL.Hostname()); err == nil && !IsPublicIP(ip) {
+	return validateTargetURL(req.URL)
+}
+
+func validateTargetURL(parsed *url.URL) error {
+	if !IsHTTPURL(parsed) || parsed.User != nil {
+		return ErrUnsafeTarget
+	}
+	if ip, err := netip.ParseAddr(parsed.Hostname()); err == nil && !IsPublicIP(ip) {
 		return ErrUnsafeTarget
 	}
 	return nil
+}
+
+func isRedirectStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsHTTPURL reports whether parsed is an absolute HTTP(S) URL with a host.

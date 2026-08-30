@@ -106,7 +106,7 @@ func validateURLCheckResults(target validateURLTarget, outcome metadataurl.Outco
 	checks := make([]validation.CheckResult, 0, 2)
 	initialHost := strings.ToLower(initialURL.Hostname())
 	finalHost := strings.ToLower(outcome.Result.FinalURL.Hostname())
-	if initialHost != "" && finalHost != "" && initialHost != finalHost {
+	if outcome.Result.RedirectedHost || (initialHost != "" && finalHost != "" && initialHost != finalHost) {
 		checks = append(checks, newValidateURLCheck(
 			"legal.url.redirected_host",
 			target,

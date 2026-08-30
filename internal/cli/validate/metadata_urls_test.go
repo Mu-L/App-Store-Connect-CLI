@@ -109,6 +109,53 @@ func TestValidateURLChecksReportsRedirectAndStatusByStableIDs(t *testing.T) {
 	}
 }
 
+func TestValidateURLChecksRetainsCrossHostRedirectWarningWhenFinalHostReturns(t *testing.T) {
+	const rawURL = "https://support.example/help"
+	checker := &fakeValidateURLChecker{results: map[string]metadataurl.Result{
+		rawURL: {
+			FinalURL:       mustParseValidateURL(t, "https://support.example/final"),
+			StatusCode:     200,
+			RedirectedHost: true,
+		},
+	}}
+	checks, err := checkValidateURLs(context.Background(), checker, []validateURLTarget{{
+		RawURL:       rawURL,
+		Locale:       "en-US",
+		Field:        "supportUrl",
+		ResourceType: "appStoreVersionLocalization",
+		ResourceID:   "version-loc-1",
+	}})
+	if err != nil {
+		t.Fatalf("checkValidateURLs() error: %v", err)
+	}
+	if len(checks) != 1 || checks[0].ID != "legal.url.redirected_host" {
+		t.Fatalf("checks = %+v, want one redirected_host warning", checks)
+	}
+}
+
+func TestValidateURLChecksDoesNotWarnForSameHostResult(t *testing.T) {
+	const rawURL = "https://support.example/help"
+	checker := &fakeValidateURLChecker{results: map[string]metadataurl.Result{
+		rawURL: {
+			FinalURL:   mustParseValidateURL(t, "https://support.example/final"),
+			StatusCode: 200,
+		},
+	}}
+	checks, err := checkValidateURLs(context.Background(), checker, []validateURLTarget{{
+		RawURL:       rawURL,
+		Locale:       "en-US",
+		Field:        "supportUrl",
+		ResourceType: "appStoreVersionLocalization",
+		ResourceID:   "version-loc-1",
+	}})
+	if err != nil {
+		t.Fatalf("checkValidateURLs() error: %v", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("checks = %+v, want no warnings", checks)
+	}
+}
+
 func TestValidateURLChecksMapsUnsafeAndTimeoutErrorsWithoutDetails(t *testing.T) {
 	checker := &fakeValidateURLChecker{
 		errors: map[string]error{

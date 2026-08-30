@@ -109,7 +109,18 @@ ASC_BYPASS_KEYCHAIN=1 make test
 
 Because help changes, regenerate `docs/COMMANDS.md`. If credentials are
 available, run one read-only built-binary smoke test against an existing app
-and version; do not mutate App Store Connect data and redact all identifiers.
+and version with `ASC_BYPASS_KEYCHAIN=1`; do not mutate App Store Connect data
+and redact all identifiers.
+
+## Unresolved risks
+
+1. The new offline warnings raise the warning count for existing apps. Pipelines
+   that already run `--strict` can begin to fail without a metadata change.
+2. `--check-urls` depends on destination availability, so repeated runs can
+   report different results for unchanged metadata.
+3. Live App Store Connect smoke verification remains environment-dependent and
+   is not a substitute for the deterministic API fixtures and URL-server tests
+   above.
 
 ## Alternatives considered
 
