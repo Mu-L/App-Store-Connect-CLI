@@ -2317,6 +2317,88 @@ func TestSigningPlanSecondPassHashAndStaleDependency(t *testing.T) {
 	}
 }
 
+func TestSigningApplyRejectsStaleXCConfigAndManifest(t *testing.T) {
+	t.Run("xcconfig input", func(t *testing.T) {
+		project := writeStructuredVersionProject(t, true)
+		sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+		shared := mustReadVersionTestFile(t, sharedPath)
+		if err := os.WriteFile(sharedPath, []byte("CODE_SIGN_STYLE = Automatic\r\n"+shared), 0o640); err != nil {
+			t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+		}
+		root := t.TempDir()
+		settingsPath := filepath.Join(root, "settings.json")
+		writeSigningSettingsTestFile(t, settingsPath, `{
+			"schemaVersion": 1,
+			"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+		}`)
+		plan, err := BuildSigningPlan(SigningPlanOptions{
+			ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+		})
+		if err != nil {
+			t.Fatalf("BuildSigningPlan() error = %v", err)
+		}
+		if plan.PlanHash == "" || plan.PlanHash != signingPlanHash(plan) {
+			t.Fatalf("plan hash = %q, recomputed = %q", plan.PlanHash, signingPlanHash(plan))
+		}
+		if err := WriteSigningPlanArtifact(plan, false); err != nil {
+			t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+		}
+		beforeProject := mustReadVersionTestFile(t, filepath.Join(project, "project.pbxproj"))
+		beforeShared := mustReadVersionTestFile(t, sharedPath)
+		mutatedShared := beforeShared + "// stale source\r\n"
+		if err := os.WriteFile(sharedPath, []byte(mutatedShared), 0o640); err != nil {
+			t.Fatalf("mutate shared xcconfig: %v", err)
+		}
+		if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err == nil || !strings.Contains(err.Error(), "stale") {
+			t.Fatalf("ApplySigningPlan() error = %v, want stale xcconfig rejection", err)
+		}
+		if got := mustReadVersionTestFile(t, filepath.Join(project, "project.pbxproj")); got != beforeProject {
+			t.Fatal("stale xcconfig apply changed the project")
+		}
+		if got := mustReadVersionTestFile(t, sharedPath); got != mutatedShared {
+			t.Fatal("stale xcconfig apply changed the source again")
+		}
+	})
+
+	t.Run("manifest input", func(t *testing.T) {
+		project := writeStructuredVersionProject(t, false)
+		root := t.TempDir()
+		settingsPath := filepath.Join(root, "settings.json")
+		settings := `{
+			"schemaVersion": 1,
+			"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+		}`
+		writeSigningSettingsTestFile(t, settingsPath, settings)
+		plan, err := BuildSigningPlan(SigningPlanOptions{
+			ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+		})
+		if err != nil {
+			t.Fatalf("BuildSigningPlan() error = %v", err)
+		}
+		if err := WriteSigningPlanArtifact(plan, false); err != nil {
+			t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+		}
+		pbxprojPath := filepath.Join(project, "project.pbxproj")
+		beforeProject := mustReadVersionTestFile(t, pbxprojPath)
+		mutatedSettings := strings.Replace(settings, `"CODE_SIGN_STYLE":"manual"`, `"CODE_SIGN_STYLE":"automatic"`, 1)
+		if mutatedSettings == settings {
+			t.Fatal("failed to mutate manifest for stale-plan check")
+		}
+		if err := os.WriteFile(settingsPath, []byte(mutatedSettings), 0o644); err != nil {
+			t.Fatalf("mutate settings file: %v", err)
+		}
+		if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err == nil || !strings.Contains(err.Error(), "stale") {
+			t.Fatalf("ApplySigningPlan() error = %v, want stale manifest rejection", err)
+		}
+		if got := mustReadVersionTestFile(t, pbxprojPath); got != beforeProject {
+			t.Fatal("stale manifest apply changed the project")
+		}
+		if got := mustReadVersionTestFile(t, settingsPath); got != mutatedSettings {
+			t.Fatal("stale manifest apply changed the source again")
+		}
+	})
+}
+
 func TestSigningPlanRevalidatesTransitiveNoOpReferenceAfterDependentChange(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
@@ -2433,6 +2515,94 @@ func TestSigningPlanRevalidatesNoOpXCConfigReferenceAfterDependentChange(t *test
 	}
 }
 
+func TestSigningPlanAppliesPromotedXCConfigNoOpAfterDependentChange(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	shared = "PRODUCT_BUNDLE_IDENTIFIER = com.example.old\r\nPROVISIONING_PROFILE_SPECIFIER = \"$(PRODUCT_BUNDLE_IDENTIFIER)\"\r\n" + shared
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"PROVISIONING_PROFILE_SPECIFIER":"com.example.old",
+			"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got %#v", plan.Blockers)
+	}
+	var profileChange, bundleChange *SigningSettingChange
+	for index := range plan.Changes {
+		change := &plan.Changes[index]
+		switch change.Setting {
+		case "PROVISIONING_PROFILE_SPECIFIER":
+			profileChange = change
+		case "PRODUCT_BUNDLE_IDENTIFIER":
+			bundleChange = change
+		}
+	}
+	if profileChange == nil || bundleChange == nil {
+		t.Fatalf("plan omitted dependent signing changes: %#v", plan.Changes)
+	}
+
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	result, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v", err)
+	}
+	if result == nil || !result.Completed {
+		t.Fatalf("ApplySigningPlan() result = %#v, want completed receipt", result)
+	}
+	projectPath := filepath.Join(project, "project.pbxproj")
+	projectChanged := false
+	for _, path := range result.ChangedFiles {
+		if path == projectPath {
+			projectChanged = true
+			break
+		}
+	}
+	if !projectChanged {
+		t.Fatalf("changed files = %#v, want project update", result.ChangedFiles)
+	}
+
+	updated, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("reopen project: %v", err)
+	}
+	configuration, err := signingConfigurationFor(updated, "App", "Debug")
+	if err != nil {
+		t.Fatalf("find updated configuration: %v", err)
+	}
+	profile, _, err := updated.resolveSetting(configuration, "PROVISIONING_PROFILE_SPECIFIER")
+	if err != nil {
+		t.Fatalf("resolve applied profile: %v", err)
+	}
+	if profile != "com.example.old" {
+		t.Fatalf("applied profile = %q, want requested no-op value", profile)
+	}
+	bundleID, _, err := updated.resolveSetting(configuration, "PRODUCT_BUNDLE_IDENTIFIER")
+	if err != nil {
+		t.Fatalf("resolve applied bundle ID: %v", err)
+	}
+	if bundleID != "com.example.new" {
+		t.Fatalf("applied bundle ID = %q, want com.example.new", bundleID)
+	}
+}
+
 func TestSigningPlanRevalidatesTransitiveNoOpXCConfigReferenceAfterDependentChange(t *testing.T) {
 	project := writeStructuredVersionProject(t, true)
 	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
@@ -2476,6 +2646,76 @@ func TestSigningPlanRevalidatesTransitiveNoOpXCConfigReferenceAfterDependentChan
 	}
 	if identityChange.Source != "pbxproj" || identityChange.NewValue == nil || *identityChange.NewValue != "com.example.old" {
 		t.Fatalf("identity change = %#v, want literal target-level value", identityChange)
+	}
+}
+
+func TestSigningPlanAppliesMultipleTransitiveXCConfigNoOpsAfterDependentChange(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	shared = "PRODUCT_BUNDLE_IDENTIFIER = com.example.old\r\nIDENTITY_ALIAS = \"$(PRODUCT_BUNDLE_IDENTIFIER)\"\r\nCODE_SIGN_IDENTITY = \"$(IDENTITY_ALIAS)\"\r\nPROVISIONING_PROFILE_SPECIFIER = \"$(CODE_SIGN_IDENTITY)\"\r\n" + shared
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"com.example.old",
+			"PROVISIONING_PROFILE_SPECIFIER":"com.example.old",
+			"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got %#v", plan.Blockers)
+	}
+	if len(plan.Changes) != 3 {
+		t.Fatalf("changes = %#v, want bundle ID plus two promoted settings", plan.Changes)
+	}
+	for _, change := range plan.Changes {
+		if change.Setting != "CODE_SIGN_IDENTITY" && change.Setting != "PROVISIONING_PROFILE_SPECIFIER" && change.Setting != "PRODUCT_BUNDLE_IDENTIFIER" {
+			t.Fatalf("unexpected signing change = %#v", change)
+		}
+	}
+
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v", err)
+	}
+	updated, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("reopen project: %v", err)
+	}
+	configuration, err := signingConfigurationFor(updated, "App", "Debug")
+	if err != nil {
+		t.Fatalf("find updated configuration: %v", err)
+	}
+	for _, expected := range []struct {
+		setting string
+		value   string
+	}{
+		{setting: "CODE_SIGN_IDENTITY", value: "com.example.old"},
+		{setting: "PROVISIONING_PROFILE_SPECIFIER", value: "com.example.old"},
+		{setting: "PRODUCT_BUNDLE_IDENTIFIER", value: "com.example.new"},
+	} {
+		resolved, _, err := updated.resolveSetting(configuration, expected.setting)
+		if err != nil {
+			t.Fatalf("resolve applied %s: %v", expected.setting, err)
+		}
+		if resolved != expected.value {
+			t.Fatalf("applied %s = %q, want %q", expected.setting, resolved, expected.value)
+		}
 	}
 }
 
