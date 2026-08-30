@@ -226,16 +226,12 @@ func executeSigningKeychainInstallWith(ctx context.Context, options signingKeych
 			resultErr = errors.Join(resultErr, fmt.Errorf("signing keychain install: release signing environment lock: %w", err))
 		}
 	}()
-	var originalSearchList []string
-	searchListHadPath := false
-	if options.AddToSearchList {
-		originalSearchList, err = deps.KeychainSearchList(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("signing keychain install: read keychain search list: %w", err)
-		}
-		originalSearchList = append([]string(nil), originalSearchList...)
-		searchListHadPath = slices.Contains(originalSearchList, resolvedKeychainPath)
+	originalSearchList, err := deps.KeychainSearchList(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("signing keychain install: read keychain search list: %w", err)
 	}
+	originalSearchList = append([]string(nil), originalSearchList...)
+	searchListHadPath := slices.Contains(originalSearchList, resolvedKeychainPath)
 
 	created := false
 	rollback := func(primary error) error {
@@ -248,14 +244,8 @@ func executeSigningKeychainInstallWith(ctx context.Context, options signingKeych
 		if err := deps.DeleteKeychain(cleanupCtx, resolvedKeychainPath); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete keychain: %w", err))
 		}
-		if options.AddToSearchList {
-			if err := deps.SetKeychainSearchList(cleanupCtx, originalSearchList); err != nil {
-				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("restore keychain search list: %w", err))
-			}
-		} else if deps.RemoveKeychainSearchEntry != nil {
-			if err := deps.RemoveKeychainSearchEntry(cleanupCtx, resolvedKeychainPath); err != nil {
-				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove keychain search-list entry: %w", err))
-			}
+		if err := deps.SetKeychainSearchList(cleanupCtx, originalSearchList); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("restore keychain search list: %w", err))
 		}
 		if cleanupErr != nil {
 			return errors.Join(primary, fmt.Errorf("signing keychain install: rollback new keychain: %w", cleanupErr))
@@ -298,7 +288,7 @@ func requireSigningKeychainInstallDeps(deps signingKeychainInstallDeps, addToSea
 	if deps.AcquireLock == nil || deps.CreateKeychain == nil || deps.ImportIdentity == nil || deps.DeleteKeychain == nil {
 		return fmt.Errorf("signing keychain install: platform keychain operations are unavailable")
 	}
-	if addToSearchList && (deps.KeychainSearchList == nil || deps.SetKeychainSearchList == nil) {
+	if deps.KeychainSearchList == nil || deps.SetKeychainSearchList == nil {
 		return fmt.Errorf("signing keychain install: platform search-list operations are unavailable")
 	}
 	if !addToSearchList && deps.RemoveKeychainSearchEntry == nil {

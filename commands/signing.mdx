@@ -378,8 +378,11 @@ keychain.
 Both passwords come from protected regular files and are never placed in
 subprocess arguments. The command deletes the new keychain if import,
 codesigning verification, or search-list activation fails. It does not change
-the default keychain. Without `--add-to-search-list`, it also removes any
-automatic search-list entry that the host creates.
+the default keychain. Before creation it snapshots the user search list and
+restores that exact snapshot after any later failure, including when the
+destination had a stale entry. Without `--add-to-search-list`, a successful
+install removes any automatic or stale destination entry so the new keychain
+remains isolated.
 
 The JSON receipt contains the absolute keychain path, public certificate
 fingerprints, team ID, and whether the user search list changed. It never

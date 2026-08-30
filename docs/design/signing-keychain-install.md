@@ -56,16 +56,19 @@ write and cleanup scope.
 ## Failure and rollback contract
 
 All input, destination, and output-format validation happens before the first
-side effect. Once creation succeeds, any later import, verification, or search
-list failure triggers deletion of the new keychain and restoration of the
-original search list. A host-created automatic search-list entry is removed
-immediately when `--add-to-search-list` is absent; explicit activation is the
-last operation when the flag is present. If both the primary operation and
-rollback fail, both errors are returned. Rollback uses an independent bounded
-context, so cancellation of the initiating command does not prevent keychain
-deletion or search-list restoration. The same rule applies when cancellation
-interrupts initial keychain configuration before the outer installer can mark
-creation complete. On macOS, SIGINT, SIGTERM, and SIGHUP cancel the initiating
+side effect. The user search list is snapshotted before keychain creation in
+both activation modes. Once creation succeeds, any later import, verification,
+isolation, or search-list failure triggers deletion of the new keychain and
+restoration of that exact snapshot, including a stale destination entry that
+existed before the destination file did. A host-created automatic or stale
+destination entry is removed immediately when `--add-to-search-list` is absent;
+explicit activation is the last operation when the flag is present. If both
+the primary operation and rollback fail, both errors are returned. Rollback
+uses an independent bounded context, so cancellation of the initiating command
+does not prevent keychain deletion or search-list restoration. The same rule
+applies when cancellation interrupts initial keychain configuration before the
+outer installer can mark creation complete. On macOS, SIGINT, SIGTERM, and
+SIGHUP cancel the initiating
 context so termination follows this rollback path. Keychain creation and
 unlocking are separate checked stages;
 an unlock failure deletes the newly created destination through the same
