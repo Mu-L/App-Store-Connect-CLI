@@ -1682,6 +1682,11 @@ func commitVersionWritesWithCreateCheck(
 					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", write.path, rollbackErr))
 				}
 			}
+			if !write.createOnly {
+				if rollbackErr := rollbackPublishedVersionWriteAfterError(write); rollbackErr != nil {
+					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", write.path, rollbackErr))
+				}
+			}
 			rollbackErrors = append(rollbackErrors, rollbackVersionWrites(committed)...)
 			writeErr := fmt.Errorf("write %s: %w", write.path, err)
 			if len(rollbackErrors) > 0 {
@@ -1728,6 +1733,37 @@ func rollbackVersionWrites(committed []preparedVersionWrite) []error {
 		}
 	}
 	return rollbackErrors
+}
+
+// rollbackPublishedVersionWriteAfterError restores a write whose replacement
+// was already published even though the write call reported an error. The
+// rooted writer stages a temporary file and publishes it only with a rename,
+// and it never writes into the destination in place, so the destination always
+// holds either the original bytes or this transaction's complete updated
+// bytes. Comparing bytes is therefore a sound test for "did this write take
+// effect", and a torn destination cannot occur.
+//
+// The concrete case is the Windows replacement path, which moves the original
+// aside, renames the staged file into place, and then fails while removing its
+// backup copy. Publication succeeded, so without this the transaction would
+// abort while leaving the project file modified and no receipt written.
+//
+// The backup file the primitive could not remove is deliberately not deleted
+// here: its name is known only to the primitive and reaches this layer inside
+// the error text. Callers join that error into the returned failure, so the
+// stranded path is reported to the operator rather than silently discarded.
+func rollbackPublishedVersionWriteAfterError(write preparedVersionWrite) error {
+	current, _, err := readRegularVersionFile(write)
+	if err != nil {
+		return fmt.Errorf("inspect file after failed write: %w", err)
+	}
+	if bytes.Equal(current, write.original) {
+		return nil
+	}
+	if !bytes.Equal(current, write.updated) {
+		return fmt.Errorf("preserve current file after concurrent change")
+	}
+	return atomicWriteVersionFileFn(write, write.original)
 }
 
 func rollbackOrdinaryVersionWrite(write preparedVersionWrite) error {

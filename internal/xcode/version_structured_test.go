@@ -1737,3 +1737,81 @@ func writeStructuredVersionProject(t *testing.T, xcconfigBacked bool) string {
 	}
 	return projectPath
 }
+
+// TestStructuredVersion_RollsBackWritePublishedBeforeError pins the caller-side
+// half of the Windows replacement path. replaceFileInRoot moves the original
+// aside, renames the staged file into place, and can then fail while removing
+// its backup, so the write reports an error even though publication already
+// succeeded. The rooted writer only ever publishes by rename and never writes
+// into the destination in place, so the destination holds either the original
+// or this transaction's complete updated bytes; comparing bytes is therefore a
+// sound test for whether the write took effect.
+func TestStructuredVersion_RollsBackWritePublishedBeforeError(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.xcconfig")
+	if err := os.WriteFile(path, []byte("old-a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalWriter := atomicWriteVersionFileFn
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) error {
+		if err := atomicWritePreparedVersionFile(write, data); err != nil {
+			return err
+		}
+		if string(data) == "new-a" {
+			return errors.New(`replacement succeeded but remove backup ".asc-backup-123": permission denied`)
+		}
+		return nil
+	}
+	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
+
+	fileRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = commitVersionWrites([]preparedVersionWrite{
+		{path: path, root: fileRoot, name: path, original: []byte("old-a"), updated: []byte("new-a"), mode: 0o644},
+	})
+	if err == nil {
+		t.Fatal("commitVersionWrites() error = nil, want publication failure")
+	}
+	if got := mustReadVersionTestFile(t, path); got != "old-a" {
+		t.Fatalf("write published before the error was not rolled back: %q", got)
+	}
+	// The backup path is known only to the rootfs primitive and reaches this
+	// layer inside the error text, so it must stay visible to the operator.
+	if !strings.Contains(err.Error(), "remove backup") {
+		t.Fatalf("stranded backup file was not reported: %v", err)
+	}
+}
+
+func TestStructuredVersion_LeavesUnpublishedFailedWriteAlone(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.xcconfig")
+	if err := os.WriteFile(path, []byte("old-a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalWriter := atomicWriteVersionFileFn
+	atomicWriteVersionFileFn = func(preparedVersionWrite, []byte) error {
+		return errors.New("open destination: permission denied")
+	}
+	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
+
+	fileRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = commitVersionWrites([]preparedVersionWrite{
+		{path: path, root: fileRoot, name: path, original: []byte("old-a"), updated: []byte("new-a"), mode: 0o644},
+	})
+	if err == nil {
+		t.Fatal("commitVersionWrites() error = nil, want write failure")
+	}
+	if got := mustReadVersionTestFile(t, path); got != "old-a" {
+		t.Fatalf("unpublished failure disturbed the destination: %q", got)
+	}
+	if strings.Contains(err.Error(), "restore") {
+		t.Fatalf("unpublished failure attempted a rollback: %v", err)
+	}
+}
