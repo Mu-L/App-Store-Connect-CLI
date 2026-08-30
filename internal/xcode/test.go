@@ -23,14 +23,15 @@ import (
 type TestAction string
 
 const (
-	TestActionTest                 TestAction = "test"
-	TestActionBuildForTesting      TestAction = "build-for-testing"
-	TestActionTestWithoutBuilding  TestAction = "test-without-building"
-	maxTestFailureMessage                     = 4096
-	maxTestFailureCount                       = 100
-	maxTestCaseCount                          = 10000
-	maxXcresulttoolOutputBytes                = 16 << 20
-	maxXcresulttoolDiagnosticBytes            = 8 << 10
+	TestActionTest                  TestAction = "test"
+	TestActionBuildForTesting       TestAction = "build-for-testing"
+	TestActionTestWithoutBuilding   TestAction = "test-without-building"
+	maxTestFailureMessage                      = 4096
+	maxTestFailureCount                        = 100
+	maxTestCaseCount                           = 10000
+	maxXcresulttoolOutputBytes                 = 16 << 20
+	maxXcresulttoolDiagnosticBytes             = 8 << 10
+	testResultPostProcessingTimeout            = 30 * time.Second
 )
 
 // TestOptions describes a local xcodebuild test operation.
@@ -277,7 +278,7 @@ func Test(ctx context.Context, opts TestOptions) (*TestResult, error) {
 	if processErr != nil {
 		setTestExitStatus(result, processErr)
 		if opts.Action != string(TestActionBuildForTesting) && validateTestResultBundlePathComponents(opts.ResultBundlePath) == nil && existingDirectory(opts.ResultBundlePath) {
-			if summary, summaryErr := readTestResultSummaryFn(ctx, opts.ResultBundlePath); summaryErr == nil {
+			if summary, summaryErr := readPartialTestResultSummary(ctx, opts.ResultBundlePath); summaryErr == nil {
 				result.Tests = summary
 			}
 		}
@@ -312,6 +313,20 @@ func Test(ctx context.Context, opts TestOptions) (*TestResult, error) {
 	exitStatus := 0
 	result.ExitStatus = &exitStatus
 	return finish(nil)
+}
+
+// readPartialTestResultSummary gives post-processing a short, independent
+// deadline after xcodebuild fails. The command context may already be canceled
+// when xcodebuild is terminated, but a readable result bundle can still contain
+// valuable partial test data. Preserve context values while deliberately
+// dropping the caller's cancellation and deadline for this bounded read.
+func readPartialTestResultSummary(ctx context.Context, resultBundlePath string) (*TestSummary, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	postProcessContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), testResultPostProcessingTimeout)
+	defer cancel()
+	return readTestResultSummaryFn(postProcessContext, resultBundlePath)
 }
 
 func normalizeTestOptions(opts TestOptions) TestOptions {

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -637,6 +638,39 @@ func TestXcodeTestJUnitPreservesInfrastructureFailureWithFailedCases(t *testing.
 				t.Fatalf("JUnit output = %s, want test plus infrastructure failures", data)
 			}
 		})
+	}
+}
+
+func TestXcodeTestJUnitDoesNotDuplicateOrdinaryExitErrorForRepresentedFailures(t *testing.T) {
+	err := exec.Command("sh", "-c", "exit 65").Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("command error = %T %v, want *exec.ExitError", err, err)
+	}
+	exitStatus := exitErr.ExitCode()
+	report := testResultJUnitReport(&localxcode.TestResult{
+		Success:    false,
+		ExitStatus: &exitStatus,
+		Tests: &localxcode.TestSummary{
+			Total:  1,
+			Failed: 1,
+			Cases: []localxcode.TestCase{{
+				Identifier: "DemoTests/Smoke/testFail",
+				Name:       "testFail",
+				Status:     "failed",
+				Message:    "assertion failed",
+			}},
+		},
+	}, err)
+	data, marshalErr := report.Marshal()
+	if marshalErr != nil {
+		t.Fatalf("JUnit Marshal() error = %v", marshalErr)
+	}
+	if got := strings.Count(string(data), "<testcase "); got != 1 {
+		t.Fatalf("JUnit testcase count = %d, want one represented test\n%s", got, data)
+	}
+	if !strings.Contains(string(data), `failures="1"`) || strings.Contains(string(data), "aggregate-failed") {
+		t.Fatalf("JUnit output = %s, want only represented test failure", data)
 	}
 }
 

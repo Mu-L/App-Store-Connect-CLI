@@ -359,14 +359,40 @@ func shouldAddJUnitInfrastructureFailure(result *localxcode.TestResult, summary 
 	if summary == nil {
 		return true
 	}
-	if result.ExitStatus != nil && *result.ExitStatus != 0 {
-		return true
-	}
 	if errors.Is(commandErr, context.Canceled) || errors.Is(commandErr, context.DeadlineExceeded) {
 		return true
 	}
 	var exitErr *exec.ExitError
-	return errors.As(commandErr, &exitErr) && exitErr.ExitCode() != 0
+	if errors.As(commandErr, &exitErr) {
+		if exitErr.ExitCode() < 0 {
+			return true
+		}
+		// A normal nonzero xcodebuild exit is commonly the result of test
+		// failures. When xcresult already represents those failures, adding an
+		// infrastructure testcase would double-count the same outcome. Keep a
+		// synthetic testcase only when the exit has no represented failure.
+		return !summaryReportsFailedTest(summary)
+	}
+	// Preserve a synthetic row for generic errors and typed infrastructure
+	// failures even when the summary contains ordinary failed test cases.
+	return true
+}
+
+func summaryReportsFailedTest(summary *localxcode.TestSummary) bool {
+	if summary == nil {
+		return false
+	}
+	if summary.Failed > 0 || len(summary.Failures) > 0 {
+		return true
+	}
+	for _, testCase := range summary.Cases {
+		normalized := strings.ToLower(strings.TrimSpace(testCase.Status))
+		switch normalized {
+		case "failed", "failure", "error", "errored":
+			return true
+		}
+	}
+	return false
 }
 
 func syntheticJUnitTestCase(status string, index int, message string) shared.JUnitTestCase {

@@ -1163,6 +1163,78 @@ func TestTestPreservesProcessFailureAndPartialSummary(t *testing.T) {
 	}
 }
 
+func TestTestRecoversPartialSummaryWithFreshPostProcessingContextAfterCancellation(t *testing.T) {
+	originalRuntimeGOOS := runtimeGOOS
+	originalLookPath := lookPathFn
+	originalCommandContext := commandContextFn
+	originalRun := runXcodeTestCommand
+	originalRead := readTestResultSummaryFn
+	t.Cleanup(func() {
+		runtimeGOOS = originalRuntimeGOOS
+		lookPathFn = originalLookPath
+		commandContextFn = originalCommandContext
+		runXcodeTestCommand = originalRun
+		readTestResultSummaryFn = originalRead
+	})
+	runtimeGOOS = "darwin"
+	lookPathFn = func(string) (string, error) { return "/usr/bin/xcodebuild", nil }
+	commandContextFn = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+	projectPath := filepath.Join(t.TempDir(), "Demo.xcodeproj")
+	if err := os.Mkdir(projectPath, 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	resultPath := filepath.Join(t.TempDir(), "Demo-tests.xcresult")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runXcodeTestCommand = func(_ context.Context, _ []string, _ io.Writer) error {
+		if err := os.Mkdir(resultPath, 0o755); err != nil {
+			return err
+		}
+		cancel()
+		return context.Canceled
+	}
+	var gotSummaryContext context.Context
+	var gotLiveSummaryContext bool
+	readTestResultSummaryFn = func(summaryContext context.Context, _ string) (*TestSummary, error) {
+		gotSummaryContext = summaryContext
+		if summaryContext.Err() != nil {
+			return nil, summaryContext.Err()
+		}
+		if _, ok := summaryContext.Deadline(); !ok {
+			return nil, errors.New("post-processing context has no deadline")
+		}
+		gotLiveSummaryContext = true
+		return &TestSummary{
+			Total:  1,
+			Failed: 1,
+			Cases:  []TestCase{{Identifier: "DemoTests/Smoke/testFail", Status: "failed"}},
+		}, nil
+	}
+
+	result, err := Test(ctx, TestOptions{
+		ProjectPath:      projectPath,
+		Scheme:           "Demo",
+		Action:           string(TestActionTest),
+		Destinations:     []string{"platform=iOS Simulator,name=iPhone 17 Pro"},
+		DerivedDataPath:  filepath.Join(t.TempDir(), "DerivedData"),
+		ResultBundlePath: resultPath,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Test() error = %v, want context cancellation", err)
+	}
+	if result == nil || result.Tests == nil || result.Tests.Failed != 1 {
+		t.Fatalf("partial summary = %+v, want failed test summary", result)
+	}
+	if gotSummaryContext == nil {
+		t.Fatal("readTestResultSummaryFn was not called")
+	}
+	if !gotLiveSummaryContext {
+		t.Fatal("post-processing reader did not receive a live deadline-bearing context")
+	}
+}
+
 func TestTestOmitsExitStatusForContextCancellation(t *testing.T) {
 	originalRuntimeGOOS := runtimeGOOS
 	originalLookPath := lookPathFn
