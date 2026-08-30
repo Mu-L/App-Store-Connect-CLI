@@ -275,6 +275,10 @@ func registerAllOutputRenderers() {
 	})
 	registerRows(buildExpireAllResultRows)
 	registerRows(appScreenshotListResultRows)
+	registerDirect(matrixResultTables)
+	registerRows(matrixCellResultRows)
+	registerRows(matrixReviewResultRows)
+	registerDirect(matrixReviewManifestTables)
 	registerRows(screenshotSizesRows)
 	registerRows(appPreviewListResultRows)
 	registerDirect(func(v *AppScreenshotUploadResult, render func([]string, [][]string)) error {

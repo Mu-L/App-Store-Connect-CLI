@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
-	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/screenshots"
 )
@@ -110,13 +109,7 @@ execution values in the matrix plan.`,
 				RetryBackoffSet:   retryBackoffSet,
 			})
 			if result != nil {
-				if printErr := shared.PrintOutputWithRenderers(
-					result,
-					*output.Output,
-					*output.Pretty,
-					func() error { return renderMatrixTable(result) },
-					func() error { return renderMatrixMarkdown(result) },
-				); printErr != nil {
+				if printErr := shared.PrintOutput(matrixResultOutput(result), *output.Output, *output.Pretty); printErr != nil {
 					return printErr
 				}
 			}
@@ -135,30 +128,4 @@ execution values in the matrix plan.`,
 func reportMatrixUsageError(err error, parameter string) error {
 	fmt.Fprintf(os.Stderr, "Error: %s\n", shared.SanitizeTerminal(err.Error()))
 	return shared.NewErrorWithCause(shared.InvalidValueUsageError(parameter), err)
-}
-
-func renderMatrixTable(result *screenshots.MatrixResult) error {
-	rows := make([][]string, 0, len(result.Cells))
-	for _, cell := range result.Cells {
-		failure := cell.FailureCode
-		if failure == "" {
-			failure = "-"
-		}
-		rows = append(rows, []string{cell.ID, cell.Status, fmt.Sprintf("%d", cell.Attempts), failure})
-	}
-	asc.RenderTable([]string{"CELL", "STATUS", "ATTEMPTS", "FAILURE"}, rows)
-	return nil
-}
-
-func renderMatrixMarkdown(result *screenshots.MatrixResult) error {
-	rows := make([][]string, 0, len(result.Cells))
-	for _, cell := range result.Cells {
-		failure := cell.FailureCode
-		if failure == "" {
-			failure = "-"
-		}
-		rows = append(rows, []string{cell.ID, cell.Status, fmt.Sprintf("%d", cell.Attempts), failure})
-	}
-	asc.RenderMarkdown([]string{"CELL", "STATUS", "ATTEMPTS", "FAILURE"}, rows)
-	return nil
 }

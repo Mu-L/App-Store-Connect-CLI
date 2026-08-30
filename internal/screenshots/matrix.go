@@ -5,19 +5,29 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"github.com/tidwall/jsonc"
 )
 
 const (
+	maxMatrixPlanBytes       = 1 << 20
+	maxMatrixReviewBytes     = 8 << 20
+	maxMatrixInventoryBytes  = 4 << 20
 	maxMatrixCells           = 256
 	maxMatrixConcurrency     = 8
 	maxMatrixAttempts        = 3
@@ -141,16 +151,16 @@ type MatrixCellResult struct {
 	Device       string                   `json:"device"`
 	Locale       string                   `json:"locale"`
 	Appearance   string                   `json:"appearance"`
-	Content      string                   `json:"content_variant"`
+	Content      string                   `json:"contentVariant"`
 	Status       string                   `json:"status"`
 	Attempts     int                      `json:"attempts"`
-	DurationMS   int64                    `json:"duration_ms"`
-	RawPaths     []string                 `json:"raw_paths,omitempty"`
-	FramedPaths  []string                 `json:"framed_paths,omitempty"`
+	DurationMS   int64                    `json:"durationMs"`
+	RawPaths     []string                 `json:"rawPaths,omitempty"`
+	FramedPaths  []string                 `json:"framedPaths,omitempty"`
 	Screenshots  []MatrixScreenshotResult `json:"screenshots,omitempty"`
 	Steps        []RunStepResult          `json:"steps,omitempty"`
-	FailureStage string                   `json:"failure_stage,omitempty"`
-	FailureCode  string                   `json:"failure_code,omitempty"`
+	FailureStage string                   `json:"failureStage,omitempty"`
+	FailureCode  string                   `json:"failureCode,omitempty"`
 	Error        *MatrixCellError         `json:"error,omitempty"`
 }
 
@@ -166,31 +176,31 @@ type MatrixCellError struct {
 type MatrixScreenshotResult struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`
-	RawPath    string `json:"raw_path,omitempty"`
-	FramedPath string `json:"framed_path,omitempty"`
+	RawPath    string `json:"rawPath,omitempty"`
+	FramedPath string `json:"framedPath,omitempty"`
 	Width      int    `json:"width,omitempty"`
 	Height     int    `json:"height,omitempty"`
 }
 
 // MatrixResult is printed after a matrix run and is also the source for review artifacts.
 type MatrixResult struct {
-	PlanPath      string              `json:"plan_path"`
-	BundleID      string              `json:"bundle_id,omitempty"`
-	RawDir        string              `json:"raw_dir"`
-	FramedDir     string              `json:"framed_dir"`
-	ReviewDir     string              `json:"review_dir"`
+	PlanPath      string              `json:"planPath"`
+	BundleID      string              `json:"bundleId,omitempty"`
+	RawDir        string              `json:"rawDir"`
+	FramedDir     string              `json:"framedDir"`
+	ReviewDir     string              `json:"reviewDir"`
 	Status        string              `json:"status"`
-	TotalCells    int                 `json:"total_cells"`
+	TotalCells    int                 `json:"totalCells"`
 	Succeeded     int                 `json:"succeeded"`
 	Failed        int                 `json:"failed"`
 	Canceled      int                 `json:"canceled"`
 	Retried       int                 `json:"retried"`
-	CleanupFailed int                 `json:"cleanup_failed,omitempty"`
+	CleanupFailed int                 `json:"cleanupFailed,omitempty"`
 	Cells         []MatrixCellResult  `json:"cells"`
 	Review        *MatrixReviewResult `json:"review,omitempty"`
 
 	// Total is retained internally for callers that build reports directly;
-	// the public output uses total_cells.
+	// the public output uses totalCells.
 	Total int `json:"-"`
 }
 
@@ -220,11 +230,33 @@ type MatrixDependencies struct {
 	CheckDevice func(context.Context, MatrixDevice) error
 }
 
+// matrixOutputRoots keep operator-selected artifact paths anchored for the
+// entire run. Paths below these roots are checked and written without
+// following symlinks, while the absolute paths remain available to the
+// existing simulator and framing adapters.
+type matrixOutputRoots struct {
+	raw        rootfs.Root
+	rawPath    string
+	framed     rootfs.Root
+	framedPath string
+	hasFramed  bool
+}
+
+var matrixTemporarySequence atomic.Uint64
+
 // LoadMatrixPlan reads a JSON or JSONC matrix plan without resolving its base plan.
 func LoadMatrixPlan(path string) (*MatrixPlan, error) {
-	data, err := os.ReadFile(path)
+	file, err := rootfs.OpenFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrMatrixPlanRead, err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxMatrixPlanBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrMatrixPlanRead, err)
+	}
+	if len(data) > maxMatrixPlanBytes {
+		return nil, fmt.Errorf("%w: matrix plan exceeds the %d-byte size limit", ErrMatrixPlanRead, maxMatrixPlanBytes)
 	}
 	var plan MatrixPlan
 	if err := json.Unmarshal(jsonc.ToJSON(data), &plan); err != nil {
@@ -235,6 +267,105 @@ func LoadMatrixPlan(path string) (*MatrixPlan, error) {
 	}
 	plan.sourcePath, _ = filepath.Abs(path)
 	return &plan, nil
+}
+
+func openMatrixOutputRoot(path string) (rootfs.Root, error) {
+	absPath, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return rootfs.Root{}, err
+	}
+	absPath = filepath.Clean(absPath)
+	parentPath := filepath.Dir(absPath)
+	name := filepath.Base(absPath)
+	parent, err := rootfs.New(parentPath)
+	if err != nil {
+		return rootfs.Root{}, err
+	}
+	defer func() { _ = parent.Close() }()
+	if err := parent.MkdirAll(".", 0o755); err != nil {
+		return rootfs.Root{}, err
+	}
+	if err := parent.CheckContained(name); err != nil {
+		return rootfs.Root{}, err
+	}
+	if err := parent.MkdirAll(name, 0o755); err != nil {
+		return rootfs.Root{}, err
+	}
+	if err := parent.CheckContained(name); err != nil {
+		return rootfs.Root{}, err
+	}
+	root, err := rootfs.New(absPath)
+	if err != nil {
+		return rootfs.Root{}, err
+	}
+	if err := root.MkdirAll(".", 0o755); err != nil {
+		_ = root.Close()
+		return rootfs.Root{}, err
+	}
+	return root, nil
+}
+
+func relativeMatrixOutputPath(rootPath, path string) (string, error) {
+	rootPath = filepath.Clean(rootPath)
+	path = filepath.Clean(path)
+	relative, err := filepath.Rel(rootPath, path)
+	if err != nil {
+		return "", err
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", fmt.Errorf("path %q escapes matrix output root", path)
+	}
+	return relative, nil
+}
+
+func createMatrixTemporaryDir(outputRoot rootfs.Root, outputRootPath, parentPath, prefix string) (string, error) {
+	parentRelative, err := relativeMatrixOutputPath(outputRootPath, parentPath)
+	if err != nil {
+		return "", err
+	}
+	if err := outputRoot.MkdirAll(parentRelative, 0o755); err != nil {
+		return "", err
+	}
+	rooted, err := outputRoot.OpenRoot()
+	if err != nil {
+		return "", err
+	}
+	defer rooted.Close()
+	parent := rooted
+	if parentRelative != "." {
+		parent, err = rooted.OpenRoot(parentRelative)
+		if err != nil {
+			return "", err
+		}
+		defer parent.Close()
+	}
+	for attempt := 0; attempt < 100; attempt++ {
+		name := fmt.Sprintf("%s%d", prefix, matrixTemporarySequence.Add(1))
+		if err := parent.Mkdir(name, 0o700); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return "", err
+		}
+		return filepath.Join(parentPath, name), nil
+	}
+	return "", errors.New("could not allocate a unique matrix temporary directory")
+}
+
+func removeMatrixTemporaryDir(outputRoot rootfs.Root, outputRootPath, path string) error {
+	relative, err := relativeMatrixOutputPath(outputRootPath, path)
+	if err != nil {
+		return err
+	}
+	rooted, err := outputRoot.OpenRoot()
+	if err != nil {
+		return err
+	}
+	defer rooted.Close()
+	if err := rooted.RemoveAll(relative); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // ValidateMatrixPlan validates all matrix inputs that can be checked without
@@ -587,15 +718,23 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 		result.Cells[index].Error = newMatrixCellError("preflight", "simulator_not_ready", "target simulator is not ready")
 		setMatrixScreenshotStatuses(&result.Cells[index])
 	}
-	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+	rawRoot, err := openMatrixOutputRoot(rawDir)
+	if err != nil {
 		return nil, fmt.Errorf("create raw output directory: %w", err)
 	}
+	defer func() { _ = rawRoot.Close() }()
+	outputRoots := matrixOutputRoots{raw: rawRoot, rawPath: rawDir}
 	if matrixPlan.Output.Frame.Enabled {
-		if err := os.MkdirAll(framedDir, 0o755); err != nil {
-			return nil, fmt.Errorf("create framed output directory: %w", err)
+		framedRoot, rootErr := openMatrixOutputRoot(framedDir)
+		if rootErr != nil {
+			return nil, fmt.Errorf("create framed output directory: %w", rootErr)
 		}
+		defer func() { _ = framedRoot.Close() }()
+		outputRoots.framed = framedRoot
+		outputRoots.framedPath = framedDir
+		outputRoots.hasFramed = true
 	}
-	runErr := executeMatrixCells(ctx, cells, deviceFailures, base, matrixPlan, concurrency, attempts, backoff, deps, result)
+	runErr := executeMatrixCells(ctx, cells, deviceFailures, base, matrixPlan, concurrency, attempts, backoff, deps, outputRoots, result)
 	countMatrixResultStatuses(result)
 	reviewCtx := context.WithoutCancel(ctx)
 	review, reviewErr := GenerateMatrixReview(reviewCtx, MatrixReviewRequest{Result: result, OutputDir: reviewDir})
@@ -649,7 +788,7 @@ func resolveMatrixExecution(execution MatrixExecution, options MatrixOptions) (i
 	return concurrency, attempts, backoff, nil
 }
 
-func executeMatrixCells(ctx context.Context, cells []MatrixCell, deviceFailures map[string]struct{}, base *Plan, matrixPlan *MatrixPlan, concurrency, attempts int, backoff time.Duration, deps MatrixDependencies, result *MatrixResult) error {
+func executeMatrixCells(ctx context.Context, cells []MatrixCell, deviceFailures map[string]struct{}, base *Plan, matrixPlan *MatrixPlan, concurrency, attempts int, backoff time.Duration, deps MatrixDependencies, outputRoots matrixOutputRoots, result *MatrixResult) error {
 	jobs := make(chan int)
 	var workers sync.WaitGroup
 	guards := make(map[string]*matrixSimulatorGuard)
@@ -673,7 +812,7 @@ func executeMatrixCells(ctx context.Context, cells []MatrixCell, deviceFailures 
 				if _, failed := deviceFailures[cells[index].Device]; failed {
 					continue
 				}
-				cellResult := executeMatrixCell(ctx, cells[index], base, matrixPlan, attempts, backoff, deps, guards[cells[index].UDID])
+				cellResult := executeMatrixCell(ctx, cells[index], base, matrixPlan, attempts, backoff, deps, outputRoots, guards[cells[index].UDID])
 				result.Cells[index] = cellResult
 			}
 		}()
@@ -713,7 +852,7 @@ type matrixSimulatorGuard struct {
 	blocked bool
 }
 
-func executeMatrixCell(ctx context.Context, cell MatrixCell, base *Plan, matrixPlan *MatrixPlan, maxAttempts int, backoff time.Duration, deps MatrixDependencies, guard *matrixSimulatorGuard) MatrixCellResult {
+func executeMatrixCell(ctx context.Context, cell MatrixCell, base *Plan, matrixPlan *MatrixPlan, maxAttempts int, backoff time.Duration, deps MatrixDependencies, outputRoots matrixOutputRoots, guard *matrixSimulatorGuard) MatrixCellResult {
 	started := time.Now()
 	result := newMatrixCellResult(cell)
 	result.Status = MatrixCellFailed
@@ -767,7 +906,7 @@ func executeMatrixCell(ctx context.Context, cell MatrixCell, base *Plan, matrixP
 			result.Error = newMatrixCellError(result.FailureStage, result.FailureCode, "cell canceled")
 			break
 		}
-		attemptResult, attemptErr := executeMatrixCellAttempt(ctx, cell, base, matrixPlan, deps)
+		attemptResult, attemptErr := executeMatrixCellAttempt(ctx, cell, base, matrixPlan, deps, outputRoots)
 		result.Steps = attemptResult.Steps
 		if len(attemptResult.RawPaths) > 0 {
 			result.RawPaths = append([]string(nil), attemptResult.RawPaths...)
@@ -833,15 +972,19 @@ type matrixAttemptResult struct {
 	Error        string
 }
 
-func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, matrixPlan *MatrixPlan, deps MatrixDependencies) (matrixAttemptResult, error) {
-	if err := os.MkdirAll(filepath.Dir(cell.RawDir), 0o755); err != nil {
-		return matrixAttemptResult{FailureStage: "execution", FailureCode: "temporary_output_failed", Error: "temporary output directory could not be created"}, err
-	}
-	attemptDir, err := os.MkdirTemp(filepath.Dir(cell.RawDir), ".asc-matrix-attempt-")
+func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, matrixPlan *MatrixPlan, deps MatrixDependencies, outputRoots matrixOutputRoots) (matrixAttemptResult, error) {
+	rawRelative, err := relativeMatrixOutputPath(outputRoots.rawPath, cell.RawDir)
 	if err != nil {
 		return matrixAttemptResult{FailureStage: "execution", FailureCode: "temporary_output_failed", Error: "temporary output directory could not be created"}, err
 	}
-	defer os.RemoveAll(attemptDir)
+	if err := outputRoots.raw.MkdirAll(rawRelative, 0o755); err != nil {
+		return matrixAttemptResult{FailureStage: "execution", FailureCode: "temporary_output_failed", Error: "temporary output directory could not be created"}, err
+	}
+	attemptDir, err := createMatrixTemporaryDir(outputRoots.raw, outputRoots.rawPath, filepath.Dir(cell.RawDir), ".asc-matrix-attempt-")
+	if err != nil {
+		return matrixAttemptResult{FailureStage: "execution", FailureCode: "temporary_output_failed", Error: "temporary output directory could not be created"}, err
+	}
+	defer func() { _ = removeMatrixTemporaryDir(outputRoots.raw, outputRoots.rawPath, attemptDir) }()
 	plan, err := cloneScreenshotPlan(base)
 	if err != nil {
 		return matrixAttemptResult{FailureStage: "execution", FailureCode: "plan_clone_failed", Error: "base plan could not be prepared"}, err
@@ -867,36 +1010,36 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 		attempt.Error = "screenshot plan returned no result"
 		return attempt, errors.New("empty screenshot result")
 	}
-	if err := os.MkdirAll(cell.RawDir, 0o755); err != nil {
-		attempt.FailureStage = "execution"
-		attempt.FailureCode = "raw_output_failed"
-		attempt.Error = "raw output directory could not be created"
-		return attempt, err
-	}
 	sources := make([]string, 0, len(cell.RawPaths))
 	names := make([]string, 0, len(cell.RawPaths))
 	dimensionsList := make([]asc.ImageDimensions, 0, len(cell.RawPaths))
 	for _, rawPath := range cell.RawPaths {
 		name := filepath.Base(rawPath)
 		source := filepath.Join(attemptDir, name)
-		if _, err := os.Stat(source); err != nil {
+		sourceRelative, relativeErr := relativeMatrixOutputPath(outputRoots.rawPath, source)
+		if relativeErr != nil {
 			attempt.FailureStage = "execution"
 			attempt.FailureCode = "missing_screenshot"
 			attempt.Error = "screenshot plan did not produce every requested image"
-			return attempt, err
+			return attempt, relativeErr
 		}
-		if err := asc.ValidateImageFile(source); err != nil {
+		sourceFile, openErr := outputRoots.raw.OpenFile(sourceRelative)
+		if openErr != nil {
+			attempt.FailureStage = "execution"
+			attempt.FailureCode = "missing_screenshot"
+			attempt.Error = "screenshot plan did not produce every requested image"
+			return attempt, openErr
+		}
+		dimensions, imageErr := readMatrixImageDimensions(sourceFile, source)
+		closeErr := sourceFile.Close()
+		if imageErr != nil || closeErr != nil {
 			attempt.FailureStage = "execution"
 			attempt.FailureCode = "invalid_screenshot"
 			attempt.Error = "screenshot plan produced an invalid image"
-			return attempt, err
-		}
-		dimensions, err := asc.ReadImageDimensions(source)
-		if err != nil {
-			attempt.FailureStage = "execution"
-			attempt.FailureCode = "invalid_screenshot"
-			attempt.Error = "screenshot plan produced an invalid image"
-			return attempt, err
+			if imageErr != nil {
+				return attempt, imageErr
+			}
+			return attempt, closeErr
 		}
 		sources = append(sources, source)
 		names = append(names, strings.TrimSuffix(name, filepath.Ext(name)))
@@ -905,7 +1048,7 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 	for index, rawPath := range cell.RawPaths {
 		source := sources[index]
 		destination := rawPath
-		if err := promoteMatrixArtifact(source, destination); err != nil {
+		if err := promoteMatrixArtifact(outputRoots.raw, outputRoots.rawPath, source, destination); err != nil {
 			attempt.FailureStage = "execution"
 			attempt.FailureCode = "raw_output_failed"
 			attempt.Error = "raw screenshot could not be promoted"
@@ -921,20 +1064,27 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 	if !matrixPlan.Output.Frame.Enabled {
 		return attempt, nil
 	}
-	if err := os.MkdirAll(cell.FramedDir, 0o755); err != nil {
+	framedRelative, err := relativeMatrixOutputPath(outputRoots.framedPath, cell.FramedDir)
+	if err != nil {
 		attempt.FailureStage = "framing"
 		attempt.FailureCode = "framed_output_failed"
 		attempt.Error = "framed output directory could not be created"
 		return attempt, err
 	}
-	frameAttemptDir, err := os.MkdirTemp(filepath.Dir(cell.FramedDir), ".asc-matrix-frame-attempt-")
+	if err := outputRoots.framed.MkdirAll(framedRelative, 0o755); err != nil {
+		attempt.FailureStage = "framing"
+		attempt.FailureCode = "framed_output_failed"
+		attempt.Error = "framed output directory could not be created"
+		return attempt, err
+	}
+	frameAttemptDir, err := createMatrixTemporaryDir(outputRoots.framed, outputRoots.framedPath, filepath.Dir(cell.FramedDir), ".asc-matrix-frame-attempt-")
 	if err != nil {
 		attempt.FailureStage = "framing"
 		attempt.FailureCode = "temporary_output_failed"
 		attempt.Error = "temporary frame output directory could not be created"
 		return attempt, err
 	}
-	defer os.RemoveAll(frameAttemptDir)
+	defer func() { _ = removeMatrixTemporaryDir(outputRoots.framed, outputRoots.framedPath, frameAttemptDir) }()
 	frameDevice := strings.TrimSpace(matrixPlan.Output.Frame.DeviceByMatrixDevice[cell.Device])
 	frameSources := make([]string, 0, len(attempt.RawPaths))
 	for index, inputPath := range attempt.RawPaths {
@@ -946,16 +1096,35 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 			attempt.Error = "screenshot framing failed"
 			return attempt, errors.New("frame failed")
 		}
-		if err := asc.ValidateImageFile(tempFrame); err != nil {
+		tempFrameRelative, relativeErr := relativeMatrixOutputPath(outputRoots.framedPath, tempFrame)
+		if relativeErr != nil {
 			attempt.FailureStage = "framing"
 			attempt.FailureCode = "invalid_frame"
 			attempt.Error = "screenshot framing produced an invalid image"
-			return attempt, err
+			return attempt, relativeErr
+		}
+		tempFrameFile, openErr := outputRoots.framed.OpenFile(tempFrameRelative)
+		if openErr != nil {
+			attempt.FailureStage = "framing"
+			attempt.FailureCode = "invalid_frame"
+			attempt.Error = "screenshot framing produced an invalid image"
+			return attempt, openErr
+		}
+		_, imageErr := readMatrixImageDimensions(tempFrameFile, tempFrame)
+		closeErr := tempFrameFile.Close()
+		if imageErr != nil || closeErr != nil {
+			attempt.FailureStage = "framing"
+			attempt.FailureCode = "invalid_frame"
+			attempt.Error = "screenshot framing produced an invalid image"
+			if imageErr != nil {
+				return attempt, imageErr
+			}
+			return attempt, closeErr
 		}
 		frameSources = append(frameSources, tempFrame)
 	}
 	for index, tempFrame := range frameSources {
-		if err := promoteMatrixArtifact(tempFrame, cell.FramedPaths[index]); err != nil {
+		if err := promoteMatrixArtifact(outputRoots.framed, outputRoots.framedPath, tempFrame, cell.FramedPaths[index]); err != nil {
 			attempt.FailureStage = "framing"
 			attempt.FailureCode = "framed_output_failed"
 			attempt.Error = "framed screenshot could not be promoted"
@@ -1004,14 +1173,49 @@ func cloneScreenshotPlan(base *Plan) (*Plan, error) {
 	return &clone, nil
 }
 
-func promoteMatrixArtifact(source, destination string) error {
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+func promoteMatrixArtifact(outputRoot rootfs.Root, outputRootPath, source, destination string) error {
+	sourceRelative, err := relativeMatrixOutputPath(outputRootPath, source)
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(source, destination); err != nil {
+	sourceFile, err := outputRoot.OpenFile(sourceRelative)
+	if err != nil {
 		return err
 	}
-	return nil
+	defer sourceFile.Close()
+	destinationRelative, err := relativeMatrixOutputPath(outputRootPath, destination)
+	if err != nil {
+		return err
+	}
+	_, err = outputRoot.WriteFrom(destinationRelative, sourceFile, 0o644)
+	return err
+}
+
+func readMatrixImageDimensions(file *os.File, path string) (asc.ImageDimensions, error) {
+	if file == nil {
+		return asc.ImageDimensions{}, errors.New("image file is required")
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return asc.ImageDimensions{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return asc.ImageDimensions{}, fmt.Errorf("expected regular image file %q", path)
+	}
+	if info.Size() <= 0 {
+		return asc.ImageDimensions{}, fmt.Errorf("image file %q is empty", path)
+	}
+	if info.Size() > 1<<30 {
+		return asc.ImageDimensions{}, fmt.Errorf("image file %q exceeds the size limit", path)
+	}
+	config, _, err := image.DecodeConfig(file)
+	if err != nil {
+		return asc.ImageDimensions{}, fmt.Errorf("decode image dimensions: %w", err)
+	}
+	if config.Width <= 0 || config.Height <= 0 {
+		return asc.ImageDimensions{}, fmt.Errorf("image %q has invalid dimensions", path)
+	}
+	return asc.ImageDimensions{Width: config.Width, Height: config.Height}, nil
 }
 
 func finishMatrixCellFailure(result MatrixCellResult, started time.Time, stage, code, message string) MatrixCellResult {
@@ -1216,10 +1420,18 @@ func frameDeviceFamily(device FrameDevice) string {
 
 func checkMatrixDevice(ctx context.Context, device MatrixDevice) error {
 	command := exec.CommandContext(ctx, "xcrun", "simctl", "list", "devices", "--json")
-	out, err := command.Output()
+	var output cappedMatrixBuffer
+	output.limit = maxMatrixInventoryBytes
+	command.Stdout = &output
+	command.Stderr = io.Discard
+	err := command.Run()
 	if err != nil {
 		return errors.New("simulator inventory could not be read")
 	}
+	if output.exceeded {
+		return errors.New("simulator inventory exceeded the output size limit")
+	}
+	out := output.Bytes()
 	var inventory struct {
 		Devices map[string][]struct {
 			UDID        string `json:"udid"`
@@ -1247,6 +1459,35 @@ func checkMatrixDevice(ctx context.Context, device MatrixDevice) error {
 	}
 	return errors.New("simulator was not found")
 }
+
+type cappedMatrixBuffer struct {
+	data     []byte
+	limit    int
+	exceeded bool
+}
+
+func (b *cappedMatrixBuffer) Write(data []byte) (int, error) {
+	if b.limit < 0 {
+		return 0, errors.New("output limit must not be negative")
+	}
+	if b.exceeded {
+		return len(data), nil
+	}
+	remaining := b.limit - len(b.data)
+	if remaining <= 0 {
+		b.exceeded = len(data) > 0
+		return len(data), nil
+	}
+	if len(data) > remaining {
+		b.data = append(b.data, data[:remaining]...)
+		b.exceeded = true
+		return len(data), nil
+	}
+	b.data = append(b.data, data...)
+	return len(data), nil
+}
+
+func (b *cappedMatrixBuffer) Bytes() []byte { return b.data }
 
 type simctlMatrixAppearance struct{}
 

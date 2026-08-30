@@ -92,10 +92,10 @@ cp "$AXE_TEMPLATE_PNG" "$out"
 	}
 	var result struct {
 		Status     string `json:"status"`
-		TotalCells int    `json:"total_cells"`
+		TotalCells int    `json:"totalCells"`
 		Review     struct {
-			ManifestPath string `json:"manifest_path"`
-			HTMLPath     string `json:"html_path"`
+			ManifestPath string `json:"manifestPath"`
+			HTMLPath     string `json:"htmlPath"`
 		} `json:"review"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
@@ -103,6 +103,9 @@ cp "$AXE_TEMPLATE_PNG" "$out"
 	}
 	if result.Status != "success" || result.TotalCells != 1 {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+	if strings.Contains(stdout, "total_cells") || strings.Contains(stdout, "manifest_path") {
+		t.Fatalf("matrix output contains legacy snake_case fields: %s", stdout)
 	}
 	for _, path := range []string{result.Review.ManifestPath, result.Review.HTMLPath, filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png")} {
 		if _, err := os.Stat(path); err != nil {

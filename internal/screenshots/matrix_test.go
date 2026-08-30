@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 func TestLoadMatrixPlanAndExpand_UsesStableAxisOrder(t *testing.T) {
@@ -78,6 +80,33 @@ func TestLoadMatrixPlanAndExpand_UsesStableAxisOrder(t *testing.T) {
 	}
 	if got := cells[1].LaunchArguments; !reflect.DeepEqual(got, []string{"-AppleLanguages", "(en)", "-AppleLocale", "en_US", "--fixture", "empty"}) {
 		t.Fatalf("launch arguments = %v", got)
+	}
+}
+
+func TestLoadMatrixPlan_RejectsOversizedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "matrix.json")
+	if err := os.WriteFile(path, []byte(strings.Repeat(" ", maxMatrixPlanBytes+1)), 0o644); err != nil {
+		t.Fatalf("write oversized matrix plan: %v", err)
+	}
+	_, err := LoadMatrixPlan(path)
+	if err == nil || !errors.Is(err, ErrMatrixPlanRead) || !strings.Contains(err.Error(), "size limit") {
+		t.Fatalf("LoadMatrixPlan() error = %v, want bounded-size read error", err)
+	}
+}
+
+func TestLoadMatrixPlan_RejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	link := filepath.Join(dir, "matrix.json")
+	if err := os.WriteFile(target, []byte(`{"version":1}`), 0o644); err != nil {
+		t.Fatalf("write target matrix plan: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("create matrix plan symlink: %v", err)
+	}
+	_, err := LoadMatrixPlan(link)
+	if err == nil || !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("LoadMatrixPlan() error = %v, want symlink rejection", err)
 	}
 }
 
@@ -151,6 +180,21 @@ func TestValidateMatrixPlan_RejectsCrossFamilyFrameMapping(t *testing.T) {
 	}
 }
 
+func TestCheckMatrixDeviceRejectsOversizedInventory(t *testing.T) {
+	binDir := t.TempDir()
+	xcrunPath := filepath.Join(binDir, "xcrun")
+	script := "#!/bin/sh\nexec /usr/bin/head -c 4194305 /dev/zero\n"
+	if err := os.WriteFile(xcrunPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write xcrun fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := checkMatrixDevice(context.Background(), MatrixDevice{ID: "phone", UDID: "SIM"})
+	if err == nil || !strings.Contains(err.Error(), "exceeded the output size limit") {
+		t.Fatalf("checkMatrixDevice() error = %v, want bounded-output error", err)
+	}
+}
+
 func TestRenderMatrixReview_ContainsFailedCellsAndEscapesLabels(t *testing.T) {
 	t.Parallel()
 
@@ -200,6 +244,16 @@ func TestRenderMatrixReview_ContainsFailedCellsAndEscapesLabels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read manifest: %v", err)
 	}
+	for _, field := range []string{`"generatedAt"`, `"planPath"`, `"totalCells"`, `"contentVariant"`} {
+		if !strings.Contains(string(manifestData), field) {
+			t.Fatalf("manifest missing governed camelCase field %s: %s", field, manifestData)
+		}
+	}
+	for _, field := range []string{`"generated_at"`, `"plan_path"`, `"total_cells"`, `"content_variant"`} {
+		if strings.Contains(string(manifestData), field) {
+			t.Fatalf("manifest contains legacy snake_case field %s: %s", field, manifestData)
+		}
+	}
 	if strings.Contains(string(manifestData), "/private/keychain") {
 		t.Fatalf("manifest leaked unsanitized failure fields: %s", manifestData)
 	}
@@ -221,7 +275,7 @@ func TestGenerateMatrixReview_DoesNotReplaceManifestWhenHTMLPublishFails(t *test
 		Result:    &MatrixResult{Cells: []MatrixCellResult{{ID: "phone|en-US|light|default", Status: MatrixCellSuccess}}},
 		OutputDir: dir,
 	})
-	if err == nil || !strings.Contains(err.Error(), "write matrix review HTML") {
+	if err == nil || !strings.Contains(err.Error(), "matrix review HTML") {
 		t.Fatalf("GenerateMatrixReview() error = %v, want HTML write failure", err)
 	}
 	got, err := os.ReadFile(manifestPath)
@@ -230,6 +284,136 @@ func TestGenerateMatrixReview_DoesNotReplaceManifestWhenHTMLPublishFails(t *test
 	}
 	if string(got) != string(oldManifest) {
 		t.Fatalf("manifest changed after HTML publish failure: %q", got)
+	}
+}
+
+func TestGenerateMatrixReview_RollsBackPairWhenManifestPublishFails(t *testing.T) {
+	dir := t.TempDir()
+	oldHTML := []byte("<html>previous</html>\n")
+	oldManifest := []byte("{\"status\":\"previous\"}\n")
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), oldHTML, 0o644); err != nil {
+		t.Fatalf("write previous HTML: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), oldManifest, 0o644); err != nil {
+		t.Fatalf("write previous manifest: %v", err)
+	}
+
+	write := func(root rootfs.Root, name string, data []byte, perm os.FileMode) error {
+		if name == "manifest.json" {
+			return errors.New("injected manifest publication failure")
+		}
+		return root.WriteFile(name, data, perm)
+	}
+	_, err := generateMatrixReviewWithWriter(context.Background(), MatrixReviewRequest{
+		Result:    &MatrixResult{Cells: []MatrixCellResult{{ID: "phone|en-US|light|default", Status: MatrixCellSuccess}}},
+		OutputDir: dir,
+	}, write)
+	if err == nil || !strings.Contains(err.Error(), "injected manifest publication failure") {
+		t.Fatalf("generateMatrixReviewWithWriter() error = %v, want injected manifest failure", err)
+	}
+	gotHTML, err := os.ReadFile(filepath.Join(dir, "index.html"))
+	if err != nil {
+		t.Fatalf("read HTML after rollback: %v", err)
+	}
+	gotManifest, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read manifest after rollback: %v", err)
+	}
+	if string(gotHTML) != string(oldHTML) || string(gotManifest) != string(oldManifest) {
+		t.Fatalf("review pair changed after rollback: HTML=%q manifest=%q", gotHTML, gotManifest)
+	}
+}
+
+func TestLoadMatrixReviewManifestRejectsOversizedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(path, []byte(strings.Repeat(" ", maxMatrixReviewBytes+1)), 0o644); err != nil {
+		t.Fatalf("write oversized matrix review manifest: %v", err)
+	}
+	_, err := LoadMatrixReviewManifest(path)
+	if err == nil || !strings.Contains(err.Error(), "size limit") {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v, want bounded-size read error", err)
+	}
+}
+
+func TestLoadMatrixReviewManifestRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	link := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(target, []byte(`{"status":"success"}`), 0o644); err != nil {
+		t.Fatalf("write target matrix review manifest: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("create matrix review manifest symlink: %v", err)
+	}
+	_, err := LoadMatrixReviewManifest(link)
+	if err == nil || !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v, want symlink rejection", err)
+	}
+}
+
+func TestPromoteMatrixArtifactRejectsParentSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outputDir := filepath.Join(dir, "raw")
+	outsideDir := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		t.Fatalf("create output directory: %v", err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("create outside directory: %v", err)
+	}
+	source := filepath.Join(outputDir, "source.png")
+	writeMatrixPNG(t, source)
+	parentLink := filepath.Join(outputDir, "nested")
+	if err := os.Symlink(outsideDir, parentLink); err != nil {
+		t.Fatalf("create parent symlink: %v", err)
+	}
+	root, err := rootfs.New(outputDir)
+	if err != nil {
+		t.Fatalf("open output root: %v", err)
+	}
+	defer root.Close()
+
+	err = promoteMatrixArtifact(root, outputDir, source, filepath.Join(parentLink, "result.png"))
+	if err == nil || !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("promoteMatrixArtifact() error = %v, want parent symlink rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "result.png")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outside destination was touched: %v", err)
+	}
+}
+
+func TestPromoteMatrixArtifactRejectsFinalSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outputDir := filepath.Join(dir, "raw")
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		t.Fatalf("create output directory: %v", err)
+	}
+	source := filepath.Join(outputDir, "source.png")
+	writeMatrixPNG(t, source)
+	target := filepath.Join(dir, "outside.png")
+	if err := os.WriteFile(target, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	destination := filepath.Join(outputDir, "result.png")
+	if err := os.Symlink(target, destination); err != nil {
+		t.Fatalf("create final symlink: %v", err)
+	}
+	root, err := rootfs.New(outputDir)
+	if err != nil {
+		t.Fatalf("open output root: %v", err)
+	}
+	defer root.Close()
+
+	err = promoteMatrixArtifact(root, outputDir, source, destination)
+	if err == nil || !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("promoteMatrixArtifact() error = %v, want final symlink rejection", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read outside target: %v", err)
+	}
+	if string(got) != "outside" {
+		t.Fatalf("outside target changed: %q", got)
 	}
 }
 

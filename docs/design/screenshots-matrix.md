@@ -139,13 +139,14 @@ framing is disabled. Approval and App Store upload integration are explicitly
 out of scope.
 
 The command prints the structured result through the existing output helpers.
-The result includes `plan_path`, `status`, `total_cells`, `succeeded`,
-`failed`, `retried`, `cells`, and `review` (with manifest and HTML paths).
-Each cell error is an object containing only a sanitized `stage`, `code`, and
-`message`; step errors are sanitized as well. All cells succeeding returns nil
-and exit code 0. Partial or failed execution writes its result/artifacts and
-then returns a runtime error for exit code 1. Invalid flags/plans return usage
-exit code 2 before side effects.
+Computed result fields use the CLI's governed camelCase contract: `planPath`,
+`status`, `totalCells`, `succeeded`, `failed`, `retried`, `cells`, and `review`
+(with `manifestPath` and `htmlPath`). Each cell error is an object containing
+only a sanitized `stage`, `code`, and `message`; step errors are sanitized as
+well. The on-disk review manifest uses the same camelCase result contract.
+All cells succeeding returns nil and exit code 0. Partial or failed execution
+writes its result/artifacts and then returns a runtime error for exit code 1.
+Invalid flags/plans return usage exit code 2 before side effects.
 
 ## Implementation locations
 
@@ -153,8 +154,12 @@ exit code 2 before side effects.
   scheduling, cell execution, retry, and result types.
 - `internal/screenshots/matrix_review.go`: explicit matrix manifest and HTML
   rendering, reusing safe review rendering helpers where appropriate.
-- `internal/cli/shots/shots_matrix.go`: flags, command execution, output, and
-  table/Markdown renderers.
+- `internal/asc/output_screenshots.go`: exported camelCase result and review
+  manifest contracts plus registered table/Markdown renderers.
+- `internal/cli/shots/shots_matrix.go`: flags, command execution, and output
+  selection.
+- `internal/cli/shots/shots_matrix_output.go`: conversion from the local
+  executor model to the governed public output model.
 - `internal/cli/screenshots/screenshots.go`: register the subcommand.
 - `internal/cli/cmdtest/shots_matrix_test.go` and package tests: CLI and unit
   coverage with injected command/frame/state runners.

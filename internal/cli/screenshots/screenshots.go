@@ -18,7 +18,7 @@ func ScreenshotsCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "screenshots",
 		ShortUsage: "asc screenshots <subcommand> [flags]",
-		ShortHelp:  "Upload and manage App Store screenshots; local capture/frame workflow is [experimental].",
+		ShortHelp:  "Upload and manage App Store screenshots; local capture/frame/matrix workflow is [experimental].",
 		LongHelp: `Manage the full screenshot workflow from local capture to App Store upload.
 
 Local screenshot automation commands are experimental.
