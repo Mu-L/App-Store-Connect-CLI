@@ -465,12 +465,14 @@ workflow artifact.
   run: |
     set +x
     umask 077
-    password_file="$RUNNER_TEMP/asc-signing-password"
-    keychain_path="$RUNNER_TEMP/asc-release.keychain-db"
-    keychain_password_file="$RUNNER_TEMP/asc-release-keychain-password"
+    keychain_dir="$(mktemp -d "$RUNNER_TEMP/asc-signing.XXXXXX")"
+    password_file="$keychain_dir/repository-password"
+    keychain_path="$keychain_dir/release.keychain-db"
+    keychain_password_file="$keychain_dir/keychain-password"
     cleanup_signing() {
       /usr/bin/security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
       rm -f "$password_file" "$keychain_password_file"
+      rmdir "$keychain_dir" >/dev/null 2>&1 || true
     }
     trap cleanup_signing EXIT
     printf '%s' "$SIGNING_SYNC_PASSWORD" > "$password_file"
@@ -526,8 +528,9 @@ For an App Store export, the profile loop reads exact paths from the pull
 receipt instead of guessing the repository layout. The identity lookup likewise
 uses the complete relative path from `sensitiveFiles` and requires exactly one
 pulled PKCS#12 identity. The generated keychain password is independent of the
-repository password, and the keychain intentionally persists through archive
-and export, then the shell cleanup trap removes it.
+repository password. The run-owned temporary directory ensures the cleanup trap
+cannot delete a pre-existing keychain when installation fails. The keychain
+intentionally persists through archive and export, then the trap removes it.
 
 Manual export inspects the archive and matches locally installed profiles for the main app and embedded targets. An explicit `--export-options` file is authoritative and cannot be combined with `--signing-style`, `--team-id`, or `--method`.
 

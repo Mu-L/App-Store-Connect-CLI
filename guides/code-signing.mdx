@@ -154,8 +154,13 @@ Write the repository password from the CI secret manager to a runner-private fil
 ```bash  theme={null}
 set +x
 umask 077
-password_file="$RUNNER_TEMP/asc-signing-password"
-trap 'rm -f "$password_file"' EXIT
+signing_tmp="$(mktemp -d "$RUNNER_TEMP/asc-signing.XXXXXX")"
+password_file="$signing_tmp/repository-password"
+cleanup_signing_pull() {
+  rm -f "$password_file"
+  rmdir "$signing_tmp" >/dev/null 2>&1 || true
+}
+trap cleanup_signing_pull EXIT
 printf '%s' "$SIGNING_SYNC_PASSWORD" > "$password_file"
 mkdir -p .asc/signing
 chmod 700 .asc/signing
@@ -182,11 +187,12 @@ identity_path="$(
       end
   ' .asc/signing/pull-result.json
 )"
-keychain_path="$RUNNER_TEMP/asc-release.keychain-db"
-keychain_password_file="$RUNNER_TEMP/asc-release-keychain-password"
+keychain_path="$signing_tmp/release.keychain-db"
+keychain_password_file="$signing_tmp/keychain-password"
 cleanup_signing() {
   /usr/bin/security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
   rm -f "$password_file" "$keychain_password_file"
+  rmdir "$signing_tmp" >/dev/null 2>&1 || true
 }
 trap cleanup_signing EXIT
 openssl rand -base64 32 > "$keychain_password_file"
@@ -216,7 +222,9 @@ normalizes the pulled PKCS#12 under that secret. The keychain password is a
 separate generated secret. The install command is macOS-only, requires a
 cgo-enabled build, refuses an existing destination, and rolls back the new
 keychain if import, codesigning verification, or search-list activation fails.
-It does not change the default keychain.
+It does not change the default keychain. The run-owned temporary directory
+ensures the cleanup trap cannot delete a pre-existing keychain if installation
+fails.
 
 The keychain remains available after the command succeeds. Keep archive and
 export inside the lifetime of the cleanup trap on disposable CI workers; for a
