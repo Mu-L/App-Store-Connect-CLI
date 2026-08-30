@@ -209,7 +209,7 @@ func signingPullProfileBundleID(profile *identityMobileProvision) (string, error
 
 func signingPullProfilePlatformMatches(profile *identityMobileProvision, profileType string) bool {
 	if profile == nil || len(profile.Platform) == 0 {
-		return true
+		return false
 	}
 	wanted := ""
 	switch {
@@ -221,7 +221,7 @@ func signingPullProfilePlatformMatches(profile *identityMobileProvision, profile
 		wanted = "osx"
 	}
 	if wanted == "" {
-		return true
+		return false
 	}
 	for _, platform := range profile.Platform {
 		normalized := strings.ToLower(strings.TrimSpace(platform))

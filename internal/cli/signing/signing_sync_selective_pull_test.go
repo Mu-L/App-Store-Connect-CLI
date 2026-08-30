@@ -104,6 +104,35 @@ func TestSelectSigningPullFilesChoosesDirectDistributionTarget(t *testing.T) {
 	}
 }
 
+func TestSelectSigningPullFilesRejectsProfileWithoutPlatform(t *testing.T) {
+	key := mustECKey(t)
+	certificate := mustSigningCertificate(t, key, 813)
+	profilePlist, err := plist.Marshal(map[string]any{
+		"UUID":                        "01234567-89ab-cdef-0123-456789abcdef",
+		"TeamIdentifier":              []string{"TEAM123"},
+		"ApplicationIdentifierPrefix": []string{"TEAM123"},
+		"ExpirationDate":              time.Now().Add(time.Hour),
+		"DeveloperCertificates":       [][]byte{certificate.Raw},
+		"Entitlements": map[string]any{
+			"application-identifier": "TEAM123.com.example.missing-platform",
+			"get-task-allow":         false,
+		},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := mustSignedCMS(t, profilePlist, certificate, key)
+	files := []decryptedSigningFile{
+		{RelativePath: "certs/distribution/certificate.cer", Plaintext: certificate.Raw},
+		{RelativePath: "profiles/appstore/profile.mobileprovision", Plaintext: profile},
+	}
+
+	_, _, err = selectSigningPullFiles(files, []string{"com.example.missing-platform"}, "IOS_APP_STORE")
+	if err == nil || !strings.Contains(err.Error(), "com.example.missing-platform") {
+		t.Fatalf("error = %v, want exact-platform selection failure", err)
+	}
+}
+
 func TestSigningSyncPullOneTargetManifestUsesBatchOutputShape(t *testing.T) {
 	result := SyncResult{Operation: "pull", Files: []string{"profile.mobileprovision"}}
 	targets := []SyncTargetResult{{
@@ -196,6 +225,7 @@ func TestSelectSigningPullFilesAcceptsStoredSubsetOfEmbeddedCertificates(t *test
 		"UUID":                        "01234567-89ab-cdef-0123-456789abcdef",
 		"TeamIdentifier":              []string{"TEAM123"},
 		"ApplicationIdentifierPrefix": []string{"TEAM123"},
+		"Platform":                    []string{"iOS"},
 		"ExpirationDate":              time.Now().Add(time.Hour),
 		"DeveloperCertificates":       [][]byte{storedCertificate.Raw, additionalCertificate.Raw},
 		"ProvisionedDevices":          []string{"DEVICE1"},
@@ -242,6 +272,7 @@ func TestSelectSigningPullFilesRequiresExactIdentityPublicCertificate(t *testing
 		"UUID":                        "01234567-89ab-cdef-0123-456789abcdef",
 		"TeamIdentifier":              []string{"TEAM123"},
 		"ApplicationIdentifierPrefix": []string{"TEAM123"},
+		"Platform":                    []string{"iOS"},
 		"ExpirationDate":              time.Now().Add(time.Hour),
 		"DeveloperCertificates":       [][]byte{identityCertificate.Raw, otherCertificate.Raw},
 		"ProvisionedDevices":          []string{"DEVICE1"},
