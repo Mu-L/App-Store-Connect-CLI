@@ -25,7 +25,7 @@ func TestNotarizationStapleCommandPrintsComputedJSON(t *testing.T) {
 		t.Fatalf("write target: %v", err)
 	}
 	previous := runStaplerStaple
-	runStaplerStaple = func(_ context.Context, path string, _ io.Writer) (*localxcode.StaplerResult, error) {
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, _ localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
 		return &localxcode.StaplerResult{
 			Path:      path,
 			Operation: string(localxcode.StaplerOperationStaple),
@@ -62,7 +62,7 @@ func TestNotarizationStapleCommandPrintsComputedJSON(t *testing.T) {
 func TestNotarizationStapleRequiresConfirmationBeforeTargetOrRunner(t *testing.T) {
 	previous := runStaplerStaple
 	calls := 0
-	runStaplerStaple = func(context.Context, string, io.Writer) (*localxcode.StaplerResult, error) {
+	runStaplerStaple = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
 		calls++
 		return nil, errors.New("runner should not be called")
 	}
@@ -160,6 +160,20 @@ func TestValidateStaplerTargetPreservesTrailingWhitespace(t *testing.T) {
 	}
 }
 
+func TestValidateStaplerTargetAcceptsDirectoryBundle(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.app")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	got, err := validateStaplerTarget(target)
+	if err != nil {
+		t.Fatalf("validateStaplerTarget() error = %v", err)
+	}
+	if got != target {
+		t.Fatalf("validateStaplerTarget() = %q, want %q", got, target)
+	}
+}
+
 func TestNotarizationValidateCommandPrintsComputedJSONWithoutStapling(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "My App.pkg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -199,6 +213,94 @@ func TestNotarizationValidateCommandPrintsComputedJSONWithoutStapling(t *testing
 	}
 }
 
+func TestNotarizationStapleRejectsTargetIdentityChangeAfterRunner(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previous := runStaplerStaple
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, _ localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := replaceStaplerTargetForTest(path); err != nil {
+			t.Fatalf("replace target: %v", err)
+		}
+		return &localxcode.StaplerResult{
+			Path:      path,
+			Operation: string(localxcode.StaplerOperationStaple),
+			Stapled:   true,
+			Validated: true,
+		}, nil
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+	})
+	if runErr == nil {
+		t.Fatal("command error = nil, want identity-drift failure")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed") {
+		t.Fatalf("stderr = %q, want identity-drift diagnostic", stderr)
+	}
+	if strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not expose artifact path", stderr)
+	}
+}
+
+func TestNotarizationValidateRejectsTargetIdentityChangeAfterRunner(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previous := runStaplerValidate
+	runStaplerValidate = func(_ context.Context, path string, _ io.Writer) (*localxcode.StaplerResult, error) {
+		if err := replaceStaplerTargetForTest(path); err != nil {
+			t.Fatalf("replace target: %v", err)
+		}
+		return &localxcode.StaplerResult{
+			Path:      path,
+			Operation: string(localxcode.StaplerOperationValidate),
+			Validated: true,
+		}, nil
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+	})
+	if runErr == nil {
+		t.Fatal("command error = nil, want identity-drift failure")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed") {
+		t.Fatalf("stderr = %q, want identity-drift diagnostic", stderr)
+	}
+	if strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not expose artifact path", stderr)
+	}
+}
+
+func replaceStaplerTargetForTest(path string) error {
+	if err := os.Rename(path, path+".original"); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("replacement"), 0o600)
+}
+
 func TestNotarizationStapleRejectsInvalidTargetsBeforeRunner(t *testing.T) {
 	root := t.TempDir()
 	valid := filepath.Join(root, "valid.dmg")
@@ -231,7 +333,7 @@ func TestNotarizationStapleRejectsInvalidTargetsBeforeRunner(t *testing.T) {
 
 	previous := runStaplerStaple
 	calls := 0
-	runStaplerStaple = func(context.Context, string, io.Writer) (*localxcode.StaplerResult, error) {
+	runStaplerStaple = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
 		calls++
 		return nil, errors.New("runner should not be called")
 	}
@@ -271,7 +373,7 @@ func TestNotarizationStapleRejectsInvalidTargetsBeforeRunner(t *testing.T) {
 
 func TestNotarizationStapleRejectsPositionalArgumentsBeforeRunner(t *testing.T) {
 	previous := runStaplerStaple
-	runStaplerStaple = func(context.Context, string, io.Writer) (*localxcode.StaplerResult, error) {
+	runStaplerStaple = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
 		t.Fatal("runner should not be called")
 		return nil, nil
 	}
@@ -298,7 +400,7 @@ func TestNotarizationStapleRejectsInvalidOutputBeforeRunner(t *testing.T) {
 	}
 	previous := runStaplerStaple
 	calls := 0
-	runStaplerStaple = func(context.Context, string, io.Writer) (*localxcode.StaplerResult, error) {
+	runStaplerStaple = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
 		calls++
 		return nil, errors.New("runner should not be called")
 	}
@@ -335,7 +437,7 @@ func TestNotarizationStapleRejectsUnverifiedRunnerResult(t *testing.T) {
 		t.Fatalf("write target: %v", err)
 	}
 	previous := runStaplerStaple
-	runStaplerStaple = func(_ context.Context, path string, _ io.Writer) (*localxcode.StaplerResult, error) {
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, _ localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
 		return &localxcode.StaplerResult{Path: path, Operation: string(localxcode.StaplerOperationStaple)}, nil
 	}
 	t.Cleanup(func() { runStaplerStaple = previous })
@@ -365,7 +467,7 @@ func TestNotarizationStapleFailurePreservesChildExitStatusAndDoesNotPrintJSON(t 
 		t.Fatalf("write target: %v", err)
 	}
 	previous := runStaplerStaple
-	runStaplerStaple = func(context.Context, string, io.Writer) (*localxcode.StaplerResult, error) {
+	runStaplerStaple = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
 		return nil, &localxcode.StaplerCommandError{
 			Operation: string(localxcode.StaplerOperationStaple),
 			ExitCode:  66,

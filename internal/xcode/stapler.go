@@ -28,6 +28,12 @@ type StaplerResult struct {
 	Validated bool
 }
 
+// StaplerStageVerifier checks the artifact immediately before and after each
+// stapler operation. It is used by callers that pin the target identity during
+// the multi-stage staple flow. A true before value identifies the pre-stage
+// check; false identifies the post-stage check.
+type StaplerStageVerifier func(operation StaplerOperation, before bool) error
+
 // StaplerCommandError preserves the operation and child exit status for a
 // failed stapler invocation. ExitCode is -1 when no ordinary process status is
 // available, such as a start failure or signal termination.
@@ -58,14 +64,36 @@ func (e *StaplerCommandError) Unwrap() error {
 // The artifact path must have been validated by the command layer before this
 // local runner is called.
 func Staple(ctx context.Context, path string, logWriter io.Writer) (*StaplerResult, error) {
+	return StapleWithVerifier(ctx, path, logWriter, nil)
+}
+
+// StapleWithVerifier retrieves and attaches a ticket, then validates the same
+// artifact. When verifier is non-nil, it runs immediately before and after
+// both child operations so callers can reject a replaced target between the
+// staple and validation stages.
+func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, verifier StaplerStageVerifier) (*StaplerResult, error) {
 	if err := ensureStaplerAvailable(ctx, logWriter); err != nil {
 		return nil, err
 	}
-	if err := runStaplerOperation(ctx, StaplerOperationStaple, path, logWriter); err != nil {
+	if err := verifyStaplerStage(verifier, StaplerOperationStaple, true); err != nil {
 		return nil, err
 	}
-	if err := runStaplerOperation(ctx, StaplerOperationValidate, path, logWriter); err != nil {
+	stapleErr := runStaplerOperation(ctx, StaplerOperationStaple, path, logWriter)
+	if verifyErr := verifyStaplerStage(verifier, StaplerOperationStaple, false); verifyErr != nil {
+		return nil, verifyErr
+	}
+	if stapleErr != nil {
+		return nil, stapleErr
+	}
+	if err := verifyStaplerStage(verifier, StaplerOperationValidate, true); err != nil {
 		return nil, err
+	}
+	validateErr := runStaplerOperation(ctx, StaplerOperationValidate, path, logWriter)
+	if verifyErr := verifyStaplerStage(verifier, StaplerOperationValidate, false); verifyErr != nil {
+		return nil, verifyErr
+	}
+	if validateErr != nil {
+		return nil, validateErr
 	}
 	return &StaplerResult{
 		Path:      path,
@@ -73,6 +101,13 @@ func Staple(ctx context.Context, path string, logWriter io.Writer) (*StaplerResu
 		Stapled:   true,
 		Validated: true,
 	}, nil
+}
+
+func verifyStaplerStage(verifier StaplerStageVerifier, operation StaplerOperation, before bool) error {
+	if verifier == nil {
+		return nil
+	}
+	return verifier(operation, before)
 }
 
 // ValidateStaple validates an already stapled artifact without modifying it.

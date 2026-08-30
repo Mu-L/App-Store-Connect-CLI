@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -47,6 +48,35 @@ func TestStapleRunsResolutionThenStapleThenValidation(t *testing.T) {
 		"xcrun|stapler|staple|" + target,
 		"xcrun|stapler|validate|" + target,
 	})
+}
+
+func TestStapleRunsStageVerifierAroundEachOperation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+
+	var stages []string
+	result, err := StapleWithVerifier(context.Background(), target, nil, func(operation StaplerOperation, before bool) error {
+		position := "after"
+		if before {
+			position = "before"
+		}
+		stages = append(stages, position+" "+string(operation))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StapleWithVerifier() error = %v", err)
+	}
+	if result == nil || !result.Stapled || !result.Validated {
+		t.Fatalf("StapleWithVerifier() result = %#v, want verified result", result)
+	}
+	want := []string{"before staple", "after staple", "before validate", "after validate"}
+	if !reflect.DeepEqual(stages, want) {
+		t.Fatalf("verified stages = %#v, want %#v", stages, want)
+	}
 }
 
 func TestValidateStapleRunsOnlyValidationAfterResolution(t *testing.T) {

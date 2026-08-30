@@ -24,23 +24,29 @@ import (
 )
 
 var (
-	runStaplerStaple        = localxcode.Staple
-	runStaplerValidate      = localxcode.ValidateStaple
-	validateStaplerTargetFn = validateStaplerTarget
+	runStaplerStaple         = localxcode.StapleWithVerifier
+	runStaplerValidate       = localxcode.ValidateStaple
+	validateStaplerDetailsFn = validateStaplerTargetDetails
 )
 
 // SetValidateStaplerTargetForTesting replaces target validation and returns a
 // restore function. It exists so command-level tests can exercise filesystem
 // failures without depending on host permissions or filesystem behavior.
 func SetValidateStaplerTargetForTesting(fn func(string) (string, error)) func() {
-	previous := validateStaplerTargetFn
+	previousDetails := validateStaplerDetailsFn
 	if fn == nil {
-		validateStaplerTargetFn = validateStaplerTarget
+		validateStaplerDetailsFn = validateStaplerTargetDetails
 	} else {
-		validateStaplerTargetFn = fn
+		validateStaplerDetailsFn = func(pathValue string) (*validatedStaplerTarget, error) {
+			validatedPath, err := fn(pathValue)
+			if err != nil {
+				return nil, err
+			}
+			return validateStaplerTargetDetails(validatedPath)
+		}
 	}
 	return func() {
-		validateStaplerTargetFn = previous
+		validateStaplerDetailsFn = previousDetails
 	}
 }
 
@@ -143,15 +149,35 @@ Examples:
 			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
 				return shared.UsageError(err.Error())
 			}
-			pathValue, err := validateStaplerTargetFn(filePath.String())
+			target, err := validateStaplerDetailsFn(filePath.String())
 			if err != nil {
 				if isStaplerTargetUsageError(err) {
 					return shared.UsageErrorf("notarization staple: %v", err)
 				}
 				return reportStaplerTargetFilesystemFailure("staple")
 			}
+			if target == nil {
+				return reportStaplerTargetFilesystemFailure("staple")
+			}
+			defer target.close()
+			pathValue := target.path
+			if err := target.verifyIdentity("before stapling"); err != nil {
+				return reportStaplerTargetIdentityFailure("staple", "before stapling")
+			}
 
-			result, runErr := runStaplerStaple(ctx, pathValue, os.Stderr)
+			result, runErr := runStaplerStaple(ctx, pathValue, os.Stderr, func(operation localxcode.StaplerOperation, before bool) error {
+				return target.verifyIdentity(staplerStageDescription(operation, before))
+			})
+			identityErr := target.verifyIdentity("after stapling")
+			if identityErr == nil && runErr != nil {
+				var targetErr *staplerTargetIdentityError
+				if errors.As(runErr, &targetErr) {
+					return reportStaplerTargetIdentityFailure("staple", targetErr.stage)
+				}
+			}
+			if identityErr != nil {
+				return reportStaplerTargetIdentityFailure("staple", "after stapling")
+			}
 			if runErr != nil {
 				return reportStaplerFailure("staple", runErr)
 			}
@@ -201,15 +227,27 @@ Examples:
 			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
 				return shared.UsageError(err.Error())
 			}
-			pathValue, err := validateStaplerTargetFn(filePath.String())
+			target, err := validateStaplerDetailsFn(filePath.String())
 			if err != nil {
 				if isStaplerTargetUsageError(err) {
 					return shared.UsageErrorf("notarization validate: %v", err)
 				}
 				return reportStaplerTargetFilesystemFailure("validate")
 			}
+			if target == nil {
+				return reportStaplerTargetFilesystemFailure("validate")
+			}
+			defer target.close()
+			pathValue := target.path
+			if err := target.verifyIdentity("before validation"); err != nil {
+				return reportStaplerTargetIdentityFailure("validate", "before validation")
+			}
 
 			result, runErr := runStaplerValidate(ctx, pathValue, os.Stderr)
+			identityErr := target.verifyIdentity("after validation")
+			if identityErr != nil {
+				return reportStaplerTargetIdentityFailure("validate", "after validation")
+			}
 			if runErr != nil {
 				return reportStaplerFailure("validate", runErr)
 			}
@@ -259,118 +297,200 @@ func isStaplerTargetUsageError(err error) bool {
 }
 
 func validateStaplerTarget(pathValue string) (string, error) {
+	target, err := validateStaplerTargetDetails(pathValue)
+	if err != nil {
+		return "", err
+	}
+	target.close()
+	return target.path, nil
+}
+
+type validatedStaplerTarget struct {
+	path      string
+	root      rootfs.Root
+	relative  string
+	directory bool
+	identity  os.FileInfo
+}
+
+func (target *validatedStaplerTarget) close() {
+	if target == nil {
+		return
+	}
+	_ = target.root.Close()
+}
+
+type staplerTargetIdentityError struct {
+	stage string
+}
+
+func (e *staplerTargetIdentityError) Error() string {
+	if e == nil || e.stage == "" {
+		return "artifact target changed"
+	}
+	return "artifact target changed " + e.stage
+}
+
+func (target *validatedStaplerTarget) verifyIdentity(stage string) error {
+	if target == nil || target.identity == nil {
+		return &staplerTargetIdentityError{stage: stage}
+	}
+	opened, err := target.open()
+	if err != nil {
+		return &staplerTargetIdentityError{stage: stage}
+	}
+	defer opened.Close()
+	current, err := opened.Stat()
+	if err != nil || !os.SameFile(target.identity, current) || current.IsDir() != target.directory {
+		return &staplerTargetIdentityError{stage: stage}
+	}
+	return nil
+}
+
+func staplerStageDescription(operation localxcode.StaplerOperation, before bool) string {
+	if before {
+		return "before " + string(operation)
+	}
+	return "after " + string(operation)
+}
+
+func (target *validatedStaplerTarget) open() (*os.File, error) {
+	if target == nil {
+		return nil, errors.New("artifact target is missing")
+	}
+	if target.directory {
+		return target.root.OpenDir(target.relative)
+	}
+	return target.root.OpenFile(target.relative)
+}
+
+func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, error) {
 	if strings.TrimSpace(pathValue) == "" {
-		return "", newStaplerTargetUsageError(errors.New("--file is required"))
+		return nil, newStaplerTargetUsageError(errors.New("--file is required"))
 	}
 	if strings.ContainsRune(pathValue, 0) {
-		return "", newStaplerTargetUsageError(errors.New("--file must not contain a NUL byte"))
+		return nil, newStaplerTargetUsageError(errors.New("--file must not contain a NUL byte"))
 	}
 	absolute, err := filepath.Abs(pathValue)
 	if err != nil {
-		return "", fmt.Errorf("resolve --file: %w", err)
+		return nil, fmt.Errorf("resolve --file: %w", err)
 	}
 	absolute = filepath.Clean(absolute)
 	if strings.EqualFold(filepath.Ext(absolute), ".zip") {
-		return "", newStaplerTargetUsageError(errors.New("zip archives cannot be stapled or validated directly; staple the contained item and recreate the archive"))
+		return nil, newStaplerTargetUsageError(errors.New("zip archives cannot be stapled or validated directly; staple the contained item and recreate the archive"))
 	}
 
-	info, err := os.Lstat(absolute)
+	root, relative, err := newStaplerTargetRoot(absolute)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", newStaplerTargetUsageError(fmt.Errorf("%q does not exist", absolute))
+		return nil, fmt.Errorf("open artifact root: %w", err)
+	}
+	keepRoot := false
+	defer func() {
+		if !keepRoot {
+			_ = root.Close()
 		}
-		return "", fmt.Errorf("inspect %q: %w", absolute, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", newStaplerTargetUsageError(fmt.Errorf("refusing to read symlink %q", absolute))
-	}
-	if err := rejectStaplerParentSymlinks(absolute); err != nil {
-		return "", err
-	}
-	if !info.IsDir() && !info.Mode().IsRegular() {
-		return "", newStaplerTargetUsageError(fmt.Errorf("%q is not a regular file or directory bundle", absolute))
-	}
+	}()
 
-	parent, err := rootfs.New(filepath.Dir(absolute))
-	if err != nil {
-		return "", fmt.Errorf("open artifact parent: %w", err)
-	}
-	defer parent.Close()
-
-	base := filepath.Base(absolute)
-	if info.IsDir() {
-		opened, openErr := parent.OpenDir(base)
-		if openErr != nil {
-			return "", fmt.Errorf("open artifact directory %q: %w", absolute, openErr)
-		}
-		defer opened.Close()
+	opened, openErr := root.OpenDir(relative)
+	if openErr == nil {
 		openedInfo, statErr := opened.Stat()
+		_ = opened.Close()
 		if statErr != nil {
-			return "", fmt.Errorf("stat artifact directory %q: %w", absolute, statErr)
+			return nil, fmt.Errorf("stat artifact directory: %w", statErr)
 		}
 		if !openedInfo.IsDir() {
-			return "", fmt.Errorf("%q is not a directory bundle", absolute)
+			return nil, newStaplerTargetUsageError(errors.New("artifact target is not a directory bundle"))
 		}
-		return absolute, nil
+		keepRoot = true
+		return &validatedStaplerTarget{
+			path:      absolute,
+			root:      root,
+			relative:  relative,
+			directory: true,
+			identity:  openedInfo,
+		}, nil
 	}
 
-	opened, openErr := parent.OpenFile(base)
-	if openErr != nil {
-		return "", fmt.Errorf("open artifact %q: %w", absolute, openErr)
+	if semanticErr := staplerTargetSemanticError(openErr, absolute); semanticErr != nil && !isStaplerWrongKindError(openErr) {
+		return nil, semanticErr
 	}
-	defer opened.Close()
+
+	opened, openErr = root.OpenFile(relative)
+	if openErr != nil {
+		if semanticErr := staplerTargetSemanticError(openErr, absolute); semanticErr != nil {
+			return nil, semanticErr
+		}
+		return nil, fmt.Errorf("open artifact: %w", openErr)
+	}
 	openedInfo, statErr := opened.Stat()
+	_ = opened.Close()
 	if statErr != nil {
-		return "", fmt.Errorf("stat artifact %q: %w", absolute, statErr)
+		return nil, fmt.Errorf("stat artifact: %w", statErr)
 	}
 	if !openedInfo.Mode().IsRegular() {
-		return "", fmt.Errorf("%q is not a regular file", absolute)
+		return nil, newStaplerTargetUsageError(fmt.Errorf("%q is not a regular file", absolute))
 	}
 	if openedInfo.Size() <= 0 {
-		return "", newStaplerTargetUsageError(errors.New("artifact file must not be empty"))
+		return nil, newStaplerTargetUsageError(errors.New("artifact file must not be empty"))
 	}
-	return absolute, nil
+	keepRoot = true
+	return &validatedStaplerTarget{
+		path:     absolute,
+		root:     root,
+		relative: relative,
+		identity: openedInfo,
+	}, nil
 }
 
-func rejectStaplerParentSymlinks(absolute string) error {
-	current := filepath.Dir(absolute)
-	volumeRoot := filepath.VolumeName(absolute) + string(os.PathSeparator)
-	if volumeRoot == string(os.PathSeparator) {
-		volumeRoot = string(os.PathSeparator)
+func newStaplerTargetRoot(absolute string) (rootfs.Root, string, error) {
+	rootPath := filepath.VolumeName(absolute) + string(os.PathSeparator)
+	root, err := rootfs.New(rootPath)
+	if err != nil {
+		return rootfs.Root{}, "", err
 	}
-	for {
-		if current == volumeRoot || current == "." || current == "" {
-			return nil
-		}
-		info, err := os.Lstat(current)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return newStaplerTargetUsageError(fmt.Errorf("artifact parent %q does not exist", current))
-			}
-			return fmt.Errorf("inspect artifact parent %q: %w", current, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			if runtime.GOOS == "darwin" && filepath.Dir(current) == volumeRoot {
-				switch filepath.Base(current) {
-				case "etc", "tmp", "var":
-					// macOS exposes these stable system aliases below /private.
-					// Treat them as the filesystem boundary selected by the
-					// operator; rootfs still rejects symlinks below the selected
-					// artifact parent.
-					return nil
-				}
-			}
-			return newStaplerTargetUsageError(fmt.Errorf("refusing to read symlink path component %q", current))
-		}
-		if !info.IsDir() {
-			return newStaplerTargetUsageError(fmt.Errorf("artifact parent %q is not a directory", current))
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return nil
-		}
-		current = parent
+	inspectionPath := staplerNoFollowPath(absolute)
+	relative, err := filepath.Rel(rootPath, inspectionPath)
+	if err != nil {
+		_ = root.Close()
+		return rootfs.Root{}, "", err
 	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		_ = root.Close()
+		return rootfs.Root{}, "", fmt.Errorf("%w: artifact path escapes filesystem root", rootfs.ErrEscapesRoot)
+	}
+	return root, relative, nil
+}
+
+func staplerNoFollowPath(absolute string) string {
+	if runtime.GOOS != "darwin" {
+		return absolute
+	}
+	for _, alias := range []string{"/etc", "/tmp", "/var"} {
+		if absolute == alias || strings.HasPrefix(absolute, alias+string(os.PathSeparator)) {
+			return filepath.Join("/private", strings.TrimPrefix(absolute, string(os.PathSeparator)))
+		}
+	}
+	return absolute
+}
+
+func isStaplerWrongKindError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "is not a directory")
+}
+
+func staplerTargetSemanticError(err error, absolute string) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, rootfs.ErrSymlink) {
+		return newStaplerTargetUsageError(fmt.Errorf("refusing to read symlink %q", absolute))
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return newStaplerTargetUsageError(fmt.Errorf("%q does not exist", absolute))
+	}
+	if isStaplerWrongKindError(err) || strings.Contains(err.Error(), "is not a regular file") {
+		return newStaplerTargetUsageError(fmt.Errorf("%q is not a regular file or directory bundle", absolute))
+	}
+	return nil
 }
 
 func reportStaplerFailure(command string, err error) error {
@@ -391,6 +511,12 @@ func reportStaplerFailure(command string, err error) error {
 
 func reportStaplerTargetFilesystemFailure(command string) error {
 	message := fmt.Sprintf("notarization %s: could not inspect artifact filesystem", command)
+	fmt.Fprintln(os.Stderr, "Error: "+message)
+	return shared.NewReportedError(errors.New(message))
+}
+
+func reportStaplerTargetIdentityFailure(command, stage string) error {
+	message := fmt.Sprintf("notarization %s: artifact target changed %s", command, stage)
 	fmt.Fprintln(os.Stderr, "Error: "+message)
 	return shared.NewReportedError(errors.New(message))
 }

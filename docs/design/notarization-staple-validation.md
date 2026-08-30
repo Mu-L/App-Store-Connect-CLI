@@ -128,3 +128,9 @@ in-place staple before cancellation or if the follow-up validation fails; the
 command reports that state but does not restore the artifact. ZIP extraction,
 repackaging, and Gatekeeper assessment remain outside this change and require
 separate workflows.
+
+The wrapper keeps the validated target identity anchored through each local
+stage, but Apple's stapler accepts a pathname rather than the wrapper's open
+descriptor. A concurrent replacement can still occur after an identity check
+and before or during the child process; the wrapper detects replacements at the
+stage boundaries and cannot eliminate that provider/path-based TOCTOU window.
