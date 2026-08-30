@@ -1257,6 +1257,9 @@ func (resolver *signingSettingResolver) expandSettingReferences(configuration *v
 	for iteration := 0; iteration < 32; iteration++ {
 		match := signingReferencePattern.FindStringSubmatchIndex(resolved)
 		if match == nil {
+			if strings.Contains(resolved, "$(") || strings.Contains(resolved, "${") {
+				return "", "", fmt.Errorf("incomplete build-setting reference")
+			}
 			return strings.TrimSpace(resolved), resolver.project.pbxprojPath, nil
 		}
 		name := ""

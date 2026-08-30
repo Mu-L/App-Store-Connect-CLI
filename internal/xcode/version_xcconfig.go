@@ -225,22 +225,22 @@ func collectXCConfigFilesWithHooks(
 ) ([]string, error) {
 	seen := make(map[string]bool)
 	var paths []string
-	var visit func(string, map[string]bool) error
-	visit = func(path string, stack map[string]bool) error {
+	var visit func(string, map[string]bool) (error, bool)
+	visit = func(path string, stack map[string]bool) (error, bool) {
 		path = filepath.Clean(path)
 		pathKey := signingLexicalPathKey(path)
 		if onPath != nil {
 			onPath(path)
 		}
 		if stack[pathKey] || seen[pathKey] {
-			return nil
+			return nil, false
 		}
 		if authorize != nil {
 			if err := authorize(path); err != nil {
 				if onError != nil {
 					onError(path, err)
 				}
-				return err
+				return err, false
 			}
 		}
 		data, err := read(path)
@@ -248,14 +248,14 @@ func collectXCConfigFilesWithHooks(
 			if onError != nil {
 				onError(path, err)
 			}
-			return err
+			return err, errors.Is(err, os.ErrNotExist)
 		}
 		document, err := parseXCConfig(data)
 		if err != nil {
 			if onError != nil {
 				onError(path, err)
 			}
-			return fmt.Errorf("parse %s: %w", path, err)
+			return fmt.Errorf("parse %s: %w", path, err), false
 		}
 		seen[pathKey] = true
 		paths = append(paths, path)
@@ -275,22 +275,23 @@ func collectXCConfigFilesWithHooks(
 			// checks. In particular, never stat an include before the authorization
 			// hook has accepted its lexical path. Optional missing includes are the
 			// one intentional not-exist case and are ignored after that check.
-			if err := visit(includePath, nextStack); err != nil {
-				if include.optional && errors.Is(err, os.ErrNotExist) {
+			childErr, missingTarget := visit(includePath, nextStack)
+			if childErr != nil {
+				if include.optional && missingTarget {
 					continue
 				}
-				includeErrors = append(includeErrors, err)
+				includeErrors = append(includeErrors, childErr)
 			}
 		}
 		if len(includeErrors) == 1 {
-			return includeErrors[0]
+			return includeErrors[0], false
 		}
 		if len(includeErrors) > 1 {
-			return errors.Join(includeErrors...)
+			return errors.Join(includeErrors...), false
 		}
-		return nil
+		return nil, false
 	}
-	if err := visit(root, make(map[string]bool)); err != nil {
+	if err, _ := visit(root, make(map[string]bool)); err != nil {
 		return nil, err
 	}
 	return paths, nil

@@ -152,6 +152,36 @@ func TestXCConfigRequiredMissingIncludeFails(t *testing.T) {
 	}
 }
 
+func TestXCConfigOptionalIncludePropagatesMissingRequiredDescendant(t *testing.T) {
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Root.xcconfig")
+	optionalPath := filepath.Join(root, "Optional.xcconfig")
+	missingPath := filepath.Join(root, "Missing.xcconfig")
+	if err := os.WriteFile(rootPath, []byte("#include? \"Optional.xcconfig\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(root) error = %v", err)
+	}
+	if err := os.WriteFile(optionalPath, []byte("#include \"Missing.xcconfig\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(optional) error = %v", err)
+	}
+
+	seen := make(map[string]bool)
+	_, err := collectXCConfigFilesWithHooks(
+		rootPath,
+		os.ReadFile,
+		nil,
+		func(path string) { seen[filepath.Clean(path)] = true },
+		nil,
+	)
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("collectXCConfigFilesWithHooks() error = %v, want descendant missing-include error", err)
+	}
+	for _, path := range []string{rootPath, optionalPath, missingPath} {
+		if !seen[path] {
+			t.Fatalf("collector did not retain lexical path %q: %#v", path, seen)
+		}
+	}
+}
+
 func TestXCConfigCollectorRecordsMissingIncludeBeforeAccess(t *testing.T) {
 	root := t.TempDir()
 	rootPath := filepath.Join(root, "Root.xcconfig")

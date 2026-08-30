@@ -1626,6 +1626,75 @@ func TestSigningPlanRejectsBuildSettingReferenceModifiers(t *testing.T) {
 	}
 }
 
+func TestSigningSettingResolverRejectsIncompleteBuildSettingReferences(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	structured, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("openStructuredVersionProject() error = %v", err)
+	}
+	configuration, err := signingConfigurationFor(structured, "App", "Debug")
+	if err != nil {
+		t.Fatalf("signingConfigurationFor() error = %v", err)
+	}
+	configuration.buildSettings["KNOWN_SETTING"] = "resolved"
+	resolver := newSigningSettingResolver(structured, nil, false)
+	tests := []struct {
+		name      string
+		value     string
+		wantError bool
+		wantValue string
+	}{
+		{name: "incomplete parenthesis", value: "$(MISSING", wantError: true},
+		{name: "incomplete brace", value: "${MISSING", wantError: true},
+		{name: "resolved then truncated", value: "prefix-$(KNOWN_SETTING)-${", wantError: true},
+		{name: "ordinary dollar", value: "price $5", wantValue: "price $5"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value, _, err := resolver.expandSettingReferences(configuration, test.value, map[string]bool{})
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "incomplete build-setting reference") {
+					t.Fatalf("expandSettingReferences(%q) error = %v, want incomplete-reference error", test.value, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expandSettingReferences(%q) error = %v, want nil", test.value, err)
+			}
+			if value != test.wantValue {
+				t.Fatalf("expandSettingReferences(%q) = %q, want %q", test.value, value, test.wantValue)
+			}
+		})
+	}
+}
+
+func TestSigningPlanBlocksIncompleteBuildSettingReference(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"), `CODE_SIGN_IDENTITY = "$(MISSING";`)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"Apple Development"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want blocked plan", err)
+	}
+	if plan.Ready {
+		t.Fatalf("incomplete build-setting reference produced ready plan: %#v", plan)
+	}
+	blockers := strings.Join(plan.Blockers, "\n")
+	if !strings.Contains(blockers, "CODE_SIGN_IDENTITY") || !strings.Contains(blockers, "incomplete build-setting reference") {
+		t.Fatalf("plan blockers = %#v, want incomplete identity reference blocker", plan.Blockers)
+	}
+}
+
 func TestSigningPlanDigestsProjectLevelXCConfigUsedForResolution(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	projectRoot := filepath.Dir(project)
