@@ -1039,6 +1039,10 @@ func TestSigningPlanIgnoresShadowedUnresolvedXCConfigEntitlements(t *testing.T) 
 			name:        "skipped conditional assignment follows concrete value",
 			assignments: "CODE_SIGN_ENTITLEMENTS = App.entitlements\nCODE_SIGN_ENTITLEMENTS ?= $(MISSING)\n",
 		},
+		{
+			name:        "later concrete assignment replaces SDK conditional default",
+			assignments: "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] ?= $(MISSING)\nCODE_SIGN_ENTITLEMENTS = App.entitlements\n",
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			project := writeStructuredVersionProject(t, true)

@@ -2287,6 +2287,7 @@ func signingProjectInputPaths(
 		}
 	}
 	selectedXCConfigSources := make(map[string]bool)
+	resolvedEntitlementConfigurations := make(map[string]bool)
 	for _, configuration := range project.configurations {
 		if !selectedIDs[configuration.id] {
 			continue
@@ -2390,6 +2391,8 @@ func signingProjectInputPaths(
 						return nil, externalEntitlementPaths, inputBlockers, err
 					}
 					inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has an unresolved CODE_SIGN_ENTITLEMENTS input: %v", configuration.target, configuration.name, err))
+				} else {
+					resolvedEntitlementConfigurations[configuration.id] = true
 				}
 			} else if !errors.Is(err, errVersionSettingNotFound) {
 				resolutionErr := fmt.Errorf("resolve CODE_SIGN_ENTITLEMENTS for target %q configuration %q: %w", configuration.target, configuration.name, err)
@@ -2450,6 +2453,9 @@ func signingProjectInputPaths(
 				if assignment.continued && allowedSigningSetting(assignment.baseKey) &&
 					(assignment.baseKey == "CODE_SIGN_ENTITLEMENTS" || selectedSource) {
 					return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("xcconfig %s uses a line continuation for signing setting %s", filePath, assignment.baseKey)
+				}
+				if resolvedEntitlementConfigurations[configuration.id] && assignment.baseKey == "CODE_SIGN_ENTITLEMENTS" {
+					continue
 				}
 				if assignment.baseKey != "CODE_SIGN_ENTITLEMENTS" || !isConditionalEntitlementKey(assignment.key) {
 					continue

@@ -525,7 +525,6 @@ func resolveXCConfigSettingRecursiveWithReader(
 		return events[left].line < events[right].line
 	})
 
-	conditionalFound := false
 	for _, item := range events {
 		if item.include != nil {
 			includePath, err := resolveXCConfigInclude(path, *item.include)
@@ -538,12 +537,11 @@ func resolveXCConfigSettingRecursiveWithReader(
 				}
 				return xcconfigResolvedValue{}, false, fmt.Errorf("read xcconfig include %s: %w", includePath, err)
 			}
-			included, includedConditional, err := resolveXCConfigSettingRecursiveWithReader(includePath, setting, nextStack, resolved, read, stat)
+			included, _, err := resolveXCConfigSettingRecursiveWithReader(includePath, setting, nextStack, resolved, read, stat)
 			if err != nil {
 				return xcconfigResolvedValue{}, false, err
 			}
 			resolved = included
-			conditionalFound = conditionalFound || includedConditional
 			continue
 		}
 
@@ -552,7 +550,9 @@ func resolveXCConfigSettingRecursiveWithReader(
 			continue
 		}
 		if assignment.key != setting {
-			conditionalFound = true
+			if assignment.operator == "?=" && resolved.found {
+				continue
+			}
 			resolved.conditionals = append(resolved.conditionals, xcconfigConditionalValue{
 				key:      assignment.key,
 				value:    assignment.value,
@@ -576,16 +576,22 @@ func resolveXCConfigSettingRecursiveWithReader(
 				value = strings.TrimSpace(strings.TrimSpace(resolved.value) + " " + strings.TrimSpace(value))
 			}
 		}
+		conditionals := resolved.conditionals
+		if assignment.operator == "=" && !hasInherited {
+			// A later unconditional replacement wins in every build context,
+			// so earlier conditional defaults cannot affect the final value.
+			conditionals = nil
+		}
 		resolved = xcconfigResolvedValue{
 			value:            strings.TrimSpace(value),
 			path:             path,
 			found:            true,
 			exact:            true,
 			missingInherited: hasInherited && !hadLowerValue,
-			conditionals:     resolved.conditionals,
+			conditionals:     conditionals,
 		}
 	}
-	return resolved, conditionalFound, nil
+	return resolved, len(resolved.conditionals) > 0, nil
 }
 
 func editXCConfig(data []byte, setting, value string) ([]byte, []string, bool, error) {

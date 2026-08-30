@@ -82,6 +82,25 @@ func TestXCConfigResolverRejectsDivergentConditionalOverride(t *testing.T) {
 	}
 }
 
+func TestXCConfigResolverIgnoresShadowedConditionalDefaults(t *testing.T) {
+	for _, contents := range []string{
+		"CODE_SIGN_ENTITLEMENTS = App.entitlements\nCODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] ?= $(MISSING)\n",
+		"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] ?= $(MISSING)\nCODE_SIGN_ENTITLEMENTS = App.entitlements\n",
+	} {
+		path := filepath.Join(t.TempDir(), "Values.xcconfig")
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatalf("WriteFile(values) error = %v", err)
+		}
+		resolved, err := resolveXCConfigSetting(path, "CODE_SIGN_ENTITLEMENTS")
+		if err != nil {
+			t.Fatalf("resolveXCConfigSetting() error = %v", err)
+		}
+		if resolved.value != "App.entitlements" || !resolved.exact {
+			t.Fatalf("resolved = %#v, want final concrete entitlement", resolved)
+		}
+	}
+}
+
 func TestXCConfigOperatorsQuotesAndIncludeOrder(t *testing.T) {
 	root := t.TempDir()
 	rootPath := filepath.Join(root, "Root.xcconfig")
