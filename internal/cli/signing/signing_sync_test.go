@@ -44,6 +44,24 @@ func TestSigningSyncPushHelpDocumentsDeviceTransition(t *testing.T) {
 	}
 }
 
+func TestSigningSyncPushHelpDocumentsTargetsFile(t *testing.T) {
+	bundleFlag := syncPushCommand().FlagSet.Lookup("bundle-id")
+	if bundleFlag == nil {
+		t.Fatal("expected --bundle-id flag")
+	}
+	if !strings.Contains(bundleFlag.Usage, "required unless --targets-file") {
+		t.Fatalf("--bundle-id usage = %q, want the alternative selector contract", bundleFlag.Usage)
+	}
+
+	flag := syncPushCommand().FlagSet.Lookup("targets-file")
+	if flag == nil {
+		t.Fatal("expected --targets-file flag")
+	}
+	if !strings.Contains(flag.Usage, "1-32") || !strings.Contains(flag.Usage, "--bundle-id") || !strings.Contains(flag.Usage, "root-relative") {
+		t.Fatalf("--targets-file usage = %q, want root boundary, bounds, and mutual exclusion", flag.Usage)
+	}
+}
+
 func TestSigningSyncPreparesRepositoryOnceInAssetOrder(t *testing.T) {
 	tests := []struct {
 		name       string
