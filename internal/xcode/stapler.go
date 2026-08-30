@@ -34,6 +34,34 @@ type StaplerResult struct {
 // check; false identifies the post-stage check.
 type StaplerStageVerifier func(operation StaplerOperation, before bool) error
 
+// StaplerStageVerificationError identifies a verifier failure at one child
+// operation boundary. The wrapped error remains available to callers that need
+// to classify the underlying cause, while Error provides a stable diagnostic
+// that does not include verifier details.
+type StaplerStageVerificationError struct {
+	Operation StaplerOperation
+	Before    bool
+	Err       error
+}
+
+func (e *StaplerStageVerificationError) Error() string {
+	if e == nil {
+		return "stapler stage verification failed"
+	}
+	position := "after"
+	if e.Before {
+		position = "before"
+	}
+	return fmt.Sprintf("stapler %s verification failed %s operation", e.Operation, position)
+}
+
+func (e *StaplerStageVerificationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // StaplerCommandError preserves the operation and child exit status for a
 // failed stapler invocation. ExitCode is -1 when no ordinary process status is
 // available, such as a start failure or signal termination.
@@ -107,18 +135,39 @@ func verifyStaplerStage(verifier StaplerStageVerifier, operation StaplerOperatio
 	if verifier == nil {
 		return nil
 	}
-	return verifier(operation, before)
+	if err := verifier(operation, before); err != nil {
+		return &StaplerStageVerificationError{
+			Operation: operation,
+			Before:    before,
+			Err:       err,
+		}
+	}
+	return nil
 }
 
 // ValidateStaple validates an already stapled artifact without modifying it.
 // The artifact path must have been validated by the command layer before this
 // local runner is called.
 func ValidateStaple(ctx context.Context, path string, logWriter io.Writer) (*StaplerResult, error) {
+	return ValidateWithVerifier(ctx, path, logWriter, nil)
+}
+
+// ValidateWithVerifier validates an already stapled artifact without
+// modifying it. When verifier is non-nil, it runs immediately before and after
+// the validation child process, after stapler resolution has completed.
+func ValidateWithVerifier(ctx context.Context, path string, logWriter io.Writer, verifier StaplerStageVerifier) (*StaplerResult, error) {
 	if err := ensureStaplerAvailable(ctx, logWriter); err != nil {
 		return nil, err
 	}
-	if err := runStaplerOperation(ctx, StaplerOperationValidate, path, logWriter); err != nil {
+	if err := verifyStaplerStage(verifier, StaplerOperationValidate, true); err != nil {
 		return nil, err
+	}
+	validateErr := runStaplerOperation(ctx, StaplerOperationValidate, path, logWriter)
+	if verifyErr := verifyStaplerStage(verifier, StaplerOperationValidate, false); verifyErr != nil {
+		return nil, verifyErr
+	}
+	if validateErr != nil {
+		return nil, validateErr
 	}
 	return &StaplerResult{
 		Path:      path,

@@ -24,9 +24,20 @@ import (
 )
 
 var (
-	runStaplerStaple         = localxcode.StapleWithVerifier
-	runStaplerValidate       = localxcode.ValidateStaple
-	validateStaplerDetailsFn = validateStaplerTargetDetails
+	runStaplerStaple              = localxcode.StapleWithVerifier
+	runStaplerValidate            = localxcode.ValidateWithVerifier
+	validateStaplerDetailsFn      = validateStaplerTargetDetails
+	openStaplerTargetDirFn        = openStaplerTargetDir
+	checkStaplerTargetContainedFn = func(root rootfs.Root, relative string) error {
+		return root.CheckContained(relative)
+	}
+	probeStaplerTargetKindFn     = probeStaplerTargetKind
+	openStaplerTargetDirectoryFn = func(root rootfs.Root, relative string) (*os.File, error) {
+		return root.OpenDir(relative)
+	}
+	openStaplerTargetFileFn = func(root rootfs.Root, relative string) (*os.File, error) {
+		return root.OpenFile(relative)
+	}
 )
 
 // SetValidateStaplerTargetForTesting replaces target validation and returns a
@@ -169,7 +180,7 @@ Examples:
 				return target.verifyIdentity(staplerStageDescription(operation, before))
 			})
 			identityErr := target.verifyIdentity("after stapling")
-			if identityErr == nil && runErr != nil {
+			if runErr != nil {
 				var targetErr *staplerTargetIdentityError
 				if errors.As(runErr, &targetErr) {
 					return reportStaplerTargetIdentityFailure("staple", targetErr.stage)
@@ -243,8 +254,16 @@ Examples:
 				return reportStaplerTargetIdentityFailure("validate", "before validation")
 			}
 
-			result, runErr := runStaplerValidate(ctx, pathValue, os.Stderr)
+			result, runErr := runStaplerValidate(ctx, pathValue, os.Stderr, func(operation localxcode.StaplerOperation, before bool) error {
+				return target.verifyIdentity(staplerStageDescription(operation, before))
+			})
 			identityErr := target.verifyIdentity("after validation")
+			if runErr != nil {
+				var targetErr *staplerTargetIdentityError
+				if errors.As(runErr, &targetErr) {
+					return reportStaplerTargetIdentityFailure("validate", targetErr.stage)
+				}
+			}
 			if identityErr != nil {
 				return reportStaplerTargetIdentityFailure("validate", "after validation")
 			}
@@ -364,6 +383,87 @@ func (target *validatedStaplerTarget) open() (*os.File, error) {
 	return target.root.OpenFile(target.relative)
 }
 
+type staplerTargetWrongKindError struct{}
+
+func (*staplerTargetWrongKindError) Error() string {
+	return "stapler target is not a directory"
+}
+
+type staplerTargetDirectoryOpenError struct {
+	err error
+}
+
+func (*staplerTargetDirectoryOpenError) Error() string {
+	return "opening stapler target directory failed"
+}
+
+func (e *staplerTargetDirectoryOpenError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+// staplerTargetTraversalError marks failures while checking the path leading
+// to the final artifact component. A traversal failure must remain
+// operational, even when its underlying syscall happens to be ENOTDIR; only
+// a successful final-component kind probe may authorize file fallback.
+type staplerTargetTraversalError struct {
+	err error
+}
+
+func (*staplerTargetTraversalError) Error() string {
+	return "checking stapler target path failed"
+}
+
+func (e *staplerTargetTraversalError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func probeStaplerTargetKind(root rootfs.Root, relative string) (os.FileInfo, error) {
+	rooted, err := root.OpenRoot()
+	if err != nil {
+		return nil, err
+	}
+	info, err := rooted.Lstat(relative)
+	closeErr := rooted.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return info, nil
+}
+
+// openStaplerTargetDir classifies the final component through a rooted
+// no-follow Lstat before opening a directory. This keeps the regular-file
+// fallback tied to an explicit local result rather than parsing an arbitrary
+// operational error string returned by a directory open.
+func openStaplerTargetDir(root rootfs.Root, relative string) (*os.File, error) {
+	if err := checkStaplerTargetContainedFn(root, relative); err != nil {
+		return nil, &staplerTargetTraversalError{err: err}
+	}
+	info, err := probeStaplerTargetKindFn(root, relative)
+	if err != nil {
+		return nil, &staplerTargetTraversalError{err: err}
+	}
+	if info == nil {
+		return nil, errors.New("stapler target kind probe returned no result")
+	}
+	if !info.IsDir() {
+		return nil, &staplerTargetWrongKindError{}
+	}
+	opened, err := openStaplerTargetDirectoryFn(root, relative)
+	if err != nil {
+		return nil, &staplerTargetDirectoryOpenError{err: err}
+	}
+	return opened, nil
+}
+
 func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, error) {
 	if strings.TrimSpace(pathValue) == "" {
 		return nil, newStaplerTargetUsageError(errors.New("--file is required"))
@@ -391,7 +491,7 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 		}
 	}()
 
-	opened, openErr := root.OpenDir(relative)
+	opened, openErr := openStaplerTargetDirFn(root, relative)
 	if openErr == nil {
 		openedInfo, statErr := opened.Stat()
 		_ = opened.Close()
@@ -411,11 +511,14 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 		}, nil
 	}
 
-	if semanticErr := staplerTargetSemanticError(openErr, absolute); semanticErr != nil && !isStaplerWrongKindError(openErr) {
-		return nil, semanticErr
+	if !isStaplerWrongKindError(openErr) {
+		if semanticErr := staplerTargetSemanticError(openErr, absolute); semanticErr != nil {
+			return nil, semanticErr
+		}
+		return nil, fmt.Errorf("open artifact directory: %w", openErr)
 	}
 
-	opened, openErr = root.OpenFile(relative)
+	opened, openErr = openStaplerTargetFileFn(root, relative)
 	if openErr != nil {
 		if semanticErr := staplerTargetSemanticError(openErr, absolute); semanticErr != nil {
 			return nil, semanticErr
@@ -474,11 +577,16 @@ func staplerNoFollowPath(absolute string) string {
 }
 
 func isStaplerWrongKindError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "is not a directory")
+	var wrongKindErr *staplerTargetWrongKindError
+	return errors.As(err, &wrongKindErr)
 }
 
 func staplerTargetSemanticError(err error, absolute string) error {
 	if err == nil {
+		return nil
+	}
+	var directoryOpenErr *staplerTargetDirectoryOpenError
+	if errors.As(err, &directoryOpenErr) {
 		return nil
 	}
 	if errors.Is(err, rootfs.ErrSymlink) {

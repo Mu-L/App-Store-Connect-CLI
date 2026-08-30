@@ -27,11 +27,16 @@ recreated after stapling its contained item.
 The command layer validates the invocation and target before any tool or auth
 work. Because stapling mutates the artifact in place, `staple` requires an
 explicit `--confirm` flag before it inspects the target or invokes Apple's
-tool. It trims and cleans the supplied path once, resolves it to an absolute
-path, rejects NULs, missing paths, final symlinks, unsafe parent symlinks,
-special files, and empty regular files, and accepts regular files or directory
-bundles for Apple's tool to classify. Direct `.zip` paths fail with a usage
-diagnostic. Parent and final checks use the existing no-follow/rooted
+tool. Trimming is used only to detect an empty flag, so leading and trailing
+whitespace in a real filename is preserved; the supplied path is then cleaned
+once and resolved to an absolute path. It rejects NULs, missing paths, final
+symlinks, unsafe parent symlinks, special files, and empty regular files, and
+accepts regular files or directory bundles for Apple's tool to classify. The
+final component's kind is classified by a rooted no-follow `Lstat` probe, so
+only a proven non-directory falls back to the regular-file path; traversal and
+directory-open failures stay operational instead of being retried as files.
+Direct `.zip` paths fail with a usage diagnostic. Parent and final checks use
+the existing no-follow/rooted
 filesystem helpers. Stable macOS `/etc`, `/tmp`, and `/var` filesystem aliases
 are accepted at the volume boundary, while symlinks below the selected
 artifact parent are rejected. The path is passed to the child as one argv
@@ -43,6 +48,15 @@ uses the existing command-construction and bounded wait seams. Child stdout and
 stderr are directed to the caller's diagnostic writer so structured command
 output remains parseable. Context cancellation is propagated through
 `exec.CommandContext`; no API client or credential lookup is performed.
+
+Both runner entry points accept an optional stage verifier that runs
+immediately before and after every child process, after `xcrun --find stapler`
+has resolved. The staple flow guards its staple and validation children; the
+validation-only flow guards its single validation child, so a replacement that
+happens during tool resolution and is reverted before the command's own
+post-check cannot be reported as a verified result. A verifier failure is
+returned as a typed stage error that keeps the caller's cause available for
+classification.
 
 When a stapling child exits non-zero, the runner preserves its status in a
 typed error. The CLI converts a real child status to the repository's private

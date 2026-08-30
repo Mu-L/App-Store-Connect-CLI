@@ -100,6 +100,296 @@ func TestValidateStapleRunsOnlyValidationAfterResolution(t *testing.T) {
 	})
 }
 
+func TestValidateWithVerifierRunsVerifierAroundValidationChild(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "My App.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+
+	var stages []string
+	result, err := ValidateWithVerifier(context.Background(), target, nil, func(operation StaplerOperation, before bool) error {
+		position := "after"
+		if before {
+			position = "before"
+		}
+		stages = append(stages, position+" "+string(operation))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ValidateWithVerifier() error = %v", err)
+	}
+	if result == nil || result.Path != target || result.Operation != string(StaplerOperationValidate) || result.Stapled || !result.Validated {
+		t.Fatalf("ValidateWithVerifier() result = %#v, want a validation-only result", result)
+	}
+	if want := []string{"before validate", "after validate"}; !reflect.DeepEqual(stages, want) {
+		t.Fatalf("verified stages = %#v, want %#v", stages, want)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|validate|" + target,
+	})
+}
+
+func TestValidateWithVerifierWrapsStageErrorsAndSkipsValidationChild(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	wantErr := errors.New("target identity mismatch")
+
+	result, err := ValidateWithVerifier(context.Background(), target, nil, func(operation StaplerOperation, before bool) error {
+		if operation != StaplerOperationValidate || !before {
+			t.Fatalf("verifier called for %s before=%t, want validate before", operation, before)
+		}
+		return wantErr
+	})
+	if result != nil {
+		t.Fatalf("ValidateWithVerifier() result = %#v, want nil on verifier failure", result)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ValidateWithVerifier() error = %v, want wrapped verifier error", err)
+	}
+	var stageErr *StaplerStageVerificationError
+	if !errors.As(err, &stageErr) {
+		t.Fatalf("ValidateWithVerifier() error = %T %v, want stage verification error", err, err)
+	}
+	if stageErr.Operation != StaplerOperationValidate || !stageErr.Before {
+		t.Fatalf("stage verification error = %#v, want validate/before", stageErr)
+	}
+	assertStaplerCommands(t, logPath, []string{"xcrun|--find|stapler"})
+}
+
+func TestValidateWithVerifierRunsAfterVerifierWhenValidationFails(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_VALIDATE_EXIT_CODE", "65")
+
+	var stages []string
+	result, err := ValidateWithVerifier(context.Background(), target, nil, func(operation StaplerOperation, before bool) error {
+		position := "after"
+		if before {
+			position = "before"
+		}
+		stages = append(stages, position+" "+string(operation))
+		return nil
+	})
+	if result != nil {
+		t.Fatalf("ValidateWithVerifier() result = %#v, want nil on child failure", result)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationValidate) || commandErr.ExitCode != 65 {
+		t.Fatalf("ValidateWithVerifier() error = %#v, want validate/65 command error", err)
+	}
+	if want := []string{"before validate", "after validate"}; !reflect.DeepEqual(stages, want) {
+		t.Fatalf("verified stages = %#v, want %#v", stages, want)
+	}
+}
+
+func TestValidateWithVerifierRejectsReplacementDetectedAfterLookup(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	originalInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_SWAP_ON_FIND", target)
+	restored := false
+	t.Cleanup(func() {
+		if restored {
+			return
+		}
+		replacementPath := target + ".replacement"
+		if _, statErr := os.Stat(target); statErr == nil {
+			_ = os.Rename(target, replacementPath)
+		}
+		_ = os.Rename(target+".original", target)
+		_ = os.Remove(replacementPath)
+	})
+
+	wantErr := errors.New("target identity changed")
+	result, err := ValidateWithVerifier(context.Background(), target, nil, func(operation StaplerOperation, before bool) error {
+		if operation != StaplerOperationValidate || !before {
+			t.Fatalf("verifier called for %s before=%t, want validate before", operation, before)
+		}
+		current, statErr := os.Stat(target)
+		if statErr != nil {
+			return statErr
+		}
+		if !os.SameFile(originalInfo, current) {
+			return wantErr
+		}
+		return nil
+	})
+	if result != nil {
+		t.Fatalf("ValidateWithVerifier() result = %#v, want nil on replacement", result)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ValidateWithVerifier() error = %v, want replacement failure", err)
+	}
+	assertStaplerCommands(t, logPath, []string{"xcrun|--find|stapler"})
+
+	if err := os.Rename(target, target+".replacement"); err != nil {
+		t.Fatalf("move replacement: %v", err)
+	}
+	if err := os.Rename(target+".original", target); err != nil {
+		t.Fatalf("restore original target: %v", err)
+	}
+	restored = true
+}
+
+func TestValidateWithVerifierRestoresLookupSwapBeforeValidationChild(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	original := []byte("original")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	observedPath := filepath.Join(t.TempDir(), "observed-by-child")
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_SWAP_AND_RESTORE_ON_FIND", target)
+	t.Setenv("ASC_STAPLER_VALIDATE_OBSERVED_PATH", observedPath)
+
+	var stages []string
+	result, err := ValidateWithVerifier(context.Background(), target, nil, func(operation StaplerOperation, before bool) error {
+		position := "after"
+		if before {
+			position = "before"
+		}
+		stages = append(stages, position+" "+string(operation))
+		if operation == StaplerOperationValidate && before {
+			current, readErr := os.ReadFile(target)
+			if readErr != nil {
+				return readErr
+			}
+			if !bytes.Equal(current, original) {
+				return fmt.Errorf("pre-child target = %q, want original", current)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ValidateWithVerifier() error = %v, want success after lookup restoration", err)
+	}
+	if result == nil || result.Path != target || result.Operation != string(StaplerOperationValidate) || !result.Validated {
+		t.Fatalf("ValidateWithVerifier() result = %#v, want truthful validation result", result)
+	}
+	observed, err := os.ReadFile(observedPath)
+	if err != nil {
+		t.Fatalf("read child observation: %v", err)
+	}
+	if !bytes.Equal(observed, original) {
+		t.Fatalf("validation child observed %q, want original bytes", observed)
+	}
+	if want := []string{"before validate", "after validate"}; !reflect.DeepEqual(stages, want) {
+		t.Fatalf("verified stages = %#v, want %#v", stages, want)
+	}
+	final, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read final target: %v", err)
+	}
+	if !bytes.Equal(final, original) {
+		t.Fatalf("final target = %q, want original bytes", final)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|validate|" + target,
+	})
+}
+
+func TestValidateWithVerifierRejectsReplacementByValidationHelper(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	original := []byte("original")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	originalInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	observedPath := filepath.Join(t.TempDir(), "observed-by-child")
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_REPLACE_AFTER_VALIDATE", target)
+	t.Setenv("ASC_STAPLER_VALIDATE_OBSERVED_PATH", observedPath)
+	restored := false
+	t.Cleanup(func() {
+		if restored {
+			return
+		}
+		replacementPath := target + ".replacement"
+		if _, statErr := os.Stat(target); statErr == nil {
+			_ = os.Rename(target, replacementPath)
+		}
+		_ = os.Rename(target+".original", target)
+		_ = os.Remove(replacementPath)
+	})
+
+	wantErr := errors.New("target identity changed after validation child")
+	var diagnostics bytes.Buffer
+	result, err := ValidateWithVerifier(context.Background(), target, &diagnostics, func(operation StaplerOperation, before bool) error {
+		if operation != StaplerOperationValidate {
+			return nil
+		}
+		current, statErr := os.Stat(target)
+		if statErr != nil {
+			return statErr
+		}
+		if before {
+			if !os.SameFile(originalInfo, current) {
+				return wantErr
+			}
+			return nil
+		}
+		if os.SameFile(originalInfo, current) {
+			return nil
+		}
+		return wantErr
+	})
+	if result != nil {
+		t.Fatalf("ValidateWithVerifier() result = %#v, want nil after helper replacement", result)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ValidateWithVerifier() error = %v, want post-child identity failure", err)
+	}
+	if diagnostics.Len() != 0 {
+		t.Fatalf("child diagnostics = %q, want no success output or diagnostics", diagnostics.String())
+	}
+	observed, err := os.ReadFile(observedPath)
+	if err != nil {
+		t.Fatalf("read child observation: %v", err)
+	}
+	if !bytes.Equal(observed, original) {
+		t.Fatalf("validation helper observed %q, want original bytes before replacement", observed)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|validate|" + target,
+	})
+
+	if err := os.Rename(target, target+".replacement"); err != nil {
+		t.Fatalf("move replacement: %v", err)
+	}
+	if err := os.Rename(target+".original", target); err != nil {
+		t.Fatalf("restore original target: %v", err)
+	}
+	if err := os.Remove(target + ".replacement"); err != nil {
+		t.Fatalf("remove replacement: %v", err)
+	}
+	restored = true
+}
+
 func TestStapleStopsBeforeValidationWhenStapleFails(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -299,6 +589,38 @@ func TestStaplerHelperProcess(t *testing.T) {
 	}
 
 	if len(args) == 3 && args[0] == "xcrun" && args[1] == "--find" && args[2] == "stapler" {
+		if target := os.Getenv("ASC_STAPLER_SWAP_ON_FIND"); target != "" {
+			if err := os.Rename(target, target+".original"); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			if err := os.WriteFile(target, []byte("replacement"), 0o600); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+		}
+		if target := os.Getenv("ASC_STAPLER_SWAP_AND_RESTORE_ON_FIND"); target != "" {
+			if err := os.Rename(target, target+".original"); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			if err := os.WriteFile(target, []byte("replacement"), 0o600); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			if err := os.Rename(target, target+".lookup-replacement"); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			if err := os.Rename(target+".original", target); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			if err := os.Remove(target + ".lookup-replacement"); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+		}
 		if code := staplerHelperExitCode("ASC_STAPLER_FIND_EXIT_CODE"); code >= 0 {
 			fmt.Fprintln(os.Stderr, "stapler lookup failed")
 			os.Exit(code)
@@ -308,6 +630,29 @@ func TestStaplerHelperProcess(t *testing.T) {
 	}
 	if len(args) >= 4 && args[0] == "xcrun" && args[1] == "stapler" {
 		operation := strings.ToUpper(args[2][:1]) + args[2][1:]
+		if args[2] == "validate" {
+			if observationPath := os.Getenv("ASC_STAPLER_VALIDATE_OBSERVED_PATH"); observationPath != "" {
+				observed, err := os.ReadFile(args[3])
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(2)
+				}
+				if err := os.WriteFile(observationPath, observed, 0o600); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(2)
+				}
+			}
+			if replacementTarget := os.Getenv("ASC_STAPLER_REPLACE_AFTER_VALIDATE"); replacementTarget != "" {
+				if err := os.Rename(replacementTarget, replacementTarget+".original"); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(2)
+				}
+				if err := os.WriteFile(replacementTarget, []byte("replacement"), 0o600); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(2)
+				}
+			}
+		}
 		if output := os.Getenv("ASC_STAPLER_" + strings.ToUpper(args[2]) + "_STDOUT"); output != "" {
 			fmt.Fprint(os.Stdout, output)
 		}
