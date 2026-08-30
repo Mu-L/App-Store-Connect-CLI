@@ -205,6 +205,49 @@ func TestInstallUsesAppPathAndVerifiesInstalledBuild(t *testing.T) {
 	}
 }
 
+func TestInstallProceedsToDevicectlForIPAWithEmbeddedTargets(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	previousRunner := installRunner
+	previousMaterialize := materializeInstallIPA
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+		installRunner = previousRunner
+		materializeInstallIPA = previousMaterialize
+	})
+	runtimeGOOS = "darwin"
+	ipaPath := filepath.Join(t.TempDir(), "Demo.ipa")
+	if err := os.WriteFile(ipaPath, []byte("not-read-by-fake-materializer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appPath := filepath.Join(t.TempDir(), "Demo.app")
+	if err := os.MkdirAll(appPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeInstallRunner{t: t}
+	installRunner = runner
+	materializeInstallIPA = func(context.Context, *os.File, int64, distribution.InspectOptions) (*distribution.MaterializedApp, error) {
+		inspection := installTestInspection(distribution.ProfileClassAdHoc)
+		inspection.EmbeddedTargets = []string{"Payload/Demo.app/PlugIns/Widget.appex/Info.plist"}
+		inspection.Preparation.MetadataEligible = false
+		inspection.Preparation.Issues = []string{"embedded targets require target-by-target signing validation before preparation"}
+		return &distribution.MaterializedApp{Inspection: inspection, Path: appPath}, nil
+	}
+
+	result, err := Install(context.Background(), InstallOptions{IPAPath: ipaPath, DeviceID: "SELECTOR_CANARY", Timeout: 5 * time.Minute})
+	if err != nil {
+		t.Fatalf("Install() error = %v, want embedded-target IPA to remain installable", err)
+	}
+	if result == nil || !result.Success || !result.Installed || !result.Verified {
+		t.Fatalf("Install() result = %#v, want successful verified result", result)
+	}
+	if result.FailureStage != "" || result.FailureCode != "" {
+		t.Fatalf("Install() result reported failure %q/%q, want none", result.FailureStage, result.FailureCode)
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("devicectl calls = %d, want discovery/install/verification despite embedded-target preparation warning", len(runner.calls))
+	}
+}
+
 func TestInstallReturnsUnverifiedResultWhenPostInstallDoesNotMatch(t *testing.T) {
 	previousGOOS := runtimeGOOS
 	previousRunner := installRunner
