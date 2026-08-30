@@ -26,15 +26,15 @@ asc certificates export \
   --private-key ./push/push.key \
   --password-file ./secrets/push.p12.password \
   --p12-out ./push/push.p12 \
-  [--csr ./push/push.csr] [--force] \
+  [--csr ./push/push.csr] [--force --confirm] \
   [--output table|json|markdown] [--pretty]
 ```
 
 `--certificate`, `--private-key`, `--password-file`, and `--p12-out` are
 required. `--csr` is optional and, when present, provides an additional
-PKCS#10 signature and public-key check. `--force` is required to replace an
-existing destination. `--p12-out -` is rejected so binary data can never be
-written to stdout.
+PKCS#10 signature and public-key check. `--force` together with `--confirm` is
+required to replace an existing destination. `--p12-out -` is rejected so
+binary data can never be written to stdout.
 
 Usage errors return exit code 2; validation and artifact-write failures return
 nonzero; successful renderers write only metadata to stdout and diagnostics to
@@ -62,8 +62,8 @@ The output contains exactly one private key and one leaf certificate encoded
 with the existing modern PKCS#12 encoder. No CA chain is added in v1. The
 file is written with mode `0600` through a same-directory atomic write. A
 symlink, directory, input/output collision, or existing destination without
-`--force` is rejected. A failed validation or encode leaves an existing
-destination unchanged.
+`--force --confirm` is rejected. A failed validation or encode leaves an
+existing destination unchanged.
 
 The stable JSON result contains only metadata, for example:
 
