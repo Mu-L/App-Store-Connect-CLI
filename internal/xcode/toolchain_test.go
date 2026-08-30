@@ -308,6 +308,131 @@ func TestValidateResolvedXcodebuildPathAcceptsAlternateCasingOfSelectedDirectory
 	}
 }
 
+// requireSamePathSpelling skips the calling test when the volume does not
+// treat the alternate-cased spelling as the same directory entry, so the
+// case-insensitive regressions run on default macOS volumes and skip on
+// case-sensitive filesystems.
+func requireSamePathSpelling(t *testing.T, canonicalPath, alternatePath string) {
+	t.Helper()
+	alternateInfo, err := os.Stat(alternatePath)
+	if err != nil {
+		t.Skipf("volume is case-sensitive; alternate-case spelling unavailable: %v", err)
+	}
+	canonicalInfo, err := os.Stat(canonicalPath)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if !os.SameFile(canonicalInfo, alternateInfo) {
+		t.Skip("volume treats the alternate casing as a distinct directory")
+	}
+}
+
+func TestNormalizeToolchainDeveloperDirHandlesAlternateCasedSpellings(t *testing.T) {
+	t.Run("bundle developer components", func(t *testing.T) {
+		root := t.TempDir()
+		canonicalDeveloperDir := filepath.Join(root, "Xcode.app", "Contents", "Developer")
+		if err := os.MkdirAll(canonicalDeveloperDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
+		}
+		selector := filepath.Join(root, "Xcode.app", "contents", "developer")
+		requireSamePathSpelling(t, canonicalDeveloperDir, selector)
+
+		developerDir, xcodePath, commandLineTools, err := normalizeToolchainDeveloperDir(selector)
+		if err != nil || commandLineTools {
+			t.Fatalf("normalizeToolchainDeveloperDir() = commandLineTools=%t err=%v, want plain developer directory", commandLineTools, err)
+		}
+		if developerDir != selector {
+			t.Fatalf("developerDir = %q, want selected spelling %q", developerDir, selector)
+		}
+		if want := filepath.Join(root, "Xcode.app"); xcodePath != want {
+			t.Fatalf("xcodePath = %q, want %q despite alternate-cased bundle components", xcodePath, want)
+		}
+	})
+
+	t.Run("app extension", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "Xcode.app", "Contents", "Developer"), 0o755); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
+		}
+		selector := filepath.Join(root, "xcode.APP")
+		requireSamePathSpelling(t, filepath.Join(root, "Xcode.app"), selector)
+
+		developerDir, xcodePath, commandLineTools, err := normalizeToolchainDeveloperDir(selector)
+		if err != nil || commandLineTools {
+			t.Fatalf("normalizeToolchainDeveloperDir() = commandLineTools=%t err=%v, want app-bundle normalization", commandLineTools, err)
+		}
+		if want := filepath.Join(selector, "Contents", "Developer"); developerDir != want {
+			t.Fatalf("developerDir = %q, want %q", developerDir, want)
+		}
+		if xcodePath != selector {
+			t.Fatalf("xcodePath = %q, want selected spelling %q", xcodePath, selector)
+		}
+	})
+
+	t.Run("command line tools", func(t *testing.T) {
+		root := t.TempDir()
+		canonicalCLT := filepath.Join(root, "Library", "Developer", "CommandLineTools")
+		if err := os.MkdirAll(canonicalCLT, 0o755); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
+		}
+		selector := filepath.Join(root, "library", "developer", "COMMANDLINETOOLS")
+		requireSamePathSpelling(t, canonicalCLT, selector)
+
+		_, _, commandLineTools, err := normalizeToolchainDeveloperDir(selector)
+		if err != nil {
+			t.Fatalf("normalizeToolchainDeveloperDir() error = %v", err)
+		}
+		if !commandLineTools {
+			t.Fatal("commandLineTools = false, want Command Line Tools classification for alternate casing")
+		}
+	})
+}
+
+func TestValidateResolvedXcodebuildPathAcceptsAlternateCasedExecutableSpelling(t *testing.T) {
+	root := t.TempDir()
+	developerDir := filepath.Join(root, "Xcode.app", "Contents", "Developer")
+	toolPath := installToolchainXcodebuild(t, developerDir)
+
+	alternateToolPath := filepath.Join(developerDir, "usr", "bin", "XCODEBUILD")
+	requireSamePathSpelling(t, toolPath, alternateToolPath)
+
+	validated, err := validateResolvedXcodebuildPath(alternateToolPath, developerDir)
+	if err != nil {
+		t.Fatalf("validateResolvedXcodebuildPath() error = %v, want acceptance for the same physical executable", err)
+	}
+	if validated != alternateToolPath {
+		t.Fatalf("validateResolvedXcodebuildPath() = %q, want xcrun spelling %q", validated, alternateToolPath)
+	}
+}
+
+func TestValidateResolvedXcodebuildPathReportsMissingToolInsideAlternateCasedDirectory(t *testing.T) {
+	// Resolve the temporary root so the missing-path diagnostic exercises the
+	// casing dimension alone; a nonexistent path cannot be symlink-resolved,
+	// so the fallback comparison is lexical by design.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks() error = %v", err)
+	}
+	developerDir := filepath.Join(root, "Xcode.app", "Contents", "Developer")
+	if err := os.MkdirAll(developerDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	alternateSpelling := filepath.Join(root, "xcode.app", "Contents", "Developer")
+	requireSamePathSpelling(t, developerDir, alternateSpelling)
+
+	missingTool := filepath.Join(alternateSpelling, "usr", "bin", "xcodebuild")
+	_, err = validateResolvedXcodebuildPath(missingTool, developerDir)
+	if err == nil {
+		t.Fatal("validateResolvedXcodebuildPath() error = nil, want unavailable failure")
+	}
+	if strings.Contains(err.Error(), "outside selected developer directory") {
+		t.Fatalf("validateResolvedXcodebuildPath() error = %v, want unavailable diagnostic for the same directory", err)
+	}
+	if !strings.Contains(err.Error(), "is unavailable") {
+		t.Fatalf("validateResolvedXcodebuildPath() error = %v, want unavailable diagnostic", err)
+	}
+}
+
 func TestInspectToolchainClassifiesBetaFromCanonicalSelectedSymlink(t *testing.T) {
 	restore := overrideTestEnvironment(t)
 	t.Cleanup(restore)

@@ -363,7 +363,7 @@ func normalizeToolchainDeveloperDir(value string) (developerDir, xcodePath strin
 
 	parent := filepath.Dir(absolute)
 	canonicalParent := filepath.Dir(canonicalAbsolute)
-	if filepath.Base(canonicalParent) == "Contents" && strings.EqualFold(filepath.Ext(filepath.Dir(canonicalParent)), ".app") && filepath.Base(parent) == "Contents" && strings.EqualFold(filepath.Ext(filepath.Dir(parent)), ".app") {
+	if strings.EqualFold(filepath.Base(canonicalParent), "Contents") && strings.EqualFold(filepath.Ext(filepath.Dir(canonicalParent)), ".app") && strings.EqualFold(filepath.Base(parent), "Contents") && strings.EqualFold(filepath.Ext(filepath.Dir(parent)), ".app") {
 		xcodePath = filepath.Dir(parent)
 	}
 	return absolute, xcodePath, commandLineTools, nil
@@ -426,7 +426,7 @@ func validateResolvedXcodebuildPath(pathValue, developerDir string) (string, err
 		return "", fmt.Errorf("xcrun returned a non-absolute xcodebuild path %q", pathValue)
 	}
 	pathValue = filepath.Clean(pathValue)
-	if filepath.Base(pathValue) != "xcodebuild" {
+	if !strings.EqualFold(filepath.Base(pathValue), "xcodebuild") {
 		return "", fmt.Errorf("xcrun returned an unexpected executable path %q", pathValue)
 	}
 
@@ -439,8 +439,7 @@ func validateResolvedXcodebuildPath(pathValue, developerDir string) (string, err
 	if err != nil {
 		// Preserve the more useful containment diagnostic for a path outside
 		// the selected directory even when that path no longer exists.
-		relative, relativeErr := filepath.Rel(canonicalDeveloperDir, pathValue)
-		if relativeErr == nil && (relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator))) {
+		if !pathWithinDirectoryFold(canonicalDeveloperDir, pathValue) {
 			return "", fmt.Errorf("xcrun resolved xcodebuild outside selected developer directory %q", canonicalDeveloperDir)
 		}
 		return "", fmt.Errorf("resolved xcodebuild path %q is unavailable: %w", pathValue, err)
@@ -468,6 +467,25 @@ func validateResolvedXcodebuildPath(pathValue, developerDir string) (string, err
 	// Preserve xcrun's resolved spelling in the report and command invocation;
 	// the canonical path above is used for containment and file validation.
 	return pathValue, nil
+}
+
+// pathWithinDirectoryFold reports whether pathValue's leading components equal
+// directory's components under Unicode case folding. It is a lexical
+// best-effort used only to pick a diagnostic for paths that no longer exist,
+// where filesystem identity cannot be consulted; existing paths must use
+// pathIdentityWithinDirectory instead.
+func pathWithinDirectoryFold(directory, pathValue string) bool {
+	directoryComponents := strings.Split(filepath.ToSlash(filepath.Clean(directory)), "/")
+	pathComponents := strings.Split(filepath.ToSlash(filepath.Clean(pathValue)), "/")
+	if len(pathComponents) < len(directoryComponents) {
+		return false
+	}
+	for index, component := range directoryComponents {
+		if !strings.EqualFold(component, pathComponents[index]) {
+			return false
+		}
+	}
+	return true
 }
 
 // pathIdentityWithinDirectory reports whether pathValue sits inside directory
