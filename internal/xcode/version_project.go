@@ -1477,29 +1477,25 @@ func commitVersionWrites(writes []preparedVersionWrite) (resultErr error) {
 		}
 		var err error
 		if write.createOnly {
-			err = atomicCreateVersionFileFn(write, write.updated)
+			var createdInfo os.FileInfo
+			createdInfo, err = atomicCreateVersionFileFn(write, write.updated)
+			write.createdInfo = createdInfo
 		} else {
 			err = atomicWriteVersionFileFn(write, write.updated)
 		}
 		if err != nil {
-			rollbackErrors := rollbackVersionWrites(committed)
+			rollbackErrors := make([]error, 0)
+			if write.createOnly && write.createdInfo != nil {
+				if rollbackErr := removeCreatedVersionFileFn(write); rollbackErr != nil {
+					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", write.path, rollbackErr))
+				}
+			}
+			rollbackErrors = append(rollbackErrors, rollbackVersionWrites(committed)...)
 			writeErr := fmt.Errorf("write %s: %w", write.path, err)
 			if len(rollbackErrors) > 0 {
 				return errors.Join(writeErr, fmt.Errorf("rollback failed: %w", errors.Join(rollbackErrors...)))
 			}
 			return writeErr
-		}
-		if write.createOnly {
-			createdInfo, statErr := statCreatedPreparedVersionFile(write)
-			if statErr != nil {
-				rollbackErrors := rollbackVersionWrites(committed)
-				verifyErr := fmt.Errorf("verify created %s: %w", write.path, statErr)
-				if len(rollbackErrors) > 0 {
-					return errors.Join(verifyErr, fmt.Errorf("rollback failed: %w", errors.Join(rollbackErrors...)))
-				}
-				return verifyErr
-			}
-			write.createdInfo = createdInfo
 		}
 		committed = append(committed, write)
 	}
@@ -1536,27 +1532,8 @@ func atomicWritePreparedVersionFile(write preparedVersionWrite, data []byte) err
 	return write.root.WriteFile(write.name, data, write.mode)
 }
 
-func atomicCreatePreparedVersionFile(write preparedVersionWrite, data []byte) error {
-	return write.root.CreateNewFileAtomic(write.name, data, write.mode)
-}
-
-func statCreatedPreparedVersionFile(write preparedVersionWrite) (os.FileInfo, error) {
-	root, err := write.root.OpenRoot()
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-	info, err := root.Lstat(write.name)
-	if err != nil {
-		return nil, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("created path is a symlink")
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("created path is not a regular file")
-	}
-	return info, nil
+func atomicCreatePreparedVersionFile(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	return write.root.CreateNewFileAtomicWithInfo(write.name, data, write.mode)
 }
 
 func removeCreatedPreparedVersionFile(write preparedVersionWrite) error {

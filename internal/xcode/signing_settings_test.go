@@ -205,9 +205,9 @@ func TestSigningApplyRollsBackProjectWhenReceiptFinalizationFails(t *testing.T) 
 	}
 	injectedErr := errors.New("injected receipt finalization failure")
 	originalCreator := atomicCreateVersionFileFn
-	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) error {
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
 		if write.createOnly {
-			return injectedErr
+			return nil, injectedErr
 		}
 		return originalCreator(write, data)
 	}
@@ -232,6 +232,48 @@ func TestSigningApplyRollsBackProjectWhenReceiptFinalizationFails(t *testing.T) 
 	}
 }
 
+func TestSigningApplyRemovesReceiptWhenPostCreateVerificationFails(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
+	injectedErr := errors.New("injected post-create receipt verification failure")
+	originalCreator := atomicCreateVersionFileFn
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+		createdInfo, err := originalCreator(write, data)
+		if err != nil || !write.createOnly {
+			return createdInfo, err
+		}
+		return createdInfo, injectedErr
+	}
+	t.Cleanup(func() { atomicCreateVersionFileFn = originalCreator })
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if !errors.Is(err, injectedErr) {
+		t.Fatalf("ApplySigningPlan() error = %v, want post-create verification failure", err)
+	}
+	if after := mustReadVersionTestFile(t, pbxprojPath); after != beforeProject {
+		t.Fatal("post-create verification failure left project changes behind")
+	}
+	if _, err := os.Lstat(plan.ReceiptPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("receipt after post-create verification failure = %v, want absent", err)
+	}
+}
+
 func TestSigningApplyRollsBackProjectWhenReceiptRacesIntoPlace(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	root := t.TempDir()
@@ -253,7 +295,7 @@ func TestSigningApplyRollsBackProjectWhenReceiptRacesIntoPlace(t *testing.T) {
 	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
 	const racingReceipt = "concurrent receipt wins\n"
 	originalCreator := atomicCreateVersionFileFn
-	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) error {
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
 		if write.createOnly {
 			if err := os.WriteFile(write.path, []byte(racingReceipt), 0o600); err != nil {
 				t.Fatalf("create racing receipt: %v", err)

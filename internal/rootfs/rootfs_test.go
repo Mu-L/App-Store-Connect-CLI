@@ -595,6 +595,25 @@ func TestCreateNewFileAtomicWritesExactMode(t *testing.T) {
 	}
 }
 
+func TestCreateNewFileAtomicWithInfoReturnsPublishedIdentity(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
+	if err != nil {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v", err)
+	}
+	if info == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned nil identity")
+	}
+	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
+	if err != nil {
+		t.Fatalf("Stat(receipt) error = %v", err)
+	}
+	if !os.SameFile(info, diskInfo) {
+		t.Fatal("returned identity does not identify the published file")
+	}
+}
+
 func TestCreateNewFileFallsBackWhenAtomicRenameIsUnsupported(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
