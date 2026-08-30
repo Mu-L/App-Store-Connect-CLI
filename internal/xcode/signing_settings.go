@@ -964,6 +964,24 @@ func inspectSigningCandidate(
 			candidate.paths = append(candidate.paths, assignmentFiles...)
 			candidate.noOp = true
 		}
+		if len(assignmentFiles) == 0 && setting.value != nil {
+			depends, dependencyErr := signingRawSettingDependsOnRequestedChange(
+				configuration,
+				setting.key,
+				requestedValues[configuration.id],
+				resolver,
+			)
+			if dependencyErr != nil {
+				return candidate, signingSettingBlocker(configuration, setting.key, dependencyErr), ""
+			}
+			if depends {
+				// The matching value is supplied by a project-level fallback or
+				// another inherited layer. Materialize it before a dependent
+				// requested setting can change that fallback's effective value.
+				candidate.mode = "pbxproj"
+				return candidate, "", ""
+			}
+		}
 		return candidate, "", ""
 	}
 
@@ -1246,6 +1264,36 @@ func signingRawXCConfigSettingValues(
 		}
 	}
 	return values, nil
+}
+
+func signingRawSettingDependsOnRequestedChange(
+	configuration *versionConfiguration,
+	setting string,
+	settingValues map[string]*string,
+	resolver *signingSettingResolver,
+) (bool, error) {
+	if configuration == nil || resolver == nil || len(settingValues) == 0 {
+		return false, nil
+	}
+	values, err := signingRawSettingValues(configuration, setting, resolver)
+	if err != nil {
+		return false, err
+	}
+	for _, raw := range values {
+		if signingValueDependsOnRequestedChange(
+			configuration,
+			setting,
+			raw.value,
+			settingValues,
+			resolver,
+			map[string]bool{setting: true},
+			0,
+			raw.source,
+		) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // signingXCConfigValueDependsOnRequestedChange reports whether an assignment
