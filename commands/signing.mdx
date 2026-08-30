@@ -342,7 +342,10 @@ cp ./signing/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
 `asc signing resign` is an experimental, macOS-only operation. It creates a
 new IPA from an existing archive and never overwrites the input or an existing
 output. Every app-like target, including nested extensions, watch targets,
-App Clips, and nested code, must have an explicit profile mapping.
+and App Clips, must have an explicit profile mapping. Nested Mach-O code such
+as frameworks and dylibs inherits the containing target's profile and must
+not appear in the manifest; an extra mapping is rejected as an undiscovered
+target.
 
 ```bash  theme={null}
 asc signing resign \
