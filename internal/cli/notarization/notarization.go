@@ -28,6 +28,34 @@ var (
 	runStaplerValidate = localxcode.ValidateStaple
 )
 
+type singleStringValue struct {
+	flagName string
+	value    string
+	set      bool
+}
+
+func bindSingleStringFlag(fs *flag.FlagSet, name, usage string) *singleStringValue {
+	value := &singleStringValue{flagName: name}
+	fs.Var(value, name, usage)
+	return value
+}
+
+func (v *singleStringValue) String() string {
+	if v == nil {
+		return ""
+	}
+	return v.value
+}
+
+func (v *singleStringValue) Set(value string) error {
+	if v.set {
+		return fmt.Errorf("--%s specified multiple times; pass one value", v.flagName)
+	}
+	v.value = value
+	v.set = true
+	return nil
+}
+
 // NotarizationCommand returns the notarization command group.
 func NotarizationCommand() *ffcli.Command {
 	return notarizationCommand()
@@ -68,15 +96,15 @@ Examples:
 func stapleCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("notarization staple", flag.ExitOnError)
 
-	filePath := fs.String("file", "", "Path to a notarized app bundle, disk image, or signed flat package (required; zip files must be recreated after stapling)")
-	confirm := fs.Bool("confirm", false, "Confirm in-place ticket stapling (required)")
+	filePath := bindSingleStringFlag(fs, "file", "[experimental] Path to a notarized app bundle, disk image, or signed flat package (required; zip files must be recreated after stapling)")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm in-place ticket stapling (required)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "staple",
 		ShortUsage: "asc notarization staple --file <path> --confirm [flags]",
-		ShortHelp:  "Attach and validate a macOS notarization ticket locally.",
-		LongHelp: `Attach Apple's notarization ticket to a local macOS artifact and
+		ShortHelp:  "[experimental] Attach and validate a macOS notarization ticket locally.",
+		LongHelp: `[experimental] Attach Apple's notarization ticket to a local macOS artifact and
 validate it immediately afterward. The target must be a notarized app bundle,
 UDIF disk image, or signed flat installer package. ZIP archives cannot be
 stapled directly; staple the contained item and recreate the archive. This
@@ -99,7 +127,7 @@ Examples:
 			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
 				return shared.UsageError(err.Error())
 			}
-			pathValue, err := validateStaplerTarget(*filePath)
+			pathValue, err := validateStaplerTarget(filePath.String())
 			if err != nil {
 				return shared.UsageErrorf("notarization staple: %v", err)
 			}
@@ -128,14 +156,14 @@ Examples:
 func validateStapleCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("notarization validate", flag.ExitOnError)
 
-	filePath := fs.String("file", "", "Path to an artifact with an existing notarization ticket (required; zip files must be validated after recreating them)")
+	filePath := bindSingleStringFlag(fs, "file", "[experimental] Path to an artifact with an existing notarization ticket (required; zip files must be validated after recreating them)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "validate",
 		ShortUsage: "asc notarization validate --file <path> [flags]",
-		ShortHelp:  "Validate a stapled macOS notarization ticket locally.",
-		LongHelp: `Validate an existing stapled ticket on a local macOS artifact.
+		ShortHelp:  "[experimental] Validate a stapled macOS notarization ticket locally.",
+		LongHelp: `[experimental] Validate an existing stapled ticket on a local macOS artifact.
 The target must be a notarized app bundle, UDIF disk image, or signed flat
 installer package. ZIP archives cannot be validated directly; validate the
 contained item after recreating the archive. This command never mutates the
@@ -154,7 +182,7 @@ Examples:
 			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
 				return shared.UsageError(err.Error())
 			}
-			pathValue, err := validateStaplerTarget(*filePath)
+			pathValue, err := validateStaplerTarget(filePath.String())
 			if err != nil {
 				return shared.UsageErrorf("notarization validate: %v", err)
 			}
@@ -179,14 +207,13 @@ Examples:
 }
 
 func validateStaplerTarget(pathValue string) (string, error) {
-	trimmed := strings.TrimSpace(pathValue)
-	if trimmed == "" {
+	if strings.TrimSpace(pathValue) == "" {
 		return "", errors.New("--file is required")
 	}
-	if strings.ContainsRune(trimmed, 0) {
+	if strings.ContainsRune(pathValue, 0) {
 		return "", errors.New("--file must not contain a NUL byte")
 	}
-	absolute, err := filepath.Abs(trimmed)
+	absolute, err := filepath.Abs(pathValue)
 	if err != nil {
 		return "", fmt.Errorf("resolve --file: %w", err)
 	}

@@ -109,3 +109,22 @@ make paths with spaces or shell metacharacters unsafe. Reusing the Notary API
 client would add credentials and server behavior to a purely local operation.
 The direct `xcrun` argv runner keeps the boundary narrow while reusing the
 repository's existing macOS command and process-test seams.
+
+## Release and push requirements
+
+The implementation and generated command documentation must be committed and
+pushed as additive changes; existing commits in the feature branch must not be
+rewritten. Before release, rerun the focused tests and the repository's build,
+format, documentation, lint, and full test gates. Record the exact release
+commit and pushed branch in the handoff. A macOS smoke test with an existing
+Accepted artifact is required when such a disposable artifact is available.
+
+## Unresolved risks
+
+The automated suite uses deterministic command seams and cannot prove Apple's
+ticket service behavior or the exact stapler result for every supported bundle,
+disk image, and package format. No rollback is possible if Apple completes an
+in-place staple before cancellation or if the follow-up validation fails; the
+command reports that state but does not restore the artifact. ZIP extraction,
+repackaging, and Gatekeeper assessment remain outside this change and require
+separate workflows.

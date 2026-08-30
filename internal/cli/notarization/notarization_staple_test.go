@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/peterbourgon/ff/v3/ffcli"
+
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	localxcode "github.com/rudrankriyam/App-Store-Connect-CLI/internal/xcode"
@@ -102,6 +104,59 @@ func TestNotarizationStapleHelpRequiresConfirmation(t *testing.T) {
 	}
 	if !strings.Contains(cmd.LongHelp, "--confirm") {
 		t.Fatalf("long help = %q, want --confirm guidance", cmd.LongHelp)
+	}
+}
+
+func TestNotarizationLocalCommandsAreExperimental(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		cmd   *ffcli.Command
+		flags []string
+	}{
+		{name: "staple", cmd: stapleCommand(), flags: []string{"file", "confirm"}},
+		{name: "validate", cmd: validateStapleCommand(), flags: []string{"file"}},
+	} {
+		if !strings.HasPrefix(test.cmd.ShortHelp, "[experimental] ") {
+			t.Errorf("%s short help = %q, want experimental marker", test.name, test.cmd.ShortHelp)
+		}
+		if !strings.HasPrefix(test.cmd.LongHelp, "[experimental] ") {
+			t.Errorf("%s long help = %q, want experimental marker", test.name, test.cmd.LongHelp)
+		}
+		for _, flagName := range test.flags {
+			flagValue := test.cmd.FlagSet.Lookup(flagName)
+			usage := "<missing>"
+			if flagValue != nil {
+				usage = flagValue.Usage
+			}
+			if flagValue == nil || !strings.HasPrefix(usage, "[experimental] ") {
+				t.Errorf("%s --%s usage = %q, want experimental marker", test.name, flagName, usage)
+			}
+		}
+	}
+}
+
+func TestNotarizationFileFlagRejectsRepeatedUse(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	value := bindSingleStringFlag(fs, "file", "artifact path")
+	if err := fs.Parse([]string{"--file", "first", "--file", "second"}); err == nil {
+		t.Fatal("repeated --file should fail")
+	}
+	if value.String() != "first" {
+		t.Fatalf("value = %q, want first value preserved", value.String())
+	}
+}
+
+func TestValidateStaplerTargetPreservesTrailingWhitespace(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg ")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	got, err := validateStaplerTarget(target)
+	if err != nil {
+		t.Fatalf("validateStaplerTarget() error = %v", err)
+	}
+	if got != target {
+		t.Fatalf("validateStaplerTarget() = %q, want %q", got, target)
 	}
 }
 
