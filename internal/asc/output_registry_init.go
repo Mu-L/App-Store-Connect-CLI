@@ -13,6 +13,7 @@ func registerAllOutputRenderers() {
 		render(sh, sr)
 		return nil
 	})
+	registerRows(xcodeInstallResultRows)
 	registerDirect(webAgreementsStatusTables)
 	registerRows(webAgreementsAcceptRows)
 	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {

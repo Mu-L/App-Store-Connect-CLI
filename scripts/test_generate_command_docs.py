@@ -72,5 +72,17 @@ class ParseHelpTests(unittest.TestCase):
         )
 
 
+class RenderTests(unittest.TestCase):
+    def test_validate_url_check_is_present_in_high_signal_examples(self) -> None:
+        rendered = generate_command_docs.render(
+            "asc <subcommand> [flags]", [], []
+        )
+
+        self.assertIn(
+            'asc validate --app "123456789" --version "1.2.3" --check-urls',
+            rendered,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
