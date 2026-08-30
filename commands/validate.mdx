@@ -38,6 +38,7 @@ The validation process checks:
 * An eligible build is attached, processed, and ready for encryption review
 * Localized listing fields do not contain unmistakable template markers such as
   `Lorem ipsum`, `TODO`, `TBD`, or `FIXME`
+* App names and keyword fields satisfy deterministic content-quality checks
 
 Placeholder findings cover app names, subtitles, descriptions, keywords,
 promotional text, and What's New copy. The canonical `Lorem ipsum dolor sit
@@ -47,6 +48,30 @@ punctuation such as a colon or dash so ordinary localized wording is not
 flagged. Findings include the locale, field, matched text, resource type and ID,
 and a remediation step. They are warnings by default and become blocking with
 `--strict`.
+
+The canonical validator also reports warning-only metadata-quality findings for
+app names shorter than two Unicode characters and for empty keyword segments,
+non-canonical separators, repeated phrases, or terms already present in the
+localized app name or subtitle. These checks do not classify editorial copy,
+use user-supplied blocked terms, or expose keyword values in the canonical
+report.
+
+## Check public metadata URL destinations
+
+URL syntax is checked offline by default. The experimental `--check-urls` flag
+opts into bounded, read-only HTTP checks for populated support, marketing,
+privacy-policy, and privacy-choices URLs:
+
+```bash  theme={null}
+asc validate --app "123456789" --version-id "VERSION_ID" --check-urls
+```
+
+The checker follows at most ten HTTP(S) redirects, rejects private or otherwise
+non-public network destinations, disables proxies, deduplicates identical
+URLs, and does not read response bodies. Destination failures, changed hosts,
+and site-root results are warnings; use `--strict` when warnings must block.
+The command never prints the URL, host, IP address, response body, or transport
+details in a finding. No URL request is made unless `--check-urls` is present.
 
 ## Check Apple's web-only blockers
 
@@ -136,7 +161,13 @@ table or Markdown output. The ordinary output shape doesn't change when
 </ParamField>
 
 <ParamField path="--strict" type="boolean">
-  Treat warnings, including placeholder findings, as blocking validation issues
+  Treat warnings, including metadata-quality and placeholder findings, as
+  blocking validation issues
+</ParamField>
+
+<ParamField path="--check-urls" type="boolean">
+  Experimental. Fetch populated metadata URL destinations with bounded,
+  privacy-safe public HTTP checks. Network checks are disabled by default.
 </ParamField>
 
 <ParamField path="--deep" type="boolean">

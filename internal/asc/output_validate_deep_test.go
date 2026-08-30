@@ -1,6 +1,7 @@
 package asc
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -44,5 +45,57 @@ func TestValidationRowsAddResolutionColumnsOnlyForDeepReports(t *testing.T) {
 	deepHeaders, deepRows := validationDeepRows(base)
 	if len(deepHeaders) == 0 || len(deepRows) == 0 {
 		t.Fatalf("deep rows were not rendered: headers=%#v rows=%#v", deepHeaders, deepRows)
+	}
+}
+
+func TestValidationMetadataFindingsRenderAcrossOutputFormats(t *testing.T) {
+	report := &validation.Report{
+		AppID:     "app-1",
+		VersionID: "version-1",
+		Checks: []validation.CheckResult{
+			{
+				ID:           "metadata.minimum.name",
+				Severity:     validation.SeverityWarning,
+				Locale:       "en-US",
+				Field:        "name",
+				ResourceType: "appInfoLocalization",
+				ResourceID:   "app-info-loc-1",
+				Message:      "app name is shorter than 2 characters",
+				Remediation:  "Use an app name with at least 2 characters",
+			},
+			{
+				ID:           "legal.url.http_status",
+				Severity:     validation.SeverityWarning,
+				Locale:       "en-US",
+				Field:        "supportUrl",
+				ResourceType: "appStoreVersionLocalization",
+				ResourceID:   "version-loc-1",
+				Message:      "declared destination returned a non-success response",
+				Remediation:  "Verify that the declared destination returns a successful HTTP response",
+			},
+		},
+	}
+
+	jsonOutput := captureStdout(t, func() error { return PrintJSON(report) })
+	var decoded validation.Report
+	if err := json.Unmarshal([]byte(jsonOutput), &decoded); err != nil {
+		t.Fatalf("JSON output error: %v; output=%q", err, jsonOutput)
+	}
+	if len(decoded.Checks) != 2 || decoded.Checks[0].ID != "metadata.minimum.name" || decoded.Checks[1].ID != "legal.url.http_status" {
+		t.Fatalf("decoded checks = %+v, want both metadata findings", decoded.Checks)
+	}
+
+	for _, renderer := range []struct {
+		name string
+		fn   func(any) error
+	}{{name: "table", fn: PrintTable}, {name: "markdown", fn: PrintMarkdown}} {
+		t.Run(renderer.name, func(t *testing.T) {
+			output := captureStdout(t, func() error { return renderer.fn(report) })
+			for _, want := range []string{"metadata.minimum.name", "legal.url.http_status", "supportUrl", "non-success response"} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("%s output missing %q: %s", renderer.name, want, output)
+				}
+			}
+		})
 	}
 }
