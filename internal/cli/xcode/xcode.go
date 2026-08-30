@@ -80,6 +80,7 @@ Examples:
 			XcodeExportOptionsGroupCommand(),
 			XcodeValidateCommand(),
 			XcodeVersionCommand(),
+			XcodeSigningCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp
