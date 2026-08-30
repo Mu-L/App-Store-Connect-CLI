@@ -1325,6 +1325,49 @@ func TestSigningSettingsManifestIsStrictAndValidatesValues(t *testing.T) {
 	}
 }
 
+func TestSigningSettingsManifestRejectsDuplicateNestedJSONKeys(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_STYLE":"manual",
+			"CODE_SIGN_STYLE":"automatic"
+		}}]}]
+	}`)
+
+	_, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		StateDir: filepath.Join(filepath.Dir(settingsPath), "state"),
+	})
+	if err == nil || !IsSigningInputError(err) {
+		t.Fatalf("BuildSigningPlan() error = %v, want duplicate-key signing input classification", err)
+	}
+	if !strings.Contains(err.Error(), "duplicate JSON object key") || !strings.Contains(err.Error(), "CODE_SIGN_STYLE") {
+		t.Fatalf("BuildSigningPlan() error = %v, want nested duplicate-key diagnostic", err)
+	}
+}
+
+func TestSigningSettingsManifestRejectsDuplicateTopLevelJSONKeys(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	_, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+	})
+	if err == nil || !IsSigningInputError(err) {
+		t.Fatalf("BuildSigningPlan() error = %v, want duplicate-key signing input classification", err)
+	}
+	if !strings.Contains(err.Error(), "duplicate JSON object key") || !strings.Contains(err.Error(), "schemaVersion") {
+		t.Fatalf("BuildSigningPlan() error = %v, want top-level duplicate-key diagnostic", err)
+	}
+}
+
 func TestBuildSigningPlanMarksDeterministicManifestValidationErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1513,6 +1556,76 @@ func TestSigningPlanRevalidatesNoOpReferenceAfterDependentChange(t *testing.T) {
 	}
 }
 
+func TestSigningPlanRevalidatesTransitiveNoOpReferenceAfterDependentChange(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
+		`PRODUCT_BUNDLE_IDENTIFIER = com.example.old; IDENTITY_ALIAS = "$(PRODUCT_BUNDLE_IDENTIFIER)"; CODE_SIGN_IDENTITY = "$(IDENTITY_ALIAS)";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	stateDir := filepath.Join(root, "state")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"com.example.old",
+			"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	var identityChange, bundleChange *SigningSettingChange
+	for index := range plan.Changes {
+		change := &plan.Changes[index]
+		switch change.Setting {
+		case "CODE_SIGN_IDENTITY":
+			identityChange = change
+		case "PRODUCT_BUNDLE_IDENTIFIER":
+			bundleChange = change
+		}
+	}
+	if bundleChange == nil {
+		t.Fatalf("plan omitted dependent bundle-ID change: %#v", plan.Changes)
+	}
+	if identityChange == nil {
+		t.Fatalf("plan treated a transitive reference-dependent identity as a no-op: %#v", plan.Changes)
+	}
+	if identityChange.Source != "pbxproj" || identityChange.NewValue == nil || *identityChange.NewValue != "com.example.old" {
+		t.Fatalf("identity change = %#v, want literal target-level value", identityChange)
+	}
+
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	result, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v", err)
+	}
+	if result == nil || !result.Completed {
+		t.Fatalf("ApplySigningPlan() result = %#v, want completed receipt", result)
+	}
+
+	updated, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("reopen project: %v", err)
+	}
+	configuration, err := signingConfigurationFor(updated, "App", "Debug")
+	if err != nil {
+		t.Fatalf("find updated configuration: %v", err)
+	}
+	identity, _, err := newSigningSettingResolver(updated, nil, false).resolveSetting(configuration, "CODE_SIGN_IDENTITY")
+	if err != nil {
+		t.Fatalf("resolve applied identity: %v", err)
+	}
+	if identity != "com.example.old" {
+		t.Fatalf("applied identity = %q, want requested no-op value", identity)
+	}
+}
+
 func TestSigningPlanRevalidatesNoOpXCConfigReferenceAfterDependentChange(t *testing.T) {
 	project := writeStructuredVersionProject(t, true)
 	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
@@ -1556,6 +1669,131 @@ func TestSigningPlanRevalidatesNoOpXCConfigReferenceAfterDependentChange(t *test
 	}
 	if identityChange.Source != "pbxproj" || identityChange.NewValue == nil || *identityChange.NewValue != "com.example.old" {
 		t.Fatalf("identity change = %#v, want a literal target-level value", identityChange)
+	}
+}
+
+func TestSigningPlanRevalidatesTransitiveNoOpXCConfigReferenceAfterDependentChange(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	shared = "PRODUCT_BUNDLE_IDENTIFIER = com.example.old\r\nIDENTITY_ALIAS = \"$(PRODUCT_BUNDLE_IDENTIFIER)\"\r\nCODE_SIGN_IDENTITY = \"$(IDENTITY_ALIAS)\"\r\n" + shared
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"com.example.old",
+			"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	var identityChange, bundleChange *SigningSettingChange
+	for index := range plan.Changes {
+		change := &plan.Changes[index]
+		switch change.Setting {
+		case "CODE_SIGN_IDENTITY":
+			identityChange = change
+		case "PRODUCT_BUNDLE_IDENTIFIER":
+			bundleChange = change
+		}
+	}
+	if bundleChange == nil {
+		t.Fatalf("plan omitted dependent bundle-ID change: %#v", plan.Changes)
+	}
+	if identityChange == nil {
+		t.Fatalf("plan treated a transitive xcconfig identity reference as a no-op: %#v", plan.Changes)
+	}
+	if identityChange.Source != "pbxproj" || identityChange.NewValue == nil || *identityChange.NewValue != "com.example.old" {
+		t.Fatalf("identity change = %#v, want literal target-level value", identityChange)
+	}
+}
+
+func TestSigningPlanRevalidatesTransitiveNoOpReferenceThroughInheritedAlias(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	shared = "PRODUCT_BUNDLE_IDENTIFIER = com.example.old\r\nIDENTITY_ALIAS = \"$(PRODUCT_BUNDLE_IDENTIFIER)\"\r\n" + shared
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
+		`IDENTITY_ALIAS = "$(inherited)"; CODE_SIGN_IDENTITY = "$(IDENTITY_ALIAS)";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"com.example.old",
+			"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	var identityChange, bundleChange *SigningSettingChange
+	for index := range plan.Changes {
+		change := &plan.Changes[index]
+		switch change.Setting {
+		case "CODE_SIGN_IDENTITY":
+			identityChange = change
+		case "PRODUCT_BUNDLE_IDENTIFIER":
+			bundleChange = change
+		}
+	}
+	if bundleChange == nil {
+		t.Fatalf("plan omitted dependent bundle-ID change: %#v", plan.Changes)
+	}
+	if identityChange == nil {
+		t.Fatalf("plan treated an inherited transitive identity reference as a no-op: %#v", plan.Changes)
+	}
+	if identityChange.Source != "pbxproj" || identityChange.NewValue == nil || *identityChange.NewValue != "com.example.old" {
+		t.Fatalf("identity change = %#v, want literal target-level value", identityChange)
+	}
+}
+
+func TestSigningPlanKeepsStableInheritedAliasNoOp(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	shared = "IDENTITY_ALIAS = \"Apple Development\"\r\n" + shared
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
+		`IDENTITY_ALIAS = "$(inherited)"; CODE_SIGN_IDENTITY = "$(IDENTITY_ALIAS)";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"Apple Development"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if len(plan.Changes) != 0 {
+		t.Fatalf("stable inherited alias produced a spurious change: %#v", plan.Changes)
 	}
 }
 

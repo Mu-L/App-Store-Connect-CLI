@@ -551,10 +551,75 @@ func canonicalSigningPath(path, label string) (string, error) {
 	return filepath.Clean(absolute), nil
 }
 
+func rejectDuplicateJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := scanJSONValueForDuplicateKeys(decoder); err != nil {
+		return err
+	}
+	return nil
+}
+
+func scanJSONValueForDuplicateKeys(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("JSON object key is not a string")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("duplicate JSON object key %q", key)
+			}
+			seen[key] = struct{}{}
+			if err := scanJSONValueForDuplicateKeys(decoder); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanJSONValueForDuplicateKeys(decoder); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+
+	closing, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	expectedClosing := json.Delim('}')
+	if delimiter == '[' {
+		expectedClosing = ']'
+	}
+	if closing != expectedClosing {
+		return fmt.Errorf("unexpected JSON delimiter %q", closing)
+	}
+	return nil
+}
+
 func readSigningSettingsManifest(path string) (*signingSettingsManifest, error) {
 	data, err := readSigningRegularFile(path, signingSettingsMaxBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read settings file %s: %w", path, err)
+	}
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return nil, newSigningInputError(fmt.Errorf("decode settings file %s: %w", path, err))
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -980,26 +1045,207 @@ func signingDirectValueDependsOnRequestedChange(
 		if !ok {
 			continue
 		}
-		matches := signingReferencePattern.FindAllStringSubmatch(value, -1)
-		for _, match := range matches {
-			name := match[1]
-			if name == "" {
-				name = match[3]
-			}
-			if name == "" || name == "inherited" || name == setting {
+		if signingValueDependsOnRequestedChange(
+			configuration,
+			setting,
+			value,
+			settingValues,
+			resolver,
+			map[string]bool{setting: true},
+			0,
+			"direct",
+		) {
+			return true
+		}
+	}
+	return false
+}
+
+type signingRawSettingValue struct {
+	value  string
+	source string
+}
+
+// signingValueDependsOnRequestedChange walks the complete build-setting
+// reference graph rooted at value. A no-op is unsafe when any transitive
+// reference reaches a requested setting whose effective value will change.
+// Resolution or graph-inspection failures conservatively report a dependency
+// so an uncertain no-op is materialized instead of silently changing later.
+func signingValueDependsOnRequestedChange(
+	configuration *versionConfiguration,
+	setting string,
+	value string,
+	settingValues map[string]*string,
+	resolver *signingSettingResolver,
+	stack map[string]bool,
+	depth int,
+	source string,
+) bool {
+	for _, match := range signingReferencePattern.FindAllStringSubmatch(value, -1) {
+		name := match[1]
+		if name == "" {
+			name = match[3]
+		}
+		if name == "" {
+			continue
+		}
+		if name == "inherited" {
+			if depth == 0 {
 				continue
 			}
-			desired, requested := settingValues[name]
-			if !requested {
-				continue
+			values, err := signingRawInheritedSettingValues(configuration, setting, source, resolver)
+			if err != nil {
+				return true
 			}
+			for _, lowerValue := range values {
+				if signingValueDependsOnRequestedChange(
+					configuration,
+					setting,
+					lowerValue.value,
+					settingValues,
+					resolver,
+					stack,
+					depth+1,
+					lowerValue.source,
+				) {
+					return true
+				}
+			}
+			continue
+		}
+		if stack[name] {
+			return true
+		}
+		nextStack := make(map[string]bool, len(stack)+1)
+		for key, present := range stack {
+			nextStack[key] = present
+		}
+		nextStack[name] = true
+		desired, requested := settingValues[name]
+		if requested {
 			current, _, err := resolver.resolveSetting(configuration, name)
 			if err != nil || !signingValuesEqual(stringPtr(current), desired) {
 				return true
 			}
 		}
+		values, err := signingRawSettingValues(configuration, name, resolver)
+		if err != nil {
+			return true
+		}
+		for _, referencedValue := range values {
+			if signingValueDependsOnRequestedChange(
+				configuration,
+				name,
+				referencedValue.value,
+				settingValues,
+				resolver,
+				nextStack,
+				depth+1,
+				referencedValue.source,
+			) {
+				return true
+			}
+		}
 	}
 	return false
+}
+
+func signingRawSettingValues(
+	configuration *versionConfiguration,
+	setting string,
+	resolver *signingSettingResolver,
+) ([]signingRawSettingValue, error) {
+	if configuration == nil || resolver == nil {
+		return nil, fmt.Errorf("cannot inspect %s dependencies without a resolver", setting)
+	}
+	if keys := matchingBuildSettingKeys(configuration.buildSettings, setting); len(keys) > 0 {
+		values := make([]signingRawSettingValue, 0, len(keys))
+		for _, key := range keys {
+			value, ok := configuration.buildSettings[key].(string)
+			if !ok {
+				return nil, fmt.Errorf("%s has a non-string build setting value", key)
+			}
+			values = append(values, signingRawSettingValue{value: value, source: "direct"})
+		}
+		return values, nil
+	}
+
+	paths := resolver.configFiles[configuration.id]
+	if len(paths) > 0 {
+		values, err := signingRawXCConfigSettingValues(configuration, setting, resolver)
+		if err != nil {
+			return nil, err
+		}
+		if len(values) > 0 {
+			return values, nil
+		}
+	}
+
+	if !configuration.projectLevel {
+		return signingRawSettingValues(resolver.project.projectConfiguration(configuration.name), setting, resolver)
+	}
+	return nil, nil
+}
+
+func signingRawInheritedSettingValues(
+	configuration *versionConfiguration,
+	setting, source string,
+	resolver *signingSettingResolver,
+) ([]signingRawSettingValue, error) {
+	if source == "xcconfig" {
+		if configuration == nil || configuration.projectLevel {
+			return nil, nil
+		}
+		return signingRawSettingValues(resolver.project.projectConfiguration(configuration.name), setting, resolver)
+	}
+	if configuration == nil {
+		return nil, fmt.Errorf("cannot inspect %s inherited dependency without a configuration", setting)
+	}
+	if configuration.baseReferenceID != "" {
+		values, err := signingRawXCConfigSettingValues(configuration, setting, resolver)
+		if err != nil {
+			return nil, err
+		}
+		if len(values) > 0 {
+			return values, nil
+		}
+	}
+	if !configuration.projectLevel {
+		return signingRawSettingValues(resolver.project.projectConfiguration(configuration.name), setting, resolver)
+	}
+	return nil, nil
+}
+
+func signingRawXCConfigSettingValues(
+	configuration *versionConfiguration,
+	setting string,
+	resolver *signingSettingResolver,
+) ([]signingRawSettingValue, error) {
+	paths := resolver.configFiles[configuration.id]
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	defining, err := xcconfigFilesDefiningWithReader(paths, setting, resolver.readXCConfig)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]signingRawSettingValue, 0, len(defining))
+	for _, path := range defining {
+		data, err := resolver.readXCConfig(path)
+		if err != nil {
+			return nil, err
+		}
+		document, err := parseXCConfig(data)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		for _, assignment := range document.assignments {
+			if assignment.baseKey == setting {
+				values = append(values, signingRawSettingValue{value: assignment.value, source: "xcconfig"})
+			}
+		}
+	}
+	return values, nil
 }
 
 // signingXCConfigValueDependsOnRequestedChange reports whether an assignment
@@ -1030,22 +1276,17 @@ func signingXCConfigValueDependsOnRequestedChange(
 			if assignment.baseKey != setting {
 				continue
 			}
-			for _, match := range signingReferencePattern.FindAllStringSubmatch(assignment.value, -1) {
-				name := match[1]
-				if name == "" {
-					name = match[3]
-				}
-				if name == "" || name == "inherited" || name == setting {
-					continue
-				}
-				desired, requested := settingValues[name]
-				if !requested {
-					continue
-				}
-				current, _, resolveErr := resolver.resolveSetting(configuration, name)
-				if resolveErr != nil || !signingValuesEqual(stringPtr(current), desired) {
-					return true, nil
-				}
+			if signingValueDependsOnRequestedChange(
+				configuration,
+				setting,
+				assignment.value,
+				settingValues,
+				resolver,
+				map[string]bool{setting: true},
+				0,
+				"xcconfig",
+			) {
+				return true, nil
 			}
 		}
 	}
