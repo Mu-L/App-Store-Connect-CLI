@@ -267,3 +267,26 @@ func TestParseCertificateExportCSRRejectsTrailingDER(t *testing.T) {
 		t.Fatalf("parseCertificateExportCSR() error = %v, want trailing-DER error", err)
 	}
 }
+
+func TestPrepareCertificateExportOutputVerifiesUnixPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permissions are not enforced on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "staging.p12")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("create staging file: %v", err)
+	}
+	defer file.Close()
+
+	if err := prepareCertificateExportOutput(file); err != nil {
+		t.Fatalf("prepareCertificateExportOutput() error = %v for an owner-only staging file", err)
+	}
+
+	if err := file.Chmod(0o640); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	if err := prepareCertificateExportOutput(file); err == nil || !strings.Contains(err.Error(), "permissions") {
+		t.Fatalf("prepareCertificateExportOutput() error = %v, want broad-permission rejection", err)
+	}
+}

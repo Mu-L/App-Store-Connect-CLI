@@ -122,7 +122,10 @@ This keeps observers from seeing a partially written identity.
 On Windows, the output DACL is applied with file-specific read/write/delete
 rights before any PKCS#12 bytes are written and is verified against the same
 specific access mask. The staging file must not expose inherited access during
-that transition. The Unix path retains the existing 0600 permission check.
+that transition. On Unix, protected inputs keep the existing 0600 permission
+check, and the staged output's effective permissions are verified before any
+PKCS#12 bytes are written, so filesystems that ignore the requested 0600 mode
+fail closed instead of publishing a broadly readable identity.
 
 Path classification remains platform-aware: a trailing backslash is a
 directory separator only on platforms where `os.IsPathSeparator` reports it as

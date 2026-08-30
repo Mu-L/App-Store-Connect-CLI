@@ -16,7 +16,25 @@ func validateCertificateExportProtectedFile(_ *os.File, info os.FileInfo, label 
 	return nil
 }
 
-func prepareCertificateExportOutput(_ *os.File) error {
+// prepareCertificateExportOutput verifies the staged output's effective
+// permissions before any PKCS#12 bytes are written. Filesystems such as FAT,
+// exFAT, and some CIFS or FUSE mounts ignore or translate the requested 0600
+// mode; failing closed here keeps the identity from being published with
+// group- or world-readable permissions while the command reports success.
+func prepareCertificateExportOutput(file *os.File) error {
+	if file == nil {
+		return fmt.Errorf("output permissions cannot be verified")
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("verify output permissions: %w", err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf(
+			"output permissions %#o are not restricted to the owner; the --p12-out filesystem must support mode 0600",
+			info.Mode().Perm(),
+		)
+	}
 	return nil
 }
 
