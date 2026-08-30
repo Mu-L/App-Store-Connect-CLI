@@ -27,13 +27,17 @@ type signingResignToolOutput struct {
 var runSigningResignToolFn = runSigningResignTool
 
 func runSigningResignTool(ctx context.Context, executable string, args ...string) (signingResignToolOutput, error) {
+	return runSigningResignToolWithFallback(ctx, signingResignToolTimeout, executable, args...)
+}
+
+func runSigningResignToolWithFallback(ctx context.Context, fallbackTimeout time.Duration, executable string, args ...string) (signingResignToolOutput, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return signingResignToolOutput{}, err
 	}
-	toolContext, cancel := signingResignToolContext(ctx)
+	toolContext, cancel := signingResignToolContext(ctx, fallbackTimeout)
 	defer cancel()
 	command := exec.CommandContext(toolContext, executable, args...)
 	command.Env = SanitizedChildEnvironment(os.Environ())
@@ -50,19 +54,24 @@ func runSigningResignTool(ctx context.Context, executable string, args ...string
 		return result, contextErr
 	}
 	if contextErr := toolContext.Err(); contextErr != nil {
-		return result, contextErr
+		// Only the internal fallback deadline can end here: a caller deadline
+		// reuses ctx itself and is reported through the branch above. Name the
+		// tool and budget so internal callers can distinguish a slow tool from
+		// an operator cancellation; the closed operational error boundary still
+		// hides this text from public CLI output.
+		return result, fmt.Errorf("%s timed out after %s: %w", filepath.Base(executable), fallbackTimeout, contextErr)
 	}
 	return result, fmt.Errorf("%s failed", filepath.Base(executable))
 }
 
-func signingResignToolContext(ctx context.Context) (context.Context, context.CancelFunc) {
+func signingResignToolContext(ctx context.Context, fallbackTimeout time.Duration) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if _, hasDeadline := ctx.Deadline(); hasDeadline {
 		return ctx, func() {}
 	}
-	return context.WithTimeout(ctx, signingResignToolTimeout)
+	return context.WithTimeout(ctx, fallbackTimeout)
 }
 
 const signingResignToolOutputLimit = infoplist.MaxBytes + 64*1024

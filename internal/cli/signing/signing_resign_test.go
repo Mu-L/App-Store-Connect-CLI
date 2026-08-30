@@ -1271,7 +1271,7 @@ func TestVerifyPackedSigningResignIPARejectsTamperedSwiftSupportAfterRepack(t *t
 func TestSigningResignToolContextHonorsCallerDeadline(t *testing.T) {
 	deadline := time.Now().Add(time.Hour)
 	caller, cancelCaller := context.WithDeadline(context.Background(), deadline)
-	deferred, cancelDeferred := signingResignToolContext(caller)
+	deferred, cancelDeferred := signingResignToolContext(caller, signingResignToolTimeout)
 	deferredDeadline, ok := deferred.Deadline()
 	if !ok || !deferredDeadline.Equal(deadline) {
 		t.Fatalf("caller deadline = %v, want %v", deferredDeadline, deadline)
@@ -1279,7 +1279,7 @@ func TestSigningResignToolContextHonorsCallerDeadline(t *testing.T) {
 	cancelDeferred()
 	cancelCaller()
 
-	fallback, cancelFallback := signingResignToolContext(context.Background())
+	fallback, cancelFallback := signingResignToolContext(context.Background(), signingResignToolTimeout)
 	fallbackDeadline, ok := fallback.Deadline()
 	if !ok || time.Until(fallbackDeadline) < 4*time.Minute {
 		t.Fatalf("fallback deadline = %v, want a realistic multi-minute phase timeout", fallbackDeadline)
