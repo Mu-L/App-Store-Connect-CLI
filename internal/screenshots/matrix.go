@@ -48,6 +48,9 @@ var (
 	ErrMatrixPlanRead = errors.New("read matrix plan")
 	// ErrMatrixPlanParseJSON indicates that a matrix plan is not valid JSON/JSONC.
 	ErrMatrixPlanParseJSON = errors.New("parse matrix plan JSON")
+	// ErrMatrixInventoryTimeout indicates that the bounded simulator inventory
+	// command reached its own deadline without caller cancellation.
+	ErrMatrixInventoryTimeout = errors.New("simulator inventory timed out")
 )
 
 // MatrixValidationError marks failures that are deterministic input errors and
@@ -1675,8 +1678,11 @@ func readMatrixSimulatorInventoryWithTimeout(ctx context.Context, timeout time.D
 	command.Stdout = &output
 	command.Stderr = io.Discard
 	err := command.Run()
-	if contextErr := inventoryCtx.Err(); contextErr != nil {
-		return nil, contextErr
+	if parentErr := ctx.Err(); parentErr != nil {
+		return nil, parentErr
+	}
+	if errors.Is(inventoryCtx.Err(), context.DeadlineExceeded) {
+		return nil, ErrMatrixInventoryTimeout
 	}
 	if output.exceeded {
 		return nil, errors.New("simulator inventory exceeded the output size limit")

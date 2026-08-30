@@ -537,11 +537,57 @@ func TestReadMatrixSimulatorInventoryUsesBoundedTimeout(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	_, err := readMatrixSimulatorInventoryWithTimeout(parentCtx, 50*time.Millisecond)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("readMatrixSimulatorInventoryWithTimeout() error = %v, want context deadline", err)
+	if !errors.Is(err, ErrMatrixInventoryTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("readMatrixSimulatorInventoryWithTimeout() error = %v, want non-context inventory timeout", err)
 	}
 	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
 		t.Fatalf("inventory command took %s, want derived timeout before caller deadline", elapsed)
+	}
+}
+
+func TestReadMatrixSimulatorInventoryWithTimeoutPreservesParentContext(t *testing.T) {
+	tests := []struct {
+		name       string
+		newContext func() (context.Context, context.CancelFunc)
+		wantError  error
+	}{
+		{
+			name: "caller canceled",
+			newContext: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, cancel
+			},
+			wantError: context.Canceled,
+		},
+		{
+			name: "caller deadline exceeded",
+			newContext: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 50*time.Millisecond)
+			},
+			wantError: context.DeadlineExceeded,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			xcrunPath := filepath.Join(binDir, "xcrun")
+			script := "#!/bin/sh\nwhile :; do :; done\n"
+			if err := os.WriteFile(xcrunPath, []byte(script), 0o755); err != nil {
+				t.Fatalf("write xcrun fixture: %v", err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			ctx, cancel := tc.newContext()
+			defer cancel()
+			_, err := readMatrixSimulatorInventoryWithTimeout(ctx, time.Second)
+			if !errors.Is(err, tc.wantError) {
+				t.Fatalf("readMatrixSimulatorInventoryWithTimeout() error = %v, want %v", err, tc.wantError)
+			}
+			if errors.Is(err, ErrMatrixInventoryTimeout) {
+				t.Fatalf("readMatrixSimulatorInventoryWithTimeout() error = %v, want parent context error", err)
+			}
+		})
 	}
 }
 
@@ -1118,6 +1164,39 @@ func TestRunMatrix_InventoryCancellationMarksAllCellsCanceled(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunMatrix_InventoryTimeoutMarksCellsFailed(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"sim-a","udid":"SIM-A"},{"id":"sim-b","udid":"SIM-B"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","review_dir":"review"}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	checkDevice := func(context.Context, MatrixDevice) error {
+		return ErrMatrixInventoryTimeout
+	}
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{CheckDevice: checkDevice})
+	if runErr == nil {
+		t.Fatal("RunMatrixWithDependencies() error = nil, want preflight failure")
+	}
+	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want non-context preflight failure", runErr)
+	}
+	if result.Succeeded != 0 || result.Failed != len(result.Cells) || result.Canceled != 0 || result.Status != MatrixCellFailed {
+		t.Fatalf("unexpected inventory-timeout result: %+v", result)
+	}
+	if result.Review == nil || result.Review.Failed != len(result.Cells) || result.Review.Canceled != 0 {
+		t.Fatalf("unexpected inventory-timeout review: %+v", result.Review)
+	}
+	for _, cell := range result.Cells {
+		if cell.Status != MatrixCellFailed || cell.FailureStage != "preflight" || cell.FailureCode != "simulator_not_ready" {
+			t.Errorf("cell %q = %+v, want preflight simulator_not_ready failure", cell.ID, cell)
+		}
 	}
 }
 

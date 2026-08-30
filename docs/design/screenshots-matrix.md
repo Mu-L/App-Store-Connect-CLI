@@ -111,17 +111,20 @@ state with the same supported `simctl ui` interface, executes the plan, and
 restores the original state in a deferred cleanup path. A restore failure is
 surfaced as `cleanup_failed` and prevents later cells on that simulator.
 
-Simulator inventory preflight has a bounded 30-second deadline. Individual
-capture, framing, and cleanup operations continue to honor the caller context;
-this slice does not add separate per-stage deadlines or attempt pair recovery
-after an external process crash.
+Simulator inventory preflight has a bounded 30-second deadline. Capture and
+framing operations honor the caller context. Appearance restoration runs on a
+detached context with the same 30-second deadline so cleanup can complete after
+caller cancellation. This slice does not add separate per-stage deadlines or
+attempt pair recovery after an external process crash.
 
 `max_attempts` is the total number of attempts and defaults to one, with a hard
 maximum of three. Execution and framing failures retry the complete cell after
 the configured backoff. Validation, cancellation, and cleanup failures do not
-retry. Independent cells continue after a failure. Context cancellation stops
-new work, cancels external commands, records unfinished cells as canceled, and
-writes the partial report.
+retry. Independent cells continue after a failure. Caller context cancellation
+stops new work, cancels external commands, records unfinished cells as canceled,
+and writes the partial report. A deadline reached only by bounded inventory
+preflight is reported as a preflight `simulator_not_ready` failure instead of
+cancellation.
 
 ## Artifact and report contract
 
