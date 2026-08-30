@@ -28,7 +28,13 @@ func darwinFileHasTestACL(t *testing.T, path string) bool {
 	if err != nil {
 		t.Fatalf("ls -le %q: %v (%s)", path, err, strings.TrimSpace(string(output)))
 	}
-	return strings.Contains(string(output), "everyone allow read")
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && strings.HasSuffix(fields[0], ":") {
+			return true
+		}
+	}
+	return false
 }
 
 func TestValidateCertificateExportProtectedFileRejectsExtendedACL(t *testing.T) {
