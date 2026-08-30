@@ -1085,6 +1085,82 @@ func TestNotarizationValidateChildAndPostVerifierFailurePreservesExitAndStage(t 
 	}
 }
 
+func TestNotarizationValidateChildAndOuterStageFailurePreservesExitAndStage(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	childErr := errors.New("validation child failed")
+	previous := runStaplerValidate
+	runStaplerValidate = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := replaceStaplerTargetForTest(target); err != nil {
+			t.Fatalf("replace target: %v", err)
+		}
+		return nil, &localxcode.StaplerCommandError{
+			Operation: string(localxcode.StaplerOperationValidate),
+			ExitCode:  65,
+			Err:       childErr,
+		}
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil || !errors.Is(runErr, childErr) {
+		t.Fatalf("command error = %v, want child cause", runErr)
+	}
+	if code, ok := sharedProcessExitCodeForTest(runErr); !ok || code != 65 {
+		t.Fatalf("command error = %v, process code = %d/%v, want 65", runErr, code, ok)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed after validation") || !strings.Contains(stderr, "exit status 65") {
+		t.Fatalf("stderr = %q, want outer stage diagnostic and child exit", stderr)
+	}
+	if strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not expose target path", stderr)
+	}
+}
+
+func TestNotarizationStapleCancellationAndOuterStageFailurePreservesBoth(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previous := runStaplerStaple
+	runStaplerStaple = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := replaceStaplerTargetForTest(target); err != nil {
+			t.Fatalf("replace target: %v", err)
+		}
+		return nil, context.Canceled
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil || !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("command error = %v, want cancellation cause", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed after stapling") {
+		t.Fatalf("stderr = %q, want outer stage diagnostic", stderr)
+	}
+	if strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not expose target path", stderr)
+	}
+}
+
 func TestVerifyIdentityStillReportsRealReplacementWhenReopenSucceeds(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.pkg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {

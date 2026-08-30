@@ -185,11 +185,14 @@ Examples:
 				return reportStaplerFailure("staple", runErr)
 			}
 			stageErr := target.verifyIdentity("after stapling")
+			if stageErr != nil {
+				if runErr != nil {
+					stageErr = errors.Join(runErr, stageErr)
+				}
+				return reportStaplerTargetStageFailure("staple", "after stapling", stageErr)
+			}
 			if runErr != nil && isStaplerTargetStageError(runErr) {
 				return reportStaplerTargetStageFailure("staple", "after stapling", runErr)
-			}
-			if stageErr != nil {
-				return reportStaplerTargetStageFailure("staple", "after stapling", stageErr)
 			}
 			if runErr != nil {
 				return reportStaplerFailure("staple", runErr)
@@ -260,11 +263,14 @@ Examples:
 				return target.verifyIdentity(staplerStageDescription(operation, before))
 			})
 			stageErr := target.verifyIdentity("after validation")
+			if stageErr != nil {
+				if runErr != nil {
+					stageErr = errors.Join(runErr, stageErr)
+				}
+				return reportStaplerTargetStageFailure("validate", "after validation", stageErr)
+			}
 			if runErr != nil && isStaplerTargetStageError(runErr) {
 				return reportStaplerTargetStageFailure("validate", "after validation", runErr)
-			}
-			if stageErr != nil {
-				return reportStaplerTargetStageFailure("validate", "after validation", stageErr)
 			}
 			if runErr != nil {
 				return reportStaplerFailure("validate", runErr)
@@ -947,13 +953,13 @@ func isStaplerTargetStageError(err error) bool {
 func reportStaplerTargetStageFailure(command, fallbackStage string, err error) error {
 	message := staplerTargetStageFailureMessage(command, fallbackStage, err)
 	var commandErr *localxcode.StaplerCommandError
-	if command == "validate" && errors.As(err, &commandErr) && commandErr.ExitCode > 0 {
+	if errors.As(err, &commandErr) && commandErr.ExitCode > 0 {
 		detail := strings.TrimPrefix(message, "notarization "+command+": ")
 		fmt.Fprintf(os.Stderr, "Error: notarization %s failed during %s (exit status %d): %s\n", command, commandErr.Operation, commandErr.ExitCode, detail)
 		return shared.NewReportedError(shared.NewProcessExitErrorWithCause(commandErr.ExitCode, err))
 	}
 	fmt.Fprintln(os.Stderr, "Error: "+message)
-	return shared.NewReportedError(errors.New(message))
+	return shared.NewReportedError(errors.Join(errors.New(message), err))
 }
 
 func staplerTargetStageFailureMessage(command, fallbackStage string, err error) string {
