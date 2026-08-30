@@ -1240,6 +1240,14 @@ func (resolver *signingSettingResolver) resolveConfigurationXCConfig(
 			value, source, err := resolver.resolveSetting(fallback, setting)
 			if err == nil {
 				base = xcconfigResolvedValue{value: value, path: source, found: true}
+			} else if !errors.Is(err, errVersionSettingNotFound) {
+				// A direct '=' assignment in the target xcconfig overrides the
+				// project-level value and does not depend on it. Probe with and
+				// without a private sentinel so only ?=/+=/inherited resolution
+				// paths retain a fallback error as a blocker.
+				if resolver.xcconfigDependsOnFallback(path, setting) {
+					return xcconfigResolvedValue{}, fmt.Errorf("resolve project-level fallback for %s: %w", setting, err)
+				}
 			}
 		}
 	}
@@ -1250,6 +1258,39 @@ func (resolver *signingSettingResolver) resolveConfigurationXCConfig(
 		resolver.readXCConfig,
 		resolver.statXCConfig,
 	)
+}
+
+// xcconfigDependsOnFallback distinguishes a target xcconfig that semantically
+// consumes its project-level base from one that replaces it with a direct
+// assignment. The probe is read-only and uses the same authorization-aware
+// callbacks as normal resolution. A sentinel is intentionally private: it is
+// only compared inside this helper and is never surfaced in a plan or error.
+func (resolver *signingSettingResolver) xcconfigDependsOnFallback(path, setting string) bool {
+	withoutBase, withoutErr := resolveXCConfigSettingWithBaseReader(
+		path,
+		setting,
+		xcconfigResolvedValue{},
+		resolver.readXCConfig,
+		resolver.statXCConfig,
+	)
+	const sentinel = "__asc_signing_project_fallback_sentinel__"
+	withBase, withErr := resolveXCConfigSettingWithBaseReader(
+		path,
+		setting,
+		xcconfigResolvedValue{value: sentinel, path: resolver.project.pbxprojPath, found: true, exact: true},
+		resolver.readXCConfig,
+		resolver.statXCConfig,
+	)
+	if withoutErr != nil || withErr != nil {
+		// If one probe succeeds and the other does not, the base changes the
+		// result. When both fail, the target's own error is returned by the
+		// normal resolution below and the fallback error is not needed.
+		return (withoutErr == nil) != (withErr == nil)
+	}
+	return withoutBase.value != withBase.value ||
+		withoutBase.found != withBase.found ||
+		withoutBase.exact != withBase.exact ||
+		withoutBase.missingInherited != withBase.missingInherited
 }
 
 func (resolver *signingSettingResolver) expandSettingReferences(configuration *versionConfiguration, value string, stack map[string]bool) (string, string, error) {
@@ -1399,6 +1440,25 @@ func signingLexicalPathEqual(left, right string) bool {
 	return signingLexicalPathKey(left) == signingLexicalPathKey(right)
 }
 
+// signingArtifactLexicalPathEqual applies filesystem case semantics only at
+// the artifact-alias boundary. General signing path keys retain their
+// platform-independent spelling rules; this helper additionally protects
+// missing paths on case-insensitive Darwin volumes where SameFile cannot
+// inspect an inode yet. Unknown volume metadata is treated conservatively as
+// case-insensitive so an uncertain alias cannot reach an artifact write.
+func signingArtifactLexicalPathEqual(left, right string) bool {
+	left = normalizeSigningLexicalPath(left)
+	right = normalizeSigningLexicalPath(right)
+	if signingLexicalPathEqual(left, right) {
+		return true
+	}
+	if runtimeGOOS != "darwin" || !strings.EqualFold(left, right) {
+		return false
+	}
+	caseInsensitive, known := signingCaseInsensitiveVolumeFor(left)
+	return !known || caseInsensitive
+}
+
 func signingPathLexicallyContained(project *structuredVersionProject, path string) bool {
 	root := signingLexicalPathKey(project.rootDir)
 	absolute := signingLexicalPathKey(path)
@@ -1468,17 +1528,17 @@ func validateSigningProjectFile(project *structuredVersionProject) error {
 }
 
 func validateSigningArtifactPaths(planPath, receiptPath, projectPath, settingsPath string) error {
-	if signingLexicalPathEqual(planPath, receiptPath) {
+	if signingArtifactLexicalPathEqual(planPath, receiptPath) {
 		return fmt.Errorf("plan and receipt paths must be different")
 	}
 	for _, candidate := range []struct {
 		label string
 		path  string
 	}{{"plan", planPath}, {"receipt", receiptPath}} {
-		if signingLexicalPathEqual(candidate.path, projectPath) {
+		if signingArtifactLexicalPathEqual(candidate.path, projectPath) {
 			return fmt.Errorf("%s path must not replace the Xcode project file", candidate.label)
 		}
-		if signingLexicalPathEqual(candidate.path, settingsPath) {
+		if signingArtifactLexicalPathEqual(candidate.path, settingsPath) {
 			return fmt.Errorf("%s path must not replace the settings file", candidate.label)
 		}
 	}
@@ -1497,20 +1557,20 @@ func validateSigningArtifactAliases(planPath, receiptPath string, inputPaths, pr
 	type artifact struct {
 		label string
 		path  string
-		key   string
 	}
 	artifacts := []artifact{
-		{label: "plan", path: normalize(planPath), key: signingLexicalPathKey(planPath)},
-		{label: "receipt", path: normalize(receiptPath), key: signingLexicalPathKey(receiptPath)},
-	}
-	protected := make(map[string]bool, len(protectedPaths))
-	for _, path := range protectedPaths {
-		protected[signingLexicalPathKey(path)] = true
+		{label: "plan", path: normalize(planPath)},
+		{label: "receipt", path: normalize(receiptPath)},
 	}
 	for _, artifact := range artifacts {
-		if protected[artifact.key] {
-			return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("%s path aliases protected project input %s", artifact.label, artifact.path)))
+		for _, protectedPath := range protectedPaths {
+			if signingArtifactLexicalPathEqual(artifact.path, protectedPath) {
+				return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("%s path aliases protected project input %s", artifact.label, artifact.path)))
+			}
 		}
+	}
+	if signingArtifactLexicalPathEqual(artifacts[0].path, artifacts[1].path) {
+		return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("plan and receipt paths must not alias the same file")))
 	}
 	artifactInfos := make(map[string]os.FileInfo, len(artifacts))
 	for _, artifact := range artifacts {
@@ -1529,19 +1589,25 @@ func validateSigningArtifactAliases(planPath, receiptPath string, inputPaths, pr
 		}
 	}
 
-	seenInputs := make(map[string]bool, len(inputPaths))
+	seenInputs := make([]string, 0, len(inputPaths))
 	for _, inputPath := range inputPaths {
 		if strings.TrimSpace(inputPath) == "" {
 			continue
 		}
 		inputPath = normalize(inputPath)
-		inputKey := signingLexicalPathKey(inputPath)
-		if seenInputs[inputKey] {
+		duplicate := false
+		for _, seenInput := range seenInputs {
+			if signingArtifactLexicalPathEqual(seenInput, inputPath) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
 			continue
 		}
-		seenInputs[inputKey] = true
+		seenInputs = append(seenInputs, inputPath)
 		for _, artifact := range artifacts {
-			if inputKey == artifact.key {
+			if signingArtifactLexicalPathEqual(inputPath, artifact.path) {
 				return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("%s path aliases project input %s", artifact.label, inputPath)))
 			}
 		}

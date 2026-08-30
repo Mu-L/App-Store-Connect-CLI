@@ -1695,6 +1695,144 @@ func TestSigningPlanBlocksIncompleteBuildSettingReference(t *testing.T) {
 	}
 }
 
+func TestSigningPlanDoesNotSwallowProjectFallbackResolutionError(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	const projectDebug = "999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = {}; name = Debug; };"
+	malformedProjectDebug := `999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_STYLE = "$(MISSING"; }; name = Debug; };`
+	if !strings.Contains(contents, projectDebug) {
+		t.Fatalf("project fixture is missing project Debug configuration")
+	}
+	if err := os.WriteFile(pbxprojPath, []byte(strings.Replace(contents, projectDebug, malformedProjectDebug, 1)), 0o644); err != nil {
+		t.Fatalf("write project error = %v", err)
+	}
+	appXCConfig := filepath.Join(filepath.Dir(project), "Configs", "App.xcconfig")
+	appContents := mustReadVersionTestFile(t, appXCConfig)
+	if err := os.WriteFile(appXCConfig, []byte("CODE_SIGN_STYLE ?= Automatic\n"+appContents), 0o644); err != nil {
+		t.Fatalf("write app xcconfig error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want blocked plan", err)
+	}
+	if plan.Ready {
+		t.Fatalf("project fallback resolution error was swallowed: %#v", plan)
+	}
+	blockers := strings.Join(plan.Blockers, "\n")
+	if !strings.Contains(blockers, "incomplete build-setting reference") || !strings.Contains(blockers, "CODE_SIGN_STYLE") {
+		t.Fatalf("plan blockers = %#v, want project fallback resolution error", plan.Blockers)
+	}
+}
+
+func TestSigningPlanAllowsOptionalXCConfigAssignmentWithoutProjectFallback(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	appXCConfig := filepath.Join(filepath.Dir(project), "Configs", "App.xcconfig")
+	appContents := mustReadVersionTestFile(t, appXCConfig)
+	if err := os.WriteFile(appXCConfig, []byte("CODE_SIGN_STYLE ?= Automatic\n"+appContents), 0o644); err != nil {
+		t.Fatalf("write app xcconfig error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want ready plan", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("optional xcconfig assignment without fallback blocked plan: %#v", plan.Blockers)
+	}
+}
+
+func TestSigningPlanDoesNotSwallowProjectFallbackForAppendingXCConfig(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	const projectDebug = "999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = {}; name = Debug; };"
+	malformedProjectDebug := `999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_STYLE = "$(MISSING"; }; name = Debug; };`
+	if !strings.Contains(contents, projectDebug) {
+		t.Fatalf("project fixture is missing project Debug configuration")
+	}
+	if err := os.WriteFile(pbxprojPath, []byte(strings.Replace(contents, projectDebug, malformedProjectDebug, 1)), 0o644); err != nil {
+		t.Fatalf("write project error = %v", err)
+	}
+	appXCConfig := filepath.Join(filepath.Dir(project), "Configs", "App.xcconfig")
+	appContents := mustReadVersionTestFile(t, appXCConfig)
+	if err := os.WriteFile(appXCConfig, []byte("CODE_SIGN_STYLE += Automatic\n"+appContents), 0o644); err != nil {
+		t.Fatalf("write app xcconfig error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want blocked plan", err)
+	}
+	if plan.Ready {
+		t.Fatalf("appending xcconfig swallowed project fallback resolution error: %#v", plan)
+	}
+	blockers := strings.Join(plan.Blockers, "\n")
+	if !strings.Contains(blockers, "incomplete build-setting reference") || !strings.Contains(blockers, "CODE_SIGN_STYLE") {
+		t.Fatalf("plan blockers = %#v, want project fallback resolution error", plan.Blockers)
+	}
+}
+
+func TestSigningPlanAllowsDirectXCConfigOverrideWithInvalidProjectFallback(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	const projectDebug = "999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = {}; name = Debug; };"
+	malformedProjectDebug := `999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_STYLE = "$(MISSING"; }; name = Debug; };`
+	if !strings.Contains(contents, projectDebug) {
+		t.Fatalf("project fixture is missing project Debug configuration")
+	}
+	if err := os.WriteFile(pbxprojPath, []byte(strings.Replace(contents, projectDebug, malformedProjectDebug, 1)), 0o644); err != nil {
+		t.Fatalf("write project error = %v", err)
+	}
+	appXCConfig := filepath.Join(filepath.Dir(project), "Configs", "App.xcconfig")
+	appContents := mustReadVersionTestFile(t, appXCConfig)
+	if err := os.WriteFile(appXCConfig, []byte("CODE_SIGN_STYLE = Automatic\n"+appContents), 0o644); err != nil {
+		t.Fatalf("write app xcconfig error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want ready plan", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("direct xcconfig override incorrectly inherited project fallback error: %#v", plan.Blockers)
+	}
+}
+
 func TestSigningPlanDigestsProjectLevelXCConfigUsedForResolution(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	projectRoot := filepath.Dir(project)

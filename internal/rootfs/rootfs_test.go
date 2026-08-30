@@ -834,6 +834,37 @@ func TestRemoveFileIfSameReportsQuarantineDisappearanceBeforeRemoval(t *testing.
 	}
 }
 
+func TestRemoveFileIfSameRestoresQuarantineWhenDestinationCheckFails(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	const content = "receipt"
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected destination lstat failure")
+	root.postConditionalQuarantineLstatForTest = func(_ *os.Root, _ string) (os.FileInfo, error) {
+		return nil, injected
+	}
+
+	err = root.RemoveFileIfSame("receipt.json", expected, []byte(content))
+	if !errors.Is(err, injected) {
+		t.Fatalf("RemoveFileIfSame() error = %v, want injected destination-check failure", err)
+	}
+	if got := mustRead(t, path); got != content {
+		t.Fatalf("destination after uncertain check = %q, want restored original", got)
+	}
+	if matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*")); globErr != nil {
+		t.Fatal(globErr)
+	} else if len(matches) != 0 {
+		t.Fatalf("quarantine files remain after recovery: %v", matches)
+	}
+}
+
 func TestRemoveFileIfSamePreservesReplacementBetweenQuarantineCheckAndRemoval(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
@@ -905,6 +936,37 @@ func TestWriteFileIfSamePreservesReplacementAfterQuarantine(t *testing.T) {
 	}
 	if got := mustRead(t, filepath.Join(dir, "settings.xcconfig")); got != "replacement" {
 		t.Fatalf("replacement content = %q, want preserved replacement", got)
+	}
+}
+
+func TestWriteFileIfSameRestoresQuarantineWhenDestinationCheckFails(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	const original = "original"
+	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected destination lstat failure")
+	root.postConditionalQuarantineLstatForTest = func(_ *os.Root, _ string) (os.FileInfo, error) {
+		return nil, injected
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("updated"), 0o640, expected, []byte(original), true)
+	if !errors.Is(err, injected) {
+		t.Fatalf("WriteFileIfSame() error = %v, want injected destination-check failure", err)
+	}
+	if got := mustRead(t, path); got != original {
+		t.Fatalf("destination after uncertain check = %q, want restored original", got)
+	}
+	if matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*")); globErr != nil {
+		t.Fatal(globErr)
+	} else if len(matches) != 0 {
+		t.Fatalf("quarantine files remain after recovery: %v", matches)
 	}
 }
 

@@ -77,9 +77,13 @@ type Root struct {
 	beforeConditionalQuarantineForTest        func(root *os.Root, name string)
 	afterConditionalQuarantineForTest         func(root *os.Root, quarantineName, name string)
 	beforeConditionalQuarantineRemovalForTest func(root *os.Root, quarantineName string)
-	beforeConditionalPublishForTest           func(root *os.Root, name string)
-	afterConditionalPublicationForTest        func(root *os.Root, name string)
-	afterConditionalPublicationOpenForTest    func(root *os.Root, name string, file *os.File)
+	// postConditionalQuarantineLstatForTest injects an error while checking
+	// the original destination after it has been quarantined. It makes the
+	// cleanup/recovery contract deterministic without widening the public API.
+	postConditionalQuarantineLstatForTest  func(root *os.Root, name string) (os.FileInfo, error)
+	beforeConditionalPublishForTest        func(root *os.Root, name string)
+	afterConditionalPublicationForTest     func(root *os.Root, name string)
+	afterConditionalPublicationOpenForTest func(root *os.Root, name string, file *os.File)
 	// simulateWindowsCloseForTest closes the staging descriptor before
 	// publication and skips Unix descriptor retention, exercising the
 	// pre-identity failure contract without requiring a Windows runner.
@@ -1209,13 +1213,13 @@ func (r Root) RemoveFileIfSame(name string, expected os.FileInfo, expectedData [
 	if err != nil {
 		return err
 	}
-	if _, err := parent.Lstat(base); err == nil {
+	if _, err := r.lstatAfterConditionalQuarantine(parent, base); err == nil {
 		return errors.Join(
 			fmt.Errorf("destination was replaced while removing the expected file"),
 			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData),
 		)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return errors.Join(err, r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData))
+		return errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 	}
 	if err := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData); err != nil {
 		return err
@@ -1295,13 +1299,13 @@ func (r Root) writeFileIfSame(
 	// The destination must remain absent after the expected file was moved.
 	// If a replacement appeared, leave it untouched and discard only the
 	// transaction's quarantined copy.
-	if _, err := parent.Lstat(base); err == nil {
+	if _, err := r.lstatAfterConditionalQuarantine(parent, base); err == nil {
 		return nil, errors.Join(
 			fmt.Errorf("destination changed while preparing replacement"),
 			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData),
 		)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, errors.Join(err, r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData))
+		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 	}
 
 	temporary, temporaryName, err := secureopen.CreateTempNoFollowInRoot(parent, ".", temporaryFilePattern, perm)
@@ -1602,6 +1606,13 @@ func (r Root) removeExpectedQuarantine(parent *os.Root, quarantineName string, e
 		return fmt.Errorf("remove quarantined file: %w", err)
 	}
 	return nil
+}
+
+func (r Root) lstatAfterConditionalQuarantine(parent *os.Root, name string) (os.FileInfo, error) {
+	if r.postConditionalQuarantineLstatForTest != nil {
+		return r.postConditionalQuarantineLstatForTest(parent, name)
+	}
+	return parent.Lstat(name)
 }
 
 func (r Root) restoreOrRemoveQuarantine(parent *os.Root, quarantineName, base string, expected os.FileInfo, expectedData []byte) error {

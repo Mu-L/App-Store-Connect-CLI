@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -274,6 +275,31 @@ func TestValidateSigningArtifactAliasesUsesWindowsCaseInsensitiveLexicalProtecti
 	err := validateSigningArtifactAliases(planPath, receiptPath, nil, []string{protectedPath})
 	if err == nil || !strings.Contains(err.Error(), "protected project input") {
 		t.Fatalf("validateSigningArtifactAliases() error = %v, want case-insensitive lexical collision", err)
+	}
+}
+
+func TestValidateSigningArtifactAliasesRejectsMissingCaseVariantOnInsensitiveVolume(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("requires Darwin filesystem semantics")
+	}
+	root := t.TempDir()
+	caseInsensitive, known := signingCaseInsensitiveVolumeFor(root)
+	if known && !caseInsensitive {
+		t.Skip("test volume is genuinely case-sensitive")
+	}
+
+	planPath := filepath.Join(root, "Plan.JSON")
+	inputPath := filepath.Join(root, "plan.json")
+	receiptPath := filepath.Join(root, "receipt.json")
+	if err := validateSigningArtifactAliases(planPath, receiptPath, []string{inputPath}, nil); err == nil {
+		t.Fatal("validateSigningArtifactAliases() accepted missing case-variant input")
+	} else if !strings.Contains(err.Error(), "aliases project input") {
+		t.Fatalf("validateSigningArtifactAliases() error = %v, want project-input alias rejection", err)
+	}
+	for _, path := range []string{planPath, inputPath} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Lstat(%q) error = %v, want path to remain missing", path, err)
+		}
 	}
 }
 
