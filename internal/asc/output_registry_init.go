@@ -13,6 +13,7 @@ func registerAllOutputRenderers() {
 		render(sh, sr)
 		return nil
 	})
+	registerRows(xcodeInstallResultRows)
 	registerDirect(webAgreementsStatusTables)
 	registerRows(webAgreementsAcceptRows)
 	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {
@@ -525,6 +526,7 @@ func registerAllOutputRenderers() {
 	registerRows(xcodeCloudRunResultRows)
 	registerRows(xcodeCloudStatusResultRows)
 	registerDirect(xcodeCloudDoctorResultTables)
+	registerRows(xcodeToolchainDoctorResultRows)
 	registerRowsWithSingleToListAdapter[CiProductResponse, CiProductsResponse](ciProductsRows)
 	registerRowsWithSingleToListAdapter[CiWorkflowResponse, CiWorkflowsResponse](ciWorkflowsRows)
 	registerRowsWithSingleToListAdapter[ScmProviderResponse, ScmProvidersResponse](scmProvidersRows)

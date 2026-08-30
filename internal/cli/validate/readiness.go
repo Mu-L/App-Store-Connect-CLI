@@ -21,6 +21,7 @@ type ReadinessOptions struct {
 	Platform  string
 	Strict    bool
 	Deep      bool
+	CheckURLs bool
 	Build     *validation.Build
 }
 
@@ -266,6 +267,18 @@ func BuildReadinessReport(ctx context.Context, opts ReadinessOptions) (validatio
 		HasPaidAppPrice:             hasPaidAppPrice,
 		AppPricingKnown:             appPricingKnown,
 	}, opts.Strict)
+	if opts.CheckURLs {
+		targets := validateURLTargets(versionLocalizations, appInfoLocalizations)
+		if len(targets) > 0 {
+			urlChecks, checkErr := checkValidateURLs(ctx, newValidateURLChecker(), targets)
+			if checkErr != nil {
+				return validation.Report{}, checkErr
+			}
+			report.Checks = append(report.Checks, urlChecks...)
+			report.Summary = validation.SummarizeChecks(report.Checks, opts.Strict)
+			report.Remediation = validation.BuildRemediation(report.Checks, opts.Strict)
+		}
+	}
 
 	return report, nil
 }
