@@ -276,6 +276,38 @@ func TestInspectToolchainRejectsXcrunResolvedSymlinkOutsideCandidate(t *testing.
 	}
 }
 
+// TestValidateResolvedXcodebuildPathAcceptsAlternateCasingOfSelectedDirectory
+// covers case-insensitive volumes (the macOS default), where a selector such
+// as /applications/Xcode.app/Contents/Developer and an xcrun result under
+// /Applications/Xcode.app/Contents/Developer name the same toolchain.
+// Containment must compare filesystem identity, not lexical spellings.
+func TestValidateResolvedXcodebuildPathAcceptsAlternateCasingOfSelectedDirectory(t *testing.T) {
+	root := t.TempDir()
+	developerDir := filepath.Join(root, "Xcode.app", "Contents", "Developer")
+	toolPath := installToolchainXcodebuild(t, developerDir)
+
+	alternateDeveloperDir := filepath.Join(root, "xCODE.APP", "Contents", "Developer")
+	alternateInfo, err := os.Stat(alternateDeveloperDir)
+	if err != nil {
+		t.Skipf("volume is case-sensitive; alternate-case spelling unavailable: %v", err)
+	}
+	canonicalInfo, err := os.Stat(developerDir)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if !os.SameFile(canonicalInfo, alternateInfo) {
+		t.Skip("volume treats the alternate casing as a distinct directory")
+	}
+
+	validated, err := validateResolvedXcodebuildPath(toolPath, alternateDeveloperDir)
+	if err != nil {
+		t.Fatalf("validateResolvedXcodebuildPath() error = %v, want acceptance for the same physical toolchain", err)
+	}
+	if validated != toolPath {
+		t.Fatalf("validateResolvedXcodebuildPath() = %q, want xcrun spelling %q", validated, toolPath)
+	}
+}
+
 func TestInspectToolchainClassifiesBetaFromCanonicalSelectedSymlink(t *testing.T) {
 	restore := overrideTestEnvironment(t)
 	t.Cleanup(restore)

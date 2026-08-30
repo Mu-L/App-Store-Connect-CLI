@@ -447,11 +447,11 @@ func validateResolvedXcodebuildPath(pathValue, developerDir string) (string, err
 	}
 	canonicalPath = filepath.Clean(canonicalPath)
 
-	relative, err := filepath.Rel(canonicalDeveloperDir, canonicalPath)
+	contained, err := pathIdentityWithinDirectory(canonicalDeveloperDir, canonicalPath)
 	if err != nil {
 		return "", fmt.Errorf("compare xcodebuild path with developer directory: %w", err)
 	}
-	if relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+	if !contained {
 		return "", fmt.Errorf("xcrun resolved xcodebuild outside selected developer directory %q", canonicalDeveloperDir)
 	}
 
@@ -468,6 +468,34 @@ func validateResolvedXcodebuildPath(pathValue, developerDir string) (string, err
 	// Preserve xcrun's resolved spelling in the report and command invocation;
 	// the canonical path above is used for containment and file validation.
 	return pathValue, nil
+}
+
+// pathIdentityWithinDirectory reports whether pathValue sits inside directory
+// by comparing filesystem identity (os.SameFile) of pathValue's ancestors with
+// directory. Unlike a lexical prefix comparison, this accepts alternate
+// spellings of the same physical directory on case-insensitive volumes while
+// never accepting a genuinely distinct directory on case-sensitive ones. Both
+// arguments must already be symlink-resolved absolute paths.
+func pathIdentityWithinDirectory(directory, pathValue string) (bool, error) {
+	directoryInfo, err := statPathFn(directory)
+	if err != nil {
+		return false, fmt.Errorf("inspect selected developer directory %q: %w", directory, err)
+	}
+	current := filepath.Clean(pathValue)
+	for {
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false, nil
+		}
+		current = parent
+		currentInfo, err := statPathFn(current)
+		if err != nil {
+			return false, fmt.Errorf("inspect resolved xcodebuild ancestor %q: %w", current, err)
+		}
+		if os.SameFile(directoryInfo, currentInfo) {
+			return true, nil
+		}
+	}
 }
 
 func parseXcodeVersion(output string) (XcodeVersion, error) {
