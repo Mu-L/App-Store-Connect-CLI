@@ -27,6 +27,7 @@ META_TOKEN_RE = re.compile(r"^<[^>]+>$|^\[[^\]]+\]$")
 GENERIC_TOKENS = {"command", "subcommand", "subcmd"}
 SHELL_OPERATORS = {"|", ";", ">", "<"}
 ELLIPSIS_TOKENS = {"...", "…"}
+COMMAND_PASSTHROUGH_RE = re.compile(r"(?:^|\s)--\s+<[^>]+>")
 REQUIRED_FLAGS_BY_COMMAND: dict[tuple[str, ...], set[str]] = {
     ("submit", "create"): {"--build", "--confirm"},
 }
@@ -642,6 +643,20 @@ def validate_example(
         if token == "--help":
             i += 1
             continue
+        if token == "--":
+            if not COMMAND_PASSTHROUGH_RE.search(current.usage):
+                errors.append(
+                    f"{example.path.relative_to(example.path.parents[1])}:{example.line_number}: "
+                    f"{' '.join(current.path)!r} does not accept command passthrough in {example.raw!r}"
+                )
+                return errors
+            if i + 1 >= len(tokens):
+                errors.append(
+                    f"{example.path.relative_to(example.path.parents[1])}:{example.line_number}: "
+                    f"command passthrough separator must be followed by a command in {example.raw!r}"
+                )
+                return errors
+            break
         if token.startswith("--"):
             flag = token.split("=", 1)[0]
             if flag in current.flags:

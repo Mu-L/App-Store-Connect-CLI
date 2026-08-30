@@ -325,6 +325,71 @@ class WebsiteCommandChecksTest(unittest.TestCase):
             errors = check_website_commands.collect_errors(website, index)
             self.assertEqual(errors, [])
 
+    def test_website_command_checks_accept_command_passthrough(self) -> None:
+        index = {
+            (): check_website_commands.CommandSpec(
+                path=(),
+                usage="asc <subcommand> [flags]",
+                flags={},
+                subcommands={"signing"},
+            ),
+            ("signing",): check_website_commands.CommandSpec(
+                path=("signing",),
+                usage="asc signing <subcommand> [flags]",
+                flags={},
+                subcommands={"run"},
+            ),
+            ("signing", "run"): check_website_commands.CommandSpec(
+                path=("signing", "run"),
+                usage=(
+                    "asc signing run --identity PATH --profile PATH [flags] "
+                    "-- <command> [args...]"
+                ),
+                flags={"--identity": False, "--profile": False},
+                subcommands=set(),
+            ),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            website = Path(tmpdir)
+            (website / "index.mdx").write_text(
+                "```bash\n"
+                "asc signing run --identity signing.p12 --profile app.mobileprovision "
+                "-- xcodebuild -exportArchive --archivePath App.xcarchive\n"
+                "```\n"
+            )
+            errors = check_website_commands.collect_errors(website, index)
+            self.assertEqual(errors, [])
+
+    def test_website_command_checks_reject_unsupported_command_passthrough(self) -> None:
+        index = {
+            (): check_website_commands.CommandSpec(
+                path=(),
+                usage="asc <subcommand> [flags]",
+                flags={},
+                subcommands={"apps"},
+            ),
+            ("apps",): check_website_commands.CommandSpec(
+                path=("apps",),
+                usage="asc apps list [flags]",
+                flags={},
+                subcommands={"list"},
+            ),
+            ("apps", "list"): check_website_commands.CommandSpec(
+                path=("apps", "list"),
+                usage="asc apps list [flags]",
+                flags={},
+                subcommands=set(),
+            ),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            website = Path(tmpdir)
+            (website / "index.mdx").write_text(
+                "```bash\nasc apps list -- echo unexpected\n```\n"
+            )
+            errors = check_website_commands.collect_errors(website, index)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("does not accept command passthrough", errors[0])
+
     def test_website_command_checks_reject_unknown_subcommand(self) -> None:
         index = {
             (): check_website_commands.CommandSpec(
