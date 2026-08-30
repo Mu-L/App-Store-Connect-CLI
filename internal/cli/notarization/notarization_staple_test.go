@@ -1625,6 +1625,58 @@ func TestNotarizationStaplePostStapleVerifierFailureReportsUnverified(t *testing
 	}
 }
 
+func TestNotarizationStapleJoinedChildAndPostStapleVerifierFailureReportsUnverified(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	wantErr := errors.New("target changed after staple")
+	previous := runStaplerStaple
+	runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		return nil, &localxcode.StaplerPartialMutationError{
+			Operation: localxcode.StaplerOperationStaple,
+			Err: errors.Join(
+				&localxcode.StaplerCommandError{
+					Operation: string(localxcode.StaplerOperationStaple),
+					ExitCode:  66,
+					Err:       errors.New("stapler child failed"),
+				},
+				&localxcode.StaplerStageVerificationError{
+					Operation: localxcode.StaplerOperationStaple,
+					Before:    false,
+					Err:       &staplerTargetVerifyError{stage: "after stapling", err: wantErr},
+				},
+			),
+		}
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil || !errors.Is(runErr, wantErr) {
+		t.Fatalf("command error = %v, want preserved verifier cause", runErr)
+	}
+	if code, ok := sharedProcessExitCodeForTest(runErr); !ok || code != 66 {
+		t.Fatalf("command error = %v, process code = %d/%v, want 66", runErr, code, ok)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "staple completed") || !strings.Contains(stderr, "not verified") {
+		t.Fatalf("stderr = %q, want post-staple warning", stderr)
+	}
+	if strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not expose target path", stderr)
+	}
+}
+
 func TestNotarizationStaplePrioritizesPostStaplePartialMutation(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {

@@ -113,6 +113,46 @@ func TestStapleWithVerifierMarksPostStapleVerifierFailureAsPartialMutation(t *te
 	})
 }
 
+func TestStapleWithVerifierJoinsStapleChildAndPostStapleVerifierFailures(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_STAPLE_EXIT_CODE", "66")
+	verifierErr := errors.New("target changed after staple")
+
+	result, err := StapleWithVerifier(context.Background(), target, nil, func(operation StaplerOperation, before bool) error {
+		if operation == StaplerOperationStaple && !before {
+			return verifierErr
+		}
+		return nil
+	})
+	if result != nil {
+		t.Fatalf("StapleWithVerifier() result = %#v, want nil after post-staple verification failure", result)
+	}
+	if !errors.Is(err, verifierErr) {
+		t.Fatalf("StapleWithVerifier() error = %v, want verifier cause", err)
+	}
+	var partialErr *StaplerPartialMutationError
+	if !errors.As(err, &partialErr) || partialErr.Operation != StaplerOperationStaple {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want staple partial marker", err, err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationStaple) || commandErr.ExitCode != 66 {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want joined staple/66 child error", err, err)
+	}
+	var stageErr *StaplerStageVerificationError
+	if !errors.As(err, &stageErr) || stageErr.Before {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want post-staple stage error", err, err)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|staple|" + target,
+	})
+}
+
 func TestStapleWithVerifierMarksPostValidationVerifierFailureAsPartialMutation(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
