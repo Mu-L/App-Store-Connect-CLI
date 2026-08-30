@@ -404,6 +404,10 @@ func syncPushCommand() *ffcli.Command {
 			}
 			profileDir := profileDirectoryName(profType)
 			profileRelPath := filepath.Join("profiles", profileDir, safeFileName(profile.Data.Attributes.Name, profile.Data.ID)+".mobileprovision")
+			profileMetadata, err := signingProfileArtifactMetadata(profile, bundle, profType)
+			if err != nil {
+				return fmt.Errorf("signing sync push: prepare profile metadata: %w", err)
+			}
 			if identity != nil {
 				if identityArtifacts == nil {
 					identityArtifacts, err = prepareSigningIdentityArtifacts(identity, pass, bundle, profType)
@@ -424,6 +428,9 @@ func syncPushCommand() *ffcli.Command {
 					return fmt.Errorf("signing sync push: preflight signing identity: %w", err)
 				}
 			}
+			if _, err := preflightSigningProfileArtifact(store, profileRelPath, profileContent, pass, profileMetadata); err != nil {
+				return fmt.Errorf("signing sync push: preflight profile: %w", err)
+			}
 
 			// Write encrypted files.
 			var files []string
@@ -442,7 +449,7 @@ func syncPushCommand() *ffcli.Command {
 				fmt.Fprintf(os.Stderr, "  Encrypted %s\n", relPath)
 			}
 
-			if err := store.WriteEncryptedFile(profileRelPath, profileContent, pass); err != nil {
+			if err := writeOrReuseSigningProfileArtifact(store, profileRelPath, profileContent, pass, profileMetadata); err != nil {
 				return fmt.Errorf("signing sync push: encrypt profile: %w", err)
 			}
 			files = append(files, profileRelPath)
@@ -787,9 +794,14 @@ func validateIdentityArtifactGraph(files []decryptedSigningFile) (map[string]str
 	activeCores := make(map[string]struct{})
 	contexts := make(map[string]string)
 	profiles := make(map[string][]byte)
+	profileMetadata := make(map[string]signingpkg.EncryptedFileMetadata)
+	contextProfileTypes := make(map[string]string)
 	for _, file := range files {
 		canonicalPath := strings.ReplaceAll(filepath.ToSlash(file.RelativePath), `\`, "/")
 		profiles[canonicalPath] = file.Plaintext
+		if file.Metadata.Kind == signingProfileArtifactKind {
+			profileMetadata[canonicalPath] = file.Metadata
+		}
 		if file.Metadata.Kind == "pkcs12-identity" {
 			if _, exists := cores[canonicalPath]; exists {
 				return nil, fmt.Errorf("duplicate signing identity core %s", canonicalPath)
@@ -805,6 +817,12 @@ func validateIdentityArtifactGraph(files []decryptedSigningFile) (map[string]str
 		if err := json.Unmarshal(file.Plaintext, &binding); err != nil {
 			return nil, fmt.Errorf("decode identity context graph: %w", err)
 		}
+		profilePath := canonicalSigningPullPath(binding.ProfilePath)
+		profileType := strings.ToUpper(strings.TrimSpace(binding.ProfileType))
+		if prior, exists := contextProfileTypes[profilePath]; exists && prior != profileType {
+			return nil, fmt.Errorf("conflicting identity context profile-type provenance")
+		}
+		contextProfileTypes[profilePath] = profileType
 		scope := strings.Join([]string{binding.TeamID, binding.BundleID, binding.ProfileType}, "\x00")
 		if prior, exists := contexts[scope]; exists {
 			if prior == binding.CertificateSHA256 {
@@ -830,9 +848,15 @@ func validateIdentityArtifactGraph(files []decryptedSigningFile) (map[string]str
 		if core.teamID != binding.TeamID {
 			return nil, fmt.Errorf("identity context team does not match its core identity")
 		}
-		profileContent, exists := profiles[binding.ProfilePath]
+		profilePath := canonicalSigningPullPath(binding.ProfilePath)
+		profileContent, exists := profiles[profilePath]
 		if !exists {
 			return nil, fmt.Errorf("identity context has no matching profile artifact")
+		}
+		if metadata, authenticated := profileMetadata[profilePath]; authenticated &&
+			(metadata.BundleID != binding.BundleID || metadata.ProfileType != binding.ProfileType ||
+				metadata.ProfileResourceID != binding.ProfileResourceID || (metadata.ProfileUUID != "" && metadata.ProfileUUID != binding.ProfileUUID)) {
+			return nil, fmt.Errorf("identity context does not match authenticated profile metadata")
 		}
 		profileDigest := sha256.Sum256(profileContent)
 		if !strings.EqualFold(hex.EncodeToString(profileDigest[:]), binding.ProfileSHA256) {
@@ -921,6 +945,12 @@ func isDirectDistributionProfile(profileType string) bool {
 
 func classifySigningFile(relPath string, plaintext []byte, metadata signingpkg.EncryptedFileMetadata, password string) (sensitive, identity bool, err error) {
 	canonicalPath := strings.ReplaceAll(filepath.ToSlash(relPath), `\`, "/")
+	if metadata.Kind == signingProfileArtifactKind {
+		if err := validateSigningProfileArtifactMetadata(canonicalPath, metadata); err != nil {
+			return false, false, err
+		}
+		return false, false, nil
+	}
 	parts := strings.Split(canonicalPath, "/")
 	identityPath := len(parts) == 3 && parts[0] == "identities" &&
 		(parts[1] == "distribution" || parts[1] == "development") && strings.HasSuffix(parts[2], ".p12")

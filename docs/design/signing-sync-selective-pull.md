@@ -28,6 +28,14 @@ password, repository clone, or output-directory side effects.
 The selected pull is additive. Existing invocations, JSON fields, full-pull
 file selection, decryption limits, and Git behavior do not change.
 
+Profile pushes now replace the legacy encrypted profile payload with a
+versioned envelope containing non-secret, authenticated bundle, profile-type,
+resource-ID, and optional UUID metadata. Certificates retain their existing
+format. The profile upgrade is published in the same existing single Git
+commit and push; an unchanged versioned profile is a semantic no-op. Existing
+legacy profiles remain valid for full pulls and for selective contexts whose
+signed claims are unambiguous.
+
 ## Selection and validation
 
 The command still authenticates and validates every encrypted artifact before
@@ -52,9 +60,16 @@ payload. For every selected profile it includes:
 - the usable PKCS#12 identity core referenced by that context.
 
 Certificate-only stores remain selectable because their profiles and public
-certificates do not require identity-context metadata. A selected identity
-context must reference one of the selected profiles and its validated core;
-the existing graph validator enforces that binding before selection.
+certificates do not normally require identity-context metadata. Native Mac and
+Mac Catalyst profiles are the exception: their signed platform and
+distribution claims overlap, so exact selection requires authenticated
+profile-type provenance. Push now stores that exact API profile type with each
+profile. An older identity context provides equivalent provenance for the
+profile it binds. An older certificate-only Mac profile with neither source is
+rejected rather than guessed; pushing the profile again upgrades its encrypted
+artifact. A selected identity context must reference one of the selected
+profiles and its validated core; the existing graph validator enforces that
+binding before selection.
 
 Every requested bundle must resolve to at least one matching profile. The
 command fails before writing any output when a requested bundle is absent,
@@ -92,8 +107,26 @@ exit 1.
 ## Non-goals
 
 This slice does not rotate passwords, add a storage backend, install profiles
-or identities, change push behavior, delete stale assets, choose a profile by
-date, relax whole-repository validation, or add per-target profile types.
+or identities, delete stale assets, choose a profile by date, relax
+whole-repository validation, or add per-target profile types. Its only push
+change is preserving exact profile-type provenance in authenticated profile
+metadata.
+
+## Alternatives and trade-offs
+
+Inferring every profile type from signed claims was rejected because native
+Mac and Mac Catalyst profiles can share the same platform and distribution
+claims. Inferring from repository directories or filenames was also rejected:
+those paths group distribution classes and user-controlled profile names do
+not authenticate the API type. A separate repository index would add a stale
+second source of truth. Keeping provenance in the profile's authenticated
+envelope binds the type to the ciphertext and lets an ordinary push migrate a
+legacy artifact without a separate command.
+
+The compatibility trade-off is fail-closed selection for an older,
+certificate-only Mac profile until it is pushed again. Returning no exact
+match is safer than selecting a native Mac profile for a Mac Catalyst request,
+or the reverse. Full pulls remain available for inspection and migration.
 
 ## RED-GREEN and verification
 
@@ -101,7 +134,19 @@ Coverage begins with failing tests for selector flag relationships, pre-secret
 manifest validation, single and multi-target selection, certificate-only and
 identity-backed stores, shared certificate/identity deduplication, missing
 contexts, corrupt unselected artifacts, unselected output collisions, batch
-output shape, and unchanged full-pull behavior. Focused signing and renderer
-tests run before built-binary help and behavior checks. Because command help
-changes, generated command documentation and the normal build, formatting,
-documentation, lint, and test gates are required before the PR is opened.
+output shape, exact native Mac versus Mac Catalyst provenance, legacy profile
+upgrade, and unchanged full-pull behavior. Focused signing and renderer tests
+run before built-binary help and behavior checks. A disposable local encrypted
+Git repository exercises push, authenticated metadata readback, selected pull,
+and wrong-scope refusal without using live signing assets. Live App Store
+Connect mutation is not required for this selection-only workflow; the push
+path consumes the same exact profile type already returned and filtered by the
+existing API client. Because command help changes, generated command
+documentation and the normal build, formatting, documentation, lint, and test
+gates are required before each push.
+
+The remaining operational risk is legacy certificate-only Mac data without
+exact provenance. The command reports no exact match and leaves the repository
+and output directory unchanged. Re-pushing that bundle and exact profile type
+adds the authenticated provenance. Multiple active profiles for the same exact
+context are still returned intentionally rather than selected by recency.

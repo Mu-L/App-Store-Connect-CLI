@@ -198,7 +198,7 @@ func (g *GitStore) WriteEncryptedFileWithMetadata(relPath string, plaintext []by
 }
 
 // ReplaceEncryptedFileWithMetadata atomically creates or replaces a versioned
-// encrypted non-secret index artifact after the caller has validated its scope.
+// encrypted artifact after the caller has validated its scope.
 func (g *GitStore) ReplaceEncryptedFileWithMetadata(relPath string, plaintext []byte, password string, metadata EncryptedFileMetadata) error {
 	if err := validateEncryptedRepositoryPath(filepath.ToSlash(relPath)); err != nil {
 		return err

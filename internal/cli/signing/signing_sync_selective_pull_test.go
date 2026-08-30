@@ -2,6 +2,7 @@ package signing
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -89,7 +90,17 @@ func TestSelectSigningPullFilesChoosesDirectDistributionTarget(t *testing.T) {
 	profile := mustSignedCMS(t, profilePlist, certificate, key)
 	files := []decryptedSigningFile{
 		{RelativePath: "certs/distribution/direct.cer", Plaintext: certificate.Raw},
-		{RelativePath: "profiles/direct/direct.mobileprovision", Plaintext: profile},
+		{
+			RelativePath: "profiles/direct/direct.mobileprovision",
+			Plaintext:    profile,
+			Metadata: signingpkg.EncryptedFileMetadata{
+				Version:           1,
+				Kind:              signingProfileArtifactKind,
+				BundleID:          "com.example.direct",
+				ProfileType:       "MAC_APP_DIRECT",
+				ProfileResourceID: "profile-direct",
+			},
+		},
 	}
 
 	selected, targets, err := selectSigningPullFiles(files, []string{"com.example.direct"}, "MAC_APP_DIRECT")
@@ -101,6 +112,57 @@ func TestSelectSigningPullFilesChoosesDirectDistributionTarget(t *testing.T) {
 	}
 	if len(targets) != 1 || targets[0].ProfileType != "MAC_APP_DIRECT" {
 		t.Fatalf("targets = %#v", targets)
+	}
+}
+
+func TestSelectSigningPullFilesRequiresExactMacProfileProvenance(t *testing.T) {
+	key := mustECKey(t)
+	certificate := mustSigningCertificate(t, key, 814)
+	profile := mustSignedMacStoreProfile(t, certificate, key, "com.example.mac")
+	certificateFile := decryptedSigningFile{RelativePath: "certs/distribution/mac.cer", Plaintext: certificate.Raw}
+
+	for _, profileType := range []string{"MAC_APP_STORE", "MAC_CATALYST_APP_STORE"} {
+		t.Run("legacy "+profileType, func(t *testing.T) {
+			files := []decryptedSigningFile{
+				certificateFile,
+				{RelativePath: "profiles/appstore/mac.mobileprovision", Plaintext: profile},
+			}
+			_, _, err := selectSigningPullFiles(files, []string{"com.example.mac"}, profileType)
+			if err == nil || !strings.Contains(err.Error(), "no active "+profileType+" profile") {
+				t.Fatalf("error = %v, want ambiguous legacy Mac profile refusal", err)
+			}
+		})
+
+		t.Run("authenticated "+profileType, func(t *testing.T) {
+			files := []decryptedSigningFile{
+				certificateFile,
+				{
+					RelativePath: "profiles/appstore/mac.mobileprovision",
+					Plaintext:    profile,
+					Metadata: signingpkg.EncryptedFileMetadata{
+						Version:           1,
+						Kind:              "provisioning-profile",
+						BundleID:          "com.example.mac",
+						ProfileType:       profileType,
+						ProfileResourceID: "profile-mac",
+					},
+				},
+			}
+			selected, _, err := selectSigningPullFiles(files, []string{"com.example.mac"}, profileType)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := signingPullRelativePaths(selected); !slices.Equal(got, []string{"certs/distribution/mac.cer", "profiles/appstore/mac.mobileprovision"}) {
+				t.Fatalf("selected paths = %v", got)
+			}
+			otherType := "MAC_APP_STORE"
+			if profileType == otherType {
+				otherType = "MAC_CATALYST_APP_STORE"
+			}
+			if _, _, err := selectSigningPullFiles(files, []string{"com.example.mac"}, otherType); err == nil {
+				t.Fatalf("authenticated %s profile selected as %s", profileType, otherType)
+			}
+		})
 	}
 }
 
@@ -505,4 +567,24 @@ func signingPullRelativePaths(files []decryptedSigningFile) []string {
 		paths = append(paths, filepath.ToSlash(file.RelativePath))
 	}
 	return uniqueSortedSigningSyncStrings(paths)
+}
+
+func mustSignedMacStoreProfile(t *testing.T, certificate *x509.Certificate, privateKey any, bundleID string) []byte {
+	t.Helper()
+	profilePlist, err := plist.Marshal(map[string]any{
+		"UUID":                        "01234567-89ab-cdef-0123-456789abcdef",
+		"TeamIdentifier":              []string{"TEAM123"},
+		"ApplicationIdentifierPrefix": []string{"TEAM123"},
+		"ExpirationDate":              time.Now().Add(time.Hour),
+		"DeveloperCertificates":       [][]byte{certificate.Raw},
+		"Platform":                    []string{"OSX"},
+		"Entitlements": map[string]any{
+			"application-identifier": "TEAM123." + bundleID,
+			"get-task-allow":         false,
+		},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mustSignedCMS(t, profilePlist, certificate, privateKey)
 }

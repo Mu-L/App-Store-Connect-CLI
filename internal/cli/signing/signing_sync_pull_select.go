@@ -54,6 +54,24 @@ func selectSigningPullFiles(files []decryptedSigningFile, bundleIDs []string, pr
 	certificatesByFingerprint := make(map[string]decryptedSigningFile)
 	profilesByBundle := make(map[string][]signingPullProfile)
 	contextsByBundle := make(map[string][]decryptedSigningFile)
+	profileTypesByPath := make(map[string]map[string]struct{})
+	for _, file := range files {
+		path := canonicalSigningPullPath(file.RelativePath)
+		if file.Metadata.Kind == signingProfileArtifactKind {
+			addSigningPullProfileTypeProvenance(profileTypesByPath, path, file.Metadata.ProfileType)
+		}
+		if file.Metadata.Kind != "identity-context" {
+			continue
+		}
+		var binding identityContextBinding
+		if err := json.Unmarshal(file.Plaintext, &binding); err != nil {
+			return nil, nil, fmt.Errorf("decode identity context for pull selection: %w", err)
+		}
+		addSigningPullProfileTypeProvenance(profileTypesByPath, binding.ProfilePath, binding.ProfileType)
+		if strings.EqualFold(strings.TrimSpace(binding.ProfileType), profileType) {
+			contextsByBundle[binding.BundleID] = append(contextsByBundle[binding.BundleID], file)
+		}
+	}
 	for _, file := range files {
 		path := canonicalSigningPullPath(file.RelativePath)
 		filesByPath[path] = file
@@ -77,7 +95,11 @@ func selectSigningPullFiles(files []decryptedSigningFile, bundleIDs []string, pr
 			if err != nil {
 				return nil, nil, fmt.Errorf("stored profile %s: %w", path, err)
 			}
-			if !profile.ExpirationDate.After(time.Now()) || !identityProfileTypeMatches(profile, profileType) || !signingPullProfilePlatformMatches(profile, profileType) {
+			if err := validateSigningProfileSelectionScope(file, profile, bundleID); err != nil {
+				return nil, nil, err
+			}
+			if !profile.ExpirationDate.After(time.Now()) || !identityProfileTypeMatches(profile, profileType) || !signingPullProfilePlatformMatches(profile, profileType) ||
+				!signingPullProfileHasExactTypeProvenance(profileTypesByPath[path], profileType) {
 				continue
 			}
 			fingerprints := make([]string, 0, len(profile.DeveloperCertificates))
@@ -95,14 +117,6 @@ func selectSigningPullFiles(files []decryptedSigningFile, bundleIDs []string, pr
 				file:        file,
 				certificate: uniqueSortedSigningSyncStrings(fingerprints),
 			})
-		case file.Metadata.Kind == "identity-context":
-			var binding identityContextBinding
-			if err := json.Unmarshal(file.Plaintext, &binding); err != nil {
-				return nil, nil, fmt.Errorf("decode identity context for pull selection: %w", err)
-			}
-			if strings.EqualFold(strings.TrimSpace(binding.ProfileType), profileType) {
-				contextsByBundle[binding.BundleID] = append(contextsByBundle[binding.BundleID], file)
-			}
 		}
 	}
 
@@ -180,6 +194,27 @@ func selectSigningPullFiles(files []decryptedSigningFile, bundleIDs []string, pr
 		return nil, nil, fmt.Errorf("no active %s profile found in encrypted repository for bundle ID(s): %s", profileType, strings.Join(missing, ", "))
 	}
 	return signingPullSortedFiles(selectedByPath), targets, nil
+}
+
+func addSigningPullProfileTypeProvenance(index map[string]map[string]struct{}, path, profileType string) {
+	path = canonicalSigningPullPath(path)
+	profileType = strings.ToUpper(strings.TrimSpace(profileType))
+	if path == "" || profileType == "" {
+		return
+	}
+	if index[path] == nil {
+		index[path] = make(map[string]struct{})
+	}
+	index[path][profileType] = struct{}{}
+}
+
+func signingPullProfileHasExactTypeProvenance(profileTypes map[string]struct{}, profileType string) bool {
+	profileType = strings.ToUpper(strings.TrimSpace(profileType))
+	if len(profileTypes) > 0 {
+		_, exists := profileTypes[profileType]
+		return exists
+	}
+	return !strings.HasPrefix(profileType, "MAC_APP_") && !strings.HasPrefix(profileType, "MAC_CATALYST_APP_")
 }
 
 func signingPullProfileBundleID(profile *identityMobileProvision) (string, error) {
