@@ -3,6 +3,7 @@ package screenshots
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1188,6 +1189,31 @@ func TestGenerateMatrixReviewSerializesPublicationOfEachPair(t *testing.T) {
 	}
 	if len(manifest.Cells) != 1 || manifest.Cells[0].ID != "generation-second" || !bytes.Contains(htmlData, []byte("generation-second")) {
 		t.Fatalf("published pair does not describe the same final generation: manifest=%+v html=%q", manifest.Cells, htmlData)
+	}
+}
+
+func TestMatrixReviewConsumersRejectMixedHTMLAndManifest(t *testing.T) {
+	dir := t.TempDir()
+	result := &MatrixResult{PlanPath: "plan.json", Cells: []MatrixCellResult{{ID: "generation", Status: MatrixCellSuccess}}}
+	if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: result, OutputDir: dir}); err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	manifest, err := LoadMatrixReviewManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v", err)
+	}
+	if len(manifest.HTMLSHA256) != sha256.Size*2 {
+		t.Fatalf("HTMLSHA256 = %q, want a SHA-256 hex digest", manifest.HTMLSHA256)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("different generation"), 0o644); err != nil {
+		t.Fatalf("WriteFile(index.html) error = %v", err)
+	}
+	if _, err := LoadMatrixReviewManifest(manifestPath); err == nil || strings.Contains(err.Error(), dir) {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v, want stable mixed-generation rejection", err)
+	}
+	if _, err := OpenReview(context.Background(), ReviewOpenRequest{OutputDir: dir, DryRun: true}); err == nil || strings.Contains(err.Error(), dir) {
+		t.Fatalf("OpenReview() error = %v, want stable mixed-generation rejection", err)
 	}
 }
 

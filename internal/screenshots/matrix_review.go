@@ -2,6 +2,7 @@ package screenshots
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -128,11 +129,13 @@ func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewReq
 			manifest.Cells[i].Error = matrixReviewErrorOutput(sanitizeMatrixReviewError(cell.Error))
 		}
 	}
+	htmlContent := renderMatrixReviewHTML(manifest)
+	htmlDigest := sha256.Sum256([]byte(htmlContent))
+	manifest.HTMLSHA256 = fmt.Sprintf("%x", htmlDigest[:])
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal matrix review manifest: %w", err)
 	}
-	htmlContent := renderMatrixReviewHTML(manifest)
 	manifestData = append(manifestData, '\n')
 	if err := validateMatrixReviewSize("HTML", []byte(htmlContent)); err != nil {
 		return nil, err
@@ -252,7 +255,58 @@ func LoadMatrixReviewManifest(path string) (*MatrixReviewManifest, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return nil, fmt.Errorf("parse matrix review manifest: %w", err)
 	}
+	if err := validateMatrixReviewHTMLDigest(filepath.Join(filepath.Dir(path), "index.html"), manifest.HTMLSHA256); err != nil {
+		return nil, err
+	}
 	return &manifest, nil
+}
+
+func validateMatrixReviewHTMLDigest(path, expected string) error {
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		// Manifests created before the digest contract remain readable.
+		return nil
+	}
+	file, err := rootfs.OpenFile(path)
+	if err != nil {
+		return errors.New("matrix review HTML does not match manifest")
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxMatrixReviewBytes+1))
+	if err != nil || len(data) > maxMatrixReviewBytes {
+		return errors.New("matrix review HTML does not match manifest")
+	}
+	digest := sha256.Sum256(data)
+	if !strings.EqualFold(expected, fmt.Sprintf("%x", digest[:])) {
+		return errors.New("matrix review HTML does not match manifest")
+	}
+	return nil
+}
+
+func validateMatrixReviewPairForHTML(path string) error {
+	if filepath.Base(path) != "index.html" {
+		return nil
+	}
+	manifestPath := filepath.Join(filepath.Dir(path), "manifest.json")
+	file, err := rootfs.OpenFile(manifestPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxMatrixReviewBytes+1))
+	if err != nil || len(data) > maxMatrixReviewBytes {
+		return nil
+	}
+	var binding struct {
+		HTMLSHA256 string `json:"htmlSha256"`
+	}
+	if err := json.Unmarshal(data, &binding); err != nil || strings.TrimSpace(binding.HTMLSHA256) == "" {
+		return nil
+	}
+	return validateMatrixReviewHTMLDigest(path, binding.HTMLSHA256)
 }
 
 func renderMatrixReviewHTML(manifest MatrixReviewManifest) string {

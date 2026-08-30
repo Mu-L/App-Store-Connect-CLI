@@ -82,17 +82,20 @@ type MatrixReviewResult struct {
 // contract so consumers do not need a second naming convention.
 type MatrixReviewManifest struct {
 	GeneratedAt string `json:"generatedAt"`
-	PlanPath    string `json:"planPath"`
-	BundleID    string `json:"bundleId"`
-	RawDir      string `json:"rawDir"`
-	FramedDir   string `json:"framedDir,omitempty"`
-	OutputDir   string `json:"outputDir"`
-	Status      string `json:"status"`
-	TotalCells  int    `json:"totalCells"`
-	Succeeded   int    `json:"succeeded"`
-	Failed      int    `json:"failed"`
-	Canceled    int    `json:"canceled"`
-	Retried     int    `json:"retried"`
+	// HTMLSHA256 binds the manifest commit marker to the exact offline report
+	// bytes so a torn or externally mixed publication is rejected.
+	HTMLSHA256 string `json:"htmlSha256,omitempty"`
+	PlanPath   string `json:"planPath"`
+	BundleID   string `json:"bundleId"`
+	RawDir     string `json:"rawDir"`
+	FramedDir  string `json:"framedDir,omitempty"`
+	OutputDir  string `json:"outputDir"`
+	Status     string `json:"status"`
+	TotalCells int    `json:"totalCells"`
+	Succeeded  int    `json:"succeeded"`
+	Failed     int    `json:"failed"`
+	Canceled   int    `json:"canceled"`
+	Retried    int    `json:"retried"`
 	// CleanupFailed mirrors MatrixResult.CleanupFailed: the subset of Failed
 	// whose cells completed capture but could not restore simulator state.
 	CleanupFailed int                `json:"cleanupFailed,omitempty"`

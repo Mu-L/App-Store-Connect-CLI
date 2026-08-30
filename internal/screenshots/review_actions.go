@@ -67,6 +67,9 @@ func OpenReview(ctx context.Context, req ReviewOpenRequest) (*ReviewOpenResult, 
 	if info.IsDir() {
 		return nil, fmt.Errorf("review HTML path points to a directory")
 	}
+	if err := validateMatrixReviewPairForHTML(htmlPath); err != nil {
+		return nil, err
+	}
 
 	if req.DryRun {
 		return &ReviewOpenResult{

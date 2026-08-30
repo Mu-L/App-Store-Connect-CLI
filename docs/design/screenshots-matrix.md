@@ -151,6 +151,11 @@ results, raw/framed paths, dimensions, and sanitized failure stage/code. Launch
 arguments, raw command output, environment values, credentials, keychain paths,
 and simulator UDIDs are not persisted.
 
+Publication is serialized per review directory across processes. The manifest
+is written last as the commit marker and records the SHA-256 digest of the exact
+HTML bytes. Matrix manifest loading and the default review opener reject a torn
+or externally mixed HTML/manifest generation instead of displaying it.
+
 The HTML report is self-contained and network-free. It displays all cells,
 including failures and cancellations, and links only to local raw/framed
 artifacts. Plan-provided labels are escaped. Raw-only reports are valid when
