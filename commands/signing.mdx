@@ -186,9 +186,13 @@ asc certificates create \
 
 The private key stays at `--key-out`; the API response contains only the public certificate. Keep the key private and back it up through encrypted sync before deleting the bootstrap copy.
 
-To pair the generated key with `signing sync push`, calculate the SHA-256 fingerprint of the returned certificate:
+Capture the certificate resource ID and calculate its SHA-256 fingerprint from the same create response. The fingerprint binds the private key during `signing sync push`; the resource ID selects that same certificate during profile reconciliation:
 
 ```bash  theme={null}
+CERTIFICATE_ID="$(
+  jq -r '.data.id' .asc/signing/distribution-certificate.json
+)"
+
 CERTIFICATE_SHA256="$(
   jq -r '.data.attributes.certificateContent' \
     .asc/signing/distribution-certificate.json \
@@ -390,13 +394,13 @@ Planning makes no App Store Connect mutations. It writes a mode-`0600` `plan.jso
 
 Plan creation refuses to replace an existing `plan.json`. After reviewing a blocked plan and fixing its blockers, rerun the same command with `--overwrite`. Use a new `--state-dir` instead when the blocked plan must remain available for comparison.
 
-When more than one active iOS distribution certificate is eligible, select one resource ID explicitly:
+When more than one active iOS distribution certificate is eligible, select the resource ID that matches the synced identity. The example reuses `CERTIFICATE_ID` captured from the same certificate response as `CERTIFICATE_SHA256`. For an existing identity, match its certificate fingerprint to the App Store Connect certificate first; do not choose an arbitrary active resource ID.
 
 ```bash  theme={null}
 asc signing reconcile plan \
   --archive-path .asc/artifacts/Example.xcarchive \
   --devices-file .asc/distribution/devices.json \
-  --certificate CERTIFICATE_ID \
+  --certificate "$CERTIFICATE_ID" \
   --output json
 ```
 

@@ -51,9 +51,13 @@ The private key remains in `.asc/secrets/distribution.key`. Do not commit it, pr
 
 ## Shared App Store identity
 
-Read the public certificate from the create response and calculate its SHA-256 fingerprint. `signing sync push` uses this value to bind the generated private key to the exact App Store Connect certificate:
+Read the certificate resource ID and public certificate from the same create response. `signing sync push` uses the SHA-256 fingerprint to bind the generated private key, while profile reconciliation uses the resource ID to select that same certificate:
 
 ```bash  theme={null}
+CERTIFICATE_ID="$(
+  jq -r '.data.id' .asc/signing/distribution-certificate.json
+)"
+
 CERTIFICATE_SHA256="$(
   jq -r '.data.attributes.certificateContent' \
     .asc/signing/distribution-certificate.json \
@@ -141,6 +145,7 @@ For an iOS archive with extensions or other embedded targets, reconcile the arch
 asc signing reconcile plan \
   --archive-path .asc/artifacts/Example.xcarchive \
   --devices-file .asc/distribution/devices.json \
+  --certificate "$CERTIFICATE_ID" \
   --minimum-validity-days 14 \
   --output json \
   --pretty
