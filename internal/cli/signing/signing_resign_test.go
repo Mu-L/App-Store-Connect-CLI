@@ -1308,7 +1308,7 @@ func TestValidateSigningResignOptionsUsesDeterministicRequiredOrder(t *testing.T
 	}
 }
 
-func TestValidateSigningResignVerifiedEntitlementsRequiresExactGeneratedDocument(t *testing.T) {
+func TestValidateSigningResignEntitlementsAgainstDocumentRequiresExactGeneratedDocument(t *testing.T) {
 	existing := map[string]any{
 		"application-identifier":              "OLDTEAM.com.example.app",
 		"com.apple.application-identifier":    "OLDTEAM.com.example.app",
@@ -1327,6 +1327,18 @@ func TestValidateSigningResignVerifiedEntitlementsRequiresExactGeneratedDocument
 	if err != nil {
 		t.Fatal(err)
 	}
+	documentData, err := marshalSigningResignEntitlements(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentPath := filepath.Join(t.TempDir(), "target-000.plist")
+	if err := os.WriteFile(documentPath, documentData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subject := "target com.example.app signed entitlements"
+	if err := validateSigningResignEntitlementsAgainstDocument(want, documentPath, subject); err != nil {
+		t.Fatalf("validateSigningResignEntitlementsAgainstDocument() error = %v, want exact document accepted", err)
+	}
 	actual := make(map[string]any, len(want))
 	for key, value := range want {
 		actual[key] = value
@@ -1335,8 +1347,9 @@ func TestValidateSigningResignVerifiedEntitlementsRequiresExactGeneratedDocument
 	if !signingResignEntitlementValuePermits(profile["keychain-access-groups"], actual["keychain-access-groups"]) {
 		t.Fatal("test setup does not exercise the profile wildcard subset case")
 	}
-	if err := validateSigningResignVerifiedEntitlements(actual, existing, profile, "com.example.app"); err == nil || !strings.Contains(err.Error(), "exactly match") {
-		t.Fatalf("validateSigningResignVerifiedEntitlements() error = %v, want exact-document rejection", err)
+	err = validateSigningResignEntitlementsAgainstDocument(actual, documentPath, subject)
+	if err == nil || !strings.Contains(err.Error(), "exactly match the generated document") {
+		t.Fatalf("validateSigningResignEntitlementsAgainstDocument() error = %v, want exact-document rejection", err)
 	}
 }
 

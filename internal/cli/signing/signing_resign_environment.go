@@ -236,6 +236,14 @@ func runSigningResignEnvironment(ctx context.Context, identity *signingRunIdenti
 	if err := deps.ImportIdentity(ctx, keychainPath, keychainPassword, normalizedIdentity, importPasswordText, identity.CertificateSHA1); err != nil {
 		return finish(fmt.Errorf("import identity into temporary keychain failed"))
 	}
+	// Keychain access happens in two phases. Signing invocations always pass
+	// the explicit `--keychain` argument, which selects where codesign looks
+	// up the imported identity. Search-list activation is still required
+	// because Security.framework resolves the signer's certificate chain
+	// through the user's keychain search list, not through that argument.
+	// The temporary keychain is visible on the search list only while
+	// `operation` runs: cleanup removes the entry and deletes the keychain on
+	// every path, and the recovery journal covers interrupted runs.
 	currentSearchList, err := deps.KeychainSearchList(ctx)
 	if err != nil {
 		return finish(fmt.Errorf("refresh user keychain search list failed"))

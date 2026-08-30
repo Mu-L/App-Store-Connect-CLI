@@ -761,17 +761,6 @@ func signingResignDisplayPath(rootPath, candidate string) string {
 	return filepath.ToSlash(relative)
 }
 
-func validateSigningResignVerifiedEntitlements(actual, existing, profile map[string]any, bundleID string) error {
-	want, err := buildSigningResignEntitlements(existing, profile)
-	if err != nil {
-		return fmt.Errorf("target %s expected entitlements: %w", bundleID, err)
-	}
-	if !signingResignEntitlementMapsEqual(actual, want) {
-		return fmt.Errorf("target %s signed entitlements do not exactly match the generated document", bundleID)
-	}
-	return nil
-}
-
 func validateSigningResignCodeEntitlements(ctx context.Context, plan signingResignCodePlan) error {
 	actual, err := readSigningResignEntitlements(ctx, plan.Path)
 	if err != nil {
