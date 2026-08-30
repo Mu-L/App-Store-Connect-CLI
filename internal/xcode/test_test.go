@@ -316,6 +316,19 @@ func TestRunXcresulttoolJSONRejectsOversizedOutput(t *testing.T) {
 	}
 }
 
+func TestRunXcresulttoolJSONPreservesBoundedDiagnostics(t *testing.T) {
+	originalCommandContext := commandContextFn
+	t.Cleanup(func() { commandContextFn = originalCommandContext })
+	commandContextFn = helperCommandContext(t, filepath.Join(t.TempDir(), "commands.log"))
+	t.Setenv("ASC_XCODE_HELPER_XCRESULT_STDERR", "result bundle is unreadable")
+	t.Setenv("ASC_XCODE_HELPER_XCRESULT_EXIT_CODE", "65")
+
+	_, err := runXcresulttoolJSON(context.Background(), "summary", "/tmp/Demo.xcresult")
+	if err == nil || !strings.Contains(err.Error(), "result bundle is unreadable") {
+		t.Fatalf("runXcresulttoolJSON() error = %v, want bounded xcresulttool diagnostics", err)
+	}
+}
+
 func TestBuildTestCommandSupportsWithoutBuilding(t *testing.T) {
 	opts := TestOptions{
 		Action:           string(TestActionTestWithoutBuilding),

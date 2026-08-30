@@ -23,13 +23,14 @@ import (
 type TestAction string
 
 const (
-	TestActionTest                TestAction = "test"
-	TestActionBuildForTesting     TestAction = "build-for-testing"
-	TestActionTestWithoutBuilding TestAction = "test-without-building"
-	maxTestFailureMessage                    = 4096
-	maxTestFailureCount                      = 100
-	maxTestCaseCount                         = 10000
-	maxXcresulttoolOutputBytes               = 16 << 20
+	TestActionTest                 TestAction = "test"
+	TestActionBuildForTesting      TestAction = "build-for-testing"
+	TestActionTestWithoutBuilding  TestAction = "test-without-building"
+	maxTestFailureMessage                     = 4096
+	maxTestFailureCount                       = 100
+	maxTestCaseCount                          = 10000
+	maxXcresulttoolOutputBytes                = 16 << 20
+	maxXcresulttoolDiagnosticBytes            = 8 << 10
 )
 
 // TestOptions describes a local xcodebuild test operation.
@@ -655,16 +656,25 @@ func runXcresulttoolJSON(ctx context.Context, operation, resultBundlePath string
 	cmd := commandContextFn(ctx, "xcrun", "xcresulttool", "get", "test-results", operation, "--path", resultBundlePath, "--compact")
 	var output boundedXcresulttoolOutput
 	output.limit = maxXcresulttoolOutputBytes
+	var diagnostics boundedXcresulttoolOutput
+	diagnostics.limit = maxXcresulttoolDiagnosticBytes
 	cmd.Stdout = &output
-	cmd.Stderr = io.Discard
+	cmd.Stderr = &diagnostics
 	err := runXcodeCommand(cmd)
 	if output.exceeded {
 		if err != nil {
-			return nil, fmt.Errorf("xcresulttool %s output exceeds %d bytes: %w", operation, maxXcresulttoolOutputBytes, err)
+			err = fmt.Errorf("xcresulttool %s output exceeds %d bytes: %w", operation, maxXcresulttoolOutputBytes, err)
+		} else {
+			err = fmt.Errorf("xcresulttool %s output exceeds %d bytes", operation, maxXcresulttoolOutputBytes)
 		}
-		return nil, fmt.Errorf("xcresulttool %s output exceeds %d bytes", operation, maxXcresulttoolOutputBytes)
 	}
 	if err != nil {
+		if diagnostic := strings.TrimSpace(string(diagnostics.Bytes())); diagnostic != "" {
+			if diagnostics.exceeded {
+				diagnostic += " [truncated]"
+			}
+			err = fmt.Errorf("%w: xcresulttool %s diagnostics: %s", err, operation, diagnostic)
+		}
 		return nil, err
 	}
 	return append([]byte(nil), output.Bytes()...), nil
