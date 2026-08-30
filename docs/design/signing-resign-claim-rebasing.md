@@ -209,7 +209,7 @@ The flag is experimental and additive:
 
 - existing invocations, help behavior, structured output shape, refusal text, and exit mappings remain unchanged when it is omitted;
 - existing profiles, signed entitlements, and optional-claim omission rules are not broadened by merely adding the flag;
-- all validation occurs before signing mutations, and the output artifact is still no-replace and atomic;
+- all planning, profile authorization, and graph validation occur before signing mutations; the mandatory post-sign pass then verifies the exact repacked IPA before its no-replace atomic publication;
 - a profile authorization failure is never converted into a warning or a best-effort rewrite;
 - a missing grammar, ambiguous target relationship, malformed value, or unsupported claim remains fail-closed;
 - the operation remains macOS-only and has no App Store Connect network side effects.
