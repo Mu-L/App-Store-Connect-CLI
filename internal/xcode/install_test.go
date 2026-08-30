@@ -387,6 +387,7 @@ func installTestInspection(profileClass distribution.ProfileClass) distribution.
 	if profileClass == distribution.ProfileClassDevelopment {
 		issues = []string{"provisioning profile class is development; expected ad-hoc"}
 	}
+	expiresAt := installNow().Add(24 * time.Hour).UTC().Format(time.RFC3339)
 	return distribution.Inspection{
 		SchemaVersion:      "1",
 		Platform:           "IOS",
@@ -401,7 +402,7 @@ func installTestInspection(profileClass distribution.ProfileClass) distribution.
 		Signing: distribution.Signing{
 			ProfileClass:                         profileClass,
 			ProfileUUID:                          "PROFILE_CANARY",
-			ExpiresAt:                            "2035-01-01T00:00:00Z",
+			ExpiresAt:                            expiresAt,
 			DeviceCount:                          1,
 			Devices:                              []string{"UDID_CANARY"},
 			ProfileCertificateSHA256Fingerprints: []string{strings.Repeat("c", 64)},
