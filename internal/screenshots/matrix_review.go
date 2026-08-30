@@ -43,11 +43,11 @@ func GenerateMatrixReview(ctx context.Context, request MatrixReviewRequest) (*Ma
 // publishes into the review directory. Plan validation refuses inputs that would
 // be overwritten by these names, so this must stay in step with the writer below;
 // TestGenerateMatrixReviewWritesOnlyTheDeclaredFiles pins that.
-var matrixReviewGeneratedFiles = []string{"index.html", "manifest.json"}
+var matrixReviewGeneratedFiles = []string{".asc-matrix-review.lock", "index.html", "manifest.json"}
 
 type matrixReviewWriter func(rootfs.Root, string, []byte, os.FileMode) error
 
-func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewRequest, write matrixReviewWriter) (*MatrixReviewResult, error) {
+func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewRequest, write matrixReviewWriter) (result *MatrixReviewResult, retErr error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -67,6 +67,15 @@ func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewReq
 		return nil, fmt.Errorf("create matrix review output directory: %w", err)
 	}
 	defer func() { _ = reviewRoot.Close() }()
+	releaseReviewLock, err := acquireMatrixReviewLock(ctx, reviewRoot)
+	if err != nil {
+		return nil, fmt.Errorf("lock matrix review output directory: %w", err)
+	}
+	defer func() {
+		if releaseErr := releaseReviewLock(); releaseErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("release matrix review output lock: %w", releaseErr))
+		}
+	}()
 	if write == nil {
 		return nil, errors.New("matrix review writer is required")
 	}

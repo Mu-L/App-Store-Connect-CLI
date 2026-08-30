@@ -1129,6 +1129,92 @@ func TestGenerateMatrixReview_RollsBackPairWhenManifestPublishFails(t *testing.T
 	}
 }
 
+func TestGenerateMatrixReviewSerializesPublicationOfEachPair(t *testing.T) {
+	dir := t.TempDir()
+	firstHTMLPublished := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondWriterEntered := make(chan struct{}, 1)
+	firstResult := &MatrixResult{PlanPath: "first.json", Cells: []MatrixCellResult{{ID: "generation-first", Status: MatrixCellSuccess}}}
+	secondResult := &MatrixResult{PlanPath: "second.json", Cells: []MatrixCellResult{{ID: "generation-second", Status: MatrixCellSuccess}}}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := generateMatrixReviewWithWriter(context.Background(), MatrixReviewRequest{Result: firstResult, OutputDir: dir}, func(root rootfs.Root, name string, data []byte, perm os.FileMode) error {
+			if err := root.WriteFilePreservingMode(name, data, perm); err != nil {
+				return err
+			}
+			if name == "index.html" {
+				close(firstHTMLPublished)
+				<-releaseFirst
+			}
+			return nil
+		})
+		firstDone <- err
+	}()
+	<-firstHTMLPublished
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := generateMatrixReviewWithWriter(context.Background(), MatrixReviewRequest{Result: secondResult, OutputDir: dir}, func(root rootfs.Root, name string, data []byte, perm os.FileMode) error {
+			select {
+			case secondWriterEntered <- struct{}{}:
+			default:
+			}
+			return root.WriteFilePreservingMode(name, data, perm)
+		})
+		secondDone <- err
+	}()
+
+	select {
+	case <-secondWriterEntered:
+		t.Fatal("second review writer entered while the first pair was only partially published")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first GenerateMatrixReview() error = %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second GenerateMatrixReview() error = %v", err)
+	}
+
+	manifest, err := LoadMatrixReviewManifest(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v", err)
+	}
+	htmlData, err := os.ReadFile(filepath.Join(dir, "index.html"))
+	if err != nil {
+		t.Fatalf("ReadFile(index.html) error = %v", err)
+	}
+	if len(manifest.Cells) != 1 || manifest.Cells[0].ID != "generation-second" || !bytes.Contains(htmlData, []byte("generation-second")) {
+		t.Fatalf("published pair does not describe the same final generation: manifest=%+v html=%q", manifest.Cells, htmlData)
+	}
+}
+
+func TestAcquireMatrixReviewLockHonorsCancellationWhileWaiting(t *testing.T) {
+	root, err := openMatrixOutputRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("openMatrixOutputRoot() error = %v", err)
+	}
+	defer root.Close()
+	release, err := acquireMatrixReviewLock(context.Background(), root)
+	if err != nil {
+		t.Fatalf("first acquireMatrixReviewLock() error = %v", err)
+	}
+	defer func() {
+		if err := release(); err != nil {
+			t.Errorf("release matrix review lock: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err = acquireMatrixReviewLock(ctx, root)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second acquireMatrixReviewLock() error = %v, want context deadline", err)
+	}
+}
+
 func TestLoadMatrixReviewManifestRejectsOversizedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "manifest.json")
 	if err := os.WriteFile(path, []byte(strings.Repeat(" ", maxMatrixReviewBytes+1)), 0o644); err != nil {
