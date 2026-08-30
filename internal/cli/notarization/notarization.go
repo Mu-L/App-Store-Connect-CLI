@@ -32,14 +32,31 @@ var (
 	checkStaplerTargetContainedFn = func(root rootfs.Root, relative string) error {
 		return root.CheckContained(relative)
 	}
-	probeStaplerTargetKindFn     = probeStaplerTargetKind
-	openStaplerTargetDirectoryFn = func(root rootfs.Root, relative string) (*os.File, error) {
+	probeStaplerTargetKindFn      = probeStaplerTargetKind
+	openStaplerLexicalDirectoryFn = openStaplerSearchableDirectoryNoFollow
+	openStaplerTargetDirectoryFn  = func(root rootfs.Root, relative string) (*os.File, error) {
 		return root.OpenDir(relative)
 	}
 	openStaplerTargetFileFn = func(root rootfs.Root, relative string) (*os.File, error) {
 		return root.OpenFile(relative)
 	}
 )
+
+// SetOpenStaplerLexicalDirectoryForTesting replaces the rooted directory open
+// used to validate a raw lexical parent before filepath.Clean can erase it.
+// It exists so command-level tests can exercise traversal failures without
+// depending on host permissions or filesystem behavior.
+func SetOpenStaplerLexicalDirectoryForTesting(fn func(string) (*os.File, error)) func() {
+	previous := openStaplerLexicalDirectoryFn
+	if fn == nil {
+		openStaplerLexicalDirectoryFn = openStaplerSearchableDirectoryNoFollow
+	} else {
+		openStaplerLexicalDirectoryFn = fn
+	}
+	return func() {
+		openStaplerLexicalDirectoryFn = previous
+	}
+}
 
 // SetValidateStaplerTargetForTesting replaces target validation and returns a
 // restore function. It exists so command-level tests can exercise filesystem
@@ -818,6 +835,24 @@ func rejectSymlinkedLexicalParentTraversal(pathValue string) error {
 				}
 				if !info.IsDir() {
 					return errStaplerNonDirectoryLexicalParent
+				}
+				opened, err := openStaplerLexicalDirectoryFn(popped.path)
+				if err != nil {
+					return err
+				}
+				if opened == nil {
+					return errors.New("lexical parent directory open returned no handle")
+				}
+				openedInfo, statErr := opened.Stat()
+				closeErr := opened.Close()
+				if statErr != nil {
+					return statErr
+				}
+				if !openedInfo.IsDir() || !os.SameFile(info, openedInfo) {
+					return errors.New("lexical parent directory changed while checking search access")
+				}
+				if closeErr != nil {
+					return closeErr
 				}
 			}
 			components = components[:len(components)-1]

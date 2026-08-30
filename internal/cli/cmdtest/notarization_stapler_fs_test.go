@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
@@ -55,6 +56,48 @@ func TestNotarizationTargetFilesystemFailuresAreRuntime(t *testing.T) {
 				t.Fatalf("stderr = %q, want sanitized filesystem diagnostic", stderr)
 			}
 		})
+	}
+}
+
+func TestNotarizationUnsearchableLexicalParentIsRuntimeAndSkipsChild(t *testing.T) {
+	root := t.TempDir()
+	blocked := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatalf("create blocked parent: %v", err)
+	}
+	target := filepath.Join(root, "App.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	pathValue := blocked + string(filepath.Separator) + ".." + string(filepath.Separator) + "App.dmg"
+
+	calls := 0
+	restore := notarizationcli.SetOpenStaplerLexicalDirectoryForTesting(func(path string) (*os.File, error) {
+		calls++
+		if filepath.Clean(path) != blocked {
+			t.Fatalf("lexical directory path = %q, want %q", path, blocked)
+		}
+		return nil, syscall.EACCES
+	})
+	t.Cleanup(restore)
+	resetCmdtestState()
+
+	stdout, stderr := captureOutput(t, func() {
+		if code := rootcmd.Run([]string{"notarization", "validate", "--file", pathValue}, "4.12.0"); code != rootcmd.ExitError {
+			t.Fatalf("Run() exit code = %d, want runtime exit %d", code, rootcmd.ExitError)
+		}
+	})
+	if calls != 1 {
+		t.Fatalf("lexical directory opens = %d, want one pre-clean searchability check", calls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "could not inspect artifact filesystem") {
+		t.Fatalf("stderr = %q, want sanitized filesystem diagnostic", stderr)
+	}
+	if strings.Contains(stderr, pathValue) || strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not expose artifact path", stderr)
 	}
 }
 

@@ -2148,3 +2148,120 @@ func invokeStaplerStage(verifier localxcode.StaplerStageVerifier, operation loca
 func sharedProcessExitCodeForTest(err error) (int, bool) {
 	return shared.ProcessExitCode(err)
 }
+
+func TestValidateStaplerTargetRejectsUnsearchableLexicalParentBeforeClean(t *testing.T) {
+	root := t.TempDir()
+	blocked := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatalf("create blocked parent: %v", err)
+	}
+	target := filepath.Join(root, "App.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	pathValue := blocked + string(filepath.Separator) + ".." + string(filepath.Separator) + "App.dmg"
+
+	previous := openStaplerLexicalDirectoryFn
+	calls := 0
+	openStaplerLexicalDirectoryFn = func(path string) (*os.File, error) {
+		calls++
+		if filepath.Clean(path) != blocked {
+			t.Fatalf("lexical directory path = %q, want %q", path, blocked)
+		}
+		return nil, syscall.EACCES
+	}
+	t.Cleanup(func() { openStaplerLexicalDirectoryFn = previous })
+
+	validated, err := validateStaplerTargetDetails(pathValue)
+	if validated != nil {
+		validated.close()
+		t.Fatalf("validateStaplerTargetDetails() target = %#v, want nil", validated)
+	}
+	if !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, want EACCES", err)
+	}
+	if isStaplerTargetUsageError(err) {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, search failure must remain operational", err)
+	}
+	if calls != 1 {
+		t.Fatalf("lexical directory opens = %d, want one searchability check before cleaning", calls)
+	}
+
+	previousRunner := runStaplerValidate
+	runnerCalls := 0
+	runStaplerValidate = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		runnerCalls++
+		return nil, errors.New("stapler child must not start")
+	}
+	t.Cleanup(func() { runStaplerValidate = previousRunner })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", pathValue, "--output", "json"}); err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	var runErr error
+	stdout, _ := captureNotarizationOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+	})
+	if runErr == nil || isStaplerTargetUsageError(runErr) {
+		t.Fatalf("validate command error = %v, want operational filesystem failure", runErr)
+	}
+	if runnerCalls != 0 {
+		t.Fatalf("stapler child calls = %d, want zero", runnerCalls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if calls != 2 {
+		t.Fatalf("lexical directory opens = %d, want one per validation", calls)
+	}
+}
+
+func TestRejectSymlinkedLexicalParentTraversalChecksSearchPermissionWithoutRequiringRead(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("search-only directory semantics are covered on Darwin and Linux")
+	}
+	root := t.TempDir()
+	blocked := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatalf("create lexical parent: %v", err)
+	}
+	pathValue := blocked + string(filepath.Separator) + ".." + string(filepath.Separator) + "App.dmg"
+
+	if err := os.Chmod(blocked, 0o444); err != nil {
+		t.Fatalf("remove lexical parent search permission: %v", err)
+	}
+	if err := rejectSymlinkedLexicalParentTraversal(pathValue); !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("unsearchable lexical parent error = %v, want EACCES", err)
+	}
+
+	if err := os.Chmod(blocked, 0o111); err != nil {
+		t.Fatalf("grant search-only lexical parent permission: %v", err)
+	}
+	if err := rejectSymlinkedLexicalParentTraversal(pathValue); err != nil {
+		t.Fatalf("search-only lexical parent rejected: %v", err)
+	}
+}
+
+func TestRejectSymlinkedLexicalParentTraversalRejectsOpenedDirectoryIdentityChange(t *testing.T) {
+	root := t.TempDir()
+	original := filepath.Join(root, "original")
+	replacement := filepath.Join(root, "replacement")
+	if err := os.Mkdir(original, 0o700); err != nil {
+		t.Fatalf("create original directory: %v", err)
+	}
+	if err := os.Mkdir(replacement, 0o700); err != nil {
+		t.Fatalf("create replacement directory: %v", err)
+	}
+	pathValue := original + string(filepath.Separator) + ".." + string(filepath.Separator) + "App.dmg"
+
+	previous := openStaplerLexicalDirectoryFn
+	openStaplerLexicalDirectoryFn = func(string) (*os.File, error) {
+		return os.Open(replacement)
+	}
+	t.Cleanup(func() { openStaplerLexicalDirectoryFn = previous })
+
+	if err := rejectSymlinkedLexicalParentTraversal(pathValue); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("directory identity change error = %v, want fail-closed race error", err)
+	}
+}
