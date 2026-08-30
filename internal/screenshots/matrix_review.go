@@ -1,6 +1,7 @@
 package screenshots
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -255,7 +256,7 @@ func LoadMatrixReviewManifest(path string) (*MatrixReviewManifest, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return nil, fmt.Errorf("parse matrix review manifest: %w", err)
 	}
-	if err := validateMatrixReviewHTMLDigest(filepath.Join(filepath.Dir(path), "index.html"), manifest.HTMLSHA256); err != nil {
+	if err := validateMatrixReviewPairForHTML(filepath.Join(filepath.Dir(path), "index.html")); err != nil {
 		return nil, err
 	}
 	return &manifest, nil
@@ -287,23 +288,40 @@ func validateMatrixReviewPairForHTML(path string) error {
 	if filepath.Base(path) != "index.html" {
 		return nil
 	}
-	manifestPath := filepath.Join(filepath.Dir(path), "manifest.json")
-	file, err := rootfs.OpenFile(manifestPath)
-	if errors.Is(err, os.ErrNotExist) {
+	htmlFile, err := rootfs.OpenFile(path)
+	if err != nil {
 		return nil
 	}
+	htmlData, readErr := io.ReadAll(io.LimitReader(htmlFile, maxMatrixReviewBytes+1))
+	closeErr := htmlFile.Close()
+	if readErr != nil || closeErr != nil || len(htmlData) > maxMatrixReviewBytes {
+		return nil
+	}
+	matrixMarked := bytes.Contains(htmlData, []byte(`<meta name="asc-matrix-review" content="1">`))
+	manifestPath := filepath.Join(filepath.Dir(path), "manifest.json")
+	file, err := rootfs.OpenFile(manifestPath)
 	if err != nil {
+		if matrixMarked {
+			return errors.New("matrix review HTML does not match manifest")
+		}
 		return nil
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, maxMatrixReviewBytes+1))
 	if err != nil || len(data) > maxMatrixReviewBytes {
+		if matrixMarked {
+			return errors.New("matrix review HTML does not match manifest")
+		}
 		return nil
 	}
 	var binding struct {
 		HTMLSHA256 string `json:"htmlSha256"`
 	}
 	if err := json.Unmarshal(data, &binding); err != nil || strings.TrimSpace(binding.HTMLSHA256) == "" {
+		if matrixMarked {
+			return errors.New("matrix review HTML does not match manifest")
+		}
+		// Non-matrix and pre-binding review pairs remain backward compatible.
 		return nil
 	}
 	return validateMatrixReviewHTMLDigest(path, binding.HTMLSHA256)
@@ -312,6 +330,7 @@ func validateMatrixReviewPairForHTML(path string) error {
 func renderMatrixReviewHTML(manifest MatrixReviewManifest) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
+	b.WriteString("<meta name=\"asc-matrix-review\" content=\"1\">\n")
 	b.WriteString("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n")
 	b.WriteString("<title>Screenshot matrix review</title>\n<style>")
 	b.WriteString("body{font:14px system-ui,sans-serif;margin:2rem;color:#202124;background:#fff}table{border-collapse:collapse;width:100%}th,td{border:1px solid #dadce0;padding:.5rem;text-align:left;vertical-align:top}th{background:#f8f9fa}.success{color:#137333}.failed,.cleanup_failed{color:#b31412}.canceled{color:#8a4b08}.missing{color:#b31412;font-weight:600}ul{margin:.25rem 0;padding-left:1.2rem}a{word-break:break-all}img{display:block;max-width:240px;max-height:420px;margin:.25rem 0;border:1px solid #dadce0}")

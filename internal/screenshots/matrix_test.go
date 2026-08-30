@@ -1217,6 +1217,42 @@ func TestMatrixReviewConsumersRejectMixedHTMLAndManifest(t *testing.T) {
 	}
 }
 
+func TestOpenMatrixReviewRejectsPublishedHTMLWithoutBoundManifest(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		manifest   []byte
+		removeFile bool
+	}{
+		{name: "manifest missing after HTML publication", removeFile: true},
+		{name: "legacy manifest left beside new HTML", manifest: []byte(`{"planPath":"old.json"}`)},
+		{name: "malformed manifest left beside new HTML", manifest: []byte(`{"htmlSha256":`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			result := &MatrixResult{PlanPath: "new.json", Cells: []MatrixCellResult{{ID: "new-generation", Status: MatrixCellSuccess}}}
+			if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: result, OutputDir: dir}); err != nil {
+				t.Fatalf("GenerateMatrixReview() error = %v", err)
+			}
+			manifestPath := filepath.Join(dir, "manifest.json")
+			if test.removeFile {
+				if err := os.Remove(manifestPath); err != nil {
+					t.Fatalf("Remove(manifest.json) error = %v", err)
+				}
+			} else if err := os.WriteFile(manifestPath, test.manifest, 0o644); err != nil {
+				t.Fatalf("WriteFile(manifest.json) error = %v", err)
+			}
+			if _, err := OpenReview(context.Background(), ReviewOpenRequest{OutputDir: dir, DryRun: true}); err == nil || strings.Contains(err.Error(), dir) {
+				t.Fatalf("OpenReview() error = %v, want stable unbound-generation rejection", err)
+			}
+			if !test.removeFile {
+				if _, err := LoadMatrixReviewManifest(manifestPath); err == nil || strings.Contains(err.Error(), dir) {
+					t.Fatalf("LoadMatrixReviewManifest() error = %v, want stable unbound-generation rejection", err)
+				}
+			}
+		})
+	}
+}
+
 func TestAcquireMatrixReviewLockHonorsCancellationWhileWaiting(t *testing.T) {
 	root, err := openMatrixOutputRoot(t.TempDir())
 	if err != nil {
