@@ -545,7 +545,7 @@ func TestValidateMatrixPlan_RejectsUnsafeAndConflictingValues(t *testing.T) {
 		},
 		{
 			name: "too many cells",
-			plan: MatrixPlan{Version: 1, Devices: makeMatrixDevices(17), Locales: makeStrings(16, "en-US"), Appearances: []string{"light"}, ContentVariants: []MatrixContentVariant{{ID: "default"}}},
+			plan: MatrixPlan{Version: 1, Devices: makeMatrixDevices(17), Locales: makeMatrixLocales(16), Appearances: []string{"light"}, ContentVariants: []MatrixContentVariant{{ID: "default"}}},
 			want: "256",
 		},
 	}
@@ -603,6 +603,24 @@ func TestBuildLocaleLaunchArgumentsPreservesScriptSubtags(t *testing.T) {
 			}
 			if !reflect.DeepEqual(args, tt.want) {
 				t.Fatalf("BuildLocaleLaunchArguments(%q) = %v, want %v", tt.locale, args, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildLocaleLaunchArgumentsRejectsMalformedSubtagStructure(t *testing.T) {
+	for _, locale := range []string{"en-12", "en-USA", "en-US-Latn", "en-Latn-US-extra", "en--US"} {
+		t.Run(locale, func(t *testing.T) {
+			if _, err := BuildLocaleLaunchArguments(locale); err == nil {
+				t.Fatalf("BuildLocaleLaunchArguments(%q) error = nil, want malformed locale rejection", locale)
+			}
+		})
+	}
+
+	for _, locale := range []string{"en", "en-US", "es-419", "zh-Hans", "zh-Hans-CN"} {
+		t.Run("valid_"+locale, func(t *testing.T) {
+			if _, err := BuildLocaleLaunchArguments(locale); err != nil {
+				t.Fatalf("BuildLocaleLaunchArguments(%q) error = %v, want valid locale", locale, err)
 			}
 		})
 	}
@@ -1968,10 +1986,10 @@ func makeMatrixDevices(count int) []MatrixDevice {
 	return devices
 }
 
-func makeStrings(count int, value string) []string {
+func makeMatrixLocales(count int) []string {
 	values := make([]string, count)
 	for i := range values {
-		values[i] = value + "-" + string([]rune{'A' + rune(i/26), 'A' + rune(i%26)})
+		values[i] = fmt.Sprintf("en-%03d", i+1)
 	}
 	return values
 }

@@ -2212,16 +2212,18 @@ func normalizeMatrixLocale(value string) (string, error) {
 		return "", fmt.Errorf("locale %q must start with a language code such as en or en-US", value)
 	}
 	parts[0] = strings.ToLower(parts[0])
-	for i := 1; i < len(parts); i++ {
-		if parts[i] == "" || len(parts[i]) < 2 || len(parts[i]) > 4 || !isASCIIAlphaNumeric(parts[i]) {
-			return "", fmt.Errorf("locale %q contains an invalid region or script", value)
-		}
-		if len(parts[i]) == 2 || len(parts[i]) == 3 && isASCIIDigit(parts[i]) {
-			parts[i] = strings.ToUpper(parts[i])
-		} else {
-			part := strings.ToLower(parts[i])
-			parts[i] = strings.ToUpper(part[:1]) + part[1:]
-		}
+	next := 1
+	if next < len(parts) && len(parts[next]) == 4 && isASCIIAlpha(parts[next]) {
+		part := strings.ToLower(parts[next])
+		parts[next] = strings.ToUpper(part[:1]) + part[1:]
+		next++
+	}
+	if next < len(parts) && (len(parts[next]) == 2 && isASCIIAlpha(parts[next]) || len(parts[next]) == 3 && isASCIIDigit(parts[next])) {
+		parts[next] = strings.ToUpper(parts[next])
+		next++
+	}
+	if next != len(parts) {
+		return "", fmt.Errorf("locale %q must contain at most one script followed by one region", value)
 	}
 	return strings.Join(parts, "-"), nil
 }
@@ -2238,15 +2240,6 @@ func isASCIIAlpha(value string) bool {
 func isASCIIDigit(value string) bool {
 	for _, r := range value {
 		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func isASCIIAlphaNumeric(value string) bool {
-	for _, r := range value {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
 			return false
 		}
 	}
