@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bitrise-io/go-xcode/xcodeproject/serialized"
 	"github.com/google/uuid"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
@@ -364,7 +365,6 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	}
 	selectedIDs := make(map[string]bool, len(requests))
 	requestedSettings := make(map[string]map[string]bool, len(requests))
-	requestedValues := make(map[string]map[string]*string, len(requests))
 	for _, request := range requests {
 		configuration, configurationErr := signingConfigurationFor(project, request.target, request.configuration)
 		if configurationErr == nil {
@@ -372,12 +372,8 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			if requestedSettings[configuration.id] == nil {
 				requestedSettings[configuration.id] = make(map[string]bool)
 			}
-			if requestedValues[configuration.id] == nil {
-				requestedValues[configuration.id] = make(map[string]*string)
-			}
 			for _, setting := range request.settings {
 				requestedSettings[configuration.id][setting.key] = true
-				requestedValues[configuration.id][setting.key] = cloneSigningString(setting.value)
 			}
 		}
 	}
@@ -526,7 +522,6 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 				fileConsumers,
 				fileIdentities,
 				requestedSettings,
-				requestedValues,
 				uncertainConsumers,
 				opts.AllowExternalXCConfig,
 				lexicalConfigPaths,
@@ -538,49 +533,57 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 				plan.Blockers = append(plan.Blockers, blocker)
 				continue
 			}
-			if candidate.mode != "" {
+			// Keep no-op candidates for the staged resolution pass. A setting
+			// whose current value is correct can become a real operation after
+			// another requested setting changes one of its references.
+			if candidate.mode != "" || candidate.noOp {
 				candidates = append(candidates, candidate)
 			}
 		}
 	}
 
-	// A shared xcconfig can only be changed once. If selected configurations
-	// require different values, narrow each operation to its target instead of
-	// rewriting a value that would affect another configuration.
-	resolveSigningSharedCandidates(candidates, fileIdentities)
-	resolver := newSigningSettingResolver(project, configFiles, opts.AllowExternalXCConfig, lexicalConfigPaths)
-	operations := make([]signingPlanOperation, 0, len(candidates))
-	for index := range candidates {
-		candidate := &candidates[index]
-		if candidate.mode == "" || candidate.noOp {
-			continue
+	var operations []signingPlanOperation
+	var operationBlockers []string
+	converged := false
+	maxIterations := len(candidates) + 1
+	for iteration := 0; iteration < maxIterations; iteration++ {
+		operations, operationBlockers = buildSigningPlanOperations(
+			project,
+			candidates,
+			configFiles,
+			fileIdentities,
+			opts.AllowExternalXCConfig,
+			lexicalConfigPaths,
+		)
+		if len(operationBlockers) > 0 {
+			break
 		}
-		if candidate.mode == "xcconfig" {
-			var validationErr error
-			for _, path := range candidate.paths {
-				if err := validateSigningXCConfigWrite(resolver, path, candidate.setting, candidate.desired); err != nil {
-					validationErr = err
-					break
-				}
-			}
-			if validationErr != nil {
-				plan.Blockers = append(plan.Blockers, signingSettingBlocker(candidate.configuration, candidate.setting, validationErr))
-				continue
-			}
-			for _, path := range candidate.paths {
-				operations = append(operations, signingPlanOperation{
-					SigningSettingChange: signingChange(candidate, path, "xcconfig"),
-					configuration:        candidate.configuration,
-				})
-			}
-			continue
+		stagedProject, stagedResolver, stageErr := stageSigningPlan(
+			project,
+			operations,
+			configFiles,
+			fileIdentities,
+			opts.AllowExternalXCConfig,
+			lexicalConfigPaths,
+		)
+		if stageErr != nil {
+			operationBlockers = append(operationBlockers, fmt.Sprintf("stage signing plan: %v", stageErr))
+			break
 		}
-		operations = append(operations, signingPlanOperation{
-			SigningSettingChange: signingChange(candidate, project.pbxprojPath, "pbxproj"),
-			configuration:        candidate.configuration,
-		})
+		reclassified, resolutionBlockers := reclassifySigningNoOps(candidates, stagedProject, stagedResolver)
+		if len(resolutionBlockers) > 0 {
+			operationBlockers = append(operationBlockers, resolutionBlockers...)
+			break
+		}
+		if reclassified == 0 {
+			converged = true
+			break
+		}
 	}
-	sortSigningPlanOperations(operations)
+	plan.Blockers = append(plan.Blockers, operationBlockers...)
+	if !converged && len(operationBlockers) == 0 {
+		plan.Blockers = append(plan.Blockers, "could not resolve signing settings after staged dependency pass")
+	}
 	plan.Changes = make([]SigningSettingChange, 0, len(operations))
 	for _, operation := range operations {
 		plan.Changes = append(plan.Changes, operation.SigningSettingChange)
@@ -962,7 +965,6 @@ func inspectSigningCandidate(
 	fileConsumers map[string]map[string]bool,
 	fileIdentities map[string]string,
 	requestedSettings map[string]map[string]bool,
-	requestedValues map[string]map[string]*string,
 	uncertainConsumers bool,
 	allowExternal bool,
 	lexicalConfigPaths map[string][]string,
@@ -986,14 +988,6 @@ func inspectSigningCandidate(
 		candidate.old = stringPtr(old)
 		candidate.resolution = "direct"
 		if signingValuesEqual(setting.value, candidate.old) {
-			if signingDirectValueDependsOnRequestedChange(configuration, setting.key, requestedValues[configuration.id], resolver) {
-				// The requested effective value currently happens to match the
-				// resolved direct assignment, but that assignment references a
-				// setting changed by this same plan. Materialize the requested
-				// value so the dependent edit cannot silently change this setting.
-				candidate.mode = "pbxproj"
-				return candidate, "", ""
-			}
 			// A direct assignment that still defers to $(inherited) keeps a live
 			// dependency on the xcconfig supplying that value. Retain it as a
 			// no-op consumer so shared-file resolution can see the disagreement
@@ -1006,28 +1000,11 @@ func inspectSigningCandidate(
 					return candidate, signingSettingBlocker(configuration, setting.key, assignmentErr), ""
 				}
 				if len(assignmentFiles) > 0 {
-					depends, dependencyErr := signingXCConfigValueDependsOnRequestedChange(
-						configuration,
-						setting.key,
-						assignmentFiles,
-						requestedValues[configuration.id],
-						resolver,
-					)
-					if dependencyErr != nil {
-						return candidate, signingSettingBlocker(configuration, setting.key, dependencyErr), ""
-					}
-					if depends {
-						// The direct assignment inherits a lower xcconfig value
-						// that depends on another requested change. Preserve this
-						// configuration's current effective value explicitly.
-						candidate.mode = "pbxproj"
-						return candidate, "", ""
-					}
 					candidate.mode = "xcconfig"
 					candidate.paths = append(candidate.paths, assignmentFiles...)
-					candidate.noOp = true
 				}
 			}
+			candidate.noOp = true
 			return candidate, "", ""
 		}
 		candidate.mode = "pbxproj"
@@ -1053,46 +1030,11 @@ func inspectSigningCandidate(
 	}
 	if signingValuesEqual(setting.value, candidate.old) {
 		if len(assignmentFiles) > 0 && setting.value != nil {
-			depends, dependencyErr := signingXCConfigValueDependsOnRequestedChange(
-				configuration,
-				setting.key,
-				assignmentFiles,
-				requestedValues[configuration.id],
-				resolver,
-			)
-			if dependencyErr != nil {
-				return candidate, signingSettingBlocker(configuration, setting.key, dependencyErr), ""
-			}
-			if depends {
-				// The requested effective value currently happens to match the
-				// resolved xcconfig value, but that assignment references a
-				// setting changed by this same plan. Materialize the requested
-				// value so the dependent edit cannot silently change this setting.
-				candidate.mode = "pbxproj"
-				return candidate, "", ""
-			}
 			candidate.mode = "xcconfig"
 			candidate.paths = append(candidate.paths, assignmentFiles...)
 			candidate.noOp = true
 		}
-		if len(assignmentFiles) == 0 && setting.value != nil {
-			depends, dependencyErr := signingRawSettingDependsOnRequestedChange(
-				configuration,
-				setting.key,
-				requestedValues[configuration.id],
-				resolver,
-			)
-			if dependencyErr != nil {
-				return candidate, signingSettingBlocker(configuration, setting.key, dependencyErr), ""
-			}
-			if depends {
-				// The matching value is supplied by a project-level fallback or
-				// another inherited layer. Materialize it before a dependent
-				// requested setting can change that fallback's effective value.
-				candidate.mode = "pbxproj"
-				return candidate, "", ""
-			}
-		}
+		candidate.noOp = true
 		return candidate, "", ""
 	}
 
@@ -1155,303 +1097,6 @@ func signingDirectValueInherits(configuration *versionConfiguration, setting str
 	return false
 }
 
-// signingDirectValueDependsOnRequestedChange reports whether a direct
-// assignment references another setting whose requested value changes from
-// the value currently resolved in this configuration. A matching no-op must
-// be materialized in that case; otherwise a later dependent edit can change
-// the effective value of the supposedly untouched setting.
-func signingDirectValueDependsOnRequestedChange(
-	configuration *versionConfiguration,
-	setting string,
-	settingValues map[string]*string,
-	resolver *signingSettingResolver,
-) bool {
-	if configuration == nil || resolver == nil || len(settingValues) == 0 {
-		return false
-	}
-	for _, key := range matchingBuildSettingKeys(configuration.buildSettings, setting) {
-		value, ok := configuration.buildSettings[key].(string)
-		if !ok {
-			continue
-		}
-		if signingValueDependsOnRequestedChange(
-			configuration,
-			setting,
-			value,
-			settingValues,
-			resolver,
-			map[string]bool{setting: true},
-			0,
-			"direct",
-		) {
-			return true
-		}
-	}
-	return false
-}
-
-type signingRawSettingValue struct {
-	value  string
-	source string
-}
-
-// signingValueDependsOnRequestedChange walks the complete build-setting
-// reference graph rooted at value. A no-op is unsafe when any transitive
-// reference reaches a requested setting whose effective value will change.
-// Resolution or graph-inspection failures conservatively report a dependency
-// so an uncertain no-op is materialized instead of silently changing later.
-func signingValueDependsOnRequestedChange(
-	configuration *versionConfiguration,
-	setting string,
-	value string,
-	settingValues map[string]*string,
-	resolver *signingSettingResolver,
-	stack map[string]bool,
-	depth int,
-	source string,
-) bool {
-	for _, match := range signingReferencePattern.FindAllStringSubmatch(value, -1) {
-		name := match[1]
-		if name == "" {
-			name = match[3]
-		}
-		if name == "" {
-			continue
-		}
-		if name == "inherited" {
-			if depth == 0 {
-				continue
-			}
-			values, err := signingRawInheritedSettingValues(configuration, setting, source, resolver)
-			if err != nil {
-				return true
-			}
-			for _, lowerValue := range values {
-				if signingValueDependsOnRequestedChange(
-					configuration,
-					setting,
-					lowerValue.value,
-					settingValues,
-					resolver,
-					stack,
-					depth+1,
-					lowerValue.source,
-				) {
-					return true
-				}
-			}
-			continue
-		}
-		if stack[name] {
-			return true
-		}
-		nextStack := make(map[string]bool, len(stack)+1)
-		for key, present := range stack {
-			nextStack[key] = present
-		}
-		nextStack[name] = true
-		desired, requested := settingValues[name]
-		if requested {
-			current, _, err := resolver.resolveSetting(configuration, name)
-			if err != nil || !signingValuesEqual(stringPtr(current), desired) {
-				return true
-			}
-		}
-		values, err := signingRawSettingValues(configuration, name, resolver)
-		if err != nil {
-			return true
-		}
-		for _, referencedValue := range values {
-			if signingValueDependsOnRequestedChange(
-				configuration,
-				name,
-				referencedValue.value,
-				settingValues,
-				resolver,
-				nextStack,
-				depth+1,
-				referencedValue.source,
-			) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func signingRawSettingValues(
-	configuration *versionConfiguration,
-	setting string,
-	resolver *signingSettingResolver,
-) ([]signingRawSettingValue, error) {
-	if configuration == nil || resolver == nil {
-		return nil, fmt.Errorf("cannot inspect %s dependencies without a resolver", setting)
-	}
-	if keys := matchingBuildSettingKeys(configuration.buildSettings, setting); len(keys) > 0 {
-		values := make([]signingRawSettingValue, 0, len(keys))
-		for _, key := range keys {
-			value, ok := configuration.buildSettings[key].(string)
-			if !ok {
-				return nil, fmt.Errorf("%s has a non-string build setting value", key)
-			}
-			values = append(values, signingRawSettingValue{value: value, source: "direct"})
-		}
-		return values, nil
-	}
-
-	paths := resolver.configFiles[configuration.id]
-	if len(paths) > 0 {
-		values, err := signingRawXCConfigSettingValues(configuration, setting, resolver)
-		if err != nil {
-			return nil, err
-		}
-		if len(values) > 0 {
-			return values, nil
-		}
-	}
-
-	if !configuration.projectLevel {
-		return signingRawSettingValues(resolver.project.projectConfiguration(configuration.name), setting, resolver)
-	}
-	return nil, nil
-}
-
-func signingRawInheritedSettingValues(
-	configuration *versionConfiguration,
-	setting, source string,
-	resolver *signingSettingResolver,
-) ([]signingRawSettingValue, error) {
-	if source == "xcconfig" {
-		if configuration == nil || configuration.projectLevel {
-			return nil, nil
-		}
-		return signingRawSettingValues(resolver.project.projectConfiguration(configuration.name), setting, resolver)
-	}
-	if configuration == nil {
-		return nil, fmt.Errorf("cannot inspect %s inherited dependency without a configuration", setting)
-	}
-	if configuration.baseReferenceID != "" {
-		values, err := signingRawXCConfigSettingValues(configuration, setting, resolver)
-		if err != nil {
-			return nil, err
-		}
-		if len(values) > 0 {
-			return values, nil
-		}
-	}
-	if !configuration.projectLevel {
-		return signingRawSettingValues(resolver.project.projectConfiguration(configuration.name), setting, resolver)
-	}
-	return nil, nil
-}
-
-func signingRawXCConfigSettingValues(
-	configuration *versionConfiguration,
-	setting string,
-	resolver *signingSettingResolver,
-) ([]signingRawSettingValue, error) {
-	paths := resolver.configFiles[configuration.id]
-	if len(paths) == 0 {
-		return nil, nil
-	}
-	defining, err := xcconfigFilesDefiningWithReader(paths, setting, resolver.readXCConfig)
-	if err != nil {
-		return nil, err
-	}
-	values := make([]signingRawSettingValue, 0, len(defining))
-	for _, path := range defining {
-		data, err := resolver.readXCConfig(path)
-		if err != nil {
-			return nil, err
-		}
-		document, err := parseXCConfig(data)
-		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
-		}
-		for _, assignment := range document.assignments {
-			if assignment.baseKey == setting {
-				values = append(values, signingRawSettingValue{value: assignment.value, source: "xcconfig"})
-			}
-		}
-	}
-	return values, nil
-}
-
-func signingRawSettingDependsOnRequestedChange(
-	configuration *versionConfiguration,
-	setting string,
-	settingValues map[string]*string,
-	resolver *signingSettingResolver,
-) (bool, error) {
-	if configuration == nil || resolver == nil || len(settingValues) == 0 {
-		return false, nil
-	}
-	values, err := signingRawSettingValues(configuration, setting, resolver)
-	if err != nil {
-		return false, err
-	}
-	for _, raw := range values {
-		if signingValueDependsOnRequestedChange(
-			configuration,
-			setting,
-			raw.value,
-			settingValues,
-			resolver,
-			map[string]bool{setting: true},
-			0,
-			raw.source,
-		) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// signingXCConfigValueDependsOnRequestedChange reports whether an assignment
-// that currently supplies a matching no-op value references another setting
-// whose requested value changes. Rewriting that other assignment would change
-// the effective value of this setting unless the no-op is materialized at the
-// target level.
-func signingXCConfigValueDependsOnRequestedChange(
-	configuration *versionConfiguration,
-	setting string,
-	paths []string,
-	settingValues map[string]*string,
-	resolver *signingSettingResolver,
-) (bool, error) {
-	if configuration == nil || resolver == nil || len(paths) == 0 || len(settingValues) == 0 {
-		return false, nil
-	}
-	for _, path := range paths {
-		data, err := resolver.readXCConfig(path)
-		if err != nil {
-			return false, fmt.Errorf("read xcconfig %s while checking %s dependencies: %w", path, setting, err)
-		}
-		document, err := parseXCConfig(data)
-		if err != nil {
-			return false, fmt.Errorf("parse %s while checking %s dependencies: %w", path, setting, err)
-		}
-		for _, assignment := range document.assignments {
-			if assignment.baseKey != setting {
-				continue
-			}
-			if signingValueDependsOnRequestedChange(
-				configuration,
-				setting,
-				assignment.value,
-				settingValues,
-				resolver,
-				map[string]bool{setting: true},
-				0,
-				"xcconfig",
-			) {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
 func signingValueInherits(value string) bool {
 	return strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}")
 }
@@ -1490,6 +1135,10 @@ type signingSettingResolver struct {
 	lexicalConfigPaths map[string][]string
 	authorizedPath     map[string]bool
 	allowExternal      bool
+	// stagedXCConfig contains private bytes for xcconfigs changed by the
+	// current planning pass. The map is keyed by normalized lexical path;
+	// source existence and authorization remain bound to the collected files.
+	stagedXCConfig map[string][]byte
 }
 
 func newSigningSettingResolver(project *structuredVersionProject, configFiles map[string][]string, allowExternal bool, lexicalConfigPaths map[string][]string) *signingSettingResolver {
@@ -1515,6 +1164,11 @@ func (resolver *signingSettingResolver) readXCConfig(path string) ([]byte, error
 	}
 	if err := resolver.authorizeXCConfigPath(absolute); err != nil {
 		return nil, err
+	}
+	if resolver.stagedXCConfig != nil {
+		if data, ok := resolver.stagedXCConfig[absolute]; ok {
+			return append([]byte(nil), data...), nil
+		}
 	}
 	return signingXCConfigReadFileFn(absolute, signingPlanMaxBytes)
 }
@@ -1864,6 +1518,266 @@ func resolveSigningSharedCandidates(candidates []signingCandidate, fileIdentitie
 				break
 			}
 		}
+	}
+}
+
+// buildSigningPlanOperations materializes the current candidate decisions
+// into concrete operations. It deliberately runs shared-file arbitration on
+// every pass: a candidate promoted to a target-level override must no longer
+// participate as an xcconfig write in a later pass.
+func buildSigningPlanOperations(
+	project *structuredVersionProject,
+	candidates []signingCandidate,
+	configFiles map[string][]string,
+	fileIdentities map[string]string,
+	allowExternal bool,
+	lexicalConfigPaths map[string][]string,
+) ([]signingPlanOperation, []string) {
+	resolveSigningSharedCandidates(candidates, fileIdentities)
+	resolver := newSigningSettingResolver(project, configFiles, allowExternal, lexicalConfigPaths)
+	operations := make([]signingPlanOperation, 0, len(candidates))
+	var blockers []string
+	for index := range candidates {
+		candidate := &candidates[index]
+		if candidate.mode == "" || candidate.noOp {
+			continue
+		}
+		if candidate.mode == "xcconfig" {
+			var validationErr error
+			for _, path := range candidate.paths {
+				if err := validateSigningXCConfigWrite(resolver, path, candidate.setting, candidate.desired); err != nil {
+					validationErr = err
+					break
+				}
+			}
+			if validationErr != nil {
+				blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, validationErr))
+				continue
+			}
+			for _, path := range candidate.paths {
+				operations = append(operations, signingPlanOperation{
+					SigningSettingChange: signingChange(candidate, path, "xcconfig"),
+					configuration:        candidate.configuration,
+				})
+			}
+			continue
+		}
+		operations = append(operations, signingPlanOperation{
+			SigningSettingChange: signingChange(candidate, project.pbxprojPath, "pbxproj"),
+			configuration:        candidate.configuration,
+		})
+	}
+	sortSigningPlanOperations(operations)
+	sort.Strings(blockers)
+	return operations, blockers
+}
+
+// stageSigningPlan applies all concrete operations to a private project copy
+// and xcconfig byte overlay. The source project and files are never mutated;
+// the resulting resolver therefore observes the same state that apply will
+// publish if the plan converges.
+func stageSigningPlan(
+	project *structuredVersionProject,
+	operations []signingPlanOperation,
+	configFiles map[string][]string,
+	fileIdentities map[string]string,
+	allowExternal bool,
+	lexicalConfigPaths map[string][]string,
+) (*structuredVersionProject, *signingSettingResolver, error) {
+	stagedProject := cloneSigningStructuredVersionProject(project)
+	configurations := make(map[string]*versionConfiguration, len(stagedProject.configurations))
+	for _, configuration := range stagedProject.configurations {
+		if configuration != nil {
+			configurations[configuration.id] = configuration
+		}
+	}
+	for _, operation := range operations {
+		if operation.Source != "pbxproj" {
+			continue
+		}
+		if operation.configuration == nil {
+			return nil, nil, fmt.Errorf("missing configuration for %s", operation.Setting)
+		}
+		configuration := configurations[operation.configuration.id]
+		if configuration == nil {
+			return nil, nil, fmt.Errorf("configuration %s is missing from staged project", operation.configuration.id)
+		}
+		stagedOperation := operation
+		stagedOperation.configuration = configuration
+		if err := applySigningPBXOperation(stagedOperation); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	resolver := newSigningSettingResolver(stagedProject, configFiles, allowExternal, lexicalConfigPaths)
+	overlayByIdentity := make(map[string][]byte)
+	for _, operation := range operations {
+		if operation.Source != "xcconfig" {
+			continue
+		}
+		if operation.NewValue == nil {
+			return nil, nil, fmt.Errorf("xcconfig removal is not supported for %s", operation.Setting)
+		}
+		identityKey := signingXCConfigOperationKey(operation.Path, fileIdentities)
+		data, ok := overlayByIdentity[identityKey]
+		if !ok {
+			var err error
+			data, err = resolver.readXCConfig(operation.Path)
+			if err != nil {
+				return nil, nil, fmt.Errorf("read xcconfig %s while staging: %w", operation.Path, err)
+			}
+		}
+		updated, _, _, err := editXCConfig(data, operation.Setting, *operation.NewValue)
+		if err != nil {
+			return nil, nil, fmt.Errorf("edit xcconfig %s while staging: %w", operation.Path, err)
+		}
+		if _, err := parseXCConfig(updated); err != nil {
+			return nil, nil, fmt.Errorf("validate xcconfig %s while staging: %w", operation.Path, err)
+		}
+		overlayByIdentity[identityKey] = append([]byte(nil), updated...)
+	}
+
+	// A case-insensitive filesystem may expose one collected file under more
+	// than one lexical spelling. Mirror the staged bytes to every collected
+	// spelling that has the same identity so resolver reads cannot escape the
+	// overlay on the next pass.
+	overlay := make(map[string][]byte, len(overlayByIdentity))
+	for _, paths := range configFiles {
+		for _, path := range paths {
+			identityKey := signingXCConfigOperationKey(path, fileIdentities)
+			data, ok := overlayByIdentity[identityKey]
+			if !ok {
+				continue
+			}
+			overlay[normalizeSigningLexicalPath(path)] = append([]byte(nil), data...)
+		}
+	}
+	resolver.stagedXCConfig = overlay
+	return stagedProject, resolver, nil
+}
+
+// reclassifySigningNoOps validates every requested setting against the fully
+// staged project. A no-op whose effective value changed is promoted to a
+// target-level literal operation; preserving the original candidate metadata
+// keeps the public plan's old-value and resolution fields stable.
+func reclassifySigningNoOps(
+	candidates []signingCandidate,
+	stagedProject *structuredVersionProject,
+	resolver *signingSettingResolver,
+) (int, []string) {
+	configurations := make(map[string]*versionConfiguration, len(stagedProject.configurations))
+	for _, configuration := range stagedProject.configurations {
+		if configuration != nil {
+			configurations[configuration.id] = configuration
+		}
+	}
+	reclassified := 0
+	var blockers []string
+	for index := range candidates {
+		candidate := &candidates[index]
+		if candidate.configuration == nil {
+			blockers = append(blockers, fmt.Sprintf("cannot stage signing setting %s without a configuration", candidate.setting))
+			continue
+		}
+		configuration := configurations[candidate.configuration.id]
+		if configuration == nil {
+			blockers = append(blockers, fmt.Sprintf("target %q configuration %q is missing from staged signing project", candidate.configuration.target, candidate.configuration.name))
+			continue
+		}
+		if candidate.desired == nil {
+			if len(matchingBuildSettingKeys(configuration.buildSettings, candidate.setting)) > 0 {
+				blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, errors.New("staged project still has a direct assignment")))
+				continue
+			}
+			if _, _, err := resolver.resolveSetting(configuration, candidate.setting); err != nil && !errors.Is(err, errVersionSettingNotFound) {
+				blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, err))
+			}
+			continue
+		}
+
+		resolved, _, err := resolver.resolveSetting(configuration, candidate.setting)
+		if err != nil {
+			if errors.Is(err, errVersionSettingNotFound) && candidate.noOp {
+				candidate.mode = "pbxproj"
+				candidate.paths = nil
+				candidate.noOp = false
+				reclassified++
+				continue
+			}
+			blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, fmt.Errorf("staged resolution failed: %w", err)))
+			continue
+		}
+		if resolved == *candidate.desired {
+			continue
+		}
+		if candidate.noOp {
+			candidate.mode = "pbxproj"
+			candidate.paths = nil
+			candidate.noOp = false
+			reclassified++
+			continue
+		}
+		blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, fmt.Errorf("staged value %q does not match desired value %q", resolved, *candidate.desired)))
+	}
+	sort.Strings(blockers)
+	return reclassified, blockers
+}
+
+func cloneSigningStructuredVersionProject(project *structuredVersionProject) *structuredVersionProject {
+	if project == nil {
+		return nil
+	}
+	clone := *project
+	clone.objects = cloneSigningSerializedObject(project.objects)
+	clone.project.RawProj = cloneSigningSerializedObject(project.project.RawProj)
+	clone.parentByChild = make(map[string]string, len(project.parentByChild))
+	for child, parent := range project.parentByChild {
+		clone.parentByChild[child] = parent
+	}
+	clone.configurations = make([]*versionConfiguration, 0, len(project.configurations))
+	for _, configuration := range project.configurations {
+		if configuration == nil {
+			clone.configurations = append(clone.configurations, nil)
+			continue
+		}
+		configurationClone := *configuration
+		configurationClone.buildSettings = cloneSigningSerializedObject(configuration.buildSettings)
+		clone.configurations = append(clone.configurations, &configurationClone)
+	}
+	return &clone
+}
+
+func cloneSigningSerializedObject(source serialized.Object) serialized.Object {
+	if source == nil {
+		return nil
+	}
+	clone := make(serialized.Object, len(source))
+	for key, value := range source {
+		clone[key] = cloneSigningValue(value)
+	}
+	return clone
+}
+
+func cloneSigningValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case serialized.Object:
+		return cloneSigningSerializedObject(typed)
+	case map[string]interface{}:
+		clone := make(map[string]interface{}, len(typed))
+		for key, nested := range typed {
+			clone[key] = cloneSigningValue(nested)
+		}
+		return clone
+	case []interface{}:
+		clone := make([]interface{}, len(typed))
+		for index, nested := range typed {
+			clone[index] = cloneSigningValue(nested)
+		}
+		return clone
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return value
 	}
 }
 

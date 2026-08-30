@@ -2151,6 +2151,144 @@ func TestSigningPlanRevalidatesNoOpReferenceAfterDependentChange(t *testing.T) {
 	}
 }
 
+func TestSigningPlanReclassifiesNoOpAfterProjectFallbackDependentChange(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	// The target inherits its identity from the project configuration. The
+	// project-level identity expands PRODUCT_BUNDLE_IDENTIFIER in the selected
+	// target context, so changing the target's bundle identifier changes the
+	// value that initially looked like a no-op.
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`PRODUCT_BUNDLE_IDENTIFIER = com.example.old; CODE_SIGN_IDENTITY = "$(PRODUCT_BUNDLE_IDENTIFIER)";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_IDENTITY = "$(inherited)";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"com.example.old",
+			"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got %#v", plan.Blockers)
+	}
+	var identityChange, bundleChange *SigningSettingChange
+	for index := range plan.Changes {
+		change := &plan.Changes[index]
+		switch change.Setting {
+		case "CODE_SIGN_IDENTITY":
+			identityChange = change
+		case "PRODUCT_BUNDLE_IDENTIFIER":
+			bundleChange = change
+		}
+	}
+	if bundleChange == nil {
+		t.Fatalf("plan omitted dependent bundle-ID change: %#v", plan.Changes)
+	}
+	if identityChange == nil {
+		t.Fatalf("plan treated a project-fallback identity as a no-op: %#v", plan.Changes)
+	}
+	if identityChange.NewValue == nil || *identityChange.NewValue != "com.example.old" {
+		t.Fatalf("identity change = %#v, want requested value", identityChange)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v", err)
+	}
+	structured, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("openStructuredVersionProject() error = %v", err)
+	}
+	configuration, err := signingConfigurationFor(structured, "App", "Debug")
+	if err != nil {
+		t.Fatalf("signingConfigurationFor() error = %v", err)
+	}
+	resolver := newSigningSettingResolver(structured, nil, false, nil)
+	resolvedIdentity, _, err := resolver.resolveSetting(configuration, "CODE_SIGN_IDENTITY")
+	if err != nil {
+		t.Fatalf("resolveSetting(CODE_SIGN_IDENTITY) error = %v", err)
+	}
+	if resolvedIdentity != "com.example.old" {
+		t.Fatalf("resolved identity = %q, want com.example.old", resolvedIdentity)
+	}
+	resolvedBundleID, _, err := resolver.resolveSetting(configuration, "PRODUCT_BUNDLE_IDENTIFIER")
+	if err != nil {
+		t.Fatalf("resolveSetting(PRODUCT_BUNDLE_IDENTIFIER) error = %v", err)
+	}
+	if resolvedBundleID != "com.example.new" {
+		t.Fatalf("resolved bundle ID = %q, want com.example.new", resolvedBundleID)
+	}
+}
+
+func TestSigningPlanSecondPassHashAndStaleDependency(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`PRODUCT_BUNDLE_IDENTIFIER = com.example.old; CODE_SIGN_IDENTITY = "$(PRODUCT_BUNDLE_IDENTIFIER)";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_IDENTITY = "$(inherited)";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	stateDir := filepath.Join(root, "state")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"com.example.old",
+			"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if plan.PlanHash == "" || plan.PlanHash != signingPlanHash(plan) {
+		t.Fatalf("plan hash = %q, recomputed = %q", plan.PlanHash, signingPlanHash(plan))
+	}
+	repeated, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("repeated BuildSigningPlan() error = %v", err)
+	}
+	if repeated.PlanHash != plan.PlanHash {
+		t.Fatalf("repeated plan hash = %q, want %q", repeated.PlanHash, plan.PlanHash)
+	}
+
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	mutated := strings.Replace(contents, "PRODUCT_BUNDLE_IDENTIFIER = com.example.old;", "PRODUCT_BUNDLE_IDENTIFIER = com.example.changed;", 1)
+	if mutated == contents {
+		t.Fatal("failed to mutate project dependency for stale-plan check")
+	}
+	if err := os.WriteFile(pbxprojPath, []byte(mutated), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("ApplySigningPlan() error = %v, want stale-plan rejection", err)
+	}
+	if got := mustReadVersionTestFile(t, pbxprojPath); got != mutated {
+		t.Fatal("stale apply changed the project")
+	}
+}
+
 func TestSigningPlanRevalidatesTransitiveNoOpReferenceAfterDependentChange(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
