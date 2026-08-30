@@ -189,6 +189,9 @@ func ValidateTestOptions(opts TestOptions) error {
 			return err
 		}
 	}
+	if err := validateTestPassthroughArguments(opts.XcodebuildArgs); err != nil {
+		return err
+	}
 	if reserved := reservedTestPassthroughArgument(opts.XcodebuildArgs); reserved != "" {
 		return fmt.Errorf("--xcodebuild-flag cannot override asc-managed argument %q", reserved)
 	}
@@ -568,6 +571,33 @@ func reservedTestPassthroughArgument(args []string) string {
 		}
 	}
 	return ""
+}
+
+func validateTestPassthroughArguments(args []string) error {
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		normalized := strings.ToLower(strings.TrimSpace(arg))
+		if !xcodebuildPassthroughArgumentTakesValue(normalized) {
+			continue
+		}
+		if index+1 >= len(args) {
+			return fmt.Errorf("--xcodebuild-flag %q requires a following value", strings.TrimSpace(arg))
+		}
+		value := args[index+1]
+		if isRecognizedTestPassthroughArgument(value) {
+			return fmt.Errorf("--xcodebuild-flag %q requires a value; %q is a recognized xcodebuild option or asc-managed argument", strings.TrimSpace(arg), strings.TrimSpace(value))
+		}
+		index++
+	}
+	return nil
+}
+
+func isRecognizedTestPassthroughArgument(arg string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(arg))
+	if isXcodebuildAuthenticationArgument(normalized) {
+		return true
+	}
+	return reservedTestPassthroughArgument([]string{arg}) != ""
 }
 
 func setTestExitStatus(result *TestResult, err error) {

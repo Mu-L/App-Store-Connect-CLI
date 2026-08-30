@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -211,6 +213,145 @@ func TestXcodeTestValidationErrorsAreUsageErrors(t *testing.T) {
 				t.Fatalf("stderr = %q, want %q", stderr, test.want)
 			}
 		})
+	}
+}
+
+func TestXcodeTestRejectsAuthenticationPassthroughUsageErrorsBeforeChild(t *testing.T) {
+	originalRunTest := runTest
+	t.Cleanup(func() { runTest = originalRunTest })
+	runTest = func(context.Context, localxcode.TestOptions) (*localxcode.TestResult, error) {
+		t.Fatal("runTest must not be called for invalid authentication passthrough input")
+		return nil, nil
+	}
+
+	baseArgs := []string{
+		"--project", "Demo.xcodeproj",
+		"--scheme", "Demo",
+		"--destination", "generic/platform=iOS",
+	}
+	tests := make([]struct {
+		name string
+		raw  []string
+		want string
+	}, 0, 20)
+	for _, authFlag := range []string{"-authenticationKeyPath", "-authenticationKeyID", "-authenticationKeyIssuerID"} {
+		tests = append(tests, struct {
+			name string
+			raw  []string
+			want string
+		}{
+			name: authFlag + " missing value",
+			raw:  []string{authFlag},
+			want: fmt.Sprintf("--xcodebuild-flag %q requires a following value", authFlag),
+		})
+	}
+	for _, next := range []string{"-authenticationKeyID", "-destination", "CODE_SIGNING_ALLOWED=NO", "clean", "test"} {
+		tests = append(tests, struct {
+			name string
+			raw  []string
+			want string
+		}{
+			name: "authentication value is " + next,
+			raw:  []string{"-authenticationKeyPath", next},
+			want: fmt.Sprintf("--xcodebuild-flag %q requires a value; %q is a recognized xcodebuild option or asc-managed argument", "-authenticationKeyPath", next),
+		})
+	}
+	tests = append(
+		tests,
+		struct {
+			name string
+			raw  []string
+			want string
+		}{name: "empty value", raw: []string{"-authenticationKeyPath", ""}, want: "--xcodebuild-flag cannot be empty"},
+		struct {
+			name string
+			raw  []string
+			want string
+		}{name: "control value", raw: []string{"-authenticationKeyPath", "AuthKey\x00.p8"}, want: "--xcodebuild-flag cannot contain control characters"},
+	)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := XcodeTestCommand()
+			cmd.FlagSet.SetOutput(io.Discard)
+			args := append([]string(nil), baseArgs...)
+			for _, raw := range test.raw {
+				args = append(args, "--xcodebuild-flag="+raw)
+			}
+			if err := cmd.FlagSet.Parse(args); err != nil {
+				t.Fatalf("FlagSet.Parse() error = %v", err)
+			}
+
+			var runErr error
+			stdout, stderr := captureCommandOutput(t, func() error {
+				runErr = cmd.Exec(context.Background(), nil)
+				return runErr
+			})
+			if !errors.Is(runErr, flag.ErrHelp) {
+				t.Fatalf("Exec() error = %v, want usage error", runErr)
+			}
+			if runErr.Error() != test.want {
+				t.Fatalf("Exec() error = %q, want %q", runErr, test.want)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if stderr != "Error: "+test.want+"\n" {
+				t.Fatalf("stderr = %q, want exact usage diagnostic", stderr)
+			}
+		})
+	}
+}
+
+func TestXcodeTestPreservesAuthenticationPassthroughPairs(t *testing.T) {
+	originalRunTest := runTest
+	t.Cleanup(func() { runTest = originalRunTest })
+
+	var gotOpts localxcode.TestOptions
+	runTest = func(_ context.Context, opts localxcode.TestOptions) (*localxcode.TestResult, error) {
+		gotOpts = opts
+		return &localxcode.TestResult{Action: opts.Action, Success: true}, nil
+	}
+
+	raw := []string{
+		"-authenticationKeyPath", "  /tmp/Auth Key.p8  ",
+		"-authenticationKeyID", "Key ID 123",
+		"-authenticationKeyIssuerID", "Issuer ID 456",
+		"-quiet",
+	}
+	cmd := XcodeTestCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	args := []string{
+		"--project", "Demo.xcodeproj",
+		"--scheme", "Demo",
+		"--destination", "generic/platform=iOS",
+		"--no-code-signing",
+		"--clean",
+		"--output", "json",
+	}
+	for _, value := range raw {
+		args = append(args, "--xcodebuild-flag="+value)
+	}
+	if err := cmd.FlagSet.Parse(args); err != nil {
+		t.Fatalf("FlagSet.Parse() error = %v", err)
+	}
+
+	var runErr error
+	stdout, stderr := captureCommandOutput(t, func() error {
+		runErr = cmd.Exec(context.Background(), nil)
+		return runErr
+	})
+	if runErr != nil {
+		t.Fatalf("Exec() error = %v", runErr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !reflect.DeepEqual(gotOpts.XcodebuildArgs, raw) {
+		t.Fatalf("XcodebuildArgs = %#v, want %#v", gotOpts.XcodebuildArgs, raw)
+	}
+	if !strings.Contains(stdout, `"success":true`) {
+		t.Fatalf("stdout = %q, want successful structured output", stdout)
 	}
 }
 

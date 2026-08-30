@@ -233,6 +233,98 @@ func TestBuildTestCommandOmitsDerivedDataForTestWithoutBuilding(t *testing.T) {
 	}
 }
 
+func TestValidateTestOptionsAuthenticationPassthroughValues(t *testing.T) {
+	base := TestOptions{
+		ProjectPath:   "Demo.xcodeproj",
+		Scheme:        "Demo",
+		Action:        string(TestActionTest),
+		Destinations:  []string{"generic/platform=iOS"},
+		NoCodeSigning: true,
+		Clean:         true,
+	}
+
+	for _, authFlag := range []string{"-authenticationKeyPath", "-authenticationKeyID", "-authenticationKeyIssuerID"} {
+		t.Run(strings.TrimPrefix(authFlag, "-")+"/missing", func(t *testing.T) {
+			opts := base
+			opts.XcodebuildArgs = []string{authFlag}
+			err := ValidateTestOptions(opts)
+			want := fmt.Sprintf("--xcodebuild-flag %q requires a following value", authFlag)
+			if err == nil || err.Error() != want {
+				t.Fatalf("ValidateTestOptions() error = %v, want %q", err, want)
+			}
+		})
+	}
+
+	for _, next := range []string{
+		"-authenticationKeyID",
+		"-destination",
+		"CODE_SIGNING_ALLOWED=NO",
+		"clean",
+		"test",
+	} {
+		t.Run("recognized value/"+next, func(t *testing.T) {
+			opts := base
+			opts.XcodebuildArgs = []string{"-authenticationKeyPath", next}
+			err := ValidateTestOptions(opts)
+			want := fmt.Sprintf("--xcodebuild-flag %q requires a value; %q is a recognized xcodebuild option or asc-managed argument", "-authenticationKeyPath", next)
+			if err == nil || err.Error() != want {
+				t.Fatalf("ValidateTestOptions() error = %v, want %q", err, want)
+			}
+		})
+	}
+
+	t.Run("empty value keeps raw validation", func(t *testing.T) {
+		opts := base
+		opts.XcodebuildArgs = []string{"-authenticationKeyPath", ""}
+		if err := ValidateTestOptions(opts); err == nil || err.Error() != "--xcodebuild-flag cannot be empty" {
+			t.Fatalf("ValidateTestOptions() error = %v, want raw empty-value error", err)
+		}
+	})
+
+	t.Run("control value keeps raw validation", func(t *testing.T) {
+		opts := base
+		opts.XcodebuildArgs = []string{"-authenticationKeyPath", "AuthKey\x00.p8"}
+		if err := ValidateTestOptions(opts); err == nil || err.Error() != "--xcodebuild-flag cannot contain control characters" {
+			t.Fatalf("ValidateTestOptions() error = %v, want raw control-character error", err)
+		}
+	})
+
+	t.Run("valid pairs preserve bytes and managed boundaries", func(t *testing.T) {
+		raw := []string{
+			"-authenticationKeyPath", "  /tmp/Auth Key.p8  ",
+			"-authenticationKeyID", "Key ID 123",
+			"-authenticationKeyIssuerID", "Issuer ID 456",
+			"-quiet",
+		}
+		opts := base
+		opts.XcodebuildArgs = raw
+		if err := ValidateTestOptions(opts); err != nil {
+			t.Fatalf("ValidateTestOptions() error = %v", err)
+		}
+		args := buildTestCommand(opts)
+		wantSuffix := append(append([]string(nil), raw...), "CODE_SIGNING_ALLOWED=NO", "clean", "test")
+		if got := args[len(args)-len(wantSuffix):]; !reflect.DeepEqual(got, wantSuffix) {
+			t.Fatalf("buildTestCommand() suffix = %#v, want %#v", got, wantSuffix)
+		}
+	})
+
+	for _, authFlag := range []string{"-authenticationKeyPath", "-authenticationKeyID", "-authenticationKeyIssuerID"} {
+		t.Run("equals form/"+authFlag, func(t *testing.T) {
+			raw := authFlag + "=/tmp/Auth Key.p8"
+			opts := base
+			opts.XcodebuildArgs = []string{raw, "-quiet"}
+			if err := ValidateTestOptions(opts); err != nil {
+				t.Fatalf("ValidateTestOptions() error = %v, want equals-form argument accepted", err)
+			}
+			args := buildTestCommand(opts)
+			wantSuffix := []string{raw, "-quiet", "CODE_SIGNING_ALLOWED=NO", "clean", "test"}
+			if got := args[len(args)-len(wantSuffix):]; !reflect.DeepEqual(got, wantSuffix) {
+				t.Fatalf("buildTestCommand() suffix = %#v, want %#v", got, wantSuffix)
+			}
+		})
+	}
+}
+
 func TestParseTestResultCasesRejectsUnknownStatus(t *testing.T) {
 	data := []byte(`[{"identifier":"DemoTests/Smoke/testPending","status":"running"}]`)
 	if _, err := ParseTestResultCases(data); err == nil || !strings.Contains(err.Error(), "unsupported status") {
