@@ -251,9 +251,10 @@ type signingPlanOperation struct {
 }
 
 type signingPlanBuild struct {
-	plan       *SigningPlan
-	project    *structuredVersionProject
-	operations []signingPlanOperation
+	plan           *SigningPlan
+	project        *structuredVersionProject
+	operations     []signingPlanOperation
+	fileIdentities map[string]string
 }
 
 // BuildSigningPlan resolves the requested settings and returns a plan without
@@ -371,7 +372,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	fileConsumers, configFiles, fileIdentities, uncertainConsumers, protectedConfigPaths, blockedExternalPaths, err := project.signingXCConfigConsumers(selectedIDs, opts.AllowExternalXCConfig)
 	if err != nil {
 		if len(blockedExternalPaths) > 0 {
-			inputPaths, externalEntitlementPaths, inputErr := signingProjectInputPaths(project, settingsPath, configFiles, requests, opts.AllowExternalXCConfig)
+			inputPaths, externalEntitlementPaths, inputPathBlockers, inputErr := signingProjectInputPaths(project, settingsPath, configFiles, requests, opts.AllowExternalXCConfig)
 			if inputErr != nil {
 				return nil, inputErr
 			}
@@ -380,6 +381,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 				return nil, aliasErr
 			}
 			plan.Blockers = append(plan.Blockers, fmt.Sprintf("selected xcconfig collection failed: %v", err))
+			plan.Blockers = append(plan.Blockers, inputPathBlockers...)
 			for _, path := range blockedExternalPaths {
 				plan.Blockers = append(plan.Blockers, signingXCConfigCollectionBlocker(project, path, opts.AllowExternalXCConfig))
 			}
@@ -389,7 +391,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		}
 		return nil, err
 	}
-	inputPaths, externalEntitlementPaths, err := signingProjectInputPaths(project, settingsPath, configFiles, requests, opts.AllowExternalXCConfig)
+	inputPaths, externalEntitlementPaths, inputPathBlockers, err := signingProjectInputPaths(project, settingsPath, configFiles, requests, opts.AllowExternalXCConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -402,6 +404,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	); err != nil {
 		return nil, err
 	}
+	inputBlockers = append(inputBlockers, inputPathBlockers...)
 	if len(inputBlockers) > 0 {
 		plan.Blockers = append(plan.Blockers, inputBlockers...)
 		plan.Ready = false
@@ -456,7 +459,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	// A shared xcconfig can only be changed once. If selected configurations
 	// require different values, narrow each operation to its target instead of
 	// rewriting a value that would affect another configuration.
-	resolveSigningSharedCandidates(candidates)
+	resolveSigningSharedCandidates(candidates, fileIdentities)
 	operations := make([]signingPlanOperation, 0, len(candidates))
 	for index := range candidates {
 		candidate := &candidates[index]
@@ -485,7 +488,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 
 	files := map[string]SigningPlanFile{}
 	addFile := func(path, source string) {
-		key := signingLexicalPathKey(path)
+		key := signingXCConfigOperationKey(path, fileIdentities)
 		if _, exists := files[key]; exists {
 			return
 		}
@@ -534,7 +537,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	plan.Ready = len(plan.Blockers) == 0
 	plan.PlanHash = signingPlanHash(plan)
 
-	return &signingPlanBuild{plan: plan, project: project, operations: operations}, nil
+	return &signingPlanBuild{plan: plan, project: project, operations: operations, fileIdentities: fileIdentities}, nil
 }
 
 func canonicalSigningPath(path, label string) (string, error) {
@@ -1634,7 +1637,7 @@ func validateSigningEntitlementsPath(project *structuredVersionProject, path str
 	return file.Close()
 }
 
-func resolveSigningSharedCandidates(candidates []signingCandidate) {
+func resolveSigningSharedCandidates(candidates []signingCandidate, fileIdentities map[string]string) {
 	desiredByFile := make(map[string]string)
 	conflictByFile := make(map[string]bool)
 	for _, candidate := range candidates {
@@ -1642,7 +1645,7 @@ func resolveSigningSharedCandidates(candidates []signingCandidate) {
 			continue
 		}
 		for _, path := range candidate.paths {
-			key := signingLexicalPathKey(path) + "\x00" + candidate.setting
+			key := signingXCConfigOperationKey(path, fileIdentities) + "\x00" + candidate.setting
 			value := *candidate.desired
 			if previous, exists := desiredByFile[key]; exists && previous != value {
 				conflictByFile[key] = true
@@ -1656,13 +1659,27 @@ func resolveSigningSharedCandidates(candidates []signingCandidate) {
 			continue
 		}
 		for _, path := range candidates[index].paths {
-			if conflictByFile[signingLexicalPathKey(path)+"\x00"+candidates[index].setting] {
+			if conflictByFile[signingXCConfigOperationKey(path, fileIdentities)+"\x00"+candidates[index].setting] {
 				candidates[index].mode = "pbxproj"
 				candidates[index].paths = nil
 				break
 			}
 		}
 	}
+}
+
+// signingXCConfigOperationKey groups authorized xcconfig paths by the
+// filesystem identity captured during collection. This is important on
+// case-insensitive macOS volumes, where two operator spellings can name the
+// same file even though their lexical paths differ. Missing or uncollected
+// paths retain the platform lexical key; prepared signing operations only
+// accept paths that were successfully collected and identity-bound.
+func signingXCConfigOperationKey(path string, fileIdentities map[string]string) string {
+	pathKey := signingLexicalPathKey(path)
+	if identity, ok := fileIdentities[pathKey]; ok && identity != "" {
+		return "identity:" + identity
+	}
+	return "path:" + pathKey
 }
 
 func signingSettingBlocker(configuration *versionConfiguration, setting string, err error) string {
@@ -1923,13 +1940,21 @@ func signingProjectInputPaths(
 	configFiles map[string][]string,
 	requests []signingRequest,
 	allowExternal bool,
-) ([]string, []string, error) {
+) ([]string, []string, []string, error) {
 	// Paths that failed collection or authorization are intentionally not added
 	// to the readable input set. The caller protects their lexical paths
 	// separately, so alias validation never stats an unauthorized or missing
 	// path.
 	externalEntitlementPaths := make([]string, 0)
+	inputBlockers := make([]string, 0)
 	paths := []string{project.pbxprojPath, settingsPath}
+	selectedIDs := make(map[string]bool, len(requests))
+	for _, request := range requests {
+		configuration, err := signingConfigurationFor(project, request.target, request.configuration)
+		if err == nil {
+			selectedIDs[configuration.id] = true
+		}
+	}
 	appendEntitlements := func(value string) error {
 		value = strings.TrimSpace(value)
 		if value == "" {
@@ -1964,28 +1989,44 @@ func signingProjectInputPaths(
 		for _, setting := range request.settings {
 			if setting.key == "CODE_SIGN_ENTITLEMENTS" && setting.value != nil {
 				if err := appendEntitlements(*setting.value); err != nil {
-					return nil, externalEntitlementPaths, err
+					return nil, externalEntitlementPaths, inputBlockers, err
 				}
 			}
 		}
 	}
 	resolver := newSigningSettingResolver(project, configFiles, allowExternal)
 	for _, configuration := range project.configurations {
-		if signingConfigurationSourcesAuthorized(project, configuration, configFiles) {
+		selected := selectedIDs[configuration.id]
+		authorized := signingConfigurationSourcesAuthorized(project, configuration, configFiles)
+		if authorized {
 			value, _, err := resolver.resolveSetting(configuration, "CODE_SIGN_ENTITLEMENTS")
 			if err == nil {
 				if err := appendEntitlements(value); err != nil {
-					return nil, externalEntitlementPaths, err
+					if selected {
+						return nil, externalEntitlementPaths, inputBlockers, err
+					}
+					inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has an unresolved CODE_SIGN_ENTITLEMENTS input: %v", configuration.target, configuration.name, err))
 				}
 			} else if !errors.Is(err, errVersionSettingNotFound) {
-				return nil, externalEntitlementPaths, fmt.Errorf("resolve CODE_SIGN_ENTITLEMENTS for target %q configuration %q: %w", configuration.target, configuration.name, err)
+				resolutionErr := fmt.Errorf("resolve CODE_SIGN_ENTITLEMENTS for target %q configuration %q: %w", configuration.target, configuration.name, err)
+				if selected {
+					return nil, externalEntitlementPaths, inputBlockers, resolutionErr
+				}
+				inputBlockers = append(inputBlockers, resolutionErr.Error())
 			}
 		}
 		for _, key := range matchingBuildSettingKeys(configuration.buildSettings, "CODE_SIGN_ENTITLEMENTS") {
 			value, ok := configuration.buildSettings[key].(string)
 			if ok {
+				if !authorized && !selected && (strings.Contains(value, "$(") || strings.Contains(value, "${")) {
+					inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has unresolved CODE_SIGN_ENTITLEMENTS reference; signing scope is uncertain", configuration.target, configuration.name))
+					continue
+				}
 				if err := appendEntitlements(value); err != nil {
-					return nil, externalEntitlementPaths, err
+					if selected {
+						return nil, externalEntitlementPaths, inputBlockers, err
+					}
+					inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has an unresolved CODE_SIGN_ENTITLEMENTS input: %v", configuration.target, configuration.name, err))
 				}
 			}
 		}
@@ -1999,22 +2040,22 @@ func signingProjectInputPaths(
 			// no-follow policy.
 			data, err := resolver.readXCConfig(filePath)
 			if err != nil {
-				return nil, externalEntitlementPaths, fmt.Errorf("read xcconfig %s: %w", filePath, err)
+				return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("read xcconfig %s: %w", filePath, err)
 			}
 			document, err := parseXCConfig(data)
 			if err != nil {
-				return nil, externalEntitlementPaths, fmt.Errorf("parse xcconfig %s: %w", filePath, err)
+				return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("parse xcconfig %s: %w", filePath, err)
 			}
 			for _, assignment := range document.assignments {
 				if assignment.baseKey == "CODE_SIGN_ENTITLEMENTS" {
 					if err := appendEntitlements(assignment.value); err != nil {
-						return nil, externalEntitlementPaths, err
+						return nil, externalEntitlementPaths, inputBlockers, err
 					}
 				}
 			}
 		}
 	}
-	return paths, externalEntitlementPaths, nil
+	return paths, externalEntitlementPaths, inputBlockers, nil
 }
 
 func validateSigningXCConfigPath(project *structuredVersionProject, path string, allowExternal bool) error {
@@ -2472,7 +2513,7 @@ func prepareSigningOperations(built *signingPlanBuild) (*preparedSigningOperatio
 		if operation.NewValue == nil {
 			return fail(fmt.Errorf("xcconfig removal is not supported for %s", operation.Setting))
 		}
-		pathKey := signingLexicalPathKey(operation.Path)
+		pathKey := signingXCConfigOperationKey(operation.Path, built.fileIdentities)
 		if xcconfigMutations[pathKey] == nil {
 			xcconfigMutations[pathKey] = make(map[string]xcconfigMutation)
 			xcconfigPaths[pathKey] = operation.Path

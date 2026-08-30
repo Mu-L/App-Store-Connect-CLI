@@ -312,7 +312,7 @@ func TestSigningProjectInputPathsFailsClosedWhenConfigDisappears(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openStructuredVersionProject() error = %v", err)
 	}
-	_, _, err = signingProjectInputPaths(
+	_, _, _, err = signingProjectInputPaths(
 		structured,
 		settingsPath,
 		map[string][]string{"configuration": {missingPath}},

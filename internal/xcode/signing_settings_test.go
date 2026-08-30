@@ -624,6 +624,104 @@ func TestPrepareSigningOperationsMergesWindowsCaseVariantXCConfigMutations(t *te
 	}
 }
 
+func TestResolveSigningSharedCandidatesCoalescesCaseVariantSameFile(t *testing.T) {
+	root := t.TempDir()
+	canonicalPath := filepath.Join(root, "Config.xcconfig")
+	caseVariantPath := filepath.Join(root, "config.xcconfig")
+	if err := os.WriteFile(canonicalPath, []byte("CODE_SIGN_STYLE = Automatic\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+	if err := os.Link(canonicalPath, caseVariantPath); err != nil && !errors.Is(err, os.ErrExist) {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	canonicalInfo, err := os.Stat(canonicalPath)
+	if err != nil {
+		t.Fatalf("Stat(canonical) error = %v", err)
+	}
+	caseVariantInfo, err := os.Stat(caseVariantPath)
+	if err != nil {
+		t.Fatalf("Stat(case variant) error = %v", err)
+	}
+	if !os.SameFile(canonicalInfo, caseVariantInfo) {
+		t.Skip("case-variant paths are distinct files on this filesystem")
+	}
+
+	candidates := []signingCandidate{
+		{mode: "xcconfig", desired: stringPtr("Manual"), paths: []string{canonicalPath}},
+		{mode: "xcconfig", desired: stringPtr("Automatic"), paths: []string{caseVariantPath}},
+	}
+	identities := map[string]string{
+		signingLexicalPathKey(canonicalPath):   canonicalPath,
+		signingLexicalPathKey(caseVariantPath): canonicalPath,
+	}
+	resolveSigningSharedCandidates(candidates, identities)
+	for index, candidate := range candidates {
+		if candidate.mode != "pbxproj" || len(candidate.paths) != 0 {
+			t.Fatalf("candidate[%d] = %#v, want conflicting same-file operation blocked from shared mutation", index, candidate)
+		}
+	}
+}
+
+func TestSigningPlanKeepsUnselectedUnresolvedEntitlementsAsUncertainty(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	const widgetMarker = "999999999999999999999995 /* Widget Debug */ = {"
+	start := strings.Index(contents, widgetMarker)
+	if start < 0 {
+		t.Fatalf("project fixture is missing Widget Debug configuration")
+	}
+	const settingsMarker = "buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; };"
+	relative := strings.Index(contents[start:], settingsMarker)
+	if relative < 0 {
+		t.Fatalf("project fixture is missing Widget Debug build settings")
+	}
+	settingsStart := start + relative
+	updated := `buildSettings = { CODE_SIGN_ENTITLEMENTS = "$(MISSING_ENTITLEMENTS)"; MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; };`
+	contents = contents[:settingsStart] + updated + contents[settingsStart+len(settingsMarker):]
+	if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want blocked plan with selected target preserved", err)
+	}
+	if plan.Ready {
+		t.Fatalf("unselected unresolved entitlement produced ready plan: %#v", plan)
+	}
+	blockers := strings.Join(plan.Blockers, "\n")
+	if !strings.Contains(blockers, "Widget") || !strings.Contains(blockers, "CODE_SIGN_ENTITLEMENTS") {
+		t.Fatalf("plan blockers = %#v, want unselected entitlement uncertainty", plan.Blockers)
+	}
+}
+
+func TestSigningPlanRejectsSelectedUnresolvedEntitlements(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"), `CODE_SIGN_ENTITLEMENTS = "$(MISSING_ENTITLEMENTS)";`)
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	_, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(t.TempDir(), "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "unresolved build-setting reference") || !strings.Contains(err.Error(), "CODE_SIGN_ENTITLEMENTS") {
+		t.Fatalf("BuildSigningPlan() error = %v, want selected entitlement resolution failure", err)
+	}
+}
+
 func TestSigningPlanDoesNotAuthorizeSharedXCConfigPerSelectedConfiguration(t *testing.T) {
 	project := writeStructuredVersionProject(t, true)
 	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
@@ -2239,7 +2337,7 @@ func TestSigningPlanProtectsResolvedEntitlementsReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openStructuredVersionProject() error = %v", err)
 	}
-	paths, _, err := signingProjectInputPaths(structured, settingsPath, nil, []signingRequest{{
+	paths, _, _, err := signingProjectInputPaths(structured, settingsPath, nil, []signingRequest{{
 		target: "App", configuration: "Debug",
 		settings: []signingDesiredSetting{{key: "CODE_SIGN_STYLE", value: stringPtr("manual")}},
 	}}, false)
