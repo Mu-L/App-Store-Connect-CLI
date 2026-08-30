@@ -364,6 +364,35 @@ func TestPrepareSigningSyncBatchFilesBindsIdentityContextsToTargetScopedProfiles
 	}
 }
 
+func TestPrepareSigningSyncBatchFilesRejectsConflictingCertificateBytes(t *testing.T) {
+	store := &signingpkg.GitStore{LocalDir: t.TempDir()}
+	targets := make([]signingSyncBatchTarget, 2)
+	for index, certificateContent := range []string{"first-certificate", "second-certificate"} {
+		targets[index] = signingSyncBatchTarget{
+			BundleID:    fmt.Sprintf("com.example.%c", 'a'+rune(index)),
+			ProfileType: "IOS_APP_STORE",
+			Profile: &asc.ProfileResponse{Data: asc.Resource[asc.ProfileAttributes]{
+				ID: fmt.Sprintf("profile-%d", index+1),
+				Attributes: asc.ProfileAttributes{
+					ProfileContent: base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("profile-%d", index+1))),
+				},
+			}},
+			Certificates: []asc.Resource[asc.CertificateAttributes]{{
+				ID: "certificate-shared",
+				Attributes: asc.CertificateAttributes{
+					SerialNumber:       "shared-serial",
+					CertificateContent: base64.StdEncoding.EncodeToString([]byte(certificateContent)),
+				},
+			}},
+		}
+	}
+
+	_, _, err := prepareSigningSyncBatchFiles(store, targets, nil, "repository-password")
+	if err == nil || !strings.Contains(err.Error(), "certificate certificate-shared returned conflicting content") {
+		t.Fatalf("prepareSigningSyncBatchFiles() error = %v, want conflicting certificate content", err)
+	}
+}
+
 func TestRunSigningSyncBatchCreatesOneCommitAndIsIdempotent(t *testing.T) {
 	remoteURL, remotePath := newSigningSyncBareRemote(t)
 	password := "repository-password"
@@ -471,6 +500,7 @@ func TestRunSigningSyncBatchCreatesMissingProfileAfterPreflight(t *testing.T) {
 	certificateContent := base64.StdEncoding.EncodeToString([]byte("new-certificate-content"))
 	profileContent := base64.StdEncoding.EncodeToString([]byte("new-profile-content"))
 	postCalls := 0
+	var postBody []byte
 	client := newSigningFetchTestClient(t, func(req *http.Request) *http.Response {
 		switch {
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/bundleIds":
@@ -478,10 +508,15 @@ func TestRunSigningSyncBatchCreatesMissingProfileAfterPreflight(t *testing.T) {
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/bundleIds/bundle-new/profiles":
 			return signingFetchJSONResponse(http.StatusOK, `{"data":[]}`)
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/certificates":
-			return signingFetchJSONResponse(http.StatusOK, fmt.Sprintf(`{"data":[{"type":"certificates","id":"certificate-new","attributes":{"serialNumber":"new-serial","certificateType":"IOS_DISTRIBUTION","expirationDate":"2100-01-01T00:00:00Z","certificateContent":%q}}]}`, certificateContent))
+			return signingFetchJSONResponse(http.StatusOK, fmt.Sprintf(`{"data":[{"type":"certificates","id":"certificate-new","attributes":{"serialNumber":"new-serial","certificateType":"IOS_DEVELOPMENT","expirationDate":"2100-01-01T00:00:00Z","certificateContent":%q}}]}`, certificateContent))
 		case req.Method == http.MethodPost && req.URL.Path == "/v1/profiles":
 			postCalls++
-			return signingFetchJSONResponse(http.StatusCreated, fmt.Sprintf(`{"data":{"type":"profiles","id":"profile-new","attributes":{"name":"IOS_APP_STORE-20990101","profileType":"IOS_APP_STORE","profileState":"ACTIVE","profileContent":%q}}}`, profileContent))
+			var err error
+			postBody, err = io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read profile create request: %v", err)
+			}
+			return signingFetchJSONResponse(http.StatusCreated, fmt.Sprintf(`{"data":{"type":"profiles","id":"profile-new","attributes":{"name":"IOS_APP_DEVELOPMENT-20990101","profileType":"IOS_APP_DEVELOPMENT","profileState":"ACTIVE","profileContent":%q}}}`, profileContent))
 		default:
 			t.Fatalf("unexpected request %s %s", req.Method, req.URL.String())
 			return signingFetchJSONResponse(http.StatusInternalServerError, `{}`)
@@ -494,8 +529,9 @@ func TestRunSigningSyncBatchCreatesMissingProfileAfterPreflight(t *testing.T) {
 		result, err = runSigningSyncBatch(context.Background(), client, signingSyncBatchOptions{
 			RepoURL:       remoteURL,
 			Password:      "repository-password",
-			ProfileType:   "IOS_APP_STORE",
+			ProfileType:   "IOS_APP_DEVELOPMENT",
 			CreateMissing: true,
+			DeviceIDs:     []string{"device-new"},
 			BundleIDs:     []string{"com.example.new"},
 		})
 	})
@@ -504,6 +540,37 @@ func TestRunSigningSyncBatchCreatesMissingProfileAfterPreflight(t *testing.T) {
 	}
 	if postCalls != 1 {
 		t.Fatalf("profile POST calls = %d, want 1", postCalls)
+	}
+	var payload asc.ProfileCreateRequest
+	if err := json.Unmarshal(postBody, &payload); err != nil {
+		t.Fatalf("decode profile create request: %v", err)
+	}
+	if payload.Data.Type != asc.ResourceTypeProfiles {
+		t.Fatalf("profile create type = %q, want %q", payload.Data.Type, asc.ResourceTypeProfiles)
+	}
+	if payload.Data.Attributes.ProfileType != "IOS_APP_DEVELOPMENT" {
+		t.Fatalf("profile create profileType = %q, want IOS_APP_DEVELOPMENT", payload.Data.Attributes.ProfileType)
+	}
+	if payload.Data.Attributes.Name != profileCreateName("IOS_APP_DEVELOPMENT", time.Now()) {
+		t.Fatalf("profile create name = %q, want today's IOS_APP_DEVELOPMENT profile name", payload.Data.Attributes.Name)
+	}
+	if payload.Data.Relationships == nil || payload.Data.Relationships.BundleID == nil {
+		t.Fatal("profile create request is missing bundleId relationship")
+	}
+	if got := payload.Data.Relationships.BundleID.Data; got.Type != asc.ResourceTypeBundleIds || got.ID != "bundle-new" {
+		t.Fatalf("profile create bundle relationship = %#v, want bundleIds:bundle-new", got)
+	}
+	if payload.Data.Relationships.Certificates == nil || len(payload.Data.Relationships.Certificates.Data) != 1 {
+		t.Fatal("profile create request is missing its certificate relationship")
+	}
+	if got := payload.Data.Relationships.Certificates.Data[0]; got.Type != asc.ResourceTypeCertificates || got.ID != "certificate-new" {
+		t.Fatalf("profile create certificate relationship = %#v, want certificates:certificate-new", got)
+	}
+	if payload.Data.Relationships.Devices == nil || len(payload.Data.Relationships.Devices.Data) != 1 {
+		t.Fatal("profile create request is missing its device relationship")
+	}
+	if got := payload.Data.Relationships.Devices.Data[0]; got.Type != asc.ResourceTypeDevices || got.ID != "device-new" {
+		t.Fatalf("profile create device relationship = %#v, want devices:device-new", got)
 	}
 	if len(result.Targets) != 1 || !result.Targets[0].ProfileCreated {
 		t.Fatalf("target result = %#v, want one created profile", result.Targets)
@@ -515,7 +582,7 @@ func TestRunSigningSyncBatchCreatesMissingProfileAfterPreflight(t *testing.T) {
 		t.Fatalf("remote commit count = %q, want 2", got)
 	}
 	files := gitOutput(t, remotePath, "ls-tree", "-r", "--name-only", "main")
-	if !strings.Contains(files, "certs/distribution/new-serial.cer.enc") || !strings.Contains(files, "profiles/appstore/com.example.new--profile-new.mobileprovision.enc") {
+	if !strings.Contains(files, "certs/development/new-serial.cer.enc") || !strings.Contains(files, "profiles/development/com.example.new--profile-new.mobileprovision.enc") {
 		t.Fatalf("remote tree missing created target artifacts:\n%s", files)
 	}
 }
@@ -593,7 +660,7 @@ func TestRunSigningSyncBatchUsesFreshTimeoutForEachTarget(t *testing.T) {
 			}
 			// This delay is shorter than the first test timeout but long enough
 			// that reusing it for the second target would exhaust the budget.
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			resourceID := map[string]string{"com.example.a": "bundle-a", "com.example.b": "bundle-b"}[identifier]
 			return signingFetchJSONResponse(http.StatusOK, fmt.Sprintf(`{"data":[{"type":"bundleIds","id":%q,"attributes":{"identifier":%q}}]}`, resourceID, identifier))
 		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/v1/bundleIds/") && strings.HasSuffix(req.URL.Path, "/profiles"):
@@ -622,7 +689,7 @@ func TestRunSigningSyncBatchUsesFreshTimeoutForEachTarget(t *testing.T) {
 			ContextWithTimeout: func(parent context.Context) (context.Context, context.CancelFunc) {
 				timeoutCalls++
 				if timeoutCalls == 1 {
-					return context.WithTimeout(parent, 30*time.Millisecond)
+					return context.WithTimeout(parent, 200*time.Millisecond)
 				}
 				return context.WithTimeout(parent, time.Second)
 			},
@@ -710,6 +777,7 @@ func boolPointer(value bool) *bool {
 
 func newSigningSyncBareRemote(t *testing.T) (string, string) {
 	t.Helper()
+	configureSigningSyncGitEnvironment(t)
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
 	runGitCommand(t, root, "init", "--bare", "--initial-branch=main", remote)
@@ -728,6 +796,26 @@ func newSigningSyncBareRemote(t *testing.T) (string, string) {
 	runGitCommand(t, seed, "remote", "add", "origin", remote)
 	runGitCommand(t, seed, "push", "-u", "origin", "main")
 	return "file://" + remote, remote
+}
+
+func configureSigningSyncGitEnvironment(t *testing.T) {
+	t.Helper()
+	configDirectory := t.TempDir()
+	globalConfig := filepath.Join(configDirectory, "global")
+	systemConfig := filepath.Join(configDirectory, "system")
+	if err := os.WriteFile(globalConfig, []byte("[user]\n\tname = Signing Sync Test\n\temail = signing-sync@example.invalid\n"), 0o600); err != nil {
+		t.Fatalf("create task-local Git global config: %v", err)
+	}
+	if err := os.WriteFile(systemConfig, nil, 0o600); err != nil {
+		t.Fatalf("create task-local Git system config: %v", err)
+	}
+	// GitStore subprocesses inherit these task-local files so commits in the
+	// cloned fixture have an identity. The direct runGitCommand helper below
+	// still strips all inherited GIT_* variables and supplies its own empty
+	// config for each isolated read/setup command.
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("GIT_CONFIG_SYSTEM", systemConfig)
 }
 
 func runGitCommand(t *testing.T, dir string, args ...string) string {

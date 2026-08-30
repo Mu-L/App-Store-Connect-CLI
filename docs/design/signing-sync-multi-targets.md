@@ -48,7 +48,7 @@ failure before commit therefore cannot publish a partial batch.
 Certificates are deduplicated by resource ID and written in canonical ID order.
 In batch mode profiles use a target-scoped path:
 
-```
+```text
 profiles/<profile-type-directory>/<safe-bundle-id>--<safe-profile-resource-id>.mobileprovision.enc
 ```
 

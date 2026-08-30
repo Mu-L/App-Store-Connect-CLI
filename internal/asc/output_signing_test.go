@@ -73,6 +73,7 @@ func TestSigningSyncResultRendererRegisteredAndRenders(t *testing.T) {
 		ProfileCreated: true,
 		Files:          []string{"certs/distribution/certificate.cer", "profiles/appstore/profile.mobileprovision"},
 	}}}
+	result.MarkBatch()
 
 	headers, rows, err := handler(result)
 	if err != nil {
@@ -93,6 +94,89 @@ func TestSigningSyncResultRendererRegisteredAndRenders(t *testing.T) {
 		t.Run(renderer.name, func(t *testing.T) {
 			assertRenderedNonJSONContains(t, renderer.fn, result,
 				"com.example.app", "IOS_APP_STORE", "profile.mobileprovision", "true")
+		})
+	}
+}
+
+func TestSigningSyncResultRendererRendersSingleTargetSummaries(t *testing.T) {
+	ensureOutputRegistryPopulated()
+	handler := requireOutputHandlerFor[SigningSyncResult](t, "SigningSyncResult")
+
+	tests := []struct {
+		name   string
+		result *SigningSyncResult
+		want   []string
+	}{
+		{
+			name: "push",
+			result: &SigningSyncResult{
+				Operation:       "push",
+				RepoURL:         "file:///tmp/signing.git",
+				BundleID:        "com.example.app",
+				ProfileType:     "IOS_APP_STORE",
+				Files:           []string{"profiles/appstore/profile.mobileprovision"},
+				IdentityPresent: true,
+			},
+			want: []string{
+				"push",
+				"file:///tmp/signing.git",
+				"com.example.app",
+				"IOS_APP_STORE",
+				"profiles/appstore/profile.mobileprovision",
+				"true",
+			},
+		},
+		{
+			name: "pull",
+			result: &SigningSyncResult{
+				Operation:       "pull",
+				RepoURL:         "file:///tmp/signing.git",
+				Files:           []string{"profiles/appstore/profile.mobileprovision"},
+				IdentityPresent: false,
+			},
+			want: []string{
+				"pull",
+				"file:///tmp/signing.git",
+				"profiles/appstore/profile.mobileprovision",
+				"false",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers, rows, err := handler(tt.result)
+			if err != nil {
+				t.Fatalf("signing sync rows handler: %v", err)
+			}
+			wantHeaders := []string{"Operation", "Repo URL", "Bundle ID", "Profile Type", "Files", "Identity Present"}
+			if len(rows) != 1 {
+				t.Fatalf("single-target rows = %d, want 1: %v", len(rows), rows)
+			}
+			if len(headers) != len(wantHeaders) {
+				t.Fatalf("single-target headers = %v, want %v", headers, wantHeaders)
+			}
+			for index, wantHeader := range wantHeaders {
+				if headers[index] != wantHeader {
+					t.Fatalf("single-target headers = %v, want %v", headers, wantHeaders)
+				}
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(strings.Join(rows[0], " "), want) {
+					t.Fatalf("single-target row = %v, want it to contain %q", rows[0], want)
+				}
+			}
+			for _, renderer := range []struct {
+				name string
+				fn   func(any) error
+			}{
+				{name: "table", fn: PrintTable},
+				{name: "markdown", fn: PrintMarkdown},
+			} {
+				t.Run(renderer.name, func(t *testing.T) {
+					assertRenderedNonJSONContains(t, renderer.fn, tt.result, tt.want...)
+				})
+			}
 		})
 	}
 }

@@ -183,15 +183,16 @@ func syncPushCommand() *ffcli.Command {
 			}
 
 			bundle := strings.TrimSpace(*bundleID)
-			targetsPath := strings.TrimSpace(*targetsFile)
-			if *targetsFile != "" && targetsPath == "" {
+			targetsPath := *targetsFile
+			hasTargetsPath := strings.TrimSpace(targetsPath) != ""
+			if targetsPath != "" && !hasTargetsPath {
 				return shared.UsageError("--targets-file must not be empty")
 			}
-			if bundle != "" && targetsPath != "" {
+			if bundle != "" && hasTargetsPath {
 				return shared.UsageError("--bundle-id and --targets-file are mutually exclusive")
 			}
 			var targetBundles []string
-			if targetsPath != "" {
+			if hasTargetsPath {
 				var readErr error
 				targetBundles, readErr = readSigningSyncTargetsFile(targetsPath)
 				if readErr != nil {
@@ -277,7 +278,7 @@ func syncPushCommand() *ffcli.Command {
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 
-			if targetsPath != "" {
+			if hasTargetsPath {
 				result, batchErr := runSigningSyncBatch(ctx, client, signingSyncBatchOptions{
 					RepoURL:         repo,
 					Branch:          *branch,
@@ -465,7 +466,7 @@ func syncPushCommand() *ffcli.Command {
 			if identity != nil {
 				result.IdentitySHA256 = identity.CertificateSHA256
 			}
-			return shared.PrintOutput(result, *output.Output, *output.Pretty)
+			return shared.PrintOutput(&result, *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -542,7 +543,7 @@ func syncPullCommand() *ffcli.Command {
 					RepoURL:   sanitizeRepoURLForOutput(repo),
 					Files:     []string{},
 				}
-				return shared.PrintOutput(result, *output.Output, *output.Pretty)
+				return shared.PrintOutput(&result, *output.Output, *output.Pretty)
 			}
 
 			if err := os.MkdirAll(outDir, 0o755); err != nil {
@@ -586,7 +587,7 @@ func syncPullCommand() *ffcli.Command {
 				IdentityPresent: identityPresent,
 				SensitiveFiles:  sensitiveFiles,
 			}
-			return shared.PrintOutput(result, *output.Output, *output.Pretty)
+			return shared.PrintOutput(&result, *output.Output, *output.Pretty)
 		},
 	}
 }

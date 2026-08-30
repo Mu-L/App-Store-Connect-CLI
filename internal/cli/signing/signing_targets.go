@@ -1,6 +1,7 @@
 package signing
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,6 +81,9 @@ func readSigningSyncTargetsFile(path string) ([]string, error) {
 	if !utf8.Valid(data) {
 		return nil, fmt.Errorf("targets manifest is not valid UTF-8")
 	}
+	if err := validateSigningSyncTargetsManifestFields(data); err != nil {
+		return nil, fmt.Errorf("validate targets manifest fields: %w", err)
+	}
 
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
@@ -124,6 +128,122 @@ func readSigningSyncTargetsFile(path string) ([]string, error) {
 		return left < right
 	})
 	return bundleIDs, nil
+}
+
+func validateSigningSyncTargetsManifestFields(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	first, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if first != json.Delim('{') {
+		return fmt.Errorf("targets manifest must be a JSON object")
+	}
+
+	seen := make(map[string]struct{}, 2)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return fmt.Errorf("targets manifest field name is not a string")
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("targets manifest contains duplicate field %q", key)
+		}
+		seen[key] = struct{}{}
+
+		switch key {
+		case "schemaVersion":
+			if err := consumeSigningSyncJSONValue(decoder); err != nil {
+				return err
+			}
+		case "targets":
+			if err := validateSigningSyncTargetsArray(decoder); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("targets manifest has unknown field %q", key)
+		}
+	}
+	last, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if last != json.Delim('}') {
+		return fmt.Errorf("targets manifest object is not closed")
+	}
+	return nil
+}
+
+func validateSigningSyncTargetsArray(decoder *json.Decoder) error {
+	first, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if first != json.Delim('[') {
+		return fmt.Errorf("targets manifest targets must be a JSON array")
+	}
+
+	for decoder.More() {
+		first, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if first != json.Delim('{') {
+			return fmt.Errorf("targets manifest target must be a JSON object")
+		}
+		if err := validateSigningSyncTargetFields(decoder); err != nil {
+			return err
+		}
+	}
+	last, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if last != json.Delim(']') {
+		return fmt.Errorf("targets manifest targets array is not closed")
+	}
+	return nil
+}
+
+func validateSigningSyncTargetFields(decoder *json.Decoder) error {
+	seen := make(map[string]struct{}, 1)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return fmt.Errorf("targets manifest target field name is not a string")
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("targets manifest target contains duplicate field %q", key)
+		}
+		seen[key] = struct{}{}
+		if key != "bundleId" {
+			return fmt.Errorf("targets manifest target has unknown field %q", key)
+		}
+		if err := consumeSigningSyncJSONValue(decoder); err != nil {
+			return err
+		}
+	}
+	last, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if last != json.Delim('}') {
+		return fmt.Errorf("targets manifest target object is not closed")
+	}
+	return nil
+}
+
+func consumeSigningSyncJSONValue(decoder *json.Decoder) error {
+	var value json.RawMessage
+	return decoder.Decode(&value)
 }
 
 func validateSigningSyncTargetBundleID(raw string) (string, error) {

@@ -72,8 +72,19 @@ func (result SigningSyncResult) MarshalJSON() ([]byte, error) {
 }
 
 func signingSyncRows(result *SigningSyncResult) ([]string, [][]string) {
+	summaryHeaders := []string{"Operation", "Repo URL", "Bundle ID", "Profile Type", "Files", "Identity Present"}
 	if result == nil {
-		result = &SigningSyncResult{}
+		return summaryHeaders, nil
+	}
+	if !result.batch {
+		return summaryHeaders, [][]string{{
+			result.Operation,
+			result.RepoURL,
+			result.BundleID,
+			result.ProfileType,
+			joinSigningList(result.Files),
+			formatBool(result.IdentityPresent),
+		}}
 	}
 	rows := make([][]string, 0, len(result.Targets))
 	for _, target := range result.Targets {

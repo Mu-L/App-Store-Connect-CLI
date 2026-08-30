@@ -1,14 +1,18 @@
 package signing
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
@@ -41,6 +45,37 @@ func TestReadSigningSyncTargetsFileAcceptsReadableNonSecretPermissions(t *testin
 	}
 }
 
+func TestSigningSyncPushPreservesTargetsFilePathWhitespace(t *testing.T) {
+	dir := t.TempDir()
+	filename := " targets.json "
+	writeSigningSyncTargetsFile(t, filepath.Join(dir, filename), `{"schemaVersion":1,"targets":[{"bundleId":"com.example.app"}]}`, 0o644)
+	t.Chdir(dir)
+
+	clientCalls := 0
+	t.Cleanup(shared.SetASCClientFactoryForTesting(func() (*asc.Client, error) {
+		clientCalls++
+		return nil, errors.New("client reached after manifest")
+	}))
+
+	cmd := syncPushCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.Parse([]string{
+		"--targets-file", filename,
+		"--profile-type", "IOS_APP_STORE",
+		"--repo", "git@example.com:team/signing.git",
+		"--password", "repository-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Run(context.Background())
+	if err == nil || err.Error() != "signing sync push: client reached after manifest" {
+		t.Fatalf("error = %v, want client error after manifest read", err)
+	}
+	if clientCalls != 1 {
+		t.Fatalf("client factory calls = %d, want 1", clientCalls)
+	}
+}
+
 func TestReadSigningSyncTargetsFileRejectsUnsafeManifest(t *testing.T) {
 	tests := []struct {
 		name string
@@ -50,6 +85,10 @@ func TestReadSigningSyncTargetsFileRejectsUnsafeManifest(t *testing.T) {
 		{name: "wrong schema", body: `{"schemaVersion":2,"targets":[{"bundleId":"com.example.app"}]}`, want: "schemaVersion"},
 		{name: "unknown top-level field", body: `{"schemaVersion":1,"targets":[{"bundleId":"com.example.app"}],"secret":"no"}`, want: "unknown field"},
 		{name: "unknown target field", body: `{"schemaVersion":1,"targets":[{"bundleId":"com.example.app","profileType":"IOS_APP_STORE"}]}`, want: "unknown field"},
+		{name: "case-sensitive top-level key", body: `{"SchemaVersion":1,"targets":[{"bundleId":"com.example.app"}]}`, want: "unknown field"},
+		{name: "case-sensitive target key", body: `{"schemaVersion":1,"targets":[{"bundleID":"com.example.app"}]}`, want: "unknown field"},
+		{name: "duplicate top-level key", body: `{"schemaVersion":1,"targets":[{"bundleId":"com.example.app"}],"targets":[{"bundleId":"com.example.other"}]}`, want: "duplicate"},
+		{name: "duplicate target key", body: `{"schemaVersion":1,"targets":[{"bundleId":"com.example.app","bundleId":"com.example.other"}]}`, want: "duplicate"},
 		{name: "empty targets", body: `{"schemaVersion":1,"targets":[]}`, want: "between 1 and 32"},
 		{name: "empty bundle ID", body: `{"schemaVersion":1,"targets":[{"bundleId":"  "}]}`, want: "bundleId"},
 		{name: "path separator", body: `{"schemaVersion":1,"targets":[{"bundleId":"com/example.app"}]}`, want: "path"},
