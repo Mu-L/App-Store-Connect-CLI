@@ -398,6 +398,9 @@ func TestPrepareSigningSyncBatchFilesDeduplicatesCertificates(t *testing.T) {
 	if got := files[0].RelativePath; got != filepath.Join("certs", "distribution", "serial-1.cer") {
 		t.Fatalf("first planned path = %q, want certificate path", got)
 	}
+	if files[0].Profile != nil || files[1].Profile == nil || files[2].Profile == nil {
+		t.Fatalf("planned metadata = %#v, want legacy certificate and authenticated profiles", files)
+	}
 	if got := len(targets[0].Files); got != 2 {
 		t.Fatalf("first target files = %d, want profile plus deduplicated certificate", got)
 	}
@@ -600,6 +603,22 @@ func TestRunSigningSyncBatchCreatesOneCommitAndIsIdempotent(t *testing.T) {
 		want := "profiles/appstore/com.example." + strings.TrimPrefix(profileID, "profile-") + "--" + profileID + ".mobileprovision.enc"
 		if !strings.Contains(files, want) {
 			t.Fatalf("repository tree missing target-scoped profile %q\n%s", want, files)
+		}
+	}
+	cloneRoot := t.TempDir()
+	checkout := filepath.Join(cloneRoot, "checkout")
+	runGitCommand(t, cloneRoot, "clone", remotePath, checkout)
+	stored := &signingpkg.GitStore{LocalDir: checkout}
+	for _, suffix := range []string{"a", "b"} {
+		profileID := "profile-" + suffix
+		profilePath := filepath.Join("profiles", "appstore", "com.example."+suffix+"--"+profileID+".mobileprovision")
+		_, metadata, err := stored.ReadEncryptedFileWithMetadata(profilePath, password)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if metadata.Kind != signingProfileArtifactKind || metadata.BundleID != "com.example."+suffix ||
+			metadata.ProfileType != "IOS_APP_STORE" || metadata.ProfileResourceID != profileID {
+			t.Fatalf("stored profile metadata = %+v", metadata)
 		}
 	}
 }

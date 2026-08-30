@@ -20,9 +20,11 @@ Apple code signing has four separate pieces:
 | Encrypt one app's signing assets and local private identity in Git | `asc signing sync push --bundle-id ...` |
 | Sync one shared identity across an app and its embedded targets | `asc signing sync push --targets-file ...` |
 | Decrypt signing assets on another machine or CI worker | `asc signing sync pull` |
+| Re-encrypt the repository with a replacement password | `asc signing sync rotate-password --confirm` |
 | Plan profiles for every target in an iOS archive and an exact device set | `asc signing reconcile plan` |
 | Apply an approved reconciliation plan | `asc signing reconcile apply --confirm` |
 | Run one release-testing command with a temporary keychain | `asc signing run` |
+| Keep one identity in a new dedicated keychain (experimental) | `asc signing keychain install --confirm` |
 
 Use `fetch` when the matching private key already exists on the machine. Use `sync` when a team or CI worker needs the private identity too. Use `reconcile` for multi-target, registered-device release testing where one stale or incomplete profile can break the whole export.
 
@@ -60,6 +62,7 @@ Keep decrypted outputs and secrets out of source control:
 .asc/secrets/
 .asc/signing/
 .asc/distribution/
+.asc/keychains/
 ```
 
 ## Set up the bundle ID and capabilities
@@ -334,13 +337,135 @@ The normalized PKCS#12 is protected by the same sync password. A pull that repor
 
 Use `--password-file` for local work. In a secret-managed CI environment, `ASC_SIGNING_SYNC_PASSWORD` is also supported. The inline `--password` flag and `ASC_MATCH_PASSWORD` are deprecated during 4.x and will be rejected in 5.0.0.
 
+### Install a persistent signing keychain
+
+> [experimental] This workflow can change before it reaches stable lifecycle status.
+
+Use `signing run` when an identity should exist only for one child command. Use
+`signing keychain install` when separate archive, export, or CI steps need one
+dedicated keychain to remain available:
+
+```bash  theme={null}
+mkdir -p .asc/keychains .asc/secrets
+chmod 700 .asc/keychains .asc/secrets
+
+keychain_password_file=.asc/secrets/release-keychain-password
+if [ ! -e "$keychain_password_file" ]; then
+  (umask 077 && openssl rand -base64 48 > "$keychain_password_file")
+fi
+chmod 600 "$keychain_password_file"
+
+identity_path="$(
+  jq -er '
+    [.sensitiveFiles[]? | select(endswith(".p12"))]
+    | if length == 1 then .[0]
+      else error("expected exactly one signing identity")
+      end
+  ' .asc/signing/pull-result.json
+)"
+
+asc signing keychain install \
+  --identity ".asc/signing/pulled/$identity_path" \
+  --identity-password-file ~/.config/asc/signing-sync-password \
+  --keychain .asc/keychains/release.keychain-db \
+  --keychain-password-file "$keychain_password_file" \
+  --expected-certificate-sha256 CERTIFICATE_SHA256 \
+  --add-to-search-list \
+  --confirm \
+  --output json
+```
+
+The command is macOS-only and requires a cgo-enabled build. It decodes the
+PKCS#12, verifies the private key and currently valid code-signing certificate,
+and checks the optional SHA-256 fingerprint before creating anything. The
+destination must not exist. This keeps partition-list changes inside a new
+keychain rather than modifying unrelated identities in a login or shared
+keychain.
+
+Both passwords come from protected regular files and are never placed in
+subprocess arguments. The command deletes the new keychain if import,
+codesigning verification, or search-list activation fails. It does not change
+the default keychain. Before creation it snapshots the user search list and
+restores that exact snapshot after any later failure, including when the
+destination had a stale entry. Without `--add-to-search-list`, a successful
+install removes any automatic or stale destination entry so the new keychain
+remains isolated.
+
+The JSON receipt contains the absolute keychain path, public certificate
+fingerprints, team ID, and whether the user search list changed. It never
+contains the identity source path or either password. The keychain persists on
+success; delete it explicitly when the job or machine no longer needs it.
+
+Provisioning profiles remain independent persistent assets. Install each
+profile with `asc profiles local install`, using the exact paths reported by
+`signing sync pull`.
+
+To decrypt only one app context, select the bundle ID and profile type:
+
+```bash  theme={null}
+asc signing sync pull \
+  --repo git@github.com:team/signing.git \
+  --bundle-id com.example.app \
+  --profile-type IOS_APP_STORE \
+  --password-file ~/.config/asc/signing-sync-password \
+  --output-dir .asc/signing/pulled \
+  --output json \
+  --pretty > .asc/signing/pull-result.json
+```
+
+Use the same schema-versioned `--targets-file` accepted by `sync push` when the app has extensions, widgets, App Clips, or other embedded targets. `--bundle-id` and `--targets-file` are mutually exclusive, and either selector requires one shared, exact App Store Connect `--profile-type`. Partial values and added suffixes fail before secret or repository access.
+
+A selected pull authenticates and validates the whole encrypted repository before filtering output, so an unselected corrupt artifact is still an error. It identifies development, ad hoc, store, in-house, and direct-distribution profiles from their signed bundle, platform, and distribution claims rather than filenames. It includes stored public certificates whose fingerprints appear in each profile without requiring inactive or otherwise unsynced embedded certificates, then includes the exact identity context and shared private identity when present. Identity-backed output also requires the stored public certificate for that exact identity. Every requested bundle must have an active matching profile. All selected destinations are checked before the first file is written; an existing file for an unselected target does not block the pull.
+
+Native Mac and Mac Catalyst profiles can have the same signed platform and distribution claims. Push therefore authenticates the exact API profile type alongside each encrypted profile. Older identity-backed stores can use the exact type in their authenticated identity context. An older certificate-only Mac profile without either form of provenance is not guessed: the selected pull reports no exact match. Push that bundle again with the exact `--profile-type` to upgrade the profile artifact, then retry the selected pull. Full-repository pulls remain available during migration.
+
+Single-target JSON reports `bundleId` and `profileType`. Multi-target JSON reports `bundleIds` plus one `targets` entry per bundle. A target can report multiple `profilePaths` when the store contains more than one active matching profile; `profilePath` remains the first deterministic path for compatibility with the existing target result shape. `files`, `sensitiveFiles`, and `identityPresent` describe only the selected output.
+
+### Rotate the repository password
+
+Prepare the replacement secret in a separate protected file, distribute it to
+dependent machines and CI secret stores, and then rotate the selected branch:
+
+```bash  theme={null}
+umask 077
+printf '%s' "$SIGNING_SYNC_PASSWORD_NEXT" \
+  > ~/.config/asc/signing-sync-password-next
+
+asc signing sync rotate-password \
+  --repo git@github.com:team/signing.git \
+  --password-file ~/.config/asc/signing-sync-password \
+  --new-password-file ~/.config/asc/signing-sync-password-next \
+  --confirm \
+  --output json \
+  --pretty
+```
+
+The two password files must be distinct regular files with mode `0600` or more
+restrictive. Rotation does not accept inline passwords or environment
+fallbacks. The command authenticates and validates the complete repository
+with the current password, re-encrypts all artifacts with fresh salts and
+nonces, rewraps normalized PKCS#12 identities with the new password, validates
+the complete result again, and publishes one Git commit. A corrupt or
+inconsistent artifact aborts the operation before publication.
+
+Existing pulls that still use the previous password fail against the new branch
+head. Update every dependent worker promptly and keep the replacement password
+file out of source control and build artifacts. The rotation commit does not
+rewrite Git history: the previous password can still decrypt matching artifacts
+from older commits. If the password was exposed, also rotate repository access
+and follow your team's history-retention procedure.
+
 ### Current sync scope
 
-The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull decrypts the whole repository rather than selecting individual apps. Password rotation, certificate renewal, persistent keychain import, and stale-asset deletion remain explicit operator work.
+The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull selectors similarly use one profile type per invocation. Certificate renewal and stale encrypted-store deletion remain explicit operator work. Dedicated persistent keychain installation is separate from sync, creates a new keychain for one identity per invocation, and leaves provisioning-profile installation as an independent operation.
 
 ## CI example
 
-The example below writes the repository password to a runner-private file without enabling shell tracing, pulls the encrypted assets, and removes the password file after use. Do not upload `.asc/signing/pulled` as a workflow artifact.
+The example below keeps all secret-file, profile-installation, and keychain
+steps in one shell process. The repository password therefore remains
+available through identity installation, and one trap removes both password
+files and the persistent job keychain. Do not upload `.asc/signing/pulled` as a
+workflow artifact.
 
 ```yaml  theme={null}
 - name: Pull signing assets
@@ -350,8 +475,16 @@ The example below writes the repository password to a runner-private file withou
   run: |
     set +x
     umask 077
-    password_file="$RUNNER_TEMP/asc-signing-password"
-    trap 'rm -f "$password_file"' EXIT
+    keychain_dir="$(mktemp -d "$RUNNER_TEMP/asc-signing.XXXXXX")"
+    password_file="$keychain_dir/repository-password"
+    keychain_path="$keychain_dir/release.keychain-db"
+    keychain_password_file="$keychain_dir/keychain-password"
+    cleanup_signing() {
+      /usr/bin/security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+      rm -f "$password_file" "$keychain_password_file"
+      rmdir "$keychain_dir" >/dev/null 2>&1 || true
+    }
+    trap cleanup_signing EXIT
     printf '%s' "$SIGNING_SYNC_PASSWORD" > "$password_file"
     mkdir -p .asc/signing
     chmod 700 .asc/signing
@@ -361,34 +494,53 @@ The example below writes the repository password to a runner-private file withou
       --password-file "$password_file" \
       --output-dir .asc/signing/pulled \
       --output json > .asc/signing/pull-result.json
-```
 
-For an App Store export, install the pulled provisioning profiles and import the pulled identity into a job-scoped macOS keychain using your CI's keychain setup. Read the exact profile paths from the pull result instead of guessing the repository layout:
+    identity_path="$(
+      jq -er '
+        [.sensitiveFiles[]? | select(endswith(".p12"))]
+        | if length == 1 then .[0]
+          else error("expected exactly one signing identity")
+          end
+      ' .asc/signing/pull-result.json
+    )"
 
-```bash  theme={null}
-jq -r '.files[] | select(endswith(".mobileprovision"))' \
-  .asc/signing/pull-result.json \
-| while IFS= read -r profile_path; do
-    asc profiles local install \
-      --path ".asc/signing/pulled/$profile_path" \
+    jq -r '.files[] | select(endswith(".mobileprovision"))' \
+      .asc/signing/pull-result.json \
+    | while IFS= read -r profile_path; do
+        asc profiles local install \
+          --path ".asc/signing/pulled/$profile_path" \
+          --output json
+      done
+
+    openssl rand -base64 32 > "$keychain_password_file"
+    asc signing keychain install \
+      --identity ".asc/signing/pulled/$identity_path" \
+      --identity-password-file "$password_file" \
+      --keychain "$keychain_path" \
+      --keychain-password-file "$keychain_password_file" \
+      --add-to-search-list \
+      --confirm \
       --output json
-  done
+
+    asc xcode archive \
+      --workspace Example.xcworkspace \
+      --scheme Example \
+      --archive-path .asc/artifacts/Example.xcarchive
+
+    asc xcode export \
+      --archive-path .asc/artifacts/Example.xcarchive \
+      --ipa-path .asc/artifacts/Example.ipa \
+      --signing-style manual \
+      --team-id TEAM_ID
 ```
 
-Then archive and export with manual signing when the project requires an exact local identity/profile match:
-
-```bash  theme={null}
-asc xcode archive \
-  --workspace Example.xcworkspace \
-  --scheme Example \
-  --archive-path .asc/artifacts/Example.xcarchive
-
-asc xcode export \
-  --archive-path .asc/artifacts/Example.xcarchive \
-  --ipa-path .asc/artifacts/Example.ipa \
-  --signing-style manual \
-  --team-id TEAM_ID
-```
+For an App Store export, the profile loop reads exact paths from the pull
+receipt instead of guessing the repository layout. The identity lookup likewise
+uses the complete relative path from `sensitiveFiles` and requires exactly one
+pulled PKCS#12 identity. The generated keychain password is independent of the
+repository password. The run-owned temporary directory ensures the cleanup trap
+cannot delete a pre-existing keychain when installation fails. The keychain
+intentionally persists through archive and export, then the trap removes it.
 
 Manual export inspects the archive and matches locally installed profiles for the main app and embedded targets. An explicit `--export-options` file is authoritative and cannot be combined with `--signing-style`, `--team-id`, or `--method`.
 

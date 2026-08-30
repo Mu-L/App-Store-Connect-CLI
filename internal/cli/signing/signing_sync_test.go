@@ -352,13 +352,11 @@ func TestSigningCommandLongHelpUsesOutputDirForSyncPull(t *testing.T) {
 	}
 }
 
-func TestSigningSyncCommandLongHelpPullExampleOmitsUnsupportedFlags(t *testing.T) {
+func TestSigningSyncCommandLongHelpDocumentsSelectivePull(t *testing.T) {
 	cmd := SigningSyncCommand()
-	if strings.Contains(cmd.LongHelp, "asc signing sync pull --bundle-id") {
-		t.Fatalf("expected pull example to omit --bundle-id, got %q", cmd.LongHelp)
-	}
-	if strings.Contains(cmd.LongHelp, "asc signing sync pull --profile-type") {
-		t.Fatalf("expected pull example to omit --profile-type, got %q", cmd.LongHelp)
+	if !strings.Contains(cmd.LongHelp, "asc signing sync pull --repo git@github.com:team/certs.git --bundle-id com.example.app") ||
+		!strings.Contains(cmd.LongHelp, "--profile-type IOS_APP_STORE") {
+		t.Fatalf("expected pull example to document target selection, got %q", cmd.LongHelp)
 	}
 }
 
