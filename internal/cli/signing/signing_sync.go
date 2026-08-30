@@ -939,17 +939,15 @@ func identityProfileTypeMatches(profile *identityMobileProvision, profileType st
 	case strings.Contains(normalized, "ADHOC"), strings.Contains(normalized, "AD_HOC"):
 		return !getTaskAllow && len(profile.ProvisionedDevices) > 0 && !profile.ProvisionsAllDevices
 	case isDirectDistributionProfile(normalized):
-		return !getTaskAllow && profile.ProvisionsAllDevices
-	case strings.Contains(normalized, "INHOUSE"), strings.Contains(normalized, "IN_HOUSE"):
-		return !getTaskAllow && profile.ProvisionsAllDevices
-	case strings.Contains(normalized, "STORE"):
-		return !getTaskAllow && len(profile.ProvisionedDevices) == 0 && !profile.ProvisionsAllDevices
-	case isDirectDistributionProfile(normalized):
 		// Direct profiles use the all-device claim. Exact native Mac versus Mac
 		// Catalyst provenance still comes from the API profile type, and the
 		// resolved Developer ID certificate is matched byte-for-byte.
 		return !getTaskAllow && len(profile.ProvisionedDevices) == 0 && profile.ProvisionsAllDevices &&
 			len(profile.Platform) == 1 && strings.EqualFold(strings.TrimSpace(profile.Platform[0]), "OSX")
+	case strings.Contains(normalized, "INHOUSE"), strings.Contains(normalized, "IN_HOUSE"):
+		return !getTaskAllow && profile.ProvisionsAllDevices
+	case strings.Contains(normalized, "STORE"):
+		return !getTaskAllow && len(profile.ProvisionedDevices) == 0 && !profile.ProvisionsAllDevices
 	default:
 		return false
 	}

@@ -303,7 +303,6 @@ type identityMobileProvision struct {
 	ExpirationDate              time.Time      `plist:"ExpirationDate"`
 	DeveloperCertificates       [][]byte       `plist:"DeveloperCertificates"`
 	Entitlements                map[string]any `plist:"Entitlements"`
-	Platform                    []string       `plist:"Platform"`
 	UUID                        string         `plist:"UUID"`
 	ProvisionedDevices          []string       `plist:"ProvisionedDevices"`
 	ProvisionsAllDevices        bool           `plist:"ProvisionsAllDevices"`
