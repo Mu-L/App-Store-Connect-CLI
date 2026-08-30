@@ -58,9 +58,9 @@ func SigningSyncCommand() *ffcli.Command {
 		ShortHelp:  "Sync signing assets with an encrypted git repo.",
 		LongHelp: `Sync signing certificates and provisioning profiles with an encrypted git repository.
 
-Lightweight alternative to fastlane match. Fetches signing assets from
-App Store Connect, encrypts them, and stores in a shared git repo.
-Team members pull and decrypt to get signing files.
+Fetches signing assets from App Store Connect, encrypts them, and stores them
+in a shared git repository. Team members and CI workers can pull and decrypt
+the same verified signing files.
 
 Examples:
   asc signing sync push --bundle-id com.example.app --profile-type IOS_APP_STORE \
