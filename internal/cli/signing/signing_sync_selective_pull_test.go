@@ -2,6 +2,7 @@ package signing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	signingpkg "github.com/rudrankriyam/App-Store-Connect-CLI/internal/signing"
+	"howett.net/plist"
 )
 
 func TestSigningSyncPullSelectorFlagsFailBeforeSecretsOrRepository(t *testing.T) {
@@ -41,6 +43,11 @@ func TestSigningSyncPullSelectorFlagsFailBeforeSecretsOrRepository(t *testing.T)
 			args: []string{"--repo", "git@example.com:team/signing.git", "--bundle-id", "com.example.app", "--targets-file", "targets.json", "--profile-type", "IOS_APP_STORE"},
 			want: "--bundle-id and --targets-file are mutually exclusive",
 		},
+		{
+			name: "profile type must use exact supported value",
+			args: []string{"--repo", "git@example.com:team/signing.git", "--bundle-id", "com.example.app", "--profile-type", "IOS_APP_STORE_BOGUS"},
+			want: "--profile-type must be a supported App Store Connect profile type",
+		},
 	}
 
 	for _, test := range tests {
@@ -56,6 +63,74 @@ func TestSigningSyncPullSelectorFlagsFailBeforeSecretsOrRepository(t *testing.T)
 				t.Fatalf("error = %v, want usage error %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestSelectSigningPullFilesChoosesDirectDistributionTarget(t *testing.T) {
+	key := mustECKey(t)
+	certificate := mustSigningCertificate(t, key, 807)
+	profilePlist, err := plist.Marshal(map[string]any{
+		"UUID":                        "01234567-89ab-cdef-0123-456789abcdef",
+		"TeamIdentifier":              []string{"TEAM123"},
+		"ApplicationIdentifierPrefix": []string{"TEAM123"},
+		"ExpirationDate":              time.Now().Add(time.Hour),
+		"DeveloperCertificates":       [][]byte{certificate.Raw},
+		"ProvisionsAllDevices":        true,
+		"Platform":                    []string{"OSX"},
+		"Entitlements": map[string]any{
+			"application-identifier": "TEAM123.com.example.direct",
+			"get-task-allow":         false,
+		},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := mustSignedCMS(t, profilePlist, certificate, key)
+	files := []decryptedSigningFile{
+		{RelativePath: "certs/distribution/direct.cer", Plaintext: certificate.Raw},
+		{RelativePath: "profiles/direct/direct.mobileprovision", Plaintext: profile},
+	}
+
+	selected, targets, err := selectSigningPullFiles(files, []string{"com.example.direct"}, "MAC_APP_DIRECT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := signingPullRelativePaths(selected); !slices.Equal(got, []string{"certs/distribution/direct.cer", "profiles/direct/direct.mobileprovision"}) {
+		t.Fatalf("selected paths = %v", got)
+	}
+	if len(targets) != 1 || targets[0].ProfileType != "MAC_APP_DIRECT" {
+		t.Fatalf("targets = %#v", targets)
+	}
+}
+
+func TestSigningSyncPullOneTargetManifestUsesBatchOutputShape(t *testing.T) {
+	result := SyncResult{Operation: "pull", Files: []string{"profile.mobileprovision"}}
+	targets := []SyncTargetResult{{
+		BundleID:     "com.example.app",
+		ProfileType:  "IOS_APP_STORE",
+		ProfilePath:  "profile.mobileprovision",
+		ProfilePaths: []string{"profile.mobileprovision"},
+		Files:        []string{"profile.mobileprovision"},
+	}}
+	applySigningPullSelectionResult(&result, "IOS_APP_STORE", []string{"com.example.app"}, targets, true)
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &shape); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := shape["bundleId"]; exists {
+		t.Fatalf("one-target manifest emitted singular bundleId: %s", encoded)
+	}
+	for _, key := range []string{"bundleIds", "targets"} {
+		if _, exists := shape[key]; !exists {
+			t.Fatalf("one-target manifest omitted %s: %s", key, encoded)
+		}
+	}
+	if !strings.Contains(string(encoded), `"profilePaths":["profile.mobileprovision"]`) {
+		t.Fatalf("one-target manifest omitted profilePaths: %s", encoded)
 	}
 }
 

@@ -18,7 +18,9 @@ asc signing sync pull \
 
 `--bundle-id` and `--targets-file` are mutually exclusive. Either selector
 requires `--profile-type`; `--profile-type` without a selector is rejected so
-it cannot be silently ignored. The existing schema-versioned targets file,
+it cannot be silently ignored. The profile type must be one exact value from
+the App Store Connect profile-type enum; suffixes and partial matches are
+rejected before passwords or repository access. The existing schema-versioned targets file,
 including its size, rooted-path, strict-JSON, count, character, duplicate, and
 ordering checks, is reused unchanged. Selector validation happens before the
 password, repository clone, or output-directory side effects.
@@ -37,7 +39,9 @@ hide a corrupt or conflicting repository.
 After repository validation, the command parses provisioning profiles and
 selects each profile whose exact bundle identifier and distribution class
 match a requested bundle/profile-type pair. Profile matching is based on the
-signed profile payload, not filenames. For every selected profile it includes:
+signed profile payload, not filenames. Development, ad hoc, store, in-house,
+and direct-distribution profile classes are distinguished from the signed
+payload. For every selected profile it includes:
 
 - the provisioning profile itself;
 - every stored public certificate whose DER fingerprint appears in the

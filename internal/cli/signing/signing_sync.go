@@ -541,6 +541,13 @@ func syncPullCommand() *ffcli.Command {
 			if !selectionRequested && profileProvided {
 				return shared.UsageError("--profile-type requires --bundle-id or --targets-file")
 			}
+			if selectionRequested {
+				var normalizeErr error
+				profile, normalizeErr = normalizeSigningPullProfileType(profile)
+				if normalizeErr != nil {
+					return shared.UsageError(normalizeErr.Error())
+				}
+			}
 			var selectedBundleIDs []string
 			switch {
 			case bundleProvided:
@@ -657,17 +664,26 @@ func syncPullCommand() *ffcli.Command {
 				SensitiveFiles:  sensitiveFiles,
 			}
 			if selectionRequested {
-				result.ProfileType = profile
-				if len(selectedBundleIDs) == 1 {
-					result.BundleID = selectedBundleIDs[0]
-				} else {
-					result.BundleIDs = selectedBundleIDs
-					result.Targets = targets
-					result.MarkBatch()
-				}
+				applySigningPullSelectionResult(&result, profile, selectedBundleIDs, targets, targetsProvided)
 			}
 			return shared.PrintOutput(&result, *output.Output, *output.Pretty)
 		},
+	}
+}
+
+func applySigningPullSelectionResult(result *SyncResult, profileType string, bundleIDs []string, targets []SyncTargetResult, batch bool) {
+	if result == nil {
+		return
+	}
+	result.ProfileType = profileType
+	if batch {
+		result.BundleIDs = bundleIDs
+		result.Targets = targets
+		result.MarkBatch()
+		return
+	}
+	if len(bundleIDs) == 1 {
+		result.BundleID = bundleIDs[0]
 	}
 }
 
@@ -883,6 +899,8 @@ func identityProfileTypeMatches(profile *identityMobileProvision, profileType st
 		return getTaskAllow && len(profile.ProvisionedDevices) > 0 && !profile.ProvisionsAllDevices
 	case strings.Contains(normalized, "ADHOC"), strings.Contains(normalized, "AD_HOC"):
 		return !getTaskAllow && len(profile.ProvisionedDevices) > 0 && !profile.ProvisionsAllDevices
+	case isDirectDistributionProfile(normalized):
+		return !getTaskAllow && profile.ProvisionsAllDevices
 	case strings.Contains(normalized, "INHOUSE"), strings.Contains(normalized, "IN_HOUSE"):
 		return !getTaskAllow && profile.ProvisionsAllDevices
 	case strings.Contains(normalized, "STORE"):
