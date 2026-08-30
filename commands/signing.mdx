@@ -443,6 +443,8 @@ asc signing run \
 
 The child owns stdin, stdout, stderr, and its exit code. The optional receipt contains certificate/profile digests, profile UUID, team, bundle ID, child result, and cleanup state; it does not contain credentials, device identifiers, or child arguments.
 
+The receipt path is create-only, including when the child fails. Before retrying in the same workspace, retain or move the reviewed receipt, remove it only when it is no longer needed, or choose a fresh `--receipt` path. The command does not overwrite an existing receipt.
+
 If a prior run was interrupted, the next run attempts bounded recovery from an ASC-owned crash journal. It refuses journals or files that fail ownership, permission, containment, link-count, or digest checks.
 
 ## Inspect and maintain local profiles

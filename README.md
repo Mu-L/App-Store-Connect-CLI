@@ -390,8 +390,9 @@ usable signing identity also needs the matching private key; `signing sync`
 can verify that local identity and share it through an encrypted Git
 repository. For multi-target release testing, `signing reconcile` plans exact
 device/profile changes. `signing run` provides a temporary macOS keychain only
-for single-target archives; multi-target exports must install every reconciled
-profile in a job-scoped keychain. See the
+for single-target archives. Multi-target exports must import the identity into
+a job-scoped keychain and install every reconciled profile for the job-exclusive
+macOS user. See the
 [signing guide](guides/code-signing.mdx) for setup, CI, rotation, security
 boundaries, and troubleshooting.
 

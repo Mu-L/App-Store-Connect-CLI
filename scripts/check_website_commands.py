@@ -658,10 +658,11 @@ def validate_example(
                     f"{' '.join(current.path)!r} does not accept command passthrough in {example.raw!r}"
                 )
                 return errors
-            if i + 1 >= len(tokens):
+            if i + 1 >= len(tokens) or not tokens[i + 1].strip():
                 errors.append(
                     f"{example.path.relative_to(example.path.parents[1])}:{example.line_number}: "
-                    f"command passthrough separator must be followed by a command in {example.raw!r}"
+                    f"command passthrough separator must be followed by a non-empty command "
+                    f"in {example.raw!r}"
                 )
                 return errors
             missing_flags = sorted(
