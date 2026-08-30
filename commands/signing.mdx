@@ -24,7 +24,7 @@ Apple code signing has four separate pieces:
 | Plan profiles for every target in an iOS archive and an exact device set | `asc signing reconcile plan` |
 | Apply an approved reconciliation plan | `asc signing reconcile apply --confirm` |
 | Run one release-testing command with a temporary keychain | `asc signing run` |
-| Keep one identity in a new dedicated keychain | `asc signing keychain install --confirm` |
+| Keep one identity in a new dedicated keychain (experimental) | `asc signing keychain install --confirm` |
 
 Use `fetch` when the matching private key already exists on the machine. Use `sync` when a team or CI worker needs the private identity too. Use `reconcile` for multi-target, registered-device release testing where one stale or incomplete profile can break the whole export.
 
@@ -337,6 +337,8 @@ The normalized PKCS#12 is protected by the same sync password. A pull that repor
 Use `--password-file` for local work. In a secret-managed CI environment, `ASC_SIGNING_SYNC_PASSWORD` is also supported. The inline `--password` flag and `ASC_MATCH_PASSWORD` are deprecated during 4.x and will be rejected in 5.0.0.
 
 ### Install a persistent signing keychain
+
+> [experimental] This workflow can change before it reaches stable lifecycle status.
 
 Use `signing run` when an identity should exist only for one child command. Use
 `signing keychain install` when separate archive, export, or CI steps need one
