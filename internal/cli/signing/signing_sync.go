@@ -234,9 +234,6 @@ func syncPushCommand() *ffcli.Command {
 			if privateKeyInput != "" && strings.TrimSpace(*identitySHA256) == "" {
 				return shared.UsageError("--identity-sha256 is required with --private-key to select one App Store Connect certificate")
 			}
-			if (identityInput != "" || privateKeyInput != "") && isDirectDistributionProfile(profType) {
-				return shared.UsageErrorf("private identity sync does not support --profile-type %s yet; omit --identity/--private-key", profType)
-			}
 			requestedFingerprint, fingerprintErr := normalizeCertificateFingerprint(*identitySHA256)
 			if fingerprintErr != nil {
 				return shared.UsageError(fingerprintErr.Error())
@@ -817,6 +814,11 @@ func identityProfileTypeMatches(profile *identityMobileProvision, profileType st
 	case strings.Contains(normalized, "INHOUSE"), strings.Contains(normalized, "IN_HOUSE"):
 		return !getTaskAllow && profile.ProvisionsAllDevices
 	case strings.Contains(normalized, "STORE"):
+		return !getTaskAllow && len(profile.ProvisionedDevices) == 0 && !profile.ProvisionsAllDevices
+	case isDirectDistributionProfile(normalized):
+		// The signed distribution claims overlap with store profiles. Exact
+		// direct-distribution provenance comes from the API profile type, and
+		// the resolved Developer ID certificate is still matched byte-for-byte.
 		return !getTaskAllow && len(profile.ProvisionedDevices) == 0 && !profile.ProvisionsAllDevices
 	default:
 		return false

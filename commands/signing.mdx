@@ -274,7 +274,7 @@ asc signing sync push \
 
 `--private-key` accepts RSA or EC PEM keys and always requires the certificate fingerprint. The CLI checks the private key's public half against the selected active, unexpired App Store Connect certificate and the certificate embedded in the profile.
 
-Private identity sync does not yet support `MAC_APP_DIRECT` or `MAC_CATALYST_APP_DIRECT`. Certificate-and-profile-only sync still works for those types when `--identity` and `--private-key` are omitted.
+Private identity sync supports `MAC_APP_DIRECT` and `MAC_CATALYST_APP_DIRECT` with the same protected `--identity` or `--private-key` inputs. The command requires the exact active API profile type, resolves the associated Developer ID Application certificate, and verifies the local private key, API certificate, embedded profile certificate, team, bundle ID, and signed profile as one identity before publication.
 
 ### Sync an app and embedded targets together
 

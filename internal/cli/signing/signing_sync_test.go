@@ -1043,7 +1043,8 @@ func TestSigningSyncRejectsBlankPasswordFile(t *testing.T) {
 	}
 }
 
-func TestSigningSyncPushRejectsDirectDistributionIdentityBeforeSecretReads(t *testing.T) {
+func TestSigningSyncPushDirectDistributionIdentityLoadFailureIsOperational(t *testing.T) {
+	t.Setenv(signingSyncPasswordEnvVar, "repository-password")
 	for _, profileType := range []string{"MAC_APP_DIRECT", "MAC_CATALYST_APP_DIRECT"} {
 		t.Run(profileType, func(t *testing.T) {
 			cmd := syncPushCommand()
@@ -1056,9 +1057,11 @@ func TestSigningSyncPushRejectsDirectDistributionIdentityBeforeSecretReads(t *te
 				t.Fatal(err)
 			}
 			err := cmd.Run(context.Background())
-			want := "private identity sync does not support --profile-type " + profileType + " yet; omit --identity/--private-key"
-			if err == nil || err.Error() != want || !errors.Is(err, flag.ErrHelp) {
-				t.Fatalf("error = %v, want usage error %q", err, want)
+			if err == nil || !strings.Contains(err.Error(), "signing sync push: signing identity") {
+				t.Fatalf("error = %v, want operational identity-load failure", err)
+			}
+			if errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("error = %v, want operational error", err)
 			}
 		})
 	}
