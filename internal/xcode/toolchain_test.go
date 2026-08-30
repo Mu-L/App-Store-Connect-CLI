@@ -257,6 +257,61 @@ func TestInspectToolchainRejectsXcrunResolvedSymlinkOutsideCandidate(t *testing.
 	}
 }
 
+func TestInspectToolchainClassifiesBetaFromCanonicalSelectedSymlink(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	root := t.TempDir()
+	canonicalApp := filepath.Join(root, "Xcode-beta.app")
+	canonicalDeveloperDir := filepath.Join(canonicalApp, "Contents", "Developer")
+	installToolchainXcodebuild(t, canonicalDeveloperDir)
+
+	selectedApp := filepath.Join(root, "Xcode.app")
+	if err := os.Symlink(canonicalApp, selectedApp); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	selectedDeveloperDir := filepath.Join(selectedApp, "Contents", "Developer")
+	t.Setenv("DEVELOPER_DIR", "")
+	t.Setenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER", "1")
+	commandContextFn = toolchainDoctorHelperCommandContext
+	lookPathFn = toolchainDoctorLookPath
+
+	report, err := InspectToolchain(context.Background(), ToolchainOptions{
+		DeveloperDir: selectedApp,
+		LogWriter:    io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("InspectToolchain() error = %v", err)
+	}
+	if report == nil || report.Status != ToolchainStatusWarn {
+		t.Fatalf("InspectToolchain() report = %+v, want warning for canonical beta target", report)
+	}
+	if report.Beta == nil || !*report.Beta {
+		t.Fatalf("InspectToolchain() beta = %v, want true from canonical target", report.Beta)
+	}
+	if !toolchainReportHasCheck(report, "beta", ToolchainCheckStatusWarn) {
+		t.Fatalf("missing beta warning: %+v", report.Checks)
+	}
+	if report.DeveloperDir != selectedDeveloperDir {
+		t.Fatalf("DeveloperDir = %q, want selected spelling %q", report.DeveloperDir, selectedDeveloperDir)
+	}
+	if report.XcodePath != selectedApp {
+		t.Fatalf("XcodePath = %q, want selected spelling %q", report.XcodePath, selectedApp)
+	}
+}
+
+func TestClassifyBetaXcodePathFailsClosedWhenCanonicalizationFails(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "Missing.app", "Contents", "Developer")
+	beta, err := classifyBetaXcodePath(missing, "")
+	if err == nil {
+		t.Fatal("classifyBetaXcodePath() error = nil, want canonicalization failure")
+	}
+	if beta != nil {
+		t.Fatalf("classifyBetaXcodePath() beta = %v, want unknown", *beta)
+	}
+}
+
 func TestInspectToolchainUsesEnvironmentBeforeXcodeSelect(t *testing.T) {
 	restore := overrideTestEnvironment(t)
 	t.Cleanup(restore)

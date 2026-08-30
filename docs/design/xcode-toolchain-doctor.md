@@ -33,8 +33,11 @@ executable is inside the selected developer directory, and runs `-version` on
 that exact path. This prevents a caller `PATH` shadow from supplying the
 version/build while the report names a different toolchain. It optionally
 resolves one SDK with `xcrun --sdk SDK --show-sdk-path`. Beta-looking paths
-produce an advisory warning. Command Line Tools-only paths are identified and
-are a deterministic failure even if mocked probes happen to return successful
+are classified from the canonical physical selected toolchain path, so a
+neutral-named application symlink still produces an advisory warning for a
+beta target. If that canonicalization fails, beta remains unknown and the
+doctor fails closed. Command Line Tools-only paths are identified and are a
+deterministic failure even if mocked probes happen to return successful
 Xcode-shaped output.
 
 The report uses the exported computed-output camelCase JSON contract. The

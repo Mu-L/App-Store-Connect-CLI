@@ -164,8 +164,19 @@ func InspectToolchain(ctx context.Context, opts ToolchainOptions) (*ToolchainRep
 		)
 	}
 
-	beta := isBetaXcodePath(developerDir) || isBetaXcodePath(xcodePath)
-	report.Beta = &beta
+	beta, betaErr := classifyBetaXcodePath(developerDir, xcodePath)
+	if betaErr != nil {
+		addCheck(
+			ToolchainCheck{
+				Name:    "beta",
+				Status:  ToolchainCheckStatusFail,
+				Message: "beta status is unavailable because the selected toolchain could not be canonicalized",
+			},
+			fmt.Errorf("classify beta Xcode: %w", betaErr),
+		)
+	} else {
+		report.Beta = beta
+	}
 
 	xcrunPath, xcrunLookupErr := resolveToolchainXcrunPath()
 	var resolvedXcodebuildPath string
@@ -343,6 +354,23 @@ func normalizeToolchainDeveloperDir(value string) (developerDir, xcodePath strin
 	lower := strings.ToLower(filepath.ToSlash(absolute))
 	commandLineTools = strings.HasSuffix(lower, "/library/developer/commandlinetools") || strings.HasSuffix(lower, "/commandlinetools")
 	return absolute, xcodePath, commandLineTools, nil
+}
+
+func classifyBetaXcodePath(developerDir, xcodePath string) (*bool, error) {
+	paths := []string{developerDir}
+	if strings.TrimSpace(xcodePath) != "" {
+		paths = append(paths, xcodePath)
+	}
+
+	beta := false
+	for _, pathValue := range paths {
+		canonicalPath, err := filepath.EvalSymlinks(pathValue)
+		if err != nil {
+			return nil, fmt.Errorf("resolve selected toolchain path symlinks: %w", err)
+		}
+		beta = beta || isBetaXcodePath(filepath.Clean(canonicalPath))
+	}
+	return &beta, nil
 }
 
 func resolveToolchainXcrunPath() (string, error) {
