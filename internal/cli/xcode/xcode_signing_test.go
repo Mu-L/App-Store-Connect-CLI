@@ -199,3 +199,37 @@ func TestXcodeSigningPlanLeavesParseAndFilesystemFailuresUnclassified(t *testing
 func isUsageError(err error) bool {
 	return err != nil && (errors.Is(err, flag.ErrHelp) || shared.IsReportedUsageError(err) || strings.Contains(err.Error(), "required"))
 }
+
+func TestXcodeSigningPlanRejectsEmptyStateDir(t *testing.T) {
+	originalBuild := runBuildSigningPlan
+	originalWrite := writeSigningPlanArtifact
+	t.Cleanup(func() {
+		runBuildSigningPlan = originalBuild
+		writeSigningPlanArtifact = originalWrite
+	})
+	calledBuild := false
+	runBuildSigningPlan = func(localxcode.SigningPlanOptions) (*localxcode.SigningPlan, error) {
+		calledBuild = true
+		return &localxcode.SigningPlan{Ready: true, PlanPath: "plan.json"}, nil
+	}
+	writeSigningPlanArtifact = func(*localxcode.SigningPlan, bool) error { return nil }
+
+	for _, stateDir := range []string{"", "   "} {
+		command := xcodeSigningPlanCommand()
+		command.FlagSet.SetOutput(io.Discard)
+		if err := command.FlagSet.Parse([]string{
+			"--project", "App.xcodeproj",
+			"--settings-file", "settings.json",
+			"--state-dir", stateDir,
+		}); err != nil {
+			t.Fatalf("Parse() error = %v", err)
+		}
+		err := command.Exec(context.Background(), nil)
+		if !isUsageError(err) {
+			t.Fatalf("--state-dir=%q: expected usage error, got %v", stateDir, err)
+		}
+		if calledBuild {
+			t.Fatalf("--state-dir=%q silently fell back to the default directory", stateDir)
+		}
+	}
+}

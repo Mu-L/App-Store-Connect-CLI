@@ -87,6 +87,12 @@ Examples:
 			if strings.TrimSpace(*settingsFile) == "" {
 				return shared.MissingRequiredUsageError("--settings-file")
 			}
+			// An explicitly empty value must not fall back to the flag default;
+			// silently relocating the plan and receipt would hide where the
+			// artifacts were written.
+			if strings.TrimSpace(*stateDir) == "" {
+				return shared.UsageErrorf("--state-dir must not be empty")
+			}
 			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
 				return shared.UsageError(err.Error())
 			}
