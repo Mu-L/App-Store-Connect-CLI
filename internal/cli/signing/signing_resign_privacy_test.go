@@ -203,7 +203,7 @@ func writeSigningResignIPAWithInfo(t *testing.T, pathValue string, info map[stri
 	}
 	archive := buildSigningResignZip(t, []signingResignZipEntry{
 		{name: "Payload/App.app/Info.plist", data: data},
-		{name: "Payload/App.app/App", data: executable},
+		{name: "Payload/App.app/App", data: executable, mode: 0o755},
 	})
 	if err := os.WriteFile(pathValue, archive, 0o600); err != nil {
 		t.Fatal(err)
@@ -424,5 +424,27 @@ func minimalSigningResignDeps(temporary string, searchList func(context.Context)
 		SetKeychainSearchList:     func(context.Context, []string) error { return nil },
 		RemoveKeychainSearchEntry: func(context.Context, string) error { return nil },
 		DeleteKeychain:            func(context.Context, string) error { return nil },
+	}
+}
+
+func TestSigningResignOperationalErrorTreeRejectsPlainWrappers(t *testing.T) {
+	typed := wrapSigningResignOperationalError(signingResignStageVerification, signingResignCodeVerification, errors.New("private cause"))
+	plain := fmt.Errorf("verify re-signed IPA after repack: %w", typed)
+	if signingResignOperationalErrorTree(plain) {
+		t.Fatal("plain wrapper around a typed cause must not count as public-safe")
+	}
+	public := wrapSigningResignOperationalError(signingResignStageVerification, signingResignCodeVerification, plain)
+	if public.Error() != "signing resign failed during verification (verification)" {
+		t.Fatalf("public error = %q, want the closed stage/code text only", public.Error())
+	}
+	if !errors.Is(public, typed) {
+		t.Fatal("detailed cause chain must remain reachable through Unwrap")
+	}
+	join := errors.Join(
+		typed,
+		wrapSigningResignOperationalError(signingResignStageCleanup, signingResignCodeCleanup, errors.New("cleanup cause")),
+	)
+	if !signingResignOperationalErrorTree(join) {
+		t.Fatal("aggregates of typed errors remain public-safe")
 	}
 }

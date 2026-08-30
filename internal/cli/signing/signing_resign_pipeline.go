@@ -890,7 +890,13 @@ func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Roo
 	if err := contextError(ctx); err != nil {
 		return "", 0, "", err
 	}
-	files := make([]string, 0)
+	type repackEntry struct {
+		relative  string
+		directory bool
+		mode      os.FileMode
+	}
+	entries := make([]repackEntry, 0)
+	fileCount := 0
 	err := filepath.WalkDir(treeRoot.Path(), func(candidate string, entry os.DirEntry, walkErr error) error {
 		if err := contextError(ctx); err != nil {
 			return err
@@ -901,12 +907,23 @@ func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Roo
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("staging tree contains a symbolic link")
 		}
-		if entry.IsDir() {
-			return nil
-		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
+		}
+		if entry.IsDir() {
+			relative, err := filepath.Rel(treeRoot.Path(), candidate)
+			if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("staging tree contains an invalid relative path")
+			}
+			if relative == "." {
+				return nil
+			}
+			// Directory entries carry validated modes and can be empty, so a
+			// faithful repack must record them explicitly instead of relying
+			// on ancestors implied by file paths.
+			entries = append(entries, repackEntry{relative: relative, directory: true, mode: info.Mode().Perm()})
+			return nil
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("staging tree contains a non-regular file")
@@ -915,16 +932,19 @@ func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Roo
 		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("staging tree contains an invalid relative path")
 		}
-		files = append(files, relative)
+		entries = append(entries, repackEntry{relative: relative})
+		fileCount++
 		return nil
 	})
 	if err != nil {
 		return "", 0, "", err
 	}
-	if len(files) == 0 {
+	if fileCount == 0 {
 		return "", 0, "", fmt.Errorf("staging tree is empty")
 	}
-	sort.Strings(files)
+	sort.Slice(entries, func(left, right int) bool {
+		return entries[left].relative < entries[right].relative
+	})
 	stageOS, err := stageRoot.OpenRoot()
 	if err != nil {
 		return "", 0, "", err
@@ -936,12 +956,22 @@ func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Roo
 	}
 	zipWriter := zip.NewWriter(packed)
 	var operationErr error
-	for _, relative := range files {
+	for _, item := range entries {
 		if err := contextError(ctx); err != nil {
 			operationErr = err
 			break
 		}
-		file, err := treeRoot.OpenFile(relative)
+		if item.directory {
+			header := &zip.FileHeader{Name: filepath.ToSlash(item.relative) + "/", Method: zip.Store}
+			header.Modified = time.Unix(0, 0)
+			header.SetMode(os.ModeDir | item.mode)
+			if _, err := zipWriter.CreateHeader(header); err != nil {
+				operationErr = err
+				break
+			}
+			continue
+		}
+		file, err := treeRoot.OpenFile(item.relative)
 		if err != nil {
 			operationErr = err
 			break
@@ -952,7 +982,7 @@ func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Roo
 			operationErr = err
 			break
 		}
-		header := &zip.FileHeader{Name: filepath.ToSlash(relative), Method: zip.Deflate}
+		header := &zip.FileHeader{Name: filepath.ToSlash(item.relative), Method: zip.Deflate}
 		header.Modified = time.Unix(0, 0)
 		header.SetMode(info.Mode().Perm())
 		entry, err := zipWriter.CreateHeader(header)

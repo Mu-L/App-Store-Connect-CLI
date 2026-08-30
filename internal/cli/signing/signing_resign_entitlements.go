@@ -85,20 +85,50 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 		}
 		value, exists := profile[key]
 		if !exists {
-			if key == "com.apple.application-identifier" ||
-				key == "keychain-access-groups" ||
-				key == "com.apple.developer.ubiquity-kvstore-identifier" ||
-				key == "com.apple.developer.parent-application-identifiers" {
+			if signingResignOptionalIdentityEntitlementKey(key) {
 				continue
 			}
 			return nil, fmt.Errorf("replacement profile entitlement %s is missing", key)
 		}
 		if signingResignEntitlementContainsWildcard(value) {
+			if signingResignOptionalIdentityEntitlementKey(key) {
+				// A wildcard is an authorization pattern, not a grantable
+				// claim. With no existing concrete claim there is nothing to
+				// preserve, so the optional capability is omitted instead of
+				// failing the operation or signing a wildcard.
+				continue
+			}
 			return nil, fmt.Errorf("replacement profile entitlement %s is wildcard-only and has no concrete signed value", key)
 		}
 		result[key] = value
 	}
 	return result, nil
+}
+
+// signingResignOptionalIdentityEntitlementKey reports whether an identity
+// entitlement is optional for a signed target: it is granted only when the
+// existing signature already claims it and the replacement profile authorizes
+// that claim.
+func signingResignOptionalIdentityEntitlementKey(key string) bool {
+	switch key {
+	case "com.apple.application-identifier",
+		"keychain-access-groups",
+		"com.apple.developer.ubiquity-kvstore-identifier",
+		"com.apple.developer.parent-application-identifiers":
+		return true
+	default:
+		return false
+	}
+}
+
+// signingResignPreserveExistingIdentityKeys lists capability-group claims
+// whose signed value must stay the app's own concrete subset. The replacement
+// profile value, wildcard or concrete, is a permission boundary; adopting it
+// verbatim could widen keychain, ubiquity, or parent-application access.
+var signingResignPreserveExistingIdentityKeys = map[string]struct{}{
+	"keychain-access-groups":                             {},
+	"com.apple.developer.ubiquity-kvstore-identifier":    {},
+	"com.apple.developer.parent-application-identifiers": {},
 }
 
 // validateSigningResignExistingEntitlements checks the identity claims from
@@ -166,14 +196,16 @@ func resolveSigningResignIdentityEntitlement(key string, existing, profile any) 
 	if !signingResignIdentityValueIsConcrete(existing) {
 		return nil, fmt.Errorf("existing entitlement %s is not a concrete value", key)
 	}
-	if signingResignEntitlementContainsWildcard(profile) {
+	_, preserveExisting := signingResignPreserveExistingIdentityKeys[key]
+	if preserveExisting || signingResignEntitlementContainsWildcard(profile) {
 		if !signingResignEntitlementValuePermits(profile, existing) {
 			return nil, fmt.Errorf("existing entitlement %s is not permitted by the replacement profile", key)
 		}
-		// A wildcard is a profile authorization pattern, not a value that
-		// can be placed in the signed entitlement document. Keep the
-		// already-concrete claim after proving that the replacement profile
-		// authorizes it.
+		// The profile value, whether a wildcard pattern or a broader concrete
+		// set, is an authorization boundary rather than the claim to sign.
+		// Keep the app's already-concrete claim after proving the replacement
+		// profile authorizes it, so re-signing never widens an identity
+		// capability.
 		return existing, nil
 	}
 	return profile, nil

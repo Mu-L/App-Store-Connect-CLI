@@ -44,3 +44,47 @@ func TestRunSigningResignToolKeepsCallerCancellationBare(t *testing.T) {
 		t.Fatalf("runSigningResignToolWithFallback() error = %v, want caller cancellation without a timeout label", err)
 	}
 }
+
+func TestSigningResignBoundedBufferReportsTruncation(t *testing.T) {
+	buffer := &signingResignBoundedBuffer{limit: 4}
+	if _, err := buffer.Write([]byte("12345")); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(buffer.Bytes()); got != "1234" {
+		t.Fatalf("buffer.Bytes() = %q, want capped capture", got)
+	}
+	if !buffer.Truncated() {
+		t.Fatal("buffer.Truncated() = false, want overflow reported")
+	}
+}
+
+func TestReadSigningResignEntitlementsFailsClosedOnTruncatedToolOutput(t *testing.T) {
+	original := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = original })
+	for _, test := range []struct {
+		name   string
+		output signingResignToolOutput
+		err    error
+	}{
+		{name: "truncated stdout", output: signingResignToolOutput{StdoutTruncated: true}},
+		{name: "truncated stderr", output: signingResignToolOutput{StderrTruncated: true}},
+		{
+			name: "truncated stderr cannot prove an unsigned object",
+			output: signingResignToolOutput{
+				Stderr:          []byte("code object is not signed at all"),
+				StderrTruncated: true,
+			},
+			err: errors.New("codesign failed"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runSigningResignToolFn = func(context.Context, string, ...string) (signingResignToolOutput, error) {
+				return test.output, test.err
+			}
+			entitlements, err := readSigningResignEntitlements(context.Background(), "/staged/App")
+			if err == nil {
+				t.Fatalf("readSigningResignEntitlements() = %v, want truncation failure instead of empty claims", entitlements)
+			}
+		})
+	}
+}

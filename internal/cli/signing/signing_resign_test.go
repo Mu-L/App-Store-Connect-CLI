@@ -293,7 +293,7 @@ func writeSigningResignMinimalIPAForPlatform(t *testing.T, pathValue, platformNa
 	}
 	data := buildSigningResignZip(t, []signingResignZipEntry{
 		{name: "Payload/App.app/Info.plist", data: info},
-		{name: "Payload/App.app/App", data: executable},
+		{name: "Payload/App.app/App", data: executable, mode: 0o755},
 	})
 	if err := os.WriteFile(pathValue, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -2185,4 +2185,176 @@ func TestDiscoverSigningResignArchiveRejectsNonLocalEntriesWithoutPriorValidatio
 	if err == nil || !strings.Contains(err.Error(), "non-local archive path") {
 		t.Fatalf("discoverSigningResignArchive() error = %v, want non-local entry rejection", err)
 	}
+}
+
+func TestBuildSigningResignEntitlementsPreservesConcreteIdentitySubsets(t *testing.T) {
+	existing := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+		"keychain-access-groups":              []string{"NEWTEAM.com.example.app"},
+	}
+	profile := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.application-identifier":    "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+		"keychain-access-groups":              []any{"NEWTEAM.com.example.app", "NEWTEAM.com.example.shared"},
+	}
+	got, err := buildSigningResignEntitlements(existing, profile)
+	if err != nil {
+		t.Fatalf("buildSigningResignEntitlements() error = %v", err)
+	}
+	if !signingResignEntitlementValuesEqual(got["keychain-access-groups"], existing["keychain-access-groups"]) {
+		t.Fatalf(
+			"keychain-access-groups = %#v, want the app's existing subset %#v without profile-widened groups",
+			got["keychain-access-groups"], existing["keychain-access-groups"],
+		)
+	}
+}
+
+func TestBuildSigningResignEntitlementsOmitsOptionalWildcardOnlyProfileClaims(t *testing.T) {
+	existing := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+	}
+	profile := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.application-identifier":    "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+		"keychain-access-groups":              []any{"NEWTEAM.*"},
+	}
+	got, err := buildSigningResignEntitlements(existing, profile)
+	if err != nil {
+		t.Fatalf("buildSigningResignEntitlements() error = %v, want wildcard-only optional claim omitted", err)
+	}
+	if value, exists := got["keychain-access-groups"]; exists {
+		t.Fatalf("keychain-access-groups = %#v, want the unclaimed optional capability omitted", value)
+	}
+	wildcardProfile := map[string]any{
+		"application-identifier":              "NEWTEAM.*",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+	}
+	if _, err := buildSigningResignEntitlements(map[string]any{}, wildcardProfile); err == nil {
+		t.Fatal("buildSigningResignEntitlements() accepted a wildcard-only required identity claim with no existing concrete value")
+	}
+}
+
+func TestInspectSigningResignTargetRequiresOwnerExecutableBinary(t *testing.T) {
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	runSigningResignToolFn = func(context.Context, string, ...string) (signingResignToolOutput, error) {
+		return signingResignToolOutput{}, nil
+	}
+	treePath := t.TempDir()
+	appDir := filepath.Join(treePath, "Payload", "App.app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	info, err := plist.Marshal(map[string]any{
+		"CFBundleIdentifier":         "com.example.app",
+		"CFBundleExecutable":         "App",
+		"DTPlatformName":             "iphoneos",
+		"CFBundleSupportedPlatforms": []string{"iPhoneOS"},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "Info.plist"), info, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	executable := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "App"), executable, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := rootfs.New(treePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tree.Close()
+	if _, err := inspectSigningResignTarget(context.Background(), tree, "Payload/App.app", "application"); err == nil || !strings.Contains(err.Error(), "owner-execute") {
+		t.Fatalf("inspectSigningResignTarget() error = %v, want owner-execute rejection for a 0644 executable", err)
+	}
+	if err := os.Chmod(filepath.Join(appDir, "App"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspectSigningResignTarget(context.Background(), tree, "Payload/App.app", "application"); err != nil {
+		t.Fatalf("inspectSigningResignTarget() error = %v, want executable target accepted", err)
+	}
+}
+
+func TestSigningResignSafeFileModeRequiresOwnerWritableDirectories(t *testing.T) {
+	if _, err := signingResignSafeFileMode(0o555, true); err == nil || !strings.Contains(err.Error(), "owner-writable") {
+		t.Fatalf("signingResignSafeFileMode(0o555, dir) error = %v, want owner-writable rejection", err)
+	}
+	mode, err := signingResignSafeFileMode(0o755, true)
+	if err != nil || mode != 0o755 {
+		t.Fatalf("signingResignSafeFileMode(0o755, dir) = %#o, %v, want accepted", mode, err)
+	}
+}
+
+func TestRepackSigningResignTreePreservesDirectoryEntries(t *testing.T) {
+	stagePath := t.TempDir()
+	treePath := filepath.Join(stagePath, "tree")
+	emptyDir := filepath.Join(treePath, "Payload", "App.app", "Empty.lproj")
+	if err := os.MkdirAll(emptyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(emptyDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(treePath, "Payload", "App.app", "Info.plist"), []byte("plist"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stageRoot, err := rootfs.New(stagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stageRoot.Close()
+	treeRoot, err := rootfs.New(treePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer treeRoot.Close()
+	packedPath, size, _, err := repackSigningResignTree(context.Background(), stageRoot, treeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packed, err := os.Open(packedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer packed.Close()
+	reader, err := zip.NewReader(packed, size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var emptyEntry *zip.File
+	for _, member := range reader.File {
+		if member.Name == "Payload/App.app/Empty.lproj/" {
+			emptyEntry = member
+		}
+	}
+	if emptyEntry == nil {
+		t.Fatalf("re-signed IPA dropped the empty directory entry; members = %v", memberNamesForTest(reader))
+	}
+	if !emptyEntry.FileInfo().IsDir() || emptyEntry.Mode().Perm() != 0o750 {
+		t.Fatalf("empty directory entry mode = %v, want preserved directory mode 0o750", emptyEntry.Mode())
+	}
+}
+
+func memberNamesForTest(reader *zip.Reader) []string {
+	names := make([]string, 0, len(reader.File))
+	for _, member := range reader.File {
+		names = append(names, member.Name)
+	}
+	return names
 }

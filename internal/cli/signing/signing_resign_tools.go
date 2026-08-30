@@ -20,8 +20,10 @@ import (
 const signingResignToolTimeout = 5 * time.Minute
 
 type signingResignToolOutput struct {
-	Stdout []byte
-	Stderr []byte
+	Stdout          []byte
+	Stderr          []byte
+	StdoutTruncated bool
+	StderrTruncated bool
 }
 
 var runSigningResignToolFn = runSigningResignTool
@@ -46,7 +48,12 @@ func runSigningResignToolWithFallback(ctx context.Context, fallbackTimeout time.
 	command.Stdout = stdout
 	command.Stderr = stderr
 	err := command.Run()
-	result := signingResignToolOutput{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
+	result := signingResignToolOutput{
+		Stdout:          stdout.Bytes(),
+		Stderr:          stderr.Bytes(),
+		StdoutTruncated: stdout.Truncated(),
+		StderrTruncated: stderr.Truncated(),
+	}
 	if err == nil {
 		return result, nil
 	}
@@ -101,6 +108,10 @@ func (buffer *signingResignBoundedBuffer) Bytes() []byte {
 	return append([]byte(nil), buffer.data...)
 }
 
+func (buffer *signingResignBoundedBuffer) Truncated() bool {
+	return buffer.overflow
+}
+
 func readSigningResignEntitlements(ctx context.Context, executablePath string) (map[string]any, error) {
 	if strings.TrimSpace(executablePath) == "" {
 		return nil, fmt.Errorf("signed executable path is missing")
@@ -109,13 +120,18 @@ func readSigningResignEntitlements(ctx context.Context, executablePath string) (
 	if err != nil {
 		// An unsigned nested code object has no claims to preserve. Any other
 		// inspection failure is terminal so that a damaged signature is never
-		// silently replaced.
-		if isUnsignedSigningResignCodeObject(result.Stderr) {
+		// silently replaced. A truncated capture cannot prove the unsigned
+		// diagnostic, so it stays terminal too.
+		if !result.StderrTruncated && isUnsignedSigningResignCodeObject(result.Stderr) {
 			return map[string]any{}, nil
 		}
 		return nil, fmt.Errorf("read signed entitlements: %w", err)
 	}
-	if len(result.Stdout) > infoplist.MaxBytes || len(result.Stderr) > signingResignToolOutputLimit {
+	// A truncated capture could hold a partial entitlement document that then
+	// decodes as empty, which would silently drop the target's existing
+	// capabilities. Fail instead of interpreting incomplete output.
+	if result.StdoutTruncated || result.StderrTruncated ||
+		len(result.Stdout) > infoplist.MaxBytes || len(result.Stderr) > signingResignToolOutputLimit {
 		return nil, fmt.Errorf("signed entitlements output exceeds the size limit")
 	}
 	data := bytes.TrimSpace(result.Stdout)

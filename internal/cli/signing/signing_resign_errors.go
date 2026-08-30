@@ -2,7 +2,6 @@ package signing
 
 import (
 	"errors"
-	"reflect"
 )
 
 // ErrSigningResignCleanupFailed marks a cleanup failure that may leave the
@@ -116,6 +115,12 @@ func (err *signingResignOperationalError) Unwrap() error {
 	return err.err
 }
 
+// publicSafeSigningResignError marks the typed operational error itself as
+// public-safe. The marker exists so the tree check below can require the
+// outermost error to be the typed value without errors.As, which would also
+// accept plain wrappers whose prefix text must never reach public output.
+func (err *signingResignOperationalError) publicSafeSigningResignError() {}
+
 func wrapSigningResignOperationalError(stage signingResignOperationalStage, code signingResignOperationalCode, err error) error {
 	if err == nil {
 		return nil
@@ -127,16 +132,17 @@ func wrapSigningResignOperationalError(stage signingResignOperationalStage, code
 }
 
 // signingResignOperationalErrorTree reports whether every error in an
-// aggregate is already public-safe. This lets a callback's signing,
-// verification, artifact, and cleanup stages retain their distinct codes even
-// when cleanup adds a second typed error, while a mixed aggregate is still
-// hidden behind one stable outer error.
+// aggregate is already public-safe. Only a typed operational error itself, or
+// an aggregate whose members are all public-safe, qualifies: a plain wrapper
+// around a typed cause would surface its own prefix text through Error(), so
+// it must be re-wrapped before it can reach public output. This still lets a
+// callback's signing, verification, artifact, and cleanup stages retain their
+// distinct codes when cleanup joins a second typed error.
 func signingResignOperationalErrorTree(err error) bool {
 	if err == nil {
 		return true
 	}
-	var alreadyWrapped *signingResignOperationalError
-	if errors.As(err, &alreadyWrapped) && isDirectSigningResignOperationalError(err, alreadyWrapped) {
+	if _, ok := err.(interface{ publicSafeSigningResignError() }); ok {
 		return true
 	}
 	if multiple, ok := err.(interface{ Unwrap() []error }); ok {
@@ -151,20 +157,5 @@ func signingResignOperationalErrorTree(err error) bool {
 		}
 		return true
 	}
-	if single, ok := err.(interface{ Unwrap() error }); ok {
-		return signingResignOperationalErrorTree(single.Unwrap())
-	}
 	return false
-}
-
-func isDirectSigningResignOperationalError(err error, candidate *signingResignOperationalError) bool {
-	if candidate == nil {
-		return false
-	}
-	errType := reflect.TypeOf(err)
-	candidateType := reflect.TypeOf(candidate)
-	if errType != candidateType || errType.Kind() != reflect.Pointer {
-		return false
-	}
-	return reflect.ValueOf(err).Pointer() == reflect.ValueOf(candidate).Pointer()
 }

@@ -282,6 +282,14 @@ func signingResignSafeFileMode(mode os.FileMode, isDirectory bool) (os.FileMode,
 		if permissions&0o500 != 0o500 {
 			return 0, fmt.Errorf("IPA contains an unreadable or untraversable directory mode")
 		}
+		// Preparation must replace embedded profiles and codesign must rewrite
+		// _CodeSignature inside these directories, and validated modes are
+		// preserved exactly through staging and repack. A read-only directory
+		// would pass validation and then fail mid-signing, so reject it up
+		// front instead of silently widening its mode.
+		if permissions&0o200 == 0 {
+			return 0, fmt.Errorf("IPA contains a directory mode that is not owner-writable")
+		}
 	} else if permissions&0o400 == 0 {
 		return 0, fmt.Errorf("IPA contains an unreadable archive file mode")
 	}
@@ -498,6 +506,14 @@ func inspectSigningResignTarget(ctx context.Context, tree rootfs.Root, relativeP
 	}
 	if !isSigningResignMachOFile(file, stat.Size()) {
 		return signingResignTarget{}, fmt.Errorf("executable is not a loadable Mach-O")
+	}
+	// A DOS-created archive member carries no Unix metadata and defaults to a
+	// non-executable file mode, and validated modes are preserved exactly
+	// through repack. Signing would then succeed while producing a bundle
+	// whose executable cannot launch, so require the owner-execute bit before
+	// any mutation instead of silently restoring it.
+	if stat.Mode().Perm()&0o100 == 0 {
+		return signingResignTarget{}, fmt.Errorf("executable file mode is missing the owner-execute permission")
 	}
 	profileMode := os.FileMode(0o644)
 	profilePath := filepath.FromSlash(path.Join(relativePath, "embedded.mobileprovision"))
