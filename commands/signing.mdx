@@ -334,6 +334,27 @@ The normalized PKCS#12 is protected by the same sync password. A pull that repor
 
 Use `--password-file` for local work. In a secret-managed CI environment, `ASC_SIGNING_SYNC_PASSWORD` is also supported. The inline `--password` flag and `ASC_MATCH_PASSWORD` are deprecated during 4.x and will be rejected in 5.0.0.
 
+To decrypt only one app context, select the bundle ID and profile type:
+
+```bash  theme={null}
+asc signing sync pull \
+  --repo git@github.com:team/signing.git \
+  --bundle-id com.example.app \
+  --profile-type IOS_APP_STORE \
+  --password-file ~/.config/asc/signing-sync-password \
+  --output-dir .asc/signing/pulled \
+  --output json \
+  --pretty > .asc/signing/pull-result.json
+```
+
+Use the same schema-versioned `--targets-file` accepted by `sync push` when the app has extensions, widgets, App Clips, or other embedded targets. `--bundle-id` and `--targets-file` are mutually exclusive, and either selector requires one shared, exact App Store Connect `--profile-type`. Partial values and added suffixes fail before secret or repository access.
+
+A selected pull authenticates and validates the whole encrypted repository before filtering output, so an unselected corrupt artifact is still an error. It identifies development, ad hoc, store, in-house, and direct-distribution profiles from their signed bundle, platform, and distribution claims rather than filenames. It includes stored public certificates whose fingerprints appear in each profile without requiring inactive or otherwise unsynced embedded certificates, then includes the exact identity context and shared private identity when present. Identity-backed output also requires the stored public certificate for that exact identity. Every requested bundle must have an active matching profile. All selected destinations are checked before the first file is written; an existing file for an unselected target does not block the pull.
+
+Native Mac and Mac Catalyst profiles can have the same signed platform and distribution claims. Push therefore authenticates the exact API profile type alongside each encrypted profile. Older identity-backed stores can use the exact type in their authenticated identity context. An older certificate-only Mac profile without either form of provenance is not guessed: the selected pull reports no exact match. Push that bundle again with the exact `--profile-type` to upgrade the profile artifact, then retry the selected pull. Full-repository pulls remain available during migration.
+
+Single-target JSON reports `bundleId` and `profileType`. Multi-target JSON reports `bundleIds` plus one `targets` entry per bundle. A target can report multiple `profilePaths` when the store contains more than one active matching profile; `profilePath` remains the first deterministic path for compatibility with the existing target result shape. `files`, `sensitiveFiles`, and `identityPresent` describe only the selected output.
+
 ### Rotate the repository password
 
 Prepare the replacement secret in a separate protected file, distribute it to
@@ -370,7 +391,7 @@ and follow your team's history-retention procedure.
 
 ### Current sync scope
 
-The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull decrypts the whole repository rather than selecting individual apps. Certificate renewal, persistent keychain import, and stale-asset deletion remain explicit operator work.
+The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull selectors similarly use one profile type per invocation. Certificate renewal, persistent keychain import, and stale encrypted-store deletion remain explicit operator work.
 
 ## CI example
 

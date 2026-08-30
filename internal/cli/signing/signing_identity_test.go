@@ -647,8 +647,8 @@ func bindTestSigningIdentityArtifactsWithSigner(t *testing.T, artifacts *signing
 	profilePlist, err := plist.Marshal(map[string]any{
 		"UUID": profileUUID, "TeamIdentifier": []string{"TEAM123"}, "ApplicationIdentifierPrefix": []string{"TEAM123"},
 		"ExpirationDate": time.Now().Add(time.Hour), "DeveloperCertificates": [][]byte{embeddedCertificate.Raw},
-		"ProvisionedDevices": []string{"DEVICE1"},
-		"Entitlements":       map[string]any{"application-identifier": "TEAM123." + bundleID, "get-task-allow": false},
+		"Platform": []string{"iOS"}, "ProvisionedDevices": []string{"DEVICE1"},
+		"Entitlements": map[string]any{"application-identifier": "TEAM123." + bundleID, "get-task-allow": false},
 	}, plist.XMLFormat)
 	if err != nil {
 		t.Fatal(err)
@@ -668,6 +668,7 @@ func mustProfilePlist(t *testing.T, certificate *x509.Certificate, teamID, appli
 		"UUID":                        "profile-1",
 		"TeamIdentifier":              []string{teamID},
 		"ApplicationIdentifierPrefix": []string{teamID},
+		"Platform":                    []string{"iOS"},
 		"ExpirationDate":              expiration,
 		"DeveloperCertificates":       [][]byte{certificate.Raw},
 		"Entitlements": map[string]any{
