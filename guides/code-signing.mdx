@@ -167,9 +167,50 @@ asc signing sync pull \
   --output json > .asc/signing/pull-result.json
 ```
 
-The result lists private identities under `sensitiveFiles`. Import the pulled PKCS#12 into a job-scoped macOS keychain using the CI runner's keychain setup, install each profile with `asc profiles local install`, then archive and export. Do not upload the decrypted directory.
+The result lists private identities under `sensitiveFiles`. Install the pulled
+PKCS#12 into a new dedicated keychain when separate archive and export commands
+need the identity to persist:
 
-`asc` does not currently perform a persistent App Store identity import. Its temporary-keychain command is intentionally limited to registered-device release testing.
+```bash  theme={null}
+keychain_path="$RUNNER_TEMP/asc-release.keychain-db"
+keychain_password_file="$RUNNER_TEMP/asc-release-keychain-password"
+cleanup_signing() {
+  /usr/bin/security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+  rm -f "$password_file" "$keychain_password_file"
+}
+trap cleanup_signing EXIT
+openssl rand -base64 32 > "$keychain_password_file"
+
+asc signing keychain install \
+  --identity .asc/signing/pulled/identities/distribution/IDENTITY.p12 \
+  --identity-password-file "$password_file" \
+  --keychain "$keychain_path" \
+  --keychain-password-file "$keychain_password_file" \
+  --add-to-search-list \
+  --confirm \
+  --output json
+
+jq -r '.files[] | select(endswith(".mobileprovision"))' \
+  .asc/signing/pull-result.json \
+| while IFS= read -r profile_path; do
+    asc profiles local install \
+      --path ".asc/signing/pulled/$profile_path" \
+      --output json
+  done
+```
+
+Replace `IDENTITY.p12` with the identity path reported in `sensitiveFiles`.
+The identity password is the encrypted-repository password because sync
+normalizes the pulled PKCS#12 under that secret. The keychain password is a
+separate generated secret. The install command is macOS-only, requires a
+cgo-enabled build, refuses an existing destination, and rolls back the new
+keychain if import, codesigning verification, or search-list activation fails.
+It does not change the default keychain.
+
+The keychain remains available after the command succeeds. Keep archive and
+export inside the lifetime of the cleanup trap on disposable CI workers; for a
+long-lived machine, omit the trap only when the dedicated keychain is intended
+to remain. Do not upload the decrypted directory, password files, or keychain.
 
 ## Registered-device release testing
 
@@ -225,10 +266,10 @@ asc signing run \
 
 `signing run` accepts iOS ad hoc profiles with registered devices. It rejects App Store, development, enterprise, macOS, and tvOS profiles.
 
-For an archive with extensions, App Clips, Watch apps, or other embedded targets, don't use this single-profile wrapper for export. On a disposable macOS worker, import the identity into a job-scoped keychain, install each completed profile action's `outputPath` from `.asc/distribution/signing/apply-result.json`, export, and discard the worker state when the job ends.
+For an archive with extensions, App Clips, Watch apps, or other embedded targets, don't use this single-profile wrapper for export. On a disposable macOS worker, use `asc signing keychain install` for the job-scoped identity, install each completed profile action's `outputPath` from `.asc/distribution/signing/apply-result.json`, export, and discard the worker state when the job ends.
 
 ## What the encrypted store does not do
 
-The current store uses Git and pulls the whole repository. It does not rotate the repository password, renew certificates, delete stale assets, assign different settings per target, or import an App Store identity into a persistent keychain. Treat those as separate reviewed operations.
+The current store uses Git. It does not renew certificates, delete stale encrypted assets, assign different settings per target, or manage the later lifecycle of installed persistent keychains. Treat those as separate reviewed operations.
 
 Read the [signing command reference](/commands/signing) before the first live push; it includes file-permission rules, exact output fields, failure boundaries, profile maintenance, and recovery behavior.
