@@ -1070,3 +1070,141 @@ func assertStaplerCommands(t *testing.T, logPath string, want []string) {
 		}
 	}
 }
+
+func TestStapleWithVerifierMarksCancellationDuringInitialStapleAsPartialMutation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_WAIT", "1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type outcome struct {
+		result *StaplerResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := StapleWithVerifier(ctx, target, nil, nil)
+		done <- outcome{result: result, err: err}
+	}()
+	waitForStaplerCommand(t, logPath, "xcrun|stapler|staple|")
+	cancel()
+
+	select {
+	case got := <-done:
+		if got.result != nil {
+			t.Fatalf("StapleWithVerifier() result = %#v, want nil after cancellation", got.result)
+		}
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("StapleWithVerifier() error = %v, want context cancellation", got.err)
+		}
+		var partialErr *StaplerPartialMutationError
+		if !errors.As(got.err, &partialErr) || partialErr.Operation != StaplerOperationStaple {
+			t.Fatalf("StapleWithVerifier() error = %T %v, want initial-staple partial marker", got.err, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StapleWithVerifier() did not return after cancellation")
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|staple|" + target,
+	})
+}
+
+func TestStapleWithVerifierMarksDeadlineDuringInitialStapleAsPartialMutation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_WAIT", "1")
+
+	ctx := newStaplerDeadlineTestContext()
+	t.Cleanup(ctx.close)
+	type outcome struct {
+		result *StaplerResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := StapleWithVerifier(ctx, target, nil, nil)
+		done <- outcome{result: result, err: err}
+	}()
+	waitForStaplerCommand(t, logPath, "xcrun|stapler|staple|")
+	ctx.close()
+
+	select {
+	case got := <-done:
+		if got.result != nil {
+			t.Fatalf("StapleWithVerifier() result = %#v, want nil after deadline", got.result)
+		}
+		if !errors.Is(got.err, context.DeadlineExceeded) {
+			t.Fatalf("StapleWithVerifier() error = %v, want context deadline", got.err)
+		}
+		var partialErr *StaplerPartialMutationError
+		if !errors.As(got.err, &partialErr) || partialErr.Operation != StaplerOperationStaple {
+			t.Fatalf("StapleWithVerifier() error = %T %v, want initial-staple partial marker", got.err, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StapleWithVerifier() did not return after deadline")
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|staple|" + target,
+	})
+}
+
+func waitForStaplerCommand(t *testing.T, logPath, prefix string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(logPath)
+		if err == nil && strings.Contains(string(data), prefix) {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("stapler helper did not report command %q", prefix)
+}
+
+type staplerDeadlineTestContext struct {
+	done chan struct{}
+}
+
+func newStaplerDeadlineTestContext() *staplerDeadlineTestContext {
+	return &staplerDeadlineTestContext{done: make(chan struct{})}
+}
+
+func (ctx *staplerDeadlineTestContext) Deadline() (time.Time, bool) {
+	return time.Now().Add(time.Hour), true
+}
+
+func (ctx *staplerDeadlineTestContext) Done() <-chan struct{} {
+	return ctx.done
+}
+
+func (ctx *staplerDeadlineTestContext) Err() error {
+	select {
+	case <-ctx.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func (ctx *staplerDeadlineTestContext) Value(any) any {
+	return nil
+}
+
+func (ctx *staplerDeadlineTestContext) close() {
+	select {
+	case <-ctx.done:
+	default:
+		close(ctx.done)
+	}
+}

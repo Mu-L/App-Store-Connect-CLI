@@ -970,6 +970,69 @@ func TestNotarizationValidateReportsNonRegularReplacementAtStage(t *testing.T) {
 	}
 }
 
+func TestNotarizationValidateReportsParentKindSwapAtStage(t *testing.T) {
+	rootDir := t.TempDir()
+	parent := filepath.Join(rootDir, "artifact-parent")
+	preservedParent := filepath.Join(rootDir, "preserved-parent")
+	target := filepath.Join(parent, "MyApp.pkg")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatalf("create target parent: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	previousDetails := validateStaplerDetailsFn
+	previousRunner := runStaplerValidate
+	validateStaplerDetailsFn = func(pathValue string) (*validatedStaplerTarget, error) {
+		validated, err := validateStaplerTargetDetails(pathValue)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Rename(parent, preservedParent); err != nil {
+			validated.close()
+			return nil, fmt.Errorf("preserve target parent: %w", err)
+		}
+		if err := os.WriteFile(parent, []byte("replacement"), 0o600); err != nil {
+			validated.close()
+			return nil, fmt.Errorf("replace parent with regular file: %w", err)
+		}
+		return validated, nil
+	}
+	runStaplerValidate = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		t.Fatal("validation runner should not be called after parent kind swap")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		validateStaplerDetailsFn = previousDetails
+		runStaplerValidate = previousRunner
+	})
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+	})
+	if runErr == nil {
+		t.Fatal("command error = nil, want parent kind-swap identity failure")
+	}
+	if errors.Is(runErr, flag.ErrHelp) || shared.IsReportedUsageError(runErr) {
+		t.Fatalf("command error = %v, stage parent replacement must not be usage", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty on stage identity failure", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed before validation") {
+		t.Fatalf("stderr = %q, want stable stage-specific identity diagnostic", stderr)
+	}
+	if strings.Contains(stderr, "could not inspect artifact filesystem") || strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, want redacted identity diagnostic", stderr)
+	}
+}
+
 func TestNotarizationValidateChildAndPostVerifierFailurePreservesExitAndStage(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.pkg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {

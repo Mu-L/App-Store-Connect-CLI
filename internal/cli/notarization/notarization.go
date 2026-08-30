@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
@@ -424,7 +425,7 @@ func (target *validatedStaplerTarget) verifyIdentity(stage string) error {
 func (target *validatedStaplerTarget) classifyStageOpenFailure(stage string, openErr error) error {
 	info, probeErr := probeStaplerTargetKindFn(target.root, target.relative)
 	if probeErr != nil {
-		if errors.Is(probeErr, os.ErrNotExist) {
+		if errors.Is(probeErr, os.ErrNotExist) || errors.Is(probeErr, syscall.ENOTDIR) {
 			return &staplerTargetIdentityError{stage: stage}
 		}
 		return &staplerTargetVerifyError{stage: stage, err: openErr}

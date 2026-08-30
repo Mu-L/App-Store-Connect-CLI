@@ -144,6 +144,12 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 		}
 	}
 	if stapleErr != nil {
+		if isStaplerOperationAttemptedCancellation(stapleErr) {
+			return nil, &StaplerPartialMutationError{
+				Operation: StaplerOperationStaple,
+				Err:       stapleErr,
+			}
+		}
 		return nil, stapleErr
 	}
 	if err := verifyStaplerStage(verifier, StaplerOperationValidate, true); err != nil {
@@ -263,6 +269,30 @@ func ensureStaplerAvailable(ctx context.Context, logWriter io.Writer) error {
 	return nil
 }
 
+// staplerOperationAttemptedCancellationError records that a stapler child was
+// invoked before its context was canceled. A cancellation before the child is
+// started remains an ordinary preflight error; once staple has been attempted,
+// the caller must warn that the artifact may have been modified.
+type staplerOperationAttemptedCancellationError struct {
+	err error
+}
+
+func (e *staplerOperationAttemptedCancellationError) Error() string {
+	return "stapler operation canceled after child invocation"
+}
+
+func (e *staplerOperationAttemptedCancellationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func isStaplerOperationAttemptedCancellation(err error) bool {
+	var attempted *staplerOperationAttemptedCancellationError
+	return errors.As(err, &attempted)
+}
+
 func runStaplerOperation(ctx context.Context, operation StaplerOperation, path string, logWriter io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -283,7 +313,7 @@ func runStaplerOperation(ctx context.Context, operation StaplerOperation, path s
 		return nil
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
+		return &staplerOperationAttemptedCancellationError{err: ctxErr}
 	}
 	return newStaplerCommandError(operation, err)
 }
