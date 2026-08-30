@@ -308,11 +308,25 @@ func Test(ctx context.Context, opts TestOptions) (*TestResult, error) {
 		if reportedFailed == 0 {
 			_, reportedFailed, _ = countTestCases(summary.Cases)
 		}
-		return finish(fmt.Errorf("xcode test result reported %d failed tests", reportedFailed))
+		return finish(&ReportedTestFailuresError{Failed: reportedFailed})
 	}
 	exitStatus := 0
 	result.ExitStatus = &exitStatus
 	return finish(nil)
+}
+
+// ReportedTestFailuresError reports that the test action completed and its
+// result bundle was parsed successfully, but the parsed summary contained
+// failing test cases. The failures are already represented in the returned
+// TestResult, so callers that build their own failure rows can recognize this
+// cause and avoid counting the same outcome twice. Genuine post-processing and
+// infrastructure errors keep their own types.
+type ReportedTestFailuresError struct {
+	Failed int
+}
+
+func (e *ReportedTestFailuresError) Error() string {
+	return fmt.Sprintf("xcode test result reported %d failed tests", e.Failed)
 }
 
 // readPartialTestResultSummary gives post-processing a short, independent

@@ -373,6 +373,13 @@ func shouldAddJUnitInfrastructureFailure(result *localxcode.TestResult, summary 
 		// synthetic testcase only when the exit has no represented failure.
 		return !summaryReportsFailedTest(summary)
 	}
+	// xcodebuild can also exit zero while the parsed xcresult reports failures.
+	// That post-processing cause is typed, so it is distinguishable from real
+	// infrastructure errors and must not double-count represented failures.
+	var reportedFailures *localxcode.ReportedTestFailuresError
+	if errors.As(commandErr, &reportedFailures) {
+		return !summaryReportsFailedTest(summary)
+	}
 	// Preserve a synthetic row for generic errors and typed infrastructure
 	// failures even when the summary contains ordinary failed test cases.
 	return true

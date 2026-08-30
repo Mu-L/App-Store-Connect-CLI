@@ -1058,6 +1058,16 @@ func TestTestRejectsFailedPostProcessingSummary(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "failed tests") {
 		t.Fatalf("Test() error = %v, want failed-test result error", err)
 	}
+	var reportedFailures *ReportedTestFailuresError
+	if !errors.As(err, &reportedFailures) {
+		t.Fatalf("Test() error = %T %v, want *ReportedTestFailuresError", err, err)
+	}
+	if reportedFailures.Failed != 1 {
+		t.Fatalf("ReportedTestFailuresError.Failed = %d, want 1", reportedFailures.Failed)
+	}
+	if got, want := err.Error(), "xcode test result reported 1 failed tests"; got != want {
+		t.Fatalf("Test() error message = %q, want %q", got, want)
+	}
 	if result.Success || result.Tests == nil || result.Tests.Failed != 1 || result.ExitStatus != nil {
 		t.Fatalf("unexpected failed-result payload: %+v", result)
 	}

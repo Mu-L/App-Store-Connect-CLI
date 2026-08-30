@@ -674,6 +674,55 @@ func TestXcodeTestJUnitDoesNotDuplicateOrdinaryExitErrorForRepresentedFailures(t
 	}
 }
 
+func TestXcodeTestJUnitDoesNotDuplicateReportedFailuresAfterZeroExit(t *testing.T) {
+	// xcodebuild can exit zero while the parsed xcresult still reports failing
+	// tests. Test() surfaces that as a typed post-processing error rather than
+	// an *exec.ExitError, and those failures are already represented.
+	report := testResultJUnitReport(&localxcode.TestResult{
+		Success: false,
+		Tests: &localxcode.TestSummary{
+			Total:  1,
+			Failed: 1,
+			Cases: []localxcode.TestCase{{
+				Identifier: "DemoTests/Smoke/testFail",
+				Name:       "testFail",
+				Status:     "failed",
+				Message:    "assertion failed",
+			}},
+		},
+	}, &localxcode.ReportedTestFailuresError{Failed: 1})
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("JUnit Marshal() error = %v", err)
+	}
+	if got := strings.Count(string(data), "<testcase "); got != 1 {
+		t.Fatalf("JUnit testcase count = %d, want one represented test\n%s", got, data)
+	}
+	if !strings.Contains(string(data), `failures="1"`) || strings.Contains(string(data), "aggregate-failed") {
+		t.Fatalf("JUnit output = %s, want only represented test failure", data)
+	}
+}
+
+func TestXcodeTestJUnitPreservesReportedFailuresErrorWithoutRepresentedFailures(t *testing.T) {
+	// Defensive: if the typed error ever disagrees with the summary, keep the
+	// synthetic row rather than silently dropping the failure signal.
+	report := testResultJUnitReport(&localxcode.TestResult{
+		Success: false,
+		Tests: &localxcode.TestSummary{
+			Total:  1,
+			Passed: 1,
+			Cases:  []localxcode.TestCase{{Identifier: "DemoTests/Smoke/testPass", Name: "testPass", Status: "passed"}},
+		},
+	}, &localxcode.ReportedTestFailuresError{Failed: 1})
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("JUnit Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), "aggregate-failed") || !strings.Contains(string(data), `failures="1"`) {
+		t.Fatalf("JUnit output = %s, want preserved synthetic failure", data)
+	}
+}
+
 func TestXcodeTestJUnitFallbackMarksSummaryFailure(t *testing.T) {
 	report := testResultJUnitReport(&localxcode.TestResult{
 		Success: true,
