@@ -9,7 +9,39 @@ import (
 	"testing"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
+
+func TestStructuredVersionFallsBackWhenNoReplaceRenameIsUnsupported(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	originalWriter := atomicWriteVersionFileFn
+	atomicWriteVersionFileFn = func(preparedVersionWrite, []byte) (os.FileInfo, error) {
+		return nil, secureopen.ErrRenameNoReplaceUnsupported
+	}
+	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
+
+	result, err := SetVersion(context.Background(), SetVersionOptions{
+		ProjectDir:  project,
+		Target:      "App",
+		Version:     "2.0.0",
+		BuildNumber: "50",
+	})
+	if err != nil {
+		t.Fatalf("SetVersion() error = %v, want portable stable-command fallback", err)
+	}
+	if len(result.ChangedFiles) != 1 || !strings.HasSuffix(result.ChangedFiles[0], "project.pbxproj") {
+		t.Fatalf("changed files = %#v", result.ChangedFiles)
+	}
+	updated, err := GetVersionScoped(context.Background(), GetVersionOptions{
+		ProjectDir: project, Target: "App", Configuration: "Debug",
+	})
+	if err != nil {
+		t.Fatalf("GetVersionScoped() error = %v", err)
+	}
+	if updated.Version != "2.0.0" || updated.BuildNumber != "50" {
+		t.Fatalf("updated version = %#v", updated)
+	}
+}
 
 func TestStructuredVersion_TargetAndConfigurationScopedEditIsCrossPlatform(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)

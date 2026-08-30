@@ -26,6 +26,7 @@ type xcconfigAssignment struct {
 	operatorEnd   int
 	valueStart    int
 	valueEnd      int
+	continued     bool
 }
 
 type xcconfigInclude struct {
@@ -95,6 +96,7 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 			operatorEnd:   operatorEnd,
 			valueStart:    valueStart,
 			valueEnd:      valueEnd,
+			continued:     xcconfigValueHasLineContinuation(masked[valueStart:valueEnd]),
 		})
 	}
 
@@ -102,6 +104,15 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 		return xcconfigDocument{}, fmt.Errorf("unterminated block comment in xcconfig")
 	}
 	return document, nil
+}
+
+func xcconfigValueHasLineContinuation(value string) bool {
+	trimmed := strings.TrimRight(value, " \t")
+	backslashes := 0
+	for index := len(trimmed) - 1; index >= 0 && trimmed[index] == '\\'; index-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
 }
 
 func parseXCConfigValue(raw string) (string, string) {
@@ -412,6 +423,9 @@ func resolveXCConfigSettingRecursiveWithReader(
 		if assignment.baseKey != setting {
 			continue
 		}
+		if assignment.continued {
+			return xcconfigResolvedValue{}, false, fmt.Errorf("%s assignment in %s uses an unsupported line continuation", setting, path)
+		}
 		if assignment.key != setting {
 			conditionalFound = true
 			resolved.conditionals = append(resolved.conditionals, xcconfigConditionalValue{
@@ -459,6 +473,9 @@ func editXCConfig(data []byte, setting, value string) ([]byte, []string, bool, e
 	for _, assignment := range document.assignments {
 		if assignment.baseKey != setting {
 			continue
+		}
+		if assignment.continued {
+			return nil, nil, false, fmt.Errorf("%s assignment uses an unsupported line continuation", setting)
 		}
 		assignmentsByLine[assignment.lineIndex] = assignment
 		oldValues = append(oldValues, assignment.value)

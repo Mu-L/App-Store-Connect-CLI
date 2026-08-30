@@ -16,6 +16,7 @@ import (
 	"github.com/bitrise-io/go-xcode/xcodeproject/xcodeproj"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 const (
@@ -73,6 +74,9 @@ type preparedVersionWrite struct {
 	// write. The commit path couples this identity with original bytes so a
 	// same-content replacement cannot be overwritten after preflight.
 	originalInfo os.FileInfo
+	// portableFallback preserves stable version-command writes on filesystems
+	// without atomic no-replace rename. Signing transactions leave it disabled.
+	portableFallback bool
 }
 
 type xcconfigMutation struct {
@@ -1138,6 +1142,9 @@ func (project *structuredVersionProject) setVersion(opts SetVersionOptions) (*Se
 		}
 	}
 
+	for index := range writes {
+		writes[index].portableFallback = true
+	}
 	if err := commitVersionWrites(writes); err != nil {
 		return nil, err
 	}
@@ -1510,6 +1517,9 @@ func xcconfigFilesDefiningWithReader(paths []string, setting string, read func(s
 		}
 		for _, assignment := range document.assignments {
 			if assignment.baseKey == setting {
+				if assignment.continued {
+					return nil, fmt.Errorf("%s assignment in %s uses an unsupported line continuation", setting, path)
+				}
 				defining = append(defining, path)
 				break
 			}
@@ -1765,6 +1775,13 @@ func commitVersionWritesWithCreateCheck(
 			}
 		} else {
 			write.committedInfo, err = atomicWriteVersionFileFn(write, write.updated)
+			if write.committedInfo == nil && write.portableFallback && errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
+				if checkErr := verifyPortableVersionWriteSource(write, write.original); checkErr != nil {
+					err = errors.Join(err, fmt.Errorf("verify source before portable fallback: %w", checkErr))
+				} else {
+					write.committedInfo, err = portableWritePreparedVersionFile(write, write.updated)
+				}
+			}
 			if write.committedInfo != nil {
 				retainedIdentities = append(retainedIdentities, write.committedInfo)
 			}
@@ -1853,14 +1870,22 @@ func rollbackPublishedVersionWriteAfterError(write preparedVersionWrite) error {
 	if rollbackPublishedVersionBeforeConditionalWriteForTest != nil {
 		rollbackPublishedVersionBeforeConditionalWriteForTest()
 	}
-	if err := write.root.WriteFileIfSame(
+	err := write.root.WriteFileIfSame(
 		write.name,
 		write.original,
 		write.mode,
 		write.committedInfo,
 		write.updated,
 		write.preserveMetadata,
-	); err != nil {
+	)
+	if write.portableFallback && errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
+		if checkErr := verifyPortableVersionWriteSource(write, write.updated); checkErr != nil {
+			err = errors.Join(err, checkErr)
+		} else {
+			_, err = portableWritePreparedVersionFile(write, write.original)
+		}
+	}
+	if err != nil {
 		return fmt.Errorf("preserve current file after failed write: %w", err)
 	}
 	return nil
@@ -1873,14 +1898,22 @@ func rollbackOrdinaryVersionWrite(write preparedVersionWrite) error {
 	if rollbackOrdinaryVersionBeforeConditionalWriteForTest != nil {
 		rollbackOrdinaryVersionBeforeConditionalWriteForTest()
 	}
-	if err := write.root.WriteFileIfSame(
+	err := write.root.WriteFileIfSame(
 		write.name,
 		write.original,
 		write.mode,
 		write.committedInfo,
 		write.updated,
 		write.preserveMetadata,
-	); err != nil {
+	)
+	if write.portableFallback && errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
+		if checkErr := verifyPortableVersionWriteSource(write, write.updated); checkErr != nil {
+			err = errors.Join(err, checkErr)
+		} else {
+			_, err = portableWritePreparedVersionFile(write, write.original)
+		}
+	}
+	if err != nil {
 		return fmt.Errorf("preserve current file after concurrent change: %w", err)
 	}
 	return nil
@@ -1922,6 +1955,46 @@ func atomicWritePreparedVersionFile(write preparedVersionWrite, data []byte) (os
 		)
 	}
 	return nil, fmt.Errorf("prepared write source identity unavailable")
+}
+
+func portableWritePreparedVersionFile(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	var err error
+	if write.preserveMetadata {
+		err = write.root.WriteFilePreservingMode(write.name, data, write.mode)
+	} else {
+		err = write.root.WriteFile(write.name, data, write.mode)
+	}
+	if err != nil {
+		return nil, err
+	}
+	file, err := write.root.OpenFile(write.name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, int64(len(data))+1))
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(contents, data) {
+		return nil, fmt.Errorf("portable version write verification failed")
+	}
+	return info, nil
+}
+
+func verifyPortableVersionWriteSource(write preparedVersionWrite, expected []byte) error {
+	current, _, err := readRegularVersionFile(&write)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, expected) {
+		return fmt.Errorf("source changed before portable fallback")
+	}
+	return nil
 }
 
 func atomicCreatePreparedVersionFile(write preparedVersionWrite, data []byte) (os.FileInfo, error) {

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 func TestBuildAndApplySigningPlanForDirectSettings(t *testing.T) {
@@ -95,6 +96,39 @@ func TestBuildAndApplySigningPlanForDirectSettings(t *testing.T) {
 	}
 	if !strings.Contains(string(receipt), `"completed": true`) || !result.Completed {
 		t.Fatalf("receipt completion state = result=%t contents=%s, want completed", result.Completed, receipt)
+	}
+}
+
+func TestSigningApplyDoesNotUseStablePortableWriteFallback(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	before := mustReadVersionTestFile(t, filepath.Join(project, "project.pbxproj"))
+	originalWriter := atomicWriteVersionFileFn
+	atomicWriteVersionFileFn = func(preparedVersionWrite, []byte) (os.FileInfo, error) {
+		return nil, secureopen.ErrRenameNoReplaceUnsupported
+	}
+	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err == nil || !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
+		t.Fatalf("ApplySigningPlan() error = %v, want signing transaction refusal", err)
+	}
+	if after := mustReadVersionTestFile(t, filepath.Join(project, "project.pbxproj")); after != before {
+		t.Fatal("failed signing transaction modified the project")
 	}
 }
 
@@ -536,6 +570,35 @@ func TestSigningPlanUsesExclusiveXCConfigWhenSelected(t *testing.T) {
 	updated := mustReadVersionTestFile(t, sharedPath)
 	if !strings.Contains(updated, "CODE_SIGN_STYLE = Manual\r\n") {
 		t.Fatalf("shared xcconfig was not updated: %q", updated)
+	}
+}
+
+func TestSigningPlanRejectsContinuedXCConfigAssignmentBeforeEditing(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	original := mustReadVersionTestFile(t, sharedPath)
+	continued := original + "CODE_SIGN_IDENTITY = Apple \\\n Development\n"
+	if err := os.WriteFile(sharedPath, []byte(continued), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"CODE_SIGN_IDENTITY":"Apple Distribution"}},
+			{"name":"Release","settings":{"CODE_SIGN_IDENTITY":"Apple Distribution"}}
+		]}]
+	}`)
+
+	_, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "line continuation") {
+		t.Fatalf("BuildSigningPlan() error = %v, want continued-assignment refusal", err)
+	}
+	if after := mustReadVersionTestFile(t, sharedPath); after != continued {
+		t.Fatal("planning a continued assignment modified the xcconfig")
 	}
 }
 

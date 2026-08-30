@@ -2222,6 +2222,9 @@ func signingProjectInputPaths(
 				return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("parse xcconfig %s: %w", filePath, err)
 			}
 			for _, assignment := range document.assignments {
+				if assignment.continued && allowedSigningSetting(assignment.baseKey) {
+					return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("xcconfig %s uses a line continuation for signing setting %s", filePath, assignment.baseKey)
+				}
 				if assignment.baseKey == "CODE_SIGN_ENTITLEMENTS" {
 					if err := appendResolvedEntitlements(configuration, assignment.value); err != nil {
 						appendLexicalEntitlementCandidate(assignment.value)
@@ -2256,6 +2259,9 @@ func signingProjectInputPaths(
 				return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("parse xcconfig %s: %w", filePath, err)
 			}
 			for _, assignment := range document.assignments {
+				if assignment.continued && allowedSigningSetting(assignment.baseKey) {
+					return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("xcconfig %s uses a line continuation for signing setting %s", filePath, assignment.baseKey)
+				}
 				if assignment.baseKey != "CODE_SIGN_ENTITLEMENTS" {
 					continue
 				}
