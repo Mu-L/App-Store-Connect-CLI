@@ -15,10 +15,10 @@ func createTempFileNoFollowWithPerm(dir string, pattern string, perm os.FileMode
 }
 
 func writeFileNoSymlinkOverwrite(path string, perm os.FileMode, tempPattern string, backupPattern string, write func(*os.File) (int64, error)) (int64, error) {
-	return writeFileNoSymlinkOverwriteWithPreparation(path, perm, tempPattern, backupPattern, nil, write)
+	return writeFileNoSymlinkOverwriteWithPreparationAndCreator(path, perm, tempPattern, backupPattern, nil, nil, write)
 }
 
-func writeFileNoSymlinkOverwriteWithPreparation(path string, perm os.FileMode, tempPattern string, backupPattern string, prepare func(*os.File) error, write func(*os.File) (int64, error)) (int64, error) {
+func writeFileNoSymlinkOverwriteWithPreparationAndCreator(path string, perm os.FileMode, tempPattern string, backupPattern string, prepare func(*os.File) error, create func(*os.Root, string, os.FileMode) (*os.File, error), write func(*os.File) (int64, error)) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return 0, err
 	}
@@ -37,16 +37,37 @@ func writeFileNoSymlinkOverwriteWithPreparation(path string, perm os.FileMode, t
 		return 0, err
 	}
 
-	tempFile, err := createTempFileNoFollowWithPerm(filepath.Dir(path), tempPattern, perm)
-	if err != nil {
-		return 0, err
+	var tempFile *os.File
+	var tempPath string
+	var tempRoot *os.Root
+	var tempName string
+	var err error
+	if create == nil {
+		tempFile, err = createTempFileNoFollowWithPerm(filepath.Dir(path), tempPattern, perm)
+		if err != nil {
+			return 0, err
+		}
+		tempPath = tempFile.Name()
+	} else {
+		tempRoot, err = os.OpenRoot(filepath.Dir(path))
+		if err != nil {
+			return 0, err
+		}
+		defer tempRoot.Close()
+		tempFile, tempName, err = secureopen.CreateTempNoFollowInRootWithCreator(tempRoot, ".", tempPattern, perm, create)
+		if err != nil {
+			return 0, err
+		}
+		tempPath = filepath.Join(tempRoot.Name(), tempName)
 	}
 	defer tempFile.Close()
-
-	tempPath := tempFile.Name()
 	success := false
 	defer func() {
 		if !success {
+			if tempRoot != nil {
+				_ = tempRoot.Remove(tempName)
+				return
+			}
 			_ = os.Remove(tempPath)
 		}
 	}()

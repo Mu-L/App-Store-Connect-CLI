@@ -106,6 +106,28 @@ capabilities, send notifications, generate token credentials, or schedule
 background renewal. It deliberately does not classify service purpose from
 certificate subject fields because that cannot be proved from arbitrary input.
 
+## Security hardening follow-up
+
+The output path is checked before any input is read or destination directory is
+created. Every existing parent component is inspected through an anchored,
+no-follow traversal; a symlinked parent is rejected even when the final output
+entry does not exist. Missing components may be created normally after that
+check, while the final output remains protected by the shared rooted writer.
+
+Publication is fail-closed for this secret artifact. A native no-replace rename
+or atomic hard-link publication is required; filesystems that expose neither
+primitive return an error instead of copying bytes into a visible destination.
+This keeps observers from seeing a partially written identity.
+
+On Windows, the output DACL is applied with file-specific read/write/delete
+rights before any PKCS#12 bytes are written and is verified against the same
+specific access mask. The staging file must not expose inherited access during
+that transition. The Unix path retains the existing 0600 permission check.
+
+Path classification remains platform-aware: a trailing backslash is a
+directory separator only on platforms where `os.IsPathSeparator` reports it as
+such. All user-supplied path bytes are otherwise preserved.
+
 ## Implementation
 
 - Add `internal/cli/certificates/export.go` and register the subcommand in

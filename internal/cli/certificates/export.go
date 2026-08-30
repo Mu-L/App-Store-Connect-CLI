@@ -26,6 +26,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	modernpkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 
@@ -224,13 +225,14 @@ func runCertificateExport(_ context.Context, opts certificateExportOptions) (*as
 	}
 	defer clearCertificateExportBytes(p12Data)
 
-	if _, err := shared.SafeWriteFileNoSymlinkWithPreparation(
+	if _, err := shared.SafeWriteFileNoSymlinkWithPreparationAndCreator(
 		p12Out,
 		0o600,
 		opts.Force,
 		".asc-cert-export-*",
 		".asc-cert-export-backup-*",
 		prepareCertificateExportOutput,
+		createCertificateExportStagingFile,
 		func(file *os.File) (int64, error) {
 			n, writeErr := file.Write(p12Data)
 			return int64(n), writeErr
@@ -285,7 +287,7 @@ func isCertificateExportDirectoryPath(path string) bool {
 		return false
 	}
 	last := path[len(path)-1]
-	return os.IsPathSeparator(last) || last == '\\'
+	return os.IsPathSeparator(last)
 }
 
 func preflightCertificateExportDestination(output string, force bool, inputs ...string) error {
@@ -294,6 +296,9 @@ func preflightCertificateExportDestination(output string, force bool, inputs ...
 		return fmt.Errorf("resolve --p12-out: %w", err)
 	}
 	outputAbs = filepath.Clean(outputAbs)
+	if err := rejectCertificateExportSymlinkedParent(outputAbs); err != nil {
+		return err
+	}
 	for _, input := range inputs {
 		inputAbs, absErr := filepath.Abs(input)
 		if absErr != nil {
@@ -334,6 +339,94 @@ func preflightCertificateExportDestination(output string, force bool, inputs ...
 		}
 	}
 	return nil
+}
+
+// rejectCertificateExportSymlinkedParent checks the existing destination
+// parents through a selected, anchored no-follow traversal before MkdirAll or
+// any output file is created. The working directory and temporary-directory
+// anchors preserve normal platform layouts such as macOS's /var alias while
+// still rejecting symlinks introduced below the operator's likely output root.
+// The final output entry is checked separately by preflightCertificateExportDestination
+// and the rooted writer.
+func rejectCertificateExportSymlinkedParent(output string) error {
+	volumeRoot := filepath.VolumeName(output) + string(filepath.Separator)
+	rootPath := volumeRoot
+	for _, candidate := range []string{certificateExportWorkingDirectory(), os.TempDir()} {
+		candidateAbs, err := filepath.Abs(candidate)
+		if err != nil {
+			continue
+		}
+		candidateAbs = filepath.Clean(candidateAbs)
+		if certificateExportPathWithinRoot(candidateAbs, output) && len(candidateAbs) > len(rootPath) {
+			rootPath = candidateAbs
+		}
+	}
+
+	trustedRoot, err := rootfs.New(rootPath)
+	if err != nil {
+		return fmt.Errorf("inspect --p12-out parent: %w", err)
+	}
+	defer trustedRoot.Close()
+
+	current, err := trustedRoot.OpenRoot()
+	if err != nil {
+		return fmt.Errorf("inspect --p12-out parent: %w", err)
+	}
+	defer func() { _ = current.Close() }()
+
+	relative, err := filepath.Rel(rootPath, filepath.Dir(output))
+	if err != nil {
+		return fmt.Errorf("inspect --p12-out parent: %w", err)
+	}
+	if relative == "." {
+		return nil
+	}
+
+	path := rootPath
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		info, statErr := current.Lstat(component)
+		if errors.Is(statErr, os.ErrNotExist) {
+			// Components below the first missing parent do not exist yet and
+			// will be created by the writer after this check.
+			return nil
+		}
+		if statErr != nil {
+			return fmt.Errorf("inspect --p12-out parent %q: %w", filepath.Join(path, component), statErr)
+		}
+		path = filepath.Join(path, component)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write --p12-out through symlinked parent %q", path)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("--p12-out parent %q is not a directory", path)
+		}
+		next, openErr := current.OpenRoot(component)
+		if openErr != nil {
+			return fmt.Errorf("inspect --p12-out parent %q: %w", path, openErr)
+		}
+		_ = current.Close()
+		current = next
+	}
+	return nil
+}
+
+func certificateExportWorkingDirectory() string {
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return workingDirectory
+}
+
+func certificateExportPathWithinRoot(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	if err != nil || filepath.IsAbs(relative) {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
 func readCertificateExportInput(path, label string, protected bool) (certificateExportInput, error) {

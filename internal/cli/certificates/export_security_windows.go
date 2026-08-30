@@ -5,6 +5,7 @@ package certificates
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"unsafe"
@@ -48,16 +49,7 @@ func prepareCertificateExportOutput(file *os.File) error {
 	var pinner runtime.Pinner
 	pinner.Pin(currentUser)
 	defer pinner.Unpin()
-	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
-		AccessPermissions: windows.GENERIC_ALL,
-		AccessMode:        windows.SET_ACCESS,
-		Inheritance:       windows.NO_INHERITANCE,
-		Trustee: windows.TRUSTEE{
-			TrusteeForm:  windows.TRUSTEE_IS_SID,
-			TrusteeType:  windows.TRUSTEE_IS_USER,
-			TrusteeValue: windows.TrusteeValueFromSID(currentUser),
-		},
-	}}, nil)
+	acl, err := certificateExportOwnerACL(currentUser)
 	if err != nil {
 		return fmt.Errorf("protect output permissions: %w", err)
 	}
@@ -92,6 +84,134 @@ func prepareCertificateExportOutput(file *os.File) error {
 	}
 	runtime.KeepAlive(acl)
 	return nil
+}
+
+// certificateExportOwnerAccessMask uses file-specific rights rather than a
+// generic access bit. SetEntriesInAcl preserves the mask supplied by callers;
+// generic bits are not expanded before the verifier inspects file rights.
+func certificateExportOwnerAccessMask() uint32 {
+	return uint32(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE | windows.WRITE_DAC | windows.DELETE)
+}
+
+func certificateExportOwnerACL(currentUser *windows.SID) (*windows.ACL, error) {
+	if currentUser == nil || !currentUser.IsValid() {
+		return nil, fmt.Errorf("current user SID is unavailable")
+	}
+	return windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
+		AccessPermissions: windows.ACCESS_MASK(certificateExportOwnerAccessMask()),
+		AccessMode:        windows.SET_ACCESS,
+		Inheritance:       windows.NO_INHERITANCE,
+		Trustee: windows.TRUSTEE{
+			TrusteeForm:  windows.TRUSTEE_IS_SID,
+			TrusteeType:  windows.TRUSTEE_IS_USER,
+			TrusteeValue: windows.TrusteeValueFromSID(currentUser),
+		},
+	}}, nil)
+}
+
+// createCertificateExportStagingFile creates the staging file with its
+// owner-only DACL attached to the native create operation. The generated name
+// and rooted parent are supplied by secureopen; this callback cannot select a
+// different path or relax the no-follow/exclusive creation contract.
+func createCertificateExportStagingFile(root *os.Root, name string, _ os.FileMode) (*os.File, error) {
+	if root == nil {
+		return nil, fmt.Errorf("create protected output: missing rooted parent")
+	}
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || filepath.Clean(name) != name {
+		return nil, fmt.Errorf("create protected output: invalid generated name %q", name)
+	}
+
+	currentUser, err := certificateExportCurrentUserSID()
+	if err != nil {
+		return nil, fmt.Errorf("create protected output: %w", err)
+	}
+	var pinner runtime.Pinner
+	pinner.Pin(currentUser)
+	defer pinner.Unpin()
+
+	acl, err := certificateExportOwnerACL(currentUser)
+	if err != nil {
+		return nil, fmt.Errorf("create protected output: %w", err)
+	}
+	securityDescriptor, err := windows.NewSecurityDescriptor()
+	if err != nil {
+		return nil, fmt.Errorf("create protected output security descriptor: %w", err)
+	}
+	if err := securityDescriptor.SetOwner(currentUser, false); err != nil {
+		return nil, fmt.Errorf("create protected output owner: %w", err)
+	}
+	if err := securityDescriptor.SetDACL(acl, true, false); err != nil {
+		return nil, fmt.Errorf("create protected output DACL: %w", err)
+	}
+	if err := securityDescriptor.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED); err != nil {
+		return nil, fmt.Errorf("protect output DACL: %w", err)
+	}
+
+	parent, err := root.Open(".")
+	if err != nil {
+		return nil, fmt.Errorf("open protected output parent: %w", err)
+	}
+	defer parent.Close()
+	raw, err := parent.SyscallConn()
+	if err != nil {
+		return nil, fmt.Errorf("open protected output parent handle: %w", err)
+	}
+	objectName, err := windows.NewNTUnicodeString(name)
+	if err != nil {
+		return nil, fmt.Errorf("create protected output name: %w", err)
+	}
+
+	var created windows.Handle
+	var createErr error
+	if err := raw.Control(func(parentHandle uintptr) {
+		createErr = createCertificateExportFile(
+			windows.Handle(parentHandle),
+			objectName,
+			securityDescriptor,
+			&created,
+		)
+	}); err != nil {
+		return nil, fmt.Errorf("open protected output parent handle: %w", err)
+	}
+	if createErr != nil {
+		return nil, fmt.Errorf("create protected output: %w", createErr)
+	}
+	if created == 0 || created == windows.InvalidHandle {
+		return nil, fmt.Errorf("create protected output: native create returned an invalid handle")
+	}
+	file := os.NewFile(uintptr(created), filepath.Join(root.Name(), name))
+	if file == nil {
+		_ = windows.CloseHandle(created)
+		return nil, fmt.Errorf("create protected output: cannot wrap native handle")
+	}
+	runtime.KeepAlive(objectName)
+	runtime.KeepAlive(securityDescriptor)
+	runtime.KeepAlive(acl)
+	return file, nil
+}
+
+func createCertificateExportFile(parent windows.Handle, objectName *windows.NTUnicodeString, securityDescriptor *windows.SECURITY_DESCRIPTOR, created *windows.Handle) error {
+	objectAttributes := windows.OBJECT_ATTRIBUTES{
+		Length:             uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
+		RootDirectory:      parent,
+		ObjectName:         objectName,
+		Attributes:         windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE,
+		SecurityDescriptor: securityDescriptor,
+	}
+	var status windows.IO_STATUS_BLOCK
+	return windows.NtCreateFile(
+		created,
+		certificateExportOwnerAccessMask(),
+		&objectAttributes,
+		&status,
+		nil,
+		0,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		windows.FILE_CREATE,
+		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+		0,
+		0,
+	)
 }
 
 func certificateExportCurrentUserSID() (*windows.SID, error) {

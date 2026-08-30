@@ -28,15 +28,30 @@ var (
 // because the destination exists (notably on Windows), we fall back to a safe replace that uses a
 // backup file to preserve the original if the final move fails.
 func SafeWriteFileNoSymlink(path string, perm os.FileMode, overwrite bool, tempPattern string, backupPattern string, write func(*os.File) (int64, error)) (int64, error) {
-	return SafeWriteFileNoSymlinkWithPreparation(path, perm, overwrite, tempPattern, backupPattern, nil, write)
+	return safeWriteFileNoSymlink(path, perm, overwrite, tempPattern, backupPattern, nil, nil, true, write)
 }
 
 // SafeWriteFileNoSymlinkWithPreparation is SafeWriteFileNoSymlink with a
 // callback that runs on each newly created staging or publication file before
 // any caller bytes are written. The callback can enforce platform-specific
 // file protection (for example, a Windows DACL) while preserving the atomic
-// write and no-follow guarantees of SafeWriteFileNoSymlink.
+// write and no-follow guarantees of SafeWriteFileNoSymlink. Protected
+// no-overwrite writes fail closed when the filesystem has no atomic publication
+// primitive rather than exposing a partially copied destination.
 func SafeWriteFileNoSymlinkWithPreparation(path string, perm os.FileMode, overwrite bool, tempPattern string, backupPattern string, prepare func(*os.File) error, write func(*os.File) (int64, error)) (int64, error) {
+	return safeWriteFileNoSymlink(path, perm, overwrite, tempPattern, backupPattern, prepare, nil, false, write)
+}
+
+// SafeWriteFileNoSymlinkWithPreparationAndCreator is the protected writer
+// variant with an optional rooted temporary-file creator. The creator is used
+// only to add platform-specific creation security; generated names, rooted
+// placement, exclusive creation, and post-open identity checks remain owned by
+// secureopen. Protected no-overwrite writes do not use a copy fallback.
+func SafeWriteFileNoSymlinkWithPreparationAndCreator(path string, perm os.FileMode, overwrite bool, tempPattern string, backupPattern string, prepare func(*os.File) error, create func(*os.Root, string, os.FileMode) (*os.File, error), write func(*os.File) (int64, error)) (int64, error) {
+	return safeWriteFileNoSymlink(path, perm, overwrite, tempPattern, backupPattern, prepare, create, false, write)
+}
+
+func safeWriteFileNoSymlink(path string, perm os.FileMode, overwrite bool, tempPattern string, backupPattern string, prepare func(*os.File) error, create func(*os.Root, string, os.FileMode) (*os.File, error), allowCopyFallback bool, write func(*os.File) (int64, error)) (int64, error) {
 	if len(path) > 0 && os.IsPathSeparator(path[len(path)-1]) {
 		return 0, fmt.Errorf("output path %q must be a file", path)
 	}
@@ -61,7 +76,7 @@ func SafeWriteFileNoSymlinkWithPreparation(path string, perm os.FileMode, overwr
 			return 0, err
 		}
 
-		file, temporaryName, err := secureopen.CreateTempNoFollowInRoot(parent, ".", tempPattern, perm)
+		file, temporaryName, err := secureopen.CreateTempNoFollowInRootWithCreator(parent, ".", tempPattern, perm, create)
 		if err != nil {
 			return 0, fmt.Errorf("create output %q: %w", path, replaceErrorPaths(err, path, temporaryName))
 		}
@@ -90,6 +105,18 @@ func SafeWriteFileNoSymlinkWithPreparation(path string, perm os.FileMode, overwr
 				return &displayPathError{err: err, message: fmt.Sprintf("publish output %q: %v", path, linkErr.Err)}
 			}
 			return err
+		}
+		var copyFile func(string, string) error
+		if allowCopyFallback {
+			copyFile = func(oldName, newName string) error {
+				var prepareFile func(*os.File) error
+				if prepare != nil {
+					prepareFile = func(file *os.File) error {
+						return displayDestinationError(prepare(file))
+					}
+				}
+				return displayPublishError(copyStagedFileNoReplace(parent, oldName, newName, perm, prepareFile))
+			}
 		}
 		written, err := writeNewFileNoSymlink(temporaryName, file, func(file *os.File) (int64, error) {
 			written, err := write(file)
@@ -122,25 +149,30 @@ func SafeWriteFileNoSymlinkWithPreparation(path string, perm os.FileMode, overwr
 			linkFile: func(oldName, newName string) error {
 				return displayPublishError(linkInRoot(parent, oldName, newName))
 			},
-			copyFile: func(oldName, newName string) error {
-				var prepareFile func(*os.File) error
-				if prepare != nil {
-					prepareFile = func(file *os.File) error {
-						return displayDestinationError(prepare(file))
-					}
-				}
-				return displayPublishError(copyStagedFileNoReplace(parent, oldName, newName, perm, prepareFile))
-			},
 			removeFile: func(name string) error {
 				return displayTemporaryError(removeRootedFile(parent, name))
 			},
+			copyFile: copyFile,
+			destinationExists: func(name string) (bool, error) {
+				_, err := parent.Lstat(name)
+				if errors.Is(err, os.ErrNotExist) {
+					return false, nil
+				}
+				if err != nil {
+					return false, err
+				}
+				return true, nil
+			},
 		}); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return written, existingOutputError(path, err)
+			}
 			return written, err
 		}
 		return written, nil
 	}
 
-	return writeFileNoSymlinkOverwriteWithPreparation(path, perm, tempPattern, backupPattern, prepare, write)
+	return writeFileNoSymlinkOverwriteWithPreparationAndCreator(path, perm, tempPattern, backupPattern, prepare, create, write)
 }
 
 type newFileWriteOps struct {
@@ -151,10 +183,11 @@ type newFileWriteOps struct {
 }
 
 type stagedFilePublishOps struct {
-	renameFile func(string, string) error
-	linkFile   func(string, string) error
-	copyFile   func(string, string) error
-	removeFile func(string) error
+	renameFile        func(string, string) error
+	linkFile          func(string, string) error
+	removeFile        func(string) error
+	copyFile          func(string, string) error
+	destinationExists func(string) (bool, error)
 }
 
 func publishStagedFileNoReplace(temporaryName, destinationName string, ops stagedFilePublishOps) error {
@@ -199,26 +232,34 @@ func publishStagedFileNoReplace(temporaryName, destinationName string, ops stage
 	if errors.Is(linkErr, os.ErrExist) {
 		return failAfterCleanup(linkErr)
 	}
-
-	// FAT/exFAT volumes, SMB shares, and several FUSE mounts implement neither
-	// primitive, and they report that with filesystem-specific errors rather
-	// than one portable code. Copying into an exclusively created destination is
-	// the no-clobber publication every filesystem supports, so try it before
-	// discarding a complete download.
-	if err := ops.copyFile(temporaryName, destinationName); err != nil {
-		return failAfterCleanup(err)
+	if ops.destinationExists != nil {
+		exists, err := ops.destinationExists(destinationName)
+		if err != nil {
+			return failAfterCleanup(err)
+		}
+		if exists {
+			return failAfterCleanup(os.ErrExist)
+		}
 	}
-	_ = removeStaged()
-	return nil
+	if ops.copyFile != nil {
+		if err := ops.copyFile(temporaryName, destinationName); err != nil {
+			return failAfterCleanup(err)
+		}
+		_ = removeStaged()
+		return nil
+	}
+
+	// A copy fallback would make the destination visible before all bytes are
+	// present. Keep secret artifacts fail-closed when the filesystem has neither
+	// atomic no-replace rename nor hard-link publication.
+	return failAfterCleanup(errors.Join(secureopen.ErrRenameNoReplaceUnsupported, linkErr))
 }
 
-// copyStagedFileNoReplace publishes the staged file by creating the destination
-// with an exclusive, no-follow create and copying the staged bytes into it.
-//
-// Exclusive create cannot clobber an existing destination, so this preserves
-// no-replace semantics on filesystems that support neither an atomic no-replace
-// rename nor hard links. A partially copied destination is removed so callers
-// never observe a truncated output file.
+// copyStagedFileNoReplace publishes a staged file by creating the destination
+// exclusively and copying the complete bytes into it. It is retained for
+// ordinary non-secret callers that need compatibility with filesystems without
+// native no-replace primitives; protected writers pass no copy callback and
+// therefore fail closed instead.
 func copyStagedFileNoReplace(root *os.Root, temporaryName, destinationName string, perm os.FileMode, prepare func(*os.File) error) error {
 	source, err := secureopen.OpenExistingNoFollowInRoot(root, temporaryName)
 	if err != nil {
@@ -235,18 +276,11 @@ func copyStagedFileNoReplace(root *os.Root, temporaryName, destinationName strin
 			return errors.Join(err, destination.Close(), removeRootedFile(root, destinationName))
 		}
 	}
-	if err := copyIntoPublishedFile(destination, source); err != nil {
-		return errors.Join(err, removeRootedFile(root, destinationName))
-	}
-	return nil
-}
-
-func copyIntoPublishedFile(destination, source *os.File) error {
 	if _, err := io.Copy(destination, source); err != nil {
-		return errors.Join(err, destination.Close())
+		return errors.Join(err, destination.Close(), removeRootedFile(root, destinationName))
 	}
 	if err := destination.Sync(); err != nil {
-		return errors.Join(err, destination.Close())
+		return errors.Join(err, destination.Close(), removeRootedFile(root, destinationName))
 	}
 	return destination.Close()
 }

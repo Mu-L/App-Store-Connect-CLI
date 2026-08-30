@@ -93,6 +93,57 @@ func TestSafeWriteFileNoSymlinkWithPreparationRunsBeforeWrite(t *testing.T) {
 	}
 }
 
+func TestSafeWriteFileNoSymlinkWithPreparationAndCreatorRunsCreatorBeforeWrite(t *testing.T) {
+	for _, overwrite := range []bool{false, true} {
+		t.Run(fmt.Sprintf("overwrite=%t", overwrite), func(t *testing.T) {
+			destination := filepath.Join(t.TempDir(), "artifact.bin")
+			if overwrite {
+				if err := os.WriteFile(destination, []byte("old"), 0o600); err != nil {
+					t.Fatalf("seed destination: %v", err)
+				}
+			}
+
+			created := false
+			prepared := false
+			_, err := SafeWriteFileNoSymlinkWithPreparationAndCreator(
+				destination,
+				0o600,
+				overwrite,
+				".safe-write-*",
+				".safe-write-backup-*",
+				func(*os.File) error {
+					if !created {
+						return errors.New("preparation ran before creation")
+					}
+					prepared = true
+					return nil
+				},
+				func(root *os.Root, name string, perm os.FileMode) (*os.File, error) {
+					created = true
+					return secureopen.OpenNewFileNoFollowInRoot(root, name, perm)
+				},
+				func(file *os.File) (int64, error) {
+					if !prepared {
+						return 0, errors.New("write ran before preparation")
+					}
+					written, err := file.Write([]byte("new"))
+					return int64(written), err
+				},
+			)
+			if err != nil {
+				t.Fatalf("SafeWriteFileNoSymlinkWithPreparationAndCreator() error = %v", err)
+			}
+			got, err := os.ReadFile(destination)
+			if err != nil {
+				t.Fatalf("read destination: %v", err)
+			}
+			if string(got) != "new" {
+				t.Fatalf("destination = %q, want new", got)
+			}
+		})
+	}
+}
+
 func TestSafeWriteFileNoSymlinkWithPreparationFailureDoesNotPublish(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "artifact.bin")
 	prepareErr := errors.New("simulated preparation failure")
@@ -552,8 +603,7 @@ func TestPublishStagedFileNoReplaceDoesNotFallbackWhenDestinationExists(t *testi
 	}
 }
 
-func TestPublishStagedFileNoReplaceCopiesWhenRenameAndLinkAreUnsupported(t *testing.T) {
-	copyCalled := false
+func TestPublishStagedFileNoReplaceRejectsWhenRenameAndLinkAreUnsupported(t *testing.T) {
 	removeCalled := false
 	linkErr := fmt.Errorf("linkat: %w", syscall.ENOTSUP)
 
@@ -567,13 +617,6 @@ func TestPublishStagedFileNoReplaceCopiesWhenRenameAndLinkAreUnsupported(t *test
 			linkFile: func(string, string) error {
 				return linkErr
 			},
-			copyFile: func(oldName, newName string) error {
-				copyCalled = true
-				if oldName != ".safe-write-staged" || newName != "artifact.bin" {
-					t.Fatalf("copy names = %q, %q", oldName, newName)
-				}
-				return nil
-			},
 			removeFile: func(name string) error {
 				removeCalled = true
 				if name != ".safe-write-staged" {
@@ -583,19 +626,15 @@ func TestPublishStagedFileNoReplaceCopiesWhenRenameAndLinkAreUnsupported(t *test
 			},
 		},
 	)
-	if err != nil {
-		t.Fatalf("publishStagedFileNoReplace() error = %v", err)
-	}
-	if !copyCalled {
-		t.Fatal("copy fallback was not called")
+	if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
+		t.Fatalf("publishStagedFileNoReplace() error = %v, want unsupported-publication error", err)
 	}
 	if !removeCalled {
-		t.Fatal("staged file was not removed after the copy fallback")
+		t.Fatal("staged file was not removed after unsupported publication")
 	}
 }
 
 func TestPublishStagedFileNoReplaceDoesNotCopyWhenLinkFindsExistingDestination(t *testing.T) {
-	copyCalled := false
 	removeCalled := false
 
 	err := publishStagedFileNoReplace(
@@ -608,10 +647,6 @@ func TestPublishStagedFileNoReplaceDoesNotCopyWhenLinkFindsExistingDestination(t
 			linkFile: func(string, string) error {
 				return os.ErrExist
 			},
-			copyFile: func(string, string) error {
-				copyCalled = true
-				return nil
-			},
 			removeFile: func(string) error {
 				removeCalled = true
 				return nil
@@ -621,46 +656,49 @@ func TestPublishStagedFileNoReplaceDoesNotCopyWhenLinkFindsExistingDestination(t
 	if !errors.Is(err, os.ErrExist) {
 		t.Fatalf("publishStagedFileNoReplace() error = %v, want os.ErrExist", err)
 	}
-	if copyCalled {
-		t.Fatal("copy fallback was called for an existing destination")
-	}
 	if !removeCalled {
 		t.Fatal("staged path was not cleaned up")
 	}
 }
 
-func TestPublishStagedFileNoReplaceReportsCopyFailure(t *testing.T) {
-	copyErr := errors.New("simulated copy failure")
-	removeCalled := false
+func TestSafeWriteFileNoSymlinkWithPreparationNoOverwriteRejectsWithoutAtomicPublication(t *testing.T) {
+	stubUnsupportedPublishPrimitives(t)
 
-	err := publishStagedFileNoReplace(
-		".safe-write-staged",
-		"artifact.bin",
-		stagedFilePublishOps{
-			renameFile: func(string, string) error {
-				return secureopen.ErrRenameNoReplaceUnsupported
-			},
-			linkFile: func(string, string) error {
-				return syscall.ENOTSUP
-			},
-			copyFile: func(string, string) error {
-				return copyErr
-			},
-			removeFile: func(string) error {
-				removeCalled = true
-				return nil
-			},
+	directory := t.TempDir()
+	destination := filepath.Join(directory, "artifact.bin")
+	content := []byte("complete")
+
+	written, err := SafeWriteFileNoSymlinkWithPreparation(
+		destination,
+		0o600,
+		false,
+		".safe-write-*",
+		".safe-write-backup-*",
+		func(*os.File) error { return nil },
+		func(file *os.File) (int64, error) {
+			written, err := file.Write(content)
+			return int64(written), err
 		},
 	)
-	if !errors.Is(err, copyErr) {
-		t.Fatalf("publishStagedFileNoReplace() error = %v, want %v", err, copyErr)
+	if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
+		t.Fatalf("SafeWriteFileNoSymlink() error = %v, want unsupported-publication error", err)
 	}
-	if !removeCalled {
-		t.Fatal("staged path was not cleaned up after the copy failure")
+	if written != int64(len(content)) {
+		t.Fatalf("SafeWriteFileNoSymlink() written = %d, want %d", written, len(content))
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination exists after unsupported publication, stat error = %v", err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("directory entries = %v, want no partial publication", entries)
 	}
 }
 
-func TestSafeWriteFileNoSymlinkNoOverwritePublishesWithoutRenameOrLinkSupport(t *testing.T) {
+func TestSafeWriteFileNoSymlinkNoOverwriteUsesCopyFallbackForOrdinaryFiles(t *testing.T) {
 	stubUnsupportedPublishPrimitives(t)
 
 	directory := t.TempDir()
@@ -679,7 +717,7 @@ func TestSafeWriteFileNoSymlinkNoOverwritePublishesWithoutRenameOrLinkSupport(t 
 		},
 	)
 	if err != nil {
-		t.Fatalf("SafeWriteFileNoSymlink() error = %v", err)
+		t.Fatalf("SafeWriteFileNoSymlink() error = %v, want ordinary copy fallback success", err)
 	}
 	if written != int64(len(content)) {
 		t.Fatalf("SafeWriteFileNoSymlink() written = %d, want %d", written, len(content))
@@ -691,23 +729,16 @@ func TestSafeWriteFileNoSymlinkNoOverwritePublishesWithoutRenameOrLinkSupport(t 
 	if string(got) != string(content) {
 		t.Fatalf("destination content = %q, want %q", got, content)
 	}
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		t.Fatalf("ReadDir() error = %v", err)
-	}
-	if len(entries) != 1 || entries[0].Name() != filepath.Base(destination) {
-		t.Fatalf("directory entries = %v, want only %q", entries, filepath.Base(destination))
-	}
 }
 
-func TestSafeWriteFileNoSymlinkNoOverwriteCopyFallbackPreservesExistingDestination(t *testing.T) {
+func TestSafeWriteFileNoSymlinkNoOverwritePreservesExistingDestinationDuringPublication(t *testing.T) {
 	stubUnsupportedPublishPrimitives(t)
 
 	directory := t.TempDir()
 	destination := filepath.Join(directory, "artifact.bin")
 	concurrent := []byte("concurrent")
 
-	_, err := SafeWriteFileNoSymlink(
+	written, err := SafeWriteFileNoSymlink(
 		destination,
 		0o600,
 		false,
@@ -726,6 +757,9 @@ func TestSafeWriteFileNoSymlinkNoOverwriteCopyFallbackPreservesExistingDestinati
 	)
 	if !errors.Is(err, os.ErrExist) {
 		t.Fatalf("SafeWriteFileNoSymlink() error = %v, want os.ErrExist", err)
+	}
+	if written != int64(len("complete")) {
+		t.Fatalf("SafeWriteFileNoSymlink() written = %d, want %d", written, len("complete"))
 	}
 	got, err := os.ReadFile(destination)
 	if err != nil {

@@ -127,6 +127,73 @@ func TestRunCertificateExportRejectsSymlinkInputsAndDestination(t *testing.T) {
 	}
 }
 
+func TestRunCertificateExportRejectsSymlinkedDestinationParent(t *testing.T) {
+	dir := t.TempDir()
+	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	certificatePath := filepath.Join(dir, "push.cer")
+	privateKeyPath := filepath.Join(dir, "push.key")
+	passwordPath := filepath.Join(dir, "password")
+	writeCertificateExportTestFiles(t, certificatePath, privateKeyPath, "", passwordPath, artifacts, []byte("password"))
+
+	outside := filepath.Join(dir, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatalf("create outside directory: %v", err)
+	}
+	linkedParent := filepath.Join(dir, "linked-parent")
+	if err := os.Symlink(outside, linkedParent); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	p12Path := filepath.Join(linkedParent, "push.p12")
+
+	_, err := runCertificateExport(context.TODO(), certificateExportOptions{
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+		PasswordPath:    passwordPath,
+		P12Out:          p12Path,
+	})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("runCertificateExport() error = %v, want symlinked-parent error", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(outside, "push.p12")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("output was published through symlinked parent, stat error = %v", statErr)
+	}
+}
+
+func TestCertificateExportPathAllowsUnixTrailingBackslash(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("backslash is a path separator on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "identity.p12") + `\`
+	if _, err := validateCertificateExportOutputPath(path); err != nil {
+		t.Fatalf("validateCertificateExportOutputPath(%q) error = %v, want accepted Unix filename", path, err)
+	}
+}
+
+func TestRunCertificateExportWritesUnixTrailingBackslashFilename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("backslash is a path separator on Windows")
+	}
+	dir := t.TempDir()
+	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	certificatePath := filepath.Join(dir, "push.cer")
+	privateKeyPath := filepath.Join(dir, "push.key")
+	passwordPath := filepath.Join(dir, "password")
+	writeCertificateExportTestFiles(t, certificatePath, privateKeyPath, "", passwordPath, artifacts, []byte("password"))
+	p12Path := filepath.Join(dir, "identity.p12") + `\`
+
+	if _, err := runCertificateExport(context.TODO(), certificateExportOptions{
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+		PasswordPath:    passwordPath,
+		P12Out:          p12Path,
+	}); err != nil {
+		t.Fatalf("runCertificateExport() error = %v, want Unix filename ending in backslash", err)
+	}
+	if _, err := os.Stat(p12Path); err != nil {
+		t.Fatalf("Stat(%q) error = %v", p12Path, err)
+	}
+}
+
 func TestRunCertificateExportRejectsInputOutputCollision(t *testing.T) {
 	dir := t.TempDir()
 	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
