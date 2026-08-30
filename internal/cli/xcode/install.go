@@ -17,7 +17,10 @@ import (
 
 const xcodeInstallDefaultTimeout = 5 * time.Minute
 
-var runInstall = localxcode.Install
+var (
+	runInstall         = localxcode.Install
+	printInstallOutput = shared.PrintOutput
+)
 
 // XcodeInstallCommand returns the local connected-device installation command.
 func XcodeInstallCommand() *ffcli.Command {
@@ -71,11 +74,11 @@ Examples:
 				return shared.UsageError(inputErr.Error())
 			}
 			if result != nil {
-				if outputErr := shared.PrintOutput(result, *output.Output, *output.Pretty); outputErr != nil {
-					if installErr != nil {
-						return shared.NewErrorWithCause(outputErr, installErr)
-					}
-					return outputErr
+				if outputErr := printInstallOutput(result, *output.Output, *output.Pretty); outputErr != nil {
+					return shared.NewErrorWithCause(
+						errors.New("xcode install output failed"),
+						errors.Join(outputErr, installErr),
+					)
 				}
 			}
 			if installErr != nil {
@@ -84,7 +87,7 @@ Examples:
 					fmt.Fprintf(os.Stderr, "Error: %s\n", diagnostic)
 					return shared.NewReportedError(shared.NewErrorWithCause(errors.New(diagnostic), installErr))
 				}
-				return fmt.Errorf("xcode install: %w", installErr)
+				return shared.NewErrorWithCause(errors.New("xcode install failed"), installErr)
 			}
 			if result == nil {
 				return fmt.Errorf("xcode install: installer returned no result")
