@@ -410,6 +410,10 @@ and `ExportOptions.plist` that use `asc builds next-build-number`,
 Add `--submit --confirm` when
 distributing to an external TestFlight group that needs beta app review submission.
 
+The experimental `asc xcode test` command provides local unit/UI test execution
+with structured results and preserved `.xcresult` bundles; see the same workflow
+guide for an invocation.
+
 ```bash
 asc workflow validate --output json
 asc xcode inject --manifest .asc/deployment.json --set version=1.2.3 --set build_number=42 --dry-run --output json
