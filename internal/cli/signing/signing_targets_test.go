@@ -110,8 +110,8 @@ func TestReadSigningSyncTargetsFileRejectsSymlinkAndDirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Chdir(dir)
-		if _, err := readSigningSyncTargetsFile("targets.json"); err == nil {
-			t.Fatal("readSigningSyncTargetsFile() followed symlink")
+		if _, err := readSigningSyncTargetsFile("targets.json"); !errors.Is(err, rootfs.ErrSymlink) {
+			t.Fatalf("readSigningSyncTargetsFile() error = %v, want rootfs.ErrSymlink", err)
 		}
 	})
 

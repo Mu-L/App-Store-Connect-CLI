@@ -37,6 +37,9 @@ func readSigningSyncTargetsFile(path string) ([]string, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errSigningSyncTargetsManifestPath
 	}
+	if err := rootfs.ValidateRelative(path); err != nil {
+		return nil, fmt.Errorf("targets manifest path: %w", err)
+	}
 	workingDirectory, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("resolve targets manifest root: %w", err)
