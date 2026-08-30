@@ -71,8 +71,8 @@ execution values in the matrix plan.`,
 					retryBackoffSet = true
 				}
 			})
-			planValue := strings.TrimSpace(*planPath)
-			if planValue == "" {
+			planValue := *planPath
+			if strings.TrimSpace(planValue) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --plan is required")
 				return shared.MissingRequiredUsageError("--plan")
 			}

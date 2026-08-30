@@ -28,14 +28,16 @@ flags override the corresponding plan values. Usage validation returns
 
 ## Matrix plan
 
-The matrix plan is a separate JSON/JSONC document. `version` is currently 1.
-Its `base_plan` points to an existing screenshot Plan v1 document. The base
-plan remains the source of the bundle ID and ordered interaction steps.
+The matrix plan is a separate JSON/JSONC document. `version` is currently 1 and
+must be present. Its `base_plan` is a literal relative filename rooted at the
+directory containing the matrix plan; absolute paths, escaping `..` paths,
+symlinks, non-regular files, and oversized files are rejected. The base plan
+remains the source of the bundle ID and ordered interaction steps.
 
 ```jsonc
 {
   "version": 1,
-  "base_plan": ".asc/screenshots.json",
+  "base_plan": "screenshots.json",
   "devices": [
     { "id": "iphone-17-pro", "udid": "SIMULATOR_UDID" },
     { "id": "ipad-pro-13", "udid": "ANOTHER_SIMULATOR_UDID" }
@@ -99,10 +101,11 @@ validation.
 
 The worker pool has a hard maximum of eight workers and a default of one. A
 per-UDID mutex serializes cells targeting the same simulator so appearance
-changes cannot race. Before a cell, the executor snapshots the simulator's
-appearance, applies the requested appearance, executes the plan, and restores
-the original state in a deferred cleanup path. A restore failure is surfaced as
-`cleanup_failed` and prevents later cells on that simulator.
+changes cannot race. Before a cell, the executor reads the simulator's
+appearance with `xcrun simctl ui <device> appearance`, applies the requested
+state with the same supported `simctl ui` interface, executes the plan, and
+restores the original state in a deferred cleanup path. A restore failure is
+surfaced as `cleanup_failed` and prevents later cells on that simulator.
 
 `max_attempts` is the total number of attempts and defaults to one, with a hard
 maximum of three. Execution and framing failures retry the complete cell after

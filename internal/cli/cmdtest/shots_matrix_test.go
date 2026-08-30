@@ -56,6 +56,10 @@ if [ "$1" = "simctl" ] && [ "$2" = "list" ]; then
   printf '%s\n' '{"devices":{"runtime":[{"udid":"SIM-UDID","state":"Booted","isAvailable":true}]}}'
   exit 0
 fi
+if [ "$1" = "simctl" ] && [ "$2" = "ui" ] && [ "$4" = "appearance" ]; then
+  printf '%s\n' light
+  exit 0
+fi
 exit 0
 `)
 	writeShotsMatrixExecutable(t, filepath.Join(binDir, "axe"), `#!/bin/sh

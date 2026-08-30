@@ -119,6 +119,36 @@ func TestShotsMatrixRejectsPrettyForNonJSONBeforeLoadingOrRunning(t *testing.T) 
 	}
 }
 
+func TestShotsMatrixPreservesLiteralPlanPath(t *testing.T) {
+	planPath := filepath.Join(t.TempDir(), "matrix plan ")
+	var loadedPath, runPath string
+	command := shotsMatrixCommandWithDependencies(
+		shotsMatrixCommandDependencies{
+			loadPlan: func(path string) (*screenshots.MatrixPlan, error) {
+				loadedPath = path
+				return &screenshots.MatrixPlan{}, nil
+			},
+			runMatrix: func(_ context.Context, path string, _ *screenshots.MatrixPlan, _ screenshots.MatrixOptions) (*screenshots.MatrixResult, error) {
+				runPath = path
+				return &screenshots.MatrixResult{Status: screenshots.MatrixCellSuccess}, nil
+			},
+		},
+	)
+	_, _, err := captureShotsMatrixOutput(t, func() error {
+		return command.ParseAndRun(context.Background(), []string{"--plan", planPath, "--output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("ParseAndRun() error = %v", err)
+	}
+	want, err := filepath.Abs(planPath)
+	if err != nil {
+		t.Fatalf("filepath.Abs() error = %v", err)
+	}
+	if loadedPath != want || runPath != want {
+		t.Fatalf("plan paths = loaded %q, run %q, want %q", loadedPath, runPath, want)
+	}
+}
+
 func captureShotsMatrixOutput(t *testing.T, run func() error) (stdout, stderr string, runErr error) {
 	t.Helper()
 

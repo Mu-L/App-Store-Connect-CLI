@@ -26,6 +26,7 @@ import (
 
 const (
 	maxMatrixPlanBytes       = 1 << 20
+	maxMatrixAppearanceBytes = 64 << 10
 	maxMatrixReviewBytes     = 8 << 20
 	maxMatrixInventoryBytes  = 4 << 20
 	maxMatrixCells           = 256
@@ -262,15 +263,55 @@ func LoadMatrixPlan(path string) (*MatrixPlan, error) {
 	if err := json.Unmarshal(jsonc.ToJSON(data), &plan); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrMatrixPlanParseJSON, err)
 	}
-	if plan.Version == 0 {
-		plan.Version = 1
-	}
 	plan.sourcePath, _ = filepath.Abs(path)
 	return &plan, nil
 }
 
+// loadMatrixBasePlan loads a base screenshot plan from the matrix plan's
+// directory. Matrix plans intentionally do not permit absolute or escaping
+// references: the directory is the operator-selected trust boundary for all
+// matrix inputs. Rooted reads reject symlinks, non-regular files, and files
+// larger than the bounded plan limit.
+func loadMatrixBasePlan(matrixPath string, matrixPlan *MatrixPlan) (*Plan, error) {
+	if matrixPlan == nil {
+		return nil, fmt.Errorf("%w: matrix plan is required", ErrPlanRead)
+	}
+	baseReference := matrixPlan.BasePlan
+	if strings.TrimSpace(baseReference) == "" {
+		return nil, fmt.Errorf("%w: base_plan is required", ErrPlanRead)
+	}
+	if filepath.IsAbs(baseReference) || filepath.VolumeName(baseReference) != "" {
+		return nil, fmt.Errorf("%w: base_plan must be relative to the matrix plan", ErrPlanRead)
+	}
+	baseRelative := filepath.Clean(baseReference)
+	if baseRelative == ".." || strings.HasPrefix(baseRelative, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("%w: base_plan must stay below the matrix plan directory", ErrPlanRead)
+	}
+	baseRoot, err := rootfs.New(matrixPlanSourceDir(matrixPath, matrixPlan.sourcePath))
+	if err != nil {
+		return nil, fmt.Errorf("%w: open matrix plan directory: %w", ErrPlanRead, err)
+	}
+	defer func() { _ = baseRoot.Close() }()
+	data, err := baseRoot.ReadFileLimited(baseRelative, maxMatrixPlanBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrPlanRead, err)
+	}
+	var plan Plan
+	data = jsonc.ToJSON(data)
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrPlanParseJSON, err)
+	}
+	if err := validatePlan(&plan); err != nil {
+		return nil, err
+	}
+	return &plan, nil
+}
+
 func openMatrixOutputRoot(path string) (rootfs.Root, error) {
-	absPath, err := filepath.Abs(strings.TrimSpace(path))
+	if strings.TrimSpace(path) == "" {
+		return rootfs.Root{}, errors.New("matrix output path is required")
+	}
+	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return rootfs.Root{}, err
 	}
@@ -494,16 +535,16 @@ func ValidateMatrixPlan(plan *MatrixPlan, base *Plan) error {
 }
 
 func validateMatrixOutputPaths(output MatrixOutput) error {
-	rawDir := strings.TrimSpace(output.RawDir)
-	if rawDir == "" {
+	rawDir := output.RawDir
+	if strings.TrimSpace(rawDir) == "" {
 		rawDir = defaultMatrixRawDir
 	}
-	framedDir := strings.TrimSpace(output.FramedDir)
-	if framedDir == "" {
+	framedDir := output.FramedDir
+	if strings.TrimSpace(framedDir) == "" {
 		framedDir = defaultMatrixFramedDir
 	}
-	reviewDir := strings.TrimSpace(output.ReviewDir)
-	if reviewDir == "" {
+	reviewDir := output.ReviewDir
+	if strings.TrimSpace(reviewDir) == "" {
 		reviewDir = defaultMatrixReviewDir
 	}
 	paths := []struct {
@@ -554,12 +595,12 @@ func ExpandMatrix(plan *MatrixPlan, base *Plan) ([]MatrixCell, error) {
 	if err := ValidateMatrixPlan(plan, base); err != nil {
 		return nil, err
 	}
-	rawDir := strings.TrimSpace(plan.Output.RawDir)
-	if rawDir == "" {
+	rawDir := plan.Output.RawDir
+	if strings.TrimSpace(rawDir) == "" {
 		rawDir = defaultMatrixRawDir
 	}
-	framedDir := strings.TrimSpace(plan.Output.FramedDir)
-	if framedDir == "" {
+	framedDir := plan.Output.FramedDir
+	if strings.TrimSpace(framedDir) == "" {
 		framedDir = defaultMatrixFramedDir
 	}
 	cells := make([]MatrixCell, 0, len(plan.Devices)*len(plan.Locales)*len(plan.Appearances)*len(plan.ContentVariants))
@@ -621,14 +662,13 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	if matrixPlan == nil {
 		return nil, newMatrixValidationError(errors.New("matrix plan is required"))
 	}
-	basePath := strings.TrimSpace(matrixPlan.BasePlan)
-	if basePath == "" {
+	if matrixPlan.Version != 1 {
+		return nil, newMatrixValidationError(fmt.Errorf("unsupported matrix plan version %d (expected 1)", matrixPlan.Version))
+	}
+	if strings.TrimSpace(matrixPlan.BasePlan) == "" {
 		return nil, newMatrixValidationError(errors.New("base_plan is required"))
 	}
-	if !filepath.IsAbs(basePath) {
-		basePath = filepath.Join(matrixPlanSourceDir(matrixPath, matrixPlan.sourcePath), basePath)
-	}
-	base, err := LoadPlan(basePath)
+	base, err := loadMatrixBasePlan(matrixPath, matrixPlan)
 	if err != nil {
 		return nil, newMatrixValidationError(fmt.Errorf("load base plan: %w", err))
 	}
@@ -665,8 +705,8 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 		reviewDir = resolveMatrixArtifactPath(baseDir, defaultMatrixReviewDir)
 	}
 
-	planPath := strings.TrimSpace(matrixPath)
-	if planPath == "" {
+	planPath := matrixPath
+	if strings.TrimSpace(planPath) == "" {
 		planPath = matrixPlan.sourcePath
 	}
 	if absolutePlanPath, pathErr := filepath.Abs(planPath); pathErr == nil {
@@ -1288,8 +1328,7 @@ func countMatrixResultStatuses(result *MatrixResult) {
 }
 
 func resolveMatrixArtifactPath(baseDir, path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
+	if strings.TrimSpace(path) == "" {
 		return ""
 	}
 	if filepath.IsAbs(path) {
@@ -1303,9 +1342,9 @@ func resolveMatrixArtifactPath(baseDir, path string) string {
 }
 
 func matrixPlanSourceDir(matrixPath, sourcePath string) string {
-	path := strings.TrimSpace(matrixPath)
-	if path == "" {
-		path = strings.TrimSpace(sourcePath)
+	path := matrixPath
+	if strings.TrimSpace(path) == "" {
+		path = sourcePath
 	}
 	if path == "" {
 		return "."
@@ -1492,43 +1531,53 @@ func (b *cappedMatrixBuffer) Bytes() []byte { return b.data }
 type simctlMatrixAppearance struct{}
 
 func (simctlMatrixAppearance) Snapshot(ctx context.Context, udid string) (string, error) {
-	out, err := runExternalOutput(ctx, "xcrun", "simctl", "spawn", udid, "defaults", "read", "-g", "AppleInterfaceStyle")
+	out, err := runMatrixAppearanceOutput(ctx, "xcrun", "simctl", "ui", udid, "appearance")
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "does not exist") || strings.Contains(strings.ToLower(err.Error()), "domain/default pair") {
-			return "light", nil
-		}
 		return "", err
 	}
-	if strings.Contains(strings.ToLower(out), "dark") {
+	switch strings.ToLower(strings.TrimSpace(out)) {
+	case "dark":
 		return "dark", nil
+	case "light":
+		return "light", nil
+	default:
+		return "", errors.New("simulator appearance state was invalid")
 	}
-	if strings.Contains(strings.ToLower(out), "light") {
-		return "light_explicit", nil
-	}
-	return "light", nil
 }
 
 func (simctlMatrixAppearance) Set(ctx context.Context, udid, appearance string) error {
-	if appearance == "dark" {
-		return runExternal(ctx, "xcrun", "simctl", "spawn", udid, "defaults", "write", "-g", "AppleInterfaceStyle", "-string", "Dark")
+	appearance = strings.ToLower(strings.TrimSpace(appearance))
+	if appearance != "light" && appearance != "dark" {
+		return errors.New("simulator appearance must be light or dark")
 	}
-	err := runExternal(ctx, "xcrun", "simctl", "spawn", udid, "defaults", "delete", "-g", "AppleInterfaceStyle")
-	if err != nil && (strings.Contains(strings.ToLower(err.Error()), "does not exist") || strings.Contains(strings.ToLower(err.Error()), "domain/default pair")) {
-		return nil
-	}
-	return err
+	return runMatrixAppearance(ctx, "xcrun", "simctl", "ui", udid, "appearance", appearance)
 }
 
 func (simctlMatrixAppearance) Restore(ctx context.Context, udid, state string) error {
-	if strings.EqualFold(strings.TrimSpace(state), "dark") {
-		return runExternal(ctx, "xcrun", "simctl", "spawn", udid, "defaults", "write", "-g", "AppleInterfaceStyle", "-string", "Dark")
+	state = strings.ToLower(strings.TrimSpace(state))
+	if state != "light" && state != "dark" {
+		return errors.New("simulator appearance state must be light or dark")
 	}
-	if strings.EqualFold(strings.TrimSpace(state), "light_explicit") {
-		return runExternal(ctx, "xcrun", "simctl", "spawn", udid, "defaults", "write", "-g", "AppleInterfaceStyle", "-string", "Light")
-	}
-	err := runExternal(ctx, "xcrun", "simctl", "spawn", udid, "defaults", "delete", "-g", "AppleInterfaceStyle")
-	if err != nil && (strings.Contains(strings.ToLower(err.Error()), "does not exist") || strings.Contains(strings.ToLower(err.Error()), "domain/default pair")) {
-		return nil
-	}
+	return runMatrixAppearance(ctx, "xcrun", "simctl", "ui", udid, "appearance", state)
+}
+
+func runMatrixAppearance(ctx context.Context, name string, args ...string) error {
+	_, err := runMatrixAppearanceOutput(ctx, name, args...)
 	return err
+}
+
+func runMatrixAppearanceOutput(ctx context.Context, name string, args ...string) (string, error) {
+	command := exec.CommandContext(ctx, name, args...)
+	stdout := &cappedMatrixBuffer{limit: maxMatrixAppearanceBytes}
+	stderr := &cappedMatrixBuffer{limit: maxMatrixAppearanceBytes}
+	command.Stdout = stdout
+	command.Stderr = stderr
+	err := command.Run()
+	if stdout.exceeded || stderr.exceeded {
+		return "", errors.New("simulator appearance command exceeded the output size limit")
+	}
+	if err != nil {
+		return "", fmt.Errorf("%s failed", name)
+	}
+	return string(stdout.Bytes()), nil
 }

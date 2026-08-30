@@ -47,8 +47,8 @@ func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewReq
 	if request.Result == nil {
 		return nil, errors.New("matrix result is required")
 	}
-	outputDir := strings.TrimSpace(request.OutputDir)
-	if outputDir == "" {
+	outputDir := request.OutputDir
+	if strings.TrimSpace(outputDir) == "" {
 		return nil, errors.New("matrix review output directory is required")
 	}
 	absOutputDir, err := filepath.Abs(outputDir)

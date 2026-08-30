@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"os"
@@ -110,6 +111,130 @@ func TestLoadMatrixPlan_RejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestLoadMatrixPlanDoesNotDefaultMissingVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "matrix.json")
+	writeMatrixTestFile(t, path, `{"devices":[]}`)
+	plan, err := LoadMatrixPlan(path)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	if plan.Version != 0 {
+		t.Fatalf("matrix plan version = %d, want missing version to remain invalid", plan.Version)
+	}
+}
+
+func TestRunMatrixRejectsMissingVersionBeforeLoadingBasePlan(t *testing.T) {
+	plan := &MatrixPlan{BasePlan: "missing.json", sourcePath: filepath.Join(t.TempDir(), "matrix.json")}
+	_, err := RunMatrixWithDependencies(context.Background(), plan.sourcePath, plan, MatrixOptions{}, MatrixDependencies{})
+	var validationErr *MatrixValidationError
+	if err == nil || !errors.As(err, &validationErr) || !strings.Contains(err.Error(), "expected 1") {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want matrix version validation", err)
+	}
+}
+
+func TestLoadMatrixBasePlanIsRootedBoundedAndNoFollow(t *testing.T) {
+	t.Parallel()
+
+	testPlan := `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`
+	tests := []struct {
+		name      string
+		basePlan  string
+		setup     func(t *testing.T, dir string) string
+		wantError string
+	}{
+		{
+			name:      "absolute reference",
+			basePlan:  "",
+			setup:     func(t *testing.T, dir string) string { return filepath.Join(dir, "outside.json") },
+			wantError: "must be relative",
+		},
+		{
+			name:      "parent traversal",
+			basePlan:  "../outside.json",
+			setup:     func(*testing.T, string) string { return "" },
+			wantError: "must stay below",
+		},
+		{
+			name:     "symlink",
+			basePlan: "base.json",
+			setup: func(t *testing.T, dir string) string {
+				target := filepath.Join(dir, "target.json")
+				writeMatrixTestFile(t, target, testPlan)
+				if err := os.Symlink(target, filepath.Join(dir, "base.json")); err != nil {
+					t.Fatalf("create base plan symlink: %v", err)
+				}
+				return target
+			},
+			wantError: "symlink",
+		},
+		{
+			name:     "oversized",
+			basePlan: "base.json",
+			setup: func(t *testing.T, dir string) string {
+				path := filepath.Join(dir, "base.json")
+				writeMatrixTestFile(t, path, strings.Repeat(" ", maxMatrixPlanBytes+1))
+				return path
+			},
+			wantError: "size limit",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			outside := tc.setup(t, dir)
+			basePlan := tc.basePlan
+			if basePlan == "" {
+				basePlan = outside
+			}
+			matrixPath := filepath.Join(dir, "matrix.json")
+			plan := &MatrixPlan{BasePlan: basePlan, sourcePath: matrixPath}
+			_, err := loadMatrixBasePlan(matrixPath, plan)
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.wantError)) {
+				t.Fatalf("loadMatrixBasePlan() error = %v, want %q", err, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestLoadMatrixBasePlanPreservesLiteralFilename(t *testing.T) {
+	dir := t.TempDir()
+	baseName := "base plan .json "
+	basePath := filepath.Join(dir, baseName)
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	matrixPath := filepath.Join(dir, "matrix.json")
+	plan := &MatrixPlan{BasePlan: baseName, sourcePath: matrixPath}
+	loaded, err := loadMatrixBasePlan(matrixPath, plan)
+	if err != nil {
+		t.Fatalf("loadMatrixBasePlan() error = %v", err)
+	}
+	if loaded.App.BundleID != "com.example.app" {
+		t.Fatalf("loaded base plan = %+v", loaded)
+	}
+}
+
+func TestExpandMatrixPreservesLiteralOutputDirectorySpelling(t *testing.T) {
+	base := &Plan{
+		Version: 1,
+		App:     PlanApp{BundleID: "com.example.app"},
+		Steps:   []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}},
+	}
+	plan := &MatrixPlan{
+		Version:         1,
+		Devices:         []MatrixDevice{{ID: "phone", UDID: "SIM-UDID"}},
+		Locales:         []string{"en-US"},
+		Appearances:     []string{"light"},
+		ContentVariants: []MatrixContentVariant{{ID: "default"}},
+		Output:          MatrixOutput{RawDir: "raw screenshots ", FramedDir: "framed screenshots ", ReviewDir: "review screenshots "},
+	}
+	cells, err := ExpandMatrix(plan, base)
+	if err != nil {
+		t.Fatalf("ExpandMatrix() error = %v", err)
+	}
+	if got, want := cells[0].RawDir, filepath.Join("raw screenshots ", "en-US", "phone", "light", "default"); got != want {
+		t.Fatalf("raw directory = %q, want %q", got, want)
+	}
+}
+
 func TestValidateMatrixPlan_RejectsUnsafeAndConflictingValues(t *testing.T) {
 	t.Parallel()
 
@@ -192,6 +317,70 @@ func TestCheckMatrixDeviceRejectsOversizedInventory(t *testing.T) {
 	err := checkMatrixDevice(context.Background(), MatrixDevice{ID: "phone", UDID: "SIM"})
 	if err == nil || !strings.Contains(err.Error(), "exceeded the output size limit") {
 		t.Fatalf("checkMatrixDevice() error = %v, want bounded-output error", err)
+	}
+}
+
+func TestSimctlMatrixAppearanceUsesSupportedUIContractAndRestores(t *testing.T) {
+	binDir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "xcrun.log")
+	xcrunPath := filepath.Join(binDir, "xcrun")
+	script := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$XCRUN_LOG"
+if [ "$#" -eq 4 ] && [ "$1" = "simctl" ] && [ "$2" = "ui" ] && [ "$4" = "appearance" ]; then
+  printf '%s\n' dark
+fi
+`
+	if err := os.WriteFile(xcrunPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write xcrun fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XCRUN_LOG", logPath)
+
+	appearance := simctlMatrixAppearance{}
+	state, err := appearance.Snapshot(context.Background(), "SIM-UDID")
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if state != "dark" {
+		t.Fatalf("Snapshot() state = %q, want dark", state)
+	}
+	if err := appearance.Set(context.Background(), "SIM-UDID", "light"); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := appearance.Restore(context.Background(), "SIM-UDID", "dark"); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read xcrun log: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(data)), "\n")
+	want := []string{
+		"simctl ui SIM-UDID appearance",
+		"simctl ui SIM-UDID appearance light",
+		"simctl ui SIM-UDID appearance dark",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("xcrun argv = %v, want %v", got, want)
+	}
+	if strings.Contains(string(data), "spawn") || strings.Contains(string(data), "defaults") || strings.Contains(string(data), "AppleInterfaceStyle") {
+		t.Fatalf("appearance used unsupported command: %s", data)
+	}
+}
+
+func TestSimctlMatrixAppearanceBoundsCapturedOutput(t *testing.T) {
+	binDir := t.TempDir()
+	xcrunPath := filepath.Join(binDir, "xcrun")
+	script := "#!/bin/sh\nexec /usr/bin/head -c " + fmt.Sprint(maxMatrixAppearanceBytes+1) + " /dev/zero\n"
+	if err := os.WriteFile(xcrunPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write xcrun fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, err := (simctlMatrixAppearance{}).Snapshot(context.Background(), "SIM-UDID")
+	if err == nil || !strings.Contains(err.Error(), "output size limit") {
+		t.Fatalf("Snapshot() error = %v, want bounded-output error", err)
 	}
 }
 
