@@ -617,22 +617,17 @@ func TestCreateNewFileAtomicWithInfoReturnsPublishedIdentity(t *testing.T) {
 func TestCreateNewFileAtomicWithInfoRejectsPublishedIdentityReplacement(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "racer-source"), []byte("racer"), 0o600); err != nil {
+		t.Fatalf("write racer source: %v", err)
+	}
 	root.renameNoReplaceForTest = func(parent *os.Root, oldName, newName string) error {
 		if err := secureopen.RenameNoReplaceInRoot(parent, oldName, newName); err != nil {
 			return err
 		}
-		if err := parent.Remove(newName); err != nil {
+		if err := parent.Rename(newName, "published-original"); err != nil {
 			return err
 		}
-		tracer, err := secureopen.OpenNewFileNoFollowInRoot(parent, newName, 0o600)
-		if err != nil {
-			return err
-		}
-		if _, err := tracer.Write([]byte("racer")); err != nil {
-			_ = tracer.Close()
-			return err
-		}
-		return tracer.Close()
+		return parent.Rename("racer-source", newName)
 	}
 
 	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
@@ -644,6 +639,9 @@ func TestCreateNewFileAtomicWithInfoRejectsPublishedIdentityReplacement(t *testi
 	}
 	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "racer" {
 		t.Fatalf("replacement content = %q, want racer", got)
+	}
+	if got := mustRead(t, filepath.Join(dir, "published-original")); got != "complete" {
+		t.Fatalf("original published content = %q, want complete", got)
 	}
 	diskInfo, statErr := os.Stat(filepath.Join(dir, "receipt.json"))
 	if statErr != nil {

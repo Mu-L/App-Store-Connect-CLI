@@ -106,8 +106,13 @@ Apply strictly decodes and verifies the plan, checks every input digest,
 re-resolves the selected settings, stages all writes, reparses the staged
 project/configuration files, and commits with rooted atomic no-follow writes.
 It rejects stale or redirected plans before writing. A later write failure
-restores earlier writes and reports rollback failure separately if recovery is
-not complete.
+restores earlier writes only while their current identity and bytes still match
+this transaction, and reports rollback failure separately if recovery is not
+complete. Receipt removal uses the same rooted no-follow and digest checks;
+because the portable rootfs API has no compare-and-unlink primitive, a final
+path replacement after the last identity check is still a residual concurrency
+window. In that case the current file is preserved and the apply reports
+rollback uncertainty rather than deleting an unverified replacement.
 
 No command in this change calls App Store Connect, modifies certificates or
 profiles, imports keychain material, signs binaries, or executes a shell.

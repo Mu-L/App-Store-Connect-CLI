@@ -1360,6 +1360,212 @@ func TestStructuredVersion_CommitFailureRollsBackEarlierFiles(t *testing.T) {
 	}
 }
 
+func TestStructuredVersion_CommitVerificationFailureRollsBackEarlierFiles(t *testing.T) {
+	root := t.TempDir()
+	firstPath := filepath.Join(root, "a.xcconfig")
+	secondPath := filepath.Join(root, "b.xcconfig")
+	if err := os.WriteFile(firstPath, []byte("old-a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondPath, []byte("old-b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalWriter := atomicWriteVersionFileFn
+	firstWrite := true
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) error {
+		if write.path == firstPath && firstWrite {
+			firstWrite = false
+			if err := atomicWritePreparedVersionFile(write, data); err != nil {
+				return err
+			}
+			return os.WriteFile(secondPath, []byte("concurrent"), 0o644)
+		}
+		return atomicWritePreparedVersionFile(write, data)
+	}
+	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
+
+	firstRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = commitVersionWrites([]preparedVersionWrite{
+		{path: secondPath, root: secondRoot, name: secondPath, original: []byte("old-b"), updated: []byte("new-b"), mode: 0o644},
+		{path: firstPath, root: firstRoot, name: firstPath, original: []byte("old-a"), updated: []byte("new-a"), mode: 0o644},
+	})
+	if err == nil || !strings.Contains(err.Error(), "source changed before commit") {
+		t.Fatalf("commitVersionWrites() error = %v, want verification failure", err)
+	}
+	if got := mustReadVersionTestFile(t, firstPath); got != "old-a" {
+		t.Fatalf("first file was not rolled back after verification failure: %q", got)
+	}
+	if got := mustReadVersionTestFile(t, secondPath); got != "concurrent" {
+		t.Fatalf("concurrent second-file save was overwritten: %q", got)
+	}
+}
+
+func TestStructuredVersion_RollbackPreservesConcurrentSave(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "settings.xcconfig")
+	receiptPath := filepath.Join(root, "receipt.json")
+	if err := os.WriteFile(filePath, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	injectedErr := errors.New("injected receipt failure")
+	originalCreator := atomicCreateVersionFileFn
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+		if write.createOnly {
+			if err := os.WriteFile(filePath, []byte("concurrent"), 0o644); err != nil {
+				return nil, err
+			}
+			return nil, injectedErr
+		}
+		return originalCreator(write, data)
+	}
+	t.Cleanup(func() { atomicCreateVersionFileFn = originalCreator })
+
+	fileRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = commitVersionWrites([]preparedVersionWrite{
+		{path: filePath, root: fileRoot, name: filePath, original: []byte("old"), updated: []byte("new"), mode: 0o644},
+		{path: receiptPath, root: receiptRoot, name: receiptPath, updated: []byte("receipt"), mode: 0o600, createOnly: true},
+	})
+	if !errors.Is(err, injectedErr) || !strings.Contains(err.Error(), "concurrent change") {
+		t.Fatalf("commitVersionWrites() error = %v, want receipt failure with preserved concurrent save", err)
+	}
+	if got := mustReadVersionTestFile(t, filePath); got != "concurrent" {
+		t.Fatalf("concurrent save was overwritten during rollback: %q", got)
+	}
+	if _, statErr := os.Lstat(receiptPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("receipt after injected failure = %v, want absent", statErr)
+	}
+}
+
+func TestStructuredVersion_RollbackDoesNotRestoreWhenWriteIdentityCaptureFails(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	injectedErr := errors.New("injected identity capture failure")
+	originalInfo := versionWriteInfoFn
+	versionWriteInfoFn = func(write preparedVersionWrite) (os.FileInfo, error) {
+		if write.path == path {
+			if err := os.WriteFile(path, []byte("new"), 0o644); err != nil {
+				t.Fatalf("replace with same-content update: %v", err)
+			}
+			return nil, injectedErr
+		}
+		return originalInfo(write)
+	}
+	t.Cleanup(func() { versionWriteInfoFn = originalInfo })
+
+	fileRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = commitVersionWrites([]preparedVersionWrite{{
+		path: path, root: fileRoot, name: filepath.Base(path),
+		original: []byte("old"), updated: []byte("new"), mode: 0o644,
+	}})
+	if !errors.Is(err, injectedErr) || !strings.Contains(err.Error(), "identity unavailable") {
+		t.Fatalf("commitVersionWrites() error = %v, want identity uncertainty", err)
+	}
+	if got := mustReadVersionTestFile(t, path); got != "new" {
+		t.Fatalf("same-content replacement was overwritten during rollback: %q", got)
+	}
+}
+
+func TestStructuredVersion_RollbackCreatedFilePreservesDisappearance(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "receipt.json")
+	contents := []byte("receipt")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fileRoot.Close() })
+	write := preparedVersionWrite{
+		path: path, root: fileRoot, name: filepath.Base(path), updated: contents, createdInfo: info, createOnly: true,
+	}
+	removeCreatedVersionFileBeforeFinalCheckForTest = func() {
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("remove created file in race hook: %v", err)
+		}
+	}
+	t.Cleanup(func() { removeCreatedVersionFileBeforeFinalCheckForTest = nil })
+
+	err = removeCreatedPreparedVersionFile(write)
+	if err == nil || !strings.Contains(err.Error(), "recheck created path") {
+		t.Fatalf("removeCreatedPreparedVersionFile() error = %v, want disappearance uncertainty", err)
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("disappeared receipt after rollback = %v, want absent", statErr)
+	}
+}
+
+func TestStructuredVersion_RollbackCreatedFilePreservesReplacement(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "receipt.json")
+	replacementPath := filepath.Join(root, "replacement.json")
+	contents := []byte("receipt")
+	const replacement = "concurrent receipt wins"
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(replacementPath, []byte(replacement), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fileRoot.Close() })
+	write := preparedVersionWrite{
+		path: path, root: fileRoot, name: filepath.Base(path), updated: contents, createdInfo: info, createOnly: true,
+	}
+	removeCreatedVersionFileBeforeFinalCheckForTest = func() {
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("remove created file in race hook: %v", err)
+		}
+		if err := os.Rename(replacementPath, path); err != nil {
+			t.Fatalf("install replacement in race hook: %v", err)
+		}
+	}
+	t.Cleanup(func() { removeCreatedVersionFileBeforeFinalCheckForTest = nil })
+
+	err = removeCreatedPreparedVersionFile(write)
+	if err == nil || !strings.Contains(err.Error(), "changed before rollback") {
+		t.Fatalf("removeCreatedPreparedVersionFile() error = %v, want replacement uncertainty", err)
+	}
+	if got := mustReadVersionTestFile(t, path); got != replacement {
+		t.Fatalf("replacement after rollback = %q, want preserved replacement", got)
+	}
+}
+
 func TestStructuredVersion_CommitClosesPreparedRoots(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "version.xcconfig")

@@ -12,6 +12,22 @@ import (
 	localxcode "github.com/rudrankriyam/App-Store-Connect-CLI/internal/xcode"
 )
 
+func TestXcodeHelpScopesMacOSRequirementToXcodeTooling(t *testing.T) {
+	command := XcodeCommand()
+	if strings.Contains(command.ShortHelp, "macOS only") {
+		t.Fatalf("Xcode short help overstates platform restriction: %q", command.ShortHelp)
+	}
+	if !strings.Contains(command.ShortHelp, "signing-settings helpers") {
+		t.Fatalf("Xcode short help omits signing helpers: %q", command.ShortHelp)
+	}
+	if !strings.Contains(command.LongHelp, "build/archive/export commands") || !strings.Contains(command.LongHelp, "are supported\non macOS only") {
+		t.Fatalf("Xcode long help does not scope macOS requirement to Xcode tooling: %q", command.LongHelp)
+	}
+	if !strings.Contains(command.LongHelp, "signing plan/apply helpers") || !strings.Contains(command.LongHelp, "supported on every platform") {
+		t.Fatalf("Xcode long help does not advertise cross-platform signing helpers: %q", command.LongHelp)
+	}
+}
+
 func TestXcodeSigningApplyRequiresConfirm(t *testing.T) {
 	command := xcodeSigningApplyCommand()
 	command.FlagSet.SetOutput(io.Discard)

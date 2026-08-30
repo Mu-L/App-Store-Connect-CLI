@@ -160,6 +160,21 @@ func TestXcodeSigningOutputsUseRegisteredHumanRenderers(t *testing.T) {
 	}
 }
 
+func TestXcodeSigningApplyOutputDoesNotClaimIncompleteApplyWasApplied(t *testing.T) {
+	output := NewXcodeSigningApplyOutput(&localxcode.SigningApplyResult{
+		Completed: false,
+		PlanPath:  "/tmp/plan.json",
+	})
+
+	rendered := captureStdout(t, func() error { return PrintTable(output) })
+	if strings.Contains(strings.ToLower(rendered), "applied") {
+		t.Fatalf("incomplete apply output made an applied claim: %s", rendered)
+	}
+	if !strings.Contains(strings.ToLower(rendered), "completed") {
+		t.Fatalf("incomplete apply output omitted completion state: %s", rendered)
+	}
+}
+
 func assertEquivalentJSON(t *testing.T, want, got any) {
 	t.Helper()
 

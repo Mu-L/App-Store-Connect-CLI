@@ -268,7 +268,6 @@ func xcodeSigningApplyOutputRows(result *XcodeSigningApplyOutput) ([]string, [][
 		result = &XcodeSigningApplyOutput{}
 	}
 	return []string{"field", "value"}, [][]string{
-		{"applied", "true"},
 		{"completed", fmt.Sprintf("%t", result.Completed)},
 		{"plan", result.PlanPath},
 		{"receipt", result.ReceiptPath},

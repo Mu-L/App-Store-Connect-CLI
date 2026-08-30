@@ -1278,8 +1278,11 @@ func (r Root) createNewFileExclusive(name string, data []byte, perm os.FileMode)
 
 // CreateNewFrom atomically publishes reader's complete contents as a new file
 // beneath the root. It stages an unpredictable no-follow file in the same
-// directory, syncs and closes it, then uses an atomic no-replace rename. A read,
-// write, sync, close, or publish failure leaves an existing destination intact.
+// directory, syncs it, then uses an atomic no-replace rename. On platforms that
+// permit it, the staging handle remains open through publication identity
+// verification so an immediate replacement cannot reuse the staged inode. A
+// read, write, sync, close, or publish failure leaves an existing destination
+// intact.
 func (r Root) CreateNewFrom(name string, reader io.Reader, perm os.FileMode) (int64, error) {
 	written, _, err := r.createNewFromWithInfo(name, reader, perm)
 	return written, err
@@ -1315,8 +1318,16 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 		return 0, nil, err
 	}
 	published := false
+	stagingClosed := false
+	closeStaging := func() error {
+		if stagingClosed {
+			return nil
+		}
+		stagingClosed = true
+		return file.Close()
+	}
 	defer func() {
-		_ = file.Close()
+		_ = closeStaging()
 		if !published {
 			_ = parent.Remove(temporaryName)
 		}
@@ -1338,8 +1349,15 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	if !stagedInfo.Mode().IsRegular() {
 		return written, nil, fmt.Errorf("staged file %q is not regular", resolved)
 	}
-	if err := file.Close(); err != nil {
-		return written, stagedInfo, err
+	// Keep the staging descriptor open through publication and the identity
+	// check on Unix. If a racing writer unlinks the published name immediately,
+	// the open descriptor keeps the original inode alive so the filesystem
+	// cannot reuse its identity for the replacement before Lstat observes it.
+	// Windows requires the handle to be closed before its rename operation.
+	if runtime.GOOS == "windows" {
+		if err := closeStaging(); err != nil {
+			return written, stagedInfo, err
+		}
 	}
 	renameNoReplace := secureopen.RenameNoReplaceInRoot
 	if r.renameNoReplaceForTest != nil {
@@ -1352,8 +1370,10 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 		if r.requireNativeNoReplace {
 			return written, stagedInfo, err
 		}
-		// A hard link atomically publishes the complete staged inode without
-		// replacing an existing destination.
+		// A hard link atomically publishes the complete staged inode without an
+		// existing destination. The staging descriptor remains open on Unix so
+		// the identity check below cannot mistake an immediately recycled inode
+		// for the file created by this call.
 		if linkErr := parent.Link(temporaryName, base); linkErr != nil {
 			return written, stagedInfo, linkErr
 		}
@@ -1385,6 +1405,9 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	}
 	if err := directory.Close(); err != nil {
 		return written, stagedInfo, fmt.Errorf("close parent directory after durability sync: %w", err)
+	}
+	if err := closeStaging(); err != nil {
+		return written, stagedInfo, fmt.Errorf("close staged file after publication: %w", err)
 	}
 	return written, stagedInfo, nil
 }

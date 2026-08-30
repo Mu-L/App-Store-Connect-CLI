@@ -1,6 +1,7 @@
 package xcode
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,5 +149,222 @@ func TestXCConfigRequiredMissingIncludeFails(t *testing.T) {
 	_, err := collectXCConfigFiles(path)
 	if err == nil {
 		t.Fatal("expected required-include error")
+	}
+}
+
+func TestXCConfigCollectorRecordsMissingIncludeBeforeAccess(t *testing.T) {
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Root.xcconfig")
+	missingPath := filepath.Join(root, "Missing.xcconfig")
+	if err := os.WriteFile(rootPath, []byte("#include \"Missing.xcconfig\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(root) error = %v", err)
+	}
+
+	seen := make(map[string]bool)
+	readPaths := make(map[string]bool)
+	var errorsByPath map[string]error
+	_, err := collectXCConfigFilesWithHooks(
+		rootPath,
+		func(path string) ([]byte, error) {
+			readPaths[filepath.Clean(path)] = true
+			return os.ReadFile(path)
+		},
+		func(path string) error {
+			if path == missingPath && !seen[path] {
+				t.Fatalf("missing include was authorized before path was recorded")
+			}
+			return nil
+		},
+		func(path string) { seen[filepath.Clean(path)] = true },
+		func(path string, collectionErr error) {
+			if errorsByPath == nil {
+				errorsByPath = make(map[string]error)
+			}
+			errorsByPath[filepath.Clean(path)] = collectionErr
+		},
+	)
+	if err == nil {
+		t.Fatal("collector error = nil, want required missing include failure")
+	}
+	if !seen[missingPath] {
+		t.Fatalf("missing include was not retained by path hook: %#v", seen)
+	}
+	if !readPaths[missingPath] {
+		t.Fatalf("missing include did not use the authorized reader: %#v", readPaths)
+	}
+	if errorsByPath[missingPath] == nil {
+		t.Fatalf("missing include was not retained by error hook: %#v", errorsByPath)
+	}
+}
+
+func TestXCConfigFileIdentityRequiresAuthorizedCollectionBeforeInspection(t *testing.T) {
+	root := t.TempDir()
+	externalPath := filepath.Join(root, "external.xcconfig")
+	if err := os.WriteFile(externalPath, []byte("CODE_SIGN_STYLE = Manual\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(external) error = %v", err)
+	}
+	linkPath := filepath.Join(root, "unselected.xcconfig")
+	if err := os.Symlink(externalPath, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	index := xcconfigFileIdentityIndex{}
+	_, err := index.identity(linkPath, map[string]bool{})
+	if err == nil || !strings.Contains(err.Error(), "was not collected") {
+		t.Fatalf("identity() error = %v, want collection-membership refusal", err)
+	}
+	if len(index.entries) != 0 {
+		t.Fatalf("identity index entries = %#v, want empty after unauthorized path", index.entries)
+	}
+}
+
+func TestXCConfigCollectorRejectsUnauthorizedSymlinkBeforeReader(t *testing.T) {
+	root := t.TempDir()
+	externalRoot := t.TempDir()
+	externalPath := filepath.Join(externalRoot, "external.xcconfig")
+	if err := os.WriteFile(externalPath, []byte("CODE_SIGN_STYLE = Manual\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(external) error = %v", err)
+	}
+	selectedPath := filepath.Join(root, "selected.xcconfig")
+	if err := os.Symlink(externalPath, selectedPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	readCalls := 0
+	paths := make(map[string]bool)
+	_, err := collectXCConfigFilesWithHooks(
+		selectedPath,
+		func(path string) ([]byte, error) {
+			readCalls++
+			return os.ReadFile(path)
+		},
+		func(path string) error {
+			if path != selectedPath {
+				t.Fatalf("authorization path = %q, want %q", path, selectedPath)
+			}
+			return errors.New("external path not authorized")
+		},
+		func(path string) { paths[path] = true },
+		nil,
+	)
+	if err == nil {
+		t.Fatal("collector error = nil, want authorization refusal")
+	}
+	if readCalls != 0 {
+		t.Fatalf("reader calls = %d, want zero before authorization", readCalls)
+	}
+	if !paths[selectedPath] {
+		t.Fatalf("path hook did not retain unauthorized path: %#v", paths)
+	}
+}
+
+func TestXCConfigCollectorContinuesSiblingIncludesAfterAuthorizationFailure(t *testing.T) {
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Root.xcconfig")
+	blockedPath := filepath.Join(root, "Blocked.xcconfig")
+	allowedPath := filepath.Join(root, "Allowed.xcconfig")
+	if err := os.WriteFile(rootPath, []byte("#include \"Blocked.xcconfig\"\n#include \"Allowed.xcconfig\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(root) error = %v", err)
+	}
+	if err := os.WriteFile(allowedPath, []byte("CODE_SIGN_STYLE = Manual\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(allowed) error = %v", err)
+	}
+
+	paths := make(map[string]bool)
+	readPaths := make(map[string]bool)
+	_, err := collectXCConfigFilesWithHooks(
+		rootPath,
+		func(path string) ([]byte, error) {
+			readPaths[filepath.Clean(path)] = true
+			return os.ReadFile(path)
+		},
+		func(path string) error {
+			if filepath.Clean(path) == blockedPath {
+				return errors.New("blocked include")
+			}
+			return nil
+		},
+		func(path string) { paths[filepath.Clean(path)] = true },
+		nil,
+	)
+	if err == nil {
+		t.Fatal("collector error = nil, want blocked include failure")
+	}
+	if !paths[rootPath] || !paths[blockedPath] || !paths[allowedPath] {
+		t.Fatalf("paths = %#v, want root and both sibling includes", paths)
+	}
+	if readPaths[blockedPath] {
+		t.Fatalf("blocked include was read despite authorization failure: %#v", readPaths)
+	}
+	if !readPaths[allowedPath] {
+		t.Fatalf("allowed sibling include was not read after earlier failure: %#v", readPaths)
+	}
+}
+
+func TestXCConfigCollectorUsesWindowsCaseInsensitiveTraversalKeys(t *testing.T) {
+	previousOS := runtimeGOOS
+	runtimeGOOS = "windows"
+	t.Cleanup(func() { runtimeGOOS = previousOS })
+
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Config.xcconfig")
+	caseVariantPath := filepath.Join(root, "config.xcconfig")
+
+	readCalls := 0
+	files, err := collectXCConfigFilesWithReader(rootPath, func(path string) ([]byte, error) {
+		readCalls++
+		switch filepath.Clean(path) {
+		case rootPath:
+			return []byte("#include \"config.xcconfig\"\n"), nil
+		case caseVariantPath:
+			return []byte("CODE_SIGN_STYLE = Manual\n"), nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}, nil)
+	if err != nil {
+		t.Fatalf("collectXCConfigFilesWithReader() error = %v", err)
+	}
+	if len(files) != 1 || files[0] != rootPath {
+		t.Fatalf("files = %#v, want one case-insensitive traversal", files)
+	}
+	if readCalls != 1 {
+		t.Fatalf("read calls = %d, want one for the same Windows path", readCalls)
+	}
+}
+
+func TestXCConfigCollectorKeepsCaseDistinctFilesOnCaseSensitiveHost(t *testing.T) {
+	previousOS := runtimeGOOS
+	runtimeGOOS = "linux"
+	t.Cleanup(func() { runtimeGOOS = previousOS })
+
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Config.xcconfig")
+	caseVariantPath := filepath.Join(root, "config.xcconfig")
+	if err := os.WriteFile(rootPath, []byte("#include \"config.xcconfig\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(root) error = %v", err)
+	}
+	if _, err := os.Lstat(caseVariantPath); err == nil {
+		t.Skip("temporary filesystem is case-insensitive")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Lstat(case variant) error = %v", err)
+	}
+	if err := os.WriteFile(caseVariantPath, []byte("CODE_SIGN_STYLE = Manual\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(case variant) error = %v", err)
+	}
+
+	readCalls := 0
+	files, err := collectXCConfigFilesWithReader(rootPath, func(path string) ([]byte, error) {
+		readCalls++
+		return os.ReadFile(path)
+	}, nil)
+	if err != nil {
+		t.Fatalf("collectXCConfigFilesWithReader() error = %v", err)
+	}
+	if len(files) != 2 || files[0] != rootPath || files[1] != caseVariantPath {
+		t.Fatalf("files = %#v, want both case-distinct files", files)
+	}
+	if readCalls != 2 {
+		t.Fatalf("read calls = %d, want one per case-distinct file", readCalls)
 	}
 }

@@ -14,6 +14,9 @@ func TestXcodeSigningPlanApplyCommandsExist(t *testing.T) {
 	if !strings.Contains(xcode.ShortHelp+"\n"+xcode.LongHelp, "[experimental] signing-settings") {
 		t.Fatalf("xcode root help = %q, want experimental signing marker", xcode.ShortHelp+"\n"+xcode.LongHelp)
 	}
+	if strings.Contains(xcode.ShortHelp, "macOS only") || !strings.Contains(xcode.LongHelp, "supported on every platform") {
+		t.Fatalf("xcode root help has incorrect platform scope: %q", xcode.ShortHelp+"\n"+xcode.LongHelp)
+	}
 
 	group := findSubcommand(root, "xcode", "signing")
 	if group == nil {

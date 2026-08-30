@@ -159,7 +159,7 @@ func NewCatalog(version string) *Catalog {
 		commandFactory("publish", "High-level publish workflows for TestFlight and App Store.", publish.PublishCommand),
 		commandFactory("release", "Run high-level App Store release workflows.", release.ReleaseCommand),
 		commandFactory("workflow", "Run multi-step automation workflows.", workflow.WorkflowCommand),
-		commandFactory("xcode", "Local Xcode build/archive/export and [experimental] signing-settings helpers (macOS only).", xcode.XcodeCommand),
+		commandFactory("xcode", "Local Xcode build/archive/export and [experimental] signing-settings helpers.", xcode.XcodeCommand),
 		commandFactory("distribute", "Plan, execute, inspect, and publish iOS distribution artifacts. [experimental]", distribute.DistributeCommand),
 		commandFactory("versions", "Manage App Store versions.", versions.VersionsCommand),
 		commandFactory("product-pages", "Manage custom product pages and product page experiments.", productpages.ProductPagesCommand),

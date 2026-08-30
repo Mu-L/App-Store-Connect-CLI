@@ -1,6 +1,7 @@
 package xcode
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -199,40 +200,93 @@ func resolveXCConfigInclude(containingPath string, include xcconfigInclude) (str
 }
 
 func collectXCConfigFiles(root string) ([]string, error) {
+	return collectXCConfigFilesWithReader(root, os.ReadFile, nil)
+}
+
+// collectXCConfigFilesWithReader walks an xcconfig include graph using the
+// caller's reader and authorization hook. Security-sensitive callers should
+// authorize every path before the reader or existence check touches it.
+func collectXCConfigFilesWithReader(root string, read func(string) ([]byte, error), authorize func(string) error) ([]string, error) {
+	return collectXCConfigFilesWithHooks(root, read, authorize, nil, nil)
+}
+
+// collectXCConfigFilesWithHooks is the instrumentable form of the collector.
+// onPath runs for every normalized root or include target before authorization,
+// stat, or read. onError receives the path responsible for a collection
+// failure. Security-sensitive callers use these hooks to retain lexical
+// provenance even when a path is missing or malformed and therefore never
+// becomes part of the successfully collected file list.
+func collectXCConfigFilesWithHooks(
+	root string,
+	read func(string) ([]byte, error),
+	authorize func(string) error,
+	onPath func(string),
+	onError func(string, error),
+) ([]string, error) {
 	seen := make(map[string]bool)
 	var paths []string
 	var visit func(string, map[string]bool) error
 	visit = func(path string, stack map[string]bool) error {
 		path = filepath.Clean(path)
-		if stack[path] || seen[path] {
+		pathKey := signingLexicalPathKey(path)
+		if onPath != nil {
+			onPath(path)
+		}
+		if stack[pathKey] || seen[pathKey] {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		if authorize != nil {
+			if err := authorize(path); err != nil {
+				if onError != nil {
+					onError(path, err)
+				}
+				return err
+			}
+		}
+		data, err := read(path)
 		if err != nil {
+			if onError != nil {
+				onError(path, err)
+			}
 			return err
 		}
 		document, err := parseXCConfig(data)
 		if err != nil {
+			if onError != nil {
+				onError(path, err)
+			}
 			return fmt.Errorf("parse %s: %w", path, err)
 		}
-		seen[path] = true
+		seen[pathKey] = true
 		paths = append(paths, path)
 		nextStack := clonePathSet(stack)
-		nextStack[path] = true
+		nextStack[pathKey] = true
+		var includeErrors []error
 		for _, include := range document.includes {
 			includePath, err := resolveXCConfigInclude(path, include)
 			if err != nil {
-				return err
+				if onError != nil {
+					onError(path, err)
+				}
+				includeErrors = append(includeErrors, err)
+				continue
 			}
-			if _, err := os.Stat(includePath); err != nil {
-				if include.optional && os.IsNotExist(err) {
+			// Let the same authorization-aware reader perform existence and type
+			// checks. In particular, never stat an include before the authorization
+			// hook has accepted its lexical path. Optional missing includes are the
+			// one intentional not-exist case and are ignored after that check.
+			if err := visit(includePath, nextStack); err != nil {
+				if include.optional && errors.Is(err, os.ErrNotExist) {
 					continue
 				}
-				return fmt.Errorf("read xcconfig include %s: %w", includePath, err)
+				includeErrors = append(includeErrors, err)
 			}
-			if err := visit(includePath, nextStack); err != nil {
-				return err
-			}
+		}
+		if len(includeErrors) == 1 {
+			return includeErrors[0]
+		}
+		if len(includeErrors) > 1 {
+			return errors.Join(includeErrors...)
 		}
 		return nil
 	}
@@ -247,8 +301,17 @@ func resolveXCConfigSetting(root, setting string) (xcconfigResolvedValue, error)
 }
 
 func resolveXCConfigSettingWithBase(root, setting string, base xcconfigResolvedValue) (xcconfigResolvedValue, error) {
-	resolved, conditional, err := resolveXCConfigSettingRecursive(
-		filepath.Clean(root), setting, make(map[string]bool), base,
+	return resolveXCConfigSettingWithBaseReader(root, setting, base, os.ReadFile, os.Stat)
+}
+
+func resolveXCConfigSettingWithBaseReader(
+	root, setting string,
+	base xcconfigResolvedValue,
+	read func(string) ([]byte, error),
+	stat func(string) (os.FileInfo, error),
+) (xcconfigResolvedValue, error) {
+	resolved, conditional, err := resolveXCConfigSettingRecursiveWithReader(
+		filepath.Clean(root), setting, make(map[string]bool), base, read, stat,
 	)
 	if err != nil {
 		return xcconfigResolvedValue{}, err
@@ -280,16 +343,20 @@ func resolveXCConfigSettingWithBase(root, setting string, base xcconfigResolvedV
 	return resolved, nil
 }
 
-func resolveXCConfigSettingRecursive(
+func resolveXCConfigSettingRecursiveWithReader(
 	path string,
 	setting string,
 	stack map[string]bool,
 	resolved xcconfigResolvedValue,
+	read func(string) ([]byte, error),
+	stat func(string) (os.FileInfo, error),
 ) (xcconfigResolvedValue, bool, error) {
-	if stack[path] {
+	path = filepath.Clean(path)
+	pathKey := signingLexicalPathKey(path)
+	if stack[pathKey] {
 		return resolved, false, nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := read(path)
 	if err != nil {
 		return xcconfigResolvedValue{}, false, err
 	}
@@ -298,7 +365,7 @@ func resolveXCConfigSettingRecursive(
 		return xcconfigResolvedValue{}, false, fmt.Errorf("parse %s: %w", path, err)
 	}
 	nextStack := clonePathSet(stack)
-	nextStack[path] = true
+	nextStack[pathKey] = true
 
 	type event struct {
 		line       int
@@ -325,13 +392,13 @@ func resolveXCConfigSettingRecursive(
 			if err != nil {
 				return xcconfigResolvedValue{}, false, err
 			}
-			if _, err := os.Stat(includePath); err != nil {
+			if _, err := stat(includePath); err != nil {
 				if item.include.optional && os.IsNotExist(err) {
 					continue
 				}
 				return xcconfigResolvedValue{}, false, fmt.Errorf("read xcconfig include %s: %w", includePath, err)
 			}
-			included, includedConditional, err := resolveXCConfigSettingRecursive(includePath, setting, nextStack, resolved)
+			included, includedConditional, err := resolveXCConfigSettingRecursiveWithReader(includePath, setting, nextStack, resolved, read, stat)
 			if err != nil {
 				return xcconfigResolvedValue{}, false, err
 			}
