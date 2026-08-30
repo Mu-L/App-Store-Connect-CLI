@@ -289,6 +289,37 @@ func TestCheckWithClientBoundsRedirectLoopWithoutReadingBodies(t *testing.T) {
 	}
 }
 
+func TestCheckWithClientTreatsRedirectWithoutLocationAsFinalResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := "redirect body"
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusFound)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(server.Close)
+	stats := &metadataURLBodyStats{}
+	transport := newMetadataURLTestTransport(t, map[string]string{
+		"origin.example.test": server.URL,
+	}, stats)
+
+	result, err := CheckWithClient(context.Background(), &http.Client{Transport: transport}, "http://origin.example.test/start")
+	if err != nil {
+		t.Fatalf("CheckWithClient() error = %v", err)
+	}
+	if result.StatusCode != http.StatusFound {
+		t.Fatalf("result.StatusCode = %d, want %d", result.StatusCode, http.StatusFound)
+	}
+	if got := result.FinalURL.String(); got != "http://origin.example.test/start" {
+		t.Fatalf("result.FinalURL = %q, want original URL", got)
+	}
+	if got := stats.reads.Load(); got != 0 {
+		t.Fatalf("redirect response body reads = %d, want zero", got)
+	}
+	if got := stats.closes.Load(); got != 1 {
+		t.Fatalf("redirect response body closes = %d, want one", got)
+	}
+}
+
 func TestCheckWithClientTracksCrossHostRedirectEvenWhenItReturns(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/start" {

@@ -98,6 +98,27 @@ func TestValidateDirCheckURLsWarnsForRedirectedHostAndSiteRoot(t *testing.T) {
 	}
 }
 
+func TestMetadataURLCheckMessagesDescribesReturningHostWithoutAtoA(t *testing.T) {
+	message := metadataURLCheckMessages(metadataURLTarget{
+		rawURL: "https://support.example/help",
+		label:  "support URL",
+	}, metadataURLCheckOutcome{result: metadataurl.Result{
+		FinalURL:       mustParseMetadataURL(t, "https://support.example/final"),
+		StatusCode:     http.StatusOK,
+		RedirectedHost: true,
+	}})
+	if len(message) != 1 {
+		t.Fatalf("messages = %v, want one redirect warning", message)
+	}
+	want := "support URL redirects through a different host before returning to support.example"
+	if message[0] != want {
+		t.Fatalf("message = %q, want %q", message[0], want)
+	}
+	if strings.Contains(message[0], "support.example -> support.example") {
+		t.Fatalf("message contains contradictory A -> A transition: %q", message[0])
+	}
+}
+
 func TestValidateDirCheckURLsWarnsForStatusAndRequestFailure(t *testing.T) {
 	dir := writeMetadataURLFixtures(t, map[string]string{
 		filepath.Join(appInfoDirName, "en-US.json"):          `{"name":"Example App","privacyPolicyUrl":"https://app.example.com/privacy"}`,

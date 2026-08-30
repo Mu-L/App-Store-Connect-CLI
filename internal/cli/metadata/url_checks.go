@@ -103,7 +103,11 @@ func metadataURLCheckMessages(target metadataURLTarget, outcome metadataURLCheck
 	initialHost := strings.ToLower(initialURL.Hostname())
 	finalHost := strings.ToLower(outcome.result.FinalURL.Hostname())
 	if outcome.result.RedirectedHost || initialHost != finalHost {
-		messages = append(messages, fmt.Sprintf("%s redirects to a different host (%s -> %s)", target.label, initialHost, finalHost))
+		if outcome.result.RedirectedHost && initialHost != "" && initialHost == finalHost {
+			messages = append(messages, fmt.Sprintf("%s redirects through a different host before returning to %s", target.label, initialHost))
+		} else {
+			messages = append(messages, fmt.Sprintf("%s redirects to a different host (%s -> %s)", target.label, initialHost, finalHost))
+		}
 	}
 	if outcome.result.StatusCode < http.StatusOK || outcome.result.StatusCode >= http.StatusMultipleChoices {
 		return append(messages, fmt.Sprintf("%s returned HTTP %d", target.label, outcome.result.StatusCode))
