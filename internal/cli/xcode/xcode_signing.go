@@ -9,7 +9,6 @@ import (
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
-	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	localxcode "github.com/rudrankriyam/App-Store-Connect-CLI/internal/xcode"
 )
@@ -109,7 +108,7 @@ Examples:
 			for _, warning := range plan.Warnings {
 				fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
 			}
-			return shared.PrintOutput(asc.NewXcodeSigningPlanOutput(plan), *output.Output, *output.Pretty)
+			return shared.PrintOutput(newXcodeSigningPlanOutput(plan), *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -159,7 +158,7 @@ Examples:
 				}
 				return fmt.Errorf("xcode signing apply: %w", err)
 			}
-			return shared.PrintOutput(asc.NewXcodeSigningApplyOutput(result), *output.Output, *output.Pretty)
+			return shared.PrintOutput(newXcodeSigningApplyOutput(result), *output.Output, *output.Pretty)
 		},
 	}
 }

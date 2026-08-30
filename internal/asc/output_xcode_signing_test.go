@@ -1,13 +1,14 @@
 package asc
 
 import (
-	"encoding/json"
-	"reflect"
 	"strings"
 	"testing"
-
-	localxcode "github.com/rudrankriyam/App-Store-Connect-CLI/internal/xcode"
 )
+
+// The artifact-shape tests for these outputs live in internal/cli/xcode,
+// because comparing against the domain artifact requires internal/xcode and
+// that package imports internal/asc. These tests cover the registered output
+// types and their renderers without the domain dependency.
 
 func TestXcodeSigningOutputsAreRegistered(t *testing.T) {
 	ensureOutputRegistryPopulated()
@@ -20,115 +21,26 @@ func TestXcodeSigningOutputsAreRegistered(t *testing.T) {
 	}
 }
 
-func TestXcodeSigningPlanOutputPreservesArtifactJSONShape(t *testing.T) {
-	value := "Manual"
-	oldValue := "Automatic"
-	plan := &localxcode.SigningPlan{
-		SchemaVersion:         1,
-		Command:               "asc xcode signing plan",
-		GeneratedAt:           "2026-08-30T00:00:00Z",
-		PlanHash:              "plan-hash",
-		Ready:                 true,
-		ProjectPath:           "/tmp/Demo.xcodeproj",
-		SettingsFilePath:      "/tmp/settings.json",
-		PlanPath:              "/tmp/plan.json",
-		ReceiptPath:           "/tmp/receipt.json",
-		AllowExternalXCConfig: true,
-		Desired: []localxcode.SigningPlanTarget{{
-			Target: "Demo",
-			Configurations: []localxcode.SigningPlanConfiguration{{
-				Name:     "Release",
-				Settings: []localxcode.SigningPlanSetting{{Key: "CODE_SIGN_STYLE", Value: &value}},
-			}},
-		}},
-		Files: []localxcode.SigningPlanFile{{
-			Path:   "/tmp/Demo.xcodeproj/project.pbxproj",
-			SHA256: "source-hash",
-			Source: "pbxproj",
-		}},
-		Changes: []localxcode.SigningSettingChange{{
-			Target:        "Demo",
-			Configuration: "Release",
-			Setting:       "CODE_SIGN_STYLE",
-			Operation:     "set",
-			Resolution:    "direct",
-			OldValue:      &oldValue,
-			NewValue:      &value,
-			Path:          "/tmp/Demo.xcodeproj/project.pbxproj",
-			Source:        "pbxproj",
-		}},
-		Blockers: []string{},
-		Warnings: []string{"warning"},
-	}
-
-	output := NewXcodeSigningPlanOutput(plan)
-	if output == nil {
-		t.Fatal("NewXcodeSigningPlanOutput returned nil")
-	}
-	if reflect.TypeOf(output) == reflect.TypeOf(plan) {
-		t.Fatal("expected outward plan output to be distinct from the artifact type")
-	}
-
-	assertEquivalentJSON(t, plan, output)
-}
-
-func TestXcodeSigningApplyOutputPreservesReceiptJSONShape(t *testing.T) {
-	oldValue := "Automatic"
-	newValue := "Manual"
-	result := &localxcode.SigningApplyResult{
-		SchemaVersion: 1,
-		AppliedAt:     "2026-08-30T00:00:00Z",
-		Completed:     true,
-		PlanHash:      "plan-hash",
-		PlanPath:      "/tmp/plan.json",
-		ReceiptPath:   "/tmp/receipt.json",
-		ChangedFiles:  []string{"/tmp/Demo.xcodeproj/project.pbxproj"},
-		Files: []localxcode.SigningFileChange{{
-			Path:         "/tmp/Demo.xcodeproj/project.pbxproj",
-			Source:       "pbxproj",
-			BeforeSHA256: "before",
-			AfterSHA256:  "after",
-		}},
-		Changes: []localxcode.SigningSettingChange{{
-			Target:        "Demo",
-			Configuration: "Release",
-			Setting:       "CODE_SIGN_STYLE",
-			Operation:     "set",
-			Resolution:    "direct",
-			OldValue:      &oldValue,
-			NewValue:      &newValue,
-			Path:          "/tmp/Demo.xcodeproj/project.pbxproj",
-			Source:        "pbxproj",
-		}},
-	}
-
-	output := NewXcodeSigningApplyOutput(result)
-	if output == nil {
-		t.Fatal("NewXcodeSigningApplyOutput returned nil")
-	}
-	assertEquivalentJSON(t, result, output)
-}
-
 func TestXcodeSigningOutputsUseRegisteredHumanRenderers(t *testing.T) {
-	plan := NewXcodeSigningPlanOutput(&localxcode.SigningPlan{
+	plan := &XcodeSigningPlanOutput{
 		Ready:    true,
 		PlanPath: "/tmp/plan.json",
 		PlanHash: "plan-hash",
-		Changes: []localxcode.SigningSettingChange{{
+		Changes: []XcodeSigningSettingChangeOutput{{
 			Target:        "Demo",
 			Configuration: "Release",
 			Setting:       "CODE_SIGN_STYLE",
 			Operation:     "set",
 			Resolution:    "direct",
 		}},
-	})
-	apply := NewXcodeSigningApplyOutput(&localxcode.SigningApplyResult{
+	}
+	apply := &XcodeSigningApplyOutput{
 		Completed:    true,
 		PlanPath:     "/tmp/plan.json",
 		ReceiptPath:  "/tmp/receipt.json",
 		PlanHash:     "plan-hash",
 		ChangedFiles: []string{"/tmp/Demo.xcodeproj/project.pbxproj"},
-	})
+	}
 
 	for _, test := range []struct {
 		name string
@@ -161,10 +73,10 @@ func TestXcodeSigningOutputsUseRegisteredHumanRenderers(t *testing.T) {
 }
 
 func TestXcodeSigningApplyOutputDoesNotClaimIncompleteApplyWasApplied(t *testing.T) {
-	output := NewXcodeSigningApplyOutput(&localxcode.SigningApplyResult{
+	output := &XcodeSigningApplyOutput{
 		Completed: false,
 		PlanPath:  "/tmp/plan.json",
-	})
+	}
 
 	rendered := captureStdout(t, func() error { return PrintTable(output) })
 	if strings.Contains(strings.ToLower(rendered), "applied") {
@@ -172,31 +84,5 @@ func TestXcodeSigningApplyOutputDoesNotClaimIncompleteApplyWasApplied(t *testing
 	}
 	if !strings.Contains(strings.ToLower(rendered), "completed") {
 		t.Fatalf("incomplete apply output omitted completion state: %s", rendered)
-	}
-}
-
-func assertEquivalentJSON(t *testing.T, want, got any) {
-	t.Helper()
-
-	var wantValue any
-	wantJSON, err := json.Marshal(want)
-	if err != nil {
-		t.Fatalf("marshal want JSON: %v", err)
-	}
-	if err := json.Unmarshal(wantJSON, &wantValue); err != nil {
-		t.Fatalf("decode want JSON: %v", err)
-	}
-
-	var gotValue any
-	gotJSON, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("marshal got JSON: %v", err)
-	}
-	if err := json.Unmarshal(gotJSON, &gotValue); err != nil {
-		t.Fatalf("decode got JSON: %v", err)
-	}
-
-	if !reflect.DeepEqual(gotValue, wantValue) {
-		t.Fatalf("outward JSON changed artifact shape:\nwant: %s\n got: %s", wantJSON, gotJSON)
 	}
 }
