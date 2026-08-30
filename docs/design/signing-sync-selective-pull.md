@@ -45,7 +45,8 @@ payload. For every selected profile it includes:
 
 - the provisioning profile itself;
 - every stored public certificate whose DER fingerprint appears in the
-  profile's developer-certificate list;
+  profile's developer-certificate list, without requiring inactive or
+  otherwise unsynced embedded certificates to be present;
 - the authenticated identity context for the exact team, bundle, and profile
   type, when one exists; and
 - the usable PKCS#12 identity core referenced by that context.
@@ -58,7 +59,9 @@ the existing graph validator enforces that binding before selection.
 Every requested bundle must resolve to at least one matching profile. The
 command fails before writing any output when a requested bundle is absent,
 when a profile cannot be classified, or when a selected profile's embedded
-certificate has no matching stored public certificate. Multiple matching
+certificate list has no matching stored public certificate. An identity-backed
+selection additionally requires the stored public certificate for its exact
+core identity. Multiple matching
 profiles for one requested context are returned rather than choosing by
 filename or repository order.
 

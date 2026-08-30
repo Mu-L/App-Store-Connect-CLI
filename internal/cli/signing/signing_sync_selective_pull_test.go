@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	signingpkg "github.com/rudrankriyam/App-Store-Connect-CLI/internal/signing"
 	"howett.net/plist"
 )
@@ -183,6 +184,160 @@ func TestSelectSigningPullFilesChoosesCertificateOnlyTarget(t *testing.T) {
 	}
 	if !slices.Equal(targets[0].Files, []string{certificatePath, secondSelectedPath, selectedPath}) {
 		t.Fatalf("target files = %v", targets[0].Files)
+	}
+}
+
+func TestSelectSigningPullFilesAcceptsStoredSubsetOfEmbeddedCertificates(t *testing.T) {
+	storedKey := mustECKey(t)
+	storedCertificate := mustSigningCertificate(t, storedKey, 808)
+	additionalKey := mustECKey(t)
+	additionalCertificate := mustSigningCertificate(t, additionalKey, 809)
+	profilePlist, err := plist.Marshal(map[string]any{
+		"UUID":                        "01234567-89ab-cdef-0123-456789abcdef",
+		"TeamIdentifier":              []string{"TEAM123"},
+		"ApplicationIdentifierPrefix": []string{"TEAM123"},
+		"ExpirationDate":              time.Now().Add(time.Hour),
+		"DeveloperCertificates":       [][]byte{storedCertificate.Raw, additionalCertificate.Raw},
+		"ProvisionedDevices":          []string{"DEVICE1"},
+		"Entitlements": map[string]any{
+			"application-identifier": "TEAM123.com.example.selected",
+			"get-task-allow":         false,
+		},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := mustSignedCMS(t, profilePlist, storedCertificate, storedKey)
+	files := []decryptedSigningFile{
+		{RelativePath: "certs/distribution/stored.cer", Plaintext: storedCertificate.Raw},
+		{RelativePath: "profiles/adhoc/selected.mobileprovision", Plaintext: profile},
+	}
+
+	selected, _, err := selectSigningPullFiles(files, []string{"com.example.selected"}, "IOS_APP_ADHOC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"certs/distribution/stored.cer", "profiles/adhoc/selected.mobileprovision"}
+	if got := signingPullRelativePaths(selected); !slices.Equal(got, want) {
+		t.Fatalf("selected paths = %v, want %v", got, want)
+	}
+}
+
+func TestSelectSigningPullFilesRequiresExactIdentityPublicCertificate(t *testing.T) {
+	const password = "repository-password"
+	identityKey := mustECKey(t)
+	identityCertificate := mustSigningCertificate(t, identityKey, 811)
+	otherKey := mustECKey(t)
+	otherCertificate := mustSigningCertificate(t, otherKey, 812)
+	identity := &signingIdentity{
+		PrivateKey:        identityKey,
+		Certificate:       identityCertificate,
+		CertificateSHA256: certificateSHA256(identityCertificate),
+	}
+	artifacts, err := prepareSigningIdentityArtifacts(identity, password, "com.example.selected", "IOS_APP_ADHOC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profilePlist, err := plist.Marshal(map[string]any{
+		"UUID":                        "01234567-89ab-cdef-0123-456789abcdef",
+		"TeamIdentifier":              []string{"TEAM123"},
+		"ApplicationIdentifierPrefix": []string{"TEAM123"},
+		"ExpirationDate":              time.Now().Add(time.Hour),
+		"DeveloperCertificates":       [][]byte{identityCertificate.Raw, otherCertificate.Raw},
+		"ProvisionedDevices":          []string{"DEVICE1"},
+		"Entitlements": map[string]any{
+			"application-identifier": "TEAM123.com.example.selected",
+			"get-task-allow":         false,
+		},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileContent := mustSignedCMS(t, profilePlist, identityCertificate, identityKey)
+	profilePath := "profiles/adhoc/selected.mobileprovision"
+	profile := &asc.ProfileResponse{Data: asc.Resource[asc.ProfileAttributes]{
+		ID: "profile-selected",
+		Attributes: asc.ProfileAttributes{
+			Name: "profile-selected",
+			UUID: "01234567-89ab-cdef-0123-456789abcdef",
+		},
+	}}
+	if err := bindSigningIdentityProfile(artifacts, profile, profilePath, profileContent); err != nil {
+		t.Fatal(err)
+	}
+	store := &signingpkg.GitStore{LocalDir: t.TempDir()}
+	otherCertificatePath := "certs/distribution/other.cer"
+	if err := store.WriteEncryptedFile(otherCertificatePath, otherCertificate.Raw, password); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteEncryptedFile(profilePath, profileContent, password); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOrReuseSigningIdentityArtifacts(store, artifacts, password); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{otherCertificatePath, profilePath, artifacts.IdentityPath, artifacts.BindingPath}
+	decrypted, err := prepareDecryptedSigningFiles(store, paths, password, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = selectSigningPullFiles(decrypted, []string{"com.example.selected"}, "IOS_APP_ADHOC")
+	if err == nil || !strings.Contains(err.Error(), "identity context") || !strings.Contains(err.Error(), "stored public certificate") {
+		t.Fatalf("error = %v, want exact identity certificate requirement", err)
+	}
+}
+
+func TestSigningIdentityGraphRejectsDirectProfileWithIOSPlatform(t *testing.T) {
+	const password = "repository-password"
+	key := mustECKey(t)
+	certificate := mustSigningCertificate(t, key, 810)
+	identity := &signingIdentity{
+		PrivateKey:        key,
+		Certificate:       certificate,
+		CertificateSHA256: certificateSHA256(certificate),
+	}
+	artifacts, err := prepareSigningIdentityArtifacts(identity, password, "com.example.direct", "MAC_APP_DIRECT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profilePlist, err := plist.Marshal(map[string]any{
+		"UUID":                        "01234567-89ab-cdef-0123-456789abcdef",
+		"TeamIdentifier":              []string{"TEAM123"},
+		"ApplicationIdentifierPrefix": []string{"TEAM123"},
+		"ExpirationDate":              time.Now().Add(time.Hour),
+		"DeveloperCertificates":       [][]byte{certificate.Raw},
+		"ProvisionsAllDevices":        true,
+		"Platform":                    []string{"iOS"},
+		"Entitlements": map[string]any{
+			"application-identifier": "TEAM123.com.example.direct",
+			"get-task-allow":         false,
+		},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileContent := mustSignedCMS(t, profilePlist, certificate, key)
+	profilePath := "profiles/direct/direct.mobileprovision"
+	profile := &asc.ProfileResponse{Data: asc.Resource[asc.ProfileAttributes]{
+		ID: "profile-direct",
+		Attributes: asc.ProfileAttributes{
+			Name: "profile-direct",
+			UUID: "01234567-89ab-cdef-0123-456789abcdef",
+		},
+	}}
+	if err := bindSigningIdentityProfile(artifacts, profile, profilePath, profileContent); err != nil {
+		t.Fatal(err)
+	}
+	store := &signingpkg.GitStore{LocalDir: t.TempDir()}
+	if err := store.WriteEncryptedFile(profilePath, profileContent, password); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOrReuseSigningIdentityArtifacts(store, artifacts, password); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{profilePath, artifacts.IdentityPath, artifacts.BindingPath}
+	if _, err := prepareDecryptedSigningFiles(store, paths, password, t.TempDir()); err == nil || !strings.Contains(err.Error(), "distribution type") {
+		t.Fatalf("error = %v, want direct-profile platform mismatch", err)
 	}
 }
 

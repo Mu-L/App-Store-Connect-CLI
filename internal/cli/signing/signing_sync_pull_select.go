@@ -125,12 +125,17 @@ func selectSigningPullFiles(files []decryptedSigningFile, bundleIDs []string, pr
 			path := canonicalSigningPullPath(profile.file.RelativePath)
 			targetPaths[path] = profile.file
 			profilePaths = append(profilePaths, path)
+			storedCertificateFound := false
 			for _, fingerprint := range profile.certificate {
 				certificate, exists := certificatesByFingerprint[fingerprint]
 				if !exists {
-					return nil, nil, fmt.Errorf("selected profile %s has no matching stored public certificate %s", path, fingerprint)
+					continue
 				}
+				storedCertificateFound = true
 				targetPaths[canonicalSigningPullPath(certificate.RelativePath)] = certificate
+			}
+			if !storedCertificateFound {
+				return nil, nil, fmt.Errorf("selected profile %s has no matching stored public certificate", path)
 			}
 		}
 
@@ -151,6 +156,11 @@ func selectSigningPullFiles(files []decryptedSigningFile, bundleIDs []string, pr
 				return nil, nil, fmt.Errorf("selected identity context for %s has no usable core identity", bundleID)
 			}
 			targetPaths[corePath] = core
+			certificate, exists := certificatesByFingerprint[binding.CertificateSHA256]
+			if !exists {
+				return nil, nil, fmt.Errorf("selected identity context for %s has no matching stored public certificate", bundleID)
+			}
+			targetPaths[canonicalSigningPullPath(certificate.RelativePath)] = certificate
 		}
 
 		targetFiles := signingPullSortedFiles(targetPaths)

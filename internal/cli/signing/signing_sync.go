@@ -853,7 +853,7 @@ func validateIdentityArtifactGraph(files []decryptedSigningFile) (map[string]str
 		if !profile.ExpirationDate.After(time.Now()) || !containsFold(profile.TeamIdentifier, binding.TeamID) {
 			return nil, fmt.Errorf("identity context profile is expired or belongs to another team")
 		}
-		if !identityProfileTypeMatches(profile, binding.ProfileType) {
+		if !identityProfileTypeMatches(profile, binding.ProfileType) || !signingPullProfilePlatformMatches(profile, binding.ProfileType) {
 			return nil, fmt.Errorf("identity context profile distribution type does not match authenticated scope")
 		}
 		applicationIdentifier, _ := profile.Entitlements["application-identifier"].(string)
