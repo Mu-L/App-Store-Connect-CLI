@@ -15,6 +15,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/metadataurl"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/validation"
 )
 
@@ -121,7 +122,7 @@ func validateDir(dir string) (ValidateResult, error) {
 type validateDirOptions struct {
 	checkURLs       bool
 	subscriptionApp bool
-	urlChecker      metadataURLChecker
+	urlChecker      metadataurl.Checker
 }
 
 func validateDirWithOptions(ctx context.Context, dir string, options validateDirOptions) (ValidateResult, error) {

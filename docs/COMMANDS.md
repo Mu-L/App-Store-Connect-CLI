@@ -177,6 +177,12 @@ asc builds upload --app "123456789" --ipa "/path/to/MyApp.ipa"
 # Generate local Xcode metadata before archiving
 asc xcode inject --manifest .asc/deployment.json --set version=1.2.3 --set build_number=42 --dry-run --output json
 
+# Inspect the selected local Xcode toolchain without changing host state
+asc xcode doctor --output json
+
+# Install and verify one signed IPA on an exact connected device
+asc xcode install --ipa .asc/artifacts/App.ipa --device-id COREDEVICE_IDENTIFIER --timeout 5m --output json
+
 # Staple and validate a notarized macOS artifact locally
 ASC_BYPASS_KEYCHAIN=1 asc notarization staple --file ./MyApp.dmg --confirm --output json
 ASC_BYPASS_KEYCHAIN=1 asc notarization validate --file ./MyApp.dmg --output json
@@ -198,6 +204,7 @@ asc status --app "123456789"
 
 # Canonical readiness and lower-level submission lifecycle flow
 asc validate --app "123456789" --version "1.2.3"
+asc validate --app "123456789" --version "1.2.3" --check-urls
 asc submit status --version-id "VERSION_ID"
 asc submit cancel --version-id "VERSION_ID" --confirm
 
