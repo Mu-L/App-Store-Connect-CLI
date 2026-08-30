@@ -74,14 +74,13 @@ func openMatrixGlobalLockRoot() (rootfs.Root, error) {
 		digest := sha256.Sum256([]byte(identity))
 		systemBase := matrixGlobalLockSystemBaseDirForTest
 		if systemBase == "" {
-			switch runtime.GOOS {
-			case "darwin":
-				systemBase = "/private/tmp"
-			case "windows":
-				systemBase = filepath.Join(current.HomeDir, "AppData", "Local", "Temp")
-			default:
-				systemBase = "/tmp"
-			}
+			// HomeDir comes from the OS account record, not the mutable HOME
+			// environment variable. It keeps the namespace user-private while
+			// remaining stable across independent invocations.
+			systemBase = current.HomeDir
+		}
+		if strings.TrimSpace(systemBase) == "" {
+			return rootfs.Root{}, errors.New("stable OS user home directory is empty")
 		}
 		baseDir = filepath.Join(systemBase, ".asc-matrix-users-"+hex.EncodeToString(digest[:8]))
 	}
