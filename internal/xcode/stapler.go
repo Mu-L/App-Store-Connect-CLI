@@ -88,18 +88,22 @@ func (e *StaplerCommandError) Unwrap() error {
 	return e.Err
 }
 
-// StaplerPartialMutationError identifies a follow-up validation failure after
-// stapling has already completed. Its stable message warns that the artifact
-// may have been modified while Unwrap retains the cancellation or child error
-// for internal classification.
+// StaplerPartialMutationError identifies either an interrupted staple child or
+// a follow-up validation failure after stapling. Its stable message warns that
+// the artifact may have been modified while Unwrap retains the cancellation or
+// child error for internal classification.
 type StaplerPartialMutationError struct {
-	Operation StaplerOperation
-	Err       error
+	Operation   StaplerOperation
+	Interrupted bool
+	Err         error
 }
 
 func (e *StaplerPartialMutationError) Error() string {
 	if e == nil {
 		return "stapler follow-up validation failed after staple; artifact may have been modified but was not verified"
+	}
+	if e.Interrupted {
+		return "stapler staple was interrupted; artifact may have been modified but was not verified"
 	}
 	if e.Operation == StaplerOperationStaple {
 		return "stapler post-staple verification failed; artifact may have been modified but was not verified"
@@ -146,8 +150,9 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 	if stapleErr != nil {
 		if isStaplerOperationAttemptedCancellation(stapleErr) {
 			return nil, &StaplerPartialMutationError{
-				Operation: StaplerOperationStaple,
-				Err:       stapleErr,
+				Operation:   StaplerOperationStaple,
+				Interrupted: true,
+				Err:         stapleErr,
 			}
 		}
 		return nil, stapleErr
@@ -300,22 +305,32 @@ func runStaplerOperation(ctx context.Context, operation StaplerOperation, path s
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	err := runCommandWithBoundedOutputMode(
-		ctx,
-		"xcrun",
-		[]string{"stapler", string(operation), path},
-		logWriter,
-		string(operation),
-		"xcrun stapler",
-		true,
-	)
+	started, err := runStaplerChildCommand(ctx, operation, path, logWriter)
 	if err == nil {
 		return nil
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
+		if !started {
+			return ctxErr
+		}
 		return &staplerOperationAttemptedCancellationError{err: ctxErr}
 	}
 	return newStaplerCommandError(operation, err)
+}
+
+func runStaplerChildCommand(ctx context.Context, operation StaplerOperation, path string, logWriter io.Writer) (bool, error) {
+	cmd := commandContextFn(ctx, "xcrun", "stapler", string(operation), path)
+	outputWindow := newXcodeDiagnosticBuffer(xcodebuildErrorTailLimit, logWriter)
+	cmd.Stdout = outputWindow
+	cmd.Stderr = outputWindow
+	cmd.WaitDelay = xcodeCommandPipeWaitDelay
+	if err := cmd.Start(); err != nil {
+		return false, formatCommandOutputError(ctx, err, outputWindow, string(operation), "xcrun stapler", true)
+	}
+	if err := normalizeXcodeCommandWaitError(cmd, cmd.Wait()); err != nil {
+		return true, formatCommandOutputError(ctx, err, outputWindow, string(operation), "xcrun stapler", true)
+	}
+	return true, nil
 }
 
 func newStaplerCommandError(operation StaplerOperation, err error) *StaplerCommandError {

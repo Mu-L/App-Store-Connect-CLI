@@ -1819,6 +1819,44 @@ func TestNotarizationStapleCancellationAfterMutationReportsUnverified(t *testing
 	}
 }
 
+func TestNotarizationStapleInterruptedDuringInitialChildDoesNotClaimCompletion(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previous := runStaplerStaple
+	runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		return nil, &localxcode.StaplerPartialMutationError{
+			Operation:   localxcode.StaplerOperationStaple,
+			Interrupted: true,
+			Err:         context.Canceled,
+		}
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil || !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("command error = %v, want cancellation cause", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "staple was interrupted") || !strings.Contains(stderr, "not verified") {
+		t.Fatalf("stderr = %q, want interrupted-staple warning", stderr)
+	}
+	if strings.Contains(stderr, "staple completed") || strings.Contains(stderr, "follow-up validation") || strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not claim completion or expose target path", stderr)
+	}
+}
+
 func TestNotarizationStaplePostStapleVerifierFailureReportsUnverified(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {

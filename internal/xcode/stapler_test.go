@@ -1106,6 +1106,9 @@ func TestStapleWithVerifierMarksCancellationDuringInitialStapleAsPartialMutation
 		if !errors.As(got.err, &partialErr) || partialErr.Operation != StaplerOperationStaple {
 			t.Fatalf("StapleWithVerifier() error = %T %v, want initial-staple partial marker", got.err, got.err)
 		}
+		if !partialErr.Interrupted || !strings.Contains(got.err.Error(), "staple was interrupted") {
+			t.Fatalf("StapleWithVerifier() error = %v, want interrupted-staple classification", got.err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("StapleWithVerifier() did not return after cancellation")
 	}
@@ -1150,6 +1153,9 @@ func TestStapleWithVerifierMarksDeadlineDuringInitialStapleAsPartialMutation(t *
 		if !errors.As(got.err, &partialErr) || partialErr.Operation != StaplerOperationStaple {
 			t.Fatalf("StapleWithVerifier() error = %T %v, want initial-staple partial marker", got.err, got.err)
 		}
+		if !partialErr.Interrupted || !strings.Contains(got.err.Error(), "staple was interrupted") {
+			t.Fatalf("StapleWithVerifier() error = %v, want interrupted-staple classification", got.err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("StapleWithVerifier() did not return after deadline")
 	}
@@ -1157,6 +1163,38 @@ func TestStapleWithVerifierMarksDeadlineDuringInitialStapleAsPartialMutation(t *
 		"xcrun|--find|stapler",
 		"xcrun|stapler|staple|" + target,
 	})
+}
+
+func TestStapleWithVerifierCancellationBeforeInitialChildStartIsNotPartial(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	helperCommandContext := commandContextFn
+	commandContextFn = func(commandCtx context.Context, name string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "stapler" {
+			cancel()
+		}
+		return helperCommandContext(commandCtx, name, args...)
+	}
+
+	result, err := StapleWithVerifier(ctx, target, nil, nil)
+	if result != nil {
+		t.Fatalf("StapleWithVerifier() result = %#v, want nil before child start", result)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("StapleWithVerifier() error = %v, want context cancellation", err)
+	}
+	var partialErr *StaplerPartialMutationError
+	if errors.As(err, &partialErr) {
+		t.Fatalf("StapleWithVerifier() error = %T %v, must not mark a child that never started as partial", err, err)
+	}
+	assertStaplerCommands(t, logPath, []string{"xcrun|--find|stapler"})
 }
 
 func waitForStaplerCommand(t *testing.T, logPath, prefix string) {

@@ -909,7 +909,7 @@ func reportStaplerFailure(command string, err error) error {
 	var commandErr *localxcode.StaplerCommandError
 	if errors.As(err, &commandErr) {
 		if partialMutation {
-			fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")
+			reportStaplerPartialMutation(partialErr)
 		}
 		if commandErr.ExitCode > 0 {
 			if command == "staple" && commandErr.Operation == string(localxcode.StaplerOperationValidate) && !partialMutation {
@@ -925,11 +925,19 @@ func reportStaplerFailure(command string, err error) error {
 		return shared.NewReportedError(err)
 	}
 	if partialMutation {
-		fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")
+		reportStaplerPartialMutation(partialErr)
 		return shared.NewReportedError(err)
 	}
 	fmt.Fprintf(os.Stderr, "Error: notarization %s: %v\n", command, err)
 	return shared.NewReportedError(err)
+}
+
+func reportStaplerPartialMutation(err *localxcode.StaplerPartialMutationError) {
+	if err != nil && err.Interrupted {
+		fmt.Fprintln(os.Stderr, "Error: notarization staple was interrupted; the artifact may have been modified but was not verified")
+		return
+	}
+	fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")
 }
 
 func reportStaplerTargetFilesystemFailure(command string) error {
