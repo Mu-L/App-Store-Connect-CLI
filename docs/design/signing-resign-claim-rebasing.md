@@ -57,7 +57,7 @@ For every target that has a rebased claim:
 
 1. Require a concrete existing `application-identifier` whose suffix exactly equals that target's bundle identifier.
 2. Extract `oldPrefix` from that value and validate it with the existing identity validation rules.
-3. Require the replacement profile's `application-identifier` to be the exact concrete `<newPrefix>.<bundle-id>` value already required by the current `signing resign` profile parser. Derive `newPrefix` from that value and require it to equal the profile's `ApplicationIdentifierPrefix`. Wildcards may authorize specific optional entitlement values below, but wildcard application identifiers remain unsupported and are never materialized by this feature.
+3. Require the replacement profile's `application-identifier` to be the exact concrete `<newPrefix>.<bundle-id>` value already required by the current `signing resign` profile parser. Derive `newPrefix` from that value and require it to match one validated member of the profile's `ApplicationIdentifierPrefix` array; it need not be the first member. Wildcards may authorize specific optional entitlement values below, but wildcard application identifiers remain unsupported and are never materialized by this feature.
 4. Require the profile's application identifier, team identifier, and certificate identity to pass the normal #2241 checks.
 5. Derive each generic prefix-only candidate transformed value only from the target's own `oldPrefix` and the replacement profile's `newPrefix`. The KVS and graph rules below use their own authenticated destination sources instead of this generic substitution.
 
@@ -176,7 +176,7 @@ The implementation should make the following phases explicit:
 9. Re-open and verify that exact temporary IPA against the generated entitlement documents, replacement profiles, signing identity, archive limits, and target inventory.
 10. Publish the already-verified IPA and emit the structured result atomically using the existing no-overwrite output contract; publication must not repack or otherwise change the verified bytes.
 
-The verification comparison must use exact generated documents, not profile-subset semantics. A profile wildcard authorizes a concrete value; it does not make a different signed value acceptable. The post-sign verifier must remain read-only and must not call a preparation function that writes temporary files.
+The verification comparison must use exact generated documents, not profile-subset semantics. A profile wildcard authorizes a concrete value; it does not make a different signed value acceptable. Verification is read-only with respect to the signed tree, generated documents, temporary IPA, and published artifact. A verifier may materialize files only inside a fresh, size-bounded private workspace created for that verification pass; it must clean that workspace afterward and must never feed materialized bytes back into the artifact being verified or published.
 
 Rewrite records are collected from the plan, not reconstructed from logs or from a second potentially different parse of the packed IPA. One canonical comparator orders the flattened records by target relative path, bundle identifier, allowlisted key rank, scalar-before-array kind, zero-based array element index, old value, and new value. The index is considered only for array records; a scalar does not receive a synthetic index. Build one sorted slice with this comparator and pass it unchanged to JSON, table, and Markdown renderers rather than sorting separately. This makes output independent of map iteration and keeps all formats, tests, and retries reproducible.
 
@@ -248,6 +248,7 @@ Tests should begin with the smallest failing assertion at the command or planner
 - `TestBuildSigningResignEntitlementsRequiresExplicitRebaseOptIn`: an old-prefix keychain claim and an exact-profile-destination KVS claim fail without the flag and transform with it.
 - `TestRebaseSigningResignClaimUsesProfileApplicationIdentifierPrefix`: a legacy source prefix and a different replacement Team ID still use the profile App ID prefix for keychain claims.
 - `TestRebaseSigningResignKVSUsesProfileKVSPrefix`: KVS preserves an authorized transfer prefix and otherwise uses only the unambiguous prefix authenticated by the replacement profile's KVS entitlement.
+- A no-flag KVS regression case proves that an existing full value already authorized by the replacement profile remains unchanged; the opt-in rewrite case instead starts with an unauthorized source value and an exact concrete profile destination with the same suffix.
 - `TestRebaseSigningResignClaimRejectsUnauthorizedThirdPrefix`: an unauthorized third prefix fails closed, while an unchanged value already authorized by the replacement profile is preserved.
 - `TestRebaseSigningResignClaimRejectsMalformedUnprefixedAndWildcardValues`: empty suffixes, unprefixed values, and wildcards fail closed.
 - `TestRebaseSigningResignClaimPreservesListOrderAndShape`: old and already-new values remain in original order and retain array shape.
@@ -294,7 +295,6 @@ Before coding, maintainers must resolve these gates with fixtures or retain the 
 
 - whether iCloud and ubiquity container identifiers are genuinely prefix-scoped in the signed values used by this command;
 - whether associated App Clip identifiers are included in the first graph implementation;
-- whether exact old/new allowlisted values are acceptable in normal result output, with only secrets and non-allowlisted claims redacted;
 - #2249 remains the canonical design issue and #2251 is the implementation follow-up; implementation work should link both issues.
 
 No gate may be resolved by making the flag broader or by treating a passing profile capability-presence check as value authorization.
