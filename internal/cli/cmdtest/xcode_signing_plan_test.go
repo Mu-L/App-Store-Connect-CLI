@@ -1,8 +1,14 @@
 package cmdtest
 
 import (
+	"context"
+	"errors"
+	"flag"
+	"io"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 func TestXcodeSigningPlanApplyCommandsExist(t *testing.T) {
@@ -39,5 +45,45 @@ func TestXcodeSigningPlanApplyCommandsExist(t *testing.T) {
 	}
 	if !strings.HasPrefix(apply.ShortHelp, "[experimental]") {
 		t.Fatalf("xcode signing apply ShortHelp = %q, want experimental marker", apply.ShortHelp)
+	}
+}
+
+func TestXcodeSigningRequiredFlagsReportConciseDiagnostics(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		parameter string
+	}{
+		{name: "plan project", args: []string{"xcode", "signing", "plan"}, parameter: "--project"},
+		{name: "plan settings file", args: []string{"xcode", "signing", "plan", "--project", "App.xcodeproj"}, parameter: "--settings-file"},
+		{name: "apply plan", args: []string{"xcode", "signing", "apply"}, parameter: "--plan"},
+		{name: "apply confirm", args: []string{"xcode", "signing", "apply", "--plan", "plan.json"}, parameter: "--confirm"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := RootCommand("1.2.3")
+			root.FlagSet.SetOutput(io.Discard)
+			var runErr error
+			stdout, stderr := captureOutput(t, func() {
+				if err := root.Parse(test.args); err != nil {
+					t.Fatalf("parse error: %v", err)
+				}
+				runErr = root.Run(context.Background())
+			})
+			if !errors.Is(runErr, flag.ErrHelp) {
+				t.Fatalf("run error = %v, want usage error", runErr)
+			}
+			diagnostic, ok := shared.DiagnosticFromError(runErr)
+			if !ok || diagnostic.Code != shared.DiagnosticRequiredInputMissing || diagnostic.Parameter != test.parameter {
+				t.Fatalf("diagnostic = %+v, found=%t, want missing %s", diagnostic, ok, test.parameter)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			wantDiagnostic := "Error: " + test.parameter + " is required\n"
+			if !strings.HasPrefix(stderr, wantDiagnostic) || strings.Count(stderr, wantDiagnostic) != 1 {
+				t.Fatalf("stderr = %q, want one leading %q diagnostic", stderr, wantDiagnostic)
+			}
+		})
 	}
 }

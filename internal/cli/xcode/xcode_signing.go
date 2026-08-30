@@ -82,9 +82,11 @@ Examples:
 				return shared.UsageErrorf("unexpected argument(s): %s", strings.Join(args, " "))
 			}
 			if strings.TrimSpace(*project) == "" {
+				fmt.Fprintln(os.Stderr, "Error: --project is required")
 				return shared.MissingRequiredUsageError("--project")
 			}
 			if strings.TrimSpace(*settingsFile) == "" {
+				fmt.Fprintln(os.Stderr, "Error: --settings-file is required")
 				return shared.MissingRequiredUsageError("--settings-file")
 			}
 			// An explicitly empty value must not fall back to the flag default;
@@ -146,9 +148,11 @@ Examples:
 				return shared.UsageErrorf("unexpected argument(s): %s", strings.Join(args, " "))
 			}
 			if strings.TrimSpace(*planPath) == "" {
+				fmt.Fprintln(os.Stderr, "Error: --plan is required")
 				return shared.MissingRequiredUsageError("--plan")
 			}
 			if !*confirm {
+				fmt.Fprintln(os.Stderr, "Error: --confirm is required")
 				return shared.MissingRequiredUsageError("--confirm")
 			}
 			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
