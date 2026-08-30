@@ -522,6 +522,7 @@ func registerAllOutputRenderers() {
 	registerRows(endUserLicenseAgreementDeleteResultRows)
 	registerRows(profileDownloadResultRows)
 	registerRows(signingFetchResultRows)
+	registerRows(signingSyncRows)
 	registerRows(xcodeTestResultRows)
 	registerRows(xcodeCloudRunResultRows)
 	registerRows(xcodeCloudStatusResultRows)

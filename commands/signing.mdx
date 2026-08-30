@@ -240,6 +240,49 @@ those profile types.
 Use a generated high-entropy sync password: it protects both the scrypt/AES-GCM
 repository envelope and the pulled modern PKCS#12 interchange file.
 
+## Sync multiple bundle targets
+
+Use `--targets-file` to resolve several bundle identifiers with one common
+profile configuration and one repository commit. It is mutually exclusive with
+`--bundle-id`; all other push flags apply to every target.
+
+The manifest is non-secret JSON. Its path is relative to the command's current
+working-directory root; absolute paths and `..` escapes are rejected. It is
+read as a no-follow regular file, accepts readable modes such as `0644`, and is
+limited to 64 KiB. Version 1 requires exactly these fields, one to 32 unique
+bundle identifiers, and no control, bidi, or path characters:
+
+```json
+{
+  "schemaVersion": 1,
+  "targets": [
+    {"bundleId": "com.example.app"},
+    {"bundleId": "com.example.widget"}
+  ]
+}
+```
+
+Targets are trimmed and processed in deterministic case-insensitive order.
+App Store Connect is queried sequentially, certificates shared by multiple
+targets are stored once, and profiles use target-scoped repository paths such
+as `profiles/appstore/com.example.app--PROFILE_ID.mobileprovision.enc`. A
+single temporary clone is used and changes are committed and pushed once after
+all targets and repository destinations pass preflight. An unchanged rerun
+retains equivalent encrypted ciphertext and creates no commit or push.
+
+```bash  theme={null}
+asc signing sync push \
+  --targets-file ./signing-targets.json \
+  --profile-type IOS_APP_STORE \
+  --repo git@github.com:team/signing.git \
+  --password-file ~/.config/asc/signing-sync-password
+```
+
+Batch JSON adds `bundleIds` and a `targets` array. Each target reports its
+`bundleId`, `profileType`, target-scoped `profilePath`, `profileCreated`, and
+files; the top-level `files` is the sorted union. Single-target JSON remains
+field-compatible with the existing output.
+
 `--password` and `ASC_MATCH_PASSWORD` remain available during the 4.x
 transition, but print a deprecation warning. Migrate to `--password-file` or
 `ASC_SIGNING_SYNC_PASSWORD`; the legacy sources will be rejected in 5.0.0.
