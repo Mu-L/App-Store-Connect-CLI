@@ -249,6 +249,7 @@ Tests should begin with the smallest failing assertion at the command or planner
 - `TestRebaseSigningResignClaimUsesProfileApplicationIdentifierPrefix`: a legacy source prefix and a different replacement Team ID still use the profile App ID prefix for keychain claims.
 - `TestRebaseSigningResignKVSUsesProfileKVSPrefix`: KVS preserves an authorized transfer prefix and otherwise uses only the unambiguous prefix authenticated by the replacement profile's KVS entitlement.
 - A no-flag KVS regression case proves that an existing full value already authorized by the replacement profile remains unchanged; the opt-in rewrite case instead starts with an unauthorized source value and an exact concrete profile destination with the same suffix.
+- A multi-target KVS regression gives two targets the same old full value but replacement profiles that preserve or propose different planned values, and asserts that the complete IPA fails before any signing-tree mutation.
 - `TestRebaseSigningResignClaimRejectsUnauthorizedThirdPrefix`: an unauthorized third prefix fails closed, while an unchanged value already authorized by the replacement profile is preserved.
 - `TestRebaseSigningResignClaimRejectsMalformedUnprefixedAndWildcardValues`: empty suffixes, unprefixed values, and wildcards fail closed.
 - `TestRebaseSigningResignClaimPreservesListOrderAndShape`: old and already-new values remain in original order and retain array shape.
