@@ -28,6 +28,15 @@ var (
 // because the destination exists (notably on Windows), we fall back to a safe replace that uses a
 // backup file to preserve the original if the final move fails.
 func SafeWriteFileNoSymlink(path string, perm os.FileMode, overwrite bool, tempPattern string, backupPattern string, write func(*os.File) (int64, error)) (int64, error) {
+	return SafeWriteFileNoSymlinkWithPreparation(path, perm, overwrite, tempPattern, backupPattern, nil, write)
+}
+
+// SafeWriteFileNoSymlinkWithPreparation is SafeWriteFileNoSymlink with a
+// callback that runs on each newly created staging or publication file before
+// any caller bytes are written. The callback can enforce platform-specific
+// file protection (for example, a Windows DACL) while preserving the atomic
+// write and no-follow guarantees of SafeWriteFileNoSymlink.
+func SafeWriteFileNoSymlinkWithPreparation(path string, perm os.FileMode, overwrite bool, tempPattern string, backupPattern string, prepare func(*os.File) error, write func(*os.File) (int64, error)) (int64, error) {
 	if len(path) > 0 && os.IsPathSeparator(path[len(path)-1]) {
 		return 0, fmt.Errorf("output path %q must be a file", path)
 	}
@@ -86,6 +95,12 @@ func SafeWriteFileNoSymlink(path string, perm os.FileMode, overwrite bool, tempP
 			written, err := write(file)
 			return written, displayDestinationError(err)
 		}, newFileWriteOps{
+			prepareFile: func(file *os.File) error {
+				if prepare == nil {
+					return nil
+				}
+				return displayDestinationError(prepare(file))
+			},
 			syncFile: func() error {
 				return displayDestinationError(file.Sync())
 			},
@@ -108,7 +123,13 @@ func SafeWriteFileNoSymlink(path string, perm os.FileMode, overwrite bool, tempP
 				return displayPublishError(linkInRoot(parent, oldName, newName))
 			},
 			copyFile: func(oldName, newName string) error {
-				return displayPublishError(copyStagedFileNoReplace(parent, oldName, newName, perm))
+				var prepareFile func(*os.File) error
+				if prepare != nil {
+					prepareFile = func(file *os.File) error {
+						return displayDestinationError(prepare(file))
+					}
+				}
+				return displayPublishError(copyStagedFileNoReplace(parent, oldName, newName, perm, prepareFile))
 			},
 			removeFile: func(name string) error {
 				return displayTemporaryError(removeRootedFile(parent, name))
@@ -119,13 +140,14 @@ func SafeWriteFileNoSymlink(path string, perm os.FileMode, overwrite bool, tempP
 		return written, nil
 	}
 
-	return writeFileNoSymlinkOverwrite(path, perm, tempPattern, backupPattern, write)
+	return writeFileNoSymlinkOverwriteWithPreparation(path, perm, tempPattern, backupPattern, prepare, write)
 }
 
 type newFileWriteOps struct {
-	syncFile   func() error
-	closeFile  func() error
-	removeFile func(string) error
+	prepareFile func(*os.File) error
+	syncFile    func() error
+	closeFile   func() error
+	removeFile  func(string) error
 }
 
 type stagedFilePublishOps struct {
@@ -197,7 +219,7 @@ func publishStagedFileNoReplace(temporaryName, destinationName string, ops stage
 // no-replace semantics on filesystems that support neither an atomic no-replace
 // rename nor hard links. A partially copied destination is removed so callers
 // never observe a truncated output file.
-func copyStagedFileNoReplace(root *os.Root, temporaryName, destinationName string, perm os.FileMode) error {
+func copyStagedFileNoReplace(root *os.Root, temporaryName, destinationName string, perm os.FileMode, prepare func(*os.File) error) error {
 	source, err := secureopen.OpenExistingNoFollowInRoot(root, temporaryName)
 	if err != nil {
 		return err
@@ -207,6 +229,11 @@ func copyStagedFileNoReplace(root *os.Root, temporaryName, destinationName strin
 	destination, err := secureopen.OpenNewFileNoFollowInRoot(root, destinationName, perm)
 	if err != nil {
 		return err
+	}
+	if prepare != nil {
+		if err := prepare(destination); err != nil {
+			return errors.Join(err, destination.Close(), removeRootedFile(root, destinationName))
+		}
 	}
 	if err := copyIntoPublishedFile(destination, source); err != nil {
 		return errors.Join(err, removeRootedFile(root, destinationName))
@@ -236,6 +263,11 @@ func writeNewFileNoSymlink(path string, file *os.File, write func(*os.File) (int
 	defer func() {
 		_ = closeFile()
 	}()
+	if ops.prepareFile != nil {
+		if err := ops.prepareFile(file); err != nil {
+			return 0, cleanupIncompleteFile(path, err, closeFile, ops.removeFile)
+		}
+	}
 
 	written, err := write(file)
 	if err != nil {

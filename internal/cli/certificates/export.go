@@ -18,9 +18,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
@@ -30,23 +30,6 @@ import (
 )
 
 const maxCertificateExportFileSize int64 = 32 << 20
-
-// certificateExportResult is the metadata-only result for certificates export.
-// It intentionally contains no certificate, CSR, private-key, or password data.
-type certificateExportResult struct {
-	Operation         string `json:"operation"`
-	CertificatePath   string `json:"certificatePath"`
-	PrivateKeyPath    string `json:"privateKeyPath"`
-	CSRPath           string `json:"csrPath,omitempty"`
-	P12Out            string `json:"p12Out"`
-	CertificateSHA256 string `json:"certificateSha256"`
-	NotBefore         string `json:"notBefore"`
-	NotAfter          string `json:"notAfter"`
-	KeyType           string `json:"keyType"`
-	KeySize           int    `json:"keySize"`
-	PrivateKeyMatched bool   `json:"privateKeyMatched"`
-	CSRMatched        *bool  `json:"csrMatched,omitempty"`
-}
 
 type certificateExportOptions struct {
 	CertificatePath string
@@ -65,20 +48,20 @@ type certificateExportInput struct {
 func CertificatesExportCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("export", flag.ExitOnError)
 
-	certificatePath := fs.String("certificate", "", "Apple-issued X.509 certificate path (DER .cer or PEM)")
-	privateKeyPath := fs.String("private-key", "", "Matching unencrypted RSA or EC private key path (PEM)")
-	csrPath := fs.String("csr", "", "Optional CSR path to verify against the certificate and private key")
-	passwordPath := fs.String("password-file", "", "Protected file containing the PKCS#12 password")
-	p12Out := fs.String("p12-out", "", "Destination path for the password-protected PKCS#12 identity")
-	force := fs.Bool("force", false, "Replace an existing PKCS#12 identity")
-	confirm := fs.Bool("confirm", false, "Confirm replacement when --force is set")
+	certificatePath := fs.String("certificate", "", "[experimental] Apple-issued X.509 certificate path (DER .cer or PEM)")
+	privateKeyPath := fs.String("private-key", "", "[experimental] Matching unencrypted RSA or EC private key path (PEM)")
+	csrPath := fs.String("csr", "", "[experimental] Optional CSR path to verify against the certificate and private key")
+	passwordPath := fs.String("password-file", "", "[experimental] Protected file containing the PKCS#12 password")
+	p12Out := fs.String("p12-out", "", "[experimental] Destination path for the password-protected PKCS#12 identity")
+	force := fs.Bool("force", false, "[experimental] Replace an existing PKCS#12 identity")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm replacement when --force is set")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "export",
 		ShortUsage: "asc certificates export --certificate ./push/push.cer --private-key ./push/push.key --password-file ./push/password --p12-out ./push/push.p12 [--csr ./push/push.csr] [--force --confirm]",
-		ShortHelp:  "Package a certificate and private key as a protected PKCS#12 identity.",
-		LongHelp: "Package an Apple-issued certificate and its matching private key as a\n" +
+		ShortHelp:  "[experimental] Package a certificate and private key as a protected PKCS#12 identity.",
+		LongHelp: "[experimental] Package an Apple-issued certificate and its matching private key as a\n" +
 			"password-protected PKCS#12 identity. This command is local-only: obtain the\n" +
 			"certificate through Apple's Developer website after uploading the CSR.\n\n" +
 			"The command accepts DER or PEM certificates, validates the private-key match,\n" +
@@ -93,32 +76,34 @@ func CertificatesExportCommand() *ffcli.Command {
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) > 0 {
-				fmt.Fprintln(os.Stderr, "Error: certificates export does not accept positional arguments")
 				return shared.UsageError("certificates export does not accept positional arguments")
 			}
 
-			certificateValue := strings.TrimSpace(*certificatePath)
-			if certificateValue == "" {
+			certificateValue := *certificatePath
+			if strings.TrimSpace(certificateValue) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --certificate is required")
 				return shared.MissingRequiredUsageError("--certificate")
 			}
-			privateKeyValue := strings.TrimSpace(*privateKeyPath)
-			if privateKeyValue == "" {
+			privateKeyValue := *privateKeyPath
+			if strings.TrimSpace(privateKeyValue) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --private-key is required")
 				return shared.MissingRequiredUsageError("--private-key")
 			}
-			passwordValue := strings.TrimSpace(*passwordPath)
-			if passwordValue == "" {
+			passwordValue := *passwordPath
+			if strings.TrimSpace(passwordValue) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --password-file is required")
 				return shared.MissingRequiredUsageError("--password-file")
 			}
-			p12Value := strings.TrimSpace(*p12Out)
-			if p12Value == "" {
+			p12Value := *p12Out
+			if strings.TrimSpace(p12Value) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --p12-out is required")
 				return shared.MissingRequiredUsageError("--p12-out")
 			}
 			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
 				return shared.UsageError(err.Error())
+			}
+			if *confirm && !*force {
+				return shared.UsageError("--confirm requires --force")
 			}
 			if *force && !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required with --force")
@@ -128,7 +113,7 @@ func CertificatesExportCommand() *ffcli.Command {
 			result, err := runCertificateExport(ctx, certificateExportOptions{
 				CertificatePath: certificateValue,
 				PrivateKeyPath:  privateKeyValue,
-				CSRPath:         strings.TrimSpace(*csrPath),
+				CSRPath:         *csrPath,
 				PasswordPath:    passwordValue,
 				P12Out:          p12Value,
 				Force:           *force,
@@ -137,20 +122,12 @@ func CertificatesExportCommand() *ffcli.Command {
 				return fmt.Errorf("certificates export: %w", err)
 			}
 
-			return shared.PrintOutputWithRenderers(
-				result,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderCertificateExportResult(result, false) },
-				func() error { return renderCertificateExportResult(result, true) },
-			)
+			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
 	}
 }
 
-func runCertificateExport(ctx context.Context, opts certificateExportOptions) (*certificateExportResult, error) {
-	_ = ctx
-
+func runCertificateExport(_ context.Context, opts certificateExportOptions) (*asc.CertificateExportResult, error) {
 	certificatePath, err := validateCertificateExportInputPath(opts.CertificatePath, "--certificate")
 	if err != nil {
 		return nil, err
@@ -167,7 +144,7 @@ func runCertificateExport(ctx context.Context, opts certificateExportOptions) (*
 	if err != nil {
 		return nil, err
 	}
-	csrPath := strings.TrimSpace(opts.CSRPath)
+	csrPath := opts.CSRPath
 	if csrPath != "" {
 		csrPath, err = validateCertificateExportInputPath(csrPath, "--csr")
 		if err != nil {
@@ -195,6 +172,9 @@ func runCertificateExport(ctx context.Context, opts certificateExportOptions) (*
 	now := time.Now()
 	if now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
 		return nil, fmt.Errorf("certificate is not currently valid")
+	}
+	if certificate.IsCA {
+		return nil, fmt.Errorf("certificate must be a leaf certificate")
 	}
 
 	privateKeyInput, err := readCertificateExportInput(privateKeyPath, "private key", true)
@@ -244,12 +224,13 @@ func runCertificateExport(ctx context.Context, opts certificateExportOptions) (*
 	}
 	defer clearCertificateExportBytes(p12Data)
 
-	if _, err := shared.SafeWriteFileNoSymlink(
+	if _, err := shared.SafeWriteFileNoSymlinkWithPreparation(
 		p12Out,
 		0o600,
 		opts.Force,
 		".asc-cert-export-*",
 		".asc-cert-export-backup-*",
+		prepareCertificateExportOutput,
 		func(file *os.File) (int64, error) {
 			n, writeErr := file.Write(p12Data)
 			return int64(n), writeErr
@@ -259,7 +240,7 @@ func runCertificateExport(ctx context.Context, opts certificateExportOptions) (*
 	}
 
 	keyType, keySize := certificateExportKeyDetails(privateKey)
-	result := &certificateExportResult{
+	result := &asc.CertificateExportResult{
 		Operation:         "certificates export",
 		CertificatePath:   certificatePath,
 		PrivateKeyPath:    privateKeyPath,
@@ -277,28 +258,26 @@ func runCertificateExport(ctx context.Context, opts certificateExportOptions) (*
 }
 
 func validateCertificateExportInputPath(path, flagName string) (string, error) {
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" {
+	if strings.TrimSpace(path) == "" {
 		return "", shared.UsageErrorf("%s is required", flagName)
 	}
-	if isCertificateExportDirectoryPath(trimmed) {
+	if isCertificateExportDirectoryPath(path) {
 		return "", shared.UsageErrorf("%s must be a file path", flagName)
 	}
-	return trimmed, nil
+	return path, nil
 }
 
 func validateCertificateExportOutputPath(path string) (string, error) {
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" {
+	if strings.TrimSpace(path) == "" {
 		return "", shared.UsageError("--p12-out is required")
 	}
-	if trimmed == "-" {
+	if path == "-" {
 		return "", shared.UsageError("--p12-out must be a file path, not stdout")
 	}
-	if isCertificateExportDirectoryPath(trimmed) {
+	if isCertificateExportDirectoryPath(path) {
 		return "", shared.UsageError("--p12-out must be a file path")
 	}
-	return trimmed, nil
+	return path, nil
 }
 
 func isCertificateExportDirectoryPath(path string) bool {
@@ -374,8 +353,10 @@ func readCertificateExportInput(path, label string, protected bool) (certificate
 	if !info.Mode().IsRegular() {
 		return certificateExportInput{}, fmt.Errorf("%s must be a regular file", label)
 	}
-	if protected && runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return certificateExportInput{}, fmt.Errorf("%s permissions must be 0600 or more restrictive", label)
+	if protected {
+		if err := validateCertificateExportProtectedFile(file, info, label); err != nil {
+			return certificateExportInput{}, err
+		}
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maxCertificateExportFileSize+1))
 	if err != nil {
@@ -421,7 +402,11 @@ func parseCertificateExportCSR(data []byte) (*x509.CertificateRequest, error) {
 }
 
 func parseCertificateExportObject(data []byte, label string, pemTypes map[string]bool) ([]byte, error) {
-	if block, rest := pem.Decode(data); block != nil {
+	trimmed := bytes.TrimLeftFunc(data, unicode.IsSpace)
+	if block, rest := pem.Decode(trimmed); block != nil {
+		if !isSingleCertificateExportPEM(trimmed) {
+			return nil, fmt.Errorf("%s must contain exactly one object", label)
+		}
 		if !pemTypes[block.Type] {
 			return nil, fmt.Errorf("%s PEM block type %q is unsupported", label, block.Type)
 		}
@@ -443,23 +428,42 @@ func parseCertificateExportDER(data []byte, label string) ([]byte, error) {
 }
 
 func parseCertificateExportPrivateKey(data []byte) (any, error) {
-	block, rest := pem.Decode(data)
-	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
+	trimmed := bytes.TrimLeftFunc(data, unicode.IsSpace)
+	block, rest := pem.Decode(trimmed)
+	if block == nil || !isSingleCertificateExportPEM(trimmed) || len(bytes.TrimSpace(rest)) != 0 {
 		return nil, fmt.Errorf("private key must contain exactly one PEM object")
 	}
-	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+	switch block.Type {
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("private key must be an unencrypted RSA or EC private key")
+		}
 		if err := validateCertificateExportPrivateKeyType(key); err != nil {
 			return nil, err
 		}
 		return key, nil
-	}
-	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+	case "RSA PRIVATE KEY":
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("private key must be an unencrypted RSA or EC private key")
+		}
 		return key, nil
-	}
-	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+	case "EC PRIVATE KEY":
+		key, err := x509.ParseECPrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("private key must be an unencrypted RSA or EC private key")
+		}
 		return key, nil
+	default:
+		return nil, fmt.Errorf("unsupported PEM block type %q for private key", block.Type)
 	}
-	return nil, fmt.Errorf("private key must be an unencrypted RSA or EC private key")
+}
+
+func isSingleCertificateExportPEM(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("-----BEGIN ")) &&
+		bytes.Count(data, []byte("-----BEGIN ")) == 1 &&
+		bytes.Count(data, []byte("-----END ")) == 1
 }
 
 func validateCertificateExportPrivateKeyType(key any) error {
@@ -525,35 +529,4 @@ func clearCertificateExportBytes(data []byte) {
 	for i := range data {
 		data[i] = 0
 	}
-}
-
-func renderCertificateExportResult(result *certificateExportResult, markdown bool) error {
-	if result == nil {
-		return fmt.Errorf("result is nil")
-	}
-	render := asc.RenderTable
-	if markdown {
-		render = asc.RenderMarkdown
-	}
-	rows := [][]string{
-		{"operation", result.Operation},
-		{"certificate_path", result.CertificatePath},
-		{"private_key_path", result.PrivateKeyPath},
-		{"p12_out", result.P12Out},
-		{"certificate_sha256", result.CertificateSHA256},
-		{"not_before", result.NotBefore},
-		{"not_after", result.NotAfter},
-		{"key_type", result.KeyType},
-		{"key_size", fmt.Sprintf("%d", result.KeySize)},
-		{"private_key_matched", fmt.Sprintf("%t", result.PrivateKeyMatched)},
-	}
-	if result.CSRPath != "" {
-		rows = append(
-			rows,
-			[]string{"csr_path", result.CSRPath},
-			[]string{"csr_matched", fmt.Sprintf("%t", result.CSRMatched != nil && *result.CSRMatched)},
-		)
-	}
-	render([]string{"field", "value"}, rows)
-	return nil
 }

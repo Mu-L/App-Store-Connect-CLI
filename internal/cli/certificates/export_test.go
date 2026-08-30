@@ -121,6 +121,32 @@ func TestRunCertificateExportAcceptsPEMCertificateWithoutCSR(t *testing.T) {
 	}
 }
 
+func TestRunCertificateExportPreservesWhitespaceInPaths(t *testing.T) {
+	dir := t.TempDir()
+	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	certificatePath := filepath.Join(dir, " certificate.cer ")
+	privateKeyPath := filepath.Join(dir, " private.key ")
+	passwordPath := filepath.Join(dir, " password ")
+	p12Path := filepath.Join(dir, " identity.p12 ")
+	writeCertificateExportTestFiles(t, certificatePath, privateKeyPath, "", passwordPath, artifacts, []byte("password\n"))
+
+	result, err := runCertificateExport(context.Background(), certificateExportOptions{
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+		PasswordPath:    passwordPath,
+		P12Out:          p12Path,
+	})
+	if err != nil {
+		t.Fatalf("runCertificateExport() error = %v", err)
+	}
+	if result.CertificatePath != certificatePath || result.PrivateKeyPath != privateKeyPath || result.P12Out != p12Path {
+		t.Fatalf("paths were not preserved: certificate=%q privateKey=%q p12=%q", result.CertificatePath, result.PrivateKeyPath, result.P12Out)
+	}
+	if _, err := os.Stat(p12Path); err != nil {
+		t.Fatalf("stat whitespace-preserving output: %v", err)
+	}
+}
+
 func TestRunCertificateExportRejectsInvalidInputsBeforeWriting(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -264,6 +290,63 @@ func TestParseCertificateExportObjectRejectsMultipleObjects(t *testing.T) {
 	)
 	if _, err := parseCertificateExportCertificate(multiple); err == nil || !strings.Contains(err.Error(), "exactly one object") {
 		t.Fatalf("parseCertificateExportCertificate() error = %v, want multiple-object error", err)
+	}
+}
+
+func TestParseCertificateExportObjectRejectsNonWhitespacePEMPrefix(t *testing.T) {
+	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: artifacts.certificateDER})
+	withPrefix := append([]byte("unexpected prefix\n"), certificatePEM...)
+
+	if _, err := parseCertificateExportCertificate(withPrefix); err == nil || !strings.Contains(err.Error(), "exactly one object") {
+		t.Fatalf("parseCertificateExportCertificate() error = %v, want non-whitespace-prefix error", err)
+	}
+}
+
+func TestParseCertificateExportPrivateKeyRejectsUnsupportedPEMType(t *testing.T) {
+	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	keyDER, err := x509.MarshalPKCS8PrivateKey(artifacts.privateKey)
+	if err != nil {
+		t.Fatalf("MarshalPKCS8PrivateKey() error: %v", err)
+	}
+
+	if _, err := parseCertificateExportPrivateKey(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: keyDER})); err == nil || !strings.Contains(err.Error(), "unsupported PEM block type") {
+		t.Fatalf("parseCertificateExportPrivateKey() error = %v, want unsupported-type error", err)
+	}
+}
+
+func TestRunCertificateExportRejectsCACertificate(t *testing.T) {
+	dir := t.TempDir()
+	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	artifacts.certificate.IsCA = true
+	artifacts.certificate.KeyUsage |= x509.KeyUsageCertSign
+	certificateDER, err := x509.CreateCertificate(rand.Reader, artifacts.certificate, artifacts.certificate, &artifacts.privateKey.PublicKey, artifacts.privateKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate() error: %v", err)
+	}
+	artifacts.certificateDER = certificateDER
+	artifacts.certificate, err = x509.ParseCertificate(certificateDER)
+	if err != nil {
+		t.Fatalf("ParseCertificate() error: %v", err)
+	}
+
+	certificatePath := filepath.Join(dir, "ca.cer")
+	privateKeyPath := filepath.Join(dir, "ca.key")
+	passwordPath := filepath.Join(dir, "password")
+	p12Path := filepath.Join(dir, "ca.p12")
+	writeCertificateExportTestFiles(t, certificatePath, privateKeyPath, "", passwordPath, artifacts, []byte("password"))
+
+	_, err = runCertificateExport(context.Background(), certificateExportOptions{
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+		PasswordPath:    passwordPath,
+		P12Out:          p12Path,
+	})
+	if err == nil || !strings.Contains(err.Error(), "certificate must be a leaf certificate") {
+		t.Fatalf("runCertificateExport() error = %v, want CA-certificate error", err)
+	}
+	if _, statErr := os.Stat(p12Path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("p12 output exists after CA certificate rejection, stat error = %v", statErr)
 	}
 }
 

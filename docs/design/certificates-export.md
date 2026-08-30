@@ -1,8 +1,8 @@
-# Local certificate identity export
+# [experimental] Local certificate identity export
 
 ## Placement and current behavior
 
-This change adds `asc certificates export` beneath the existing
+This experimental change adds `asc certificates export` beneath the existing
 `asc certificates` command group. It is an offline artifact operation and
 does not add a public API endpoint or web-session operation.
 
@@ -27,14 +27,15 @@ asc certificates export \
   --password-file ./secrets/push.p12.password \
   --p12-out ./push/push.p12 \
   [--csr ./push/push.csr] [--force --confirm] \
-  [--output table|json|markdown] [--pretty]
+  [--output table|json|markdown] [--pretty (JSON only)]
 ```
 
 `--certificate`, `--private-key`, `--password-file`, and `--p12-out` are
 required. `--csr` is optional and, when present, provides an additional
 PKCS#10 signature and public-key check. `--force` together with `--confirm` is
-required to replace an existing destination. `--p12-out -` is rejected so
-binary data can never be written to stdout.
+required to replace an existing destination. `--pretty` requires
+`--output json`. `--p12-out -` is rejected so binary data can never be written
+to stdout.
 
 Usage errors return exit code 2; validation and artifact-write failures return
 nonzero; successful renderers write only metadata to stdout and diagnostics to
@@ -48,6 +49,9 @@ All inputs are validated before the destination is changed:
 
 - files are regular, bounded, no-follow inputs using the repository's
   protected-file policy for private keys and passwords;
+- on Windows, protected inputs must have a verifiable restricted DACL, and the
+  new output is assigned and verified with a protected owner DACL before it is
+  published;
 - certificates, private keys, and CSRs are non-empty and contain exactly one
   supported object;
 - the certificate is currently valid (`NotBefore <= now < NotAfter`);
@@ -65,7 +69,7 @@ symlink, directory, input/output collision, or existing destination without
 `--force --confirm` is rejected. A failed validation or encode leaves an
 existing destination unchanged.
 
-The stable JSON result contains only metadata, for example:
+The experimental JSON result contains only metadata, for example:
 
 ```json
 {
@@ -90,7 +94,7 @@ and password bytes are never printed or logged.
 
 ## Compatibility and lifecycle
 
-The new subcommand is additive and does not change existing certificate, CSR,
+The experimental subcommand is additive and does not change existing certificate, CSR,
 pass-type, merchant-ID, signing, authentication, or web-session behavior.
 It packages an artifact; it does not create, renew, revoke, download, or
 classify a certificate. Renewal remains explicit: obtain a new certificate

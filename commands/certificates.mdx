@@ -156,7 +156,7 @@ The CSR contains your public key. Keep the private key secure - you'll need it t
 * **Common Name:** Any descriptive name
 * The CLI accepts CSR files in PEM format or base64-encoded
 
-## Export an Apple Push Identity
+## [experimental] Export an Apple Push Identity
 
 Package an Apple-issued APNs or Website Push certificate with the matching
 private key as a password-protected PKCS#12 identity:
@@ -179,7 +179,7 @@ asc certificates export \
   --p12-out "./push/push.p12"
 ```
 
-The export command is local-only. It validates the X.509 certificate, private
+The experimental export command is local-only. It validates the X.509 certificate, private
 key, and optional CSR before writing exactly one key and leaf certificate to
 the PKCS#12 file. The certificate must currently be valid, and the output is
 written with restrictive permissions. Passwords and key material are never

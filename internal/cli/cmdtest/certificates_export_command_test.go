@@ -171,6 +171,22 @@ func TestCertificatesExport_JSONOutputAndPKCS12RoundTrip(t *testing.T) {
 	}
 }
 
+func TestCertificatesExportMarksCommandAndFlagsExperimental(t *testing.T) {
+	command := certificatescli.CertificatesExportCommand()
+	if !strings.HasPrefix(command.ShortHelp, "[experimental]") {
+		t.Fatalf("ShortHelp = %q, want experimental marker", command.ShortHelp)
+	}
+	for _, name := range []string{"certificate", "private-key", "csr", "password-file", "p12-out", "force", "confirm"} {
+		flagDef := command.FlagSet.Lookup(name)
+		if flagDef == nil {
+			t.Fatalf("missing --%s flag", name)
+		}
+		if !strings.HasPrefix(flagDef.Usage, "[experimental]") {
+			t.Fatalf("--%s usage = %q, want experimental marker", name, flagDef.Usage)
+		}
+	}
+}
+
 func TestCertificatesExport_RejectsStdoutDestinationAsUsageError(t *testing.T) {
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
@@ -324,6 +340,54 @@ func TestCertificatesExport_ForceRequiresConfirmBeforeWriting(t *testing.T) {
 	}
 	if _, err := os.Stat(p12Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("p12 output exists without confirmation, stat error = %v", err)
+	}
+}
+
+func TestCertificatesExport_ConfirmRequiresForceBeforeWriting(t *testing.T) {
+	dir := t.TempDir()
+	artifacts := newCertificateExportCommandArtifacts(t)
+	certificatePath := filepath.Join(dir, "push.cer")
+	privateKeyPath := filepath.Join(dir, "push.key")
+	passwordPath := filepath.Join(dir, "password")
+	p12Path := filepath.Join(dir, "push.p12")
+	if err := os.WriteFile(certificatePath, artifacts.certificateDER, 0o644); err != nil {
+		t.Fatalf("write certificate: %v", err)
+	}
+	if err := os.WriteFile(privateKeyPath, artifacts.privateKeyPEM, 0o600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+	if err := os.WriteFile(passwordPath, []byte("command-password\n"), 0o600); err != nil {
+		t.Fatalf("write password: %v", err)
+	}
+
+	command := certificatescli.CertificatesExportCommand()
+	command.FlagSet.SetOutput(io.Discard)
+	stdout, stderr := captureOutput(t, func() {
+		if err := command.FlagSet.Parse([]string{
+			"--certificate", certificatePath,
+			"--private-key", privateKeyPath,
+			"--password-file", passwordPath,
+			"--p12-out", p12Path,
+			"--confirm",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		err := command.Exec(context.Background(), nil)
+		if !isUsageClassError(err) {
+			t.Fatalf("run error = %v, want usage error", err)
+		}
+		if got, want := err.Error(), "--confirm requires --force"; got != want {
+			t.Fatalf("error = %q, want %q", got, want)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if got, want := stderr, "Error: --confirm requires --force\n"; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(p12Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("p12 output exists without --force, stat error = %v", err)
 	}
 }
 

@@ -15,6 +15,10 @@ func createTempFileNoFollowWithPerm(dir string, pattern string, perm os.FileMode
 }
 
 func writeFileNoSymlinkOverwrite(path string, perm os.FileMode, tempPattern string, backupPattern string, write func(*os.File) (int64, error)) (int64, error) {
+	return writeFileNoSymlinkOverwriteWithPreparation(path, perm, tempPattern, backupPattern, nil, write)
+}
+
+func writeFileNoSymlinkOverwriteWithPreparation(path string, perm os.FileMode, tempPattern string, backupPattern string, prepare func(*os.File) error, write func(*os.File) (int64, error)) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return 0, err
 	}
@@ -50,6 +54,11 @@ func writeFileNoSymlinkOverwrite(path string, perm os.FileMode, tempPattern stri
 	// Ensure final file permissions match caller intent rather than process umask.
 	if err := tempFile.Chmod(perm); err != nil {
 		return 0, err
+	}
+	if prepare != nil {
+		if err := prepare(tempFile); err != nil {
+			return 0, err
+		}
 	}
 
 	written, err := write(tempFile)

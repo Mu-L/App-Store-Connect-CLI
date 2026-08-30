@@ -516,6 +516,7 @@ func registerAllOutputRenderers() {
 	registerRows(passTypeIDDeleteResultRows)
 	registerRows(bundleIDCapabilityDeleteResultRows)
 	registerRows(certificateRevokeResultRows)
+	registerRows(certificateExportResultRows)
 	registerRows(profileDeleteResultRows)
 	registerRows(endUserLicenseAgreementRows)
 	registerRows(endUserLicenseAgreementDeleteResultRows)

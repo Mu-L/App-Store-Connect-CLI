@@ -50,6 +50,77 @@ func TestSafeWriteFileNoSymlinkRejectsTrailingSeparatorBeforeSideEffects(t *test
 	}
 }
 
+func TestSafeWriteFileNoSymlinkWithPreparationRunsBeforeWrite(t *testing.T) {
+	for _, overwrite := range []bool{false, true} {
+		t.Run(fmt.Sprintf("overwrite=%t", overwrite), func(t *testing.T) {
+			destination := filepath.Join(t.TempDir(), "artifact.bin")
+			if overwrite {
+				if err := os.WriteFile(destination, []byte("old"), 0o600); err != nil {
+					t.Fatalf("seed destination: %v", err)
+				}
+			}
+
+			prepared := false
+			_, err := SafeWriteFileNoSymlinkWithPreparation(
+				destination,
+				0o600,
+				overwrite,
+				".safe-write-*",
+				".safe-write-backup-*",
+				func(file *os.File) error {
+					prepared = true
+					return nil
+				},
+				func(file *os.File) (int64, error) {
+					if !prepared {
+						return 0, errors.New("write callback ran before preparation")
+					}
+					written, err := file.Write([]byte("new"))
+					return int64(written), err
+				},
+			)
+			if err != nil {
+				t.Fatalf("SafeWriteFileNoSymlinkWithPreparation() error = %v", err)
+			}
+			got, err := os.ReadFile(destination)
+			if err != nil {
+				t.Fatalf("read destination: %v", err)
+			}
+			if string(got) != "new" {
+				t.Fatalf("destination = %q, want new", got)
+			}
+		})
+	}
+}
+
+func TestSafeWriteFileNoSymlinkWithPreparationFailureDoesNotPublish(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "artifact.bin")
+	prepareErr := errors.New("simulated preparation failure")
+	writeCalled := false
+
+	_, err := SafeWriteFileNoSymlinkWithPreparation(
+		destination,
+		0o600,
+		false,
+		".safe-write-*",
+		".safe-write-backup-*",
+		func(*os.File) error { return prepareErr },
+		func(file *os.File) (int64, error) {
+			writeCalled = true
+			return 0, nil
+		},
+	)
+	if !errors.Is(err, prepareErr) {
+		t.Fatalf("SafeWriteFileNoSymlinkWithPreparation() error = %v, want %v", err, prepareErr)
+	}
+	if writeCalled {
+		t.Fatal("write callback ran after preparation failed")
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination exists after preparation failure, stat error = %v", err)
+	}
+}
+
 func TestSafeWriteFileNoSymlinkNoOverwriteRemovesPartialFileAfterCallbackFailure(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "artifact.bin")
 	writeErr := errors.New("simulated write failure")
