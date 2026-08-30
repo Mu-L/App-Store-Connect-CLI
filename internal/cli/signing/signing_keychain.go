@@ -273,6 +273,9 @@ func executeSigningKeychainInstallWith(ctx context.Context, options signingKeych
 		}
 		searchListUpdated = true
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, rollback(fmt.Errorf("signing keychain install: %w", err))
+	}
 
 	return &asc.SigningKeychainInstallResult{
 		Action:            "installed",

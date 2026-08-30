@@ -53,8 +53,7 @@ Private input files must be regular files, must not be symlinks, and must not be
 chmod 600 \
   ~/.config/asc/signing-sync-password \
   ./distribution.p12 \
-  ./distribution-p12-password \
-  ./release-keychain-password
+  ./distribution-p12-password
 ```
 
 Keep decrypted outputs and secrets out of source control:
@@ -63,6 +62,7 @@ Keep decrypted outputs and secrets out of source control:
 .asc/secrets/
 .asc/signing/
 .asc/distribution/
+.asc/keychains/
 ```
 
 ## Set up the bundle ID and capabilities
@@ -348,6 +348,12 @@ dedicated keychain to remain available:
 mkdir -p .asc/keychains .asc/secrets
 chmod 700 .asc/keychains .asc/secrets
 
+keychain_password_file=.asc/secrets/release-keychain-password
+if [ ! -e "$keychain_password_file" ]; then
+  (umask 077 && openssl rand -base64 48 > "$keychain_password_file")
+fi
+chmod 600 "$keychain_password_file"
+
 identity_path="$(
   jq -er '
     [.sensitiveFiles[]? | select(endswith(".p12"))]
@@ -361,7 +367,7 @@ asc signing keychain install \
   --identity ".asc/signing/pulled/$identity_path" \
   --identity-password-file ~/.config/asc/signing-sync-password \
   --keychain .asc/keychains/release.keychain-db \
-  --keychain-password-file .asc/secrets/release-keychain-password \
+  --keychain-password-file "$keychain_password_file" \
   --expected-certificate-sha256 CERTIFICATE_SHA256 \
   --add-to-search-list \
   --confirm \
