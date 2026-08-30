@@ -765,6 +765,37 @@ func TestRemoveFileIfSamePreservesReplacementAfterQuarantine(t *testing.T) {
 	}
 }
 
+func TestRemoveFileIfSameSyncsParentAfterSuccessfulRemoval(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	const content = "receipt"
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncErr := errors.New("injected receipt removal sync failure")
+	var syncObserved bool
+	root.syncDirectoryForTest = func(_ *os.Root) error {
+		syncObserved = true
+		return syncErr
+	}
+
+	err = root.RemoveFileIfSame("receipt.json", expected, []byte(content))
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("RemoveFileIfSame() error = %v, want parent sync failure", err)
+	}
+	if !syncObserved {
+		t.Fatal("parent directory sync hook was not invoked")
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("removed receipt stat error = %v, want absent", statErr)
+	}
+}
+
 func TestRemoveFileIfSamePreservesReplacementBeforeQuarantine(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)

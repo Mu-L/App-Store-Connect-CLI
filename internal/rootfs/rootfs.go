@@ -1232,6 +1232,9 @@ func (r Root) RemoveFileIfSame(name string, expected os.FileInfo, expectedData [
 	if err := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData); err != nil {
 		return err
 	}
+	if err := r.syncConditionalParentDirectory(parent); err != nil {
+		return err
+	}
 	return nil
 }
 
