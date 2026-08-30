@@ -752,7 +752,7 @@ func TestSigningPlanBlocksAmbiguousProjectNames(t *testing.T) {
 	}
 }
 
-func TestPrepareSigningOperationsMergesWindowsCaseVariantXCConfigMutations(t *testing.T) {
+func TestPrepareSigningOperationsUsesWindowsXCConfigIdentity(t *testing.T) {
 	previousOS := runtimeGOOS
 	runtimeGOOS = "windows"
 	t.Cleanup(func() { runtimeGOOS = previousOS })
@@ -792,9 +792,27 @@ func TestPrepareSigningOperationsMergesWindowsCaseVariantXCConfigMutations(t *te
 	if err != nil {
 		t.Fatalf("signingConfigurationFor(Release) error = %v", err)
 	}
+	configInfo, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("Stat(config) error = %v", err)
+	}
+	caseVariantInfo, err := os.Stat(caseVariantPath)
+	if err != nil {
+		t.Fatalf("Stat(case variant) error = %v", err)
+	}
+	sameFile := os.SameFile(configInfo, caseVariantInfo)
+	secondIdentity := "identity:second"
+	if sameFile {
+		secondIdentity = "identity:first"
+	}
+	fileIdentities := map[string]string{
+		normalizeSigningLexicalPath(configPath):      "identity:first",
+		normalizeSigningLexicalPath(caseVariantPath): secondIdentity,
+	}
 	built := &signingPlanBuild{
-		plan:    &SigningPlan{AllowExternalXCConfig: false},
-		project: project,
+		plan:           &SigningPlan{AllowExternalXCConfig: false},
+		project:        project,
+		fileIdentities: fileIdentities,
 		operations: []signingPlanOperation{
 			{
 				SigningSettingChange: SigningSettingChange{
@@ -816,74 +834,56 @@ func TestPrepareSigningOperationsMergesWindowsCaseVariantXCConfigMutations(t *te
 	if err != nil {
 		t.Fatalf("prepareSigningOperations() error = %v", err)
 	}
-	if len(prepared.writes) != 1 {
-		_ = closeVersionWrites(prepared.writes)
-		_ = prepared.projectRoot.Close()
-		t.Fatalf("prepared writes = %d, want one case-insensitive mutation", len(prepared.writes))
+	defer func() { _ = closeVersionWrites(prepared.writes) }()
+	defer func() { _ = prepared.projectRoot.Close() }()
+	wantWrites := 2
+	if sameFile {
+		wantWrites = 1
 	}
-	if prepared.writes[0].path != configPath {
-		_ = closeVersionWrites(prepared.writes)
-		_ = prepared.projectRoot.Close()
-		t.Fatalf("prepared path = %q, want first operator spelling %q", prepared.writes[0].path, configPath)
-	}
-	if len(prepared.changedFiles) != 1 || prepared.changedFiles[0] != configPath {
-		_ = closeVersionWrites(prepared.writes)
-		_ = prepared.projectRoot.Close()
-		t.Fatalf("changed files = %#v, want one first-spelling path", prepared.changedFiles)
+	if len(prepared.writes) != wantWrites || len(prepared.changedFiles) != wantWrites {
+		t.Fatalf("prepared writes = %d, changed files = %#v, want %d identity-grouped writes", len(prepared.writes), prepared.changedFiles, wantWrites)
 	}
 
 	plan := &SigningPlan{Files: []SigningPlanFile{{
-		Path: caseVariantPath, SHA256: signingFileDigestBytes(original), Source: "xcconfig",
+		Path: configPath, SHA256: signingFileDigestBytes(original), Source: "xcconfig",
 	}}}
-	if err := verifySigningPlanSources(plan, prepared.writes); err != nil {
-		_ = closeVersionWrites(prepared.writes)
-		_ = prepared.projectRoot.Close()
-		t.Fatalf("verifySigningPlanSources() error = %v, want case-insensitive source match", err)
+	if !sameFile {
+		plan.Files = append(plan.Files, SigningPlanFile{
+			Path: caseVariantPath, SHA256: signingFileDigestBytes(original), Source: "xcconfig",
+		})
 	}
-	fileChanges, err := signingReceiptFileChanges(plan, prepared.writes, []string{caseVariantPath})
+	if err := verifySigningPlanSources(plan, prepared.writes, fileIdentities); err != nil {
+		t.Fatalf("verifySigningPlanSources() error = %v", err)
+	}
+	fileChanges, err := signingReceiptFileChanges(plan, prepared.writes, prepared.changedFiles, fileIdentities)
 	if err != nil {
-		_ = closeVersionWrites(prepared.writes)
-		_ = prepared.projectRoot.Close()
-		t.Fatalf("signingReceiptFileChanges() error = %v, want case-insensitive source match", err)
+		t.Fatalf("signingReceiptFileChanges() error = %v", err)
 	}
-	if len(fileChanges) != 1 || fileChanges[0].Path != caseVariantPath {
-		_ = closeVersionWrites(prepared.writes)
-		_ = prepared.projectRoot.Close()
-		t.Fatalf("file changes = %#v, want preserved requested spelling", fileChanges)
+	if len(fileChanges) != wantWrites {
+		t.Fatalf("file changes = %#v, want %d", fileChanges, wantWrites)
 	}
-
 	if err := commitVersionWrites(prepared.writes); err != nil {
-		_ = prepared.projectRoot.Close()
-		t.Fatalf("commitVersionWrites() error = %v, want one successful write", err)
+		t.Fatalf("commitVersionWrites() error = %v", err)
 	}
-	if err := prepared.projectRoot.Close(); err != nil {
-		t.Fatalf("close project root error = %v", err)
-	}
-	updated := []byte(mustReadVersionTestFile(t, configPath))
-	if !strings.Contains(string(updated), "CODE_SIGN_STYLE = Manual") {
-		t.Fatalf("case-insensitive mutation did not apply: %q", updated)
-	}
-	configInfo, err := os.Stat(configPath)
-	if err != nil {
-		t.Fatalf("Stat(config) error = %v", err)
-	}
-	if info, statErr := os.Stat(caseVariantPath); statErr == nil && !os.SameFile(info, configInfo) {
-		if got := mustReadVersionTestFile(t, caseVariantPath); got != string(original) {
-			t.Fatalf("case-distinct file changed with Windows-only aliasing: %q", got)
-		}
-	}
-
 	recheckRoot, err := rootfs.New(configDir)
 	if err != nil {
 		t.Fatalf("rootfs.New(recheck) error = %v", err)
 	}
 	defer recheckRoot.Close()
-	committed := preparedVersionWrite{
-		path: caseVariantPath, name: filepath.Base(configPath), root: recheckRoot,
-		original: original, updated: updated,
+	committed := make([]preparedVersionWrite, 0, len(prepared.writes))
+	for _, write := range prepared.writes {
+		committed = append(committed, preparedVersionWrite{
+			path: write.path, name: filepath.Base(write.path), root: recheckRoot,
+			original: write.original, updated: write.updated,
+		})
 	}
-	if err := verifySigningPlanSourcesBeforeReceipt(plan, []preparedVersionWrite{committed}); err != nil {
-		t.Fatalf("verifySigningPlanSourcesBeforeReceipt() error = %v, want case-insensitive source match", err)
+	if err := verifySigningPlanSourcesBeforeReceipt(plan, committed, fileIdentities); err != nil {
+		t.Fatalf("verifySigningPlanSourcesBeforeReceipt() error = %v", err)
+	}
+	for _, path := range []string{configPath, caseVariantPath} {
+		if got := mustReadVersionTestFile(t, path); !strings.Contains(got, "CODE_SIGN_STYLE = Manual") {
+			t.Fatalf("identity-grouped mutation did not apply to %q: %q", path, got)
+		}
 	}
 }
 
@@ -922,6 +922,64 @@ func TestResolveSigningSharedCandidatesCoalescesCaseVariantSameFile(t *testing.T
 		if candidate.mode != "pbxproj" || len(candidate.paths) != 0 {
 			t.Fatalf("candidate[%d] = %#v, want conflicting same-file operation blocked from shared mutation", index, candidate)
 		}
+	}
+}
+
+func TestResolveSigningSharedCandidatesKeepsProvenWindowsCaseDistinctFilesSeparate(t *testing.T) {
+	previousOS := runtimeGOOS
+	runtimeGOOS = "windows"
+	t.Cleanup(func() { runtimeGOOS = previousOS })
+
+	root := t.TempDir()
+	firstPath := filepath.Join(root, "Config.xcconfig")
+	secondPath := filepath.Join(root, "config.xcconfig")
+	identities := map[string]string{
+		normalizeSigningLexicalPath(firstPath):  "identity:first",
+		normalizeSigningLexicalPath(secondPath): "identity:second",
+	}
+	if signingXCConfigOperationKey(firstPath, identities) == signingXCConfigOperationKey(secondPath, identities) {
+		t.Fatal("proven-distinct Windows xcconfig identities collapsed to one operation key")
+	}
+
+	candidates := []signingCandidate{
+		{mode: "xcconfig", setting: "CODE_SIGN_STYLE", desired: stringPtr("Manual"), paths: []string{firstPath}},
+		{mode: "xcconfig", setting: "CODE_SIGN_STYLE", desired: stringPtr("Automatic"), paths: []string{secondPath}},
+	}
+	resolveSigningSharedCandidates(candidates, identities)
+	for index, candidate := range candidates {
+		if candidate.mode != "xcconfig" || len(candidate.paths) != 1 {
+			t.Fatalf("candidate[%d] = %#v, want separate case-sensitive file operation", index, candidate)
+		}
+	}
+}
+
+func TestSigningPathLexicallyContainedAcceptsCaseVariantRootOnInsensitiveVolume(t *testing.T) {
+	root := t.TempDir()
+	caseInsensitive, known := signingCaseInsensitiveVolumeFor(root)
+	if !known || !caseInsensitive {
+		t.Skip("temporary filesystem is not known to be case-insensitive")
+	}
+
+	name := filepath.Base(root)
+	variantName := strings.ToUpper(name[:1]) + name[1:]
+	if variantName == name {
+		variantName = strings.ToLower(name[:1]) + name[1:]
+	}
+	if variantName == name {
+		t.Skip("temporary directory name has no case variant")
+	}
+	path := filepath.Join(root, "Config.xcconfig")
+	if err := os.WriteFile(path, []byte("CODE_SIGN_STYLE = Manual\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+	variantPath := filepath.Join(filepath.Dir(root), variantName, filepath.Base(path))
+	if _, err := os.Stat(variantPath); err != nil {
+		t.Fatalf("Stat(case-variant internal path) error = %v", err)
+	}
+
+	project := &structuredVersionProject{rootDir: root}
+	if !signingPathLexicallyContained(project, variantPath) {
+		t.Fatalf("case-variant internal path %q was classified outside %q", variantPath, root)
 	}
 }
 
@@ -965,6 +1023,52 @@ func TestSigningPlanKeepsUnselectedUnresolvedEntitlementsAsUncertainty(t *testin
 	blockers := strings.Join(plan.Blockers, "\n")
 	if !strings.Contains(blockers, "Widget") || !strings.Contains(blockers, "CODE_SIGN_ENTITLEMENTS") {
 		t.Fatalf("plan blockers = %#v, want unselected entitlement uncertainty", plan.Blockers)
+	}
+}
+
+func TestSigningPlanIgnoresShadowedUnresolvedXCConfigEntitlements(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		assignments string
+	}{
+		{
+			name:        "later assignment replaces unresolved value",
+			assignments: "CODE_SIGN_ENTITLEMENTS = $(MISSING)\nCODE_SIGN_ENTITLEMENTS = App.entitlements\n",
+		},
+		{
+			name:        "skipped conditional assignment follows concrete value",
+			assignments: "CODE_SIGN_ENTITLEMENTS = App.entitlements\nCODE_SIGN_ENTITLEMENTS ?= $(MISSING)\n",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			project := writeStructuredVersionProject(t, true)
+			projectRoot := filepath.Dir(project)
+			appXCConfig := filepath.Join(projectRoot, "Configs", "App.xcconfig")
+			contents := mustReadVersionTestFile(t, appXCConfig) + testCase.assignments
+			if err := os.WriteFile(appXCConfig, []byte(contents), 0o644); err != nil {
+				t.Fatalf("WriteFile(App.xcconfig) error = %v", err)
+			}
+			entitlementsPath := filepath.Join(projectRoot, "App.entitlements")
+			if err := os.WriteFile(entitlementsPath, []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+				t.Fatalf("WriteFile(entitlements) error = %v", err)
+			}
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			writeSigningSettingsTestFile(t, settingsPath, `{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+			}`)
+
+			plan, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+			})
+			if err != nil {
+				t.Fatalf("BuildSigningPlan() error = %v", err)
+			}
+			if !plan.Ready {
+				t.Fatalf("shadowed entitlement expression blocked plan: %#v", plan.Blockers)
+			}
+		})
 	}
 }
 
@@ -2919,12 +3023,15 @@ func TestSigningPlanRejectsUninventoriableConditionalPBXEntitlements(t *testing.
 				t.Fatalf("WriteFile(existing plan) error = %v", err)
 			}
 
-			_, err := BuildSigningPlan(SigningPlanOptions{
+			plan, err := BuildSigningPlan(SigningPlanOptions{
 				ProjectPath: project, SettingsFilePath: settingsPath,
 				PlanPath: planPath, StateDir: filepath.Join(root, "state"),
 			})
-			if err == nil || !strings.Contains(err.Error(), "conditional CODE_SIGN_ENTITLEMENTS cannot be safely inventoried") {
-				t.Fatalf("BuildSigningPlan() error = %v, want fail-closed conditional entitlement error", err)
+			if err != nil {
+				t.Fatalf("BuildSigningPlan() error = %v, want blocked plan with uncertainty", err)
+			}
+			if plan == nil || plan.Ready || !strings.Contains(strings.Join(plan.Blockers, "\n"), "unresolved conditional CODE_SIGN_ENTITLEMENTS") {
+				t.Fatalf("plan = %#v, want unselected conditional uncertainty blocker", plan)
 			}
 			if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
 				t.Fatalf("existing plan changed after conditional entitlement failure: %q", got)
@@ -2969,12 +3076,15 @@ func TestSigningPlanRejectsUninventoriableConditionalXCConfigEntitlements(t *tes
 				t.Fatalf("WriteFile(existing plan) error = %v", err)
 			}
 
-			_, err := BuildSigningPlan(SigningPlanOptions{
+			plan, err := BuildSigningPlan(SigningPlanOptions{
 				ProjectPath: project, SettingsFilePath: settingsPath,
 				PlanPath: planPath, StateDir: filepath.Join(root, "state"),
 			})
-			if err == nil || !strings.Contains(err.Error(), "conditional CODE_SIGN_ENTITLEMENTS cannot be safely inventoried") {
-				t.Fatalf("BuildSigningPlan() error = %v, want fail-closed conditional entitlement error", err)
+			if err != nil {
+				t.Fatalf("BuildSigningPlan() error = %v, want blocked plan with uncertainty", err)
+			}
+			if plan == nil || plan.Ready || !strings.Contains(strings.Join(plan.Blockers, "\n"), "unresolved conditional CODE_SIGN_ENTITLEMENTS") {
+				t.Fatalf("plan = %#v, want unselected conditional uncertainty blocker", plan)
 			}
 			if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
 				t.Fatalf("existing plan changed after conditional entitlement failure: %q", got)
@@ -3036,8 +3146,8 @@ func TestSigningPlanRejectsUnauthorizedConditionalEntitlementWithoutReadingIt(t 
 		ProjectPath: project, SettingsFilePath: settingsPath,
 		PlanPath: planPath, StateDir: filepath.Join(root, "state"),
 	})
-	if err == nil || !strings.Contains(err.Error(), "conditional CODE_SIGN_ENTITLEMENTS cannot be safely inventoried") {
-		t.Fatalf("BuildSigningPlan() error = %v, want unauthorized conditional entitlement failure", err)
+	if err == nil || !strings.Contains(err.Error(), signingUnauthorizedExternalXCConfigMessage) {
+		t.Fatalf("BuildSigningPlan() error = %v, want generic unauthorized external failure", err)
 	}
 	if strings.Contains(err.Error(), canary) {
 		t.Fatalf("BuildSigningPlan() error exposed unauthorized xcconfig contents: %v", err)

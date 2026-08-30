@@ -1051,7 +1051,7 @@ func (project *structuredVersionProject) setVersion(opts SetVersionOptions) (*Se
 				if !uncertainXCConfigConsumers && consumersSelected(assignmentFiles, fileConsumers, fileIdentities, selectedIDs) {
 					handled[configuration.id] = true
 					for _, path := range assignmentFiles {
-						pathKey := signingLexicalPathKey(path)
+						pathKey := signingXCConfigOperationKey(path, fileIdentities)
 						if xcconfigMutations[pathKey] == nil {
 							xcconfigMutations[pathKey] = make(map[string]xcconfigMutation)
 							xcconfigPathSpelling[pathKey] = path
@@ -1068,7 +1068,7 @@ func (project *structuredVersionProject) setVersion(opts SetVersionOptions) (*Se
 
 			if !configuration.projectLevel {
 				ancestor := project.projectConfiguration(configuration.name)
-				if ancestor != nil && selectedIDs[ancestor.id] && configurationProvidesScheduledSetting(ancestor, requested.name, configFiles, xcconfigMutations) {
+				if ancestor != nil && selectedIDs[ancestor.id] && configurationProvidesScheduledSetting(ancestor, requested.name, configFiles, fileIdentities, xcconfigMutations) {
 					handled[configuration.id] = true
 					continue
 				}
@@ -1220,13 +1220,14 @@ func configurationProvidesScheduledSetting(
 	configuration *versionConfiguration,
 	setting string,
 	configFiles map[string][]string,
+	fileIdentities map[string]string,
 	mutations map[string]map[string]xcconfigMutation,
 ) bool {
 	if len(matchingBuildSettingKeys(configuration.buildSettings, setting)) > 0 {
 		return true
 	}
 	for _, path := range configFiles[configuration.id] {
-		mutation, ok := mutations[signingLexicalPathKey(path)][setting]
+		mutation, ok := mutations[signingXCConfigOperationKey(path, fileIdentities)][setting]
 		if !ok {
 			continue
 		}
@@ -1308,10 +1309,10 @@ func (index *xcconfigFileIdentityIndex) identity(path string, collected map[stri
 		return "", err
 	}
 	absolutePath = filepath.Clean(absolutePath)
-	if !collected[signingLexicalPathKey(absolutePath)] {
+	if !collected[normalizeSigningLexicalPath(absolutePath)] && !collected[signingLexicalPathKey(absolutePath)] {
 		return "", fmt.Errorf("xcconfig path %s was not collected for this signing plan", absolutePath)
 	}
-	info, err := signingRegularFileInfo(absolutePath)
+	info, err := signingXCConfigIdentityFn(absolutePath)
 	if err != nil {
 		return "", err
 	}
@@ -1356,7 +1357,11 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 	collect := func(path string) ([]string, error) {
 		var collectionErrorPath string
 		observedPaths := make([]string, 0)
-		files, err := collectXCConfigFilesWithHooks(
+		var identify func(string) (os.FileInfo, error)
+		if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
+			identify = signingXCConfigIdentityFn
+		}
+		files, err := collectXCConfigFilesWithHooksAndIdentity(
 			path,
 			func(filePath string) ([]byte, error) {
 				return signingXCConfigReadFileFn(filePath, signingPlanMaxBytes)
@@ -1388,8 +1393,9 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 			func(filePath string, _ error) {
 				collectionErrorPath = filePath
 			},
+			identify,
 		)
-		observedPathsByRoot[signingLexicalPathKey(path)] = observedPaths
+		observedPathsByRoot[normalizeSigningLexicalPath(path)] = observedPaths
 		if err == nil {
 			return files, nil
 		}
@@ -1416,7 +1422,7 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 		if rootErr != nil {
 			continue
 		}
-		if observed := observedPathsByRoot[signingLexicalPathKey(root)]; len(observed) > 0 {
+		if observed := observedPathsByRoot[normalizeSigningLexicalPath(root)]; len(observed) > 0 {
 			lexicalConfigPaths[configuration.id] = append([]string(nil), observed...)
 		}
 	}
@@ -1478,7 +1484,7 @@ func (project *structuredVersionProject) xcconfigConsumersWithCollectorAndErrorH
 				uncertainConsumers = true
 				continue
 			}
-			collected[signingLexicalPathKey(absolute)] = true
+			collected[normalizeSigningLexicalPath(absolute)] = true
 		}
 		for _, path := range files {
 			identity, err := identityIndex.identity(path, collected)
@@ -1490,7 +1496,11 @@ func (project *structuredVersionProject) xcconfigConsumersWithCollectorAndErrorH
 				uncertainConsumers = true
 				continue
 			}
-			fileIdentities[signingLexicalPathKey(path)] = identity
+			// Keep the operator spelling as the map key. Windows can enable
+			// case-sensitive semantics per directory, so lowercasing here would
+			// discard a distinct file before operation keys can use its proven
+			// identity.
+			fileIdentities[normalizeSigningLexicalPath(path)] = identity
 			if consumers[identity] == nil {
 				consumers[identity] = make(map[string]bool)
 			}
@@ -1527,7 +1537,7 @@ func xcconfigFilesDefiningWithReader(paths []string, setting string, read func(s
 
 func consumersSelected(paths []string, consumers map[string]map[string]bool, identities map[string]string, selected map[string]bool) bool {
 	for _, path := range paths {
-		identity, ok := identities[signingLexicalPathKey(path)]
+		identity, ok := signingFileIdentity(path, identities)
 		if !ok {
 			return false
 		}
@@ -1553,7 +1563,7 @@ func consumersAuthorizeSetting(
 	setting string,
 ) bool {
 	for _, path := range paths {
-		identity, ok := identities[signingLexicalPathKey(path)]
+		identity, ok := signingFileIdentity(path, identities)
 		if !ok {
 			return false
 		}
@@ -1675,7 +1685,13 @@ func readRegularVersionFile(target *preparedVersionWrite) ([]byte, os.FileMode, 
 	if !info.Mode().IsRegular() {
 		return nil, 0, fmt.Errorf("not a regular file: %s", target.path)
 	}
-	target.originalInfo = info
+	// The first successful read pins the source identity for the prepared
+	// transaction. A commit-time re-read verifies the same source but must not
+	// replace that pin with a file that appeared after preparation; otherwise a
+	// same-byte replacement could be accepted and overwritten.
+	if target.originalInfo == nil {
+		target.originalInfo = info
+	}
 	data, err := io.ReadAll(file)
 	if err != nil {
 		return nil, 0, err

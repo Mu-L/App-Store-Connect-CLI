@@ -1,6 +1,7 @@
 package xcode
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -1476,6 +1477,103 @@ func TestStructuredVersion_CommitVerificationFailureRollsBackEarlierFiles(t *tes
 	}
 	if got := mustReadVersionTestFile(t, secondPath); got != "concurrent" {
 		t.Fatalf("concurrent second-file save was overwritten: %q", got)
+	}
+}
+
+func TestStructuredVersion_CommitRejectsSameByteReplacementOfPinnedSource(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "settings.xcconfig")
+	original := []byte("same bytes")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pinnedInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(root, "replacement.xcconfig")
+	if err := os.WriteFile(replacement, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+
+	fileRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = commitVersionWrites([]preparedVersionWrite{{
+		path: path, root: fileRoot, name: filepath.Base(path),
+		original: original, updated: []byte("updated bytes"), mode: 0o644,
+		originalInfo: pinnedInfo,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "file identity changed") {
+		t.Fatalf("commitVersionWrites() error = %v, want pinned-identity rejection", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("same-byte replacement was overwritten: %q", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("replacement mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestSetVersionKeepsProvenWindowsCaseDistinctXCConfigsSeparate(t *testing.T) {
+	previousOS := runtimeGOOS
+	runtimeGOOS = "windows"
+	t.Cleanup(func() { runtimeGOOS = previousOS })
+
+	projectPath := writeStructuredVersionProject(t, true)
+	root := filepath.Dir(projectPath)
+	configDir := filepath.Join(root, "Configs")
+	firstPath := filepath.Join(configDir, "Config.xcconfig")
+	secondPath := filepath.Join(configDir, "config.xcconfig")
+	if _, err := os.Lstat(secondPath); err == nil {
+		t.Skip("temporary filesystem is case-insensitive")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Lstat(case variant) error = %v", err)
+	}
+	contents := []byte("MARKETING_VERSION = 1.2.3\nCURRENT_PROJECT_VERSION = 42\n")
+	if err := os.WriteFile(firstPath, contents, 0o640); err != nil {
+		t.Fatalf("WriteFile(first xcconfig) error = %v", err)
+	}
+	if err := os.WriteFile(secondPath, contents, 0o640); err != nil {
+		t.Fatalf("WriteFile(second xcconfig) error = %v", err)
+	}
+
+	pbxprojPath := filepath.Join(projectPath, "project.pbxproj")
+	pbxproj := mustReadVersionTestFile(t, pbxprojPath)
+	pbxproj = strings.Replace(pbxproj,
+		"AAAAAAAAAAAAAAAAAAAAAAAA /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configs/App.xcconfig; sourceTree = SOURCE_ROOT; };",
+		"AAAAAAAAAAAAAAAAAAAAAAAA /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configs/Config.xcconfig; sourceTree = SOURCE_ROOT; };\n\t\tBBBBBBBBBBBBBBBBBBBBBBBB /* config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configs/config.xcconfig; sourceTree = SOURCE_ROOT; };", 1)
+	pbxproj = strings.Replace(pbxproj,
+		"999999999999999999999994 /* App Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = AAAAAAAAAAAAAAAAAAAAAAAA;",
+		"999999999999999999999994 /* App Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = BBBBBBBBBBBBBBBBBBBBBBBB;", 1)
+	if err := os.WriteFile(pbxprojPath, []byte(pbxproj), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
+
+	_, err := SetVersion(context.Background(), SetVersionOptions{
+		ProjectDir: projectPath,
+		Target:     "App",
+		Version:    "2.0.0",
+	})
+	if err != nil {
+		t.Fatalf("SetVersion() error = %v", err)
+	}
+	for _, path := range []string{firstPath, secondPath} {
+		if got := mustReadVersionTestFile(t, path); !strings.Contains(got, "MARKETING_VERSION = 2.0.0") {
+			t.Fatalf("case-distinct xcconfig %q was not updated: %q", path, got)
+		}
 	}
 }
 

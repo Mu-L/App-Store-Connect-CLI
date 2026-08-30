@@ -464,3 +464,169 @@ func TestXCConfigCollectorKeepsCaseDistinctFilesOnCaseSensitiveHost(t *testing.T
 		t.Fatalf("read calls = %d, want one per case-distinct file", readCalls)
 	}
 }
+
+func TestIdentityAwareDarwinCollectorDeduplicatesCaseVariantSameFile(t *testing.T) {
+	previousOS := runtimeGOOS
+	runtimeGOOS = "darwin"
+	t.Cleanup(func() { runtimeGOOS = previousOS })
+
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Config.xcconfig")
+	caseVariantPath := filepath.Join(root, "config.xcconfig")
+	// The identity and reader seams model a case-insensitive volume even when
+	// this test runs on a case-sensitive temporary filesystem.
+	identityPath := filepath.Join(root, "identity")
+	if err := os.WriteFile(identityPath, []byte("identity"), 0o600); err != nil {
+		t.Fatalf("WriteFile(identity) error = %v", err)
+	}
+	identity, err := os.Stat(identityPath)
+	if err != nil {
+		t.Fatalf("Stat(identity) error = %v", err)
+	}
+	readCalls := 0
+	files, err := collectXCConfigFilesWithHooksAndIdentity(
+		rootPath,
+		func(path string) ([]byte, error) {
+			readCalls++
+			if filepath.Clean(path) == rootPath {
+				return []byte("#include \"config.xcconfig\"\n"), nil
+			}
+			return []byte("CODE_SIGN_STYLE = Manual\n"), nil
+		},
+		nil,
+		nil,
+		nil,
+		func(string) (os.FileInfo, error) { return identity, nil },
+	)
+	if err != nil {
+		t.Fatalf("collectXCConfigFilesWithHooksAndIdentity() error = %v", err)
+	}
+	if len(files) != 1 || files[0] != rootPath {
+		t.Fatalf("files = %#v, want one identity-equivalent path", files)
+	}
+	if readCalls != 1 {
+		t.Fatalf("read calls = %d, want one after identity deduplication", readCalls)
+	}
+	_ = caseVariantPath
+}
+
+func TestSigningXCConfigConsumersKeepsWindowsCaseDistinctFilesByIdentity(t *testing.T) {
+	previousOS := runtimeGOOS
+	runtimeGOOS = "windows"
+	t.Cleanup(func() { runtimeGOOS = previousOS })
+
+	projectPath := writeStructuredVersionProject(t, true)
+	configDir := filepath.Join(filepath.Dir(projectPath), "Configs")
+	rootPath := filepath.Join(configDir, "App.xcconfig")
+	caseVariantPath := filepath.Join(configDir, "app.xcconfig")
+	rootContents := mustReadVersionTestFile(t, rootPath)
+	previousReader := signingXCConfigReadFileFn
+	previousIdentity := signingXCConfigIdentityFn
+	signingXCConfigReadFileFn = func(path string, _ int64) ([]byte, error) {
+		switch filepath.Clean(path) {
+		case rootPath:
+			return []byte("#include \"app.xcconfig\"\n" + rootContents), nil
+		case caseVariantPath:
+			return []byte("CODE_SIGN_STYLE = Manual\n"), nil
+		default:
+			return previousReader(path, signingPlanMaxBytes)
+		}
+	}
+	identityDir := t.TempDir()
+	firstIdentityPath := filepath.Join(identityDir, "first")
+	secondIdentityPath := filepath.Join(identityDir, "second")
+	if err := os.WriteFile(firstIdentityPath, []byte("first"), 0o600); err != nil {
+		t.Fatalf("WriteFile(first identity) error = %v", err)
+	}
+	if err := os.WriteFile(secondIdentityPath, []byte("second"), 0o600); err != nil {
+		t.Fatalf("WriteFile(second identity) error = %v", err)
+	}
+	firstInfo, err := os.Stat(firstIdentityPath)
+	if err != nil {
+		t.Fatalf("Stat(first identity) error = %v", err)
+	}
+	secondInfo, err := os.Stat(secondIdentityPath)
+	if err != nil {
+		t.Fatalf("Stat(second identity) error = %v", err)
+	}
+	signingXCConfigIdentityFn = func(path string) (os.FileInfo, error) {
+		switch filepath.Clean(path) {
+		case rootPath:
+			return firstInfo, nil
+		case caseVariantPath:
+			return secondInfo, nil
+		default:
+			return previousIdentity(path)
+		}
+	}
+	t.Cleanup(func() {
+		signingXCConfigReadFileFn = previousReader
+		signingXCConfigIdentityFn = previousIdentity
+	})
+
+	project, err := openStructuredVersionProject(projectPath)
+	if err != nil {
+		t.Fatalf("openStructuredVersionProject() error = %v", err)
+	}
+	_, configFiles, _, _, _, _, _, _, err := project.signingXCConfigConsumers(nil, false)
+	if err != nil {
+		t.Fatalf("signingXCConfigConsumers() error = %v", err)
+	}
+	for configurationID, files := range configFiles {
+		if !containsString(files, caseVariantPath) {
+			t.Fatalf("configuration %q files = %#v, want case-distinct include %q", configurationID, files, caseVariantPath)
+		}
+	}
+}
+
+func TestIdentityAwareWindowsCollectorReportsMissingRequiredCaseVariant(t *testing.T) {
+	previousOS := runtimeGOOS
+	runtimeGOOS = "windows"
+	t.Cleanup(func() { runtimeGOOS = previousOS })
+
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Config.xcconfig")
+	missingPath := filepath.Join(root, "config.xcconfig")
+	if err := os.WriteFile(rootPath, []byte("#include \"config.xcconfig\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(root) error = %v", err)
+	}
+	rootInfo, err := os.Stat(rootPath)
+	if err != nil {
+		t.Fatalf("Stat(root) error = %v", err)
+	}
+	readMissing := false
+	_, err = collectXCConfigFilesWithHooksAndIdentity(
+		rootPath,
+		func(path string) ([]byte, error) {
+			if filepath.Clean(path) == missingPath {
+				readMissing = true
+				return nil, os.ErrNotExist
+			}
+			return os.ReadFile(path)
+		},
+		nil,
+		nil,
+		nil,
+		func(path string) (os.FileInfo, error) {
+			if filepath.Clean(path) == missingPath {
+				return nil, os.ErrNotExist
+			}
+			return rootInfo, nil
+		},
+	)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("collector error = %v, want required include not-exist failure", err)
+	}
+	if !readMissing {
+		t.Fatal("required missing case-variant include was mistaken for an existing-file cycle")
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

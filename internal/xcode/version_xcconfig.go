@@ -281,17 +281,35 @@ func collectXCConfigFilesWithHooks(
 	onPath func(string),
 	onError func(string, error),
 ) ([]string, error) {
+	return collectXCConfigFilesWithHooksAndIdentity(root, read, authorize, onPath, onError, nil)
+}
+
+// collectXCConfigFilesWithHooksAndIdentity is the signing-specific collector
+// extension for filesystems whose path spelling semantics can vary by
+// directory. The identity callback runs only after authorization and lets a
+// caller distinguish two case-variant paths that are distinct files without
+// weakening the no-read-before-authorization contract.
+func collectXCConfigFilesWithHooksAndIdentity(
+	root string,
+	read func(string) ([]byte, error),
+	authorize func(string) error,
+	onPath func(string),
+	onError func(string, error),
+	identify func(string) (os.FileInfo, error),
+) ([]string, error) {
 	seen := make(map[string]bool)
+	type collectedIdentity struct {
+		path string
+		info os.FileInfo
+	}
+	var collected []collectedIdentity
 	var paths []string
-	var visit func(string, map[string]bool) (error, bool)
-	visit = func(path string, stack map[string]bool) (error, bool) {
+	var visit func(string, map[string][]os.FileInfo) (error, bool)
+	visit = func(path string, stack map[string][]os.FileInfo) (error, bool) {
 		path = filepath.Clean(path)
 		pathKey := signingLexicalPathKey(path)
 		if onPath != nil {
 			onPath(path)
-		}
-		if stack[pathKey] || seen[pathKey] {
-			return nil, false
 		}
 		if authorize != nil {
 			if err := authorize(path); err != nil {
@@ -299,6 +317,54 @@ func collectXCConfigFilesWithHooks(
 					onError(path, err)
 				}
 				return err, false
+			}
+		}
+		var identity os.FileInfo
+		if identify != nil {
+			var err error
+			identity, err = identify(path)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				if onError != nil {
+					onError(path, err)
+				}
+				return err, false
+			}
+		}
+		sameIdentity := func(infos []os.FileInfo) bool {
+			if identity == nil {
+				return false
+			}
+			for _, info := range infos {
+				if info != nil && os.SameFile(identity, info) {
+					return true
+				}
+			}
+			return false
+		}
+		// Case variants can refer to one inode on a case-insensitive volume.
+		// Coalesce only spellings that differ by case: general hard links may
+		// live in different directories, where their relative includes resolve
+		// against different bases and must still be traversed independently.
+		if identity != nil {
+			for _, entry := range collected {
+				if strings.EqualFold(entry.path, path) && entry.info != nil && os.SameFile(identity, entry.info) {
+					return nil, false
+				}
+			}
+		}
+		if stackInfos, ok := stack[pathKey]; ok {
+			if identify == nil || sameIdentity(stackInfos) {
+				return nil, false
+			}
+		}
+		if seen[pathKey] {
+			if identify == nil {
+				return nil, false
+			}
+			for _, entry := range collected {
+				if signingLexicalPathKey(entry.path) == pathKey && entry.info != nil && os.SameFile(identity, entry.info) {
+					return nil, false
+				}
 			}
 		}
 		data, err := read(path)
@@ -315,10 +381,25 @@ func collectXCConfigFilesWithHooks(
 			}
 			return fmt.Errorf("parse %s: %w", path, err), false
 		}
+		if identify != nil && identity == nil {
+			identity, err = identify(path)
+			if err != nil {
+				if onError != nil {
+					onError(path, err)
+				}
+				return err, false
+			}
+		}
 		seen[pathKey] = true
 		paths = append(paths, path)
-		nextStack := clonePathSet(stack)
-		nextStack[pathKey] = true
+		if identity != nil {
+			collected = append(collected, collectedIdentity{path: path, info: identity})
+		}
+		nextStack := make(map[string][]os.FileInfo, len(stack)+1)
+		for key, infos := range stack {
+			nextStack[key] = append([]os.FileInfo(nil), infos...)
+		}
+		nextStack[pathKey] = append(nextStack[pathKey], identity)
 		var includeErrors []error
 		for _, include := range document.includes {
 			includePath, err := resolveXCConfigInclude(path, include)
@@ -349,7 +430,7 @@ func collectXCConfigFilesWithHooks(
 		}
 		return nil, false
 	}
-	if err, _ := visit(root, make(map[string]bool)); err != nil {
+	if err, _ := visit(root, make(map[string][]os.FileInfo)); err != nil {
 		return nil, err
 	}
 	return paths, nil

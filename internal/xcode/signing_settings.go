@@ -414,10 +414,16 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	fileConsumers, configFiles, fileIdentities, uncertainConsumers, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, unauthorizedExternal, err := project.signingXCConfigConsumers(selectedIDs, opts.AllowExternalXCConfig)
 	authorizedProtectedConfigPaths := make([]string, 0)
 	for _, protectedPath := range protectedConfigPaths {
-		if !opts.AllowExternalXCConfig && !signingPathLexicallyContained(project, protectedPath) {
+		contained := signingPathLexicallyContained(project, protectedPath)
+		if !opts.AllowExternalXCConfig && !contained {
 			continue
 		}
-		if validateSigningXCConfigPath(project, protectedPath, opts.AllowExternalXCConfig) == nil {
+		if validateSigningXCConfigPath(project, protectedPath, opts.AllowExternalXCConfig) == nil ||
+			// An explicitly opted-in external path may be missing or otherwise
+			// uncollectable, but its prospective parent still must participate in
+			// alias checks. The collector has already authorized this path, so a
+			// no-follow prospective lookup is within the requested scope.
+			(opts.AllowExternalXCConfig && !contained) {
 			authorizedProtectedConfigPaths = appendUniqueSigningPaths(authorizedProtectedConfigPaths, protectedPath)
 		}
 	}
@@ -431,6 +437,12 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 				return nil, inputErr
 			}
 			protectedConfigPaths = appendUniqueSigningPaths(protectedConfigPaths, externalEntitlementPaths...)
+			// Direct external entitlement values are not readable through this
+			// workflow, but their prospective path still came from the project
+			// input and must be checked for physical artifact aliases. This is a
+			// no-content rooted-path inspection, not authorization to read the
+			// entitlement itself.
+			authorizedProtectedConfigPaths = appendUniqueSigningPaths(authorizedProtectedConfigPaths, externalEntitlementPaths...)
 			if aliasErr := validateSigningArtifactAliasesWithAuthorizedProtectedPaths(planPath, receiptPath, inputPaths, protectedConfigPaths, authorizedProtectedConfigPaths); aliasErr != nil {
 				return nil, aliasErr
 			}
@@ -459,6 +471,10 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		return nil, err
 	}
 	protectedConfigPaths = appendUniqueSigningPaths(protectedConfigPaths, externalEntitlementPaths...)
+	// See the error branch above: an external direct-entitlement path is not
+	// content-authorized, but it is an explicitly discovered path whose
+	// prospective physical alias must be validated before writing any artifact.
+	authorizedProtectedConfigPaths = appendUniqueSigningPaths(authorizedProtectedConfigPaths, externalEntitlementPaths...)
 	if err := validateSigningArtifactAliasesWithAuthorizedProtectedPaths(
 		planPath,
 		receiptPath,
@@ -1486,7 +1502,7 @@ func newSigningSettingResolver(project *structuredVersionProject, configFiles ma
 	}
 	for _, paths := range configFiles {
 		for _, path := range paths {
-			resolver.authorizedPath[signingLexicalPathKey(path)] = true
+			resolver.authorizedPath[normalizeSigningLexicalPath(path)] = true
 		}
 	}
 	return resolver
@@ -1494,7 +1510,7 @@ func newSigningSettingResolver(project *structuredVersionProject, configFiles ma
 
 func (resolver *signingSettingResolver) readXCConfig(path string) ([]byte, error) {
 	absolute := normalizeSigningLexicalPath(path)
-	if !resolver.authorizedPath[signingLexicalPathKey(absolute)] {
+	if !resolver.authorizedPath[normalizeSigningLexicalPath(absolute)] {
 		return nil, fmt.Errorf("xcconfig %s was not collected for this signing plan", absolute)
 	}
 	if err := resolver.authorizeXCConfigPath(absolute); err != nil {
@@ -1505,12 +1521,12 @@ func (resolver *signingSettingResolver) readXCConfig(path string) ([]byte, error
 
 func (resolver *signingSettingResolver) statXCConfigFor(configuration *versionConfiguration, path string) (os.FileInfo, error) {
 	absolute := normalizeSigningLexicalPath(path)
-	key := signingLexicalPathKey(absolute)
+	key := normalizeSigningLexicalPath(absolute)
 	if !resolver.configurationCollectedPath(configuration, key) {
 		known := false
 		if configuration != nil {
 			for _, observed := range resolver.lexicalConfigPaths[configuration.id] {
-				if signingLexicalPathKey(observed) == key {
+				if normalizeSigningLexicalPath(observed) == key {
 					known = true
 					break
 				}
@@ -1539,7 +1555,7 @@ func (resolver *signingSettingResolver) statXCConfigFor(configuration *versionCo
 
 func (resolver *signingSettingResolver) readXCConfigFor(configuration *versionConfiguration, path string) ([]byte, error) {
 	absolute := normalizeSigningLexicalPath(path)
-	if !resolver.configurationCollectedPath(configuration, signingLexicalPathKey(absolute)) {
+	if !resolver.configurationCollectedPath(configuration, normalizeSigningLexicalPath(absolute)) {
 		return nil, fmt.Errorf("xcconfig %s was not collected for this configuration", absolute)
 	}
 	return resolver.readXCConfig(absolute)
@@ -1550,7 +1566,7 @@ func (resolver *signingSettingResolver) configurationCollectedPath(configuration
 		return false
 	}
 	for _, collected := range resolver.configFiles[configuration.id] {
-		if signingLexicalPathKey(collected) == key {
+		if normalizeSigningLexicalPath(collected) == key {
 			return true
 		}
 	}
@@ -1859,10 +1875,28 @@ func resolveSigningSharedCandidates(candidates []signingCandidate, fileIdentitie
 // accept paths that were successfully collected and identity-bound.
 func signingXCConfigOperationKey(path string, fileIdentities map[string]string) string {
 	pathKey := signingLexicalPathKey(path)
-	if identity, ok := fileIdentities[pathKey]; ok && identity != "" {
+	if identity, ok := signingFileIdentity(path, fileIdentities); ok && identity != "" {
 		return "identity:" + identity
 	}
 	return "path:" + pathKey
+}
+
+// signingFileIdentity first uses the exact normalized spelling emitted by the
+// collector. The lexical-key fallback keeps compatibility with older callers
+// and hand-built test maps, but an exact entry always wins so two proven
+// case-distinct files on a Windows case-sensitive directory cannot collide.
+func signingFileIdentity(path string, fileIdentities map[string]string) (string, bool) {
+	if fileIdentities == nil {
+		return "", false
+	}
+	if identity, ok := fileIdentities[normalizeSigningLexicalPath(path)]; ok {
+		return identity, identity != ""
+	}
+	legacyKey := signingLexicalPathKey(path)
+	if identity, ok := fileIdentities[legacyKey]; ok {
+		return identity, identity != ""
+	}
+	return "", false
 }
 
 func signingSettingBlocker(configuration *versionConfiguration, setting string, err error) string {
@@ -1975,8 +2009,26 @@ func signingArtifactLexicalPathEqual(left, right string) bool {
 }
 
 func signingPathLexicallyContained(project *structuredVersionProject, path string) bool {
-	root := signingLexicalPathKey(project.rootDir)
-	absolute := signingLexicalPathKey(path)
+	root := normalizeSigningLexicalPath(project.rootDir)
+	absolute := normalizeSigningLexicalPath(path)
+	if signingNormalizedPathContained(root, absolute) {
+		return true
+	}
+	if runtimeGOOS == "windows" {
+		return signingNormalizedPathContained(strings.ToLower(root), strings.ToLower(absolute))
+	}
+	if runtimeGOOS != "darwin" {
+		return false
+	}
+	rootInsensitive, rootKnown := signingCaseInsensitiveVolumeFor(root)
+	pathInsensitive, pathKnown := signingCaseInsensitiveVolumeFor(absolute)
+	if !rootKnown || !pathKnown || !rootInsensitive || !pathInsensitive {
+		return false
+	}
+	return signingNormalizedPathContained(strings.ToLower(root), strings.ToLower(absolute))
+}
+
+func signingNormalizedPathContained(root, absolute string) bool {
 	relative, err := filepath.Rel(root, absolute)
 	if err != nil {
 		return false
@@ -2002,7 +2054,7 @@ func appendUniqueSigningPaths(paths []string, additions ...string) []string {
 		}
 		found := false
 		for _, existing := range paths {
-			if signingLexicalPathEqual(existing, path) {
+			if signingPathListEqual(existing, path) {
 				found = true
 				break
 			}
@@ -2012,6 +2064,17 @@ func appendUniqueSigningPaths(paths []string, additions ...string) []string {
 		}
 	}
 	return paths
+}
+
+// signingPathListEqual is used only for retaining lexical provenance. On
+// Windows, keep case-distinct spellings until a rooted file identity proves
+// that they are the same object; alias validation remains conservatively
+// case-insensitive for prospective artifact collisions.
+func signingPathListEqual(left, right string) bool {
+	if runtimeGOOS == "windows" {
+		return normalizeSigningLexicalPath(left) == normalizeSigningLexicalPath(right)
+	}
+	return signingLexicalPathEqual(left, right)
 }
 
 func sortSigningPlanOperations(operations []signingPlanOperation) {
@@ -2322,6 +2385,7 @@ func signingProjectInputPaths(
 			value, _, err := resolver.resolveSetting(configuration, "CODE_SIGN_ENTITLEMENTS")
 			if err == nil {
 				if err := appendResolvedEntitlements(configuration, value); err != nil {
+					appendLexicalEntitlementCandidate(value)
 					if selected {
 						return nil, externalEntitlementPaths, inputBlockers, err
 					}
@@ -2339,14 +2403,16 @@ func signingProjectInputPaths(
 			value, ok := configuration.buildSettings[key].(string)
 			if ok {
 				if !authorized && !selected && (strings.Contains(value, "$(") || strings.Contains(value, "${")) {
-					if isConditionalEntitlementKey(key) {
-						return nil, externalEntitlementPaths, inputBlockers, newSigningConditionalEntitlementError(nil)
-					}
 					inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has unresolved CODE_SIGN_ENTITLEMENTS reference; signing scope is uncertain", configuration.target, configuration.name))
 					continue
 				}
 				if err := appendResolvedEntitlements(configuration, value); err != nil {
+					appendLexicalEntitlementCandidate(value)
 					if isConditionalEntitlementKey(key) {
+						if !selected {
+							inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has an unresolved conditional CODE_SIGN_ENTITLEMENTS input; signing scope is uncertain", configuration.target, configuration.name))
+							continue
+						}
 						return nil, externalEntitlementPaths, inputBlockers, newSigningConditionalEntitlementError(err)
 					}
 					if selected {
@@ -2364,7 +2430,6 @@ func signingProjectInputPaths(
 		if !ok {
 			continue
 		}
-		selected := selectedIDs[configuration.id]
 		for _, filePath := range files {
 			// These paths came from the successful collector, but keep the
 			// membership and authorization checks on this later read as well.
@@ -2380,22 +2445,22 @@ func signingProjectInputPaths(
 				return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("parse xcconfig %s: %w", filePath, err)
 			}
 			for _, assignment := range document.assignments {
+				selected := selectedIDs[configuration.id]
 				selectedSource := selectedXCConfigSources[signingXCConfigOperationKey(filePath, fileIdentities)]
 				if assignment.continued && allowedSigningSetting(assignment.baseKey) &&
 					(assignment.baseKey == "CODE_SIGN_ENTITLEMENTS" || selectedSource) {
 					return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("xcconfig %s uses a line continuation for signing setting %s", filePath, assignment.baseKey)
 				}
-				if assignment.baseKey == "CODE_SIGN_ENTITLEMENTS" {
-					if err := appendResolvedEntitlements(configuration, assignment.value); err != nil {
-						appendLexicalEntitlementCandidate(assignment.value)
-						if isConditionalEntitlementKey(assignment.key) {
-							return nil, externalEntitlementPaths, inputBlockers, newSigningConditionalEntitlementError(err)
-						}
-						if selected {
-							return nil, externalEntitlementPaths, inputBlockers, err
-						}
-						inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has an invalid CODE_SIGN_ENTITLEMENTS input: %v", configuration.target, configuration.name, err))
+				if assignment.baseKey != "CODE_SIGN_ENTITLEMENTS" || !isConditionalEntitlementKey(assignment.key) {
+					continue
+				}
+				if err := appendResolvedEntitlements(configuration, assignment.value); err != nil {
+					appendLexicalEntitlementCandidate(assignment.value)
+					if !selected {
+						inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has an unresolved conditional CODE_SIGN_ENTITLEMENTS input; signing scope is uncertain", configuration.target, configuration.name))
+						continue
 					}
+					return nil, externalEntitlementPaths, inputBlockers, newSigningConditionalEntitlementError(err)
 				}
 			}
 		}
@@ -2427,7 +2492,8 @@ func signingProjectInputPaths(
 				}
 				if strings.Contains(assignment.value, "$(") || strings.Contains(assignment.value, "${") {
 					if isConditionalEntitlementKey(assignment.key) {
-						return nil, externalEntitlementPaths, inputBlockers, newSigningConditionalEntitlementError(nil)
+						inputBlockers = append(inputBlockers, fmt.Sprintf("xcconfig %s has an unresolved conditional CODE_SIGN_ENTITLEMENTS input; signing scope is uncertain", filePath))
+						continue
 					}
 				}
 				if err := appendEntitlements(assignment.value); err != nil {
@@ -2493,6 +2559,12 @@ var signingXCConfigReadFileFn = readSigningRegularFile
 // behind the same rooted reader while allowing tests to prove that an
 // unauthorized path is rejected before stat/open is attempted.
 var signingXCConfigStatFileFn = signingRegularFileInfo
+
+// signingXCConfigIdentityFn is used only after signing authorization has
+// accepted a path. On Windows, per-directory case sensitivity means a global
+// lowercase lexical key cannot establish whether two spellings name one file
+// or two; the rooted file identity supplies that distinction.
+var signingXCConfigIdentityFn = signingRegularFileInfo
 
 // signingRegularFileInfo obtains metadata through the same rooted no-follow
 // path policy used for signing reads. Callers must establish authorization
@@ -2630,10 +2702,10 @@ func ApplySigningPlan(opts SigningApplyOptions) (*SigningApplyResult, error) {
 	if beforeSigningCommitForTest != nil {
 		beforeSigningCommitForTest()
 	}
-	if err := verifySigningPlanSources(plan, prepared.writes); err != nil {
+	if err := verifySigningPlanSources(plan, prepared.writes, built.fileIdentities); err != nil {
 		return nil, fmt.Errorf("verify signing plan sources: %w", err)
 	}
-	fileChanges, err := signingReceiptFileChanges(plan, prepared.writes, prepared.changedFiles)
+	fileChanges, err := signingReceiptFileChanges(plan, prepared.writes, prepared.changedFiles, built.fileIdentities)
 	if err != nil {
 		return nil, fmt.Errorf("prepare signing receipt: %w", err)
 	}
@@ -2654,7 +2726,7 @@ func ApplySigningPlan(opts SigningApplyOptions) (*SigningApplyResult, error) {
 	}
 	prepared.writes = append(prepared.writes, receiptWrite)
 	if err := commitVersionWritesWithCreateCheck(prepared.writes, func(committed []preparedVersionWrite) error {
-		return verifySigningPlanSourcesBeforeReceipt(plan, committed)
+		return verifySigningPlanSourcesBeforeReceipt(plan, committed, built.fileIdentities)
 	}); err != nil {
 		return nil, fmt.Errorf("apply signing settings transaction: %w", err)
 	}
@@ -2667,30 +2739,31 @@ var beforeSigningCommitForTest func()
 // publication. Every staged original must still match the digest captured in
 // the plan, and every source must still match the bytes used to prepare the
 // update before a receipt is even encoded.
-func verifySigningPlanSources(plan *SigningPlan, writes []preparedVersionWrite) error {
+func verifySigningPlanSources(plan *SigningPlan, writes []preparedVersionWrite, fileIdentities map[string]string) error {
 	if plan == nil {
 		return fmt.Errorf("signing plan is nil")
 	}
 	expected := make(map[string]SigningPlanFile, len(plan.Files))
 	for _, file := range plan.Files {
-		expected[signingLexicalPathKey(file.Path)] = file
+		expected[signingXCConfigOperationKey(file.Path, fileIdentities)] = file
 	}
 	staged := make(map[string]preparedVersionWrite, len(writes))
 	for _, write := range writes {
 		if write.createOnly {
 			continue
 		}
-		file, ok := expected[signingLexicalPathKey(write.path)]
+		pathKey := signingXCConfigOperationKey(write.path, fileIdentities)
+		file, ok := expected[pathKey]
 		if !ok {
 			return fmt.Errorf("signing plan is stale; staged source %s is not recorded in plan", write.path)
 		}
 		if signingFileDigestBytes(write.original) != file.SHA256 {
 			return fmt.Errorf("signing plan is stale; staged source %s differs from plan", write.path)
 		}
-		staged[signingLexicalPathKey(write.path)] = write
+		staged[pathKey] = write
 	}
 	for _, file := range plan.Files {
-		if write, ok := staged[signingLexicalPathKey(file.Path)]; ok {
+		if write, ok := staged[signingXCConfigOperationKey(file.Path, fileIdentities)]; ok {
 			current, _, err := readRegularVersionFile(&write)
 			if err != nil {
 				return fmt.Errorf("signing plan is stale; read source %s: %w", file.Path, err)
@@ -2717,18 +2790,18 @@ func verifySigningPlanSources(plan *SigningPlan, writes []preparedVersionWrite) 
 // bytes; untouched files must still match their plan digest. A concurrent save
 // in this final window therefore fails the transaction and is handled by the
 // ordinary rollback path instead of receiving a misleading successful receipt.
-func verifySigningPlanSourcesBeforeReceipt(plan *SigningPlan, committed []preparedVersionWrite) error {
+func verifySigningPlanSourcesBeforeReceipt(plan *SigningPlan, committed []preparedVersionWrite, fileIdentities map[string]string) error {
 	if plan == nil {
 		return fmt.Errorf("signing plan is nil")
 	}
 	committedByPath := make(map[string]preparedVersionWrite, len(committed))
 	for _, write := range committed {
 		if !write.createOnly {
-			committedByPath[signingLexicalPathKey(write.path)] = write
+			committedByPath[signingXCConfigOperationKey(write.path, fileIdentities)] = write
 		}
 	}
 	for _, file := range plan.Files {
-		if write, ok := committedByPath[signingLexicalPathKey(file.Path)]; ok {
+		if write, ok := committedByPath[signingXCConfigOperationKey(file.Path, fileIdentities)]; ok {
 			current, _, err := readRegularVersionFile(&write)
 			if err != nil {
 				return fmt.Errorf("read written source %s: %w", file.Path, err)
@@ -2749,25 +2822,26 @@ func verifySigningPlanSourcesBeforeReceipt(plan *SigningPlan, committed []prepar
 	return nil
 }
 
-func signingReceiptFileChanges(plan *SigningPlan, writes []preparedVersionWrite, changedFiles []string) ([]SigningFileChange, error) {
+func signingReceiptFileChanges(plan *SigningPlan, writes []preparedVersionWrite, changedFiles []string, fileIdentities map[string]string) ([]SigningFileChange, error) {
 	before := make(map[string]SigningPlanFile, len(plan.Files))
 	for _, file := range plan.Files {
-		before[signingLexicalPathKey(file.Path)] = file
+		before[signingXCConfigOperationKey(file.Path, fileIdentities)] = file
 	}
 	updated := make(map[string][]byte, len(writes))
 	for _, write := range writes {
 		if write.createOnly || bytes.Equal(write.original, write.updated) {
 			continue
 		}
-		updated[signingLexicalPathKey(write.path)] = write.updated
+		updated[signingXCConfigOperationKey(write.path, fileIdentities)] = write.updated
 	}
 	changes := make([]SigningFileChange, 0, len(changedFiles))
 	for _, path := range changedFiles {
-		file, ok := before[signingLexicalPathKey(path)]
+		pathKey := signingXCConfigOperationKey(path, fileIdentities)
+		file, ok := before[pathKey]
 		if !ok {
 			return nil, fmt.Errorf("changed file %s was not present in the plan", path)
 		}
-		data, ok := updated[signingLexicalPathKey(path)]
+		data, ok := updated[pathKey]
 		if !ok {
 			return nil, fmt.Errorf("changed file %s was not prepared for the transaction", path)
 		}

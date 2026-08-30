@@ -99,6 +99,41 @@ func TestBuildSigningPlanRejectsPlanAliasToExternalDirectEntitlements(t *testing
 	}
 }
 
+func TestBuildSigningPlanRejectsPhysicalAliasToExternalDirectEntitlements(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	externalRoot := t.TempDir()
+	externalPath := filepath.Join(externalRoot, "App.entitlements")
+	const original = "external entitlements"
+	if err := os.WriteFile(externalPath, []byte(original), 0o600); err != nil {
+		t.Fatalf("WriteFile(external entitlements) error = %v", err)
+	}
+	aliasDir := filepath.Join(projectRoot, "artifact-alias")
+	if err := os.Symlink(externalRoot, aliasDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	planPath := filepath.Join(aliasDir, filepath.Base(externalPath))
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"), `CODE_SIGN_ENTITLEMENTS = "`+externalPath+`";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	_, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, PlanPath: planPath,
+		StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "aliases protected project input") {
+		t.Fatalf("BuildSigningPlan() error = %v, want physical external-entitlement alias rejection", err)
+	}
+	if got := mustReadVersionTestFile(t, externalPath); got != original {
+		t.Fatalf("external entitlement changed after alias rejection: %q", got)
+	}
+}
+
 func TestBuildSigningPlanRejectsMissingEntitlementArtifactCollision(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	root := t.TempDir()
