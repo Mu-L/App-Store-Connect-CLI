@@ -1,8 +1,10 @@
 package screenshots
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +30,52 @@ func TestOpenReview_DryRun(t *testing.T) {
 	}
 	if result.HTMLPath != htmlPath {
 		t.Fatalf("html path = %q, want %q", result.HTMLPath, htmlPath)
+	}
+}
+
+func TestOpenReviewAllowsOversizedLegacyHTML(t *testing.T) {
+	outputDir := t.TempDir()
+	html := append([]byte("<!doctype html><html><body>legacy"), bytes.Repeat([]byte{'x'}, maxMatrixReviewBytes)...)
+	html = append(html, []byte("</body></html>\n")...)
+	if len(html) <= maxMatrixReviewBytes {
+		t.Fatalf("legacy HTML length = %d, want over %d", len(html), maxMatrixReviewBytes)
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, defaultReviewHTMLName), html, 0o644); err != nil {
+		t.Fatalf("write oversized legacy HTML: %v", err)
+	}
+
+	result, err := OpenReview(context.Background(), ReviewOpenRequest{OutputDir: outputDir, DryRun: true})
+	if err != nil {
+		t.Fatalf("OpenReview() error = %v, want oversized legacy HTML to remain readable", err)
+	}
+	if result.Opened {
+		t.Fatal("expected dry-run result not to open browser")
+	}
+}
+
+func TestOpenReviewRejectsOversizedHTMLWithBoundManifest(t *testing.T) {
+	outputDir := t.TempDir()
+	html := append([]byte("<!doctype html><html><body>legacy"), bytes.Repeat([]byte{'x'}, maxMatrixReviewBytes)...)
+	html = append(html, []byte("</body></html>\n")...)
+	if len(html) <= maxMatrixReviewBytes {
+		t.Fatalf("HTML length = %d, want over %d", len(html), maxMatrixReviewBytes)
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, defaultReviewHTMLName), html, 0o644); err != nil {
+		t.Fatalf("write oversized HTML: %v", err)
+	}
+	// A readable, digest-bound matrix manifest makes this a matrix pair even
+	// when the marker is removed from the HTML. It must not be reclassified as
+	// an unbounded legacy report.
+	manifest := []byte(`{"htmlSha256":"bound-generation"}`)
+	if err := os.WriteFile(filepath.Join(outputDir, defaultReviewManifestName), manifest, 0o644); err != nil {
+		t.Fatalf("write bound manifest: %v", err)
+	}
+	manifestPath := filepath.Join(outputDir, defaultReviewManifestName)
+	if _, err := LoadMatrixReviewManifest(manifestPath); !errors.Is(err, errMatrixReviewPairMismatch) {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v, want stable pair mismatch", err)
+	}
+	if _, err := OpenReview(context.Background(), ReviewOpenRequest{OutputDir: outputDir, DryRun: true}); !errors.Is(err, errMatrixReviewPairMismatch) {
+		t.Fatalf("OpenReview() error = %v, want stable pair mismatch", err)
 	}
 }
 

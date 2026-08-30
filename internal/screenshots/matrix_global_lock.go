@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -45,21 +46,47 @@ func acquireMatrixGlobalLock(ctx context.Context, key string) (func() error, err
 }
 
 // matrixGlobalLockBaseDirForTest is intentionally a narrow test seam. The
-// production namespace is rooted in the user's home directory, while tests
-// use a disposable equivalent without changing the host's home state.
+// production namespace is rooted in a stable per-user system location, while
+// tests use a disposable equivalent without changing the host's lock state.
 var matrixGlobalLockBaseDirForTest string
+
+// matrixGlobalLockSystemBaseDirForTest keeps the production identity resolver
+// testable without writing into the real system temporary directory.
+var matrixGlobalLockSystemBaseDirForTest string
 
 func openMatrixGlobalLockRoot() (rootfs.Root, error) {
 	baseDir := matrixGlobalLockBaseDirForTest
 	if baseDir == "" {
-		var err error
-		baseDir, err = os.UserHomeDir()
+		current, err := user.Current()
 		if err != nil {
 			return rootfs.Root{}, err
 		}
+		// user.Current reads the OS account database rather than the mutable
+		// HOME environment variable, so separate invocations cannot bypass
+		// the same-user lock namespace by selecting different homes.
+		identity := strings.TrimSpace(current.Uid)
+		if identity == "" {
+			identity = strings.TrimSpace(current.Username)
+		}
+		if identity == "" {
+			return rootfs.Root{}, errors.New("stable OS user identity is empty")
+		}
+		digest := sha256.Sum256([]byte(identity))
+		systemBase := matrixGlobalLockSystemBaseDirForTest
+		if systemBase == "" {
+			switch runtime.GOOS {
+			case "darwin":
+				systemBase = "/private/tmp"
+			case "windows":
+				systemBase = filepath.Join(current.HomeDir, "AppData", "Local", "Temp")
+			default:
+				systemBase = "/tmp"
+			}
+		}
+		baseDir = filepath.Join(systemBase, ".asc-matrix-users-"+hex.EncodeToString(digest[:8]))
 	}
 	if strings.TrimSpace(baseDir) == "" {
-		return rootfs.Root{}, errors.New("user home directory is empty")
+		return rootfs.Root{}, errors.New("matrix lock base directory is empty")
 	}
 	lockRootPath := filepath.Join(baseDir, ".asc", matrixGlobalLockDirectory)
 	lockRoot, err := rootfs.New(lockRootPath)

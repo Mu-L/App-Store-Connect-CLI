@@ -296,6 +296,10 @@ type matrixOutputRoots struct {
 
 var matrixTemporarySequence atomic.Uint64
 
+// This seam lets focused tests model bounded per-artifact verification and is
+// intentionally nil in production.
+var matrixRawVerificationBeforeArtifactForTest func()
+
 // LoadMatrixPlan reads a JSON or JSONC matrix plan without resolving its base plan.
 func LoadMatrixPlan(path string) (*MatrixPlan, error) {
 	file, err := rootfs.OpenFile(path)
@@ -1335,10 +1339,8 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 		runErr = executeMatrixCells(ctx, cells, deviceFailures, base, matrixPlan, concurrency, attempts, backoff, deps, outputRoots, result)
 	}
 	rawVerificationCtx := ctx
-	var rawVerificationCancel context.CancelFunc
 	if ctx.Err() != nil {
-		rawVerificationCtx, rawVerificationCancel = context.WithTimeout(context.WithoutCancel(ctx), matrixSubprocessTimeout)
-		defer rawVerificationCancel()
+		rawVerificationCtx = context.WithoutCancel(ctx)
 	}
 	if rawErr := revalidateMatrixRawPaths(rawVerificationCtx, result); rawErr != nil {
 		if runErr == nil {
@@ -1948,6 +1950,72 @@ type matrixContextReader struct {
 	reader io.Reader
 }
 
+// matrixArtifactBudgetContext combines a per-artifact timer with the caller's
+// context while forwarding Err directly to the caller. The latter matters for
+// context implementations whose Done channel is nil but whose Err can still
+// report cancellation (and keeps cancellation observable during hashing).
+type matrixArtifactBudgetContext struct {
+	parent context.Context
+	timer  context.Context
+	done   chan struct{}
+
+	closeOnce  sync.Once
+	stopParent func() bool
+	stopTimer  func() bool
+}
+
+func newMatrixArtifactBudgetContext(parent context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	timer, cancelTimer := context.WithTimeout(context.Background(), budget)
+	combined := &matrixArtifactBudgetContext{parent: parent, timer: timer, done: make(chan struct{})}
+	combined.stopTimer = context.AfterFunc(timer, combined.closeDone)
+	if parent.Done() != nil {
+		combined.stopParent = context.AfterFunc(parent, combined.closeDone)
+	}
+	return combined, func() {
+		cancelTimer()
+		if combined.stopParent != nil {
+			combined.stopParent()
+		}
+		if combined.stopTimer != nil {
+			combined.stopTimer()
+		}
+		combined.closeDone()
+	}
+}
+
+func (c *matrixArtifactBudgetContext) closeDone() {
+	c.closeOnce.Do(func() { close(c.done) })
+}
+
+func (c *matrixArtifactBudgetContext) Deadline() (time.Time, bool) {
+	parentDeadline, parentOK := c.parent.Deadline()
+	timerDeadline, timerOK := c.timer.Deadline()
+	switch {
+	case !parentOK:
+		return timerDeadline, timerOK
+	case !timerOK:
+		return parentDeadline, true
+	case parentDeadline.Before(timerDeadline):
+		return parentDeadline, true
+	default:
+		return timerDeadline, true
+	}
+}
+
+func (c *matrixArtifactBudgetContext) Done() <-chan struct{} { return c.done }
+
+func (c *matrixArtifactBudgetContext) Err() error {
+	if err := c.parent.Err(); err != nil {
+		return err
+	}
+	return c.timer.Err()
+}
+
+func (c *matrixArtifactBudgetContext) Value(key any) any { return c.parent.Value(key) }
+
 func (r *matrixContextReader) Read(p []byte) (int, error) {
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
@@ -1972,6 +2040,10 @@ func mergeMatrixRawArtifacts(result *MatrixCellResult, attempt matrixAttemptResu
 }
 
 func revalidateMatrixRawPaths(ctx context.Context, result *MatrixResult) error {
+	return revalidateMatrixRawPathsWithBudget(ctx, result, matrixSubprocessTimeout)
+}
+
+func revalidateMatrixRawPathsWithBudget(ctx context.Context, result *MatrixResult, budget time.Duration) error {
 	if result == nil {
 		return nil
 	}
@@ -2011,11 +2083,22 @@ func revalidateMatrixRawPaths(ctx context.Context, result *MatrixResult) error {
 				invalid = true
 				continue
 			}
-			current, err := inspectMatrixArtifactWithContext(ctx, rawRoot, result.RawDir, path)
-			if err != nil || !matrixArtifactMatches(expected, current) {
-				if contextErr == nil {
-					contextErr = ctx.Err()
-				}
+			artifactCtx := ctx
+			var cancelArtifact context.CancelFunc
+			if budget > 0 {
+				artifactCtx, cancelArtifact = newMatrixArtifactBudgetContext(ctx, budget)
+			}
+			if matrixRawVerificationBeforeArtifactForTest != nil {
+				matrixRawVerificationBeforeArtifactForTest()
+			}
+			current, err := inspectMatrixArtifactWithContext(artifactCtx, rawRoot, result.RawDir, path)
+			if cancelArtifact != nil {
+				cancelArtifact()
+			}
+			if contextErr == nil {
+				contextErr = ctx.Err()
+			}
+			if err != nil || contextErr != nil || !matrixArtifactMatches(expected, current) {
 				invalid = true
 				if contextErr != nil {
 					break

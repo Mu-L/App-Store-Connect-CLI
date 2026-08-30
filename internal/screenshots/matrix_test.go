@@ -3063,6 +3063,44 @@ func TestAcquireMatrixSimulatorLockUsesStableNamespaceAcrossTempDirs(t *testing.
 	}
 }
 
+func TestAcquireMatrixSimulatorLockUsesStableNamespaceAcrossHomeDirs(t *testing.T) {
+	previousBase := matrixGlobalLockBaseDirForTest
+	previousSystemBase := matrixGlobalLockSystemBaseDirForTest
+	matrixGlobalLockBaseDirForTest = ""
+	matrixGlobalLockSystemBaseDirForTest = t.TempDir()
+	t.Cleanup(func() {
+		matrixGlobalLockBaseDirForTest = previousBase
+		matrixGlobalLockSystemBaseDirForTest = previousSystemBase
+	})
+
+	firstHome := t.TempDir()
+	secondHome := t.TempDir()
+	key := fmt.Sprintf("stable-home-lock-%d", os.Getpid())
+	t.Setenv("HOME", firstHome)
+	first, err := acquireMatrixSimulatorLock(context.Background(), key)
+	if err != nil {
+		t.Fatalf("first simulator lock: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := first(); err != nil {
+			t.Errorf("release first simulator lock: %v", err)
+		}
+	})
+
+	t.Setenv("HOME", secondHome)
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	second, err := acquireMatrixSimulatorLock(ctx, key)
+	if second != nil {
+		if releaseErr := second(); releaseErr != nil {
+			t.Errorf("release unexpectedly acquired second simulator lock: %v", releaseErr)
+		}
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second simulator lock error = %v, want deadline across home roots", err)
+	}
+}
+
 func TestNormalizeMatrixLockPathUsesWindowsCaseFoldForMissingRoots(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -3562,5 +3600,72 @@ func TestRevalidateMatrixRawPathsStopsOnCancellationDuringHash(t *testing.T) {
 	}
 	if len(cell.RawPaths) != 0 || cell.Screenshots[0].RawPath != "" {
 		t.Fatalf("canceled revalidation retained unverified raw path: %+v", cell)
+	}
+}
+
+func TestRevalidateMatrixRawPathsUsesPerArtifactBudget(t *testing.T) {
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	if err := os.Mkdir(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw directory: %v", err)
+	}
+	paths := []string{filepath.Join(rawDir, "first.png"), filepath.Join(rawDir, "second.png")}
+	for _, path := range paths {
+		writeMatrixPNG(t, path)
+	}
+	rawRoot, err := rootfs.New(rawDir)
+	if err != nil {
+		t.Fatalf("open raw root: %v", err)
+	}
+	expected := make(map[string]matrixArtifactInfo, len(paths))
+	for _, path := range paths {
+		artifact, inspectErr := inspectMatrixArtifact(rawRoot, rawDir, path)
+		if inspectErr != nil {
+			rawRoot.Close()
+			t.Fatalf("inspect expected artifact %q: %v", path, inspectErr)
+		}
+		expected[path] = artifact
+	}
+	if err := rawRoot.Close(); err != nil {
+		t.Fatalf("close raw root: %v", err)
+	}
+
+	result := &MatrixResult{RawDir: rawDir, Cells: []MatrixCellResult{{
+		Status:       MatrixCellSuccess,
+		RawPaths:     append([]string(nil), paths...),
+		Screenshots:  []MatrixScreenshotResult{{RawPath: paths[0], Status: MatrixCellSuccess}, {RawPath: paths[1], Status: MatrixCellSuccess}},
+		rawArtifacts: expected,
+	}}}
+	previousHook := matrixRawVerificationBeforeArtifactForTest
+	matrixRawVerificationBeforeArtifactForTest = func() { time.Sleep(15 * time.Millisecond) }
+	t.Cleanup(func() { matrixRawVerificationBeforeArtifactForTest = previousHook })
+
+	if err := revalidateMatrixRawPathsWithBudget(context.Background(), result, 20*time.Millisecond); err != nil {
+		t.Fatalf("revalidateMatrixRawPathsWithBudget() error = %v, want each artifact to receive its own budget", err)
+	}
+	if got := result.Cells[0].RawPaths; !reflect.DeepEqual(got, paths) {
+		t.Fatalf("revalidated raw paths = %v, want %v", got, paths)
+	}
+}
+
+func TestLoadMatrixReviewManifestBindsDecodedGeneration(t *testing.T) {
+	dir := t.TempDir()
+	first := &MatrixResult{PlanPath: "plan.json", Cells: []MatrixCellResult{{ID: "first-generation", Status: MatrixCellSuccess}}}
+	if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: first, OutputDir: dir}); err != nil {
+		t.Fatalf("GenerateMatrixReview(first) error = %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	var hookErr error
+	matrixReviewManifestLoadedForTest = func() {
+		second := &MatrixResult{PlanPath: "plan.json", Cells: []MatrixCellResult{{ID: "second-generation", Status: MatrixCellSuccess}}}
+		_, hookErr = GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: second, OutputDir: dir})
+	}
+	t.Cleanup(func() { matrixReviewManifestLoadedForTest = nil })
+	_, err := LoadMatrixReviewManifest(manifestPath)
+	if hookErr != nil {
+		t.Fatalf("GenerateMatrixReview(second) error = %v", hookErr)
+	}
+	if !errors.Is(err, errMatrixReviewPairMismatch) {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v, want decoded-generation pair mismatch", err)
 	}
 }

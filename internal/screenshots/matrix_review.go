@@ -34,6 +34,10 @@ type (
 	MatrixReviewResult   = asc.MatrixReviewResult
 )
 
+// matrixReviewManifestLoadedForTest is a narrow race-test seam. It runs after
+// the manifest has been decoded but before its HTML pair is validated.
+var matrixReviewManifestLoadedForTest func()
+
 // GenerateMatrixReview writes an offline HTML report and its JSON manifest.
 // It includes every planned cell, including failed and canceled cells.
 func GenerateMatrixReview(ctx context.Context, request MatrixReviewRequest) (*MatrixReviewResult, error) {
@@ -279,32 +283,13 @@ func LoadMatrixReviewManifest(path string) (*MatrixReviewManifest, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return nil, fmt.Errorf("parse matrix review manifest: %w", err)
 	}
-	if err := validateMatrixReviewPairForHTML(filepath.Join(filepath.Dir(path), "index.html")); err != nil {
+	if matrixReviewManifestLoadedForTest != nil {
+		matrixReviewManifestLoadedForTest()
+	}
+	if err := validateMatrixReviewManifestHTML(filepath.Join(filepath.Dir(path), "index.html"), manifest.HTMLSHA256); err != nil {
 		return nil, err
 	}
 	return &manifest, nil
-}
-
-func validateMatrixReviewHTMLDigest(path, expected string) error {
-	expected = strings.TrimSpace(expected)
-	if expected == "" {
-		// Manifests created before the digest contract remain readable.
-		return nil
-	}
-	file, err := rootfs.OpenFile(path)
-	if err != nil {
-		return errMatrixReviewPairMismatch
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxMatrixReviewBytes+1))
-	if err != nil || len(data) > maxMatrixReviewBytes {
-		return errMatrixReviewPairMismatch
-	}
-	digest := sha256.Sum256(data)
-	if !strings.EqualFold(expected, fmt.Sprintf("%x", digest[:])) {
-		return errMatrixReviewPairMismatch
-	}
-	return nil
 }
 
 func validateMatrixReviewPairForHTML(path string) error {
@@ -317,7 +302,7 @@ func validateMatrixReviewPairForHTML(path string) error {
 	}
 	htmlData, readErr := io.ReadAll(io.LimitReader(htmlFile, maxMatrixReviewBytes+1))
 	closeErr := htmlFile.Close()
-	if readErr != nil || closeErr != nil || len(htmlData) > maxMatrixReviewBytes {
+	if readErr != nil || closeErr != nil {
 		return errMatrixReviewPairMismatch
 	}
 	matrixMarked := bytes.Contains(htmlData, []byte(`<meta name="asc-matrix-review" content="1">`))
@@ -347,7 +332,47 @@ func validateMatrixReviewPairForHTML(path string) error {
 		// Non-matrix and pre-binding review pairs remain backward compatible.
 		return nil
 	}
-	return validateMatrixReviewHTMLDigest(path, binding.HTMLSHA256)
+	return validateMatrixReviewHTMLData(htmlData, binding.HTMLSHA256)
+}
+
+// validateMatrixReviewManifestHTML binds a decoded manifest to the exact HTML
+// snapshot validated for it. The caller may have read the manifest before a
+// concurrent publisher replaced the pair; validating its digest against one
+// HTML read prevents accepting a newer generation while returning old metadata.
+func validateMatrixReviewManifestHTML(path, expected string) error {
+	file, err := rootfs.OpenFile(path)
+	if err != nil {
+		return errMatrixReviewPairMismatch
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maxMatrixReviewBytes+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		return errMatrixReviewPairMismatch
+	}
+	return validateMatrixReviewHTMLData(data, expected)
+}
+
+func validateMatrixReviewHTMLData(data []byte, expected string) error {
+	matrixMarked := bytes.Contains(data, []byte(`<meta name="asc-matrix-review" content="1">`))
+	expected = strings.TrimSpace(expected)
+	if len(data) > maxMatrixReviewBytes {
+		if matrixMarked || expected != "" {
+			return errMatrixReviewPairMismatch
+		}
+		return nil
+	}
+	if expected == "" {
+		if matrixMarked {
+			return errMatrixReviewPairMismatch
+		}
+		// Manifests created before the digest contract remain readable.
+		return nil
+	}
+	digest := sha256.Sum256(data)
+	if !strings.EqualFold(expected, fmt.Sprintf("%x", digest[:])) {
+		return errMatrixReviewPairMismatch
+	}
+	return nil
 }
 
 func renderMatrixReviewHTML(manifest MatrixReviewManifest) string {
