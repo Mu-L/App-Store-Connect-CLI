@@ -584,6 +584,49 @@ func TestBuildLocaleLaunchArguments_NormalizesLocale(t *testing.T) {
 	}
 }
 
+func TestBuildLocaleLaunchArgumentsPreservesScriptSubtags(t *testing.T) {
+	tests := []struct {
+		locale string
+		want   []string
+	}{
+		{locale: "zh-hans", want: []string{"-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_Hans"}},
+		{locale: "zh_Hant", want: []string{"-AppleLanguages", "(zh-Hant)", "-AppleLocale", "zh_Hant"}},
+		{locale: "sr-latn", want: []string{"-AppleLanguages", "(sr-Latn)", "-AppleLocale", "sr_Latn"}},
+		{locale: "zh-Hans-CN", want: []string{"-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_Hans_CN"}},
+		{locale: "pt-BR", want: []string{"-AppleLanguages", "(pt)", "-AppleLocale", "pt_BR"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.locale, func(t *testing.T) {
+			args, err := BuildLocaleLaunchArguments(tt.locale)
+			if err != nil {
+				t.Fatalf("BuildLocaleLaunchArguments() error = %v", err)
+			}
+			if !reflect.DeepEqual(args, tt.want) {
+				t.Fatalf("BuildLocaleLaunchArguments(%q) = %v, want %v", tt.locale, args, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeMatrixReviewErrorPreservesFramePreflightReasons(t *testing.T) {
+	tests := []struct {
+		code    string
+		message string
+	}{
+		{code: matrixPreflightFrameMismatch, message: "configured frame does not match simulator family"},
+		{code: matrixPreflightFamilyUnknown, message: "simulator family could not be identified"},
+		{code: matrixPreflightMappingInvalid, message: "configured frame mapping is invalid"},
+	}
+	for _, test := range tests {
+		t.Run(test.code, func(t *testing.T) {
+			got := sanitizeMatrixReviewError(newMatrixCellError("preflight", test.code, test.message))
+			if got == nil || got.Stage != "preflight" || got.Code != test.code || got.Message != test.message {
+				t.Fatalf("sanitizeMatrixReviewError() = %+v, want stable frame preflight reason", got)
+			}
+		})
+	}
+}
+
 func TestValidateMatrixPlanDefersFrameFamilyToSimulator(t *testing.T) {
 	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
 	plan := &MatrixPlan{
@@ -1646,6 +1689,39 @@ func TestRunMatrix_RetriesExecutionButNotValidation(t *testing.T) {
 	}
 }
 
+func TestRunMatrixLateCancellationAfterCompletedCellsStillSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","review_dir":"review"}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	appearance := &matrixTestAppearance{restoreFunc: cancel}
+	runPlan := func(_ context.Context, plan *Plan) (*RunResult, error) {
+		writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+		return &RunResult{Steps: []RunStepResult{{Index: 1, Action: "screenshot", Status: "ok"}}}, nil
+	}
+	result, runErr := RunMatrixWithDependencies(ctx, matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan:     runPlan,
+		Appearance:  appearance,
+		CheckDevice: func(context.Context, MatrixDevice) error { return nil },
+	})
+	if runErr != nil {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want completed matrix to remain successful", runErr)
+	}
+	if result == nil || result.Succeeded != 1 || result.Failed != 0 || result.Canceled != 0 || result.Status != MatrixCellSuccess {
+		t.Fatalf("late-cancel result = %+v, want one successful cell", result)
+	}
+	if result.Cells[0].Status != MatrixCellSuccess {
+		t.Fatalf("cell status = %q, want success", result.Cells[0].Status)
+	}
+}
+
 func TestRunMatrix_PreflightFailureDoesNotSuppressReadyDevices(t *testing.T) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.json")
@@ -1743,6 +1819,42 @@ func TestRunMatrix_InventoryCancellationMarksAllCellsCanceled(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunMatrixReportsFrameFamilyMismatchPreflight(t *testing.T) {
+	binDir := t.TempDir()
+	xcrunPath := filepath.Join(binDir, "xcrun")
+	script := `#!/bin/sh
+set -eu
+printf '%s\n' '{"devices":{"runtime":[{"udid":"SIM-UDID","state":"Booted","isAvailable":true,"name":"iPad Pro (13-inch)","deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPad-Pro"}]}}'
+`
+	if err := os.WriteFile(xcrunPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write xcrun fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"iphone-demo","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","review_dir":"review","frame":{"enabled":true,"device_by_matrix_device":{"iphone-demo":"iphone-17-pro"}}}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{})
+	if runErr == nil {
+		t.Fatal("RunMatrixWithDependencies() error = nil, want frame-family preflight failure")
+	}
+	if result == nil || len(result.Cells) != 1 {
+		t.Fatalf("result = %+v, want one-cell preflight result", result)
+	}
+	cell := result.Cells[0]
+	if cell.Status != MatrixCellFailed || cell.FailureStage != "preflight" || cell.FailureCode != "frame_family_mismatch" {
+		t.Fatalf("cell = %+v, want specific frame-family preflight failure", cell)
+	}
+	if cell.Error == nil || cell.Error.Message != "configured frame does not match simulator family" {
+		t.Fatalf("cell error = %+v, want stable frame-family reason", cell.Error)
 	}
 }
 

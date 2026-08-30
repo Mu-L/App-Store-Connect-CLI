@@ -95,9 +95,13 @@ and output directory in memory. It passes locale launch overrides and literal
 content-variant arguments to each `launch` step. Locale overrides are:
 
 ```text
--AppleLanguages (<language>)
+-AppleLanguages (<language-or-language-script>)
 -AppleLocale <locale-with-underscore>
 ```
+
+Script-specific locales retain the normalized script in `AppleLanguages`
+(for example, `zh-Hans-CN` uses `(zh-Hans)`), while region-only locales keep
+the language-only behavior (`pt-BR` uses `(pt)`).
 
 Content arguments are appended without shell interpolation. A content variant
 that tries to override Apple language or locale arguments is rejected during
