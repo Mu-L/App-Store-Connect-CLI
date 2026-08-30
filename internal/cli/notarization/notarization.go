@@ -24,9 +24,25 @@ import (
 )
 
 var (
-	runStaplerStaple   = localxcode.Staple
-	runStaplerValidate = localxcode.ValidateStaple
+	runStaplerStaple        = localxcode.Staple
+	runStaplerValidate      = localxcode.ValidateStaple
+	validateStaplerTargetFn = validateStaplerTarget
 )
+
+// SetValidateStaplerTargetForTesting replaces target validation and returns a
+// restore function. It exists so command-level tests can exercise filesystem
+// failures without depending on host permissions or filesystem behavior.
+func SetValidateStaplerTargetForTesting(fn func(string) (string, error)) func() {
+	previous := validateStaplerTargetFn
+	if fn == nil {
+		validateStaplerTargetFn = validateStaplerTarget
+	} else {
+		validateStaplerTargetFn = fn
+	}
+	return func() {
+		validateStaplerTargetFn = previous
+	}
+}
 
 type singleStringValue struct {
 	flagName string
@@ -127,9 +143,12 @@ Examples:
 			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
 				return shared.UsageError(err.Error())
 			}
-			pathValue, err := validateStaplerTarget(filePath.String())
+			pathValue, err := validateStaplerTargetFn(filePath.String())
 			if err != nil {
-				return shared.UsageErrorf("notarization staple: %v", err)
+				if isStaplerTargetUsageError(err) {
+					return shared.UsageErrorf("notarization staple: %v", err)
+				}
+				return reportStaplerTargetFilesystemFailure("staple")
 			}
 
 			result, runErr := runStaplerStaple(ctx, pathValue, os.Stderr)
@@ -182,9 +201,12 @@ Examples:
 			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
 				return shared.UsageError(err.Error())
 			}
-			pathValue, err := validateStaplerTarget(filePath.String())
+			pathValue, err := validateStaplerTargetFn(filePath.String())
 			if err != nil {
-				return shared.UsageErrorf("notarization validate: %v", err)
+				if isStaplerTargetUsageError(err) {
+					return shared.UsageErrorf("notarization validate: %v", err)
+				}
+				return reportStaplerTargetFilesystemFailure("validate")
 			}
 
 			result, runErr := runStaplerValidate(ctx, pathValue, os.Stderr)
@@ -206,12 +228,42 @@ Examples:
 	}
 }
 
+type staplerTargetUsageError struct {
+	err error
+}
+
+func (e *staplerTargetUsageError) Error() string {
+	if e == nil || e.err == nil {
+		return "invalid notarization artifact target"
+	}
+	return e.err.Error()
+}
+
+func (e *staplerTargetUsageError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func newStaplerTargetUsageError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &staplerTargetUsageError{err: err}
+}
+
+func isStaplerTargetUsageError(err error) bool {
+	var usageErr *staplerTargetUsageError
+	return errors.As(err, &usageErr)
+}
+
 func validateStaplerTarget(pathValue string) (string, error) {
 	if strings.TrimSpace(pathValue) == "" {
-		return "", errors.New("--file is required")
+		return "", newStaplerTargetUsageError(errors.New("--file is required"))
 	}
 	if strings.ContainsRune(pathValue, 0) {
-		return "", errors.New("--file must not contain a NUL byte")
+		return "", newStaplerTargetUsageError(errors.New("--file must not contain a NUL byte"))
 	}
 	absolute, err := filepath.Abs(pathValue)
 	if err != nil {
@@ -219,24 +271,24 @@ func validateStaplerTarget(pathValue string) (string, error) {
 	}
 	absolute = filepath.Clean(absolute)
 	if strings.EqualFold(filepath.Ext(absolute), ".zip") {
-		return "", errors.New("zip archives cannot be stapled or validated directly; staple the contained item and recreate the archive")
+		return "", newStaplerTargetUsageError(errors.New("zip archives cannot be stapled or validated directly; staple the contained item and recreate the archive"))
 	}
 
 	info, err := os.Lstat(absolute)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("%q does not exist", absolute)
+			return "", newStaplerTargetUsageError(fmt.Errorf("%q does not exist", absolute))
 		}
 		return "", fmt.Errorf("inspect %q: %w", absolute, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("refusing to read symlink %q", absolute)
+		return "", newStaplerTargetUsageError(fmt.Errorf("refusing to read symlink %q", absolute))
 	}
 	if err := rejectStaplerParentSymlinks(absolute); err != nil {
 		return "", err
 	}
 	if !info.IsDir() && !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%q is not a regular file or directory bundle", absolute)
+		return "", newStaplerTargetUsageError(fmt.Errorf("%q is not a regular file or directory bundle", absolute))
 	}
 
 	parent, err := rootfs.New(filepath.Dir(absolute))
@@ -275,7 +327,7 @@ func validateStaplerTarget(pathValue string) (string, error) {
 		return "", fmt.Errorf("%q is not a regular file", absolute)
 	}
 	if openedInfo.Size() <= 0 {
-		return "", errors.New("artifact file must not be empty")
+		return "", newStaplerTargetUsageError(errors.New("artifact file must not be empty"))
 	}
 	return absolute, nil
 }
@@ -293,7 +345,7 @@ func rejectStaplerParentSymlinks(absolute string) error {
 		info, err := os.Lstat(current)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("artifact parent %q does not exist", current)
+				return newStaplerTargetUsageError(fmt.Errorf("artifact parent %q does not exist", current))
 			}
 			return fmt.Errorf("inspect artifact parent %q: %w", current, err)
 		}
@@ -308,10 +360,10 @@ func rejectStaplerParentSymlinks(absolute string) error {
 					return nil
 				}
 			}
-			return fmt.Errorf("refusing to read symlink path component %q", current)
+			return newStaplerTargetUsageError(fmt.Errorf("refusing to read symlink path component %q", current))
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("artifact parent %q is not a directory", current)
+			return newStaplerTargetUsageError(fmt.Errorf("artifact parent %q is not a directory", current))
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
@@ -335,6 +387,12 @@ func reportStaplerFailure(command string, err error) error {
 	}
 	fmt.Fprintf(os.Stderr, "Error: notarization %s: %v\n", command, err)
 	return shared.NewReportedError(err)
+}
+
+func reportStaplerTargetFilesystemFailure(command string) error {
+	message := fmt.Sprintf("notarization %s: could not inspect artifact filesystem", command)
+	fmt.Fprintln(os.Stderr, "Error: "+message)
+	return shared.NewReportedError(errors.New(message))
 }
 
 // submitCommand returns the submit subcommand.
