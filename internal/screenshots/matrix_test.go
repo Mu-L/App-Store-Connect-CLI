@@ -2174,6 +2174,48 @@ func TestRunMatrix_InventoryTimeoutMarksCellsFailed(t *testing.T) {
 	}
 }
 
+func TestRunMatrix_InventoryTimeoutPreservesReadyCellInPartialReview(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"sim-ready","udid":"SIM-READY"},{"id":"sim-timeout","udid":"SIM-TIMEOUT"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","review_dir":"review"}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	checkDevice := func(_ context.Context, device MatrixDevice) error {
+		if device.ID == "sim-timeout" {
+			return ErrMatrixInventoryTimeout
+		}
+		return nil
+	}
+	runPlan := func(_ context.Context, plan *Plan) (*RunResult, error) {
+		writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+		return &RunResult{Steps: []RunStepResult{{Index: 1, Action: "screenshot", Status: "ok"}}}, nil
+	}
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan:     runPlan,
+		Appearance:  &matrixTestAppearance{},
+		CheckDevice: checkDevice,
+	})
+	if runErr == nil || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want child-only timeout without caller cancellation", runErr)
+	}
+	if result.Succeeded != 1 || result.Failed != 1 || result.Canceled != 0 {
+		t.Fatalf("result summary = %+v, want one ready success and one timeout failure", result)
+	}
+	if result.Cells[0].Status != MatrixCellSuccess || result.Cells[1].Status != MatrixCellFailed {
+		t.Fatalf("cell statuses = %q, %q, want success/failed", result.Cells[0].Status, result.Cells[1].Status)
+	}
+	if result.Cells[1].FailureCode != "simulator_not_ready" {
+		t.Fatalf("timeout cell failure code = %q, want simulator_not_ready", result.Cells[1].FailureCode)
+	}
+	if result.Review == nil || result.Review.Succeeded != 1 || result.Review.Failed != 1 || result.Review.Canceled != 0 {
+		t.Fatalf("review summary = %+v, want one success and one failure", result.Review)
+	}
+}
+
 func TestRunMatrix_CleanupFailureBlocksLaterCellsOnSameSimulator(t *testing.T) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.json")
@@ -3427,6 +3469,1493 @@ func TestMatrixOutputLockIdentityUsesFilesystemCaseSemantics(t *testing.T) {
 	}
 }
 
+func TestAcquireMatrixOutputLocksUsesOpenedFilesystemIdentity(t *testing.T) {
+	parent := t.TempDir()
+	realPath := filepath.Join(parent, "real")
+	aliasPath := filepath.Join(parent, "alias")
+	if err := os.Mkdir(realPath, 0o755); err != nil {
+		t.Fatalf("create real output root: %v", err)
+	}
+	if err := os.Symlink(realPath, aliasPath); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	realRoot, err := rootfs.New(realPath)
+	if err != nil {
+		t.Fatalf("open real output root: %v", err)
+	}
+	defer realRoot.Close()
+	aliasRoot, err := rootfs.New(aliasPath)
+	if err != nil {
+		t.Fatalf("open aliased output root: %v", err)
+	}
+	defer aliasRoot.Close()
+	release, err := acquireMatrixOutputLocksForRoots(context.Background(), []matrixOutputLockTarget{
+		{root: realRoot},
+	})
+	if err != nil {
+		t.Fatalf("acquire real output lock: %v", err)
+	}
+	defer func() {
+		if err := release(); err != nil {
+			t.Errorf("release real output lock: %v", err)
+		}
+	}()
+	if err := os.Chmod(realPath, 0o700); err != nil {
+		t.Skipf("metadata mutation unavailable on this platform: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(realPath, "metadata-child"), 0o700); err != nil {
+		t.Skipf("directory mutation unavailable on this platform: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	if _, err := acquireMatrixOutputLocksForRoots(ctx, []matrixOutputLockTarget{{root: aliasRoot}}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("acquire aliased output lock error = %v, want deadline across one filesystem identity", err)
+	}
+}
+
+func TestAcquireMatrixOutputLocksClosesEarlierOpenedRootsOnLaterFailure(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	second := filepath.Join(dir, "second")
+	if err := os.Mkdir(first, 0o755); err != nil {
+		t.Fatalf("create first output root: %v", err)
+	}
+	if err := os.WriteFile(second, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("create invalid second output path: %v", err)
+	}
+	var firstOpened *os.Root
+	previousHook := matrixOutputLockRootOpenedForTest
+	matrixOutputLockRootOpenedForTest = func(opened *os.Root) {
+		if firstOpened == nil {
+			firstOpened = opened
+		}
+	}
+	t.Cleanup(func() { matrixOutputLockRootOpenedForTest = previousHook })
+	if _, err := acquireMatrixOutputLocks(context.Background(), []string{first, second}); err == nil {
+		t.Fatal("acquireMatrixOutputLocks() error = nil, want later path failure")
+	}
+	if firstOpened == nil {
+		t.Fatal("first output root was not observed")
+	}
+	if _, err := firstOpened.Stat("."); err == nil {
+		t.Fatal("earlier opened root remains usable after later path failure")
+	}
+}
+
+func TestRunMatrixKeepsExecutionRootsPinnedAfterLock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement is not reliable while the rooted handle is open on Windows")
+	}
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	rawDir := filepath.Join(dir, "raw")
+	rawOriginal := filepath.Join(dir, "raw-original")
+	rawReplacement := filepath.Join(dir, "raw-replacement")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"PINNED-ROOT-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","review_dir":"review"}}`)
+	if err := os.Mkdir(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw directory: %v", err)
+	}
+	if err := os.Mkdir(rawReplacement, 0o755); err != nil {
+		t.Fatalf("create replacement raw directory: %v", err)
+	}
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	previousHook := matrixOutputLocksAcquiredForTest
+	var swapErr error
+	matrixOutputLocksAcquiredForTest = func() {
+		if err := os.Rename(rawDir, rawOriginal); err != nil {
+			swapErr = err
+			return
+		}
+		if err := os.Rename(rawReplacement, rawDir); err != nil {
+			swapErr = err
+		}
+	}
+	t.Cleanup(func() { matrixOutputLocksAcquiredForTest = previousHook })
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Appearance: &matrixTestAppearance{},
+	})
+	if swapErr != nil {
+		t.Fatalf("swap output root: %v", swapErr)
+	}
+	if runErr == nil {
+		t.Fatalf("RunMatrixWithDependencies() error = nil, want fail-closed root replacement")
+	}
+	if result == nil || len(result.Cells) != 1 {
+		t.Fatalf("RunMatrixWithDependencies() result = %+v, want one partial cell", result)
+	}
+	replacementArtifact := filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png")
+	if _, err := os.Stat(replacementArtifact); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement artifact stat error = %v, want no write through reopened root", err)
+	}
+	if result.Cells[0].Status == MatrixCellSuccess {
+		t.Fatalf("cell status = %q, want fail-closed root replacement", result.Cells[0].Status)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "review", "manifest.json")); err != nil {
+		t.Fatalf("partial review manifest stat error = %v, want review publication to remain available", err)
+	}
+}
+
+func TestMatrixAttemptProvidersUsePrivatePinnedDestinations(t *testing.T) {
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	framedDir := filepath.Join(dir, "framed")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw output root: %v", err)
+	}
+	if err := os.MkdirAll(framedDir, 0o755); err != nil {
+		t.Fatalf("create framed output root: %v", err)
+	}
+	rawRoot, err := rootfs.New(rawDir)
+	if err != nil {
+		t.Fatalf("open raw output root: %v", err)
+	}
+	defer rawRoot.Close()
+	framedRoot, err := rootfs.New(framedDir)
+	if err != nil {
+		t.Fatalf("open framed output root: %v", err)
+	}
+	defer framedRoot.Close()
+
+	cell := MatrixCell{
+		ID:          "phone|en-US|light|default",
+		Device:      "phone",
+		UDID:        "SIM-UDID",
+		Locale:      "en-US",
+		Appearance:  "light",
+		Content:     "default",
+		RawDir:      filepath.Join(rawDir, "en-US", "phone", "light", "default"),
+		FramedDir:   filepath.Join(framedDir, "en-US", "phone", "light", "default"),
+		RawPaths:    []string{filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png")},
+		FramedPaths: []string{filepath.Join(framedDir, "en-US", "phone", "light", "default", "home.png")},
+	}
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	matrixPlan := &MatrixPlan{Output: MatrixOutput{Frame: MatrixFrame{Enabled: true, DeviceByMatrixDevice: map[string]string{"phone": "iphone-17-pro"}}}}
+	inside := func(root, path string) bool {
+		relative, err := filepath.Rel(root, path)
+		return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	}
+	runChecked, frameChecked := false, false
+	deps := MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			if inside(rawDir, plan.App.OutputDir) {
+				t.Errorf("capture output directory %q remains under selected raw root %q", plan.App.OutputDir, rawDir)
+			}
+			info, statErr := os.Stat(plan.App.OutputDir)
+			if statErr != nil {
+				t.Errorf("stat private capture output directory: %v", statErr)
+			} else if got := info.Mode().Perm(); got != 0o700 {
+				t.Errorf("capture output directory mode = %o, want 700", got)
+			}
+			runChecked = true
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Frame: func(_ context.Context, request FrameRequest) (*FrameResult, error) {
+			frameDir := filepath.Dir(request.OutputPath)
+			if inside(framedDir, frameDir) {
+				t.Errorf("framing output directory %q remains under selected framed root %q", frameDir, framedDir)
+			}
+			info, statErr := os.Stat(frameDir)
+			if statErr != nil {
+				t.Errorf("stat private framing output directory: %v", statErr)
+			} else if got := info.Mode().Perm(); got != 0o700 {
+				t.Errorf("framing output directory mode = %o, want 700", got)
+			}
+			frameChecked = true
+			writeMatrixPNG(t, request.OutputPath)
+			return &FrameResult{}, nil
+		},
+	}
+	if _, err := executeMatrixCellAttempt(context.Background(), cell, base, matrixPlan, deps, matrixOutputRoots{
+		raw: rawRoot, rawPath: rawDir, framed: framedRoot, framedPath: framedDir, hasFramed: true,
+	}); err != nil {
+		t.Fatalf("executeMatrixCellAttempt() error = %v", err)
+	}
+	if !runChecked || !frameChecked {
+		t.Fatalf("provider checks = capture:%t frame:%t, want both providers invoked", runChecked, frameChecked)
+	}
+}
+
+func TestCaptureWithRootPublishesThroughPinnedDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement is not reliable on Windows")
+	}
+	dir := t.TempDir()
+	destinationPath := filepath.Join(dir, "destination")
+	outsidePath := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(destinationPath, 0o755); err != nil {
+		t.Fatalf("create destination: %v", err)
+	}
+	if err := os.MkdirAll(outsidePath, 0o755); err != nil {
+		t.Fatalf("create outside: %v", err)
+	}
+	destination, err := rootfs.New(destinationPath)
+	if err != nil {
+		t.Fatalf("open destination: %v", err)
+	}
+	defer destination.Close()
+	originalPath := destinationPath + "-original"
+	previousHook := matrixCaptureRootBeforePublishForTest
+	matrixCaptureRootBeforePublishForTest = func(string) {
+		if err := os.Rename(destinationPath, originalPath); err != nil {
+			t.Fatalf("rename destination: %v", err)
+		}
+		if err := os.Symlink(outsidePath, destinationPath); err != nil {
+			t.Fatalf("replace destination: %v", err)
+		}
+	}
+	t.Cleanup(func() { matrixCaptureRootBeforePublishForTest = previousHook })
+	provider := ProviderFunc(func(_ context.Context, request CaptureRequest) (string, error) {
+		path := filepath.Join(request.OutputDir, request.Name+".png")
+		writeMinimalPNG(t, path, 100, 200)
+		return path, nil
+	})
+	result, err := captureWithRootProvider(context.Background(), CaptureRequest{Name: "home", OutputDir: destinationPath}, destination, provider)
+	if err == nil {
+		t.Fatalf("captureWithRootProvider() error = nil, want fail-closed destination replacement")
+	}
+	if result != nil {
+		t.Fatalf("capture result = %+v, want no result after destination replacement", result)
+	}
+	if _, err := os.Stat(filepath.Join(originalPath, "home.png")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pinned destination artifact stat error = %v, want no publication after replacement", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsidePath, "home.png")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("capture wrote through replaced destination: %v", err)
+	}
+}
+
+func TestCaptureWithRootRejectsFinalSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("final symlink fixtures require elevated privileges on Windows")
+	}
+	dir := t.TempDir()
+	destinationPath := filepath.Join(dir, "destination")
+	outsidePath := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(destinationPath, 0o755); err != nil {
+		t.Fatalf("create destination: %v", err)
+	}
+	if err := os.MkdirAll(outsidePath, 0o755); err != nil {
+		t.Fatalf("create outside: %v", err)
+	}
+	sentinelPath := filepath.Join(outsidePath, "sentinel")
+	if err := os.WriteFile(sentinelPath, []byte("untouched"), 0o600); err != nil {
+		t.Fatalf("write outside sentinel: %v", err)
+	}
+	destination, err := rootfs.New(destinationPath)
+	if err != nil {
+		t.Fatalf("open destination: %v", err)
+	}
+	defer destination.Close()
+	previousHook := matrixCaptureRootBeforePublishForTest
+	matrixCaptureRootBeforePublishForTest = func(outputPath string) {
+		if err := os.Symlink(sentinelPath, outputPath); err != nil {
+			t.Fatalf("replace final destination with symlink: %v", err)
+		}
+	}
+	t.Cleanup(func() { matrixCaptureRootBeforePublishForTest = previousHook })
+	provider := ProviderFunc(func(_ context.Context, request CaptureRequest) (string, error) {
+		path := filepath.Join(request.OutputDir, request.Name+".png")
+		writeMinimalPNG(t, path, 100, 200)
+		return path, nil
+	})
+	result, err := captureWithRootProvider(context.Background(), CaptureRequest{Name: "home", OutputDir: destinationPath}, destination, provider)
+	if err == nil {
+		t.Fatal("captureWithRootProvider() error = nil, want final symlink rejection")
+	}
+	if result != nil {
+		t.Fatalf("capture result = %+v, want no result after final symlink rejection", result)
+	}
+	if got, readErr := os.ReadFile(sentinelPath); readErr != nil || string(got) != "untouched" {
+		t.Fatalf("outside sentinel = %q, read error = %v, want unchanged", got, readErr)
+	}
+	info, statErr := os.Lstat(filepath.Join(destinationPath, "home.png"))
+	if statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("final destination = %+v, stat error = %v, want preserved symlink", info, statErr)
+	}
+}
+
+// ProviderFunc adapts a function to the screenshot Provider contract for
+// rooted publication tests.
+type ProviderFunc func(context.Context, CaptureRequest) (string, error)
+
+func (f ProviderFunc) Capture(ctx context.Context, request CaptureRequest) (string, error) {
+	return f(ctx, request)
+}
+
+func TestRunPlanWithRootUsesPinnedCaptureScratch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement is not reliable on Windows")
+	}
+	dir := t.TempDir()
+	destinationPath := filepath.Join(dir, "destination")
+	outsidePath := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(destinationPath, 0o755); err != nil {
+		t.Fatalf("create destination: %v", err)
+	}
+	if err := os.MkdirAll(outsidePath, 0o755); err != nil {
+		t.Fatalf("create outside: %v", err)
+	}
+	sentinelPath := filepath.Join(outsidePath, "sentinel")
+	if err := os.WriteFile(sentinelPath, []byte("untouched"), 0o600); err != nil {
+		t.Fatalf("write outside sentinel: %v", err)
+	}
+	templatePath := filepath.Join(dir, "template.png")
+	writeMinimalPNG(t, templatePath, 100, 200)
+
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin: %v", err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "xcrun"), `#!/bin/sh
+set -eu
+`)
+	writeExecutable(t, filepath.Join(binDir, "axe"), `#!/bin/sh
+set -eu
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then out="$2"; break; fi
+  shift
+done
+cp "$AXE_TEMPLATE_PNG" "$out"
+scratch=$(dirname "$out")
+mv "$scratch" "$scratch-original"
+ln -s "$MATRIX_OUTSIDE" "$scratch"
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AXE_TEMPLATE_PNG", templatePath)
+	t.Setenv("MATRIX_OUTSIDE", outsidePath)
+
+	root, err := rootfs.New(destinationPath)
+	if err != nil {
+		t.Fatalf("open destination root: %v", err)
+	}
+	defer root.Close()
+	name := "home"
+	plan := &Plan{
+		Version: 1,
+		App:     PlanApp{BundleID: "com.example.app", OutputDir: destinationPath},
+		Steps:   []PlanStep{{Action: ActionScreenshot, Name: &name}},
+	}
+	result, err := runPlanWithRoot(context.Background(), plan, root)
+	if err == nil {
+		t.Fatalf("runPlanWithRoot() error = nil, want swapped capture scratch rejection")
+	}
+	if result == nil || len(result.Steps) != 1 || result.Steps[0].Status != "error" {
+		t.Fatalf("runPlanWithRoot() result = %+v, want failed screenshot step", result)
+	}
+	if got, readErr := os.ReadFile(sentinelPath); readErr != nil || string(got) != "untouched" {
+		t.Fatalf("outside sentinel = %q, read error = %v, want unchanged", got, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(destinationPath, "home.png")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination artifact stat error = %v, want no publication", statErr)
+	}
+}
+
+func TestFrameIntoRootUsesPinnedKoubouScratch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement is not reliable on Windows")
+	}
+	resetKoubouVersionCacheForTest()
+	dir := t.TempDir()
+	destinationPath := filepath.Join(dir, "destination")
+	outsidePath := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(destinationPath, 0o755); err != nil {
+		t.Fatalf("create destination: %v", err)
+	}
+	if err := os.MkdirAll(outsidePath, 0o755); err != nil {
+		t.Fatalf("create outside: %v", err)
+	}
+	sentinelPath := filepath.Join(outsidePath, "sentinel")
+	if err := os.WriteFile(sentinelPath, []byte("untouched"), 0o600); err != nil {
+		t.Fatalf("write outside sentinel: %v", err)
+	}
+	rawPath := filepath.Join(dir, "raw.png")
+	writeMinimalPNG(t, rawPath, 200, 300)
+	templatePath := filepath.Join(dir, "template.png")
+	writeMinimalPNG(t, templatePath, 2880, 1800)
+
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin: %v", err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "kou"), `#!/bin/sh
+set -eu
+if [ "$1" = "--version" ]; then
+  echo "kou 0.18.1"
+  exit 0
+fi
+if [ "$1" != "generate" ]; then
+  exit 1
+fi
+work=$(dirname "$2")
+mkdir -p "$work/output"
+cp "$KOU_TEMPLATE_PNG" "$work/output/framed.png"
+mv "$work" "$work-original"
+ln -s "$MATRIX_OUTSIDE" "$work"
+printf '[{"name":"framed","path":"output/framed.png","success":true}]'
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("KOU_TEMPLATE_PNG", templatePath)
+	t.Setenv("MATRIX_OUTSIDE", outsidePath)
+
+	root, err := rootfs.New(destinationPath)
+	if err != nil {
+		t.Fatalf("open destination root: %v", err)
+	}
+	defer root.Close()
+	result, err := frameIntoRoot(context.Background(), FrameRequest{
+		InputPath:  rawPath,
+		OutputPath: filepath.Join(destinationPath, "home.png"),
+		Device:     string(FrameDeviceMac),
+	}, root)
+	if err == nil {
+		t.Fatalf("frameIntoRoot() error = nil, want swapped Koubou scratch rejection")
+	}
+	if result != nil {
+		t.Fatalf("frameIntoRoot() result = %+v, want no result", result)
+	}
+	if got, readErr := os.ReadFile(sentinelPath); readErr != nil || string(got) != "untouched" {
+		t.Fatalf("outside sentinel = %q, read error = %v, want unchanged", got, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(destinationPath, "home.png")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination artifact stat error = %v, want no publication", statErr)
+	}
+}
+
+func TestFrameIntoRootRejectsSymlinkedInputBeforeKoubou(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixture requires elevated permissions on Windows")
+	}
+	dir := t.TempDir()
+	destinationPath := filepath.Join(dir, "destination")
+	if err := os.MkdirAll(destinationPath, 0o755); err != nil {
+		t.Fatalf("create destination: %v", err)
+	}
+	inputPath := filepath.Join(dir, "input.png")
+	originalPath := inputPath + "-original"
+	outsidePath := filepath.Join(dir, "outside.png")
+	writeMinimalPNG(t, inputPath, 200, 300)
+	writeMinimalPNG(t, outsidePath, 200, 300)
+	previous := matrixFrameInputBeforeCopyForTest
+	called := false
+	matrixFrameInputBeforeCopyForTest = func(path string) {
+		called = true
+		if err := os.Rename(path, originalPath); err != nil {
+			t.Errorf("rename input: %v", err)
+			return
+		}
+		if err := os.Symlink(outsidePath, path); err != nil {
+			t.Errorf("replace input with symlink: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		matrixFrameInputBeforeCopyForTest = previous
+		_ = os.Remove(inputPath)
+		_ = os.Remove(originalPath)
+	})
+	root, err := rootfs.New(destinationPath)
+	if err != nil {
+		t.Fatalf("open destination root: %v", err)
+	}
+	defer root.Close()
+	result, err := frameIntoRoot(context.Background(), FrameRequest{
+		InputPath:  inputPath,
+		OutputPath: filepath.Join(destinationPath, "home.png"),
+		Device:     string(FrameDeviceMac),
+	}, root)
+	if !called {
+		t.Fatal("input replacement seam was not called")
+	}
+	if err == nil {
+		t.Fatal("frameIntoRoot() error = nil, want symlinked input rejection")
+	}
+	if result != nil {
+		t.Fatalf("frameIntoRoot() result = %+v, want no result", result)
+	}
+	if _, statErr := os.Lstat(filepath.Join(destinationPath, "home.png")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination stat error = %v, want no publication", statErr)
+	}
+}
+
+func TestFrameIntoRootRejectsReplacedInputBeforeKoubou(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixture requires elevated permissions on Windows")
+	}
+	dir := t.TempDir()
+	destinationPath := filepath.Join(dir, "destination")
+	outsidePath := filepath.Join(dir, "outside.png")
+	inputPath := filepath.Join(dir, "input.png")
+	if err := os.MkdirAll(destinationPath, 0o755); err != nil {
+		t.Fatalf("create destination: %v", err)
+	}
+	writeMinimalPNG(t, inputPath, 200, 300)
+	writeMinimalPNG(t, outsidePath, 200, 300)
+	previous := matrixFrameInputBeforeGenerateForTest
+	var replacedOriginalPath string
+	called := false
+	matrixFrameInputBeforeGenerateForTest = func(path string) {
+		called = true
+		if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+			t.Errorf("unlock input scratch for race fixture: %v", err)
+			return
+		}
+		replacedOriginalPath = path + "-original"
+		if err := os.Rename(path, replacedOriginalPath); err != nil {
+			t.Errorf("rename prepared input: %v", err)
+			return
+		}
+		if err := os.Symlink(outsidePath, path); err != nil {
+			t.Errorf("replace prepared input with symlink: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		matrixFrameInputBeforeGenerateForTest = previous
+		_ = os.Remove(inputPath)
+		if replacedOriginalPath != "" {
+			_ = os.Remove(replacedOriginalPath)
+		}
+	})
+	root, err := rootfs.New(destinationPath)
+	if err != nil {
+		t.Fatalf("open destination root: %v", err)
+	}
+	defer root.Close()
+	result, err := frameIntoRoot(context.Background(), FrameRequest{
+		InputPath:  inputPath,
+		OutputPath: filepath.Join(destinationPath, "home.png"),
+		Device:     string(FrameDeviceMac),
+	}, root)
+	if !called {
+		t.Fatal("prepared input replacement seam was not called")
+	}
+	if err == nil {
+		t.Fatal("frameIntoRoot() error = nil, want replaced input rejection")
+	}
+	if result != nil {
+		t.Fatalf("frameIntoRoot() result = %+v, want no result", result)
+	}
+	if _, statErr := os.Lstat(filepath.Join(destinationPath, "home.png")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination stat error = %v, want no publication", statErr)
+	}
+}
+
+func TestFrameIntoRootPreservesReplacementWhenWorkRootAnchoringFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement is not reliable on Windows")
+	}
+	dir := t.TempDir()
+	destinationPath := filepath.Join(dir, "destination")
+	outsidePath := filepath.Join(dir, "outside")
+	inputPath := filepath.Join(dir, "input.png")
+	if err := os.MkdirAll(destinationPath, 0o755); err != nil {
+		t.Fatalf("create destination: %v", err)
+	}
+	if err := os.MkdirAll(outsidePath, 0o755); err != nil {
+		t.Fatalf("create outside: %v", err)
+	}
+	sentinelPath := filepath.Join(outsidePath, "sentinel")
+	if err := os.WriteFile(sentinelPath, []byte("preserve"), 0o600); err != nil {
+		t.Fatalf("write outside sentinel: %v", err)
+	}
+	writeMinimalPNG(t, inputPath, 200, 300)
+	var originalWorkRoot, replacedWorkRoot string
+	previous := matrixFrameWorkRootBeforeAnchorForTest
+	matrixFrameWorkRootBeforeAnchorForTest = func(path string) {
+		originalWorkRoot = path + "-original"
+		if err := os.Rename(path, originalWorkRoot); err != nil {
+			t.Errorf("rename Koubou work root: %v", err)
+			return
+		}
+		if err := os.Symlink(outsidePath, path); err != nil {
+			t.Errorf("replace Koubou work root: %v", err)
+			return
+		}
+		replacedWorkRoot = path
+	}
+	t.Cleanup(func() {
+		matrixFrameWorkRootBeforeAnchorForTest = previous
+		if originalWorkRoot != "" {
+			_ = os.RemoveAll(originalWorkRoot)
+		}
+		if replacedWorkRoot == "" {
+			return
+		}
+		info, statErr := os.Lstat(replacedWorkRoot)
+		if errors.Is(statErr, os.ErrNotExist) {
+			return
+		}
+		if statErr != nil {
+			t.Errorf("stat replaced Koubou work root: %v", statErr)
+			return
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("replaced Koubou work root = %s, want test-created symlink", info.Mode())
+			return
+		}
+		if removeErr := os.Remove(replacedWorkRoot); removeErr != nil {
+			t.Errorf("remove replaced Koubou work root: %v", removeErr)
+			return
+		}
+		if _, statErr := os.Lstat(replacedWorkRoot); !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("replaced Koubou work root residue: %v", statErr)
+		}
+	})
+	root, err := rootfs.New(destinationPath)
+	if err != nil {
+		t.Fatalf("open destination root: %v", err)
+	}
+	defer root.Close()
+	result, err := frameIntoRoot(context.Background(), FrameRequest{
+		InputPath:  inputPath,
+		OutputPath: filepath.Join(destinationPath, "home.png"),
+		Device:     string(FrameDeviceMac),
+	}, root)
+	if err == nil {
+		t.Fatal("frameIntoRoot() error = nil, want work-root anchoring failure")
+	}
+	if result != nil {
+		t.Fatalf("frameIntoRoot() result = %+v, want no result", result)
+	}
+	if got, readErr := os.ReadFile(sentinelPath); readErr != nil || string(got) != "preserve" {
+		t.Fatalf("outside sentinel = %q, read error = %v, want replacement preserved", got, readErr)
+	}
+}
+
+func TestRunMatrixRejectsAmbiguousRootedCallbacksBeforeExecution(t *testing.T) {
+	var runPlanCalled, rootedRunPlanCalled, frameCalled, rootedFrameCalled bool
+	_, err := RunMatrixWithDependencies(context.Background(), "", nil, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(context.Context, *Plan) (*RunResult, error) {
+			runPlanCalled = true
+			return nil, nil
+		},
+		RunPlanRooted: func(context.Context, *Plan, rootfs.Root) (*RunResult, error) {
+			rootedRunPlanCalled = true
+			return nil, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "RunPlan and RunPlanRooted are mutually exclusive") {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want ambiguous plan callback validation", err)
+	}
+	if runPlanCalled || rootedRunPlanCalled || frameCalled || rootedFrameCalled {
+		t.Fatal("ambiguous callback validation invoked a provider")
+	}
+	_, err = RunMatrixWithDependencies(context.Background(), "", nil, MatrixOptions{}, MatrixDependencies{
+		Frame: func(context.Context, FrameRequest) (*FrameResult, error) {
+			frameCalled = true
+			return nil, nil
+		},
+		FrameRooted: func(context.Context, FrameRequest, rootfs.Root) (*FrameResult, error) {
+			rootedFrameCalled = true
+			return nil, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Frame and FrameRooted are mutually exclusive") {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want ambiguous frame callback validation", err)
+	}
+	if frameCalled || rootedFrameCalled {
+		t.Fatal("ambiguous frame callback validation invoked a provider")
+	}
+}
+
+func TestMatrixAttemptRejectsReplacedPrivateCaptureRoot(t *testing.T) {
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw output root: %v", err)
+	}
+	rawRoot, err := rootfs.New(rawDir)
+	if err != nil {
+		t.Fatalf("open raw output root: %v", err)
+	}
+	defer rawRoot.Close()
+	cell := MatrixCell{
+		ID:     "phone|en-US|light|default",
+		Device: "phone",
+		UDID:   "SIM-UDID",
+		RawDir: filepath.Join(rawDir, "en-US", "phone", "light", "default"),
+		RawPaths: []string{
+			filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png"),
+		},
+	}
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	matrixPlan := &MatrixPlan{}
+	var attemptParentPath string
+	previousParentCreated := matrixPrivateAttemptParentCreatedForTest
+	matrixPrivateAttemptParentCreatedForTest = func(path string) { attemptParentPath = path }
+	t.Cleanup(func() { matrixPrivateAttemptParentCreatedForTest = previousParentCreated })
+	t.Cleanup(func() {
+		if attemptParentPath != "" {
+			_ = os.RemoveAll(attemptParentPath)
+		}
+	})
+	outside := filepath.Join(dir, "outside")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatalf("create outside directory: %v", err)
+	}
+	_, attemptErr := executeMatrixCellAttempt(context.Background(), cell, base, matrixPlan, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			original := plan.App.OutputDir + "-original"
+			if err := os.Rename(plan.App.OutputDir, original); err != nil {
+				return nil, err
+			}
+			if err := os.Symlink(outside, plan.App.OutputDir); err != nil {
+				return nil, err
+			}
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+	}, matrixOutputRoots{raw: rawRoot, rawPath: rawDir})
+	if attemptErr == nil {
+		t.Fatal("executeMatrixCellAttempt() error = nil, want replaced private root failure")
+	}
+	if _, err := os.Stat(cell.RawPaths[0]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("raw destination stat error = %v, want no promoted artifact", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "home.png")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("provider wrote outside private attempt root: %v", err)
+	}
+}
+
+func TestMatrixAttemptRejectsReplacedPrivateFrameRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement is not reliable on Windows")
+	}
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	framedDir := filepath.Join(dir, "framed")
+	outside := filepath.Join(dir, "outside")
+	for _, path := range []string{rawDir, framedDir, outside} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("create %s: %v", path, err)
+		}
+	}
+	rawRoot, err := rootfs.New(rawDir)
+	if err != nil {
+		t.Fatalf("open raw output root: %v", err)
+	}
+	defer rawRoot.Close()
+	framedRoot, err := rootfs.New(framedDir)
+	if err != nil {
+		t.Fatalf("open framed output root: %v", err)
+	}
+	defer framedRoot.Close()
+	cell := MatrixCell{
+		ID:          "phone|en-US|light|default",
+		Device:      "phone",
+		UDID:        "SIM-FRAME-SWAP",
+		RawDir:      filepath.Join(rawDir, "en-US", "phone", "light", "default"),
+		FramedDir:   filepath.Join(framedDir, "en-US", "phone", "light", "default"),
+		RawPaths:    []string{filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png")},
+		FramedPaths: []string{filepath.Join(framedDir, "en-US", "phone", "light", "default", "home.png")},
+	}
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	matrixPlan := &MatrixPlan{Output: MatrixOutput{Frame: MatrixFrame{Enabled: true, DeviceByMatrixDevice: map[string]string{"phone": "iphone-17-pro"}}}}
+	_, attemptErr := executeMatrixCellAttempt(context.Background(), cell, base, matrixPlan, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Frame: func(_ context.Context, request FrameRequest) (*FrameResult, error) {
+			frameDir := filepath.Dir(request.OutputPath)
+			original := frameDir + "-original"
+			if err := os.Rename(frameDir, original); err != nil {
+				return nil, err
+			}
+			if err := os.Symlink(outside, frameDir); err != nil {
+				return nil, err
+			}
+			writeMatrixPNG(t, filepath.Join(frameDir, "home.png"))
+			return &FrameResult{}, nil
+		},
+	}, matrixOutputRoots{raw: rawRoot, rawPath: rawDir, framed: framedRoot, framedPath: framedDir, hasFramed: true})
+	if attemptErr == nil {
+		t.Fatal("executeMatrixCellAttempt() error = nil, want replaced private frame root failure")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "home.png")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("frame provider wrote outside private attempt root: %v", err)
+	}
+}
+
+func TestCreateMatrixPrivateAttemptRootRejectsReplacementBetweenRootAndChildOpen(t *testing.T) {
+	var parentPath string
+	var originalPath string
+	var replacementSentinel string
+	var swapErr error
+	previousParentCreated := matrixPrivateAttemptParentCreatedForTest
+	previousHook := matrixPrivateAttemptRootBeforeChildRootForTest
+	matrixPrivateAttemptParentCreatedForTest = func(path string) { parentPath = path }
+	matrixPrivateAttemptRootBeforeChildRootForTest = func(path string) {
+		originalPath = path + "-original"
+		if err := os.Rename(path, originalPath); err != nil {
+			swapErr = err
+			return
+		}
+		if err := os.Mkdir(path, 0o700); err != nil {
+			swapErr = err
+			return
+		}
+		replacementSentinel = filepath.Join(path, "replacement-sentinel")
+		swapErr = os.WriteFile(replacementSentinel, []byte("replacement must survive"), 0o600)
+	}
+	t.Cleanup(func() {
+		matrixPrivateAttemptParentCreatedForTest = previousParentCreated
+		matrixPrivateAttemptRootBeforeChildRootForTest = previousHook
+	})
+
+	attempt, err := createMatrixPrivateAttemptRoot()
+	if swapErr != nil {
+		t.Fatalf("replace private attempt root: %v", swapErr)
+	}
+	if err == nil {
+		_ = attempt.close()
+		t.Fatal("createMatrixPrivateAttemptRoot() error = nil, want construction identity failure")
+	}
+	if replacementSentinel == "" {
+		t.Fatal("replacement callback did not create sentinel")
+	}
+	if _, statErr := os.Stat(replacementSentinel); statErr != nil {
+		t.Fatalf("replacement sentinel stat error = %v, want replacement preserved", statErr)
+	}
+	t.Cleanup(func() {
+		if originalPath != "" {
+			_ = os.RemoveAll(originalPath)
+		}
+		if replacementSentinel != "" {
+			_ = os.RemoveAll(filepath.Dir(replacementSentinel))
+		}
+		if parentPath != "" {
+			_ = os.RemoveAll(parentPath)
+		}
+	})
+}
+
+func TestCreateMatrixPrivateAttemptRootEarlyFailuresPreserveReplacements(t *testing.T) {
+	tests := []struct {
+		name      string
+		stage     string
+		uncertain bool
+	}{
+		{name: "grandparent open", stage: "grandparent_open", uncertain: true},
+		{name: "parent open", stage: "parent_open", uncertain: true},
+		{name: "parent stat", stage: "parent_stat", uncertain: true},
+		{name: "mkdir", stage: "mkdir"},
+		{name: "child lstat", stage: "child_lstat", uncertain: true},
+		{name: "child open", stage: "child_open"},
+		{name: "child stat", stage: "child_stat"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, nonEmpty := range []bool{false, true} {
+				t.Run(fmt.Sprintf("replacement-empty-%t", nonEmpty), func(t *testing.T) {
+					var parentPath string
+					var originalPath, replacementPath, replacementSentinel string
+					var swapErr error
+					previousParentCreated := matrixPrivateAttemptParentCreatedForTest
+					previousOperation := matrixPrivateAttemptOperationForTest
+					matrixPrivateAttemptParentCreatedForTest = func(path string) { parentPath = path }
+					matrixPrivateAttemptOperationForTest = func(stage, path string) error {
+						if stage != tc.stage {
+							return nil
+						}
+						target := path
+						if stage == "grandparent_open" || stage == "mkdir" {
+							target = parentPath
+						}
+						originalPath = target + "-original"
+						if err := os.Rename(target, originalPath); err != nil {
+							swapErr = err
+							return swapErr
+						}
+						if err := os.Mkdir(target, 0o700); err != nil {
+							swapErr = err
+							return swapErr
+						}
+						replacementPath = target
+						if nonEmpty {
+							replacementSentinel = filepath.Join(target, "replacement-sentinel")
+							swapErr = os.WriteFile(replacementSentinel, []byte("replacement must survive"), 0o600)
+						}
+						return errors.New("injected matrix private attempt construction failure")
+					}
+					t.Cleanup(func() {
+						matrixPrivateAttemptParentCreatedForTest = previousParentCreated
+						matrixPrivateAttemptOperationForTest = previousOperation
+						if replacementPath != "" {
+							_ = os.RemoveAll(replacementPath)
+						}
+						if originalPath != "" {
+							_ = os.RemoveAll(originalPath)
+						}
+						if parentPath != "" {
+							_ = os.RemoveAll(parentPath)
+						}
+					})
+
+					attempt, err := createMatrixPrivateAttemptRoot()
+					if got := errors.Is(err, errMatrixPrivateAttemptCleanupUncertain); got != tc.uncertain {
+						t.Fatalf("cleanup uncertainty = %t, want %t (err=%v)", got, tc.uncertain, err)
+					}
+					if err == nil {
+						_ = attempt.close()
+						t.Fatal("createMatrixPrivateAttemptRoot() error = nil, want injected construction failure")
+					}
+					if swapErr != nil {
+						t.Fatalf("replace construction path: %v", swapErr)
+					}
+					if replacementPath == "" {
+						t.Fatal("replacement path was not created")
+					}
+					if _, statErr := os.Stat(replacementPath); statErr != nil {
+						t.Fatalf("replacement stat error = %v, want replacement preserved", statErr)
+					}
+					if nonEmpty {
+						if _, statErr := os.Stat(replacementSentinel); statErr != nil {
+							t.Fatalf("replacement sentinel stat error = %v, want replacement preserved", statErr)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestCreateMatrixPrivateAttemptRootClosesReopenedChildOnParentLockFailure(t *testing.T) {
+	var parentPath string
+	previousParentCreated := matrixPrivateAttemptParentCreatedForTest
+	previousOperation := matrixPrivateAttemptOperationForTest
+	matrixPrivateAttemptParentCreatedForTest = func(path string) { parentPath = path }
+	matrixPrivateAttemptOperationForTest = func(stage, _ string) error {
+		if stage == "parent_lock" {
+			return errors.New("injected parent lock failure")
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		matrixPrivateAttemptParentCreatedForTest = previousParentCreated
+		matrixPrivateAttemptOperationForTest = previousOperation
+		if parentPath != "" {
+			_ = os.RemoveAll(parentPath)
+		}
+	})
+	attempt, err := createMatrixPrivateAttemptRoot()
+	if err == nil {
+		_ = attempt.close()
+		t.Fatal("createMatrixPrivateAttemptRoot() error = nil, want injected lock failure")
+	}
+	if !strings.Contains(err.Error(), "injected parent lock failure") {
+		t.Fatalf("createMatrixPrivateAttemptRoot() error = %v, want injected lock failure", err)
+	}
+	if parentPath == "" {
+		t.Fatal("private attempt parent callback was not called")
+	}
+}
+
+func TestMatrixAttemptCleanupPreservesEmptyReplacement(t *testing.T) {
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw output root: %v", err)
+	}
+	rawRoot, err := rootfs.New(rawDir)
+	if err != nil {
+		t.Fatalf("open raw output root: %v", err)
+	}
+	defer rawRoot.Close()
+	cell := MatrixCell{
+		ID:     "phone|en-US|light|default",
+		Device: "phone",
+		UDID:   "SIM-UDID",
+		RawDir: filepath.Join(rawDir, "en-US", "phone", "light", "default"),
+		RawPaths: []string{
+			filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png"),
+		},
+	}
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	var replacementPath string
+	var originalPath string
+	var swapErr error
+	var swapped bool
+	previousHook := matrixPrivateAttemptBeforeCleanupRemoveForTest
+	matrixPrivateAttemptBeforeCleanupRemoveForTest = func(path string) {
+		if swapped {
+			return
+		}
+		swapped = true
+		originalPath = path + "-original"
+		if err := os.Rename(path, originalPath); err != nil {
+			swapErr = err
+			return
+		}
+		replacementPath = path
+		swapErr = os.Mkdir(replacementPath, 0o700)
+	}
+	t.Cleanup(func() { matrixPrivateAttemptBeforeCleanupRemoveForTest = previousHook })
+	_, attemptErr := executeMatrixCellAttempt(context.Background(), cell, base, &MatrixPlan{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+	}, matrixOutputRoots{raw: rawRoot, rawPath: rawDir})
+	if swapErr != nil {
+		t.Fatalf("replace private attempt root during cleanup: %v", swapErr)
+	}
+	if attemptErr != nil {
+		t.Fatalf("executeMatrixCellAttempt() error = %v, want cleanup to preserve replacement", attemptErr)
+	}
+	if !swapped || replacementPath == "" {
+		t.Fatal("cleanup replacement seam did not run")
+	}
+	if _, err := os.Stat(replacementPath); err != nil {
+		t.Fatalf("empty replacement stat error = %v, want replacement preserved", err)
+	}
+	if _, err := os.Stat(originalPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("original attempt root stat error = %v, want original cleaned", err)
+	}
+	t.Cleanup(func() {
+		if replacementPath != "" {
+			_ = os.RemoveAll(filepath.Dir(replacementPath))
+		}
+	})
+}
+
+func TestMatrixAttemptCleanupPreservesReplacedPrivateRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		frame         bool
+		callbackError bool
+	}{
+		{name: "capture success", frame: false},
+		{name: "capture callback error", frame: false, callbackError: true},
+		{name: "frame success", frame: true},
+		{name: "frame callback error", frame: true, callbackError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rawDir := filepath.Join(dir, "raw")
+			framedDir := filepath.Join(dir, "framed")
+			if err := os.MkdirAll(rawDir, 0o755); err != nil {
+				t.Fatalf("create raw output root: %v", err)
+			}
+			if tc.frame {
+				if err := os.MkdirAll(framedDir, 0o755); err != nil {
+					t.Fatalf("create framed output root: %v", err)
+				}
+			}
+			rawRoot, err := rootfs.New(rawDir)
+			if err != nil {
+				t.Fatalf("open raw output root: %v", err)
+			}
+			defer rawRoot.Close()
+			var framedRoot rootfs.Root
+			if tc.frame {
+				framedRoot, err = rootfs.New(framedDir)
+				if err != nil {
+					t.Fatalf("open framed output root: %v", err)
+				}
+				defer framedRoot.Close()
+			}
+			cell := MatrixCell{
+				ID:          "phone|en-US|light|default",
+				Device:      "phone",
+				UDID:        "SIM-UDID",
+				RawDir:      filepath.Join(rawDir, "en-US", "phone", "light", "default"),
+				RawPaths:    []string{filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png")},
+				FramedDir:   filepath.Join(framedDir, "en-US", "phone", "light", "default"),
+				FramedPaths: []string{filepath.Join(framedDir, "en-US", "phone", "light", "default", "home.png")},
+			}
+			base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+			matrixPlan := &MatrixPlan{}
+			if tc.frame {
+				matrixPlan.Output.Frame = MatrixFrame{Enabled: true, DeviceByMatrixDevice: map[string]string{"phone": "iphone-17-pro"}}
+			}
+			var replacementSentinel string
+			var originalAttemptPath string
+			replace := func(path string) error {
+				// The production parent is mutation-locked while providers run.
+				// Explicitly restore the test fixture's owner write bit here so
+				// this test continues to exercise cleanup after an adversarial
+				// replacement rather than the provider-destination guard.
+				if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+					return err
+				}
+				originalAttemptPath = path + "-original"
+				if err := os.Rename(path, originalAttemptPath); err != nil {
+					return err
+				}
+				if err := os.Mkdir(path, 0o700); err != nil {
+					return err
+				}
+				replacementSentinel = filepath.Join(path, "replacement-sentinel")
+				return os.WriteFile(replacementSentinel, []byte("must survive cleanup"), 0o600)
+			}
+			deps := MatrixDependencies{
+				RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+					if tc.frame {
+						writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+						return &RunResult{}, nil
+					}
+					if err := replace(plan.App.OutputDir); err != nil {
+						return nil, err
+					}
+					if tc.callbackError {
+						return nil, errors.New("capture callback failed")
+					}
+					return &RunResult{}, nil
+				},
+			}
+			if tc.frame {
+				deps.Frame = func(_ context.Context, request FrameRequest) (*FrameResult, error) {
+					if err := replace(filepath.Dir(request.OutputPath)); err != nil {
+						return nil, err
+					}
+					if tc.callbackError {
+						return nil, errors.New("frame callback failed")
+					}
+					return &FrameResult{}, nil
+				}
+			}
+			_, _ = executeMatrixCellAttempt(context.Background(), cell, base, matrixPlan, deps, matrixOutputRoots{
+				raw: rawRoot, rawPath: rawDir, framed: framedRoot, framedPath: framedDir, hasFramed: tc.frame,
+			})
+			if replacementSentinel == "" {
+				t.Fatal("replacement callback did not run")
+			}
+			if _, err := os.Stat(replacementSentinel); err != nil {
+				t.Fatalf("replacement sentinel stat error = %v, want replacement preserved", err)
+			}
+			if _, err := os.Stat(originalAttemptPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("original attempt root stat error = %v, want original cleaned", err)
+			}
+			t.Cleanup(func() {
+				if originalAttemptPath != "" {
+					_ = os.RemoveAll(filepath.Dir(originalAttemptPath))
+				}
+			})
+		})
+	}
+}
+
+func TestMatrixAttemptResourceErrorsSuppressSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		setCleanup bool
+	}{
+		{name: "cleanup", setCleanup: true},
+		{name: "close"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rawDir := filepath.Join(dir, "raw")
+			if err := os.MkdirAll(rawDir, 0o755); err != nil {
+				t.Fatalf("create raw output root: %v", err)
+			}
+			rawRoot, err := rootfs.New(rawDir)
+			if err != nil {
+				t.Fatalf("open raw output root: %v", err)
+			}
+			defer rawRoot.Close()
+			cell := MatrixCell{
+				ID:     "phone|en-US|light|default",
+				Device: "phone",
+				UDID:   "SIM-UDID",
+				RawDir: filepath.Join(rawDir, "en-US", "phone", "light", "default"),
+				RawPaths: []string{
+					filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png"),
+				},
+			}
+			base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+			resourceErr := errors.New("injected private attempt " + tc.name + " error")
+			previousCleanup := matrixPrivateAttemptCleanupForTest
+			previousClose := matrixPrivateAttemptCloseForTest
+			if tc.setCleanup {
+				matrixPrivateAttemptCleanupForTest = func(string) error { return resourceErr }
+			} else {
+				matrixPrivateAttemptCloseForTest = func(string) error { return resourceErr }
+			}
+			t.Cleanup(func() {
+				matrixPrivateAttemptCleanupForTest = previousCleanup
+				matrixPrivateAttemptCloseForTest = previousClose
+			})
+			attempt, attemptErr := executeMatrixCellAttempt(context.Background(), cell, base, &MatrixPlan{}, MatrixDependencies{
+				RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+					writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+					return &RunResult{}, nil
+				},
+			}, matrixOutputRoots{raw: rawRoot, rawPath: rawDir})
+			if attemptErr == nil || !errors.Is(attemptErr, resourceErr) {
+				t.Fatalf("executeMatrixCellAttempt() error = %v, want injected resource error", attemptErr)
+			}
+			if attempt.FailureStage != "cleanup" || attempt.FailureCode != "temporary_output_cleanup_failed" {
+				t.Fatalf("attempt failure = %s/%s, want cleanup/temporary_output_cleanup_failed", attempt.FailureStage, attempt.FailureCode)
+			}
+			if !attempt.CleanupFailed {
+				t.Fatal("attempt cleanupFailed = false, want cleanup uncertainty marker")
+			}
+		})
+	}
+}
+
+func TestMatrixAttemptPrimaryAndCleanupErrorsRemainJoined(t *testing.T) {
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw output root: %v", err)
+	}
+	rawRoot, err := rootfs.New(rawDir)
+	if err != nil {
+		t.Fatalf("open raw output root: %v", err)
+	}
+	defer rawRoot.Close()
+	cell := MatrixCell{
+		ID:     "phone|en-US|light|default",
+		Device: "phone",
+		UDID:   "SIM-UDID",
+		RawDir: filepath.Join(rawDir, "en-US", "phone", "light", "default"),
+		RawPaths: []string{
+			filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png"),
+		},
+	}
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	primaryErr := errors.New("primary attempt error")
+	cleanupErr := errors.New("cleanup attempt error")
+	previousHook := matrixPrivateAttemptCleanupForTest
+	matrixPrivateAttemptCleanupForTest = func(string) error { return cleanupErr }
+	t.Cleanup(func() { matrixPrivateAttemptCleanupForTest = previousHook })
+	attempt, attemptErr := executeMatrixCellAttempt(context.Background(), cell, base, &MatrixPlan{}, MatrixDependencies{
+		RunPlan: func(context.Context, *Plan) (*RunResult, error) { return nil, primaryErr },
+	}, matrixOutputRoots{raw: rawRoot, rawPath: rawDir})
+	if attemptErr == nil || !errors.Is(attemptErr, primaryErr) || !errors.Is(attemptErr, cleanupErr) {
+		t.Fatalf("executeMatrixCellAttempt() error = %v, want primary and cleanup causes", attemptErr)
+	}
+	if attempt.FailureCode != "plan_failed" || !strings.Contains(attempt.Error, "cleanup") {
+		t.Fatalf("attempt failure = %s/%s %q, want primary code plus cleanup uncertainty", attempt.FailureStage, attempt.FailureCode, attempt.Error)
+	}
+	if !attempt.CleanupFailed {
+		t.Fatal("attempt cleanupFailed = false, want cleanup uncertainty marker")
+	}
+}
+
+func TestRevalidateMatrixFramedPathsUsesPerArtifactBudget(t *testing.T) {
+	dir := t.TempDir()
+	framedDir := filepath.Join(dir, "framed")
+	if err := os.Mkdir(framedDir, 0o755); err != nil {
+		t.Fatalf("create framed directory: %v", err)
+	}
+	paths := []string{filepath.Join(framedDir, "first.png"), filepath.Join(framedDir, "second.png")}
+	for _, path := range paths {
+		writeMatrixPNG(t, path)
+	}
+	framedRoot, err := rootfs.New(framedDir)
+	if err != nil {
+		t.Fatalf("open framed root: %v", err)
+	}
+	expected := make(map[string]matrixArtifactInfo, len(paths))
+	for _, path := range paths {
+		artifact, inspectErr := inspectMatrixArtifact(framedRoot, framedDir, path)
+		if inspectErr != nil {
+			framedRoot.Close()
+			t.Fatalf("inspect expected artifact %q: %v", path, inspectErr)
+		}
+		expected[path] = artifact
+	}
+	if err := framedRoot.Close(); err != nil {
+		t.Fatalf("close framed root: %v", err)
+	}
+	result := &MatrixResult{FramedDir: framedDir, Cells: []MatrixCellResult{{
+		Status:          MatrixCellSuccess,
+		FramedPaths:     append([]string(nil), paths...),
+		Screenshots:     []MatrixScreenshotResult{{FramedPath: paths[0], Status: MatrixCellSuccess}, {FramedPath: paths[1], Status: MatrixCellSuccess}},
+		framedArtifacts: expected,
+	}}}
+	previousContextHook := matrixFramedVerificationContextForTest
+	var deadlines []time.Time
+	matrixFramedVerificationContextForTest = func(ctx context.Context) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Errorf("verification context has no deadline")
+			return
+		}
+		deadlines = append(deadlines, deadline)
+	}
+	t.Cleanup(func() { matrixFramedVerificationContextForTest = previousContextHook })
+	if err := revalidateMatrixFramedPathsWithBudget(context.Background(), result, 20*time.Millisecond); err != nil {
+		t.Fatalf("revalidateMatrixFramedPathsWithBudget() error = %v, want each artifact to receive its own budget", err)
+	}
+	if got := result.Cells[0].FramedPaths; !reflect.DeepEqual(got, paths) {
+		t.Fatalf("revalidated framed paths = %v, want %v", got, paths)
+	}
+	if len(deadlines) != len(paths) {
+		t.Fatalf("verification context count = %d, want %d", len(deadlines), len(paths))
+	}
+}
+
+func TestRevalidateMatrixFramedPathsPropagatesCallerCancellation(t *testing.T) {
+	dir := t.TempDir()
+	framedDir := filepath.Join(dir, "framed")
+	if err := os.Mkdir(framedDir, 0o755); err != nil {
+		t.Fatalf("create framed directory: %v", err)
+	}
+	path := filepath.Join(framedDir, "screen.png")
+	writeMatrixPNG(t, path)
+	framedRoot, err := rootfs.New(framedDir)
+	if err != nil {
+		t.Fatalf("open framed root: %v", err)
+	}
+	expected, err := inspectMatrixArtifact(framedRoot, framedDir, path)
+	if err != nil {
+		framedRoot.Close()
+		t.Fatalf("inspect expected artifact: %v", err)
+	}
+	if err := framedRoot.Close(); err != nil {
+		t.Fatalf("close framed root: %v", err)
+	}
+	result := &MatrixResult{FramedDir: framedDir, Cells: []MatrixCellResult{{
+		Status:          MatrixCellSuccess,
+		FramedPaths:     []string{path},
+		Screenshots:     []MatrixScreenshotResult{{FramedPath: path, Status: MatrixCellSuccess}},
+		framedArtifacts: map[string]matrixArtifactInfo{path: expected},
+	}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previousHook := matrixFramedVerificationBeforeArtifactForTest
+	matrixFramedVerificationBeforeArtifactForTest = cancel
+	t.Cleanup(func() { matrixFramedVerificationBeforeArtifactForTest = previousHook })
+	if err := revalidateMatrixFramedPathsWithBudget(ctx, result, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("revalidateMatrixFramedPathsWithBudget() error = %v, want context cancellation", err)
+	}
+	if got := result.Cells[0].Status; got != MatrixCellCanceled {
+		t.Fatalf("cell status = %q, want canceled", got)
+	}
+	if len(result.Cells[0].FramedPaths) != 0 {
+		t.Fatalf("framed paths = %v, want canceled path removed", result.Cells[0].FramedPaths)
+	}
+}
+
+func TestRevalidateMatrixFramedPathsAlreadyCanceledStopsImmediately(t *testing.T) {
+	dir := t.TempDir()
+	framedDir := filepath.Join(dir, "framed")
+	if err := os.Mkdir(framedDir, 0o755); err != nil {
+		t.Fatalf("create framed directory: %v", err)
+	}
+	path := filepath.Join(framedDir, "screen.png")
+	writeMatrixPNG(t, path)
+	framedRoot, err := rootfs.New(framedDir)
+	if err != nil {
+		t.Fatalf("open framed root: %v", err)
+	}
+	expected, err := inspectMatrixArtifact(framedRoot, framedDir, path)
+	if err != nil {
+		framedRoot.Close()
+		t.Fatalf("inspect expected artifact: %v", err)
+	}
+	if err := framedRoot.Close(); err != nil {
+		t.Fatalf("close framed root: %v", err)
+	}
+	result := &MatrixResult{FramedDir: framedDir, Cells: []MatrixCellResult{{
+		Status:          MatrixCellSuccess,
+		FramedPaths:     []string{path},
+		Screenshots:     []MatrixScreenshotResult{{FramedPath: path, Status: MatrixCellSuccess}},
+		framedArtifacts: map[string]matrixArtifactInfo{path: expected},
+	}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var inspected bool
+	previousHook := matrixFramedVerificationContextForTest
+	matrixFramedVerificationContextForTest = func(context.Context) { inspected = true }
+	t.Cleanup(func() { matrixFramedVerificationContextForTest = previousHook })
+	if err := revalidateMatrixFramedPathsWithBudget(ctx, result, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("revalidateMatrixFramedPathsWithBudget() error = %v, want context cancellation", err)
+	}
+	if inspected {
+		t.Fatal("framed verification inspected an artifact after caller cancellation")
+	}
+	if result.Cells[0].Status != MatrixCellCanceled || len(result.Cells[0].FramedPaths) != 0 {
+		t.Fatalf("canceled framed result = %+v, want canceled cell without paths", result.Cells[0])
+	}
+}
+
+func TestRevalidateMatrixFramedPathsChildTimeoutKeepsPartialReviewTruth(t *testing.T) {
+	dir := t.TempDir()
+	framedDir := filepath.Join(dir, "framed")
+	if err := os.Mkdir(framedDir, 0o755); err != nil {
+		t.Fatalf("create framed directory: %v", err)
+	}
+	paths := []string{filepath.Join(framedDir, "timeout.png"), filepath.Join(framedDir, "ready.png")}
+	for _, path := range paths {
+		writeMatrixPNG(t, path)
+	}
+	framedRoot, err := rootfs.New(framedDir)
+	if err != nil {
+		t.Fatalf("open framed root: %v", err)
+	}
+	expected := make([]matrixArtifactInfo, len(paths))
+	for index, path := range paths {
+		expected[index], err = inspectMatrixArtifact(framedRoot, framedDir, path)
+		if err != nil {
+			framedRoot.Close()
+			t.Fatalf("inspect expected artifact %q: %v", path, err)
+		}
+	}
+	if err := framedRoot.Close(); err != nil {
+		t.Fatalf("close framed root: %v", err)
+	}
+	result := &MatrixResult{FramedDir: framedDir, ReviewDir: filepath.Join(dir, "review"), Cells: []MatrixCellResult{
+		{
+			ID:              "timeout",
+			Status:          MatrixCellSuccess,
+			FramedPaths:     []string{paths[0]},
+			Screenshots:     []MatrixScreenshotResult{{FramedPath: paths[0], Status: MatrixCellSuccess}},
+			framedArtifacts: map[string]matrixArtifactInfo{paths[0]: expected[0]},
+		},
+		{
+			ID:              "ready",
+			Status:          MatrixCellSuccess,
+			FramedPaths:     []string{paths[1]},
+			Screenshots:     []MatrixScreenshotResult{{FramedPath: paths[1], Status: MatrixCellSuccess}},
+			framedArtifacts: map[string]matrixArtifactInfo{paths[1]: expected[1]},
+		},
+	}}
+	previousHook := matrixFramedVerificationContextForTest
+	seen := 0
+	matrixFramedVerificationContextForTest = func(ctx context.Context) {
+		seen++
+		if seen == 1 {
+			<-ctx.Done()
+		}
+	}
+	t.Cleanup(func() { matrixFramedVerificationContextForTest = previousHook })
+	if err := revalidateMatrixFramedPathsWithBudget(context.Background(), result, 20*time.Millisecond); err == nil {
+		t.Fatal("revalidateMatrixFramedPathsWithBudget() error = nil, want child timeout")
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("revalidateMatrixFramedPathsWithBudget() error = %v, want bounded non-context failure", err)
+	}
+	if result.Cells[0].Status != MatrixCellFailed || result.Cells[0].FailureCode != "framed_output_unavailable" {
+		t.Fatalf("timed-out cell = %+v, want framed output failure", result.Cells[0])
+	}
+	if result.Cells[1].Status != MatrixCellSuccess || len(result.Cells[1].FramedPaths) != 1 {
+		t.Fatalf("ready cell = %+v, want retained success", result.Cells[1])
+	}
+	countMatrixResultStatuses(result)
+	review, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: result, OutputDir: result.ReviewDir})
+	if err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v", err)
+	}
+	if review.Succeeded != 1 || review.Failed != 1 || review.Canceled != 0 {
+		t.Fatalf("review counts = %+v, want one success and one failure", review)
+	}
+}
+
 func TestRunMatrixRejectsReplacedRawOutputRootBeforeReview(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory replacement is not reliable while the rooted handle is open on Windows")
@@ -3498,6 +5027,126 @@ func TestRunMatrixRejectsReplacedRawOutputRootBeforeReview(t *testing.T) {
 	}
 	if len(manifest.Cells) != 1 || len(manifest.Cells[0].RawPaths) != 0 {
 		t.Fatalf("review manifest retained stale raw path: %+v", manifest.Cells)
+	}
+}
+
+func TestRunMatrixRejectsSymlinkedOutputRootsBeforeRevalidation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement is not reliable while the rooted handle is open on Windows")
+	}
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	rawDir := filepath.Join(dir, "raw")
+	framedDir := filepath.Join(dir, "framed")
+	rawOriginal := filepath.Join(dir, "raw-original")
+	framedOriginal := filepath.Join(dir, "framed-original")
+	rawOutside := filepath.Join(dir, "raw-outside")
+	framedOutside := filepath.Join(dir, "framed-outside")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","framed_dir":"framed","review_dir":"review","frame":{"enabled":true,"device_by_matrix_device":{"phone":"iphone-17-pro"}}}}`)
+	if err := os.Mkdir(rawOutside, 0o755); err != nil {
+		t.Fatalf("create outside raw root: %v", err)
+	}
+	if err := os.Mkdir(framedOutside, 0o755); err != nil {
+		t.Fatalf("create outside framed root: %v", err)
+	}
+	rawCanary := filepath.Join(rawOutside, "en-US", "phone", "light", "default", "home.png")
+	framedCanary := filepath.Join(framedOutside, "en-US", "phone", "light", "default", "home.png")
+	if err := os.MkdirAll(filepath.Dir(rawCanary), 0o755); err != nil {
+		t.Fatalf("create outside raw canary parent: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(framedCanary), 0o755); err != nil {
+		t.Fatalf("create outside framed canary parent: %v", err)
+	}
+	writeMatrixTestFile(t, rawCanary, "outside raw read canary")
+	writeMatrixTestFile(t, framedCanary, "outside framed read canary")
+
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	matrixPlan.Devices[0].UDID = "symlink-output-root-" + filepath.Base(dir)
+	var swapErr error
+	var swapped bool
+	appearance := &matrixTestAppearance{restoreFunc: func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		if err := os.Rename(rawDir, rawOriginal); err != nil {
+			swapErr = err
+			return
+		}
+		if err := os.Symlink(rawOutside, rawDir); err != nil {
+			swapErr = err
+			return
+		}
+		if err := os.Rename(framedDir, framedOriginal); err != nil {
+			swapErr = err
+			return
+		}
+		if err := os.Symlink(framedOutside, framedDir); err != nil {
+			swapErr = err
+		}
+	}}
+	previousOpenHook := matrixArtifactBeforeOpenForTest
+	outsideReadAttempted := false
+	matrixArtifactBeforeOpenForTest = func(root rootfs.Root, _ string) {
+		info, statErr := os.Lstat(root.Path())
+		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			outsideReadAttempted = true
+		}
+	}
+	t.Cleanup(func() {
+		matrixArtifactBeforeOpenForTest = previousOpenHook
+		for _, path := range []string{rawDir, framedDir} {
+			if info, statErr := os.Lstat(path); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+				if removeErr := os.Remove(path); removeErr != nil {
+					t.Errorf("remove replaced output-root symlink %q: %v", path, removeErr)
+				}
+			}
+		}
+	})
+	deps := MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Frame: func(_ context.Context, request FrameRequest) (*FrameResult, error) {
+			writeMatrixPNG(t, request.OutputPath)
+			return &FrameResult{}, nil
+		},
+		Appearance: appearance,
+	}
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, deps)
+	if swapErr != nil {
+		t.Fatalf("replace output roots: %v", swapErr)
+	}
+	if runErr == nil {
+		t.Fatal("RunMatrixWithDependencies() error = nil, want output-root identity uncertainty")
+	}
+	if outsideReadAttempted {
+		t.Fatal("revalidation attempted to open an artifact through a replaced output-root symlink")
+	}
+	if result == nil || len(result.Cells) != 1 {
+		t.Fatalf("result = %+v, want one cell", result)
+	}
+	cell := result.Cells[0]
+	if len(cell.RawPaths) != 0 || len(cell.FramedPaths) != 0 {
+		t.Fatalf("result retained artifacts from replaced output roots: %+v", cell)
+	}
+	if got, readErr := os.ReadFile(rawCanary); readErr != nil || string(got) != "outside raw read canary" {
+		t.Fatalf("outside raw canary = %q, read error = %v, want unchanged", got, readErr)
+	}
+	if got, readErr := os.ReadFile(framedCanary); readErr != nil || string(got) != "outside framed read canary" {
+		t.Fatalf("outside framed canary = %q, read error = %v, want unchanged", got, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(rawOriginal, "en-US", "phone", "light", "default", "home.png")); statErr != nil {
+		t.Fatalf("original raw artifact was not preserved: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(framedOriginal, "en-US", "phone", "light", "default", "home.png")); statErr != nil {
+		t.Fatalf("original framed artifact was not preserved: %v", statErr)
 	}
 }
 
@@ -3636,15 +5285,26 @@ func TestRevalidateMatrixRawPathsUsesPerArtifactBudget(t *testing.T) {
 		Screenshots:  []MatrixScreenshotResult{{RawPath: paths[0], Status: MatrixCellSuccess}, {RawPath: paths[1], Status: MatrixCellSuccess}},
 		rawArtifacts: expected,
 	}}}
-	previousHook := matrixRawVerificationBeforeArtifactForTest
-	matrixRawVerificationBeforeArtifactForTest = func() { time.Sleep(15 * time.Millisecond) }
-	t.Cleanup(func() { matrixRawVerificationBeforeArtifactForTest = previousHook })
+	previousContextHook := matrixRawVerificationContextForTest
+	var deadlines []time.Time
+	matrixRawVerificationContextForTest = func(ctx context.Context) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Errorf("verification context has no deadline")
+			return
+		}
+		deadlines = append(deadlines, deadline)
+	}
+	t.Cleanup(func() { matrixRawVerificationContextForTest = previousContextHook })
 
 	if err := revalidateMatrixRawPathsWithBudget(context.Background(), result, 20*time.Millisecond); err != nil {
 		t.Fatalf("revalidateMatrixRawPathsWithBudget() error = %v, want each artifact to receive its own budget", err)
 	}
 	if got := result.Cells[0].RawPaths; !reflect.DeepEqual(got, paths) {
 		t.Fatalf("revalidated raw paths = %v, want %v", got, paths)
+	}
+	if len(deadlines) != len(paths) {
+		t.Fatalf("verification context count = %d, want %d", len(deadlines), len(paths))
 	}
 }
 

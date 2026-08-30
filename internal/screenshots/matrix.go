@@ -12,6 +12,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 	"github.com/tidwall/jsonc"
 )
 
@@ -276,8 +278,19 @@ type MatrixAppearance interface {
 // MatrixDependencies makes external execution replaceable by tests without
 // changing the normal command behavior.
 type MatrixDependencies struct {
-	RunPlan     func(context.Context, *Plan) (*RunResult, error)
-	Frame       func(context.Context, FrameRequest) (*FrameResult, error)
+	RunPlan func(context.Context, *Plan) (*RunResult, error)
+	// RunPlanRooted is the matrix-only provider contract. The destination root
+	// is retained for the whole attempt and must be used for every output write.
+	// It is additive so existing test/integration callbacks keep compiling while
+	// normal matrix execution avoids handing a replaceable pathname to adapters.
+	// RunPlan and RunPlanRooted are mutually exclusive; supplying both is a
+	// validation error rather than an implicit precedence choice.
+	RunPlanRooted func(context.Context, *Plan, rootfs.Root) (*RunResult, error)
+	Frame         func(context.Context, FrameRequest) (*FrameResult, error)
+	// FrameRooted is the rooted counterpart of Frame. Implementations must use
+	// the supplied root for the final output publication. Frame and FrameRooted
+	// are mutually exclusive for the same reason as the plan callbacks.
+	FrameRooted func(context.Context, FrameRequest, rootfs.Root) (*FrameResult, error)
 	Appearance  MatrixAppearance
 	CheckDevice func(context.Context, MatrixDevice) error
 }
@@ -299,6 +312,23 @@ var matrixTemporarySequence atomic.Uint64
 // This seam lets focused tests model bounded per-artifact verification and is
 // intentionally nil in production.
 var matrixRawVerificationBeforeArtifactForTest func()
+
+// matrixRawVerificationContextForTest observes each fresh per-artifact raw
+// verification context without adding timing dependencies to tests.
+var matrixRawVerificationContextForTest func(context.Context)
+
+// matrixFramedVerificationBeforeArtifactForTest is the framed counterpart of
+// the raw verification seam. It is intentionally nil in production.
+var matrixFramedVerificationBeforeArtifactForTest func()
+
+// matrixFramedVerificationContextForTest observes each fresh per-artifact
+// verification context without adding timing dependencies to tests.
+var matrixFramedVerificationContextForTest func(context.Context)
+
+// matrixArtifactBeforeOpenForTest observes the last point before a
+// revalidation read. It is intentionally nil in production and lets tests
+// prove a replaced output root is rejected before any artifact is opened.
+var matrixArtifactBeforeOpenForTest func(rootfs.Root, string)
 
 // LoadMatrixPlan reads a JSON or JSONC matrix plan without resolving its base plan.
 func LoadMatrixPlan(path string) (*MatrixPlan, error) {
@@ -527,6 +557,48 @@ func loadMatrixBasePlan(matrixPath string, matrixPlan *MatrixPlan) (*Plan, error
 // parent has anchored the selected child and before the child root is opened.
 var matrixOutputRootBeforeChildRootForTest func()
 
+// matrixPrivateAttemptRootBeforeChildRootForTest is a test-only seam placed
+// after the selected attempt directory is pinned and before its parent is
+// reopened. It models a directory-entry replacement in the construction
+// window without changing production behavior.
+var matrixPrivateAttemptRootBeforeChildRootForTest func(string)
+
+// matrixPrivateAttemptBeforeCleanupRemoveForTest is a test-only seam placed
+// after cleanup has validated an entry identity and before it quarantines the
+// entry. It models a replacement in the final publication/cleanup window.
+var matrixPrivateAttemptBeforeCleanupRemoveForTest func(string)
+
+// These seams inject cleanup/close failures after the real resource handling
+// has run, so tests can verify that a successful attempt never hides resource
+// uncertainty without leaking temporary directories.
+var (
+	matrixPrivateAttemptCleanupForTest func(string) error
+	matrixPrivateAttemptCloseForTest   func(string) error
+)
+
+// matrixPrivateAttemptOperationForTest is a test-only seam that can inject a
+// construction failure immediately before a rooted filesystem operation. It
+// deliberately does not replace the production operation or allow tests to
+// select a different path.
+var matrixPrivateAttemptOperationForTest func(stage, path string) error
+
+// matrixPrivateAttemptParentCreatedForTest observes the freshly-created
+// private parent so tests can replace its directory entry while an early
+// construction failure is being injected.
+var matrixPrivateAttemptParentCreatedForTest func(string)
+
+var errMatrixPrivateAttemptCleanupUncertain = errors.New("private matrix attempt cleanup uncertain")
+
+// matrixOutputLocksAcquiredForTest is a test-only seam placed after all
+// execution/review roots have been opened and their filesystem identities have
+// been locked. It models a path replacement between lock acquisition and the
+// first rooted operation without changing production behavior.
+var matrixOutputLocksAcquiredForTest func()
+
+// matrixOutputLockRootOpenedForTest observes compatibility-wrapper roots so
+// tests can prove that a later open failure closes earlier descriptors.
+var matrixOutputLockRootOpenedForTest func(*os.Root)
+
 func openMatrixOutputRoot(path string) (rootfs.Root, error) {
 	if strings.TrimSpace(path) == "" {
 		return rootfs.Root{}, errors.New("matrix output path is required")
@@ -603,54 +675,472 @@ func relativeMatrixOutputPath(rootPath, path string) (string, error) {
 	return relative, nil
 }
 
-func createMatrixTemporaryDir(outputRoot rootfs.Root, outputRootPath, parentPath, prefix string) (string, error) {
-	parentRelative, err := relativeMatrixOutputPath(outputRootPath, parentPath)
-	if err != nil {
-		return "", err
+// matrixPrivateAttemptRoot retains both the rooted API used by the provider
+// and an independently held parent/child descriptor. The latter lets cleanup
+// find and remove the original directory after a provider renames it, while
+// never recursively deleting a replacement that now occupies the old path.
+type matrixPrivateAttemptRoot struct {
+	root         rootfs.Root
+	path         string
+	grandparent  *os.Root
+	parent       *os.Root
+	pinned       *os.Root
+	child        *os.Root
+	parentID     os.FileInfo
+	identity     os.FileInfo
+	parentLocked bool
+}
+
+func matrixPrivateAttemptOperation(stage, path string) error {
+	if matrixPrivateAttemptOperationForTest != nil {
+		return matrixPrivateAttemptOperationForTest(stage, path)
 	}
-	if err := outputRoot.MkdirAll(parentRelative, 0o755); err != nil {
-		return "", err
-	}
-	rooted, err := outputRoot.OpenRoot()
-	if err != nil {
-		return "", err
-	}
-	defer rooted.Close()
-	parent := rooted
-	if parentRelative != "." {
-		parent, err = rooted.OpenRoot(parentRelative)
-		if err != nil {
-			return "", err
+	return nil
+}
+
+func closeMatrixPrivateAttemptRoots(roots ...*os.Root) error {
+	var closeErr error
+	for _, root := range roots {
+		if root != nil {
+			closeErr = errors.Join(closeErr, root.Close())
 		}
-		defer parent.Close()
 	}
+	return closeErr
+}
+
+func matrixPrivateAttemptConstructionFailure(primary, cleanupErr error, uncertain bool, roots ...*os.Root) error {
+	// Before a rooted identity has been captured, the freshly-created parent
+	// cannot be removed by pathname: that entry may already name a replacement.
+	// In that fail-closed case the private temporary tree can remain for the
+	// host's temporary-directory cleanup, and the closed uncertainty sentinel
+	// tells callers not to report construction cleanup as complete.
+	closeErr := closeMatrixPrivateAttemptRoots(roots...)
+	if cleanupErr != nil || closeErr != nil {
+		uncertain = true
+	}
+	var errs []error
+	if primary != nil {
+		errs = append(errs, primary)
+	}
+	if uncertain {
+		errs = append(errs, errMatrixPrivateAttemptCleanupUncertain)
+	}
+	if cleanupErr != nil {
+		errs = append(errs, cleanupErr)
+	}
+	if closeErr != nil {
+		errs = append(errs, closeErr)
+	}
+	return errors.Join(errs...)
+}
+
+// lockMatrixPrivateAttemptParent removes the directory-entry mutation rights
+// needed to rename or replace the provider's destination. The child remains
+// writable, so legacy path-based adapters can create their files, but a same
+// user rename+symlink swap cannot redirect those writes outside the pinned
+// child root. The rooted providers remain the primary contract; this guard
+// preserves compatibility for existing adapters during the transition.
+func lockMatrixPrivateAttemptParent(parent *os.Root) error {
+	if parent == nil {
+		return errors.New("private matrix attempt parent is unavailable")
+	}
+	return parent.Chmod(".", 0o500)
+}
+
+func unlockMatrixPrivateAttemptParent(parent *os.Root) error {
+	if parent == nil {
+		return nil
+	}
+	return parent.Chmod(".", 0o700)
+}
+
+// createMatrixPrivateAttemptRoot creates an owner-only staging directory for
+// capture or framing adapters. Provider paths are still required by the
+// existing adapter contracts, but they no longer sit below user-selected
+// artifact roots where another process could replace an attempt directory and
+// redirect pathname-based writes outside the selected root.
+func createMatrixPrivateAttemptRoot() (matrixPrivateAttemptRoot, error) {
+	parentPath, err := os.MkdirTemp("", ".asc-matrix-attempt-parent-")
+	if err != nil {
+		return matrixPrivateAttemptRoot{}, err
+	}
+	if matrixPrivateAttemptParentCreatedForTest != nil {
+		matrixPrivateAttemptParentCreatedForTest(parentPath)
+	}
+	grandparentPath := filepath.Dir(parentPath)
+	if err := matrixPrivateAttemptOperation("grandparent_open", grandparentPath); err != nil {
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, nil, true)
+	}
+	grandparent, err := os.OpenRoot(grandparentPath)
+	if err != nil {
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, nil, true)
+	}
+	parentName := filepath.Base(parentPath)
+	if err := matrixPrivateAttemptOperation("parent_open", parentPath); err != nil {
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, nil, true, grandparent)
+	}
+	parent, err := grandparent.OpenRoot(parentName)
+	if err != nil {
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, nil, true, grandparent)
+	}
+	if err := matrixPrivateAttemptOperation("parent_stat", parentPath); err != nil {
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, nil, true, parent, grandparent)
+	}
+	parentID, err := parent.Stat(".")
+	if err != nil {
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, nil, true, parent, grandparent)
+	}
+	name := fmt.Sprintf(".asc-matrix-attempt-%d", matrixTemporarySequence.Add(1))
+	path := filepath.Join(parentPath, name)
+	if err := matrixPrivateAttemptOperation("mkdir", path); err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, nil, nil, parentID)
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, cleanupErr, false, parent, grandparent)
+	}
+	if err := parent.Mkdir(name, 0o700); err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, nil, nil, parentID)
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, cleanupErr, false, parent, grandparent)
+	}
+	if err := matrixPrivateAttemptOperation("child_lstat", path); err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, nil, nil, parentID)
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, cleanupErr, true, parent, grandparent)
+	}
+	createdID, err := parent.Lstat(name)
+	if err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, nil, nil, parentID)
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, cleanupErr, true, parent, grandparent)
+	}
+	if err := matrixPrivateAttemptOperation("child_open", path); err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, nil, createdID, parentID)
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, cleanupErr, false, parent, grandparent)
+	}
+	anchoredChild, err := parent.OpenRoot(name)
+	if err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, nil, createdID, parentID)
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, cleanupErr, false, parent, grandparent)
+	}
+	if err := matrixPrivateAttemptOperation("child_stat", path); err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, nil, createdID, parentID)
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, cleanupErr, false, anchoredChild, parent, grandparent)
+	}
+	anchoredID, err := anchoredChild.Stat(".")
+	if err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, nil, createdID, parentID)
+		return matrixPrivateAttemptRoot{}, matrixPrivateAttemptConstructionFailure(err, cleanupErr, false, anchoredChild, parent, grandparent)
+	}
+	root, err := rootfs.New(path)
+	if err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, anchoredChild, anchoredID, parentID)
+		closeErr := errors.Join(anchoredChild.Close(), parent.Close(), grandparent.Close())
+		return matrixPrivateAttemptRoot{}, errors.Join(err, cleanupErr, closeErr)
+	}
+	pinned, err := root.OpenRoot()
+	if err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, anchoredChild, anchoredID, parentID)
+		closeErr := errors.Join(root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
+		return matrixPrivateAttemptRoot{}, errors.Join(err, cleanupErr, closeErr)
+	}
+	pinnedID, err := pinned.Stat(".")
+	if err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, anchoredChild, anchoredID, parentID)
+		closeErr := errors.Join(pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
+		return matrixPrivateAttemptRoot{}, errors.Join(err, cleanupErr, closeErr)
+	}
+	if !os.SameFile(anchoredID, pinnedID) {
+		identityErr := errors.New("private matrix attempt root changed while opening")
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, anchoredChild, anchoredID, parentID)
+		closeErr := errors.Join(pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
+		return matrixPrivateAttemptRoot{}, errors.Join(identityErr, cleanupErr, closeErr)
+	}
+	if matrixPrivateAttemptRootBeforeChildRootForTest != nil {
+		matrixPrivateAttemptRootBeforeChildRootForTest(path)
+	}
+	reopenedChild, err := parent.OpenRoot(name)
+	if err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned, pinnedID, parentID)
+		closeErr := errors.Join(pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
+		return matrixPrivateAttemptRoot{}, errors.Join(err, cleanupErr, closeErr)
+	}
+	identity, err := reopenedChild.Stat(".")
+	if err != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned, pinnedID, parentID)
+		closeErr := errors.Join(reopenedChild.Close(), pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
+		return matrixPrivateAttemptRoot{}, errors.Join(err, cleanupErr, closeErr)
+	}
+	if !os.SameFile(pinnedID, identity) {
+		identityErr := errors.New("private matrix attempt root changed while opening")
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned, pinnedID, parentID)
+		closeErr := errors.Join(reopenedChild.Close(), pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
+		return matrixPrivateAttemptRoot{}, errors.Join(identityErr, cleanupErr, closeErr)
+	}
+	if err := matrixPrivateAttemptOperation("parent_lock", parentPath); err != nil {
+		closeErr := reopenedChild.Close()
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned, pinnedID, parentID)
+		constructionErr := matrixPrivateAttemptConstructionFailure(err, cleanupErr, false, pinned, anchoredChild, parent, grandparent)
+		return matrixPrivateAttemptRoot{}, errors.Join(constructionErr, closeErr, root.Close())
+	}
+	if err := lockMatrixPrivateAttemptParent(parent); err != nil {
+		childCloseErr := reopenedChild.Close()
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned, pinnedID, parentID)
+		closeErr := errors.Join(childCloseErr, pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
+		return matrixPrivateAttemptRoot{}, errors.Join(err, cleanupErr, closeErr)
+	}
+	closeErr := reopenedChild.Close()
+	if closeErr != nil {
+		unlockErr := unlockMatrixPrivateAttemptParent(parent)
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned, pinnedID, parentID)
+		return matrixPrivateAttemptRoot{}, errors.Join(closeErr, unlockErr, cleanupErr, pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
+	}
+	return matrixPrivateAttemptRoot{
+		root: root, path: path, grandparent: grandparent,
+		parent: parent, pinned: pinned, child: anchoredChild, parentID: parentID, identity: identity,
+		parentLocked: true,
+	}, nil
+}
+
+func cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned *os.Root, identity, parentID os.FileInfo) error {
+	var cleanupErr error
+	if pinned != nil {
+		entries, err := fs.ReadDir(pinned.FS(), ".")
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			cleanupErr = errors.Join(cleanupErr, err)
+		} else {
+			for _, entry := range entries {
+				cleanupErr = errors.Join(cleanupErr, pinned.RemoveAll(entry.Name()))
+			}
+		}
+	}
+	if parent == nil {
+		return cleanupErr
+	}
+	cleanupErr = errors.Join(cleanupErr, removeMatrixExpectedEntry(parent, identity, nil))
+	if empty, err := matrixPrivateAttemptDirectoryEmpty(parent); err != nil {
+		cleanupErr = errors.Join(cleanupErr, err)
+	} else if empty && grandparent != nil && parentID != nil {
+		cleanupErr = errors.Join(cleanupErr, removeMatrixExpectedEntry(grandparent, parentID, nil))
+	}
+	return cleanupErr
+}
+
+func (attempt matrixPrivateAttemptRoot) matrixPrivateAttemptRootIsStable() error {
+	if attempt.pinned == nil || attempt.child == nil || attempt.identity == nil {
+		return errors.New("private matrix attempt root is unavailable")
+	}
+	pinnedInfo, err := attempt.pinned.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(attempt.identity, pinnedInfo) {
+		return errors.New("private matrix attempt root identity changed")
+	}
+	current, err := attempt.child.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(attempt.identity, current) {
+		return errors.New("private matrix attempt root identity changed")
+	}
+	opened, err := attempt.root.OpenRoot()
+	if err != nil {
+		return err
+	}
+	return opened.Close()
+}
+
+func (attempt matrixPrivateAttemptRoot) cleanup() error {
+	if attempt.grandparent == nil || attempt.parent == nil || attempt.child == nil || attempt.identity == nil {
+		return nil
+	}
+	if attempt.parentLocked {
+		if err := unlockMatrixPrivateAttemptParent(attempt.parent); err != nil {
+			return err
+		}
+	}
+	// Remove entries through the held child descriptor, so a rename cannot
+	// redirect recursive cleanup to an unrelated directory.
+	entries, err := fs.ReadDir(attempt.child.FS(), ".")
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, entry := range entries {
+		if err := attempt.child.RemoveAll(entry.Name()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if err := removeMatrixExpectedEntry(attempt.parent, attempt.identity, matrixPrivateAttemptBeforeCleanupRemoveForTest); err != nil {
+		return err
+	}
+	empty, err := matrixPrivateAttemptDirectoryEmpty(attempt.parent)
+	if err != nil {
+		return err
+	}
+	if !empty {
+		return nil
+	}
+	return removeMatrixExpectedEntry(attempt.grandparent, attempt.parentID, nil)
+}
+
+func (attempt matrixPrivateAttemptRoot) close() error {
+	var closeErr error
+	if attempt.child != nil {
+		closeErr = errors.Join(closeErr, attempt.child.Close())
+	}
+	if attempt.pinned != nil {
+		closeErr = errors.Join(closeErr, attempt.pinned.Close())
+	}
+	closeErr = errors.Join(closeErr, attempt.root.Close())
+	if attempt.parent != nil {
+		closeErr = errors.Join(closeErr, attempt.parent.Close())
+	}
+	if attempt.grandparent != nil {
+		closeErr = errors.Join(closeErr, attempt.grandparent.Close())
+	}
+	return closeErr
+}
+
+func cleanupMatrixPrivateAttemptForExecution(attempt matrixPrivateAttemptRoot) error {
+	err := attempt.cleanup()
+	if matrixPrivateAttemptCleanupForTest != nil {
+		err = errors.Join(err, matrixPrivateAttemptCleanupForTest(attempt.path))
+	}
+	return err
+}
+
+func closeMatrixPrivateAttemptForExecution(attempt matrixPrivateAttemptRoot) error {
+	err := attempt.close()
+	if matrixPrivateAttemptCloseForTest != nil {
+		err = errors.Join(err, matrixPrivateAttemptCloseForTest(attempt.path))
+	}
+	return err
+}
+
+func joinMatrixAttemptResourceErrors(attempt *matrixAttemptResult, returnErr *error, resourceErr error) {
+	if resourceErr == nil {
+		return
+	}
+	attempt.CleanupFailed = true
+	*returnErr = errors.Join(*returnErr, resourceErr)
+	if attempt.FailureCode == "" {
+		attempt.FailureStage = "cleanup"
+		attempt.FailureCode = "temporary_output_cleanup_failed"
+		attempt.Error = "temporary screenshot output cleanup failed"
+		return
+	}
+	if attempt.Error == "" {
+		attempt.Error = "screenshot attempt failed; temporary output cleanup is uncertain"
+		return
+	}
+	attempt.Error += "; temporary output cleanup is uncertain"
+}
+
+func removeMatrixExpectedEntry(parent *os.Root, expected os.FileInfo, before func(string)) error {
+	if parent == nil || expected == nil {
+		return nil
+	}
+	for pass := 0; pass < 4; pass++ {
+		entries, err := fs.ReadDir(parent.FS(), ".")
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		found := false
+		for _, entry := range entries {
+			current, statErr := parent.Lstat(entry.Name())
+			if statErr != nil || !os.SameFile(expected, current) {
+				continue
+			}
+			current, statErr = parent.Lstat(entry.Name())
+			if statErr != nil || !os.SameFile(expected, current) {
+				continue
+			}
+			found = true
+			if before != nil {
+				before(filepath.Join(parent.Name(), entry.Name()))
+			}
+			if err := quarantineMatrixExpectedEntry(parent, entry.Name(), expected); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				return err
+			}
+		}
+		if !found {
+			return nil
+		}
+	}
+	return errors.New("matrix private attempt cleanup did not converge")
+}
+
+func quarantineMatrixExpectedEntry(parent *os.Root, name string, expected os.FileInfo) error {
+	// Quarantining first keeps a replacement at the original name out of the
+	// cleanup path and the repeated identity checks narrow the race window. The
+	// final Remove is still path-based; rootfs has no compare-and-unlink
+	// primitive, so a replacement after the last Lstat can race with removal.
+	// Callers must treat any resulting cleanup error/uncertainty as a failed
+	// cleanup, not as proof of atomic deletion.
 	for attempt := 0; attempt < 100; attempt++ {
-		name := fmt.Sprintf("%s%d", prefix, matrixTemporarySequence.Add(1))
-		if err := parent.Mkdir(name, 0o700); err != nil {
+		quarantine := fmt.Sprintf(".asc-matrix-cleanup-%d", matrixTemporarySequence.Add(1))
+		if _, err := parent.Lstat(quarantine); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := parent.Rename(name, quarantine); err != nil {
 			if errors.Is(err, os.ErrExist) {
 				continue
 			}
-			return "", err
+			return err
 		}
-		return filepath.Join(parentPath, name), nil
+		quarantined, err := parent.Lstat(quarantine)
+		if err != nil {
+			return err
+		}
+		if !os.SameFile(expected, quarantined) {
+			restoreErr := secureopen.RenameNoReplaceInRoot(parent, quarantine, name)
+			if restoreErr != nil {
+				return errors.Join(errors.New("matrix private attempt entry changed during cleanup"), restoreErr)
+			}
+			return nil
+		}
+		latest, err := parent.Lstat(quarantine)
+		if err != nil {
+			return err
+		}
+		if !os.SameFile(expected, latest) {
+			restoreErr := secureopen.RenameNoReplaceInRoot(parent, quarantine, name)
+			if restoreErr != nil {
+				return errors.Join(errors.New("matrix private attempt entry changed during cleanup"), restoreErr)
+			}
+			return nil
+		}
+		if err := parent.Remove(quarantine); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		return nil
 	}
-	return "", errors.New("could not allocate a unique matrix temporary directory")
+	return errors.New("matrix private attempt cleanup quarantine unavailable")
 }
 
-func removeMatrixTemporaryDir(outputRoot rootfs.Root, outputRootPath, path string) error {
-	relative, err := relativeMatrixOutputPath(outputRootPath, path)
+func matrixPrivateAttemptDirectoryEmpty(root *os.Root) (bool, error) {
+	if root == nil {
+		return true, nil
+	}
+	entries, err := fs.ReadDir(root.FS(), ".")
 	if err != nil {
-		return err
+		if errors.Is(err, os.ErrNotExist) {
+			return true, nil
+		}
+		return false, err
 	}
-	rooted, err := outputRoot.OpenRoot()
-	if err != nil {
-		return err
-	}
-	defer rooted.Close()
-	if err := rooted.RemoveAll(relative); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
+	return len(entries) == 0, nil
+}
+
+func matrixPrivateAttemptRootIsStable(attempt matrixPrivateAttemptRoot) error {
+	return attempt.matrixPrivateAttemptRootIsStable()
 }
 
 // ValidateMatrixPlan validates all matrix inputs that can be checked without
@@ -1173,6 +1663,12 @@ func RunMatrix(ctx context.Context, matrixPath string, matrixPlan *MatrixPlan, o
 
 // RunMatrixWithDependencies is the testable implementation of RunMatrix.
 func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPlan *MatrixPlan, options MatrixOptions, dependencies MatrixDependencies) (*MatrixResult, error) {
+	if dependencies.RunPlan != nil && dependencies.RunPlanRooted != nil {
+		return nil, newMatrixValidationError(errors.New("RunPlan and RunPlanRooted are mutually exclusive"))
+	}
+	if dependencies.Frame != nil && dependencies.FrameRooted != nil {
+		return nil, newMatrixValidationError(errors.New("Frame and FrameRooted are mutually exclusive"))
+	}
 	if matrixPlan == nil {
 		return nil, newMatrixValidationError(errors.New("matrix plan is required"))
 	}
@@ -1221,15 +1717,6 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	if strings.TrimSpace(matrixPlan.Output.ReviewDir) == "" {
 		reviewDir = resolveMatrixArtifactPath(baseDir, defaultMatrixReviewDir)
 	}
-	outputLockPaths := []string{rawDir, reviewDir}
-	if matrixPlan.Output.Frame.Enabled {
-		outputLockPaths = append(outputLockPaths, framedDir)
-	}
-	releaseOutputLocks, outputLockErr := acquireMatrixOutputLocks(ctx, outputLockPaths)
-	if outputLockErr != nil {
-		releaseOutputLocks = nil
-	}
-
 	planPath := matrixPath
 	if strings.TrimSpace(planPath) == "" {
 		planPath = matrixPlan.sourcePath
@@ -1252,12 +1739,12 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	}
 
 	deps := dependencies
-	useDefaultDeviceCheck := deps.RunPlan == nil && deps.Frame == nil && deps.Appearance == nil && deps.CheckDevice == nil
-	if deps.RunPlan == nil {
-		deps.RunPlan = RunPlan
+	useDefaultDeviceCheck := deps.RunPlan == nil && deps.RunPlanRooted == nil && deps.Frame == nil && deps.FrameRooted == nil && deps.Appearance == nil && deps.CheckDevice == nil
+	if deps.RunPlan == nil && deps.RunPlanRooted == nil {
+		deps.RunPlanRooted = runPlanWithRoot
 	}
-	if deps.Frame == nil {
-		deps.Frame = Frame
+	if deps.Frame == nil && deps.FrameRooted == nil {
+		deps.FrameRooted = frameIntoRoot
 	}
 	if deps.Appearance == nil {
 		deps.Appearance = &simctlMatrixAppearance{}
@@ -1303,29 +1790,76 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	}
 	runErr := preflightErr
 	var outputRoots matrixOutputRoots
+	var reviewRoot rootfs.Root
+	var reviewRootReady bool
 	var outputRootErr error
-	if outputLockErr != nil {
-		outputRootErr = matrixLockError("output", outputLockErr)
+	var releaseOutputLocks func() error
+	var outputLockErr error
+	rawRoot, rawRootErr := openMatrixOutputRoot(rawDir)
+	if rawRootErr != nil {
+		outputRootErr = fmt.Errorf("create raw output directory: %w", rawRootErr)
 	} else {
-
-		rawRoot, rawRootErr := openMatrixOutputRoot(rawDir)
-		if rawRootErr != nil {
-			outputRootErr = fmt.Errorf("create raw output directory: %w", rawRootErr)
+		rawOpened, rootOpenErr := rawRoot.OpenRoot()
+		if rootOpenErr != nil {
+			_ = rawRoot.Close()
+			outputRootErr = fmt.Errorf("open raw output directory: %w", rootOpenErr)
 		} else {
 			defer func() { _ = rawRoot.Close() }()
+			defer func() { _ = rawOpened.Close() }()
 			outputRoots = matrixOutputRoots{raw: rawRoot, rawPath: rawDir}
+			var framedRoot rootfs.Root
+			var framedOpened *os.Root
 			if matrixPlan.Output.Frame.Enabled {
-				framedRoot, rootErr := openMatrixOutputRoot(framedDir)
-				if rootErr != nil {
-					outputRootErr = fmt.Errorf("create framed output directory: %w", rootErr)
+				framedRoot, rootOpenErr = openMatrixOutputRoot(framedDir)
+				if rootOpenErr != nil {
+					outputRootErr = fmt.Errorf("create framed output directory: %w", rootOpenErr)
 				} else {
-					defer func() { _ = framedRoot.Close() }()
-					outputRoots.framed = framedRoot
-					outputRoots.framedPath = framedDir
-					outputRoots.hasFramed = true
+					framedOpened, rootOpenErr = framedRoot.OpenRoot()
+					if rootOpenErr != nil {
+						_ = framedRoot.Close()
+						outputRootErr = fmt.Errorf("open framed output directory: %w", rootOpenErr)
+					} else {
+						defer func() { _ = framedRoot.Close() }()
+						defer func() { _ = framedOpened.Close() }()
+						outputRoots.framed = framedRoot
+						outputRoots.framedPath = framedDir
+						outputRoots.hasFramed = true
+					}
+				}
+			}
+			var reviewOpened *os.Root
+			if outputRootErr == nil {
+				reviewRoot, rootOpenErr = openMatrixOutputRoot(reviewDir)
+				if rootOpenErr != nil {
+					outputRootErr = fmt.Errorf("create matrix review output directory: %w", rootOpenErr)
+				} else {
+					reviewOpened, rootOpenErr = reviewRoot.OpenRoot()
+					if rootOpenErr != nil {
+						_ = reviewRoot.Close()
+						outputRootErr = fmt.Errorf("open matrix review output directory: %w", rootOpenErr)
+					} else {
+						reviewRootReady = true
+						defer func() { _ = reviewRoot.Close() }()
+						defer func() { _ = reviewOpened.Close() }()
+					}
+				}
+			}
+			if outputRootErr == nil {
+				targets := []matrixOutputLockTarget{{root: rawRoot, opened: rawOpened}, {root: reviewRoot, opened: reviewOpened}}
+				if matrixPlan.Output.Frame.Enabled {
+					targets = append(targets, matrixOutputLockTarget{root: outputRoots.framed, opened: framedOpened})
+				}
+				releaseOutputLocks, outputLockErr = acquireMatrixOutputLocksForRoots(ctx, targets)
+				if outputLockErr != nil {
+					releaseOutputLocks = nil
+				} else if matrixOutputLocksAcquiredForTest != nil {
+					matrixOutputLocksAcquiredForTest()
 				}
 			}
 		}
+	}
+	if outputLockErr != nil {
+		outputRootErr = matrixLockError("output", outputLockErr)
 	}
 	if outputRootErr != nil {
 		markMatrixOutputFailure(result)
@@ -1342,14 +1876,21 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	if ctx.Err() != nil {
 		rawVerificationCtx = context.WithoutCancel(ctx)
 	}
-	if rawErr := revalidateMatrixRawPaths(rawVerificationCtx, result); rawErr != nil {
+	var retainedRawRoot, retainedFramedRoot *rootfs.Root
+	if outputRoots.raw.Path() != "" {
+		retainedRawRoot = &outputRoots.raw
+	}
+	if outputRoots.hasFramed && outputRoots.framed.Path() != "" {
+		retainedFramedRoot = &outputRoots.framed
+	}
+	if rawErr := revalidateMatrixRawPathsWithRoot(rawVerificationCtx, result, matrixSubprocessTimeout, retainedRawRoot); rawErr != nil {
 		if runErr == nil {
 			runErr = rawErr
 		} else {
 			runErr = errors.Join(runErr, rawErr)
 		}
 	}
-	if framedErr := revalidateMatrixFramedPaths(result); framedErr != nil {
+	if framedErr := revalidateMatrixFramedPathsWithRoot(ctx, result, matrixSubprocessTimeout, retainedFramedRoot); framedErr != nil {
 		if runErr == nil {
 			runErr = framedErr
 		} else {
@@ -1358,11 +1899,14 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	}
 	countMatrixResultStatuses(result)
 	reviewCtx := context.WithoutCancel(ctx)
-	review, reviewErr := GenerateMatrixReview(reviewCtx, MatrixReviewRequest{
-		Result:      result,
-		OutputDir:   reviewDir,
-		LockContext: ctx,
-	})
+	var review *MatrixReviewResult
+	var reviewErr error
+	reviewRequest := MatrixReviewRequest{Result: result, OutputDir: reviewDir, LockContext: ctx}
+	if reviewRootReady {
+		review, reviewErr = generateMatrixReviewWithRoot(reviewCtx, reviewRequest, reviewRoot)
+	} else {
+		review, reviewErr = GenerateMatrixReview(reviewCtx, reviewRequest)
+	}
 	if reviewErr == nil {
 		result.Review = review
 	} else if runErr == nil {
@@ -1562,12 +2106,15 @@ func executeMatrixCellWithSimulatorLock(ctx context.Context, cell MatrixCell, ba
 			result.Error = nil
 			break
 		}
-		if ctx.Err() != nil {
+		if ctx.Err() != nil && !attemptResult.CleanupFailed {
 			result.Status = MatrixCellCanceled
 			result.FailureStage = "execution"
 			result.FailureCode = "canceled"
 			result.Error = newMatrixCellError(result.FailureStage, result.FailureCode, "cell canceled")
 			break
+		}
+		if attemptResult.CleanupFailed {
+			result.Status = MatrixCellCleanupFailed
 		}
 		result.FailureStage = attemptResult.FailureStage
 		result.FailureCode = attemptResult.FailureCode
@@ -1612,6 +2159,7 @@ type matrixAttemptResult struct {
 	RawArtifacts    map[string]matrixArtifactInfo
 	FramedPaths     []string
 	FramedArtifacts map[string]matrixArtifactInfo
+	CleanupFailed   bool
 	Screenshots     []MatrixScreenshotResult
 	Steps           []RunStepResult
 	FailureStage    string
@@ -1619,7 +2167,7 @@ type matrixAttemptResult struct {
 	Error           string
 }
 
-func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, matrixPlan *MatrixPlan, deps MatrixDependencies, outputRoots matrixOutputRoots) (matrixAttemptResult, error) {
+func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, matrixPlan *MatrixPlan, deps MatrixDependencies, outputRoots matrixOutputRoots) (attempt matrixAttemptResult, returnErr error) {
 	rawRelative, err := relativeMatrixOutputPath(outputRoots.rawPath, cell.RawDir)
 	if err != nil {
 		return matrixAttemptResult{FailureStage: "execution", FailureCode: "temporary_output_failed", Error: "temporary output directory could not be created"}, err
@@ -1627,11 +2175,16 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 	if err := outputRoots.raw.MkdirAll(rawRelative, 0o755); err != nil {
 		return matrixAttemptResult{FailureStage: "execution", FailureCode: "temporary_output_failed", Error: "temporary output directory could not be created"}, err
 	}
-	attemptDir, err := createMatrixTemporaryDir(outputRoots.raw, outputRoots.rawPath, filepath.Dir(cell.RawDir), ".asc-matrix-attempt-")
+	attemptRoot, err := createMatrixPrivateAttemptRoot()
 	if err != nil {
 		return matrixAttemptResult{FailureStage: "execution", FailureCode: "temporary_output_failed", Error: "temporary output directory could not be created"}, err
 	}
-	defer func() { _ = removeMatrixTemporaryDir(outputRoots.raw, outputRoots.rawPath, attemptDir) }()
+	defer func() {
+		cleanupErr := cleanupMatrixPrivateAttemptForExecution(attemptRoot)
+		closeErr := closeMatrixPrivateAttemptForExecution(attemptRoot)
+		joinMatrixAttemptResourceErrors(&attempt, &returnErr, errors.Join(cleanupErr, closeErr))
+	}()
+	attemptDir := attemptRoot.path
 	plan, err := cloneScreenshotPlan(base)
 	if err != nil {
 		return matrixAttemptResult{FailureStage: "execution", FailureCode: "plan_clone_failed", Error: "base plan could not be prepared"}, err
@@ -1641,16 +2194,34 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 	plan.App.LaunchArguments = append(append([]string(nil), base.App.LaunchArguments...), cell.LaunchArguments...)
 	plan.App.terminateRunningProcess = true
 	ensureMatrixLaunchStep(plan)
-	runResult, err := deps.RunPlan(ctx, plan)
-	attempt := matrixAttemptResult{}
+	var runResult *RunResult
+	if deps.RunPlan != nil {
+		runResult, err = deps.RunPlan(ctx, plan)
+	} else {
+		runResult, err = deps.RunPlanRooted(ctx, plan, attemptRoot.root)
+	}
+	attempt = matrixAttemptResult{}
 	if runResult != nil {
 		attempt.Steps = sanitizeMatrixSteps(runResult.Steps)
 	}
+	stabilityErr := matrixPrivateAttemptRootIsStable(attemptRoot)
 	if err != nil {
+		if stabilityErr != nil {
+			attempt.FailureStage = "execution"
+			attempt.FailureCode = "temporary_output_failed"
+			attempt.Error = "screenshot capture output changed during execution"
+			return attempt, errors.Join(err, stabilityErr)
+		}
 		attempt.FailureStage = "execution"
 		attempt.FailureCode = "plan_failed"
 		attempt.Error = "screenshot plan execution failed"
 		return attempt, err
+	}
+	if stabilityErr != nil {
+		attempt.FailureStage = "execution"
+		attempt.FailureCode = "temporary_output_failed"
+		attempt.Error = "screenshot capture output changed during execution"
+		return attempt, stabilityErr
 	}
 	if runResult == nil {
 		attempt.FailureStage = "execution"
@@ -1664,14 +2235,7 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 	for _, rawPath := range cell.RawPaths {
 		name := filepath.Base(rawPath)
 		source := filepath.Join(attemptDir, name)
-		sourceRelative, relativeErr := relativeMatrixOutputPath(outputRoots.rawPath, source)
-		if relativeErr != nil {
-			attempt.FailureStage = "execution"
-			attempt.FailureCode = "missing_screenshot"
-			attempt.Error = "screenshot plan did not produce every requested image"
-			return attempt, relativeErr
-		}
-		sourceFile, openErr := outputRoots.raw.OpenFile(sourceRelative)
+		sourceFile, openErr := attemptRoot.root.OpenFile(name)
 		if openErr != nil {
 			attempt.FailureStage = "execution"
 			attempt.FailureCode = "missing_screenshot"
@@ -1696,7 +2260,7 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 	for index, rawPath := range cell.RawPaths {
 		source := sources[index]
 		destination := rawPath
-		artifact, err := promoteMatrixArtifactWithInfo(ctx, outputRoots.raw, outputRoots.rawPath, source, destination)
+		artifact, err := promoteMatrixArtifactWithInfoFromRoots(ctx, attemptRoot.root, attemptDir, source, outputRoots.raw, outputRoots.rawPath, destination)
 		if err != nil {
 			attempt.FailureStage = "execution"
 			attempt.FailureCode = "raw_output_failed"
@@ -1730,14 +2294,19 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 		attempt.Error = "framed output directory could not be created"
 		return attempt, err
 	}
-	frameAttemptDir, err := createMatrixTemporaryDir(outputRoots.framed, outputRoots.framedPath, filepath.Dir(cell.FramedDir), ".asc-matrix-frame-attempt-")
+	frameAttemptRoot, err := createMatrixPrivateAttemptRoot()
 	if err != nil {
 		attempt.FailureStage = "framing"
 		attempt.FailureCode = "temporary_output_failed"
 		attempt.Error = "temporary frame output directory could not be created"
 		return attempt, err
 	}
-	defer func() { _ = removeMatrixTemporaryDir(outputRoots.framed, outputRoots.framedPath, frameAttemptDir) }()
+	defer func() {
+		cleanupErr := cleanupMatrixPrivateAttemptForExecution(frameAttemptRoot)
+		closeErr := closeMatrixPrivateAttemptForExecution(frameAttemptRoot)
+		joinMatrixAttemptResourceErrors(&attempt, &returnErr, errors.Join(cleanupErr, closeErr))
+	}()
+	frameAttemptDir := frameAttemptRoot.path
 	frameDevice, frameMappingFound := matrixFrameMappingForDevice(matrixPlan.Output.Frame.DeviceByMatrixDevice, cell.Device)
 	if !frameMappingFound || strings.TrimSpace(frameDevice) == "" {
 		attempt.FailureStage = "framing"
@@ -1749,21 +2318,36 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 	frameSources := make([]string, 0, len(attempt.RawPaths))
 	for index, inputPath := range attempt.RawPaths {
 		tempFrame := filepath.Join(frameAttemptDir, filepath.Base(cell.FramedPaths[index]))
-		frameResult, frameErr := deps.Frame(ctx, FrameRequest{InputPath: inputPath, OutputPath: tempFrame, Device: frameDevice})
+		frameRequest := FrameRequest{InputPath: inputPath, OutputPath: tempFrame, Device: frameDevice}
+		var frameResult *FrameResult
+		var frameErr error
+		if deps.Frame != nil {
+			frameResult, frameErr = deps.Frame(ctx, frameRequest)
+		} else {
+			frameResult, frameErr = deps.FrameRooted(ctx, frameRequest, frameAttemptRoot.root)
+		}
+		stabilityErr := matrixPrivateAttemptRootIsStable(frameAttemptRoot)
 		if frameErr != nil || frameResult == nil {
 			attempt.FailureStage = "framing"
+			if stabilityErr != nil {
+				attempt.FailureCode = "temporary_output_failed"
+				attempt.Error = "framing output changed during execution"
+				return attempt, errors.Join(frameErr, stabilityErr)
+			}
 			attempt.FailureCode = "frame_failed"
 			attempt.Error = "screenshot framing failed"
+			if frameErr != nil {
+				return attempt, frameErr
+			}
 			return attempt, errors.New("frame failed")
 		}
-		tempFrameRelative, relativeErr := relativeMatrixOutputPath(outputRoots.framedPath, tempFrame)
-		if relativeErr != nil {
+		if stabilityErr != nil {
 			attempt.FailureStage = "framing"
-			attempt.FailureCode = "invalid_frame"
-			attempt.Error = "screenshot framing produced an invalid image"
-			return attempt, relativeErr
+			attempt.FailureCode = "temporary_output_failed"
+			attempt.Error = "framing output changed during execution"
+			return attempt, stabilityErr
 		}
-		tempFrameFile, openErr := outputRoots.framed.OpenFile(tempFrameRelative)
+		tempFrameFile, openErr := frameAttemptRoot.root.OpenFile(filepath.Base(tempFrame))
 		if openErr != nil {
 			attempt.FailureStage = "framing"
 			attempt.FailureCode = "invalid_frame"
@@ -1784,7 +2368,7 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 		frameSources = append(frameSources, tempFrame)
 	}
 	for index, tempFrame := range frameSources {
-		artifact, err := promoteMatrixArtifactWithInfo(ctx, outputRoots.framed, outputRoots.framedPath, tempFrame, cell.FramedPaths[index])
+		artifact, err := promoteMatrixArtifactWithInfoFromRoots(ctx, frameAttemptRoot.root, frameAttemptDir, tempFrame, outputRoots.framed, outputRoots.framedPath, cell.FramedPaths[index])
 		if err != nil {
 			attempt.FailureStage = "framing"
 			attempt.FailureCode = "framed_output_failed"
@@ -1860,20 +2444,24 @@ func cloneScreenshotPlan(base *Plan) (*Plan, error) {
 }
 
 func promoteMatrixArtifact(outputRoot rootfs.Root, outputRootPath, source, destination string) error {
-	sourceRelative, err := relativeMatrixOutputPath(outputRootPath, source)
+	return promoteMatrixArtifactFromRoots(outputRoot, outputRootPath, source, outputRoot, outputRootPath, destination)
+}
+
+func promoteMatrixArtifactFromRoots(sourceRoot rootfs.Root, sourceRootPath, source string, destinationRoot rootfs.Root, destinationRootPath, destination string) error {
+	sourceRelative, err := relativeMatrixOutputPath(sourceRootPath, source)
 	if err != nil {
 		return err
 	}
-	sourceFile, err := outputRoot.OpenFile(sourceRelative)
+	sourceFile, err := sourceRoot.OpenFile(sourceRelative)
 	if err != nil {
 		return err
 	}
 	defer sourceFile.Close()
-	destinationRelative, err := relativeMatrixOutputPath(outputRootPath, destination)
+	destinationRelative, err := relativeMatrixOutputPath(destinationRootPath, destination)
 	if err != nil {
 		return err
 	}
-	_, err = outputRoot.WriteFromPreservingMode(destinationRelative, sourceFile, 0o644)
+	_, err = destinationRoot.WriteFromPreservingMode(destinationRelative, sourceFile, 0o644)
 	return err
 }
 
@@ -1884,19 +2472,23 @@ type matrixArtifactInfo struct {
 }
 
 func promoteMatrixArtifactWithInfo(ctx context.Context, outputRoot rootfs.Root, outputRootPath, source, destination string) (matrixArtifactInfo, error) {
+	return promoteMatrixArtifactWithInfoFromRoots(ctx, outputRoot, outputRootPath, source, outputRoot, outputRootPath, destination)
+}
+
+func promoteMatrixArtifactWithInfoFromRoots(ctx context.Context, sourceRoot rootfs.Root, sourceRootPath, source string, destinationRoot rootfs.Root, destinationRootPath, destination string) (matrixArtifactInfo, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return matrixArtifactInfo{}, err
 	}
-	if err := promoteMatrixArtifact(outputRoot, outputRootPath, source, destination); err != nil {
+	if err := promoteMatrixArtifactFromRoots(sourceRoot, sourceRootPath, source, destinationRoot, destinationRootPath, destination); err != nil {
 		return matrixArtifactInfo{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return matrixArtifactInfo{}, err
 	}
-	return inspectMatrixArtifactWithContext(ctx, outputRoot, outputRootPath, destination)
+	return inspectMatrixArtifactWithContext(ctx, destinationRoot, destinationRootPath, destination)
 }
 
 func inspectMatrixArtifact(outputRoot rootfs.Root, outputRootPath, path string) (matrixArtifactInfo, error) {
@@ -1913,6 +2505,9 @@ func inspectMatrixArtifactWithContext(ctx context.Context, outputRoot rootfs.Roo
 	relative, err := relativeMatrixOutputPath(outputRootPath, path)
 	if err != nil {
 		return matrixArtifactInfo{}, err
+	}
+	if matrixArtifactBeforeOpenForTest != nil {
+		matrixArtifactBeforeOpenForTest(outputRoot, path)
 	}
 	file, err := outputRoot.OpenFile(relative)
 	if err != nil {
@@ -2044,6 +2639,10 @@ func revalidateMatrixRawPaths(ctx context.Context, result *MatrixResult) error {
 }
 
 func revalidateMatrixRawPathsWithBudget(ctx context.Context, result *MatrixResult, budget time.Duration) error {
+	return revalidateMatrixRawPathsWithRoot(ctx, result, budget, nil)
+}
+
+func revalidateMatrixRawPathsWithRoot(ctx context.Context, result *MatrixResult, budget time.Duration, retainedRoot *rootfs.Root) error {
 	if result == nil {
 		return nil
 	}
@@ -2060,9 +2659,18 @@ func revalidateMatrixRawPathsWithBudget(ctx context.Context, result *MatrixResul
 	if !hasRawPaths {
 		return nil
 	}
-	rawRoot, rootErr := rootfs.New(result.RawDir)
-	if rootErr == nil {
-		defer rawRoot.Close()
+	rawRootPath := result.RawDir
+	var rawRoot rootfs.Root
+	var rootErr error
+	if retainedRoot != nil {
+		rawRoot = *retainedRoot
+		rawRootPath = rawRoot.Path()
+		rootErr = verifyMatrixRetainedOutputRoot(rawRoot)
+	} else {
+		rawRoot, rootErr = rootfs.New(result.RawDir)
+		if rootErr == nil {
+			defer rawRoot.Close()
+		}
 	}
 	invalid := false
 	var contextErr error
@@ -2088,10 +2696,13 @@ func revalidateMatrixRawPathsWithBudget(ctx context.Context, result *MatrixResul
 			if budget > 0 {
 				artifactCtx, cancelArtifact = newMatrixArtifactBudgetContext(ctx, budget)
 			}
+			if matrixRawVerificationContextForTest != nil {
+				matrixRawVerificationContextForTest(artifactCtx)
+			}
 			if matrixRawVerificationBeforeArtifactForTest != nil {
 				matrixRawVerificationBeforeArtifactForTest()
 			}
-			current, err := inspectMatrixArtifactWithContext(artifactCtx, rawRoot, result.RawDir, path)
+			current, err := inspectMatrixArtifactWithContext(artifactCtx, rawRoot, rawRootPath, path)
 			if cancelArtifact != nil {
 				cancelArtifact()
 			}
@@ -2133,6 +2744,28 @@ func revalidateMatrixRawPathsWithBudget(ctx context.Context, result *MatrixResul
 			setMatrixScreenshotStatuses(cell)
 		}
 	}
+	if retainedRoot != nil && rootErr == nil {
+		if err := verifyMatrixRetainedOutputRoot(rawRoot); err != nil {
+			invalid = true
+			for cellIndex := range result.Cells {
+				cell := &result.Cells[cellIndex]
+				if len(cell.RawPaths) == 0 {
+					continue
+				}
+				cell.RawPaths = nil
+				for screenshotIndex := range cell.Screenshots {
+					cell.Screenshots[screenshotIndex].RawPath = ""
+				}
+				if cell.Status == MatrixCellSuccess {
+					cell.Status = MatrixCellFailed
+					cell.FailureStage = "execution"
+					cell.FailureCode = "raw_output_unavailable"
+					cell.Error = newMatrixCellError(cell.FailureStage, cell.FailureCode, "raw screenshot became unavailable")
+				}
+				setMatrixScreenshotStatuses(cell)
+			}
+		}
+	}
 	if contextErr != nil {
 		return contextErr
 	}
@@ -2155,8 +2788,19 @@ func mergeMatrixFramedArtifacts(result *MatrixCellResult, attempt matrixAttemptR
 }
 
 func revalidateMatrixFramedPaths(result *MatrixResult) error {
+	return revalidateMatrixFramedPathsWithBudget(context.Background(), result, matrixSubprocessTimeout)
+}
+
+func revalidateMatrixFramedPathsWithBudget(ctx context.Context, result *MatrixResult, budget time.Duration) error {
+	return revalidateMatrixFramedPathsWithRoot(ctx, result, budget, nil)
+}
+
+func revalidateMatrixFramedPathsWithRoot(ctx context.Context, result *MatrixResult, budget time.Duration, retainedRoot *rootfs.Root) error {
 	if result == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	hasFramedPaths := false
 	for _, cell := range result.Cells {
@@ -2168,24 +2812,61 @@ func revalidateMatrixFramedPaths(result *MatrixResult) error {
 	if !hasFramedPaths {
 		return nil
 	}
-	framedRoot, rootErr := rootfs.New(result.FramedDir)
-	if rootErr == nil {
-		defer framedRoot.Close()
+	framedRootPath := result.FramedDir
+	var framedRoot rootfs.Root
+	var rootErr error
+	if retainedRoot != nil {
+		framedRoot = *retainedRoot
+		framedRootPath = framedRoot.Path()
+		rootErr = verifyMatrixRetainedOutputRoot(framedRoot)
+	} else {
+		framedRoot, rootErr = rootfs.New(result.FramedDir)
+		if rootErr == nil {
+			defer framedRoot.Close()
+		}
 	}
 	invalid := false
+	var contextErr error
 	for cellIndex := range result.Cells {
 		cell := &result.Cells[cellIndex]
 		validPaths := make([]string, 0, len(cell.FramedPaths))
 		validSet := make(map[string]struct{}, len(cell.FramedPaths))
 		for _, path := range cell.FramedPaths {
+			if contextErr == nil {
+				contextErr = ctx.Err()
+			}
+			if contextErr != nil {
+				invalid = true
+				break
+			}
 			expected, known := cell.framedArtifacts[path]
 			if rootErr != nil || !known {
 				invalid = true
 				continue
 			}
-			current, err := inspectMatrixArtifact(framedRoot, result.FramedDir, path)
-			if err != nil || !matrixArtifactMatches(expected, current) {
+			artifactCtx := ctx
+			var cancelArtifact context.CancelFunc
+			if budget > 0 {
+				artifactCtx, cancelArtifact = newMatrixArtifactBudgetContext(ctx, budget)
+			}
+			if matrixFramedVerificationContextForTest != nil {
+				matrixFramedVerificationContextForTest(artifactCtx)
+			}
+			if matrixFramedVerificationBeforeArtifactForTest != nil {
+				matrixFramedVerificationBeforeArtifactForTest()
+			}
+			current, err := inspectMatrixArtifactWithContext(artifactCtx, framedRoot, framedRootPath, path)
+			if cancelArtifact != nil {
+				cancelArtifact()
+			}
+			if contextErr == nil {
+				contextErr = ctx.Err()
+			}
+			if err != nil || contextErr != nil || !matrixArtifactMatches(expected, current) {
 				invalid = true
+				if contextErr != nil {
+					break
+				}
 				continue
 			}
 			validPaths = append(validPaths, path)
@@ -2193,7 +2874,12 @@ func revalidateMatrixFramedPaths(result *MatrixResult) error {
 		}
 		if len(validPaths) != len(cell.FramedPaths) {
 			cell.FramedPaths = validPaths
-			if cell.Status == MatrixCellSuccess {
+			if contextErr != nil && cell.Status == MatrixCellSuccess {
+				cell.Status = MatrixCellCanceled
+				cell.FailureStage = "execution"
+				cell.FailureCode = "canceled"
+				cell.Error = newMatrixCellError(cell.FailureStage, cell.FailureCode, "cell canceled")
+			} else if cell.Status == MatrixCellSuccess {
 				cell.Status = MatrixCellFailed
 				cell.FailureStage = "framing"
 				cell.FailureCode = "framed_output_unavailable"
@@ -2210,8 +2896,46 @@ func revalidateMatrixFramedPaths(result *MatrixResult) error {
 			}
 		}
 	}
+	if retainedRoot != nil && rootErr == nil {
+		if err := verifyMatrixRetainedOutputRoot(framedRoot); err != nil {
+			invalid = true
+			for cellIndex := range result.Cells {
+				cell := &result.Cells[cellIndex]
+				if len(cell.FramedPaths) == 0 {
+					continue
+				}
+				cell.FramedPaths = nil
+				for screenshotIndex := range cell.Screenshots {
+					cell.Screenshots[screenshotIndex].FramedPath = ""
+				}
+				if cell.Status == MatrixCellSuccess {
+					cell.Status = MatrixCellFailed
+					cell.FailureStage = "framing"
+					cell.FailureCode = "framed_output_unavailable"
+					cell.Error = newMatrixCellError(cell.FailureStage, cell.FailureCode, "framed screenshot became unavailable")
+				}
+			}
+		}
+	}
+	if contextErr != nil {
+		return contextErr
+	}
 	if invalid {
 		return errors.New("one or more framed screenshots became unavailable")
+	}
+	return nil
+}
+
+func verifyMatrixRetainedOutputRoot(root rootfs.Root) error {
+	if root.Path() == "" {
+		return errors.New("matrix output root is unavailable")
+	}
+	ok, err := root.ContainsPath(root.Path())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("matrix output root changed during execution")
 	}
 	return nil
 }

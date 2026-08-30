@@ -46,6 +46,12 @@ func GenerateMatrixReview(ctx context.Context, request MatrixReviewRequest) (*Ma
 	})
 }
 
+func generateMatrixReviewWithRoot(ctx context.Context, request MatrixReviewRequest, reviewRoot rootfs.Root) (*MatrixReviewResult, error) {
+	return generateMatrixReviewWithWriterAndRoot(ctx, request, func(root rootfs.Root, name string, data []byte, perm os.FileMode) error {
+		return root.WriteFilePreservingMode(name, data, perm)
+	}, &reviewRoot)
+}
+
 // matrixReviewGeneratedFiles lists every file generateMatrixReviewWithWriter
 // publishes into the review directory. Plan validation refuses inputs that would
 // be overwritten by these names, so this must stay in step with the writer below;
@@ -71,6 +77,10 @@ func matrixReviewLockContext(ctx context.Context) (context.Context, context.Canc
 type matrixReviewWriter func(rootfs.Root, string, []byte, os.FileMode) error
 
 func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewRequest, write matrixReviewWriter) (result *MatrixReviewResult, retErr error) {
+	return generateMatrixReviewWithWriterAndRoot(ctx, request, write, nil)
+}
+
+func generateMatrixReviewWithWriterAndRoot(ctx context.Context, request MatrixReviewRequest, write matrixReviewWriter, selectedRoot *rootfs.Root) (result *MatrixReviewResult, retErr error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -85,11 +95,17 @@ func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewReq
 	if err != nil {
 		return nil, fmt.Errorf("resolve matrix review output directory: %w", err)
 	}
-	reviewRoot, err := openMatrixOutputRoot(absOutputDir)
-	if err != nil {
-		return nil, fmt.Errorf("create matrix review output directory: %w", err)
+	var reviewRoot rootfs.Root
+	if selectedRoot != nil {
+		reviewRoot = *selectedRoot
+	} else {
+		var err error
+		reviewRoot, err = openMatrixOutputRoot(absOutputDir)
+		if err != nil {
+			return nil, fmt.Errorf("create matrix review output directory: %w", err)
+		}
+		defer func() { _ = reviewRoot.Close() }()
 	}
-	defer func() { _ = reviewRoot.Close() }()
 	lockContextSource := request.LockContext
 	if lockContextSource == nil {
 		lockContextSource = ctx

@@ -117,15 +117,95 @@ func acquireMatrixSimulatorLock(ctx context.Context, udid string) (func() error,
 	return acquireMatrixGlobalLock(ctx, "simulator:"+normalizeMatrixUDID(udid))
 }
 
+// matrixOutputLockTarget carries the already-open destination root whose
+// filesystem identity must determine the lock key. A path string is not
+// sufficient: bind mounts and other filesystem aliases can name the same
+// directory through different lexical and resolved paths.
+type matrixOutputLockTarget struct {
+	root   rootfs.Root
+	opened *os.Root
+}
+
 // acquireMatrixOutputLocks orders all destination locks before acquisition so
 // two concurrent runs with the same paths in a different order cannot deadlock.
+// The compatibility wrapper opens each destination before deriving its key;
+// RunMatrixWithDependencies uses acquireMatrixOutputLocksForRoots so the roots
+// used for execution can be the same identities that were locked.
 func acquireMatrixOutputLocks(ctx context.Context, paths []string) (func() error, error) {
-	identities := make(map[string]struct{}, len(paths))
+	targets := make([]matrixOutputLockTarget, 0, len(paths))
+	roots := make([]rootfs.Root, 0, len(paths))
+	openedRoots := make([]*os.Root, 0, len(paths))
 	for _, path := range paths {
-		identity := matrixOutputLockIdentity(path)
-		if identity != "" {
-			identities[identity] = struct{}{}
+		root, err := openMatrixOutputRoot(path)
+		if err != nil {
+			for _, opened := range openedRoots {
+				_ = opened.Close()
+			}
+			for _, opened := range roots {
+				_ = opened.Close()
+			}
+			return nil, err
 		}
+		opened, err := root.OpenRoot()
+		if err != nil {
+			_ = root.Close()
+			for _, opened := range openedRoots {
+				_ = opened.Close()
+			}
+			for _, opened := range roots {
+				_ = opened.Close()
+			}
+			return nil, err
+		}
+		roots = append(roots, root)
+		openedRoots = append(openedRoots, opened)
+		if matrixOutputLockRootOpenedForTest != nil {
+			matrixOutputLockRootOpenedForTest(opened)
+		}
+		targets = append(targets, matrixOutputLockTarget{root: root, opened: opened})
+	}
+	release, acquireErr := acquireMatrixOutputLocksForRoots(ctx, targets)
+	var closeErr error
+	for _, opened := range openedRoots {
+		closeErr = errors.Join(closeErr, opened.Close())
+	}
+	for _, root := range roots {
+		closeErr = errors.Join(closeErr, root.Close())
+	}
+	if closeErr != nil {
+		if release != nil {
+			closeErr = errors.Join(closeErr, release())
+			release = nil
+		}
+	}
+	return release, errors.Join(acquireErr, closeErr)
+}
+
+// acquireMatrixOutputLocksForRoots derives each lock key from the opened root
+// identity, not from a canonicalized pathname. The identity representation is
+// immediately hashed by acquireMatrixGlobalLock and never appears in output.
+func acquireMatrixOutputLocksForRoots(ctx context.Context, targets []matrixOutputLockTarget) (func() error, error) {
+	identities := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		opened := target.opened
+		var err error
+		if opened == nil {
+			opened, err = target.root.OpenRoot()
+		}
+		if err != nil {
+			return nil, errors.New("matrix output filesystem identity is unavailable")
+		}
+		identity, identityErr := matrixStableFilesystemIdentity(opened)
+		if target.opened == nil {
+			err = opened.Close()
+		}
+		if identityErr != nil {
+			err = errors.Join(err, identityErr)
+		}
+		if err != nil {
+			return nil, errors.New("matrix output filesystem identity is unavailable")
+		}
+		identities[identity] = struct{}{}
 	}
 	ordered := make([]string, 0, len(identities))
 	for identity := range identities {
