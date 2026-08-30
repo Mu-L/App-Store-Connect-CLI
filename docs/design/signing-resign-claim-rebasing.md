@@ -32,9 +32,9 @@ asc signing resign \
 
 `--rebase-team-claims` is a command-specific `[experimental]` boolean flag. It defaults to false. `--output` remains the artifact destination, and `--format` remains the result renderer; the new flag must not overload either name.
 
-When the flag is absent, the command retains the existing #2241 contract byte-for-byte where observable: an existing unauthorized claim is refused, the diagnostic gives manual remediation, and no automatic prefix derivation occurs. When the flag is present, only claims accepted by the rules below may be transformed. It is not an authorization bypass, a profile repair operation, or a way to grant a capability that was absent from the signed input.
+When the flag is absent, the command retains the existing #2241 refusal semantics: an existing unauthorized claim is refused, the diagnostic gives manual remediation, and no automatic prefix derivation occurs. The structured result gains only the additive `entitlementRewrites: []` field described below. When the flag is present, only claims accepted by the rules below may be transformed. It is not an authorization bypass, a profile repair operation, or a way to grant a capability that was absent from the signed input.
 
-The flag is rejected with a usage error on unsupported platforms before the IPA, profile, identity, or password is read. Missing or malformed values remain usage errors (exit 2); artifact, signing, verification, and profile-authorization failures remain ordinary non-zero command failures. Diagnostics go to stderr. Successful structured output goes to stdout unless the existing renderer contract directs it elsewhere.
+The command reserves exit 2 for invocation and input-shape errors: flag parsing, missing or empty flag values, positional arguments, unsupported platforms, invalid output-format values, and invalid strict profiles-manifest JSON or mapping shape. Once valid paths and manifest shape are accepted, malformed IPA/archive bytes, malformed signed-entitlement plists, malformed CMS/mobileprovision bytes, profile-target or identity mismatches, unauthorized claims, signing, verification, and output failures are operational failures with an ordinary non-zero exit. A missing or unreadable file is also operational after its path flag has passed validation. Diagnostics go to stderr. Successful structured output goes to stdout unless the existing renderer contract directs it elsewhere.
 
 ## Existing behavior and dependency boundary
 
@@ -53,13 +53,13 @@ The following identifiers are distinct and must remain distinct in code and docu
 - `oldTeamID` and `newTeamID`: the signed and replacement profile team identifiers;
 - `oldApplicationID` and `newApplicationID`: the complete target application identifiers, including the prefix and bundle identifier.
 
-An App ID prefix is often, but is not required to be, the Team ID. The implementation must therefore never derive a prefix from a Team ID and must never use a broad text replacement. The replacement profile's `ApplicationIdentifierPrefix` is the source of `newPrefix`, including when it differs from the replacement profile Team ID.
+An App ID prefix is often, but is not required to be, the Team ID. The implementation must therefore never derive a prefix from a Team ID and must never use a broad text replacement. The replacement profile's authenticated application identifier is the source of the concrete planned application ID, and its `ApplicationIdentifierPrefix` is a consistency check, including when it differs from the replacement profile Team ID.
 
 For every target that has a rebased claim:
 
 1. Require a concrete existing `application-identifier` whose suffix exactly equals that target's bundle identifier.
 2. Extract `oldPrefix` from that value and validate it with the existing identity validation rules.
-3. Read `newPrefix` from the target's replacement profile. A profile wildcard may authorize a concrete target value, but the generated signed document must contain the concrete `newPrefix.<bundle-id>` value.
+3. Resolve the replacement profile's `application-identifier` to a concrete planned value. An exact value must be `<newPrefix>.<bundle-id>`; the only permitted wildcard form is exactly `<newPrefix>.*`, which is materialized as `<newPrefix>.<bundle-id>`. Derive `newPrefix` from that concrete planned value and require it to equal the profile's `ApplicationIdentifierPrefix`. A wildcard is authorization-only; the generated signed document must contain the concrete value.
 4. Require the profile's application identifier, team identifier, and certificate identity to pass the normal #2241 checks.
 5. Derive each candidate transformed value only from the target's own `oldPrefix` and the replacement profile's `newPrefix`.
 
@@ -76,12 +76,12 @@ The allowlist is intentionally narrow. A key is not eligible because its value h
 | `keychain-access-groups` | array of strings | allow, prefix-only | Transform each concrete `<oldPrefix>.<suffix>` item to `<newPrefix>.<suffix>`; preserve order and authorize the resulting array items against the replacement profile. |
 | `com.apple.developer.ubiquity-kvstore-identifier` | string | allow, prefix-only | Transform one concrete `<oldPrefix>.<suffix>` value; authorize the concrete result. |
 | `com.apple.developer.parent-application-identifiers` | array of strings | allow only through the App Clip graph | Do not perform a generic prefix swap; replace only the one value proven to be the discovered main app's old application identifier, using the main app's planned new application identifier. |
-| `com.apple.developer.ubiquity-container-identifiers` | array of strings | defer by default | Enable only after signed/profile fixtures prove the exact prefix grammar and replacement profile authorization behavior. |
-| `com.apple.developer.icloud-container-identifiers` | array of strings | defer by default | Treat the container identifier as a shared resource reference, not as a string to rewrite, until its signed grammar and ownership rules are proven for this command. |
-| `com.apple.developer.icloud-container-development-container-identifiers` | array of strings | defer by default | Same boundary as production iCloud container identifiers; no speculative rewrite. |
-| `com.apple.developer.associated-appclip-app-identifiers` | array of strings | defer or graph-only | If implemented, map references to discovered App Clip targets and verify both sides; never rewrite an arbitrary sibling bundle identifier. |
+| `com.apple.developer.ubiquity-container-identifiers` | array of strings | unsupported in v1 | Enable only after signed/profile fixtures prove the exact prefix grammar and replacement profile authorization behavior. |
+| `com.apple.developer.icloud-container-identifiers` | array of strings | unsupported in v1 | Treat the container identifier as a shared resource reference, not as a string to rewrite, until its signed grammar and ownership rules are proven for this command. |
+| `com.apple.developer.icloud-container-development-container-identifiers` | array of strings | unsupported in v1 | Same boundary as production iCloud container identifiers; no speculative rewrite. |
+| `com.apple.developer.associated-appclip-app-identifiers` | array of strings | unsupported in v1; graph-only if added | A future implementation must map references to discovered App Clip targets and verify both sides; it must never rewrite an arbitrary sibling bundle identifier. |
 
-The first implementation should ship only the rows marked allow, with the graph-only parent rule implemented together with the target graph. Deferred keys remain unchanged and are either profile-authorized unchanged or refused by the existing fail-closed path. Adding a key later is an additive allowlist change with its own fixtures and output tests.
+The first implementation ships only the rows marked allow, with the graph-only parent rule implemented together with the target graph. Unsupported v1 keys remain unchanged when the replacement profile authorizes their exact existing values and are refused otherwise. Adding a key later is an additive allowlist change with its own fixtures and output tests.
 
 ### Never-rewrite policy
 
@@ -106,27 +106,27 @@ For a prefix-only string, accept exactly a non-empty concrete value with the for
 oldPrefix + "." + non-empty-suffix
 ```
 
-The suffix is copied as an opaque identifier after structural validation; it is not parsed by splitting on every dot and it must not contain a wildcard. The transformed value is:
+The suffix is copied as an opaque identifier after key-specific structural validation; it is not parsed by splitting on every dot. For both initial prefix-only keys, require valid UTF-8 and reject an empty suffix, leading or trailing whitespace, any Unicode whitespace or control code point, `*`, `/`, `\\`, or a NUL byte. Arrays must contain only strings. These rules are an input boundary, not a generic dotted-string parser. The transformed value is:
 
 ```text
 newPrefix + "." + same-suffix
 ```
 
-For an array, apply the same rule to every element. A value with a third prefix, an unprefixed value, an empty suffix, a wildcard, a non-string element, or an ambiguous grammar fails closed. There are no silent partial rewrites.
+For an array, apply the same rule to every element. First preserve any concrete value that the replacement profile already authorizes exactly or by a valid entitlement wildcard. Only an unauthorized value with the exact `oldPrefix.` prefix is a rebase candidate. A remaining third-prefix or unprefixed value, empty suffix, wildcard source value, non-string element, or ambiguous grammar fails closed. There are no silent partial rewrites.
 
-An already-new-prefix value may remain unchanged only when it is concrete and the replacement profile authorizes it. A list may therefore contain source-old values that transform and already-new values that remain unchanged. Every other prefix is a refusal. This mixed-set rule is per element and is not an invitation to accept arbitrary values.
+An already-new-prefix or other value may remain unchanged only when it is concrete and the replacement profile authorizes that exact value or a valid wildcard pattern authorizes it. A list may therefore contain source-old values that transform and already-authorized values that remain unchanged. Every unauthorized non-source-prefix value is a refusal. This mixed-set rule is per element and is not an invitation to accept arbitrary values.
 
-Preserve array order, element type, and length. The recommended policy is to reject duplicate elements when the rebasing flag is active: deduplication could change entitlement semantics and would make the audit record ambiguous. If compatibility evidence requires preserving duplicates, the implementation must preserve them exactly and report each indexed transformation; it must not silently deduplicate.
+Preserve array order, element type, length, and duplicates exactly. Deduplication or duplicate rejection would change an existing signed input without establishing a stronger authorization boundary. Report each changed element by its original index so duplicate transformations remain auditable.
 
 ### Profile authorization after transformation
 
-The pipeline must first calculate the complete candidate entitlement document, then ask the existing profile authorization routine whether each candidate is permitted. Authorization is checked against the transformed value, not the old value. A terminal wildcard profile value may authorize a concrete rebased value, but a wildcard must never be emitted in the signed document.
+The pipeline must first calculate the complete candidate entitlement document, then ask the existing profile authorization routine whether each candidate is permitted. Authorization is checked against the transformed value, not the old value. Derive `newPrefix` from the profile's concrete planned application identifier; entitlement wildcard entries are authorization patterns only. Permit only a terminal wildcard with a non-empty dotted prefix and no other `*`. Multiple valid patterns are not ambiguous: a concrete candidate is authorized when at least one pattern permits it. Reject malformed patterns or a concrete candidate with no permitting exact value or pattern. A wildcard must never be emitted in the signed document.
 
 The following cases all fail closed:
 
 - the replacement profile omits a claim that exists in the signed input;
 - a transformed value is not authorized by the replacement profile;
-- a profile wildcard is ambiguous or does not resolve to one target prefix;
+- the profile application identifier cannot produce one concrete target prefix, an entitlement wildcard is malformed, or no exact value or valid pattern permits the candidate;
 - a required identity claim remains wildcard-only or otherwise non-concrete;
 - a source value cannot be classified as old-prefix or already-authorized new-prefix;
 - a candidate is accepted by a capability presence check but not by its value-specific profile entitlement.
@@ -142,12 +142,12 @@ All target entitlement plans are built before the first generated entitlement fi
 - references must resolve to a discovered target in the same IPA;
 - the referenced target kind must be valid for the claim;
 - the referenced target's planned application identifier must be concrete;
-- both source and replacement profiles must authorize their respective claims;
+- the existing signed claim must pass its type and grammar checks, and the replacement profile must authorize the planned candidate;
 - a failure in any node or edge rejects the complete operation without a partial output IPA.
 
 ### App Clip parent relationship
 
-`com.apple.developer.parent-application-identifiers` is an App Clip-only array with exactly one value. For a discovered App Clip, the value is eligible only when it equals the discovered main app's old concrete `application-identifier`. The planner then uses the main app's planned new concrete application identifier as the replacement value.
+`com.apple.developer.parent-application-identifiers` is an App Clip-only array with exactly one value. For a discovered App Clip, an exact match for the discovered main app's old concrete `application-identifier` is rewritten to the main app's planned new concrete application identifier. A value already equal to that planned new identifier is preserved unchanged. Every other value fails closed. The same old-to-new-or-preserve rule applies if associated App Clip references are added later.
 
 The App Clip replacement profile must authorize that exact new parent value. The main app and App Clip must both be present, uniquely identified, and paired by the archive relationship; a prefix that merely looks compatible is not sufficient. Reject multiple parent values, a parent outside the IPA, a missing or ambiguous main app, a mismatched pair, or a profile that does not authorize the planned value.
 
@@ -179,7 +179,7 @@ Rewrite records are collected from the plan, not reconstructed from logs or from
 
 The current `signing resign` command emits a structured `SigningResignResult`; it does not write a separate receipt file. This feature should extend that result additively rather than introduce a second persistence format or an overwrite-prone receipt flag.
 
-Add an always-present, possibly empty `entitlementRewrites` array. One record represents one scalar rewrite or one array element, so mixed values and ordering are unambiguous:
+Add an always-present, possibly empty, top-level flattened `entitlementRewrites` array. It contains only automatic changes made by `--rebase-team-claims`; normal profile-derived values such as application identifiers, team identifiers, and `get-task-allow` are not rebase records. One record represents one scalar rewrite or one array element, so mixed values and ordering are unambiguous:
 
 ```json
 {
@@ -216,7 +216,7 @@ The initial release should not migrate old invocations or change the default. An
 After #2241 has merged and its command surface is current, implement the feature in these areas:
 
 1. `internal/cli/signing/signing_resign.go`: add `RebaseTeamClaims` to command options, bind the experimental flag, and include the exact help text and plumbing.
-2. `internal/cli/signing/signing_resign_entitlements.go`: add typed allowlist metadata, source-prefix parsing, scalar and list planners, duplicate/mixed-prefix checks, and post-transform profile authorization. Return rewrite records as data, not side effects.
+2. `internal/cli/signing/signing_resign_entitlements.go`: add typed allowlist metadata, source-prefix parsing, scalar and list planners, duplicate-preserving mixed-prefix handling, and post-transform profile authorization. Return rewrite records as data, not side effects.
 3. `internal/cli/signing/signing_resign_archive.go`: expose a stable target graph and old/new application-identifier lookup, or place the equivalent helper in the pipeline package without duplicating archive discovery.
 4. `internal/cli/signing/signing_resign_pipeline.go`: plan every target before writes, validate graph edges, propagate rewrite records, retain exact generated-document verification, and keep nested non-target code outside the rebase scope.
 5. `internal/asc/output_signing_resign.go`: add exported rewrite result types and deterministic table/Markdown rows while preserving the existing result fields.
@@ -242,17 +242,18 @@ Tests should begin with the smallest failing assertion at the command or planner
 
 - `TestBuildSigningResignEntitlementsRequiresExplicitRebaseOptIn`: old-prefix keychain and key-value claims fail without the flag and transform with it.
 - `TestRebaseSigningResignClaimUsesProfileApplicationIdentifierPrefix`: a legacy source prefix and a different replacement Team ID still use the profile App ID prefix.
-- `TestRebaseSigningResignClaimRejectsUnknownThirdPrefix`: a third prefix fails closed.
+- `TestRebaseSigningResignClaimRejectsUnauthorizedThirdPrefix`: an unauthorized third prefix fails closed, while an unchanged value already authorized by the replacement profile is preserved.
 - `TestRebaseSigningResignClaimRejectsMalformedUnprefixedAndWildcardValues`: empty suffixes, unprefixed values, and wildcards fail closed.
 - `TestRebaseSigningResignClaimPreservesListOrderAndShape`: old and already-new values remain in original order and retain array shape.
 - `TestBuildSigningResignEntitlementsMixedOldNewTeamClaims`: old values transform, authorized new values remain, and unrelated values fail.
-- A duplicate-element test asserts the chosen reject-or-preserve policy; the implementation must never silently deduplicate.
+- A duplicate-element test asserts exact preservation of duplicates, order, array shape, and per-index rewrite records.
 - `TestBuildSigningResignEntitlementsStillOmitsAbsentOptionalClaimsWithRebase`: the flag cannot add absent optional claims from the profile.
 
 ### Profile authorization and pipeline safety
 
 - `TestRebaseSigningResignClaimRequiresReplacementProfileAuthorization`: wildcard profile authorization accepts a concrete rebased value; concrete profiles require exact membership.
-- A missing profile key, non-authorized transformed value, wildcard-only required identity, and ambiguous wildcard prefix each fail before signing.
+- A missing profile key, non-authorized transformed value, wildcard-only required identity, malformed wildcard, and candidate matching no valid profile pattern each fail before signing.
+- The wildcard regression fixture uses old-prefix keychain and ubiquity-KV values with a `NEWPREFIX.*` replacement profile, proving no-flag refusal and opt-in concrete rewriting rather than reusing already-new values.
 - `TestPrepareSigningResignTreePlansAllRewritesBeforeMutation`: a later target or edge failure leaves no generated entitlement, embedded profile, or output-tree mutation.
 - `TestRebaseSigningResignRewriteOrderingIsStable`: map iteration order cannot change records or generated documents.
 - `TestRebaseSigningResignPostSignDocumentMatchesRewrittenEntitlements`: verification compares the exact concrete transformed document and rejects a different authorized subset.
@@ -287,7 +288,6 @@ Before coding, maintainers must resolve these gates with fixtures or retain the 
 
 - whether iCloud and ubiquity container identifiers are genuinely prefix-scoped in the signed values used by this command;
 - whether associated App Clip identifiers are included in the first graph implementation;
-- whether duplicate array elements are rejected (recommended) or preserved exactly;
 - whether exact old/new allowlisted values are acceptable in normal result output, with only secrets and non-allowlisted claims redacted;
 - #2249 remains the canonical design issue and #2251 is the implementation follow-up; implementation work should link both issues.
 
