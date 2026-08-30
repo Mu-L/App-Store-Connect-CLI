@@ -16,6 +16,7 @@ import (
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	signingpkg "github.com/rudrankriyam/App-Store-Connect-CLI/internal/signing"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
@@ -31,16 +32,13 @@ const (
 )
 
 // SyncResult is the structured output for sync operations.
-type SyncResult struct {
-	Operation       string   `json:"operation"`
-	RepoURL         string   `json:"repoUrl"`
-	BundleID        string   `json:"bundleId"`
-	ProfileType     string   `json:"profileType"`
-	Files           []string `json:"files"`
-	IdentityPresent bool     `json:"identityPresent"`
-	IdentitySHA256  string   `json:"identitySha256,omitempty"`
-	SensitiveFiles  []string `json:"sensitiveFiles,omitempty"`
-}
+//
+// The concrete output contract lives in internal/asc so the command's JSON
+// and non-JSON renderers share one registered, exported result type.
+type SyncResult = asc.SigningSyncResult
+
+// SyncTargetResult describes one target in a multi-target signing sync push.
+type SyncTargetResult = asc.SigningSyncTargetResult
 
 type decryptedSigningFile struct {
 	RelativePath string
@@ -66,6 +64,9 @@ Team members pull and decrypt to get signing files.
 
 Examples:
   asc signing sync push --bundle-id com.example.app --profile-type IOS_APP_STORE \
+    --repo git@github.com:team/certs.git --password-file ~/.config/asc/signing-sync-password
+
+  asc signing sync push --targets-file ./signing-targets.json --profile-type IOS_APP_STORE \
     --repo git@github.com:team/certs.git --password-file ~/.config/asc/signing-sync-password
 
   asc signing sync pull --repo git@github.com:team/certs.git --password-file ~/.config/asc/signing-sync-password \
@@ -151,7 +152,8 @@ func onceAfterSuccess(operation func() error) func() error {
 func syncPushCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("push", flag.ExitOnError)
 
-	bundleID := fs.String("bundle-id", "", "Bundle identifier (required)")
+	bundleID := fs.String("bundle-id", "", "Bundle identifier (required unless --targets-file is used)")
+	targetsFile := fs.String("targets-file", "", "[experimental] Command-root-relative JSON file containing 1-32 bundle targets (mutually exclusive with --bundle-id)")
 	profileType := fs.String("profile-type", "", "Profile type: IOS_APP_STORE, IOS_APP_DEVELOPMENT, etc. (required)")
 	repoURL := fs.String("repo", "", "Git repo URL for encrypted storage (required)")
 	password := fs.String("password", "", "Deprecated: encryption password (or ASC_MATCH_PASSWORD env); use --password-file")
@@ -168,7 +170,7 @@ func syncPushCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "push",
-		ShortUsage: "asc signing sync push --bundle-id ID --profile-type TYPE --repo URL [--password-file PATH]",
+		ShortUsage: "asc signing sync push (--bundle-id ID | --targets-file PATH) --profile-type TYPE --repo URL [--password-file PATH]",
 		ShortHelp:  "Fetch signing assets from ASC, encrypt, and push to git.",
 		FlagSet:    fs,
 		UsageFunc:  shared.DefaultUsageFunc,
@@ -176,10 +178,29 @@ func syncPushCommand() *ffcli.Command {
 			if len(args) > 0 {
 				return shared.UsageErrorf("unexpected argument(s): %s", strings.Join(args, " "))
 			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageError(err.Error())
+			}
 
 			bundle := strings.TrimSpace(*bundleID)
-			if bundle == "" {
+			targetsPath := strings.TrimSpace(*targetsFile)
+			if *targetsFile != "" && targetsPath == "" {
+				return shared.UsageError("--targets-file must not be empty")
+			}
+			if bundle != "" && targetsPath != "" {
+				return shared.UsageError("--bundle-id and --targets-file are mutually exclusive")
+			}
+			var targetBundles []string
+			if targetsPath != "" {
+				var readErr error
+				targetBundles, readErr = readSigningSyncTargetsFile(targetsPath)
+				if readErr != nil {
+					return shared.UsageError(readErr.Error())
+				}
+			} else if bundle == "" {
 				return shared.UsageError("--bundle-id is required")
+			} else {
+				targetBundles = []string{bundle}
 			}
 			profType := strings.ToUpper(strings.TrimSpace(*profileType))
 			if profType == "" {
@@ -255,6 +276,24 @@ func syncPushCommand() *ffcli.Command {
 
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
+
+			if targetsPath != "" {
+				result, batchErr := runSigningSyncBatch(ctx, client, signingSyncBatchOptions{
+					RepoURL:         repo,
+					Branch:          *branch,
+					Password:        pass,
+					ProfileType:     profType,
+					CertificateType: *certType,
+					DeviceIDs:       shared.SplitCSV(*deviceIDs),
+					CreateMissing:   *createMissing,
+					Identity:        identity,
+					BundleIDs:       targetBundles,
+				})
+				if batchErr != nil {
+					return fmt.Errorf("signing sync push: %w", batchErr)
+				}
+				return shared.PrintOutput(&result, *output.Output, *output.Pretty)
+			}
 
 			// Fetch signing assets from ASC.
 			fmt.Fprintln(os.Stderr, "Fetching signing assets from App Store Connect...")

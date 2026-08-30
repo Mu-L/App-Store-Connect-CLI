@@ -20,7 +20,8 @@ or per-target profile settings.
 
 The manifest is read before password, identity, authentication, App Store
 Connect, repository, or Git side effects. The selected path is opened through
-the rooted, no-follow filesystem helper, must be a regular file, and is capped
+the current working-directory root with absolute paths and `..` escapes
+rejected, must use no-follow traversal, must be a regular file, and is capped
 at 64 KiB. It is intentionally not subject to the owner-only permission rule
 used for secret inputs; a readable `0644` manifest is valid. JSON decoding is
 strict: schema version 1, exactly the `schemaVersion` and `targets` fields at
@@ -61,8 +62,9 @@ legacy envelopes are decrypted and compared before replacement; equivalent
 plaintext is retained, while an unreadable or differently authenticated
 artifact fails closed. Versioned identity artifacts use their existing
 authenticated comparison and replacement rules. One `git add`, at most one
-commit, and at most one push cover the whole batch. An unchanged batch performs
-no commit or push.
+commit, and at most one push cover the whole batch. The deterministic commit
+message is `Update signing assets for <profile-type> (<target-count> targets)`.
+An unchanged batch performs no commit or push.
 
 ## Output and compatibility
 
