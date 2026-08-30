@@ -388,7 +388,9 @@ colliding entries, symlinks, encrypted members, oversized expansion, and
 unsupported target metadata fail without creating the output parent. A valid
 `SwiftSupport` directory, when present, is exactly
 `SwiftSupport/iphoneos/*.dylib`: it has no root files, alternate platform
-directories, nested entries, symlinks, or non-dylib files. Each runtime is
+directories, nested entries, symlinks, or non-dylib files. A valid
+`WatchKitSupport2` directory, when present, contains only the regular `WK`
+binary. Each preserved runtime is
 verified against Apple's generic code-signing anchor before and after repack.
 The initial and final direct-runtime inventories must match exactly by
 normalized relative path, bounded size (at most 1 GiB per file), SHA-256

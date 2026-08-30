@@ -238,3 +238,77 @@ func TestVerifyPackedSigningResignIPAProjectsSwiftSupportMismatchAsClosedVerific
 		t.Fatalf("failed command left a success receipt: stat error = %v", statErr)
 	}
 }
+
+func TestSigningResignPreservedExternalCodeIncludesWatchKitSupport(t *testing.T) {
+	root := t.TempDir()
+	if !isSigningResignPreservedExternalCodePath(root, filepath.Join(root, "WatchKitSupport2", "WK")) {
+		t.Fatal("WatchKitSupport2/WK must be treated as preserved distribution-side code")
+	}
+	if isSigningResignPreservedExternalCodePath(root, filepath.Join(root, "WatchKitSupport2", "Other")) {
+		t.Fatal("only the WK binary is preserved under WatchKitSupport2")
+	}
+	if isSigningResignPreservedExternalCodePath(root, filepath.Join(root, "WatchKitSupport2", "nested", "WK")) {
+		t.Fatal("nested WatchKitSupport2 entries are not preserved")
+	}
+}
+
+func TestValidateSigningResignWatchKitSupportEnforcesShapeAndProvenance(t *testing.T) {
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	var verified []string
+	runSigningResignToolFn = func(_ context.Context, _ string, args ...string) (signingResignToolOutput, error) {
+		verified = append(verified, args[len(args)-1])
+		return signingResignToolOutput{}, nil
+	}
+	root := t.TempDir()
+	if err := validateSigningResignWatchKitSupport(context.Background(), root); err != nil {
+		t.Fatalf("validateSigningResignWatchKitSupport() error = %v, want absent directory accepted", err)
+	}
+	wkDir := filepath.Join(root, "WatchKitSupport2")
+	if err := os.MkdirAll(wkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wkDir, "WK"), []byte("wk binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSigningResignWatchKitSupport(context.Background(), root); err != nil {
+		t.Fatalf("validateSigningResignWatchKitSupport() error = %v, want standard WK layout accepted", err)
+	}
+	if len(verified) != 1 || filepath.Base(verified[0]) != "WK" {
+		t.Fatalf("verified = %v, want provenance verification of the WK binary", verified)
+	}
+	if err := os.WriteFile(filepath.Join(wkDir, "extra"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSigningResignWatchKitSupport(context.Background(), root); err == nil {
+		t.Fatal("validateSigningResignWatchKitSupport() accepted an unexpected extra entry")
+	}
+}
+
+func TestCaptureSigningResignPreservedInventoryIncludesWatchKit(t *testing.T) {
+	root := t.TempDir()
+	inventory, err := captureSigningResignPreservedInventory(context.Background(), root)
+	if err != nil || inventory != nil {
+		t.Fatalf("captureSigningResignPreservedInventory() = %v, %v, want empty for a plain tree", inventory, err)
+	}
+	wkDir := filepath.Join(root, "WatchKitSupport2")
+	if err := os.MkdirAll(wkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte("wk binary")
+	if err := os.WriteFile(filepath.Join(wkDir, "WK"), contents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err = captureSigningResignPreservedInventory(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory) != 1 {
+		t.Fatalf("inventory = %v, want the WK binary captured", inventory)
+	}
+	entry := inventory[0]
+	if entry.RelativePath != "WatchKitSupport2/WK" || entry.SizeBytes != int64(len(contents)) ||
+		entry.Mode != 0o755 || entry.SHA256 != signingResignSHA256(contents) {
+		t.Fatalf("inventory entry = %+v, want exact WK path, size, mode, and digest", entry)
+	}
+}

@@ -407,12 +407,12 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 	for _, target := range prepared.Archive.Targets {
 		targetExecutablePaths[targetExecutablePath(treeRoot.Path(), target)] = struct{}{}
 	}
-	if err := validateSigningResignSwiftSupport(ctx, treeRoot.Path()); err != nil {
+	if err := validateSigningResignPreservedExternalDirectories(ctx, treeRoot.Path()); err != nil {
 		return signingResignPreparedTree{}, err
 	}
-	prepared.SwiftSupport, err = captureSigningResignSwiftSupportInventory(ctx, treeRoot.Path())
+	prepared.SwiftSupport, err = captureSigningResignPreservedInventory(ctx, treeRoot.Path())
 	if err != nil {
-		return signingResignPreparedTree{}, fmt.Errorf("capture SwiftSupport inventory: %w", err)
+		return signingResignPreparedTree{}, fmt.Errorf("capture preserved support inventory: %w", err)
 	}
 	for index, codePath := range codePaths {
 		if err := contextError(ctx); err != nil {
@@ -466,6 +466,12 @@ func isSigningResignPreservedExternalCodePath(treeRoot, codePath string) bool {
 		return false
 	}
 	relative = filepath.ToSlash(relative)
+	if relative == "WatchKitSupport2/WK" {
+		// App Store-exported Watch IPAs carry the distribution-side WK shim
+		// binary beside the payload. It is provenance-checked and preserved
+		// byte-for-byte, never re-signed.
+		return true
+	}
 	const prefix = "SwiftSupport/iphoneos/"
 	if !strings.HasPrefix(relative, prefix) {
 		return false
@@ -539,6 +545,107 @@ func validateSigningResignSwiftSupport(ctx context.Context, treeRoot string) err
 		}
 	}
 	return nil
+}
+
+// validateSigningResignWatchKitSupport enforces the standard Watch
+// distribution layout: an optional WatchKitSupport2 directory containing
+// exactly the regular, non-symlink WK binary, whose Apple provenance is
+// verified before it is preserved.
+func validateSigningResignWatchKitSupport(ctx context.Context, treeRoot string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	watchRoot := filepath.Join(treeRoot, "WatchKitSupport2")
+	info, err := os.Lstat(watchRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect WatchKitSupport2 directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("WatchKitSupport2 is not a regular directory")
+	}
+	entries, err := os.ReadDir(watchRoot)
+	if err != nil {
+		return fmt.Errorf("read WatchKitSupport2 directory: %w", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "WK" {
+		return fmt.Errorf("WatchKitSupport2 must contain only the WK binary")
+	}
+	entry := entries[0]
+	if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+		return fmt.Errorf("WatchKitSupport2 contains a nested or symbolic-link entry")
+	}
+	entryInfo, err := entry.Info()
+	if err != nil || !entryInfo.Mode().IsRegular() {
+		return fmt.Errorf("WatchKitSupport2 contains a non-regular entry")
+	}
+	if err := verifySigningResignPreservedExternalCode(ctx, filepath.Join(watchRoot, "WK")); err != nil {
+		return fmt.Errorf("verify preserved WatchKitSupport2 code failed: %w", err)
+	}
+	return nil
+}
+
+func captureSigningResignWatchKitSupportInventory(ctx context.Context, treeRoot string) ([]signingResignSwiftSupportEntry, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	candidate := filepath.Join(treeRoot, "WatchKitSupport2", "WK")
+	entryInfo, err := os.Lstat(candidate)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect WatchKitSupport2 entry: %w", err)
+	}
+	if entryInfo.Mode()&os.ModeSymlink != 0 || !entryInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("WatchKitSupport2 contains a non-regular entry")
+	}
+	if entryInfo.Size() > signingResignSwiftSupportMaxBytes {
+		return nil, fmt.Errorf("WatchKitSupport2 entry exceeds %d bytes", signingResignSwiftSupportMaxBytes)
+	}
+	digest, err := hashSigningResignFile(ctx, candidate, entryInfo.Size())
+	if err != nil {
+		return nil, fmt.Errorf("hash WatchKitSupport2 entry: %w", err)
+	}
+	return []signingResignSwiftSupportEntry{{
+		RelativePath: "WatchKitSupport2/WK",
+		SizeBytes:    entryInfo.Size(),
+		SHA256:       digest,
+		Mode:         entryInfo.Mode().Perm(),
+	}}, nil
+}
+
+// validateSigningResignPreservedExternalDirectories checks every supported
+// distribution-side directory that is preserved instead of re-signed.
+func validateSigningResignPreservedExternalDirectories(ctx context.Context, treeRoot string) error {
+	if err := validateSigningResignSwiftSupport(ctx, treeRoot); err != nil {
+		return err
+	}
+	return validateSigningResignWatchKitSupport(ctx, treeRoot)
+}
+
+// captureSigningResignPreservedInventory records the sorted path, size,
+// digest, and mode of every preserved distribution-side runtime so repack can
+// be held to byte-for-byte equality.
+func captureSigningResignPreservedInventory(ctx context.Context, treeRoot string) ([]signingResignSwiftSupportEntry, error) {
+	swift, err := captureSigningResignSwiftSupportInventory(ctx, treeRoot)
+	if err != nil {
+		return nil, err
+	}
+	watch, err := captureSigningResignWatchKitSupportInventory(ctx, treeRoot)
+	if err != nil {
+		return nil, err
+	}
+	combined := append(swift, watch...)
+	sort.Slice(combined, func(left, right int) bool {
+		return combined[left].RelativePath < combined[right].RelativePath
+	})
+	if len(combined) == 0 {
+		return nil, nil
+	}
+	return combined, nil
 }
 
 func captureSigningResignSwiftSupportInventory(ctx context.Context, treeRoot string) ([]signingResignSwiftSupportEntry, error) {
@@ -1110,7 +1217,7 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 			fmt.Errorf("materialize final verification tree: %w", err),
 		)
 	}
-	if err := validateSigningResignSwiftSupport(ctx, filepath.Join(stageRoot.Path(), "packed-tree")); err != nil {
+	if err := validateSigningResignPreservedExternalDirectories(ctx, filepath.Join(stageRoot.Path(), "packed-tree")); err != nil {
 		return fmt.Errorf("verify preserved SwiftSupport after repack: %w", err)
 	}
 	packedTreeRoot, err := rootfs.New(filepath.Join(stageRoot.Path(), "packed-tree"))
@@ -1122,12 +1229,12 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 		)
 	}
 	defer packedTreeRoot.Close()
-	packedSwiftSupport, err := captureSigningResignSwiftSupportInventory(ctx, packedTreeRoot.Path())
+	packedSwiftSupport, err := captureSigningResignPreservedInventory(ctx, packedTreeRoot.Path())
 	if err != nil {
 		return wrapSigningResignOperationalError(
 			signingResignStageArtifact,
 			signingResignCodeArtifactRead,
-			fmt.Errorf("capture packed SwiftSupport inventory: %w", err),
+			fmt.Errorf("capture packed preserved support inventory: %w", err),
 		)
 	}
 	if err := validateSigningResignSwiftSupportInventory(packedSwiftSupport, original.SwiftSupport); err != nil {

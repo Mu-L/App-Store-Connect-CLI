@@ -97,7 +97,10 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    treating those distribution-side runtime libraries as app code to re-sign.
    The `SwiftSupport` root may contain only the `iphoneos` directory, whose
    direct children must be regular, non-symlink `.dylib` files; nested,
-   alternate-platform, root-file, and other entries are rejected. Re-run the
+   alternate-platform, root-file, and other entries are rejected. A
+   `WatchKitSupport2` root, when present, may contain only the regular,
+   non-symlink `WK` binary, preserved under the same provenance verification
+   and inventory equality rules. Re-run the
    strict Apple generic-anchor `codesign` verification on the final packed
    tree before publication. Capture a private, sorted inventory of every
    direct runtime using its normalized relative path, bounded size (at most

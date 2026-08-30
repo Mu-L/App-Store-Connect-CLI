@@ -2358,3 +2358,31 @@ func memberNamesForTest(reader *zip.Reader) []string {
 	}
 	return names
 }
+
+func TestBuildSigningResignEntitlementsOmitsAbsentOptionalConcreteClaims(t *testing.T) {
+	existing := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+	}
+	profile := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.application-identifier":    "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+		"keychain-access-groups":              []any{"NEWTEAM.com.example.shared"},
+	}
+	got, err := buildSigningResignEntitlements(existing, profile)
+	if err != nil {
+		t.Fatalf("buildSigningResignEntitlements() error = %v", err)
+	}
+	if value, exists := got["keychain-access-groups"]; exists {
+		t.Fatalf("keychain-access-groups = %#v, want the unclaimed optional capability omitted even for concrete profile values", value)
+	}
+	if value, exists := got["com.apple.application-identifier"]; exists {
+		t.Fatalf("com.apple.application-identifier = %#v, want the unclaimed alternate identifier omitted", value)
+	}
+	if got["get-task-allow"] != false {
+		t.Fatalf("get-task-allow = %#v, want the required claim adopted from the profile", got["get-task-allow"])
+	}
+}

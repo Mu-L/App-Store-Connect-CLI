@@ -83,21 +83,18 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 		if _, exists := existing[key]; exists {
 			continue
 		}
+		if signingResignOptionalIdentityEntitlementKey(key) {
+			// Optional identity capabilities are granted only when the
+			// existing signature already claims them. The profile value,
+			// wildcard or concrete, is an authorization boundary: signing an
+			// unclaimed capability in would widen the app's access.
+			continue
+		}
 		value, exists := profile[key]
 		if !exists {
-			if signingResignOptionalIdentityEntitlementKey(key) {
-				continue
-			}
 			return nil, fmt.Errorf("replacement profile entitlement %s is missing", key)
 		}
 		if signingResignEntitlementContainsWildcard(value) {
-			if signingResignOptionalIdentityEntitlementKey(key) {
-				// A wildcard is an authorization pattern, not a grantable
-				// claim. With no existing concrete claim there is nothing to
-				// preserve, so the optional capability is omitted instead of
-				// failing the operation or signing a wildcard.
-				continue
-			}
 			return nil, fmt.Errorf("replacement profile entitlement %s is wildcard-only and has no concrete signed value", key)
 		}
 		result[key] = value
