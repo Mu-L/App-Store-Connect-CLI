@@ -76,6 +76,7 @@ Examples:
 		Subcommands: []*ffcli.Command{
 			syncPushCommand(),
 			syncPullCommand(),
+			syncRotatePasswordCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp
@@ -613,42 +614,7 @@ func prepareDecryptedSigningFiles(store *signingpkg.GitStore, encryptedFiles []s
 }
 
 func prepareDecryptedSigningFilesInRoot(store *signingpkg.GitStore, encryptedFiles []string, password string, root rootfs.Root) ([]decryptedSigningFile, error) {
-	if len(encryptedFiles) > maxEncryptedSigningFiles {
-		return nil, fmt.Errorf("encrypted signing repository contains %d files; limit is %d", len(encryptedFiles), maxEncryptedSigningFiles)
-	}
-	if err := signingpkg.ValidateEncryptedRepositoryPaths(encryptedFiles); err != nil {
-		return nil, err
-	}
-	var cumulativeSize int64
-	for _, relPath := range encryptedFiles {
-		size, err := store.EncryptedFileSize(relPath)
-		if err != nil {
-			return nil, fmt.Errorf("inspect encrypted artifact %s: %w", relPath, err)
-		}
-		if size < 0 || size > maxEncryptedSigningBytes-cumulativeSize {
-			return nil, fmt.Errorf("encrypted signing repository exceeds the %d-byte cumulative size limit", maxEncryptedSigningBytes)
-		}
-		cumulativeSize += size
-	}
-	decrypted := make([]decryptedSigningFile, 0, len(encryptedFiles))
-	for _, relPath := range encryptedFiles {
-		plaintext, metadata, err := store.ReadEncryptedFileWithMetadata(relPath, password)
-		if err != nil {
-			return nil, fmt.Errorf("decrypt %s: %w", relPath, err)
-		}
-		sensitive, identity, err := classifySigningFile(relPath, plaintext, metadata, password)
-		if err != nil {
-			return nil, fmt.Errorf("validate %s: %w", relPath, err)
-		}
-		decrypted = append(decrypted, decryptedSigningFile{
-			RelativePath: relPath,
-			Plaintext:    plaintext,
-			Metadata:     metadata,
-			Sensitive:    sensitive,
-			Identity:     identity,
-		})
-	}
-	activeIdentityPaths, err := validateIdentityArtifactGraph(decrypted)
+	decrypted, activeIdentityPaths, err := loadAndValidateSigningFiles(store, encryptedFiles, password)
 	if err != nil {
 		return nil, err
 	}
@@ -658,13 +624,6 @@ func prepareDecryptedSigningFilesInRoot(store *signingpkg.GitStore, encryptedFil
 			canonicalPath := strings.ReplaceAll(filepath.ToSlash(file.RelativePath), `\`, "/")
 			if _, active := activeIdentityPaths[canonicalPath]; !active {
 				continue
-			}
-			_, certificate, err := modernpkcs12.Decode(file.Plaintext, password)
-			if err != nil || certificate == nil {
-				return nil, fmt.Errorf("active identity core is not a decodable PKCS#12 identity")
-			}
-			if now := time.Now(); now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
-				return nil, fmt.Errorf("active identity certificate is not currently valid")
 			}
 		}
 		filtered = append(filtered, file)
@@ -682,6 +641,65 @@ func prepareDecryptedSigningFilesInRoot(store *signingpkg.GitStore, encryptedFil
 		}
 	}
 	return decrypted, nil
+}
+
+func loadAndValidateSigningFiles(store *signingpkg.GitStore, encryptedFiles []string, password string) ([]decryptedSigningFile, map[string]struct{}, error) {
+	if len(encryptedFiles) > maxEncryptedSigningFiles {
+		return nil, nil, fmt.Errorf("encrypted signing repository contains %d files; limit is %d", len(encryptedFiles), maxEncryptedSigningFiles)
+	}
+	if err := signingpkg.ValidateEncryptedRepositoryPaths(encryptedFiles); err != nil {
+		return nil, nil, err
+	}
+	var cumulativeSize int64
+	for _, relPath := range encryptedFiles {
+		size, err := store.EncryptedFileSize(relPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("inspect encrypted artifact %s: %w", relPath, err)
+		}
+		if size < 0 || size > maxEncryptedSigningBytes-cumulativeSize {
+			return nil, nil, fmt.Errorf("encrypted signing repository exceeds the %d-byte cumulative size limit", maxEncryptedSigningBytes)
+		}
+		cumulativeSize += size
+	}
+	decrypted := make([]decryptedSigningFile, 0, len(encryptedFiles))
+	for _, relPath := range encryptedFiles {
+		plaintext, metadata, err := store.ReadEncryptedFileWithMetadata(relPath, password)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decrypt %s: %w", relPath, err)
+		}
+		sensitive, identity, err := classifySigningFile(relPath, plaintext, metadata, password)
+		if err != nil {
+			return nil, nil, fmt.Errorf("validate %s: %w", relPath, err)
+		}
+		decrypted = append(decrypted, decryptedSigningFile{
+			RelativePath: relPath,
+			Plaintext:    plaintext,
+			Metadata:     metadata,
+			Sensitive:    sensitive,
+			Identity:     identity,
+		})
+	}
+	activeIdentityPaths, err := validateIdentityArtifactGraph(decrypted)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, file := range decrypted {
+		if file.Metadata.Kind != "pkcs12-identity" {
+			continue
+		}
+		canonicalPath := strings.ReplaceAll(filepath.ToSlash(file.RelativePath), `\`, "/")
+		if _, active := activeIdentityPaths[canonicalPath]; !active {
+			continue
+		}
+		_, certificate, err := modernpkcs12.Decode(file.Plaintext, password)
+		if err != nil || certificate == nil {
+			return nil, nil, fmt.Errorf("active identity core is not a decodable PKCS#12 identity")
+		}
+		if now := time.Now(); now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
+			return nil, nil, fmt.Errorf("active identity certificate is not currently valid")
+		}
+	}
+	return decrypted, activeIdentityPaths, nil
 }
 
 func validateIdentityArtifactGraph(files []decryptedSigningFile) (map[string]struct{}, error) {
