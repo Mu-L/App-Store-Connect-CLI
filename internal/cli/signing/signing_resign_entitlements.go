@@ -45,8 +45,18 @@ func signingResignUnauthorizedClaimsError(claims []signingResignUnauthorizedClai
 			remediation,
 		))
 	}
-	return fmt.Errorf("existing entitlements are not authorized by the replacement profile: %s", strings.Join(descriptions, "; "))
+	return &signingResignPublicDetailError{
+		message: "existing entitlements are not authorized by the replacement profile: " + strings.Join(descriptions, "; "),
+	}
 }
+
+// signingResignProfileRequiredEntitlementKeyOrder lists distribution claims a
+// replacement profile injects for its class. They are derived from the
+// profile when the existing signature has no claim, because distribution
+// requires them: an App Store profile's beta-reports-active=true must reach
+// the signed document for TestFlight beta reporting even when the input was
+// built ad hoc or unsigned.
+var signingResignProfileRequiredEntitlementKeyOrder = []string{"beta-reports-active"}
 
 // signingResignClaimRebaseSuggestion derives the concrete value a wildcard
 // profile authorization would accept for an existing claim, for diagnostics
@@ -221,6 +231,19 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 	}
 	if len(unauthorized) > 0 {
 		return nil, signingResignUnauthorizedClaimsError(unauthorized)
+	}
+	for _, key := range signingResignProfileRequiredEntitlementKeyOrder {
+		if _, exists := existing[key]; exists {
+			continue
+		}
+		value, exists := profile[key]
+		if !exists {
+			continue
+		}
+		if _, isBool := value.(bool); !isBool {
+			return nil, fmt.Errorf("replacement profile entitlement %s is not a concrete boolean value", key)
+		}
+		result[key] = value
 	}
 	for _, key := range signingResignIdentityEntitlementKeyOrder {
 		if _, exists := existing[key]; exists {

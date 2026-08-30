@@ -2065,6 +2065,53 @@ func TestPublishSigningResignOutputCancellationAfterPublicationIsAmbiguous(t *te
 	}
 }
 
+func TestPublishSigningResignOutputCancellationRetainsContextCause(t *testing.T) {
+	contents := []byte("packed IPA")
+	stagePath := t.TempDir()
+	packedPath := filepath.Join(stagePath, "packed.ipa")
+	if err := os.WriteFile(packedPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(t.TempDir(), "output.ipa")
+	outputRoot, err := rootfs.New(filepath.Dir(outputPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outputRoot.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	originalHook := signingResignBeforePublishedHashFn
+	t.Cleanup(func() { signingResignBeforePublishedHashFn = originalHook })
+	signingResignBeforePublishedHashFn = cancel
+	_, err = publishSigningResignOutput(ctx, outputRoot, filepath.Base(outputPath), packedPath, int64(len(contents)), signingResignSHA256(contents))
+	if err == nil || !errors.Is(err, ErrSigningResignPublicationAmbiguous) {
+		t.Fatalf("publishSigningResignOutput() error = %v, want ambiguous publication", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("publishSigningResignOutput() error = %v, want the cancellation cause retained", err)
+	}
+}
+
+func TestSigningResignVerificationEntitlementReadUsesVerificationStage(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-entitlements.plist")
+	err := validateSigningResignEntitlementsAgainstDocumentAtStage(
+		map[string]any{},
+		missing,
+		"verified target entitlements",
+		signingResignStageVerification,
+	)
+	if err == nil {
+		t.Fatal("validateSigningResignEntitlementsAgainstDocumentAtStage() error = nil, want missing document failure")
+	}
+	var operation *signingResignOperationalError
+	if !errors.As(err, &operation) {
+		t.Fatalf("error = %v, want typed verification error", err)
+	}
+	if operation.stage != signingResignStageVerification || operation.code != signingResignCodeGeneratedEntitlements {
+		t.Fatalf("error = %v, want verification/generated-entitlements classification", err)
+	}
+}
+
 func mustReadFile(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -2445,5 +2492,170 @@ func TestDecodeSigningResignManifestRejectsStandaloneCaseVariantFields(t *testin
 	valid := `{"schemaVersion":1,"profiles":[{"bundleId":"com.example.app","profilePath":"p/app.mobileprovision"}]}`
 	if _, err := decodeSigningResignManifest([]byte(valid)); err != nil {
 		t.Fatalf("decodeSigningResignManifest() error = %v, want exact schema accepted", err)
+	}
+}
+
+func TestBuildSigningResignEntitlementsDerivesProfileRequiredDistributionClaims(t *testing.T) {
+	existing := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+	}
+	profile := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+		"beta-reports-active":                 true,
+	}
+	got, err := buildSigningResignEntitlements(existing, profile)
+	if err != nil {
+		t.Fatalf("buildSigningResignEntitlements() error = %v", err)
+	}
+	if got["beta-reports-active"] != true {
+		t.Fatalf("beta-reports-active = %#v, want the profile-required distribution claim derived", got["beta-reports-active"])
+	}
+
+	delete(profile, "beta-reports-active")
+	got, err = buildSigningResignEntitlements(existing, profile)
+	if err != nil {
+		t.Fatalf("buildSigningResignEntitlements() error = %v", err)
+	}
+	if _, exists := got["beta-reports-active"]; exists {
+		t.Fatal("beta-reports-active granted without a profile claim")
+	}
+
+	profile["beta-reports-active"] = "yes"
+	if _, err := buildSigningResignEntitlements(existing, profile); err == nil {
+		t.Fatal("buildSigningResignEntitlements() accepted a non-boolean profile-required claim")
+	}
+}
+
+func TestSigningResignUnauthorizedClaimsRefusalSurvivesPublicBoundary(t *testing.T) {
+	existing := map[string]any{
+		"application-identifier":              "OLDTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "OLDTEAM",
+		"get-task-allow":                      false,
+		"keychain-access-groups":              []string{"OLDTEAM.com.example.shared"},
+	}
+	profile := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.application-identifier":    "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+		"keychain-access-groups":              []any{"NEWTEAM.*"},
+	}
+	_, refusal := buildSigningResignEntitlements(existing, profile)
+	if refusal == nil {
+		t.Fatal("buildSigningResignEntitlements() accepted an unauthorized claim")
+	}
+	if !signingResignOperationalErrorTree(refusal) {
+		t.Fatalf("refusal %q is not public-safe, so the boundary would flatten its remediation", refusal)
+	}
+	wrapped := wrapSigningResignOperationalError(signingResignStagePreparation, signingResignCodeFilesystem, refusal)
+	if !strings.Contains(wrapped.Error(), "then re-run") || !strings.Contains(wrapped.Error(), "keychain-access-groups") {
+		t.Fatalf("boundary-wrapped refusal = %q, want the per-claim remediation preserved verbatim", wrapped.Error())
+	}
+	contextual := wrapSigningResignPublicDetail("target com.example.app entitlements", refusal)
+	rewrapped := wrapSigningResignOperationalError(signingResignStagePreparation, signingResignCodeFilesystem, contextual)
+	if !strings.Contains(rewrapped.Error(), "target com.example.app entitlements") || !strings.Contains(rewrapped.Error(), "then re-run") {
+		t.Fatalf("contextual refusal = %q, want context and remediation preserved", rewrapped.Error())
+	}
+}
+
+func TestSigningResignCommandSurfacesUnauthorizedClaimRemediation(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("signing resign is macOS-only")
+	}
+	original := executeSigningResignFn
+	t.Cleanup(func() { executeSigningResignFn = original })
+	refusal := signingResignUnauthorizedClaimsError([]signingResignUnauthorizedClaim{{
+		Key:      "keychain-access-groups",
+		Existing: []string{"OLDTEAM.com.example.shared"},
+		Profile:  []any{"NEWTEAM.*"},
+	}})
+	executeSigningResignFn = func(context.Context, signingResignOptions) (signingResignResult, error) {
+		return signingResignResult{}, refusal
+	}
+	command := SigningResignCommand()
+	if err := command.FlagSet.Parse([]string{
+		"--ipa", "input.ipa", "--output", "output.ipa",
+		"--identity", "identity.p12", "--profiles-manifest", "profiles.json",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := command.Exec(context.Background(), nil)
+	if err == nil {
+		t.Fatal("SigningResignCommand().Exec() error = nil, want surfaced refusal")
+	}
+	for _, want := range []string{
+		"keychain-access-groups",
+		`"OLDTEAM.com.example.shared"`,
+		`"NEWTEAM.com.example.shared"`,
+		"then re-run",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("command error %q is missing %q, so stderr would omit the remediation", err, want)
+		}
+	}
+}
+
+func TestSigningResignCommandPublicationAmbiguityRetainsCauseAndRedactsIt(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("signing resign is macOS-only")
+	}
+	const secret = "/private/tmp/secret-published-ipa"
+	underlying := errors.New("hash failed at " + secret)
+	publication := signingResignPublicationAmbiguousError("hash published re-signed IPA failed", underlying)
+	original := executeSigningResignFn
+	t.Cleanup(func() { executeSigningResignFn = original })
+	executeSigningResignFn = func(context.Context, signingResignOptions) (signingResignResult, error) {
+		return signingResignResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactHash,
+			publication,
+		)
+	}
+	command := SigningResignCommand()
+	if err := command.FlagSet.Parse([]string{
+		"--ipa", "input.ipa", "--output", "output.ipa",
+		"--identity", "identity.p12", "--profiles-manifest", "profiles.json",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := command.Exec(context.Background(), nil)
+	if err == nil {
+		t.Fatal("SigningResignCommand().Exec() error = nil, want publication uncertainty")
+	}
+	if !errors.Is(err, ErrSigningResignPublicationAmbiguous) || !errors.Is(err, underlying) {
+		t.Fatalf("command error = %v, want ambiguity and underlying causes retained", err)
+	}
+	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "artifact verification (artifact-hash)") {
+		t.Fatalf("command error = %q, want closed artifact stage/code without private path", err)
+	}
+}
+
+func TestSigningResignCodeContainersIncludeBundleAndXPC(t *testing.T) {
+	treePath := filepath.Join(string(filepath.Separator), "stage", "tree")
+	plans := []signingResignCodePlan{
+		{Path: filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework", "Feature")},
+		{Path: filepath.Join(treePath, "Payload", "App.app", "PlugIns", "Loadable.bundle", "Loadable")},
+		{Path: filepath.Join(treePath, "Payload", "App.app", "Helpers", "Agent.xpc", "Agent")},
+	}
+	containers := signingResignFrameworkContainers(treePath, plans)
+	want := map[string]bool{
+		filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework"): false,
+		filepath.Join(treePath, "Payload", "App.app", "PlugIns", "Loadable.bundle"):      false,
+		filepath.Join(treePath, "Payload", "App.app", "Helpers", "Agent.xpc"):            false,
+	}
+	for _, container := range containers {
+		if _, expected := want[container]; !expected {
+			t.Fatalf("unexpected container %q in %v", container, containers)
+		}
+		want[container] = true
+	}
+	for container, seen := range want {
+		if !seen {
+			t.Fatalf("containers %v are missing %q", containers, container)
+		}
 	}
 }

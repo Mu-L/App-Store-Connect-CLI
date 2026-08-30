@@ -376,7 +376,13 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 		}
 		entitlements, err := buildSigningResignEntitlements(target.ExistingEntitlements, profile.Entitlements)
 		if err != nil {
-			return signingResignPreparedTree{}, fmt.Errorf("target %s entitlements: %w", target.BundleID, err)
+			// An unauthorized-claims refusal is public-safe and actionable;
+			// keep it that way through the operational boundary instead of
+			// flattening the remediation into a bare stage/code message.
+			return signingResignPreparedTree{}, wrapSigningResignPublicDetail(
+				fmt.Sprintf("target %s entitlements", target.BundleID),
+				err,
+			)
 		}
 		entitlementsData, err := marshalSigningResignEntitlements(entitlements)
 		if err != nil {
@@ -758,7 +764,7 @@ func signSigningResignTree(ctx context.Context, treePath string, prepared signin
 	containers := signingResignFrameworkContainers(treePath, plans)
 	for _, container := range containers {
 		if err := signSigningResignObject(ctx, container, identitySHA1, keychainPath, ""); err != nil {
-			return fmt.Errorf("sign framework %s: %w", signingResignDisplayPath(treePath, container), err)
+			return fmt.Errorf("sign code container %s: %w", signingResignDisplayPath(treePath, container), err)
 		}
 	}
 	for _, target := range prepared.Archive.Targets {
@@ -768,6 +774,19 @@ func signSigningResignTree(ctx context.Context, treePath string, prepared signin
 		}
 	}
 	return nil
+}
+
+// isSigningResignCodeContainerName reports whether a directory name is a
+// supported nested code container whose signature must be refreshed after the
+// code inside it changes. App-like bundles (.app, .appex) are signed as
+// discovered targets instead.
+func isSigningResignCodeContainerName(name string) bool {
+	for _, suffix := range []string{".framework", ".bundle", ".xpc"} {
+		if name != suffix && strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func sortSigningResignCodePlans(plans []signingResignCodePlan) {
@@ -781,12 +800,15 @@ func sortSigningResignCodePlans(plans []signingResignCodePlan) {
 	})
 }
 
+// signingResignFrameworkContainers returns every ancestor code container of a
+// scheduled code plan, deepest first, so each container's signature and
+// resource seal are refreshed after its contained code changes.
 func signingResignFrameworkContainers(treePath string, plans []signingResignCodePlan) []string {
 	seen := make(map[string]struct{})
 	for _, plan := range plans {
 		candidate := filepath.Dir(plan.Path)
 		for candidate != treePath && strings.HasPrefix(candidate, treePath+string(filepath.Separator)) {
-			if strings.HasSuffix(filepath.Base(candidate), ".framework") {
+			if isSigningResignCodeContainerName(filepath.Base(candidate)) {
 				seen[candidate] = struct{}{}
 			}
 			candidate = filepath.Dir(candidate)
@@ -842,7 +864,7 @@ func verifySigningResignTree(ctx context.Context, treePath string, prepared sign
 		if strings.TrimSpace(target.EntitlementsPath) == "" {
 			return fmt.Errorf("target %s generated entitlements document is missing", target.BundleID)
 		}
-		if err := validateSigningResignEntitlementsAgainstDocument(entitlements, target.EntitlementsPath, fmt.Sprintf("target %s signed entitlements", target.BundleID)); err != nil {
+		if err := validateSigningResignEntitlementsAgainstDocumentAtStage(entitlements, target.EntitlementsPath, fmt.Sprintf("target %s signed entitlements", target.BundleID), signingResignStageVerification); err != nil {
 			return err
 		}
 		profileData, err := readRootedSigningResignFile(treePath, filepath.FromSlash(path.Join(target.RelativePath, "embedded.mobileprovision")), signingResignProfileMaxBytes)
@@ -873,11 +895,15 @@ func validateSigningResignCodeEntitlements(ctx context.Context, plan signingResi
 	if err != nil {
 		return err
 	}
-	return validateSigningResignEntitlementsAgainstDocument(actual, plan.EntitlementsPath, "signed entitlements")
+	return validateSigningResignEntitlementsAgainstDocumentAtStage(actual, plan.EntitlementsPath, "signed entitlements", signingResignStageVerification)
 }
 
 func validateSigningResignEntitlementsAgainstDocument(actual map[string]any, documentPath, subject string) error {
-	want, err := readSigningResignGeneratedEntitlements(documentPath)
+	return validateSigningResignEntitlementsAgainstDocumentAtStage(actual, documentPath, subject, signingResignStagePreparation)
+}
+
+func validateSigningResignEntitlementsAgainstDocumentAtStage(actual map[string]any, documentPath, subject string, stage signingResignOperationalStage) error {
+	want, err := readSigningResignGeneratedEntitlementsAtStage(documentPath, stage)
 	if err != nil {
 		return err
 	}
@@ -887,7 +913,7 @@ func validateSigningResignEntitlementsAgainstDocument(actual map[string]any, doc
 	return nil
 }
 
-func readSigningResignGeneratedEntitlements(documentPath string) (map[string]any, error) {
+func readSigningResignGeneratedEntitlementsAtStage(documentPath string, stage signingResignOperationalStage) (map[string]any, error) {
 	want := map[string]any{}
 	if strings.TrimSpace(documentPath) == "" {
 		return want, nil
@@ -895,7 +921,7 @@ func readSigningResignGeneratedEntitlements(documentPath string) (map[string]any
 	data, err := readBoundedSigningRunFile(documentPath, infoplist.MaxBytes, false)
 	if err != nil {
 		return nil, wrapSigningResignOperationalError(
-			signingResignStagePreparation,
+			stage,
 			signingResignCodeGeneratedEntitlements,
 			fmt.Errorf("read generated entitlements: %w", err),
 		)
@@ -1392,8 +1418,10 @@ func publishSigningResignOutput(ctx context.Context, outputRoot rootfs.Root, nam
 				return signingResignArtifactResult{}, wrapSigningResignOperationalError(
 					signingResignStageArtifact,
 					signingResignCodeArtifactPublish,
-					fmt.Errorf("%w: publish re-signed IPA returned an uncertain result: %w", ErrSigningResignPublicationAmbiguous, err),
+					signingResignPublicationAmbiguousError("publish re-signed IPA returned an uncertain result", err),
 				)
+			} else {
+				err = errors.Join(err, openErr)
 			}
 		}
 		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
@@ -1406,14 +1434,14 @@ func publishSigningResignOutput(ctx context.Context, outputRoot rootfs.Root, nam
 		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
 			signingResignStageArtifact,
 			signingResignCodeArtifactPublish,
-			fmt.Errorf("%w: publication completed but cancellation prevented validation", ErrSigningResignPublicationAmbiguous),
+			signingResignPublicationAmbiguousError("publication completed but cancellation prevented validation", err),
 		)
 	}
 	if written != packedSize {
 		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
 			signingResignStageArtifact,
 			signingResignCodeArtifactPublish,
-			fmt.Errorf("%w: published re-signed IPA size is inconsistent", ErrSigningResignPublicationAmbiguous),
+			signingResignPublicationAmbiguousError("published re-signed IPA size is inconsistent"),
 		)
 	}
 	published, err := outputRoot.OpenFile(name)
@@ -1421,7 +1449,7 @@ func publishSigningResignOutput(ctx context.Context, outputRoot rootfs.Root, nam
 		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
 			signingResignStageArtifact,
 			signingResignCodeArtifactPublish,
-			fmt.Errorf("%w: reopen published re-signed IPA failed", ErrSigningResignPublicationAmbiguous),
+			signingResignPublicationAmbiguousError("reopen published re-signed IPA failed", err),
 		)
 	}
 	defer func() {
@@ -1434,7 +1462,7 @@ func publishSigningResignOutput(ctx context.Context, outputRoot rootfs.Root, nam
 		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
 			signingResignStageArtifact,
 			signingResignCodeArtifactPublish,
-			fmt.Errorf("%w: inspect published re-signed IPA failed", ErrSigningResignPublicationAmbiguous),
+			signingResignPublicationAmbiguousError("inspect published re-signed IPA failed", err),
 		)
 	}
 	signingResignBeforePublishedHashFn()
@@ -1443,14 +1471,14 @@ func publishSigningResignOutput(ctx context.Context, outputRoot rootfs.Root, nam
 		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
 			signingResignStageArtifact,
 			signingResignCodeArtifactHash,
-			fmt.Errorf("%w: hash published re-signed IPA failed", ErrSigningResignPublicationAmbiguous),
+			signingResignPublicationAmbiguousError("hash published re-signed IPA failed", err),
 		)
 	}
 	if !strings.EqualFold(digest, packedDigest) {
 		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
 			signingResignStageArtifact,
 			signingResignCodeArtifactHash,
-			fmt.Errorf("%w: published re-signed IPA digest is inconsistent", ErrSigningResignPublicationAmbiguous),
+			signingResignPublicationAmbiguousError("published re-signed IPA digest is inconsistent"),
 		)
 	}
 	if err := published.Close(); err != nil {
@@ -1458,7 +1486,7 @@ func publishSigningResignOutput(ctx context.Context, outputRoot rootfs.Root, nam
 		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
 			signingResignStageArtifact,
 			signingResignCodeArtifactPublish,
-			fmt.Errorf("%w: close published re-signed IPA failed", ErrSigningResignPublicationAmbiguous),
+			signingResignPublicationAmbiguousError("close published re-signed IPA failed", err),
 		)
 	}
 	published = nil
@@ -1466,7 +1494,7 @@ func publishSigningResignOutput(ctx context.Context, outputRoot rootfs.Root, nam
 		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
 			signingResignStageArtifact,
 			signingResignCodeArtifactPublish,
-			fmt.Errorf("%w: publication completed but cancellation prevented success", ErrSigningResignPublicationAmbiguous),
+			signingResignPublicationAmbiguousError("publication completed but cancellation prevented success", err),
 		)
 	}
 	return signingResignArtifactResult{Path: filepath.Join(outputRoot.Path(), name), SizeBytes: info.Size(), SHA256: digest}, nil

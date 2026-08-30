@@ -2,7 +2,49 @@ package signing
 
 import (
 	"errors"
+	"fmt"
 )
+
+// signingResignPublicDetailError carries a fully sanitized, user-actionable
+// message through the closed operational boundary. Only construct one from
+// text that is already safe to print: entitlement keys and values, bundle
+// identifiers, and remediation guidance; never paths, keychain names, or tool
+// diagnostics.
+type signingResignPublicDetailError struct {
+	message string
+	cause   error
+}
+
+func (err *signingResignPublicDetailError) Error() string { return err.message }
+
+func (err *signingResignPublicDetailError) Unwrap() error { return err.cause }
+
+func (err *signingResignPublicDetailError) publicSafeSigningResignError() {}
+
+// wrapSigningResignPublicDetail adds context to an error. When the cause is
+// already public-safe, the result stays public-safe so an actionable refusal
+// is not flattened into a bare stage/code message; any other cause keeps the
+// ordinary opaque wrapping.
+func wrapSigningResignPublicDetail(context string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := err.(interface{ publicSafeSigningResignError() }); ok {
+		return &signingResignPublicDetailError{message: context + ": " + err.Error(), cause: err}
+	}
+	return fmt.Errorf("%s: %w", context, err)
+}
+
+// signingResignPublicationAmbiguousError joins the closed ambiguity sentinel
+// with any operational cause that prevented post-publication verification.
+// The caller's outer operational wrapper keeps the public message closed,
+// while errors.Is/errors.As can still inspect every underlying cause.
+func signingResignPublicationAmbiguousError(message string, causes ...error) error {
+	all := make([]error, 0, len(causes)+1)
+	all = append(all, ErrSigningResignPublicationAmbiguous)
+	all = append(all, causes...)
+	return fmt.Errorf("%w: %s", errors.Join(all...), message)
+}
 
 // ErrSigningResignCleanupFailed marks a cleanup failure that may leave the
 // temporary signing environment for recovery. Its concrete cause remains

@@ -68,7 +68,7 @@ func runSigningResignToolWithFallback(ctx context.Context, fallbackTimeout time.
 		// hides this text from public CLI output.
 		return result, fmt.Errorf("%s timed out after %s: %w", filepath.Base(executable), fallbackTimeout, contextErr)
 	}
-	return result, fmt.Errorf("%s failed", filepath.Base(executable))
+	return result, fmt.Errorf("%s failed: %w", filepath.Base(executable), err)
 }
 
 func signingResignToolContext(ctx context.Context, fallbackTimeout time.Duration) (context.Context, context.CancelFunc) {
