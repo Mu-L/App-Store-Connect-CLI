@@ -160,6 +160,7 @@ type SigningFileChange struct {
 type SigningApplyResult struct {
 	SchemaVersion int                    `json:"schemaVersion"`
 	AppliedAt     string                 `json:"appliedAt"`
+	Completed     bool                   `json:"completed"`
 	PlanHash      string                 `json:"planHash"`
 	PlanPath      string                 `json:"planPath"`
 	ReceiptPath   string                 `json:"receiptPath"`
@@ -881,8 +882,12 @@ func signingFileDigest(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return signingFileDigestBytes(data), nil
+}
+
+func signingFileDigestBytes(data []byte) string {
 	digest := sha256.Sum256(data)
-	return hex.EncodeToString(digest[:]), nil
+	return hex.EncodeToString(digest[:])
 }
 
 func readSigningRegularFile(path string, limit int64) ([]byte, error) {
@@ -945,7 +950,9 @@ func WriteSigningPlanArtifact(plan *SigningPlan, overwrite bool) error {
 
 // ApplySigningPlan verifies and applies a plan, then writes its receipt. No
 // project write occurs until the plan hash and all source digests match a
-// freshly resolved plan.
+// freshly resolved plan. Project files and the complete receipt are committed
+// as one transaction so a receipt failure cannot leave signing settings
+// partially applied.
 func ApplySigningPlan(opts SigningApplyOptions) (*SigningApplyResult, error) {
 	planPath, err := canonicalSigningPath(opts.PlanPath, "plan file")
 	if err != nil {
@@ -984,34 +991,51 @@ func ApplySigningPlan(opts SigningApplyOptions) (*SigningApplyResult, error) {
 	if err := preflightSigningReceipt(plan.ReceiptPath); err != nil {
 		return nil, err
 	}
-	changedFiles, err := applySigningOperations(built)
+	prepared, err := prepareSigningOperations(built)
 	if err != nil {
 		return nil, err
 	}
-	fileChanges, err := signingReceiptFileChanges(plan, changedFiles)
+	defer func() {
+		_ = closeVersionWrites(prepared.writes)
+		_ = prepared.projectRoot.Close()
+	}()
+	fileChanges, err := signingReceiptFileChanges(plan, prepared.writes, prepared.changedFiles)
 	if err != nil {
-		return nil, fmt.Errorf("signing settings applied but receipt digest failed: %w", err)
+		return nil, fmt.Errorf("prepare signing receipt: %w", err)
 	}
 	result := &SigningApplyResult{
 		SchemaVersion: signingPlanSchemaVersion,
 		AppliedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		Completed:     true,
 		PlanHash:      plan.PlanHash,
 		PlanPath:      plan.PlanPath,
 		ReceiptPath:   plan.ReceiptPath,
-		ChangedFiles:  changedFiles,
+		ChangedFiles:  prepared.changedFiles,
 		Files:         fileChanges,
 		Changes:       append([]SigningSettingChange(nil), plan.Changes...),
 	}
-	if err := writeSigningReceipt(result); err != nil {
-		return nil, fmt.Errorf("signing settings applied but receipt write failed: %w", err)
+	receiptWrite, err := prepareSigningReceiptWrite(result)
+	if err != nil {
+		return nil, fmt.Errorf("prepare signing receipt: %w", err)
+	}
+	prepared.writes = append(prepared.writes, receiptWrite)
+	if err := commitVersionWrites(prepared.writes); err != nil {
+		return nil, fmt.Errorf("apply signing settings transaction: %w", err)
 	}
 	return result, nil
 }
 
-func signingReceiptFileChanges(plan *SigningPlan, changedFiles []string) ([]SigningFileChange, error) {
+func signingReceiptFileChanges(plan *SigningPlan, writes []preparedVersionWrite, changedFiles []string) ([]SigningFileChange, error) {
 	before := make(map[string]SigningPlanFile, len(plan.Files))
 	for _, file := range plan.Files {
 		before[file.Path] = file
+	}
+	updated := make(map[string][]byte, len(writes))
+	for _, write := range writes {
+		if write.createOnly || bytes.Equal(write.original, write.updated) {
+			continue
+		}
+		updated[write.path] = write.updated
 	}
 	changes := make([]SigningFileChange, 0, len(changedFiles))
 	for _, path := range changedFiles {
@@ -1019,15 +1043,15 @@ func signingReceiptFileChanges(plan *SigningPlan, changedFiles []string) ([]Sign
 		if !ok {
 			return nil, fmt.Errorf("changed file %s was not present in the plan", path)
 		}
-		after, err := signingFileDigest(path)
-		if err != nil {
-			return nil, fmt.Errorf("digest changed file %s: %w", path, err)
+		data, ok := updated[path]
+		if !ok {
+			return nil, fmt.Errorf("changed file %s was not prepared for the transaction", path)
 		}
 		changes = append(changes, SigningFileChange{
 			Path:         path,
 			Source:       file.Source,
 			BeforeSHA256: file.SHA256,
-			AfterSHA256:  after,
+			AfterSHA256:  signingFileDigestBytes(data),
 		})
 	}
 	return changes, nil
@@ -1070,31 +1094,55 @@ func preflightSigningReceipt(path string) error {
 		return err
 	}
 	defer root.Close()
-	if err := root.CheckWriteFilePreservingMode(filepath.Base(absolute)); err != nil {
+	if err := root.CheckCreateNewFile(filepath.Base(absolute)); err != nil {
 		return fmt.Errorf("preflight receipt %s: %w", absolute, err)
 	}
 	return nil
 }
 
-func writeSigningReceipt(result *SigningApplyResult) error {
+func encodeSigningReceipt(result *SigningApplyResult) ([]byte, error) {
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	data = append(data, '\n')
+	return append(data, '\n'), nil
+}
+
+func prepareSigningReceiptWrite(result *SigningApplyResult) (preparedVersionWrite, error) {
+	data, err := encodeSigningReceipt(result)
+	if err != nil {
+		return preparedVersionWrite{}, err
+	}
 	absolute, err := canonicalSigningPath(result.ReceiptPath, "receipt file")
 	if err != nil {
-		return err
+		return preparedVersionWrite{}, err
 	}
 	root, err := rootfs.New(filepath.Dir(absolute))
 	if err != nil {
-		return err
+		return preparedVersionWrite{}, err
 	}
-	defer root.Close()
-	return root.WriteFile(filepath.Base(absolute), data, 0o600)
+	name := filepath.Base(absolute)
+	if err := root.CheckCreateNewFile(name); err != nil {
+		_ = root.Close()
+		return preparedVersionWrite{}, err
+	}
+	return preparedVersionWrite{
+		path:       absolute,
+		updated:    data,
+		mode:       0o600,
+		root:       root,
+		name:       name,
+		createOnly: true,
+	}, nil
 }
 
-func applySigningOperations(built *signingPlanBuild) ([]string, error) {
+type preparedSigningOperations struct {
+	writes       []preparedVersionWrite
+	changedFiles []string
+	projectRoot  rootfs.Root
+}
+
+func prepareSigningOperations(built *signingPlanBuild) (*preparedSigningOperations, error) {
 	if built == nil || built.project == nil {
 		return nil, fmt.Errorf("signing plan build is nil")
 	}
@@ -1104,25 +1152,28 @@ func applySigningOperations(built *signingPlanBuild) ([]string, error) {
 		return nil, err
 	}
 	projectRoot = projectRoot.AllowingInternalSymlinks()
-	defer projectRoot.Close()
-	var writes []preparedVersionWrite
-	defer func() { _ = closeVersionWrites(writes) }()
+	prepared := &preparedSigningOperations{projectRoot: projectRoot}
+	fail := func(failure error) (*preparedSigningOperations, error) {
+		_ = closeVersionWrites(prepared.writes)
+		_ = prepared.projectRoot.Close()
+		return nil, failure
+	}
 	pbxprojChanged := false
 	for _, operation := range built.operations {
 		if operation.Source != "pbxproj" {
 			continue
 		}
 		if err := applySigningPBXOperation(operation); err != nil {
-			return nil, err
+			return fail(err)
 		}
 		pbxprojChanged = true
 	}
 	if pbxprojChanged {
 		write, err := project.preparePBXProjWrite(projectRoot)
 		if err != nil {
-			return nil, err
+			return fail(err)
 		}
-		writes = append(writes, write)
+		prepared.writes = append(prepared.writes, write)
 	}
 
 	xcconfigMutations := make(map[string]map[string]xcconfigMutation)
@@ -1131,14 +1182,14 @@ func applySigningOperations(built *signingPlanBuild) ([]string, error) {
 			continue
 		}
 		if operation.NewValue == nil {
-			return nil, fmt.Errorf("xcconfig removal is not supported for %s", operation.Setting)
+			return fail(fmt.Errorf("xcconfig removal is not supported for %s", operation.Setting))
 		}
 		if xcconfigMutations[operation.Path] == nil {
 			xcconfigMutations[operation.Path] = make(map[string]xcconfigMutation)
 		}
 		mutation := xcconfigMutations[operation.Path][operation.Setting]
 		if mutation.setting != "" && mutation.value != *operation.NewValue {
-			return nil, fmt.Errorf("conflicting xcconfig operations for %s", operation.Path)
+			return fail(fmt.Errorf("conflicting xcconfig operations for %s", operation.Path))
 		}
 		mutation.setting = operation.Setting
 		mutation.value = *operation.NewValue
@@ -1156,28 +1207,25 @@ func applySigningOperations(built *signingPlanBuild) ([]string, error) {
 			if target.root.Path() != "" && target.ownsRoot {
 				_ = target.root.Close()
 			}
-			return nil, fmt.Errorf("prepare xcconfig %s: %w", path, err)
+			return fail(fmt.Errorf("prepare xcconfig %s: %w", path, err))
 		}
 		write, _, changed, err := prepareXCConfigWrite(target, xcconfigMutations[path])
 		if err != nil {
 			_ = target.root.Close()
-			return nil, err
+			return fail(err)
 		}
 		if changed {
-			writes = append(writes, write)
+			prepared.writes = append(prepared.writes, write)
 		} else if target.ownsRoot {
 			_ = target.root.Close()
 		}
 	}
-	if err := commitVersionWrites(writes); err != nil {
-		return nil, err
+	prepared.changedFiles = make([]string, 0, len(prepared.writes))
+	for _, write := range prepared.writes {
+		prepared.changedFiles = append(prepared.changedFiles, write.path)
 	}
-	changed := make([]string, 0, len(writes))
-	for _, write := range writes {
-		changed = append(changed, write.path)
-	}
-	sort.Strings(changed)
-	return changed, nil
+	sort.Strings(prepared.changedFiles)
+	return prepared, nil
 }
 
 func applySigningPBXOperation(operation signingPlanOperation) error {

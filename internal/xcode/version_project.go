@@ -55,6 +55,14 @@ type preparedVersionWrite struct {
 	root     rootfs.Root
 	name     string
 	ownsRoot bool
+	// createOnly marks an artifact that must be published with no-replace
+	// semantics. It is used for receipts, which are part of a multi-file
+	// transaction but must never overwrite an operator or concurrent writer's
+	// file.
+	createOnly bool
+	// createdInfo identifies a create-only file after successful publication so
+	// rollback never removes a file that replaced or raced with our artifact.
+	createdInfo os.FileInfo
 }
 
 type xcconfigMutation struct {
@@ -1446,32 +1454,72 @@ func readRegularVersionFile(target preparedVersionWrite) ([]byte, os.FileMode, e
 
 var atomicWriteVersionFileFn = atomicWritePreparedVersionFile
 
+var atomicCreateVersionFileFn = atomicCreatePreparedVersionFile
+
+var removeCreatedVersionFileFn = removeCreatedPreparedVersionFile
+
 func commitVersionWrites(writes []preparedVersionWrite) (resultErr error) {
 	defer func() {
 		resultErr = errors.Join(resultErr, closeVersionWrites(writes))
 	}()
-	sort.Slice(writes, func(left, right int) bool { return writes[left].path < writes[right].path })
+	sort.Slice(writes, func(left, right int) bool {
+		// Finalize create-only artifacts after ordinary project files so a
+		// publication failure exercises the rollback path for every mutation.
+		if writes[left].createOnly != writes[right].createOnly {
+			return !writes[left].createOnly
+		}
+		return writes[left].path < writes[right].path
+	})
 	var committed []preparedVersionWrite
 	for _, write := range writes {
-		if string(write.original) == string(write.updated) {
+		if !write.createOnly && string(write.original) == string(write.updated) {
 			continue
 		}
-		if err := atomicWriteVersionFileFn(write, write.updated); err != nil {
-			var rollbackErrors []error
-			for index := len(committed) - 1; index >= 0; index-- {
-				if rollbackErr := atomicWriteVersionFileFn(committed[index], committed[index].original); rollbackErr != nil {
-					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", committed[index].path, rollbackErr))
-				}
-			}
+		var err error
+		if write.createOnly {
+			err = atomicCreateVersionFileFn(write, write.updated)
+		} else {
+			err = atomicWriteVersionFileFn(write, write.updated)
+		}
+		if err != nil {
+			rollbackErrors := rollbackVersionWrites(committed)
 			writeErr := fmt.Errorf("write %s: %w", write.path, err)
 			if len(rollbackErrors) > 0 {
 				return errors.Join(writeErr, fmt.Errorf("rollback failed: %w", errors.Join(rollbackErrors...)))
 			}
 			return writeErr
 		}
+		if write.createOnly {
+			createdInfo, statErr := statCreatedPreparedVersionFile(write)
+			if statErr != nil {
+				rollbackErrors := rollbackVersionWrites(committed)
+				verifyErr := fmt.Errorf("verify created %s: %w", write.path, statErr)
+				if len(rollbackErrors) > 0 {
+					return errors.Join(verifyErr, fmt.Errorf("rollback failed: %w", errors.Join(rollbackErrors...)))
+				}
+				return verifyErr
+			}
+			write.createdInfo = createdInfo
+		}
 		committed = append(committed, write)
 	}
 	return nil
+}
+
+func rollbackVersionWrites(committed []preparedVersionWrite) []error {
+	var rollbackErrors []error
+	for index := len(committed) - 1; index >= 0; index-- {
+		var rollbackErr error
+		if committed[index].createOnly {
+			rollbackErr = removeCreatedVersionFileFn(committed[index])
+		} else {
+			rollbackErr = atomicWriteVersionFileFn(committed[index], committed[index].original)
+		}
+		if rollbackErr != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", committed[index].path, rollbackErr))
+		}
+	}
+	return rollbackErrors
 }
 
 func closeVersionWrites(writes []preparedVersionWrite) error {
@@ -1486,6 +1534,54 @@ func closeVersionWrites(writes []preparedVersionWrite) error {
 
 func atomicWritePreparedVersionFile(write preparedVersionWrite, data []byte) error {
 	return write.root.WriteFile(write.name, data, write.mode)
+}
+
+func atomicCreatePreparedVersionFile(write preparedVersionWrite, data []byte) error {
+	return write.root.CreateNewFileAtomic(write.name, data, write.mode)
+}
+
+func statCreatedPreparedVersionFile(write preparedVersionWrite) (os.FileInfo, error) {
+	root, err := write.root.OpenRoot()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	info, err := root.Lstat(write.name)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("created path is a symlink")
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("created path is not a regular file")
+	}
+	return info, nil
+}
+
+func removeCreatedPreparedVersionFile(write preparedVersionWrite) error {
+	if write.createdInfo == nil {
+		return fmt.Errorf("created file identity is unavailable")
+	}
+	root, err := write.root.OpenRoot()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	info, err := root.Lstat(write.name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !os.SameFile(write.createdInfo, info) {
+		return fmt.Errorf("created path no longer identifies the receipt")
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("created path became a symlink")
+	}
+	return root.Remove(write.name)
 }
 
 // atomicWriteVersionFile is retained for other Xcode outputs that already

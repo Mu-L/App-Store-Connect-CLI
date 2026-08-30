@@ -1,6 +1,7 @@
 package xcode
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,6 +90,188 @@ func TestBuildAndApplySigningPlanForDirectSettings(t *testing.T) {
 	}
 	if !strings.Contains(string(receipt), `"beforeSha256"`) || !strings.Contains(string(receipt), `"afterSha256"`) {
 		t.Fatalf("receipt does not contain per-file digests: %s", receipt)
+	}
+	if !strings.Contains(string(receipt), `"completed": true`) || !result.Completed {
+		t.Fatalf("receipt completion state = result=%t contents=%s, want completed", result.Completed, receipt)
+	}
+}
+
+func TestSigningPlanWritesCompletedNoOpReceipt(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	firstPlan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "first"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan(first) error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(firstPlan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact(first) error = %v", err)
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: firstPlan.PlanPath}); err != nil {
+		t.Fatalf("ApplySigningPlan(first) error = %v", err)
+	}
+
+	noOpPlan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "no-op"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan(no-op) error = %v", err)
+	}
+	if !noOpPlan.Ready || len(noOpPlan.Changes) != 0 {
+		t.Fatalf("no-op plan = ready=%t changes=%#v blockers=%#v", noOpPlan.Ready, noOpPlan.Changes, noOpPlan.Blockers)
+	}
+	if err := WriteSigningPlanArtifact(noOpPlan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact(no-op) error = %v", err)
+	}
+	result, err := ApplySigningPlan(SigningApplyOptions{PlanPath: noOpPlan.PlanPath})
+	if err != nil {
+		t.Fatalf("ApplySigningPlan(no-op) error = %v", err)
+	}
+	if !result.Completed || len(result.ChangedFiles) != 0 || len(result.Files) != 0 {
+		t.Fatalf("no-op receipt result = %#v, want completed with no changed files", result)
+	}
+	receipt, err := readSigningRegularFile(noOpPlan.ReceiptPath, signingPlanMaxBytes)
+	if err != nil {
+		t.Fatalf("read no-op receipt error = %v", err)
+	}
+	if !strings.Contains(string(receipt), `"completed": true`) {
+		t.Fatalf("no-op receipt = %s, want completed", receipt)
+	}
+}
+
+func TestSigningApplyRefusesExistingReceiptBeforeMutation(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	const existingReceipt = "existing receipt must remain unchanged\n"
+	if err := os.WriteFile(plan.ReceiptPath, []byte(existingReceipt), 0o600); err != nil {
+		t.Fatalf("WriteFile(receipt) error = %v", err)
+	}
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("ApplySigningPlan() error = %v, want existing-receipt rejection", err)
+	}
+	if after := mustReadVersionTestFile(t, pbxprojPath); after != beforeProject {
+		t.Fatal("existing receipt rejection mutated the project")
+	}
+	if after := mustReadVersionTestFile(t, plan.ReceiptPath); after != existingReceipt {
+		t.Fatalf("existing receipt changed: %q", after)
+	}
+}
+
+func TestSigningApplyRollsBackProjectWhenReceiptFinalizationFails(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
+	beforeInfo, err := os.Stat(pbxprojPath)
+	if err != nil {
+		t.Fatalf("Stat(project) error = %v", err)
+	}
+	injectedErr := errors.New("injected receipt finalization failure")
+	originalCreator := atomicCreateVersionFileFn
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) error {
+		if write.createOnly {
+			return injectedErr
+		}
+		return originalCreator(write, data)
+	}
+	t.Cleanup(func() { atomicCreateVersionFileFn = originalCreator })
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if !errors.Is(err, injectedErr) {
+		t.Fatalf("ApplySigningPlan() error = %v, want injected receipt failure", err)
+	}
+	if after := mustReadVersionTestFile(t, pbxprojPath); after != beforeProject {
+		t.Fatal("receipt finalization failure left project changes behind")
+	}
+	afterInfo, err := os.Stat(pbxprojPath)
+	if err != nil {
+		t.Fatalf("Stat(project after rollback) error = %v", err)
+	}
+	if afterInfo.Mode().Perm() != beforeInfo.Mode().Perm() {
+		t.Fatalf("project mode after rollback = %o, want %o", afterInfo.Mode().Perm(), beforeInfo.Mode().Perm())
+	}
+	if _, err := os.Lstat(plan.ReceiptPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("receipt after failed transaction = %v, want absent", err)
+	}
+}
+
+func TestSigningApplyRollsBackProjectWhenReceiptRacesIntoPlace(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
+	const racingReceipt = "concurrent receipt wins\n"
+	originalCreator := atomicCreateVersionFileFn
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) error {
+		if write.createOnly {
+			if err := os.WriteFile(write.path, []byte(racingReceipt), 0o600); err != nil {
+				t.Fatalf("create racing receipt: %v", err)
+			}
+		}
+		return originalCreator(write, data)
+	}
+	t.Cleanup(func() { atomicCreateVersionFileFn = originalCreator })
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("ApplySigningPlan() error = %v, want receipt race rejection", err)
+	}
+	if after := mustReadVersionTestFile(t, pbxprojPath); after != beforeProject {
+		t.Fatal("receipt race left project changes behind")
+	}
+	if after := mustReadVersionTestFile(t, plan.ReceiptPath); after != racingReceipt {
+		t.Fatalf("racing receipt changed: %q", after)
 	}
 }
 

@@ -218,6 +218,7 @@ func signingApplyRows(result *localxcode.SigningApplyResult) [][]string {
 	}
 	return [][]string{
 		{"applied", "true"},
+		{"completed", fmt.Sprintf("%t", result.Completed)},
 		{"plan", result.PlanPath},
 		{"receipt", result.ReceiptPath},
 		{"plan hash", result.PlanHash},
