@@ -189,6 +189,7 @@ def render(usage: str, flags: list[tuple[str, str]], groups: list[tuple[str, lis
             "",
             "# Canonical readiness and lower-level submission lifecycle flow",
             "asc validate --app \"123456789\" --version \"1.2.3\"",
+            "asc validate --app \"123456789\" --version \"1.2.3\" --check-urls",
             "asc submit status --version-id \"VERSION_ID\"",
             "asc submit cancel --version-id \"VERSION_ID\" --confirm",
             "",
