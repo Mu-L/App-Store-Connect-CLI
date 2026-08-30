@@ -174,7 +174,7 @@ The implementation should make the following phases explicit:
 7. Sign leaf-first using the existing explicit target and nested-code rules; do not rebase arbitrary framework, bundle, or XPC entitlements.
 8. Repack the signed tree to a temporary IPA without publishing it.
 9. Re-open and verify that exact temporary IPA against the generated entitlement documents, replacement profiles, signing identity, archive limits, and target inventory.
-10. Publish the already-verified IPA and emit the structured result atomically using the existing no-overwrite output contract; publication must not repack or otherwise change the verified bytes.
+10. Atomically publish the already-verified IPA with the existing no-overwrite artifact contract; publication must not repack or otherwise change the verified bytes. Only after publication succeeds may the command hand the success result to the selected stdout renderer.
 
 The verification comparison must use exact generated documents, not profile-subset semantics. A profile wildcard authorizes a concrete value; it does not make a different signed value acceptable. Verification is read-only with respect to the signed tree, generated documents, temporary IPA, and published artifact. A verifier may materialize files only inside a fresh, size-bounded private workspace created for that verification pass; it must clean that workspace afterward and must never feed materialized bytes back into the artifact being verified or published.
 
@@ -201,7 +201,7 @@ When `--rebase-team-claims` is enabled, add a top-level flattened `entitlementRe
 
 Exact old and new values are appropriate here because they are limited to explicitly allowlisted identifiers being transformed locally and are required to audit what was signed. The result must never contain passwords, private keys, profile source paths, raw profile plists, temporary paths, subprocess diagnostics, or unchanged arbitrary entitlement values. A failure diagnostic may identify target, key, element index, and a value-safe reason, but must not echo operational secrets.
 
-When the flag is enabled but no value changes, `entitlementRewrites` is an empty array. When the flag is absent, the field is omitted. A failed operation does not publish a success result or partial rewrite receipt. If a future workflow needs a durable file receipt, it must define destination preflight, mode, no-overwrite behavior, atomic publication, and redaction separately; that is outside this feature.
+When the flag is enabled but no value changes, `entitlementRewrites` is an empty array. When the flag is absent, the field is omitted. A failure before artifact publication does not publish an IPA or a success result. A renderer failure after publication, including a broken stdout pipe, returns a non-zero operational error and leaves the verified IPA at its published destination; the command must not delete a successfully published artifact merely because result delivery failed. No partial durable rewrite receipt exists. If a future workflow needs a durable file receipt, it must define destination preflight, mode, no-overwrite behavior, atomic publication, and redaction separately; that is outside this feature.
 
 ## Failure, compatibility, and lifecycle
 
