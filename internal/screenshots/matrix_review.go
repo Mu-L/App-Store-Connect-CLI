@@ -79,7 +79,7 @@ func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewReq
 		return nil, fmt.Errorf("read previous matrix review manifest: %w", err)
 	}
 
-	total, succeeded, failed, canceled := matrixReviewCounts(request.Result)
+	total, succeeded, failed, canceled, cleanupFailed := matrixReviewCounts(request.Result)
 	status := request.Result.Status
 	if status == "" {
 		status = MatrixCellSuccess
@@ -100,7 +100,9 @@ func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewReq
 		Failed:      failed,
 		Canceled:    canceled,
 		Retried:     request.Result.Retried,
-		Cells:       make([]asc.MatrixCellResult, len(request.Result.Cells)),
+
+		CleanupFailed: cleanupFailed,
+		Cells:         make([]asc.MatrixCellResult, len(request.Result.Cells)),
 	}
 	for i, cell := range request.Result.Cells {
 		manifest.Cells[i] = matrixReviewCellOutput(cell)
@@ -190,7 +192,10 @@ func joinMatrixReviewWriteErrors(primary, rollback error) error {
 	return errors.Join(primary, fmt.Errorf("rollback matrix review: %w", rollback))
 }
 
-func matrixReviewCounts(result *MatrixResult) (total, succeeded, failed, canceled int) {
+// matrixReviewCounts mirrors countMatrixResultStatuses so the persisted review
+// agrees with the command result: a cleanup failure counts in both failed and
+// cleanupFailed, the latter being a labelled subset rather than a sibling.
+func matrixReviewCounts(result *MatrixResult) (total, succeeded, failed, canceled, cleanupFailed int) {
 	total = len(result.Cells)
 	for _, cell := range result.Cells {
 		switch cell.Status {
@@ -198,6 +203,9 @@ func matrixReviewCounts(result *MatrixResult) (total, succeeded, failed, cancele
 			succeeded++
 		case MatrixCellCanceled:
 			canceled++
+		case MatrixCellCleanupFailed:
+			cleanupFailed++
+			failed++
 		default:
 			failed++
 		}
@@ -208,7 +216,7 @@ func matrixReviewCounts(result *MatrixResult) (total, succeeded, failed, cancele
 	if result.Total > total {
 		total = result.Total
 	}
-	return total, succeeded, failed, canceled
+	return total, succeeded, failed, canceled, cleanupFailed
 }
 
 // LoadMatrixReviewManifest parses a generated matrix review manifest.
@@ -240,7 +248,13 @@ func renderMatrixReviewHTML(manifest MatrixReviewManifest) string {
 	b.WriteString("body{font:14px system-ui,sans-serif;margin:2rem;color:#202124;background:#fff}table{border-collapse:collapse;width:100%}th,td{border:1px solid #dadce0;padding:.5rem;text-align:left;vertical-align:top}th{background:#f8f9fa}.success{color:#137333}.failed,.cleanup_failed{color:#b31412}.canceled{color:#8a4b08}.missing{color:#b31412;font-weight:600}ul{margin:.25rem 0;padding-left:1.2rem}a{word-break:break-all}img{display:block;max-width:240px;max-height:420px;margin:.25rem 0;border:1px solid #dadce0}")
 	b.WriteString("</style>\n</head>\n<body>\n")
 	b.WriteString("<h1>Screenshot matrix review</h1>\n")
-	b.WriteString("<p>Total: " + html.EscapeString(fmt.Sprintf("%d", manifest.TotalCells)) + "; succeeded: " + html.EscapeString(fmt.Sprintf("%d", manifest.Succeeded)) + "; failed: " + html.EscapeString(fmt.Sprintf("%d", manifest.Failed)) + "; canceled: " + html.EscapeString(fmt.Sprintf("%d", manifest.Canceled)) + ".</p>\n")
+	b.WriteString("<p>Total: " + html.EscapeString(fmt.Sprintf("%d", manifest.TotalCells)) + "; succeeded: " + html.EscapeString(fmt.Sprintf("%d", manifest.Succeeded)) + "; failed: " + html.EscapeString(fmt.Sprintf("%d", manifest.Failed)))
+	// Mirrors the manifest's omitempty aggregate: only surfaced when a cell
+	// captured successfully but could not restore simulator state.
+	if manifest.CleanupFailed > 0 {
+		b.WriteString(" (cleanup failed: " + html.EscapeString(fmt.Sprintf("%d", manifest.CleanupFailed)) + ")")
+	}
+	b.WriteString("; canceled: " + html.EscapeString(fmt.Sprintf("%d", manifest.Canceled)) + ".</p>\n")
 	b.WriteString("<table><thead><tr><th>Cell</th><th>Axes</th><th>Status</th><th>Attempts</th><th>Artifacts</th><th>Failure</th></tr></thead><tbody>\n")
 	for _, cell := range manifest.Cells {
 		status := html.EscapeString(cell.Status)

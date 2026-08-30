@@ -81,19 +81,22 @@ type MatrixReviewResult struct {
 // HTML review. Its field names intentionally match MatrixResult's output
 // contract so consumers do not need a second naming convention.
 type MatrixReviewManifest struct {
-	GeneratedAt string             `json:"generatedAt"`
-	PlanPath    string             `json:"planPath"`
-	BundleID    string             `json:"bundleId"`
-	RawDir      string             `json:"rawDir"`
-	FramedDir   string             `json:"framedDir,omitempty"`
-	OutputDir   string             `json:"outputDir"`
-	Status      string             `json:"status"`
-	TotalCells  int                `json:"totalCells"`
-	Succeeded   int                `json:"succeeded"`
-	Failed      int                `json:"failed"`
-	Canceled    int                `json:"canceled"`
-	Retried     int                `json:"retried"`
-	Cells       []MatrixCellResult `json:"cells"`
+	GeneratedAt string `json:"generatedAt"`
+	PlanPath    string `json:"planPath"`
+	BundleID    string `json:"bundleId"`
+	RawDir      string `json:"rawDir"`
+	FramedDir   string `json:"framedDir,omitempty"`
+	OutputDir   string `json:"outputDir"`
+	Status      string `json:"status"`
+	TotalCells  int    `json:"totalCells"`
+	Succeeded   int    `json:"succeeded"`
+	Failed      int    `json:"failed"`
+	Canceled    int    `json:"canceled"`
+	Retried     int    `json:"retried"`
+	// CleanupFailed mirrors MatrixResult.CleanupFailed: the subset of Failed
+	// whose cells completed capture but could not restore simulator state.
+	CleanupFailed int                `json:"cleanupFailed,omitempty"`
+	Cells         []MatrixCellResult `json:"cells"`
 }
 
 func matrixResultTables(result *MatrixResult, render func([]string, [][]string)) error {
@@ -106,6 +109,7 @@ func matrixResultTables(result *MatrixResult, render func([]string, [][]string))
 		{"Total Cells", strconv.Itoa(result.TotalCells)},
 		{"Succeeded", strconv.Itoa(result.Succeeded)},
 		{"Failed", strconv.Itoa(result.Failed)},
+		{"Cleanup Failed", strconv.Itoa(result.CleanupFailed)},
 		{"Canceled", strconv.Itoa(result.Canceled)},
 		{"Retried", strconv.Itoa(result.Retried)},
 	})
@@ -175,6 +179,7 @@ func matrixReviewManifestTables(manifest *MatrixReviewManifest, render func([]st
 		{"Total Cells", strconv.Itoa(manifest.TotalCells)},
 		{"Succeeded", strconv.Itoa(manifest.Succeeded)},
 		{"Failed", strconv.Itoa(manifest.Failed)},
+		{"Cleanup Failed", strconv.Itoa(manifest.CleanupFailed)},
 		{"Canceled", strconv.Itoa(manifest.Canceled)},
 		{"Retried", strconv.Itoa(manifest.Retried)},
 	})

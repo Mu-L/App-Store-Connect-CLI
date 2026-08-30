@@ -1428,13 +1428,34 @@ func sanitizeMatrixSteps(steps []RunStepResult) []RunStepResult {
 	return sanitized
 }
 
+// ensureMatrixLaunchStep guarantees the cell's app session is established with
+// this cell's locale and content-variant launch arguments before any step that
+// observes or drives the app runs.
+//
+// A plain "does the plan launch anywhere" check is not sufficient: a valid base
+// plan may place a screenshot or interaction before a later launch, and those
+// early steps would then run against whatever session the simulator already had,
+// producing artifacts mislabeled for the requested axes. Only leading
+// app-independent steps may precede the launch.
 func ensureMatrixLaunchStep(plan *Plan) {
 	for _, step := range plan.Steps {
+		if matrixStepIsAppIndependent(step.Action) {
+			continue
+		}
 		if step.Action == ActionLaunch {
 			return
 		}
+		break
 	}
 	plan.Steps = append([]PlanStep{{Action: ActionLaunch}}, plan.Steps...)
+}
+
+// matrixStepIsAppIndependent reports whether a step neither observes nor drives
+// the app under test, and may therefore precede the matrix launch. Only an
+// unconditional delay qualifies; every other action reads or manipulates app
+// state. ActionWaitFor is excluded because it polls for on-screen content.
+func matrixStepIsAppIndependent(action StepAction) bool {
+	return action == ActionWait
 }
 
 func cloneScreenshotPlan(base *Plan) (*Plan, error) {

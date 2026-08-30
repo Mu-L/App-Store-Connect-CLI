@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1870,5 +1871,161 @@ func writeMatrixPNG(t *testing.T, path string) {
 	defer file.Close()
 	if err := png.Encode(file, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
 		t.Fatalf("encode fake screenshot: %v", err)
+	}
+}
+
+func TestEnsureMatrixLaunchStepPrependsLaunchBeforePreLaunchSteps(t *testing.T) {
+	tests := []struct {
+		name  string
+		steps []StepAction
+		want  []StepAction
+	}{
+		{
+			name:  "no launch at all",
+			steps: []StepAction{ActionScreenshot},
+			want:  []StepAction{ActionLaunch, ActionScreenshot},
+		},
+		{
+			name:  "already launches first",
+			steps: []StepAction{ActionLaunch, ActionScreenshot},
+			want:  []StepAction{ActionLaunch, ActionScreenshot},
+		},
+		{
+			name:  "wait before launch stays untouched",
+			steps: []StepAction{ActionWait, ActionLaunch, ActionScreenshot},
+			want:  []StepAction{ActionWait, ActionLaunch, ActionScreenshot},
+		},
+		{
+			name:  "screenshot before a later launch",
+			steps: []StepAction{ActionScreenshot, ActionLaunch, ActionScreenshot},
+			want:  []StepAction{ActionLaunch, ActionScreenshot, ActionLaunch, ActionScreenshot},
+		},
+		{
+			name:  "interaction before a later launch",
+			steps: []StepAction{ActionTap, ActionLaunch, ActionScreenshot},
+			want:  []StepAction{ActionLaunch, ActionTap, ActionLaunch, ActionScreenshot},
+		},
+		{
+			name:  "wait_for before a later launch",
+			steps: []StepAction{ActionWaitFor, ActionLaunch},
+			want:  []StepAction{ActionLaunch, ActionWaitFor, ActionLaunch},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}}
+			for _, action := range tt.steps {
+				plan.Steps = append(plan.Steps, PlanStep{Action: action})
+			}
+			ensureMatrixLaunchStep(plan)
+			got := make([]StepAction, 0, len(plan.Steps))
+			for _, step := range plan.Steps {
+				got = append(got, step.Action)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("steps = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunMatrixLaunchesBeforeBaseStepsThatPrecedeALaterLaunch(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"},{"action":"launch"},{"action":"screenshot","name":"details"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"promo","launch_arguments":["-promo","1"]}],"output":{"raw_dir":"raw","review_dir":"review"}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	var gotSteps []StepAction
+	var gotArgs []string
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			for _, step := range plan.Steps {
+				gotSteps = append(gotSteps, step.Action)
+			}
+			gotArgs = append([]string(nil), plan.App.LaunchArguments...)
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "details.png"))
+			return &RunResult{}, nil
+		},
+		Appearance: &matrixTestAppearance{},
+	})
+	if runErr != nil {
+		t.Fatalf("RunMatrixWithDependencies() error = %v", runErr)
+	}
+	if result == nil || result.Succeeded != 1 {
+		t.Fatalf("result = %+v, want one successful cell", result)
+	}
+	if len(gotSteps) == 0 || gotSteps[0] != ActionLaunch {
+		t.Fatalf("executed steps = %v, want a launch before the first pre-launch base step", gotSteps)
+	}
+	if !slices.Contains(gotArgs, "-promo") {
+		t.Fatalf("launch arguments = %v, want the cell's content-variant arguments applied", gotArgs)
+	}
+}
+
+func TestMatrixReviewManifestPersistsCleanupFailedTotal(t *testing.T) {
+	dir := t.TempDir()
+	result := &MatrixResult{Cells: []MatrixCellResult{
+		{ID: "phone|en-US|light|default", Status: MatrixCellSuccess},
+		{ID: "phone|en-US|dark|default", Status: MatrixCellCleanupFailed, FailureStage: "appearance", FailureCode: "restore_failed"},
+		{ID: "phone|fr-FR|light|default", Status: MatrixCellFailed, FailureStage: "execution", FailureCode: "run_failed"},
+	}}
+	if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: result, OutputDir: dir}); err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v", err)
+	}
+	manifest, err := LoadMatrixReviewManifest(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v", err)
+	}
+	if manifest.CleanupFailed != 1 {
+		t.Fatalf("manifest cleanupFailed = %d, want 1", manifest.CleanupFailed)
+	}
+	// countMatrixResultStatuses counts a cleanup failure in both Failed and
+	// CleanupFailed; the persisted manifest must mirror that contract exactly.
+	if manifest.Failed != 2 {
+		t.Fatalf("manifest failed = %d, want cleanup failures counted in failed too", manifest.Failed)
+	}
+	if manifest.Succeeded != 1 || manifest.TotalCells != 3 {
+		t.Fatalf("manifest totals = succeeded %d total %d, want 1 and 3", manifest.Succeeded, manifest.TotalCells)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if !strings.Contains(string(raw), `"cleanupFailed": 1`) {
+		t.Fatalf("manifest JSON missing cleanupFailed aggregate: %s", raw)
+	}
+	html, err := os.ReadFile(filepath.Join(dir, "index.html"))
+	if err != nil {
+		t.Fatalf("read HTML: %v", err)
+	}
+	if !strings.Contains(string(html), "cleanup failed: 1") {
+		t.Fatalf("HTML summary missing cleanup-failure total: %s", html)
+	}
+}
+
+func TestMatrixReviewManifestOmitsCleanupFailedWhenZero(t *testing.T) {
+	dir := t.TempDir()
+	result := &MatrixResult{Cells: []MatrixCellResult{{ID: "phone|en-US|light|default", Status: MatrixCellSuccess}}}
+	if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: result, OutputDir: dir}); err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if strings.Contains(string(raw), "cleanupFailed") {
+		t.Fatalf("manifest JSON emitted cleanupFailed for a clean run: %s", raw)
+	}
+	html, err := os.ReadFile(filepath.Join(dir, "index.html"))
+	if err != nil {
+		t.Fatalf("read HTML: %v", err)
+	}
+	if strings.Contains(string(html), "cleanup failed") {
+		t.Fatalf("HTML summary emitted cleanup-failure total for a clean run: %s", html)
 	}
 }
