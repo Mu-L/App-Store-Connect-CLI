@@ -901,10 +901,26 @@ func signingSettingAllowsRemoval(key string) bool {
 }
 
 func signingConfigurationFor(project *structuredVersionProject, target, configuration string) (*versionConfiguration, error) {
+	targetMatches := 0
+	for _, candidate := range project.project.Proj.Targets {
+		if candidate.Name == target {
+			targetMatches++
+		}
+	}
+	if targetMatches > 1 {
+		return nil, fmt.Errorf("project contains multiple targets named %q", target)
+	}
+	var match *versionConfiguration
 	for _, candidate := range project.configurations {
 		if !candidate.projectLevel && candidate.target == target && candidate.name == configuration {
-			return candidate, nil
+			if match != nil {
+				return nil, fmt.Errorf("target %q contains multiple configurations named %q", target, configuration)
+			}
+			match = candidate
 		}
+	}
+	if match != nil {
+		return match, nil
 	}
 	return nil, fmt.Errorf("configuration %q not found for target %q", configuration, target)
 }

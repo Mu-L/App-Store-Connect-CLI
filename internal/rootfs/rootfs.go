@@ -80,6 +80,9 @@ type Root struct {
 	// before the no-follow reopen. It makes a replacement during that interval
 	// deterministic without weakening the production API.
 	beforePublicationOpenForTest func(root *os.Root, name string)
+	// openPublishedFileForTest injects a transient result from the rooted
+	// published-file reopen without changing production callers.
+	openPublishedFileForTest func(root *os.Root, name string) (*os.File, error)
 	// postPublicationLstatForTest replaces the first published-entry Lstat in
 	// tests so transient identity-observation failures can be exercised without
 	// widening the production API.
@@ -1801,8 +1804,8 @@ func (r Root) CreateNewFileAtomic(name string, data []byte, perm os.FileMode) er
 // retains a descriptor for that identity until Root.Close, so a caller can
 // safely roll back only the file it created even if the pathname is replaced
 // after this method returns. When a durability step fails after publication,
-// the identity is still returned for the same purpose. If the first
-// post-publication observation fails, the implementation retains either the
+// the identity is still returned for the same purpose. If a post-publication
+// identity observation fails, the implementation retains either the
 // staged descriptor or a rooted no-follow destination descriptor after
 // verifying the same identity. Unix can retain the staging descriptor across
 // publication; Windows must close it before rename, so destination reopening
@@ -1916,6 +1919,10 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	stagingClosed := false
 	stagingRetained := false
 	var stagedInfo os.FileInfo
+	openPublishedFile := secureopen.OpenExistingNoFollowInRoot
+	if r.openPublishedFileForTest != nil {
+		openPublishedFile = r.openPublishedFileForTest
+	}
 	closeStaging := func() error {
 		if stagingClosed || stagingRetained {
 			return nil
@@ -1937,7 +1944,7 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 		if !retainPublishedIdentity || r.selectedIdentity == nil {
 			return nil, false
 		}
-		publishedFile, openErr := secureopen.OpenExistingNoFollowInRoot(parent, base)
+		publishedFile, openErr := openPublishedFile(parent, base)
 		if openErr != nil {
 			return nil, false
 		}
@@ -1947,6 +1954,7 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 			return nil, false
 		}
 		if !r.selectedIdentity.retainFile(publishedFile) {
+			_ = publishedFile.Close()
 			return nil, false
 		}
 		return publishedInfo, true
@@ -2042,8 +2050,14 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	if r.beforePublicationOpenForTest != nil {
 		r.beforePublicationOpenForTest(parent, base)
 	}
-	publishedFile, err := secureopen.OpenExistingNoFollowInRoot(parent, base)
+	publishedFile, err := openPublishedFile(parent, base)
 	if err != nil {
+		if retainedInfo, retained := retainPublishedDestinationIdentity(); retained {
+			return written, retainedInfo, fmt.Errorf("open published file %q for identity verification: %w", resolved, err)
+		}
+		if retainStagingIdentity() {
+			return written, stagedInfo, fmt.Errorf("open published file %q for identity verification: %w", resolved, err)
+		}
 		return written, nil, fmt.Errorf("open published file %q for identity verification: %w", resolved, err)
 	}
 	closePublishedFile := true

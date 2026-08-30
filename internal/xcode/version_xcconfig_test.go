@@ -141,6 +141,19 @@ func TestXCConfigParserRejectsUnterminatedBlockComment(t *testing.T) {
 	}
 }
 
+func TestXCConfigParserRejectsUnterminatedQuotedValues(t *testing.T) {
+	for _, input := range []string{
+		`DEVELOPMENT_TEAM = "BROKEN`,
+		`DEVELOPMENT_TEAM = 'BROKEN`,
+		`DEVELOPMENT_TEAM = "BROKEN\"`,
+	} {
+		_, err := parseXCConfig([]byte(input))
+		if err == nil || !strings.Contains(err.Error(), "unterminated quote") {
+			t.Fatalf("parseXCConfig(%q) error = %v, want unterminated quote", input, err)
+		}
+	}
+}
+
 func TestXCConfigRequiredMissingIncludeFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Root.xcconfig")
 	if err := os.WriteFile(path, []byte("#include \"Missing.xcconfig\"\n"), 0o644); err != nil {

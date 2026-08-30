@@ -84,7 +84,10 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 		key := masked[indices[4]:indices[5]]
 		operatorStart, operatorEnd := indices[8], indices[9]
 		valueStart, valueEnd := indices[12], indices[13]
-		value, quote := parseXCConfigValue(body[valueStart:valueEnd])
+		value, quote, err := parseXCConfigValue(body[valueStart:valueEnd])
+		if err != nil {
+			return xcconfigDocument{}, fmt.Errorf("xcconfig line %d: %w", index+1, err)
+		}
 		document.assignments = append(document.assignments, xcconfigAssignment{
 			lineIndex:     index,
 			key:           key,
@@ -115,12 +118,44 @@ func xcconfigValueHasLineContinuation(value string) bool {
 	return backslashes%2 == 1
 }
 
-func parseXCConfigValue(raw string) (string, string) {
+func parseXCConfigValue(raw string) (string, string, error) {
 	value := strings.TrimSpace(raw)
-	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
-		return value[1 : len(value)-1], string(value[0])
+	if err := validateXCConfigValueQuotes(value); err != nil {
+		return "", "", err
 	}
-	return value, ""
+	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+		return value[1 : len(value)-1], string(value[0]), nil
+	}
+	return value, "", nil
+}
+
+func validateXCConfigValueQuotes(value string) error {
+	var quote byte
+	escaped := false
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if quote == 0 {
+			if character == '"' || character == '\'' {
+				quote = character
+			}
+			continue
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		if character == '\\' {
+			escaped = true
+			continue
+		}
+		if character == quote {
+			quote = 0
+		}
+	}
+	if quote != 0 {
+		return fmt.Errorf("unterminated quote %q in xcconfig value", string(quote))
+	}
+	return nil
 }
 
 func splitLinesPreservingEndings(value string) []string {

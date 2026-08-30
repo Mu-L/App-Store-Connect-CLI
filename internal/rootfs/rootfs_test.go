@@ -756,6 +756,64 @@ func TestCreateNewFileAtomicWithInfoRetainsIdentityAfterInitialPublishedLstatFai
 	}
 }
 
+func TestCreateNewFileAtomicWithInfoRetainsIdentityAfterPublishedReopenFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	transient := errors.New("injected published reopen failure")
+	attempts := 0
+	root.openPublishedFileForTest = func(parent *os.Root, name string) (*os.File, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, transient
+		}
+		return secureopen.OpenExistingNoFollowInRoot(parent, name)
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
+	if err == nil || !errors.Is(err, transient) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected reopen failure", err)
+	}
+	if info == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned nil identity after transient reopen failure")
+	}
+	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
+	if err != nil {
+		t.Fatalf("Stat(receipt) error = %v", err)
+	}
+	if !os.SameFile(info, diskInfo) {
+		t.Fatal("returned identity does not identify the published file")
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoRetainsStagingIdentityWhilePublishedReopenFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows must close the staging descriptor before publication")
+	}
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	transient := errors.New("injected persistent published reopen failure")
+	root.openPublishedFileForTest = func(*os.Root, string) (*os.File, error) {
+		return nil, transient
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
+	if err == nil || !errors.Is(err, transient) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected reopen failure", err)
+	}
+	if info == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned nil retained staging identity")
+	}
+	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
+	if err != nil {
+		t.Fatalf("Stat(receipt) error = %v", err)
+	}
+	if !os.SameFile(info, diskInfo) {
+		t.Fatal("retained staging identity does not identify the published file")
+	}
+}
+
 func TestCreateNewFileAtomicWithInfoCapturesDestinationAfterInitialPublishedLstatFailure(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)

@@ -602,6 +602,96 @@ func TestSigningPlanRejectsContinuedXCConfigAssignmentBeforeEditing(t *testing.T
 	}
 }
 
+func TestSigningPlanBlocksUnterminatedQuotedSigningValue(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	before := `DEVELOPMENT_TEAM = "BROKEN` + "\n" + mustReadVersionTestFile(t, sharedPath)
+	if err := os.WriteFile(sharedPath, []byte(before), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"DEVELOPMENT_TEAM":"ABCDEFGHIJ"}}
+		]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want blocked plan", err)
+	}
+	if plan.Ready || !strings.Contains(strings.Join(plan.Blockers, "\n"), "unterminated quote") {
+		t.Fatalf("BuildSigningPlan() = ready %t, blockers %#v", plan.Ready, plan.Blockers)
+	}
+	if after := mustReadVersionTestFile(t, sharedPath); after != before {
+		t.Fatal("planning a malformed quoted assignment modified the xcconfig")
+	}
+}
+
+func TestSigningPlanBlocksAmbiguousProjectNames(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(string) string
+		want   string
+	}{
+		{
+			name: "duplicate target name",
+			mutate: func(contents string) string {
+				return strings.Replace(contents, "\t\t\tname = Widget;\n\t\t\tproductName = Widget;", "\t\t\tname = App;\n\t\t\tproductName = Widget;", 1)
+			},
+			want: `multiple targets named "App"`,
+		},
+		{
+			name: "duplicate configuration name",
+			mutate: func(contents string) string {
+				const original = "999999999999999999999994 /* App Release */ = {isa = XCBuildConfiguration;  buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Release; };"
+				const duplicate = "999999999999999999999994 /* App Release */ = {isa = XCBuildConfiguration;  buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+				return strings.Replace(contents, original, duplicate, 1)
+			},
+			want: `multiple configurations named "Debug"`,
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			project := writeStructuredVersionProject(t, false)
+			pbxprojPath := filepath.Join(project, "project.pbxproj")
+			before := mustReadVersionTestFile(t, pbxprojPath)
+			mutated := testCase.mutate(before)
+			if mutated == before {
+				t.Fatal("fixture mutation did not change the project")
+			}
+			if err := os.WriteFile(pbxprojPath, []byte(mutated), 0o644); err != nil {
+				t.Fatalf("WriteFile(project) error = %v", err)
+			}
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			writeSigningSettingsTestFile(t, settingsPath, `{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[
+					{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}
+				]}]
+			}`)
+
+			plan, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+			})
+			if err != nil {
+				t.Fatalf("BuildSigningPlan() error = %v, want blocked plan", err)
+			}
+			if plan.Ready || !strings.Contains(strings.Join(plan.Blockers, "\n"), testCase.want) {
+				t.Fatalf("BuildSigningPlan() = ready %t, blockers %#v, want %q", plan.Ready, plan.Blockers, testCase.want)
+			}
+			if after := mustReadVersionTestFile(t, pbxprojPath); after != mutated {
+				t.Fatal("planning an ambiguous project modified the pbxproj")
+			}
+		})
+	}
+}
+
 func TestPrepareSigningOperationsMergesWindowsCaseVariantXCConfigMutations(t *testing.T) {
 	previousOS := runtimeGOOS
 	runtimeGOOS = "windows"
