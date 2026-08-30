@@ -105,6 +105,7 @@ func runSigningSyncBatch(ctx context.Context, client *asc.Client, options signin
 				BundleIDResourceID: bundleIDResponse.Data.ID,
 				BundleIdentifier:   bundleID,
 				ProfileType:        options.ProfileType,
+				ProfileName:        profileCreateNameForTarget(options.ProfileType, bundleID, time.Now()),
 				CertificateType:    options.CertificateType,
 				DeviceIDs:          options.DeviceIDs,
 				CreateMissing:      options.CreateMissing,

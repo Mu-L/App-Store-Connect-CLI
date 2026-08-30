@@ -582,6 +582,7 @@ func newGitCommand(ctx context.Context, dir string, args ...string) (*exec.Cmd, 
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = gitCommandEnvironmentWithConfig(environment, runtime.GOOS, coreSSHCommandConfigured)
+	configureGitProcess(cmd)
 	return cmd, nil
 }
 
@@ -699,6 +700,7 @@ func hasConfiguredGitSSHCommand(
 	cmd := exec.CommandContext(ctx, "git", "config", "--get", "core.sshCommand")
 	cmd.Dir = queryDir
 	cmd.Env = queryEnvironment
+	configureGitProcess(cmd)
 	cmd.Stderr = os.Stderr
 	output, err := cmd.Output()
 	if err != nil {

@@ -149,6 +149,10 @@ func onceAfterSuccess(operation func() error) func() error {
 	}
 }
 
+// Kept as a narrow seam so command tests can verify that the command-scoped
+// timeout is handed to the whole batch operation, including Git publication.
+var runSigningSyncBatchForCommand = runSigningSyncBatch
+
 func syncPushCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("push", flag.ExitOnError)
 
@@ -279,7 +283,7 @@ func syncPushCommand() *ffcli.Command {
 			defer cancel()
 
 			if hasTargetsPath {
-				result, batchErr := runSigningSyncBatch(ctx, client, signingSyncBatchOptions{
+				result, batchErr := runSigningSyncBatchForCommand(requestCtx, client, signingSyncBatchOptions{
 					RepoURL:         repo,
 					Branch:          *branch,
 					Password:        pass,

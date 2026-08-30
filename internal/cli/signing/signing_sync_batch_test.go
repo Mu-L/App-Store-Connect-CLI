@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,6 +184,59 @@ func TestSigningSyncPushTargetsFileValidationPrecedesPasswordAndClient(t *testin
 	}
 	if clientCalls != 0 {
 		t.Fatalf("client factory calls = %d, want 0", clientCalls)
+	}
+}
+
+func TestSigningSyncPushBatchPassesCommandTimeoutToRunner(t *testing.T) {
+	dir := t.TempDir()
+	writeSigningSyncTargetsFile(t, filepath.Join(dir, "targets.json"), `{"schemaVersion":1,"targets":[{"bundleId":"com.example.app"}]}`, 0o644)
+	t.Chdir(dir)
+	t.Setenv(signingSyncPasswordEnvVar, "repository-password")
+	t.Setenv("ASC_TIMEOUT", "40ms")
+
+	client := &asc.Client{}
+	t.Cleanup(shared.SetASCClientFactoryForTesting(func() (*asc.Client, error) {
+		return client, nil
+	}))
+	originalRunner := runSigningSyncBatchForCommand
+	var received context.Context
+	runSigningSyncBatchForCommand = func(ctx context.Context, gotClient *asc.Client, options signingSyncBatchOptions) (SyncResult, error) {
+		received = ctx
+		if gotClient != client {
+			t.Errorf("batch client = %p, want %p", gotClient, client)
+		}
+		return SyncResult{}, context.Canceled
+	}
+	t.Cleanup(func() { runSigningSyncBatchForCommand = originalRunner })
+
+	cmd := syncPushCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.Parse([]string{
+		"--targets-file", "targets.json",
+		"--profile-type", "IOS_APP_STORE",
+		"--repo", "file:///unused/signing.git",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var runErr error
+	stdout, _ := captureOutput(t, func() {
+		runErr = cmd.Run(context.Background())
+	})
+	if runErr == nil || runErr.Error() != "signing sync push: context canceled" {
+		t.Fatalf("error = %v, want wrapped batch cancellation", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success receipt after cancellation", stdout)
+	}
+	if received == nil {
+		t.Fatal("batch runner was not called")
+	}
+	deadline, ok := received.Deadline()
+	if !ok {
+		t.Fatal("batch runner received an unbounded context")
+	}
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > 40*time.Millisecond {
+		t.Fatalf("batch runner deadline remaining = %v, want positive command timeout <= 40ms", remaining)
 	}
 }
 
@@ -501,14 +555,14 @@ func TestRunSigningSyncBatchCreatesMissingProfileAfterPreflight(t *testing.T) {
 	profileContent := base64.StdEncoding.EncodeToString([]byte("new-profile-content"))
 	postCalls := 0
 	var postBody []byte
-	client := newSigningFetchTestClient(t, func(req *http.Request) *http.Response {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/bundleIds":
-			return signingFetchJSONResponse(http.StatusOK, `{"data":[{"type":"bundleIds","id":"bundle-new","attributes":{"identifier":"com.example.new"}}]}`)
+			signingFetchWriteJSON(t, w, http.StatusOK, `{"data":[{"type":"bundleIds","id":"bundle-new","attributes":{"identifier":"com.example.new"}}]}`)
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/bundleIds/bundle-new/profiles":
-			return signingFetchJSONResponse(http.StatusOK, `{"data":[]}`)
+			signingFetchWriteJSON(t, w, http.StatusOK, `{"data":[]}`)
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/certificates":
-			return signingFetchJSONResponse(http.StatusOK, fmt.Sprintf(`{"data":[{"type":"certificates","id":"certificate-new","attributes":{"serialNumber":"new-serial","certificateType":"IOS_DEVELOPMENT","expirationDate":"2100-01-01T00:00:00Z","certificateContent":%q}}]}`, certificateContent))
+			signingFetchWriteJSON(t, w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"certificates","id":"certificate-new","attributes":{"serialNumber":"new-serial","certificateType":"IOS_DEVELOPMENT","expirationDate":"2100-01-01T00:00:00Z","certificateContent":%q}}]}`, certificateContent))
 		case req.Method == http.MethodPost && req.URL.Path == "/v1/profiles":
 			postCalls++
 			var err error
@@ -516,12 +570,14 @@ func TestRunSigningSyncBatchCreatesMissingProfileAfterPreflight(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read profile create request: %v", err)
 			}
-			return signingFetchJSONResponse(http.StatusCreated, fmt.Sprintf(`{"data":{"type":"profiles","id":"profile-new","attributes":{"name":"IOS_APP_DEVELOPMENT-20990101","profileType":"IOS_APP_DEVELOPMENT","profileState":"ACTIVE","profileContent":%q}}}`, profileContent))
+			signingFetchWriteJSON(t, w, http.StatusCreated, fmt.Sprintf(`{"data":{"type":"profiles","id":"profile-new","attributes":{"name":"IOS_APP_DEVELOPMENT-20990101","profileType":"IOS_APP_DEVELOPMENT","profileState":"ACTIVE","profileContent":%q}}}`, profileContent))
 		default:
 			t.Fatalf("unexpected request %s %s", req.Method, req.URL.String())
-			return signingFetchJSONResponse(http.StatusInternalServerError, `{}`)
+			signingFetchWriteJSON(t, w, http.StatusInternalServerError, `{}`)
 		}
-	})
+	}))
+	defer server.Close()
+	client := newSigningFetchServerTestClient(t, server)
 
 	var result SyncResult
 	var err error
@@ -551,8 +607,8 @@ func TestRunSigningSyncBatchCreatesMissingProfileAfterPreflight(t *testing.T) {
 	if payload.Data.Attributes.ProfileType != "IOS_APP_DEVELOPMENT" {
 		t.Fatalf("profile create profileType = %q, want IOS_APP_DEVELOPMENT", payload.Data.Attributes.ProfileType)
 	}
-	if payload.Data.Attributes.Name != profileCreateName("IOS_APP_DEVELOPMENT", time.Now()) {
-		t.Fatalf("profile create name = %q, want today's IOS_APP_DEVELOPMENT profile name", payload.Data.Attributes.Name)
+	if payload.Data.Attributes.Name != profileCreateNameForTarget("IOS_APP_DEVELOPMENT", "com.example.new", time.Now()) {
+		t.Fatalf("profile create name = %q, want today's target-specific IOS_APP_DEVELOPMENT profile name", payload.Data.Attributes.Name)
 	}
 	if payload.Data.Relationships == nil || payload.Data.Relationships.BundleID == nil {
 		t.Fatal("profile create request is missing bundleId relationship")
@@ -584,6 +640,122 @@ func TestRunSigningSyncBatchCreatesMissingProfileAfterPreflight(t *testing.T) {
 	files := gitOutput(t, remotePath, "ls-tree", "-r", "--name-only", "main")
 	if !strings.Contains(files, "certs/development/new-serial.cer.enc") || !strings.Contains(files, "profiles/development/com.example.new--profile-new.mobileprovision.enc") {
 		t.Fatalf("remote tree missing created target artifacts:\n%s", files)
+	}
+}
+
+func TestRunSigningSyncBatchCreatesTargetSpecificProfilesAndRetriesWithoutRecreating(t *testing.T) {
+	remoteURL, remotePath := newSigningSyncBareRemote(t)
+	certificateContent := base64.StdEncoding.EncodeToString([]byte("shared-certificate-content"))
+	profileContent := base64.StdEncoding.EncodeToString([]byte("profile-content"))
+	resourceIDs := map[string]string{
+		"com.example.a": "bundle-a",
+		"com.example.b": "bundle-b",
+	}
+	profileIDs := map[string]string{
+		"bundle-a": "profile-a",
+		"bundle-b": "profile-b",
+	}
+	createdNames := make(map[string]string)
+	postCalls := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/bundleIds":
+			identifier := req.URL.Query().Get("filter[identifier]")
+			resourceID := resourceIDs[identifier]
+			if resourceID == "" {
+				t.Errorf("unexpected bundle identifier filter %q", identifier)
+				signingFetchWriteJSON(t, w, http.StatusBadRequest, `{"errors":[{"title":"unexpected bundle"}]}`)
+				return
+			}
+			signingFetchWriteJSON(t, w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"bundleIds","id":%q,"attributes":{"identifier":%q}}]}`, resourceID, identifier))
+		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/v1/bundleIds/") && strings.HasSuffix(req.URL.Path, "/profiles"):
+			bundleResourceID := strings.TrimSuffix(strings.TrimPrefix(req.URL.Path, "/v1/bundleIds/"), "/profiles")
+			profileID := profileIDs[bundleResourceID]
+			if name, ok := createdNames[bundleResourceID]; ok {
+				signingFetchWriteJSON(t, w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"profiles","id":%q,"attributes":{"name":%q,"profileType":"IOS_APP_STORE","profileState":"ACTIVE","profileContent":%q}}]}`, profileID, name, profileContent))
+				return
+			}
+			signingFetchWriteJSON(t, w, http.StatusOK, `{"data":[]}`)
+		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/v1/profiles/") && strings.HasSuffix(req.URL.Path, "/certificates"):
+			signingFetchWriteJSON(t, w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"certificates","id":"certificate-shared","attributes":{"serialNumber":"shared-serial","certificateType":"IOS_DISTRIBUTION","expirationDate":"2100-01-01T00:00:00Z","certificateContent":%q}}]}`, certificateContent))
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/certificates":
+			signingFetchWriteJSON(t, w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"certificates","id":"certificate-shared","attributes":{"serialNumber":"shared-serial","certificateType":"IOS_DISTRIBUTION","activated":true,"expirationDate":"2100-01-01T00:00:00Z","certificateContent":%q}}]}`, certificateContent))
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/profiles":
+			var payload asc.ProfileCreateRequest
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				t.Errorf("decode profile create request: %v", err)
+				signingFetchWriteJSON(t, w, http.StatusBadRequest, `{"errors":[{"title":"invalid request"}]}`)
+				return
+			}
+			if payload.Data.Relationships == nil || payload.Data.Relationships.BundleID == nil {
+				t.Errorf("profile create request is missing bundle relationship")
+				signingFetchWriteJSON(t, w, http.StatusBadRequest, `{"errors":[{"title":"missing bundle"}]}`)
+				return
+			}
+			bundleResourceID := payload.Data.Relationships.BundleID.Data.ID
+			if _, ok := profileIDs[bundleResourceID]; !ok {
+				t.Errorf("unexpected profile create bundle relationship %q", bundleResourceID)
+				signingFetchWriteJSON(t, w, http.StatusBadRequest, `{"errors":[{"title":"unexpected bundle"}]}`)
+				return
+			}
+			postCalls++
+			createdNames[bundleResourceID] = payload.Data.Attributes.Name
+			signingFetchWriteJSON(t, w, http.StatusCreated, fmt.Sprintf(`{"data":{"type":"profiles","id":%q,"attributes":{"name":%q,"profileType":"IOS_APP_STORE","profileState":"ACTIVE","profileContent":%q}}}`, profileIDs[bundleResourceID], payload.Data.Attributes.Name, profileContent))
+		default:
+			t.Errorf("unexpected request %s %s", req.Method, req.URL.String())
+			signingFetchWriteJSON(t, w, http.StatusNotFound, `{"errors":[{"title":"unexpected request"}]}`)
+		}
+	}))
+	defer server.Close()
+	client := newSigningFetchServerTestClient(t, server)
+	options := signingSyncBatchOptions{
+		RepoURL:       remoteURL,
+		Password:      "repository-password",
+		ProfileType:   "IOS_APP_STORE",
+		CreateMissing: true,
+		BundleIDs:     []string{"com.example.b", "com.example.a"},
+	}
+
+	var first SyncResult
+	var err error
+	_, _ = captureOutput(t, func() {
+		first, err = runSigningSyncBatch(context.Background(), client, options)
+	})
+	if err != nil {
+		t.Fatalf("first batch push error = %v", err)
+	}
+	if got, want := postCalls, 2; got != want {
+		t.Fatalf("first profile POST calls = %d, want %d", got, want)
+	}
+	if got := createdNames["bundle-a"]; got == "" || !strings.Contains(got, "com.example.a") {
+		t.Fatalf("profile name for target A = %q, want target-specific component", got)
+	}
+	if got := createdNames["bundle-b"]; got == "" || !strings.Contains(got, "com.example.b") {
+		t.Fatalf("profile name for target B = %q, want target-specific component", got)
+	}
+	if createdNames["bundle-a"] == createdNames["bundle-b"] {
+		t.Fatalf("profile names collided: %q", createdNames["bundle-a"])
+	}
+	if got, want := len(first.Targets), 2; got != want {
+		t.Fatalf("first target result count = %d, want %d", got, want)
+	}
+
+	var second SyncResult
+	_, _ = captureOutput(t, func() {
+		second, err = runSigningSyncBatch(context.Background(), client, options)
+	})
+	if err != nil {
+		t.Fatalf("retry batch push error = %v", err)
+	}
+	if got, want := postCalls, 2; got != want {
+		t.Fatalf("retry profile POST calls = %d, want unchanged %d", got, want)
+	}
+	if !bytes.Equal(mustJSON(t, first.Files), mustJSON(t, second.Files)) {
+		t.Fatalf("retry file union changed: first=%v second=%v", first.Files, second.Files)
+	}
+	if got := strings.TrimSpace(gitOutput(t, remotePath, "rev-list", "--count", "main")); got != "2" {
+		t.Fatalf("remote commit count after retry = %q, want unchanged 2", got)
 	}
 }
 
@@ -651,7 +823,7 @@ func TestRunSigningSyncBatchUsesFreshTimeoutForEachTarget(t *testing.T) {
 	profileContent := base64.StdEncoding.EncodeToString([]byte("profile-content"))
 	profileIDs := map[string]string{"bundle-a": "profile-a", "bundle-b": "profile-b"}
 	timeoutCalls := 0
-	client := newSigningFetchTestClient(t, func(req *http.Request) *http.Response {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/bundleIds":
 			identifier := req.URL.Query().Get("filter[identifier]")
@@ -662,21 +834,23 @@ func TestRunSigningSyncBatchUsesFreshTimeoutForEachTarget(t *testing.T) {
 			// that reusing it for the second target would exhaust the budget.
 			time.Sleep(100 * time.Millisecond)
 			resourceID := map[string]string{"com.example.a": "bundle-a", "com.example.b": "bundle-b"}[identifier]
-			return signingFetchJSONResponse(http.StatusOK, fmt.Sprintf(`{"data":[{"type":"bundleIds","id":%q,"attributes":{"identifier":%q}}]}`, resourceID, identifier))
+			signingFetchWriteJSON(t, w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"bundleIds","id":%q,"attributes":{"identifier":%q}}]}`, resourceID, identifier))
 		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/v1/bundleIds/") && strings.HasSuffix(req.URL.Path, "/profiles"):
 			bundleResourceID := strings.TrimSuffix(strings.TrimPrefix(req.URL.Path, "/v1/bundleIds/"), "/profiles")
 			profileID := profileIDs[bundleResourceID]
 			if profileID == "" {
 				t.Fatalf("unexpected bundle resource ID %q", bundleResourceID)
 			}
-			return signingFetchJSONResponse(http.StatusOK, fmt.Sprintf(`{"data":[{"type":"profiles","id":%q,"attributes":{"profileType":"IOS_APP_STORE","profileState":"ACTIVE","profileContent":%q}}]}`, profileID, profileContent))
+			signingFetchWriteJSON(t, w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"profiles","id":%q,"attributes":{"profileType":"IOS_APP_STORE","profileState":"ACTIVE","profileContent":%q}}]}`, profileID, profileContent))
 		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/v1/profiles/") && strings.HasSuffix(req.URL.Path, "/certificates"):
-			return signingFetchJSONResponse(http.StatusOK, fmt.Sprintf(`{"data":[{"type":"certificates","id":"certificate-shared","attributes":{"serialNumber":"shared-serial","certificateType":"IOS_DISTRIBUTION","expirationDate":"2100-01-01T00:00:00Z","certificateContent":%q}}]}`, certificateContent))
+			signingFetchWriteJSON(t, w, http.StatusOK, fmt.Sprintf(`{"data":[{"type":"certificates","id":"certificate-shared","attributes":{"serialNumber":"shared-serial","certificateType":"IOS_DISTRIBUTION","expirationDate":"2100-01-01T00:00:00Z","certificateContent":%q}}]}`, certificateContent))
 		default:
 			t.Fatalf("unexpected request %s %s", req.Method, req.URL.String())
-			return signingFetchJSONResponse(http.StatusInternalServerError, `{}`)
+			signingFetchWriteJSON(t, w, http.StatusInternalServerError, `{}`)
 		}
-	})
+	}))
+	defer server.Close()
+	client := newSigningFetchServerTestClient(t, server)
 
 	var result SyncResult
 	var err error
@@ -703,6 +877,63 @@ func TestRunSigningSyncBatchUsesFreshTimeoutForEachTarget(t *testing.T) {
 	}
 	if got, want := timeoutCalls, 4; got != want {
 		t.Fatalf("timeout context calls = %d, want one bundle and asset budget per target (%d)", got, want)
+	}
+}
+
+func TestRunSigningSyncBatchCancellationReachesHTTPAndDoesNotPublish(t *testing.T) {
+	remoteURL, remotePath := newSigningSyncBareRemote(t)
+	requestStarted := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet || req.URL.Path != "/v1/bundleIds" {
+			t.Errorf("unexpected request %s %s", req.Method, req.URL.String())
+			signingFetchWriteJSON(t, w, http.StatusNotFound, `{"errors":[{"title":"unexpected request"}]}`)
+			return
+		}
+		select {
+		case <-requestStarted:
+		default:
+			close(requestStarted)
+		}
+		<-req.Context().Done()
+		close(requestCanceled)
+	}))
+	defer server.Close()
+	client := newSigningFetchServerTestClient(t, server)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	resultDone := make(chan error, 1)
+	go func() {
+		_, err := runSigningSyncBatch(ctx, client, signingSyncBatchOptions{
+			RepoURL:     remoteURL,
+			Password:    "repository-password",
+			ProfileType: "IOS_APP_STORE",
+			BundleIDs:   []string{"com.example.app"},
+		})
+		resultDone <- err
+	}()
+	select {
+	case <-requestStarted:
+		cancel()
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for bundle lookup")
+	}
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP server did not observe request cancellation")
+	}
+	select {
+	case err := <-resultDone:
+		if err == nil || !strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("batch cancellation error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("batch runner did not return after request cancellation")
+	}
+	if got := strings.TrimSpace(gitOutput(t, remotePath, "rev-list", "--count", "main")); got != "1" {
+		t.Fatalf("remote commit count after cancellation = %q, want seed commit only", got)
 	}
 }
 
