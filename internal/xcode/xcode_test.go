@@ -1959,11 +1959,13 @@ func overrideTestEnvironment(t *testing.T) func() {
 
 	originalGOOS := runtimeGOOS
 	originalLookPath := lookPathFn
+	originalStatPath := statPathFn
 	originalCommandContext := commandContextFn
 	originalActiveDeveloperDir := activeDeveloperDirFn
 	return func() {
 		runtimeGOOS = originalGOOS
 		lookPathFn = originalLookPath
+		statPathFn = originalStatPath
 		commandContextFn = originalCommandContext
 		activeDeveloperDirFn = originalActiveDeveloperDir
 	}

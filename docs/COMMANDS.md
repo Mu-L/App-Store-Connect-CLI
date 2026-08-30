@@ -177,6 +177,9 @@ asc builds upload --app "123456789" --ipa "/path/to/MyApp.ipa"
 # Generate local Xcode metadata before archiving
 asc xcode inject --manifest .asc/deployment.json --set version=1.2.3 --set build_number=42 --dry-run --output json
 
+# Inspect the selected local Xcode toolchain without changing host state
+asc xcode doctor --output json
+
 # Install and verify one signed IPA on an exact connected device
 asc xcode install --ipa .asc/artifacts/App.ipa --device-id COREDEVICE_IDENTIFIER --timeout 5m --output json
 
