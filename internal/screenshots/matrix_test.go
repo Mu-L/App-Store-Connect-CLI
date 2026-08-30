@@ -2243,6 +2243,39 @@ func TestRunMatrixRejectsPhysicallyAliasedOutputDirectories(t *testing.T) {
 	}
 }
 
+func TestSameMatrixPathResolvesMissingSymlinkedSuffix(t *testing.T) {
+	dir := t.TempDir()
+	realRoot := filepath.Join(dir, "real")
+	linkRoot := filepath.Join(dir, "link")
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatalf("create real path: %v", err)
+	}
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	left := filepath.Join(realRoot, "future", "plan.json")
+	right := filepath.Join(linkRoot, "future", "plan.json")
+	if _, err := os.Lstat(left); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("left test path unexpectedly exists: %v", err)
+	}
+	if _, err := os.Lstat(right); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("right test path unexpectedly exists: %v", err)
+	}
+	leftPhysical, leftOK := resolveMatrixPhysicalPath(left)
+	rightPhysical, rightOK := resolveMatrixPhysicalPath(right)
+	if !leftOK || !rightOK || !strings.EqualFold(leftPhysical, rightPhysical) {
+		t.Fatalf("missing aliased paths resolved to %q and %q (ok=%t/%t)", leftPhysical, rightPhysical, leftOK, rightOK)
+	}
+	if !sameMatrixPath(left, right) {
+		t.Fatalf("sameMatrixPath(%q, %q) = false, want physical identity", left, right)
+	}
+
+	distinct := filepath.Join(linkRoot, "other", "plan.json")
+	if sameMatrixPath(left, distinct) {
+		t.Fatalf("sameMatrixPath(%q, %q) = true, want distinct missing suffixes to remain distinct", left, distinct)
+	}
+}
+
 func TestValidateMatrixPlanAllowsReviewDirBesidePlanWithDifferentNames(t *testing.T) {
 	dir := t.TempDir()
 	configDir := filepath.Join(dir, "config")

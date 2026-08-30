@@ -977,7 +977,7 @@ func validateMatrixArtifactPathsDoNotOverwritePlans(plan *MatrixPlan, matrixPath
 			for _, path := range artifact.paths {
 				resolvedPath := filepath.Clean(resolveMatrixArtifactPath(baseDir, path))
 				for _, input := range inputs {
-					if strings.EqualFold(resolvedPath, input.path) || sameMatrixFile(resolvedPath, input.path) {
+					if sameMatrixPath(resolvedPath, input.path) {
 						return fmt.Errorf(
 							"output %s artifact %q would overwrite the %s at %q; choose distinct output paths",
 							artifact.kind, resolvedPath, input.label, input.path,
@@ -988,6 +988,22 @@ func validateMatrixArtifactPathsDoNotOverwritePlans(plan *MatrixPlan, matrixPath
 		}
 	}
 	return nil
+}
+
+// sameMatrixPath reports whether two paths identify the same existing input,
+// or resolve to the same physical path when the destination does not exist
+// yet. The latter matters for aliases such as /tmp versus /private/tmp and
+// symlinked ancestors: a future artifact must not be allowed to replace a
+// plan simply because its final directory entry has not been created.
+func sameMatrixPath(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if strings.EqualFold(left, right) || sameMatrixFile(left, right) {
+		return true
+	}
+	leftPhysical, leftOK := resolveMatrixPhysicalPath(left)
+	rightPhysical, rightOK := resolveMatrixPhysicalPath(right)
+	return leftOK && rightOK && strings.EqualFold(leftPhysical, rightPhysical)
 }
 
 func resolveMatrixValidationPath(baseDir, path string) string {
