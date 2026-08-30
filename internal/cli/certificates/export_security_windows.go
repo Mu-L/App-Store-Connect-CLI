@@ -225,6 +225,13 @@ func certificateExportCurrentUserSID() (*windows.SID, error) {
 	return user.User.Sid, nil
 }
 
+// certificateExportVerifyProtectedDACL verifies that a security descriptor
+// restricts a file to the current user. In input mode
+// (allowTrustedSystemEntries), inherited DACLs are acceptable as long as every
+// effective entry belongs to the current user or a trusted system account, so
+// keys written by `asc certificates csr generate` and normally created
+// password files validate. Output mode remains strict: the DACL this command
+// applies must be protected, non-inherited, and owner-only.
 func certificateExportVerifyProtectedDACL(descriptor *windows.SECURITY_DESCRIPTOR, currentUser *windows.SID, allowTrustedSystemEntries bool) error {
 	if descriptor == nil || currentUser == nil {
 		return fmt.Errorf("missing security descriptor")
@@ -236,12 +243,14 @@ func certificateExportVerifyProtectedDACL(descriptor *windows.SECURITY_DESCRIPTO
 	if owner == nil || !owner.Equals(currentUser) {
 		return fmt.Errorf("file is not owned by the current user")
 	}
-	control, _, err := descriptor.Control()
-	if err != nil {
-		return err
-	}
-	if control&windows.SE_DACL_PROTECTED == 0 {
-		return fmt.Errorf("DACL is inherited")
+	if !allowTrustedSystemEntries {
+		control, _, controlErr := descriptor.Control()
+		if controlErr != nil {
+			return controlErr
+		}
+		if control&windows.SE_DACL_PROTECTED == 0 {
+			return fmt.Errorf("DACL is inherited")
+		}
 	}
 	dacl, _, err := descriptor.DACL()
 	if err != nil {
@@ -251,6 +260,12 @@ func certificateExportVerifyProtectedDACL(descriptor *windows.SECURITY_DESCRIPTO
 		return fmt.Errorf("DACL is missing")
 	}
 
+	var permittedACEFlags uint8
+	if allowTrustedSystemEntries {
+		// Inherited allow entries are the only additional shape accepted for
+		// inputs; inheritance-propagation and audit flags stay rejected.
+		permittedACEFlags = uint8(windows.INHERITED_ACE)
+	}
 	trustedSystem, trustedAdministrators := certificateExportTrustedSIDs()
 	currentUserEntries := 0
 	for index := uint16(0); index < dacl.AceCount; index++ {
@@ -258,7 +273,7 @@ func certificateExportVerifyProtectedDACL(descriptor *windows.SECURITY_DESCRIPTO
 		if err := windows.GetAce(dacl, uint32(index), &ace); err != nil {
 			return err
 		}
-		if ace == nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != 0 {
+		if ace == nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags&^permittedACEFlags != 0 {
 			return fmt.Errorf("DACL contains an unsupported access entry")
 		}
 		aceSID := (*windows.SID)(unsafe.Pointer(&ace.SidStart))

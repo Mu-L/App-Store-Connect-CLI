@@ -123,7 +123,12 @@ This keeps observers from seeing a partially written identity.
 On Windows, the output DACL is applied with file-specific read/write/delete
 rights before any PKCS#12 bytes are written and is verified against the same
 specific access mask. The staging file must not expose inherited access during
-that transition. On Unix, protected inputs keep the existing 0600 permission
+that transition. Protected inputs are validated by their effective DACL
+instead of requiring inheritance to be disabled: inherited allow entries are
+accepted when every entry belongs to the current user, SYSTEM, or
+Administrators, so private keys written by `asc certificates csr generate` and
+normally created password files pass validation while any entry for another
+account is still rejected. On Unix, protected inputs keep the existing 0600 permission
 check, and the staged output's effective permissions are verified before any
 PKCS#12 bytes are written, so filesystems that ignore the requested 0600 mode
 fail closed instead of publishing a broadly readable identity.
