@@ -179,8 +179,10 @@ func (g *GitStore) WriteEncryptedFile(relPath string, plaintext []byte, password
 	return root.WriteFile(relPath+".enc", encrypted, 0o600)
 }
 
-// ReplaceEncryptedFile atomically creates or replaces a legacy encrypted
-// artifact while preserving its existing file mode when present.
+// ReplaceEncryptedFile creates or replaces a legacy encrypted artifact while
+// preserving its existing file mode when present. Replacement is atomic on
+// platforms where rename replaces an existing destination; on Windows, the
+// original is restored if publishing the replacement fails.
 func (g *GitStore) ReplaceEncryptedFile(relPath string, plaintext []byte, password string) error {
 	if err := validateEncryptedRepositoryPath(filepath.ToSlash(relPath)); err != nil {
 		return err
