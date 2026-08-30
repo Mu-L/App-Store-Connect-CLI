@@ -169,6 +169,9 @@ func TestSigningResignPreflightErrorsMapToUsageExit(t *testing.T) {
 }
 
 func TestSigningResignCommandClassifiesPreflightUsageOnly(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("signing resign is macOS-only")
+	}
 	original := executeSigningResignFn
 	t.Cleanup(func() { executeSigningResignFn = original })
 	makeCommand := func() *ffcli.Command {
@@ -493,6 +496,9 @@ func TestReadSigningResignManifestPreservesWhitespacePathBytes(t *testing.T) {
 }
 
 func TestSigningResignCommandPreservesPathBytes(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("signing resign is macOS-only")
+	}
 	original := executeSigningResignFn
 	t.Cleanup(func() { executeSigningResignFn = original })
 	var got signingResignOptions

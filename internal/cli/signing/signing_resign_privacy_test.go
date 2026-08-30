@@ -30,6 +30,9 @@ func TestSigningResignOperationalErrorHasStablePublicMessageAndCause(t *testing.
 }
 
 func TestSigningResignCommandBoundaryRedactsInjectedOperationalCause(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("signing resign is macOS-only")
+	}
 	const secret = "/private/tmp/secret-cert-selector"
 	original := executeSigningResignFn
 	t.Cleanup(func() { executeSigningResignFn = original })
