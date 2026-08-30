@@ -2160,3 +2160,29 @@ func testSigningResignIdentity(t *testing.T) *signingRunIdentity {
 	}
 	return &signingRunIdentity{Certificate: certificate, PrivateKey: key, CertificateSHA1: strings.Repeat("A", 40), CertificateSHA256: strings.Repeat("B", 64)}
 }
+
+func TestDiscoverSigningResignArchiveRejectsNonLocalEntriesWithoutPriorValidation(t *testing.T) {
+	buffer := &bytes.Buffer{}
+	writer := zip.NewWriter(buffer)
+	for _, name := range []string{"Payload/App.app/Info.plist", "../escape"} {
+		if _, err := writer.Create(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(buffer.Bytes()), int64(buffer.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := rootfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tree.Close()
+	_, err = discoverSigningResignArchive(context.Background(), reader, tree)
+	if err == nil || !strings.Contains(err.Error(), "non-local archive path") {
+		t.Fatalf("discoverSigningResignArchive() error = %v, want non-local entry rejection", err)
+	}
+}

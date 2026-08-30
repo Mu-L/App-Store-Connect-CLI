@@ -378,6 +378,14 @@ func discoverSigningResignArchive(ctx context.Context, reader *zip.Reader, tree 
 	directories := make(map[string]struct{})
 	for _, member := range reader.File {
 		name := strings.TrimSuffix(member.Name, "/")
+		// The pipeline validates every archive member before discovery, and
+		// all reads below go through the rooted staging tree. Keep discovery
+		// independently fail-closed anyway: reject entry names that could
+		// resolve outside the tree before any derived path reaches a
+		// filesystem operation.
+		if name == "" || !filepath.IsLocal(filepath.FromSlash(name)) {
+			return signingResignArchive{}, fmt.Errorf("IPA contains a non-local archive path")
+		}
 		for candidate := name; candidate != "." && candidate != ""; candidate = path.Dir(candidate) {
 			directories[candidate] = struct{}{}
 		}
