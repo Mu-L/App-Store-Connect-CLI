@@ -622,6 +622,12 @@ func validateTestPassthroughArguments(args []string) error {
 		if isRecognizedTestPassthroughArgument(value) {
 			return fmt.Errorf("--xcodebuild-flag %q requires a value; %q is a recognized xcodebuild option or asc-managed argument", strings.TrimSpace(arg), strings.TrimSpace(value))
 		}
+		// Authentication values are paths and identifiers, never options. Any
+		// leading dash means the caller omitted the value and xcodebuild would
+		// silently consume the next option as the credential instead.
+		if strings.HasPrefix(strings.TrimSpace(value), "-") {
+			return fmt.Errorf("--xcodebuild-flag %q requires a value; %q is an xcodebuild option", strings.TrimSpace(arg), strings.TrimSpace(value))
+		}
 		index++
 	}
 	return nil

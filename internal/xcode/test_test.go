@@ -273,6 +273,18 @@ func TestValidateTestOptionsAuthenticationPassthroughValues(t *testing.T) {
 		})
 	}
 
+	for _, next := range []string{"-quiet", "-verbose", "-showBuildTimingSummary"} {
+		t.Run("option token value/"+next, func(t *testing.T) {
+			opts := base
+			opts.XcodebuildArgs = []string{"-authenticationKeyPath", next}
+			err := ValidateTestOptions(opts)
+			want := fmt.Sprintf("--xcodebuild-flag %q requires a value; %q is an xcodebuild option", "-authenticationKeyPath", next)
+			if err == nil || err.Error() != want {
+				t.Fatalf("ValidateTestOptions() error = %v, want %q", err, want)
+			}
+		})
+	}
+
 	t.Run("empty value keeps raw validation", func(t *testing.T) {
 		opts := base
 		opts.XcodebuildArgs = []string{"-authenticationKeyPath", ""}

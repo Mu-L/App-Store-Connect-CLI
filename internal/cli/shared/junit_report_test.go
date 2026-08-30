@@ -327,3 +327,40 @@ type failingWriter struct{}
 func (failingWriter) Write([]byte) (int, error) {
 	return 0, fmt.Errorf("write failed")
 }
+
+func TestJUnitReport_SuiteDurationPrefersAggregateOverCaseSum(t *testing.T) {
+	report := &JUnitReport{
+		Name:      "asc xcode test",
+		Timestamp: time.Now(),
+		Duration:  time.Second,
+		Tests: []JUnitTestCase{
+			{Name: "testA", Time: 100 * time.Millisecond},
+			{Name: "testB", Time: 100 * time.Millisecond},
+		},
+	}
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), `time="1.000"`) {
+		t.Fatalf("JUnit output = %s, want aggregate suite duration", data)
+	}
+}
+
+func TestJUnitReport_SuiteDurationFallsBackToCaseSum(t *testing.T) {
+	report := &JUnitReport{
+		Name:      "asc xcode test",
+		Timestamp: time.Now(),
+		Tests: []JUnitTestCase{
+			{Name: "testA", Time: 100 * time.Millisecond},
+			{Name: "testB", Time: 150 * time.Millisecond},
+		},
+	}
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), `time="0.250"`) {
+		t.Fatalf("JUnit output = %s, want summed case duration", data)
+	}
+}

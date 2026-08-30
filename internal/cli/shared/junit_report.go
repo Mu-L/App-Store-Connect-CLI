@@ -26,6 +26,11 @@ type JUnitReport struct {
 	Tests     []JUnitTestCase // Test cases in this report
 	Timestamp time.Time       // Report generation time
 	Name      string          // Test suite name (default: "asc")
+	// Duration optionally reports wall time for the whole suite. Leaf case
+	// durations often exclude setup, teardown, and repeated or multi-destination
+	// work, so their sum can understate the run. When Duration exceeds that sum
+	// it is used for the suite time attribute; zero keeps the summed behavior.
+	Duration time.Duration
 }
 
 // Write writes the JUnit report to the specified file path.
@@ -93,7 +98,7 @@ func (r *JUnitReport) Marshal() ([]byte, error) {
 		Failures:  failures,
 		Skipped:   skipped,
 		Errors:    0,
-		Time:      formatDuration(totalDuration(r.Tests)),
+		Time:      formatDuration(r.suiteDuration()),
 		Timestamp: r.Timestamp.Format(time.RFC3339),
 		TestCases: testCases,
 	}
@@ -177,6 +182,16 @@ type testsuiteXML struct {
 
 func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%.3f", d.Seconds())
+}
+
+// suiteDuration reports the suite time attribute, never understating the run:
+// the summed case durations unless an explicit aggregate exceeds them.
+func (r *JUnitReport) suiteDuration() time.Duration {
+	summed := totalDuration(r.Tests)
+	if r.Duration > summed {
+		return r.Duration
+	}
+	return summed
 }
 
 func totalDuration(tests []JUnitTestCase) time.Duration {

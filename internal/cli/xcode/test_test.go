@@ -623,6 +623,34 @@ func TestXcodeTestJUnitKeepsInfrastructureRowWhenReportHasNoFailure(t *testing.T
 	}
 }
 
+func TestXcodeTestJUnitPreservesAggregateDurationWithoutSyntheticCases(t *testing.T) {
+	// Every aggregate test has a parsed case, so reconciliation adds no row.
+	// The leaf durations still sum to less than the aggregate, and the suite
+	// time must reflect the aggregate rather than the leaf sum.
+	report := testResultJUnitReport(&localxcode.TestResult{
+		Success: true,
+		Tests: &localxcode.TestSummary{
+			Total:      2,
+			Passed:     2,
+			DurationMS: 1000,
+			Cases: []localxcode.TestCase{
+				{Identifier: "DemoTests/Smoke/testA", Name: "testA", Status: "passed", DurationMS: 100},
+				{Identifier: "DemoTests/Smoke/testB", Name: "testB", Status: "passed", DurationMS: 100},
+			},
+		},
+	}, nil)
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("JUnit Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), `<testsuite name="asc xcode test" tests="2"`) {
+		t.Fatalf("JUnit output = %s, want exactly the parsed cases", data)
+	}
+	if !strings.Contains(string(data), `time="1.000"`) {
+		t.Fatalf("JUnit output = %s, want aggregate duration preserved without synthetic cases", data)
+	}
+}
+
 func TestXcodeTestJUnitZeroSummaryProducesNoSyntheticCase(t *testing.T) {
 	report := testResultJUnitReport(&localxcode.TestResult{
 		Success: true,

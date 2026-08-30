@@ -52,7 +52,7 @@ type XcodeTestSummary struct {
 type XcodeTestCase struct {
 	Identifier string `json:"identifier"`
 	Name       string `json:"name,omitempty"`
-	Classname  string `json:"classname,omitempty"`
+	Classname  string `json:"className,omitempty"`
 	Status     string `json:"status"`
 	DurationMs int64  `json:"durationMs,omitempty"`
 	Message    string `json:"message,omitempty"`

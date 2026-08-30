@@ -1,6 +1,7 @@
 package asc
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -50,5 +51,23 @@ func TestFormatXcodeTestFailureTruncatesAtUTF8Boundary(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, strings.Repeat("a", maxXcodeTestHumanMessage-1)) {
 		t.Fatalf("formatted failure does not preserve complete prefix: %q", got)
+	}
+}
+
+func TestXcodeTestCaseUsesCamelCaseClassNameKey(t *testing.T) {
+	data, err := json.Marshal(XcodeTestCase{
+		Identifier: "DemoTests/Smoke/testPass",
+		Name:       "testPass",
+		Classname:  "Smoke",
+		Status:     "passed",
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), `"className":"Smoke"`) {
+		t.Fatalf("XcodeTestCase JSON = %s, want camelCase className key", data)
+	}
+	if strings.Contains(string(data), `"classname"`) {
+		t.Fatalf("XcodeTestCase JSON = %s, want no lowercase classname key", data)
 	}
 }

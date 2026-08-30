@@ -284,7 +284,6 @@ func testResultJUnitReport(result *localxcode.TestResult, commandErr error) *sha
 		missingPassed := max(0, summary.Passed+summary.ExpectedFailures-actualPassed)
 		missingFailed := max(0, summary.Failed-actualFailed)
 		missingSkipped := max(0, summary.Skipped-actualSkipped)
-		syntheticStart := len(tests)
 		syntheticCount := 0
 		// Synthesize failures first. Aggregate counts can exceed the flattened
 		// cases for multi-destination and repeated runs, and unrepresented
@@ -302,16 +301,12 @@ func testResultJUnitReport(result *localxcode.TestResult, commandErr error) *sha
 			tests = append(tests, syntheticJUnitTestCase("passed", syntheticCount, ""))
 			syntheticCount++
 		}
-		if len(tests) > syntheticStart {
-			// JUnit derives suite time by summing testcase durations. Preserve
-			// the aggregate Xcode duration in synthesized cases while retaining
-			// every parsed case's own duration.
-			aggregateDuration := durationFromMilliseconds(summary.DurationMS)
-			parsedDuration := totalJUnitDuration(tests[:syntheticStart])
-			if remaining := aggregateDuration - parsedDuration; remaining > 0 {
-				tests[syntheticStart].Time = remaining
-			}
-		}
+		// JUnit derives suite time by summing testcase durations, which drops
+		// setup, teardown, and repeated or multi-destination work. Report the
+		// aggregate at the suite level so it survives whether or not
+		// reconciliation synthesized any row, and leave every parsed case's own
+		// duration untouched.
+		report.Duration = durationFromMilliseconds(summary.DurationMS)
 	}
 
 	if shouldAddJUnitInfrastructureFailure(result, summary, tests, commandErr) {
@@ -346,14 +341,6 @@ func junitStatusCounts(tests []shared.JUnitTestCase) (passed, failed, skipped in
 		}
 	}
 	return passed, failed, skipped
-}
-
-func totalJUnitDuration(tests []shared.JUnitTestCase) time.Duration {
-	var total time.Duration
-	for _, testCase := range tests {
-		total += testCase.Time
-	}
-	return total
 }
 
 func shouldAddJUnitInfrastructureFailure(result *localxcode.TestResult, summary *localxcode.TestSummary, tests []shared.JUnitTestCase, commandErr error) bool {
