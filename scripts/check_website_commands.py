@@ -31,6 +31,9 @@ COMMAND_PASSTHROUGH_RE = re.compile(r"(?:^|\s)--\s+<[^>]+>")
 REQUIRED_FLAGS_BY_COMMAND: dict[tuple[str, ...], set[str]] = {
     ("submit", "create"): {"--build", "--confirm"},
 }
+REQUIRED_FLAGS_BEFORE_PASSTHROUGH_BY_COMMAND: dict[tuple[str, ...], set[str]] = {
+    ("signing", "run"): {"--identity", "--profile"},
+}
 # Presence-aware booleans intentionally omit a displayed default because unset
 # and explicit false have different behavior. Scope these overrides by command
 # so same-named value flags remain value flags elsewhere in the CLI.
@@ -654,6 +657,17 @@ def validate_example(
                 errors.append(
                     f"{example.path.relative_to(example.path.parents[1])}:{example.line_number}: "
                     f"command passthrough separator must be followed by a command in {example.raw!r}"
+                )
+                return errors
+            missing_flags = sorted(
+                REQUIRED_FLAGS_BEFORE_PASSTHROUGH_BY_COMMAND.get(current.path, set())
+                - seen_flags
+            )
+            if missing_flags:
+                errors.append(
+                    f"{example.path.relative_to(example.path.parents[1])}:{example.line_number}: "
+                    f"missing required flag(s) {', '.join(missing_flags)!r} before command passthrough "
+                    f"for {' '.join(current.path)!r} in {example.raw!r}"
                 )
                 return errors
             break

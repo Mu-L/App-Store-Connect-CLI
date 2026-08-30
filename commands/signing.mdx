@@ -414,6 +414,8 @@ Value-specific entitlements such as App Groups, Apple Pay merchant IDs, Network 
 
 It validates the PKCS#12, private key, certificate, team, signed profile, expiration, and embedded certificate before changing local signing state. It then creates a private temporary keychain, installs the profile only for the child process, executes the argv after `--` without a shell, and removes ASC-owned temporary state afterward.
 
+The wrapper accepts exactly one `--profile`. The example below therefore applies only to a single-target archive. For an archive with embedded targets, use a disposable macOS worker, import the identity into its job-scoped keychain, install every profile path returned by `signing reconcile apply`, export, and discard the worker state after the job.
+
 ```bash  theme={null}
 signing_command=(
   asc xcode export

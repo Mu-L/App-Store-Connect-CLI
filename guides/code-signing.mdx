@@ -51,21 +51,33 @@ The private key remains in `.asc/secrets/distribution.key`. Do not commit it, pr
 
 ## Shared App Store identity
 
-Push one verified private identity, certificate, and profile into a private encrypted Git repository:
+Read the public certificate from the create response and calculate its SHA-256 fingerprint. `signing sync push` uses this value to bind the generated private key to the exact App Store Connect certificate:
+
+```bash  theme={null}
+CERTIFICATE_SHA256="$(
+  jq -r '.data.attributes.certificateContent' \
+    .asc/signing/distribution-certificate.json \
+  | openssl base64 -d -A \
+  | openssl x509 -inform DER -outform DER \
+  | shasum -a 256 \
+  | awk '{print toupper($1)}'
+)"
+```
+
+Push that verified private key, certificate, and profile into a private encrypted Git repository:
 
 ```bash  theme={null}
 chmod 600 \
   ~/.config/asc/signing-sync-password \
-  .asc/secrets/distribution.p12 \
-  .asc/secrets/distribution-p12-password
+  .asc/secrets/distribution.key
 
 asc signing sync push \
   --bundle-id com.example.app \
   --profile-type IOS_APP_STORE \
   --repo git@github.com:team/signing.git \
   --password-file ~/.config/asc/signing-sync-password \
-  --identity .asc/secrets/distribution.p12 \
-  --identity-password-file .asc/secrets/distribution-p12-password \
+  --private-key .asc/secrets/distribution.key \
+  --identity-sha256 "$CERTIFICATE_SHA256" \
   --create-missing \
   --output json \
   --pretty
@@ -89,8 +101,8 @@ asc signing sync push \
   --profile-type IOS_APP_STORE \
   --repo git@github.com:team/signing.git \
   --password-file ~/.config/asc/signing-sync-password \
-  --identity .asc/secrets/distribution.p12 \
-  --identity-password-file .asc/secrets/distribution-p12-password \
+  --private-key .asc/secrets/distribution.key \
+  --identity-sha256 "$CERTIFICATE_SHA256" \
   --create-missing \
   --output json
 ```
@@ -141,7 +153,7 @@ asc signing reconcile apply \
 
 Planning is read-only and can return a successful `ready: false` result with blockers. Apply performs only the additive actions recorded in a ready plan; it does not delete profiles, create certificates, or change capabilities.
 
-Run the release-testing export with the identity and ad hoc profile available only to the child process:
+`signing run` accepts exactly one profile. Use the temporary-keychain export below only for a single-target archive whose main app uses that profile:
 
 ```bash  theme={null}
 signing_command=(
@@ -162,6 +174,8 @@ asc signing run \
 ```
 
 `signing run` accepts iOS ad hoc profiles with registered devices. It rejects App Store, development, enterprise, macOS, and tvOS profiles.
+
+For an archive with extensions, App Clips, Watch apps, or other embedded targets, don't use this single-profile wrapper for export. On a disposable macOS worker, import the identity into a job-scoped keychain, install every path in the reconciliation result's `profiles` array, export, and discard the worker state when the job ends.
 
 ## What the encrypted store does not do
 
