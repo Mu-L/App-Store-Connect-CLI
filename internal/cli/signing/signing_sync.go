@@ -149,8 +149,9 @@ func onceAfterSuccess(operation func() error) func() error {
 	}
 }
 
-// Kept as a narrow seam so command tests can verify that the command-scoped
-// timeout is handed to the whole batch operation, including Git publication.
+// Kept as a narrow seam so command tests can verify that the command context is
+// handed to the whole batch operation, including Git publication, and that the
+// batch is not capped by a single outbound-request timeout.
 var runSigningSyncBatchForCommand = runSigningSyncBatch
 
 func syncPushCommand() *ffcli.Command {
@@ -279,11 +280,14 @@ func syncPushCommand() *ffcli.Command {
 				return fmt.Errorf("signing sync push: %w", err)
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
-			defer cancel()
-
 			if hasTargetsPath {
-				result, batchErr := runSigningSyncBatchForCommand(requestCtx, client, signingSyncBatchOptions{
+				// The batch spans one lookup, asset resolution, and optional
+				// profile creation per target plus the Git clone and push, so it
+				// receives the command context and applies its own per-request
+				// timeouts. Capping the whole run with a single request budget
+				// would fail valid multi-target runs and, with --create-missing,
+				// could abandon created profiles before publication.
+				result, batchErr := runSigningSyncBatchForCommand(ctx, client, signingSyncBatchOptions{
 					RepoURL:         repo,
 					Branch:          *branch,
 					Password:        pass,
@@ -299,6 +303,9 @@ func syncPushCommand() *ffcli.Command {
 				}
 				return shared.PrintOutput(&result, *output.Output, *output.Pretty)
 			}
+
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
 
 			// Fetch signing assets from ASC.
 			fmt.Fprintln(os.Stderr, "Fetching signing assets from App Store Connect...")

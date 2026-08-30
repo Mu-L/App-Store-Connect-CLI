@@ -211,7 +211,10 @@ func TestSigningSyncPushTargetsFileValidationPrecedesPasswordAndClient(t *testin
 	}
 }
 
-func TestSigningSyncPushBatchPassesCommandTimeoutToRunner(t *testing.T) {
+// runSigningSyncPushBatchForContext drives the push command down the batch
+// branch with a stub runner and returns the context the runner received.
+func runSigningSyncPushBatchForContext(t *testing.T, commandCtx context.Context) context.Context {
+	t.Helper()
 	dir := t.TempDir()
 	writeSigningSyncTargetsFile(t, filepath.Join(dir, "targets.json"), `{"schemaVersion":1,"targets":[{"bundleId":"com.example.app"}]}`, 0o644)
 	t.Chdir(dir)
@@ -244,7 +247,7 @@ func TestSigningSyncPushBatchPassesCommandTimeoutToRunner(t *testing.T) {
 	}
 	var runErr error
 	stdout, _ := captureOutput(t, func() {
-		runErr = cmd.Run(context.Background())
+		runErr = cmd.Run(commandCtx)
 	})
 	if runErr == nil || runErr.Error() != "signing sync push: context canceled" {
 		t.Fatalf("error = %v, want wrapped batch cancellation", runErr)
@@ -255,12 +258,40 @@ func TestSigningSyncPushBatchPassesCommandTimeoutToRunner(t *testing.T) {
 	if received == nil {
 		t.Fatal("batch runner was not called")
 	}
-	deadline, ok := received.Deadline()
+	return received
+}
+
+// A multi-target batch performs one profile lookup, asset resolution, and
+// optional profile creation per target, then clones and pushes the signing
+// repository. Capping that whole sequence with a single per-request timeout
+// fails valid runs, and with --create-missing it can abandon freshly created
+// App Store Connect profiles before the repository commit is published.
+func TestSigningSyncPushBatchDoesNotCapBatchWithOneRequestTimeout(t *testing.T) {
+	received := runSigningSyncPushBatchForContext(t, context.Background())
+	if deadline, ok := received.Deadline(); ok {
+		t.Fatalf("batch runner deadline = %v (remaining %v), want the unbounded command context so per-request timeouts and Git publication are not capped by one request budget", deadline, time.Until(deadline))
+	}
+	requestCtx, cancel := shared.ContextWithTimeout(received)
+	defer cancel()
+	deadline, ok := requestCtx.Deadline()
 	if !ok {
-		t.Fatal("batch runner received an unbounded context")
+		t.Fatal("per-request context derived inside the batch has no deadline")
 	}
 	if remaining := time.Until(deadline); remaining <= 0 || remaining > 40*time.Millisecond {
-		t.Fatalf("batch runner deadline remaining = %v, want positive command timeout <= 40ms", remaining)
+		t.Fatalf("per-request deadline remaining = %v, want a full positive request timeout <= 40ms", remaining)
+	}
+}
+
+func TestSigningSyncPushBatchPreservesOuterCommandDeadline(t *testing.T) {
+	commandCtx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	received := runSigningSyncPushBatchForContext(t, commandCtx)
+	deadline, ok := received.Deadline()
+	if !ok {
+		t.Fatal("batch runner dropped the caller's command deadline")
+	}
+	if remaining := time.Until(deadline); remaining <= 40*time.Millisecond {
+		t.Fatalf("batch runner deadline remaining = %v, want the caller's hour-long budget rather than one request timeout", remaining)
 	}
 }
 
