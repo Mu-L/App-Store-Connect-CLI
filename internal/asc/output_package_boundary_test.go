@@ -4,10 +4,11 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 // forbiddenAscImports lists first-party packages that internal/asc must not
@@ -20,22 +21,38 @@ var forbiddenAscImports = map[string]string{
 }
 
 func TestAscOutputPackageDoesNotImportDomainPackagesThatImportIt(t *testing.T) {
+	packageRoot, err := rootfs.New(".")
+	if err != nil {
+		t.Fatalf("open package root: %v", err)
+	}
+	defer packageRoot.Close()
+
+	// Every file read below goes through the rooted handle. The enumeration
+	// itself stays on os.ReadDir because rootfs exposes no directory-listing
+	// primitive; the names it yields are re-resolved through the root before
+	// any bytes are read.
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read package directory: %v", err)
 	}
 
 	fileSet := token.NewFileSet()
+	inspected := 0
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
 
-		file, parseErr := parser.ParseFile(fileSet, filepath.Join(".", name), nil, parser.ImportsOnly)
+		source, readErr := packageRoot.ReadFile(name)
+		if readErr != nil {
+			t.Fatalf("read %s: %v", name, readErr)
+		}
+		file, parseErr := parser.ParseFile(fileSet, name, source, parser.ImportsOnly)
 		if parseErr != nil {
 			t.Fatalf("parse %s: %v", name, parseErr)
 		}
+		inspected++
 		for _, importSpec := range file.Imports {
 			path, unquoteErr := strconv.Unquote(importSpec.Path.Value)
 			if unquoteErr != nil {
@@ -45,5 +62,9 @@ func TestAscOutputPackageDoesNotImportDomainPackagesThatImportIt(t *testing.T) {
 				t.Errorf("%s imports %s: %s", name, path, reason)
 			}
 		}
+	}
+
+	if inspected == 0 {
+		t.Fatal("no package sources inspected; the boundary check would pass vacuously")
 	}
 }
