@@ -614,6 +614,46 @@ func TestCreateNewFileAtomicWithInfoReturnsPublishedIdentity(t *testing.T) {
 	}
 }
 
+func TestCreateNewFileAtomicWithInfoRejectsPublishedIdentityReplacement(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	root.renameNoReplaceForTest = func(parent *os.Root, oldName, newName string) error {
+		if err := secureopen.RenameNoReplaceInRoot(parent, oldName, newName); err != nil {
+			return err
+		}
+		if err := parent.Remove(newName); err != nil {
+			return err
+		}
+		tracer, err := secureopen.OpenNewFileNoFollowInRoot(parent, newName, 0o600)
+		if err != nil {
+			return err
+		}
+		if _, err := tracer.Write([]byte("racer")); err != nil {
+			_ = tracer.Close()
+			return err
+		}
+		return tracer.Close()
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
+	if err == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() succeeded after the published inode was replaced")
+	}
+	if info == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() did not return the staged identity on post-publication failure")
+	}
+	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "racer" {
+		t.Fatalf("replacement content = %q, want racer", got)
+	}
+	diskInfo, statErr := os.Stat(filepath.Join(dir, "receipt.json"))
+	if statErr != nil {
+		t.Fatalf("Stat(receipt) error = %v", statErr)
+	}
+	if os.SameFile(info, diskInfo) {
+		t.Fatal("returned identity incorrectly identified the racing replacement")
+	}
+}
+
 func TestCreateNewFileFallsBackWhenAtomicRenameIsUnsupported(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)

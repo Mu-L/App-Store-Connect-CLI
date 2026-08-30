@@ -1331,8 +1331,15 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	if err := file.Sync(); err != nil {
 		return written, nil, err
 	}
-	if err := file.Close(); err != nil {
+	stagedInfo, err := file.Stat()
+	if err != nil {
 		return written, nil, err
+	}
+	if !stagedInfo.Mode().IsRegular() {
+		return written, nil, fmt.Errorf("staged file %q is not regular", resolved)
+	}
+	if err := file.Close(); err != nil {
+		return written, stagedInfo, err
 	}
 	renameNoReplace := secureopen.RenameNoReplaceInRoot
 	if r.renameNoReplaceForTest != nil {
@@ -1340,43 +1347,46 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	}
 	if err := renameNoReplace(parent, temporaryName, base); err != nil {
 		if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
-			return written, nil, err
+			return written, stagedInfo, err
 		}
 		if r.requireNativeNoReplace {
-			return written, nil, err
+			return written, stagedInfo, err
 		}
 		// A hard link atomically publishes the complete staged inode without
 		// replacing an existing destination.
 		if linkErr := parent.Link(temporaryName, base); linkErr != nil {
-			return written, nil, linkErr
+			return written, stagedInfo, linkErr
 		}
 		if removeErr := parent.Remove(temporaryName); removeErr != nil {
-			return written, nil, fmt.Errorf("publish succeeded but remove staged file: %w", removeErr)
+			return written, stagedInfo, fmt.Errorf("publish succeeded but remove staged file: %w", removeErr)
 		}
 	}
 	published = true
 	createdInfo, err := parent.Lstat(base)
 	if err != nil {
-		return written, nil, fmt.Errorf("stat published file %q: %w", resolved, err)
+		return written, stagedInfo, fmt.Errorf("stat published file %q: %w", resolved, err)
 	}
 	if createdInfo.Mode()&os.ModeSymlink != 0 {
-		return written, createdInfo, symlinkError(resolved)
+		return written, stagedInfo, symlinkError(resolved)
 	}
 	if !createdInfo.Mode().IsRegular() {
-		return written, createdInfo, fmt.Errorf("published file %q is not regular", resolved)
+		return written, stagedInfo, fmt.Errorf("published file %q is not regular", resolved)
+	}
+	if !os.SameFile(stagedInfo, createdInfo) {
+		return written, stagedInfo, fmt.Errorf("published file %q identity changed during publication", resolved)
 	}
 	directory, err := parent.Open(".")
 	if err != nil {
-		return written, createdInfo, fmt.Errorf("open parent directory for durability sync: %w", err)
+		return written, stagedInfo, fmt.Errorf("open parent directory for durability sync: %w", err)
 	}
 	if err := directory.Sync(); err != nil && !unsupportedDirectorySyncError(err) {
 		_ = directory.Close()
-		return written, createdInfo, fmt.Errorf("sync parent directory after publish: %w", err)
+		return written, stagedInfo, fmt.Errorf("sync parent directory after publish: %w", err)
 	}
 	if err := directory.Close(); err != nil {
-		return written, createdInfo, fmt.Errorf("close parent directory after durability sync: %w", err)
+		return written, stagedInfo, fmt.Errorf("close parent directory after durability sync: %w", err)
 	}
-	return written, createdInfo, nil
+	return written, stagedInfo, nil
 }
 
 // AppendFile appends data to a file beneath the root, creating it when missing,
