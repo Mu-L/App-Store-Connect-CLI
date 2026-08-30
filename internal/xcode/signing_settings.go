@@ -780,6 +780,23 @@ func inspectSigningCandidate(
 		candidate.old = stringPtr(old)
 		candidate.resolution = "direct"
 		if signingValuesEqual(setting.value, candidate.old) {
+			// A direct assignment that still defers to $(inherited) keeps a live
+			// dependency on the xcconfig supplying that value. Retain it as a
+			// no-op consumer so shared-file resolution can see the disagreement
+			// when a sibling configuration wants a different value in the same
+			// file; otherwise rewriting that file would silently change this
+			// configuration's effective value.
+			if setting.value != nil && signingDirectValueInherits(configuration, setting.key) {
+				assignmentFiles, assignmentErr := xcconfigFilesDefiningWithReader(configFiles[configuration.id], setting.key, resolver.readXCConfig)
+				if assignmentErr != nil {
+					return candidate, signingSettingBlocker(configuration, setting.key, assignmentErr), ""
+				}
+				if len(assignmentFiles) > 0 {
+					candidate.mode = "xcconfig"
+					candidate.paths = append(candidate.paths, assignmentFiles...)
+					candidate.noOp = true
+				}
+			}
 			return candidate, "", ""
 		}
 		candidate.mode = "pbxproj"
@@ -847,6 +864,32 @@ func inspectSigningCandidate(
 	// target/configuration. This avoids widening a change to other targets.
 	candidate.mode = "pbxproj"
 	return candidate, "", ""
+}
+
+// signingDirectValueInherits reports whether a direct project assignment for
+// setting still defers to a lower-level value through $(inherited). Such a
+// configuration keeps depending on the xcconfig that supplies the inherited
+// value even when its resolved value already matches the requested one.
+func signingDirectValueInherits(configuration *versionConfiguration, setting string) bool {
+	for _, key := range matchingBuildSettingKeys(configuration.buildSettings, setting) {
+		switch value := configuration.buildSettings[key].(type) {
+		case string:
+			if signingValueInherits(value) {
+				return true
+			}
+		case []any:
+			for _, element := range value {
+				if text, ok := element.(string); ok && signingValueInherits(text) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func signingValueInherits(value string) bool {
+	return strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}")
 }
 
 func signingConfigurationSourcesAuthorized(

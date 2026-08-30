@@ -1357,3 +1357,69 @@ func writeSigningSettingsTestFile(t *testing.T, path, contents string) {
 		t.Fatalf("WriteFile(%s) error = %v", path, err)
 	}
 }
+
+// injectSigningDirectBuildSetting adds a direct assignment to one existing
+// XCBuildConfiguration so a test can model a project that keeps a pbxproj-level
+// setting alongside its base xcconfig.
+func injectSigningDirectBuildSetting(t *testing.T, pbxprojPath, configurationID, assignment string) {
+	t.Helper()
+	data := mustReadVersionTestFile(t, pbxprojPath)
+	start := strings.Index(data, configurationID)
+	if start < 0 {
+		t.Fatalf("configuration %s not found in project", configurationID)
+	}
+	const marker = "buildSettings = {"
+	offset := strings.Index(data[start:], marker)
+	if offset < 0 {
+		t.Fatalf("buildSettings not found for configuration %s", configurationID)
+	}
+	insert := start + offset + len(marker)
+	updated := data[:insert] + " " + assignment + data[insert:]
+	if err := os.WriteFile(pbxprojPath, []byte(updated), 0o644); err != nil {
+		t.Fatalf("WriteFile(project) error = %v", err)
+	}
+}
+
+func TestSigningPlanRetainsInheritedDirectConsumerInSharedConflict(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	if err := os.WriteFile(sharedPath, []byte("CODE_SIGN_STYLE = Automatic\r\n"+shared), 0o644); err != nil {
+		t.Fatalf("write shared xcconfig error = %v", err)
+	}
+	// Debug keeps a direct assignment that still defers to the shared value.
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
+		"999999999999999999999993", `CODE_SIGN_STYLE = "$(inherited)";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"CODE_SIGN_STYLE":"automatic"}},
+			{"name":"Release","settings":{"CODE_SIGN_STYLE":"manual"}}
+		]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got %#v", plan.Blockers)
+	}
+	if len(plan.Changes) != 1 {
+		t.Fatalf("expected only the conflicting Release override, got %#v", plan.Changes)
+	}
+	change := plan.Changes[0]
+	if change.Configuration != "Release" {
+		t.Fatalf("unexpected configuration in change: %#v", change)
+	}
+	// Rewriting the shared file would also change Debug's inherited value, so
+	// the plan must use a target-level override instead.
+	if change.Source != "pbxproj" {
+		t.Fatalf("shared xcconfig rewritten past an inherited-direct consumer: %#v", change)
+	}
+}
