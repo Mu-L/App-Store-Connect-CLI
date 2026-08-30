@@ -22,6 +22,15 @@ import (
 	localxcode "github.com/rudrankriyam/App-Store-Connect-CLI/internal/xcode"
 )
 
+type staplerModeFileInfo struct {
+	os.FileInfo
+	mode os.FileMode
+}
+
+func (info staplerModeFileInfo) Mode() os.FileMode {
+	return info.mode
+}
+
 func TestNotarizationStapleCommandPrintsComputedJSON(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "My App.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -254,6 +263,378 @@ func TestValidateStaplerTargetDetailsDoesNotFallbackDirectoryOpenRace(t *testing
 	}
 	if isStaplerTargetUsageError(err) {
 		t.Fatalf("validateStaplerTargetDetails() error = %v, directory-open race must remain operational", err)
+	}
+}
+
+func TestValidateStaplerTargetDetailsDoesNotClassifyRegularFilePhraseInPathAsUsage(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "is not a regular file")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	target := filepath.Join(parent, "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previous := openStaplerTargetFileFn
+	openStaplerTargetFileFn = func(rootfs.Root, string) (*os.File, error) {
+		// Real rooted opens embed the pathname in the message, so an
+		// operational failure on this artifact carries the wrong-kind phrase.
+		return nil, fmt.Errorf("open %s: %w", target, syscall.EACCES)
+	}
+	t.Cleanup(func() { openStaplerTargetFileFn = previous })
+
+	validated, err := validateStaplerTargetDetails(target)
+	if validated != nil {
+		validated.close()
+		t.Fatalf("validateStaplerTargetDetails() target = %#v, want nil", validated)
+	}
+	if !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, want EACCES", err)
+	}
+	if isStaplerTargetUsageError(err) {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, pathname text must not make it usage", err)
+	}
+}
+
+func TestValidateStaplerTargetDetailsRejectsSpecialFileWithoutPathnameMatching(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	baseInfo, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	previousProbe := probeStaplerTargetKindFn
+	probeStaplerTargetKindFn = func(rootfs.Root, string) (os.FileInfo, error) {
+		return staplerModeFileInfo{FileInfo: baseInfo, mode: os.ModeNamedPipe | 0o600}, nil
+	}
+	t.Cleanup(func() { probeStaplerTargetKindFn = previousProbe })
+
+	validated, err := validateStaplerTargetDetails(target)
+	if validated != nil {
+		validated.close()
+		t.Fatalf("validateStaplerTargetDetails() target = %#v, want nil", validated)
+	}
+	if !isStaplerTargetUsageError(err) {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, want usage error for a special file", err)
+	}
+	if !strings.Contains(err.Error(), "is not a regular file or directory bundle") {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, want stable special-file diagnostic", err)
+	}
+}
+
+func TestValidateStaplerTargetDetailsRejectsSameKindReplacementAfterProbe(t *testing.T) {
+	tests := []struct {
+		name      string
+		directory bool
+	}{
+		{name: "regular file", directory: false},
+		{name: "directory bundle", directory: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parent := t.TempDir()
+			target := filepath.Join(parent, "MyApp.pkg")
+			replacement := filepath.Join(parent, "replacement")
+			preserved := filepath.Join(parent, "preserved-original")
+			if test.directory {
+				if err := os.Mkdir(target, 0o700); err != nil {
+					t.Fatalf("create target directory: %v", err)
+				}
+				if err := os.Mkdir(replacement, 0o700); err != nil {
+					t.Fatalf("create replacement directory: %v", err)
+				}
+				previousOpen := openStaplerTargetDirectoryFn
+				openStaplerTargetDirectoryFn = func(root rootfs.Root, relative string) (*os.File, error) {
+					if err := os.Rename(target, preserved); err != nil {
+						t.Fatalf("preserve target: %v", err)
+					}
+					if err := os.Rename(replacement, target); err != nil {
+						t.Fatalf("replace target: %v", err)
+					}
+					return root.OpenDir(relative)
+				}
+				t.Cleanup(func() { openStaplerTargetDirectoryFn = previousOpen })
+			} else {
+				if err := os.WriteFile(target, []byte("original"), 0o600); err != nil {
+					t.Fatalf("write target: %v", err)
+				}
+				if err := os.WriteFile(replacement, []byte("replacement"), 0o600); err != nil {
+					t.Fatalf("write replacement: %v", err)
+				}
+				previousOpen := openStaplerTargetFileFn
+				openStaplerTargetFileFn = func(root rootfs.Root, relative string) (*os.File, error) {
+					if err := os.Rename(target, preserved); err != nil {
+						t.Fatalf("preserve target: %v", err)
+					}
+					if err := os.Rename(replacement, target); err != nil {
+						t.Fatalf("replace target: %v", err)
+					}
+					return root.OpenFile(relative)
+				}
+				t.Cleanup(func() { openStaplerTargetFileFn = previousOpen })
+			}
+
+			validated, err := validateStaplerTargetDetails(target)
+			if validated != nil {
+				validated.close()
+				t.Fatalf("validateStaplerTargetDetails() target = %#v, want nil", validated)
+			}
+			if !errors.Is(err, errStaplerTargetRaced) {
+				t.Fatalf("validateStaplerTargetDetails() error = %v, want replacement race", err)
+			}
+			if isStaplerTargetUsageError(err) {
+				t.Fatalf("validateStaplerTargetDetails() error = %v, replacement race must remain operational", err)
+			}
+		})
+	}
+}
+
+func TestValidateStaplerTargetDetailsKeepsPostProbeReplacementOperational(t *testing.T) {
+	tests := []struct {
+		name    string
+		failure error
+	}{
+		{name: "removed after probe", failure: syscall.ENOENT},
+		{name: "replaced by symlink after probe", failure: rootfs.ErrSymlink},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "MyApp.pkg")
+			if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+				t.Fatalf("write target: %v", err)
+			}
+			previous := openStaplerTargetFileFn
+			openStaplerTargetFileFn = func(rootfs.Root, string) (*os.File, error) {
+				return nil, test.failure
+			}
+			t.Cleanup(func() { openStaplerTargetFileFn = previous })
+
+			validated, err := validateStaplerTargetDetails(target)
+			if validated != nil {
+				validated.close()
+				t.Fatalf("validateStaplerTargetDetails() target = %#v, want nil", validated)
+			}
+			if !errors.Is(err, test.failure) {
+				t.Fatalf("validateStaplerTargetDetails() error = %v, want %v", err, test.failure)
+			}
+			// The probe already proved the target existed and was not a
+			// symlink, so a later disagreement is a race, not operator input.
+			if isStaplerTargetUsageError(err) {
+				t.Fatalf("validateStaplerTargetDetails() error = %v, post-probe race must stay operational", err)
+			}
+			if strings.Contains(err.Error(), target) && isStaplerTargetUsageError(err) {
+				t.Fatalf("validateStaplerTargetDetails() error = %v, must not expose the path as usage", err)
+			}
+		})
+	}
+}
+
+func TestNotarizationValidateReportsPostProbeReplacementAsRuntimeFailure(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previousOpen := openStaplerTargetFileFn
+	previousRunner := runStaplerValidate
+	openStaplerTargetFileFn = func(rootfs.Root, string) (*os.File, error) {
+		return nil, syscall.ENOENT
+	}
+	runStaplerValidate = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		t.Fatal("validation runner should not be called after a post-probe race")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		openStaplerTargetFileFn = previousOpen
+		runStaplerValidate = previousRunner
+	})
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+	})
+	if runErr == nil {
+		t.Fatal("command error = nil, want runtime failure")
+	}
+	if errors.Is(runErr, flag.ErrHelp) || shared.IsReportedUsageError(runErr) {
+		t.Fatalf("command error = %v, post-probe race must not be usage", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "could not inspect artifact filesystem") {
+		t.Fatalf("stderr = %q, want sanitized filesystem failure", stderr)
+	}
+	if strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not expose artifact path", stderr)
+	}
+}
+
+func TestValidateStaplerTargetDetailsTreatsPostOpenKindFlipAsRace(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	swapped := filepath.Join(root, "swapped")
+	if err := os.Mkdir(swapped, 0o755); err != nil {
+		t.Fatalf("create swapped directory: %v", err)
+	}
+	previous := openStaplerTargetFileFn
+	openStaplerTargetFileFn = func(rootfs.Root, string) (*os.File, error) {
+		// The probe saw a regular file; hand back a handle that no longer is
+		// one, as a replacement between probe and open would.
+		return os.Open(swapped)
+	}
+	t.Cleanup(func() { openStaplerTargetFileFn = previous })
+
+	validated, err := validateStaplerTargetDetails(target)
+	if validated != nil {
+		validated.close()
+		t.Fatalf("validateStaplerTargetDetails() target = %#v, want nil", validated)
+	}
+	if !errors.Is(err, errStaplerTargetRaced) {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, want the race sentinel", err)
+	}
+	if isStaplerTargetUsageError(err) {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, a race must not be usage", err)
+	}
+}
+
+func TestValidateStaplerTargetDetailsPinsArtifactInodeForTheOperation(t *testing.T) {
+	for _, directory := range []bool{false, true} {
+		name := "regular file"
+		if directory {
+			name = "directory bundle"
+		}
+		t.Run(name, func(t *testing.T) {
+			var target string
+			if directory {
+				target = filepath.Join(t.TempDir(), "MyApp.app")
+				if err := os.Mkdir(target, 0o755); err != nil {
+					t.Fatalf("create target: %v", err)
+				}
+			} else {
+				target = filepath.Join(t.TempDir(), "MyApp.pkg")
+				if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+					t.Fatalf("write target: %v", err)
+				}
+			}
+
+			validated, err := validateStaplerTargetDetails(target)
+			if err != nil {
+				t.Fatalf("validateStaplerTargetDetails() error = %v", err)
+			}
+			t.Cleanup(validated.close)
+
+			// Unlink the artifact. A retained descriptor keeps the inode
+			// allocated, so a replacement cannot receive the recycled file ID
+			// and satisfy os.SameFile against the recorded identity.
+			if err := os.Remove(target); err != nil {
+				t.Fatalf("remove target: %v", err)
+			}
+
+			pinned, statErr := validated.pinnedIdentity()
+			if statErr != nil {
+				t.Fatalf("pinnedIdentity() error = %v, want the artifact descriptor retained", statErr)
+			}
+			if !os.SameFile(validated.identity, pinned) {
+				t.Fatalf("pinnedIdentity() = %#v, want the originally validated artifact", pinned)
+			}
+		})
+	}
+}
+
+func TestNotarizationValidateReportsFilesystemFailureWhenIdentityReopenFails(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previousOpenFile := openStaplerTargetFileFn
+	previousDetails := validateStaplerDetailsFn
+	previousRunner := runStaplerValidate
+	calls := 0
+	// Validate the real target first, then revoke reopen so only the stage
+	// boundary fails. The artifact itself is never replaced.
+	validateStaplerDetailsFn = func(pathValue string) (*validatedStaplerTarget, error) {
+		validated, err := validateStaplerTargetDetails(pathValue)
+		if err == nil {
+			openStaplerTargetFileFn = func(rootfs.Root, string) (*os.File, error) {
+				return nil, syscall.EACCES
+			}
+		}
+		return validated, err
+	}
+	runStaplerValidate = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		calls++
+		return nil, errors.New("runner should not be called")
+	}
+	t.Cleanup(func() {
+		openStaplerTargetFileFn = previousOpenFile
+		validateStaplerDetailsFn = previousDetails
+		runStaplerValidate = previousRunner
+	})
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+	})
+	if runErr == nil {
+		t.Fatal("command error = nil, want operational stage failure")
+	}
+	if errors.Is(runErr, flag.ErrHelp) || shared.IsReportedUsageError(runErr) {
+		t.Fatalf("command error = %v, reopen failure must not be usage", runErr)
+	}
+	if calls != 0 {
+		t.Fatalf("validation runner calls = %d, want 0", calls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "could not inspect artifact filesystem") {
+		t.Fatalf("stderr = %q, want filesystem diagnostic", stderr)
+	}
+	if strings.Contains(stderr, "artifact target changed") {
+		t.Fatalf("stderr = %q, unchanged artifact must not be reported as replaced", stderr)
+	}
+	if strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not expose artifact path", stderr)
+	}
+}
+
+func TestVerifyIdentityStillReportsRealReplacementWhenReopenSucceeds(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	validated, err := validateStaplerTargetDetails(target)
+	if err != nil {
+		t.Fatalf("validateStaplerTargetDetails() error = %v", err)
+	}
+	t.Cleanup(validated.close)
+
+	if err := replaceStaplerTargetForTest(target); err != nil {
+		t.Fatalf("replace target: %v", err)
+	}
+	stageErr := validated.verifyIdentity("before validation")
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(stageErr, &identityErr) {
+		t.Fatalf("verifyIdentity() error = %T %v, want identity error", stageErr, stageErr)
+	}
+	var verifyErr *staplerTargetVerifyError
+	if errors.As(stageErr, &verifyErr) {
+		t.Fatalf("verifyIdentity() error = %v, a real replacement must not be operational", stageErr)
 	}
 }
 
@@ -810,6 +1191,49 @@ func TestNotarizationStapleFailurePreservesChildExitStatusAndDoesNotPrintJSON(t 
 	}
 	if !strings.Contains(stderr, "staple failed") {
 		t.Fatalf("stderr = %q, want failure stage", stderr)
+	}
+}
+
+func TestNotarizationValidateStartFailureRedactsUnderlyingDiagnostic(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	const canary = "START_PATH_CANARY_2242"
+	underlying := errors.New("start /private/tmp/" + canary + "/xcrun: permission denied")
+	previous := runStaplerValidate
+	runStaplerValidate = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationValidate, true); err != nil {
+			return nil, err
+		}
+		return nil, &localxcode.StaplerCommandError{
+			Operation: string(localxcode.StaplerOperationValidate),
+			ExitCode:  -1,
+			Err:       underlying,
+		}
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("command error = nil, want start failure")
+	}
+	if !errors.Is(runErr, underlying) {
+		t.Fatalf("command error = %v, want preserved underlying cause", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if strings.Contains(stderr, canary) || strings.Contains(stderr, "/private/tmp/") {
+		t.Fatalf("stderr = %q, must redact underlying start diagnostic", stderr)
+	}
+	if !strings.Contains(stderr, "failed during validate before a usable exit status") {
+		t.Fatalf("stderr = %q, want stable start-failure diagnostic", stderr)
 	}
 }
 

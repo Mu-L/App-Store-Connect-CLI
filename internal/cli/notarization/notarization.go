@@ -173,21 +173,18 @@ Examples:
 			defer target.close()
 			pathValue := target.path
 			if err := target.verifyIdentity("before stapling"); err != nil {
-				return reportStaplerTargetIdentityFailure("staple", "before stapling")
+				return reportStaplerTargetStageFailure("staple", "before stapling", err)
 			}
 
 			result, runErr := runStaplerStaple(ctx, pathValue, os.Stderr, func(operation localxcode.StaplerOperation, before bool) error {
 				return target.verifyIdentity(staplerStageDescription(operation, before))
 			})
-			identityErr := target.verifyIdentity("after stapling")
-			if runErr != nil {
-				var targetErr *staplerTargetIdentityError
-				if errors.As(runErr, &targetErr) {
-					return reportStaplerTargetIdentityFailure("staple", targetErr.stage)
-				}
+			stageErr := target.verifyIdentity("after stapling")
+			if runErr != nil && isStaplerTargetStageError(runErr) {
+				return reportStaplerTargetStageFailure("staple", "after stapling", runErr)
 			}
-			if identityErr != nil {
-				return reportStaplerTargetIdentityFailure("staple", "after stapling")
+			if stageErr != nil {
+				return reportStaplerTargetStageFailure("staple", "after stapling", stageErr)
 			}
 			if runErr != nil {
 				return reportStaplerFailure("staple", runErr)
@@ -251,21 +248,18 @@ Examples:
 			defer target.close()
 			pathValue := target.path
 			if err := target.verifyIdentity("before validation"); err != nil {
-				return reportStaplerTargetIdentityFailure("validate", "before validation")
+				return reportStaplerTargetStageFailure("validate", "before validation", err)
 			}
 
 			result, runErr := runStaplerValidate(ctx, pathValue, os.Stderr, func(operation localxcode.StaplerOperation, before bool) error {
 				return target.verifyIdentity(staplerStageDescription(operation, before))
 			})
-			identityErr := target.verifyIdentity("after validation")
-			if runErr != nil {
-				var targetErr *staplerTargetIdentityError
-				if errors.As(runErr, &targetErr) {
-					return reportStaplerTargetIdentityFailure("validate", targetErr.stage)
-				}
+			stageErr := target.verifyIdentity("after validation")
+			if runErr != nil && isStaplerTargetStageError(runErr) {
+				return reportStaplerTargetStageFailure("validate", "after validation", runErr)
 			}
-			if identityErr != nil {
-				return reportStaplerTargetIdentityFailure("validate", "after validation")
+			if stageErr != nil {
+				return reportStaplerTargetStageFailure("validate", "after validation", stageErr)
 			}
 			if runErr != nil {
 				return reportStaplerFailure("validate", runErr)
@@ -330,13 +324,31 @@ type validatedStaplerTarget struct {
 	relative  string
 	directory bool
 	identity  os.FileInfo
+	// handle stays open for the whole operation. Retaining the descriptor
+	// keeps the artifact's inode allocated, so a replacement cannot receive
+	// the recycled file ID and then satisfy os.SameFile against the recorded
+	// identity. The retained rootfs.Root pins only the filesystem root.
+	handle *os.File
 }
 
 func (target *validatedStaplerTarget) close() {
 	if target == nil {
 		return
 	}
+	if target.handle != nil {
+		_ = target.handle.Close()
+	}
 	_ = target.root.Close()
+}
+
+// pinnedIdentity reports the retained descriptor's current metadata. It fails
+// when the artifact handle was not retained, which would leave the recorded
+// identity vulnerable to inode reuse.
+func (target *validatedStaplerTarget) pinnedIdentity() (os.FileInfo, error) {
+	if target == nil || target.handle == nil {
+		return nil, errors.New("artifact target descriptor is not retained")
+	}
+	return target.handle.Stat()
 }
 
 type staplerTargetIdentityError struct {
@@ -350,20 +362,76 @@ func (e *staplerTargetIdentityError) Error() string {
 	return "artifact target changed " + e.stage
 }
 
+// staplerTargetVerifyError marks a stage boundary that could not be evaluated
+// because reopening or inspecting the artifact failed operationally. It is
+// deliberately distinct from staplerTargetIdentityError: a revoked permission,
+// a descriptor limit, or an I/O error must not be reported to the operator as
+// a replaced artifact, because the corrective action differs.
+type staplerTargetVerifyError struct {
+	stage string
+	err   error
+}
+
+func (e *staplerTargetVerifyError) Error() string {
+	if e == nil || e.stage == "" {
+		return "could not verify artifact target"
+	}
+	return "could not verify artifact target " + e.stage
+}
+
+func (e *staplerTargetVerifyError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
 func (target *validatedStaplerTarget) verifyIdentity(stage string) error {
 	if target == nil || target.identity == nil {
 		return &staplerTargetIdentityError{stage: stage}
 	}
+	pinned, err := target.pinnedIdentity()
+	if err != nil {
+		return &staplerTargetVerifyError{stage: stage, err: err}
+	}
+	if !os.SameFile(target.identity, pinned) {
+		return &staplerTargetIdentityError{stage: stage}
+	}
 	opened, err := target.open()
 	if err != nil {
-		return &staplerTargetIdentityError{stage: stage}
+		return target.classifyStageOpenFailure(stage, err)
 	}
 	defer opened.Close()
 	current, err := opened.Stat()
-	if err != nil || !os.SameFile(target.identity, current) || current.IsDir() != target.directory {
+	if err != nil {
+		return &staplerTargetVerifyError{stage: stage, err: err}
+	}
+	if !os.SameFile(target.identity, current) || current.IsDir() != target.directory {
 		return &staplerTargetIdentityError{stage: stage}
 	}
 	return nil
+}
+
+// classifyStageOpenFailure decides whether a failed stage reopen proves the
+// target changed or only that the filesystem could not be inspected. It probes
+// the final component with a rooted no-follow Lstat rather than reading the
+// open error's text, so a vanished target, a kind flip, or a replacement by a
+// symlink stays an identity failure while every other cause stays operational.
+func (target *validatedStaplerTarget) classifyStageOpenFailure(stage string, openErr error) error {
+	info, probeErr := probeStaplerTargetKindFn(target.root, target.relative)
+	if probeErr != nil {
+		if errors.Is(probeErr, os.ErrNotExist) {
+			return &staplerTargetIdentityError{stage: stage}
+		}
+		return &staplerTargetVerifyError{stage: stage, err: openErr}
+	}
+	if info == nil || info.IsDir() != target.directory {
+		return &staplerTargetIdentityError{stage: stage}
+	}
+	if errors.Is(openErr, rootfs.ErrSymlink) {
+		return &staplerTargetIdentityError{stage: stage}
+	}
+	return &staplerTargetVerifyError{stage: stage, err: openErr}
 }
 
 func staplerStageDescription(operation localxcode.StaplerOperation, before bool) string {
@@ -378,12 +446,25 @@ func (target *validatedStaplerTarget) open() (*os.File, error) {
 		return nil, errors.New("artifact target is missing")
 	}
 	if target.directory {
-		return target.root.OpenDir(target.relative)
+		return openStaplerTargetDirectoryFn(target.root, target.relative)
 	}
-	return target.root.OpenFile(target.relative)
+	return openStaplerTargetFileFn(target.root, target.relative)
 }
 
-type staplerTargetWrongKindError struct{}
+// errStaplerTargetRaced marks a target that changed between the kind probe and
+// the open that followed it. The probe already proved the semantic
+// preconditions, so a later disagreement is an operational race rather than
+// invalid operator input.
+var errStaplerTargetRaced = errors.New("artifact target changed during inspection")
+
+// staplerTargetWrongKindError reports that the final component exists but is
+// not a directory bundle. It carries the probed identity so the caller can
+// both decide between the regular-file fallback and a semantic rejection and
+// bind the later open to the same filesystem object without matching error
+// text.
+type staplerTargetWrongKindError struct {
+	info os.FileInfo
+}
 
 func (*staplerTargetWrongKindError) Error() string {
 	return "stapler target is not a directory"
@@ -455,11 +536,20 @@ func openStaplerTargetDir(root rootfs.Root, relative string) (*os.File, error) {
 		return nil, errors.New("stapler target kind probe returned no result")
 	}
 	if !info.IsDir() {
-		return nil, &staplerTargetWrongKindError{}
+		return nil, &staplerTargetWrongKindError{info: info}
 	}
 	opened, err := openStaplerTargetDirectoryFn(root, relative)
 	if err != nil {
 		return nil, &staplerTargetDirectoryOpenError{err: err}
+	}
+	openedInfo, err := opened.Stat()
+	if err != nil {
+		_ = opened.Close()
+		return nil, &staplerTargetDirectoryOpenError{err: err}
+	}
+	if !openedInfo.IsDir() || !os.SameFile(info, openedInfo) {
+		_ = opened.Close()
+		return nil, &staplerTargetDirectoryOpenError{err: errStaplerTargetRaced}
 	}
 	return opened, nil
 }
@@ -493,8 +583,13 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 
 	opened, openErr := openStaplerTargetDirFn(root, relative)
 	if openErr == nil {
+		keepHandle := false
+		defer func() {
+			if !keepHandle {
+				_ = opened.Close()
+			}
+		}()
 		openedInfo, statErr := opened.Stat()
-		_ = opened.Close()
 		if statErr != nil {
 			return nil, fmt.Errorf("stat artifact directory: %w", statErr)
 		}
@@ -502,46 +597,63 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 			return nil, newStaplerTargetUsageError(errors.New("artifact target is not a directory bundle"))
 		}
 		keepRoot = true
+		keepHandle = true
 		return &validatedStaplerTarget{
 			path:      absolute,
 			root:      root,
 			relative:  relative,
 			directory: true,
 			identity:  openedInfo,
+			handle:    opened,
 		}, nil
 	}
 
-	if !isStaplerWrongKindError(openErr) {
+	var wrongKindErr *staplerTargetWrongKindError
+	if !errors.As(openErr, &wrongKindErr) {
 		if semanticErr := staplerTargetSemanticError(openErr, absolute); semanticErr != nil {
 			return nil, semanticErr
 		}
 		return nil, fmt.Errorf("open artifact directory: %w", openErr)
 	}
+	// The probe already established the final component's kind, so a special
+	// file is rejected here instead of being inferred from the text of a
+	// failed regular-file open.
+	if wrongKindErr.info == nil || !wrongKindErr.info.Mode().IsRegular() {
+		return nil, newStaplerTargetUsageError(fmt.Errorf("%q is not a regular file or directory bundle", absolute))
+	}
 
+	// Past this point the target was proven to exist, to not be a symlink, and
+	// to be a regular file. Any failure here is a replacement race or another
+	// operational fault, so it must keep runtime classification instead of
+	// being reported as invalid input with the artifact path attached.
 	opened, openErr = openStaplerTargetFileFn(root, relative)
 	if openErr != nil {
-		if semanticErr := staplerTargetSemanticError(openErr, absolute); semanticErr != nil {
-			return nil, semanticErr
-		}
 		return nil, fmt.Errorf("open artifact: %w", openErr)
 	}
+	keepHandle := false
+	defer func() {
+		if !keepHandle {
+			_ = opened.Close()
+		}
+	}()
 	openedInfo, statErr := opened.Stat()
-	_ = opened.Close()
 	if statErr != nil {
 		return nil, fmt.Errorf("stat artifact: %w", statErr)
 	}
-	if !openedInfo.Mode().IsRegular() {
-		return nil, newStaplerTargetUsageError(fmt.Errorf("%q is not a regular file", absolute))
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(wrongKindErr.info, openedInfo) {
+		return nil, fmt.Errorf("artifact changed kind during open: %w", errStaplerTargetRaced)
 	}
 	if openedInfo.Size() <= 0 {
 		return nil, newStaplerTargetUsageError(errors.New("artifact file must not be empty"))
 	}
 	keepRoot = true
+	keepHandle = true
 	return &validatedStaplerTarget{
 		path:     absolute,
 		root:     root,
 		relative: relative,
 		identity: openedInfo,
+		handle:   opened,
 	}, nil
 }
 
@@ -576,11 +688,11 @@ func staplerNoFollowPath(absolute string) string {
 	return absolute
 }
 
-func isStaplerWrongKindError(err error) bool {
-	var wrongKindErr *staplerTargetWrongKindError
-	return errors.As(err, &wrongKindErr)
-}
-
+// staplerTargetSemanticError maps a pre-probe traversal failure to an operator
+// input error. Only error values are inspected; no branch reads an error's
+// message text. A directory-open failure is deliberately excluded because it
+// happens after the target's kind was already proven, which makes it
+// operational.
 func staplerTargetSemanticError(err error, absolute string) error {
 	if err == nil {
 		return nil
@@ -595,23 +707,24 @@ func staplerTargetSemanticError(err error, absolute string) error {
 	if errors.Is(err, os.ErrNotExist) {
 		return newStaplerTargetUsageError(fmt.Errorf("%q does not exist", absolute))
 	}
-	if isStaplerWrongKindError(err) || strings.Contains(err.Error(), "is not a regular file") {
-		return newStaplerTargetUsageError(fmt.Errorf("%q is not a regular file or directory bundle", absolute))
-	}
 	return nil
 }
 
 func reportStaplerFailure(command string, err error) error {
 	var commandErr *localxcode.StaplerCommandError
-	if errors.As(err, &commandErr) && commandErr.ExitCode > 0 {
-		if command == "staple" && commandErr.Operation == string(localxcode.StaplerOperationValidate) {
-			fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")
-		} else if commandErr.Operation == string(localxcode.StaplerOperationResolve) {
-			fmt.Fprintf(os.Stderr, "Error: notarization %s could not resolve Apple's stapler tool (exit status %d)\n", command, commandErr.ExitCode)
-		} else {
-			fmt.Fprintf(os.Stderr, "Error: notarization %s failed during %s (exit status %d)\n", command, commandErr.Operation, commandErr.ExitCode)
+	if errors.As(err, &commandErr) {
+		if commandErr.ExitCode > 0 {
+			if command == "staple" && commandErr.Operation == string(localxcode.StaplerOperationValidate) {
+				fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")
+			} else if commandErr.Operation == string(localxcode.StaplerOperationResolve) {
+				fmt.Fprintf(os.Stderr, "Error: notarization %s could not resolve Apple's stapler tool (exit status %d)\n", command, commandErr.ExitCode)
+			} else {
+				fmt.Fprintf(os.Stderr, "Error: notarization %s failed during %s (exit status %d)\n", command, commandErr.Operation, commandErr.ExitCode)
+			}
+			return shared.NewReportedError(shared.NewProcessExitError(commandErr.ExitCode))
 		}
-		return shared.NewReportedError(shared.NewProcessExitError(commandErr.ExitCode))
+		fmt.Fprintf(os.Stderr, "Error: notarization %s failed during %s before a usable exit status was available\n", command, commandErr.Operation)
+		return shared.NewReportedError(err)
 	}
 	fmt.Fprintf(os.Stderr, "Error: notarization %s: %v\n", command, err)
 	return shared.NewReportedError(err)
@@ -627,6 +740,30 @@ func reportStaplerTargetIdentityFailure(command, stage string) error {
 	message := fmt.Sprintf("notarization %s: artifact target changed %s", command, stage)
 	fmt.Fprintln(os.Stderr, "Error: "+message)
 	return shared.NewReportedError(errors.New(message))
+}
+
+// isStaplerTargetStageError reports whether err came from a stage boundary
+// check, whether the target was proven replaced or merely could not be
+// inspected.
+func isStaplerTargetStageError(err error) bool {
+	var identityErr *staplerTargetIdentityError
+	var verifyErr *staplerTargetVerifyError
+	return errors.As(err, &identityErr) || errors.As(err, &verifyErr)
+}
+
+// reportStaplerTargetStageFailure emits the diagnostic that matches the cause:
+// a proven replacement names the stage it was detected at, while a boundary
+// that could not be evaluated reports the sanitized filesystem failure.
+func reportStaplerTargetStageFailure(command, fallbackStage string, err error) error {
+	var verifyErr *staplerTargetVerifyError
+	if errors.As(err, &verifyErr) {
+		return reportStaplerTargetFilesystemFailure(command)
+	}
+	var identityErr *staplerTargetIdentityError
+	if errors.As(err, &identityErr) && identityErr.stage != "" {
+		return reportStaplerTargetIdentityFailure(command, identityErr.stage)
+	}
+	return reportStaplerTargetIdentityFailure(command, fallbackStage)
 }
 
 // submitCommand returns the submit subcommand.

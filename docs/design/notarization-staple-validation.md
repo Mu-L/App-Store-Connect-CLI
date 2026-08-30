@@ -33,8 +33,28 @@ once and resolved to an absolute path. It rejects NULs, missing paths, final
 symlinks, unsafe parent symlinks, special files, and empty regular files, and
 accepts regular files or directory bundles for Apple's tool to classify. The
 final component's kind is classified by a rooted no-follow `Lstat` probe, so
-only a proven non-directory falls back to the regular-file path; traversal and
-directory-open failures stay operational instead of being retried as files.
+only a proven regular file falls back to the regular-file path; a probed
+special file is rejected as invalid input, while traversal and open failures
+stay operational instead of being retried as files. No classification decision
+reads the text of an open error, so an artifact whose own pathname contains a
+diagnostic phrase cannot be misreported as invalid input.
+
+The probe establishes every semantic precondition, which fixes where the
+usage/runtime boundary sits. Missing paths, symlinks, special files, direct
+`.zip` targets, and empty files are operator input errors. Once the probe has
+succeeded, a disagreement at the open that follows it — including `ENOENT`, a
+symlink appearing at the final component, a kind flip, or a different object
+of the same kind — is a replacement race, so it keeps runtime classification
+and its sanitized diagnostic rather than being reported as invalid input with
+the artifact path attached.
+
+The opened artifact descriptor is retained for the whole operation instead of
+being closed after its metadata is recorded. Holding it keeps the artifact's
+inode allocated, so an attacker who unlinks the target cannot have a
+replacement receive the recycled file ID and then satisfy `os.SameFile`
+against the recorded identity. The retained `rootfs.Root` pins only the
+filesystem root, which is why the artifact handle is pinned separately.
+
 Direct `.zip` paths fail with a usage diagnostic. Parent and final checks use
 the existing no-follow/rooted
 filesystem helpers. Stable macOS `/etc`, `/tmp`, and `/var` filesystem aliases
@@ -52,18 +72,33 @@ output remains parseable. Context cancellation is propagated through
 Both runner entry points accept an optional stage verifier that runs
 immediately before and after every child process, after `xcrun --find stapler`
 has resolved. The staple flow guards its staple and validation children; the
-validation-only flow guards its single validation child, so a replacement that
-happens during tool resolution and is reverted before the command's own
-post-check cannot be reported as a verified result. A verifier failure is
-returned as a typed stage error that keeps the caller's cause available for
-classification.
+validation-only flow guards its single validation child. This closes the window
+between tool resolution and the child, so a replacement that is still in place
+when the child would run is rejected before the child starts, instead of
+Apple's tool inspecting one artifact while the command reports another. A
+replacement that is fully reverted before the pre-child check is not detectable
+by the wrapper, and the run may still be reported as verified; in that case the
+child observed the original artifact, so the reported state matches what was
+inspected. A verifier failure is returned as a typed stage error that keeps the
+caller's cause available for classification.
+
+A stage boundary distinguishes a proven replacement from a boundary that could
+not be evaluated. A `SameFile` mismatch, a vanished target, a kind flip, or a
+replacement by a symlink is reported as a changed artifact and names the stage;
+an operational reopen or stat failure such as a revoked permission, a
+descriptor limit, or an I/O error is reported as the sanitized filesystem
+diagnostic instead, because the corrective action differs. Neither outcome can
+produce a success result.
 
 When a stapling child exits non-zero, the runner preserves its status in a
 typed error. The CLI converts a real child status to the repository's private
 process-exit marker after writing one concise stage diagnostic. A successful
 staple followed by a failed validation is reported specifically as an
 unverified mutation and returns the validation child status. Lookup, platform,
-start, and cancellation failures retain the ordinary generic runtime mapping.
+and cancellation failures retain the ordinary generic runtime mapping. A start
+or signal failure represented by the typed runner error keeps its underlying
+cause for internal classification but emits only a stable stage diagnostic, so
+an executable or temporary path from the operating system is not exposed.
 
 Successful computed output is represented by exported structs in
 `internal/asc/output_notary.go` and registered with the normal output registry:
