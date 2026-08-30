@@ -8,7 +8,8 @@ import (
 	"time"
 )
 
-func TestMaterializeIPAAppContextUsesSelectedMainAppAndPreservesExecutableMode(t *testing.T) {
+func TestIPAAppSourceMaterializesSelectedMainAppOnlyOnRequest(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	path := writeOrderedIPA(t, []orderedZipEntry{
 		{Name: "Payload/", Mode: os.ModeDir | 0o755},
 		{Name: "Payload/Decoy.app/", Mode: os.ModeDir | 0o755},
@@ -35,9 +36,17 @@ func TestMaterializeIPAAppContextUsesSelectedMainAppAndPreservesExecutableMode(t
 		t.Fatal(err)
 	}
 
-	materialized, err := MaterializeIPAAppContext(t.Context(), file, info.Size(), InspectOptions{IncludeDevices: true})
+	source, err := OpenIPAAppSourceContext(t.Context(), file, info.Size(), InspectOptions{IncludeDevices: true})
 	if err != nil {
-		t.Fatalf("MaterializeIPAAppContext() error = %v", err)
+		t.Fatalf("OpenIPAAppSourceContext() error = %v", err)
+	}
+	defer source.Cleanup()
+	if extracted, globErr := filepath.Glob(filepath.Join(os.TempDir(), ".asc-xcode-install-app-*")); globErr != nil || len(extracted) != 0 {
+		t.Fatalf("app payload extracted before MaterializeApp: %v %v", extracted, globErr)
+	}
+	materialized, err := source.MaterializeApp(t.Context())
+	if err != nil {
+		t.Fatalf("MaterializeApp() error = %v", err)
 	}
 	if materialized.Path == "" || filepath.Base(materialized.Path) != "Demo.app" {
 		t.Fatalf("materialized path = %q", materialized.Path)
@@ -63,5 +72,9 @@ func TestMaterializeIPAAppContextUsesSelectedMainAppAndPreservesExecutableMode(t
 	}
 	if !bytes.Equal(sourceBefore, sourceAfter) {
 		t.Fatal("source IPA changed during materialization")
+	}
+	source.Cleanup()
+	if _, err := source.MaterializeApp(t.Context()); err == nil {
+		t.Fatal("MaterializeApp() after Cleanup succeeded, want closed-source error")
 	}
 }

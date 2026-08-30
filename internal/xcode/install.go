@@ -35,10 +35,28 @@ const (
 
 var (
 	installRunner                installDeviceRunner = processInstallDeviceRunner{}
-	materializeInstallIPA                            = distribution.MaterializeIPAAppContext
+	openInstallIPASource                             = defaultOpenInstallIPASource
 	installNow                                       = time.Now
 	installAfterJSONLstatForTest func()
 )
+
+// installIPASource is the deferred-extraction seam between the command flow
+// and distribution materialization: profile eligibility and device discovery
+// read Inspection first, and MaterializeApp extracts the app payload only
+// after those cheap checks pass.
+type installIPASource interface {
+	Inspection() distribution.Inspection
+	MaterializeApp(context.Context) (*distribution.MaterializedApp, error)
+	Cleanup()
+}
+
+func defaultOpenInstallIPASource(ctx context.Context, file *os.File, size int64, options distribution.InspectOptions) (installIPASource, error) {
+	source, err := distribution.OpenIPAAppSourceContext(ctx, file, size, options)
+	if err != nil {
+		return nil, err
+	}
+	return source, nil
+}
 
 // InstallOptions describes a local IPA installation on one exact connected
 // CoreDevice. Environment is optional; nil means use the current process
@@ -237,78 +255,74 @@ func Install(ctx context.Context, options InstallOptions) (*asc.XcodeInstallResu
 	}
 	defer file.Close()
 
-	materialized, err := materializeInstallIPA(requestContext, file, size, distribution.InspectOptions{
+	source, err := openInstallIPASource(requestContext, file, size, distribution.InspectOptions{
 		IncludeDevices: true,
 		Now:            installNow(),
 	})
 	if err != nil {
-		var partial *distribution.MaterializationError
-		var inspection *distribution.Inspection
-		if errors.As(err, &partial) {
-			inspection = &partial.Inspection
-		}
 		if contextErr := requestContext.Err(); contextErr != nil {
-			return fail(inspection, nil, "materialization", installContextFailureCode(contextErr), contextErr)
+			return fail(nil, nil, "profile-preflight", installContextFailureCode(contextErr), contextErr)
 		}
-		stage, code := classifyMaterializationFailure(err)
-		return fail(inspection, nil, stage, code, fmt.Errorf("inspect and materialize IPA: %w", err))
+		return fail(nil, nil, "profile-preflight", "ipa_preflight_failed", fmt.Errorf("inspect IPA: %w", err))
 	}
-	if materialized == nil {
-		return fail(nil, nil, "materialization", "materialization_failed", fmt.Errorf("IPA materializer returned no app"))
+	if source == nil {
+		return fail(nil, nil, "profile-preflight", "ipa_preflight_failed", fmt.Errorf("IPA inspector returned no source"))
 	}
-	defer materialized.Cleanup()
-	if err := validateInstallInspection(materialized.Inspection); err != nil {
-		inspection := materialized.Inspection
+	defer source.Cleanup()
+	inspection := source.Inspection()
+	if err := validateInstallInspection(inspection); err != nil {
 		return fail(&inspection, nil, "profile-preflight", "profile_not_installable", err)
-	}
-	if materialized.Path == "" {
-		inspection := materialized.Inspection
-		return fail(&inspection, nil, "materialization", "materialization_failed", fmt.Errorf("materialized IPA app path is empty"))
 	}
 
 	runner := installRunner
 	if runner == nil {
-		inspection := materialized.Inspection
 		return fail(&inspection, nil, "device-discovery", "devicectl_unavailable", fmt.Errorf("connected-device installation runner is required"))
 	}
 	environment := installEnvironment(options.Environment)
 	devicectlPath, err := runner.ResolveDevicectl(requestContext, environment)
 	if err != nil {
 		if contextErr := requestContext.Err(); contextErr != nil {
-			inspection := materialized.Inspection
 			return fail(&inspection, nil, "device-discovery", installContextFailureCode(contextErr), contextErr)
 		}
-		inspection := materialized.Inspection
 		return fail(&inspection, nil, "device-discovery", "devicectl_unavailable", fmt.Errorf("resolve devicectl through the active Xcode toolchain"))
 	}
 	if !filepath.IsAbs(devicectlPath) {
-		inspection := materialized.Inspection
 		return fail(&inspection, nil, "device-discovery", "devicectl_unavailable", fmt.Errorf("resolved devicectl path is not absolute"))
 	}
 	jsonDir, err := os.MkdirTemp("", ".asc-xcode-install-json-")
 	if err != nil {
-		inspection := materialized.Inspection
 		return fail(&inspection, nil, "device-discovery", "private_output_failed", fmt.Errorf("create private devicectl output directory"))
 	}
 	defer os.RemoveAll(jsonDir)
 	if err := os.Chmod(jsonDir, 0o700); err != nil {
-		inspection := materialized.Inspection
 		return fail(&inspection, nil, "device-discovery", "private_output_failed", fmt.Errorf("protect private devicectl output directory"))
 	}
 
-	device, err := discoverInstallDevice(requestContext, runner, devicectlPath, environment, jsonDir, options.Timeout, options.DeviceID, materialized.Inspection.Signing.Devices)
+	device, err := discoverInstallDevice(requestContext, runner, devicectlPath, environment, jsonDir, options.Timeout, options.DeviceID, inspection.Signing.Devices)
 	if err != nil {
-		inspection := materialized.Inspection
 		return fail(&inspection, nil, "device-discovery", installFailureCodeForDeviceError(err), err)
 	}
-	result := installResultFromInspection(materialized.Inspection, &device)
-	if err := runInstallCommand(requestContext, runner, devicectlPath, environment, jsonDir, options.Timeout, device, materialized.Path, materialized.Inspection.App.BundleID); err != nil {
+
+	materialized, err := source.MaterializeApp(requestContext)
+	if err != nil {
+		if contextErr := requestContext.Err(); contextErr != nil {
+			return fail(&inspection, &device, "materialization", installContextFailureCode(contextErr), contextErr)
+		}
+		return fail(&inspection, &device, "materialization", "materialization_failed", fmt.Errorf("materialize IPA app: %w", err))
+	}
+	if materialized == nil || materialized.Path == "" {
+		return fail(&inspection, &device, "materialization", "materialization_failed", fmt.Errorf("IPA materializer returned no app"))
+	}
+	defer materialized.Cleanup()
+
+	result := installResultFromInspection(inspection, &device)
+	if err := runInstallCommand(requestContext, runner, devicectlPath, environment, jsonDir, options.Timeout, device, materialized.Path, inspection.App.BundleID); err != nil {
 		finishInstallResult(result, started, false, false, false)
 		setInstallFailure(result, "install", installFailureCodeForCommandError(err))
 		return result, err
 	}
 	result.Installed = true
-	if err := verifyInstalledApp(requestContext, runner, devicectlPath, environment, jsonDir, options.Timeout, device, materialized.Inspection.App.BundleID, materialized.Inspection.App.Version, materialized.Inspection.App.BuildNumber); err != nil {
+	if err := verifyInstalledApp(requestContext, runner, devicectlPath, environment, jsonDir, options.Timeout, device, inspection.App.BundleID, inspection.App.Version, inspection.App.BuildNumber); err != nil {
 		finishInstallResult(result, started, true, false, false)
 		setInstallFailure(result, "verification", installFailureCodeForVerificationError(err))
 		return result, err
@@ -365,17 +379,6 @@ func installContextFailureCode(err error) string {
 		return "cancelled"
 	}
 	return "operation_cancelled"
-}
-
-func classifyMaterializationFailure(err error) (string, string) {
-	if err == nil {
-		return "materialization", "materialization_failed"
-	}
-	message := strings.ToLower(err.Error())
-	if strings.Contains(message, "materializ") || strings.Contains(message, "private app directory") || strings.Contains(message, "expanded main app") {
-		return "materialization", "materialization_failed"
-	}
-	return "profile-preflight", "ipa_preflight_failed"
 }
 
 func installFailureCodeForDeviceError(err error) string {

@@ -135,12 +135,10 @@ func TestValidateInstallInspectionRejectsInstallBlockingPreparationIssue(t *test
 func TestInstallUsesAppPathAndVerifiesInstalledBuild(t *testing.T) {
 	previousGOOS := runtimeGOOS
 	previousRunner := installRunner
-	previousMaterialize := materializeInstallIPA
 	previousNow := installNow
 	t.Cleanup(func() {
 		runtimeGOOS = previousGOOS
 		installRunner = previousRunner
-		materializeInstallIPA = previousMaterialize
 		installNow = previousNow
 	})
 	runtimeGOOS = "darwin"
@@ -156,9 +154,8 @@ func TestInstallUsesAppPathAndVerifiesInstalledBuild(t *testing.T) {
 	}
 	runner := &fakeInstallRunner{t: t}
 	installRunner = runner
-	materializeInstallIPA = func(context.Context, *os.File, int64, distribution.InspectOptions) (*distribution.MaterializedApp, error) {
-		return &distribution.MaterializedApp{Inspection: installTestInspection(distribution.ProfileClassAdHoc), Path: appPath}, nil
-	}
+	source := &fakeInstallIPASource{inspection: installTestInspection(distribution.ProfileClassAdHoc), appPath: appPath, runner: runner}
+	stubInstallIPASource(t, source)
 
 	result, err := Install(context.Background(), InstallOptions{
 		IPAPath:  ipaPath,
@@ -184,6 +181,12 @@ func TestInstallUsesAppPathAndVerifiesInstalledBuild(t *testing.T) {
 	if len(runner.calls) != 3 {
 		t.Fatalf("devicectl calls = %d, want discovery/install/verification", len(runner.calls))
 	}
+	if source.materializeCalls != 1 || source.runnerCallsAtMaterialize != 1 {
+		t.Fatalf("materialize calls = %d after %d devicectl calls, want exactly one extraction after device discovery", source.materializeCalls, source.runnerCallsAtMaterialize)
+	}
+	if source.cleanupCalls == 0 {
+		t.Fatal("IPA app source was not cleaned up")
+	}
 	installArgs := runner.calls[1]
 	if containsInstallArg(installArgs, ipaPath) || !containsInstallArg(installArgs, appPath) {
 		t.Fatalf("install args = %#v, want materialized app path only", installArgs)
@@ -208,11 +211,9 @@ func TestInstallUsesAppPathAndVerifiesInstalledBuild(t *testing.T) {
 func TestInstallProceedsToDevicectlForIPAWithEmbeddedTargets(t *testing.T) {
 	previousGOOS := runtimeGOOS
 	previousRunner := installRunner
-	previousMaterialize := materializeInstallIPA
 	t.Cleanup(func() {
 		runtimeGOOS = previousGOOS
 		installRunner = previousRunner
-		materializeInstallIPA = previousMaterialize
 	})
 	runtimeGOOS = "darwin"
 	ipaPath := filepath.Join(t.TempDir(), "Demo.ipa")
@@ -225,13 +226,11 @@ func TestInstallProceedsToDevicectlForIPAWithEmbeddedTargets(t *testing.T) {
 	}
 	runner := &fakeInstallRunner{t: t}
 	installRunner = runner
-	materializeInstallIPA = func(context.Context, *os.File, int64, distribution.InspectOptions) (*distribution.MaterializedApp, error) {
-		inspection := installTestInspection(distribution.ProfileClassAdHoc)
-		inspection.EmbeddedTargets = []string{"Payload/Demo.app/PlugIns/Widget.appex/Info.plist"}
-		inspection.Preparation.MetadataEligible = false
-		inspection.Preparation.Issues = []string{"embedded targets require target-by-target signing validation before preparation"}
-		return &distribution.MaterializedApp{Inspection: inspection, Path: appPath}, nil
-	}
+	inspection := installTestInspection(distribution.ProfileClassAdHoc)
+	inspection.EmbeddedTargets = []string{"Payload/Demo.app/PlugIns/Widget.appex/Info.plist"}
+	inspection.Preparation.MetadataEligible = false
+	inspection.Preparation.Issues = []string{"embedded targets require target-by-target signing validation before preparation"}
+	stubInstallIPASource(t, &fakeInstallIPASource{inspection: inspection, appPath: appPath, runner: runner})
 
 	result, err := Install(context.Background(), InstallOptions{IPAPath: ipaPath, DeviceID: "SELECTOR_CANARY", Timeout: 5 * time.Minute})
 	if err != nil {
@@ -248,14 +247,120 @@ func TestInstallProceedsToDevicectlForIPAWithEmbeddedTargets(t *testing.T) {
 	}
 }
 
-func TestInstallReturnsUnverifiedResultWhenPostInstallDoesNotMatch(t *testing.T) {
+func TestInstallDoesNotMaterializeIneligibleProfile(t *testing.T) {
 	previousGOOS := runtimeGOOS
 	previousRunner := installRunner
-	previousMaterialize := materializeInstallIPA
 	t.Cleanup(func() {
 		runtimeGOOS = previousGOOS
 		installRunner = previousRunner
-		materializeInstallIPA = previousMaterialize
+	})
+	runtimeGOOS = "darwin"
+	ipaPath := filepath.Join(t.TempDir(), "Demo.ipa")
+	if err := os.WriteFile(ipaPath, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeInstallRunner{t: t}
+	installRunner = runner
+	inspection := installTestInspection(distribution.ProfileClassAdHoc)
+	inspection.Signing.ExpiresAt = installNow().Add(-time.Hour).UTC().Format(time.RFC3339)
+	source := &fakeInstallIPASource{inspection: inspection, runner: runner}
+	stubInstallIPASource(t, source)
+
+	result, err := Install(context.Background(), InstallOptions{IPAPath: ipaPath, DeviceID: "SELECTOR_CANARY", Timeout: 5 * time.Minute})
+	if err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("Install() error = %v, want expired-profile rejection", err)
+	}
+	if result == nil || result.Success || result.FailureStage != "profile-preflight" || result.FailureCode != "profile_not_installable" {
+		t.Fatalf("Install() result = %#v, want profile-preflight failure", result)
+	}
+	if source.materializeCalls != 0 {
+		t.Fatalf("materialize calls = %d, want no extraction for an ineligible profile", source.materializeCalls)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("devicectl calls = %d, want none before profile eligibility passes", len(runner.calls))
+	}
+	if source.cleanupCalls == 0 {
+		t.Fatal("IPA app source was not cleaned up")
+	}
+}
+
+func TestInstallDoesNotMaterializeWhenRequestedDeviceMissing(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	previousRunner := installRunner
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+		installRunner = previousRunner
+	})
+	runtimeGOOS = "darwin"
+	ipaPath := filepath.Join(t.TempDir(), "Demo.ipa")
+	if err := os.WriteFile(ipaPath, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeInstallRunner{t: t}
+	installRunner = runner
+	source := &fakeInstallIPASource{inspection: installTestInspection(distribution.ProfileClassAdHoc), runner: runner}
+	stubInstallIPASource(t, source)
+
+	result, err := Install(context.Background(), InstallOptions{IPAPath: ipaPath, DeviceID: "MISSING_CANARY", Timeout: 5 * time.Minute})
+	if err == nil || !strings.Contains(err.Error(), "was not found") {
+		t.Fatalf("Install() error = %v, want missing-device rejection", err)
+	}
+	if result == nil || result.Success || result.FailureStage != "device-discovery" || result.FailureCode != "device_not_found" {
+		t.Fatalf("Install() result = %#v, want device-discovery failure", result)
+	}
+	if source.materializeCalls != 0 {
+		t.Fatalf("materialize calls = %d, want no extraction for a missing device", source.materializeCalls)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("devicectl calls = %d, want device discovery only", len(runner.calls))
+	}
+}
+
+func TestInstallReportsMaterializationFailureAfterDeviceDiscovery(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	previousRunner := installRunner
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+		installRunner = previousRunner
+	})
+	runtimeGOOS = "darwin"
+	ipaPath := filepath.Join(t.TempDir(), "Demo.ipa")
+	if err := os.WriteFile(ipaPath, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeInstallRunner{t: t}
+	installRunner = runner
+	source := &fakeInstallIPASource{
+		inspection:     installTestInspection(distribution.ProfileClassAdHoc),
+		materializeErr: errors.New("extraction denied"),
+		runner:         runner,
+	}
+	stubInstallIPASource(t, source)
+
+	result, err := Install(context.Background(), InstallOptions{IPAPath: ipaPath, DeviceID: "SELECTOR_CANARY", Timeout: 5 * time.Minute})
+	if err == nil || !strings.Contains(err.Error(), "materialize IPA app") {
+		t.Fatalf("Install() error = %v, want materialization failure", err)
+	}
+	if result == nil || result.Success || result.FailureStage != "materialization" || result.FailureCode != "materialization_failed" {
+		t.Fatalf("Install() result = %#v, want materialization failure result", result)
+	}
+	if result.Device == nil {
+		t.Fatalf("Install() result = %#v, want discovered device identity in materialization failure", result)
+	}
+	if source.materializeCalls != 1 || source.runnerCallsAtMaterialize != 1 {
+		t.Fatalf("materialize calls = %d after %d devicectl calls, want one extraction attempt after device discovery", source.materializeCalls, source.runnerCallsAtMaterialize)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("devicectl calls = %d, want no install attempt without a materialized app", len(runner.calls))
+	}
+}
+
+func TestInstallReturnsUnverifiedResultWhenPostInstallDoesNotMatch(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	previousRunner := installRunner
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+		installRunner = previousRunner
 	})
 	runtimeGOOS = "darwin"
 	ipaPath := filepath.Join(t.TempDir(), "Demo.ipa")
@@ -268,9 +373,7 @@ func TestInstallReturnsUnverifiedResultWhenPostInstallDoesNotMatch(t *testing.T)
 	}
 	runner := &fakeInstallRunner{t: t, verificationBuild: "different"}
 	installRunner = runner
-	materializeInstallIPA = func(context.Context, *os.File, int64, distribution.InspectOptions) (*distribution.MaterializedApp, error) {
-		return &distribution.MaterializedApp{Inspection: installTestInspection(distribution.ProfileClassAdHoc), Path: appPath}, nil
-	}
+	stubInstallIPASource(t, &fakeInstallIPASource{inspection: installTestInspection(distribution.ProfileClassAdHoc), appPath: appPath, runner: runner})
 
 	result, err := Install(context.Background(), InstallOptions{IPAPath: ipaPath, DeviceID: "SELECTOR_CANARY", Timeout: 5 * time.Minute})
 	if err == nil || !strings.Contains(err.Error(), "version or build") {
@@ -287,11 +390,9 @@ func TestInstallReturnsUnverifiedResultWhenPostInstallDoesNotMatch(t *testing.T)
 func TestInstallReturnsRedactedDeviceDiscoveryFailureResult(t *testing.T) {
 	previousGOOS := runtimeGOOS
 	previousRunner := installRunner
-	previousMaterialize := materializeInstallIPA
 	t.Cleanup(func() {
 		runtimeGOOS = previousGOOS
 		installRunner = previousRunner
-		materializeInstallIPA = previousMaterialize
 	})
 	runtimeGOOS = "darwin"
 	ipaPath := filepath.Join(t.TempDir(), "Demo.ipa")
@@ -303,9 +404,8 @@ func TestInstallReturnsRedactedDeviceDiscoveryFailureResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	installRunner = &failingInstallRunner{}
-	materializeInstallIPA = func(context.Context, *os.File, int64, distribution.InspectOptions) (*distribution.MaterializedApp, error) {
-		return &distribution.MaterializedApp{Inspection: installTestInspection(distribution.ProfileClassAdHoc), Path: appPath}, nil
-	}
+	source := &fakeInstallIPASource{inspection: installTestInspection(distribution.ProfileClassAdHoc), appPath: appPath}
+	stubInstallIPASource(t, source)
 
 	result, err := Install(context.Background(), InstallOptions{IPAPath: ipaPath, DeviceID: "SELECTOR_CANARY", Timeout: 5 * time.Minute})
 	if err == nil {
@@ -323,6 +423,9 @@ func TestInstallReturnsRedactedDeviceDiscoveryFailureResult(t *testing.T) {
 		if strings.Contains(output, secret) {
 			t.Fatalf("result JSON leaked %q: %s", secret, output)
 		}
+	}
+	if source.materializeCalls != 0 {
+		t.Fatalf("materialize calls = %d, want no extraction when devicectl is unavailable", source.materializeCalls)
 	}
 }
 
@@ -454,6 +557,40 @@ func installTestInspection(profileClass distribution.ProfileClass) distribution.
 			CodeSignatureVerification:            distribution.CodeSignatureVerification{Status: distribution.CodeSignatureVerified},
 		},
 		Preparation: distribution.Preparation{MetadataEligible: profileClass == distribution.ProfileClassAdHoc, Issues: issues},
+	}
+}
+
+type fakeInstallIPASource struct {
+	inspection               distribution.Inspection
+	appPath                  string
+	materializeErr           error
+	materializeCalls         int
+	cleanupCalls             int
+	runner                   *fakeInstallRunner
+	runnerCallsAtMaterialize int
+}
+
+func (s *fakeInstallIPASource) Inspection() distribution.Inspection { return s.inspection }
+
+func (s *fakeInstallIPASource) MaterializeApp(context.Context) (*distribution.MaterializedApp, error) {
+	s.materializeCalls++
+	if s.runner != nil {
+		s.runnerCallsAtMaterialize = len(s.runner.calls)
+	}
+	if s.materializeErr != nil {
+		return nil, s.materializeErr
+	}
+	return &distribution.MaterializedApp{Inspection: s.inspection, Path: s.appPath}, nil
+}
+
+func (s *fakeInstallIPASource) Cleanup() { s.cleanupCalls++ }
+
+func stubInstallIPASource(t *testing.T, source *fakeInstallIPASource) {
+	t.Helper()
+	previous := openInstallIPASource
+	t.Cleanup(func() { openInstallIPASource = previous })
+	openInstallIPASource = func(context.Context, *os.File, int64, distribution.InspectOptions) (installIPASource, error) {
+		return source, nil
 	}
 }
 
