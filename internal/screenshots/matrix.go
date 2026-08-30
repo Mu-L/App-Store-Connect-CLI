@@ -30,6 +30,7 @@ const (
 	maxMatrixPlanBytes       = 1 << 20
 	maxMatrixAppearanceBytes = 64 << 10
 	maxMatrixReviewBytes     = 8 << 20
+	maxMatrixArtifactBytes   = 1 << 30
 	maxMatrixInventoryBytes  = 4 << 20
 	maxMatrixCells           = 256
 	maxMatrixConcurrency     = 8
@@ -212,6 +213,7 @@ type MatrixCellResult struct {
 	Error        *MatrixCellError         `json:"error,omitempty"`
 
 	framedArtifacts map[string]matrixArtifactInfo
+	rawArtifacts    map[string]matrixArtifactInfo
 }
 
 // MatrixCellError is a sanitized, stable failure contract. It intentionally
@@ -395,6 +397,13 @@ func walkMatrixJSONValue(decoder *json.Decoder, scope matrixJSONScope) error {
 	if err != nil {
 		return err
 	}
+	if token == nil {
+		switch scope {
+		case matrixJSONScopeExecution, matrixJSONScopeOutput, matrixJSONScopeFrame:
+			return fmt.Errorf("matrix plan %s must be an object", scope)
+		}
+		return nil
+	}
 	delim, isDelim := token.(json.Delim)
 	if !isDelim {
 		return nil
@@ -507,6 +516,10 @@ func loadMatrixBasePlan(matrixPath string, matrixPlan *MatrixPlan) (*Plan, error
 	return &plan, nil
 }
 
+// matrixOutputRootBeforeChildRootForTest is a test-only seam placed after the
+// parent has anchored the selected child and before the child root is opened.
+var matrixOutputRootBeforeChildRootForTest func()
+
 func openMatrixOutputRoot(path string) (rootfs.Root, error) {
 	if strings.TrimSpace(path) == "" {
 		return rootfs.Root{}, errors.New("matrix output path is required")
@@ -535,9 +548,33 @@ func openMatrixOutputRoot(path string) (rootfs.Root, error) {
 	if err := parent.CheckContained(name); err != nil {
 		return rootfs.Root{}, err
 	}
+	anchoredChild, err := parent.OpenDir(name)
+	if err != nil {
+		return rootfs.Root{}, err
+	}
+	defer anchoredChild.Close()
+	if matrixOutputRootBeforeChildRootForTest != nil {
+		matrixOutputRootBeforeChildRootForTest()
+	}
 	root, err := rootfs.New(absPath)
 	if err != nil {
 		return rootfs.Root{}, err
+	}
+	openedChild, openErr := root.OpenRoot()
+	if openErr != nil {
+		_ = root.Close()
+		return rootfs.Root{}, openErr
+	}
+	anchoredInfo, anchorErr := anchoredChild.Stat()
+	openedInfo, openedErr := openedChild.Stat(".")
+	closeErr := openedChild.Close()
+	if anchorErr != nil || openedErr != nil || closeErr != nil {
+		_ = root.Close()
+		return rootfs.Root{}, errors.Join(anchorErr, openedErr, closeErr)
+	}
+	if !os.SameFile(anchoredInfo, openedInfo) {
+		_ = root.Close()
+		return rootfs.Root{}, errors.New("matrix output root changed while opening")
 	}
 	if err := root.MkdirAll(".", 0o755); err != nil {
 		_ = root.Close()
@@ -1174,6 +1211,14 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	if strings.TrimSpace(matrixPlan.Output.ReviewDir) == "" {
 		reviewDir = resolveMatrixArtifactPath(baseDir, defaultMatrixReviewDir)
 	}
+	outputLockPaths := []string{rawDir, reviewDir}
+	if matrixPlan.Output.Frame.Enabled {
+		outputLockPaths = append(outputLockPaths, framedDir)
+	}
+	releaseOutputLocks, outputLockErr := acquireMatrixOutputLocks(ctx, outputLockPaths)
+	if outputLockErr != nil {
+		releaseOutputLocks = nil
+	}
 
 	planPath := matrixPath
 	if strings.TrimSpace(planPath) == "" {
@@ -1249,21 +1294,26 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	runErr := preflightErr
 	var outputRoots matrixOutputRoots
 	var outputRootErr error
-	rawRoot, rawRootErr := openMatrixOutputRoot(rawDir)
-	if rawRootErr != nil {
-		outputRootErr = fmt.Errorf("create raw output directory: %w", rawRootErr)
+	if outputLockErr != nil {
+		outputRootErr = matrixLockError("output", outputLockErr)
 	} else {
-		defer func() { _ = rawRoot.Close() }()
-		outputRoots = matrixOutputRoots{raw: rawRoot, rawPath: rawDir}
-		if matrixPlan.Output.Frame.Enabled {
-			framedRoot, rootErr := openMatrixOutputRoot(framedDir)
-			if rootErr != nil {
-				outputRootErr = fmt.Errorf("create framed output directory: %w", rootErr)
-			} else {
-				defer func() { _ = framedRoot.Close() }()
-				outputRoots.framed = framedRoot
-				outputRoots.framedPath = framedDir
-				outputRoots.hasFramed = true
+
+		rawRoot, rawRootErr := openMatrixOutputRoot(rawDir)
+		if rawRootErr != nil {
+			outputRootErr = fmt.Errorf("create raw output directory: %w", rawRootErr)
+		} else {
+			defer func() { _ = rawRoot.Close() }()
+			outputRoots = matrixOutputRoots{raw: rawRoot, rawPath: rawDir}
+			if matrixPlan.Output.Frame.Enabled {
+				framedRoot, rootErr := openMatrixOutputRoot(framedDir)
+				if rootErr != nil {
+					outputRootErr = fmt.Errorf("create framed output directory: %w", rootErr)
+				} else {
+					defer func() { _ = framedRoot.Close() }()
+					outputRoots.framed = framedRoot
+					outputRoots.framedPath = framedDir
+					outputRoots.hasFramed = true
+				}
 			}
 		}
 	}
@@ -1278,6 +1328,19 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	if runErr == nil {
 		runErr = executeMatrixCells(ctx, cells, deviceFailures, base, matrixPlan, concurrency, attempts, backoff, deps, outputRoots, result)
 	}
+	rawVerificationCtx := ctx
+	var rawVerificationCancel context.CancelFunc
+	if runErr == nil && ctx.Err() != nil {
+		rawVerificationCtx, rawVerificationCancel = context.WithTimeout(context.WithoutCancel(ctx), matrixSubprocessTimeout)
+		defer rawVerificationCancel()
+	}
+	if rawErr := revalidateMatrixRawPaths(rawVerificationCtx, result); rawErr != nil {
+		if runErr == nil {
+			runErr = rawErr
+		} else {
+			runErr = errors.Join(runErr, rawErr)
+		}
+	}
 	if framedErr := revalidateMatrixFramedPaths(result); framedErr != nil {
 		if runErr == nil {
 			runErr = framedErr
@@ -1287,7 +1350,11 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	}
 	countMatrixResultStatuses(result)
 	reviewCtx := context.WithoutCancel(ctx)
-	review, reviewErr := GenerateMatrixReview(reviewCtx, MatrixReviewRequest{Result: result, OutputDir: reviewDir})
+	review, reviewErr := GenerateMatrixReview(reviewCtx, MatrixReviewRequest{
+		Result:      result,
+		OutputDir:   reviewDir,
+		LockContext: ctx,
+	})
 	if reviewErr == nil {
 		result.Review = review
 	} else if runErr == nil {
@@ -1296,6 +1363,16 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	} else {
 		result.Status = MatrixCellFailed
 		runErr = errors.Join(runErr, fmt.Errorf("write matrix review: %w", reviewErr))
+	}
+	if releaseOutputLocks != nil {
+		if releaseErr := releaseOutputLocks(); releaseErr != nil {
+			lockErr := matrixLockError("output release", releaseErr)
+			if runErr == nil {
+				runErr = lockErr
+			} else {
+				runErr = errors.Join(runErr, lockErr)
+			}
+		}
 	}
 	return result, runErr
 }
@@ -1413,7 +1490,7 @@ type matrixSimulatorGuard struct {
 	blocked bool
 }
 
-func executeMatrixCell(ctx context.Context, cell MatrixCell, base *Plan, matrixPlan *MatrixPlan, maxAttempts int, backoff time.Duration, deps MatrixDependencies, outputRoots matrixOutputRoots, guard *matrixSimulatorGuard) MatrixCellResult {
+func executeMatrixCellWithSimulatorLock(ctx context.Context, cell MatrixCell, base *Plan, matrixPlan *MatrixPlan, maxAttempts int, backoff time.Duration, deps MatrixDependencies, outputRoots matrixOutputRoots, guard *matrixSimulatorGuard) MatrixCellResult {
 	started := time.Now()
 	result := newMatrixCellResult(cell)
 	result.Status = MatrixCellFailed
@@ -1524,6 +1601,7 @@ func restoreMatrixAppearance(appearance MatrixAppearance, udid, state string) er
 
 type matrixAttemptResult struct {
 	RawPaths        []string
+	RawArtifacts    map[string]matrixArtifactInfo
 	FramedPaths     []string
 	FramedArtifacts map[string]matrixArtifactInfo
 	Screenshots     []MatrixScreenshotResult
@@ -1610,13 +1688,18 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 	for index, rawPath := range cell.RawPaths {
 		source := sources[index]
 		destination := rawPath
-		if err := promoteMatrixArtifact(outputRoots.raw, outputRoots.rawPath, source, destination); err != nil {
+		artifact, err := promoteMatrixArtifactWithInfo(ctx, outputRoots.raw, outputRoots.rawPath, source, destination)
+		if err != nil {
 			attempt.FailureStage = "execution"
 			attempt.FailureCode = "raw_output_failed"
 			attempt.Error = "raw screenshot could not be promoted"
 			return attempt, err
 		}
+		if attempt.RawArtifacts == nil {
+			attempt.RawArtifacts = make(map[string]matrixArtifactInfo)
+		}
 		attempt.RawPaths = append(attempt.RawPaths, destination)
+		attempt.RawArtifacts[destination] = artifact
 		attempt.Screenshots = append(attempt.Screenshots, MatrixScreenshotResult{
 			Name: names[index], Status: MatrixCellSuccess,
 			RawPath: destination, Width: dimensionsList[index].Width, Height: dimensionsList[index].Height,
@@ -1693,7 +1776,7 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 		frameSources = append(frameSources, tempFrame)
 	}
 	for index, tempFrame := range frameSources {
-		artifact, err := promoteMatrixArtifactWithInfo(outputRoots.framed, outputRoots.framedPath, tempFrame, cell.FramedPaths[index])
+		artifact, err := promoteMatrixArtifactWithInfo(ctx, outputRoots.framed, outputRoots.framedPath, tempFrame, cell.FramedPaths[index])
 		if err != nil {
 			attempt.FailureStage = "framing"
 			attempt.FailureCode = "framed_output_failed"
@@ -1792,14 +1875,33 @@ type matrixArtifactInfo struct {
 	digest   [sha256.Size]byte
 }
 
-func promoteMatrixArtifactWithInfo(outputRoot rootfs.Root, outputRootPath, source, destination string) (matrixArtifactInfo, error) {
+func promoteMatrixArtifactWithInfo(ctx context.Context, outputRoot rootfs.Root, outputRootPath, source, destination string) (matrixArtifactInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return matrixArtifactInfo{}, err
+	}
 	if err := promoteMatrixArtifact(outputRoot, outputRootPath, source, destination); err != nil {
 		return matrixArtifactInfo{}, err
 	}
-	return inspectMatrixArtifact(outputRoot, outputRootPath, destination)
+	if err := ctx.Err(); err != nil {
+		return matrixArtifactInfo{}, err
+	}
+	return inspectMatrixArtifactWithContext(ctx, outputRoot, outputRootPath, destination)
 }
 
 func inspectMatrixArtifact(outputRoot rootfs.Root, outputRootPath, path string) (matrixArtifactInfo, error) {
+	return inspectMatrixArtifactWithContext(context.Background(), outputRoot, outputRootPath, path)
+}
+
+func inspectMatrixArtifactWithContext(ctx context.Context, outputRoot rootfs.Root, outputRootPath, path string) (matrixArtifactInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return matrixArtifactInfo{}, err
+	}
 	relative, err := relativeMatrixOutputPath(outputRootPath, path)
 	if err != nil {
 		return matrixArtifactInfo{}, err
@@ -1813,14 +1915,142 @@ func inspectMatrixArtifact(outputRoot rootfs.Root, outputRootPath, path string) 
 	if err != nil {
 		return matrixArtifactInfo{}, err
 	}
+	if info.Size() > maxMatrixArtifactBytes {
+		return matrixArtifactInfo{}, errors.New("matrix artifact exceeds the size limit")
+	}
 	hasher := sha256.New()
-	size, err := io.Copy(hasher, file)
+	size, err := io.Copy(hasher, io.LimitReader(&matrixContextReader{ctx: ctx, reader: file}, maxMatrixArtifactBytes+1))
 	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return matrixArtifactInfo{}, contextErr
+		}
 		return matrixArtifactInfo{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return matrixArtifactInfo{}, err
+	}
+	if size > maxMatrixArtifactBytes {
+		return matrixArtifactInfo{}, errors.New("matrix artifact exceeds the size limit")
 	}
 	var digest [sha256.Size]byte
 	copy(digest[:], hasher.Sum(nil))
 	return matrixArtifactInfo{identity: info, size: size, digest: digest}, nil
+}
+
+type matrixContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *matrixContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.reader.Read(p)
+	if contextErr := r.ctx.Err(); contextErr != nil {
+		return n, contextErr
+	}
+	return n, err
+}
+
+func mergeMatrixRawArtifacts(result *MatrixCellResult, attempt matrixAttemptResult) {
+	if len(attempt.RawArtifacts) == 0 {
+		return
+	}
+	if result.rawArtifacts == nil {
+		result.rawArtifacts = make(map[string]matrixArtifactInfo, len(attempt.RawArtifacts))
+	}
+	for path, artifact := range attempt.RawArtifacts {
+		result.rawArtifacts[path] = artifact
+	}
+}
+
+func revalidateMatrixRawPaths(ctx context.Context, result *MatrixResult) error {
+	if result == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hasRawPaths := false
+	for _, cell := range result.Cells {
+		if len(cell.RawPaths) > 0 {
+			hasRawPaths = true
+			break
+		}
+	}
+	if !hasRawPaths {
+		return nil
+	}
+	rawRoot, rootErr := rootfs.New(result.RawDir)
+	if rootErr == nil {
+		defer rawRoot.Close()
+	}
+	invalid := false
+	var contextErr error
+	for cellIndex := range result.Cells {
+		cell := &result.Cells[cellIndex]
+		validPaths := make([]string, 0, len(cell.RawPaths))
+		validSet := make(map[string]struct{}, len(cell.RawPaths))
+		for _, path := range cell.RawPaths {
+			if contextErr == nil {
+				contextErr = ctx.Err()
+			}
+			if contextErr != nil {
+				invalid = true
+				break
+			}
+			expected, known := cell.rawArtifacts[path]
+			if rootErr != nil || !known {
+				invalid = true
+				continue
+			}
+			current, err := inspectMatrixArtifactWithContext(ctx, rawRoot, result.RawDir, path)
+			if err != nil || !matrixArtifactMatches(expected, current) {
+				if contextErr == nil {
+					contextErr = ctx.Err()
+				}
+				invalid = true
+				if contextErr != nil {
+					break
+				}
+				continue
+			}
+			validPaths = append(validPaths, path)
+			validSet[path] = struct{}{}
+		}
+		if len(validPaths) != len(cell.RawPaths) {
+			cell.RawPaths = validPaths
+			if contextErr != nil && cell.Status == MatrixCellSuccess {
+				cell.Status = MatrixCellCanceled
+				cell.FailureStage = "execution"
+				cell.FailureCode = "canceled"
+				cell.Error = newMatrixCellError(cell.FailureStage, cell.FailureCode, "cell canceled")
+			} else if cell.Status == MatrixCellSuccess {
+				cell.Status = MatrixCellFailed
+				cell.FailureStage = "execution"
+				cell.FailureCode = "raw_output_unavailable"
+				cell.Error = newMatrixCellError(cell.FailureStage, cell.FailureCode, "raw screenshot became unavailable")
+			}
+			for screenshotIndex := range cell.Screenshots {
+				path := cell.Screenshots[screenshotIndex].RawPath
+				if path == "" {
+					continue
+				}
+				if _, ok := validSet[path]; !ok {
+					cell.Screenshots[screenshotIndex].RawPath = ""
+				}
+			}
+			setMatrixScreenshotStatuses(cell)
+		}
+	}
+	if contextErr != nil {
+		return contextErr
+	}
+	if invalid {
+		return errors.New("one or more raw screenshots became unavailable")
+	}
+	return nil
 }
 
 func mergeMatrixFramedArtifacts(result *MatrixCellResult, attempt matrixAttemptResult) {
@@ -1918,7 +2148,7 @@ func readMatrixImageDimensions(file *os.File, path string) (asc.ImageDimensions,
 	if info.Size() <= 0 {
 		return asc.ImageDimensions{}, fmt.Errorf("image file %q is empty", path)
 	}
-	if info.Size() > 1<<30 {
+	if info.Size() > maxMatrixArtifactBytes {
 		return asc.ImageDimensions{}, fmt.Errorf("image file %q exceeds the size limit", path)
 	}
 	config, _, err := image.DecodeConfig(file)
@@ -2005,6 +2235,7 @@ func mergeMatrixAttemptResult(result *MatrixCellResult, cell MatrixCell, attempt
 	}
 	result.RawPaths = mergeMatrixPaths(result.RawPaths, attempt.RawPaths, cell.RawPaths)
 	result.FramedPaths = mergeMatrixPaths(result.FramedPaths, attempt.FramedPaths, cell.FramedPaths)
+	mergeMatrixRawArtifacts(result, attempt)
 	mergeMatrixFramedArtifacts(result, attempt)
 	mergeMatrixScreenshots(result, cell, attempt.Screenshots)
 }
@@ -2585,4 +2816,31 @@ func runMatrixAppearanceOutput(ctx context.Context, name string, args ...string)
 		return "", fmt.Errorf("%s failed", name)
 	}
 	return string(stdout.Bytes()), nil
+}
+
+func executeMatrixCell(ctx context.Context, cell MatrixCell, base *Plan, matrixPlan *MatrixPlan, maxAttempts int, backoff time.Duration, deps MatrixDependencies, outputRoots matrixOutputRoots, guard *matrixSimulatorGuard) MatrixCellResult {
+	started := time.Now()
+	result := newMatrixCellResult(cell)
+	result.Status = MatrixCellFailed
+	release, lockErr := acquireMatrixSimulatorLock(ctx, cell.UDID)
+	if lockErr != nil {
+		if isMatrixContextTermination(lockErr) {
+			return finishMatrixCellFailure(result, started, "execution", "canceled", "cell canceled")
+		}
+		result.FailureStage = "appearance"
+		result.FailureCode = "simulator_lock_failed"
+		result.Error = newMatrixCellError(result.FailureStage, result.FailureCode, "simulator lock could not be acquired")
+		setMatrixScreenshotStatuses(&result)
+		result.DurationMS = time.Since(started).Milliseconds()
+		return result
+	}
+	result = executeMatrixCellWithSimulatorLock(ctx, cell, base, matrixPlan, maxAttempts, backoff, deps, outputRoots, guard)
+	if releaseErr := release(); releaseErr != nil {
+		result.Status = MatrixCellCleanupFailed
+		result.FailureStage = "cleanup"
+		result.FailureCode = "simulator_lock_release_failed"
+		result.Error = newMatrixCellError(result.FailureStage, result.FailureCode, "simulator lock could not be released")
+		setMatrixScreenshotStatuses(&result)
+	}
+	return result
 }

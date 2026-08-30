@@ -21,8 +21,9 @@ import (
 
 // MatrixReviewRequest describes the local report to write after a matrix run.
 type MatrixReviewRequest struct {
-	Result    *MatrixResult
-	OutputDir string
+	Result      *MatrixResult
+	OutputDir   string
+	LockContext context.Context
 }
 
 // MatrixReviewManifest and MatrixReviewResult are aliases for the governed
@@ -45,7 +46,23 @@ func GenerateMatrixReview(ctx context.Context, request MatrixReviewRequest) (*Ma
 // publishes into the review directory. Plan validation refuses inputs that would
 // be overwritten by these names, so this must stay in step with the writer below;
 // TestGenerateMatrixReviewWritesOnlyTheDeclaredFiles pins that.
+var errMatrixReviewPairMismatch = errors.New("matrix review HTML does not match manifest")
+
 var matrixReviewGeneratedFiles = []string{".asc-matrix-review.lock", "index.html", "manifest.json"}
+
+const matrixReviewLockAfterCancelTimeout = 250 * time.Millisecond
+
+func matrixReviewLockContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	// Report generation is intentionally detached from a canceled matrix run,
+	// but lock acquisition must not wait forever behind another process.
+	return context.WithTimeout(context.Background(), matrixReviewLockAfterCancelTimeout)
+}
 
 type matrixReviewWriter func(rootfs.Root, string, []byte, os.FileMode) error
 
@@ -69,7 +86,13 @@ func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewReq
 		return nil, fmt.Errorf("create matrix review output directory: %w", err)
 	}
 	defer func() { _ = reviewRoot.Close() }()
-	releaseReviewLock, err := acquireMatrixReviewLock(ctx, reviewRoot)
+	lockContextSource := request.LockContext
+	if lockContextSource == nil {
+		lockContextSource = ctx
+	}
+	lockCtx, cancelLock := matrixReviewLockContext(lockContextSource)
+	defer cancelLock()
+	releaseReviewLock, err := acquireMatrixReviewLock(lockCtx, reviewRoot)
 	if err != nil {
 		return nil, fmt.Errorf("lock matrix review output directory: %w", err)
 	}
@@ -270,16 +293,16 @@ func validateMatrixReviewHTMLDigest(path, expected string) error {
 	}
 	file, err := rootfs.OpenFile(path)
 	if err != nil {
-		return errors.New("matrix review HTML does not match manifest")
+		return errMatrixReviewPairMismatch
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, maxMatrixReviewBytes+1))
 	if err != nil || len(data) > maxMatrixReviewBytes {
-		return errors.New("matrix review HTML does not match manifest")
+		return errMatrixReviewPairMismatch
 	}
 	digest := sha256.Sum256(data)
 	if !strings.EqualFold(expected, fmt.Sprintf("%x", digest[:])) {
-		return errors.New("matrix review HTML does not match manifest")
+		return errMatrixReviewPairMismatch
 	}
 	return nil
 }
@@ -290,19 +313,19 @@ func validateMatrixReviewPairForHTML(path string) error {
 	}
 	htmlFile, err := rootfs.OpenFile(path)
 	if err != nil {
-		return nil
+		return errMatrixReviewPairMismatch
 	}
 	htmlData, readErr := io.ReadAll(io.LimitReader(htmlFile, maxMatrixReviewBytes+1))
 	closeErr := htmlFile.Close()
 	if readErr != nil || closeErr != nil || len(htmlData) > maxMatrixReviewBytes {
-		return nil
+		return errMatrixReviewPairMismatch
 	}
 	matrixMarked := bytes.Contains(htmlData, []byte(`<meta name="asc-matrix-review" content="1">`))
 	manifestPath := filepath.Join(filepath.Dir(path), "manifest.json")
 	file, err := rootfs.OpenFile(manifestPath)
 	if err != nil {
 		if matrixMarked {
-			return errors.New("matrix review HTML does not match manifest")
+			return errMatrixReviewPairMismatch
 		}
 		return nil
 	}
@@ -310,7 +333,7 @@ func validateMatrixReviewPairForHTML(path string) error {
 	data, err := io.ReadAll(io.LimitReader(file, maxMatrixReviewBytes+1))
 	if err != nil || len(data) > maxMatrixReviewBytes {
 		if matrixMarked {
-			return errors.New("matrix review HTML does not match manifest")
+			return errMatrixReviewPairMismatch
 		}
 		return nil
 	}
@@ -319,7 +342,7 @@ func validateMatrixReviewPairForHTML(path string) error {
 	}
 	if err := json.Unmarshal(data, &binding); err != nil || strings.TrimSpace(binding.HTMLSHA256) == "" {
 		if matrixMarked {
-			return errors.New("matrix review HTML does not match manifest")
+			return errMatrixReviewPairMismatch
 		}
 		// Non-matrix and pre-binding review pairs remain backward compatible.
 		return nil

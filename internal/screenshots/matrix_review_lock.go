@@ -21,8 +21,12 @@ const (
 // second process can never lock a replacement inode while a first process
 // still owns the original.
 func acquireMatrixReviewLock(ctx context.Context, root rootfs.Root) (func() error, error) {
+	return acquireMatrixNamedLock(ctx, root, matrixReviewLockName)
+}
+
+func acquireMatrixNamedLock(ctx context.Context, root rootfs.Root, name string) (func() error, error) {
 	if ctx == nil {
-		return nil, errors.New("matrix review lock context is required")
+		return nil, errors.New("matrix lock context is required")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -37,7 +41,7 @@ func acquireMatrixReviewLock(ctx context.Context, root rootfs.Root) (func() erro
 			_ = rooted.Close()
 		}
 	}()
-	file, err := openMatrixReviewLockFile(rooted, matrixReviewLockName)
+	file, err := openMatrixReviewLockFile(rooted, name)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +51,7 @@ func acquireMatrixReviewLock(ctx context.Context, root rootfs.Root) (func() erro
 			_ = file.Close()
 		}
 	}()
-	if err := validateMatrixReviewLockPath(rooted, file); err != nil {
+	if err := validateMatrixLockPath(rooted, file, name); err != nil {
 		return nil, err
 	}
 
@@ -60,7 +64,7 @@ func acquireMatrixReviewLock(ctx context.Context, root rootfs.Root) (func() erro
 			return nil, lockErr
 		}
 		if locked {
-			if err := validateMatrixReviewLockPath(rooted, file); err != nil {
+			if err := validateMatrixLockPath(rooted, file, name); err != nil {
 				return nil, errors.Join(err, unlockMatrixReviewFile(file))
 			}
 			closeRoot = false
@@ -85,20 +89,20 @@ func acquireMatrixReviewLock(ctx context.Context, root rootfs.Root) (func() erro
 	}
 }
 
-func validateMatrixReviewLockPath(root *os.Root, file *os.File) error {
+func validateMatrixLockPath(root *os.Root, file *os.File, name string) error {
 	openedInfo, err := file.Stat()
 	if err != nil {
-		return fmt.Errorf("inspect matrix review lock: %w", err)
+		return fmt.Errorf("inspect matrix lock: %w", err)
 	}
 	if !openedInfo.Mode().IsRegular() {
-		return errors.New("matrix review lock must be a regular file")
+		return errors.New("matrix lock must be a regular file")
 	}
-	pathInfo, err := root.Lstat(matrixReviewLockName)
+	pathInfo, err := root.Lstat(name)
 	if err != nil {
-		return fmt.Errorf("inspect matrix review lock path: %w", err)
+		return fmt.Errorf("inspect matrix lock path: %w", err)
 	}
 	if !pathInfo.Mode().IsRegular() || !os.SameFile(openedInfo, pathInfo) {
-		return errors.New("matrix review lock path changed")
+		return errors.New("matrix lock path changed")
 	}
 	return nil
 }

@@ -3,12 +3,13 @@ package screenshots
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 // ReviewOpenRequest configures opening a generated review HTML file.
@@ -60,15 +61,20 @@ func OpenReview(ctx context.Context, req ReviewOpenRequest) (*ReviewOpenResult, 
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(htmlPath)
+	if err := validateMatrixReviewPairForHTML(htmlPath); err != nil {
+		return nil, err
+	}
+	htmlFile, err := rootfs.OpenFile(htmlPath)
 	if err != nil {
-		return nil, fmt.Errorf("read review HTML: %w", err)
+		return nil, errMatrixReviewPairMismatch
+	}
+	info, statErr := htmlFile.Stat()
+	closeErr := htmlFile.Close()
+	if statErr != nil || closeErr != nil {
+		return nil, errMatrixReviewPairMismatch
 	}
 	if info.IsDir() {
 		return nil, fmt.Errorf("review HTML path points to a directory")
-	}
-	if err := validateMatrixReviewPairForHTML(htmlPath); err != nil {
-		return nil, err
 	}
 
 	if req.DryRun {

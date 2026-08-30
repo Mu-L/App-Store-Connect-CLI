@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -2857,5 +2858,572 @@ func TestRunMatrixRejectsRetryBackoffOverflowBeforeExecution(t *testing.T) {
 	}
 	if runCalls != 0 {
 		t.Fatalf("RunPlan calls = %d, want validation to reject before execution", runCalls)
+	}
+}
+
+func TestLoadMatrixPlanRejectsExplicitNullObjectSections(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "execution", data: `{"version":1,"base_plan":"base.json","devices":[],"locales":[],"appearances":[],"content_variants":[],"execution":null}`},
+		{name: "output", data: `{"version":1,"base_plan":"base.json","devices":[],"locales":[],"appearances":[],"content_variants":[],"output":null}`},
+		{name: "nested frame", data: `{"version":1,"base_plan":"base.json","devices":[],"locales":[],"appearances":[],"content_variants":[],"output":{"frame":null}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "matrix.json")
+			writeMatrixTestFile(t, path, tc.data)
+			_, err := LoadMatrixPlan(path)
+			if err == nil || !errors.Is(err, ErrMatrixPlanParseJSON) || !strings.Contains(err.Error(), "must be an object") {
+				t.Fatalf("LoadMatrixPlan() error = %v, want explicit-null object rejection", err)
+			}
+		})
+	}
+}
+
+func TestOpenMatrixOutputRootRejectsChildSwapAfterAnchoring(t *testing.T) {
+	dir := t.TempDir()
+	selected := filepath.Join(dir, "selected")
+	original := filepath.Join(dir, "original")
+	replacement := filepath.Join(dir, "replacement")
+	if err := os.Mkdir(selected, 0o755); err != nil {
+		t.Fatalf("create selected directory: %v", err)
+	}
+	if err := os.Mkdir(replacement, 0o755); err != nil {
+		t.Fatalf("create replacement directory: %v", err)
+	}
+	var hookErr error
+	matrixOutputRootBeforeChildRootForTest = func() {
+		if err := os.Rename(selected, original); err != nil {
+			hookErr = err
+			return
+		}
+		if err := os.Rename(replacement, selected); err != nil {
+			hookErr = err
+		}
+	}
+	t.Cleanup(func() { matrixOutputRootBeforeChildRootForTest = nil })
+	_, err := openMatrixOutputRoot(selected)
+	if hookErr != nil {
+		t.Fatalf("swap hook error: %v", hookErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "matrix output root changed") {
+		t.Fatalf("openMatrixOutputRoot() error = %v, want anchored identity rejection", err)
+	}
+	if _, err := os.Stat(original); err != nil {
+		t.Fatalf("original directory after rejection: %v", err)
+	}
+	if _, err := os.Stat(selected); err != nil {
+		t.Fatalf("replacement directory after rejection: %v", err)
+	}
+}
+
+func TestAcquireMatrixSimulatorLockSerializesSameUDID(t *testing.T) {
+	first, err := acquireMatrixSimulatorLock(context.Background(), "simulator-a")
+	if err != nil {
+		t.Fatalf("first simulator lock: %v", err)
+	}
+	defer func() {
+		if err := first(); err != nil {
+			t.Errorf("release first simulator lock: %v", err)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := acquireMatrixSimulatorLock(ctx, "simulator-a"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second same-UDID lock error = %v, want deadline", err)
+	}
+	other, err := acquireMatrixSimulatorLock(context.Background(), "simulator-b")
+	if err != nil {
+		t.Fatalf("unrelated simulator lock: %v", err)
+	}
+	if err := other(); err != nil {
+		t.Fatalf("release unrelated simulator lock: %v", err)
+	}
+}
+
+func TestRunMatrixSerializesSharedArtifactAndReviewPublication(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","framed_dir":"framed","review_dir":"review","frame":{"enabled":true,"device_by_matrix_device":{"phone":"iphone-17-pro"}}}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	matrixPlan.Devices[0].UDID = fmt.Sprintf("matrix-lock-%d-%s", os.Getpid(), filepath.Base(dir))
+	firstEntered := make(chan struct{})
+	secondEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	var mu sync.Mutex
+	calls := 0
+	runPlan := func(ctx context.Context, plan *Plan) (*RunResult, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		calls++
+		call := calls
+		mu.Unlock()
+		if call == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		} else {
+			close(secondEntered)
+		}
+		writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+		return &RunResult{Steps: []RunStepResult{{Index: 1, Action: "screenshot", Status: "ok"}}}, nil
+	}
+	appearance := &matrixTestAppearance{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	frame := func(ctx context.Context, request FrameRequest) (*FrameResult, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		writeMatrixPNG(t, request.OutputPath)
+		return &FrameResult{}, nil
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := RunMatrixWithDependencies(ctx, matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{RunPlan: runPlan, Frame: frame, Appearance: appearance})
+		firstDone <- err
+	}()
+	select {
+	case <-firstEntered:
+	case firstErr := <-firstDone:
+		t.Fatalf("first RunMatrixWithDependencies() returned before execution gate: %v", firstErr)
+	case <-time.After(5 * time.Second):
+		cancel()
+		release()
+		select {
+		case <-firstDone:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("first RunMatrixWithDependencies() did not reach execution gate")
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := RunMatrixWithDependencies(ctx, matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{RunPlan: runPlan, Frame: frame, Appearance: appearance})
+		secondDone <- err
+	}()
+	select {
+	case <-secondEntered:
+		release()
+		t.Fatal("second matrix run entered execution before first publication completed")
+	case <-time.After(125 * time.Millisecond):
+	}
+	release()
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first RunMatrixWithDependencies() error = %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second RunMatrixWithDependencies() error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("run plan calls = %d, want two serialized runs", calls)
+	}
+}
+
+func TestMatrixReviewConsumersRejectHTMLSymlink(t *testing.T) {
+	dir := t.TempDir()
+	result := &MatrixResult{PlanPath: "plan.json", Cells: []MatrixCellResult{{ID: "generation", Status: MatrixCellSuccess}}}
+	if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: result, OutputDir: dir}); err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v", err)
+	}
+	original := filepath.Join(dir, "original.html")
+	if err := os.Rename(filepath.Join(dir, "index.html"), original); err != nil {
+		t.Fatalf("rename HTML: %v", err)
+	}
+	if err := os.Symlink(original, filepath.Join(dir, "index.html")); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if _, err := LoadMatrixReviewManifest(manifestPath); !errors.Is(err, errMatrixReviewPairMismatch) {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v, want stable pair mismatch", err)
+	}
+	if _, err := OpenReview(context.Background(), ReviewOpenRequest{OutputDir: dir, DryRun: true}); !errors.Is(err, errMatrixReviewPairMismatch) {
+		t.Fatalf("OpenReview() error = %v, want stable pair mismatch", err)
+	}
+}
+
+func TestRunMatrixCanceledContextBoundsReviewLockWait(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	reviewDir := filepath.Join(dir, "review")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","review_dir":"review"}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	reviewRoot, err := openMatrixOutputRoot(reviewDir)
+	if err != nil {
+		t.Fatalf("open review root: %v", err)
+	}
+	defer func() {
+		if err := reviewRoot.Close(); err != nil {
+			t.Errorf("close review root: %v", err)
+		}
+	}()
+	release, err := acquireMatrixReviewLock(context.Background(), reviewRoot)
+	if err != nil {
+		t.Fatalf("acquire held review lock: %v", err)
+	}
+	defer func() {
+		if err := release(); err != nil {
+			t.Errorf("release held review lock: %v", err)
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runPlanCalled := false
+	done := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		_, runErr := RunMatrixWithDependencies(ctx, matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+			RunPlan: func(context.Context, *Plan) (*RunResult, error) {
+				runPlanCalled = true
+				return &RunResult{}, nil
+			},
+			Appearance: &matrixTestAppearance{},
+		})
+		done <- runErr
+	}()
+	select {
+	case <-done:
+		if time.Since(started) > time.Second {
+			t.Fatalf("canceled RunMatrixWithDependencies() waited %s for review lock", time.Since(started))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled RunMatrixWithDependencies() waited indefinitely for review lock")
+	}
+	if runPlanCalled {
+		t.Fatal("canceled RunMatrixWithDependencies() invoked the screenshot adapter")
+	}
+}
+
+type matrixLockSpanAppearance struct {
+	mu                  sync.Mutex
+	snapshots           int
+	restores            int
+	firstRestoreEntered chan struct{}
+	secondSnapshot      chan struct{}
+	releaseFirstRestore chan struct{}
+	restoreEnteredOnce  sync.Once
+	secondSnapshotOnce  sync.Once
+}
+
+func (a *matrixLockSpanAppearance) Snapshot(context.Context, string) (string, error) {
+	a.mu.Lock()
+	a.snapshots++
+	snapshotNumber := a.snapshots
+	a.mu.Unlock()
+	if snapshotNumber == 2 {
+		a.secondSnapshotOnce.Do(func() { close(a.secondSnapshot) })
+	}
+	return "light", nil
+}
+
+func (*matrixLockSpanAppearance) Set(context.Context, string, string) error {
+	return errors.New("set failed")
+}
+
+func (a *matrixLockSpanAppearance) Restore(context.Context, string, string) error {
+	a.mu.Lock()
+	a.restores++
+	restoreNumber := a.restores
+	a.mu.Unlock()
+	if restoreNumber == 1 {
+		a.restoreEnteredOnce.Do(func() { close(a.firstRestoreEntered) })
+		<-a.releaseFirstRestore
+	}
+	return nil
+}
+
+func TestExecuteMatrixCellSimulatorLockSpansAppearanceRestore(t *testing.T) {
+	appearance := &matrixLockSpanAppearance{
+		firstRestoreEntered: make(chan struct{}),
+		secondSnapshot:      make(chan struct{}),
+		releaseFirstRestore: make(chan struct{}),
+	}
+	cell := MatrixCell{ID: "cell", UDID: "matrix-lock-span", Appearance: "dark"}
+	firstDone := make(chan MatrixCellResult, 1)
+	go func() {
+		firstDone <- executeMatrixCell(context.Background(), cell, nil, nil, 1, 0, MatrixDependencies{Appearance: appearance}, matrixOutputRoots{}, &matrixSimulatorGuard{})
+	}()
+	select {
+	case <-appearance.firstRestoreEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first cell did not reach appearance restore")
+	}
+
+	secondDone := make(chan MatrixCellResult, 1)
+	go func() {
+		secondDone <- executeMatrixCell(context.Background(), cell, nil, nil, 1, 0, MatrixDependencies{Appearance: appearance}, matrixOutputRoots{}, &matrixSimulatorGuard{})
+	}()
+	secondEntered := false
+	select {
+	case <-appearance.secondSnapshot:
+		secondEntered = true
+	case <-time.After(125 * time.Millisecond):
+	}
+	close(appearance.releaseFirstRestore)
+	first := <-firstDone
+	second := <-secondDone
+	if secondEntered {
+		t.Fatal("second cell entered appearance before first restore completed")
+	}
+	if first.FailureCode != "set_failed" || second.FailureCode != "set_failed" {
+		t.Fatalf("unexpected cell results: first=%+v second=%+v", first, second)
+	}
+	appearance.mu.Lock()
+	snapshots, restores := appearance.snapshots, appearance.restores
+	appearance.mu.Unlock()
+	if snapshots != 2 || restores != 2 {
+		t.Fatalf("appearance calls = snapshots %d, restores %d; want two of each", snapshots, restores)
+	}
+}
+
+func TestGenerateMatrixReviewUsesLiveLockContext(t *testing.T) {
+	dir := t.TempDir()
+	heldRoot, err := openMatrixOutputRoot(dir)
+	if err != nil {
+		t.Fatalf("open held review root: %v", err)
+	}
+	defer func() {
+		if err := heldRoot.Close(); err != nil {
+			t.Errorf("close held review root: %v", err)
+		}
+	}()
+	releaseHeld, err := acquireMatrixReviewLock(context.Background(), heldRoot)
+	if err != nil {
+		t.Fatalf("acquire held review lock: %v", err)
+	}
+	defer func() {
+		if err := releaseHeld(); err != nil {
+			t.Errorf("release held review lock: %v", err)
+		}
+	}()
+
+	lockCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, reviewErr := GenerateMatrixReview(context.Background(), MatrixReviewRequest{
+			Result:      &MatrixResult{PlanPath: "plan.json", Cells: []MatrixCellResult{{ID: "cell", Status: MatrixCellSuccess}}},
+			OutputDir:   dir,
+			LockContext: lockCtx,
+		})
+		done <- reviewErr
+	}()
+	time.Sleep(3 * matrixReviewLockPollInterval)
+	cancel()
+	select {
+	case reviewErr := <-done:
+		if !errors.Is(reviewErr, context.Canceled) {
+			t.Fatalf("GenerateMatrixReview() error = %v, want live lock cancellation", reviewErr)
+		}
+	case <-time.After(time.Second):
+		if err := releaseHeld(); err != nil {
+			t.Errorf("release held review lock after timeout: %v", err)
+		}
+		<-done
+		t.Fatal("GenerateMatrixReview() did not observe live lock cancellation")
+	}
+}
+
+func TestMatrixOutputLockIdentityUsesFilesystemCaseSemantics(t *testing.T) {
+	dir := t.TempDir()
+	if !matrixFilesystemCaseInsensitive(dir) {
+		t.Skip("selected filesystem is case-sensitive")
+	}
+	upper := filepath.Join(dir, "Output", "raw")
+	lower := filepath.Join(dir, "output", "raw")
+	upperIdentity := matrixOutputLockIdentity(upper)
+	lowerIdentity := matrixOutputLockIdentity(lower)
+	if upperIdentity != lowerIdentity {
+		t.Fatalf("case-variant output lock identities differ: %q != %q", upperIdentity, lowerIdentity)
+	}
+}
+
+func TestRunMatrixRejectsReplacedRawOutputRootBeforeReview(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement is not reliable while the rooted handle is open on Windows")
+	}
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	rawDir := filepath.Join(dir, "raw")
+	rawOriginal := filepath.Join(dir, "raw-original")
+	rawReplacement := filepath.Join(dir, "raw-replacement")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","review_dir":"review"}}`)
+	if err := os.Mkdir(rawReplacement, 0o755); err != nil {
+		t.Fatalf("create replacement raw root: %v", err)
+	}
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	matrixPlan.Devices[0].UDID = "raw-root-swap-" + filepath.Base(dir)
+	var swapErr error
+	swapped := false
+	appearance := &matrixTestAppearance{restoreFunc: func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		if err := os.Rename(rawDir, rawOriginal); err != nil {
+			swapErr = err
+		} else if err := os.Rename(rawReplacement, rawDir); err != nil {
+			swapErr = err
+		}
+	}}
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Appearance: appearance,
+	})
+	if swapErr != nil {
+		t.Fatalf("replace raw output root: %v", swapErr)
+	}
+	if runErr == nil {
+		t.Fatal("RunMatrixWithDependencies() error = nil, want raw-output identity uncertainty")
+	}
+	if result == nil || len(result.Cells) != 1 {
+		t.Fatalf("result = %+v, want one cell", result)
+	}
+	cell := result.Cells[0]
+	if result.Status != MatrixCellFailed || result.Succeeded != 0 || result.Failed != 1 {
+		t.Fatalf("result status/counts = %s/%d/%d, want failed/0/1", result.Status, result.Succeeded, result.Failed)
+	}
+	if cell.FailureStage != "execution" || cell.FailureCode != "raw_output_unavailable" {
+		t.Fatalf("cell failure = %s/%s, want execution/raw_output_unavailable", cell.FailureStage, cell.FailureCode)
+	}
+	if len(cell.RawPaths) != 0 || len(cell.Screenshots) != 1 || cell.Screenshots[0].RawPath != "" {
+		t.Fatalf("cell retained stale raw output: %+v", cell)
+	}
+	if _, err := os.Stat(filepath.Join(rawOriginal, "en-US", "phone", "light", "default", "home.png")); err != nil {
+		t.Fatalf("original raw output was not preserved after root swap: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement raw root contains a stale claimed artifact: %v", err)
+	}
+	manifest, err := LoadMatrixReviewManifest(filepath.Join(dir, "review", "manifest.json"))
+	if err != nil {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v", err)
+	}
+	if len(manifest.Cells) != 1 || len(manifest.Cells[0].RawPaths) != 0 {
+		t.Fatalf("review manifest retained stale raw path: %+v", manifest.Cells)
+	}
+}
+
+type matrixCancelAfterChecksContext struct {
+	checks      int
+	cancelAfter int
+}
+
+func (c *matrixCancelAfterChecksContext) Deadline() (time.Time, bool) {
+	return time.Time{}, false
+}
+
+func (*matrixCancelAfterChecksContext) Done() <-chan struct{} {
+	return nil
+}
+
+func (c *matrixCancelAfterChecksContext) Err() error {
+	c.checks++
+	if c.checks > c.cancelAfter {
+		return context.Canceled
+	}
+	return nil
+}
+
+func (*matrixCancelAfterChecksContext) Value(any) any {
+	return nil
+}
+
+func TestPromoteMatrixArtifactWithInfoStopsAfterPromotionWhenContextCancels(t *testing.T) {
+	dir := t.TempDir()
+	outputDir := filepath.Join(dir, "raw")
+	if err := os.Mkdir(outputDir, 0o755); err != nil {
+		t.Fatalf("create output directory: %v", err)
+	}
+	source := filepath.Join(outputDir, "source.png")
+	destination := filepath.Join(outputDir, "published.png")
+	writeMatrixPNG(t, source)
+	root, err := rootfs.New(outputDir)
+	if err != nil {
+		t.Fatalf("open output root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close output root: %v", err)
+		}
+	})
+
+	ctx := &matrixCancelAfterChecksContext{cancelAfter: 4}
+	_, err = promoteMatrixArtifactWithInfo(ctx, root, outputDir, source, destination)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("promoteMatrixArtifactWithInfo() error = %v, want context cancellation", err)
+	}
+	if ctx.checks <= ctx.cancelAfter {
+		t.Fatalf("context checks = %d, want cancellation during metadata hashing", ctx.checks)
+	}
+	if _, err := os.Stat(destination); err != nil {
+		t.Fatalf("destination was not published before metadata cancellation: %v", err)
+	}
+}
+
+func TestRevalidateMatrixRawPathsStopsOnCancellationDuringHash(t *testing.T) {
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	if err := os.Mkdir(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw directory: %v", err)
+	}
+	rawPath := filepath.Join(rawDir, "home.png")
+	writeMatrixPNG(t, rawPath)
+	rawRoot, err := rootfs.New(rawDir)
+	if err != nil {
+		t.Fatalf("open raw root: %v", err)
+	}
+	expected, err := inspectMatrixArtifact(rawRoot, rawDir, rawPath)
+	if closeErr := rawRoot.Close(); closeErr != nil {
+		t.Fatalf("close raw root: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("inspect expected raw artifact: %v", err)
+	}
+	result := &MatrixResult{
+		RawDir: rawDir,
+		Cells: []MatrixCellResult{{
+			Status:       MatrixCellSuccess,
+			RawPaths:     []string{rawPath},
+			Screenshots:  []MatrixScreenshotResult{{RawPath: rawPath, Status: MatrixCellSuccess}},
+			rawArtifacts: map[string]matrixArtifactInfo{rawPath: expected},
+		}},
+	}
+	ctx := &matrixCancelAfterChecksContext{cancelAfter: 3}
+	err = revalidateMatrixRawPaths(ctx, result)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("revalidateMatrixRawPaths() error = %v, want context cancellation", err)
+	}
+	if ctx.checks <= ctx.cancelAfter {
+		t.Fatalf("context checks = %d, want cancellation during hashing", ctx.checks)
+	}
+	cell := result.Cells[0]
+	if cell.Status != MatrixCellCanceled || cell.FailureCode != "canceled" {
+		t.Fatalf("cell status/failure = %s/%s, want canceled/canceled", cell.Status, cell.FailureCode)
+	}
+	if len(cell.RawPaths) != 0 || cell.Screenshots[0].RawPath != "" {
+		t.Fatalf("canceled revalidation retained unverified raw path: %+v", cell)
 	}
 }
