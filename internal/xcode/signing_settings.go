@@ -496,6 +496,22 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			addFile(operation.Path, "xcconfig")
 		}
 	}
+	// Bind every xcconfig consulted while resolving a selected configuration,
+	// not only the files this plan rewrites. A file that merely supplies or
+	// overrides a resolved value can change between re-resolution and commit,
+	// and without a recorded digest that change would go unnoticed and the
+	// receipt would certify an effective value the project no longer produces.
+	resolutionInputs := make([]string, 0)
+	for configurationID, paths := range configFiles {
+		if !selectedIDs[configurationID] {
+			continue
+		}
+		resolutionInputs = append(resolutionInputs, paths...)
+	}
+	sort.Strings(resolutionInputs)
+	for _, path := range resolutionInputs {
+		addFile(path, "xcconfig")
+	}
 	for _, file := range files {
 		plan.Files = append(plan.Files, file)
 	}

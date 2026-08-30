@@ -1423,3 +1423,48 @@ func TestSigningPlanRetainsInheritedDirectConsumerInSharedConflict(t *testing.T)
 		t.Fatalf("shared xcconfig rewritten past an inherited-direct consumer: %#v", change)
 	}
 }
+
+func TestSigningPlanDigestsXCConfigsUsedOnlyForResolution(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	configDir := filepath.Join(filepath.Dir(project), "Configs")
+	sharedPath := filepath.Join(configDir, "Shared.xcconfig")
+	appPath := filepath.Join(configDir, "App.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	if err := os.WriteFile(sharedPath, []byte("CODE_SIGN_STYLE = Automatic\r\n"+shared), 0o644); err != nil {
+		t.Fatalf("write shared xcconfig error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}},
+			{"name":"Release","settings":{"CODE_SIGN_STYLE":"manual"}}
+		]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got %#v", plan.Blockers)
+	}
+
+	digested := make(map[string]bool, len(plan.Files))
+	for _, file := range plan.Files {
+		digested[file.Path] = true
+	}
+	// Shared.xcconfig carries the assignment and is rewritten. App.xcconfig only
+	// includes it, but a later overriding assignment there would change the
+	// effective value, so it must be digested and rechecked too.
+	if !digested[sharedPath] {
+		t.Fatalf("mutated xcconfig missing from plan files: %#v", plan.Files)
+	}
+	if !digested[appPath] {
+		t.Fatalf("resolution-only xcconfig %s missing from plan files: %#v", appPath, plan.Files)
+	}
+}
