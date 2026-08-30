@@ -69,8 +69,9 @@ rejected rather than silently overwritten.
 
 The example deliberately disables framing because matrix device labels must
 never be mapped to a frame for another device family. When framing is enabled,
-each matrix device needs an explicit supported mapping validated through the
-existing frame-device parser.
+each matrix device needs an explicit supported mapping accepted by the existing
+frame-device parser and checked against the actual simulator family during
+inventory preflight.
 
 The product of the four axis lengths must be non-zero and no more than 256
 cells. Device IDs, content-variant IDs, and screenshot names must be unique
@@ -109,6 +110,11 @@ appearance with `xcrun simctl ui <device> appearance`, applies the requested
 state with the same supported `simctl ui` interface, executes the plan, and
 restores the original state in a deferred cleanup path. A restore failure is
 surfaced as `cleanup_failed` and prevents later cells on that simulator.
+
+Simulator inventory preflight has a bounded 30-second deadline. Individual
+capture, framing, and cleanup operations continue to honor the caller context;
+this slice does not add separate per-stage deadlines or attempt pair recovery
+after an external process crash.
 
 `max_attempts` is the total number of attempts and defaults to one, with a hard
 maximum of three. Execution and framing failures retry the complete cell after

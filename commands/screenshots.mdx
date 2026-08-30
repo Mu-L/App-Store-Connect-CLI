@@ -171,10 +171,11 @@ declaration order, with a maximum of 256 cells:
 
 Framing is disabled in this example because an iPad must never be represented
 by an iPhone frame. When framing is enabled, every matrix device needs an
-explicit same-family mapping accepted by the frame-device parser. Use
-`--max-attempts` and `--retry-backoff` to override the plan. Retries apply only
-to execution and framing; validation, cancellation, and cleanup failures are
-reported without retrying. See [the matrix design note](https://github.com/rorkai/App-Store-Connect-CLI/blob/main/docs/design/screenshots-matrix.md)
+explicit supported mapping; syntax is checked by the frame-device parser and
+family compatibility is checked against the actual simulator during preflight.
+Use `--max-attempts` and `--retry-backoff` to override the plan. Retries apply
+only to execution and framing; validation, cancellation, and cleanup failures
+are reported without retrying. See [the matrix design note](https://github.com/rorkai/App-Store-Connect-CLI/blob/main/docs/design/screenshots-matrix.md)
 for the complete result, privacy, and review contracts.
 
 ### List Frame Devices

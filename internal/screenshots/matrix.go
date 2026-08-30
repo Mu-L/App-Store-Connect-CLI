@@ -914,24 +914,33 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 		deps.Appearance = &simctlMatrixAppearance{}
 	}
 	deviceFailures := make(map[string]struct{})
+	var preflightErr error
 	if deps.CheckDevice == nil && useDefaultDeviceCheck {
-		deviceFailures = checkMatrixDevices(ctx, matrixPlan)
+		deviceFailures, preflightErr = checkMatrixDevices(ctx, matrixPlan)
 	} else if deps.CheckDevice != nil {
 		for _, device := range matrixPlan.Devices {
 			if err := deps.CheckDevice(ctx, device); err != nil {
+				if isMatrixContextTermination(err) {
+					preflightErr = err
+					break
+				}
 				deviceFailures[device.ID] = struct{}{}
 			}
 		}
 	}
-	for index, cell := range cells {
-		if _, failed := deviceFailures[cell.Device]; !failed {
-			continue
+	if preflightErr != nil {
+		markMatrixCellsCanceled(result)
+	} else {
+		for index, cell := range cells {
+			if _, failed := deviceFailures[cell.Device]; !failed {
+				continue
+			}
+			result.Cells[index].Status = MatrixCellFailed
+			result.Cells[index].FailureStage = "preflight"
+			result.Cells[index].FailureCode = "simulator_not_ready"
+			result.Cells[index].Error = newMatrixCellError("preflight", "simulator_not_ready", "target simulator is not ready")
+			setMatrixScreenshotStatuses(&result.Cells[index])
 		}
-		result.Cells[index].Status = MatrixCellFailed
-		result.Cells[index].FailureStage = "preflight"
-		result.Cells[index].FailureCode = "simulator_not_ready"
-		result.Cells[index].Error = newMatrixCellError("preflight", "simulator_not_ready", "target simulator is not ready")
-		setMatrixScreenshotStatuses(&result.Cells[index])
 	}
 	rawRoot, err := openMatrixOutputRoot(rawDir)
 	if err != nil {
@@ -949,7 +958,10 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 		outputRoots.framedPath = framedDir
 		outputRoots.hasFramed = true
 	}
-	runErr := executeMatrixCells(ctx, cells, deviceFailures, base, matrixPlan, concurrency, attempts, backoff, deps, outputRoots, result)
+	runErr := preflightErr
+	if runErr == nil {
+		runErr = executeMatrixCells(ctx, cells, deviceFailures, base, matrixPlan, concurrency, attempts, backoff, deps, outputRoots, result)
+	}
 	countMatrixResultStatuses(result)
 	reviewCtx := context.WithoutCancel(ctx)
 	review, reviewErr := GenerateMatrixReview(reviewCtx, MatrixReviewRequest{Result: result, OutputDir: reviewDir})
@@ -1450,6 +1462,22 @@ func finishMatrixCellFailure(result MatrixCellResult, started time.Time, stage, 
 	return result
 }
 
+func markMatrixCellsCanceled(result *MatrixResult) {
+	if result == nil {
+		return
+	}
+	for i := range result.Cells {
+		if result.Cells[i].Status == MatrixCellSuccess {
+			continue
+		}
+		result.Cells[i].Status = MatrixCellCanceled
+		result.Cells[i].FailureStage = "execution"
+		result.Cells[i].FailureCode = "canceled"
+		result.Cells[i].Error = newMatrixCellError("execution", "canceled", "cell canceled")
+		setMatrixScreenshotStatuses(&result.Cells[i])
+	}
+}
+
 func setMatrixScreenshotStatuses(result *MatrixCellResult) {
 	for i := range result.Screenshots {
 		switch result.Status {
@@ -1597,20 +1625,10 @@ func isASCIIAlphaNumeric(value string) bool {
 }
 
 func validateMatrixFrameMapping(matrixDevice, frame string) error {
-	parsed, err := ParseFrameDevice(frame)
-	if err != nil {
+	// Device-family compatibility is checked after simulator inventory is read;
+	// a matrix ID is only a logical label and must not determine the family.
+	if _, err := ParseFrameDevice(frame); err != nil {
 		return fmt.Errorf("device %q: %w", matrixDevice, err)
-	}
-	matrixFamily := matrixDeviceFamily(matrixDevice)
-	frameFamily := frameDeviceFamily(parsed)
-	if matrixFamily == "unknown" {
-		return fmt.Errorf("device %q family is unknown; use a device label containing iphone or mac before enabling framing", matrixDevice)
-	}
-	if matrixFamily != "unknown" && frameFamily != "unknown" && matrixFamily != frameFamily {
-		return fmt.Errorf("device %q cannot use %q frame: device families must match", matrixDevice, parsed)
-	}
-	if matrixFamily == "ipad" {
-		return fmt.Errorf("device %q has no supported same-device frame mapping", matrixDevice)
 	}
 	return nil
 }
@@ -1657,6 +1675,9 @@ func readMatrixSimulatorInventoryWithTimeout(ctx context.Context, timeout time.D
 	command.Stdout = &output
 	command.Stderr = io.Discard
 	err := command.Run()
+	if contextErr := inventoryCtx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
 	if output.exceeded {
 		return nil, errors.New("simulator inventory exceeded the output size limit")
 	}
@@ -1692,9 +1713,12 @@ func checkMatrixDevice(ctx context.Context, device MatrixDevice) error {
 	return errors.New("simulator was not found")
 }
 
-func checkMatrixDevices(ctx context.Context, plan *MatrixPlan) map[string]struct{} {
+func checkMatrixDevices(ctx context.Context, plan *MatrixPlan) (map[string]struct{}, error) {
 	failures := make(map[string]struct{})
 	devices, inventoryErr := readMatrixSimulatorInventory(ctx)
+	if inventoryErr != nil && isMatrixContextTermination(inventoryErr) {
+		return nil, inventoryErr
+	}
 	for _, device := range plan.Devices {
 		if inventoryErr != nil {
 			failures[device.ID] = struct{}{}
@@ -1712,7 +1736,11 @@ func checkMatrixDevices(ctx context.Context, plan *MatrixPlan) map[string]struct
 			}
 		}
 	}
-	return failures
+	return failures, nil
+}
+
+func isMatrixContextTermination(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func findMatrixSimulatorDevice(devices []matrixSimulatorDevice, udid string) (matrixSimulatorDevice, bool) {

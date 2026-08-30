@@ -415,7 +415,7 @@ func TestBuildLocaleLaunchArguments_NormalizesLocale(t *testing.T) {
 	}
 }
 
-func TestValidateMatrixPlan_RejectsCrossFamilyFrameMapping(t *testing.T) {
+func TestValidateMatrixPlanDefersFrameFamilyToSimulator(t *testing.T) {
 	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
 	plan := &MatrixPlan{
 		Version:         1,
@@ -425,8 +425,60 @@ func TestValidateMatrixPlan_RejectsCrossFamilyFrameMapping(t *testing.T) {
 		ContentVariants: []MatrixContentVariant{{ID: "default"}},
 		Output:          MatrixOutput{Frame: MatrixFrame{Enabled: true, DeviceByMatrixDevice: map[string]string{"ipad-pro-13": "iphone-17-pro"}}},
 	}
-	if err := ValidateMatrixPlan(plan, base); err == nil || !strings.Contains(err.Error(), "families") {
-		t.Fatalf("ValidateMatrixPlan() error = %v, want family mismatch", err)
+	if err := ValidateMatrixPlan(plan, base); err != nil {
+		t.Fatalf("ValidateMatrixPlan() error = %v, want syntax-only frame validation", err)
+	}
+}
+
+func TestValidateMatrixFrameMappingForSimulatorUsesActualFamily(t *testing.T) {
+	tests := []struct {
+		name      string
+		matrixID  string
+		simulator matrixSimulatorDevice
+		wantError bool
+	}{
+		{
+			name:     "iPhone actual and logical phone",
+			matrixID: "sim-a",
+			simulator: matrixSimulatorDevice{
+				Name:                 "iPhone 16 Pro",
+				DeviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro",
+			},
+		},
+		{
+			name:     "iPhone actual despite iPad logical label",
+			matrixID: "ipad-demo",
+			simulator: matrixSimulatorDevice{
+				Name:                 "iPhone 16 Pro",
+				DeviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro",
+			},
+		},
+		{
+			name:     "iPad actual",
+			matrixID: "sim-a",
+			simulator: matrixSimulatorDevice{
+				Name:                 "iPad Pro (13-inch)",
+				DeviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4",
+			},
+			wantError: true,
+		},
+		{
+			name:     "unknown actual type",
+			matrixID: "sim-a",
+			simulator: matrixSimulatorDevice{
+				Name:                 "Test Device",
+				DeviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.Unknown",
+			},
+			wantError: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateMatrixFrameMappingForSimulator(tc.matrixID, "iphone-17-pro", tc.simulator)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("validateMatrixFrameMappingForSimulator() error = %v, wantError=%t", err, tc.wantError)
+			}
+		})
 	}
 }
 
@@ -463,7 +515,10 @@ printf '%s\n' '{"devices":{"runtime":[{"udid":"SIM-UDID","state":"Booted","isAva
 			Frame: MatrixFrame{Enabled: true, DeviceByMatrixDevice: map[string]string{"iphone-demo": "iphone-17-pro"}},
 		},
 	}
-	failures := checkMatrixDevices(context.Background(), plan)
+	failures, err := checkMatrixDevices(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("checkMatrixDevices() error = %v", err)
+	}
 	if _, failed := failures["iphone-demo"]; !failed {
 		t.Fatalf("checkMatrixDevices() failures = %v, want model/frame mismatch", failures)
 	}
@@ -482,8 +537,8 @@ func TestReadMatrixSimulatorInventoryUsesBoundedTimeout(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	_, err := readMatrixSimulatorInventoryWithTimeout(parentCtx, 50*time.Millisecond)
-	if err == nil {
-		t.Fatal("readMatrixSimulatorInventoryWithTimeout() error = nil, want timeout failure")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("readMatrixSimulatorInventoryWithTimeout() error = %v, want context deadline", err)
 	}
 	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
 		t.Fatalf("inventory command took %s, want derived timeout before caller deadline", elapsed)
@@ -1001,6 +1056,68 @@ func TestRunMatrix_PreflightFailureDoesNotSuppressReadyDevices(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "review", "manifest.json")); err != nil {
 		t.Fatalf("manifest missing after preflight failure: %v", err)
+	}
+}
+
+func TestRunMatrix_InventoryCancellationMarksAllCellsCanceled(t *testing.T) {
+	tests := []struct {
+		name       string
+		newContext func() (context.Context, context.CancelFunc)
+		wantError  error
+	}{
+		{
+			name: "caller canceled",
+			newContext: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, cancel
+			},
+			wantError: context.Canceled,
+		},
+		{
+			name: "caller deadline exceeded",
+			newContext: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			},
+			wantError: context.DeadlineExceeded,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			basePath := filepath.Join(dir, "base.json")
+			matrixPath := filepath.Join(dir, "matrix.json")
+			writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+			writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"sim-a","udid":"SIM-A"},{"id":"sim-b","udid":"SIM-B"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","review_dir":"review"}}`)
+			matrixPlan, err := LoadMatrixPlan(matrixPath)
+			if err != nil {
+				t.Fatalf("LoadMatrixPlan() error = %v", err)
+			}
+			ctx, cancel := tc.newContext()
+			defer cancel()
+
+			result, runErr := RunMatrixWithDependencies(ctx, matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{})
+			if !errors.Is(runErr, tc.wantError) {
+				t.Fatalf("RunMatrixWithDependencies() error = %v, want %v", runErr, tc.wantError)
+			}
+			if result == nil {
+				t.Fatal("RunMatrixWithDependencies() result = nil, want partial canceled result")
+			}
+			if result.Succeeded != 0 || result.Failed != 0 || result.Canceled != len(result.Cells) {
+				t.Fatalf("unexpected cancellation summary: %+v", result)
+			}
+			if result.Review == nil || result.Review.Canceled != len(result.Cells) || result.Review.Failed != 0 {
+				t.Fatalf("unexpected cancellation review: %+v", result.Review)
+			}
+			for _, cell := range result.Cells {
+				if cell.Status != MatrixCellCanceled {
+					t.Errorf("cell %q status = %q, want canceled", cell.ID, cell.Status)
+				}
+				if cell.FailureCode == "simulator_not_ready" {
+					t.Errorf("cell %q reported simulator_not_ready for inventory cancellation", cell.ID)
+				}
+			}
+		})
 	}
 }
 
