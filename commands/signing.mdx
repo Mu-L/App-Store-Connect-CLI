@@ -384,6 +384,8 @@ asc signing reconcile plan \
 
 Planning makes no App Store Connect mutations. It writes a mode-`0600` `plan.json`; a blocked plan still succeeds with `ready: false` so automation can inspect its blockers. Raw UDIDs do not appear in the plan or normal command output.
 
+Plan creation refuses to replace an existing `plan.json`. After reviewing a blocked plan and fixing its blockers, rerun the same command with `--overwrite`. Use a new `--state-dir` instead when the blocked plan must remain available for comparison.
+
 When more than one active iOS distribution certificate is eligible, select one resource ID explicitly:
 
 ```bash  theme={null}
@@ -429,7 +431,7 @@ signing_command=(
 asc signing run \
   --identity .asc/signing/pulled/identities/distribution/IDENTITY.p12 \
   --identity-password-file ~/.config/asc/signing-sync-password \
-  --profile .asc/signing/pulled/profiles/PROFILE.mobileprovision \
+  --profile .asc/distribution/signing/profiles/PROFILE.mobileprovision \
   --purpose release-testing \
   --receipt .asc/distribution/signing-run.json \
   -- "${signing_command[@]}"

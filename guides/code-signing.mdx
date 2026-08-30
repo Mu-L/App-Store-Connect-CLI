@@ -153,6 +153,8 @@ asc signing reconcile apply \
 
 Planning is read-only and can return a successful `ready: false` result with blockers. Apply performs only the additive actions recorded in a ready plan; it does not delete profiles, create certificates, or change capabilities.
 
+Planning creates `plan.json` without replacing an existing file. If a plan reports blockers, review it and fix them first. Then rerun the same plan command with `--overwrite`, or choose a new `--state-dir` when the blocked plan must remain on disk.
+
 `signing run` accepts exactly one profile. Use the temporary-keychain export below only for a single-target archive whose main app uses that profile:
 
 ```bash  theme={null}
@@ -168,7 +170,7 @@ signing_command=(
 asc signing run \
   --identity .asc/signing/pulled/identities/distribution/IDENTITY.p12 \
   --identity-password-file ~/.config/asc/signing-sync-password \
-  --profile .asc/signing/pulled/profiles/PROFILE.mobileprovision \
+  --profile .asc/distribution/signing/profiles/PROFILE.mobileprovision \
   --receipt .asc/distribution/signing-run.json \
   -- "${signing_command[@]}"
 ```
