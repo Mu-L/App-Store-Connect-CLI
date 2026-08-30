@@ -1,0 +1,482 @@
+package xcode
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestParseXcodeVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		output      string
+		wantVersion string
+		wantBuild   string
+		wantErr     string
+	}{
+		{
+			name:        "stable",
+			output:      "Xcode 16.4\nBuild version 16F6\n",
+			wantVersion: "16.4",
+			wantBuild:   "16F6",
+		},
+		{
+			name:        "warning before version",
+			output:      "warning\nXcode 27.0 beta 4\nBuild version 27A5228h\n",
+			wantVersion: "27.0 beta 4",
+			wantBuild:   "27A5228h",
+		},
+		{
+			name:    "empty",
+			wantErr: `unexpected xcodebuild -version output: "empty output"`,
+		},
+		{
+			name:    "missing build",
+			output:  "Xcode 16.4\n",
+			wantErr: "missing Build version",
+		},
+		{
+			name:    "malformed",
+			output:  "Command Line Tools 16.0\n",
+			wantErr: "unexpected xcodebuild -version output",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseXcodeVersion(test.output)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("parseXcodeVersion() error = %v, want containing %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseXcodeVersion() error = %v", err)
+			}
+			if got.Version != test.wantVersion || got.Build != test.wantBuild {
+				t.Fatalf("parseXcodeVersion() = %+v, want version=%q build=%q", got, test.wantVersion, test.wantBuild)
+			}
+		})
+	}
+}
+
+func TestInspectToolchainUsesExplicitDeveloperDirAndSDK(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	developerDir := filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer")
+	if err := os.MkdirAll(developerDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	originalDeveloperDir := filepath.Join(t.TempDir(), "OtherXcode.app", "Contents", "Developer")
+	t.Setenv("DEVELOPER_DIR", originalDeveloperDir)
+	t.Setenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER", "1")
+	commandContextFn = toolchainDoctorHelperCommandContext
+	lookPathFn = func(name string) (string, error) {
+		switch name {
+		case "xcodebuild":
+			return "/usr/bin/xcodebuild", nil
+		case "xcrun":
+			return "/usr/bin/xcrun", nil
+		default:
+			return "", exec.ErrNotFound
+		}
+	}
+	activeDeveloperDirFn = func(context.Context) (string, error) {
+		t.Fatal("active developer directory lookup must not run for an explicit candidate")
+		return "", nil
+	}
+
+	report, err := InspectToolchain(context.Background(), ToolchainOptions{
+		DeveloperDir: filepath.Dir(filepath.Dir(developerDir)),
+		SDK:          "iphonesimulator",
+		LogWriter:    io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("InspectToolchain() error = %v", err)
+	}
+	if report == nil {
+		t.Fatal("InspectToolchain() report = nil")
+	}
+	if report.Status != ToolchainStatusOK || report.Source != ToolchainSourceFlag {
+		t.Fatalf("InspectToolchain() report status/source = %q/%q, want ok/flag: %+v", report.Status, report.Source, report)
+	}
+	if report.DeveloperDir != developerDir {
+		t.Fatalf("DeveloperDir = %q, want %q", report.DeveloperDir, developerDir)
+	}
+	if report.XcodeVersion != "16.4" || report.XcodeBuild != "16F6" {
+		t.Fatalf("version/build = %q/%q, want 16.4/16F6", report.XcodeVersion, report.XcodeBuild)
+	}
+	if check, ok := toolchainReportCheck(report, "xcodebuild"); !ok || check.Path != filepath.Join(developerDir, "usr", "bin", "xcodebuild") {
+		t.Fatalf("xcodebuild check = %+v, want selected-toolchain path", check)
+	}
+	if report.XcodePath != filepath.Dir(filepath.Dir(developerDir)) {
+		t.Fatalf("XcodePath = %q, want %q", report.XcodePath, filepath.Dir(filepath.Dir(developerDir)))
+	}
+	if report.Beta {
+		t.Fatal("stable Xcode candidate unexpectedly reported as beta")
+	}
+	if !toolchainReportHasCheck(report, "sdk:iphonesimulator", ToolchainCheckStatusOK) {
+		t.Fatalf("SDK check missing or not OK: %+v", report.Checks)
+	}
+	if got := os.Getenv("DEVELOPER_DIR"); got != originalDeveloperDir {
+		t.Fatalf("parent DEVELOPER_DIR changed to %q, want %q", got, originalDeveloperDir)
+	}
+}
+
+func TestInspectToolchainUsesEnvironmentBeforeXcodeSelect(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	developerDir := filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer")
+	if err := os.MkdirAll(developerDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	t.Setenv("DEVELOPER_DIR", developerDir)
+	t.Setenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER", "1")
+	commandContextFn = toolchainDoctorHelperCommandContext
+	lookPathFn = toolchainDoctorLookPath
+	activeDeveloperDirFn = func(context.Context) (string, error) {
+		t.Fatal("xcode-select lookup must not run when DEVELOPER_DIR is set")
+		return "", nil
+	}
+
+	report, err := InspectToolchain(context.Background(), ToolchainOptions{LogWriter: io.Discard})
+	if err != nil {
+		t.Fatalf("InspectToolchain() error = %v", err)
+	}
+	if report == nil || report.Source != ToolchainSourceEnvironment || report.DeveloperDir != developerDir {
+		t.Fatalf("unexpected environment report: %+v", report)
+	}
+}
+
+func TestInspectToolchainUsesXcodeSelectWhenEnvironmentUnset(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	developerDir := filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer")
+	if err := os.MkdirAll(developerDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	t.Setenv("DEVELOPER_DIR", "")
+	t.Setenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER", "1")
+	commandContextFn = toolchainDoctorHelperCommandContext
+	lookPathFn = toolchainDoctorLookPath
+	activeDeveloperDirFn = func(context.Context) (string, error) { return developerDir, nil }
+
+	report, err := InspectToolchain(context.Background(), ToolchainOptions{LogWriter: io.Discard})
+	if err != nil {
+		t.Fatalf("InspectToolchain() error = %v", err)
+	}
+	if report == nil || report.Source != ToolchainSourceXcodeSelect || report.DeveloperDir != developerDir {
+		t.Fatalf("unexpected xcode-select report: %+v", report)
+	}
+}
+
+func TestInspectToolchainReportsBetaAndCommandLineToolsWarnings(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	t.Setenv("DEVELOPER_DIR", "")
+	t.Setenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER", "1")
+	commandContextFn = toolchainDoctorHelperCommandContext
+	lookPathFn = toolchainDoctorLookPath
+	activeDeveloperDirFn = func(context.Context) (string, error) {
+		t.Fatal("xcode-select lookup must not run for explicit candidates")
+		return "", nil
+	}
+
+	tests := []struct {
+		name       string
+		candidate  func(string) string
+		wantStatus ToolchainStatus
+		wantCheck  ToolchainCheckStatus
+		wantBeta   bool
+	}{
+		{
+			name: "beta xcode",
+			candidate: func(root string) string {
+				return filepath.Join(root, "Xcode-beta.app", "Contents", "Developer")
+			},
+			wantStatus: ToolchainStatusWarn,
+			wantCheck:  ToolchainCheckStatusOK,
+			wantBeta:   true,
+		},
+		{
+			name: "command line tools",
+			candidate: func(root string) string {
+				return filepath.Join(root, "Library", "Developer", "CommandLineTools")
+			},
+			wantStatus: ToolchainStatusWarn,
+			wantCheck:  ToolchainCheckStatusWarn,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := test.candidate(t.TempDir())
+			if err := os.MkdirAll(candidate, 0o755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
+
+			report, err := InspectToolchain(context.Background(), ToolchainOptions{
+				DeveloperDir: candidate,
+				LogWriter:    io.Discard,
+			})
+			if err != nil {
+				t.Fatalf("InspectToolchain() error = %v", err)
+			}
+			if report == nil || report.Status != test.wantStatus || report.Beta != test.wantBeta {
+				t.Fatalf("unexpected report: %+v", report)
+			}
+			if check, ok := toolchainReportCheck(report, "developer_dir"); !ok || check.Status != test.wantCheck {
+				t.Fatalf("developer_dir check = %+v (found=%t), want %q", check, ok, test.wantCheck)
+			}
+			if test.wantBeta && !toolchainReportHasCheck(report, "beta", ToolchainCheckStatusWarn) {
+				t.Fatalf("missing beta warning: %+v", report.Checks)
+			}
+		})
+	}
+}
+
+func TestInspectToolchainReturnsFailureForUnavailableCandidate(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	lookPathFn = toolchainDoctorLookPath
+	report, err := InspectToolchain(context.Background(), ToolchainOptions{
+		DeveloperDir: filepath.Join(t.TempDir(), "Missing.xcode", "Contents", "Developer"),
+		LogWriter:    io.Discard,
+	})
+	if err == nil {
+		t.Fatal("InspectToolchain() error = nil, want unavailable candidate error")
+	}
+	if report == nil || report.Status != ToolchainStatusFail {
+		t.Fatalf("InspectToolchain() report = %+v, error = %v; want failed report", report, err)
+	}
+	if !toolchainReportHasCheck(report, "developer_dir", ToolchainCheckStatusFail) {
+		t.Fatalf("missing failed developer_dir check: %+v", report.Checks)
+	}
+}
+
+func TestInspectToolchainRejectsNonDirectoryCandidate(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	candidate := filepath.Join(t.TempDir(), "Xcode.app")
+	if err := os.WriteFile(candidate, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	report, err := InspectToolchain(context.Background(), ToolchainOptions{DeveloperDir: candidate, LogWriter: io.Discard})
+	if err == nil || report == nil || report.Status != ToolchainStatusFail {
+		t.Fatalf("InspectToolchain() report/error = %+v/%v, want failed report", report, err)
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("InspectToolchain() error = %v, want non-directory detail", err)
+	}
+}
+
+func TestInspectToolchainReportsUnsupportedPlatform(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "linux"
+	report, err := InspectToolchain(context.Background(), ToolchainOptions{DeveloperDir: t.TempDir(), LogWriter: io.Discard})
+	if report != nil {
+		t.Fatalf("InspectToolchain() report = %+v, want nil on unsupported platform", report)
+	}
+	if err == nil || !strings.Contains(err.Error(), "supported on macOS only") {
+		t.Fatalf("InspectToolchain() error = %v, want macOS-only error", err)
+	}
+}
+
+func toolchainReportHasCheck(report *ToolchainReport, name string, status ToolchainCheckStatus) bool {
+	for _, check := range report.Checks {
+		if check.Name == name && check.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func toolchainReportCheck(report *ToolchainReport, name string) (ToolchainCheck, bool) {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check, true
+		}
+	}
+	return ToolchainCheck{}, false
+}
+
+func toolchainDoctorLookPath(name string) (string, error) {
+	switch name {
+	case "xcodebuild":
+		return "/usr/bin/xcodebuild", nil
+	case "xcrun":
+		return "/usr/bin/xcrun", nil
+	default:
+		return "", exec.ErrNotFound
+	}
+}
+
+func toolchainDoctorHelperCommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	commandArgs := []string{"-test.run=TestToolchainDoctorHelperProcess", "--", name}
+	commandArgs = append(commandArgs, args...)
+	return exec.CommandContext(ctx, os.Args[0], commandArgs...)
+}
+
+func TestToolchainDoctorHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER") != "1" {
+		return
+	}
+
+	args := os.Args
+	separator := -1
+	for i, arg := range args {
+		if arg == "--" {
+			separator = i
+			break
+		}
+	}
+	if separator < 0 || separator+1 >= len(args) {
+		fmt.Fprintln(os.Stderr, "missing helper command")
+		os.Exit(2)
+	}
+	command := args[separator+1:]
+	switch {
+	case len(command) >= 2 && command[0] == "xcodebuild" && command[1] == "-version":
+		if os.Getenv("GO_TOOLCHAIN_DOCTOR_FAIL_XCODEBUILD") == "1" {
+			fmt.Fprintln(os.Stderr, strings.Repeat("toolchain diagnostic ", 400))
+			os.Exit(7)
+		}
+		fmt.Fprintln(os.Stdout, "Xcode 16.4")
+		fmt.Fprintln(os.Stdout, "Build version 16F6")
+		os.Exit(0)
+	case len(command) >= 3 && command[0] == "xcrun" && command[1] == "--find" && command[2] == "xcodebuild":
+		if os.Getenv("GO_TOOLCHAIN_DOCTOR_FAIL_XCRUN_FIND") == "1" {
+			fmt.Fprintln(os.Stderr, "xcrun could not resolve xcodebuild")
+			os.Exit(8)
+		}
+		fmt.Fprintln(os.Stdout, filepath.Join(os.Getenv("DEVELOPER_DIR"), "usr", "bin", "xcodebuild"))
+		os.Exit(0)
+	case len(command) >= 4 && command[0] == "xcrun" && command[1] == "--sdk" && command[3] == "--show-sdk-path":
+		if os.Getenv("GO_TOOLCHAIN_DOCTOR_FAIL_SDK") == "1" {
+			fmt.Fprintln(os.Stderr, "requested SDK is not installed")
+			os.Exit(9)
+		}
+		fmt.Fprintln(os.Stdout, filepath.Join(os.Getenv("DEVELOPER_DIR"), "Platforms", "iPhoneSimulator.platform", "Developer", "SDKs", command[2]+".sdk"))
+		os.Exit(0)
+	case len(command) >= 2 && command[0] == "xcode-select":
+		fmt.Fprintln(os.Stderr, "xcode-select must not be used for an explicit toolchain candidate")
+		os.Exit(3)
+	default:
+		fmt.Fprintf(os.Stderr, "unexpected helper command %q\n", command)
+		os.Exit(2)
+	}
+}
+
+func TestInspectToolchainPreservesCancellation(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+	runtimeGOOS = "darwin"
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := InspectToolchain(ctx, ToolchainOptions{DeveloperDir: t.TempDir(), LogWriter: io.Discard})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("InspectToolchain() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestInspectToolchainBoundsProbeDiagnostics(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	developerDir := filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer")
+	if err := os.MkdirAll(developerDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	t.Setenv("DEVELOPER_DIR", "")
+	t.Setenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER", "1")
+	t.Setenv("GO_TOOLCHAIN_DOCTOR_FAIL_XCODEBUILD", "1")
+	commandContextFn = toolchainDoctorHelperCommandContext
+	lookPathFn = toolchainDoctorLookPath
+
+	var logs strings.Builder
+	report, err := InspectToolchain(context.Background(), ToolchainOptions{
+		DeveloperDir: developerDir,
+		LogWriter:    &logs,
+	})
+	if err == nil || report == nil || report.Status != ToolchainStatusFail {
+		t.Fatalf("InspectToolchain() report/error = %+v/%v, want failed report", report, err)
+	}
+	check, ok := toolchainReportCheck(report, "xcodebuild")
+	if !ok || !strings.Contains(check.Message, "xcodebuild -version failed") {
+		t.Fatalf("xcodebuild check = %+v, want bounded probe failure", check)
+	}
+	if len(check.Message) > 512 {
+		t.Fatalf("xcodebuild diagnostic length = %d, want bounded message", len(check.Message))
+	}
+	if !strings.Contains(logs.String(), "toolchain diagnostic") {
+		t.Fatalf("probe log = %q, want child diagnostic", logs.String())
+	}
+	if len(logs.String()) > toolchainProbeDiagnosticLimit*2+2 {
+		t.Fatalf("probe log length = %d, want bounded output", len(logs.String()))
+	}
+}
+
+func TestInspectToolchainReportsProbeFailures(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	developerDir := filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer")
+	if err := os.MkdirAll(developerDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	t.Setenv("DEVELOPER_DIR", "")
+	t.Setenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER", "1")
+	commandContextFn = toolchainDoctorHelperCommandContext
+	lookPathFn = toolchainDoctorLookPath
+
+	for _, test := range []struct {
+		name      string
+		env       string
+		sdk       string
+		checkName string
+	}{
+		{name: "xcodebuild", env: "GO_TOOLCHAIN_DOCTOR_FAIL_XCODEBUILD", checkName: "xcodebuild"},
+		{name: "xcrun", env: "GO_TOOLCHAIN_DOCTOR_FAIL_XCRUN_FIND", checkName: "xcrun"},
+		{name: "sdk", env: "GO_TOOLCHAIN_DOCTOR_FAIL_SDK", sdk: "iphonesimulator", checkName: "sdk:iphonesimulator"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(test.env, "1")
+			report, err := InspectToolchain(context.Background(), ToolchainOptions{
+				DeveloperDir: developerDir,
+				SDK:          test.sdk,
+				LogWriter:    io.Discard,
+			})
+			if err == nil || report == nil || report.Status != ToolchainStatusFail {
+				t.Fatalf("InspectToolchain() report/error = %+v/%v, want failed report", report, err)
+			}
+			if !toolchainReportHasCheck(report, test.checkName, ToolchainCheckStatusFail) {
+				t.Fatalf("missing failed %s check: %+v", test.checkName, report.Checks)
+			}
+		})
+	}
+}

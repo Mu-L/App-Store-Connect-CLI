@@ -1,0 +1,422 @@
+package xcode
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+)
+
+const toolchainProbeDiagnosticLimit = 4 * 1024
+
+// ToolchainStatus is the overall status of a local Xcode toolchain report.
+type ToolchainStatus string
+
+const (
+	ToolchainStatusOK   ToolchainStatus = "ok"
+	ToolchainStatusWarn ToolchainStatus = "warn"
+	ToolchainStatusFail ToolchainStatus = "fail"
+)
+
+// ToolchainCheckStatus is the status of one local Xcode toolchain check.
+type ToolchainCheckStatus string
+
+const (
+	ToolchainCheckStatusOK   ToolchainCheckStatus = "ok"
+	ToolchainCheckStatusWarn ToolchainCheckStatus = "warn"
+	ToolchainCheckStatusFail ToolchainCheckStatus = "fail"
+)
+
+// ToolchainSource describes how the developer directory was selected.
+type ToolchainSource string
+
+const (
+	ToolchainSourceFlag        ToolchainSource = "flag"
+	ToolchainSourceEnvironment ToolchainSource = "environment"
+	ToolchainSourceXcodeSelect ToolchainSource = "xcode-select"
+)
+
+// XcodeVersion contains the version and build values reported by xcodebuild.
+type XcodeVersion struct {
+	Version string
+	Build   string
+}
+
+// ToolchainOptions controls local Xcode toolchain inspection.
+type ToolchainOptions struct {
+	DeveloperDir string
+	SDK          string
+	LogWriter    io.Writer
+}
+
+// ToolchainCheck is one check in a local Xcode toolchain report.
+type ToolchainCheck struct {
+	Name    string               `json:"name"`
+	Status  ToolchainCheckStatus `json:"status"`
+	Path    string               `json:"path,omitempty"`
+	Message string               `json:"message"`
+}
+
+// ToolchainReport is the stable structured result for local toolchain checks.
+type ToolchainReport struct {
+	Status       ToolchainStatus  `json:"status"`
+	Source       ToolchainSource  `json:"source,omitempty"`
+	DeveloperDir string           `json:"developer_dir,omitempty"`
+	XcodePath    string           `json:"xcode_path,omitempty"`
+	XcodeVersion string           `json:"xcode_version,omitempty"`
+	XcodeBuild   string           `json:"xcode_build,omitempty"`
+	Beta         bool             `json:"beta"`
+	Checks       []ToolchainCheck `json:"checks"`
+}
+
+var (
+	xcodeVersionLinePattern = regexp.MustCompile(`(?m)^\s*Xcode[\t ]+(.+?)\s*$`)
+	xcodeBuildLinePattern   = regexp.MustCompile(`(?m)^\s*Build[\t ]+version[\t ]+(.+?)\s*$`)
+)
+
+// InspectToolchain resolves and verifies a local Xcode developer directory.
+// It returns a report alongside probe failures whenever enough information is
+// available to produce one.
+func InspectToolchain(ctx context.Context, opts ToolchainOptions) (*ToolchainReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if runtimeGOOS != "darwin" {
+		return nil, fmt.Errorf("supported on macOS only; current platform is %s", runtimeGOOS)
+	}
+
+	report := &ToolchainReport{
+		Status: ToolchainStatusOK,
+		Checks: make([]ToolchainCheck, 0, 4),
+	}
+	var firstErr error
+	addCheck := func(check ToolchainCheck, err error) {
+		report.Checks = append(report.Checks, check)
+		if check.Status == ToolchainCheckStatusFail {
+			report.Status = ToolchainStatusFail
+			if firstErr == nil {
+				firstErr = err
+			}
+		} else if check.Status == ToolchainCheckStatusWarn && report.Status == ToolchainStatusOK {
+			report.Status = ToolchainStatusWarn
+		}
+	}
+
+	developerDir, source, err := resolveToolchainDeveloperDir(ctx, opts.DeveloperDir)
+	report.Source = source
+	if err != nil {
+		addCheck(
+			ToolchainCheck{
+				Name:    "developer_dir",
+				Status:  ToolchainCheckStatusFail,
+				Message: sanitizeToolchainError(err),
+			},
+			fmt.Errorf("resolve developer directory: %w", err),
+		)
+		return report, firstErr
+	}
+
+	developerDir, xcodePath, commandLineTools, err := normalizeToolchainDeveloperDir(developerDir)
+	report.DeveloperDir = developerDir
+	report.XcodePath = xcodePath
+	if err != nil {
+		addCheck(
+			ToolchainCheck{
+				Name:    "developer_dir",
+				Status:  ToolchainCheckStatusFail,
+				Message: sanitizeToolchainError(err),
+			},
+			fmt.Errorf("inspect developer directory: %w", err),
+		)
+		return report, firstErr
+	}
+
+	if commandLineTools {
+		addCheck(
+			ToolchainCheck{
+				Name:    "developer_dir",
+				Status:  ToolchainCheckStatusWarn,
+				Message: "selected developer directory is the Command Line Tools package; full Xcode is required for archive and export workflows",
+			},
+			nil,
+		)
+	} else {
+		addCheck(
+			ToolchainCheck{
+				Name:    "developer_dir",
+				Status:  ToolchainCheckStatusOK,
+				Message: "developer directory is available",
+			},
+			nil,
+		)
+	}
+
+	report.Beta = isBetaXcodePath(developerDir) || isBetaXcodePath(xcodePath)
+
+	xcodebuildPath, xcodebuildErr := lookPathFn("xcodebuild")
+	if xcodebuildErr != nil {
+		message := "xcodebuild is not available in PATH"
+		if !errors.Is(xcodebuildErr, exec.ErrNotFound) {
+			message = sanitizeToolchainError(fmt.Errorf("locate xcodebuild: %w", xcodebuildErr))
+		}
+		addCheck(
+			ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusFail, Message: message},
+			fmt.Errorf("locate xcodebuild: %w", xcodebuildErr),
+		)
+	} else {
+		stdout, stderr, probeErr := runToolchainProbe(ctx, "xcodebuild", []string{"-version"}, developerDir, opts.LogWriter)
+		if probeErr != nil {
+			message := toolchainProbeFailureMessage("xcodebuild -version", stderr, probeErr)
+			addCheck(
+				ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusFail, Path: xcodebuildPath, Message: message},
+				fmt.Errorf("xcodebuild -version: %w", probeErr),
+			)
+		} else {
+			version, parseErr := parseXcodeVersion(stdout)
+			if parseErr != nil {
+				addCheck(
+					ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusFail, Path: xcodebuildPath, Message: sanitizeToolchainError(parseErr)},
+					fmt.Errorf("parse xcodebuild -version: %w", parseErr),
+				)
+			} else {
+				report.XcodeVersion = version.Version
+				report.XcodeBuild = version.Build
+				addCheck(
+					ToolchainCheck{Name: "xcodebuild", Status: ToolchainCheckStatusOK, Path: xcodebuildPath, Message: "xcodebuild -version succeeded"},
+					nil,
+				)
+			}
+		}
+	}
+
+	xcrunPath, xcrunErr := lookPathFn("xcrun")
+	if xcrunErr != nil {
+		message := "xcrun is not available in PATH"
+		if !errors.Is(xcrunErr, exec.ErrNotFound) {
+			message = sanitizeToolchainError(fmt.Errorf("locate xcrun: %w", xcrunErr))
+		}
+		addCheck(
+			ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusFail, Message: message},
+			fmt.Errorf("locate xcrun: %w", xcrunErr),
+		)
+	} else {
+		stdout, stderr, probeErr := runToolchainProbe(ctx, "xcrun", []string{"--find", "xcodebuild"}, developerDir, opts.LogWriter)
+		resolvedXcodebuild := strings.TrimSpace(stdout)
+		if probeErr != nil {
+			message := toolchainProbeFailureMessage("xcrun --find xcodebuild", stderr, probeErr)
+			addCheck(
+				ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusFail, Path: xcrunPath, Message: message},
+				fmt.Errorf("xcrun --find xcodebuild: %w", probeErr),
+			)
+		} else if resolvedXcodebuild == "" {
+			message := "xcrun did not resolve xcodebuild"
+			addCheck(
+				ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusFail, Path: xcrunPath, Message: message},
+				errors.New(message),
+			)
+		} else {
+			addCheck(
+				ToolchainCheck{Name: "xcrun", Status: ToolchainCheckStatusOK, Path: xcrunPath, Message: "xcrun resolved xcodebuild from the selected toolchain"},
+				nil,
+			)
+			for index := range report.Checks {
+				if report.Checks[index].Name == "xcodebuild" && report.Checks[index].Status == ToolchainCheckStatusOK {
+					report.Checks[index].Path = resolvedXcodebuild
+					break
+				}
+			}
+		}
+	}
+
+	if sdk := strings.TrimSpace(opts.SDK); sdk != "" {
+		checkName := "sdk:" + sdk
+		if xcrunErr != nil {
+			message := fmt.Sprintf("xcrun is unavailable; cannot resolve SDK %q", sdk)
+			addCheck(
+				ToolchainCheck{Name: checkName, Status: ToolchainCheckStatusFail, Message: message},
+				fmt.Errorf("resolve SDK %q: xcrun unavailable: %w", sdk, xcrunErr),
+			)
+		} else {
+			stdout, stderr, probeErr := runToolchainProbe(ctx, "xcrun", []string{"--sdk", sdk, "--show-sdk-path"}, developerDir, opts.LogWriter)
+			sdkPath := strings.TrimSpace(stdout)
+			switch {
+			case probeErr != nil:
+				message := toolchainProbeFailureMessage("xcrun --sdk "+sdk+" --show-sdk-path", stderr, probeErr)
+				addCheck(
+					ToolchainCheck{Name: checkName, Status: ToolchainCheckStatusFail, Message: message},
+					fmt.Errorf("resolve SDK %q: %w", sdk, probeErr),
+				)
+			case sdkPath == "":
+				message := fmt.Sprintf("SDK %q did not resolve to a path", sdk)
+				addCheck(
+					ToolchainCheck{Name: checkName, Status: ToolchainCheckStatusFail, Message: message},
+					errors.New(message),
+				)
+			default:
+				addCheck(
+					ToolchainCheck{Name: checkName, Status: ToolchainCheckStatusOK, Path: sdkPath, Message: "SDK is available"},
+					nil,
+				)
+			}
+		}
+	}
+
+	if report.Beta {
+		betaCheck := ToolchainCheck{
+			Name:    "beta",
+			Status:  ToolchainCheckStatusWarn,
+			Message: "selected developer directory appears to be a beta Xcode build",
+		}
+		addCheck(betaCheck, nil)
+	}
+
+	if firstErr != nil {
+		return report, firstErr
+	}
+	return report, nil
+}
+
+func resolveToolchainDeveloperDir(ctx context.Context, explicit string) (string, ToolchainSource, error) {
+	if value := strings.TrimSpace(explicit); value != "" {
+		return value, ToolchainSourceFlag, nil
+	}
+	if value := strings.TrimSpace(os.Getenv("DEVELOPER_DIR")); value != "" {
+		return value, ToolchainSourceEnvironment, nil
+	}
+	value, err := activeDeveloperDirFn(ctx)
+	if err != nil {
+		return "", ToolchainSourceXcodeSelect, err
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", ToolchainSourceXcodeSelect, errors.New("xcode-select returned an empty developer directory")
+	}
+	return value, ToolchainSourceXcodeSelect, nil
+}
+
+func normalizeToolchainDeveloperDir(value string) (developerDir, xcodePath string, commandLineTools bool, err error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", "", false, errors.New("developer directory is empty")
+	}
+	absolute, err := filepath.Abs(trimmed)
+	if err != nil {
+		return "", "", false, fmt.Errorf("resolve developer directory path: %w", err)
+	}
+	absolute = filepath.Clean(absolute)
+	info, err := os.Stat(absolute)
+	if err != nil {
+		return "", "", false, fmt.Errorf("developer directory %q is unavailable: %w", absolute, err)
+	}
+	if !info.IsDir() {
+		return "", "", false, fmt.Errorf("developer directory %q is not a directory", absolute)
+	}
+
+	if strings.EqualFold(filepath.Ext(absolute), ".app") {
+		candidate := filepath.Join(absolute, "Contents", "Developer")
+		candidateInfo, candidateErr := os.Stat(candidate)
+		if candidateErr != nil {
+			return "", "", false, fmt.Errorf("xcode application %q has no Contents/Developer directory: %w", absolute, candidateErr)
+		}
+		if !candidateInfo.IsDir() {
+			return "", "", false, fmt.Errorf("xcode application developer path %q is not a directory", candidate)
+		}
+		return filepath.Clean(candidate), absolute, false, nil
+	}
+
+	parent := filepath.Dir(absolute)
+	if filepath.Base(parent) == "Contents" && strings.EqualFold(filepath.Ext(filepath.Dir(parent)), ".app") {
+		xcodePath = filepath.Dir(parent)
+	}
+	lower := strings.ToLower(filepath.ToSlash(absolute))
+	commandLineTools = strings.HasSuffix(lower, "/library/developer/commandlinetools") || strings.HasSuffix(lower, "/commandlinetools")
+	return absolute, xcodePath, commandLineTools, nil
+}
+
+func parseXcodeVersion(output string) (XcodeVersion, error) {
+	versionMatch := xcodeVersionLinePattern.FindStringSubmatch(output)
+	if len(versionMatch) != 2 || strings.TrimSpace(versionMatch[1]) == "" {
+		detail := strings.TrimSpace(output)
+		if detail == "" {
+			detail = "empty output"
+		} else {
+			detail = truncateUTF8Prefix(detail, 256)
+		}
+		return XcodeVersion{}, fmt.Errorf("unexpected xcodebuild -version output: %q", detail)
+	}
+	buildMatch := xcodeBuildLinePattern.FindStringSubmatch(output)
+	if len(buildMatch) != 2 || strings.TrimSpace(buildMatch[1]) == "" {
+		return XcodeVersion{}, errors.New("missing Build version in xcodebuild -version output")
+	}
+	return XcodeVersion{
+		Version: strings.TrimSpace(versionMatch[1]),
+		Build:   strings.TrimSpace(buildMatch[1]),
+	}, nil
+}
+
+func runToolchainProbe(ctx context.Context, name string, args []string, developerDir string, logWriter io.Writer) (stdout, stderr string, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := commandContextFn(ctx, name, args...)
+	cmd.Env = toolchainProbeEnvironment(developerDir)
+	stdoutBuffer := newTailBuffer(toolchainProbeDiagnosticLimit)
+	stderrBuffer := newTailBuffer(toolchainProbeDiagnosticLimit)
+	cmd.Stdout = stdoutBuffer
+	cmd.Stderr = stderrBuffer
+	err = runXcodeCommand(cmd)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		}
+	}
+	stdout = stdoutBuffer.String()
+	stderr = stderrBuffer.String()
+	writeToolchainProbeLog(logWriter, stdout)
+	writeToolchainProbeLog(logWriter, stderr)
+	return stdout, stderr, err
+}
+
+func writeToolchainProbeLog(logWriter io.Writer, output string) {
+	if logWriter == nil || output == "" {
+		return
+	}
+	_, _ = io.WriteString(logWriter, output)
+	if !strings.HasSuffix(output, "\n") {
+		_, _ = io.WriteString(logWriter, "\n")
+	}
+}
+
+func toolchainProbeEnvironment(developerDir string) []string {
+	original := os.Environ()
+	environment := make([]string, 0, len(original)+1)
+	for _, entry := range original {
+		if strings.HasPrefix(entry, "DEVELOPER_DIR=") {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	return append(environment, "DEVELOPER_DIR="+developerDir)
+}
+
+func toolchainProbeFailureMessage(command string, stderr string, err error) string {
+	detail := strings.TrimSpace(stderr)
+	if detail != "" {
+		return fmt.Sprintf("%s failed: %s", command, truncateUTF8Prefix(detail, 256))
+	}
+	return fmt.Sprintf("%s failed: %s", command, sanitizeToolchainError(err))
+}
+
+func sanitizeToolchainError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return truncateUTF8Prefix(strings.TrimSpace(err.Error()), 512)
+}
