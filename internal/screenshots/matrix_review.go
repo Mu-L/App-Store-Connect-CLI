@@ -39,6 +39,12 @@ func GenerateMatrixReview(ctx context.Context, request MatrixReviewRequest) (*Ma
 	})
 }
 
+// matrixReviewGeneratedFiles lists every file generateMatrixReviewWithWriter
+// publishes into the review directory. Plan validation refuses inputs that would
+// be overwritten by these names, so this must stay in step with the writer below;
+// TestGenerateMatrixReviewWritesOnlyTheDeclaredFiles pins that.
+var matrixReviewGeneratedFiles = []string{"index.html", "manifest.json"}
+
 type matrixReviewWriter func(rootfs.Root, string, []byte, os.FileMode) error
 
 func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewRequest, write matrixReviewWriter) (*MatrixReviewResult, error) {

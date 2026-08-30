@@ -76,11 +76,21 @@ execution values in the matrix plan.`,
 				fmt.Fprintln(os.Stderr, "Error: --plan is required")
 				return shared.MissingRequiredUsageError("--plan")
 			}
-			if (maxConcurrencySet && *maxConcurrency < 1) || *maxConcurrency > 8 {
+			// Both flags advertise "0 uses plan value". Honor that sentinel
+			// instead of rejecting it, so a script computing an override can
+			// pass 0 to defer to the plan. Only a stated non-zero value counts
+			// as an override, and it must fall inside the documented range.
+			if *maxConcurrency == 0 {
+				maxConcurrencySet = false
+			}
+			if *maxAttempts == 0 {
+				maxAttemptsSet = false
+			}
+			if maxConcurrencySet && (*maxConcurrency < 1 || *maxConcurrency > 8) {
 				fmt.Fprintln(os.Stderr, "Error: --max-concurrency must be between 1 and 8 when set")
 				return shared.InvalidValueUsageError("--max-concurrency")
 			}
-			if (maxAttemptsSet && *maxAttempts < 1) || *maxAttempts > 3 {
+			if maxAttemptsSet && (*maxAttempts < 1 || *maxAttempts > 3) {
 				fmt.Fprintln(os.Stderr, "Error: --max-attempts must be between 1 and 3 when set")
 				return shared.InvalidValueUsageError("--max-attempts")
 			}

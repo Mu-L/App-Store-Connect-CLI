@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -2027,5 +2028,190 @@ func TestMatrixReviewManifestOmitsCleanupFailedWhenZero(t *testing.T) {
 	}
 	if strings.Contains(string(html), "cleanup failed") {
 		t.Fatalf("HTML summary emitted cleanup-failure total for a clean run: %s", html)
+	}
+}
+
+func TestLoadMatrixPlanRejectsExplicitZeroExecutionLimits(t *testing.T) {
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	tests := []struct {
+		name      string
+		execution string
+		wantErr   string
+	}{
+		{
+			name:      "explicit zero concurrency",
+			execution: `{"max_concurrency":0}`,
+			wantErr:   "execution.max_concurrency must be between 1 and 8 when set",
+		},
+		{
+			name:      "explicit zero attempts",
+			execution: `{"max_attempts":0}`,
+			wantErr:   "execution.max_attempts must be between 1 and 3 when set",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			matrixPath := filepath.Join(dir, "matrix.json")
+			writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"execution":`+tt.execution+`,"output":{"raw_dir":"raw","review_dir":"review"}}`)
+			plan, err := LoadMatrixPlan(matrixPath)
+			if err != nil {
+				t.Fatalf("LoadMatrixPlan() error = %v", err)
+			}
+			if err := ValidateMatrixPlan(plan, base); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateMatrixPlan() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadMatrixPlanAcceptsOmittedExecutionLimits(t *testing.T) {
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	dir := t.TempDir()
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"execution":{"retry_backoff_ms":10},"output":{"raw_dir":"raw","review_dir":"review"}}`)
+	plan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	if err := ValidateMatrixPlan(plan, base); err != nil {
+		t.Fatalf("ValidateMatrixPlan() error = %v, want omitted execution limits to default", err)
+	}
+	// A programmatically constructed plan carries no presence information, so a
+	// zero value must still mean "use the default" rather than "explicit zero".
+	if err := ValidateMatrixPlan(&MatrixPlan{
+		Version:         1,
+		Devices:         []MatrixDevice{{ID: "phone", UDID: "SIM-UDID"}},
+		Locales:         []string{"en-US"},
+		Appearances:     []string{"light"},
+		ContentVariants: []MatrixContentVariant{{ID: "default"}},
+	}, base); err != nil {
+		t.Fatalf("ValidateMatrixPlan() on constructed plan error = %v, want zero to mean default", err)
+	}
+}
+
+func TestValidateMatrixPlanRejectsReviewOutputAliasingPlanInputs(t *testing.T) {
+	tests := []struct {
+		name          string
+		matrixName    string
+		baseName      string
+		wantSubstring string
+	}{
+		{
+			name:          "review manifest overwrites the matrix plan",
+			matrixName:    "manifest.json",
+			baseName:      "base.json",
+			wantSubstring: "matrix plan",
+		},
+		{
+			name:          "review HTML overwrites the matrix plan",
+			matrixName:    "index.html",
+			baseName:      "base.json",
+			wantSubstring: "matrix plan",
+		},
+		{
+			name:          "review manifest overwrites the base plan",
+			matrixName:    "matrix.json",
+			baseName:      "manifest.json",
+			wantSubstring: "base plan",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configDir := filepath.Join(dir, "config")
+			if err := os.MkdirAll(configDir, 0o755); err != nil {
+				t.Fatalf("create config dir: %v", err)
+			}
+			basePath := filepath.Join(configDir, tt.baseName)
+			matrixPath := filepath.Join(configDir, tt.matrixName)
+			writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+			writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"`+tt.baseName+`","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","framed_dir":"framed","review_dir":"."}}`)
+			matrixPlan, err := LoadMatrixPlan(matrixPath)
+			if err != nil {
+				t.Fatalf("LoadMatrixPlan() error = %v", err)
+			}
+			_, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+				RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+					writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+					return &RunResult{}, nil
+				},
+				Appearance: &matrixTestAppearance{},
+			})
+			if runErr == nil || !strings.Contains(runErr.Error(), tt.wantSubstring) {
+				t.Fatalf("RunMatrixWithDependencies() error = %v, want refusal naming the %s", runErr, tt.wantSubstring)
+			}
+			// The plan input must survive untouched.
+			data, err := os.ReadFile(matrixPath)
+			if err != nil {
+				t.Fatalf("read matrix plan: %v", err)
+			}
+			if !strings.Contains(string(data), `"base_plan"`) {
+				t.Fatalf("matrix plan was overwritten by generated output: %s", data)
+			}
+			baseData, err := os.ReadFile(basePath)
+			if err != nil {
+				t.Fatalf("read base plan: %v", err)
+			}
+			if !strings.Contains(string(baseData), `"bundle_id"`) {
+				t.Fatalf("base plan was overwritten by generated output: %s", baseData)
+			}
+		})
+	}
+}
+
+func TestValidateMatrixPlanAllowsReviewDirBesidePlanWithDifferentNames(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("create config dir: %v", err)
+	}
+	basePath := filepath.Join(configDir, "base.json")
+	matrixPath := filepath.Join(configDir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","framed_dir":"framed","review_dir":"."}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Appearance: &matrixTestAppearance{},
+	})
+	if runErr != nil {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want a review dir beside differently named plans to be allowed", runErr)
+	}
+	if result == nil || result.Succeeded != 1 {
+		t.Fatalf("result = %+v, want one successful cell", result)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "manifest.json")); err != nil {
+		t.Fatalf("review manifest not written beside the plans: %v", err)
+	}
+}
+
+func TestGenerateMatrixReviewWritesOnlyTheDeclaredFiles(t *testing.T) {
+	dir := t.TempDir()
+	result := &MatrixResult{Cells: []MatrixCellResult{{ID: "phone|en-US|light|default", Status: MatrixCellSuccess}}}
+	if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: result, OutputDir: dir}); err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read review dir: %v", err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		got = append(got, entry.Name())
+	}
+	sort.Strings(got)
+	want := append([]string(nil), matrixReviewGeneratedFiles...)
+	sort.Strings(want)
+	// Plan validation refuses inputs aliasing matrixReviewGeneratedFiles, so an
+	// undeclared published file would be an unguarded overwrite hazard.
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("review dir contents = %v, want exactly matrixReviewGeneratedFiles %v", got, want)
 	}
 }

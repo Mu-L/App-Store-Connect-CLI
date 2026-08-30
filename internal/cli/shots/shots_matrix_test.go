@@ -187,3 +187,91 @@ func captureShotsMatrixOutput(t *testing.T, run func() error) (stdout, stderr st
 	_ = stderrReader.Close()
 	return stdout, stderr, runErr
 }
+
+func TestShotsMatrixHonorsDocumentedZeroOverrideSentinel(t *testing.T) {
+	tests := []struct {
+		name string
+		flag string
+	}{
+		{name: "max-concurrency", flag: "--max-concurrency"},
+		{name: "max-attempts", flag: "--max-attempts"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotOptions screenshots.MatrixOptions
+			var runCalls int
+			command := shotsMatrixCommandWithDependencies(
+				shotsMatrixCommandDependencies{
+					loadPlan: func(string) (*screenshots.MatrixPlan, error) {
+						return &screenshots.MatrixPlan{}, nil
+					},
+					runMatrix: func(_ context.Context, _ string, _ *screenshots.MatrixPlan, options screenshots.MatrixOptions) (*screenshots.MatrixResult, error) {
+						runCalls++
+						gotOptions = options
+						return &screenshots.MatrixResult{}, nil
+					},
+				},
+			)
+
+			_, stderr, err := captureShotsMatrixOutput(t, func() error {
+				return command.ParseAndRun(context.Background(), []string{
+					"--plan", filepath.Join(t.TempDir(), "matrix.json"),
+					tt.flag, "0",
+					"--output", "json",
+				})
+			})
+			if err != nil {
+				t.Fatalf("error = %v, want explicit zero accepted as the documented plan-value sentinel", err)
+			}
+			if runCalls != 1 {
+				t.Fatalf("runCalls = %d, want the matrix to run", runCalls)
+			}
+			if strings.Contains(stderr, "must be between") {
+				t.Fatalf("stderr = %q, want no range diagnostic for the documented sentinel", stderr)
+			}
+			if gotOptions.MaxConcurrencySet || gotOptions.MaxAttemptsSet {
+				t.Fatalf("options = %+v, want explicit zero to defer to the plan value", gotOptions)
+			}
+		})
+	}
+}
+
+func TestShotsMatrixStillRejectsNegativeAndOutOfRangeOverrides(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		diag string
+	}{
+		{name: "negative concurrency", args: []string{"--max-concurrency", "-1"}, diag: "--max-concurrency must be between 1 and 8"},
+		{name: "concurrency above max", args: []string{"--max-concurrency", "9"}, diag: "--max-concurrency must be between 1 and 8"},
+		{name: "negative attempts", args: []string{"--max-attempts", "-1"}, diag: "--max-attempts must be between 1 and 3"},
+		{name: "attempts above max", args: []string{"--max-attempts", "4"}, diag: "--max-attempts must be between 1 and 3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var runCalls int
+			command := shotsMatrixCommandWithDependencies(
+				shotsMatrixCommandDependencies{
+					loadPlan: func(string) (*screenshots.MatrixPlan, error) { return &screenshots.MatrixPlan{}, nil },
+					runMatrix: func(context.Context, string, *screenshots.MatrixPlan, screenshots.MatrixOptions) (*screenshots.MatrixResult, error) {
+						runCalls++
+						return &screenshots.MatrixResult{}, nil
+					},
+				},
+			)
+			args := append([]string{"--plan", filepath.Join(t.TempDir(), "matrix.json")}, tt.args...)
+			_, stderr, err := captureShotsMatrixOutput(t, func() error {
+				return command.ParseAndRun(context.Background(), args)
+			})
+			if err == nil {
+				t.Fatalf("error = nil, want out-of-range rejection")
+			}
+			if !strings.Contains(stderr, tt.diag) {
+				t.Fatalf("stderr = %q, want %q", stderr, tt.diag)
+			}
+			if runCalls != 0 {
+				t.Fatalf("runCalls = %d, want no run for an invalid override", runCalls)
+			}
+		})
+	}
+}

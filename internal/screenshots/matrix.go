@@ -99,6 +99,36 @@ type MatrixExecution struct {
 	MaxAttempts    int    `json:"max_attempts,omitempty"`
 	RetryBackoffMS int    `json:"retry_backoff_ms,omitempty"`
 	RetryBackoff   string `json:"retry_backoff,omitempty"`
+
+	// maxConcurrencySet and maxAttemptsSet record whether the operator stated
+	// the bounded limit explicitly, so an omitted field can default while an
+	// explicit zero is rejected as out of the documented 1-N range.
+	maxConcurrencySet bool
+	maxAttemptsSet    bool
+}
+
+// UnmarshalJSON decodes execution settings while recording which bounded limits
+// were stated explicitly. encoding/json cannot otherwise distinguish
+// "max_concurrency": 0 from an omitted field, so a mistaken zero would silently
+// run with the default instead of being reported. Unknown-field strictness is
+// preserved here because a custom unmarshaler bypasses the outer decoder's
+// DisallowUnknownFields.
+func (e *MatrixExecution) UnmarshalJSON(data []byte) error {
+	type executionFields MatrixExecution
+	var decoded executionFields
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	*e = MatrixExecution(decoded)
+	var present map[string]json.RawMessage
+	if err := json.Unmarshal(data, &present); err != nil {
+		return err
+	}
+	_, e.maxConcurrencySet = present["max_concurrency"]
+	_, e.maxAttemptsSet = present["max_attempts"]
+	return nil
 }
 
 // MatrixFrame configures optional local framing for matrix artifacts.
@@ -665,10 +695,15 @@ func validateMatrixPlan(plan *MatrixPlan, base *Plan, outputBaseDir string) erro
 	if cellCount > maxMatrixCells {
 		return fmt.Errorf("matrix expands to %d cells; maximum is %d", cellCount, maxMatrixCells)
 	}
-	if plan.Execution.MaxConcurrency < 0 || plan.Execution.MaxConcurrency > maxMatrixConcurrency {
+	// An omitted limit defaults; an explicitly configured value must fall inside
+	// the documented range, so a stated zero is rejected rather than silently
+	// replaced by the default.
+	if plan.Execution.MaxConcurrency < 0 || plan.Execution.MaxConcurrency > maxMatrixConcurrency ||
+		(plan.Execution.maxConcurrencySet && plan.Execution.MaxConcurrency < 1) {
 		return fmt.Errorf("execution.max_concurrency must be between 1 and %d when set", maxMatrixConcurrency)
 	}
-	if plan.Execution.MaxAttempts < 0 || plan.Execution.MaxAttempts > maxMatrixAttempts {
+	if plan.Execution.MaxAttempts < 0 || plan.Execution.MaxAttempts > maxMatrixAttempts ||
+		(plan.Execution.maxAttemptsSet && plan.Execution.MaxAttempts < 1) {
 		return fmt.Errorf("execution.max_attempts must be between 1 and %d when set", maxMatrixAttempts)
 	}
 	if plan.Execution.RetryBackoffMS < 0 {
@@ -684,6 +719,9 @@ func validateMatrixPlan(plan *MatrixPlan, base *Plan, outputBaseDir string) erro
 		}
 	}
 	if err := validateMatrixOutputPaths(plan.Output, outputBaseDir); err != nil {
+		return err
+	}
+	if err := validateMatrixReviewDoesNotOverwritePlans(plan, outputBaseDir); err != nil {
 		return err
 	}
 	if plan.Output.Frame.Enabled {
@@ -736,6 +774,57 @@ func validateMatrixOutputPaths(output MatrixOutput, baseDir string) error {
 			right := resolveMatrixValidationPath(baseDir, paths[j].path)
 			if strings.EqualFold(filepath.Clean(left), filepath.Clean(right)) {
 				return fmt.Errorf("output.%s and output.%s must be different directories", paths[i].name, paths[j].name)
+			}
+		}
+	}
+	return nil
+}
+
+// validateMatrixReviewDoesNotOverwritePlans refuses a review directory whose
+// generated files would atomically replace one of the plan documents that
+// produced them.
+//
+// Comparing only the three output directories is not enough: GenerateMatrixReview
+// always publishes fixed filenames into review_dir, so a matrix plan at
+// config/manifest.json with review_dir "." is structurally valid yet destroys its
+// own input on the first run, and every later run then fails to parse it. The
+// comparison is case-folded to match the case-insensitive filesystems this runs
+// on, consistent with validateMatrixOutputPaths.
+func validateMatrixReviewDoesNotOverwritePlans(plan *MatrixPlan, baseDir string) error {
+	planPath := strings.TrimSpace(plan.sourcePath)
+	if planPath == "" {
+		// A programmatically constructed plan has no on-disk source to protect.
+		return nil
+	}
+	planDir := filepath.Dir(planPath)
+	if strings.TrimSpace(baseDir) == "" {
+		baseDir = planDir
+	}
+	reviewDir := plan.Output.ReviewDir
+	if strings.TrimSpace(reviewDir) == "" {
+		reviewDir = defaultMatrixReviewDir
+	}
+	resolvedReviewDir := filepath.Clean(resolveMatrixValidationPath(baseDir, reviewDir))
+
+	type matrixPlanInput struct {
+		label string
+		path  string
+	}
+	inputs := []matrixPlanInput{{label: "matrix plan", path: filepath.Clean(planPath)}}
+	if reference := strings.TrimSpace(plan.BasePlan); reference != "" && !filepath.IsAbs(reference) {
+		inputs = append(inputs, matrixPlanInput{
+			label: "base plan",
+			path:  filepath.Clean(resolveMatrixArtifactPath(planDir, reference)),
+		})
+	}
+	for _, generated := range matrixReviewGeneratedFiles {
+		generatedPath := filepath.Clean(filepath.Join(resolvedReviewDir, generated))
+		for _, input := range inputs {
+			if strings.EqualFold(generatedPath, input.path) {
+				return fmt.Errorf(
+					"output.review_dir would overwrite the %s at %q with the generated %s; use a different review_dir or plan filename",
+					input.label, input.path, generated,
+				)
 			}
 		}
 	}
