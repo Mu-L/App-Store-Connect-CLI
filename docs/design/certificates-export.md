@@ -32,7 +32,8 @@ asc certificates export \
 
 `--certificate`, `--private-key`, `--password-file`, and `--p12-out` are
 required. `--csr` is optional and, when present, provides an additional
-PKCS#10 signature and public-key check. `--force` together with `--confirm` is
+PKCS#10 signature and public-key check; an explicitly empty `--csr` value is
+rejected as a usage error rather than silently skipping that verification. `--force` together with `--confirm` is
 required to replace an existing destination. `--pretty` requires
 `--output json`. `--p12-out -` is rejected so binary data can never be written
 to stdout.

@@ -453,3 +453,52 @@ func commandPublicKeysEqual(privateKey, publicKey any) bool {
 	}
 	return bytes.Equal(privateDER, publicDER)
 }
+
+func TestCertificatesExport_RejectsExplicitlyEmptyCSR(t *testing.T) {
+	dir := t.TempDir()
+	artifacts := newCertificateExportCommandArtifacts(t)
+	certificatePath := filepath.Join(dir, "push.cer")
+	privateKeyPath := filepath.Join(dir, "push.key")
+	passwordPath := filepath.Join(dir, "password")
+	p12Path := filepath.Join(dir, "push.p12")
+	if err := os.WriteFile(certificatePath, artifacts.certificateDER, 0o644); err != nil {
+		t.Fatalf("write certificate: %v", err)
+	}
+	if err := os.WriteFile(privateKeyPath, artifacts.privateKeyPEM, 0o600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+	if err := os.WriteFile(passwordPath, []byte("command-password\n"), 0o600); err != nil {
+		t.Fatalf("write password: %v", err)
+	}
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"certificates", "export",
+			"--certificate", certificatePath,
+			"--private-key", privateKeyPath,
+			"--csr", "",
+			"--password-file", passwordPath,
+			"--p12-out", p12Path,
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		err := root.Run(context.Background())
+		if !errors.Is(err, flag.ErrHelp) {
+			t.Fatalf("expected usage error, got %v", err)
+		}
+		if got, want := err.Error(), "--csr must not be empty"; got != want {
+			t.Fatalf("error = %q, want %q", got, want)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "Error: --csr must not be empty") {
+		t.Fatalf("expected empty-CSR usage diagnostic, got %q", stderr)
+	}
+	if _, err := os.Lstat(p12Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("p12 output was created despite the usage error, stat error = %v", err)
+	}
+}

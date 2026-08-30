@@ -100,6 +100,17 @@ func CertificatesExportCommand() *ffcli.Command {
 				fmt.Fprintln(os.Stderr, "Error: --p12-out is required")
 				return shared.MissingRequiredUsageError("--p12-out")
 			}
+			csrSet := false
+			fs.Visit(func(f *flag.Flag) {
+				if f.Name == "csr" {
+					csrSet = true
+				}
+			})
+			if csrSet && strings.TrimSpace(*csrPath) == "" {
+				// An explicitly empty --csr must not silently disable the
+				// requested CSR verification; omit the flag to skip it.
+				return shared.UsageError("--csr must not be empty")
+			}
 			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
 				return shared.UsageError(err.Error())
 			}
