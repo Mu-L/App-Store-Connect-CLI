@@ -84,8 +84,8 @@ RED coverage starts at the CLI boundary for command registration, help, flags,
 output, and exit behavior, followed by core tests for selection precedence,
 version parsing, path normalization, child environment propagation, exact
 xcrun-resolved executable selection, PATH-shadow/mismatched-resolution
-failures, Command Line Tools failure, probe failures, beta warnings, SDK
-checks, cancellation, and bounded diagnostics.
+and symlink-escape failures, Command Line Tools failure, probe failures, beta
+warnings, SDK checks, cancellation, and bounded diagnostics.
 All subprocess and filesystem interactions use injectable seams, so tests do
 not require a real Xcode installation.
 

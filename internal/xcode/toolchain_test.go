@@ -221,6 +221,42 @@ func TestInspectToolchainRejectsXcrunResolvedPathOutsideCandidate(t *testing.T) 
 	}
 }
 
+func TestInspectToolchainRejectsXcrunResolvedSymlinkOutsideCandidate(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	root := t.TempDir()
+	developerDir := filepath.Join(root, "Xcode.app", "Contents", "Developer")
+	if err := os.MkdirAll(developerDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	outsideDeveloperDir := filepath.Join(root, "OtherXcode.app", "Contents", "Developer")
+	outsidePath := installToolchainXcodebuild(t, outsideDeveloperDir)
+	shadowPath := filepath.Join(developerDir, "usr", "bin", "xcodebuild")
+	if err := os.MkdirAll(filepath.Dir(shadowPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.Symlink(outsidePath, shadowPath); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	t.Setenv("DEVELOPER_DIR", "")
+	t.Setenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER", "1")
+	commandContextFn = toolchainDoctorHelperCommandContext
+	lookPathFn = toolchainDoctorLookPath
+
+	report, err := InspectToolchain(context.Background(), ToolchainOptions{
+		DeveloperDir: developerDir,
+		LogWriter:    io.Discard,
+	})
+	if err == nil || report == nil || report.Status != ToolchainStatusFail {
+		t.Fatalf("InspectToolchain() report/error = %+v/%v, want failed symlink escape", report, err)
+	}
+	if check, ok := toolchainReportCheck(report, "xcrun"); !ok || check.Status != ToolchainCheckStatusFail || !strings.Contains(check.Message, "outside selected developer directory") {
+		t.Fatalf("xcrun check = %+v (found=%t), want rejected symlink target", check, ok)
+	}
+}
+
 func TestInspectToolchainUsesEnvironmentBeforeXcodeSelect(t *testing.T) {
 	restore := overrideTestEnvironment(t)
 	t.Cleanup(restore)

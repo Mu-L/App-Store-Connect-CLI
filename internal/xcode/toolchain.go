@@ -381,24 +381,43 @@ func validateResolvedXcodebuildPath(pathValue, developerDir string) (string, err
 		return "", fmt.Errorf("xcrun returned an unexpected executable path %q", pathValue)
 	}
 
-	relative, err := filepath.Rel(developerDir, pathValue)
+	canonicalDeveloperDir, err := filepath.EvalSymlinks(developerDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve selected developer directory symlinks: %w", err)
+	}
+	canonicalDeveloperDir = filepath.Clean(canonicalDeveloperDir)
+	canonicalPath, err := filepath.EvalSymlinks(pathValue)
+	if err != nil {
+		// Preserve the more useful containment diagnostic for a path outside
+		// the selected directory even when that path no longer exists.
+		relative, relativeErr := filepath.Rel(canonicalDeveloperDir, pathValue)
+		if relativeErr == nil && (relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator))) {
+			return "", fmt.Errorf("xcrun resolved xcodebuild outside selected developer directory %q", canonicalDeveloperDir)
+		}
+		return "", fmt.Errorf("resolved xcodebuild path %q is unavailable: %w", pathValue, err)
+	}
+	canonicalPath = filepath.Clean(canonicalPath)
+
+	relative, err := filepath.Rel(canonicalDeveloperDir, canonicalPath)
 	if err != nil {
 		return "", fmt.Errorf("compare xcodebuild path with developer directory: %w", err)
 	}
 	if relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("xcrun resolved xcodebuild outside selected developer directory %q", developerDir)
+		return "", fmt.Errorf("xcrun resolved xcodebuild outside selected developer directory %q", canonicalDeveloperDir)
 	}
 
-	info, err := statPathFn(pathValue)
+	info, err := statPathFn(canonicalPath)
 	if err != nil {
-		return "", fmt.Errorf("resolved xcodebuild path %q is unavailable: %w", pathValue, err)
+		return "", fmt.Errorf("resolved xcodebuild path %q is unavailable: %w", canonicalPath, err)
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("resolved xcodebuild path %q is a directory", pathValue)
+		return "", fmt.Errorf("resolved xcodebuild path %q is a directory", canonicalPath)
 	}
 	if info.Mode().Perm()&0o111 == 0 {
-		return "", fmt.Errorf("resolved xcodebuild path %q is not executable", pathValue)
+		return "", fmt.Errorf("resolved xcodebuild path %q is not executable", canonicalPath)
 	}
+	// Preserve xcrun's resolved spelling in the report and command invocation;
+	// the canonical path above is used for containment and file validation.
 	return pathValue, nil
 }
 
