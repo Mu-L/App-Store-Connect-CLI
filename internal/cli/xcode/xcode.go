@@ -82,6 +82,7 @@ Examples:
 		Subcommands: []*ffcli.Command{
 			XcodeInjectCommand(),
 			XcodeBuildCommand(),
+			XcodeTestCommand(),
 			XcodeArchiveCommand(),
 			XcodeExportCommand(),
 			XcodeInstallCommand(),
