@@ -20,6 +20,7 @@ Apple code signing has four separate pieces:
 | Encrypt one app's signing assets and local private identity in Git | `asc signing sync push --bundle-id ...` |
 | Sync one shared identity across an app and its embedded targets | `asc signing sync push --targets-file ...` |
 | Decrypt signing assets on another machine or CI worker | `asc signing sync pull` |
+| Re-encrypt the repository with a replacement password | `asc signing sync rotate-password --confirm` |
 | Plan profiles for every target in an iOS archive and an exact device set | `asc signing reconcile plan` |
 | Apply an approved reconciliation plan | `asc signing reconcile apply --confirm` |
 | Run one release-testing command with a temporary keychain | `asc signing run` |
@@ -354,9 +355,43 @@ Native Mac and Mac Catalyst profiles can have the same signed platform and distr
 
 Single-target JSON reports `bundleId` and `profileType`. Multi-target JSON reports `bundleIds` plus one `targets` entry per bundle. A target can report multiple `profilePaths` when the store contains more than one active matching profile; `profilePath` remains the first deterministic path for compatibility with the existing target result shape. `files`, `sensitiveFiles`, and `identityPresent` describe only the selected output.
 
+### Rotate the repository password
+
+Prepare the replacement secret in a separate protected file, distribute it to
+dependent machines and CI secret stores, and then rotate the selected branch:
+
+```bash  theme={null}
+umask 077
+printf '%s' "$SIGNING_SYNC_PASSWORD_NEXT" \
+  > ~/.config/asc/signing-sync-password-next
+
+asc signing sync rotate-password \
+  --repo git@github.com:team/signing.git \
+  --password-file ~/.config/asc/signing-sync-password \
+  --new-password-file ~/.config/asc/signing-sync-password-next \
+  --confirm \
+  --output json \
+  --pretty
+```
+
+The two password files must be distinct regular files with mode `0600` or more
+restrictive. Rotation does not accept inline passwords or environment
+fallbacks. The command authenticates and validates the complete repository
+with the current password, re-encrypts all artifacts with fresh salts and
+nonces, rewraps normalized PKCS#12 identities with the new password, validates
+the complete result again, and publishes one Git commit. A corrupt or
+inconsistent artifact aborts the operation before publication.
+
+Existing pulls that still use the previous password fail against the new branch
+head. Update every dependent worker promptly and keep the replacement password
+file out of source control and build artifacts. The rotation commit does not
+rewrite Git history: the previous password can still decrypt matching artifacts
+from older commits. If the password was exposed, also rotate repository access
+and follow your team's history-retention procedure.
+
 ### Current sync scope
 
-The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull selectors similarly use one profile type per invocation. Password rotation, automatic certificate renewal, persistent keychain import, and stale encrypted-store deletion remain explicit operator work.
+The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull selectors similarly use one profile type per invocation. Certificate renewal, persistent keychain import, and stale encrypted-store deletion remain explicit operator work.
 
 ## CI example
 
