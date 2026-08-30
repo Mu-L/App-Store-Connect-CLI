@@ -20,6 +20,7 @@ Apple code signing has four separate pieces:
 | Encrypt one app's signing assets and local private identity in Git | `asc signing sync push --bundle-id ...` |
 | Sync one shared identity across an app and its embedded targets | `asc signing sync push --targets-file ...` |
 | Decrypt signing assets on another machine or CI worker | `asc signing sync pull` |
+| Re-encrypt the repository with a replacement password | `asc signing sync rotate-password --confirm` |
 | Plan profiles for every target in an iOS archive and an exact device set | `asc signing reconcile plan` |
 | Apply an approved reconciliation plan | `asc signing reconcile apply --confirm` |
 | Run one release-testing command with a temporary keychain | `asc signing run` |
@@ -378,9 +379,64 @@ Provisioning profiles remain independent persistent assets. Install each
 profile with `asc profiles local install`, using the exact paths reported by
 `signing sync pull`.
 
+To decrypt only one app context, select the bundle ID and profile type:
+
+```bash  theme={null}
+asc signing sync pull \
+  --repo git@github.com:team/signing.git \
+  --bundle-id com.example.app \
+  --profile-type IOS_APP_STORE \
+  --password-file ~/.config/asc/signing-sync-password \
+  --output-dir .asc/signing/pulled \
+  --output json \
+  --pretty > .asc/signing/pull-result.json
+```
+
+Use the same schema-versioned `--targets-file` accepted by `sync push` when the app has extensions, widgets, App Clips, or other embedded targets. `--bundle-id` and `--targets-file` are mutually exclusive, and either selector requires one shared, exact App Store Connect `--profile-type`. Partial values and added suffixes fail before secret or repository access.
+
+A selected pull authenticates and validates the whole encrypted repository before filtering output, so an unselected corrupt artifact is still an error. It identifies development, ad hoc, store, in-house, and direct-distribution profiles from their signed bundle, platform, and distribution claims rather than filenames. It includes stored public certificates whose fingerprints appear in each profile without requiring inactive or otherwise unsynced embedded certificates, then includes the exact identity context and shared private identity when present. Identity-backed output also requires the stored public certificate for that exact identity. Every requested bundle must have an active matching profile. All selected destinations are checked before the first file is written; an existing file for an unselected target does not block the pull.
+
+Native Mac and Mac Catalyst profiles can have the same signed platform and distribution claims. Push therefore authenticates the exact API profile type alongside each encrypted profile. Older identity-backed stores can use the exact type in their authenticated identity context. An older certificate-only Mac profile without either form of provenance is not guessed: the selected pull reports no exact match. Push that bundle again with the exact `--profile-type` to upgrade the profile artifact, then retry the selected pull. Full-repository pulls remain available during migration.
+
+Single-target JSON reports `bundleId` and `profileType`. Multi-target JSON reports `bundleIds` plus one `targets` entry per bundle. A target can report multiple `profilePaths` when the store contains more than one active matching profile; `profilePath` remains the first deterministic path for compatibility with the existing target result shape. `files`, `sensitiveFiles`, and `identityPresent` describe only the selected output.
+
+### Rotate the repository password
+
+Prepare the replacement secret in a separate protected file, distribute it to
+dependent machines and CI secret stores, and then rotate the selected branch:
+
+```bash  theme={null}
+umask 077
+printf '%s' "$SIGNING_SYNC_PASSWORD_NEXT" \
+  > ~/.config/asc/signing-sync-password-next
+
+asc signing sync rotate-password \
+  --repo git@github.com:team/signing.git \
+  --password-file ~/.config/asc/signing-sync-password \
+  --new-password-file ~/.config/asc/signing-sync-password-next \
+  --confirm \
+  --output json \
+  --pretty
+```
+
+The two password files must be distinct regular files with mode `0600` or more
+restrictive. Rotation does not accept inline passwords or environment
+fallbacks. The command authenticates and validates the complete repository
+with the current password, re-encrypts all artifacts with fresh salts and
+nonces, rewraps normalized PKCS#12 identities with the new password, validates
+the complete result again, and publishes one Git commit. A corrupt or
+inconsistent artifact aborts the operation before publication.
+
+Existing pulls that still use the previous password fail against the new branch
+head. Update every dependent worker promptly and keep the replacement password
+file out of source control and build artifacts. The rotation commit does not
+rewrite Git history: the previous password can still decrypt matching artifacts
+from older commits. If the password was exposed, also rotate repository access
+and follow your team's history-retention procedure.
+
 ### Current sync scope
 
-The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull decrypts the whole repository rather than selecting individual apps. Password rotation, certificate renewal, persistent keychain import, and stale-asset deletion remain explicit operator work.
+The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull selectors similarly use one profile type per invocation. Certificate renewal and stale encrypted-store deletion remain explicit operator work. Dedicated persistent keychain installation is separate from sync, creates a new keychain for one identity per invocation, and leaves provisioning-profile installation as an independent operation.
 
 ## CI example
 
