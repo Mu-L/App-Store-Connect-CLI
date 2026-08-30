@@ -750,6 +750,11 @@ func runtimeFailureContext(analysis invocationAnalysis, err error, exitCode int)
 	if diagnostic, ok := shared.DiagnosticFromError(err); ok {
 		eventContext.FailureParameter = diagnostic.Parameter
 	}
+	if shared.IsLocalProcessFailure(err) &&
+		!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		eventContext.OutcomeKind = telemetry.OutcomeInternalError
+		return eventContext
+	}
 	switch {
 	case errors.Is(err, shared.ErrMissingAuth):
 		eventContext.FailureStage = telemetry.FailureStageValidation

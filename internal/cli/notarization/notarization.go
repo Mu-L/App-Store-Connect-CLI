@@ -827,19 +827,28 @@ func staplerTargetSemanticError(err error, absolute string) error {
 }
 
 func reportStaplerFailure(command string, err error) error {
+	var partialErr *localxcode.StaplerPartialMutationError
+	partialMutation := command == "staple" && errors.As(err, &partialErr)
 	var commandErr *localxcode.StaplerCommandError
 	if errors.As(err, &commandErr) {
+		if partialMutation {
+			fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")
+		}
 		if commandErr.ExitCode > 0 {
-			if command == "staple" && commandErr.Operation == string(localxcode.StaplerOperationValidate) {
+			if command == "staple" && commandErr.Operation == string(localxcode.StaplerOperationValidate) && !partialMutation {
 				fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")
 			} else if commandErr.Operation == string(localxcode.StaplerOperationResolve) {
 				fmt.Fprintf(os.Stderr, "Error: notarization %s could not resolve Apple's stapler tool (exit status %d)\n", command, commandErr.ExitCode)
-			} else {
+			} else if !partialMutation || commandErr.Operation != string(localxcode.StaplerOperationValidate) {
 				fmt.Fprintf(os.Stderr, "Error: notarization %s failed during %s (exit status %d)\n", command, commandErr.Operation, commandErr.ExitCode)
 			}
-			return shared.NewReportedError(shared.NewProcessExitError(commandErr.ExitCode))
+			return shared.NewReportedError(shared.NewProcessExitErrorWithCause(commandErr.ExitCode, err))
 		}
 		fmt.Fprintf(os.Stderr, "Error: notarization %s failed during %s before a usable exit status was available\n", command, commandErr.Operation)
+		return shared.NewReportedError(err)
+	}
+	if partialMutation {
+		fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")
 		return shared.NewReportedError(err)
 	}
 	fmt.Fprintf(os.Stderr, "Error: notarization %s: %v\n", command, err)

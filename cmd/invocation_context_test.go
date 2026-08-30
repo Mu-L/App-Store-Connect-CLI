@@ -16,6 +16,7 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/itunes"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/telemetry"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
+	localxcode "github.com/rudrankriyam/App-Store-Connect-CLI/internal/xcode"
 )
 
 func TestRuntimeFailureContextClassifiesItunesHTTPStatus(t *testing.T) {
@@ -200,6 +201,29 @@ func TestRuntimeFailureContextClassifiesLowCardinalityFailures(t *testing.T) {
 					test.wantOutcome,
 					test.wantStatus,
 				)
+			}
+		})
+	}
+}
+
+func TestRuntimeFailureContextDoesNotTreatLocalStaplerExitAsAPIStatus(t *testing.T) {
+	analysis := invocationAnalysis{shape: telemetry.InvocationShapeLeaf}
+	for _, code := range []int{3, 4, 5, 65, 66} {
+		t.Run(fmt.Sprintf("exit-%d", code), func(t *testing.T) {
+			cause := &localxcode.StaplerCommandError{
+				Operation: string(localxcode.StaplerOperationValidate),
+				ExitCode:  code,
+				Err:       errors.New("local stapler failure"),
+			}
+			err := shared.NewProcessExitErrorWithCause(code, cause)
+			var gotCause *localxcode.StaplerCommandError
+			if !errors.As(err, &gotCause) || gotCause != cause {
+				t.Fatalf("process exit error = %T %v, want preserved stapler cause", err, err)
+			}
+			got := runtimeFailureContext(analysis, err, code)
+			if got.ErrorKind != telemetry.ErrorKindOther || got.FailureStage != telemetry.FailureStageExecution ||
+				got.OutcomeKind != telemetry.OutcomeInternalError || got.HTTPStatus != 0 {
+				t.Fatalf("runtimeFailureContext() = %+v, want local execution/internal failure", got)
 			}
 		})
 	}

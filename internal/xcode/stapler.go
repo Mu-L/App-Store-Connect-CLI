@@ -88,6 +88,29 @@ func (e *StaplerCommandError) Unwrap() error {
 	return e.Err
 }
 
+// StaplerPartialMutationError identifies a follow-up validation failure after
+// stapling has already completed. Its stable message warns that the artifact
+// may have been modified while Unwrap retains the cancellation or child error
+// for internal classification.
+type StaplerPartialMutationError struct {
+	Operation StaplerOperation
+	Err       error
+}
+
+func (e *StaplerPartialMutationError) Error() string {
+	if e == nil {
+		return "stapler follow-up validation failed after staple; artifact may have been modified but was not verified"
+	}
+	return "stapler " + string(e.Operation) + " failed after staple; artifact may have been modified but was not verified"
+}
+
+func (e *StaplerPartialMutationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // Staple retrieves and attaches a ticket, then validates the same artifact.
 // The artifact path must have been validated by the command layer before this
 // local runner is called.
@@ -121,7 +144,10 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 		return nil, verifyErr
 	}
 	if validateErr != nil {
-		return nil, validateErr
+		return nil, &StaplerPartialMutationError{
+			Operation: StaplerOperationValidate,
+			Err:       validateErr,
+		}
 	}
 	return &StaplerResult{
 		Path:      path,

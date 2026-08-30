@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
@@ -1423,11 +1424,88 @@ func TestNotarizationStapleFailurePreservesChildExitStatusAndDoesNotPrintJSON(t 
 	if code, ok := sharedProcessExitCodeForTest(runErr); !ok || code != 66 {
 		t.Fatalf("command error = %v, process code = %d/%v, want 66", runErr, code, ok)
 	}
+	var commandErr *localxcode.StaplerCommandError
+	if !errors.As(runErr, &commandErr) || commandErr.ExitCode != 66 {
+		t.Fatalf("command error = %T %v, want preserved stapler command cause", runErr, runErr)
+	}
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want no success JSON", stdout)
 	}
 	if !strings.Contains(stderr, "staple failed") {
 		t.Fatalf("stderr = %q, want failure stage", stderr)
+	}
+}
+
+func TestNotarizationStapleCancellationAfterMutationReportsUnverified(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		cancelDuringValidate bool
+		cause                error
+		deadline             bool
+	}{
+		{name: "cancellation before follow-up validation", cause: context.Canceled},
+		{name: "cancellation during follow-up validation", cancelDuringValidate: true, cause: context.Canceled},
+		{name: "deadline before follow-up validation", cause: context.DeadlineExceeded, deadline: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "MyApp.dmg")
+			if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+				t.Fatalf("write target: %v", err)
+			}
+			previous := runStaplerStaple
+			ctx, cancel := context.WithCancel(context.Background())
+			if test.deadline {
+				ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+			}
+			runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+				if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+					return nil, err
+				}
+				if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, false); err != nil {
+					return nil, err
+				}
+				if test.cancelDuringValidate {
+					if err := invokeStaplerStage(verifier, localxcode.StaplerOperationValidate, true); err != nil {
+						return nil, err
+					}
+				}
+				if test.deadline {
+					<-ctx.Done()
+					return nil, &localxcode.StaplerPartialMutationError{
+						Operation: localxcode.StaplerOperationValidate,
+						Err:       ctx.Err(),
+					}
+				}
+				cancel()
+				return nil, &localxcode.StaplerPartialMutationError{
+					Operation: localxcode.StaplerOperationValidate,
+					Err:       test.cause,
+				}
+			}
+			t.Cleanup(func() {
+				cancel()
+				runStaplerStaple = previous
+			})
+
+			cmd := stapleCommand()
+			if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var runErr error
+			stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(ctx, nil) })
+			if runErr == nil || !errors.Is(runErr, test.cause) {
+				t.Fatalf("command error = %v, want %v", runErr, test.cause)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want no success JSON", stdout)
+			}
+			if !strings.Contains(stderr, "staple completed") || !strings.Contains(stderr, "not verified") {
+				t.Fatalf("stderr = %q, want post-staple verification warning", stderr)
+			}
+			if strings.Contains(stderr, target) {
+				t.Fatalf("stderr = %q, must not expose target path", stderr)
+			}
+		})
 	}
 }
 

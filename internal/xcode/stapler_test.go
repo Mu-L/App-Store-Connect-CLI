@@ -79,6 +79,96 @@ func TestStapleRunsStageVerifierAroundEachOperation(t *testing.T) {
 	}
 }
 
+func TestStapleWithVerifierMarksCancellationBeforeFollowUpValidation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stages []string
+	result, err := StapleWithVerifier(ctx, target, nil, func(operation StaplerOperation, before bool) error {
+		position := "after"
+		if before {
+			position = "before"
+		}
+		stages = append(stages, position+" "+string(operation))
+		if operation == StaplerOperationStaple && !before {
+			cancel()
+		}
+		return nil
+	})
+	if result != nil {
+		t.Fatalf("StapleWithVerifier() result = %#v, want nil after cancellation", result)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("StapleWithVerifier() error = %v, want context cancellation", err)
+	}
+	if !strings.Contains(err.Error(), "after staple") {
+		t.Fatalf("StapleWithVerifier() error = %v, want post-staple validation phase", err)
+	}
+	if want := []string{"before staple", "after staple", "before validate", "after validate"}; !reflect.DeepEqual(stages, want) {
+		t.Fatalf("verified stages = %#v, want %#v", stages, want)
+	}
+}
+
+func TestStapleWithVerifierMarksCancellationDuringFollowUpValidation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	readyPath := filepath.Join(t.TempDir(), "validate-ready")
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_VALIDATE_WAIT", "1")
+	t.Setenv("ASC_STAPLER_VALIDATE_READY_PATH", readyPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type outcome struct {
+		result *StaplerResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := StapleWithVerifier(ctx, target, nil, func(StaplerOperation, bool) error {
+			return nil
+		})
+		done <- outcome{result: result, err: err}
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			cancel()
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("validation helper did not report readiness")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	select {
+	case got := <-done:
+		if got.result != nil {
+			t.Fatalf("StapleWithVerifier() result = %#v, want nil after cancellation", got.result)
+		}
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("StapleWithVerifier() error = %v, want context cancellation", got.err)
+		}
+		if !strings.Contains(got.err.Error(), "after staple") {
+			t.Fatalf("StapleWithVerifier() error = %v, want post-staple validation phase", got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StapleWithVerifier() did not return after cancellation")
+	}
+}
+
 func TestValidateStapleRunsOnlyValidationAfterResolution(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "My App.pkg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -443,6 +533,10 @@ func TestStapleReturnsValidationFailureAfterMutation(t *testing.T) {
 	if commandErr.Operation != string(StaplerOperationValidate) || commandErr.ExitCode != 65 {
 		t.Fatalf("Staple() command error = %#v, want validate/65", commandErr)
 	}
+	var partialErr *StaplerPartialMutationError
+	if !errors.As(err, &partialErr) || partialErr.Operation != StaplerOperationValidate {
+		t.Fatalf("Staple() error = %#v, want post-staple validation marker", err)
+	}
 	if !strings.Contains(diagnostics.String(), "ticket mismatch") {
 		t.Fatalf("diagnostics = %q, want validation diagnostic", diagnostics.String())
 	}
@@ -650,6 +744,17 @@ func TestStaplerHelperProcess(t *testing.T) {
 				if err := os.WriteFile(replacementTarget, []byte("replacement"), 0o600); err != nil {
 					fmt.Fprintln(os.Stderr, err)
 					os.Exit(2)
+				}
+			}
+			if os.Getenv("ASC_STAPLER_VALIDATE_WAIT") == "1" {
+				if readyPath := os.Getenv("ASC_STAPLER_VALIDATE_READY_PATH"); readyPath != "" {
+					if err := os.WriteFile(readyPath, []byte("ready"), 0o600); err != nil {
+						fmt.Fprintln(os.Stderr, err)
+						os.Exit(2)
+					}
+				}
+				for {
+					time.Sleep(time.Second)
 				}
 			}
 		}
