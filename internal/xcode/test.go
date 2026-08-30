@@ -278,7 +278,7 @@ func Test(ctx context.Context, opts TestOptions) (*TestResult, error) {
 	if processErr != nil {
 		setTestExitStatus(result, processErr)
 		if opts.Action != string(TestActionBuildForTesting) && validateTestResultBundlePathComponents(opts.ResultBundlePath) == nil && existingDirectory(opts.ResultBundlePath) {
-			if summary, summaryErr := readPartialTestResultSummary(ctx, opts.ResultBundlePath); summaryErr == nil {
+			if summary, _ := readPartialTestResultSummary(ctx, opts.ResultBundlePath); summary != nil {
 				result.Tests = summary
 			}
 		}
@@ -296,10 +296,12 @@ func Test(ctx context.Context, opts TestOptions) (*TestResult, error) {
 	}
 
 	summary, err := readTestResultSummaryFn(ctx, opts.ResultBundlePath)
+	if summary != nil {
+		result.Tests = summary
+	}
 	if err != nil {
 		return finish(fmt.Errorf("read test result summary: %w", err))
 	}
-	result.Tests = summary
 	if err := validateTestSummary(summary); err != nil {
 		return finish(fmt.Errorf("validate test result: %w", err))
 	}
@@ -696,15 +698,15 @@ func readTestResultSummary(ctx context.Context, resultBundlePath string) (*TestS
 	// human-readable xcodebuild output.
 	testsOutput, err := runXcresulttoolJSON(ctx, "tests", resultBundlePath)
 	if err != nil {
-		return nil, fmt.Errorf("run xcresulttool test-results tests: %w", err)
+		return summary, fmt.Errorf("run xcresulttool test-results tests: %w", err)
 	}
 	cases, err := ParseTestResultCases(testsOutput)
 	if err != nil {
-		return nil, err
+		return summary, err
 	}
 	summary.Cases = cases
 	if err := validateTestSummary(summary); err != nil {
-		return nil, err
+		return summary, err
 	}
 	for _, testCase := range cases {
 		if len(summary.Failures) >= maxTestFailureCount {

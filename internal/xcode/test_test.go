@@ -957,6 +957,36 @@ func TestReadTestResultSummaryUsesCurrentXcodeOperations(t *testing.T) {
 	}
 }
 
+func TestReadTestResultSummaryRetainsAggregateWhenCaseEnrichmentFails(t *testing.T) {
+	originalLookPath := lookPathFn
+	originalCommandContext := commandContextFn
+	t.Cleanup(func() {
+		lookPathFn = originalLookPath
+		commandContextFn = originalCommandContext
+	})
+	lookPathFn = func(string) (string, error) { return "/usr/bin/xcrun", nil }
+	commandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		if len(args) > 3 && args[3] == "tests" {
+			return exec.CommandContext(ctx, "sh", "-c", "echo tests enrichment unavailable >&2; exit 17")
+		}
+		return exec.CommandContext(ctx, "printf", "%s", `{"totalTestCount":3,"passedTests":1,"failedTests":1,"skippedTests":1,"testFailures":[{"testIdentifierString":"DemoTests/Smoke/testFail","failureText":"assertion failed"}]}`)
+	}
+
+	got, err := readTestResultSummary(context.Background(), "/tmp/Demo.xcresult")
+	if err == nil || !strings.Contains(err.Error(), "run xcresulttool test-results tests") {
+		t.Fatalf("readTestResultSummary() error = %v, want case-enrichment failure", err)
+	}
+	if got == nil {
+		t.Fatal("readTestResultSummary() returned nil summary after aggregate succeeded")
+	}
+	if got.Total != 3 || got.Passed != 1 || got.Failed != 1 || got.Skipped != 1 {
+		t.Fatalf("aggregate summary = %+v, want preserved counts", got)
+	}
+	if len(got.Failures) != 1 || got.Failures[0].Identifier != "DemoTests/Smoke/testFail" {
+		t.Fatalf("aggregate failures = %+v, want preserved failure metadata", got.Failures)
+	}
+}
+
 func TestTestRunsActionAndParsesResult(t *testing.T) {
 	originalRuntimeGOOS := runtimeGOOS
 	originalLookPath := lookPathFn
@@ -1347,5 +1377,63 @@ func TestTestOmitsExitStatusForResultPostProcessingFailure(t *testing.T) {
 	}
 	if result.Success || result.ExitStatus != nil {
 		t.Fatalf("unexpected post-processing result: %+v", result)
+	}
+}
+
+func TestTestRetainsAggregateWhenCaseEnrichmentFails(t *testing.T) {
+	originalRuntimeGOOS := runtimeGOOS
+	originalLookPath := lookPathFn
+	originalCommandContext := commandContextFn
+	originalRun := runXcodeTestCommand
+	originalRead := readTestResultSummaryFn
+	t.Cleanup(func() {
+		runtimeGOOS = originalRuntimeGOOS
+		lookPathFn = originalLookPath
+		commandContextFn = originalCommandContext
+		runXcodeTestCommand = originalRun
+		readTestResultSummaryFn = originalRead
+	})
+	runtimeGOOS = "darwin"
+	lookPathFn = func(string) (string, error) { return "/usr/bin/xcodebuild", nil }
+	commandContextFn = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+	projectPath := filepath.Join(t.TempDir(), "Demo.xcodeproj")
+	if err := os.Mkdir(projectPath, 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	resultPath := filepath.Join(t.TempDir(), "Demo-tests.xcresult")
+	runXcodeTestCommand = func(_ context.Context, _ []string, _ io.Writer) error {
+		return os.Mkdir(resultPath, 0o755)
+	}
+	enrichmentErr := errors.New("tests enrichment unavailable")
+	readTestResultSummaryFn = func(context.Context, string) (*TestSummary, error) {
+		return &TestSummary{
+			Total:  2,
+			Passed: 1,
+			Failed: 1,
+			Failures: []TestFailure{{
+				Identifier: "DemoTests/Smoke/testFail",
+				Message:    "assertion failed",
+			}},
+		}, enrichmentErr
+	}
+
+	result, err := Test(context.Background(), TestOptions{
+		ProjectPath:      projectPath,
+		Scheme:           "Demo",
+		Action:           string(TestActionTest),
+		Destinations:     []string{"platform=iOS Simulator,name=iPhone 17 Pro"},
+		DerivedDataPath:  filepath.Join(t.TempDir(), "DerivedData"),
+		ResultBundlePath: resultPath,
+	})
+	if !errors.Is(err, enrichmentErr) {
+		t.Fatalf("Test() error = %v, want enrichment error", err)
+	}
+	if result == nil || result.Success || result.Tests == nil {
+		t.Fatalf("Test() result = %+v, want failed result with aggregate summary", result)
+	}
+	if result.Tests.Total != 2 || result.Tests.Failed != 1 || len(result.Tests.Failures) != 1 {
+		t.Fatalf("retained aggregate = %+v, want counts and failure metadata", result.Tests)
 	}
 }
