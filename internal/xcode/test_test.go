@@ -323,6 +323,20 @@ func TestValidateTestOptionsAuthenticationPassthroughValues(t *testing.T) {
 			}
 		})
 	}
+
+	for _, authFlag := range []string{"-authenticationKeyPath", "-authenticationKeyID", "-authenticationKeyIssuerID"} {
+		for _, value := range []string{"", "   "} {
+			t.Run("equals empty/"+authFlag+"/"+fmt.Sprintf("%q", value), func(t *testing.T) {
+				raw := authFlag + "=" + value
+				opts := base
+				opts.XcodebuildArgs = []string{raw}
+				want := fmt.Sprintf("--xcodebuild-flag %q cannot have an empty value", strings.TrimSpace(raw))
+				if err := ValidateTestOptions(opts); err == nil || err.Error() != want {
+					t.Fatalf("ValidateTestOptions() error = %v, want %q", err, want)
+				}
+			})
+		}
+	}
 }
 
 func TestParseTestResultCasesRejectsUnknownStatus(t *testing.T) {

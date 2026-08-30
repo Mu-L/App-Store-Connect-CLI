@@ -577,6 +577,12 @@ func validateTestPassthroughArguments(args []string) error {
 	for index := 0; index < len(args); index++ {
 		arg := args[index]
 		normalized := strings.ToLower(strings.TrimSpace(arg))
+		if isXcodebuildAuthenticationArgument(normalized) && strings.Contains(normalized, "=") {
+			equalsIndex := strings.Index(arg, "=")
+			if equalsIndex >= 0 && strings.TrimSpace(arg[equalsIndex+1:]) == "" {
+				return fmt.Errorf("--xcodebuild-flag %q cannot have an empty value", strings.TrimSpace(arg))
+			}
+		}
 		if !xcodebuildPassthroughArgumentTakesValue(normalized) {
 			continue
 		}
