@@ -32,7 +32,10 @@ The command checks the selected directory, resolves `xcodebuild` with
 executable is inside the selected developer directory, and runs `-version` on
 that exact path. This prevents a caller `PATH` shadow from supplying the
 version/build while the report names a different toolchain. It optionally
-resolves one SDK with `xcrun --sdk SDK --show-sdk-path`. Beta-looking paths
+resolves one SDK with `xcrun --sdk SDK --show-sdk-path`. Xcode application-root
+normalization also uses the canonical target, so an extensionless symlink is
+treated as the application it points to while the report keeps the
+operator-selected spelling. Beta-looking paths
 are classified from the canonical physical selected toolchain path, so a
 neutral-named application symlink still produces an advisory warning for a
 beta target. Command Line Tools detection also uses that canonical path, so a

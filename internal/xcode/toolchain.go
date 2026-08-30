@@ -345,7 +345,7 @@ func normalizeToolchainDeveloperDir(value string) (developerDir, xcodePath strin
 		return absolute, "", true, nil
 	}
 
-	if strings.EqualFold(filepath.Ext(absolute), ".app") {
+	if strings.EqualFold(filepath.Ext(canonicalAbsolute), ".app") {
 		candidate := filepath.Join(absolute, "Contents", "Developer")
 		candidateInfo, candidateErr := os.Stat(candidate)
 		if candidateErr != nil {
@@ -358,7 +358,8 @@ func normalizeToolchainDeveloperDir(value string) (developerDir, xcodePath strin
 	}
 
 	parent := filepath.Dir(absolute)
-	if filepath.Base(parent) == "Contents" && strings.EqualFold(filepath.Ext(filepath.Dir(parent)), ".app") {
+	canonicalParent := filepath.Dir(canonicalAbsolute)
+	if filepath.Base(canonicalParent) == "Contents" && strings.EqualFold(filepath.Ext(filepath.Dir(canonicalParent)), ".app") && filepath.Base(parent) == "Contents" && strings.EqualFold(filepath.Ext(filepath.Dir(parent)), ".app") {
 		xcodePath = filepath.Dir(parent)
 	}
 	return absolute, xcodePath, commandLineTools, nil

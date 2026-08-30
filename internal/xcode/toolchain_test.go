@@ -312,6 +312,153 @@ func TestClassifyBetaXcodePathFailsClosedWhenCanonicalizationFails(t *testing.T)
 	}
 }
 
+func TestInspectToolchainNormalizesExtensionlessXcodeAppSymlinkFromCanonicalTarget(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	root := t.TempDir()
+	tests := []struct {
+		name        string
+		appName     string
+		wantStatus  ToolchainStatus
+		wantBeta    bool
+		wantWarning bool
+	}{
+		{name: "stable", appName: "Xcode.app", wantStatus: ToolchainStatusOK},
+		{name: "beta", appName: "Xcode-beta.app", wantStatus: ToolchainStatusWarn, wantBeta: true, wantWarning: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			canonicalApp := filepath.Join(root, test.name, test.appName)
+			canonicalDeveloperDir := filepath.Join(canonicalApp, "Contents", "Developer")
+			installToolchainXcodebuild(t, canonicalDeveloperDir)
+			selectedApp := filepath.Join(root, test.name, "current-xcode")
+			if err := os.Symlink(canonicalApp, selectedApp); err != nil {
+				t.Fatalf("Symlink() error = %v", err)
+			}
+
+			t.Setenv("DEVELOPER_DIR", "")
+			t.Setenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER", "1")
+			commandContextFn = toolchainDoctorHelperCommandContext
+			lookPathFn = toolchainDoctorLookPath
+
+			report, err := InspectToolchain(context.Background(), ToolchainOptions{
+				DeveloperDir: selectedApp,
+				LogWriter:    io.Discard,
+			})
+			if err != nil {
+				t.Fatalf("InspectToolchain() error = %v", err)
+			}
+			if report == nil || report.Status != test.wantStatus {
+				t.Fatalf("InspectToolchain() report = %+v, want status %q", report, test.wantStatus)
+			}
+			if report.DeveloperDir != filepath.Join(selectedApp, "Contents", "Developer") {
+				t.Fatalf("DeveloperDir = %q, want selected spelling under %q", report.DeveloperDir, selectedApp)
+			}
+			if report.XcodePath != selectedApp {
+				t.Fatalf("XcodePath = %q, want selected spelling %q", report.XcodePath, selectedApp)
+			}
+			if report.Beta == nil || *report.Beta != test.wantBeta {
+				t.Fatalf("Beta = %v, want %t from canonical target", report.Beta, test.wantBeta)
+			}
+			if test.wantWarning && !toolchainReportHasCheck(report, "beta", ToolchainCheckStatusWarn) {
+				t.Fatalf("missing beta warning: %+v", report.Checks)
+			}
+			wantXcodebuild := filepath.Join(selectedApp, "Contents", "Developer", "usr", "bin", "xcodebuild")
+			if check, ok := toolchainReportCheck(report, "xcodebuild"); !ok || check.Status != ToolchainCheckStatusOK || check.Path != wantXcodebuild {
+				t.Fatalf("xcodebuild check = %+v (found=%t), want selected probe path %q", check, ok, wantXcodebuild)
+			}
+		})
+	}
+}
+
+func TestInspectToolchainKeepsCanonicalDeveloperDirectorySymlinkAsDeveloperCandidate(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	root := t.TempDir()
+	canonicalDeveloperDir := filepath.Join(root, "Xcode-beta.app", "Contents", "Developer")
+	installToolchainXcodebuild(t, canonicalDeveloperDir)
+	selectedDeveloperDir := filepath.Join(root, "current-developer")
+	if err := os.Symlink(canonicalDeveloperDir, selectedDeveloperDir); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	t.Setenv("DEVELOPER_DIR", "")
+	t.Setenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER", "1")
+	commandContextFn = toolchainDoctorHelperCommandContext
+	lookPathFn = toolchainDoctorLookPath
+
+	report, err := InspectToolchain(context.Background(), ToolchainOptions{
+		DeveloperDir: selectedDeveloperDir,
+		LogWriter:    io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("InspectToolchain() error = %v", err)
+	}
+	if report == nil || report.Status != ToolchainStatusWarn {
+		t.Fatalf("InspectToolchain() report = %+v, want beta warning", report)
+	}
+	if report.DeveloperDir != selectedDeveloperDir {
+		t.Fatalf("DeveloperDir = %q, want selected spelling %q", report.DeveloperDir, selectedDeveloperDir)
+	}
+	if report.XcodePath != "" {
+		t.Fatalf("XcodePath = %q, want omitted for developer-directory selector", report.XcodePath)
+	}
+	if report.Beta == nil || !*report.Beta {
+		t.Fatalf("Beta = %v, want true from canonical developer target", report.Beta)
+	}
+	if check, ok := toolchainReportCheck(report, "xcodebuild"); !ok || check.Status != ToolchainCheckStatusOK {
+		t.Fatalf("xcodebuild check = %+v (found=%t), want successful probe", check, ok)
+	}
+}
+
+func TestInspectToolchainFailsClosedForBrokenAndCyclicDeveloperSymlinks(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	root := t.TempDir()
+	tests := []struct {
+		name   string
+		target func(string) string
+	}{
+		{name: "broken", target: func(root string) string { return filepath.Join(root, "missing") }},
+		{name: "cyclic", target: func(root string) string { return filepath.Join(root, "cycle") }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			selectedDeveloperDir := filepath.Join(root, test.name, "selected")
+			if err := os.MkdirAll(filepath.Dir(selectedDeveloperDir), 0o755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
+			if err := os.Symlink(test.target(filepath.Dir(selectedDeveloperDir)), selectedDeveloperDir); err != nil {
+				t.Fatalf("Symlink() error = %v", err)
+			}
+			if test.name == "cyclic" {
+				if err := os.Symlink(selectedDeveloperDir, test.target(filepath.Dir(selectedDeveloperDir))); err != nil {
+					t.Fatalf("cycle Symlink() error = %v", err)
+				}
+			}
+
+			report, err := InspectToolchain(context.Background(), ToolchainOptions{
+				DeveloperDir: selectedDeveloperDir,
+				LogWriter:    io.Discard,
+			})
+			if err == nil || report == nil || report.Status != ToolchainStatusFail {
+				t.Fatalf("InspectToolchain() report/error = %+v/%v, want failed selection", report, err)
+			}
+			if report.Beta != nil {
+				t.Fatalf("InspectToolchain() beta = %v, want unknown after %s symlink failure", *report.Beta, test.name)
+			}
+			if !toolchainReportHasCheck(report, "developer_dir", ToolchainCheckStatusFail) {
+				t.Fatalf("missing failed developer_dir check: %+v", report.Checks)
+			}
+		})
+	}
+}
+
 func TestInspectToolchainClassifiesCommandLineToolsFromCanonicalSelectedSymlink(t *testing.T) {
 	restore := overrideTestEnvironment(t)
 	t.Cleanup(restore)
