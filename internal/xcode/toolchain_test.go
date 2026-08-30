@@ -312,6 +312,45 @@ func TestClassifyBetaXcodePathFailsClosedWhenCanonicalizationFails(t *testing.T)
 	}
 }
 
+func TestInspectToolchainClassifiesCommandLineToolsFromCanonicalSelectedSymlink(t *testing.T) {
+	restore := overrideTestEnvironment(t)
+	t.Cleanup(restore)
+
+	runtimeGOOS = "darwin"
+	root := t.TempDir()
+	canonicalDeveloperDir := filepath.Join(root, "Library", "Developer", "CommandLineTools")
+	installToolchainXcodebuild(t, canonicalDeveloperDir)
+
+	selectedDeveloperDir := filepath.Join(root, "SelectedToolchain")
+	if err := os.Symlink(canonicalDeveloperDir, selectedDeveloperDir); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	t.Setenv("DEVELOPER_DIR", "")
+	t.Setenv("GO_WANT_TOOLCHAIN_DOCTOR_HELPER", "1")
+	commandContextFn = toolchainDoctorHelperCommandContext
+	lookPathFn = toolchainDoctorLookPath
+
+	report, err := InspectToolchain(context.Background(), ToolchainOptions{
+		DeveloperDir: selectedDeveloperDir,
+		LogWriter:    io.Discard,
+	})
+	if err == nil || report == nil || report.Status != ToolchainStatusFail {
+		t.Fatalf("InspectToolchain() report/error = %+v/%v, want Command Line Tools failure", report, err)
+	}
+	if report.DeveloperDir != selectedDeveloperDir {
+		t.Fatalf("DeveloperDir = %q, want selected spelling %q", report.DeveloperDir, selectedDeveloperDir)
+	}
+	if report.XcodePath != "" {
+		t.Fatalf("XcodePath = %q, want empty for Command Line Tools", report.XcodePath)
+	}
+	if report.Beta == nil || *report.Beta {
+		t.Fatalf("InspectToolchain() beta = %v, want false for canonical Command Line Tools", report.Beta)
+	}
+	if !toolchainReportHasCheck(report, "developer_dir", ToolchainCheckStatusFail) {
+		t.Fatalf("missing Command Line Tools failure: %+v", report.Checks)
+	}
+}
+
 func TestInspectToolchainUsesEnvironmentBeforeXcodeSelect(t *testing.T) {
 	restore := overrideTestEnvironment(t)
 	t.Cleanup(restore)

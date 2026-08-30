@@ -335,6 +335,16 @@ func normalizeToolchainDeveloperDir(value string) (developerDir, xcodePath strin
 		return "", "", false, fmt.Errorf("developer directory %q is not a directory", absolute)
 	}
 
+	canonicalAbsolute, err := canonicalToolchainPath(absolute)
+	if err != nil {
+		return "", "", false, err
+	}
+	canonicalLower := strings.ToLower(filepath.ToSlash(canonicalAbsolute))
+	commandLineTools = strings.HasSuffix(canonicalLower, "/library/developer/commandlinetools") || strings.HasSuffix(canonicalLower, "/commandlinetools")
+	if commandLineTools {
+		return absolute, "", true, nil
+	}
+
 	if strings.EqualFold(filepath.Ext(absolute), ".app") {
 		candidate := filepath.Join(absolute, "Contents", "Developer")
 		candidateInfo, candidateErr := os.Stat(candidate)
@@ -351,9 +361,15 @@ func normalizeToolchainDeveloperDir(value string) (developerDir, xcodePath strin
 	if filepath.Base(parent) == "Contents" && strings.EqualFold(filepath.Ext(filepath.Dir(parent)), ".app") {
 		xcodePath = filepath.Dir(parent)
 	}
-	lower := strings.ToLower(filepath.ToSlash(absolute))
-	commandLineTools = strings.HasSuffix(lower, "/library/developer/commandlinetools") || strings.HasSuffix(lower, "/commandlinetools")
 	return absolute, xcodePath, commandLineTools, nil
+}
+
+func canonicalToolchainPath(pathValue string) (string, error) {
+	canonicalPath, err := filepath.EvalSymlinks(pathValue)
+	if err != nil {
+		return "", fmt.Errorf("resolve selected toolchain path symlinks: %w", err)
+	}
+	return filepath.Clean(canonicalPath), nil
 }
 
 func classifyBetaXcodePath(developerDir, xcodePath string) (*bool, error) {
@@ -364,11 +380,11 @@ func classifyBetaXcodePath(developerDir, xcodePath string) (*bool, error) {
 
 	beta := false
 	for _, pathValue := range paths {
-		canonicalPath, err := filepath.EvalSymlinks(pathValue)
+		canonicalPath, err := canonicalToolchainPath(pathValue)
 		if err != nil {
-			return nil, fmt.Errorf("resolve selected toolchain path symlinks: %w", err)
+			return nil, err
 		}
-		beta = beta || isBetaXcodePath(filepath.Clean(canonicalPath))
+		beta = beta || isBetaXcodePath(canonicalPath)
 	}
 	return &beta, nil
 }
