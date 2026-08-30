@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestValidateTestOptions(t *testing.T) {
@@ -633,6 +634,51 @@ func TestParseTestResultSummaryBoundsFailureMessage(t *testing.T) {
 	}
 	if len(got.Failures) != 1 || len(got.Failures[0].Message) != maxTestFailureMessage {
 		t.Fatalf("failure message length = %d, want %d", len(got.Failures[0].Message), maxTestFailureMessage)
+	}
+}
+
+func TestParseTestMessagesStayValidUTF8AtByteCap(t *testing.T) {
+	for _, suffix := range []string{"é", "☃", "😀"} {
+		t.Run(suffix, func(t *testing.T) {
+			message := strings.Repeat("a", maxTestFailureMessage-1) + suffix
+
+			casesJSON := []byte(fmt.Sprintf(`{
+  "testNodes":[{
+    "nodeType":"Test Case",
+    "nodeIdentifier":"DemoTests/Smoke/testInvalid",
+    "result":"Failed",
+    "message":%q
+  }]
+}`, message))
+			cases, err := ParseTestResultCases(casesJSON)
+			if err != nil {
+				t.Fatalf("ParseTestResultCases() error = %v", err)
+			}
+			if len(cases) != 1 || !utf8.ValidString(cases[0].Message) || len(cases[0].Message) > maxTestFailureMessage {
+				t.Fatalf("case message = %q, valid UTF-8 = %t, bytes = %d; want valid and <= %d", cases[0].Message, utf8.ValidString(cases[0].Message), len(cases[0].Message), maxTestFailureMessage)
+			}
+
+			summaryJSON := []byte(fmt.Sprintf(`{
+  "totalTestCount":1,
+  "passedTests":0,
+  "failedTests":1,
+  "skippedTests":0,
+  "testFailures":[{"testIdentifier":"DemoTests/Smoke/testInvalid","message":%q}],
+  "tests":[{"testIdentifier":"DemoTests/Smoke/testEnriched","status":"Failed","message":%q}]
+}`, message, message))
+			summary, err := ParseTestResultSummary(summaryJSON)
+			if err != nil {
+				t.Fatalf("ParseTestResultSummary() error = %v", err)
+			}
+			if len(summary.Failures) != 2 {
+				t.Fatalf("summary failures = %+v, want raw and enriched failures", summary.Failures)
+			}
+			for _, failure := range summary.Failures {
+				if !utf8.ValidString(failure.Message) || len(failure.Message) > maxTestFailureMessage {
+					t.Fatalf("failure %q message valid UTF-8 = %t, bytes = %d; want valid and <= %d", failure.Identifier, utf8.ValidString(failure.Message), len(failure.Message), maxTestFailureMessage)
+				}
+			}
+		})
 	}
 }
 

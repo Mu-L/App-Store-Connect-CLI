@@ -1426,10 +1426,7 @@ func hasFailedTestCase(cases []TestCase) bool {
 
 func boundTestMessage(value string) string {
 	value = strings.TrimSpace(value)
-	if len(value) <= maxTestFailureMessage {
-		return value
-	}
-	return value[:maxTestFailureMessage]
+	return truncateUTF8Prefix(value, maxTestFailureMessage)
 }
 
 func containsTestFailure(failures []TestFailure, identifier string) bool {
