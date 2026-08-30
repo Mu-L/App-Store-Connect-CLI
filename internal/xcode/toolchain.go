@@ -57,26 +57,30 @@ type ToolchainOptions struct {
 	LogWriter    io.Writer
 }
 
-// ToolchainCheck is one check in a local Xcode toolchain report.
+// ToolchainCheck is one check in a local Xcode toolchain report. It is a
+// probe-layer type, not a serialization contract; command output flows
+// through internal/asc's XcodeToolchainDoctorCheck.
 type ToolchainCheck struct {
-	Name    string               `json:"name"`
-	Status  ToolchainCheckStatus `json:"status"`
-	Path    string               `json:"path,omitempty"`
-	Message string               `json:"message"`
+	Name    string
+	Status  ToolchainCheckStatus
+	Path    string
+	Message string
 }
 
-// ToolchainReport is the stable structured result for local toolchain checks.
+// ToolchainReport is the structured result for local toolchain checks. It is
+// a probe-layer type, not a serialization contract; command output flows
+// through internal/asc's registered camelCase XcodeToolchainDoctorResult.
 type ToolchainReport struct {
-	Status       ToolchainStatus `json:"status"`
-	Source       ToolchainSource `json:"source,omitempty"`
-	DeveloperDir string          `json:"developer_dir,omitempty"`
-	XcodePath    string          `json:"xcode_path,omitempty"`
-	XcodeVersion string          `json:"xcode_version,omitempty"`
-	XcodeBuild   string          `json:"xcode_build,omitempty"`
+	Status       ToolchainStatus
+	Source       ToolchainSource
+	DeveloperDir string
+	XcodePath    string
+	XcodeVersion string
+	XcodeBuild   string
 	// Beta is nil until developer-directory selection and normalization have
 	// completed, so a failed selection cannot be reported as stable Xcode.
-	Beta   *bool            `json:"beta,omitempty"`
-	Checks []ToolchainCheck `json:"checks"`
+	Beta   *bool
+	Checks []ToolchainCheck
 }
 
 var (

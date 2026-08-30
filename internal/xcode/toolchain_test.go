@@ -8,9 +8,28 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+// TestToolchainReportCarriesNoJSONContract guards against the probe-layer
+// structs re-establishing a serialization contract. JSON output for
+// `asc xcode doctor` must flow exclusively through the exported camelCase
+// structs in internal/asc/output_xcode_toolchain.go.
+func TestToolchainReportCarriesNoJSONContract(t *testing.T) {
+	for _, typ := range []reflect.Type{
+		reflect.TypeOf(ToolchainReport{}),
+		reflect.TypeOf(ToolchainCheck{}),
+	} {
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			if tag, ok := field.Tag.Lookup("json"); ok {
+				t.Fatalf("%s.%s carries json tag %q; serialize through internal/asc output structs instead", typ.Name(), field.Name, tag)
+			}
+		}
+	}
+}
 
 func TestParseXcodeVersion(t *testing.T) {
 	tests := []struct {
