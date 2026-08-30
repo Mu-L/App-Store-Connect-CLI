@@ -57,6 +57,14 @@ func applyLinuxTestACL(t *testing.T, file *os.File) {
 	if err != nil {
 		t.Fatalf("apply test ACL: %v", err)
 	}
+	if err := file.Chmod(0o600); err != nil {
+		t.Fatalf("restore protected mode after applying test ACL: %v", err)
+	}
+	if size, err := linuxFgetxattr(int(file.Fd()), linuxPOSIXACLAccessAttribute, nil); err != nil {
+		t.Fatalf("verify test ACL after restoring mode: %v", err)
+	} else if size == 0 {
+		t.Fatal("test ACL disappeared when restoring protected mode")
+	}
 }
 
 func TestValidateCertificateExportProtectedFileRejectsPOSIXACL(t *testing.T) {
@@ -96,5 +104,68 @@ func TestPrepareCertificateExportOutputStripsPOSIXACL(t *testing.T) {
 	}
 	if hasACL {
 		t.Fatal("staging file retains its POSIX ACL after preparation")
+	}
+}
+
+func TestCertificateExportFileHasACLFailsClosedWhenACLInspectionUnsupported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "push.key")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("create protected file: %v", err)
+	}
+	defer file.Close()
+
+	previous := linuxFgetxattr
+	t.Cleanup(func() { linuxFgetxattr = previous })
+	linuxFgetxattr = func(int, string, []byte) (int, error) {
+		return 0, unix.ENOTSUP
+	}
+
+	hasACL, err := certificateExportFileHasACL(file)
+	if err == nil || !errors.Is(err, unix.ENOTSUP) {
+		t.Fatalf("certificateExportFileHasACL() = %v, %v; want ENOTSUP", hasACL, err)
+	}
+	if hasACL {
+		t.Fatal("certificateExportFileHasACL() reported ACL presence after unsupported inspection")
+	}
+}
+
+func TestValidateCertificateExportProtectedFileFailsClosedWhenACLInspectionUnsupported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "push.key")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("create protected file: %v", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatalf("stat protected file: %v", err)
+	}
+
+	previous := linuxFgetxattr
+	t.Cleanup(func() { linuxFgetxattr = previous })
+	linuxFgetxattr = func(int, string, []byte) (int, error) {
+		return 0, unix.EOPNOTSUPP
+	}
+
+	if err := validateCertificateExportProtectedFile(file, info, "private key"); err == nil || !errors.Is(err, unix.EOPNOTSUPP) {
+		t.Fatalf("validateCertificateExportProtectedFile() error = %v, want EOPNOTSUPP", err)
+	}
+}
+
+func TestClearCertificateExportFileACLFailsClosedWhenACLRemovalUnsupported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "staging.p12")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("create staging file: %v", err)
+	}
+	defer file.Close()
+
+	previous := linuxFremovexattr
+	t.Cleanup(func() { linuxFremovexattr = previous })
+	linuxFremovexattr = func(int, string) error { return unix.EOPNOTSUPP }
+
+	if err := clearCertificateExportFileACL(file); err == nil || !errors.Is(err, unix.EOPNOTSUPP) {
+		t.Fatalf("clearCertificateExportFileACL() error = %v, want EOPNOTSUPP", err)
 	}
 }

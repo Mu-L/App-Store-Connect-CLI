@@ -294,6 +294,7 @@ jobs:
             command: |
               ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/secureopen
               ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/cli/shared -run '^(TestSafeWriteFileNoSymlink|TestPublishStagedFileNoReplace|TestWriteNewFileNoSymlink|TestCleanupIncompleteFile)'
+              ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/cli/certificates -run '^TestCreateCertificateExportStagingFileProtectsDACLAtCreation$'
               CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o build/asc_dev_windows_amd64.exe .
     steps:
       - name: Checkout code

@@ -15,9 +15,14 @@ import (
 // filesystems that do not implement them.
 var (
 	renameNoReplaceInRoot = secureopen.RenameNoReplaceInRoot
-	linkInRoot            = func(root *os.Root, oldName, newName string) error {
+	renameInRoot          = func(root *os.Root, oldName, newName string) error {
+		return root.Rename(oldName, newName)
+	}
+	linkInRoot = func(root *os.Root, oldName, newName string) error {
 		return root.Link(oldName, newName)
 	}
+	removeRootedFileForWrite       = removeRootedFile
+	removeRootedStagedFileForWrite = removeRootedFile
 )
 
 // SafeWriteFileNoSymlink writes a file to path without following symlinks and with an optional
@@ -175,9 +180,10 @@ func writeNewFileNoSymlinkInParent(parent *os.Root, path, base string, perm os.F
 				return displayPublishError(linkInRoot(parent, oldName, newName))
 			},
 			removeFile: func(name string) error {
-				return displayTemporaryError(removeRootedFile(parent, name))
+				return displayTemporaryError(removeRootedStagedFileForWrite(parent, name))
 			},
-			copyFile: copyFile,
+			copyFile:      copyFile,
+			strictCleanup: !allowCopyFallback,
 			destinationExists: func(name string) (bool, error) {
 				_, err := parent.Lstat(name)
 				if errors.Is(err, os.ErrNotExist) {
@@ -253,7 +259,7 @@ func writeFileNoSymlinkOverwriteInRoot(parent *os.Root, displayPath, base string
 	// supports it. Where it refuses because the destination exists, fall back
 	// to the same backup-preserving replace as the path-based writer, still
 	// inside the pinned parent.
-	if err := parent.Rename(tempName, base); err != nil {
+	if err := renameInRoot(parent, tempName, base); err != nil {
 		if !hadExisting {
 			return 0, err
 		}
@@ -269,14 +275,21 @@ func writeFileNoSymlinkOverwriteInRoot(parent *os.Root, displayPath, base string
 			return 0, removeErr
 		}
 
-		if moveErr := parent.Rename(base, backupName); moveErr != nil {
+		if moveErr := renameInRoot(parent, base, backupName); moveErr != nil {
 			return 0, moveErr
 		}
-		if moveErr := parent.Rename(tempName, base); moveErr != nil {
-			_ = parent.Rename(backupName, base)
-			return 0, moveErr
+		if moveErr := renameInRoot(parent, tempName, base); moveErr != nil {
+			if restoreErr := renameInRoot(parent, backupName, base); restoreErr != nil {
+				return 0, errors.Join(
+					replaceErrorPaths(moveErr, "temporary output", tempName),
+					replaceErrorPaths(restoreErr, "backup output", backupName),
+				)
+			}
+			return 0, replaceErrorPaths(moveErr, "temporary output", tempName)
 		}
-		_ = removeRootedFile(parent, backupName)
+		if removeErr := removeRootedFileForWrite(parent, backupName); removeErr != nil {
+			return written, fmt.Errorf("remove backup after replacing %q: %w", displayPath, replaceErrorPaths(removeErr, "backup output", backupName))
+		}
 	}
 
 	success = true
@@ -296,6 +309,7 @@ type stagedFilePublishOps struct {
 	removeFile        func(string) error
 	copyFile          func(string, string) error
 	destinationExists func(string) (bool, error)
+	strictCleanup     bool
 }
 
 func publishStagedFileNoReplace(temporaryName, destinationName string, ops stagedFilePublishOps) error {
@@ -333,8 +347,12 @@ func publishStagedFileNoReplace(temporaryName, destinationName string, ops stage
 	linkErr := ops.linkFile(temporaryName, destinationName)
 	if linkErr == nil {
 		// Once publication succeeds, the complete destination is committed. Cleanup
-		// remains best effort so callers do not retry a write that already succeeded.
-		_ = removeStaged()
+		// remains best effort for ordinary files. Protected artifacts surface a
+		// failed staged-name removal because the second hard link could retain a
+		// secret-bearing inode after the command returns.
+		if cleanupErr := removeStaged(); cleanupErr != nil && ops.strictCleanup {
+			return fmt.Errorf("published file but staged cleanup failed: %w", cleanupErr)
+		}
 		return nil
 	}
 	if errors.Is(linkErr, os.ErrExist) {

@@ -16,20 +16,27 @@ import (
 // account access past a 0600 mode.
 const linuxPOSIXACLAccessAttribute = "system.posix_acl_access"
 
+var (
+	linuxFgetxattr    = unix.Fgetxattr
+	linuxFremovexattr = unix.Fremovexattr
+)
+
 func certificateExportFileHasACL(file *os.File) (bool, error) {
-	size, err := unix.Fgetxattr(int(file.Fd()), linuxPOSIXACLAccessAttribute, nil)
+	size, err := linuxFgetxattr(int(file.Fd()), linuxPOSIXACLAccessAttribute, nil)
 	if err != nil {
-		if errors.Is(err, unix.ENODATA) || errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP) {
+		if errors.Is(err, unix.ENODATA) {
 			return false, nil
 		}
+		// Unsupported xattrs do not prove that no ACL can grant access, so
+		// protected inputs and outputs must fail closed on such filesystems.
 		return false, fmt.Errorf("inspect access control list: %w", err)
 	}
 	return size > 0, nil
 }
 
 func clearCertificateExportFileACL(file *os.File) error {
-	err := unix.Fremovexattr(int(file.Fd()), linuxPOSIXACLAccessAttribute)
-	if err == nil || errors.Is(err, unix.ENODATA) || errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP) {
+	err := linuxFremovexattr(int(file.Fd()), linuxPOSIXACLAccessAttribute)
+	if err == nil || errors.Is(err, unix.ENODATA) {
 		return nil
 	}
 	return fmt.Errorf("remove access control list: %w", err)

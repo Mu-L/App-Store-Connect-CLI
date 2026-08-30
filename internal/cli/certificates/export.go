@@ -413,7 +413,7 @@ func pinCertificateExportDestination(output string) (*os.Root, string, error) {
 // openCertificateExportDestinationParent walks the destination's parent chain
 // through a selected, anchored no-follow traversal and returns the pinned
 // parent directory root. The working directory and temporary-directory anchors
-// preserve normal platform layouts such as macOS's /var alias while still
+// preserve normal platform layouts such as macOS's /var and /tmp aliases while still
 // rejecting symlinks introduced below the operator's likely output root. When
 // createMissing is false the walk stops at the first missing component and
 // returns a nil root; when true, missing components are created through the
@@ -421,6 +421,7 @@ func pinCertificateExportDestination(output string) (*os.Root, string, error) {
 // symlink swap. The final output entry is checked separately by
 // preflightCertificateExportDestination and the rooted writer.
 func openCertificateExportDestinationParent(output string, createMissing bool) (*os.Root, error) {
+	output = certificateExportRootPath(output)
 	volumeRoot := filepath.VolumeName(output) + string(filepath.Separator)
 	rootPath := volumeRoot
 	for _, candidate := range []string{certificateExportWorkingDirectory(), os.TempDir()} {

@@ -122,10 +122,17 @@ directory that was validated, not into whatever the path resolves to later.
 Validation failures after the pin may leave newly created empty parent
 directories behind, but never a partial or redirected output.
 
+On macOS, the standard `/tmp` and `/var` aliases are canonicalized to their
+`/private` targets only for this rooted traversal. Other symlinked components
+remain untrusted and are rejected.
+
 Publication is fail-closed for this secret artifact. A native no-replace rename
 or atomic hard-link publication is required; filesystems that expose neither
 primitive return an error instead of copying bytes into a visible destination.
 This keeps observers from seeing a partially written identity.
+If hard-link publication succeeds but removal of the staged link fails, the
+operation returns an error rather than silently leaving a second secret-bearing
+link; the destination remains complete for manual recovery.
 
 On Windows, the output DACL is applied with file-specific read/write/delete
 rights before any PKCS#12 bytes are written and is verified against the same
@@ -148,6 +155,9 @@ removal hint, because an ACL entry can grant another account access that the
 0600 mode bits do not show. Any ACL the staging file inherits from the
 destination directory is stripped and the removal verified before PKCS#12
 bytes are written; a filesystem that cannot drop the ACL fails closed.
+Linux filesystems that cannot inspect or remove the POSIX ACL attribute likewise
+fail closed rather than treating unsupported metadata operations as proof of
+owner-only access.
 
 Path classification remains platform-aware: a trailing backslash is a
 directory separator only on platforms where `os.IsPathSeparator` reports it as

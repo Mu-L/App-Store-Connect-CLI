@@ -447,3 +447,25 @@ func TestRunCertificateExportCreatesMissingParentsThroughPinnedRoots(t *testing.
 		t.Fatalf("output mode = %v, want regular file", info.Mode())
 	}
 }
+
+func TestOpenCertificateExportDestinationParentAllowsDarwinPrivateAliases(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS private directory aliases are not present on this platform")
+	}
+
+	for _, alias := range []string{"/tmp", "/var"} {
+		t.Run(filepath.Base(alias), func(t *testing.T) {
+			output := filepath.Join(alias, "asc-certificate-export-alias-test.p12")
+			parent, err := openCertificateExportDestinationParent(output, false)
+			if err != nil {
+				t.Fatalf("openCertificateExportDestinationParent(%q) error = %v, want known macOS alias accepted", output, err)
+			}
+			if parent == nil {
+				t.Fatal("openCertificateExportDestinationParent() returned nil root for existing alias parent")
+			}
+			if err := parent.Close(); err != nil {
+				t.Fatalf("close rooted alias parent: %v", err)
+			}
+		})
+	}
+}

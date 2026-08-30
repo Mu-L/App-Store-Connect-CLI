@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -487,6 +488,97 @@ func TestPublishStagedFileNoReplaceTreatsPostPublishCleanupAsBestEffort(t *testi
 	}
 	if removeCalls != 2 {
 		t.Fatalf("remove calls = %d, want immediate attempt and deferred retry", removeCalls)
+	}
+}
+
+func TestPublishStagedFileNoReplaceStrictCleanupReportsHardLinkCleanupFailure(t *testing.T) {
+	cleanupErr := errors.New("simulated staged hard-link cleanup failure")
+	removeCalls := 0
+
+	err := publishStagedFileNoReplace(
+		".safe-write-staged",
+		"artifact.bin",
+		stagedFilePublishOps{
+			renameFile: func(string, string) error {
+				return secureopen.ErrRenameNoReplaceUnsupported
+			},
+			linkFile: func(string, string) error { return nil },
+			removeFile: func(name string) error {
+				if name != ".safe-write-staged" {
+					t.Fatalf("remove name = %q", name)
+				}
+				removeCalls++
+				return cleanupErr
+			},
+			strictCleanup: true,
+		},
+	)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("publishStagedFileNoReplace() error = %v, want cleanup failure", err)
+	}
+	if removeCalls < 1 {
+		t.Fatal("staged hard-link name was not removed")
+	}
+}
+
+func TestSafeWriteFileNoSymlinkInRootReportsProtectedHardLinkCleanupFailure(t *testing.T) {
+	directory := t.TempDir()
+	destination := filepath.Join(directory, "artifact.bin")
+	parent, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatalf("OpenRoot() error = %v", err)
+	}
+	defer parent.Close()
+
+	previousRename := renameNoReplaceInRoot
+	previousLink := linkInRoot
+	previousRemove := removeRootedStagedFileForWrite
+	t.Cleanup(func() {
+		renameNoReplaceInRoot = previousRename
+		linkInRoot = previousLink
+		removeRootedStagedFileForWrite = previousRemove
+	})
+
+	renameNoReplaceInRoot = func(*os.Root, string, string) error {
+		return secureopen.ErrRenameNoReplaceUnsupported
+	}
+	linkInRoot = func(root *os.Root, oldName, newName string) error {
+		return root.Link(oldName, newName)
+	}
+	cleanupErr := errors.New("simulated protected staged cleanup failure")
+	removeRootedStagedFileForWrite = func(*os.Root, string) error { return cleanupErr }
+
+	written, err := SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot(
+		parent,
+		destination,
+		"artifact.bin",
+		0o600,
+		false,
+		".safe-write-*",
+		".safe-write-backup-*",
+		nil,
+		nil,
+		func(file *os.File) (int64, error) {
+			n, writeErr := file.Write([]byte("secret"))
+			return int64(n), writeErr
+		},
+	)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot() error = %v, want staged cleanup failure", err)
+	}
+	if written != int64(len("secret")) {
+		t.Fatalf("written = %d, want %d", written, len("secret"))
+	}
+	got, readErr := os.ReadFile(destination)
+	if readErr != nil || string(got) != "secret" {
+		t.Fatalf("destination = %q, %v; want complete published content", got, readErr)
+	}
+	entries, readDirErr := os.ReadDir(directory)
+	if readDirErr != nil {
+		t.Fatalf("ReadDir() error = %v", readDirErr)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("directory entries = %v, want destination plus retained staged link", entries)
 	}
 }
 
@@ -1031,7 +1123,11 @@ func TestSafeWriteFileNoSymlinkInRootWritesThroughPinnedParent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Lstat() error = %v", err)
 			}
-			if info.Mode().Perm()&0o077 != 0 {
+			// Windows does not project DACLs into FileMode permission bits. The
+			// certificate package's Windows integration test verifies the
+			// owner-only DACL contract; this shared test checks mode bits only on
+			// platforms where they represent access permissions.
+			if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 				t.Fatalf("destination permissions = %v, want owner-only", info.Mode().Perm())
 			}
 			entries, err := os.ReadDir(directory)
@@ -1042,6 +1138,160 @@ func TestSafeWriteFileNoSymlinkInRootWritesThroughPinnedParent(t *testing.T) {
 				t.Fatalf("directory entries = %v, want only artifact.bin", entries)
 			}
 		})
+	}
+}
+
+func TestSafeWriteFileNoSymlinkInRootReportsBackupCleanupFailure(t *testing.T) {
+	directory := t.TempDir()
+	destination := filepath.Join(directory, "artifact.bin")
+	if err := os.WriteFile(destination, []byte("old"), 0o600); err != nil {
+		t.Fatalf("seed destination: %v", err)
+	}
+	parent, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatalf("OpenRoot() error = %v", err)
+	}
+	defer parent.Close()
+
+	previousRename := renameInRoot
+	previousRemove := removeRootedFileForWrite
+	t.Cleanup(func() {
+		renameInRoot = previousRename
+		removeRootedFileForWrite = previousRemove
+	})
+
+	initialRenameErr := errors.New("simulated replacement fallback")
+	backupCleanupErr := errors.New("simulated backup cleanup failure")
+	renameCalls := 0
+	renameInRoot = func(root *os.Root, oldName, newName string) error {
+		renameCalls++
+		if renameCalls == 1 {
+			return initialRenameErr
+		}
+		return root.Rename(oldName, newName)
+	}
+	removeRootedFileForWrite = func(root *os.Root, name string) error {
+		return backupCleanupErr
+	}
+
+	written, err := SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot(
+		parent,
+		destination,
+		"artifact.bin",
+		0o600,
+		true,
+		".safe-write-*",
+		".safe-write-backup-*",
+		nil,
+		nil,
+		func(file *os.File) (int64, error) {
+			n, writeErr := file.Write([]byte("new"))
+			return int64(n), writeErr
+		},
+	)
+	if !errors.Is(err, backupCleanupErr) {
+		t.Fatalf("SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot() error = %v, want backup cleanup failure", err)
+	}
+	if written != int64(len("new")) {
+		t.Fatalf("written = %d, want %d", written, len("new"))
+	}
+	got, readErr := os.ReadFile(destination)
+	if readErr != nil || string(got) != "new" {
+		t.Fatalf("destination = %q, %v; want published new content", got, readErr)
+	}
+	entries, readDirErr := os.ReadDir(directory)
+	if readDirErr != nil {
+		t.Fatalf("ReadDir() error = %v", readDirErr)
+	}
+	backupFound := false
+	for _, entry := range entries {
+		if entry.Name() == "artifact.bin" {
+			continue
+		}
+		backupFound = true
+		backup, backupReadErr := os.ReadFile(filepath.Join(directory, entry.Name()))
+		if backupReadErr != nil || string(backup) != "old" {
+			t.Fatalf("backup %q = %q, %v; want preserved old content", entry.Name(), backup, backupReadErr)
+		}
+	}
+	if !backupFound {
+		t.Fatal("backup was removed despite the injected cleanup failure")
+	}
+}
+
+func TestSafeWriteFileNoSymlinkInRootReportsBackupRestoreFailure(t *testing.T) {
+	directory := t.TempDir()
+	destination := filepath.Join(directory, "artifact.bin")
+	if err := os.WriteFile(destination, []byte("old"), 0o600); err != nil {
+		t.Fatalf("seed destination: %v", err)
+	}
+	parent, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatalf("OpenRoot() error = %v", err)
+	}
+	defer parent.Close()
+
+	previousRename := renameInRoot
+	t.Cleanup(func() { renameInRoot = previousRename })
+
+	initialRenameErr := errors.New("simulated replacement fallback")
+	moveErr := errors.New("simulated final replacement failure")
+	restoreErr := errors.New("simulated backup restore failure")
+	renameCalls := 0
+	renameInRoot = func(root *os.Root, oldName, newName string) error {
+		renameCalls++
+		switch renameCalls {
+		case 1:
+			return initialRenameErr
+		case 2:
+			return root.Rename(oldName, newName)
+		case 3:
+			return moveErr
+		case 4:
+			return restoreErr
+		default:
+			return root.Rename(oldName, newName)
+		}
+	}
+
+	_, err = SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot(
+		parent,
+		destination,
+		"artifact.bin",
+		0o600,
+		true,
+		".safe-write-*",
+		".safe-write-backup-*",
+		nil,
+		nil,
+		func(file *os.File) (int64, error) {
+			n, writeErr := file.Write([]byte("new"))
+			return int64(n), writeErr
+		},
+	)
+	if !errors.Is(err, moveErr) || !errors.Is(err, restoreErr) {
+		t.Fatalf("SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot() error = %v, want move and restore failures", err)
+	}
+	if _, readErr := os.Stat(destination); !errors.Is(readErr, os.ErrNotExist) {
+		t.Fatalf("destination stat error = %v, want missing destination after failed restore", readErr)
+	}
+	entries, readDirErr := os.ReadDir(directory)
+	if readDirErr != nil {
+		t.Fatalf("ReadDir() error = %v", readDirErr)
+	}
+	backupFound := false
+	for _, entry := range entries {
+		if entry.Name() == "artifact.bin" {
+			continue
+		}
+		backupFound = true
+		backup, backupReadErr := os.ReadFile(filepath.Join(directory, entry.Name()))
+		if backupReadErr != nil || string(backup) != "old" {
+			t.Fatalf("backup %q = %q, %v; want preserved old content", entry.Name(), backup, backupReadErr)
+		}
+	}
+	if !backupFound {
+		t.Fatal("original content was lost after backup restoration failed")
 	}
 }
 
