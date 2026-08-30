@@ -74,13 +74,18 @@ type TestResult struct {
 
 // TestSummary contains the structured counts extracted from an xcresult.
 type TestSummary struct {
-	Total      int           `json:"total"`
-	Passed     int           `json:"passed"`
-	Failed     int           `json:"failed"`
-	Skipped    int           `json:"skipped"`
-	DurationMS int64         `json:"duration_ms"`
-	Cases      []TestCase    `json:"cases,omitempty"`
-	Failures   []TestFailure `json:"failures,omitempty"`
+	Total            int           `json:"total"`
+	Passed           int           `json:"passed"`
+	Failed           int           `json:"failed"`
+	Skipped          int           `json:"skipped"`
+	ExpectedFailures int           `json:"expected_failures,omitempty"`
+	DurationMS       int64         `json:"duration_ms"`
+	Cases            []TestCase    `json:"cases,omitempty"`
+	Failures         []TestFailure `json:"failures,omitempty"`
+
+	// expectedFailuresSet distinguishes a parsed aggregate (where zero is an
+	// authoritative value) from a hand-built summary used by callers/tests.
+	expectedFailuresSet bool
 }
 
 // TestCase is a bounded structured representation of one test case.
@@ -630,6 +635,9 @@ func readTestResultSummary(ctx context.Context, resultBundlePath string) (*TestS
 		return nil, err
 	}
 	for _, testCase := range cases {
+		if len(summary.Failures) >= maxTestFailureCount {
+			break
+		}
 		if normalizeTestStatus(testCase.Status) == "failed" && !containsTestFailure(summary.Failures, testCase.Identifier) {
 			summary.Failures = append(summary.Failures, TestFailure{
 				Identifier: testCase.Identifier,
@@ -695,18 +703,19 @@ func (output *boundedXcresulttoolOutput) Write(data []byte) (int, error) {
 }
 
 type rawTestResultSummary struct {
-	Tests          json.RawMessage `json:"tests"`
-	TestCases      json.RawMessage `json:"testCases"`
-	TotalTestCount json.RawMessage `json:"totalTestCount"`
-	PassedTests    json.RawMessage `json:"passedTests"`
-	FailedTests    json.RawMessage `json:"failedTests"`
-	SkippedTests   json.RawMessage `json:"skippedTests"`
-	TestDuration   json.RawMessage `json:"testDuration"`
-	DurationMS     json.RawMessage `json:"durationMs"`
-	Duration       json.RawMessage `json:"duration"`
-	StartTime      json.RawMessage `json:"startTime"`
-	FinishTime     json.RawMessage `json:"finishTime"`
-	TestFailures   json.RawMessage `json:"testFailures"`
+	Tests            json.RawMessage `json:"tests"`
+	TestCases        json.RawMessage `json:"testCases"`
+	TotalTestCount   json.RawMessage `json:"totalTestCount"`
+	PassedTests      json.RawMessage `json:"passedTests"`
+	FailedTests      json.RawMessage `json:"failedTests"`
+	SkippedTests     json.RawMessage `json:"skippedTests"`
+	ExpectedFailures json.RawMessage `json:"expectedFailures"`
+	TestDuration     json.RawMessage `json:"testDuration"`
+	DurationMS       json.RawMessage `json:"durationMs"`
+	Duration         json.RawMessage `json:"duration"`
+	StartTime        json.RawMessage `json:"startTime"`
+	FinishTime       json.RawMessage `json:"finishTime"`
+	TestFailures     json.RawMessage `json:"testFailures"`
 }
 
 type rawTestFailure struct {
@@ -799,6 +808,10 @@ func ParseTestResultSummary(data []byte) (*TestSummary, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode skipped test count: %w", err)
 	}
+	expectedFailures, expectedFailuresSet, err := decodeIntValue(raw.ExpectedFailures)
+	if err != nil {
+		return nil, fmt.Errorf("decode expected-failure count: %w", err)
+	}
 	if !totalSet && len(cases) > 0 {
 		total = len(cases)
 		totalSet = true
@@ -814,10 +827,10 @@ func ParseTestResultSummary(data []byte) (*TestSummary, error) {
 		skipped = caseSkipped
 	}
 	if !totalSet {
-		if !passedSet && !failedSet && !skippedSet {
+		if !passedSet && !failedSet && !skippedSet && !expectedFailuresSet {
 			return nil, fmt.Errorf("xcresulttool summary did not include a test count")
 		}
-		total = passed + failed + skipped
+		total = passed + failed + skipped + expectedFailures
 		totalSet = true
 	}
 	if len(cases) == 0 {
@@ -840,6 +853,13 @@ func ParseTestResultSummary(data []byte) (*TestSummary, error) {
 	}
 	if !testCountsMatch(total, passed, failed, skipped) {
 		return nil, fmt.Errorf("xcresulttool summary contains inconsistent test counts")
+	}
+	expectedRemainder, _ := testCountRemainder(total, passed, failed, skipped)
+	if expectedFailuresSet && expectedFailures != expectedRemainder {
+		return nil, fmt.Errorf("xcresulttool summary contains inconsistent expected-failure count")
+	}
+	if !expectedFailuresSet {
+		expectedFailures = expectedRemainder
 	}
 	durationMS, err := decodeMilliseconds(raw.DurationMS)
 	if err != nil {
@@ -872,20 +892,22 @@ func ParseTestResultSummary(data []byte) (*TestSummary, error) {
 		return nil, fmt.Errorf("decode test failures: %w", err)
 	}
 	for _, testCase := range cases {
-		if strings.EqualFold(testCase.Status, "failed") && len(failures) < maxTestFailureCount {
+		if normalizeTestStatus(testCase.Status) == "failed" && len(failures) < maxTestFailureCount {
 			if !containsTestFailure(failures, testCase.Identifier) {
 				failures = append(failures, TestFailure{Identifier: testCase.Identifier, Message: boundTestMessage(testCase.Message)})
 			}
 		}
 	}
 	summary := &TestSummary{
-		Total:      total,
-		Passed:     passed,
-		Failed:     failed,
-		Skipped:    skipped,
-		DurationMS: durationMS,
-		Cases:      cases,
-		Failures:   failures,
+		Total:               total,
+		Passed:              passed,
+		Failed:              failed,
+		Skipped:             skipped,
+		ExpectedFailures:    expectedFailures,
+		expectedFailuresSet: true,
+		DurationMS:          durationMS,
+		Cases:               cases,
+		Failures:            failures,
 	}
 	if err := validateTestSummary(summary); err != nil {
 		return nil, err
@@ -1277,15 +1299,20 @@ func hasJSONValue(data json.RawMessage) bool {
 }
 
 func normalizeTestStatus(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
 	case "passed", "pass", "success", "succeeded":
 		return "passed"
 	case "failed", "failure", "error", "errored":
 		return "failed"
 	case "skipped", "skip":
 		return "skipped"
+	}
+	switch strings.NewReplacer("-", "", "_", "", " ", "").Replace(normalized) {
+	case "expectedfailure", "expectedfailures":
+		return "expected-failure"
 	default:
-		return strings.ToLower(strings.TrimSpace(value))
+		return normalized
 	}
 }
 
@@ -1303,10 +1330,20 @@ func countTestCases(cases []TestCase) (passed, failed, skipped int) {
 	return passed, failed, skipped
 }
 
+func countExpectedFailureCases(cases []TestCase) int {
+	count := 0
+	for _, testCase := range cases {
+		if normalizeTestStatus(testCase.Status) == "expected-failure" {
+			count++
+		}
+	}
+	return count
+}
+
 func validateTestCases(cases []TestCase) error {
 	for _, testCase := range cases {
 		switch normalizeTestStatus(testCase.Status) {
-		case "passed", "failed", "skipped":
+		case "passed", "failed", "skipped", "expected-failure":
 		default:
 			return fmt.Errorf("xcresulttool test case %q has unsupported status %q", testCase.Identifier, testCase.Status)
 		}
@@ -1321,6 +1358,12 @@ func validateTestSummary(summary *TestSummary) error {
 	if !testCountsMatch(summary.Total, summary.Passed, summary.Failed, summary.Skipped) {
 		return fmt.Errorf("xcresulttool summary contains inconsistent test counts")
 	}
+	if summary.expectedFailuresSet || summary.ExpectedFailures > 0 {
+		expectedRemainder, _ := testCountRemainder(summary.Total, summary.Passed, summary.Failed, summary.Skipped)
+		if summary.ExpectedFailures != expectedRemainder {
+			return fmt.Errorf("xcresulttool summary contains inconsistent expected-failure count")
+		}
+	}
 	if len(summary.Cases) == 0 {
 		return nil
 	}
@@ -1334,21 +1377,32 @@ func validateTestSummary(summary *TestSummary) error {
 		return nil
 	}
 	passed, failed, skipped := countTestCases(summary.Cases)
-	if passed != summary.Passed || failed != summary.Failed || skipped != summary.Skipped {
+	expectedFailures := countExpectedFailureCases(summary.Cases)
+	if passed != summary.Passed || failed != summary.Failed || skipped != summary.Skipped ||
+		((summary.expectedFailuresSet || summary.ExpectedFailures > 0) && expectedFailures != summary.ExpectedFailures) {
 		return fmt.Errorf("xcresulttool test case statuses do not match summary counts")
 	}
 	return nil
 }
 
 func testCountsMatch(total, passed, failed, skipped int) bool {
+	_, ok := testCountRemainder(total, passed, failed, skipped)
+	return ok
+}
+
+func testCountRemainder(total, passed, failed, skipped int) (int, bool) {
 	if total < 0 || passed < 0 || failed < 0 || skipped < 0 || passed > total {
-		return false
+		return 0, false
 	}
 	remaining := total - passed
 	if failed > remaining {
-		return false
+		return 0, false
 	}
-	return skipped == remaining-failed
+	remaining -= failed
+	if skipped > remaining {
+		return 0, false
+	}
+	return remaining - skipped, true
 }
 
 func hasFailedTestCase(cases []TestCase) bool {

@@ -213,6 +213,39 @@ func TestXcodeTestValidationErrorsAreUsageErrors(t *testing.T) {
 	}
 }
 
+func TestXcodeTestFlagsAreExperimental(t *testing.T) {
+	command := XcodeTestCommand()
+	wantFlags := map[string]bool{
+		"workspace":          true,
+		"project":            true,
+		"scheme":             true,
+		"action":             true,
+		"configuration":      true,
+		"destination":        true,
+		"test-plan":          true,
+		"xctestrun":          true,
+		"only-testing":       true,
+		"skip-testing":       true,
+		"derived-data-path":  true,
+		"result-bundle-path": true,
+		"clean":              true,
+		"no-code-signing":    true,
+		"xcodebuild-flag":    true,
+	}
+	command.FlagSet.VisitAll(func(flagDef *flag.Flag) {
+		if !wantFlags[flagDef.Name] {
+			return
+		}
+		if !strings.HasPrefix(flagDef.Usage, "[experimental] ") {
+			t.Errorf("--%s usage = %q, want [experimental] prefix", flagDef.Name, flagDef.Usage)
+		}
+		delete(wantFlags, flagDef.Name)
+	})
+	for flagName := range wantFlags {
+		t.Errorf("--%s was not registered", flagName)
+	}
+}
+
 func TestXcodeTestRendersTableAndMarkdown(t *testing.T) {
 	originalRunTest := runTest
 	t.Cleanup(func() { runTest = originalRunTest })
@@ -326,7 +359,7 @@ func TestXcodeTestJUnitIncludesStructuredCases(t *testing.T) {
 				{Identifier: "DemoTests/Smoke/testSkip", Name: "testSkip", Classname: "DemoTests", Status: "skipped"},
 			},
 		},
-	})
+	}, nil)
 	data, err := report.Marshal()
 	if err != nil {
 		t.Fatalf("JUnit Marshal() error = %v", err)
@@ -354,7 +387,7 @@ func TestXcodeTestJUnitReconcilesSummaryCountsWithoutDroppingCases(t *testing.T)
 				{Identifier: "DemoTests/Smoke/testFail", Name: "testFail", Status: "failed", Message: "assertion failed"},
 			},
 		},
-	})
+	}, nil)
 	data, err := report.Marshal()
 	if err != nil {
 		t.Fatalf("JUnit Marshal() error = %v", err)
@@ -373,7 +406,7 @@ func TestXcodeTestJUnitZeroSummaryProducesNoSyntheticCase(t *testing.T) {
 	report := testResultJUnitReport(&localxcode.TestResult{
 		Success: true,
 		Tests:   &localxcode.TestSummary{},
-	})
+	}, nil)
 	data, err := report.Marshal()
 	if err != nil {
 		t.Fatalf("JUnit Marshal() error = %v", err)
@@ -396,7 +429,7 @@ func TestXcodeTestJUnitPreservesInfrastructureFailureWithPassingCases(t *testing
 			Passed: 1,
 			Cases:  []localxcode.TestCase{{Identifier: "DemoTests/Smoke/testPass", Name: "testPass", Status: "passed"}},
 		},
-	})
+	}, nil)
 	data, err := report.Marshal()
 	if err != nil {
 		t.Fatalf("JUnit Marshal() error = %v", err)
@@ -413,12 +446,50 @@ func TestXcodeTestJUnitFallbackMarksSummaryFailure(t *testing.T) {
 	report := testResultJUnitReport(&localxcode.TestResult{
 		Success: true,
 		Tests:   &localxcode.TestSummary{Total: 1, Failed: 1, DurationMS: 600},
-	})
+	}, nil)
 	data, err := report.Marshal()
 	if err != nil {
 		t.Fatalf("JUnit Marshal() error = %v", err)
 	}
 	if !strings.Contains(string(data), `failures="1"`) || !strings.Contains(string(data), "FAILURE") {
 		t.Fatalf("JUnit output = %s, want one failure", data)
+	}
+}
+
+func TestXcodeTestJUnitPreservesPreflightCause(t *testing.T) {
+	result := &localxcode.TestResult{}
+	cause := errors.New("project path does not exist")
+	report := testResultJUnitReport(result, cause)
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("JUnit Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), cause.Error()) {
+		t.Fatalf("JUnit output = %s, want actionable preflight cause", data)
+	}
+}
+
+func TestXcodeTestJUnitTreatsExpectedFailuresAsNonfailing(t *testing.T) {
+	report := testResultJUnitReport(&localxcode.TestResult{
+		Success: true,
+		Tests: &localxcode.TestSummary{
+			Total:            2,
+			Passed:           1,
+			ExpectedFailures: 1,
+			Cases: []localxcode.TestCase{
+				{Identifier: "DemoTests/Smoke/testPass", Name: "testPass", Status: "passed"},
+				{Identifier: "DemoTests/Smoke/testKnownIssue", Name: "testKnownIssue", Status: "expected-failure"},
+			},
+		},
+	}, nil)
+	data, err := report.Marshal()
+	if err != nil {
+		t.Fatalf("JUnit Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), `tests="2"`) || !strings.Contains(string(data), `failures="0"`) {
+		t.Fatalf("JUnit output = %s, want expected failure treated as nonfailing", data)
+	}
+	if got := strings.Count(string(data), "<testcase "); got != 2 {
+		t.Fatalf("JUnit testcase count = %d, want 2\n%s", got, data)
 	}
 }

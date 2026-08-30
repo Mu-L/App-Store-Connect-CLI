@@ -67,9 +67,12 @@ aggregate fields such as `totalTestCount`, `passedTests`, `failedTests`,
 `skippedTests`, and `testFailures`; `xcresulttool get test-results tests
 --path PATH --compact` supplies the recursive `testNodes` tree. The parser
 flattens only `Test Case` nodes and takes bounded failure text from structured
-failure-message children. It accepts only closed `passed`, `failed`, and
-`skipped` case statuses and requires aggregate counts to sum exactly to the
-total. When the flattened cases represent the same unit as the aggregate,
+failure-message children. It accepts closed `passed`, `failed`, `skipped`, and
+expected-failure case statuses; expected failures remain nonfailing while their
+count is reported separately. Aggregate counts must be nonnegative and cannot
+exceed `totalTestCount`; `expectedFailures` reconciles any remaining aggregate
+count when Xcode provides it, and is derived from the remainder when the field
+is absent. When the flattened cases represent the same unit as the aggregate,
 their status counts are cross-checked; multi-destination or repetition trees
 are preserved even when their leaf count differs from the aggregate. Unknown
 fields are ignored. Structured output is capped before parsing. Missing
@@ -93,6 +96,7 @@ JSON uses the registered exported output receipt with stable camelCase fields:
     "passed": 10,
     "failed": 1,
     "skipped": 1,
+    "expectedFailures": 0,
     "durationMs": 4812,
     "failures": [
       {"identifier": "AppTests/LoginTests/testInvalidPassword", "message": "assertion failed"}

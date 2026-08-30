@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -361,6 +362,102 @@ func TestParseTestResultSummaryWithCases(t *testing.T) {
 	}
 }
 
+func TestParseTestResultSummaryAllowsExpectedFailures(t *testing.T) {
+	data := []byte(`{
+  "totalTestCount":2,
+  "passedTests":1,
+  "failedTests":0,
+  "skippedTests":0,
+  "expectedFailures":1,
+  "tests":[
+    {"testIdentifier":"DemoTests/Smoke/testPass","status":"Passed"},
+    {"testIdentifier":"DemoTests/Smoke/testKnownIssue","status":"Expected Failure"}
+  ]
+}`)
+
+	got, err := ParseTestResultSummary(data)
+	if err != nil {
+		t.Fatalf("ParseTestResultSummary() error = %v, want expected failure to remain nonfailing", err)
+	}
+	if got.Total != 2 || got.Passed != 1 || got.Failed != 0 || got.Skipped != 0 || got.ExpectedFailures != 1 {
+		t.Fatalf("unexpected expected-failure summary: %+v", got)
+	}
+	if len(got.Cases) != 2 || got.Cases[1].Status != "expected-failure" {
+		t.Fatalf("unexpected expected-failure cases: %+v", got.Cases)
+	}
+}
+
+func TestParseTestResultCasesAcceptsExpectedFailureStatus(t *testing.T) {
+	data := []byte(`{
+  "testNodes":[{
+    "nodeType":"Test Suite",
+    "children":[{
+      "nodeType":"Test Case",
+      "nodeIdentifier":"DemoTests/Smoke/testKnownIssue",
+      "result":"expectedFailure"
+    }]
+  }]
+}`)
+
+	cases, err := ParseTestResultCases(data)
+	if err != nil {
+		t.Fatalf("ParseTestResultCases() error = %v, want expected failure status accepted", err)
+	}
+	if len(cases) != 1 || cases[0].Status != "expected-failure" {
+		t.Fatalf("expected-failure cases = %+v, want normalized nonfailing status", cases)
+	}
+}
+
+func TestParseTestResultSummaryRejectsInvalidExpectedFailureCounts(t *testing.T) {
+	for _, data := range [][]byte{
+		[]byte(`{"totalTestCount":1,"passedTests":0,"failedTests":0,"skippedTests":0,"expectedFailures":-1}`),
+		[]byte(`{"totalTestCount":1,"passedTests":0,"failedTests":0,"skippedTests":0,"expectedFailures":2}`),
+		[]byte(`{"totalTestCount":2,"passedTests":1,"failedTests":0,"skippedTests":0,"expectedFailures":0}`),
+	} {
+		if _, err := ParseTestResultSummary(data); err == nil {
+			t.Fatalf("ParseTestResultSummary(%s) succeeded, want invalid expected-failure counts rejected", data)
+		}
+	}
+}
+
+func TestReadTestResultSummaryBoundsMergedCaseFailures(t *testing.T) {
+	originalLookPath := lookPathFn
+	originalCommandContext := commandContextFn
+	t.Cleanup(func() {
+		lookPathFn = originalLookPath
+		commandContextFn = originalCommandContext
+	})
+
+	cases := make([]map[string]string, maxTestFailureCount+1)
+	for index := range cases {
+		cases[index] = map[string]string{
+			"identifier": "DemoTests/Smoke/test" + strconv.Itoa(index),
+			"status":     "failed",
+		}
+	}
+	encodedCases, err := json.Marshal(cases)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	summaryOutput := `{"totalTestCount":101,"passedTests":0,"failedTests":101,"skippedTests":0}`
+	lookPathFn = func(string) (string, error) { return "/usr/bin/xcrun", nil }
+	commandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		output := summaryOutput
+		if len(args) > 3 && args[3] == "tests" {
+			output = string(encodedCases)
+		}
+		return exec.CommandContext(ctx, "printf", "%s", output)
+	}
+
+	got, err := readTestResultSummary(context.Background(), "/tmp/Demo.xcresult")
+	if err != nil {
+		t.Fatalf("readTestResultSummary() error = %v", err)
+	}
+	if len(got.Failures) != maxTestFailureCount {
+		t.Fatalf("failure count = %d, want cap %d", len(got.Failures), maxTestFailureCount)
+	}
+}
+
 func TestParseTestResultSummaryWithCounts(t *testing.T) {
 	data := []byte(`{"tests":4,"passedTests":3,"failedTests":1,"skippedTests":0,"testDuration":2.5}`)
 	got, err := ParseTestResultSummary(data)
@@ -442,7 +539,7 @@ func TestParseTestResultCasesWalksCurrentXcodeTree(t *testing.T) {
 func TestParseTestResultSummaryRejectsInvalidCountsAndMissingCount(t *testing.T) {
 	for _, data := range [][]byte{
 		[]byte(`{"tests":2,"passedTests":2,"failedTests":1}`),
-		[]byte(`{"tests":2,"passedTests":1,"failedTests":0,"skippedTests":0}`),
+		[]byte(`{"tests":2,"passedTests":1,"failedTests":0,"skippedTests":0,"expectedFailures":0}`),
 		[]byte(`{"totalTestCount":2}`),
 		[]byte(`{"result":"Passed"}`),
 		[]byte(`{"tests":[{"identifier":"DemoTests/Smoke/testPending","status":"running"}]}`),

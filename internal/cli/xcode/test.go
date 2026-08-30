@@ -39,25 +39,25 @@ func (f *exactTestStringFlag) Set(value string) error {
 func XcodeTestCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("xcode test", flag.ExitOnError)
 
-	workspacePath := fs.String("workspace", "", "Path to .xcworkspace directory")
-	projectPath := fs.String("project", "", "Path to .xcodeproj directory")
-	scheme := fs.String("scheme", "", "Xcode scheme name (required except for test-without-building)")
-	action := fs.String("action", string(localxcode.TestActionTest), "Xcode test action: test, build-for-testing, or test-without-building")
-	configuration := fs.String("configuration", "", "Build configuration (for example Debug or Release)")
+	workspacePath := fs.String("workspace", "", "[experimental] Path to .xcworkspace directory")
+	projectPath := fs.String("project", "", "[experimental] Path to .xcodeproj directory")
+	scheme := fs.String("scheme", "", "[experimental] Xcode scheme name (required except for test-without-building)")
+	action := fs.String("action", string(localxcode.TestActionTest), "[experimental] Xcode test action: test, build-for-testing, or test-without-building")
+	configuration := fs.String("configuration", "", "[experimental] Build configuration (for example Debug or Release)")
 	var destinations exactTestStringFlag
-	fs.Var(&destinations, "destination", "Xcode destination specifier (repeatable; required)")
-	testPlan := fs.String("test-plan", "", "Xcode test plan name")
-	xctestrunPath := fs.String("xctestrun", "", "Path to an existing .xctestrun file for test-without-building")
+	fs.Var(&destinations, "destination", "[experimental] Xcode destination specifier (repeatable; required)")
+	testPlan := fs.String("test-plan", "", "[experimental] Xcode test plan name")
+	xctestrunPath := fs.String("xctestrun", "", "[experimental] Path to an existing .xctestrun file for test-without-building")
 	var onlyTesting exactTestStringFlag
-	fs.Var(&onlyTesting, "only-testing", "Run only the selected test target or identifier (repeatable)")
+	fs.Var(&onlyTesting, "only-testing", "[experimental] Run only the selected test target or identifier (repeatable)")
 	var skipTesting exactTestStringFlag
-	fs.Var(&skipTesting, "skip-testing", "Skip the selected test target or identifier (repeatable)")
-	derivedDataPath := fs.String("derived-data-path", "", "DerivedData directory (defaults to a stable asc cache path)")
-	resultBundlePath := fs.String("result-bundle-path", "", "Destination for a new Xcode result bundle")
-	clean := fs.Bool("clean", false, "Run clean before the selected Xcode action")
-	noCodeSigning := fs.Bool("no-code-signing", false, "Set CODE_SIGNING_ALLOWED=NO explicitly")
+	fs.Var(&skipTesting, "skip-testing", "[experimental] Skip the selected test target or identifier (repeatable)")
+	derivedDataPath := fs.String("derived-data-path", "", "[experimental] DerivedData directory (defaults to a stable asc cache path)")
+	resultBundlePath := fs.String("result-bundle-path", "", "[experimental] Destination for a new Xcode result bundle")
+	clean := fs.Bool("clean", false, "[experimental] Run clean before the selected Xcode action")
+	noCodeSigning := fs.Bool("no-code-signing", false, "[experimental] Set CODE_SIGNING_ALLOWED=NO explicitly")
 	var xcodebuildFlags exactTestStringFlag
-	fs.Var(&xcodebuildFlags, "xcodebuild-flag", "Pass a raw argument through to xcodebuild (repeatable)")
+	fs.Var(&xcodebuildFlags, "xcodebuild-flag", "[experimental] Pass a raw argument through to xcodebuild (repeatable)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -127,7 +127,7 @@ Examples:
 					return outputErr
 				}
 				if shared.ReportFormat() == shared.ReportFormatJUnit && shared.ReportFile() != "" {
-					shared.SetJUnitReport(testResultJUnitReport(result))
+					shared.SetJUnitReport(testResultJUnitReport(result, testErr))
 				}
 			}
 			if testErr != nil {
@@ -198,11 +198,12 @@ func toXcodeTestResult(result *localxcode.TestResult) *asc.XcodeTestResult {
 		return output
 	}
 	output.Tests = &asc.XcodeTestSummary{
-		Total:      result.Tests.Total,
-		Passed:     result.Tests.Passed,
-		Failed:     result.Tests.Failed,
-		Skipped:    result.Tests.Skipped,
-		DurationMs: result.Tests.DurationMS,
+		Total:            result.Tests.Total,
+		Passed:           result.Tests.Passed,
+		Failed:           result.Tests.Failed,
+		Skipped:          result.Tests.Skipped,
+		ExpectedFailures: result.Tests.ExpectedFailures,
+		DurationMs:       result.Tests.DurationMS,
 	}
 	if len(result.Tests.Cases) > 0 {
 		output.Tests.Cases = make([]asc.XcodeTestCase, 0, len(result.Tests.Cases))
@@ -229,7 +230,9 @@ func toXcodeTestResult(result *localxcode.TestResult) *asc.XcodeTestResult {
 	return output
 }
 
-func testResultJUnitReport(result *localxcode.TestResult) *shared.JUnitReport {
+const maxJUnitFailureMessage = 4096
+
+func testResultJUnitReport(result *localxcode.TestResult, commandErr error) *shared.JUnitReport {
 	report := &shared.JUnitReport{Timestamp: time.Now(), Name: "asc xcode test"}
 	if result == nil {
 		return report
@@ -277,7 +280,7 @@ func testResultJUnitReport(result *localxcode.TestResult) *shared.JUnitReport {
 
 	if summary != nil {
 		actualPassed, actualFailed, actualSkipped := junitStatusCounts(tests)
-		missingPassed := max(0, summary.Passed-actualPassed)
+		missingPassed := max(0, summary.Passed+summary.ExpectedFailures-actualPassed)
 		missingFailed := max(0, summary.Failed-actualFailed)
 		missingSkipped := max(0, summary.Skipped-actualSkipped)
 		syntheticCount := 0
@@ -308,7 +311,9 @@ func testResultJUnitReport(result *localxcode.TestResult) *shared.JUnitReport {
 		}
 		if infrastructureFailure {
 			message := "xcode test did not complete successfully"
-			if result.ExitStatus != nil && *result.ExitStatus != 0 {
+			if commandErr != nil {
+				message = boundJUnitFailureMessage(commandErr.Error())
+			} else if result.ExitStatus != nil && *result.ExitStatus != 0 {
 				message = fmt.Sprintf("xcodebuild exited with status %d", *result.ExitStatus)
 			}
 			tests = append(tests, syntheticJUnitTestCase("failed", len(tests), message))
@@ -377,4 +382,12 @@ func testFailureMessage(summary *localxcode.TestSummary, identifier string) stri
 
 func durationFromMilliseconds(value int64) time.Duration {
 	return time.Duration(value) * time.Millisecond
+}
+
+func boundJUnitFailureMessage(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= maxJUnitFailureMessage {
+		return value
+	}
+	return value[:maxJUnitFailureMessage]
 }

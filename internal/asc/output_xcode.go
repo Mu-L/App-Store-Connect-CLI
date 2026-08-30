@@ -1,8 +1,15 @@
 package asc
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
+)
+
+const (
+	maxXcodeTestHumanCases    = 10000
+	maxXcodeTestHumanFailures = 100
+	maxXcodeTestHumanMessage  = 4096
 )
 
 // XcodeTestResult is the stable output receipt for a local Xcode test action.
@@ -30,13 +37,14 @@ type XcodeTestResult struct {
 // XcodeTestSummary is the structured test aggregate in an Xcode result
 // receipt.
 type XcodeTestSummary struct {
-	Total      int                `json:"total"`
-	Passed     int                `json:"passed"`
-	Failed     int                `json:"failed"`
-	Skipped    int                `json:"skipped"`
-	DurationMs int64              `json:"durationMs"`
-	Cases      []XcodeTestCase    `json:"cases,omitempty"`
-	Failures   []XcodeTestFailure `json:"failures,omitempty"`
+	Total            int                `json:"total"`
+	Passed           int                `json:"passed"`
+	Failed           int                `json:"failed"`
+	Skipped          int                `json:"skipped"`
+	ExpectedFailures int                `json:"expectedFailures"`
+	DurationMs       int64              `json:"durationMs"`
+	Cases            []XcodeTestCase    `json:"cases,omitempty"`
+	Failures         []XcodeTestFailure `json:"failures,omitempty"`
 }
 
 // XcodeTestCase is one parsed Xcode test case.
@@ -100,8 +108,21 @@ func xcodeTestResultRows(result *XcodeTestResult) ([]string, [][]string) {
 			[]string{"tests_passed", formatInt(result.Tests.Passed)},
 			[]string{"tests_failed", formatInt(result.Tests.Failed)},
 			[]string{"tests_skipped", formatInt(result.Tests.Skipped)},
+			[]string{"tests_expected_failures", formatInt(result.Tests.ExpectedFailures)},
 			[]string{"tests_duration_ms", formatInt64(result.Tests.DurationMs)},
 		)
+		for index, testCase := range result.Tests.Cases {
+			if index >= maxXcodeTestHumanCases {
+				break
+			}
+			rows = append(rows, []string{"test_case", formatXcodeTestCase(testCase)})
+		}
+		for index, failure := range result.Tests.Failures {
+			if index >= maxXcodeTestHumanFailures {
+				break
+			}
+			rows = append(rows, []string{"test_failure", formatXcodeTestFailure(failure)})
+		}
 	}
 	rows = append(
 		rows,
@@ -120,4 +141,34 @@ func joinOutputValues(values []string) string {
 
 func formatInt64(value int64) string {
 	return strconv.FormatInt(value, 10)
+}
+
+func formatXcodeTestCase(testCase XcodeTestCase) string {
+	identifier := strings.TrimSpace(testCase.Identifier)
+	if identifier == "" {
+		identifier = strings.TrimSpace(testCase.Name)
+	}
+	if identifier == "" {
+		identifier = "unnamed-test"
+	}
+	status := strings.TrimSpace(testCase.Status)
+	if status == "" {
+		status = "unknown"
+	}
+	return fmt.Sprintf("%s [%s]", identifier, status)
+}
+
+func formatXcodeTestFailure(failure XcodeTestFailure) string {
+	identifier := strings.TrimSpace(failure.Identifier)
+	if identifier == "" {
+		identifier = "unknown-test"
+	}
+	message := strings.TrimSpace(failure.Message)
+	if len(message) > maxXcodeTestHumanMessage {
+		message = message[:maxXcodeTestHumanMessage]
+	}
+	if message == "" {
+		return identifier
+	}
+	return identifier + ": " + message
 }
