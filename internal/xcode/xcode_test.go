@@ -2098,6 +2098,21 @@ func TestXcodeHelperProcess(t *testing.T) {
 		os.Exit(0)
 	}
 
+	if len(commandArgs) >= 2 && commandArgs[0] == "xcrun" && commandArgs[1] == "xcresulttool" {
+		if output := os.Getenv("ASC_XCODE_HELPER_XCRESULT_STDERR"); output != "" {
+			fmt.Fprint(os.Stderr, output)
+		}
+		if code := os.Getenv("ASC_XCODE_HELPER_XCRESULT_EXIT_CODE"); code != "" {
+			parsed, err := strconv.Atoi(code)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			os.Exit(parsed)
+		}
+		os.Exit(0)
+	}
+
 	if len(commandArgs) >= 2 && commandArgs[0] == "agvtool" {
 		switch commandArgs[1] {
 		case "what-marketing-version":
