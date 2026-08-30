@@ -1,6 +1,7 @@
 package screenshots
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -381,6 +382,96 @@ func TestRunMatrixWritesReviewAfterOutputRootSetupFailure(t *testing.T) {
 	}
 }
 
+func TestRunMatrixDropsReplacedFramedPathBeforeReview(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","framed_dir":"framed","review_dir":"review","frame":{"enabled":true,"device_by_matrix_device":{"phone":"iphone-17-pro"}}}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	framedPath := filepath.Join(dir, "framed", "en-US", "phone", "light", "default", "home.png")
+	appearance := &matrixTestAppearance{restoreFunc: func() {
+		if err := os.Remove(framedPath); err != nil {
+			t.Errorf("remove framed path for replacement: %v", err)
+			return
+		}
+		if err := os.WriteFile(framedPath, []byte("replacement"), 0o644); err != nil {
+			t.Errorf("write replacement framed path: %v", err)
+		}
+	}}
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Frame: func(_ context.Context, request FrameRequest) (*FrameResult, error) {
+			writeMatrixPNG(t, request.OutputPath)
+			return &FrameResult{}, nil
+		},
+		Appearance: appearance,
+	})
+	if runErr == nil {
+		t.Fatal("RunMatrixWithDependencies() error = nil, want replaced-frame uncertainty")
+	}
+	if result == nil || len(result.Cells) != 1 {
+		t.Fatalf("result = %+v, want one cell", result)
+	}
+	cell := result.Cells[0]
+	if len(cell.FramedPaths) != 0 {
+		t.Fatalf("framed paths = %v, want replaced path dropped", cell.FramedPaths)
+	}
+	if len(cell.Screenshots) != 1 || cell.Screenshots[0].FramedPath != "" {
+		t.Fatalf("screenshot metadata = %+v, want no stale framed path", cell.Screenshots)
+	}
+	if cell.FailureStage != "framing" || cell.FailureCode != "framed_output_unavailable" {
+		t.Fatalf("cell failure = %s/%s, want framing/framed_output_unavailable", cell.FailureStage, cell.FailureCode)
+	}
+	manifest, err := LoadMatrixReviewManifest(filepath.Join(dir, "review", "manifest.json"))
+	if err != nil {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v", err)
+	}
+	if len(manifest.Cells) != 1 || len(manifest.Cells[0].FramedPaths) != 0 {
+		t.Fatalf("review manifest retained stale framed path: %+v", manifest.Cells)
+	}
+}
+
+func TestRunMatrixAcceptsCaseInsensitiveFrameMapping(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","framed_dir":"framed","review_dir":"review","frame":{"enabled":true,"device_by_matrix_device":{"PHONE":"iphone-17-pro"}}}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	var gotFrameDevice string
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Frame: func(_ context.Context, request FrameRequest) (*FrameResult, error) {
+			gotFrameDevice = request.Device
+			writeMatrixPNG(t, request.OutputPath)
+			return &FrameResult{}, nil
+		},
+		Appearance: &matrixTestAppearance{},
+	})
+	if runErr != nil {
+		t.Fatalf("RunMatrixWithDependencies() error = %v", runErr)
+	}
+	if gotFrameDevice != "iphone-17-pro" {
+		t.Fatalf("frame device = %q, want case-insensitive mapping value", gotFrameDevice)
+	}
+	if result == nil || result.Succeeded != 1 || len(result.Cells[0].FramedPaths) != 1 {
+		t.Fatalf("result = %+v, want successful framed cell", result)
+	}
+}
+
 func TestRunMatrixDoesNotComparePlanRelativeOutputsAgainstWorkingDirectory(t *testing.T) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -519,6 +610,23 @@ func TestValidateMatrixPlanRejectsMappingsForUndeclaredDevices(t *testing.T) {
 	}
 	if err := ValidateMatrixPlan(plan, base); err == nil || !strings.Contains(err.Error(), "undeclared") {
 		t.Fatalf("ValidateMatrixPlan() error = %v, want undeclared frame mapping failure", err)
+	}
+}
+
+func TestValidateMatrixPlanRejectsCaseInsensitiveDuplicateFrameMappings(t *testing.T) {
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	plan := &MatrixPlan{
+		Version:         1,
+		Devices:         []MatrixDevice{{ID: "phone", UDID: "SIM-UDID"}},
+		Locales:         []string{"en-US"},
+		Appearances:     []string{"light"},
+		ContentVariants: []MatrixContentVariant{{ID: "default"}},
+		Output: MatrixOutput{Frame: MatrixFrame{Enabled: true, DeviceByMatrixDevice: map[string]string{
+			"phone": "iphone-17-pro", " PHONE ": "iphone-air",
+		}}},
+	}
+	if err := ValidateMatrixPlan(plan, base); err == nil || !strings.Contains(err.Error(), "must be unique") {
+		t.Fatalf("ValidateMatrixPlan() error = %v, want case-insensitive duplicate mapping failure", err)
 	}
 }
 
@@ -968,6 +1076,89 @@ func TestLoadMatrixReviewManifestRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestValidateMatrixReviewSizeUsesInclusiveByteBoundary(t *testing.T) {
+	within := bytes.Repeat([]byte{'x'}, maxMatrixReviewBytes)
+	if err := validateMatrixReviewSize("manifest", within); err != nil {
+		t.Fatalf("validateMatrixReviewSize() at limit = %v, want nil", err)
+	}
+	withTerminator := append(append([]byte(nil), within...), '\n')
+	if err := validateMatrixReviewSize("manifest", withTerminator); err == nil || !strings.Contains(err.Error(), "size limit") {
+		t.Fatalf("validateMatrixReviewSize() with newline = %v, want size-limit error", err)
+	}
+}
+
+func TestGenerateMatrixReviewRejectsOversizedHTMLBeforePublish(t *testing.T) {
+	dir := t.TempDir()
+	oldHTML := []byte("<html>previous</html>\n")
+	oldManifest := []byte(`{"status":"previous"}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), oldHTML, 0o600); err != nil {
+		t.Fatalf("write previous HTML: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), oldManifest, 0o600); err != nil {
+		t.Fatalf("write previous manifest: %v", err)
+	}
+
+	_, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{
+		Result: &MatrixResult{Cells: []MatrixCellResult{{
+			ID:         strings.Repeat("x", maxMatrixReviewBytes),
+			Device:     "phone",
+			Locale:     "en-US",
+			Appearance: "light",
+			Content:    "default",
+			Status:     MatrixCellSuccess,
+		}}},
+		OutputDir: dir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "matrix review HTML") || !strings.Contains(err.Error(), "size limit") {
+		t.Fatalf("GenerateMatrixReview() error = %v, want bounded HTML-size failure", err)
+	}
+	gotHTML, err := os.ReadFile(filepath.Join(dir, "index.html"))
+	if err != nil {
+		t.Fatalf("read previous HTML: %v", err)
+	}
+	gotManifest, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read previous manifest: %v", err)
+	}
+	if string(gotHTML) != string(oldHTML) || string(gotManifest) != string(oldManifest) {
+		t.Fatalf("review pair changed after oversized HTML: HTML=%q manifest=%q", gotHTML, gotManifest)
+	}
+}
+
+func TestGenerateMatrixReviewRejectsOversizedManifestBeforePublish(t *testing.T) {
+	dir := t.TempDir()
+	oldHTML := []byte("<html>previous</html>\n")
+	oldManifest := []byte(`{"status":"previous"}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), oldHTML, 0o600); err != nil {
+		t.Fatalf("write previous HTML: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), oldManifest, 0o600); err != nil {
+		t.Fatalf("write previous manifest: %v", err)
+	}
+
+	_, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{
+		Result: &MatrixResult{
+			PlanPath: strings.Repeat("p", maxMatrixReviewBytes),
+			Cells:    []MatrixCellResult{{ID: "phone|en-US|light|default", Status: MatrixCellSuccess}},
+		},
+		OutputDir: dir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "matrix review manifest") || !strings.Contains(err.Error(), "size limit") {
+		t.Fatalf("GenerateMatrixReview() error = %v, want bounded manifest-size failure", err)
+	}
+	gotHTML, err := os.ReadFile(filepath.Join(dir, "index.html"))
+	if err != nil {
+		t.Fatalf("read previous HTML: %v", err)
+	}
+	gotManifest, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read previous manifest: %v", err)
+	}
+	if string(gotHTML) != string(oldHTML) || string(gotManifest) != string(oldManifest) {
+		t.Fatalf("review pair changed after oversized manifest: HTML=%q manifest=%q", gotHTML, gotManifest)
+	}
+}
+
 func TestLoadMatrixReviewManifestRejectsSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target.json")
@@ -1149,6 +1340,197 @@ func TestExecuteMatrixCellPreservesPartiallyPromotedFramedPaths(t *testing.T) {
 	}
 	if len(result.FramedPaths) != 1 || result.FramedPaths[0] != cell.FramedPaths[0] {
 		t.Fatalf("framed paths = %v, want first promoted path %q", result.FramedPaths, cell.FramedPaths[0])
+	}
+}
+
+func TestExecuteMatrixCellPreservesFullScreenshotRecordsAfterPartialRawPromotion(t *testing.T) {
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw directory: %v", err)
+	}
+	cell := MatrixCell{
+		ID:         "phone|en-US|light|default",
+		Device:     "phone",
+		UDID:       "SIM-UDID",
+		Locale:     "en-US",
+		Appearance: "light",
+		Content:    "default",
+		RawDir:     filepath.Join(rawDir, "en-US", "phone", "light", "default"),
+		RawPaths: []string{
+			filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png"),
+			filepath.Join(rawDir, "en-US", "phone", "light", "default", "details.png"),
+		},
+	}
+	if err := os.MkdirAll(filepath.Dir(cell.RawPaths[1]), 0o755); err != nil {
+		t.Fatalf("create raw cell directory: %v", err)
+	}
+	if err := os.Mkdir(cell.RawPaths[1], 0o755); err != nil {
+		t.Fatalf("create blocked second raw destination: %v", err)
+	}
+	rawRoot, err := rootfs.New(rawDir)
+	if err != nil {
+		t.Fatalf("open raw root: %v", err)
+	}
+	defer rawRoot.Close()
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{
+		{Action: ActionScreenshot, Name: stringPtr("home")},
+		{Action: ActionScreenshot, Name: stringPtr("details")},
+	}}
+	matrixPlan := &MatrixPlan{}
+	deps := MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "details.png"))
+			return &RunResult{}, nil
+		},
+		Appearance: &matrixTestAppearance{},
+	}
+	result := executeMatrixCell(context.Background(), cell, base, matrixPlan, 1, 0, deps, matrixOutputRoots{raw: rawRoot, rawPath: rawDir}, &matrixSimulatorGuard{})
+	if result.Status != MatrixCellFailed || result.FailureCode != "raw_output_failed" {
+		t.Fatalf("result = %+v, want raw promotion failure", result)
+	}
+	if len(result.Screenshots) != len(cell.RawPaths) {
+		t.Fatalf("screenshots = %d, want one record per requested path: %+v", len(result.Screenshots), result.Screenshots)
+	}
+	if got := result.Screenshots[0].RawPath; got != cell.RawPaths[0] {
+		t.Fatalf("first screenshot raw path = %q, want %q", got, cell.RawPaths[0])
+	}
+	if got := result.Screenshots[1].Name; got != "details" {
+		t.Fatalf("missing screenshot record name = %q, want details", got)
+	}
+	if got := result.Screenshots[1].RawPath; got != "" {
+		t.Fatalf("missing screenshot raw path = %q, want empty", got)
+	}
+}
+
+func TestExecuteMatrixCellUnionsFramedPathsAcrossShorterRetry(t *testing.T) {
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	framedDir := filepath.Join(dir, "framed")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw directory: %v", err)
+	}
+	if err := os.MkdirAll(framedDir, 0o755); err != nil {
+		t.Fatalf("create framed directory: %v", err)
+	}
+	cell := MatrixCell{
+		ID:         "phone|en-US|light|default",
+		Device:     "phone",
+		UDID:       "SIM-UDID",
+		Locale:     "en-US",
+		Appearance: "light",
+		Content:    "default",
+		RawDir:     filepath.Join(rawDir, "en-US", "phone", "light", "default"),
+		FramedDir:  filepath.Join(framedDir, "en-US", "phone", "light", "default"),
+		RawPaths: []string{
+			filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png"),
+			filepath.Join(rawDir, "en-US", "phone", "light", "default", "details.png"),
+			filepath.Join(rawDir, "en-US", "phone", "light", "default", "settings.png"),
+		},
+		FramedPaths: []string{
+			filepath.Join(framedDir, "en-US", "phone", "light", "default", "home.png"),
+			filepath.Join(framedDir, "en-US", "phone", "light", "default", "details.png"),
+			filepath.Join(framedDir, "en-US", "phone", "light", "default", "settings.png"),
+		},
+	}
+	if err := os.MkdirAll(filepath.Dir(cell.FramedPaths[2]), 0o755); err != nil {
+		t.Fatalf("create framed cell directory: %v", err)
+	}
+	if err := os.Mkdir(cell.FramedPaths[2], 0o755); err != nil {
+		t.Fatalf("create blocked third framed destination: %v", err)
+	}
+	rawRoot, err := rootfs.New(rawDir)
+	if err != nil {
+		t.Fatalf("open raw root: %v", err)
+	}
+	defer rawRoot.Close()
+	framedRoot, err := rootfs.New(framedDir)
+	if err != nil {
+		t.Fatalf("open framed root: %v", err)
+	}
+	defer framedRoot.Close()
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{
+		{Action: ActionScreenshot, Name: stringPtr("home")},
+		{Action: ActionScreenshot, Name: stringPtr("details")},
+		{Action: ActionScreenshot, Name: stringPtr("settings")},
+	}}
+	matrixPlan := &MatrixPlan{Output: MatrixOutput{Frame: MatrixFrame{Enabled: true, DeviceByMatrixDevice: map[string]string{"phone": "iphone-17-pro"}}}}
+	var mu sync.Mutex
+	currentAttempt, frameCalls := 0, 0
+	deps := MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			mu.Lock()
+			currentAttempt++
+			frameCalls = 0
+			mu.Unlock()
+			for _, name := range []string{"home", "details", "settings"} {
+				writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, name+".png"))
+			}
+			return &RunResult{}, nil
+		},
+		Frame: func(_ context.Context, request FrameRequest) (*FrameResult, error) {
+			writeMatrixPNG(t, request.OutputPath)
+			mu.Lock()
+			frameCalls++
+			attempt, call := currentAttempt, frameCalls
+			mu.Unlock()
+			if attempt == 2 && call == 3 {
+				if err := os.Remove(cell.FramedPaths[1]); err != nil {
+					return nil, err
+				}
+				if err := os.Mkdir(cell.FramedPaths[1], 0o755); err != nil {
+					return nil, err
+				}
+			}
+			return &FrameResult{}, nil
+		},
+		Appearance: &matrixTestAppearance{},
+	}
+	result := executeMatrixCell(context.Background(), cell, base, matrixPlan, 2, 0, deps, matrixOutputRoots{
+		raw: rawRoot, rawPath: rawDir, framed: framedRoot, framedPath: framedDir, hasFramed: true,
+	}, &matrixSimulatorGuard{})
+	if result.Status != MatrixCellFailed || result.FailureCode != "framed_output_failed" {
+		t.Fatalf("result = %+v, want framed promotion failure", result)
+	}
+	if got, want := result.FramedPaths, cell.FramedPaths[:2]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("framed paths = %v, want union in declaration order %v", got, want)
+	}
+	if len(result.Screenshots) != len(cell.FramedPaths) || result.Screenshots[1].FramedPath != cell.FramedPaths[1] {
+		t.Fatalf("screenshot metadata lost prior framed path: %+v", result.Screenshots)
+	}
+
+	// The retry merge intentionally retains the earlier successful paths so a
+	// later partial attempt cannot make the review look complete. Before that
+	// metadata is published, however, the retained paths must still be bound to
+	// the files that produced them. The second attempt replaced details.png with
+	// a directory, so it must be dropped while the valid home.png remains.
+	reviewResult := &MatrixResult{
+		FramedDir: framedDir,
+		ReviewDir: filepath.Join(dir, "review"),
+		Cells:     []MatrixCellResult{result},
+	}
+	if err := revalidateMatrixFramedPaths(reviewResult); err == nil {
+		t.Fatal("revalidateMatrixFramedPaths() error = nil, want replaced retry artifact uncertainty")
+	}
+	if got, want := reviewResult.Cells[0].FramedPaths, cell.FramedPaths[:1]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("revalidated framed paths = %v, want valid prior path %v", got, want)
+	}
+	if got := reviewResult.Cells[0].Screenshots[0].FramedPath; got != cell.FramedPaths[0] {
+		t.Fatalf("valid prior screenshot path = %q, want %q", got, cell.FramedPaths[0])
+	}
+	if got := reviewResult.Cells[0].Screenshots[1].FramedPath; got != "" {
+		t.Fatalf("replaced retry screenshot path = %q, want dropped", got)
+	}
+	if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: reviewResult, OutputDir: reviewResult.ReviewDir}); err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v", err)
+	}
+	manifest, err := LoadMatrixReviewManifest(filepath.Join(reviewResult.ReviewDir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v", err)
+	}
+	if len(manifest.Cells) != 1 || !reflect.DeepEqual(manifest.Cells[0].FramedPaths, cell.FramedPaths[:1]) {
+		t.Fatalf("review manifest retained replaced retry path: %+v", manifest.Cells)
 	}
 }
 
@@ -1424,6 +1806,7 @@ type matrixTestAppearance struct {
 	restoreCount int
 	setErr       bool
 	restoreErr   bool
+	restoreFunc  func()
 }
 
 func (*matrixTestAppearance) Snapshot(context.Context, string) (string, error) { return "light", nil }
@@ -1440,9 +1823,14 @@ func (a *matrixTestAppearance) Set(context.Context, string, string) error {
 
 func (a *matrixTestAppearance) Restore(context.Context, string, string) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.restoreCount++
-	if a.restoreErr {
+	restoreErr := a.restoreErr
+	restoreFunc := a.restoreFunc
+	a.mu.Unlock()
+	if restoreFunc != nil {
+		restoreFunc()
+	}
+	if restoreErr {
 		return errors.New("restore failed")
 	}
 	return nil

@@ -3,6 +3,7 @@ package screenshots
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -168,6 +169,8 @@ type MatrixCellResult struct {
 	FailureStage string                   `json:"failureStage,omitempty"`
 	FailureCode  string                   `json:"failureCode,omitempty"`
 	Error        *MatrixCellError         `json:"error,omitempty"`
+
+	framedArtifacts map[string]matrixArtifactInfo
 }
 
 // MatrixCellError is a sanitized, stable failure contract. It intentionally
@@ -684,13 +687,19 @@ func validateMatrixPlan(plan *MatrixPlan, base *Plan, outputBaseDir string) erro
 		return err
 	}
 	if plan.Output.Frame.Enabled {
+		frameMappings := make(map[string]string, len(plan.Output.Frame.DeviceByMatrixDevice))
 		for matrixDevice := range plan.Output.Frame.DeviceByMatrixDevice {
-			if _, declared := seenIDs[strings.ToLower(matrixDevice)]; !declared {
+			key := normalizeMatrixDeviceID(matrixDevice)
+			if _, declared := seenIDs[key]; !declared {
 				return fmt.Errorf("framing mapping references undeclared device %q", matrixDevice)
 			}
+			if _, duplicate := frameMappings[key]; duplicate {
+				return fmt.Errorf("framing mapping device %q must be unique", matrixDevice)
+			}
+			frameMappings[key] = plan.Output.Frame.DeviceByMatrixDevice[matrixDevice]
 		}
 		for _, device := range plan.Devices {
-			frame, ok := plan.Output.Frame.DeviceByMatrixDevice[device.ID]
+			frame, ok := frameMappings[normalizeMatrixDeviceID(device.ID)]
 			if !ok || strings.TrimSpace(frame) == "" {
 				return fmt.Errorf("framing requires a frame mapping for device %q", device.ID)
 			}
@@ -982,6 +991,13 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	if runErr == nil {
 		runErr = executeMatrixCells(ctx, cells, deviceFailures, base, matrixPlan, concurrency, attempts, backoff, deps, outputRoots, result)
 	}
+	if framedErr := revalidateMatrixFramedPaths(result); framedErr != nil {
+		if runErr == nil {
+			runErr = framedErr
+		} else {
+			runErr = errors.Join(runErr, framedErr)
+		}
+	}
 	countMatrixResultStatuses(result)
 	reviewCtx := context.WithoutCancel(ctx)
 	review, reviewErr := GenerateMatrixReview(reviewCtx, MatrixReviewRequest{Result: result, OutputDir: reviewDir})
@@ -1156,13 +1172,7 @@ func executeMatrixCell(ctx context.Context, cell MatrixCell, base *Plan, matrixP
 		}
 		attemptResult, attemptErr := executeMatrixCellAttempt(ctx, cell, base, matrixPlan, deps, outputRoots)
 		result.Steps = attemptResult.Steps
-		if len(attemptResult.RawPaths) > 0 {
-			result.RawPaths = append([]string(nil), attemptResult.RawPaths...)
-			result.Screenshots = append([]MatrixScreenshotResult(nil), attemptResult.Screenshots...)
-		}
-		if len(attemptResult.FramedPaths) > 0 {
-			result.FramedPaths = append([]string(nil), attemptResult.FramedPaths...)
-		}
+		mergeMatrixAttemptResult(&result, cell, attemptResult)
 		if attemptErr == nil {
 			result.Status = MatrixCellSuccess
 			result.FailureStage = ""
@@ -1216,13 +1226,14 @@ func restoreMatrixAppearance(appearance MatrixAppearance, udid, state string) er
 }
 
 type matrixAttemptResult struct {
-	RawPaths     []string
-	FramedPaths  []string
-	Screenshots  []MatrixScreenshotResult
-	Steps        []RunStepResult
-	FailureStage string
-	FailureCode  string
-	Error        string
+	RawPaths        []string
+	FramedPaths     []string
+	FramedArtifacts map[string]matrixArtifactInfo
+	Screenshots     []MatrixScreenshotResult
+	Steps           []RunStepResult
+	FailureStage    string
+	FailureCode     string
+	Error           string
 }
 
 func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, matrixPlan *MatrixPlan, deps MatrixDependencies, outputRoots matrixOutputRoots) (matrixAttemptResult, error) {
@@ -1338,7 +1349,14 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 		return attempt, err
 	}
 	defer func() { _ = removeMatrixTemporaryDir(outputRoots.framed, outputRoots.framedPath, frameAttemptDir) }()
-	frameDevice := strings.TrimSpace(matrixPlan.Output.Frame.DeviceByMatrixDevice[cell.Device])
+	frameDevice, frameMappingFound := matrixFrameMappingForDevice(matrixPlan.Output.Frame.DeviceByMatrixDevice, cell.Device)
+	if !frameMappingFound || strings.TrimSpace(frameDevice) == "" {
+		attempt.FailureStage = "framing"
+		attempt.FailureCode = "framing_mapping_missing"
+		attempt.Error = "framing device mapping could not be resolved"
+		return attempt, errors.New("framing device mapping is missing")
+	}
+	frameDevice = strings.TrimSpace(frameDevice)
 	frameSources := make([]string, 0, len(attempt.RawPaths))
 	for index, inputPath := range attempt.RawPaths {
 		tempFrame := filepath.Join(frameAttemptDir, filepath.Base(cell.FramedPaths[index]))
@@ -1377,13 +1395,18 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 		frameSources = append(frameSources, tempFrame)
 	}
 	for index, tempFrame := range frameSources {
-		if err := promoteMatrixArtifact(outputRoots.framed, outputRoots.framedPath, tempFrame, cell.FramedPaths[index]); err != nil {
+		artifact, err := promoteMatrixArtifactWithInfo(outputRoots.framed, outputRoots.framedPath, tempFrame, cell.FramedPaths[index])
+		if err != nil {
 			attempt.FailureStage = "framing"
 			attempt.FailureCode = "framed_output_failed"
 			attempt.Error = "framed screenshot could not be promoted"
 			return attempt, err
 		}
+		if attempt.FramedArtifacts == nil {
+			attempt.FramedArtifacts = make(map[string]matrixArtifactInfo)
+		}
 		attempt.FramedPaths = append(attempt.FramedPaths, cell.FramedPaths[index])
+		attempt.FramedArtifacts[cell.FramedPaths[index]] = artifact
 		attempt.Screenshots[index].FramedPath = cell.FramedPaths[index]
 	}
 	return attempt, nil
@@ -1442,6 +1465,124 @@ func promoteMatrixArtifact(outputRoot rootfs.Root, outputRootPath, source, desti
 	}
 	_, err = outputRoot.WriteFromPreservingMode(destinationRelative, sourceFile, 0o644)
 	return err
+}
+
+type matrixArtifactInfo struct {
+	identity os.FileInfo
+	size     int64
+	digest   [sha256.Size]byte
+}
+
+func promoteMatrixArtifactWithInfo(outputRoot rootfs.Root, outputRootPath, source, destination string) (matrixArtifactInfo, error) {
+	if err := promoteMatrixArtifact(outputRoot, outputRootPath, source, destination); err != nil {
+		return matrixArtifactInfo{}, err
+	}
+	return inspectMatrixArtifact(outputRoot, outputRootPath, destination)
+}
+
+func inspectMatrixArtifact(outputRoot rootfs.Root, outputRootPath, path string) (matrixArtifactInfo, error) {
+	relative, err := relativeMatrixOutputPath(outputRootPath, path)
+	if err != nil {
+		return matrixArtifactInfo{}, err
+	}
+	file, err := outputRoot.OpenFile(relative)
+	if err != nil {
+		return matrixArtifactInfo{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return matrixArtifactInfo{}, err
+	}
+	hasher := sha256.New()
+	size, err := io.Copy(hasher, file)
+	if err != nil {
+		return matrixArtifactInfo{}, err
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], hasher.Sum(nil))
+	return matrixArtifactInfo{identity: info, size: size, digest: digest}, nil
+}
+
+func mergeMatrixFramedArtifacts(result *MatrixCellResult, attempt matrixAttemptResult) {
+	if len(attempt.FramedArtifacts) == 0 {
+		return
+	}
+	if result.framedArtifacts == nil {
+		result.framedArtifacts = make(map[string]matrixArtifactInfo, len(attempt.FramedArtifacts))
+	}
+	for path, artifact := range attempt.FramedArtifacts {
+		result.framedArtifacts[path] = artifact
+	}
+}
+
+func revalidateMatrixFramedPaths(result *MatrixResult) error {
+	if result == nil {
+		return nil
+	}
+	hasFramedPaths := false
+	for _, cell := range result.Cells {
+		if len(cell.FramedPaths) > 0 {
+			hasFramedPaths = true
+			break
+		}
+	}
+	if !hasFramedPaths {
+		return nil
+	}
+	framedRoot, rootErr := rootfs.New(result.FramedDir)
+	if rootErr == nil {
+		defer framedRoot.Close()
+	}
+	invalid := false
+	for cellIndex := range result.Cells {
+		cell := &result.Cells[cellIndex]
+		validPaths := make([]string, 0, len(cell.FramedPaths))
+		validSet := make(map[string]struct{}, len(cell.FramedPaths))
+		for _, path := range cell.FramedPaths {
+			expected, known := cell.framedArtifacts[path]
+			if rootErr != nil || !known {
+				invalid = true
+				continue
+			}
+			current, err := inspectMatrixArtifact(framedRoot, result.FramedDir, path)
+			if err != nil || !matrixArtifactMatches(expected, current) {
+				invalid = true
+				continue
+			}
+			validPaths = append(validPaths, path)
+			validSet[path] = struct{}{}
+		}
+		if len(validPaths) != len(cell.FramedPaths) {
+			cell.FramedPaths = validPaths
+			if cell.Status == MatrixCellSuccess {
+				cell.Status = MatrixCellFailed
+				cell.FailureStage = "framing"
+				cell.FailureCode = "framed_output_unavailable"
+				cell.Error = newMatrixCellError(cell.FailureStage, cell.FailureCode, "framed screenshot became unavailable")
+			}
+		}
+		for screenshotIndex := range cell.Screenshots {
+			path := cell.Screenshots[screenshotIndex].FramedPath
+			if path == "" {
+				continue
+			}
+			if _, ok := validSet[path]; !ok {
+				cell.Screenshots[screenshotIndex].FramedPath = ""
+			}
+		}
+	}
+	if invalid {
+		return errors.New("one or more framed screenshots became unavailable")
+	}
+	return nil
+}
+
+func matrixArtifactMatches(expected, current matrixArtifactInfo) bool {
+	if expected.identity == nil || current.identity == nil {
+		return false
+	}
+	return os.SameFile(expected.identity, current.identity) && expected.size == current.size && expected.digest == current.digest
 }
 
 func readMatrixImageDimensions(file *os.File, path string) (asc.ImageDimensions, error) {
@@ -1524,11 +1665,141 @@ func setMatrixScreenshotStatuses(result *MatrixCellResult) {
 		case MatrixCellSuccess:
 			result.Screenshots[i].Status = MatrixCellSuccess
 		case MatrixCellCanceled:
-			result.Screenshots[i].Status = MatrixCellCanceled
+			if result.Screenshots[i].RawPath == "" {
+				result.Screenshots[i].Status = MatrixCellCanceled
+			} else {
+				result.Screenshots[i].Status = MatrixCellSuccess
+			}
 		default:
-			result.Screenshots[i].Status = MatrixCellFailed
+			if result.Screenshots[i].RawPath == "" {
+				result.Screenshots[i].Status = MatrixCellFailed
+			} else {
+				result.Screenshots[i].Status = MatrixCellSuccess
+			}
 		}
 	}
+}
+
+func mergeMatrixAttemptResult(result *MatrixCellResult, cell MatrixCell, attempt matrixAttemptResult) {
+	if result == nil {
+		return
+	}
+	result.RawPaths = mergeMatrixPaths(result.RawPaths, attempt.RawPaths, cell.RawPaths)
+	result.FramedPaths = mergeMatrixPaths(result.FramedPaths, attempt.FramedPaths, cell.FramedPaths)
+	mergeMatrixFramedArtifacts(result, attempt)
+	mergeMatrixScreenshots(result, cell, attempt.Screenshots)
+}
+
+func mergeMatrixPaths(existing, incoming, canonical []string) []string {
+	if len(existing) == 0 && len(incoming) == 0 {
+		return nil
+	}
+	merged := make([]string, 0, len(existing)+len(incoming))
+	seen := make(map[string]struct{}, len(existing)+len(incoming))
+	appendUnique := func(paths []string) {
+		for _, path := range paths {
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			merged = append(merged, path)
+		}
+	}
+	appendUnique(existing)
+	appendUnique(incoming)
+	if len(canonical) == 0 {
+		return merged
+	}
+	ordered := make([]string, 0, len(merged))
+	for _, path := range canonical {
+		if _, ok := seen[path]; !ok {
+			continue
+		}
+		ordered = append(ordered, path)
+		delete(seen, path)
+	}
+	for _, path := range merged {
+		if _, ok := seen[path]; !ok {
+			continue
+		}
+		ordered = append(ordered, path)
+		delete(seen, path)
+	}
+	return ordered
+}
+
+func mergeMatrixScreenshots(result *MatrixCellResult, cell MatrixCell, incoming []MatrixScreenshotResult) {
+	if len(result.Screenshots) == 0 && len(cell.RawPaths) == 0 && len(incoming) == 0 {
+		return
+	}
+	existing := make(map[string]MatrixScreenshotResult, len(result.Screenshots))
+	for _, screenshot := range result.Screenshots {
+		key := strings.ToLower(strings.TrimSpace(screenshot.Name))
+		if key == "" {
+			continue
+		}
+		existing[key] = screenshot
+	}
+	ordered := make([]MatrixScreenshotResult, 0, len(cell.RawPaths)+len(incoming))
+	seen := make(map[string]struct{}, len(cell.RawPaths)+len(incoming))
+	for _, rawPath := range cell.RawPaths {
+		name := strings.TrimSuffix(filepath.Base(rawPath), filepath.Ext(rawPath))
+		key := strings.ToLower(strings.TrimSpace(name))
+		screenshot, ok := existing[key]
+		if !ok {
+			screenshot = MatrixScreenshotResult{Name: name, Status: MatrixCellCanceled}
+		}
+		ordered = append(ordered, screenshot)
+		seen[key] = struct{}{}
+	}
+	for _, screenshot := range result.Screenshots {
+		key := strings.ToLower(strings.TrimSpace(screenshot.Name))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		ordered = append(ordered, screenshot)
+		seen[key] = struct{}{}
+	}
+	for _, screenshot := range incoming {
+		key := strings.ToLower(strings.TrimSpace(screenshot.Name))
+		if key == "" {
+			continue
+		}
+		index := -1
+		for candidate := range ordered {
+			if strings.EqualFold(strings.TrimSpace(ordered[candidate].Name), strings.TrimSpace(screenshot.Name)) {
+				index = candidate
+				break
+			}
+		}
+		if index < 0 {
+			ordered = append(ordered, screenshot)
+			continue
+		}
+		current := &ordered[index]
+		if screenshot.Name != "" {
+			current.Name = screenshot.Name
+		}
+		if screenshot.Status != "" {
+			current.Status = screenshot.Status
+		}
+		if screenshot.RawPath != "" {
+			current.RawPath = screenshot.RawPath
+		}
+		if screenshot.FramedPath != "" {
+			current.FramedPath = screenshot.FramedPath
+		}
+		if screenshot.Width > 0 {
+			current.Width = screenshot.Width
+		}
+		if screenshot.Height > 0 {
+			current.Height = screenshot.Height
+		}
+	}
+	result.Screenshots = ordered
 }
 
 func newMatrixCellResult(cell MatrixCell) MatrixCellResult {
@@ -1773,7 +2044,7 @@ func checkMatrixDevices(ctx context.Context, plan *MatrixPlan) (map[string]struc
 			continue
 		}
 		if plan.Output.Frame.Enabled {
-			frame := plan.Output.Frame.DeviceByMatrixDevice[device.ID]
+			frame, _ := matrixFrameMappingForDevice(plan.Output.Frame.DeviceByMatrixDevice, device.ID)
 			if validateMatrixFrameMappingForSimulator(device.ID, frame, candidate) != nil {
 				failures[device.ID] = struct{}{}
 			}
@@ -1830,6 +2101,30 @@ func matrixSimulatorFamily(device matrixSimulatorDevice) string {
 
 func normalizeMatrixUDID(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeMatrixDeviceID(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func matrixFrameMappingForDevice(mapping map[string]string, deviceID string) (string, bool) {
+	wanted := normalizeMatrixDeviceID(deviceID)
+	if wanted == "" {
+		return "", false
+	}
+	var value string
+	found := false
+	for candidate, frame := range mapping {
+		if normalizeMatrixDeviceID(candidate) != wanted {
+			continue
+		}
+		if found {
+			return "", false
+		}
+		found = true
+		value = frame
+	}
+	return value, found
 }
 
 type cappedMatrixBuffer struct {

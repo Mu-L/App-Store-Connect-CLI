@@ -116,6 +116,13 @@ func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewReq
 		return nil, fmt.Errorf("marshal matrix review manifest: %w", err)
 	}
 	htmlContent := renderMatrixReviewHTML(manifest)
+	manifestData = append(manifestData, '\n')
+	if err := validateMatrixReviewSize("HTML", []byte(htmlContent)); err != nil {
+		return nil, err
+	}
+	if err := validateMatrixReviewSize("manifest", manifestData); err != nil {
+		return nil, err
+	}
 	// Publish HTML before the manifest. The manifest is the report's commit
 	// marker. Both writes are rooted and atomic. If the manifest publication
 	// fails, restore both files so the old marker and HTML remain a pair.
@@ -123,7 +130,7 @@ func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewReq
 		rollbackErr := restoreMatrixReviewFile(reviewRoot, "index.html", previousHTML, hadHTML)
 		return nil, joinMatrixReviewWriteErrors(fmt.Errorf("write matrix review HTML: %w", err), rollbackErr)
 	}
-	if err := write(reviewRoot, "manifest.json", append(manifestData, '\n'), 0o644); err != nil {
+	if err := write(reviewRoot, "manifest.json", manifestData, 0o644); err != nil {
 		manifestRollbackErr := restoreMatrixReviewFile(reviewRoot, "manifest.json", previousManifest, hadManifest)
 		htmlRollbackErr := restoreMatrixReviewFile(reviewRoot, "index.html", previousHTML, hadHTML)
 		return nil, joinMatrixReviewWriteErrors(
@@ -141,6 +148,13 @@ func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewReq
 		Failed:       manifest.Failed,
 		Canceled:     manifest.Canceled,
 	}, nil
+}
+
+func validateMatrixReviewSize(kind string, data []byte) error {
+	if len(data) > maxMatrixReviewBytes {
+		return fmt.Errorf("matrix review %s exceeds the %d-byte size limit", kind, maxMatrixReviewBytes)
+	}
+	return nil
 }
 
 func readMatrixReviewFile(root rootfs.Root, name string) ([]byte, bool, error) {
@@ -344,7 +358,7 @@ func sanitizeMatrixReviewError(value *MatrixCellError) *MatrixCellError {
 	}
 	message := strings.TrimSpace(value.Message)
 	switch message {
-	case "cell canceled", "screenshot plan execution failed", "screenshot framing failed", "raw screenshot could not be promoted", "framed screenshot could not be promoted", "simulator appearance could not be restored", "simulator blocked after appearance cleanup failure", "appearance state could not be read", "requested appearance could not be applied", "cell execution failed", "target simulator is not ready", "screenshot plan did not produce every requested image", "screenshot plan produced an invalid image", "screenshot framing produced an invalid image":
+	case "cell canceled", "screenshot plan execution failed", "screenshot framing failed", "raw screenshot could not be promoted", "framed screenshot could not be promoted", "framed screenshot became unavailable", "simulator appearance could not be restored", "simulator blocked after appearance cleanup failure", "appearance state could not be read", "requested appearance could not be applied", "cell execution failed", "target simulator is not ready", "screenshot plan did not produce every requested image", "screenshot plan produced an invalid image", "screenshot framing produced an invalid image":
 	default:
 		message = "matrix execution failed"
 	}
