@@ -148,7 +148,7 @@ asc signing reconcile plan \
 asc signing reconcile apply \
   --plan .asc/distribution/signing/plan.json \
   --confirm \
-  --output json
+  --output json > .asc/distribution/signing/apply-result.json
 ```
 
 Planning is read-only and can return a successful `ready: false` result with blockers. Apply performs only the additive actions recorded in a ready plan; it does not delete profiles, create certificates, or change capabilities.
@@ -177,7 +177,7 @@ asc signing run \
 
 `signing run` accepts iOS ad hoc profiles with registered devices. It rejects App Store, development, enterprise, macOS, and tvOS profiles.
 
-For an archive with extensions, App Clips, Watch apps, or other embedded targets, don't use this single-profile wrapper for export. On a disposable macOS worker, import the identity into a job-scoped keychain, install every path in the reconciliation result's `profiles` array, export, and discard the worker state when the job ends.
+For an archive with extensions, App Clips, Watch apps, or other embedded targets, don't use this single-profile wrapper for export. On a disposable macOS worker, import the identity into a job-scoped keychain, install each completed profile action's `outputPath` from `.asc/distribution/signing/apply-result.json`, export, and discard the worker state when the job ends.
 
 ## What the encrypted store does not do
 

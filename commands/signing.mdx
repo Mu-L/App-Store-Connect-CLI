@@ -59,7 +59,7 @@ Keep decrypted outputs and secrets out of source control:
 ```gitignore
 .asc/secrets/
 .asc/signing/
-.asc/distribution/signing/
+.asc/distribution/
 ```
 
 ## Set up the bundle ID and capabilities
@@ -326,12 +326,14 @@ The example below writes the repository password to a runner-private file withou
       --output json > .asc/signing/pull-result.json
 ```
 
-For an App Store export, install the pulled provisioning profiles and import the pulled identity into a job-scoped macOS keychain using your CI's keychain setup. `asc profiles local install` can install each profile safely:
+For an App Store export, install the pulled provisioning profiles and import the pulled identity into a job-scoped macOS keychain using your CI's keychain setup. Read the exact profile paths from the pull result instead of guessing the repository layout:
 
 ```bash  theme={null}
-asc profiles local install \
-  --path .asc/signing/pulled/profiles/PROFILE.mobileprovision \
-  --output json
+jq -r '.files[] | select(endswith(".mobileprovision"))' \
+  .asc/signing/pull-result.json \
+| while IFS= read -r profile_path; do
+    asc profiles local install --path "$profile_path" --output json
+  done
 ```
 
 Then archive and export with manual signing when the project requires an exact local identity/profile match:
@@ -416,7 +418,7 @@ Value-specific entitlements such as App Groups, Apple Pay merchant IDs, Network 
 
 It validates the PKCS#12, private key, certificate, team, signed profile, expiration, and embedded certificate before changing local signing state. It then creates a private temporary keychain, installs the profile only for the child process, executes the argv after `--` without a shell, and removes ASC-owned temporary state afterward.
 
-The wrapper accepts exactly one `--profile`. The example below therefore applies only to a single-target archive. For an archive with embedded targets, use a disposable macOS worker, import the identity into its job-scoped keychain, install every profile path returned by `signing reconcile apply`, export, and discard the worker state after the job.
+The wrapper accepts exactly one `--profile`. The example below therefore applies only to a single-target archive. For an archive with embedded targets, use a disposable macOS worker, import the identity into its job-scoped keychain, install each completed profile action's `outputPath` from `signing reconcile apply`, export, and discard the worker state after the job.
 
 ```bash  theme={null}
 signing_command=(
