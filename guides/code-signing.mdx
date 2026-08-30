@@ -172,6 +172,14 @@ PKCS#12 into a new dedicated keychain when separate archive and export commands
 need the identity to persist:
 
 ```bash  theme={null}
+identity_path="$(
+  jq -er '
+    [.sensitiveFiles[]? | select(endswith(".p12"))]
+    | if length == 1 then .[0]
+      else error("expected exactly one signing identity")
+      end
+  ' .asc/signing/pull-result.json
+)"
 keychain_path="$RUNNER_TEMP/asc-release.keychain-db"
 keychain_password_file="$RUNNER_TEMP/asc-release-keychain-password"
 cleanup_signing() {
@@ -182,7 +190,7 @@ trap cleanup_signing EXIT
 openssl rand -base64 32 > "$keychain_password_file"
 
 asc signing keychain install \
-  --identity .asc/signing/pulled/identities/distribution/IDENTITY.p12 \
+  --identity ".asc/signing/pulled/$identity_path" \
   --identity-password-file "$password_file" \
   --keychain "$keychain_path" \
   --keychain-password-file "$keychain_password_file" \
@@ -199,8 +207,9 @@ jq -r '.files[] | select(endswith(".mobileprovision"))' \
   done
 ```
 
-Replace `IDENTITY.p12` with the identity path reported in `sensitiveFiles`.
-The identity password is the encrypted-repository password because sync
+The receipt supplies the identity's complete relative path. This example
+requires exactly one pulled PKCS#12 identity and stops if that invariant is not
+met. The identity password is the encrypted-repository password because sync
 normalizes the pulled PKCS#12 under that secret. The keychain password is a
 separate generated secret. The install command is macOS-only, requires a
 cgo-enabled build, refuses an existing destination, and rolls back the new

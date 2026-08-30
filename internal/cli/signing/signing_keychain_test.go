@@ -33,10 +33,22 @@ func TestSigningCommandIncludesKeychainInstall(t *testing.T) {
 
 func TestSigningKeychainInstallCommandThreadsOptions(t *testing.T) {
 	previous := installSigningKeychainFn
-	t.Cleanup(func() { installSigningKeychainFn = previous })
+	previousContext := signingKeychainInstallContext
+	t.Cleanup(func() {
+		installSigningKeychainFn = previous
+		signingKeychainInstallContext = previousContext
+	})
 
 	var got signingKeychainInstallOptions
-	installSigningKeychainFn = func(_ context.Context, options signingKeychainInstallOptions) (*asc.SigningKeychainInstallResult, error) {
+	type installContextKey struct{}
+	contextStopped := false
+	signingKeychainInstallContext = func(ctx context.Context) (context.Context, func()) {
+		return context.WithValue(ctx, installContextKey{}, true), func() { contextStopped = true }
+	}
+	installSigningKeychainFn = func(ctx context.Context, options signingKeychainInstallOptions) (*asc.SigningKeychainInstallResult, error) {
+		if wrapped, _ := ctx.Value(installContextKey{}).(bool); !wrapped {
+			t.Fatal("install context was not wrapped for termination signals")
+		}
 		got = options
 		return &asc.SigningKeychainInstallResult{Action: "installed"}, nil
 	}
@@ -72,6 +84,9 @@ func TestSigningKeychainInstallCommandThreadsOptions(t *testing.T) {
 	}
 	if !strings.Contains(stdout, `"action":"installed"`) {
 		t.Fatalf("stdout = %q, want JSON result", stdout)
+	}
+	if !contextStopped {
+		t.Fatal("install signal context was not stopped")
 	}
 }
 

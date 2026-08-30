@@ -346,8 +346,17 @@ dedicated keychain to remain available:
 mkdir -p .asc/keychains .asc/secrets
 chmod 700 .asc/keychains .asc/secrets
 
+identity_path="$(
+  jq -er '
+    [.sensitiveFiles[]? | select(endswith(".p12"))]
+    | if length == 1 then .[0]
+      else error("expected exactly one signing identity")
+      end
+  ' .asc/signing/pull-result.json
+)"
+
 asc signing keychain install \
-  --identity .asc/signing/pulled/identities/IDENTITY.p12 \
+  --identity ".asc/signing/pulled/$identity_path" \
   --identity-password-file ~/.config/asc/signing-sync-password \
   --keychain .asc/keychains/release.keychain-db \
   --keychain-password-file .asc/secrets/release-keychain-password \
@@ -472,6 +481,15 @@ workflow artifact.
       --output-dir .asc/signing/pulled \
       --output json > .asc/signing/pull-result.json
 
+    identity_path="$(
+      jq -er '
+        [.sensitiveFiles[]? | select(endswith(".p12"))]
+        | if length == 1 then .[0]
+          else error("expected exactly one signing identity")
+          end
+      ' .asc/signing/pull-result.json
+    )"
+
     jq -r '.files[] | select(endswith(".mobileprovision"))' \
       .asc/signing/pull-result.json \
     | while IFS= read -r profile_path; do
@@ -482,7 +500,7 @@ workflow artifact.
 
     openssl rand -base64 32 > "$keychain_password_file"
     asc signing keychain install \
-      --identity .asc/signing/pulled/identities/IDENTITY.p12 \
+      --identity ".asc/signing/pulled/$identity_path" \
       --identity-password-file "$password_file" \
       --keychain "$keychain_path" \
       --keychain-password-file "$keychain_password_file" \
@@ -503,10 +521,11 @@ workflow artifact.
 ```
 
 For an App Store export, the profile loop reads exact paths from the pull
-receipt instead of guessing the repository layout. Replace `IDENTITY.p12` with
-the identity path reported in `sensitiveFiles`. The generated keychain password
-is independent of the repository password, and the keychain intentionally
-persists through archive and export, then the shell cleanup trap removes it.
+receipt instead of guessing the repository layout. The identity lookup likewise
+uses the complete relative path from `sensitiveFiles` and requires exactly one
+pulled PKCS#12 identity. The generated keychain password is independent of the
+repository password, and the keychain intentionally persists through archive
+and export, then the shell cleanup trap removes it.
 
 Manual export inspects the archive and matches locally installed profiles for the main app and embedded targets. An explicit `--export-options` file is authoritative and cannot be combined with `--signing-style`, `--team-id`, or `--method`.
 

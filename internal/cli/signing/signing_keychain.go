@@ -41,7 +41,10 @@ type signingKeychainInstallDeps struct {
 	DeleteKeychain            func(context.Context, string) error
 }
 
-var installSigningKeychainFn = executeSigningKeychainInstall
+var (
+	installSigningKeychainFn      = executeSigningKeychainInstall
+	signingKeychainInstallContext = platformSigningRunContext
+)
 
 // SigningKeychainCommand returns the signing keychain command group.
 func SigningKeychainCommand() *ffcli.Command {
@@ -118,7 +121,9 @@ Examples:
 			if !*confirm {
 				return shared.UsageError("--confirm is required to create a persistent signing keychain")
 			}
-			result, err := installSigningKeychainFn(ctx, signingKeychainInstallOptions{
+			installCtx, stopSignals := signingKeychainInstallContext(ctx)
+			defer stopSignals()
+			result, err := installSigningKeychainFn(installCtx, signingKeychainInstallOptions{
 				IdentityPath:              identity,
 				IdentityPasswordPath:      identityPassword,
 				KeychainPath:              keychain,

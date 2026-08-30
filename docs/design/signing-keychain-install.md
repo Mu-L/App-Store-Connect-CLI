@@ -65,7 +65,9 @@ rollback fail, both errors are returned. Rollback uses an independent bounded
 context, so cancellation of the initiating command does not prevent keychain
 deletion or search-list restoration. The same rule applies when cancellation
 interrupts initial keychain configuration before the outer installer can mark
-creation complete. Keychain creation and unlocking are separate checked stages;
+creation complete. On macOS, SIGINT, SIGTERM, and SIGHUP cancel the initiating
+context so termination follows this rollback path. Keychain creation and
+unlocking are separate checked stages;
 an unlock failure deletes the newly created destination through the same
 Security framework keychain reference before returning. A cleanup failure is
 joined with the unlock failure.
