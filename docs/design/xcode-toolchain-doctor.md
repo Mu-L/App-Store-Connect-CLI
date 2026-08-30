@@ -37,11 +37,17 @@ produce an advisory warning. Command Line Tools-only paths are identified and
 are a deterministic failure even if mocked probes happen to return successful
 Xcode-shaped output.
 
-The report uses the existing local `asc xcode` snake_case JSON convention. The
+The report uses the exported computed-output camelCase JSON contract. The
 top-level status is `ok`, `warn`, or `fail`. Checks have stable names, status,
 message, and optional path fields. The selected source is `flag`, `environment`,
-or `xcode-select`. JSON is emitted on stdout; bounded diagnostics remain on
-stderr. Table and Markdown render the same stable data.
+or `xcode-select`. Beta is omitted from JSON when developer-directory
+selection or normalization fails; human output shows that state as `unknown`.
+JSON is emitted on stdout; bounded diagnostics remain on stderr. Table and
+Markdown render the same stable data.
+
+Without `--output`, the report defaults to `table` in an interactive terminal
+and minified `json` for pipes or CI. An explicit `--output` value always takes
+precedence.
 
 Exit behavior is:
 

@@ -103,49 +103,30 @@ func toolchainUsageError(message, parameter string) error {
 }
 
 func printToolchainReport(report *localxcode.ToolchainReport, output string, pretty bool) error {
-	return shared.PrintOutputWithRenderers(
-		report,
-		output,
-		pretty,
-		func() error {
-			asc.RenderTable([]string{"check", "status", "path", "message"}, toolchainReportRows(report))
-			return nil
-		},
-		func() error {
-			asc.RenderMarkdown([]string{"check", "status", "path", "message"}, toolchainReportRows(report))
-			return nil
-		},
-	)
+	return shared.PrintOutput(toolchainReportOutput(report), output, pretty)
 }
 
-func toolchainReportRows(report *localxcode.ToolchainReport) [][]string {
+func toolchainReportOutput(report *localxcode.ToolchainReport) *asc.XcodeToolchainDoctorResult {
 	if report == nil {
 		return nil
 	}
-	rows := [][]string{
-		{"source", "selected", "", string(report.Source)},
-		{"developer_dir", "selected", report.DeveloperDir, "effective developer directory"},
-		{"xcode_path", "selected", report.XcodePath, "Xcode application, when identified"},
-		{"xcode_version", "selected", report.XcodeVersion, report.XcodeBuild},
-		{"beta", statusForBeta(report.Beta), "", betaMessage(report.Beta)},
-	}
+	checks := make([]asc.XcodeToolchainDoctorCheck, 0, len(report.Checks))
 	for _, check := range report.Checks {
-		rows = append(rows, []string{check.Name, string(check.Status), check.Path, check.Message})
+		checks = append(checks, asc.XcodeToolchainDoctorCheck{
+			Name:    check.Name,
+			Status:  string(check.Status),
+			Path:    check.Path,
+			Message: check.Message,
+		})
 	}
-	rows = append(rows, []string{"summary", string(report.Status), "", "overall toolchain status"})
-	return rows
-}
-
-func statusForBeta(beta bool) string {
-	if beta {
-		return string(localxcode.ToolchainCheckStatusWarn)
+	return &asc.XcodeToolchainDoctorResult{
+		Status:       string(report.Status),
+		Source:       string(report.Source),
+		DeveloperDir: report.DeveloperDir,
+		XcodePath:    report.XcodePath,
+		XcodeVersion: report.XcodeVersion,
+		XcodeBuild:   report.XcodeBuild,
+		Beta:         report.Beta,
+		Checks:       checks,
 	}
-	return string(localxcode.ToolchainCheckStatusOK)
-}
-
-func betaMessage(beta bool) string {
-	if beta {
-		return "selected developer directory appears to be a beta Xcode build"
-	}
-	return "selected developer directory is not identified as beta"
 }

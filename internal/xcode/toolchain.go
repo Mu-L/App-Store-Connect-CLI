@@ -67,14 +67,16 @@ type ToolchainCheck struct {
 
 // ToolchainReport is the stable structured result for local toolchain checks.
 type ToolchainReport struct {
-	Status       ToolchainStatus  `json:"status"`
-	Source       ToolchainSource  `json:"source,omitempty"`
-	DeveloperDir string           `json:"developer_dir,omitempty"`
-	XcodePath    string           `json:"xcode_path,omitempty"`
-	XcodeVersion string           `json:"xcode_version,omitempty"`
-	XcodeBuild   string           `json:"xcode_build,omitempty"`
-	Beta         bool             `json:"beta"`
-	Checks       []ToolchainCheck `json:"checks"`
+	Status       ToolchainStatus `json:"status"`
+	Source       ToolchainSource `json:"source,omitempty"`
+	DeveloperDir string          `json:"developer_dir,omitempty"`
+	XcodePath    string          `json:"xcode_path,omitempty"`
+	XcodeVersion string          `json:"xcode_version,omitempty"`
+	XcodeBuild   string          `json:"xcode_build,omitempty"`
+	// Beta is nil until developer-directory selection and normalization have
+	// completed, so a failed selection cannot be reported as stable Xcode.
+	Beta   *bool            `json:"beta,omitempty"`
+	Checks []ToolchainCheck `json:"checks"`
 }
 
 var (
@@ -162,7 +164,8 @@ func InspectToolchain(ctx context.Context, opts ToolchainOptions) (*ToolchainRep
 		)
 	}
 
-	report.Beta = isBetaXcodePath(developerDir) || isBetaXcodePath(xcodePath)
+	beta := isBetaXcodePath(developerDir) || isBetaXcodePath(xcodePath)
+	report.Beta = &beta
 
 	xcrunPath, xcrunLookupErr := resolveToolchainXcrunPath()
 	var resolvedXcodebuildPath string
@@ -271,7 +274,7 @@ func InspectToolchain(ctx context.Context, opts ToolchainOptions) (*ToolchainRep
 		}
 	}
 
-	if report.Beta {
+	if report.Beta != nil && *report.Beta {
 		betaCheck := ToolchainCheck{
 			Name:    "beta",
 			Status:  ToolchainCheckStatusWarn,

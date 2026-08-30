@@ -122,7 +122,7 @@ func TestInspectToolchainUsesExplicitDeveloperDirAndSDK(t *testing.T) {
 	if report.XcodePath != filepath.Dir(filepath.Dir(developerDir)) {
 		t.Fatalf("XcodePath = %q, want %q", report.XcodePath, filepath.Dir(filepath.Dir(developerDir)))
 	}
-	if report.Beta {
+	if report.Beta == nil || *report.Beta {
 		t.Fatal("stable Xcode candidate unexpectedly reported as beta")
 	}
 	if !toolchainReportHasCheck(report, "sdk:iphonesimulator", ToolchainCheckStatusOK) {
@@ -288,12 +288,14 @@ func TestInspectToolchainReportsBetaWarningAndCommandLineToolsFailure(t *testing
 		return "", nil
 	}
 
+	stable := false
+	beta := true
 	tests := []struct {
 		name       string
 		candidate  func(string) string
 		wantStatus ToolchainStatus
 		wantCheck  ToolchainCheckStatus
-		wantBeta   bool
+		wantBeta   *bool
 	}{
 		{
 			name: "beta xcode",
@@ -302,7 +304,7 @@ func TestInspectToolchainReportsBetaWarningAndCommandLineToolsFailure(t *testing
 			},
 			wantStatus: ToolchainStatusWarn,
 			wantCheck:  ToolchainCheckStatusOK,
-			wantBeta:   true,
+			wantBeta:   &beta,
 		},
 		{
 			name: "command line tools",
@@ -311,6 +313,7 @@ func TestInspectToolchainReportsBetaWarningAndCommandLineToolsFailure(t *testing
 			},
 			wantStatus: ToolchainStatusFail,
 			wantCheck:  ToolchainCheckStatusFail,
+			wantBeta:   &stable,
 		},
 	}
 
@@ -332,13 +335,13 @@ func TestInspectToolchainReportsBetaWarningAndCommandLineToolsFailure(t *testing
 			if test.wantStatus != ToolchainStatusFail && err != nil {
 				t.Fatalf("InspectToolchain() error = %v", err)
 			}
-			if report == nil || report.Status != test.wantStatus || report.Beta != test.wantBeta {
+			if report == nil || report.Status != test.wantStatus || !sameOptionalBool(report.Beta, test.wantBeta) {
 				t.Fatalf("unexpected report: %+v", report)
 			}
 			if check, ok := toolchainReportCheck(report, "developer_dir"); !ok || check.Status != test.wantCheck {
 				t.Fatalf("developer_dir check = %+v (found=%t), want %q", check, ok, test.wantCheck)
 			}
-			if test.wantBeta && !toolchainReportHasCheck(report, "beta", ToolchainCheckStatusWarn) {
+			if test.wantBeta != nil && *test.wantBeta && !toolchainReportHasCheck(report, "beta", ToolchainCheckStatusWarn) {
 				t.Fatalf("missing beta warning: %+v", report.Checks)
 			}
 		})
@@ -363,6 +366,9 @@ func TestInspectToolchainReturnsFailureForUnavailableCandidate(t *testing.T) {
 	}
 	if !toolchainReportHasCheck(report, "developer_dir", ToolchainCheckStatusFail) {
 		t.Fatalf("missing failed developer_dir check: %+v", report.Checks)
+	}
+	if report.Beta != nil {
+		t.Fatalf("failed developer-directory selection reported beta=%t, want unknown", *report.Beta)
 	}
 }
 
@@ -415,6 +421,13 @@ func toolchainReportCheck(report *ToolchainReport, name string) (ToolchainCheck,
 		}
 	}
 	return ToolchainCheck{}, false
+}
+
+func sameOptionalBool(got, want *bool) bool {
+	if got == nil || want == nil {
+		return got == nil && want == nil
+	}
+	return *got == *want
 }
 
 func toolchainDoctorLookPath(name string) (string, error) {

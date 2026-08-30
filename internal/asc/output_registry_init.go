@@ -524,6 +524,7 @@ func registerAllOutputRenderers() {
 	registerRows(xcodeCloudRunResultRows)
 	registerRows(xcodeCloudStatusResultRows)
 	registerDirect(xcodeCloudDoctorResultTables)
+	registerRows(xcodeToolchainDoctorResultRows)
 	registerRowsWithSingleToListAdapter[CiProductResponse, CiProductsResponse](ciProductsRows)
 	registerRowsWithSingleToListAdapter[CiWorkflowResponse, CiWorkflowsResponse](ciWorkflowsRows)
 	registerRowsWithSingleToListAdapter[ScmProviderResponse, ScmProvidersResponse](scmProvidersRows)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	localxcode "github.com/rudrankriyam/App-Store-Connect-CLI/internal/xcode"
 )
@@ -62,12 +63,22 @@ func TestXcodeDoctorCommandPassesFlagsAndPrintsJSON(t *testing.T) {
 		t.Fatal("LogWriter = nil, want stderr writer")
 	}
 
-	var payload localxcode.ToolchainReport
+	var payload asc.XcodeToolchainDoctorResult
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v\nstdout=%s", err, stdout)
 	}
-	if payload.Status != localxcode.ToolchainStatusOK || payload.XcodeVersion != "16.4" || payload.XcodeBuild != "16F6" {
+	if payload.Status != string(localxcode.ToolchainStatusOK) || payload.XcodeVersion != "16.4" || payload.XcodeBuild != "16F6" {
 		t.Fatalf("unexpected JSON payload: %+v", payload)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
+		t.Fatalf("json.Unmarshal(raw) error = %v", err)
+	}
+	if _, ok := raw["developerDir"]; !ok {
+		t.Fatalf("JSON payload missing camelCase developerDir: %s", stdout)
+	}
+	if _, ok := raw["developer_dir"]; ok {
+		t.Fatalf("JSON payload contains internal snake_case developer_dir: %s", stdout)
 	}
 }
 
@@ -103,12 +114,55 @@ func TestXcodeDoctorCommandPrintsFailureReportAndReturnsError(t *testing.T) {
 	if !strings.Contains(stderr, "Error: xcode doctor: toolchain checks failed") {
 		t.Fatalf("stderr = %q, want a concise failure diagnostic", stderr)
 	}
-	var payload localxcode.ToolchainReport
+	var payload asc.XcodeToolchainDoctorResult
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v\nstdout=%s", err, stdout)
 	}
-	if payload.Status != localxcode.ToolchainStatusFail {
+	if payload.Status != string(localxcode.ToolchainStatusFail) {
 		t.Fatalf("payload status = %q, want fail", payload.Status)
+	}
+}
+
+func TestXcodeDoctorCommandDoesNotInventBetaWhenSelectionFails(t *testing.T) {
+	originalRun := runToolchainDoctor
+	t.Cleanup(func() { runToolchainDoctor = originalRun })
+
+	runToolchainDoctor = func(_ context.Context, _ localxcode.ToolchainOptions) (*localxcode.ToolchainReport, error) {
+		return &localxcode.ToolchainReport{
+			Status: localxcode.ToolchainStatusFail,
+			Source: localxcode.ToolchainSourceXcodeSelect,
+			Checks: []localxcode.ToolchainCheck{{
+				Name:    "developer_dir",
+				Status:  localxcode.ToolchainCheckStatusFail,
+				Message: "xcode-select returned an empty developer directory",
+			}},
+		}, errors.New("resolve developer directory: xcode-select returned an empty developer directory")
+	}
+
+	for _, format := range []string{"json", "table", "markdown"} {
+		t.Run(format, func(t *testing.T) {
+			cmd := XcodeDoctorCommand()
+			cmd.FlagSet.SetOutput(io.Discard)
+			if err := cmd.FlagSet.Parse([]string{"--output", format}); err != nil {
+				t.Fatalf("FlagSet.Parse() error = %v", err)
+			}
+			stdout, _ := captureCommandOutput(t, func() error {
+				return cmd.Exec(context.Background(), nil)
+			})
+			if format == "json" {
+				var raw map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
+					t.Fatalf("json.Unmarshal() error = %v\nstdout=%s", err, stdout)
+				}
+				if _, ok := raw["beta"]; ok {
+					t.Fatalf("failed selection JSON must omit unknown beta, got %s", stdout)
+				}
+				return
+			}
+			if !strings.Contains(stdout, "beta") || !strings.Contains(stdout, "unknown") {
+				t.Fatalf("%s output must make unknown beta explicit: %s", format, stdout)
+			}
+		})
 	}
 }
 
@@ -117,6 +171,7 @@ func TestXcodeDoctorCommandRendersHumanOutput(t *testing.T) {
 	t.Cleanup(func() { runToolchainDoctor = originalRun })
 
 	runToolchainDoctor = func(_ context.Context, _ localxcode.ToolchainOptions) (*localxcode.ToolchainReport, error) {
+		beta := true
 		return &localxcode.ToolchainReport{
 			Status:       localxcode.ToolchainStatusWarn,
 			Source:       localxcode.ToolchainSourceEnvironment,
@@ -124,7 +179,7 @@ func TestXcodeDoctorCommandRendersHumanOutput(t *testing.T) {
 			XcodePath:    "/Applications/Xcode-beta.app",
 			XcodeVersion: "16.4 beta 2",
 			XcodeBuild:   "16F6",
-			Beta:         true,
+			Beta:         &beta,
 			Checks: []localxcode.ToolchainCheck{
 				{Name: "developer_dir", Status: localxcode.ToolchainCheckStatusOK, Message: "Developer directory is available"},
 				{Name: "beta", Status: localxcode.ToolchainCheckStatusWarn, Message: "selected developer directory appears to be a beta Xcode build"},
