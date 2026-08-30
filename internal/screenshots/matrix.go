@@ -34,6 +34,9 @@ const (
 	maxMatrixCells           = 256
 	maxMatrixConcurrency     = 8
 	maxMatrixAttempts        = 3
+	// Keep millisecond retry values within time.Duration's nanosecond range
+	// before converting them to a duration for scheduling.
+	maxMatrixRetryBackoffMS  = (1<<63 - 1) / int64(time.Millisecond)
 	matrixSubprocessTimeout  = 30 * time.Second
 	defaultMatrixConcurrency = 1
 	defaultMatrixAttempts    = 1
@@ -717,6 +720,9 @@ func validateMatrixPlan(plan *MatrixPlan, base *Plan, outputBaseDir string) erro
 	if plan.Execution.RetryBackoffMS < 0 {
 		return errors.New("execution.retry_backoff_ms must be >= 0")
 	}
+	if int64(plan.Execution.RetryBackoffMS) > maxMatrixRetryBackoffMS {
+		return errors.New("execution.retry_backoff_ms exceeds maximum duration")
+	}
 	retryBackoffText := strings.TrimSpace(plan.Execution.RetryBackoff)
 	if retryBackoffText != "" {
 		parsed, err := time.ParseDuration(retryBackoffText)
@@ -1300,6 +1306,9 @@ func resolveMatrixExecution(execution MatrixExecution, options MatrixOptions) (i
 	}
 	if attempts < 1 || attempts > maxMatrixAttempts {
 		return 0, 0, 0, fmt.Errorf("max attempts must be between 1 and %d", maxMatrixAttempts)
+	}
+	if int64(execution.RetryBackoffMS) > maxMatrixRetryBackoffMS {
+		return 0, 0, 0, errors.New("retry backoff milliseconds exceeds maximum duration")
 	}
 	backoff := time.Duration(execution.RetryBackoffMS) * time.Millisecond
 	if strings.TrimSpace(execution.RetryBackoff) != "" {

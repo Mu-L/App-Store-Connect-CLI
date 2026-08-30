@@ -2440,3 +2440,80 @@ func TestValidateMatrixPlanAcceptsASingleRetryBackoffEncoding(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateMatrixPlanBoundsRetryBackoffMillisecondsToDuration(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("retry_backoff_ms cannot represent the duration boundary on 32-bit platforms")
+	}
+
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	const maxRetryBackoffMS = (1<<63 - 1) / int64(time.Millisecond)
+	for _, test := range []struct {
+		name    string
+		value   int64
+		wantErr bool
+	}{
+		{name: "maximum representable duration", value: maxRetryBackoffMS},
+		{name: "one millisecond beyond duration", value: maxRetryBackoffMS + 1, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := &MatrixPlan{
+				Version:         1,
+				Devices:         []MatrixDevice{{ID: "phone", UDID: "SIM-UDID"}},
+				Locales:         []string{"en-US"},
+				Appearances:     []string{"light"},
+				ContentVariants: []MatrixContentVariant{{ID: "default"}},
+				Execution:       MatrixExecution{RetryBackoffMS: int(test.value)},
+			}
+			err := ValidateMatrixPlan(plan, base)
+			if test.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "execution.retry_backoff_ms exceeds maximum duration") {
+					t.Fatalf("ValidateMatrixPlan() error = %v, want retry-backoff overflow rejection", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidateMatrixPlan() error = %v, want maximum duration to be accepted", err)
+			}
+			_, _, backoff, err := resolveMatrixExecution(plan.Execution, MatrixOptions{})
+			if err != nil {
+				t.Fatalf("resolveMatrixExecution() error = %v, want maximum duration to be accepted", err)
+			}
+			want := time.Duration(maxRetryBackoffMS) * time.Millisecond
+			if backoff != want {
+				t.Fatalf("resolved backoff = %s, want %s", backoff, want)
+			}
+		})
+	}
+}
+
+func TestRunMatrixRejectsRetryBackoffOverflowBeforeExecution(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("retry_backoff_ms cannot represent the duration boundary on 32-bit platforms")
+	}
+
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	const maxRetryBackoffMS = (1<<63 - 1) / int64(time.Millisecond)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"execution":{"retry_backoff_ms":`+strconv.FormatInt(maxRetryBackoffMS+1, 10)+`},"output":{"raw_dir":"raw","review_dir":"review"}}`)
+	plan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	runCalls := 0
+	_, err = RunMatrixWithDependencies(context.Background(), matrixPath, plan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(context.Context, *Plan) (*RunResult, error) {
+			runCalls++
+			return &RunResult{}, nil
+		},
+	})
+	var validationErr *MatrixValidationError
+	if err == nil || !errors.As(err, &validationErr) || !strings.Contains(err.Error(), "execution.retry_backoff_ms exceeds maximum duration") {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want retry-backoff overflow validation error", err)
+	}
+	if runCalls != 0 {
+		t.Fatalf("RunPlan calls = %d, want validation to reject before execution", runCalls)
+	}
+}
