@@ -69,6 +69,10 @@ type preparedVersionWrite struct {
 	// checked during rollback together with the bytes before restoring the
 	// original, so a replacement cannot be mistaken for our update.
 	committedInfo os.FileInfo
+	// originalInfo pins the source inode observed while preparing an ordinary
+	// write. The commit path couples this identity with original bytes so a
+	// same-content replacement cannot be overwritten after preflight.
+	originalInfo os.FileInfo
 }
 
 type xcconfigMutation struct {
@@ -146,6 +150,9 @@ func openStructuredVersionProject(projectInput string) (*structuredVersionProjec
 	if err != nil {
 		return nil, err
 	}
+	if err := validateStructuredVersionProjectPath(projectPath); err != nil {
+		return nil, err
+	}
 	parsed, err := xcodeproj.Open(projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", filepath.Join(projectPath, "project.pbxproj"), err)
@@ -171,6 +178,32 @@ func openStructuredVersionProject(projectInput string) (*structuredVersionProjec
 		return nil, err
 	}
 	return project, nil
+}
+
+// validateStructuredVersionProjectPath performs the rooted no-follow checks
+// before the plist parser opens project.pbxproj. The parser accepts ordinary
+// filesystem paths and would otherwise follow an explicitly selected
+// .xcodeproj or project.pbxproj symlink before the later mutation preflight
+// had a chance to reject it.
+func validateStructuredVersionProjectPath(projectPath string) error {
+	absolute, err := filepath.Abs(projectPath)
+	if err != nil {
+		return fmt.Errorf("resolve Xcode project path: %w", err)
+	}
+	absolute = filepath.Clean(absolute)
+	root, err := rootfs.New(filepath.Dir(absolute))
+	if err != nil {
+		return fmt.Errorf("open Xcode project root: %w", err)
+	}
+	defer root.Close()
+	if err := root.CheckContained(absolute); err != nil {
+		return fmt.Errorf("refusing to parse Xcode project %s: %w", absolute, err)
+	}
+	pbxprojPath := filepath.Join(absolute, "project.pbxproj")
+	if err := root.CheckContained(pbxprojPath); err != nil {
+		return fmt.Errorf("refusing to parse Xcode project file %s: %w", pbxprojPath, err)
+	}
+	return nil
 }
 
 func (project *structuredVersionProject) hasStructuredVersionSettingsForView(target, configuration string) (bool, error) {
@@ -956,6 +989,7 @@ func (project *structuredVersionProject) setVersion(opts SetVersionOptions) (*Se
 	configFiles := validation.configFiles
 	uncertainXCConfigConsumers := validation.uncertainXCConfigConsumers
 	xcconfigMutations := make(map[string]map[string]xcconfigMutation)
+	xcconfigPathSpelling := make(map[string]string)
 	changes := make([]VersionChange, 0)
 	pbxprojChanged := false
 
@@ -1002,14 +1036,16 @@ func (project *structuredVersionProject) setVersion(opts SetVersionOptions) (*Se
 				if !uncertainXCConfigConsumers && consumersSelected(assignmentFiles, fileConsumers, fileIdentities, selectedIDs) {
 					handled[configuration.id] = true
 					for _, path := range assignmentFiles {
-						if xcconfigMutations[path] == nil {
-							xcconfigMutations[path] = make(map[string]xcconfigMutation)
+						pathKey := signingLexicalPathKey(path)
+						if xcconfigMutations[pathKey] == nil {
+							xcconfigMutations[pathKey] = make(map[string]xcconfigMutation)
+							xcconfigPathSpelling[pathKey] = path
 						}
-						mutation := xcconfigMutations[path][requested.name]
+						mutation := xcconfigMutations[pathKey][requested.name]
 						mutation.setting = requested.name
 						mutation.value = requested.value
 						mutation.configurations = appendVersionConfigurationOnce(mutation.configurations, configuration)
-						xcconfigMutations[path][requested.name] = mutation
+						xcconfigMutations[pathKey][requested.name] = mutation
 					}
 					continue
 				}
@@ -1065,11 +1101,12 @@ func (project *structuredVersionProject) setVersion(opts SetVersionOptions) (*Se
 	}
 
 	var xcconfigPaths []string
-	for path := range xcconfigMutations {
-		xcconfigPaths = append(xcconfigPaths, path)
+	for pathKey := range xcconfigMutations {
+		xcconfigPaths = append(xcconfigPaths, pathKey)
 	}
 	sort.Strings(xcconfigPaths)
-	for _, path := range xcconfigPaths {
+	for _, pathKey := range xcconfigPaths {
+		path := xcconfigPathSpelling[pathKey]
 		if err := project.checkXCConfigWritable(path, opts.AllowExternalXCConfig); err != nil {
 			return nil, err
 		}
@@ -1077,7 +1114,7 @@ func (project *structuredVersionProject) setVersion(opts SetVersionOptions) (*Se
 		if err != nil {
 			return nil, fmt.Errorf("prepare xcconfig %s: %w", path, err)
 		}
-		write, fileChanges, changed, err := prepareXCConfigWrite(target, xcconfigMutations[path])
+		write, fileChanges, changed, err := prepareXCConfigWrite(target, xcconfigMutations[pathKey])
 		if err != nil {
 			_ = target.root.Close()
 			return nil, err
@@ -1171,7 +1208,7 @@ func configurationProvidesScheduledSetting(
 		return true
 	}
 	for _, path := range configFiles[configuration.id] {
-		mutation, ok := mutations[path][setting]
+		mutation, ok := mutations[signingLexicalPathKey(path)][setting]
 		if !ok {
 			continue
 		}
@@ -1495,7 +1532,7 @@ func (project *structuredVersionProject) preparePBXProjWrite(projectRoot rootfs.
 			_ = target.root.Close()
 		}
 	}()
-	original, mode, err := readRegularVersionFile(target)
+	original, mode, err := readRegularVersionFile(&target)
 	if err != nil {
 		return preparedVersionWrite{}, err
 	}
@@ -1530,7 +1567,7 @@ func (project *structuredVersionProject) preparePBXProjWrite(projectRoot rootfs.
 }
 
 func prepareXCConfigWrite(target preparedVersionWrite, mutations map[string]xcconfigMutation) (preparedVersionWrite, []VersionChange, bool, error) {
-	original, mode, err := readRegularVersionFile(target)
+	original, mode, err := readRegularVersionFile(&target)
 	if err != nil {
 		return preparedVersionWrite{}, nil, false, err
 	}
@@ -1578,7 +1615,10 @@ func prepareXCConfigWrite(target preparedVersionWrite, mutations map[string]xcco
 	return target, changes, changed, nil
 }
 
-func readRegularVersionFile(target preparedVersionWrite) ([]byte, os.FileMode, error) {
+func readRegularVersionFile(target *preparedVersionWrite) ([]byte, os.FileMode, error) {
+	if target == nil {
+		return nil, 0, fmt.Errorf("prepared version write is nil")
+	}
 	file, err := target.root.OpenFile(target.name)
 	if err != nil {
 		return nil, 0, err
@@ -1591,6 +1631,7 @@ func readRegularVersionFile(target preparedVersionWrite) ([]byte, os.FileMode, e
 	if !info.Mode().IsRegular() {
 		return nil, 0, fmt.Errorf("not a regular file: %s", target.path)
 	}
+	target.originalInfo = info
 	data, err := io.ReadAll(file)
 	if err != nil {
 		return nil, 0, err
@@ -1604,12 +1645,21 @@ var atomicCreateVersionFileFn = atomicCreatePreparedVersionFile
 
 var removeCreatedVersionFileFn = removeCreatedPreparedVersionFile
 
-var versionWriteInfoFn = versionWriteInfo
-
 // removeCreatedVersionFileBeforeFinalCheckForTest injects a replacement or
 // disappearance between content verification and the final identity check.
 // It is intentionally test-only and nil in production.
 var removeCreatedVersionFileBeforeFinalCheckForTest func()
+
+// rollbackOrdinaryVersionBeforeConditionalWriteForTest injects a replacement
+// after the transaction has captured a committed identity but before the
+// rooted compare-and-publish primitive runs. It is intentionally test-only.
+var rollbackOrdinaryVersionBeforeConditionalWriteForTest func()
+
+// rollbackPublishedVersionBeforeConditionalWriteForTest injects a
+// replacement after a failed write has returned its installed identity, but
+// before the rooted compare-and-publish rollback.
+// It is intentionally test-only and nil in production.
+var rollbackPublishedVersionBeforeConditionalWriteForTest func()
 
 func commitVersionWrites(writes []preparedVersionWrite) (resultErr error) {
 	return commitVersionWritesWithCreateCheck(writes, nil)
@@ -1625,8 +1675,9 @@ func commitVersionWritesWithCreateCheck(
 	writes []preparedVersionWrite,
 	beforeCreate func([]preparedVersionWrite) error,
 ) (resultErr error) {
+	var retainedIdentities []os.FileInfo
 	defer func() {
-		resultErr = errors.Join(resultErr, closeVersionWrites(writes))
+		resultErr = errors.Join(resultErr, closeVersionWrites(writes), closeVersionIdentities(retainedIdentities))
 	}()
 	sort.Slice(writes, func(left, right int) bool {
 		// Finalize create-only artifacts after ordinary project files so a
@@ -1642,7 +1693,7 @@ func commitVersionWritesWithCreateCheck(
 			continue
 		}
 		if !write.createOnly {
-			current, _, err := readRegularVersionFile(write)
+			current, _, err := readRegularVersionFile(&write)
 			if err != nil {
 				return commitVersionWriteFailure(
 					write,
@@ -1672,10 +1723,19 @@ func commitVersionWritesWithCreateCheck(
 			var createdInfo os.FileInfo
 			createdInfo, err = atomicCreateVersionFileFn(write, write.updated)
 			write.createdInfo = createdInfo
+			if createdInfo != nil {
+				retainedIdentities = append(retainedIdentities, createdInfo)
+			}
 		} else {
-			err = atomicWriteVersionFileFn(write, write.updated)
+			write.committedInfo, err = atomicWriteVersionFileFn(write, write.updated)
+			if write.committedInfo != nil {
+				retainedIdentities = append(retainedIdentities, write.committedInfo)
+			}
 		}
 		if err != nil {
+			if !write.createOnly && write.committedInfo == nil {
+				err = errors.Join(err, errors.New("installed identity unavailable; rollback uncertain"))
+			}
 			rollbackErrors := make([]error, 0)
 			if write.createOnly && write.createdInfo != nil {
 				if rollbackErr := removeCreatedVersionFileFn(write); rollbackErr != nil {
@@ -1694,16 +1754,13 @@ func commitVersionWritesWithCreateCheck(
 			}
 			return writeErr
 		}
-		if !write.createOnly {
-			write.committedInfo, err = versionWriteInfoFn(write)
-			if err != nil {
-				committedWithWrite := append(append([]preparedVersionWrite(nil), committed...), write)
-				return commitVersionWriteFailure(
-					write,
-					fmt.Errorf("verify written file: %w", err),
-					committedWithWrite,
-				)
-			}
+		if !write.createOnly && write.committedInfo == nil {
+			committedWithWrite := append(append([]preparedVersionWrite(nil), committed...), write)
+			return commitVersionWriteFailure(
+				write,
+				fmt.Errorf("verify written file: installed identity unavailable"),
+				committedWithWrite,
+			)
 		}
 		committed = append(committed, write)
 	}
@@ -1737,11 +1794,11 @@ func rollbackVersionWrites(committed []preparedVersionWrite) []error {
 
 // rollbackPublishedVersionWriteAfterError restores a write whose replacement
 // was already published even though the write call reported an error. The
-// rooted writer stages a temporary file and publishes it only with a rename,
-// and it never writes into the destination in place, so the destination always
-// holds either the original bytes or this transaction's complete updated
-// bytes. Comparing bytes is therefore a sound test for "did this write take
-// effect", and a torn destination cannot occur.
+// writer returns the installed identity from the same rooted publication
+// operation, backed by a held descriptor, so rollback does not reopen the
+// destination by path and mistake a later same-content replacement for the
+// transaction's update. WriteFileIfSame then couples that identity to the
+// expected updated bytes before restoring the original.
 //
 // The concrete case is the Windows replacement path, which moves the original
 // aside, renames the staged file into place, and then fails while removing its
@@ -1753,38 +1810,43 @@ func rollbackVersionWrites(committed []preparedVersionWrite) []error {
 // the error text. Callers join that error into the returned failure, so the
 // stranded path is reported to the operator rather than silently discarded.
 func rollbackPublishedVersionWriteAfterError(write preparedVersionWrite) error {
-	current, _, err := readRegularVersionFile(write)
-	if err != nil {
-		return fmt.Errorf("inspect file after failed write: %w", err)
-	}
-	if bytes.Equal(current, write.original) {
+	if write.committedInfo == nil {
 		return nil
 	}
-	if !bytes.Equal(current, write.updated) {
-		return fmt.Errorf("preserve current file after concurrent change")
+	if rollbackPublishedVersionBeforeConditionalWriteForTest != nil {
+		rollbackPublishedVersionBeforeConditionalWriteForTest()
 	}
-	return atomicWriteVersionFileFn(write, write.original)
+	if err := write.root.WriteFileIfSame(
+		write.name,
+		write.original,
+		write.mode,
+		write.committedInfo,
+		write.updated,
+		write.preserveMetadata,
+	); err != nil {
+		return fmt.Errorf("preserve current file after failed write: %w", err)
+	}
+	return nil
 }
 
 func rollbackOrdinaryVersionWrite(write preparedVersionWrite) error {
 	if write.committedInfo == nil {
 		return fmt.Errorf("preserve current file after concurrent change: committed file identity unavailable")
 	}
-	currentInfo, err := versionWriteInfoFn(write)
-	if err != nil {
+	if rollbackOrdinaryVersionBeforeConditionalWriteForTest != nil {
+		rollbackOrdinaryVersionBeforeConditionalWriteForTest()
+	}
+	if err := write.root.WriteFileIfSame(
+		write.name,
+		write.original,
+		write.mode,
+		write.committedInfo,
+		write.updated,
+		write.preserveMetadata,
+	); err != nil {
 		return fmt.Errorf("preserve current file after concurrent change: %w", err)
 	}
-	if !os.SameFile(write.committedInfo, currentInfo) {
-		return fmt.Errorf("preserve current file after concurrent change: identity changed")
-	}
-	current, _, err := readRegularVersionFile(write)
-	if err != nil {
-		return fmt.Errorf("preserve current file after concurrent change: %w", err)
-	}
-	if !bytes.Equal(current, write.updated) {
-		return fmt.Errorf("preserve current file after concurrent change")
-	}
-	return atomicWriteVersionFileFn(write, write.original)
+	return nil
 }
 
 func closeVersionWrites(writes []preparedVersionWrite) error {
@@ -1797,20 +1859,32 @@ func closeVersionWrites(writes []preparedVersionWrite) error {
 	return errors.Join(closeErrors...)
 }
 
-func atomicWritePreparedVersionFile(write preparedVersionWrite, data []byte) error {
-	if write.preserveMetadata {
-		return write.root.WriteFilePreservingMode(write.name, data, write.mode)
+func closeVersionIdentities(identities []os.FileInfo) error {
+	var closeErrors []error
+	for _, identity := range identities {
+		closer, ok := identity.(interface{ Close() error })
+		if !ok {
+			continue
+		}
+		if err := closer.Close(); err != nil {
+			closeErrors = append(closeErrors, err)
+		}
 	}
-	return write.root.WriteFile(write.name, data, write.mode)
+	return errors.Join(closeErrors...)
 }
 
-func versionWriteInfo(write preparedVersionWrite) (os.FileInfo, error) {
-	file, err := write.root.OpenFile(write.name)
-	if err != nil {
-		return nil, err
+func atomicWritePreparedVersionFile(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	if write.originalInfo != nil {
+		return write.root.WriteFileIfSameWithInfo(
+			write.name,
+			data,
+			write.mode,
+			write.originalInfo,
+			write.original,
+			write.preserveMetadata,
+		)
 	}
-	defer file.Close()
-	return file.Stat()
+	return nil, fmt.Errorf("prepared write source identity unavailable")
 }
 
 func atomicCreatePreparedVersionFile(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
@@ -1864,7 +1938,10 @@ func removeCreatedPreparedVersionFile(write preparedVersionWrite) error {
 	if latestInfo.Mode()&os.ModeSymlink != 0 || !latestInfo.Mode().IsRegular() {
 		return fmt.Errorf("created path changed before rollback; preserving current file")
 	}
-	return root.Remove(write.name)
+	if err := write.root.RemoveFileIfSame(write.name, write.createdInfo, write.updated); err != nil {
+		return fmt.Errorf("remove created path safely: %w", err)
+	}
+	return nil
 }
 
 // atomicWriteVersionFile is retained for other Xcode outputs that already

@@ -419,8 +419,8 @@ func TestSigningApplyRechecksSourcesBeforeReceipt(t *testing.T) {
 	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
 	originalWriter := atomicWriteVersionFileFn
 	mutated := false
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) error {
-		err := originalWriter(write, data)
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+		info, err := originalWriter(write, data)
 		if err == nil && !write.createOnly && !mutated {
 			mutated = true
 			settings := mustReadVersionTestFile(t, settingsPath)
@@ -428,7 +428,7 @@ func TestSigningApplyRechecksSourcesBeforeReceipt(t *testing.T) {
 				t.Fatalf("mutate settings after ordinary write: %v", err)
 			}
 		}
-		return err
+		return info, err
 	}
 	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
 
@@ -1159,7 +1159,7 @@ func TestSigningApplyUsesMetadataPreservingWrites(t *testing.T) {
 
 	originalWriter := atomicWriteVersionFileFn
 	var writes []preparedVersionWrite
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) error {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
 		writes = append(writes, write)
 		return originalWriter(write, data)
 	}
@@ -1361,8 +1361,9 @@ func writeSigningSettingsTestFile(t *testing.T, path, contents string) {
 // injectSigningDirectBuildSetting adds a direct assignment to one existing
 // XCBuildConfiguration so a test can model a project that keeps a pbxproj-level
 // setting alongside its base xcconfig.
-func injectSigningDirectBuildSetting(t *testing.T, pbxprojPath, configurationID, assignment string) {
+func injectSigningDirectBuildSetting(t *testing.T, pbxprojPath, assignment string) {
 	t.Helper()
+	const configurationID = "999999999999999999999993"
 	data := mustReadVersionTestFile(t, pbxprojPath)
 	start := strings.Index(data, configurationID)
 	if start < 0 {
@@ -1389,7 +1390,7 @@ func TestSigningPlanRetainsInheritedDirectConsumerInSharedConflict(t *testing.T)
 	}
 	// Debug keeps a direct assignment that still defers to the shared value.
 	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
-		"999999999999999999999993", `CODE_SIGN_STYLE = "$(inherited)";`)
+		`CODE_SIGN_STYLE = "$(inherited)";`)
 
 	root := t.TempDir()
 	settingsPath := filepath.Join(root, "settings.json")
@@ -1466,5 +1467,287 @@ func TestSigningPlanDigestsXCConfigsUsedOnlyForResolution(t *testing.T) {
 	}
 	if !digested[appPath] {
 		t.Fatalf("resolution-only xcconfig %s missing from plan files: %#v", appPath, plan.Files)
+	}
+}
+
+func TestSigningPlanRevalidatesNoOpReferenceAfterDependentChange(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningDirectBuildSetting(t, pbxprojPath,
+		`PRODUCT_BUNDLE_IDENTIFIER = com.example.old; CODE_SIGN_IDENTITY = "$(PRODUCT_BUNDLE_IDENTIFIER)";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"com.example.old",
+			"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	var identityChange, bundleChange *SigningSettingChange
+	for index := range plan.Changes {
+		change := &plan.Changes[index]
+		switch change.Setting {
+		case "CODE_SIGN_IDENTITY":
+			identityChange = change
+		case "PRODUCT_BUNDLE_IDENTIFIER":
+			bundleChange = change
+		}
+	}
+	if bundleChange == nil {
+		t.Fatalf("plan omitted dependent bundle-ID change: %#v", plan.Changes)
+	}
+	if identityChange == nil {
+		t.Fatalf("plan treated a reference-dependent identity as a no-op: %#v", plan.Changes)
+	}
+	if identityChange.NewValue == nil || *identityChange.NewValue != "com.example.old" {
+		t.Fatalf("identity change = %#v, want literal requested value", identityChange)
+	}
+}
+
+func TestSigningPlanRevalidatesNoOpXCConfigReferenceAfterDependentChange(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	shared = "PRODUCT_BUNDLE_IDENTIFIER = com.example.old\r\nCODE_SIGN_IDENTITY = \"$(PRODUCT_BUNDLE_IDENTIFIER)\"\r\n" + shared
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"com.example.old",
+			"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	var identityChange, bundleChange *SigningSettingChange
+	for index := range plan.Changes {
+		change := &plan.Changes[index]
+		switch change.Setting {
+		case "CODE_SIGN_IDENTITY":
+			identityChange = change
+		case "PRODUCT_BUNDLE_IDENTIFIER":
+			bundleChange = change
+		}
+	}
+	if bundleChange == nil {
+		t.Fatalf("plan omitted dependent bundle-ID change: %#v", plan.Changes)
+	}
+	if identityChange == nil {
+		t.Fatalf("plan treated an xcconfig reference-dependent identity as a no-op: %#v", plan.Changes)
+	}
+	if identityChange.Source != "pbxproj" || identityChange.NewValue == nil || *identityChange.NewValue != "com.example.old" {
+		t.Fatalf("identity change = %#v, want a literal target-level value", identityChange)
+	}
+}
+
+func TestSigningPlanRevalidatesInheritedNoOpXCConfigReferenceAfterDependentChange(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	shared = "PRODUCT_BUNDLE_IDENTIFIER = com.example.old\r\nCODE_SIGN_IDENTITY = \"$(PRODUCT_BUNDLE_IDENTIFIER)\"\r\n" + shared
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+	// The direct assignment preserves the target's existing scope while
+	// inheriting the effective identity from Shared.xcconfig.
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
+		`CODE_SIGN_IDENTITY = "$(inherited)";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"com.example.old",
+			"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	var identityChange, bundleChange *SigningSettingChange
+	for index := range plan.Changes {
+		change := &plan.Changes[index]
+		switch change.Setting {
+		case "CODE_SIGN_IDENTITY":
+			identityChange = change
+		case "PRODUCT_BUNDLE_IDENTIFIER":
+			bundleChange = change
+		}
+	}
+	if bundleChange == nil {
+		t.Fatalf("plan omitted dependent bundle-ID change: %#v", plan.Changes)
+	}
+	if identityChange == nil {
+		t.Fatalf("plan treated an inherited reference-dependent identity as a no-op: %#v", plan.Changes)
+	}
+	if identityChange.Source != "pbxproj" || identityChange.NewValue == nil || *identityChange.NewValue != "com.example.old" {
+		t.Fatalf("identity change = %#v, want a literal target-level value", identityChange)
+	}
+}
+
+func TestSigningPlanRejectsBuildSettingReferenceModifiers(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	structured, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("openStructuredVersionProject() error = %v", err)
+	}
+	configuration, err := signingConfigurationFor(structured, "App", "Debug")
+	if err != nil {
+		t.Fatalf("signingConfigurationFor() error = %v", err)
+	}
+	resolver := newSigningSettingResolver(structured, nil, false)
+	_, _, err = resolver.expandSettingReferences(configuration, "$(MARKETING_VERSION:rfc1034identifier)", map[string]bool{})
+	if err == nil || !strings.Contains(err.Error(), "reference modifier") {
+		t.Fatalf("expandSettingReferences() error = %v, want unsupported modifier", err)
+	}
+}
+
+func TestSigningPlanDigestsProjectLevelXCConfigUsedForResolution(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	projectConfigPath := filepath.Join(projectRoot, "Configs", "Project.xcconfig")
+	if err := os.MkdirAll(filepath.Dir(projectConfigPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(config) error = %v", err)
+	}
+	if err := os.WriteFile(projectConfigPath, []byte("CODE_SIGN_STYLE = Automatic\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	fileReference := `
+		BBBBBBBBBBBBBBBBBBBBBBBB /* Project.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configs/Project.xcconfig; sourceTree = SOURCE_ROOT; };`
+	marker := "\t\t111111111111111111111111 /* Project object */ = {"
+	if !strings.Contains(contents, marker) {
+		t.Fatal("project fixture is missing project object marker")
+	}
+	contents = strings.Replace(contents, marker, fileReference+"\n"+marker, 1)
+	projectConfiguration := "999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = {}; name = Debug; };"
+	updatedConfiguration := "999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = BBBBBBBBBBBBBBBBBBBBBBBB; buildSettings = {}; name = Debug; };"
+	if !strings.Contains(contents, projectConfiguration) {
+		t.Fatal("project fixture is missing project Debug configuration")
+	}
+	contents = strings.Replace(contents, projectConfiguration, updatedConfiguration, 1)
+	if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got blockers %#v", plan.Blockers)
+	}
+	for _, file := range plan.Files {
+		if file.Path == projectConfigPath {
+			return
+		}
+	}
+	t.Fatalf("plan omitted project-level resolution xcconfig %s: %#v", projectConfigPath, plan.Files)
+}
+
+func TestOpenStructuredVersionProjectRejectsEscapingSymlinkBeforeParsing(t *testing.T) {
+	selectedRoot := t.TempDir()
+	outsideRoot := t.TempDir()
+	outsideProject := filepath.Join(outsideRoot, "Outside.xcodeproj")
+	if err := os.MkdirAll(outsideProject, 0o755); err != nil {
+		t.Fatalf("MkdirAll(outside project) error = %v", err)
+	}
+	// A parser error here proves that the project was opened before its
+	// operator-selected root was checked. The preflight must reject the
+	// escaping final symlink first.
+	if err := os.WriteFile(filepath.Join(outsideProject, "project.pbxproj"), []byte("not a project"), 0o644); err != nil {
+		t.Fatalf("WriteFile(outside project) error = %v", err)
+	}
+	selectedProject := filepath.Join(selectedRoot, "Selected.xcodeproj")
+	if err := os.Symlink(outsideProject, selectedProject); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	_, err := openStructuredVersionProject(selectedProject)
+	if err == nil || !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("openStructuredVersionProject() error = %v, want rooted symlink rejection", err)
+	}
+}
+
+func TestSigningPlanProtectsResolvedEntitlementsReference(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningDirectBuildSetting(t, pbxprojPath,
+		`ENTITLEMENTS_FILE = App.entitlements; CODE_SIGN_ENTITLEMENTS = "$(ENTITLEMENTS_FILE)";`)
+	entitlementsPath := filepath.Join(filepath.Dir(project), "App.entitlements")
+	if err := os.WriteFile(entitlementsPath, []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(entitlements) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want resolved entitlement reference accepted", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("resolved entitlement reference blocked plan: %#v", plan.Blockers)
+	}
+	structured, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("openStructuredVersionProject() error = %v", err)
+	}
+	paths, _, err := signingProjectInputPaths(structured, settingsPath, nil, []signingRequest{{
+		target: "App", configuration: "Debug",
+		settings: []signingDesiredSetting{{key: "CODE_SIGN_STYLE", value: stringPtr("manual")}},
+	}}, false)
+	if err != nil {
+		t.Fatalf("signingProjectInputPaths() error = %v", err)
+	}
+	foundEntitlements := false
+	for _, path := range paths {
+		if path == entitlementsPath {
+			foundEntitlements = true
+		}
+		if strings.Contains(path, "$(") || strings.Contains(path, "${") {
+			t.Fatalf("input path retained unresolved entitlement expression: %q", path)
+		}
+	}
+	if !foundEntitlements {
+		t.Fatalf("input paths omitted resolved entitlement input %s: %#v", entitlementsPath, paths)
 	}
 }

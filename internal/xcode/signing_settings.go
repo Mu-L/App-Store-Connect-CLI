@@ -30,8 +30,9 @@ const (
 )
 
 var (
-	signingTeamIDPattern   = regexp.MustCompile(`^[A-Z0-9]{10}$`)
-	signingBundleIDPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$`)
+	signingTeamIDPattern    = regexp.MustCompile(`^[A-Z0-9]{10}$`)
+	signingBundleIDPattern  = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$`)
+	signingReferencePattern = regexp.MustCompile(`\$\(([^):]+)(?::([^)]*))?\)|\$\{([^}:]+)(?::([^}]*))?\}`)
 )
 
 // signingInputError marks deterministic manifest or artifact-shape failures
@@ -320,6 +321,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	}
 	selectedIDs := make(map[string]bool, len(requests))
 	requestedSettings := make(map[string]map[string]bool, len(requests))
+	requestedValues := make(map[string]map[string]*string, len(requests))
 	for _, request := range requests {
 		configuration, configurationErr := signingConfigurationFor(project, request.target, request.configuration)
 		if configurationErr == nil {
@@ -327,8 +329,12 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			if requestedSettings[configuration.id] == nil {
 				requestedSettings[configuration.id] = make(map[string]bool)
 			}
+			if requestedValues[configuration.id] == nil {
+				requestedValues[configuration.id] = make(map[string]*string)
+			}
 			for _, setting := range request.settings {
 				requestedSettings[configuration.id][setting.key] = true
+				requestedValues[configuration.id][setting.key] = cloneSigningString(setting.value)
 			}
 		}
 	}
@@ -430,6 +436,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 				fileConsumers,
 				fileIdentities,
 				requestedSettings,
+				requestedValues,
 				uncertainConsumers,
 				opts.AllowExternalXCConfig,
 			)
@@ -502,11 +509,17 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	// and without a recorded digest that change would go unnoticed and the
 	// receipt would certify an effective value the project no longer produces.
 	resolutionInputs := make([]string, 0)
-	for configurationID, paths := range configFiles {
-		if !selectedIDs[configurationID] {
+	for _, configuration := range project.configurations {
+		if !selectedIDs[configuration.id] {
 			continue
 		}
-		resolutionInputs = append(resolutionInputs, paths...)
+		for current := configuration; current != nil; {
+			resolutionInputs = append(resolutionInputs, configFiles[current.id]...)
+			if current.projectLevel {
+				break
+			}
+			current = project.projectConfiguration(current.name)
+		}
 	}
 	sort.Strings(resolutionInputs)
 	for _, path := range resolutionInputs {
@@ -774,6 +787,7 @@ func inspectSigningCandidate(
 	fileConsumers map[string]map[string]bool,
 	fileIdentities map[string]string,
 	requestedSettings map[string]map[string]bool,
+	requestedValues map[string]map[string]*string,
 	uncertainConsumers bool,
 	allowExternal bool,
 ) (signingCandidate, string, string) {
@@ -796,6 +810,14 @@ func inspectSigningCandidate(
 		candidate.old = stringPtr(old)
 		candidate.resolution = "direct"
 		if signingValuesEqual(setting.value, candidate.old) {
+			if signingDirectValueDependsOnRequestedChange(configuration, setting.key, requestedValues[configuration.id], resolver) {
+				// The requested effective value currently happens to match the
+				// resolved direct assignment, but that assignment references a
+				// setting changed by this same plan. Materialize the requested
+				// value so the dependent edit cannot silently change this setting.
+				candidate.mode = "pbxproj"
+				return candidate, "", ""
+			}
 			// A direct assignment that still defers to $(inherited) keeps a live
 			// dependency on the xcconfig supplying that value. Retain it as a
 			// no-op consumer so shared-file resolution can see the disagreement
@@ -808,6 +830,23 @@ func inspectSigningCandidate(
 					return candidate, signingSettingBlocker(configuration, setting.key, assignmentErr), ""
 				}
 				if len(assignmentFiles) > 0 {
+					depends, dependencyErr := signingXCConfigValueDependsOnRequestedChange(
+						configuration,
+						setting.key,
+						assignmentFiles,
+						requestedValues[configuration.id],
+						resolver,
+					)
+					if dependencyErr != nil {
+						return candidate, signingSettingBlocker(configuration, setting.key, dependencyErr), ""
+					}
+					if depends {
+						// The direct assignment inherits a lower xcconfig value
+						// that depends on another requested change. Preserve this
+						// configuration's current effective value explicitly.
+						candidate.mode = "pbxproj"
+						return candidate, "", ""
+					}
 					candidate.mode = "xcconfig"
 					candidate.paths = append(candidate.paths, assignmentFiles...)
 					candidate.noOp = true
@@ -838,6 +877,24 @@ func inspectSigningCandidate(
 	}
 	if signingValuesEqual(setting.value, candidate.old) {
 		if len(assignmentFiles) > 0 && setting.value != nil {
+			depends, dependencyErr := signingXCConfigValueDependsOnRequestedChange(
+				configuration,
+				setting.key,
+				assignmentFiles,
+				requestedValues[configuration.id],
+				resolver,
+			)
+			if dependencyErr != nil {
+				return candidate, signingSettingBlocker(configuration, setting.key, dependencyErr), ""
+			}
+			if depends {
+				// The requested effective value currently happens to match the
+				// resolved xcconfig value, but that assignment references a
+				// setting changed by this same plan. Materialize the requested
+				// value so the dependent edit cannot silently change this setting.
+				candidate.mode = "pbxproj"
+				return candidate, "", ""
+			}
 			candidate.mode = "xcconfig"
 			candidate.paths = append(candidate.paths, assignmentFiles...)
 			candidate.noOp = true
@@ -902,6 +959,97 @@ func signingDirectValueInherits(configuration *versionConfiguration, setting str
 		}
 	}
 	return false
+}
+
+// signingDirectValueDependsOnRequestedChange reports whether a direct
+// assignment references another setting whose requested value changes from
+// the value currently resolved in this configuration. A matching no-op must
+// be materialized in that case; otherwise a later dependent edit can change
+// the effective value of the supposedly untouched setting.
+func signingDirectValueDependsOnRequestedChange(
+	configuration *versionConfiguration,
+	setting string,
+	settingValues map[string]*string,
+	resolver *signingSettingResolver,
+) bool {
+	if configuration == nil || resolver == nil || len(settingValues) == 0 {
+		return false
+	}
+	for _, key := range matchingBuildSettingKeys(configuration.buildSettings, setting) {
+		value, ok := configuration.buildSettings[key].(string)
+		if !ok {
+			continue
+		}
+		matches := signingReferencePattern.FindAllStringSubmatch(value, -1)
+		for _, match := range matches {
+			name := match[1]
+			if name == "" {
+				name = match[3]
+			}
+			if name == "" || name == "inherited" || name == setting {
+				continue
+			}
+			desired, requested := settingValues[name]
+			if !requested {
+				continue
+			}
+			current, _, err := resolver.resolveSetting(configuration, name)
+			if err != nil || !signingValuesEqual(stringPtr(current), desired) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// signingXCConfigValueDependsOnRequestedChange reports whether an assignment
+// that currently supplies a matching no-op value references another setting
+// whose requested value changes. Rewriting that other assignment would change
+// the effective value of this setting unless the no-op is materialized at the
+// target level.
+func signingXCConfigValueDependsOnRequestedChange(
+	configuration *versionConfiguration,
+	setting string,
+	paths []string,
+	settingValues map[string]*string,
+	resolver *signingSettingResolver,
+) (bool, error) {
+	if configuration == nil || resolver == nil || len(paths) == 0 || len(settingValues) == 0 {
+		return false, nil
+	}
+	for _, path := range paths {
+		data, err := resolver.readXCConfig(path)
+		if err != nil {
+			return false, fmt.Errorf("read xcconfig %s while checking %s dependencies: %w", path, setting, err)
+		}
+		document, err := parseXCConfig(data)
+		if err != nil {
+			return false, fmt.Errorf("parse %s while checking %s dependencies: %w", path, setting, err)
+		}
+		for _, assignment := range document.assignments {
+			if assignment.baseKey != setting {
+				continue
+			}
+			for _, match := range signingReferencePattern.FindAllStringSubmatch(assignment.value, -1) {
+				name := match[1]
+				if name == "" {
+					name = match[3]
+				}
+				if name == "" || name == "inherited" || name == setting {
+					continue
+				}
+				desired, requested := settingValues[name]
+				if !requested {
+					continue
+				}
+				current, _, resolveErr := resolver.resolveSetting(configuration, name)
+				if resolveErr != nil || !signingValuesEqual(stringPtr(current), desired) {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
 }
 
 func signingValueInherits(value string) bool {
@@ -1105,10 +1253,9 @@ func (resolver *signingSettingResolver) resolveConfigurationXCConfig(
 }
 
 func (resolver *signingSettingResolver) expandSettingReferences(configuration *versionConfiguration, value string, stack map[string]bool) (string, string, error) {
-	referencePattern := regexp.MustCompile(`\$\(([^):]+)(?::[^)]*)?\)|\$\{([^}:]+)(?::[^}]*)?\}`)
 	resolved := value
 	for iteration := 0; iteration < 32; iteration++ {
-		match := referencePattern.FindStringSubmatchIndex(resolved)
+		match := signingReferencePattern.FindStringSubmatchIndex(resolved)
 		if match == nil {
 			return strings.TrimSpace(resolved), resolver.project.pbxprojPath, nil
 		}
@@ -1116,7 +1263,10 @@ func (resolver *signingSettingResolver) expandSettingReferences(configuration *v
 		if match[2] >= 0 {
 			name = resolved[match[2]:match[3]]
 		} else {
-			name = resolved[match[4]:match[5]]
+			name = resolved[match[6]:match[7]]
+		}
+		if match[4] >= 0 || match[8] >= 0 {
+			return "", "", fmt.Errorf("build-setting reference modifier for %s is unsupported", name)
 		}
 		if stack[name] {
 			return "", "", fmt.Errorf("build-setting reference cycle at %s", name)
@@ -1425,6 +1575,13 @@ func signingProjectInputPaths(
 	appendEntitlements := func(value string) error {
 		value = strings.TrimSpace(value)
 		if value == "" {
+			return nil
+		}
+		// Raw project/xcconfig scans can encounter the expression that the
+		// authorization-aware resolver already expanded. Do not turn that
+		// expression into a synthetic filesystem path; a selected unresolved
+		// expression is still reported by the resolver above.
+		if strings.Contains(value, "$(") || strings.Contains(value, "${") {
 			return nil
 		}
 		if validateSigningRelativePath(value) == nil {
@@ -1738,7 +1895,7 @@ func verifySigningPlanSources(plan *SigningPlan, writes []preparedVersionWrite) 
 	}
 	for _, file := range plan.Files {
 		if write, ok := staged[signingLexicalPathKey(file.Path)]; ok {
-			current, _, err := readRegularVersionFile(write)
+			current, _, err := readRegularVersionFile(&write)
 			if err != nil {
 				return fmt.Errorf("signing plan is stale; read source %s: %w", file.Path, err)
 			}
@@ -1776,7 +1933,7 @@ func verifySigningPlanSourcesBeforeReceipt(plan *SigningPlan, committed []prepar
 	}
 	for _, file := range plan.Files {
 		if write, ok := committedByPath[signingLexicalPathKey(file.Path)]; ok {
-			current, _, err := readRegularVersionFile(write)
+			current, _, err := readRegularVersionFile(&write)
 			if err != nil {
 				return fmt.Errorf("read written source %s: %w", file.Path, err)
 			}

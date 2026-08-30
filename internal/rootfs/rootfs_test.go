@@ -598,6 +598,7 @@ func TestCreateNewFileAtomicWritesExactMode(t *testing.T) {
 func TestCreateNewFileAtomicWithInfoReturnsPublishedIdentity(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
 	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
 	if err != nil {
 		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v", err)
@@ -617,6 +618,7 @@ func TestCreateNewFileAtomicWithInfoReturnsPublishedIdentity(t *testing.T) {
 func TestCreateNewFileAtomicWithInfoRejectsPublishedIdentityReplacement(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
 	if err := os.WriteFile(filepath.Join(dir, "racer-source"), []byte("racer"), 0o600); err != nil {
 		t.Fatalf("write racer source: %v", err)
 	}
@@ -634,8 +636,8 @@ func TestCreateNewFileAtomicWithInfoRejectsPublishedIdentityReplacement(t *testi
 	if err == nil {
 		t.Fatal("CreateNewFileAtomicWithInfo() succeeded after the published inode was replaced")
 	}
-	if info == nil {
-		t.Fatal("CreateNewFileAtomicWithInfo() did not return the staged identity on post-publication failure")
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned a bare staged snapshot without a retained destination identity")
 	}
 	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "racer" {
 		t.Fatalf("replacement content = %q, want racer", got)
@@ -647,8 +649,446 @@ func TestCreateNewFileAtomicWithInfoRejectsPublishedIdentityReplacement(t *testi
 	if statErr != nil {
 		t.Fatalf("Stat(receipt) error = %v", statErr)
 	}
-	if os.SameFile(info, diskInfo) {
-		t.Fatal("returned identity incorrectly identified the racing replacement")
+	if diskInfo == nil {
+		t.Fatal("Stat(receipt) returned a nil replacement identity")
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoRechecksActualPublishedIdentity(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	const content = "complete"
+	if err := os.WriteFile(filepath.Join(dir, "racer-source"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write racer source: %v", err)
+	}
+	root.afterPublicationOpenForTest = func(parent *os.Root, name string) {
+		if err := parent.Rename(name, "published-original"); err != nil {
+			t.Fatalf("move original publication: %v", err)
+		}
+		if err := parent.Rename("racer-source", name); err != nil {
+			t.Fatalf("install same-content replacement: %v", err)
+		}
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte(content), 0o600)
+	if err == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() succeeded after same-content replacement")
+	}
+	if info == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned no installed identity")
+	}
+	originalInfo, err := os.Stat(filepath.Join(dir, "published-original"))
+	if err != nil {
+		t.Fatalf("stat original publication: %v", err)
+	}
+	if !os.SameFile(info, originalInfo) {
+		t.Fatal("returned identity does not identify the originally installed inode")
+	}
+	replacementInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
+	if err != nil {
+		t.Fatalf("stat replacement: %v", err)
+	}
+	if os.SameFile(info, replacementInfo) {
+		t.Fatal("returned identity incorrectly identified same-content replacement")
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoReturnsNilBeforeDestinationIdentity(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	const content = "complete"
+	root.simulateWindowsCloseForTest = true
+	if err := os.WriteFile(filepath.Join(dir, "racer-source"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write racer source: %v", err)
+	}
+	root.beforePublicationOpenForTest = func(parent *os.Root, name string) {
+		if err := parent.Rename(name, "published-original"); err != nil {
+			t.Fatalf("move original publication: %v", err)
+		}
+		if err := parent.Rename("racer-source", name); err != nil {
+			t.Fatalf("install same-content replacement: %v", err)
+		}
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte(content), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "identity changed before reopen") {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want reopen identity uncertainty", err)
+	}
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned a bare staged snapshot without a retained destination identity")
+	}
+	if got := mustRead(t, filepath.Join(dir, "published-original")); got != content {
+		t.Fatalf("original published content = %q, want staged bytes", got)
+	}
+	replacementInfo, statErr := os.Stat(filepath.Join(dir, "receipt.json"))
+	if statErr != nil {
+		t.Fatalf("stat replacement: %v", statErr)
+	}
+	if replacementInfo == nil {
+		t.Fatal("Stat(replacement) returned a nil identity")
+	}
+}
+
+func TestRemoveFileIfSamePreservesReplacementAfterQuarantine(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	const content = "receipt"
+	if err := os.WriteFile(filepath.Join(dir, "receipt.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "racer-source"), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(filepath.Join(dir, "receipt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.afterConditionalQuarantineForTest = func(parent *os.Root, _, name string) {
+		if err := parent.Rename("racer-source", name); err != nil {
+			t.Fatalf("install replacement after quarantine: %v", err)
+		}
+	}
+
+	err = root.RemoveFileIfSame("receipt.json", expected, []byte(content))
+	if err == nil || !strings.Contains(err.Error(), "replaced") {
+		t.Fatalf("RemoveFileIfSame() error = %v, want replacement uncertainty", err)
+	}
+	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "replacement" {
+		t.Fatalf("replacement content = %q, want preserved replacement", got)
+	}
+	if matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*")); globErr != nil {
+		t.Fatal(globErr)
+	} else if len(matches) != 0 {
+		t.Fatalf("quarantine files remain after replacement preservation: %v", matches)
+	}
+}
+
+func TestRemoveFileIfSamePreservesReplacementBeforeQuarantine(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	const content = "receipt"
+	if err := os.WriteFile(filepath.Join(dir, "receipt.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "racer-source"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(filepath.Join(dir, "receipt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.beforeConditionalQuarantineForTest = func(parent *os.Root, name string) {
+		if err := parent.Rename(name, "published-original"); err != nil {
+			t.Fatalf("move original before quarantine: %v", err)
+		}
+		if err := parent.Rename("racer-source", name); err != nil {
+			t.Fatalf("install same-content replacement before quarantine: %v", err)
+		}
+	}
+
+	err = root.RemoveFileIfSame("receipt.json", expected, []byte(content))
+	if err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("RemoveFileIfSame() error = %v, want pre-quarantine identity uncertainty", err)
+	}
+	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != content {
+		t.Fatalf("replacement content = %q, want preserved replacement", got)
+	}
+	if got := mustRead(t, filepath.Join(dir, "published-original")); got != content {
+		t.Fatalf("original content = %q, want preserved original", got)
+	}
+}
+
+func TestRemoveFileIfSameReportsQuarantineDisappearanceBeforeRemoval(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	const content = "receipt"
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.beforeConditionalQuarantineRemovalForTest = func(parent *os.Root, quarantineName string) {
+		if err := parent.Remove(quarantineName); err != nil {
+			t.Fatalf("remove quarantined entry in race hook: %v", err)
+		}
+	}
+
+	err = root.RemoveFileIfSame("receipt.json", expected, []byte(content))
+	if err == nil || !strings.Contains(err.Error(), "recheck quarantined file") {
+		t.Fatalf("RemoveFileIfSame() error = %v, want disappearance uncertainty", err)
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination after quarantine disappearance = %v, want absent", statErr)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("quarantine entries remain after injected disappearance: %v", matches)
+	}
+}
+
+func TestRemoveFileIfSamePreservesReplacementBetweenQuarantineCheckAndRemoval(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	const content = "receipt"
+	const replacement = "replacement"
+	path := filepath.Join(dir, "receipt.json")
+	racerPath := filepath.Join(dir, "racer-source")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(racerPath, []byte(replacement), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replacementQuarantine string
+	root.beforeConditionalQuarantineRemovalForTest = func(parent *os.Root, quarantineName string) {
+		replacementQuarantine = quarantineName
+		if err := parent.Rename(quarantineName, "quarantine-original"); err != nil {
+			t.Fatalf("retain original quarantine entry: %v", err)
+		}
+		if err := parent.Rename("racer-source", quarantineName); err != nil {
+			t.Fatalf("install replacement quarantine entry: %v", err)
+		}
+	}
+
+	err = root.RemoveFileIfSame("receipt.json", expected, []byte(content))
+	if err == nil || !strings.Contains(err.Error(), "identity changed before removal") {
+		t.Fatalf("RemoveFileIfSame() error = %v, want identity uncertainty", err)
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination after quarantine race = %v, want absent", statErr)
+	}
+	if got := mustRead(t, filepath.Join(dir, "quarantine-original")); got != content {
+		t.Fatalf("original quarantine content = %q, want original receipt", got)
+	}
+	if replacementQuarantine == "" {
+		t.Fatal("race hook did not capture replacement quarantine name")
+	}
+	if got := mustRead(t, filepath.Join(dir, replacementQuarantine)); got != replacement {
+		t.Fatalf("replacement quarantine content = %q, want replacement", got)
+	}
+}
+
+func TestWriteFileIfSamePreservesReplacementAfterQuarantine(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "settings.xcconfig"), []byte("new"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "racer-source"), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(filepath.Join(dir, "settings.xcconfig"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.afterConditionalQuarantineForTest = func(parent *os.Root, _, name string) {
+		if err := parent.Rename("racer-source", name); err != nil {
+			t.Fatalf("install replacement after quarantine: %v", err)
+		}
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("old"), 0o640, expected, []byte("new"), true)
+	if err == nil || !strings.Contains(err.Error(), "destination changed") {
+		t.Fatalf("WriteFileIfSame() error = %v, want replacement uncertainty", err)
+	}
+	if got := mustRead(t, filepath.Join(dir, "settings.xcconfig")); got != "replacement" {
+		t.Fatalf("replacement content = %q, want preserved replacement", got)
+	}
+}
+
+func TestWriteFileIfSameLeavesQuarantineWhenRestoreSeesReplacement(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("new"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.beforeConditionalPublishForTest = func(parent *os.Root, name string) {
+		if err := parent.WriteFile(name, []byte("replacement"), 0o600); err != nil {
+			t.Fatalf("install replacement before publish: %v", err)
+		}
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("old"), 0o640, expected, []byte("new"), true)
+	if err == nil || !strings.Contains(err.Error(), "was left in place") {
+		t.Fatalf("WriteFileIfSame() error = %v, want preserved quarantine diagnostic", err)
+	}
+	if got := mustRead(t, path); got != "replacement" {
+		t.Fatalf("replacement content = %q, want preserved replacement", got)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("quarantine count = %d, want one recoverable quarantine: %v", len(matches), matches)
+	}
+	if got := mustRead(t, matches[0]); got != "new" {
+		t.Fatalf("quarantine content = %q, want original replacement", got)
+	}
+}
+
+func TestWriteFileIfSameLeavesQuarantineAfterPublishedOpenFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("new"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.afterConditionalPublicationForTest = func(parent *os.Root, name string) {
+		if err := parent.Remove(name); err != nil {
+			t.Fatalf("remove published file in race hook: %v", err)
+		}
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("old"), 0o640, expected, []byte("new"), true)
+	if err == nil || !strings.Contains(err.Error(), "after publication uncertainty") {
+		t.Fatalf("WriteFileIfSame() error = %v, want published-open uncertainty", err)
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination after published-open failure = %v, want absent", statErr)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("quarantine count = %d, want one recoverable quarantine: %v", len(matches), matches)
+	}
+	if got := mustRead(t, matches[0]); got != "new" {
+		t.Fatalf("quarantine content = %q, want original bytes", got)
+	}
+}
+
+func TestWriteFileIfSameLeavesQuarantineAfterPublishedStatFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("new"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.afterConditionalPublicationOpenForTest = func(_ *os.Root, _ string, file *os.File) {
+		if err := file.Close(); err != nil {
+			t.Fatalf("close published file in stat-failure hook: %v", err)
+		}
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("old"), 0o640, expected, []byte("new"), true)
+	if err == nil || !strings.Contains(err.Error(), "stat published file") || !strings.Contains(err.Error(), "after publication uncertainty") {
+		t.Fatalf("WriteFileIfSame() error = %v, want published-stat uncertainty", err)
+	}
+	if _, statErr := os.Lstat(path); statErr != nil {
+		t.Fatalf("destination after published-stat failure = %v, want published file", statErr)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("quarantine count = %d, want one recoverable quarantine: %v", len(matches), matches)
+	}
+	if got := mustRead(t, matches[0]); got != "new" {
+		t.Fatalf("quarantine content = %q, want original bytes", got)
+	}
+}
+
+func TestWriteFileIfSamePreservesQuarantineAfterPublishedIdentityFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	root.simulateWindowsCloseForTest = true
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("new"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "racer-source"), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.afterConditionalPublicationForTest = func(parent *os.Root, name string) {
+		if err := parent.Rename(name, "published-original"); err != nil {
+			t.Fatalf("retain original publication: %v", err)
+		}
+		if err := parent.Rename("racer-source", name); err != nil {
+			t.Fatalf("install replacement publication: %v", err)
+		}
+	}
+
+	info, err := root.WriteFileIfSameWithInfo("settings.xcconfig", []byte("old"), 0o640, expected, []byte("new"), true)
+	if err == nil || !strings.Contains(err.Error(), "after publication uncertainty") || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("WriteFileIfSameWithInfo() error = %v, want identity uncertainty with quarantine preservation", err)
+	}
+	if info != nil {
+		t.Fatal("WriteFileIfSameWithInfo() returned a bare staged snapshot without a retained destination identity")
+	}
+	if got := mustRead(t, path); got != "replacement" {
+		t.Fatalf("replacement content = %q, want preserved replacement", got)
+	}
+	if got := mustRead(t, filepath.Join(dir, "published-original")); got != "old" {
+		t.Fatalf("original published content = %q, want staged bytes", got)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("quarantine count = %d, want one recoverable quarantine: %v", len(matches), matches)
+	}
+	if got := mustRead(t, matches[0]); got != "new" {
+		t.Fatalf("quarantine content = %q, want original bytes", got)
+	}
+}
+
+func TestWriteFileIfSameRestoresOriginalWhenUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("new"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.WriteFileIfSame("settings.xcconfig", []byte("old"), 0o640, expected, []byte("new"), true); err != nil {
+		t.Fatalf("WriteFileIfSame() error = %v", err)
+	}
+	if got := mustRead(t, path); got != "old" {
+		t.Fatalf("restored content = %q, want old", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("restored mode = %o, want 640", got)
 	}
 }
 

@@ -249,14 +249,14 @@ func TestSetVersionRefusesXCConfigParentSwapAfterValidation(t *testing.T) {
 
 	swapped := false
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) error {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
 		if write.path == sharedPath && !swapped {
 			swapped = true
 			if err := os.Rename(configsDir, originalConfigsDir); err != nil {
-				return err
+				return nil, err
 			}
 			if err := os.Symlink(externalDir, configsDir); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		return atomicWritePreparedVersionFile(write, data)
@@ -300,14 +300,14 @@ func TestSetVersionRefusesXcodeprojParentSwapAfterValidation(t *testing.T) {
 
 	swapped := false
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) error {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
 		if write.path == pbxprojPath && !swapped {
 			swapped = true
 			if err := os.Rename(projectPath, originalProjectPath); err != nil {
-				return err
+				return nil, err
 			}
 			if err := os.Symlink(externalProjectPath, projectPath); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		return atomicWritePreparedVersionFile(write, data)
