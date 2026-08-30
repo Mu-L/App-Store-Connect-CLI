@@ -57,9 +57,9 @@ For every target that has a rebased claim:
 
 1. Require a concrete existing `application-identifier` whose suffix exactly equals that target's bundle identifier.
 2. Extract `oldPrefix` from that value and validate it with the existing identity validation rules.
-3. Resolve the replacement profile's `application-identifier` to a concrete planned value. An exact value must be `<newPrefix>.<bundle-id>`; the only permitted wildcard form is exactly `<newPrefix>.*`, which is materialized as `<newPrefix>.<bundle-id>`. Derive `newPrefix` from that concrete planned value and require it to equal the profile's `ApplicationIdentifierPrefix`. A wildcard is authorization-only; the generated signed document must contain the concrete value.
+3. Require the replacement profile's `application-identifier` to be the exact concrete `<newPrefix>.<bundle-id>` value already required by the current `signing resign` profile parser. Derive `newPrefix` from that value and require it to equal the profile's `ApplicationIdentifierPrefix`. Wildcards may authorize specific optional entitlement values below, but wildcard application identifiers remain unsupported and are never materialized by this feature.
 4. Require the profile's application identifier, team identifier, and certificate identity to pass the normal #2241 checks.
-5. Derive each candidate transformed value only from the target's own `oldPrefix` and the replacement profile's `newPrefix`.
+5. Derive each generic prefix-only candidate transformed value only from the target's own `oldPrefix` and the replacement profile's `newPrefix`. The KVS and graph rules below use their own authenticated destination sources instead of this generic substitution.
 
 No v1 flag accepts user-supplied old or new prefixes. An override would make it possible to rewrite an unrelated prefix and would need a separate strict-input design. If a future override is considered, it must match the target's observed prefix and the profile's authenticated prefix rather than replacing those observations.
 
@@ -110,7 +110,11 @@ The suffix is copied as an opaque identifier after key-specific structural valid
 newPrefix + "." + same-suffix
 ```
 
-The KVS entitlement uses its own transfer-aware transformer. Its prefix can intentionally differ from both the App ID prefix and Team ID, including after an app transfer. If the replacement profile authorizes the existing concrete KVS value, preserve it. Otherwise the replacement profile's KVS entitlement must expose exactly one usable destination prefix through an exact value with the same suffix or a single valid terminal-wildcard pattern. Rewrite only that prefix, preserve the suffix exactly, and require the resulting concrete value to pass normal profile authorization. Missing, conflicting, malformed, or suffix-incompatible profile values fail closed. This feature never guesses the KVS prefix from another entitlement and warns that changing it selects a different KVS namespace.
+The KVS entitlement uses its own transfer-aware scalar parser. Require valid UTF-8 and exactly one non-empty prefix segment before the first dot plus a non-empty suffix after it; reject leading or trailing whitespace, any Unicode whitespace or control code point, `*`, `/`, `\\`, NUL, and unsupported types. The existing value comes only from the target's signed-entitlement document inventoried by the normal pipeline, never from the manifest or a user-supplied prefix. Its prefix can intentionally differ from both the App ID prefix and Team ID, including after an app transfer.
+
+If the replacement profile authorizes the existing full concrete KVS value, preserve it exactly so a transfer can retain its storage namespace. Otherwise v1 requires the replacement profile's KVS entitlement to be one exact concrete value with the same validated suffix. That exact profile value is authoritative: rewrite only the prefix, then run normal profile authorization. A wildcard may authorize a candidate but cannot select the destination KVS namespace, so an unauthorized old value plus only wildcard KVS authorization fails closed. Missing, conflicting, malformed, or suffix-incompatible profile values also fail closed. The opt-in flag help and command documentation must state that changing the KVS value selects a different namespace and can make existing data inaccessible; no additional interactive prompt is introduced.
+
+Plan KVS across the complete target graph. Every occurrence of one old full KVS value must resolve to the same planned full value. If the main app and an extension share an old KVS value but their replacement profiles preserve or propose different values, reject the whole IPA before mutation rather than splitting a shared namespace.
 
 For an array, apply the same rule to every element. First preserve any concrete value that the replacement profile already authorizes exactly or by a valid entitlement wildcard. Only an unauthorized value with the exact `oldPrefix.` prefix is a rebase candidate. A remaining third-prefix or unprefixed value, empty suffix, wildcard source value, non-string element, or ambiguous grammar fails closed. There are no silent partial rewrites.
 
@@ -120,7 +124,7 @@ Preserve array order, element type, length, and duplicates exactly. Deduplicatio
 
 ### Profile authorization after transformation
 
-The pipeline must first calculate the complete candidate entitlement document, then ask the existing profile authorization routine whether each candidate is permitted. Authorization is checked against the transformed value, not the old value. Derive `newPrefix` from the profile's concrete planned application identifier; entitlement wildcard entries are authorization patterns only. Permit only a terminal wildcard with a non-empty dotted prefix and no other `*`. Multiple valid patterns are not ambiguous: a concrete candidate is authorized when at least one pattern permits it. Reject malformed patterns or a concrete candidate with no permitting exact value or pattern. A wildcard must never be emitted in the signed document.
+The pipeline must first calculate the complete candidate entitlement document, then ask the existing profile authorization routine whether each candidate is permitted. Authorization is checked against the transformed value, not the old value. Derive `newPrefix` from the profile's concrete planned application identifier; entitlement wildcard entries are authorization patterns only. Permit only a literal terminal wildcard with a non-empty dotted prefix and no other `*`, and require the concrete candidate to contain at least one character after that dotted prefix. Apply this validation to a scalar profile value and recursively to every string in a profile array before matching; malformed types or patterns make the claim unusable rather than being skipped. Multiple valid patterns are not ambiguous: a concrete candidate is authorized when at least one pattern permits it. Reject malformed patterns or a concrete candidate with no permitting exact value or pattern. A wildcard must never be emitted in the signed document.
 
 The following cases all fail closed:
 
@@ -174,13 +178,13 @@ The implementation should make the following phases explicit:
 
 The verification comparison must use exact generated documents, not profile-subset semantics. A profile wildcard authorizes a concrete value; it does not make a different signed value acceptable. The post-sign verifier must remain read-only and must not call a preparation function that writes temporary files.
 
-Rewrite records are collected from the plan, not reconstructed from logs or from a second potentially different parse of the packed IPA. Sort records by target relative path, allowlisted key order, and array element index. This makes JSON, table, Markdown, tests, and retries reproducible.
+Rewrite records are collected from the plan, not reconstructed from logs or from a second potentially different parse of the packed IPA. One canonical comparator orders the flattened records by target relative path, bundle identifier, allowlisted key rank, scalar-before-array kind, zero-based array element index, old value, and new value. The index is considered only for array records; a scalar does not receive a synthetic index. Build one sorted slice with this comparator and pass it unchanged to JSON, table, and Markdown renderers rather than sorting separately. This makes output independent of map iteration and keeps all formats, tests, and retries reproducible.
 
 ## Result and audit output
 
 The current `signing resign` command emits a structured `SigningResignResult`; it does not write a separate receipt file. This feature should extend that result additively rather than introduce a second persistence format or an overwrite-prone receipt flag.
 
-When `--rebase-team-claims` is enabled, add a top-level flattened `entitlementRewrites` array, present even when no values changed. Omit the field entirely when the flag is absent so existing structured output keeps its shape. The array contains only automatic changes made by the flag; normal profile-derived values such as application identifiers, team identifiers, and `get-task-allow` are not rebase records. One record represents one scalar rewrite or one array element, so mixed values and ordering are unambiguous:
+When `--rebase-team-claims` is enabled, add a top-level flattened `entitlementRewrites` array, present even when no values changed. Omit the field entirely when the flag is absent so existing structured output keeps its shape. Represent presence explicitly in Go with a pointer to a slice (or an equivalent custom marshaler): nil means the flag was absent and omits the field, while a non-nil pointer to an empty slice emits `[]`. Renderers use the same presence distinction. The array contains only automatic changes made by the flag; normal profile-derived values such as application identifiers, team identifiers, and `get-task-allow` are not rebase records. One record represents one scalar rewrite or one array element, so mixed values and ordering are unambiguous:
 
 ```json
 {
@@ -241,7 +245,7 @@ Tests should begin with the smallest failing assertion at the command or planner
 
 ### Prefix and allowlist behavior
 
-- `TestBuildSigningResignEntitlementsRequiresExplicitRebaseOptIn`: old-prefix keychain and key-value claims fail without the flag and transform with it.
+- `TestBuildSigningResignEntitlementsRequiresExplicitRebaseOptIn`: an old-prefix keychain claim and an exact-profile-destination KVS claim fail without the flag and transform with it.
 - `TestRebaseSigningResignClaimUsesProfileApplicationIdentifierPrefix`: a legacy source prefix and a different replacement Team ID still use the profile App ID prefix for keychain claims.
 - `TestRebaseSigningResignKVSUsesProfileKVSPrefix`: KVS preserves an authorized transfer prefix and otherwise uses only the unambiguous prefix authenticated by the replacement profile's KVS entitlement.
 - `TestRebaseSigningResignClaimRejectsUnauthorizedThirdPrefix`: an unauthorized third prefix fails closed, while an unchanged value already authorized by the replacement profile is preserved.
@@ -255,7 +259,7 @@ Tests should begin with the smallest failing assertion at the command or planner
 
 - `TestRebaseSigningResignClaimRequiresReplacementProfileAuthorization`: wildcard profile authorization accepts a concrete rebased value; concrete profiles require exact membership.
 - A missing profile key, non-authorized transformed value, wildcard-only required identity, malformed wildcard, and candidate matching no valid profile pattern each fail before signing.
-- The wildcard regression fixture uses old-prefix keychain and ubiquity-KV values with a `NEWPREFIX.*` replacement profile, proving no-flag refusal and opt-in concrete rewriting rather than reusing already-new values.
+- The wildcard regression fixture uses an old-prefix keychain value with `NEWPREFIX.*` profile authorization, proving no-flag refusal and opt-in concrete rewriting rather than reusing an already-new value. Its KVS fixture separately uses an exact concrete profile destination because a wildcard cannot select a KVS namespace.
 - `TestPrepareSigningResignTreePlansAllRewritesBeforeMutation`: a later target or edge failure leaves no generated entitlement, embedded profile, or output-tree mutation.
 - `TestRebaseSigningResignRewriteOrderingIsStable`: map iteration order cannot change records or generated documents.
 - `TestRebaseSigningResignPostSignDocumentMatchesRewrittenEntitlements`: verification compares the exact concrete transformed document and rejects a different authorized subset.
