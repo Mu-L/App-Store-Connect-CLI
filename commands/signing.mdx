@@ -167,6 +167,7 @@ The command does not overwrite output files. This prevents a failed write from s
 | `MAC_APP_DIRECT` | Developer ID distribution | Developer ID Application | No |
 | `MAC_CATALYST_APP_STORE` | Mac Catalyst App Store | Mac distribution | No |
 | `MAC_CATALYST_APP_DEVELOPMENT` | Mac Catalyst development | Mac development | Yes |
+| `MAC_CATALYST_APP_DIRECT` | Mac Catalyst Developer ID distribution | Developer ID Application | No |
 
 Use `--certificate-type` only when the inferred type is not the one you need.
 
@@ -277,7 +278,7 @@ asc signing sync push \
 
 `--private-key` accepts RSA or EC PEM keys and always requires the certificate fingerprint. The CLI checks the private key's public half against the selected active, unexpired App Store Connect certificate and the certificate embedded in the profile.
 
-Private identity sync does not yet support `MAC_APP_DIRECT` or `MAC_CATALYST_APP_DIRECT`. Certificate-and-profile-only sync still works for those types when `--identity` and `--private-key` are omitted.
+Private identity sync supports `MAC_APP_DIRECT` and `MAC_CATALYST_APP_DIRECT` with the same protected `--identity` or `--private-key` inputs. The command requires the exact active API profile type, accepts associated Developer ID Application certificates from either supported generation, and verifies the local private key, API certificate, embedded profile certificate, signed macOS platform and all-device claims, team, bundle ID, and signed profile as one identity before publication.
 
 ### Sync an app and embedded targets together
 
