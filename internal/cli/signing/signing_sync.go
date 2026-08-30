@@ -70,7 +70,10 @@ Examples:
     --repo git@github.com:team/certs.git --password-file ~/.config/asc/signing-sync-password
 
   asc signing sync pull --repo git@github.com:team/certs.git --password-file ~/.config/asc/signing-sync-password \
-    --output-dir ./signing`,
+    --output-dir ./signing
+
+  asc signing sync pull --repo git@github.com:team/certs.git --bundle-id com.example.app \
+    --profile-type IOS_APP_STORE --password-file ~/.config/asc/signing-sync-password --output-dir ./signing`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
@@ -486,6 +489,9 @@ func syncPullCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("pull", flag.ExitOnError)
 
 	repoURL := fs.String("repo", "", "Git repo URL (required)")
+	bundleID := fs.String("bundle-id", "", "[experimental] Decrypt only one bundle target (requires --profile-type; mutually exclusive with --targets-file)")
+	targetsFile := fs.String("targets-file", "", "[experimental] Decrypt only the 1-32 bundle targets in a root-relative JSON file (requires --profile-type; mutually exclusive with --bundle-id)")
+	profileType := fs.String("profile-type", "", "[experimental] Profile type for --bundle-id or --targets-file")
 	password := fs.String("password", "", "Deprecated: decryption password (or ASC_MATCH_PASSWORD env); use --password-file")
 	passwordFile := fs.String("password-file", "", "[experimental] Protected file containing the repository encryption password")
 	branch := fs.String("branch", "main", "Git branch")
@@ -494,7 +500,7 @@ func syncPullCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "pull",
-		ShortUsage: "asc signing sync pull --repo URL [--password-file PATH] [--output-dir DIR]",
+		ShortUsage: "asc signing sync pull --repo URL [--bundle-id ID | --targets-file PATH] [--profile-type TYPE] [--password-file PATH] [--output-dir DIR]",
 		ShortHelp:  "Pull and decrypt signing assets from git.",
 		FlagSet:    fs,
 		UsageFunc:  shared.DefaultUsageFunc,
@@ -506,6 +512,45 @@ func syncPullCommand() *ffcli.Command {
 			repo := strings.TrimSpace(*repoURL)
 			if repo == "" {
 				return shared.UsageError("--repo is required")
+			}
+			provided := make(map[string]bool)
+			fs.Visit(func(flag *flag.Flag) {
+				provided[flag.Name] = true
+			})
+			bundle := strings.TrimSpace(*bundleID)
+			profile := strings.ToUpper(strings.TrimSpace(*profileType))
+			bundleProvided := provided["bundle-id"]
+			targetsProvided := provided["targets-file"]
+			profileProvided := provided["profile-type"]
+			if bundleProvided && bundle == "" {
+				return shared.UsageError("--bundle-id must not be empty")
+			}
+			if targetsProvided && strings.TrimSpace(*targetsFile) == "" {
+				return shared.UsageError("--targets-file must not be empty")
+			}
+			if profileProvided && profile == "" {
+				return shared.UsageError("--profile-type must not be empty")
+			}
+			if bundleProvided && targetsProvided {
+				return shared.UsageError("--bundle-id and --targets-file are mutually exclusive")
+			}
+			selectionRequested := bundleProvided || targetsProvided
+			if selectionRequested && profile == "" {
+				return shared.UsageError("--profile-type is required with --bundle-id or --targets-file")
+			}
+			if !selectionRequested && profileProvided {
+				return shared.UsageError("--profile-type requires --bundle-id or --targets-file")
+			}
+			var selectedBundleIDs []string
+			switch {
+			case bundleProvided:
+				selectedBundleIDs = []string{bundle}
+			case targetsProvided:
+				var readErr error
+				selectedBundleIDs, readErr = readSigningSyncTargetsFile(*targetsFile)
+				if readErr != nil {
+					return shared.UsageError(readErr.Error())
+				}
 			}
 			if strings.TrimSpace(*passwordFile) != "" && *password != "" {
 				return shared.UsageError("--password-file and --password are mutually exclusive")
@@ -548,6 +593,9 @@ func syncPullCommand() *ffcli.Command {
 			}
 
 			if len(encryptedFiles) == 0 {
+				if selectionRequested {
+					return fmt.Errorf("signing sync pull: no active %s profile found in encrypted repository for bundle ID(s): %s", profile, strings.Join(selectedBundleIDs, ", "))
+				}
 				fmt.Fprintln(os.Stderr, "No encrypted signing files found in repo")
 				result := SyncResult{
 					Operation: "pull",
@@ -555,6 +603,18 @@ func syncPullCommand() *ffcli.Command {
 					Files:     []string{},
 				}
 				return shared.PrintOutput(&result, *output.Output, *output.Pretty)
+			}
+
+			decrypted, err := decryptAndValidateSigningFiles(store, encryptedFiles, pass)
+			if err != nil {
+				return fmt.Errorf("signing sync pull: %w", err)
+			}
+			var targets []SyncTargetResult
+			if selectionRequested {
+				decrypted, targets, err = selectSigningPullFiles(decrypted, selectedBundleIDs, profile)
+				if err != nil {
+					return fmt.Errorf("signing sync pull: %w", err)
+				}
 			}
 
 			if err := os.MkdirAll(outDir, 0o755); err != nil {
@@ -565,9 +625,7 @@ func syncPullCommand() *ffcli.Command {
 				return fmt.Errorf("signing sync pull: create output root: %w", err)
 			}
 			defer outputRoot.Close()
-
-			decrypted, err := prepareDecryptedSigningFilesInRoot(store, encryptedFiles, pass, outputRoot)
-			if err != nil {
+			if err := preflightSigningPullFilesInRoot(outputRoot, decrypted); err != nil {
 				return fmt.Errorf("signing sync pull: %w", err)
 			}
 
@@ -598,6 +656,16 @@ func syncPullCommand() *ffcli.Command {
 				IdentityPresent: identityPresent,
 				SensitiveFiles:  sensitiveFiles,
 			}
+			if selectionRequested {
+				result.ProfileType = profile
+				if len(selectedBundleIDs) == 1 {
+					result.BundleID = selectedBundleIDs[0]
+				} else {
+					result.BundleIDs = selectedBundleIDs
+					result.Targets = targets
+					result.MarkBatch()
+				}
+			}
 			return shared.PrintOutput(&result, *output.Output, *output.Pretty)
 		},
 	}
@@ -613,6 +681,17 @@ func prepareDecryptedSigningFiles(store *signingpkg.GitStore, encryptedFiles []s
 }
 
 func prepareDecryptedSigningFilesInRoot(store *signingpkg.GitStore, encryptedFiles []string, password string, root rootfs.Root) ([]decryptedSigningFile, error) {
+	decrypted, err := decryptAndValidateSigningFiles(store, encryptedFiles, password)
+	if err != nil {
+		return nil, err
+	}
+	if err := preflightSigningPullFilesInRoot(root, decrypted); err != nil {
+		return nil, err
+	}
+	return decrypted, nil
+}
+
+func decryptAndValidateSigningFiles(store *signingpkg.GitStore, encryptedFiles []string, password string) ([]decryptedSigningFile, error) {
 	if len(encryptedFiles) > maxEncryptedSigningFiles {
 		return nil, fmt.Errorf("encrypted signing repository contains %d files; limit is %d", len(encryptedFiles), maxEncryptedSigningFiles)
 	}
@@ -671,16 +750,6 @@ func prepareDecryptedSigningFilesInRoot(store *signingpkg.GitStore, encryptedFil
 	}
 	decrypted = filtered
 
-	for _, file := range decrypted {
-		if file.Sensitive {
-			err = root.CheckCreateNewFile(file.RelativePath)
-		} else {
-			err = root.CheckWriteFilePreservingMode(file.RelativePath)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("preflight output %s: %w", file.RelativePath, err)
-		}
-	}
 	return decrypted, nil
 }
 

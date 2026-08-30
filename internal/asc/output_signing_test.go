@@ -39,6 +39,7 @@ func TestSigningSyncResultBatchJSONOmitsSingularBundleID(t *testing.T) {
 			BundleID:       "com.example.app",
 			ProfileType:    "IOS_APP_STORE",
 			ProfilePath:    "profiles/appstore/com.example.app--profile.mobileprovision",
+			ProfilePaths:   []string{"profiles/appstore/com.example.app--profile.mobileprovision"},
 			ProfileCreated: false,
 			Files:          []string{"profiles/appstore/com.example.app--profile.mobileprovision"},
 		}},
@@ -56,7 +57,7 @@ func TestSigningSyncResultBatchJSONOmitsSingularBundleID(t *testing.T) {
 	if _, ok := decoded["bundleId"]; ok {
 		t.Fatalf("batch JSON unexpectedly contains singular bundleId: %s", data)
 	}
-	for _, field := range []string{`"bundleIds":["com.example.app"]`, `"targets":[`, `"profileCreated":false`} {
+	for _, field := range []string{`"bundleIds":["com.example.app"]`, `"targets":[`, `"profilePaths":["profiles/appstore/com.example.app--profile.mobileprovision"]`, `"profileCreated":false`} {
 		if !strings.Contains(string(data), field) {
 			t.Fatalf("batch JSON missing %s: %s", field, data)
 		}

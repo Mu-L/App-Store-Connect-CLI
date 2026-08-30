@@ -8,6 +8,7 @@ type SigningSyncTargetResult struct {
 	BundleID       string   `json:"bundleId"`
 	ProfileType    string   `json:"profileType"`
 	ProfilePath    string   `json:"profilePath"`
+	ProfilePaths   []string `json:"profilePaths,omitempty"`
 	ProfileCreated bool     `json:"profileCreated"`
 	Files          []string `json:"files"`
 }

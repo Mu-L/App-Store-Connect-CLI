@@ -333,9 +333,28 @@ The normalized PKCS#12 is protected by the same sync password. A pull that repor
 
 Use `--password-file` for local work. In a secret-managed CI environment, `ASC_SIGNING_SYNC_PASSWORD` is also supported. The inline `--password` flag and `ASC_MATCH_PASSWORD` are deprecated during 4.x and will be rejected in 5.0.0.
 
+To decrypt only one app context, select the bundle ID and profile type:
+
+```bash  theme={null}
+asc signing sync pull \
+  --repo git@github.com:team/signing.git \
+  --bundle-id com.example.app \
+  --profile-type IOS_APP_STORE \
+  --password-file ~/.config/asc/signing-sync-password \
+  --output-dir .asc/signing/pulled \
+  --output json \
+  --pretty > .asc/signing/pull-result.json
+```
+
+Use the same schema-versioned `--targets-file` accepted by `sync push` when the app has extensions, widgets, App Clips, or other embedded targets. `--bundle-id` and `--targets-file` are mutually exclusive, and either selector requires one shared `--profile-type`.
+
+A selected pull authenticates and validates the whole encrypted repository before filtering output, so an unselected corrupt artifact is still an error. It identifies profiles from their signed bundle and distribution claims rather than filenames, includes their stored public certificates, and includes the exact identity context and shared private identity when present. Every requested bundle must have an active matching profile. All selected destinations are checked before the first file is written; an existing file for an unselected target does not block the pull.
+
+Single-target JSON reports `bundleId` and `profileType`. Multi-target JSON reports `bundleIds` plus one `targets` entry per bundle. A target can report multiple `profilePaths` when the store contains more than one active matching profile; `profilePath` remains the first deterministic path for compatibility with the existing target result shape. `files`, `sensitiveFiles`, and `identityPresent` describe only the selected output.
+
 ### Current sync scope
 
-The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull decrypts the whole repository rather than selecting individual apps. Password rotation, certificate renewal, persistent keychain import, and stale-asset deletion remain explicit operator work.
+The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull selectors similarly use one profile type per invocation. Password rotation, automatic certificate renewal, persistent keychain import, and stale encrypted-store deletion remain explicit operator work.
 
 ## CI example
 
