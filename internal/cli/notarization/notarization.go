@@ -179,6 +179,10 @@ Examples:
 			result, runErr := runStaplerStaple(ctx, pathValue, os.Stderr, func(operation localxcode.StaplerOperation, before bool) error {
 				return target.verifyIdentity(staplerStageDescription(operation, before))
 			})
+			var partialErr *localxcode.StaplerPartialMutationError
+			if runErr != nil && errors.As(runErr, &partialErr) {
+				return reportStaplerFailure("staple", runErr)
+			}
 			stageErr := target.verifyIdentity("after stapling")
 			if runErr != nil && isStaplerTargetStageError(runErr) {
 				return reportStaplerTargetStageFailure("staple", "after stapling", runErr)
@@ -571,6 +575,7 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 	if strings.ContainsRune(pathValue, 0) {
 		return nil, newStaplerTargetUsageError(errors.New("--file must not contain a NUL byte"))
 	}
+	requiresDirectory := staplerPathRequiresDirectory(pathValue)
 	if err := rejectSymlinkedLexicalParentTraversal(pathValue); err != nil {
 		if errors.Is(err, rootfs.ErrSymlink) {
 			return nil, newStaplerTargetUsageError(errors.New("artifact path contains a symlinked component before lexical parent traversal"))
@@ -643,6 +648,9 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 	if wrongKindErr.info == nil || !wrongKindErr.info.Mode().IsRegular() {
 		return nil, newStaplerTargetUsageError(fmt.Errorf("%q is not a regular file or directory bundle", absolute))
 	}
+	if requiresDirectory {
+		return nil, newStaplerTargetUsageError(errors.New("artifact path requires a directory bundle"))
+	}
 
 	// Past this point the target was proven to exist, to not be a symlink, and
 	// to be a regular file. Any failure here is a replacement race or another
@@ -677,6 +685,23 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 		identity: openedInfo,
 		handle:   opened,
 	}, nil
+}
+
+// staplerPathRequiresDirectory preserves the kernel's directory-qualified
+// pathname semantics before filepath.Clean removes the qualification. A
+// trailing separator or a final "." component requires the preceding target
+// to be a directory; a trailing backslash is intentionally not a separator on
+// Unix.
+func staplerPathRequiresDirectory(pathValue string) bool {
+	trimmed := strings.TrimRightFunc(pathValue, isStaplerPathSeparator)
+	if trimmed != pathValue {
+		return true
+	}
+	if trimmed == "." {
+		return true
+	}
+	separator := strings.LastIndexFunc(trimmed, isStaplerPathSeparator)
+	return separator >= 0 && trimmed[separator+1:] == "."
 }
 
 type lexicalStaplerPathComponent struct {

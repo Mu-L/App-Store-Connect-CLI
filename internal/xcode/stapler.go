@@ -150,7 +150,14 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 	}
 	validateErr := runStaplerOperation(ctx, StaplerOperationValidate, path, logWriter)
 	if verifyErr := verifyStaplerStage(verifier, StaplerOperationValidate, false); verifyErr != nil {
-		return nil, verifyErr
+		partialErr := error(verifyErr)
+		if validateErr != nil {
+			partialErr = errors.Join(validateErr, verifyErr)
+		}
+		return nil, &StaplerPartialMutationError{
+			Operation: StaplerOperationValidate,
+			Err:       partialErr,
+		}
 	}
 	if validateErr != nil {
 		return nil, &StaplerPartialMutationError{
