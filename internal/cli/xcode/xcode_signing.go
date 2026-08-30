@@ -109,19 +109,7 @@ Examples:
 			for _, warning := range plan.Warnings {
 				fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
 			}
-			return shared.PrintOutputWithRenderers(
-				plan,
-				*output.Output,
-				*output.Pretty,
-				func() error {
-					asc.RenderTable([]string{"field", "value"}, signingPlanRows(plan))
-					return nil
-				},
-				func() error {
-					asc.RenderMarkdown([]string{"field", "value"}, signingPlanRows(plan))
-					return nil
-				},
-			)
+			return shared.PrintOutput(asc.NewXcodeSigningPlanOutput(plan), *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -171,19 +159,7 @@ Examples:
 				}
 				return fmt.Errorf("xcode signing apply: %w", err)
 			}
-			return shared.PrintOutputWithRenderers(
-				result,
-				*output.Output,
-				*output.Pretty,
-				func() error {
-					asc.RenderTable([]string{"field", "value"}, signingApplyRows(result))
-					return nil
-				},
-				func() error {
-					asc.RenderMarkdown([]string{"field", "value"}, signingApplyRows(result))
-					return nil
-				},
-			)
+			return shared.PrintOutput(asc.NewXcodeSigningApplyOutput(result), *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -196,32 +172,4 @@ func xcodeSigningInputUsageError(command string, err error) error {
 		shared.DiagnosticInvalidInput,
 		"",
 	)
-}
-
-func signingPlanRows(plan *localxcode.SigningPlan) [][]string {
-	if plan == nil {
-		return nil
-	}
-	return [][]string{
-		{"ready", fmt.Sprintf("%t", plan.Ready)},
-		{"plan", plan.PlanPath},
-		{"plan hash", plan.PlanHash},
-		{"changes", fmt.Sprintf("%d", len(plan.Changes))},
-		{"blockers", strings.Join(plan.Blockers, "; ")},
-		{"warnings", strings.Join(plan.Warnings, "; ")},
-	}
-}
-
-func signingApplyRows(result *localxcode.SigningApplyResult) [][]string {
-	if result == nil {
-		return nil
-	}
-	return [][]string{
-		{"applied", "true"},
-		{"completed", fmt.Sprintf("%t", result.Completed)},
-		{"plan", result.PlanPath},
-		{"receipt", result.ReceiptPath},
-		{"plan hash", result.PlanHash},
-		{"changed files", strings.Join(result.ChangedFiles, ", ")},
-	}
 }
