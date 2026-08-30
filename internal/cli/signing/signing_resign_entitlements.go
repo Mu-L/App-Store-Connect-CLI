@@ -1,6 +1,7 @@
 package signing
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -9,6 +10,137 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/infoplist"
 	"howett.net/plist"
 )
+
+// signingResignClaimUnauthorizedError marks an existing entitlement claim the
+// replacement profile does not authorize, so the caller can aggregate every
+// blocked claim into one actionable refusal.
+type signingResignClaimUnauthorizedError struct{ key string }
+
+func (err signingResignClaimUnauthorizedError) Error() string {
+	return "existing entitlement " + err.key + " is not authorized by the replacement profile"
+}
+
+// signingResignUnauthorizedClaim records one blocked claim together with the
+// profile value that refused it, for remediation reporting.
+type signingResignUnauthorizedClaim struct {
+	Key      string
+	Existing any
+	Profile  any
+}
+
+// signingResignUnauthorizedClaimsError lists every blocked claim with its
+// offending value and a per-claim manual remediation. Re-signing across teams
+// stays fail-closed; this only makes the refusal actionable.
+func signingResignUnauthorizedClaimsError(claims []signingResignUnauthorizedClaim) error {
+	descriptions := make([]string, 0, len(claims))
+	for _, claim := range claims {
+		remediation := "authorize this exact value in the replacement profile, or drop the claim from the app, then re-run"
+		if suggestion, ok := signingResignClaimRebaseSuggestion(claim.Existing, claim.Profile); ok {
+			remediation = "edit the claim to " + suggestion + ", or drop it from the app, then re-run"
+		}
+		descriptions = append(descriptions, fmt.Sprintf(
+			"%s=%s (%s)",
+			claim.Key,
+			signingResignFormatClaimValue(claim.Existing),
+			remediation,
+		))
+	}
+	return fmt.Errorf("existing entitlements are not authorized by the replacement profile: %s", strings.Join(descriptions, "; "))
+}
+
+// signingResignClaimRebaseSuggestion derives the concrete value a wildcard
+// profile authorization would accept for an existing claim, for diagnostics
+// only: the suffix after the claim's first prefix segment is re-anchored to
+// the profile's wildcard prefix. No value is ever rewritten automatically.
+func signingResignClaimRebaseSuggestion(existing, profileValue any) (string, bool) {
+	prefix, ok := signingResignWildcardPrefix(profileValue)
+	if !ok {
+		return "", false
+	}
+	rebase := func(value string) (string, bool) {
+		separator := strings.IndexRune(value, '.')
+		if separator <= 0 || separator == len(value)-1 {
+			return "", false
+		}
+		return prefix + value[separator+1:], true
+	}
+	switch typed := existing.(type) {
+	case string:
+		rebased, ok := rebase(typed)
+		if !ok {
+			return "", false
+		}
+		return fmt.Sprintf("%q", rebased), true
+	default:
+		list, isList := signingResignEntitlementList(existing)
+		if !isList || len(list) == 0 {
+			return "", false
+		}
+		rebasedValues := make([]string, 0, len(list))
+		for _, item := range list {
+			text, isString := item.(string)
+			if !isString {
+				return "", false
+			}
+			rebased, ok := rebase(text)
+			if !ok {
+				return "", false
+			}
+			rebasedValues = append(rebasedValues, fmt.Sprintf("%q", rebased))
+		}
+		return "[" + strings.Join(rebasedValues, ", ") + "]", true
+	}
+}
+
+// signingResignWildcardPrefix extracts the single terminal-wildcard prefix,
+// including its trailing separator, from a profile authorization value.
+func signingResignWildcardPrefix(profileValue any) (string, bool) {
+	candidates := []any{profileValue}
+	if list, isList := signingResignEntitlementList(profileValue); isList {
+		candidates = list
+	}
+	prefix := ""
+	for _, candidate := range candidates {
+		text, isString := candidate.(string)
+		if !isString || !strings.HasSuffix(text, "*") {
+			continue
+		}
+		trimmed := strings.TrimSuffix(text, "*")
+		if trimmed == "" || strings.ContainsRune(trimmed, '*') {
+			return "", false
+		}
+		if prefix != "" && prefix != trimmed {
+			// Multiple distinct wildcard prefixes make a single suggestion
+			// ambiguous; fall back to the generic remediation.
+			return "", false
+		}
+		prefix = trimmed
+	}
+	return prefix, prefix != ""
+}
+
+func signingResignFormatClaimValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return fmt.Sprintf("%q", typed)
+	case bool:
+		return fmt.Sprintf("%t", typed)
+	default:
+		list, isList := signingResignEntitlementList(value)
+		if !isList {
+			return fmt.Sprintf("%v", value)
+		}
+		items := make([]string, 0, len(list))
+		for _, item := range list {
+			if text, isString := item.(string); isString {
+				items = append(items, fmt.Sprintf("%q", text))
+				continue
+			}
+			items = append(items, fmt.Sprintf("%v", item))
+		}
+		return "[" + strings.Join(items, ", ") + "]"
+	}
+}
 
 var signingResignIdentityEntitlementKeys = map[string]struct{}{
 	"application-identifier":                             {},
@@ -59,15 +191,22 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 		existingKeys = append(existingKeys, key)
 	}
 	sort.Strings(existingKeys)
+	var unauthorized []signingResignUnauthorizedClaim
 	for _, key := range existingKeys {
 		value := existing[key]
 		if _, identityKey := signingResignIdentityEntitlementKeys[key]; identityKey {
 			profileValue, exists := profile[key]
 			if !exists {
-				return nil, fmt.Errorf("existing entitlement %s is missing from the replacement profile", key)
+				unauthorized = append(unauthorized, signingResignUnauthorizedClaim{Key: key, Existing: value})
+				continue
 			}
 			resolved, err := resolveSigningResignIdentityEntitlement(key, value, profileValue)
 			if err != nil {
+				var claimErr signingResignClaimUnauthorizedError
+				if errors.As(err, &claimErr) {
+					unauthorized = append(unauthorized, signingResignUnauthorizedClaim{Key: key, Existing: value, Profile: profileValue})
+					continue
+				}
 				return nil, err
 			}
 			result[key] = resolved
@@ -75,9 +214,13 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 		}
 		profileValue, permitted := profile[key]
 		if !permitted || !signingResignEntitlementValuePermits(profileValue, value) {
-			return nil, fmt.Errorf("existing entitlement %s is not permitted by the replacement profile", key)
+			unauthorized = append(unauthorized, signingResignUnauthorizedClaim{Key: key, Existing: value, Profile: profileValue})
+			continue
 		}
 		result[key] = value
+	}
+	if len(unauthorized) > 0 {
+		return nil, signingResignUnauthorizedClaimsError(unauthorized)
 	}
 	for _, key := range signingResignIdentityEntitlementKeyOrder {
 		if _, exists := existing[key]; exists {
@@ -196,7 +339,7 @@ func resolveSigningResignIdentityEntitlement(key string, existing, profile any) 
 	_, preserveExisting := signingResignPreserveExistingIdentityKeys[key]
 	if preserveExisting || signingResignEntitlementContainsWildcard(profile) {
 		if !signingResignEntitlementValuePermits(profile, existing) {
-			return nil, fmt.Errorf("existing entitlement %s is not permitted by the replacement profile", key)
+			return nil, signingResignClaimUnauthorizedError{key: key}
 		}
 		// The profile value, whether a wildcard pattern or a broader concrete
 		// set, is an authorization boundary rather than the claim to sign.

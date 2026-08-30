@@ -38,6 +38,17 @@ type signingResignManifest struct {
 	Profiles      []signingResignManifestEntry `json:"profiles"`
 }
 
+// signingResignManifestAllowedJSONFields lists the exact field spellings the
+// strict manifest schema accepts. encoding/json would otherwise match a
+// case-variant alias such as BundleID to the bundleId tag, bypassing
+// DisallowUnknownFields.
+var signingResignManifestAllowedJSONFields = map[string]struct{}{
+	"schemaVersion": {},
+	"profiles":      {},
+	"bundleId":      {},
+	"profilePath":   {},
+}
+
 type signingResignManifestEntry struct {
 	BundleID    string `json:"bundleId"`
 	ProfilePath string `json:"profilePath"`
@@ -91,8 +102,8 @@ func decodeSigningResignManifest(data []byte) (signingResignManifest, error) {
 	if len(data) > signingResignManifestMaxBytes {
 		return signingResignManifest{}, fmt.Errorf("profiles manifest exceeds %d bytes", signingResignManifestMaxBytes)
 	}
-	if err := rejectDuplicateSigningRunJSONKeys(data); err != nil {
-		return signingResignManifest{}, fmt.Errorf("profiles manifest contains duplicate fields: %w", err)
+	if err := validateSigningRunJSONKeys(data, signingResignManifestAllowedJSONFields); err != nil {
+		return signingResignManifest{}, fmt.Errorf("profiles manifest contains invalid fields: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()

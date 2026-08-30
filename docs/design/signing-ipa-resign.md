@@ -73,7 +73,15 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    capability change that is not permitted by the replacement profile. A
    wildcard profile authorization is never emitted as a signed identity
    entitlement: an existing concrete value is retained only after it is
-   authorized, and no concrete value means the operation fails closed. Before
+   authorized. Capability-group identity claims always keep the app's
+   existing concrete subset; the profile value, wildcard or concrete, is an
+   authorization boundary only. Optional identity capabilities absent from
+   the existing signature are omitted rather than granted from the profile,
+   while a required identity claim that cannot resolve to a concrete value
+   fails closed. Claims the replacement profile does not authorize, such as
+   old-team-prefixed keychain or ubiquity values, fail closed with a refusal
+   that lists every blocked claim, its offending value, and a per-claim
+   manual remediation; claims are never rewritten automatically. Before
    writing the private entitlement documents, require existing concrete
    application-identifier claims to agree with one another and end in the
    exact target bundle identifier; the alternate

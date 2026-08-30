@@ -20,3 +20,11 @@ func TestRejectDuplicateSigningRunJSONKeysFoldsCaseVariants(t *testing.T) {
 		t.Fatalf("rejectDuplicateSigningRunJSONKeys() error = %v, want sibling objects folded independently", err)
 	}
 }
+
+func TestRejectDuplicateSigningRunJSONKeysMatchesEqualFoldSemantics(t *testing.T) {
+	// The Kelvin sign folds to ASCII k under the simple folding that
+	// encoding/json uses for field matching.
+	if err := rejectDuplicateSigningRunJSONKeys([]byte("{\"Key\":1,\"key\":2}")); err == nil {
+		t.Fatal("rejectDuplicateSigningRunJSONKeys() missed a Unicode simple-fold duplicate")
+	}
+}

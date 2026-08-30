@@ -356,7 +356,7 @@ func TestDecodeSigningResignManifestStrict(t *testing.T) {
 		{
 			name: "unknown field",
 			data: `{"schemaVersion":1,"profiles":[],"extra":true}`,
-			want: "decode profiles manifest",
+			want: `unknown JSON field "extra"`,
 		},
 		{
 			name: "duplicate field",
@@ -806,7 +806,7 @@ func TestBuildSigningResignEntitlementsRejectsUnpermittedCapability(t *testing.T
 			"com.apple.security.application-groups": []any{"group.allowed"},
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "not permitted") {
+	if err == nil || !strings.Contains(err.Error(), "not authorized by the replacement profile") {
 		t.Fatalf("buildSigningResignEntitlements() error = %v, want unpermitted capability", err)
 	}
 }
@@ -2384,5 +2384,66 @@ func TestBuildSigningResignEntitlementsOmitsAbsentOptionalConcreteClaims(t *test
 	}
 	if got["get-task-allow"] != false {
 		t.Fatalf("get-task-allow = %#v, want the required claim adopted from the profile", got["get-task-allow"])
+	}
+}
+
+func TestBuildSigningResignEntitlementsListsEveryUnauthorizedCrossTeamClaim(t *testing.T) {
+	existing := map[string]any{
+		"application-identifier":                          "OLDTEAM.com.example.app",
+		"com.apple.developer.team-identifier":             "OLDTEAM",
+		"get-task-allow":                                  false,
+		"keychain-access-groups":                          []string{"OLDTEAM.com.example.shared"},
+		"com.apple.developer.ubiquity-kvstore-identifier": "OLDTEAM.com.example.app",
+	}
+	profile := map[string]any{
+		"application-identifier":                          "NEWTEAM.com.example.app",
+		"com.apple.application-identifier":                "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier":             "NEWTEAM",
+		"get-task-allow":                                  false,
+		"keychain-access-groups":                          []any{"NEWTEAM.*"},
+		"com.apple.developer.ubiquity-kvstore-identifier": "NEWTEAM.*",
+	}
+	_, err := buildSigningResignEntitlements(existing, profile)
+	if err == nil {
+		t.Fatal("buildSigningResignEntitlements() accepted cross-team claims, want fail-closed refusal")
+	}
+	message := err.Error()
+	for _, want := range []string{
+		"keychain-access-groups",
+		`"OLDTEAM.com.example.shared"`,
+		`"NEWTEAM.com.example.shared"`,
+		"com.apple.developer.ubiquity-kvstore-identifier",
+		`"OLDTEAM.com.example.app"`,
+		`"NEWTEAM.com.example.app"`,
+		"then re-run",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("refusal %q is missing %q", message, want)
+		}
+	}
+	if got := strings.Count(message, "then re-run"); got != 2 {
+		t.Fatalf("refusal %q lists %d remediations, want one per blocked claim", message, got)
+	}
+}
+
+func TestDecodeSigningResignManifestRejectsStandaloneCaseVariantFields(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data string
+	}{
+		{name: "top-level SchemaVersion", data: `{"SchemaVersion":1,"profiles":[{"bundleId":"com.example.app","profilePath":"p/app.mobileprovision"}]}`},
+		{name: "top-level Profiles", data: `{"schemaVersion":1,"Profiles":[{"bundleId":"com.example.app","profilePath":"p/app.mobileprovision"}]}`},
+		{name: "entry BundleID", data: `{"schemaVersion":1,"profiles":[{"BundleID":"com.example.app","profilePath":"p/app.mobileprovision"}]}`},
+		{name: "entry ProfilePath", data: `{"schemaVersion":1,"profiles":[{"bundleId":"com.example.app","ProfilePath":"p/app.mobileprovision"}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := decodeSigningResignManifest([]byte(test.data)); err == nil {
+				t.Fatal("decodeSigningResignManifest() accepted a case-variant schema field")
+			}
+		})
+	}
+	valid := `{"schemaVersion":1,"profiles":[{"bundleId":"com.example.app","profilePath":"p/app.mobileprovision"}]}`
+	if _, err := decodeSigningResignManifest([]byte(valid)); err != nil {
+		t.Fatalf("decodeSigningResignManifest() error = %v, want exact schema accepted", err)
 	}
 }

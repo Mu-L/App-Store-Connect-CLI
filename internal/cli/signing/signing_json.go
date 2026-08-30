@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 )
 
 type signingRunJSONFrame struct {
@@ -15,7 +16,20 @@ type signingRunJSONFrame struct {
 	keys      map[string]struct{}
 }
 
+// rejectDuplicateSigningRunJSONKeys rejects any object containing two field
+// names that encoding/json would treat as the same tagged field.
 func rejectDuplicateSigningRunJSONKeys(data []byte) error {
+	return validateSigningRunJSONKeys(data, nil)
+}
+
+// validateSigningRunJSONKeys walks a JSON document and rejects duplicate
+// field names within an object. Keys are canonicalized with the same simple
+// case folding encoding/json uses to match tagged struct fields, so a
+// case-variant alias counts as the duplicate it effectively is. When a
+// non-nil allowed set is supplied, every field name must also match one of
+// its members exactly, which closes the standalone case-variant hole left by
+// the decoder's case-insensitive field matching.
+func validateSigningRunJSONKeys(data []byte, allowed map[string]struct{}) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	var stack []signingRunJSONFrame
 	for {
@@ -42,16 +56,16 @@ func rejectDuplicateSigningRunJSONKeys(data []byte) error {
 		case string:
 			if len(stack) > 0 && stack[len(stack)-1].object && stack[len(stack)-1].expectKey {
 				current := &stack[len(stack)-1]
-				// encoding/json matches tagged struct fields case-insensitively,
-				// so BundleID silently overwrites bundleId during decoding. Fold
-				// keys the same way here so a case-variant alias counts as the
-				// duplicate it effectively is.
-				for existing := range current.keys {
-					if strings.EqualFold(existing, value) {
-						return fmt.Errorf("duplicate JSON field %q", value)
+				folded := foldSigningRunJSONKey(value)
+				if _, exists := current.keys[folded]; exists {
+					return fmt.Errorf("duplicate JSON field %q", value)
+				}
+				current.keys[folded] = struct{}{}
+				if allowed != nil {
+					if _, exact := allowed[value]; !exact {
+						return fmt.Errorf("unknown JSON field %q", value)
 					}
 				}
-				current.keys[value] = struct{}{}
 				current.expectKey = false
 			} else {
 				markSigningRunJSONValueConsumed(stack)
@@ -60,6 +74,21 @@ func rejectDuplicateSigningRunJSONKeys(data []byte) error {
 			markSigningRunJSONValueConsumed(stack)
 		}
 	}
+}
+
+// foldSigningRunJSONKey maps every rune to the minimum member of its simple
+// case-folding orbit, so two keys fold to the same string exactly when
+// strings.EqualFold reports them equal.
+func foldSigningRunJSONKey(key string) string {
+	return strings.Map(func(character rune) rune {
+		minimum := character
+		for folded := unicode.SimpleFold(character); folded != character; folded = unicode.SimpleFold(folded) {
+			if folded < minimum {
+				minimum = folded
+			}
+		}
+		return minimum
+	}, key)
 }
 
 func markSigningRunJSONValueConsumed(stack []signingRunJSONFrame) {
