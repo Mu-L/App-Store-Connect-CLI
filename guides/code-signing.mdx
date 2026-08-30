@@ -37,6 +37,7 @@ Generate the private key and certificate request locally, then send the request 
 ```bash  theme={null}
 mkdir -p .asc/signing .asc/secrets
 chmod 700 .asc/signing .asc/secrets
+certificate_response=.asc/signing/distribution-certificate.json
 
 asc certificates create \
   --certificate-type IOS_DISTRIBUTION \
@@ -44,10 +45,41 @@ asc certificates create \
   --key-out .asc/secrets/distribution.key \
   --csr-out .asc/signing/distribution.csr \
   --output json \
-  --pretty > .asc/signing/distribution-certificate.json
+  --pretty > "$certificate_response"
 ```
 
 The private key remains in `.asc/secrets/distribution.key`. Do not commit it, print it, or upload it as a CI artifact. Back it up through encrypted signing sync before removing the bootstrap copy.
+
+The key and CSR are written before the API request. After a timeout or ambiguous failure, first list certificates and check whether the request created one whose public key matches the preserved private key. Do not rerun `--generate-csr` or use `--force`:
+
+```bash  theme={null}
+asc certificates list \
+  --certificate-type IOS_DISTRIBUTION \
+  --paginate \
+  --output json \
+  --pretty > .asc/signing/distribution-certificates-after-ambiguous-create.json
+```
+
+When a matching certificate exists, retrieve that resource into a fresh response file:
+
+```bash  theme={null}
+certificate_response=.asc/signing/distribution-certificate-recovered.json
+asc certificates view \
+  --id MATCHING_CERTIFICATE_ID \
+  --output json \
+  --pretty > "$certificate_response"
+```
+
+If no matching certificate exists, retry with the preserved CSR and a fresh response file:
+
+```bash  theme={null}
+certificate_response=.asc/signing/distribution-certificate-retry.json
+asc certificates create \
+  --certificate-type IOS_DISTRIBUTION \
+  --csr .asc/signing/distribution.csr \
+  --output json \
+  --pretty > "$certificate_response"
+```
 
 ## Shared App Store identity
 
@@ -55,12 +87,12 @@ Read the certificate resource ID and public certificate from the same create res
 
 ```bash  theme={null}
 CERTIFICATE_ID="$(
-  jq -r '.data.id' .asc/signing/distribution-certificate.json
+  jq -r '.data.id' "$certificate_response"
 )"
 
 CERTIFICATE_SHA256="$(
   jq -r '.data.attributes.certificateContent' \
-    .asc/signing/distribution-certificate.json \
+    "$certificate_response" \
   | openssl base64 -d -A \
   | openssl x509 -inform DER -outform DER \
   | shasum -a 256 \

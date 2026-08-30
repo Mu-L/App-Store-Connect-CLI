@@ -174,6 +174,7 @@ If no suitable certificate exists, generate the private key and certificate sign
 ```bash  theme={null}
 mkdir -p .asc/signing .asc/secrets
 chmod 700 .asc/signing .asc/secrets
+certificate_response=.asc/signing/distribution-certificate.json
 
 asc certificates create \
   --certificate-type IOS_DISTRIBUTION \
@@ -181,21 +182,52 @@ asc certificates create \
   --key-out .asc/secrets/distribution.key \
   --csr-out .asc/signing/distribution.csr \
   --output json \
-  --pretty > .asc/signing/distribution-certificate.json
+  --pretty > "$certificate_response"
 ```
 
 The private key stays at `--key-out`; the API response contains only the public certificate. Keep the key private and back it up through encrypted sync before deleting the bootstrap copy.
+
+The key and CSR are written before the App Store Connect request. If that request times out or returns an ambiguous failure, do not rerun `--generate-csr` and do not add `--force`: either action can replace the identity while a certificate from the first request may already exist. List the current certificates into a fresh file and inspect candidates created during the failed attempt. Confirm a candidate by matching its public key to `.asc/secrets/distribution.key`, not by name or date alone:
+
+```bash  theme={null}
+asc certificates list \
+  --certificate-type IOS_DISTRIBUTION \
+  --paginate \
+  --output json \
+  --pretty > .asc/signing/distribution-certificates-after-ambiguous-create.json
+```
+
+If a matching certificate exists, retrieve it into a fresh response file:
+
+```bash  theme={null}
+certificate_response=.asc/signing/distribution-certificate-recovered.json
+asc certificates view \
+  --id MATCHING_CERTIFICATE_ID \
+  --output json \
+  --pretty > "$certificate_response"
+```
+
+If no certificate matches the preserved key, retry the API request with the preserved CSR and a fresh response file:
+
+```bash  theme={null}
+certificate_response=.asc/signing/distribution-certificate-retry.json
+asc certificates create \
+  --certificate-type IOS_DISTRIBUTION \
+  --csr .asc/signing/distribution.csr \
+  --output json \
+  --pretty > "$certificate_response"
+```
 
 Capture the certificate resource ID and calculate its SHA-256 fingerprint from the same create response. The fingerprint binds the private key during `signing sync push`; the resource ID selects that same certificate during profile reconciliation:
 
 ```bash  theme={null}
 CERTIFICATE_ID="$(
-  jq -r '.data.id' .asc/signing/distribution-certificate.json
+  jq -r '.data.id' "$certificate_response"
 )"
 
 CERTIFICATE_SHA256="$(
   jq -r '.data.attributes.certificateContent' \
-    .asc/signing/distribution-certificate.json \
+    "$certificate_response" \
   | openssl base64 -d -A \
   | openssl x509 -inform DER -outform DER \
   | shasum -a 256 \
