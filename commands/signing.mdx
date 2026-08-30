@@ -332,7 +332,9 @@ For an App Store export, install the pulled provisioning profiles and import the
 jq -r '.files[] | select(endswith(".mobileprovision"))' \
   .asc/signing/pull-result.json \
 | while IFS= read -r profile_path; do
-    asc profiles local install --path "$profile_path" --output json
+    asc profiles local install \
+      --path ".asc/signing/pulled/$profile_path" \
+      --output json
   done
 ```
 
