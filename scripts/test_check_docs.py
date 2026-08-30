@@ -401,6 +401,51 @@ class WebsiteCommandChecksTest(unittest.TestCase):
                     self.assertIn("missing required flag", errors[0])
                     self.assertIn(missing_flag, errors[0])
 
+    def test_website_command_checks_reject_empty_flags_before_command_passthrough(self) -> None:
+        index = {
+            (): check_website_commands.CommandSpec(
+                path=(),
+                usage="asc <subcommand> [flags]",
+                flags={},
+                subcommands={"signing"},
+            ),
+            ("signing",): check_website_commands.CommandSpec(
+                path=("signing",),
+                usage="asc signing <subcommand> [flags]",
+                flags={},
+                subcommands={"run"},
+            ),
+            ("signing", "run"): check_website_commands.CommandSpec(
+                path=("signing", "run"),
+                usage=(
+                    "asc signing run --identity PATH --profile PATH [flags] "
+                    "-- <command> [args...]"
+                ),
+                flags={"--identity": False, "--profile": False},
+                subcommands=set(),
+            ),
+        }
+        examples = {
+            "--identity= --profile app.mobileprovision": "--identity",
+            '--identity "" --profile app.mobileprovision': "--identity",
+            "--identity signing.p12 --identity= --profile app.mobileprovision": "--identity",
+            "--identity signing.p12 --profile=": "--profile",
+            '--identity signing.p12 --profile ""': "--profile",
+            '--identity signing.p12 --profile app.mobileprovision --profile ""': "--profile",
+        }
+
+        for flags, missing_flag in examples.items():
+            with self.subTest(flags=flags):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    website = Path(tmpdir)
+                    (website / "index.mdx").write_text(
+                        f"```bash\nasc signing run {flags} -- xcodebuild -exportArchive\n```\n"
+                    )
+                    errors = check_website_commands.collect_errors(website, index)
+                    self.assertEqual(len(errors), 1)
+                    self.assertIn("missing required flag", errors[0])
+                    self.assertIn(missing_flag, errors[0])
+
     def test_website_command_checks_reject_unsupported_command_passthrough(self) -> None:
         index = {
             (): check_website_commands.CommandSpec(

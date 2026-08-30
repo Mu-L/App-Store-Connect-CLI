@@ -291,7 +291,7 @@ asc signing sync pull \
 jq -r '.sensitiveFiles[]?' .asc/signing/pull-result.json
 ```
 
-Pulled private identities appear in `sensitiveFiles`; ordinary certificate and profile paths appear in `files`. New files use mode `0600`, and the command refuses unsafe identity envelopes, oversized repositories, path escapes, and metadata that does not match the encrypted artifact.
+`files` lists every decrypted output, including private identities. `sensitiveFiles` is the subset of those paths that contains private identity material. Do not treat `files` as a non-sensitive artifact list: exclude or protect every entry also named in `sensitiveFiles`. New files use mode `0600`, and the command refuses unsafe identity envelopes, oversized repositories, path escapes, and metadata that does not match the encrypted artifact.
 
 The normalized PKCS#12 is protected by the same sync password. A pull that reports `identityPresent: false` contains certificates and profiles only and cannot sign an app by itself.
 
@@ -418,7 +418,7 @@ Value-specific entitlements such as App Groups, Apple Pay merchant IDs, Network 
 
 `asc signing run` is macOS-only and currently accepts iOS release-testing profiles: the profile must contain registered devices, must not allow debugging, and must not be an enterprise or App Store profile.
 
-It validates the PKCS#12, private key, certificate, team, signed profile, expiration, and embedded certificate before changing local signing state. It then creates a private temporary keychain, installs the profile only for the child process, executes the argv after `--` without a shell, and removes ASC-owned temporary state afterward.
+It validates the PKCS#12, private key, certificate, team, signed profile, expiration, and embedded certificate before changing local signing state. During child execution, it installs the profile in the user's Xcode provisioning-profile directory and prepends the temporary keychain to that user's keychain search list. This state is temporary, but it is visible to unrelated Xcode or `codesign` processes running as the same macOS user. Use a job-exclusive or disposable user so another process cannot consume or interfere with it. The command executes the argv after `--` without a shell, restores the search list, and removes ASC-owned temporary state afterward.
 
 The wrapper accepts exactly one `--profile`. The example below therefore applies only to a single-target archive. For an archive with embedded targets, use a disposable macOS worker, import the identity into its job-scoped keychain, install each completed profile action's `outputPath` from `signing reconcile apply`, export, and discard the worker state after the job.
 

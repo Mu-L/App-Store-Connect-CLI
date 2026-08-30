@@ -155,9 +155,15 @@ Planning is read-only and can return a successful `ready: false` result with blo
 
 Planning creates `plan.json` without replacing an existing file. If a plan reports blockers, review it and fix them first. Then rerun the same plan command with `--overwrite`, or choose a new `--state-dir` when the blocked plan must remain on disk.
 
-`signing run` accepts exactly one profile. Use the temporary-keychain export below only for a single-target archive whose main app uses that profile:
+`signing run` accepts exactly one profile. Use the temporary-keychain export below only for a single-target archive whose main app uses that profile. When this runs in a later CI step than the pull, recreate the runner-private password file because the pull step's cleanup trap removed its copy:
 
 ```bash  theme={null}
+set +x
+umask 077
+password_file="$RUNNER_TEMP/asc-signing-password"
+trap 'rm -f "$password_file"' EXIT
+printf '%s' "$SIGNING_SYNC_PASSWORD" > "$password_file"
+
 signing_command=(
   asc xcode export
   --archive-path .asc/artifacts/Example.xcarchive
@@ -169,7 +175,7 @@ signing_command=(
 
 asc signing run \
   --identity .asc/signing/pulled/identities/distribution/IDENTITY.p12 \
-  --identity-password-file ~/.config/asc/signing-sync-password \
+  --identity-password-file "$password_file" \
   --profile .asc/distribution/signing/profiles/PROFILE.mobileprovision \
   --receipt .asc/distribution/signing-run.json \
   -- "${signing_command[@]}"

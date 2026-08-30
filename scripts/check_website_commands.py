@@ -630,6 +630,7 @@ def validate_example(
     pending_flag: str | None = None
     saw_positional = False
     seen_flags: set[str] = set()
+    satisfied_flags: set[str] = set()
 
     while i < len(tokens):
         token = tokens[i]
@@ -640,6 +641,10 @@ def validate_example(
                     f"missing value for flag {pending_flag!r} in {example.raw!r}"
                 )
                 return errors
+            if token.strip():
+                satisfied_flags.add(pending_flag)
+            else:
+                satisfied_flags.discard(pending_flag)
             pending_flag = None
             i += 1
             continue
@@ -661,7 +666,7 @@ def validate_example(
                 return errors
             missing_flags = sorted(
                 REQUIRED_FLAGS_BEFORE_PASSTHROUGH_BY_COMMAND.get(current.path, set())
-                - seen_flags
+                - satisfied_flags
             )
             if missing_flags:
                 errors.append(
@@ -672,7 +677,7 @@ def validate_example(
                 return errors
             break
         if token.startswith("--"):
-            flag = token.split("=", 1)[0]
+            flag, separator, inline_value = token.partition("=")
             if flag in current.flags:
                 if saw_positional and style == "flags_before_positionals":
                     errors.append(
@@ -680,7 +685,13 @@ def validate_example(
                         f"flag {flag!r} appears after positional arguments in {example.raw!r}"
                     )
                 seen_flags.add(flag)
-                pending_flag = flag if "=" not in token and not current.flags.get(flag, False) else None
+                if current.flags.get(flag, False):
+                    satisfied_flags.add(flag)
+                elif separator and inline_value.strip():
+                    satisfied_flags.add(flag)
+                else:
+                    satisfied_flags.discard(flag)
+                pending_flag = flag if not separator and not current.flags.get(flag, False) else None
                 i += 1
                 continue
             if flag in root.flags:
