@@ -140,6 +140,15 @@ check, and the staged output's effective permissions are verified before any
 PKCS#12 bytes are written, so filesystems that ignore the requested 0600 mode
 fail closed instead of publishing a broadly readable identity.
 
+Extended ACLs are treated as independent metadata, exactly as
+`internal/rootfs` does. On macOS (through `acl_get_fd_np`/`acl_set_fd_np`
+dynamic-libc calls) and Linux (through the `system.posix_acl_access`
+attribute), a protected input that carries an extended ACL is rejected with a
+removal hint, because an ACL entry can grant another account access that the
+0600 mode bits do not show. Any ACL the staging file inherits from the
+destination directory is stripped and the removal verified before PKCS#12
+bytes are written; a filesystem that cannot drop the ACL fails closed.
+
 Path classification remains platform-aware: a trailing backslash is a
 directory separator only on platforms where `os.IsPathSeparator` reports it as
 such. All user-supplied path bytes are otherwise preserved.
