@@ -53,11 +53,12 @@ mode `0600`; new ordinary outputs also use `0600`, while existing ordinary
 certificate/profile outputs retain their prior mode during atomic replacement.
 Private identity sync also accepts `MAC_APP_DIRECT` and
 `MAC_CATALYST_APP_DIRECT`. Their signed distribution claims overlap with store
-profiles, so the command does not infer the exact type from the profile plist.
-It requires the exact active profile type returned by App Store Connect,
-resolves the associated Developer ID Application certificate, and verifies
-that the local private key, API certificate, embedded profile certificate,
-team, bundle ID, and signed profile all agree before publication.
+profiles in some fields, but direct profiles carry the all-device claim. The
+command requires that claim, the signed macOS platform claim, and the exact
+active profile type returned by App Store Connect, resolves associated Developer
+ID Application certificates from either supported generation, and verifies that
+the local private key, API certificate, embedded profile certificate, team,
+bundle ID, and signed profile all agree before publication.
 Data is written to stdout, progress and deprecation warnings to stderr, invalid
 flag combinations use exit code 2, and operational failures use exit code 1.
 
@@ -110,12 +111,15 @@ all encrypted artifacts are published successfully; any local multi-file write
 failure returns before Git commit and cleanup removes the clone, so no partial
 identity graph reaches the remote repository.
 
-Treating every signed profile with no devices as direct distribution was
-rejected because App Store profiles have overlapping signed claims. Treating a
-filename or repository directory as authoritative was also rejected because
-those values are local conventions. The selected App Store Connect resource's
-exact `profileType` is the authoritative discriminator; the signed profile and
-associated Developer ID certificate then provide the cryptographic binding.
+Treating every signed all-device profile as an exact direct-distribution type
+was rejected because that claim does not distinguish native Mac from Mac
+Catalyst and is also used by other distribution families. Treating a filename
+or repository directory as authoritative was also rejected because those values
+are local conventions. The all-device and macOS platform claims establish
+direct-distribution semantics, while the selected App Store Connect resource's
+exact `profileType` is the native Mac versus Mac Catalyst discriminator. The
+signed profile and associated Developer ID certificate then provide the
+cryptographic binding.
 
 If the API resource type is absent or differs from `--profile-type`, the
 command stops before publication. It also stops when the associated certificate
@@ -135,8 +139,9 @@ envelopes, legacy envelope reads, `sensitiveFiles`, `0600` pull output, and
 secret canaries across output and errors. Focused signing packages, generated
 command docs, a command-level mock-ASC/local-Git push-pull round trip, and the normal repository gate
 complete verification. The direct extension adds synthetic signed-profile
-coverage for both native Mac and Mac Catalyst plus command-boundary coverage
-showing that local identity failures remain operational errors. Live account
+coverage for both native Mac and Mac Catalyst, including missing and non-macOS
+platform-claim rejection, plus command-boundary coverage showing that local
+identity failures remain operational errors. Live account
 or keychain mutation is outside this extension; its remaining risk is provider
 data whose associated Developer ID certificate or profile content differs from
 the documented API contract, which fails closed before Git publication.

@@ -201,6 +201,7 @@ func TestValidateIdentityForResolvedAssetsAcceptsDirectDistributionProfiles(t *t
 		"ExpirationDate":              time.Now().Add(time.Hour),
 		"DeveloperCertificates":       [][]byte{certificate.Raw},
 		"Platform":                    []string{"OSX"},
+		"ProvisionsAllDevices":        true,
 		"Entitlements": map[string]any{
 			"application-identifier": "TEAM123.com.example.mac",
 			"get-task-allow":         false,
