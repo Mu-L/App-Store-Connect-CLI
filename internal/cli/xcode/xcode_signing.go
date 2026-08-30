@@ -69,8 +69,11 @@ func xcodeSigningPlanCommand() *ffcli.Command {
 		LongHelp: `[experimental] Resolve signing settings and write a plan.
 
 The settings file must contain schemaVersion 1 and explicit target,
-configuration, and allowlisted signing-setting values. A blocked plan is still
-written with ready=false and explains the blocker without changing the project.
+configuration, and allowlisted signing-setting values. A representable blocked
+plan is written with ready=false and explains the blocker without changing the
+project. Any unauthorized external xcconfig prevents artifact publication
+because its contents cannot be safely inventoried; pass
+--allow-external-xcconfig to authorize reading it.
 
 Examples:
   asc xcode signing plan --project ./App.xcodeproj --settings-file .asc/xcode-signing.json

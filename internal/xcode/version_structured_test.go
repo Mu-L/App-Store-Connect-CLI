@@ -333,6 +333,23 @@ func TestStructuredVersion_DefaultViewSelectsApplicationAndDefaultConfiguration(
 	}
 }
 
+func TestStructuredVersion_GetVersionScopedPreservesSelectedProjectSymlink(t *testing.T) {
+	targetProject := writeStructuredVersionProject(t, false)
+	selectedRoot := t.TempDir()
+	selectedProject := filepath.Join(selectedRoot, "Selected.xcodeproj")
+	if err := os.Symlink(targetProject, selectedProject); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	view, err := GetVersionScoped(context.Background(), GetVersionOptions{ProjectDir: selectedProject})
+	if err != nil {
+		t.Fatalf("GetVersionScoped() error = %v, want stable symlink compatibility", err)
+	}
+	if view.Version != "1.2.3" || view.BuildNumber != "42" {
+		t.Fatalf("GetVersionScoped() = %#v, want target project version", view)
+	}
+}
+
 func TestStructuredVersion_DirectInheritedValueUsesNextLowerLayer(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")

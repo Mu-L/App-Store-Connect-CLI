@@ -731,6 +731,114 @@ func TestCreateNewFileAtomicWithInfoReturnsNilBeforeDestinationIdentity(t *testi
 	}
 }
 
+func TestCreateNewFileAtomicWithInfoRetainsIdentityAfterInitialPublishedLstatFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	transient := errors.New("injected published lstat failure")
+	root.postPublicationLstatForTest = func(_ *os.Root, _ string) (os.FileInfo, error) {
+		return nil, transient
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
+	if err == nil || !errors.Is(err, transient) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected Lstat failure", err)
+	}
+	if info == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned nil identity after transient Lstat failure")
+	}
+	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
+	if err != nil {
+		t.Fatalf("Stat(receipt) error = %v", err)
+	}
+	if !os.SameFile(info, diskInfo) {
+		t.Fatal("returned identity does not identify the published file")
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoCapturesDestinationAfterInitialPublishedLstatFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	root.simulateWindowsCloseForTest = true
+	transient := errors.New("injected published lstat failure")
+	root.postPublicationLstatForTest = func(_ *os.Root, _ string) (os.FileInfo, error) {
+		return nil, transient
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
+	if err == nil || !errors.Is(err, transient) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected Lstat failure", err)
+	}
+	if info == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned nil destination identity after transient Lstat failure")
+	}
+	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
+	if err != nil {
+		t.Fatalf("Stat(receipt) error = %v", err)
+	}
+	if !os.SameFile(info, diskInfo) {
+		t.Fatal("returned identity does not identify the published file")
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoPreservesReplacementAfterInitialPublishedLstatFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	if err := os.WriteFile(filepath.Join(dir, "racer-source"), []byte("replacement"), 0o600); err != nil {
+		t.Fatalf("WriteFile(racer-source) error = %v", err)
+	}
+	transient := errors.New("injected published lstat failure")
+	root.postPublicationLstatForTest = func(parent *os.Root, name string) (os.FileInfo, error) {
+		if err := parent.Rename(name, "published-original"); err != nil {
+			t.Fatalf("move original publication: %v", err)
+		}
+		if err := parent.Rename("racer-source", name); err != nil {
+			t.Fatalf("install replacement publication: %v", err)
+		}
+		return nil, transient
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
+	if err == nil || !errors.Is(err, transient) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected Lstat failure", err)
+	}
+	if runtime.GOOS != "windows" && info == nil {
+		t.Fatal("Unix publication did not retain staged identity for replacement-safe rollback")
+	}
+	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "replacement" {
+		t.Fatalf("replacement content = %q, want replacement preserved", got)
+	}
+	if got := mustRead(t, filepath.Join(dir, "published-original")); got != "complete" {
+		t.Fatalf("published original content = %q, want staged content preserved", got)
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoPreservesDisappearanceAfterInitialPublishedLstatFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	transient := errors.New("injected published lstat failure")
+	root.postPublicationLstatForTest = func(parent *os.Root, name string) (os.FileInfo, error) {
+		if err := parent.Remove(name); err != nil {
+			t.Fatalf("remove published entry: %v", err)
+		}
+		return nil, transient
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("complete"), 0o600)
+	if err == nil || !errors.Is(err, transient) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected Lstat failure", err)
+	}
+	if runtime.GOOS != "windows" && info == nil {
+		t.Fatal("Unix publication did not retain staged identity after disappearance")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("receipt after disappearance = %v, want absent", err)
+	}
+}
+
 func TestRemoveFileIfSamePreservesReplacementAfterQuarantine(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)

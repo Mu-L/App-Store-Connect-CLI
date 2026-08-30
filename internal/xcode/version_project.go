@@ -146,12 +146,22 @@ func GetConsistentMarketingVersion(ctx context.Context, opts GetVersionOptions) 
 }
 
 func openStructuredVersionProject(projectInput string) (*structuredVersionProject, error) {
+	return openStructuredVersionProjectWithPolicy(projectInput, false)
+}
+
+func openSigningStructuredVersionProject(projectInput string) (*structuredVersionProject, error) {
+	return openStructuredVersionProjectWithPolicy(projectInput, true)
+}
+
+func openStructuredVersionProjectWithPolicy(projectInput string, signingSafety bool) (*structuredVersionProject, error) {
 	projectPath, err := findXcodeproj(projectInput)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateStructuredVersionProjectPath(projectPath); err != nil {
-		return nil, err
+	if signingSafety {
+		if err := validateStructuredVersionProjectPath(projectPath); err != nil {
+			return nil, err
+		}
 	}
 	parsed, err := xcodeproj.Open(projectPath)
 	if err != nil {
@@ -180,11 +190,12 @@ func openStructuredVersionProject(projectInput string) (*structuredVersionProjec
 	return project, nil
 }
 
-// validateStructuredVersionProjectPath performs the rooted no-follow checks
-// before the plist parser opens project.pbxproj. The parser accepts ordinary
-// filesystem paths and would otherwise follow an explicitly selected
-// .xcodeproj or project.pbxproj symlink before the later mutation preflight
-// had a chance to reject it.
+// validateStructuredVersionProjectPath performs the signing-only rooted
+// no-follow checks before the plist parser opens project.pbxproj. The parser
+// accepts ordinary filesystem paths and would otherwise follow an explicitly
+// selected .xcodeproj or project.pbxproj symlink before signing's later
+// mutation preflight had a chance to reject it. Stable version commands retain
+// their historical selected-path symlink behavior through openStructuredVersionProject.
 func validateStructuredVersionProjectPath(projectPath string) error {
 	absolute, err := filepath.Abs(projectPath)
 	if err != nil {
@@ -1311,9 +1322,10 @@ func (project *structuredVersionProject) xcconfigConsumers(selectedIDs map[strin
 	return project.xcconfigConsumersWithCollector(selectedIDs, collectXCConfigFiles)
 }
 
-func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs map[string]bool, allowExternal bool) (map[string]map[string]bool, map[string][]string, map[string]string, bool, []string, []string, map[string][]string, error) {
+func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs map[string]bool, allowExternal bool) (map[string]map[string]bool, map[string][]string, map[string]string, bool, []string, []string, map[string][]string, bool, error) {
 	var protectedConfigPaths []string
 	var blockedExternalPaths []string
+	unauthorizedExternal := false
 	lexicalConfigPaths := make(map[string][]string)
 	observedPathsByRoot := make(map[string][]string)
 	addProtectedPath := func(path string) {
@@ -1340,13 +1352,21 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 		files, err := collectXCConfigFilesWithHooks(
 			path,
 			func(filePath string) ([]byte, error) {
-				return readSigningRegularFile(filePath, signingPlanMaxBytes)
+				return signingXCConfigReadFileFn(filePath, signingPlanMaxBytes)
 			},
 			func(filePath string) error {
 				if !allowExternal && !signingPathLexicallyContained(project, filePath) {
+					unauthorizedExternal = true
 					return &signingXCConfigAccessError{path: filePath, err: errors.New("path is outside the project directory"), external: true}
 				}
 				if err := validateSigningXCConfigPath(project, filePath, allowExternal); err != nil {
+					// A rejected symlink is not readable through the signing
+					// root, even when its lexical spelling is inside the project.
+					// Treat it as untrusted external content: its target may hide
+					// an entitlement expression that cannot be inventoried here.
+					if !allowExternal && errors.Is(err, rootfs.ErrSymlink) {
+						unauthorizedExternal = true
+					}
 					return &signingXCConfigAccessError{path: filePath, err: err, external: !signingPathLexicallyContained(project, filePath)}
 				}
 				return nil
@@ -1393,7 +1413,7 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 			lexicalConfigPaths[configuration.id] = append([]string(nil), observed...)
 		}
 	}
-	return consumers, configFiles, identities, uncertain, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, err
+	return consumers, configFiles, identities, uncertain, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, unauthorizedExternal, err
 }
 
 func (project *structuredVersionProject) xcconfigConsumersWithCollector(
@@ -1905,6 +1925,10 @@ func atomicWritePreparedVersionFile(write preparedVersionWrite, data []byte) (os
 }
 
 func atomicCreatePreparedVersionFile(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	// CreateNewFileAtomicWithInfo preserves a rooted identity even when a
+	// post-publication observation (such as the first Lstat) fails. Keep that
+	// identity paired with the error so the transaction can conditionally remove
+	// only its receipt and roll back ordinary writes without deleting a racer.
 	return write.root.CreateNewFileAtomicWithInfo(write.name, data, write.mode)
 }
 

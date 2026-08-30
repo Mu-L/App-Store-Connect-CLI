@@ -76,6 +76,48 @@ func newSigningArtifactAliasError(err error) error {
 	return signingArtifactAliasError{err: err}
 }
 
+const signingUnauthorizedExternalXCConfigMessage = "unauthorized external xcconfig cannot be safely inventoried without --allow-external-xcconfig"
+
+// signingUnauthorizedExternalXCConfigError marks an external xcconfig that
+// was discovered but not authorized for reading. Its contents are unknown, so
+// the planner cannot safely publish even a blocked artifact. Keep the cause
+// available for internal classification while exposing only stable text.
+type signingUnauthorizedExternalXCConfigError struct {
+	err error
+}
+
+func (e signingUnauthorizedExternalXCConfigError) Error() string {
+	return signingUnauthorizedExternalXCConfigMessage
+}
+
+func (e signingUnauthorizedExternalXCConfigError) Unwrap() error {
+	return e.err
+}
+
+func newSigningUnauthorizedExternalXCConfigError(err error) error {
+	return signingUnauthorizedExternalXCConfigError{err: err}
+}
+
+// signingConditionalEntitlementError marks a conditional entitlement value
+// whose reference graph could not be inventoried safely. Such a value cannot
+// be represented by a blocked plan because an artifact path may be hidden
+// behind the unresolved expression.
+type signingConditionalEntitlementError struct {
+	err error
+}
+
+func (e signingConditionalEntitlementError) Error() string {
+	return "conditional CODE_SIGN_ENTITLEMENTS cannot be safely inventoried"
+}
+
+func (e signingConditionalEntitlementError) Unwrap() error {
+	return e.err
+}
+
+func newSigningConditionalEntitlementError(err error) error {
+	return signingConditionalEntitlementError{err: err}
+}
+
 // NewSigningInputError adapts a deterministic signing-input failure for a
 // command boundary. It is primarily useful to keep adapters and tests aligned
 // with the same usage classification as the built-in manifest validator.
@@ -280,7 +322,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		return nil, err
 	}
 
-	project, err := openStructuredVersionProject(opts.ProjectPath)
+	project, err := openSigningStructuredVersionProject(opts.ProjectPath)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +411,10 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		}
 	}
 
-	fileConsumers, configFiles, fileIdentities, uncertainConsumers, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, err := project.signingXCConfigConsumers(selectedIDs, opts.AllowExternalXCConfig)
+	fileConsumers, configFiles, fileIdentities, uncertainConsumers, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, unauthorizedExternal, err := project.signingXCConfigConsumers(selectedIDs, opts.AllowExternalXCConfig)
+	hasUnauthorizedExternal := func(paths []string) bool {
+		return !opts.AllowExternalXCConfig && unauthorizedExternal && len(paths) > 0
+	}
 	if err != nil {
 		if len(blockedExternalPaths) > 0 {
 			inputPaths, externalEntitlementPaths, inputPathBlockers, inputErr := signingProjectInputPaths(project, settingsPath, configFiles, requests, opts.AllowExternalXCConfig, lexicalConfigPaths)
@@ -379,6 +424,15 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			protectedConfigPaths = appendUniqueSigningPaths(protectedConfigPaths, externalEntitlementPaths...)
 			if aliasErr := validateSigningArtifactAliases(planPath, receiptPath, inputPaths, protectedConfigPaths); aliasErr != nil {
 				return nil, aliasErr
+			}
+			// An unauthorized external xcconfig is not merely an uncertain
+			// consumer. Its unread contents may define an entitlement input, so
+			// the artifact alias set cannot be complete without reading it. Do
+			// not serialize a blocked plan: even a distinct plan path could later
+			// be changed to collide with an undiscovered input. Lexical alias
+			// failures above remain the more precise, no-read diagnostic.
+			if hasUnauthorizedExternal(blockedExternalPaths) {
+				return nil, newSigningUnauthorizedExternalXCConfigError(err)
 			}
 			plan.Blockers = append(plan.Blockers, fmt.Sprintf("selected xcconfig collection failed: %v", err))
 			plan.Blockers = append(plan.Blockers, inputPathBlockers...)
@@ -403,6 +457,13 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		protectedConfigPaths,
 	); err != nil {
 		return nil, err
+	}
+	if hasUnauthorizedExternal(blockedExternalPaths) {
+		// Unselected configurations deliberately do not make collection errors
+		// the primary return value. They are still fatal here: without reading
+		// an unauthorized source, its contents cannot be inventoried and a
+		// blocked plan is unsafe to publish.
+		return nil, newSigningUnauthorizedExternalXCConfigError(nil)
 	}
 	inputBlockers = append(inputBlockers, inputPathBlockers...)
 	if len(inputBlockers) > 0 {
@@ -1410,7 +1471,7 @@ func (resolver *signingSettingResolver) readXCConfig(path string) ([]byte, error
 	if err := resolver.authorizeXCConfigPath(absolute); err != nil {
 		return nil, err
 	}
-	return readSigningRegularFile(absolute, signingPlanMaxBytes)
+	return signingXCConfigReadFileFn(absolute, signingPlanMaxBytes)
 }
 
 func (resolver *signingSettingResolver) statXCConfigFor(configuration *versionConfiguration, path string) (os.FileInfo, error) {
@@ -1432,7 +1493,7 @@ func (resolver *signingSettingResolver) statXCConfigFor(configuration *versionCo
 		if err := resolver.authorizeXCConfigPath(absolute); err != nil {
 			return nil, err
 		}
-		info, err := signingRegularFileInfo(absolute)
+		info, err := signingXCConfigStatFileFn(absolute)
 		if err != nil {
 			return nil, err
 		}
@@ -1444,7 +1505,7 @@ func (resolver *signingSettingResolver) statXCConfigFor(configuration *versionCo
 	if err := resolver.authorizeXCConfigPath(absolute); err != nil {
 		return nil, err
 	}
-	return signingRegularFileInfo(absolute)
+	return signingXCConfigStatFileFn(absolute)
 }
 
 func (resolver *signingSettingResolver) readXCConfigFor(configuration *versionConfiguration, path string) ([]byte, error) {
@@ -2057,6 +2118,9 @@ func signingProjectInputPaths(
 		}
 		externalEntitlementPaths = appendUniqueSigningPaths(externalEntitlementPaths, filepath.Clean(candidate))
 	}
+	isConditionalEntitlementKey := func(key string) bool {
+		return key != "CODE_SIGN_ENTITLEMENTS" && xcconfigBaseKey(key) == "CODE_SIGN_ENTITLEMENTS"
+	}
 	for _, files := range configFiles {
 		paths = append(paths, files...)
 	}
@@ -2070,13 +2134,36 @@ func signingProjectInputPaths(
 		}
 	}
 	resolver := newSigningSettingResolver(project, configFiles, allowExternal, lexicalConfigPaths)
+	appendResolvedEntitlements := func(configuration *versionConfiguration, value string) error {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil
+		}
+		if strings.Contains(value, "$(") || strings.Contains(value, "${") {
+			if configuration == nil {
+				return fmt.Errorf("CODE_SIGN_ENTITLEMENTS reference cannot be resolved without a configuration")
+			}
+			// Use the same source-aware expansion as direct build settings. In
+			// particular, $(inherited) must resolve against the lower project or
+			// xcconfig layer rather than being treated as an ordinary setting
+			// reference. This keeps raw PBX and xcconfig scans aligned with the
+			// effective resolver and prevents an inherited entitlement path from
+			// disappearing from the protected-input inventory.
+			expanded, _, err := resolver.expandDirectSetting(configuration, "CODE_SIGN_ENTITLEMENTS", value, map[string]bool{"CODE_SIGN_ENTITLEMENTS": true})
+			if err != nil {
+				return err
+			}
+			value = expanded
+		}
+		return appendEntitlements(value)
+	}
 	for _, configuration := range project.configurations {
 		selected := selectedIDs[configuration.id]
 		authorized := signingConfigurationSourcesAuthorized(project, configuration, configFiles)
 		if authorized {
 			value, _, err := resolver.resolveSetting(configuration, "CODE_SIGN_ENTITLEMENTS")
 			if err == nil {
-				if err := appendEntitlements(value); err != nil {
+				if err := appendResolvedEntitlements(configuration, value); err != nil {
 					if selected {
 						return nil, externalEntitlementPaths, inputBlockers, err
 					}
@@ -2094,10 +2181,16 @@ func signingProjectInputPaths(
 			value, ok := configuration.buildSettings[key].(string)
 			if ok {
 				if !authorized && !selected && (strings.Contains(value, "$(") || strings.Contains(value, "${")) {
+					if isConditionalEntitlementKey(key) {
+						return nil, externalEntitlementPaths, inputBlockers, newSigningConditionalEntitlementError(nil)
+					}
 					inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has unresolved CODE_SIGN_ENTITLEMENTS reference; signing scope is uncertain", configuration.target, configuration.name))
 					continue
 				}
-				if err := appendEntitlements(value); err != nil {
+				if err := appendResolvedEntitlements(configuration, value); err != nil {
+					if isConditionalEntitlementKey(key) {
+						return nil, externalEntitlementPaths, inputBlockers, newSigningConditionalEntitlementError(err)
+					}
 					if selected {
 						return nil, externalEntitlementPaths, inputBlockers, err
 					}
@@ -2130,8 +2223,11 @@ func signingProjectInputPaths(
 			}
 			for _, assignment := range document.assignments {
 				if assignment.baseKey == "CODE_SIGN_ENTITLEMENTS" {
-					if err := appendEntitlements(assignment.value); err != nil {
+					if err := appendResolvedEntitlements(configuration, assignment.value); err != nil {
 						appendLexicalEntitlementCandidate(assignment.value)
+						if isConditionalEntitlementKey(assignment.key) {
+							return nil, externalEntitlementPaths, inputBlockers, newSigningConditionalEntitlementError(err)
+						}
 						if selected {
 							return nil, externalEntitlementPaths, inputBlockers, err
 						}
@@ -2162,6 +2258,11 @@ func signingProjectInputPaths(
 			for _, assignment := range document.assignments {
 				if assignment.baseKey != "CODE_SIGN_ENTITLEMENTS" {
 					continue
+				}
+				if strings.Contains(assignment.value, "$(") || strings.Contains(assignment.value, "${") {
+					if isConditionalEntitlementKey(assignment.key) {
+						return nil, externalEntitlementPaths, inputBlockers, newSigningConditionalEntitlementError(nil)
+					}
 				}
 				if err := appendEntitlements(assignment.value); err != nil {
 					return nil, externalEntitlementPaths, inputBlockers, err
@@ -2216,6 +2317,16 @@ func readSigningRegularFile(path string, limit int64) ([]byte, error) {
 	defer root.Close()
 	return root.ReadFileLimited(filepath.Base(absolute), limit)
 }
+
+// signingXCConfigReadFileFn keeps configuration reads behind the same rooted
+// reader while allowing tests to prove that authorization rejects a path
+// before any read is attempted. Production always uses readSigningRegularFile.
+var signingXCConfigReadFileFn = readSigningRegularFile
+
+// signingXCConfigStatFileFn keeps later authorization-aware existence checks
+// behind the same rooted reader while allowing tests to prove that an
+// unauthorized path is rejected before stat/open is attempted.
+var signingXCConfigStatFileFn = signingRegularFileInfo
 
 // signingRegularFileInfo obtains metadata through the same rooted no-follow
 // path policy used for signing reads. Callers must establish authorization

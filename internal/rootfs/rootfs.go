@@ -80,6 +80,10 @@ type Root struct {
 	// before the no-follow reopen. It makes a replacement during that interval
 	// deterministic without weakening the production API.
 	beforePublicationOpenForTest func(root *os.Root, name string)
+	// postPublicationLstatForTest replaces the first published-entry Lstat in
+	// tests so transient identity-observation failures can be exercised without
+	// widening the production API.
+	postPublicationLstatForTest func(root *os.Root, name string) (os.FileInfo, error)
 	// conditionalMutation hooks make the compare-and-publish/remove tests
 	// deterministic without widening the production API with callbacks.
 	beforeConditionalQuarantineForTest        func(root *os.Root, name string)
@@ -1797,9 +1801,14 @@ func (r Root) CreateNewFileAtomic(name string, data []byte, perm os.FileMode) er
 // retains a descriptor for that identity until Root.Close, so a caller can
 // safely roll back only the file it created even if the pathname is replaced
 // after this method returns. When a durability step fails after publication,
-// the identity is still returned for the same purpose. If publication
-// validation fails before the descriptor is retained, it returns nil and
-// leaves the published/staged evidence in place for uncertainty handling.
+// the identity is still returned for the same purpose. If the first
+// post-publication observation fails, the implementation retains either the
+// staged descriptor or a rooted no-follow destination descriptor after
+// verifying the same identity. Unix can retain the staging descriptor across
+// publication; Windows must close it before rename, so destination reopening
+// is best-effort and conservative. If neither reference can be retained, it
+// returns nil and leaves the published/staged evidence in place for uncertainty
+// handling.
 func (r Root) CreateNewFileAtomicWithInfo(name string, data []byte, perm os.FileMode) (os.FileInfo, error) {
 	r.requireNativeNoReplace = true
 	_, info, err := r.createNewFromWithInfo(name, bytes.NewReader(data), perm, true)
@@ -1905,12 +1914,42 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	}
 	published := false
 	stagingClosed := false
+	stagingRetained := false
+	var stagedInfo os.FileInfo
 	closeStaging := func() error {
-		if stagingClosed {
+		if stagingClosed || stagingRetained {
 			return nil
 		}
 		stagingClosed = true
 		return file.Close()
+	}
+	retainStagingIdentity := func() bool {
+		if !retainPublishedIdentity || stagingClosed || stagingRetained || runtime.GOOS == "windows" || r.simulateWindowsCloseForTest {
+			return false
+		}
+		if r.selectedIdentity == nil || !r.selectedIdentity.retainFile(file) {
+			return false
+		}
+		stagingRetained = true
+		return true
+	}
+	retainPublishedDestinationIdentity := func() (os.FileInfo, bool) {
+		if !retainPublishedIdentity || r.selectedIdentity == nil {
+			return nil, false
+		}
+		publishedFile, openErr := secureopen.OpenExistingNoFollowInRoot(parent, base)
+		if openErr != nil {
+			return nil, false
+		}
+		publishedInfo, statErr := publishedFile.Stat()
+		if statErr != nil || !publishedInfo.Mode().IsRegular() || !os.SameFile(stagedInfo, publishedInfo) {
+			_ = publishedFile.Close()
+			return nil, false
+		}
+		if !r.selectedIdentity.retainFile(publishedFile) {
+			return nil, false
+		}
+		return publishedInfo, true
 	}
 	defer func() {
 		if err := closeStaging(); err != nil {
@@ -1932,7 +1971,7 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	if err := file.Sync(); err != nil {
 		return written, nil, err
 	}
-	stagedInfo, err := file.Stat()
+	stagedInfo, err = file.Stat()
 	if err != nil {
 		return written, nil, err
 	}
@@ -1973,7 +2012,16 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	}
 	published = true
 	createdInfo, err := parent.Lstat(base)
+	if r.postPublicationLstatForTest != nil {
+		createdInfo, err = r.postPublicationLstatForTest(parent, base)
+	}
 	if err != nil {
+		if publishedInfo, retained := retainPublishedDestinationIdentity(); retained {
+			return written, publishedInfo, fmt.Errorf("stat published file %q: %w", resolved, err)
+		}
+		if retainStagingIdentity() {
+			return written, stagedInfo, fmt.Errorf("stat published file %q: %w", resolved, err)
+		}
 		return written, nil, fmt.Errorf("stat published file %q: %w", resolved, err)
 	}
 	if createdInfo.Mode()&os.ModeSymlink != 0 {

@@ -86,6 +86,13 @@ External xcconfig writes are refused by default. `--allow-external-xcconfig`
 must be supplied to both plan and apply, and the exact path and digest are
 bound into the plan. Final symlinks remain forbidden.
 
+Any unauthorized external xcconfig is a hard planning failure, not a
+`ready: false` artifact. Its unread contents could define an entitlement value
+or reference an entitlement path that cannot be inventoried without violating
+the authorization boundary. The planner therefore does not publish either a
+distinct or an overwrite-enabled plan artifact until the source is explicitly
+authorized with `--allow-external-xcconfig`.
+
 ## Plan and apply artifacts
 
 The plan contains versioned, deterministic JSON with:
