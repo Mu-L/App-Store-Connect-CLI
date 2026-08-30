@@ -180,6 +180,52 @@ func TestValidateStaplerTargetPreservesTrailingWhitespace(t *testing.T) {
 	}
 }
 
+func TestValidateStaplerTargetResolvesRelativeParentFromPhysicalWorkingDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	physical := filepath.Join(workspace, "physical")
+	physicalCWD := filepath.Join(physical, "nested")
+	if err := os.MkdirAll(physicalCWD, 0o755); err != nil {
+		t.Fatalf("create physical cwd: %v", err)
+	}
+	target := filepath.Join(physical, "target.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logicalCWD := filepath.Join(workspace, "logical-cwd")
+	if err := os.Symlink(physicalCWD, logicalCWD); err != nil {
+		t.Fatalf("create logical cwd symlink: %v", err)
+	}
+	originalCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get original cwd: %v", err)
+	}
+	if err := os.Chdir(logicalCWD); err != nil {
+		t.Fatalf("change to logical cwd: %v", err)
+	}
+	t.Setenv("PWD", logicalCWD)
+	t.Cleanup(func() {
+		if err := os.Chdir(originalCWD); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+	if got, err := os.Getwd(); err != nil || got != logicalCWD {
+		t.Skipf("platform does not expose a logical symlinked cwd (got %q, err %v)", got, err)
+	}
+
+	validated, err := validateStaplerTargetDetails("../target.pkg")
+	if err != nil {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, want target relative to physical cwd", err)
+	}
+	defer validated.close()
+	physicalTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatalf("resolve physical target: %v", err)
+	}
+	if validated.path != physicalTarget {
+		t.Fatalf("validated path = %q, want physical target %q", validated.path, physicalTarget)
+	}
+}
+
 func TestNotarizationValidateRejectsDirectoryQualifiedRegularFile(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "MyApp.pkg")
@@ -921,6 +967,58 @@ func TestNotarizationValidateReportsNonRegularReplacementAtStage(t *testing.T) {
 	}
 	if strings.Contains(stderr, target) {
 		t.Fatalf("stderr = %q, must not expose artifact path", stderr)
+	}
+}
+
+func TestNotarizationValidateChildAndPostVerifierFailurePreservesExitAndStage(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	childErr := errors.New("validation child failed")
+	previous := runStaplerValidate
+	runStaplerValidate = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationValidate, true); err != nil {
+			return nil, err
+		}
+		return nil, errors.Join(
+			&localxcode.StaplerCommandError{
+				Operation: string(localxcode.StaplerOperationValidate),
+				ExitCode:  65,
+				Err:       childErr,
+			},
+			&localxcode.StaplerStageVerificationError{
+				Operation: localxcode.StaplerOperationValidate,
+				Before:    false,
+				Err:       &staplerTargetIdentityError{stage: "after validation"},
+			},
+		)
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil || !errors.Is(runErr, childErr) {
+		t.Fatalf("command error = %v, want child cause", runErr)
+	}
+	if code, ok := sharedProcessExitCodeForTest(runErr); !ok || code != 65 {
+		t.Fatalf("command error = %v, process code = %d/%v, want 65", runErr, code, ok)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed after validation") || !strings.Contains(stderr, "exit status 65") {
+		t.Fatalf("stderr = %q, want stage diagnostic and child exit", stderr)
+	}
+	if strings.Contains(stderr, "staple completed") || strings.Contains(stderr, "not verified") {
+		t.Fatalf("stderr = %q, validate-only failure must not claim partial staple mutation", stderr)
+	}
+	if strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not expose target path", stderr)
 	}
 }
 

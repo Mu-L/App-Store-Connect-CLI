@@ -576,7 +576,11 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 		return nil, newStaplerTargetUsageError(errors.New("--file must not contain a NUL byte"))
 	}
 	requiresDirectory := staplerPathRequiresDirectory(pathValue)
-	if err := rejectSymlinkedLexicalParentTraversal(pathValue); err != nil {
+	absolute, err := resolveStaplerPath(pathValue)
+	if err != nil {
+		return nil, fmt.Errorf("resolve --file: %w", err)
+	}
+	if err := rejectSymlinkedLexicalParentTraversal(absolute); err != nil {
 		if errors.Is(err, rootfs.ErrSymlink) {
 			return nil, newStaplerTargetUsageError(errors.New("artifact path contains a symlinked component before lexical parent traversal"))
 		}
@@ -587,10 +591,6 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 			return nil, newStaplerTargetUsageError(errors.New("artifact path contains a non-directory component before lexical parent traversal"))
 		}
 		return nil, fmt.Errorf("inspect artifact path: %w", err)
-	}
-	absolute, err := filepath.Abs(pathValue)
-	if err != nil {
-		return nil, fmt.Errorf("resolve --file: %w", err)
 	}
 	absolute = filepath.Clean(absolute)
 	if strings.EqualFold(filepath.Ext(absolute), ".zip") {
@@ -704,6 +704,51 @@ func staplerPathRequiresDirectory(pathValue string) bool {
 	return separator >= 0 && trimmed[separator+1:] == "."
 }
 
+// resolveStaplerPath anchors relative paths to the physical current working
+// directory. os.Getwd may return the logical PWD spelling when the process was
+// launched through a symlink; cleaning a relative path against that spelling
+// would make "../artifact" refer to a different directory than the kernel's
+// current-directory handle.
+func resolveStaplerPath(pathValue string) (string, error) {
+	if filepath.IsAbs(pathValue) {
+		return pathValue, nil
+	}
+	physicalCWD, err := staplerPhysicalWorkingDirectory()
+	if err != nil {
+		return "", err
+	}
+	return physicalCWD + string(filepath.Separator) + pathValue, nil
+}
+
+func staplerPhysicalWorkingDirectory() (string, error) {
+	currentDir, err := os.Open(".")
+	if err != nil {
+		return "", fmt.Errorf("open current directory: %w", err)
+	}
+	defer currentDir.Close()
+	currentInfo, err := currentDir.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat current directory: %w", err)
+	}
+	logicalCWD, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	physicalCWD, err := filepath.EvalSymlinks(logicalCWD)
+	if err != nil {
+		return "", fmt.Errorf("resolve physical current directory: %w", err)
+	}
+	physicalCWD = filepath.Clean(physicalCWD)
+	physicalInfo, err := os.Stat(physicalCWD)
+	if err != nil {
+		return "", fmt.Errorf("stat physical current directory: %w", err)
+	}
+	if !os.SameFile(currentInfo, physicalInfo) {
+		return "", errors.New("current directory changed while resolving its physical path")
+	}
+	return physicalCWD, nil
+}
+
 type lexicalStaplerPathComponent struct {
 	path     string
 	provided bool
@@ -724,7 +769,7 @@ func rejectSymlinkedLexicalParentTraversal(pathValue string) error {
 	cwd := ""
 	if !wasAbsolute {
 		var err error
-		cwd, err = os.Getwd()
+		cwd, err = staplerPhysicalWorkingDirectory()
 		if err != nil {
 			return err
 		}
@@ -886,12 +931,6 @@ func reportStaplerTargetFilesystemFailure(command string) error {
 	return shared.NewReportedError(errors.New(message))
 }
 
-func reportStaplerTargetIdentityFailure(command, stage string) error {
-	message := fmt.Sprintf("notarization %s: artifact target changed %s", command, stage)
-	fmt.Fprintln(os.Stderr, "Error: "+message)
-	return shared.NewReportedError(errors.New(message))
-}
-
 // isStaplerTargetStageError reports whether err came from a stage boundary
 // check, whether the target was proven replaced or merely could not be
 // inspected.
@@ -905,15 +944,27 @@ func isStaplerTargetStageError(err error) bool {
 // a proven replacement names the stage it was detected at, while a boundary
 // that could not be evaluated reports the sanitized filesystem failure.
 func reportStaplerTargetStageFailure(command, fallbackStage string, err error) error {
+	message := staplerTargetStageFailureMessage(command, fallbackStage, err)
+	var commandErr *localxcode.StaplerCommandError
+	if command == "validate" && errors.As(err, &commandErr) && commandErr.ExitCode > 0 {
+		detail := strings.TrimPrefix(message, "notarization "+command+": ")
+		fmt.Fprintf(os.Stderr, "Error: notarization %s failed during %s (exit status %d): %s\n", command, commandErr.Operation, commandErr.ExitCode, detail)
+		return shared.NewReportedError(shared.NewProcessExitErrorWithCause(commandErr.ExitCode, err))
+	}
+	fmt.Fprintln(os.Stderr, "Error: "+message)
+	return shared.NewReportedError(errors.New(message))
+}
+
+func staplerTargetStageFailureMessage(command, fallbackStage string, err error) string {
 	var verifyErr *staplerTargetVerifyError
 	if errors.As(err, &verifyErr) {
-		return reportStaplerTargetFilesystemFailure(command)
+		return fmt.Sprintf("notarization %s: could not inspect artifact filesystem", command)
 	}
 	var identityErr *staplerTargetIdentityError
 	if errors.As(err, &identityErr) && identityErr.stage != "" {
-		return reportStaplerTargetIdentityFailure(command, identityErr.stage)
+		return fmt.Sprintf("notarization %s: artifact target changed %s", command, identityErr.stage)
 	}
-	return reportStaplerTargetIdentityFailure(command, fallbackStage)
+	return fmt.Sprintf("notarization %s: artifact target changed %s", command, fallbackStage)
 }
 
 // submitCommand returns the submit subcommand.

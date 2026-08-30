@@ -153,6 +153,41 @@ func TestStapleWithVerifierJoinsStapleChildAndPostStapleVerifierFailures(t *test
 	})
 }
 
+func TestStapleWithVerifierMarksPreValidationVerifierFailureAsPartialMutation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	verifierErr := errors.New("target changed before validation")
+
+	result, err := StapleWithVerifier(context.Background(), target, nil, func(operation StaplerOperation, before bool) error {
+		if operation == StaplerOperationValidate && before {
+			return verifierErr
+		}
+		return nil
+	})
+	if result != nil {
+		t.Fatalf("StapleWithVerifier() result = %#v, want nil after post-staple verification failure", result)
+	}
+	if !errors.Is(err, verifierErr) {
+		t.Fatalf("StapleWithVerifier() error = %v, want verifier cause", err)
+	}
+	var partialErr *StaplerPartialMutationError
+	if !errors.As(err, &partialErr) || partialErr.Operation != StaplerOperationStaple {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want staple partial marker", err, err)
+	}
+	var stageErr *StaplerStageVerificationError
+	if !errors.As(err, &stageErr) || !stageErr.Before || stageErr.Operation != StaplerOperationValidate {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want pre-validation stage error", err, err)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|staple|" + target,
+	})
+}
+
 func TestStapleWithVerifierMarksPostValidationVerifierFailureAsPartialMutation(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -459,6 +494,42 @@ func TestValidateWithVerifierRunsAfterVerifierWhenValidationFails(t *testing.T) 
 	if want := []string{"before validate", "after validate"}; !reflect.DeepEqual(stages, want) {
 		t.Fatalf("verified stages = %#v, want %#v", stages, want)
 	}
+}
+
+func TestValidateWithVerifierJoinsChildAndPostValidationVerifierFailures(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.pkg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_VALIDATE_EXIT_CODE", "65")
+	verifierErr := errors.New("target changed after validation")
+
+	result, err := ValidateWithVerifier(context.Background(), target, nil, func(operation StaplerOperation, before bool) error {
+		if operation == StaplerOperationValidate && !before {
+			return verifierErr
+		}
+		return nil
+	})
+	if result != nil {
+		t.Fatalf("ValidateWithVerifier() result = %#v, want nil after post-validation verifier failure", result)
+	}
+	if !errors.Is(err, verifierErr) {
+		t.Fatalf("ValidateWithVerifier() error = %v, want verifier cause", err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationValidate) || commandErr.ExitCode != 65 {
+		t.Fatalf("ValidateWithVerifier() error = %T %v, want joined validate/65 child error", err, err)
+	}
+	var stageErr *StaplerStageVerificationError
+	if !errors.As(err, &stageErr) || stageErr.Before || stageErr.Operation != StaplerOperationValidate {
+		t.Fatalf("ValidateWithVerifier() error = %T %v, want post-validation stage error", err, err)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|validate|" + target,
+	})
 }
 
 func TestValidateWithVerifierRejectsReplacementDetectedAfterLookup(t *testing.T) {
