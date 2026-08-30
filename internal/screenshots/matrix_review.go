@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,7 +107,9 @@ func generateMatrixReviewWithWriter(ctx context.Context, request MatrixReviewReq
 		// Error values are produced by the matrix executor from a fixed set of
 		// messages. Keep this defensive check in case a future caller supplies a
 		// result directly to the report writer.
-		manifest.Cells[i].Error = matrixReviewErrorOutput(sanitizeMatrixReviewError(cell.Error))
+		if cell.Status != MatrixCellSuccess {
+			manifest.Cells[i].Error = matrixReviewErrorOutput(sanitizeMatrixReviewError(cell.Error))
+		}
 	}
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -290,7 +293,9 @@ func matrixReviewCellOutput(cell MatrixCellResult) asc.MatrixCellResult {
 			DurationMS: step.DurationMS, Error: step.Error,
 		}
 	}
-	output.FailureStage, output.FailureCode = sanitizeMatrixReviewFailure(cell.FailureStage, cell.FailureCode)
+	if cell.Status != MatrixCellSuccess {
+		output.FailureStage, output.FailureCode = sanitizeMatrixReviewFailure(cell.FailureStage, cell.FailureCode)
+	}
 	return output
 }
 
@@ -306,7 +311,7 @@ func writeMatrixArtifactLinks(b *strings.Builder, label string, paths []string, 
 	for _, path := range paths {
 		count++
 		path = filepath.ToSlash(relativeOrCleanPath(root, path))
-		escapedPath := html.EscapeString(path)
+		escapedPath := html.EscapeString(matrixArtifactURLPath(path))
 		escapedLabel := html.EscapeString(label)
 		name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		escapedName := html.EscapeString(name)
@@ -315,9 +320,16 @@ func writeMatrixArtifactLinks(b *strings.Builder, label string, paths []string, 
 	return count
 }
 
+func matrixArtifactURLPath(path string) string {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
+}
+
 func relativeOrCleanPath(root, path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
+	if strings.TrimSpace(path) == "" {
 		return ""
 	}
 	if relative, err := filepath.Rel(root, path); err == nil {

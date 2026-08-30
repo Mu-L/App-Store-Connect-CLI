@@ -170,7 +170,7 @@ func NewCatalog(version string) *Catalog {
 		commandFactory("pre-orders", "Manage app pre-orders.", preorders.PreOrdersCommand),
 		commandFactory("localizations", "Manage App Store localization metadata.", localizations.LocalizationsCommand),
 		commandFactory("metadata", "Manage app metadata with deterministic workflows and keyword tooling.", metadata.MetadataCommand),
-		commandFactory("screenshots", "Upload and manage App Store screenshots; local capture/frame/matrix workflow is [experimental].", screenshots.ScreenshotsCommand),
+		commandFactory("screenshots", "Upload and manage App Store screenshots; local matrix workflow is [experimental].", screenshots.ScreenshotsCommand),
 		commandFactory("video-previews", "Manage App Store app preview videos.", videopreviews.VideoPreviewsCommand),
 		commandFactory("background-assets", "Manage background assets.", backgroundassets.BackgroundAssetsCommand),
 		commandFactory("build-localizations", "Manage build release notes localizations.", buildlocalizations.BuildLocalizationsCommand),

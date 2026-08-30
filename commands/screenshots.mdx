@@ -10,7 +10,7 @@ The `screenshots` command provides both local automation for capturing and frami
 
 ## Local Workflow (Experimental)
 
-The local screenshot automation features are experimental. If you encounter issues, please [file feedback](https://github.com/rorkai/App-Store-Connect-CLI/issues/new/choose).
+The local screenshot matrix workflow is experimental. If you encounter issues, please [file feedback](https://github.com/rorkai/App-Store-Connect-CLI/issues/new/choose).
 
 ### Capture Screenshots
 
@@ -138,9 +138,9 @@ asc screenshots matrix --plan .asc/screenshots-matrix.json --max-concurrency 2 -
 
 Targets must already exist and be booted simulators. The command does not build,
 install, create, boot, clone, or delete simulators, and it does not upload
-screenshots. Each invocation writes raw artifacts plus an offline
-`review/manifest.json` and `review/index.html`, including failed or canceled
-cells.
+screenshots. After validation succeeds, the command writes raw artifacts plus
+an offline `review/manifest.json` and `review/index.html`, including failed or
+canceled cells.
 
 The matrix plan is a separate JSON/JSONC file. Its four axes are expanded in
 declaration order, with a maximum of 256 cells:
@@ -148,7 +148,7 @@ declaration order, with a maximum of 256 cells:
 ```jsonc
 {
   "version": 1,
-  "base_plan": ".asc/screenshots.json",
+  "base_plan": "screenshots.json",
   "devices": [
     {"id": "iphone-17-pro", "udid": "SIMULATOR_UDID"},
     {"id": "ipad-pro-13", "udid": "ANOTHER_SIMULATOR_UDID"}

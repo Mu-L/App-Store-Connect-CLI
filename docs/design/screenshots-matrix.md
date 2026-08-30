@@ -32,7 +32,9 @@ The matrix plan is a separate JSON/JSONC document. `version` is currently 1 and
 must be present. Its `base_plan` is a literal relative filename rooted at the
 directory containing the matrix plan; absolute paths, escaping `..` paths,
 symlinks, non-regular files, and oversized files are rejected. The base plan
-remains the source of the bundle ID and ordered interaction steps.
+remains the source of the bundle ID and ordered interaction steps. Matrix field
+names must use the documented exact snake_case spelling; duplicate fields are
+rejected rather than silently overwritten.
 
 ```jsonc
 {
@@ -71,9 +73,10 @@ each matrix device needs an explicit supported mapping validated through the
 existing frame-device parser.
 
 The product of the four axis lengths must be non-zero and no more than 256
-cells. Device IDs, content-variant IDs, and screenshot names must be unique and
-safe path components. Device UDIDs must be present and unique across device
-declarations. Appearance is case-insensitively normalized to `light` or `dark`.
+cells. Device IDs, content-variant IDs, and screenshot names must be unique
+(case-insensitively) and safe path components. Device UDIDs must be present and
+unique across device declarations after whitespace/case normalization.
+Appearance is case-insensitively normalized to `light` or `dark`.
 Locales are non-empty and use the existing locale normalization helper.
 
 ## Execution model
@@ -127,13 +130,13 @@ Each attempt writes to a temporary attempt path and promotes only validated
 successes to the final path. The command does not recursively delete prior
 outputs; stale files are excluded from the explicit current-run manifest.
 
-Every invocation writes `review/manifest.json` and `review/index.html`, even
-when one or more cells fail. The matrix manifest has one entry per planned cell
-and contains the logical device label rather than the simulator UDID. Entries
-include cell axes, status, attempts, duration, step results, raw/framed paths,
-dimensions, and sanitized failure stage/code. Launch arguments, raw command
-output, environment values, credentials, keychain paths, and simulator UDIDs
-are not persisted.
+Every validated invocation writes `review/manifest.json` and
+`review/index.html`, even when one or more cells fail. The matrix manifest has
+one entry per planned cell and contains the logical device label rather than the
+simulator UDID. Entries include cell axes, status, attempts, duration, step
+results, raw/framed paths, dimensions, and sanitized failure stage/code. Launch
+arguments, raw command output, environment values, credentials, keychain paths,
+and simulator UDIDs are not persisted.
 
 The HTML report is self-contained and network-free. It displays all cells,
 including failures and cancellations, and links only to local raw/framed
@@ -196,6 +199,12 @@ On macOS, perform one opt-in smoke test with two already-booted simulators and
 an installed sample app. Confirm that cells are isolated, same-device cells do
 not overlap, appearance is restored, review artifacts contain failures, and no
 App Store Connect request occurs.
+
+The implementation is delivered as additive commits on the
+`codex/2230-screenshot-matrix` branch and tracked by PR #2247; it is not merged.
+Unresolved risks are the absence of a live Simulator smoke test on this host and
+dependence on the installed Xcode `simctl ui` appearance interface and selected
+framing profiles for any opt-in framed run.
 
 ## Alternatives rejected
 

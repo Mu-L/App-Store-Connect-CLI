@@ -123,6 +123,37 @@ func TestLoadMatrixPlanDoesNotDefaultMissingVersion(t *testing.T) {
 	}
 }
 
+func TestLoadMatrixPlanRejectsUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "matrix.json")
+	writeMatrixTestFile(t, path, `{"version":1,"unknown_axis":true}`)
+	_, err := LoadMatrixPlan(path)
+	if err == nil || !errors.Is(err, ErrMatrixPlanParseJSON) || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("LoadMatrixPlan() error = %v, want unknown-field parse error", err)
+	}
+}
+
+func TestLoadMatrixPlanRejectsDuplicateAndMisCasedFields(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "duplicate", data: `{"version":1,"version":1}`, want: "duplicate fields"},
+		{name: "mis-cased", data: `{"Version":1}`, want: "exact spelling"},
+		{name: "nested mis-cased", data: `{"version":1,"execution":{"Max_Attempts":2}}`, want: "exact spelling"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "matrix.json")
+			writeMatrixTestFile(t, path, tc.data)
+			_, err := LoadMatrixPlan(path)
+			if err == nil || !errors.Is(err, ErrMatrixPlanParseJSON) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadMatrixPlan() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunMatrixRejectsMissingVersionBeforeLoadingBasePlan(t *testing.T) {
 	plan := &MatrixPlan{BasePlan: "missing.json", sourcePath: filepath.Join(t.TempDir(), "matrix.json")}
 	_, err := RunMatrixWithDependencies(context.Background(), plan.sourcePath, plan, MatrixOptions{}, MatrixDependencies{})
@@ -212,6 +243,20 @@ func TestLoadMatrixBasePlanPreservesLiteralFilename(t *testing.T) {
 	}
 }
 
+func TestLoadMatrixBasePlanRetainsVersionZeroCompatibility(t *testing.T) {
+	dir := t.TempDir()
+	baseName := "base.json"
+	writeMatrixTestFile(t, filepath.Join(dir, baseName), `{"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	plan := &MatrixPlan{BasePlan: baseName, sourcePath: filepath.Join(dir, "matrix.json")}
+	loaded, err := loadMatrixBasePlan(plan.sourcePath, plan)
+	if err != nil {
+		t.Fatalf("loadMatrixBasePlan() error = %v", err)
+	}
+	if loaded.Version != 1 {
+		t.Fatalf("loaded base plan version = %d, want compatibility default 1", loaded.Version)
+	}
+}
+
 func TestExpandMatrixPreservesLiteralOutputDirectorySpelling(t *testing.T) {
 	base := &Plan{
 		Version: 1,
@@ -235,6 +280,67 @@ func TestExpandMatrixPreservesLiteralOutputDirectorySpelling(t *testing.T) {
 	}
 }
 
+func TestRunMatrixRejectsOutputAliasesResolvedFromMatrixPlanDirectory(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	plan := &MatrixPlan{
+		Version:         1,
+		BasePlan:        "base.json",
+		Devices:         []MatrixDevice{{ID: "phone", UDID: "SIM-UDID"}},
+		Locales:         []string{"en-US"},
+		Appearances:     []string{"light"},
+		ContentVariants: []MatrixContentVariant{{ID: "default"}},
+		Output: MatrixOutput{
+			RawDir:    "raw",
+			FramedDir: filepath.Join(dir, "raw"),
+			ReviewDir: "review",
+		},
+		sourcePath: matrixPath,
+	}
+	_, err := RunMatrixWithDependencies(context.Background(), matrixPath, plan, MatrixOptions{}, MatrixDependencies{})
+	var validationErr *MatrixValidationError
+	if err == nil || !errors.As(err, &validationErr) || !strings.Contains(err.Error(), "must be different directories") {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want plan-directory output collision", err)
+	}
+}
+
+func TestRunMatrixDoesNotComparePlanRelativeOutputsAgainstWorkingDirectory(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	plan := &MatrixPlan{
+		Version:         1,
+		BasePlan:        "base.json",
+		Devices:         []MatrixDevice{{ID: "phone", UDID: "SIM-UDID"}},
+		Locales:         []string{"en-US"},
+		Appearances:     []string{"light"},
+		ContentVariants: []MatrixContentVariant{{ID: "default"}},
+		Output: MatrixOutput{
+			RawDir:    "raw",
+			FramedDir: filepath.Join(cwd, "raw"),
+			ReviewDir: "review",
+		},
+		sourcePath: matrixPath,
+	}
+	runPlan := func(_ context.Context, screenshotPlan *Plan) (*RunResult, error) {
+		writeMatrixPNG(t, filepath.Join(screenshotPlan.App.OutputDir, "home.png"))
+		return &RunResult{Steps: []RunStepResult{{Index: 1, Action: "screenshot", Status: "ok"}}}, nil
+	}
+	_, err = RunMatrixWithDependencies(context.Background(), matrixPath, plan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: runPlan, Appearance: &matrixTestAppearance{},
+	})
+	if err != nil {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want distinct plan-relative outputs", err)
+	}
+}
+
 func TestValidateMatrixPlan_RejectsUnsafeAndConflictingValues(t *testing.T) {
 	t.Parallel()
 
@@ -255,7 +361,12 @@ func TestValidateMatrixPlan_RejectsUnsafeAndConflictingValues(t *testing.T) {
 		},
 		{
 			name: "duplicate udid",
-			plan: MatrixPlan{Version: 1, Devices: []MatrixDevice{{ID: "one", UDID: "same"}, {ID: "two", UDID: "same"}}, Locales: []string{"en-US"}, Appearances: []string{"light"}, ContentVariants: []MatrixContentVariant{{ID: "default"}}},
+			plan: MatrixPlan{Version: 1, Devices: []MatrixDevice{{ID: "one", UDID: "same"}, {ID: "two", UDID: " SAME "}}, Locales: []string{"en-US"}, Appearances: []string{"light"}, ContentVariants: []MatrixContentVariant{{ID: "default"}}},
+			want: "unique",
+		},
+		{
+			name: "case-insensitive device id",
+			plan: MatrixPlan{Version: 1, Devices: []MatrixDevice{{ID: "Phone", UDID: "one"}, {ID: "phone", UDID: "two"}}, Locales: []string{"en-US"}, Appearances: []string{"light"}, ContentVariants: []MatrixContentVariant{{ID: "default"}}},
 			want: "unique",
 		},
 		{
@@ -276,6 +387,20 @@ func TestValidateMatrixPlan_RejectsUnsafeAndConflictingValues(t *testing.T) {
 				t.Fatalf("ValidateMatrixPlan() error = %v, want substring %q", err, tc.want)
 			}
 		})
+	}
+	caseInsensitiveScreenshots := *base
+	caseInsensitiveScreenshots.Steps = []PlanStep{
+		{Action: ActionScreenshot, Name: stringPtr("Home")},
+		{Action: ActionScreenshot, Name: stringPtr("home")},
+	}
+	if err := ValidateMatrixPlan(&MatrixPlan{
+		Version:         1,
+		Devices:         []MatrixDevice{{ID: "phone", UDID: "u"}},
+		Locales:         []string{"en-US"},
+		Appearances:     []string{"light"},
+		ContentVariants: []MatrixContentVariant{{ID: "default"}},
+	}, &caseInsensitiveScreenshots); err == nil || !strings.Contains(err.Error(), "unique") {
+		t.Fatalf("ValidateMatrixPlan() error = %v, want case-insensitive screenshot-name collision", err)
 	}
 }
 
@@ -317,6 +442,30 @@ func TestCheckMatrixDeviceRejectsOversizedInventory(t *testing.T) {
 	err := checkMatrixDevice(context.Background(), MatrixDevice{ID: "phone", UDID: "SIM"})
 	if err == nil || !strings.Contains(err.Error(), "exceeded the output size limit") {
 		t.Fatalf("checkMatrixDevice() error = %v, want bounded-output error", err)
+	}
+}
+
+func TestCheckMatrixDevicesUsesSimulatorModelForFrameFamily(t *testing.T) {
+	binDir := t.TempDir()
+	xcrunPath := filepath.Join(binDir, "xcrun")
+	script := `#!/bin/sh
+set -eu
+printf '%s\n' '{"devices":{"runtime":[{"udid":"SIM-UDID","state":"Booted","isAvailable":true,"name":"iPad Pro (13-inch)","deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPad-Pro"}]}}'
+`
+	if err := os.WriteFile(xcrunPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write xcrun fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	plan := &MatrixPlan{
+		Devices: []MatrixDevice{{ID: "iphone-demo", UDID: "SIM-UDID"}},
+		Output: MatrixOutput{
+			Frame: MatrixFrame{Enabled: true, DeviceByMatrixDevice: map[string]string{"iphone-demo": "iphone-17-pro"}},
+		},
+	}
+	failures := checkMatrixDevices(context.Background(), plan)
+	if _, failed := failures["iphone-demo"]; !failed {
+		t.Fatalf("checkMatrixDevices() failures = %v, want model/frame mismatch", failures)
 	}
 }
 
@@ -381,6 +530,51 @@ func TestSimctlMatrixAppearanceBoundsCapturedOutput(t *testing.T) {
 	_, err := (simctlMatrixAppearance{}).Snapshot(context.Background(), "SIM-UDID")
 	if err == nil || !strings.Contains(err.Error(), "output size limit") {
 		t.Fatalf("Snapshot() error = %v, want bounded-output error", err)
+	}
+}
+
+func TestMatrixReviewSanitizerClearsSuccessfulCellFailureMetadata(t *testing.T) {
+	dir := t.TempDir()
+	result := &MatrixResult{Cells: []MatrixCellResult{{
+		ID: "phone|en-US|light|default", Status: MatrixCellSuccess,
+		FailureStage: "execution", FailureCode: "stale_failure",
+		Error: &MatrixCellError{Stage: "execution", Code: "stale_failure", Message: "capture failed"},
+	}}}
+	if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: result, OutputDir: dir}); err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v", err)
+	}
+	manifest, err := LoadMatrixReviewManifest(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v", err)
+	}
+	cell := manifest.Cells[0]
+	if cell.FailureStage != "" || cell.FailureCode != "" || cell.Error != nil {
+		t.Fatalf("successful cell retained failure metadata: %+v", cell)
+	}
+}
+
+func TestRenderMatrixReviewURLEncodesArtifactPaths(t *testing.T) {
+	dir := t.TempDir()
+	rawPath := filepath.Join(dir, "raw screenshots", "home image#1?.png")
+	result := &MatrixResult{RawDir: filepath.Join(dir, "raw screenshots"), Cells: []MatrixCellResult{{
+		ID: "phone|en-US|light|default", Status: MatrixCellSuccess,
+		RawPaths: []string{rawPath},
+	}}}
+	if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: result, OutputDir: dir}); err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "index.html"))
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+	html := string(data)
+	for _, want := range []string{`href="raw%20screenshots/home%20image%231%3F.png"`, `src="raw%20screenshots/home%20image%231%3F.png"`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML missing URL-encoded artifact path %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, `href="raw screenshots/home image#1?.png"`) {
+		t.Fatalf("HTML contains unescaped artifact path: %s", html)
 	}
 }
 
@@ -709,6 +903,9 @@ func TestRunMatrix_RetriesExecutionButNotValidation(t *testing.T) {
 	}
 	if attempts != 2 || result.Cells[0].Attempts != 2 || result.Cells[0].Status != MatrixCellSuccess {
 		t.Fatalf("attempts=%d cell=%+v", attempts, result.Cells[0])
+	}
+	if result.Cells[0].FailureStage != "" || result.Cells[0].FailureCode != "" || result.Cells[0].Error != nil {
+		t.Fatalf("successful retry retained failure metadata: %+v", result.Cells[0])
 	}
 }
 

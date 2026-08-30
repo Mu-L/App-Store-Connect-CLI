@@ -1,6 +1,7 @@
 package screenshots
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -259,12 +260,157 @@ func LoadMatrixPlan(path string) (*MatrixPlan, error) {
 	if len(data) > maxMatrixPlanBytes {
 		return nil, fmt.Errorf("%w: matrix plan exceeds the %d-byte size limit", ErrMatrixPlanRead, maxMatrixPlanBytes)
 	}
+	jsonData := jsonc.ToJSON(data)
+	if err := validateMatrixPlanJSONFields(jsonData); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrMatrixPlanParseJSON, err)
+	}
 	var plan MatrixPlan
-	if err := json.Unmarshal(jsonc.ToJSON(data), &plan); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(jsonData))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&plan); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrMatrixPlanParseJSON, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("%w: multiple JSON values", ErrMatrixPlanParseJSON)
+		}
 		return nil, fmt.Errorf("%w: %w", ErrMatrixPlanParseJSON, err)
 	}
 	plan.sourcePath, _ = filepath.Abs(path)
 	return &plan, nil
+}
+
+type matrixJSONScope string
+
+const (
+	matrixJSONScopePlan           matrixJSONScope = "plan"
+	matrixJSONScopeDevice         matrixJSONScope = "device"
+	matrixJSONScopeContentVariant matrixJSONScope = "content_variant"
+	matrixJSONScopeExecution      matrixJSONScope = "execution"
+	matrixJSONScopeOutput         matrixJSONScope = "output"
+	matrixJSONScopeFrame          matrixJSONScope = "frame"
+	matrixJSONScopeGeneric        matrixJSONScope = "generic"
+)
+
+var matrixJSONFieldScopes = map[matrixJSONScope]map[string]matrixJSONScope{
+	matrixJSONScopePlan: {
+		"version":          matrixJSONScopeGeneric,
+		"base_plan":        matrixJSONScopeGeneric,
+		"devices":          matrixJSONScopeDevice,
+		"locales":          matrixJSONScopeGeneric,
+		"appearances":      matrixJSONScopeGeneric,
+		"content_variants": matrixJSONScopeContentVariant,
+		"execution":        matrixJSONScopeExecution,
+		"output":           matrixJSONScopeOutput,
+	},
+	matrixJSONScopeDevice: {
+		"id":   matrixJSONScopeGeneric,
+		"udid": matrixJSONScopeGeneric,
+	},
+	matrixJSONScopeContentVariant: {
+		"id":               matrixJSONScopeGeneric,
+		"launch_arguments": matrixJSONScopeGeneric,
+	},
+	matrixJSONScopeExecution: {
+		"max_concurrency":  matrixJSONScopeGeneric,
+		"max_attempts":     matrixJSONScopeGeneric,
+		"retry_backoff_ms": matrixJSONScopeGeneric,
+		"retry_backoff":    matrixJSONScopeGeneric,
+	},
+	matrixJSONScopeOutput: {
+		"raw_dir":    matrixJSONScopeGeneric,
+		"framed_dir": matrixJSONScopeGeneric,
+		"review_dir": matrixJSONScopeGeneric,
+		"frame":      matrixJSONScopeFrame,
+	},
+	matrixJSONScopeFrame: {
+		"enabled":                 matrixJSONScopeGeneric,
+		"device_by_matrix_device": matrixJSONScopeGeneric,
+	},
+}
+
+// validateMatrixPlanJSONFields rejects duplicate keys and accepts only the
+// exact snake_case spelling of matrix-plan fields. encoding/json otherwise
+// accepts case-insensitive field matches and silently keeps the last duplicate
+// value, which makes operator typos and ambiguous plans unsafe to review.
+func validateMatrixPlanJSONFields(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := walkMatrixJSONValue(decoder, matrixJSONScopePlan); err != nil {
+		return err
+	}
+	return nil
+}
+
+func walkMatrixJSONValue(decoder *json.Decoder, scope matrixJSONScope) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, isDelim := token.(json.Delim)
+	if !isDelim {
+		return nil
+	}
+	switch delim {
+	case '{':
+		return walkMatrixJSONObject(decoder, scope)
+	case '[':
+		for decoder.More() {
+			if err := walkMatrixJSONValue(decoder, scope); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if end != json.Delim(']') {
+			return fmt.Errorf("matrix plan JSON array is malformed")
+		}
+		return nil
+	default:
+		return fmt.Errorf("matrix plan JSON value is malformed")
+	}
+}
+
+func walkMatrixJSONObject(decoder *json.Decoder, scope matrixJSONScope) error {
+	allowed := matrixJSONFieldScopes[scope]
+	seen := make(map[string]string)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("matrix plan JSON object key is malformed")
+		}
+		keyFolded := strings.ToLower(key)
+		if previous, exists := seen[keyFolded]; exists {
+			return fmt.Errorf("matrix plan contains duplicate fields %q and %q", previous, key)
+		}
+		childScope, exact := allowed[key]
+		if len(allowed) > 0 && !exact {
+			for expected := range allowed {
+				if strings.EqualFold(expected, key) {
+					return fmt.Errorf("matrix plan field %q must use exact spelling %q", key, expected)
+				}
+			}
+			return fmt.Errorf("matrix plan contains unknown field %q", key)
+		}
+		seen[keyFolded] = key
+		if err := walkMatrixJSONValue(decoder, childScope); err != nil {
+			return err
+		}
+	}
+	end, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if end != json.Delim('}') {
+		return fmt.Errorf("matrix plan JSON object is malformed")
+	}
+	return nil
 }
 
 // loadMatrixBasePlan loads a base screenshot plan from the matrix plan's
@@ -300,6 +446,12 @@ func loadMatrixBasePlan(matrixPath string, matrixPlan *MatrixPlan) (*Plan, error
 	data = jsonc.ToJSON(data)
 	if err := json.Unmarshal(data, &plan); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrPlanParseJSON, err)
+	}
+	// Keep the existing base-plan compatibility contract: omitted version
+	// fields are treated as v1. The matrix envelope itself remains strict and
+	// must explicitly declare version 1.
+	if plan.Version == 0 {
+		plan.Version = 1
 	}
 	if err := validatePlan(&plan); err != nil {
 		return nil, err
@@ -412,6 +564,10 @@ func removeMatrixTemporaryDir(outputRoot rootfs.Root, outputRootPath, path strin
 // ValidateMatrixPlan validates all matrix inputs that can be checked without
 // executing commands. The base plan must already be loaded and validated.
 func ValidateMatrixPlan(plan *MatrixPlan, base *Plan) error {
+	return validateMatrixPlan(plan, base, "")
+}
+
+func validateMatrixPlan(plan *MatrixPlan, base *Plan, outputBaseDir string) error {
 	if plan == nil {
 		return errors.New("matrix plan is required")
 	}
@@ -440,17 +596,19 @@ func ValidateMatrixPlan(plan *MatrixPlan, base *Plan) error {
 		if !isSafeMatrixPathComponent(device.ID) {
 			return fmt.Errorf("device id %q must be a unique safe path component", device.ID)
 		}
-		if _, exists := seenIDs[device.ID]; exists {
+		idKey := strings.ToLower(device.ID)
+		if _, exists := seenIDs[idKey]; exists {
 			return fmt.Errorf("device id %q must be unique", device.ID)
 		}
-		seenIDs[device.ID] = struct{}{}
+		seenIDs[idKey] = struct{}{}
 		if device.UDID == "" {
 			return fmt.Errorf("device %q udid is required", device.ID)
 		}
-		if _, exists := seenUDIDs[device.UDID]; exists {
+		udidKey := normalizeMatrixUDID(device.UDID)
+		if _, exists := seenUDIDs[udidKey]; exists {
 			return fmt.Errorf("device udid values must be unique")
 		}
-		seenUDIDs[device.UDID] = struct{}{}
+		seenUDIDs[udidKey] = struct{}{}
 	}
 
 	seenLocales := make(map[string]struct{}, len(plan.Locales))
@@ -486,10 +644,11 @@ func ValidateMatrixPlan(plan *MatrixPlan, base *Plan) error {
 		if !isSafeMatrixPathComponent(variant.ID) {
 			return fmt.Errorf("content variant id %q must be a unique safe path component", variant.ID)
 		}
-		if _, exists := seenContent[variant.ID]; exists {
+		contentKey := strings.ToLower(variant.ID)
+		if _, exists := seenContent[contentKey]; exists {
 			return fmt.Errorf("content variant id %q must be unique", variant.ID)
 		}
-		seenContent[variant.ID] = struct{}{}
+		seenContent[contentKey] = struct{}{}
 		if err := validateLiteralLaunchArguments(variant.LaunchArguments); err != nil {
 			return fmt.Errorf("content variant %q: %w", variant.ID, err)
 		}
@@ -517,7 +676,7 @@ func ValidateMatrixPlan(plan *MatrixPlan, base *Plan) error {
 			return errors.New("set only one of execution.retry_backoff or execution.retry_backoff_ms")
 		}
 	}
-	if err := validateMatrixOutputPaths(plan.Output); err != nil {
+	if err := validateMatrixOutputPaths(plan.Output, outputBaseDir); err != nil {
 		return err
 	}
 	if plan.Output.Frame.Enabled {
@@ -534,7 +693,7 @@ func ValidateMatrixPlan(plan *MatrixPlan, base *Plan) error {
 	return nil
 }
 
-func validateMatrixOutputPaths(output MatrixOutput) error {
+func validateMatrixOutputPaths(output MatrixOutput, baseDir string) error {
 	rawDir := output.RawDir
 	if strings.TrimSpace(rawDir) == "" {
 		rawDir = defaultMatrixRawDir
@@ -555,14 +714,25 @@ func validateMatrixOutputPaths(output MatrixOutput) error {
 	}
 	for i := range paths {
 		for j := i + 1; j < len(paths); j++ {
-			left, _ := filepath.Abs(paths[i].path)
-			right, _ := filepath.Abs(paths[j].path)
-			if filepath.Clean(left) == filepath.Clean(right) {
+			left := resolveMatrixValidationPath(baseDir, paths[i].path)
+			right := resolveMatrixValidationPath(baseDir, paths[j].path)
+			if strings.EqualFold(filepath.Clean(left), filepath.Clean(right)) {
 				return fmt.Errorf("output.%s and output.%s must be different directories", paths[i].name, paths[j].name)
 			}
 		}
 	}
 	return nil
+}
+
+func resolveMatrixValidationPath(baseDir, path string) string {
+	if baseDir != "" {
+		return resolveMatrixArtifactPath(baseDir, path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(abs)
 }
 
 func validateMatrixBaseScreenshots(base *Plan) error {
@@ -575,10 +745,11 @@ func validateMatrixBaseScreenshots(base *Plan) error {
 		if !isSafeMatrixPathComponent(name) {
 			return fmt.Errorf("base plan screenshot at steps[%d] has unsafe name %q", i+1, name)
 		}
-		if _, exists := seen[name]; exists {
+		nameKey := strings.ToLower(name)
+		if _, exists := seen[nameKey]; exists {
 			return fmt.Errorf("base plan screenshot name %q must be unique", name)
 		}
-		seen[name] = struct{}{}
+		seen[nameKey] = struct{}{}
 	}
 	if len(seen) == 0 {
 		return errors.New("base plan must contain at least one screenshot step")
@@ -592,7 +763,11 @@ func validateMatrixBaseScreenshots(base *Plan) error {
 // ExpandMatrix returns cells in declaration order: device, locale, appearance,
 // then content variant. Paths are logical paths until RunMatrix resolves them.
 func ExpandMatrix(plan *MatrixPlan, base *Plan) ([]MatrixCell, error) {
-	if err := ValidateMatrixPlan(plan, base); err != nil {
+	return expandMatrix(plan, base, "")
+}
+
+func expandMatrix(plan *MatrixPlan, base *Plan, outputBaseDir string) ([]MatrixCell, error) {
+	if err := validateMatrixPlan(plan, base, outputBaseDir); err != nil {
 		return nil, err
 	}
 	rawDir := plan.Output.RawDir
@@ -668,22 +843,22 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	if strings.TrimSpace(matrixPlan.BasePlan) == "" {
 		return nil, newMatrixValidationError(errors.New("base_plan is required"))
 	}
+	baseDir := matrixPlanSourceDir(matrixPath, matrixPlan.sourcePath)
 	base, err := loadMatrixBasePlan(matrixPath, matrixPlan)
 	if err != nil {
 		return nil, newMatrixValidationError(fmt.Errorf("load base plan: %w", err))
 	}
-	if err := ValidateMatrixPlan(matrixPlan, base); err != nil {
+	if err := validateMatrixPlan(matrixPlan, base, baseDir); err != nil {
 		return nil, newMatrixValidationError(err)
 	}
 	concurrency, attempts, backoff, err := resolveMatrixExecution(matrixPlan.Execution, options)
 	if err != nil {
 		return nil, newMatrixValidationError(err)
 	}
-	cells, err := ExpandMatrix(matrixPlan, base)
+	cells, err := expandMatrix(matrixPlan, base, baseDir)
 	if err != nil {
 		return nil, newMatrixValidationError(err)
 	}
-	baseDir := matrixPlanSourceDir(matrixPath, matrixPlan.sourcePath)
 	for i := range cells {
 		cells[i].RawDir = resolveMatrixArtifactPath(baseDir, cells[i].RawDir)
 		cells[i].FramedDir = resolveMatrixArtifactPath(baseDir, cells[i].FramedDir)
@@ -737,11 +912,10 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	if deps.Appearance == nil {
 		deps.Appearance = &simctlMatrixAppearance{}
 	}
-	if deps.CheckDevice == nil && useDefaultDeviceCheck {
-		deps.CheckDevice = checkMatrixDevice
-	}
 	deviceFailures := make(map[string]struct{})
-	if deps.CheckDevice != nil {
+	if deps.CheckDevice == nil && useDefaultDeviceCheck {
+		deviceFailures = checkMatrixDevices(ctx, matrixPlan)
+	} else if deps.CheckDevice != nil {
 		for _, device := range matrixPlan.Devices {
 			if err := deps.CheckDevice(ctx, device); err != nil {
 				deviceFailures[device.ID] = struct{}{}
@@ -833,8 +1007,9 @@ func executeMatrixCells(ctx context.Context, cells []MatrixCell, deviceFailures 
 	var workers sync.WaitGroup
 	guards := make(map[string]*matrixSimulatorGuard)
 	for _, cell := range cells {
-		if _, ok := guards[cell.UDID]; !ok {
-			guards[cell.UDID] = &matrixSimulatorGuard{}
+		guardKey := normalizeMatrixUDID(cell.UDID)
+		if _, ok := guards[guardKey]; !ok {
+			guards[guardKey] = &matrixSimulatorGuard{}
 		}
 	}
 	workerCount := concurrency
@@ -852,7 +1027,7 @@ func executeMatrixCells(ctx context.Context, cells []MatrixCell, deviceFailures 
 				if _, failed := deviceFailures[cells[index].Device]; failed {
 					continue
 				}
-				cellResult := executeMatrixCell(ctx, cells[index], base, matrixPlan, attempts, backoff, deps, outputRoots, guards[cells[index].UDID])
+				cellResult := executeMatrixCell(ctx, cells[index], base, matrixPlan, attempts, backoff, deps, outputRoots, guards[normalizeMatrixUDID(cells[index].UDID)])
 				result.Cells[index] = cellResult
 			}
 		}()
@@ -954,6 +1129,9 @@ func executeMatrixCell(ctx context.Context, cell MatrixCell, base *Plan, matrixP
 		}
 		if attemptErr == nil {
 			result.Status = MatrixCellSuccess
+			result.FailureStage = ""
+			result.FailureCode = ""
+			result.Error = nil
 			result.FramedPaths = append([]string(nil), attemptResult.FramedPaths...)
 			break
 		}
@@ -1457,46 +1635,123 @@ func frameDeviceFamily(device FrameDevice) string {
 	return "iphone"
 }
 
-func checkMatrixDevice(ctx context.Context, device MatrixDevice) error {
+type matrixSimulatorDevice struct {
+	UDID                 string `json:"udid"`
+	State                string `json:"state"`
+	IsAvailable          bool   `json:"isAvailable"`
+	Name                 string `json:"name"`
+	DeviceTypeIdentifier string `json:"deviceTypeIdentifier"`
+}
+
+func readMatrixSimulatorInventory(ctx context.Context) ([]matrixSimulatorDevice, error) {
 	command := exec.CommandContext(ctx, "xcrun", "simctl", "list", "devices", "--json")
 	var output cappedMatrixBuffer
 	output.limit = maxMatrixInventoryBytes
 	command.Stdout = &output
 	command.Stderr = io.Discard
 	err := command.Run()
-	if err != nil {
-		return errors.New("simulator inventory could not be read")
-	}
 	if output.exceeded {
-		return errors.New("simulator inventory exceeded the output size limit")
+		return nil, errors.New("simulator inventory exceeded the output size limit")
+	}
+	if err != nil {
+		return nil, errors.New("simulator inventory could not be read")
 	}
 	out := output.Bytes()
 	var inventory struct {
-		Devices map[string][]struct {
-			UDID        string `json:"udid"`
-			State       string `json:"state"`
-			IsAvailable bool   `json:"isAvailable"`
-		} `json:"devices"`
+		Devices map[string][]matrixSimulatorDevice `json:"devices"`
 	}
 	if err := json.Unmarshal(out, &inventory); err != nil {
-		return errors.New("simulator inventory was invalid")
+		return nil, errors.New("simulator inventory was invalid")
 	}
-	wanted := strings.TrimSpace(device.UDID)
-	for _, devices := range inventory.Devices {
-		for _, candidate := range devices {
-			if !strings.EqualFold(strings.TrimSpace(candidate.UDID), wanted) {
-				continue
-			}
-			if !candidate.IsAvailable {
-				return errors.New("simulator is unavailable")
-			}
-			if !strings.EqualFold(strings.TrimSpace(candidate.State), "booted") {
-				return errors.New("simulator is not booted")
-			}
-			return nil
+	devices := make([]matrixSimulatorDevice, 0)
+	for _, runtimeDevices := range inventory.Devices {
+		devices = append(devices, runtimeDevices...)
+	}
+	return devices, nil
+}
+
+func checkMatrixDevice(ctx context.Context, device MatrixDevice) error {
+	devices, err := readMatrixSimulatorInventory(ctx)
+	if err != nil {
+		return err
+	}
+	wanted := normalizeMatrixUDID(device.UDID)
+	for _, candidate := range devices {
+		if normalizeMatrixUDID(candidate.UDID) != wanted {
+			continue
 		}
+		return validateMatrixSimulatorDevice(candidate)
 	}
 	return errors.New("simulator was not found")
+}
+
+func checkMatrixDevices(ctx context.Context, plan *MatrixPlan) map[string]struct{} {
+	failures := make(map[string]struct{})
+	devices, inventoryErr := readMatrixSimulatorInventory(ctx)
+	for _, device := range plan.Devices {
+		if inventoryErr != nil {
+			failures[device.ID] = struct{}{}
+			continue
+		}
+		candidate, found := findMatrixSimulatorDevice(devices, device.UDID)
+		if !found || validateMatrixSimulatorDevice(candidate) != nil {
+			failures[device.ID] = struct{}{}
+			continue
+		}
+		if plan.Output.Frame.Enabled {
+			frame := plan.Output.Frame.DeviceByMatrixDevice[device.ID]
+			if validateMatrixFrameMappingForSimulator(device.ID, frame, candidate) != nil {
+				failures[device.ID] = struct{}{}
+			}
+		}
+	}
+	return failures
+}
+
+func findMatrixSimulatorDevice(devices []matrixSimulatorDevice, udid string) (matrixSimulatorDevice, bool) {
+	wanted := normalizeMatrixUDID(udid)
+	for _, device := range devices {
+		if normalizeMatrixUDID(device.UDID) == wanted {
+			return device, true
+		}
+	}
+	return matrixSimulatorDevice{}, false
+}
+
+func validateMatrixSimulatorDevice(device matrixSimulatorDevice) error {
+	if !device.IsAvailable {
+		return errors.New("simulator is unavailable")
+	}
+	if !strings.EqualFold(strings.TrimSpace(device.State), "booted") {
+		return errors.New("simulator is not booted")
+	}
+	return nil
+}
+
+func validateMatrixFrameMappingForSimulator(matrixDevice, frame string, simulator matrixSimulatorDevice) error {
+	parsed, err := ParseFrameDevice(frame)
+	if err != nil {
+		return fmt.Errorf("device %q: %w", matrixDevice, err)
+	}
+	actualFamily := matrixSimulatorFamily(simulator)
+	if actualFamily == "unknown" {
+		return fmt.Errorf("device %q simulator family is unknown", matrixDevice)
+	}
+	if actualFamily == "ipad" {
+		return fmt.Errorf("device %q has no supported same-device frame mapping", matrixDevice)
+	}
+	if actualFamily != frameDeviceFamily(parsed) {
+		return fmt.Errorf("device %q frame family does not match simulator model", matrixDevice)
+	}
+	return nil
+}
+
+func matrixSimulatorFamily(device matrixSimulatorDevice) string {
+	return matrixDeviceFamily(device.Name + " " + device.DeviceTypeIdentifier)
+}
+
+func normalizeMatrixUDID(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 type cappedMatrixBuffer struct {
