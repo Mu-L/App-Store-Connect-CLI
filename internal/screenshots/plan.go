@@ -76,9 +76,10 @@ type Plan struct {
 
 // PlanApp contains app/simulator defaults for a run.
 type PlanApp struct {
-	BundleID  string `json:"bundle_id"`
-	UDID      string `json:"udid,omitempty"`
-	OutputDir string `json:"output_dir,omitempty"`
+	BundleID        string   `json:"bundle_id"`
+	UDID            string   `json:"udid,omitempty"`
+	OutputDir       string   `json:"output_dir,omitempty"`
+	LaunchArguments []string `json:"launch_arguments,omitempty"`
 }
 
 // PlanDefaults defines default timing behavior.

@@ -27,6 +27,7 @@ https://github.com/rorkai/App-Store-Connect-CLI/issues/new/choose
 
 Local workflow (experimental):
   asc screenshots run --plan .asc/screenshots.json
+  asc screenshots matrix --plan .asc/screenshots-matrix.json
   asc screenshots capture --bundle-id "com.example.app" --name home
   asc screenshots frame --input ./screenshots/raw/home.png --device iphone-air
   asc screenshots review-generate --framed-dir ./screenshots/framed
@@ -55,6 +56,7 @@ default; use --all only when you need the full matrix.`,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
 			shots.ShotsRunCommand(),
+			shots.ShotsMatrixCommand(),
 			shots.ShotsCaptureCommand(),
 			shots.ShotsFrameCommand(),
 			shots.ShotsFramesListDevicesCommand(),

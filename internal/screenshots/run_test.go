@@ -105,9 +105,10 @@ cp "$AXE_TEMPLATE_PNG" "$out"
 	plan := &Plan{
 		Version: 1,
 		App: PlanApp{
-			BundleID:  "com.example.app",
-			UDID:      "SIM-UDID-123",
-			OutputDir: t.TempDir(),
+			BundleID:        "com.example.app",
+			UDID:            "SIM-UDID-123",
+			OutputDir:       t.TempDir(),
+			LaunchArguments: []string{"--fixture", "empty"},
 		},
 		Steps: []PlanStep{
 			{Action: ActionLaunch},
@@ -132,7 +133,7 @@ cp "$AXE_TEMPLATE_PNG" "$out"
 	if len(lines) != 1 {
 		t.Fatalf("expected exactly one app launch, got %d (%q)", len(lines), string(xcrunArgs))
 	}
-	if !strings.Contains(lines[0], "simctl launch SIM-UDID-123 com.example.app") {
+	if !strings.Contains(lines[0], "simctl launch SIM-UDID-123 com.example.app --fixture empty") {
 		t.Fatalf("unexpected launch args %q", lines[0])
 	}
 

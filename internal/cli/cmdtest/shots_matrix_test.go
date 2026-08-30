@@ -1,0 +1,145 @@
+package cmdtest
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"image"
+	"image/png"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/screenshots"
+)
+
+func TestShotsMatrix_Registered(t *testing.T) {
+	root := RootCommand("1.2.3")
+	missing := filepath.Join(t.TempDir(), "matrix.json")
+	if err := root.Parse([]string{"screenshots", "matrix", "--plan", missing}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	_, stderr := captureOutput(t, func() {
+		if err := root.Run(context.Background()); !errors.Is(err, screenshots.ErrMatrixPlanRead) {
+			t.Fatalf("expected missing matrix plan error, got %v", err)
+		}
+	})
+	if !strings.Contains(stderr, "Error:") {
+		t.Fatalf("expected a usage diagnostic, got %q", stderr)
+	}
+}
+
+func TestShotsMatrix_InvalidConcurrencyIsUsageError(t *testing.T) {
+	root := RootCommand("1.2.3")
+	if err := root.Parse([]string{"screenshots", "matrix", "--plan", filepath.Join(t.TempDir(), "matrix.json"), "--max-concurrency", "9"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	_, stderr := captureOutput(t, func() {
+		err := root.Run(context.Background())
+		if !isUsageClassError(err) {
+			t.Fatalf("expected usage error, got %v", err)
+		}
+	})
+	if !strings.Contains(stderr, "--max-concurrency must be between 1 and 8") {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
+func TestShotsMatrix_LocalFakeRunProducesResultAndReview(t *testing.T) {
+	binDir := t.TempDir()
+	templatePNG := filepath.Join(t.TempDir(), "template.png")
+	writeShotsMatrixPNG(t, templatePNG)
+	writeShotsMatrixExecutable(t, filepath.Join(binDir, "xcrun"), `#!/bin/sh
+set -eu
+if [ "$1" = "simctl" ] && [ "$2" = "list" ]; then
+  printf '%s\n' '{"devices":{"runtime":[{"udid":"SIM-UDID","state":"Booted","isAvailable":true}]}}'
+  exit 0
+fi
+exit 0
+`)
+	writeShotsMatrixExecutable(t, filepath.Join(binDir, "axe"), `#!/bin/sh
+set -eu
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then out="$2"; break; fi
+  shift
+done
+cp "$AXE_TEMPLATE_PNG" "$out"
+`)
+	t.Setenv("AXE_TEMPLATE_PNG", templatePNG)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	rawDir := filepath.Join(dir, "raw")
+	reviewDir := filepath.Join(dir, "review")
+	writeShotsMatrixFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"launch"},{"action":"screenshot","name":"home"}]}`)
+	writeShotsMatrixFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"`+rawDir+`","review_dir":"`+reviewDir+`"}}`)
+
+	root := RootCommand("1.2.3")
+	if err := root.Parse([]string{"screenshots", "matrix", "--plan", matrixPath, "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+	var result struct {
+		Status     string `json:"status"`
+		TotalCells int    `json:"total_cells"`
+		Review     struct {
+			ManifestPath string `json:"manifest_path"`
+			HTMLPath     string `json:"html_path"`
+		} `json:"review"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("unmarshal result: %v\nstdout=%s", err, stdout)
+	}
+	if result.Status != "success" || result.TotalCells != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	for _, path := range []string{result.Review.ManifestPath, result.Review.HTMLPath, filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected artifact %q: %v", path, err)
+		}
+	}
+	manifest, err := os.ReadFile(result.Review.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if strings.Contains(string(manifest), "SIM-UDID") || strings.Contains(string(manifest), "AppleLocale") {
+		t.Fatalf("manifest leaked execution details: %s", manifest)
+	}
+}
+
+func writeShotsMatrixFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func writeShotsMatrixExecutable(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
+}
+
+func writeShotsMatrixPNG(t *testing.T, path string) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create PNG: %v", err)
+	}
+	defer file.Close()
+	if err := png.Encode(file, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatalf("encode PNG: %v", err)
+	}
+}

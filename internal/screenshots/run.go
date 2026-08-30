@@ -71,7 +71,7 @@ func RunPlan(ctx context.Context, plan *Plan) (*RunResult, error) {
 			Status: "ok",
 		}
 
-		if err := runStep(ctx, action, step, plan.App.BundleID, udid, absOutputDir); err != nil {
+		if err := runStep(ctx, action, step, plan.App.BundleID, plan.App.LaunchArguments, udid, absOutputDir); err != nil {
 			stepResult.Status = "error"
 			stepResult.Error = err.Error()
 			stepResult.DurationMS = time.Since(start).Milliseconds()
@@ -92,10 +92,12 @@ func RunPlan(ctx context.Context, plan *Plan) (*RunResult, error) {
 	return result, nil
 }
 
-func runStep(ctx context.Context, action StepAction, step PlanStep, bundleID, udid, outputDir string) error {
+func runStep(ctx context.Context, action StepAction, step PlanStep, bundleID string, launchArguments []string, udid, outputDir string) error {
 	switch action {
 	case ActionLaunch:
-		return runExternal(ctx, "xcrun", "simctl", "launch", udid, bundleID)
+		args := []string{"simctl", "launch", udid, bundleID}
+		args = append(args, launchArguments...)
+		return runExternal(ctx, "xcrun", args...)
 	case ActionTap:
 		return runTapStep(ctx, step, udid)
 	case ActionType:

@@ -377,6 +377,18 @@ asc screenshots upload --version-localization "VERSION_LOCALIZATION_ID" --path "
 `VERSION_LOCALIZATION_ID` is the App Store version localization resource ID
 from `data[].id`, not the locale code from `attributes.locale`.
 
+For local capture coverage across multiple devices, locales, appearances, and
+content fixtures, use an experimental matrix plan. Targets must already be
+booted simulators; the command writes raw artifacts and an offline review
+report, without uploading to App Store Connect:
+
+```bash
+asc screenshots matrix --plan .asc/screenshots-matrix.json --max-concurrency 2 --output json --pretty
+```
+
+See [docs/design/screenshots-matrix.md](docs/design/screenshots-matrix.md) for
+the JSONC schema, isolated output layout, retry behavior, and review contract.
+
 ### Signing and bundle IDs
 
 ```bash
