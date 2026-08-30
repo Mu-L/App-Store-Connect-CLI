@@ -972,7 +972,7 @@ func signingProjectInputPaths(
 	}
 	for _, files := range configFiles {
 		for _, filePath := range files {
-			data, err := os.ReadFile(filePath)
+			data, err := readSigningRegularFile(filePath, signingPlanMaxBytes)
 			if err != nil {
 				continue
 			}
