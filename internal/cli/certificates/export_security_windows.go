@@ -268,6 +268,7 @@ func certificateExportVerifyProtectedDACL(descriptor *windows.SECURITY_DESCRIPTO
 	}
 	trustedSystem, trustedAdministrators := certificateExportTrustedSIDs()
 	currentUserEntries := 0
+	var currentUserAccess uint32
 	for index := uint16(0); index < dacl.AceCount; index++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, uint32(index), &ace); err != nil {
@@ -282,11 +283,7 @@ func certificateExportVerifyProtectedDACL(descriptor *windows.SECURITY_DESCRIPTO
 		}
 		if aceSID.Equals(currentUser) {
 			currentUserEntries++
-			mask := uint32(ace.Mask)
-			required := uint32(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE)
-			if mask&required != required {
-				return fmt.Errorf("current user cannot read and write the file")
-			}
+			currentUserAccess |= uint32(ace.Mask)
 			continue
 		}
 		if allowTrustedSystemEntries && ((trustedSystem != nil && aceSID.Equals(trustedSystem)) || (trustedAdministrators != nil && aceSID.Equals(trustedAdministrators))) {
@@ -299,6 +296,18 @@ func certificateExportVerifyProtectedDACL(descriptor *windows.SECURITY_DESCRIPTO
 	}
 	if !allowTrustedSystemEntries && currentUserEntries != 1 {
 		return fmt.Errorf("DACL contains duplicate current-user entries")
+	}
+	if allowTrustedSystemEntries {
+		// Inputs are only read, so a hardened read-only key or password file
+		// (the Windows analog of Unix mode 0400) stays usable.
+		if currentUserAccess&uint32(windows.FILE_GENERIC_READ) != uint32(windows.FILE_GENERIC_READ) {
+			return fmt.Errorf("current user cannot read the file")
+		}
+		return nil
+	}
+	required := uint32(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE)
+	if currentUserAccess&required != required {
+		return fmt.Errorf("current user cannot read and write the file")
 	}
 	return nil
 }
