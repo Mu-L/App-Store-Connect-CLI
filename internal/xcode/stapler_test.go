@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -841,6 +842,32 @@ func TestStaplerReportsMissingXcrunWithoutStartingChild(t *testing.T) {
 	}
 }
 
+func TestStaplerRedactsNonNotFoundXcrunLookupFailure(t *testing.T) {
+	previousOS := runtimeGOOS
+	runtimeGOOS = "darwin"
+	t.Cleanup(func() { runtimeGOOS = previousOS })
+	const canary = "STAPLER_LOOKUP_PATH_CANARY_2242"
+	wantErr := errors.New("lookpath /private/tmp/" + canary + "/xcrun: permission denied")
+	previousLookPath := lookPathFn
+	lookPathFn = func(string) (string, error) { return "", wantErr }
+	t.Cleanup(func() { lookPathFn = previousLookPath })
+
+	result, err := Staple(context.Background(), "/tmp/MyApp.dmg", nil)
+	if result != nil {
+		t.Fatalf("Staple() result = %#v, want nil", result)
+	}
+	if err == nil || !errors.Is(err, wantErr) {
+		t.Fatalf("Staple() error = %v, want lookup cause", err)
+	}
+	var resolutionErr *StaplerResolutionError
+	if !errors.As(err, &resolutionErr) {
+		t.Fatalf("Staple() error = %T %v, want StaplerResolutionError", err, err)
+	}
+	if strings.Contains(err.Error(), canary) || strings.Contains(err.Error(), "/private/tmp/") {
+		t.Fatalf("Staple() error = %q, must redact lookup path", err.Error())
+	}
+}
+
 func TestStaplerPreservesResolutionExitStatus(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -1007,6 +1034,21 @@ func TestStaplerHelperProcess(t *testing.T) {
 				}
 			}
 		}
+		if os.Getenv("ASC_STAPLER_"+strings.ToUpper(args[2])+"_SIGNAL") == "1" {
+			process, err := os.FindProcess(os.Getpid())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			if err := process.Signal(os.Interrupt); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			// Keep the helper bounded if a platform ignores Interrupt. The
+			// test is skipped on platforms where child interruption is absent.
+			time.Sleep(100 * time.Millisecond)
+			os.Exit(125)
+		}
 		if output := os.Getenv("ASC_STAPLER_" + strings.ToUpper(args[2]) + "_STDOUT"); output != "" {
 			fmt.Fprint(os.Stdout, output)
 		}
@@ -1118,6 +1160,59 @@ func TestStapleWithVerifierMarksCancellationDuringInitialStapleAsPartialMutation
 	})
 }
 
+func TestStapleWithVerifierPreservesInterruptedWhenPostStapleVerifierAlsoFails(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_WAIT", "1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	verifierErr := errors.New("target changed after interrupted staple")
+	type outcome struct {
+		result *StaplerResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := StapleWithVerifier(ctx, target, nil, func(operation StaplerOperation, before bool) error {
+			if operation == StaplerOperationStaple && !before {
+				return verifierErr
+			}
+			return nil
+		})
+		done <- outcome{result: result, err: err}
+	}()
+	waitForStaplerCommand(t, logPath, "xcrun|stapler|staple|")
+	cancel()
+
+	select {
+	case got := <-done:
+		if got.result != nil {
+			t.Fatalf("StapleWithVerifier() result = %#v, want nil after cancellation", got.result)
+		}
+		if !errors.Is(got.err, context.Canceled) || !errors.Is(got.err, verifierErr) {
+			t.Fatalf("StapleWithVerifier() error = %v, want cancellation and verifier causes", got.err)
+		}
+		var partialErr *StaplerPartialMutationError
+		if !errors.As(got.err, &partialErr) || partialErr.Operation != StaplerOperationStaple {
+			t.Fatalf("StapleWithVerifier() error = %T %v, want initial-staple partial marker", got.err, got.err)
+		}
+		if !partialErr.Interrupted || !strings.Contains(got.err.Error(), "staple was interrupted") {
+			t.Fatalf("StapleWithVerifier() error = %v, want interrupted-staple classification", got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StapleWithVerifier() did not return after cancellation")
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|staple|" + target,
+	})
+}
+
 func TestStapleWithVerifierMarksDeadlineDuringInitialStapleAsPartialMutation(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -1163,6 +1258,51 @@ func TestStapleWithVerifierMarksDeadlineDuringInitialStapleAsPartialMutation(t *
 		"xcrun|--find|stapler",
 		"xcrun|stapler|staple|" + target,
 	})
+}
+
+func TestStapleWithVerifierMarksSignalDuringInitialStapleAsPartialMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Interrupt is not implemented for child processes on Windows")
+	}
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_STAPLE_SIGNAL", "1")
+
+	result, err := StapleWithVerifier(context.Background(), target, nil, nil)
+	if result != nil {
+		t.Fatalf("StapleWithVerifier() result = %#v, want nil after signal termination", result)
+	}
+	var partialErr *StaplerPartialMutationError
+	if !errors.As(err, &partialErr) || partialErr.Operation != StaplerOperationStaple {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want initial-staple partial marker", err, err)
+	}
+	if !partialErr.Interrupted || !strings.Contains(err.Error(), "staple was interrupted") {
+		t.Fatalf("StapleWithVerifier() error = %v, want interrupted-staple classification", err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationStaple) || commandErr.ExitCode != -1 {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want signaled staple command cause", err, err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || !staplerExitWasSignaled(exitErr) {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want signaled child cause", err, err)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|staple|" + target,
+	})
+}
+
+func staplerExitWasSignaled(exitErr *exec.ExitError) bool {
+	if exitErr == nil || exitErr.ProcessState == nil {
+		return false
+	}
+	status, ok := exitErr.Sys().(interface{ Signaled() bool })
+	return ok && status.Signaled()
 }
 
 func TestStapleWithVerifierCancellationBeforeInitialChildStartIsNotPartial(t *testing.T) {

@@ -82,6 +82,23 @@ child observed the original artifact, so the reported state matches what was
 inspected. A verifier failure is returned as a typed stage error that keeps the
 caller's cause available for classification.
 
+Directory bundles receive an additional bounded content binding at the command
+boundary. After a successful staple child and before the follow-up validation
+child, the command captures a private inventory of the bundle; validation-only
+captures one immediately before its child. The inventory is a deterministic
+SHA-256 over every relative entry's kind, normalized relative path, permission
+mode, size, and file SHA-256, together with total byte and entry counts. The
+scanner is rooted at the already pinned filesystem root, opens directories and
+files without following final symlinks, rejects symlinks and special files, and
+rechecks each entry's identity, size, and mode after reading it. It checks the
+active context between entries and reads and fails closed at bounded path,
+entry, and total-byte limits. A second inventory is required after validation;
+any mismatch is an unverified artifact change and cannot produce success. The
+inventory is comparison evidence only: paths, names, digests, and raw scanner
+causes never enter public output or telemetry. Extended attributes and
+filesystem ACLs remain outside this content digest and are not represented as
+unchanged by it.
+
 A stage boundary distinguishes a proven replacement from a boundary that could
 not be evaluated. A `SameFile` mismatch, a vanished target, a kind flip, or a
 replacement by a symlink is reported as a changed artifact and names the stage;
@@ -99,6 +116,8 @@ and cancellation failures retain the ordinary generic runtime mapping. A start
 or signal failure represented by the typed runner error keeps its underlying
 cause for internal classification but emits only a stable stage diagnostic, so
 an executable or temporary path from the operating system is not exposed.
+Non-NotFound `xcrun` lookup failures use the same closed resolution-stage
+diagnostic while retaining the lookup cause internally.
 
 Successful computed output is represented by exported structs in
 `internal/asc/output_notary.go` and registered with the normal output registry:
@@ -142,7 +161,12 @@ commands. Runner tests cover exact argv, path preservation, tool resolution,
 stdout/stderr routing, child status preservation, staple-then-validate
 ordering, validation-only behavior, cancellation, unsupported hosts, and
 missing tools. Filesystem tests cover final and parent symlinks, missing,
-special, empty, regular-file, and directory-bundle targets.
+special, empty, regular-file, and directory-bundle targets. Directory-bundle
+tests additionally cover nested replacement before and after validation, stable
+inventories, symlinks, special files, cancellation during scanning, and
+entry/byte/path bounds. Signal termination after the staple child starts is
+classified as a partial mutation and retains its internal process cause while
+emitting only the unverified warning.
 
 After focused tests pass, verify a built binary's help, output streams, and
 usage status. Run `make build`, `make format`, `make generate-command-docs`,
@@ -182,4 +206,7 @@ The wrapper keeps the validated target identity anchored through each local
 stage, but Apple's stapler accepts a pathname rather than the wrapper's open
 descriptor. A concurrent replacement can still occur after an identity check
 and before or during the child process; the wrapper detects replacements at the
-stage boundaries and cannot eliminate that provider/path-based TOCTOU window.
+stage boundaries and the bounded directory inventory detects content changes
+between those boundaries, but neither can eliminate the provider/path-based
+TOCTOU window during the child itself. A regular-file target has no recursive
+inventory and remains protected by descriptor and outer identity checks only.

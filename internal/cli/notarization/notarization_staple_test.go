@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -1288,6 +1289,61 @@ func TestNotarizationStapleRejectsTargetIdentityChangeAfterRunner(t *testing.T) 
 	}
 }
 
+func TestNotarizationStapleRejectsNestedReplacementBeforeValidation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.app")
+	nested := filepath.Join(target, "Contents", "Info.plist")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+		t.Fatalf("create bundle contents: %v", err)
+	}
+	if err := os.WriteFile(nested, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+	previous := runStaplerStaple
+	validationChildCalls := 0
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := verifier(localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		if err := verifier(localxcode.StaplerOperationStaple, false); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(nested, []byte("replacement"), 0o600); err != nil {
+			t.Fatalf("replace nested file: %v", err)
+		}
+		if err := verifier(localxcode.StaplerOperationValidate, true); err != nil {
+			return nil, err
+		}
+		validationChildCalls++
+		if err := verifier(localxcode.StaplerOperationValidate, false); err != nil {
+			return nil, err
+		}
+		return &localxcode.StaplerResult{Path: path, Operation: string(localxcode.StaplerOperationStaple), Stapled: true, Validated: true}, nil
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("command error = nil, want nested replacement failure")
+	}
+	if validationChildCalls != 0 {
+		t.Fatalf("validation child calls = %d, want zero after nested preflight mismatch", validationChildCalls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed") || !strings.Contains(stderr, "before validation") {
+		t.Fatalf("stderr = %q, want stable nested-mismatch stage", stderr)
+	}
+	if strings.Contains(stderr, target) || strings.Contains(stderr, "Info.plist") {
+		t.Fatalf("stderr = %q, must not expose nested path", stderr)
+	}
+}
+
 func TestNotarizationValidateRejectsTargetIdentityChangeAfterRunner(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.pkg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -1857,6 +1913,55 @@ func TestNotarizationStapleInterruptedDuringInitialChildDoesNotClaimCompletion(t
 	}
 }
 
+func TestNotarizationStapleSignalDuringInitialChildReportsUnverified(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Interrupt is not implemented for child processes on Windows")
+	}
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previous := runStaplerStaple
+	runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		return nil, &localxcode.StaplerPartialMutationError{
+			Operation:   localxcode.StaplerOperationStaple,
+			Interrupted: true,
+			Err: &localxcode.StaplerCommandError{
+				Operation: string(localxcode.StaplerOperationStaple),
+				ExitCode:  -1,
+				Err:       errors.New("stapler child terminated by signal"),
+			},
+		}
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("command error = nil, want signaled staple failure")
+	}
+	var partialErr *localxcode.StaplerPartialMutationError
+	if !errors.As(runErr, &partialErr) || !partialErr.Interrupted {
+		t.Fatalf("command error = %T %v, want interrupted partial marker", runErr, runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "staple was interrupted") || !strings.Contains(stderr, "not verified") {
+		t.Fatalf("stderr = %q, want interrupted-staple warning", stderr)
+	}
+	if strings.Contains(stderr, "staple completed") || strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not claim completion or expose target path", stderr)
+	}
+}
+
 func TestNotarizationStaplePostStapleVerifierFailureReportsUnverified(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -1897,6 +2002,88 @@ func TestNotarizationStaplePostStapleVerifierFailureReportsUnverified(t *testing
 	}
 	if strings.Contains(stderr, target) {
 		t.Fatalf("stderr = %q, must not expose target path", stderr)
+	}
+}
+
+func TestNotarizationValidateRejectsNestedReplacementAfterChild(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.app")
+	nested := filepath.Join(target, "Contents", "Info.plist")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+		t.Fatalf("create bundle contents: %v", err)
+	}
+	if err := os.WriteFile(nested, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+	previous := runStaplerValidate
+	runStaplerValidate = func(_ context.Context, path string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := verifier(localxcode.StaplerOperationValidate, true); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(nested, []byte("replacement"), 0o600); err != nil {
+			t.Fatalf("replace nested file: %v", err)
+		}
+		if err := verifier(localxcode.StaplerOperationValidate, false); err != nil {
+			return nil, err
+		}
+		return &localxcode.StaplerResult{Path: path, Operation: string(localxcode.StaplerOperationValidate), Validated: true}, nil
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("command error = nil, want nested replacement failure")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed") || !strings.Contains(stderr, "after validation") {
+		t.Fatalf("stderr = %q, want stable nested-mismatch stage", stderr)
+	}
+	if strings.Contains(stderr, target) || strings.Contains(stderr, "Info.plist") {
+		t.Fatalf("stderr = %q, must not expose nested path", stderr)
+	}
+}
+
+func TestNotarizationValidateDirectoryBundleWithStableNestedInventorySucceeds(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.app")
+	nested := filepath.Join(target, "Contents", "Info.plist")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+		t.Fatalf("create bundle contents: %v", err)
+	}
+	if err := os.WriteFile(nested, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+	previous := runStaplerValidate
+	runStaplerValidate = func(_ context.Context, path string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := verifier(localxcode.StaplerOperationValidate, true); err != nil {
+			return nil, err
+		}
+		if err := verifier(localxcode.StaplerOperationValidate, false); err != nil {
+			return nil, err
+		}
+		return &localxcode.StaplerResult{Path: path, Operation: string(localxcode.StaplerOperationValidate), Validated: true}, nil
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr != nil {
+		t.Fatalf("command error = %v, want unchanged nested inventory success", runErr)
+	}
+	if stdout == "" || !strings.Contains(stdout, `"validated":true`) {
+		t.Fatalf("stdout = %q, want validated JSON", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 }
 
@@ -2045,6 +2232,86 @@ func TestNotarizationStaplePostValidationVerifierFailureReportsUnverified(t *tes
 	}
 }
 
+func TestNotarizationStapleProductionRunnerProjectsInventoryMismatchAsPartialMutation(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("local stapler is macOS-only")
+	}
+	target := filepath.Join(t.TempDir(), "MyApp.app")
+	nestedPath := filepath.Join(target, "Contents", "Info.plist")
+	if err := os.MkdirAll(filepath.Dir(nestedPath), 0o755); err != nil {
+		t.Fatalf("create bundle contents: %v", err)
+	}
+	if err := os.WriteFile(nestedPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+
+	// Use a real localxcode.StapleWithVerifier invocation. The temporary xcrun
+	// changes the nested file during validate, after the staple-stage inventory
+	// was captured, so the command must take the production partial-mutation
+	// projection rather than a test-only runner shortcut.
+	fakeBin := t.TempDir()
+	fakeXcrun := filepath.Join(fakeBin, "xcrun")
+	const canary = "STAPLER_INVENTORY_DIGEST_CANARY_2242"
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--find\" ] && [ \"$2\" = \"stapler\" ]; then\n" +
+		"  printf '%s\\n' /usr/bin/stapler\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"stapler\" ] && [ \"$2\" = \"staple\" ]; then\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"stapler\" ] && [ \"$2\" = \"validate\" ]; then\n" +
+		"  printf '%s' '" + canary + "' > \"$3/Contents/Info.plist\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exit 2\n"
+	if err := os.WriteFile(fakeXcrun, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake xcrun: %v", err)
+	}
+	oldPath, hadPath := os.LookupEnv("PATH")
+	pathValue := fakeBin
+	if hadPath {
+		pathValue += string(os.PathListSeparator) + oldPath
+	}
+	t.Setenv("PATH", pathValue)
+
+	previous := runStaplerStaple
+	runStaplerStaple = localxcode.StapleWithVerifier
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want partial-mutation failure")
+	}
+	var partialErr *localxcode.StaplerPartialMutationError
+	if !errors.As(runErr, &partialErr) || partialErr.Operation != localxcode.StaplerOperationValidate {
+		t.Fatalf("staple command error = %T %v, want production post-validation partial marker", runErr, runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "staple completed") || !strings.Contains(stderr, "not verified") {
+		t.Fatalf("stderr = %q, want generic unverified warning", stderr)
+	}
+	for _, secret := range []string{target, nestedPath, canary} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr = %q, must not expose %q", stderr, secret)
+		}
+	}
+	contents, err := os.ReadFile(nestedPath)
+	if err != nil {
+		t.Fatalf("read mutated nested file: %v", err)
+	}
+	if string(contents) != canary {
+		t.Fatalf("nested file = %q, want fake validator mutation", contents)
+	}
+}
+
 func TestNotarizationValidateStartFailureRedactsUnderlyingDiagnostic(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -2085,6 +2352,42 @@ func TestNotarizationValidateStartFailureRedactsUnderlyingDiagnostic(t *testing.
 	}
 	if !strings.Contains(stderr, "failed during validate before a usable exit status") {
 		t.Fatalf("stderr = %q, want stable start-failure diagnostic", stderr)
+	}
+}
+
+func TestNotarizationValidateResolutionFailureRedactsLookupPath(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	const canary = "RESOLUTION_PATH_CANARY_2242"
+	underlying := errors.New("lookpath /private/tmp/" + canary + "/xcrun: permission denied")
+	previous := runStaplerValidate
+	runStaplerValidate = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationValidate, true); err != nil {
+			return nil, err
+		}
+		return nil, &localxcode.StaplerResolutionError{Err: underlying}
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil || !errors.Is(runErr, underlying) {
+		t.Fatalf("command error = %v, want lookup cause", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if strings.Contains(stderr, canary) || strings.Contains(stderr, "/private/tmp/") {
+		t.Fatalf("stderr = %q, must redact lookup path", stderr)
+	}
+	if !strings.Contains(stderr, "stapler tool resolution failed") {
+		t.Fatalf("stderr = %q, want stable resolution diagnostic", stderr)
 	}
 }
 
@@ -2221,6 +2524,7 @@ func TestRejectSymlinkedLexicalParentTraversalChecksSearchPermissionWithoutRequi
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("search-only directory semantics are covered on Darwin and Linux")
 	}
+	skipIfDACOverrideForStaplerTest(t)
 	root := t.TempDir()
 	blocked := filepath.Join(root, "blocked")
 	if err := os.Mkdir(blocked, 0o700); err != nil {
@@ -2240,6 +2544,30 @@ func TestRejectSymlinkedLexicalParentTraversalChecksSearchPermissionWithoutRequi
 	}
 	if err := rejectSymlinkedLexicalParentTraversal(pathValue); err != nil {
 		t.Fatalf("search-only lexical parent rejected: %v", err)
+	}
+}
+
+func skipIfDACOverrideForStaplerTest(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("mode-bit permission assertions are not deterministic for root")
+	}
+	if runtime.GOOS != "linux" {
+		return
+	}
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(status), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != "CapEff:" {
+			continue
+		}
+		capabilities, err := strconv.ParseUint(fields[1], 16, 64)
+		if err == nil && capabilities&((1<<1)|(1<<2)) != 0 { // CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH
+			t.Skip("mode-bit permission assertions are not deterministic with DAC override/search capability")
+		}
 	}
 }
 

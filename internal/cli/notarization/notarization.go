@@ -194,8 +194,36 @@ Examples:
 				return reportStaplerTargetStageFailure("staple", "before stapling", err)
 			}
 
+			var expectedInventory staplerDirectoryInventory
+			inventoryCaptured := false
 			result, runErr := runStaplerStaple(ctx, pathValue, os.Stderr, func(operation localxcode.StaplerOperation, before bool) error {
-				return target.verifyIdentity(staplerStageDescription(operation, before))
+				stage := staplerStageDescription(operation, before)
+				if err := target.verifyIdentity(stage); err != nil {
+					return err
+				}
+				if !target.directory {
+					return nil
+				}
+				switch {
+				case operation == localxcode.StaplerOperationStaple && !before:
+					inventory, err := target.captureDirectoryInventoryAtStage(ctx, "after stapling")
+					if err != nil {
+						return err
+					}
+					expectedInventory = inventory
+					inventoryCaptured = true
+				case operation == localxcode.StaplerOperationValidate && before:
+					if !inventoryCaptured {
+						return &staplerTargetVerifyError{stage: "before validation", err: errors.New("artifact directory inventory is unavailable")}
+					}
+					return target.verifyDirectoryInventory(ctx, expectedInventory, "before validation")
+				case operation == localxcode.StaplerOperationValidate && !before:
+					if !inventoryCaptured {
+						return &staplerTargetVerifyError{stage: "after validation", err: errors.New("artifact directory inventory is unavailable")}
+					}
+					return target.verifyDirectoryInventory(ctx, expectedInventory, "after validation")
+				}
+				return nil
 			})
 			var partialErr *localxcode.StaplerPartialMutationError
 			if runErr != nil && errors.As(runErr, &partialErr) {
@@ -276,8 +304,31 @@ Examples:
 				return reportStaplerTargetStageFailure("validate", "before validation", err)
 			}
 
+			var expectedInventory staplerDirectoryInventory
+			inventoryCaptured := false
 			result, runErr := runStaplerValidate(ctx, pathValue, os.Stderr, func(operation localxcode.StaplerOperation, before bool) error {
-				return target.verifyIdentity(staplerStageDescription(operation, before))
+				stage := staplerStageDescription(operation, before)
+				if err := target.verifyIdentity(stage); err != nil {
+					return err
+				}
+				if !target.directory {
+					return nil
+				}
+				switch {
+				case operation == localxcode.StaplerOperationValidate && before:
+					inventory, err := target.captureDirectoryInventoryAtStage(ctx, "before validation")
+					if err != nil {
+						return err
+					}
+					expectedInventory = inventory
+					inventoryCaptured = true
+				case operation == localxcode.StaplerOperationValidate && !before:
+					if !inventoryCaptured {
+						return &staplerTargetVerifyError{stage: "after validation", err: errors.New("artifact directory inventory is unavailable")}
+					}
+					return target.verifyDirectoryInventory(ctx, expectedInventory, "after validation")
+				}
+				return nil
 			})
 			stageErr := target.verifyIdentity("after validation")
 			if stageErr != nil {
@@ -945,6 +996,9 @@ func reportStaplerFailure(command string, err error) error {
 	if errors.As(err, &commandErr) {
 		if partialMutation {
 			reportStaplerPartialMutation(partialErr)
+			if partialErr != nil && partialErr.Interrupted {
+				return shared.NewReportedError(err)
+			}
 		}
 		if commandErr.ExitCode > 0 {
 			if command == "staple" && commandErr.Operation == string(localxcode.StaplerOperationValidate) && !partialMutation {

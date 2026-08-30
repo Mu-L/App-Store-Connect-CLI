@@ -1,0 +1,550 @@
+package notarization
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"hash"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
+)
+
+const (
+	staplerInventoryMaxBytes   = int64(32 << 30)
+	staplerInventoryMaxEntries = 250_000
+	staplerInventoryMaxPath    = 4_096
+	staplerInventoryVersion    = "asc-stapler-bundle-v1\x00"
+	// Keep one directory-read allocation bounded. The aggregate names slice is
+	// still capped by staplerInventoryMaxEntries before a batch is appended so a
+	// hostile directory cannot make Readdir allocate without bound.
+	staplerInventoryReadBatchSize = 256
+)
+
+var errStaplerInventoryChanged = errors.New("artifact directory contents changed during inspection")
+
+// This narrow seam keeps the scanner testable without manufacturing hundreds
+// of thousands of filesystem entries. Production reads are always bounded by
+// staplerInventoryReadBatchSize.
+var readdirStaplerInventoryNamesFn = func(file *os.File, count int) ([]string, error) {
+	return file.Readdirnames(count)
+}
+
+// staplerDirectoryInventory is deliberately private. It is comparison
+// evidence for a single invocation, not a public artifact description.
+type staplerDirectoryInventory struct {
+	digest     [sha256.Size]byte
+	sizeBytes  int64
+	entryCount int
+}
+
+func (inventory staplerDirectoryInventory) equal(other staplerDirectoryInventory) bool {
+	return inventory.digest == other.digest &&
+		inventory.sizeBytes == other.sizeBytes &&
+		inventory.entryCount == other.entryCount
+}
+
+// captureDirectoryInventory opens the selected directory through the already
+// pinned filesystem root and recursively inspects only rooted, no-follow
+// entries. Any path-bearing scanner error is kept internal and must be wrapped
+// by captureDirectoryInventoryAtStage before reaching command output.
+func (target *validatedStaplerTarget) captureDirectoryInventory(ctx context.Context) (staplerDirectoryInventory, error) {
+	if target == nil || !target.directory {
+		return staplerDirectoryInventory{}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return staplerDirectoryInventory{}, err
+	}
+	if target.identity == nil || target.handle == nil {
+		return staplerDirectoryInventory{}, errors.New("artifact target descriptor is not retained")
+	}
+	pinned, err := target.pinnedIdentity()
+	if err != nil {
+		return staplerDirectoryInventory{}, err
+	}
+	if !os.SameFile(target.identity, pinned) || !pinned.IsDir() {
+		return staplerDirectoryInventory{}, errStaplerInventoryChanged
+	}
+
+	filesystemRoot, err := target.root.OpenRoot()
+	if err != nil {
+		return staplerDirectoryInventory{}, fmt.Errorf("open inventory root: %w", err)
+	}
+	defer filesystemRoot.Close()
+
+	selected, selectedInfo, err := openStaplerInventoryDirectory(filesystemRoot, target.relative, target.identity)
+	if err != nil {
+		return staplerDirectoryInventory{}, err
+	}
+	defer selected.Close()
+
+	hashTree := sha256.New()
+	_, _ = io.WriteString(hashTree, staplerInventoryVersion)
+	scanner := staplerInventoryScanner{
+		ctx:      ctx,
+		treeHash: hashTree,
+	}
+	if err := scanner.recordDirectoryEntry(".", selectedInfo); err != nil {
+		return staplerDirectoryInventory{}, err
+	}
+	if err := scanner.scanDirectory(selected, "", selectedInfo); err != nil {
+		return staplerDirectoryInventory{}, err
+	}
+
+	finalSelected, err := selected.Stat(".")
+	if err != nil {
+		return staplerDirectoryInventory{}, fmt.Errorf("reinspect inventory root: %w", err)
+	}
+	if !staplerInventoryInfoStable(selectedInfo, finalSelected) {
+		return staplerDirectoryInventory{}, errStaplerInventoryChanged
+	}
+	finalPinned, err := target.pinnedIdentity()
+	if err != nil {
+		return staplerDirectoryInventory{}, err
+	}
+	if !os.SameFile(target.identity, finalPinned) || !finalPinned.IsDir() {
+		return staplerDirectoryInventory{}, errStaplerInventoryChanged
+	}
+	finalPathInfo, err := filesystemRoot.Lstat(target.relative)
+	if err != nil {
+		return staplerDirectoryInventory{}, fmt.Errorf("reinspect inventory path: %w", err)
+	}
+	if finalPathInfo.Mode()&os.ModeSymlink != 0 || !staplerInventoryInfoStable(target.identity, finalPathInfo) {
+		return staplerDirectoryInventory{}, errStaplerInventoryChanged
+	}
+
+	var digest [sha256.Size]byte
+	copy(digest[:], hashTree.Sum(nil))
+	return staplerDirectoryInventory{
+		digest:     digest,
+		sizeBytes:  scanner.sizeBytes,
+		entryCount: scanner.entryCount,
+	}, nil
+}
+
+// captureDirectoryInventoryAtStage maps scanner failures into the existing
+// privacy-safe stage errors. The raw scanner cause remains available through
+// Unwrap for internal classification, but Error never contains a path.
+func (target *validatedStaplerTarget) captureDirectoryInventoryAtStage(ctx context.Context, stage string) (staplerDirectoryInventory, error) {
+	inventory, err := target.captureDirectoryInventory(ctx)
+	if err == nil {
+		return inventory, nil
+	}
+	if errors.Is(err, errStaplerInventoryChanged) {
+		return staplerDirectoryInventory{}, &staplerTargetIdentityError{stage: stage}
+	}
+	return staplerDirectoryInventory{}, &staplerTargetVerifyError{stage: stage, err: err}
+}
+
+func (target *validatedStaplerTarget) verifyDirectoryInventory(ctx context.Context, expected staplerDirectoryInventory, stage string) error {
+	actual, err := target.captureDirectoryInventory(ctx)
+	if err != nil {
+		if errors.Is(err, errStaplerInventoryChanged) {
+			return &staplerTargetIdentityError{stage: stage}
+		}
+		return &staplerTargetVerifyError{stage: stage, err: err}
+	}
+	if !actual.equal(expected) {
+		return &staplerTargetIdentityError{stage: stage}
+	}
+	return nil
+}
+
+func openStaplerInventoryDirectory(filesystemRoot *os.Root, relative string, expected os.FileInfo) (*os.Root, os.FileInfo, error) {
+	if filesystemRoot == nil || expected == nil {
+		return nil, nil, errors.New("inventory directory is missing")
+	}
+	cleaned := filepathCleanForStaplerInventory(relative)
+	if cleaned == "." {
+		selected, err := filesystemRoot.OpenRoot(".")
+		if err != nil {
+			return nil, nil, err
+		}
+		info, err := selected.Stat(".")
+		if err != nil {
+			_ = selected.Close()
+			return nil, nil, err
+		}
+		if !info.IsDir() || !os.SameFile(expected, info) {
+			_ = selected.Close()
+			return nil, nil, errStaplerInventoryChanged
+		}
+		return selected, info, nil
+	}
+	if err := rootfs.ValidateRelative(cleaned); err != nil {
+		return nil, nil, err
+	}
+
+	components := strings.Split(filepathToSlashForStaplerInventory(cleaned), "/")
+	current := filesystemRoot
+	owned := false
+	defer func() {
+		if owned {
+			_ = current.Close()
+		}
+	}()
+	for index, component := range components {
+		if component == "" || component == "." || component == ".." {
+			return nil, nil, errors.New("invalid inventory directory component")
+		}
+		before, err := current.Lstat(component)
+		if err != nil {
+			return nil, nil, err
+		}
+		if before.Mode()&os.ModeSymlink != 0 || !before.IsDir() {
+			return nil, nil, errStaplerInventoryChanged
+		}
+		child, err := current.OpenRoot(component)
+		if err != nil {
+			return nil, nil, err
+		}
+		childInfo, statErr := child.Stat(".")
+		if statErr != nil {
+			_ = child.Close()
+			return nil, nil, statErr
+		}
+		after, lstatErr := current.Lstat(component)
+		if lstatErr != nil {
+			_ = child.Close()
+			return nil, nil, lstatErr
+		}
+		if after.Mode()&os.ModeSymlink != 0 || !staplerInventoryInfoStable(before, childInfo) || !staplerInventoryInfoStable(before, after) {
+			_ = child.Close()
+			return nil, nil, errStaplerInventoryChanged
+		}
+		if owned {
+			_ = current.Close()
+		}
+		current = child
+		owned = true
+		if index == len(components)-1 && !os.SameFile(expected, childInfo) {
+			return nil, nil, errStaplerInventoryChanged
+		}
+	}
+	info, err := current.Stat(".")
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.IsDir() || !os.SameFile(expected, info) {
+		return nil, nil, errStaplerInventoryChanged
+	}
+	owned = false
+	return current, info, nil
+}
+
+type staplerInventoryScanner struct {
+	ctx        context.Context
+	treeHash   hash.Hash
+	sizeBytes  int64
+	entryCount int
+}
+
+func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relative string, initial os.FileInfo) error {
+	if err := scanner.checkContext(); err != nil {
+		return err
+	}
+	handle, err := directory.Open(".")
+	if err != nil {
+		return fmt.Errorf("open inventory directory %q: %w", staplerInventoryDisplayPath(relative), err)
+	}
+	var names []string
+	for {
+		if err := scanner.checkContext(); err != nil {
+			_ = handle.Close()
+			return err
+		}
+		batch, readErr := readdirStaplerInventoryNamesFn(handle, staplerInventoryReadBatchSize)
+		remaining := staplerInventoryMaxEntries - scanner.entryCount - len(names)
+		if len(batch) > remaining {
+			_ = handle.Close()
+			return fmt.Errorf("inventory contains more than %d entries", staplerInventoryMaxEntries)
+		}
+		names = append(names, batch...)
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				_ = handle.Close()
+				return fmt.Errorf("read inventory directory %q: %w", staplerInventoryDisplayPath(relative), readErr)
+			}
+			break
+		}
+		if len(batch) == 0 {
+			break
+		}
+	}
+	closeErr := handle.Close()
+	if closeErr != nil {
+		return fmt.Errorf("close inventory directory %q: %w", staplerInventoryDisplayPath(relative), closeErr)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if err := scanner.checkContext(); err != nil {
+			return err
+		}
+		if name == "" || name == "." || name == ".." || strings.ContainsRune(name, '/') || (os.PathSeparator == '\\' && strings.ContainsRune(name, '\\')) {
+			return fmt.Errorf("inventory contains invalid entry name %q", name)
+		}
+		entryRelative := name
+		if relative != "" {
+			entryRelative = path.Join(relative, name)
+		}
+		info, err := directory.Lstat(name)
+		if err != nil {
+			return fmt.Errorf("inspect inventory entry %q: %w", entryRelative, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("inventory entry %q is a symlink", entryRelative)
+		}
+		switch {
+		case info.IsDir():
+			if err := scanner.recordDirectory(directory, name, entryRelative, info); err != nil {
+				return err
+			}
+		case info.Mode().IsRegular():
+			if err := scanner.recordFile(directory, name, entryRelative, info); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("inventory entry %q is a special file", entryRelative)
+		}
+	}
+
+	final, err := directory.Stat(".")
+	if err != nil {
+		return fmt.Errorf("reinspect inventory directory %q: %w", staplerInventoryDisplayPath(relative), err)
+	}
+	if !staplerInventoryInfoStable(initial, final) {
+		return errStaplerInventoryChanged
+	}
+	return nil
+}
+
+func (scanner *staplerInventoryScanner) recordDirectory(parent *os.Root, name, relative string, before os.FileInfo) error {
+	if err := scanner.checkContext(); err != nil {
+		return err
+	}
+	opened, err := parent.OpenRoot(name)
+	if err != nil {
+		return fmt.Errorf("open inventory directory %q: %w", relative, err)
+	}
+	defer opened.Close()
+	openedInfo, err := opened.Stat(".")
+	if err != nil {
+		return fmt.Errorf("inspect inventory directory %q: %w", relative, err)
+	}
+	afterOpen, err := parent.Lstat(name)
+	if err != nil {
+		return fmt.Errorf("reinspect inventory directory %q: %w", relative, err)
+	}
+	if afterOpen.Mode()&os.ModeSymlink != 0 || !staplerInventoryInfoStable(before, openedInfo) || !staplerInventoryInfoStable(before, afterOpen) {
+		return errStaplerInventoryChanged
+	}
+	if err := scanner.recordDirectoryEntry(relative, openedInfo); err != nil {
+		return err
+	}
+	if err := scanner.scanDirectory(opened, relative, openedInfo); err != nil {
+		return err
+	}
+	finalParent, err := parent.Lstat(name)
+	if err != nil {
+		return fmt.Errorf("reinspect inventory directory %q: %w", relative, err)
+	}
+	if finalParent.Mode()&os.ModeSymlink != 0 || !staplerInventoryInfoStable(openedInfo, finalParent) {
+		return errStaplerInventoryChanged
+	}
+	return nil
+}
+
+func (scanner *staplerInventoryScanner) recordDirectoryEntry(relative string, info os.FileInfo) error {
+	if info == nil || !info.IsDir() {
+		return errStaplerInventoryChanged
+	}
+	if err := scanner.noteEntry(relative); err != nil {
+		return err
+	}
+	writeStaplerInventoryEntry(scanner.treeHash, 'd', relative, info.Mode(), 0, nil)
+	return nil
+}
+
+func (scanner *staplerInventoryScanner) recordFile(parent *os.Root, name, relative string, before os.FileInfo) error {
+	if err := scanner.checkContext(); err != nil {
+		return err
+	}
+	if err := scanner.noteEntry(relative); err != nil {
+		return err
+	}
+	if before.Size() < 0 || before.Size() > staplerInventoryMaxBytes-scanner.sizeBytes {
+		return fmt.Errorf("inventory content exceeds %d bytes", staplerInventoryMaxBytes)
+	}
+	file, err := secureopen.OpenExistingNoFollowInRoot(parent, name)
+	if err != nil {
+		return fmt.Errorf("open inventory file %q: %w", relative, err)
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect inventory file %q: %w", relative, err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(before, openedInfo) ||
+		!staplerInventoryInfoStable(before, openedInfo) {
+		return errStaplerInventoryChanged
+	}
+
+	contentHash := sha256.New()
+	reader := &staplerInventoryExactReader{
+		ctx:       scanner.ctx,
+		reader:    file,
+		remaining: openedInfo.Size(),
+	}
+	written, err := io.Copy(contentHash, reader)
+	if err != nil {
+		return fmt.Errorf("read inventory file %q: %w", relative, err)
+	}
+	if written != openedInfo.Size() {
+		return errStaplerInventoryChanged
+	}
+	finalInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("reinspect inventory file %q: %w", relative, err)
+	}
+	finalPathInfo, err := parent.Lstat(name)
+	if err != nil {
+		return fmt.Errorf("reinspect inventory file %q: %w", relative, err)
+	}
+	if finalPathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(finalInfo, finalPathInfo) ||
+		!staplerInventoryInfoStable(openedInfo, finalInfo) {
+		return errStaplerInventoryChanged
+	}
+
+	scanner.sizeBytes += written
+	writeStaplerInventoryEntry(scanner.treeHash, 'f', relative, openedInfo.Mode(), written, contentHash.Sum(nil))
+	return nil
+}
+
+func (scanner *staplerInventoryScanner) noteEntry(relative string) error {
+	if len([]byte(relative)) > staplerInventoryMaxPath {
+		return fmt.Errorf("inventory path exceeds %d bytes", staplerInventoryMaxPath)
+	}
+	if scanner.entryCount >= staplerInventoryMaxEntries {
+		return fmt.Errorf("inventory contains more than %d entries", staplerInventoryMaxEntries)
+	}
+	scanner.entryCount++
+	return nil
+}
+
+func (scanner *staplerInventoryScanner) checkContext() error {
+	if scanner.ctx == nil {
+		return nil
+	}
+	return scanner.ctx.Err()
+}
+
+type staplerInventoryExactReader struct {
+	ctx       context.Context
+	reader    io.Reader
+	remaining int64
+	verified  bool
+}
+
+func (reader *staplerInventoryExactReader) Read(buffer []byte) (int, error) {
+	if reader.ctx != nil {
+		if err := reader.ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
+	if reader.remaining > 0 {
+		if int64(len(buffer)) > reader.remaining {
+			buffer = buffer[:reader.remaining]
+		}
+		n, err := reader.reader.Read(buffer)
+		reader.remaining -= int64(n)
+		if errors.Is(err, io.EOF) && reader.remaining > 0 {
+			return n, io.ErrUnexpectedEOF
+		}
+		return n, err
+	}
+	if reader.verified {
+		return 0, io.EOF
+	}
+	reader.verified = true
+	var probe [1]byte
+	n, err := reader.reader.Read(probe[:])
+	if n != 0 || err == nil {
+		return 0, errStaplerInventoryChanged
+	}
+	if !errors.Is(err, io.EOF) {
+		return 0, err
+	}
+	return 0, io.EOF
+}
+
+func writeStaplerInventoryEntry(tree hash.Hash, kind byte, relative string, mode os.FileMode, size int64, contentDigest []byte) {
+	_, _ = tree.Write([]byte{kind})
+	var numeric [8]byte
+	relativeBytes := []byte(relative)
+	binary.BigEndian.PutUint32(numeric[:4], uint32(len(relativeBytes)))
+	_, _ = tree.Write(numeric[:4])
+	_, _ = tree.Write(relativeBytes)
+	binary.BigEndian.PutUint32(numeric[:4], uint32(mode))
+	_, _ = tree.Write(numeric[:4])
+	binary.BigEndian.PutUint64(numeric[:], uint64(size))
+	_, _ = tree.Write(numeric[:])
+	if len(contentDigest) == sha256.Size {
+		_, _ = tree.Write(contentDigest)
+		return
+	}
+	var empty [sha256.Size]byte
+	_, _ = tree.Write(empty[:])
+}
+
+func staplerInventoryInfoStable(before, after os.FileInfo) bool {
+	if before == nil || after == nil || !os.SameFile(before, after) {
+		return false
+	}
+	if before.Mode() != after.Mode() {
+		return false
+	}
+	// Directory metadata (including size and modification time) can change
+	// when unrelated children are created or removed. The recursive inventory
+	// below binds directory contents; only regular-file metadata is used here.
+	if before.IsDir() {
+		return true
+	}
+	// Keep the size and timestamp check for regular files so a same-size
+	// rewrite that restores identical bytes is still treated as changed during
+	// one scan.
+	return before.Size() == after.Size() && before.ModTime().Equal(after.ModTime())
+}
+
+func filepathCleanForStaplerInventory(value string) string {
+	if value == "" {
+		return "."
+	}
+	cleaned := filepath.Clean(value)
+	if cleaned == "" {
+		return "."
+	}
+	return cleaned
+}
+
+func filepathToSlashForStaplerInventory(value string) string {
+	return filepath.ToSlash(value)
+}
+
+func staplerInventoryDisplayPath(relative string) string {
+	if relative == "" {
+		return "."
+	}
+	return relative
+}

@@ -88,6 +88,25 @@ func (e *StaplerCommandError) Unwrap() error {
 	return e.Err
 }
 
+// StaplerResolutionError marks an operational failure while locating the
+// local stapler tool. Its public text is intentionally closed so a platform
+// lookup error cannot disclose paths or other host details; the original
+// lookup cause remains available to internal callers through Unwrap.
+type StaplerResolutionError struct {
+	Err error
+}
+
+func (e *StaplerResolutionError) Error() string {
+	return "stapler tool resolution failed"
+}
+
+func (e *StaplerResolutionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // StaplerPartialMutationError identifies either an interrupted staple child or
 // a follow-up validation failure after stapling. Its stable message warns that
 // the artifact may have been modified while Unwrap retains the cancellation or
@@ -154,12 +173,13 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 			partialErr = errors.Join(stapleErr, verifyErr)
 		}
 		return nil, &StaplerPartialMutationError{
-			Operation: StaplerOperationStaple,
-			Err:       partialErr,
+			Operation:   StaplerOperationStaple,
+			Interrupted: isStaplerOperationAttemptedCancellation(stapleErr) || isStaplerOperationAttemptedSignal(stapleErr),
+			Err:         partialErr,
 		}
 	}
 	if stapleErr != nil {
-		if isStaplerOperationAttemptedCancellation(stapleErr) {
+		if isStaplerOperationAttemptedCancellation(stapleErr) || isStaplerOperationAttemptedSignal(stapleErr) {
 			return nil, &StaplerPartialMutationError{
 				Operation:   StaplerOperationStaple,
 				Interrupted: true,
@@ -261,7 +281,7 @@ func ensureStaplerAvailable(ctx context.Context, logWriter io.Writer) error {
 		if errors.Is(err, exec.ErrNotFound) {
 			return fmt.Errorf("xcrun not available; install Xcode and ensure the active developer directory is configured")
 		}
-		return fmt.Errorf("locate xcrun: %w", err)
+		return &StaplerResolutionError{Err: err}
 	}
 
 	cmd := commandContextFn(ctx, "xcrun", "--find", "stapler")
@@ -309,6 +329,40 @@ func isStaplerOperationAttemptedCancellation(err error) bool {
 	return errors.As(err, &attempted)
 }
 
+// staplerOperationAttemptedSignalError records that the child was started and
+// then terminated by a signal. A signaled staple may have modified the target
+// before termination, so it must take the same partial-mutation path as an
+// in-flight cancellation. The wrapped command error remains available to
+// callers that need the process status or underlying *exec.ExitError.
+type staplerOperationAttemptedSignalError struct {
+	err error
+}
+
+func (e *staplerOperationAttemptedSignalError) Error() string {
+	return "stapler operation terminated by signal after child invocation"
+}
+
+func (e *staplerOperationAttemptedSignalError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func isStaplerOperationAttemptedSignal(err error) bool {
+	var attempted *staplerOperationAttemptedSignalError
+	return errors.As(err, &attempted)
+}
+
+func staplerProcessWasSignaled(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr == nil || exitErr.ProcessState == nil {
+		return false
+	}
+	status, ok := exitErr.Sys().(interface{ Signaled() bool })
+	return ok && status.Signaled()
+}
+
 func runStaplerOperation(ctx context.Context, operation StaplerOperation, path string, logWriter io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -326,7 +380,11 @@ func runStaplerOperation(ctx context.Context, operation StaplerOperation, path s
 		}
 		return &staplerOperationAttemptedCancellationError{err: ctxErr}
 	}
-	return newStaplerCommandError(operation, err)
+	commandErr := newStaplerCommandError(operation, err)
+	if staplerProcessWasSignaled(err) {
+		return &staplerOperationAttemptedSignalError{err: commandErr}
+	}
+	return commandErr
 }
 
 func runStaplerChildCommand(ctx context.Context, operation StaplerOperation, path string, logWriter io.Writer) (bool, error) {
