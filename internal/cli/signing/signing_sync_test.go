@@ -352,13 +352,11 @@ func TestSigningCommandLongHelpUsesOutputDirForSyncPull(t *testing.T) {
 	}
 }
 
-func TestSigningSyncCommandLongHelpPullExampleOmitsUnsupportedFlags(t *testing.T) {
+func TestSigningSyncCommandLongHelpDocumentsSelectivePull(t *testing.T) {
 	cmd := SigningSyncCommand()
-	if strings.Contains(cmd.LongHelp, "asc signing sync pull --bundle-id") {
-		t.Fatalf("expected pull example to omit --bundle-id, got %q", cmd.LongHelp)
-	}
-	if strings.Contains(cmd.LongHelp, "asc signing sync pull --profile-type") {
-		t.Fatalf("expected pull example to omit --profile-type, got %q", cmd.LongHelp)
+	if !strings.Contains(cmd.LongHelp, "asc signing sync pull --repo git@github.com:team/certs.git --bundle-id com.example.app") ||
+		!strings.Contains(cmd.LongHelp, "--profile-type IOS_APP_STORE") {
+		t.Fatalf("expected pull example to document target selection, got %q", cmd.LongHelp)
 	}
 }
 
@@ -1043,7 +1041,8 @@ func TestSigningSyncRejectsBlankPasswordFile(t *testing.T) {
 	}
 }
 
-func TestSigningSyncPushRejectsDirectDistributionIdentityBeforeSecretReads(t *testing.T) {
+func TestSigningSyncPushDirectDistributionIdentityLoadFailureIsOperational(t *testing.T) {
+	t.Setenv(signingSyncPasswordEnvVar, "repository-password")
 	for _, profileType := range []string{"MAC_APP_DIRECT", "MAC_CATALYST_APP_DIRECT"} {
 		t.Run(profileType, func(t *testing.T) {
 			cmd := syncPushCommand()
@@ -1056,11 +1055,57 @@ func TestSigningSyncPushRejectsDirectDistributionIdentityBeforeSecretReads(t *te
 				t.Fatal(err)
 			}
 			err := cmd.Run(context.Background())
-			want := "private identity sync does not support --profile-type " + profileType + " yet; omit --identity/--private-key"
-			if err == nil || err.Error() != want || !errors.Is(err, flag.ErrHelp) {
-				t.Fatalf("error = %v, want usage error %q", err, want)
+			if err == nil || !strings.Contains(err.Error(), "signing sync push: signing identity") {
+				t.Fatalf("error = %v, want operational identity-load failure", err)
+			}
+			if errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("error = %v, want operational error", err)
 			}
 		})
+	}
+}
+
+func TestIdentityProfileTypeMatchesDirectRequiresAllDeviceClaim(t *testing.T) {
+	profile := &identityMobileProvision{
+		Entitlements: map[string]any{"get-task-allow": false},
+		Platform:     []string{"OSX"},
+	}
+	for _, profileType := range []string{"MAC_APP_DIRECT", "MAC_CATALYST_APP_DIRECT"} {
+		if identityProfileTypeMatches(profile, profileType) {
+			t.Fatalf("%s matched without the all-device claim", profileType)
+		}
+		profile.ProvisionsAllDevices = true
+		if !identityProfileTypeMatches(profile, profileType) {
+			t.Fatalf("%s did not match its all-device claim", profileType)
+		}
+		profile.ProvisionedDevices = []string{"DEVICE1"}
+		if identityProfileTypeMatches(profile, profileType) {
+			t.Fatalf("%s matched with an explicit device list", profileType)
+		}
+		profile.ProvisionedDevices = nil
+		profile.ProvisionsAllDevices = false
+	}
+	profile.ProvisionsAllDevices = true
+	profile.Entitlements["get-task-allow"] = true
+	if identityProfileTypeMatches(profile, "MAC_APP_DIRECT") {
+		t.Fatal("direct profile matched with debugging enabled")
+	}
+}
+
+func TestIdentityProfileTypeMatchesDirectRequiresMacOSPlatformClaim(t *testing.T) {
+	profile := &identityMobileProvision{
+		Entitlements:         map[string]any{"get-task-allow": false},
+		ProvisionsAllDevices: true,
+	}
+	for _, platform := range [][]string{nil, {}, {"iOS"}, {"OSX", "iOS"}} {
+		profile.Platform = platform
+		if identityProfileTypeMatches(profile, "MAC_APP_DIRECT") {
+			t.Fatalf("direct profile matched platform claim %v", platform)
+		}
+	}
+	profile.Platform = []string{"OSX"}
+	if !identityProfileTypeMatches(profile, "MAC_APP_DIRECT") {
+		t.Fatal("direct profile did not match its macOS platform claim")
 	}
 }
 

@@ -45,6 +45,7 @@ type signingSyncBatchTarget struct {
 type signingSyncBatchLegacyFile struct {
 	RelativePath string
 	Plaintext    []byte
+	Profile      *signingpkg.EncryptedFileMetadata
 }
 
 func runSigningSyncBatch(ctx context.Context, client *asc.Client, options signingSyncBatchOptions) (SyncResult, error) {
@@ -202,7 +203,13 @@ func runSigningSyncBatch(ctx context.Context, client *asc.Client, options signin
 	}
 
 	for _, file := range legacyFiles {
-		if _, err := preflightSigningSyncLegacyArtifact(store, file.RelativePath, file.Plaintext, options.Password); err != nil {
+		var err error
+		if file.Profile != nil {
+			_, err = preflightSigningProfileArtifact(store, file.RelativePath, file.Plaintext, options.Password, *file.Profile)
+		} else {
+			_, err = preflightSigningSyncLegacyArtifact(store, file.RelativePath, file.Plaintext, options.Password)
+		}
+		if err != nil {
 			return SyncResult{}, signingSyncBatchPublicationError(fmt.Errorf("preflight %s: %w", file.RelativePath, err), targets)
 		}
 	}
@@ -216,7 +223,13 @@ func runSigningSyncBatch(ctx context.Context, client *asc.Client, options signin
 	}
 
 	for _, file := range legacyFiles {
-		if err := writeOrReuseSigningSyncLegacyArtifact(store, file.RelativePath, file.Plaintext, options.Password); err != nil {
+		var err error
+		if file.Profile != nil {
+			err = writeOrReuseSigningProfileArtifact(store, file.RelativePath, file.Plaintext, options.Password, *file.Profile)
+		} else {
+			err = writeOrReuseSigningSyncLegacyArtifact(store, file.RelativePath, file.Plaintext, options.Password)
+		}
+		if err != nil {
 			return SyncResult{}, signingSyncBatchPublicationError(fmt.Errorf("encrypt %s: %w", file.RelativePath, err), targets)
 		}
 		fmt.Fprintf(os.Stderr, "  Encrypted %s\n", file.RelativePath)
@@ -285,6 +298,7 @@ func signingSyncBatchPublicationError(err error, targets []signingSyncBatchTarge
 
 func prepareSigningSyncBatchFiles(store *signingpkg.GitStore, targets []signingSyncBatchTarget, identity *signingIdentity, password string) ([]signingSyncBatchLegacyFile, string, error) {
 	legacyByPath := make(map[string][]byte)
+	profileMetadataByPath := make(map[string]signingpkg.EncryptedFileMetadata)
 	legacyOrder := make([]string, 0)
 	certificateContentByID := make(map[string][]byte)
 	certificatePathByID := make(map[string]string)
@@ -306,6 +320,14 @@ func prepareSigningSyncBatchFiles(store *signingpkg.GitStore, targets []signingS
 		}
 		target.ProfileContent = profileContent
 		target.ProfilePath = signingSyncBatchProfilePath(target.BundleID, target.ProfileType, target.Profile.Data.ID)
+		profileMetadata, err := signingProfileArtifactMetadata(target.Profile, target.BundleID, target.ProfileType)
+		if err != nil {
+			return nil, "", fmt.Errorf("profile for %s metadata: %w", target.BundleID, err)
+		}
+		if existing, exists := profileMetadataByPath[target.ProfilePath]; exists && !sameSigningProfileArtifactScope(existing, profileMetadata) {
+			return nil, "", fmt.Errorf("profile for %s maps to a conflicting authenticated scope", target.BundleID)
+		}
+		profileMetadataByPath[target.ProfilePath] = profileMetadata
 		if err := addSigningSyncBatchLegacyFile(legacyByPath, &legacyOrder, target.ProfilePath, profileContent); err != nil {
 			return nil, "", fmt.Errorf("profile for %s: %w", target.BundleID, err)
 		}
@@ -381,7 +403,12 @@ func prepareSigningSyncBatchFiles(store *signingpkg.GitStore, targets []signingS
 	})
 	legacyFiles := make([]signingSyncBatchLegacyFile, 0, len(legacyOrder))
 	for _, path := range legacyOrder {
-		legacyFiles = append(legacyFiles, signingSyncBatchLegacyFile{RelativePath: path, Plaintext: legacyByPath[path]})
+		file := signingSyncBatchLegacyFile{RelativePath: path, Plaintext: legacyByPath[path]}
+		if metadata, exists := profileMetadataByPath[path]; exists {
+			metadataCopy := metadata
+			file.Profile = &metadataCopy
+		}
+		legacyFiles = append(legacyFiles, file)
 	}
 	return legacyFiles, identityCore, nil
 }
