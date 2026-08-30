@@ -12,11 +12,16 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"howett.net/plist"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/infoplist"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
@@ -27,11 +32,37 @@ type signingResignCodePlan struct {
 }
 
 type signingResignPreparedTree struct {
-	Archive   signingResignArchive
-	CodePlans []signingResignCodePlan
+	Archive      signingResignArchive
+	CodePlans    []signingResignCodePlan
+	SwiftSupport []signingResignSwiftSupportEntry
 }
 
+type signingResignSwiftSupportEntry struct {
+	RelativePath string
+	SizeBytes    int64
+	SHA256       string
+	Mode         os.FileMode
+}
+
+// ErrSigningResignPublicationAmbiguous means the destination file was created
+// but its post-publication validation did not complete successfully. Callers
+// must inspect the reported artifact before retrying.
+var ErrSigningResignPublicationAmbiguous = errors.New("re-signed IPA publication is ambiguous")
+
+// signingResignBeforePublishedHashFn is a no-op production hook used by the
+// package tests to make the post-publication cancellation boundary
+// deterministic.
+var signingResignBeforePublishedHashFn = func() {}
+
 func executeSigningResignImplementation(ctx context.Context, options signingResignOptions) (result signingResignResult, resultErr error) {
+	publicStage := signingResignStagePreparation
+	publicCode := signingResignCodeFilesystem
+	defer func() {
+		if resultErr == nil || isSigningResignUsageError(resultErr) {
+			return
+		}
+		resultErr = wrapSigningResignOperationalError(publicStage, publicCode, resultErr)
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -44,7 +75,7 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 	ctx, stopSignals := platformSigningRunContext(ctx)
 	defer stopSignals()
 	if err := validateSigningResignOptions(options); err != nil {
-		return result, err
+		return result, signingResignUsage(err)
 	}
 
 	inputPath, err := filepath.Abs(filepath.Clean(options.IPAPath))
@@ -80,14 +111,19 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 
 	outputRoot, err := rootfs.New(filepath.Dir(outputPath))
 	if err != nil {
-		return result, fmt.Errorf("open IPA output directory: %w", err)
+		return result, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactPublish,
+			fmt.Errorf("open IPA output directory: %w", err),
+		)
 	}
 	defer outputRoot.Close()
-	if err := outputRoot.MkdirAll(".", 0o755); err != nil {
-		return result, fmt.Errorf("create IPA output directory: %w", err)
-	}
 	if err := outputRoot.CheckCreateNewFile(filepath.Base(outputPath)); err != nil {
-		return result, fmt.Errorf("preflight IPA output: %w", err)
+		return result, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactPublish,
+			fmt.Errorf("preflight IPA output: %w", err),
+		)
 	}
 	if sourceInfo.Mode()&os.ModeSymlink != 0 {
 		return result, fmt.Errorf("IPA input is a symbolic link")
@@ -103,7 +139,14 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 	}
 	defer func() {
 		if cleanupErr := removeSigningResignStage(stageDir); cleanupErr != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("remove private re-signing directory: %w", cleanupErr))
+			resultErr = errors.Join(
+				resultErr,
+				wrapSigningResignOperationalError(
+					signingResignStageCleanup,
+					signingResignCodeCleanup,
+					fmt.Errorf("%w: remove private re-signing directory: %w", ErrSigningResignCleanupFailed, cleanupErr),
+				),
+			)
 		}
 	}()
 
@@ -179,7 +222,7 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 	}
 	defer clear(identityData)
 	var passwordData []byte
-	if options.IdentityPasswordPath != "" {
+	if strings.TrimSpace(options.IdentityPasswordPath) != "" {
 		passwordData, err = readBoundedSigningRunFile(options.IdentityPasswordPath, signingRunPasswordLimit, true)
 		if err != nil {
 			return result, fmt.Errorf("read signing identity password failed")
@@ -207,8 +250,7 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 	result = signingResignResult{
 		SchemaVersion: 1,
 		Command:       "signing resign",
-		Input: signingResignArtifactResult{
-			Path:      inputPath,
+		Input: signingResignInputResult{
 			SizeBytes: sourceInfo.Size(),
 			SHA256:    strings.ToUpper(inputDigest),
 		},
@@ -232,26 +274,53 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 	}
 
 	var outputArtifact signingResignArtifactResult
+	publicStage = signingResignStageEnvironment
+	publicCode = signingResignCodeEnvironment
 	if err := runSigningResignEnvironment(ctx, identity, func(signingContext context.Context, keychainPath string) error {
+		publicStage = signingResignStageSigning
+		publicCode = signingResignCodeSigning
 		if err := signSigningResignTree(signingContext, treeRoot.Path(), prepared, identity.CertificateSHA1, keychainPath); err != nil {
-			return err
+			return wrapSigningResignOperationalError(signingResignStageSigning, signingResignCodeSigning, err)
 		}
+		publicStage = signingResignStageVerification
+		publicCode = signingResignCodeVerification
 		if err := verifySigningResignTree(signingContext, treeRoot.Path(), prepared, teamID, identity.CertificateSHA256); err != nil {
-			return err
+			return wrapSigningResignOperationalError(signingResignStageVerification, signingResignCodeVerification, err)
 		}
+		publicStage = signingResignStageArtifact
+		publicCode = signingResignCodeArtifactRead
 		packedPath, packedSize, packedDigest, err := repackSigningResignTree(signingContext, stageRoot, treeRoot)
 		if err != nil {
-			return err
+			return wrapSigningResignOperationalError(signingResignStageArtifact, signingResignCodeFilesystem, err)
 		}
 		if err := validatePackedSigningResignIPA(signingContext, packedPath, packedSize); err != nil {
-			return err
+			return wrapSigningResignOperationalError(signingResignStageVerification, signingResignCodeVerification, err)
 		}
-		if err := verifyPackedSigningResignIPA(signingContext, packedPath, packedSize, stageRoot, prepared, teamID, identity.CertificateSHA256); err != nil {
-			return err
+		if err := verifyPackedSigningResignIPA(signingContext, packedPath, packedSize, stageRoot, treeRoot.Path(), prepared, teamID, identity.CertificateSHA256); err != nil {
+			return wrapSigningResignOperationalError(signingResignStageVerification, signingResignCodeVerification, err)
 		}
-		outputArtifact, err = publishSigningResignOutput(outputRoot, filepath.Base(outputPath), packedPath, packedSize, packedDigest)
+		publicStage = signingResignStageArtifact
+		publicCode = signingResignCodeArtifactPublish
+		if err := outputRoot.MkdirAll(".", 0o755); err != nil {
+			return wrapSigningResignOperationalError(
+				signingResignStageArtifact,
+				signingResignCodeArtifactPublish,
+				fmt.Errorf("create IPA output directory: %w", err),
+			)
+		}
+		if err := outputRoot.CheckCreateNewFile(filepath.Base(outputPath)); err != nil {
+			return wrapSigningResignOperationalError(
+				signingResignStageArtifact,
+				signingResignCodeArtifactPublish,
+				fmt.Errorf("preflight IPA output: %w", err),
+			)
+		}
+		outputArtifact, err = publishSigningResignOutput(signingContext, outputRoot, filepath.Base(outputPath), packedPath, packedSize, packedDigest)
 		return err
 	}); err != nil {
+		if outputArtifact.Path != "" {
+			return result, fmt.Errorf("%w: re-signed IPA was published but environment cleanup failed: %w", ErrSigningResignPublicationAmbiguous, err)
+		}
 		return result, err
 	}
 	result.Output = outputArtifact
@@ -263,18 +332,21 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 }
 
 func validateSigningResignOptions(options signingResignOptions) error {
-	values := map[string]string{
-		"IPA input":         options.IPAPath,
-		"IPA output":        options.OutputPath,
-		"signing identity":  options.IdentityPath,
-		"profiles manifest": options.ProfilesManifestPath,
+	required := []struct {
+		label string
+		value string
+	}{
+		{label: "IPA input", value: options.IPAPath},
+		{label: "IPA output", value: options.OutputPath},
+		{label: "signing identity", value: options.IdentityPath},
+		{label: "profiles manifest", value: options.ProfilesManifestPath},
 	}
-	for label, value := range values {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("%s is required", label)
+	for _, item := range required {
+		if strings.TrimSpace(item.value) == "" {
+			return fmt.Errorf("%s is required", item.label)
 		}
-		if strings.ContainsRune(value, 0) {
-			return fmt.Errorf("%s contains a NUL byte", label)
+		if strings.ContainsRune(item.value, 0) {
+			return fmt.Errorf("%s contains a NUL byte", item.label)
 		}
 	}
 	if strings.ContainsRune(options.IdentityPasswordPath, 0) {
@@ -286,6 +358,11 @@ func validateSigningResignOptions(options signingResignOptions) error {
 func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Root, archive signingResignArchive, profiles map[string]signingResignProfile) (signingResignPreparedTree, error) {
 	if err := contextError(ctx); err != nil {
 		return signingResignPreparedTree{}, err
+	}
+	for _, target := range archive.Targets {
+		if err := validateSigningResignExistingEntitlements(target.ExistingEntitlements, target.BundleID); err != nil {
+			return signingResignPreparedTree{}, fmt.Errorf("target %s existing entitlements: %w", target.BundleID, err)
+		}
 	}
 	if err := stageRoot.MkdirAll("entitlements", 0o700); err != nil {
 		return signingResignPreparedTree{}, fmt.Errorf("create private entitlements directory failed")
@@ -310,7 +387,11 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 			return signingResignPreparedTree{}, fmt.Errorf("write target %s entitlements failed", target.BundleID)
 		}
 		profileName := filepath.FromSlash(path.Join(target.RelativePath, "embedded.mobileprovision"))
-		if err := treeRoot.WriteFile(profileName, profile.Data, 0o600); err != nil {
+		profileMode := target.ProfileMode
+		if profileMode == 0 {
+			profileMode = 0o644
+		}
+		if err := treeRoot.WriteFile(profileName, profile.Data, profileMode); err != nil {
 			return signingResignPreparedTree{}, fmt.Errorf("embed profile for target %s failed", target.BundleID)
 		}
 		target.Profile = profile
@@ -326,11 +407,25 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 	for _, target := range prepared.Archive.Targets {
 		targetExecutablePaths[targetExecutablePath(treeRoot.Path(), target)] = struct{}{}
 	}
+	if err := validateSigningResignSwiftSupport(ctx, treeRoot.Path()); err != nil {
+		return signingResignPreparedTree{}, err
+	}
+	prepared.SwiftSupport, err = captureSigningResignSwiftSupportInventory(ctx, treeRoot.Path())
+	if err != nil {
+		return signingResignPreparedTree{}, fmt.Errorf("capture SwiftSupport inventory: %w", err)
+	}
 	for index, codePath := range codePaths {
 		if err := contextError(ctx); err != nil {
 			return signingResignPreparedTree{}, err
 		}
 		if !strings.HasPrefix(codePath, mainPrefix) {
+			if isSigningResignPreservedExternalCodePath(treeRoot.Path(), codePath) {
+				// SwiftSupport/iphoneos contains Apple-supplied Swift runtime
+				// libraries that are distributed beside the app payload. They
+				// were provenance-checked as a complete directory above and
+				// remain byte-for-byte untouched.
+				continue
+			}
 			return signingResignPreparedTree{}, fmt.Errorf("Mach-O code exists outside the main app")
 		}
 		if _, isTargetExecutable := targetExecutablePaths[filepath.Clean(codePath)]; isTargetExecutable {
@@ -365,6 +460,146 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 	return prepared, nil
 }
 
+func isSigningResignPreservedExternalCodePath(treeRoot, codePath string) bool {
+	relative, err := filepath.Rel(treeRoot, codePath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false
+	}
+	relative = filepath.ToSlash(relative)
+	const prefix = "SwiftSupport/iphoneos/"
+	if !strings.HasPrefix(relative, prefix) {
+		return false
+	}
+	name := strings.TrimPrefix(relative, prefix)
+	return name != "" && !strings.ContainsRune(name, '/') && name != ".dylib" && strings.HasSuffix(name, ".dylib")
+}
+
+func verifySigningResignPreservedExternalCode(ctx context.Context, codePath string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if _, err := runSigningResignToolFn(ctx, "/usr/bin/codesign", "--verify", "--strict", "--all-architectures", "-R=anchor apple generic", codePath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateSigningResignSwiftSupport(ctx context.Context, treeRoot string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	swiftSupportRoot := filepath.Join(treeRoot, "SwiftSupport")
+	info, err := os.Lstat(swiftSupportRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect SwiftSupport directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("SwiftSupport is not a regular directory")
+	}
+	entries, err := os.ReadDir(swiftSupportRoot)
+	if err != nil {
+		return fmt.Errorf("read SwiftSupport directory: %w", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "iphoneos" {
+		return fmt.Errorf("SwiftSupport must contain only the iphoneos directory")
+	}
+	swiftRoot := filepath.Join(swiftSupportRoot, "iphoneos")
+	platformInfo, err := os.Lstat(swiftRoot)
+	if err != nil {
+		return fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", err)
+	}
+	if platformInfo.Mode()&os.ModeSymlink != 0 || !platformInfo.IsDir() {
+		return fmt.Errorf("SwiftSupport/iphoneos is not a regular directory")
+	}
+	entries, err = os.ReadDir(swiftRoot)
+	if err != nil {
+		return fmt.Errorf("read SwiftSupport/iphoneos directory: %w", err)
+	}
+	for _, entry := range entries {
+		if err := contextError(ctx); err != nil {
+			return err
+		}
+		name := entry.Name()
+		candidate := filepath.Join(swiftRoot, name)
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("SwiftSupport/iphoneos contains a nested or symbolic-link entry")
+		}
+		entryInfo, err := entry.Info()
+		if err != nil || !entryInfo.Mode().IsRegular() {
+			return fmt.Errorf("SwiftSupport/iphoneos contains a non-regular entry")
+		}
+		if name == ".dylib" || !strings.HasSuffix(name, ".dylib") {
+			return fmt.Errorf("SwiftSupport/iphoneos contains an unsupported entry")
+		}
+		if err := verifySigningResignPreservedExternalCode(ctx, candidate); err != nil {
+			return fmt.Errorf("verify preserved SwiftSupport code failed: %w", err)
+		}
+	}
+	return nil
+}
+
+func captureSigningResignSwiftSupportInventory(ctx context.Context, treeRoot string) ([]signingResignSwiftSupportEntry, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	swiftRoot := filepath.Join(treeRoot, "SwiftSupport", "iphoneos")
+	info, err := os.Lstat(filepath.Join(treeRoot, "SwiftSupport"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect SwiftSupport directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("SwiftSupport is not a regular directory")
+	}
+	platformInfo, err := os.Lstat(swiftRoot)
+	if err != nil {
+		return nil, fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", err)
+	}
+	if platformInfo.Mode()&os.ModeSymlink != 0 || !platformInfo.IsDir() {
+		return nil, fmt.Errorf("SwiftSupport/iphoneos is not a regular directory")
+	}
+	entries, err := os.ReadDir(swiftRoot)
+	if err != nil {
+		return nil, fmt.Errorf("read SwiftSupport/iphoneos directory: %w", err)
+	}
+	inventory := make([]signingResignSwiftSupportEntry, 0, len(entries))
+	for _, entry := range entries {
+		if err := contextError(ctx); err != nil {
+			return nil, err
+		}
+		candidate := filepath.Join(swiftRoot, entry.Name())
+		entryInfo, err := os.Lstat(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("inspect SwiftSupport entry: %w", err)
+		}
+		if entryInfo.Mode()&os.ModeSymlink != 0 || !entryInfo.Mode().IsRegular() {
+			return nil, fmt.Errorf("SwiftSupport/iphoneos contains a non-regular entry")
+		}
+		if entryInfo.Size() > signingResignSwiftSupportMaxBytes {
+			return nil, fmt.Errorf("SwiftSupport entry exceeds %d bytes", signingResignSwiftSupportMaxBytes)
+		}
+		digest, err := hashSigningResignFile(ctx, candidate, entryInfo.Size())
+		if err != nil {
+			return nil, fmt.Errorf("hash SwiftSupport entry: %w", err)
+		}
+		inventory = append(inventory, signingResignSwiftSupportEntry{
+			RelativePath: filepath.ToSlash(filepath.Join("SwiftSupport", "iphoneos", entry.Name())),
+			SizeBytes:    entryInfo.Size(),
+			SHA256:       digest,
+			Mode:         entryInfo.Mode().Perm(),
+		})
+	}
+	sort.Slice(inventory, func(left, right int) bool {
+		return inventory[left].RelativePath < inventory[right].RelativePath
+	})
+	return inventory, nil
+}
+
 func signingResignTargetForCodePath(targets []signingResignTarget, treeRoot, codePath string) (signingResignTarget, bool) {
 	var selected signingResignTarget
 	selectedLength := -1
@@ -391,7 +626,14 @@ func validateSigningResignNestedEntitlements(entitlements, profile map[string]an
 	return nil
 }
 
-func signSigningResignTree(ctx context.Context, treePath string, prepared signingResignPreparedTree, identitySHA1, keychainPath string) error {
+func signSigningResignTree(ctx context.Context, treePath string, prepared signingResignPreparedTree, identitySHA1, keychainPath string) (resultErr error) {
+	defer func() {
+		resultErr = wrapSigningResignOperationalError(
+			signingResignStageSigning,
+			signingResignCodeSigning,
+			resultErr,
+		)
+	}()
 	plans := append([]signingResignCodePlan(nil), prepared.CodePlans...)
 	sortSigningResignCodePlans(plans)
 	targetExecutablePaths := make(map[string]struct{}, len(prepared.Archive.Targets))
@@ -458,7 +700,14 @@ func signingResignFrameworkContainers(treePath string, plans []signingResignCode
 	return containers
 }
 
-func verifySigningResignTree(ctx context.Context, treePath string, prepared signingResignPreparedTree, teamID, certificateSHA256 string) error {
+func verifySigningResignTree(ctx context.Context, treePath string, prepared signingResignPreparedTree, teamID, certificateSHA256 string) (resultErr error) {
+	defer func() {
+		resultErr = wrapSigningResignOperationalError(
+			signingResignStageVerification,
+			signingResignCodeVerification,
+			resultErr,
+		)
+	}()
 	plans := append([]signingResignCodePlan(nil), prepared.CodePlans...)
 	for _, plan := range plans {
 		if err := verifySigningResignObject(ctx, plan.Path, teamID, false); err != nil {
@@ -466,6 +715,9 @@ func verifySigningResignTree(ctx context.Context, treePath string, prepared sign
 		}
 		if err := verifySigningResignCertificate(ctx, plan.Path, certificateSHA256); err != nil {
 			return fmt.Errorf("verify nested code certificate: %w", err)
+		}
+		if err := validateSigningResignCodeEntitlements(ctx, plan); err != nil {
+			return fmt.Errorf("verify nested code entitlements: %w", err)
 		}
 	}
 	for _, target := range prepared.Archive.Targets {
@@ -480,7 +732,10 @@ func verifySigningResignTree(ctx context.Context, treePath string, prepared sign
 		if err != nil {
 			return fmt.Errorf("read verified target %s entitlements: %w", target.BundleID, err)
 		}
-		if err := validateSigningResignVerifiedEntitlements(entitlements, target.ExistingEntitlements, target.Profile.Entitlements, target.BundleID); err != nil {
+		if strings.TrimSpace(target.EntitlementsPath) == "" {
+			return fmt.Errorf("target %s generated entitlements document is missing", target.BundleID)
+		}
+		if err := validateSigningResignEntitlementsAgainstDocument(entitlements, target.EntitlementsPath, fmt.Sprintf("target %s signed entitlements", target.BundleID)); err != nil {
 			return err
 		}
 		profileData, err := readRootedSigningResignFile(treePath, filepath.FromSlash(path.Join(target.RelativePath, "embedded.mobileprovision")), signingResignProfileMaxBytes)
@@ -511,16 +766,96 @@ func validateSigningResignVerifiedEntitlements(actual, existing, profile map[str
 	if err != nil {
 		return fmt.Errorf("target %s expected entitlements: %w", bundleID, err)
 	}
-	if len(actual) != len(want) {
-		return fmt.Errorf("target %s signed entitlements contain unexpected keys", bundleID)
-	}
-	for key, expected := range want {
-		value, exists := actual[key]
-		if !exists || !signingResignEntitlementValuePermits(expected, value) {
-			return fmt.Errorf("target %s signed entitlement %s is not the expected value", bundleID, key)
-		}
+	if !signingResignEntitlementMapsEqual(actual, want) {
+		return fmt.Errorf("target %s signed entitlements do not exactly match the generated document", bundleID)
 	}
 	return nil
+}
+
+func validateSigningResignCodeEntitlements(ctx context.Context, plan signingResignCodePlan) error {
+	actual, err := readSigningResignEntitlements(ctx, plan.Path)
+	if err != nil {
+		return err
+	}
+	return validateSigningResignEntitlementsAgainstDocument(actual, plan.EntitlementsPath, "signed entitlements")
+}
+
+func validateSigningResignEntitlementsAgainstDocument(actual map[string]any, documentPath, subject string) error {
+	want, err := readSigningResignGeneratedEntitlements(documentPath)
+	if err != nil {
+		return err
+	}
+	if !signingResignEntitlementMapsEqual(actual, want) {
+		return fmt.Errorf("%s do not exactly match the generated document", subject)
+	}
+	return nil
+}
+
+func readSigningResignGeneratedEntitlements(documentPath string) (map[string]any, error) {
+	want := map[string]any{}
+	if strings.TrimSpace(documentPath) == "" {
+		return want, nil
+	}
+	data, err := readBoundedSigningRunFile(documentPath, infoplist.MaxBytes, false)
+	if err != nil {
+		return nil, wrapSigningResignOperationalError(
+			signingResignStagePreparation,
+			signingResignCodeGeneratedEntitlements,
+			fmt.Errorf("read generated entitlements: %w", err),
+		)
+	}
+	defer clear(data)
+	if _, err := plist.Unmarshal(data, &want); err != nil {
+		return nil, fmt.Errorf("decode generated entitlements: %w", err)
+	}
+	if want == nil {
+		want = map[string]any{}
+	}
+	return want, nil
+}
+
+func signingResignEntitlementMapsEqual(left, right map[string]any) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, expected := range right {
+		actual, exists := left[key]
+		if !exists || !signingResignEntitlementValuesEqual(actual, expected) {
+			return false
+		}
+	}
+	return true
+}
+
+func signingResignEntitlementValuesEqual(left, right any) bool {
+	leftList, leftIsList := signingResignEntitlementList(left)
+	rightList, rightIsList := signingResignEntitlementList(right)
+	if leftIsList || rightIsList {
+		if !leftIsList || !rightIsList || len(leftList) != len(rightList) {
+			return false
+		}
+		for index := range leftList {
+			if !signingResignEntitlementValuesEqual(leftList[index], rightList[index]) {
+				return false
+			}
+		}
+		return true
+	}
+	leftMap, leftIsMap := left.(map[string]any)
+	rightMap, rightIsMap := right.(map[string]any)
+	if leftIsMap || rightIsMap {
+		if !leftIsMap || !rightIsMap || len(leftMap) != len(rightMap) {
+			return false
+		}
+		for key, expected := range rightMap {
+			actual, exists := leftMap[key]
+			if !exists || !signingResignEntitlementValuesEqual(actual, expected) {
+				return false
+			}
+		}
+		return true
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 func readRootedSigningResignFile(rootPath, relativePath string, limit int64) ([]byte, error) {
@@ -555,7 +890,14 @@ func removeSigningResignStage(stagePath string) error {
 	return os.RemoveAll(clean)
 }
 
-func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Root) (string, int64, string, error) {
+func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Root) (packedPath string, packedSize int64, packedDigest string, resultErr error) {
+	defer func() {
+		resultErr = wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeFilesystem,
+			resultErr,
+		)
+	}()
 	if err := contextError(ctx); err != nil {
 		return "", 0, "", err
 	}
@@ -650,12 +992,12 @@ func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Roo
 		_ = os.Remove(filepath.Join(stageRoot.Path(), "resigned.ipa"))
 		return "", 0, "", errors.Join(operationErr, closeErr)
 	}
-	packedPath := filepath.Join(stageRoot.Path(), "resigned.ipa")
+	packedPath = filepath.Join(stageRoot.Path(), "resigned.ipa")
 	info, err := os.Stat(packedPath)
 	if err != nil {
 		return "", 0, "", err
 	}
-	digest, err := hashSigningResignFile(packedPath, info.Size())
+	digest, err := hashSigningResignFile(ctx, packedPath, info.Size())
 	if err != nil {
 		return "", 0, "", err
 	}
@@ -664,11 +1006,19 @@ func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Roo
 
 func validatePackedSigningResignIPA(ctx context.Context, packedPath string, size int64) error {
 	if err := contextError(ctx); err != nil {
-		return err
+		return wrapSigningResignOperationalError(
+			signingResignStageVerification,
+			signingResignCodeVerification,
+			err,
+		)
 	}
 	file, err := os.Open(packedPath)
 	if err != nil {
-		return fmt.Errorf("open re-signed IPA: %w", err)
+		return wrapSigningResignOperationalError(
+			signingResignStageVerification,
+			signingResignCodeArtifactRead,
+			fmt.Errorf("open re-signed IPA: %w", err),
+		)
 	}
 	defer file.Close()
 	info, err := file.Stat()
@@ -685,13 +1035,21 @@ func validatePackedSigningResignIPA(ctx context.Context, packedPath string, size
 	return validateSigningResignArchive(ctx, reader)
 }
 
-func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size int64, stageRoot rootfs.Root, original signingResignPreparedTree, teamID, certificateSHA256 string) error {
+func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size int64, stageRoot rootfs.Root, originalTreePath string, original signingResignPreparedTree, teamID, certificateSHA256 string) error {
 	if err := contextError(ctx); err != nil {
-		return err
+		return wrapSigningResignOperationalError(
+			signingResignStageVerification,
+			signingResignCodeVerification,
+			err,
+		)
 	}
 	file, err := os.Open(packedPath)
 	if err != nil {
-		return fmt.Errorf("open re-signed IPA for final verification: %w", err)
+		return wrapSigningResignOperationalError(
+			signingResignStageVerification,
+			signingResignCodeArtifactRead,
+			fmt.Errorf("open re-signed IPA for final verification: %w", err),
+		)
 	}
 	defer file.Close()
 	reader, err := zip.NewReader(file, size)
@@ -702,26 +1060,67 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 		return err
 	}
 	if err := stageRoot.MkdirAll("packed-tree", 0o700); err != nil {
-		return fmt.Errorf("create final verification tree: %w", err)
+		return wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeFilesystem,
+			fmt.Errorf("create final verification tree: %w", err),
+		)
 	}
 	stageOS, err := stageRoot.OpenRoot()
 	if err != nil {
-		return fmt.Errorf("open final verification root: %w", err)
+		return wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeFilesystem,
+			fmt.Errorf("open final verification root: %w", err),
+		)
 	}
 	defer stageOS.Close()
 	packedTreeOS, err := stageOS.OpenRoot("packed-tree")
 	if err != nil {
-		return fmt.Errorf("open final verification tree: %w", err)
+		return wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeFilesystem,
+			fmt.Errorf("open final verification tree: %w", err),
+		)
 	}
 	defer packedTreeOS.Close()
 	if err := materializeSigningResignArchive(ctx, reader, packedTreeOS); err != nil {
-		return fmt.Errorf("materialize final verification tree: %w", err)
+		return wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeFilesystem,
+			fmt.Errorf("materialize final verification tree: %w", err),
+		)
+	}
+	if err := validateSigningResignSwiftSupport(ctx, filepath.Join(stageRoot.Path(), "packed-tree")); err != nil {
+		return fmt.Errorf("verify preserved SwiftSupport after repack: %w", err)
 	}
 	packedTreeRoot, err := rootfs.New(filepath.Join(stageRoot.Path(), "packed-tree"))
 	if err != nil {
-		return fmt.Errorf("open final verification tree: %w", err)
+		return wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeFilesystem,
+			fmt.Errorf("open final verification tree: %w", err),
+		)
 	}
 	defer packedTreeRoot.Close()
+	packedSwiftSupport, err := captureSigningResignSwiftSupportInventory(ctx, packedTreeRoot.Path())
+	if err != nil {
+		return wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactRead,
+			fmt.Errorf("capture packed SwiftSupport inventory: %w", err),
+		)
+	}
+	if err := validateSigningResignSwiftSupportInventory(packedSwiftSupport, original.SwiftSupport); err != nil {
+		return wrapSigningResignOperationalError(
+			signingResignStageVerification,
+			signingResignCodeVerification,
+			err,
+		)
+	}
+	if err := validateSigningResignPackedCodeInventory(ctx, packedTreeRoot.Path(), originalTreePath, original); err != nil {
+		return fmt.Errorf("verify packed Mach-O inventory: %w", err)
+	}
 	archive, err := discoverSigningResignArchive(ctx, reader, packedTreeRoot)
 	if err != nil {
 		return fmt.Errorf("inspect final verification targets: %w", err)
@@ -729,21 +1128,19 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 	if archive.MainPath != original.Archive.MainPath || len(archive.Targets) != len(original.Archive.Targets) {
 		return fmt.Errorf("re-signed IPA target inventory changed during repack")
 	}
-	profiles := make(map[string]signingResignProfile, len(original.Archive.Targets))
 	for index, target := range archive.Targets {
 		want := original.Archive.Targets[index]
-		if target.Kind != want.Kind || target.RelativePath != want.RelativePath || target.BundleID != want.BundleID {
+		if target.Kind != want.Kind || target.RelativePath != want.RelativePath || target.BundleID != want.BundleID || target.Executable != want.Executable || target.ProfileMode.Perm() != want.ProfileMode.Perm() {
 			return fmt.Errorf("re-signed IPA target inventory changed during repack")
 		}
 		profileData, err := readRootedSigningResignFile(packedTreeRoot.Path(), filepath.FromSlash(path.Join(target.RelativePath, "embedded.mobileprovision")), signingResignProfileMaxBytes)
 		if err != nil || !strings.EqualFold(signingResignSHA256(profileData), want.Profile.SHA256) {
 			return fmt.Errorf("re-signed IPA target profile changed during repack")
 		}
-		profiles[want.BundleID] = want.Profile
 	}
-	finalPrepared, err := prepareSigningResignTree(ctx, stageRoot, packedTreeRoot, archive, profiles)
+	finalPrepared, err := rebaseSigningResignPreparedTree(original, originalTreePath, packedTreeRoot.Path())
 	if err != nil {
-		return fmt.Errorf("prepare final verification targets: %w", err)
+		return fmt.Errorf("rebase final verification targets: %w", err)
 	}
 	if err := verifySigningResignTree(ctx, packedTreeRoot.Path(), finalPrepared, teamID, certificateSHA256); err != nil {
 		return fmt.Errorf("verify re-signed IPA after repack: %w", err)
@@ -751,61 +1148,250 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 	return nil
 }
 
-func publishSigningResignOutput(outputRoot rootfs.Root, name, packedPath string, packedSize int64, packedDigest string) (signingResignArtifactResult, error) {
+func validateSigningResignSwiftSupportInventory(actual, expected []signingResignSwiftSupportEntry) error {
+	if !slices.Equal(actual, expected) {
+		return fmt.Errorf("re-signed IPA SwiftSupport inventory changed during repack")
+	}
+	return nil
+}
+
+func validateSigningResignPackedCodeInventory(ctx context.Context, packedTreePath, originalTreePath string, original signingResignPreparedTree) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	packedRoot, err := filepath.Abs(filepath.Clean(packedTreePath))
+	if err != nil {
+		return fmt.Errorf("resolve packed verification tree: %w", err)
+	}
+	originalRoot, err := filepath.Abs(filepath.Clean(originalTreePath))
+	if err != nil {
+		return fmt.Errorf("resolve original prepared tree: %w", err)
+	}
+	expected := make([]string, 0, len(original.Archive.Targets)+len(original.CodePlans))
+	for _, target := range original.Archive.Targets {
+		relative := filepath.Clean(filepath.FromSlash(path.Join(target.RelativePath, target.Executable)))
+		expected = append(expected, filepath.ToSlash(relative))
+	}
+	for _, plan := range original.CodePlans {
+		codePath := filepath.Clean(plan.Path)
+		if !filepath.IsAbs(codePath) {
+			return fmt.Errorf("original prepared code path is not absolute")
+		}
+		relative, err := filepath.Rel(originalRoot, codePath)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("original prepared code path is outside the staging tree")
+		}
+		expected = append(expected, filepath.ToSlash(filepath.Clean(relative)))
+	}
+	currentPaths, err := enumerateSigningResignMachOFiles(ctx, packedRoot)
+	if err != nil {
+		return fmt.Errorf("enumerate packed Mach-O files: %w", err)
+	}
+	current := make([]string, 0, len(currentPaths))
+	for _, codePath := range currentPaths {
+		if isSigningResignPreservedExternalCodePath(packedRoot, codePath) {
+			continue
+		}
+		relative, err := filepath.Rel(packedRoot, codePath)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("packed code path is outside the staging tree")
+		}
+		current = append(current, filepath.ToSlash(filepath.Clean(relative)))
+	}
+	sort.Strings(expected)
+	sort.Strings(current)
+	if !slices.Equal(current, expected) {
+		return fmt.Errorf("re-signed IPA Mach-O executable inventory changed during repack")
+	}
+	return nil
+}
+
+func rebaseSigningResignPreparedTree(original signingResignPreparedTree, originalTreePath, packedTreePath string) (signingResignPreparedTree, error) {
+	if originalTreePath == "" || packedTreePath == "" {
+		return signingResignPreparedTree{}, fmt.Errorf("prepared tree roots are missing")
+	}
+	originalRoot, err := filepath.Abs(filepath.Clean(originalTreePath))
+	if err != nil {
+		return signingResignPreparedTree{}, fmt.Errorf("resolve original prepared tree: %w", err)
+	}
+	packedRoot, err := filepath.Abs(filepath.Clean(packedTreePath))
+	if err != nil {
+		return signingResignPreparedTree{}, fmt.Errorf("resolve packed verification tree: %w", err)
+	}
+	rebased := original
+	rebased.Archive.Targets = append([]signingResignTarget(nil), original.Archive.Targets...)
+	rebased.CodePlans = append([]signingResignCodePlan(nil), original.CodePlans...)
+	rebased.SwiftSupport = append([]signingResignSwiftSupportEntry(nil), original.SwiftSupport...)
+	for index := range rebased.CodePlans {
+		codePath := filepath.Clean(rebased.CodePlans[index].Path)
+		if !filepath.IsAbs(codePath) {
+			return signingResignPreparedTree{}, fmt.Errorf("prepared code path is not absolute")
+		}
+		relative, err := filepath.Rel(originalRoot, codePath)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return signingResignPreparedTree{}, fmt.Errorf("prepared code path is outside the original staging tree")
+		}
+		rebased.CodePlans[index].Path = filepath.Join(packedRoot, relative)
+	}
+	return rebased, nil
+}
+
+func publishSigningResignOutput(ctx context.Context, outputRoot rootfs.Root, name, packedPath string, packedSize int64, packedDigest string) (signingResignArtifactResult, error) {
+	if err := contextError(ctx); err != nil {
+		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactPublish,
+			err,
+		)
+	}
 	file, err := os.Open(packedPath)
 	if err != nil {
-		return signingResignArtifactResult{}, fmt.Errorf("open staged re-signed IPA: %w", err)
+		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactRead,
+			fmt.Errorf("open staged re-signed IPA: %w", err),
+		)
 	}
 	defer file.Close()
 	written, err := outputRoot.CreateNewFrom(name, file, 0o600)
 	if err != nil {
-		return signingResignArtifactResult{}, fmt.Errorf("publish re-signed IPA: %w", err)
+		// CreateNewFrom can report a durability/cleanup error after the
+		// no-replace rename has already published the destination. If the
+		// complete staged byte count was written and the destination is now
+		// visible, preserve that uncertainty for the caller instead of
+		// inviting a blind retry.
+		if written == packedSize {
+			if published, openErr := outputRoot.OpenFile(name); openErr == nil {
+				_ = published.Close()
+				return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+					signingResignStageArtifact,
+					signingResignCodeArtifactPublish,
+					fmt.Errorf("%w: publish re-signed IPA returned an uncertain result: %w", ErrSigningResignPublicationAmbiguous, err),
+				)
+			}
+		}
+		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactPublish,
+			fmt.Errorf("publish re-signed IPA: %w", err),
+		)
+	}
+	if err := contextError(ctx); err != nil {
+		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactPublish,
+			fmt.Errorf("%w: publication completed but cancellation prevented validation", ErrSigningResignPublicationAmbiguous),
+		)
 	}
 	if written != packedSize {
-		return signingResignArtifactResult{}, fmt.Errorf("published re-signed IPA size is inconsistent")
+		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactPublish,
+			fmt.Errorf("%w: published re-signed IPA size is inconsistent", ErrSigningResignPublicationAmbiguous),
+		)
 	}
 	published, err := outputRoot.OpenFile(name)
 	if err != nil {
-		return signingResignArtifactResult{}, fmt.Errorf("reopen published re-signed IPA: %w", err)
+		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactPublish,
+			fmt.Errorf("%w: reopen published re-signed IPA failed", ErrSigningResignPublicationAmbiguous),
+		)
 	}
-	defer published.Close()
+	defer func() {
+		if published != nil {
+			_ = published.Close()
+		}
+	}()
 	info, err := published.Stat()
 	if err != nil {
-		return signingResignArtifactResult{}, err
+		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactPublish,
+			fmt.Errorf("%w: inspect published re-signed IPA failed", ErrSigningResignPublicationAmbiguous),
+		)
 	}
-	digest, err := hashSigningResignOpenFile(published, info.Size())
+	signingResignBeforePublishedHashFn()
+	digest, err := hashSigningResignOpenFile(ctx, published, info.Size())
 	if err != nil {
-		return signingResignArtifactResult{}, err
+		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactHash,
+			fmt.Errorf("%w: hash published re-signed IPA failed", ErrSigningResignPublicationAmbiguous),
+		)
 	}
 	if !strings.EqualFold(digest, packedDigest) {
-		return signingResignArtifactResult{}, fmt.Errorf("published re-signed IPA digest is inconsistent")
+		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactHash,
+			fmt.Errorf("%w: published re-signed IPA digest is inconsistent", ErrSigningResignPublicationAmbiguous),
+		)
+	}
+	if err := published.Close(); err != nil {
+		published = nil
+		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactPublish,
+			fmt.Errorf("%w: close published re-signed IPA failed", ErrSigningResignPublicationAmbiguous),
+		)
+	}
+	published = nil
+	if err := contextError(ctx); err != nil {
+		return signingResignArtifactResult{}, wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactPublish,
+			fmt.Errorf("%w: publication completed but cancellation prevented success", ErrSigningResignPublicationAmbiguous),
+		)
 	}
 	return signingResignArtifactResult{Path: filepath.Join(outputRoot.Path(), name), SizeBytes: info.Size(), SHA256: digest}, nil
 }
 
-func hashSigningResignFile(pathValue string, size int64) (string, error) {
+func hashSigningResignFile(ctx context.Context, pathValue string, size int64) (digest string, resultErr error) {
+	defer func() {
+		resultErr = wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactHash,
+			resultErr,
+		)
+	}()
+	if err := contextError(ctx); err != nil {
+		return "", err
+	}
 	file, err := os.Open(pathValue)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
-	return hashSigningResignOpenFile(file, size)
+	return hashSigningResignOpenFile(ctx, file, size)
 }
 
-func hashSigningResignOpenFile(file *os.File, size int64) (string, error) {
+func hashSigningResignOpenFile(ctx context.Context, file *os.File, size int64) (digest string, resultErr error) {
+	defer func() {
+		resultErr = wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeArtifactHash,
+			resultErr,
+		)
+	}()
 	if file == nil || size < 0 {
 		return "", fmt.Errorf("hash input is invalid")
+	}
+	if err := contextError(ctx); err != nil {
+		return "", err
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return "", err
 	}
 	hash := sha256.New()
-	written, err := copySigningResignWithContext(context.Background(), hash, io.LimitReader(file, size+1), size)
+	written, err := copySigningResignWithContext(ctx, hash, io.LimitReader(file, size+1), size)
 	if err != nil {
 		return "", err
 	}
 	if written != size {
 		return "", fmt.Errorf("hash input size changed")
+	}
+	if err := contextError(ctx); err != nil {
+		return "", err
 	}
 	return strings.ToUpper(hex.EncodeToString(hash.Sum(nil))), nil
 }

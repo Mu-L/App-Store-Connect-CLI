@@ -9,7 +9,11 @@ experimental, macOS-only local operation:
 asc signing resign --ipa PATH --output PATH --identity PATH --profiles-manifest PATH [--identity-password-file PATH] [--format FORMAT]
 ```
 
-`--ipa`, `--output`, `--identity`, and `--profiles-manifest` are required.
+The command-specific `--ipa`, `--output`, `--identity`,
+`--identity-password-file`, and `--profiles-manifest` flags are experimental;
+`--ipa`, `--output`, `--identity`, and `--profiles-manifest` are required, while
+the password-file path is optional. The help text marks each of these flags
+with `[experimental]`.
 The destination is create-only: an existing path is a hard conflict and there
 is no overwrite flag in the first release. Positional arguments are rejected.
 The output format uses the repository's standard table, JSON, and Markdown
@@ -41,7 +45,18 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
 3. Require one `Payload/*.app` and discover only the supported app-like target
    locations: app extensions, watch applications/extensions, and App Clips.
    Validate each target's bounded `Info.plist`, bundle identifier, executable,
-   platform, and Mach-O executable. Reject unrecognized nested app bundles.
+   platform, and Mach-O executable. Main-app, extension, and App Clip targets
+   require iOS device metadata; discovered Watch targets require matching
+   `watchos`/`WatchOS` metadata. Replacement profiles continue to use the
+   profile parser's accepted iOS platform set for bundled Watch targets; no
+   genuine signed Watch fixture was available for this local test lane.
+   `CFBundleSupportedPlatforms` is decoded without lossy coercion: it must be
+   a non-empty array of non-empty strings, with no control characters or
+   case-insensitive duplicates. Scalar/object values, mixed member types,
+   empty members, and malformed extras are operational archive failures (exit
+   1), while a well-formed but unsupported canonical platform is a usage
+   failure (exit 2).
+   Reject unrecognized nested app bundles.
 4. Strictly decode the manifest before creating any keychain. It maps each
    discovered target's exact bundle identifier to a relative, regular,
    no-follow profile file. Reject unknown fields, duplicate keys, duplicate
@@ -53,10 +68,19 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    certificate, current validity, and a team/certificate match for every
    profile.
 6. Use the private mutable staging snapshot. For each app-like target, replace
-   `embedded.mobileprovision`, derive
-   provisioning-controlled entitlements from the existing signed entitlements,
-   and reject any non-identity capability change that is not permitted by the
-   replacement profile.
+   `embedded.mobileprovision`, derive provisioning-controlled entitlements
+   from the existing signed entitlements, and reject any non-identity
+   capability change that is not permitted by the replacement profile. A
+   wildcard profile authorization is never emitted as a signed identity
+   entitlement: an existing concrete value is retained only after it is
+   authorized, and no concrete value means the operation fails closed. Before
+   writing the private entitlement documents, require existing concrete
+   application-identifier claims to agree with one another and end in the
+   exact target bundle identifier; the alternate
+   `com.apple.application-identifier` synonym is optional. Validate an
+   existing team-identifier claim syntactically, but do not infer that a
+   legacy application-ID prefix must equal it. Replacement-profile identity
+   claims are checked independently against the target and profile fields.
 7. Create a dedicated temporary keychain using the existing recovery/journal
    and lock boundary, import the already validated identity, and sign leaf
    nested frameworks/dylibs before nested bundles, extensions, watch apps/App
@@ -66,14 +90,32 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    invocations, including resource seal, profile, entitlements, team,
    application identifier, and signer certificate binding. Repack into a new
    IPA, validate the generated archive, and publish with no-replace atomic
-   rooted output. The input is never rewritten.
+   rooted output. The input is never rewritten. Preserve each validated
+   regular-file permission mode (defaulting only when the ZIP omitted mode
+   metadata); unsafe group/world write modes are rejected. Preserve
+   the exact `SwiftSupport/iphoneos/*.dylib` layout byte-for-byte without
+   treating those distribution-side runtime libraries as app code to re-sign.
+   The `SwiftSupport` root may contain only the `iphoneos` directory, whose
+   direct children must be regular, non-symlink `.dylib` files; nested,
+   alternate-platform, root-file, and other entries are rejected. Re-run the
+   strict Apple generic-anchor `codesign` verification on the final packed
+   tree before publication. Capture a private, sorted inventory of every
+   direct runtime using its normalized relative path, bounded size (at most
+   1 GiB per file), SHA-256 digest, and validated permission mode. Rebuild the
+   inventory after repack and require exact path, size, digest, and mode
+   equality in addition to the final provenance check; added, dropped,
+   renamed, replaced, or mode-mutated runtimes fail before publication. The
+   inventory is internal only and never appears in output or telemetry.
+   Direct codesign invocations inherit a caller deadline or use a bounded,
+   multi-minute phase fallback.
 9. Remove temporary keychain, generated entitlements, staging, and journal on
    all paths. Cleanup errors are joined with the primary error and cannot be
    reported as success.
 
 ## Output and errors
 
-JSON is a schema-versioned receipt containing only input/output size and
+JSON is a schema-versioned, registered `internal/asc` output type containing
+only input/output size and
 SHA-256 digests, public leaf-certificate digest/team, target relative path and
 bundle identifier, profile class/UUID/digest, and an all-target verification
 status. Table and Markdown expose the same safe fields. It never emits
@@ -82,9 +124,17 @@ plists, device identifiers, or raw subprocess diagnostics.
 
 Usage validation returns exit code 2. IPA, profile, identity, entitlement,
 signing, verification, cleanup, and publication failures return a nonzero
-execution error. Exit 0 is possible only after output publication and parent
-directory synchronization succeed. A post-rename durability error is
-reported as ambiguous publication and the artifact is left in place.
+execution error. Path-bearing operational failures use a closed internal
+stage/code error whose public `Error()` is stable; the original filesystem,
+tool, and cleanup causes remain available to internal `errors.Is`/`errors.As`
+callers through `Unwrap` but are never rendered by the CLI. The output parent
+is not created until all input, profile, identity, signing, and verification
+checks pass. Exit 0 is possible only after output publication and
+post-publication validation succeed. Any failure after the no-replace
+publication creates the artifact but before its size, reopen, hash, or close
+checks complete is reported as an ambiguous publication
+(`ErrSigningResignPublicationAmbiguous`); the artifact is left in place for
+inspection and must not be blindly retried.
 
 ## Compatibility and alternatives
 

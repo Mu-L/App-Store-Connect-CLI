@@ -2,6 +2,7 @@ package signing
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"runtime"
@@ -26,11 +27,11 @@ type signingResignOptions struct {
 // SigningResignCommand returns the experimental local IPA re-signing command.
 func SigningResignCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("resign", flag.ExitOnError)
-	ipaPath := fs.String("ipa", "", "Path to the existing IPA input (required)")
-	outputPath := fs.String("output", "", "Path for the newly re-signed IPA (required)")
-	identityPath := fs.String("identity", "", "Path to a PKCS#12 signing identity (required)")
-	identityPasswordPath := fs.String("identity-password-file", "", "Path to a file containing the PKCS#12 password")
-	profilesManifestPath := fs.String("profiles-manifest", "", "Path to the strict bundle-to-profile manifest (required)")
+	ipaPath := fs.String("ipa", "", "[experimental] Path to the existing IPA input (required)")
+	outputPath := fs.String("output", "", "[experimental] Path for the newly re-signed IPA (required)")
+	identityPath := fs.String("identity", "", "[experimental] Path to a PKCS#12 signing identity (required)")
+	identityPasswordPath := fs.String("identity-password-file", "", "[experimental] Path to a file containing the PKCS#12 password")
+	profilesManifestPath := fs.String("profiles-manifest", "", "[experimental] Path to the strict bundle-to-profile manifest (required)")
 	format := shared.BindOutputFlagsWith(fs, "format", shared.DefaultOutputFormat(), "Output format: json, table, markdown")
 
 	return &ffcli.Command{
@@ -61,27 +62,44 @@ Example:
 			if runtime.GOOS != "darwin" {
 				return shared.UsageError("signing resign is supported only on macOS")
 			}
-			for name, value := range map[string]string{
-				"--ipa":               *ipaPath,
-				"--output":            *outputPath,
-				"--identity":          *identityPath,
-				"--profiles-manifest": *profilesManifestPath,
-			} {
-				if strings.TrimSpace(value) == "" {
-					return shared.UsageError(name + " is required")
+			required := []struct {
+				name  string
+				value string
+			}{
+				{name: "--ipa", value: *ipaPath},
+				{name: "--output", value: *outputPath},
+				{name: "--identity", value: *identityPath},
+				{name: "--profiles-manifest", value: *profilesManifestPath},
+			}
+			for _, item := range required {
+				if strings.TrimSpace(item.value) == "" {
+					return shared.UsageError(item.name + " is required")
 				}
 			}
 			if _, err := shared.ValidateOutputFormat(*format.Output, *format.Pretty); err != nil {
 				return shared.UsageError(err.Error())
 			}
-			result, err := executeSigningResign(ctx, signingResignOptions{
-				IPAPath:              strings.TrimSpace(*ipaPath),
-				OutputPath:           strings.TrimSpace(*outputPath),
-				IdentityPath:         strings.TrimSpace(*identityPath),
-				IdentityPasswordPath: strings.TrimSpace(*identityPasswordPath),
-				ProfilesManifestPath: strings.TrimSpace(*profilesManifestPath),
+			result, err := executeSigningResignFn(ctx, signingResignOptions{
+				IPAPath:              *ipaPath,
+				OutputPath:           *outputPath,
+				IdentityPath:         *identityPath,
+				IdentityPasswordPath: signingResignPathOrEmpty(*identityPasswordPath),
+				ProfilesManifestPath: *profilesManifestPath,
 			})
 			if err != nil {
+				if isSigningResignUsageError(err) {
+					return shared.UsageError(err.Error())
+				}
+				// The implementation normally classifies path-bearing failures
+				// before returning. Keep the public command boundary defensive for
+				// injected implementations and future stages: detailed causes stay
+				// available to package callers through Unwrap, while the CLI never
+				// prints temporary paths, keychain names, or tool diagnostics.
+				err = wrapSigningResignOperationalError(
+					signingResignStagePreparation,
+					signingResignCodeFilesystem,
+					err,
+				)
 				return fmt.Errorf("signing resign: %w", err)
 			}
 			return printSigningResignResult(result, *format.Output, *format.Pretty)
@@ -89,88 +107,47 @@ Example:
 	}
 }
 
-// signingResignResult is intentionally defined before the implementation so
-// the command's renderer remains a stable, redacted public contract.
-type signingResignResult struct {
-	SchemaVersion int                         `json:"schemaVersion"`
-	Command       string                      `json:"command"`
-	Input         signingResignArtifactResult `json:"input"`
-	Output        signingResignArtifactResult `json:"output"`
-	Identity      signingResignIdentityResult `json:"identity"`
-	Targets       []signingResignTargetResult `json:"targets"`
-	Verification  signingResignVerification   `json:"verification"`
+type signingResignUsageFailure struct{ err error }
+
+func (failure signingResignUsageFailure) Error() string { return failure.err.Error() }
+
+func (failure signingResignUsageFailure) Unwrap() error { return failure.err }
+
+func signingResignUsage(err error) error {
+	if err == nil {
+		return nil
+	}
+	return signingResignUsageFailure{err: err}
 }
 
-type signingResignArtifactResult struct {
-	Path      string `json:"path"`
-	SizeBytes int64  `json:"sizeBytes"`
-	SHA256    string `json:"sha256"`
+func isSigningResignUsageError(err error) bool {
+	var failure signingResignUsageFailure
+	return errors.As(err, &failure)
 }
 
-type signingResignIdentityResult struct {
-	CertificateSHA256 string `json:"certificateSha256"`
-	TeamID            string `json:"teamId"`
+func signingResignPathOrEmpty(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return value
 }
 
-type signingResignTargetResult struct {
-	Kind          string `json:"kind"`
-	RelativePath  string `json:"relativePath"`
-	BundleID      string `json:"bundleId"`
-	ProfileClass  string `json:"profileClass"`
-	ProfileUUID   string `json:"profileUuid"`
-	ProfileSHA256 string `json:"profileSha256"`
-	Status        string `json:"status"`
-}
-
-type signingResignVerification struct {
-	Status string `json:"status"`
-	Scope  string `json:"scope"`
-}
+// Keep implementation-local aliases while exposing the public receipt from
+// internal/asc, where the shared output registry can render its exact type.
+type (
+	signingResignResult         = asc.SigningResignResult
+	signingResignInputResult    = asc.SigningResignInputResult
+	signingResignArtifactResult = asc.SigningResignArtifactResult
+	signingResignIdentityResult = asc.SigningResignIdentityResult
+	signingResignTargetResult   = asc.SigningResignTargetResult
+	signingResignVerification   = asc.SigningResignVerification
+)
 
 func printSigningResignResult(result signingResignResult, format string, pretty bool) error {
-	return shared.PrintOutputWithRenderers(
-		result,
-		format,
-		pretty,
-		func() error {
-			asc.RenderTable([]string{"field", "value"}, signingResignResultRows(result))
-			return nil
-		},
-		func() error {
-			asc.RenderMarkdown([]string{"field", "value"}, signingResignResultRows(result))
-			return nil
-		},
-	)
+	return shared.PrintOutput(&result, format, pretty)
 }
 
-func signingResignResultRows(result signingResignResult) [][]string {
-	rows := [][]string{
-		{"command", result.Command},
-		{"input.path", result.Input.Path},
-		{"input.sizeBytes", fmt.Sprintf("%d", result.Input.SizeBytes)},
-		{"input.sha256", result.Input.SHA256},
-		{"output.path", result.Output.Path},
-		{"output.sizeBytes", fmt.Sprintf("%d", result.Output.SizeBytes)},
-		{"output.sha256", result.Output.SHA256},
-		{"identity.certificateSha256", result.Identity.CertificateSHA256},
-		{"identity.teamId", result.Identity.TeamID},
-		{"verification.status", result.Verification.Status},
-		{"verification.scope", result.Verification.Scope},
-	}
-	for _, target := range result.Targets {
-		prefix := "target." + target.RelativePath
-		rows = append(
-			rows,
-			[]string{prefix + ".kind", target.Kind},
-			[]string{prefix + ".bundleId", target.BundleID},
-			[]string{prefix + ".profileClass", target.ProfileClass},
-			[]string{prefix + ".profileUuid", target.ProfileUUID},
-			[]string{prefix + ".profileSha256", target.ProfileSHA256},
-			[]string{prefix + ".status", target.Status},
-		)
-	}
-	return rows
-}
+var executeSigningResignFn = executeSigningResign
 
 func executeSigningResign(ctx context.Context, options signingResignOptions) (signingResignResult, error) {
 	return executeSigningResignImplementation(ctx, options)

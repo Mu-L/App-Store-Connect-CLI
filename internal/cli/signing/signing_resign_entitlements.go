@@ -3,6 +3,7 @@ package signing
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/infoplist"
@@ -17,6 +18,16 @@ var signingResignIdentityEntitlementKeys = map[string]struct{}{
 	"keychain-access-groups":                             {},
 	"com.apple.developer.ubiquity-kvstore-identifier":    {},
 	"com.apple.developer.parent-application-identifiers": {},
+}
+
+var signingResignIdentityEntitlementKeyOrder = []string{
+	"application-identifier",
+	"com.apple.application-identifier",
+	"com.apple.developer.team-identifier",
+	"get-task-allow",
+	"keychain-access-groups",
+	"com.apple.developer.ubiquity-kvstore-identifier",
+	"com.apple.developer.parent-application-identifiers",
 }
 
 func buildSigningResignEntitlements(existing, profile map[string]any) (map[string]any, error) {
@@ -43,13 +54,23 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 		}
 	}
 	result := make(map[string]any, len(existing)+4)
-	for key, value := range existing {
+	existingKeys := make([]string, 0, len(existing))
+	for key := range existing {
+		existingKeys = append(existingKeys, key)
+	}
+	sort.Strings(existingKeys)
+	for _, key := range existingKeys {
+		value := existing[key]
 		if _, identityKey := signingResignIdentityEntitlementKeys[key]; identityKey {
 			profileValue, exists := profile[key]
 			if !exists {
 				return nil, fmt.Errorf("existing entitlement %s is missing from the replacement profile", key)
 			}
-			result[key] = profileValue
+			resolved, err := resolveSigningResignIdentityEntitlement(key, value, profileValue)
+			if err != nil {
+				return nil, err
+			}
+			result[key] = resolved
 			continue
 		}
 		profileValue, permitted := profile[key]
@@ -58,7 +79,10 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 		}
 		result[key] = value
 	}
-	for key := range signingResignIdentityEntitlementKeys {
+	for _, key := range signingResignIdentityEntitlementKeyOrder {
+		if _, exists := existing[key]; exists {
+			continue
+		}
 		value, exists := profile[key]
 		if !exists {
 			if key == "com.apple.application-identifier" ||
@@ -69,9 +93,147 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 			}
 			return nil, fmt.Errorf("replacement profile entitlement %s is missing", key)
 		}
+		if signingResignEntitlementContainsWildcard(value) {
+			return nil, fmt.Errorf("replacement profile entitlement %s is wildcard-only and has no concrete signed value", key)
+		}
 		result[key] = value
 	}
 	return result, nil
+}
+
+// validateSigningResignExistingEntitlements checks the identity claims from
+// the input signature before any replacement profile or tree mutation is
+// attempted. The alternate com.apple.application-identifier claim is
+// optional, but when present it must agree with application-identifier.
+func validateSigningResignExistingEntitlements(existing map[string]any, bundleID string) error {
+	if existing == nil {
+		return nil
+	}
+	if err := validateSigningResignBundleID(bundleID); err != nil {
+		return fmt.Errorf("target bundle identifier is invalid: %w", err)
+	}
+	identifiers := make(map[string]string, 2)
+	for _, key := range []string{"application-identifier", "com.apple.application-identifier"} {
+		value, exists := existing[key]
+		if !exists {
+			continue
+		}
+		text, ok := value.(string)
+		if !ok || strings.TrimSpace(text) != text || strings.ContainsRune(text, '*') {
+			return fmt.Errorf("existing entitlement %s is invalid", key)
+		}
+		prefix, err := signingResignApplicationIdentifierPrefix(text, bundleID)
+		if err != nil {
+			return fmt.Errorf("existing entitlement %s is invalid: %w", key, err)
+		}
+		identifiers[key] = prefix
+	}
+	if canonical, exists := identifiers["application-identifier"]; exists {
+		if alternate, alternateExists := identifiers["com.apple.application-identifier"]; alternateExists && canonical != alternate {
+			return fmt.Errorf("existing application identifiers are contradictory")
+		}
+	}
+	teamValue, hasTeam := existing["com.apple.developer.team-identifier"]
+	if hasTeam {
+		team, ok := teamValue.(string)
+		if !ok || strings.TrimSpace(team) != team || strings.ContainsRune(team, '*') || validateSigningResignTeamID(team) != nil {
+			return fmt.Errorf("existing entitlement com.apple.developer.team-identifier is invalid")
+		}
+	}
+	// A legacy signing identity can use an application-identifier prefix that
+	// differs from com.apple.developer.team-identifier. Without a captured
+	// code-signature TeamIdentifier, do not infer equality between them; the
+	// replacement profile is independently checked before signing.
+	return nil
+}
+
+func signingResignApplicationIdentifierPrefix(value, bundleID string) (string, error) {
+	suffix := "." + bundleID
+	if !strings.HasSuffix(value, suffix) {
+		return "", fmt.Errorf("does not match target bundle identifier")
+	}
+	prefix := strings.TrimSuffix(value, suffix)
+	if prefix == "" || strings.ContainsRune(prefix, '*') {
+		return "", fmt.Errorf("does not contain a concrete team prefix")
+	}
+	if err := validateSigningResignTeamID(prefix); err != nil {
+		return "", fmt.Errorf("team prefix is invalid")
+	}
+	return prefix, nil
+}
+
+func resolveSigningResignIdentityEntitlement(key string, existing, profile any) (any, error) {
+	if !signingResignIdentityValueIsConcrete(existing) {
+		return nil, fmt.Errorf("existing entitlement %s is not a concrete value", key)
+	}
+	if signingResignEntitlementContainsWildcard(profile) {
+		if !signingResignEntitlementValuePermits(profile, existing) {
+			return nil, fmt.Errorf("existing entitlement %s is not permitted by the replacement profile", key)
+		}
+		// A wildcard is a profile authorization pattern, not a value that
+		// can be placed in the signed entitlement document. Keep the
+		// already-concrete claim after proving that the replacement profile
+		// authorizes it.
+		return existing, nil
+	}
+	return profile, nil
+}
+
+func signingResignEntitlementContainsWildcard(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return strings.ContainsRune(typed, '*')
+	case []string:
+		for _, item := range typed {
+			if signingResignEntitlementContainsWildcard(item) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if signingResignEntitlementContainsWildcard(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range typed {
+			if signingResignEntitlementContainsWildcard(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func signingResignIdentityValueIsConcrete(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed) != "" && !strings.ContainsRune(typed, '*')
+	case []string:
+		if len(typed) == 0 {
+			return false
+		}
+		for _, item := range typed {
+			if !signingResignIdentityValueIsConcrete(item) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		if len(typed) == 0 {
+			return false
+		}
+		for _, item := range typed {
+			if !signingResignIdentityValueIsConcrete(item) {
+				return false
+			}
+		}
+		return true
+	case bool:
+		return true
+	default:
+		return false
+	}
 }
 
 func signingResignEntitlementValuePermits(profileValue, signedValue any) bool {

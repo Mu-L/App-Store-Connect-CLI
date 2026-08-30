@@ -150,6 +150,7 @@ func registerAllOutputRenderers() {
 		}
 		return nil
 	})
+	registerRows(signingResignResultRows)
 	registerRows(subscriptionAvailabilityRows)
 	registerRowsWithSingleResourceAdapter(subscriptionPlanAvailabilitiesRows)
 	registerRows(subscriptionGracePeriodRows)

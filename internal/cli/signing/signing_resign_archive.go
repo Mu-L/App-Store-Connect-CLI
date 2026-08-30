@@ -30,6 +30,7 @@ const (
 	signingResignMaxArchiveMemberNameLen        = 4096
 	signingResignMaxExpandedBytes        uint64 = 16 << 30
 	signingResignMaxIPABytes             int64  = 8 << 30
+	signingResignSwiftSupportMaxBytes    int64  = 1 << 30
 	signingResignMaxTargetCount                 = 256
 )
 
@@ -38,6 +39,7 @@ type signingResignTarget struct {
 	RelativePath         string
 	BundleID             string
 	Executable           string
+	ProfileMode          os.FileMode
 	ExistingEntitlements map[string]any
 	Profile              signingResignProfile
 	EntitlementsPath     string
@@ -259,7 +261,49 @@ func validateSigningResignArchiveMember(member *zip.File) error {
 	if !member.FileInfo().IsDir() && !member.Mode().IsRegular() {
 		return fmt.Errorf("IPA contains a non-regular member")
 	}
+	if _, err := signingResignArchiveMemberMode(member); err != nil {
+		return err
+	}
 	return nil
+}
+
+func signingResignSafeFileMode(mode os.FileMode, isDirectory bool) (os.FileMode, error) {
+	permissions := mode.Perm()
+	if mode&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+		return 0, fmt.Errorf("IPA contains an unsafe archive special mode")
+	}
+	// Group/world write bits are not safe to carry into an installed app.
+	// Reject them instead of silently changing a validated archive member's
+	// metadata; all accepted modes are then preserved exactly through repack.
+	if permissions&0o022 != 0 {
+		return 0, fmt.Errorf("IPA contains an unsafe archive permission mode")
+	}
+	if isDirectory {
+		if permissions&0o500 != 0o500 {
+			return 0, fmt.Errorf("IPA contains an unreadable or untraversable directory mode")
+		}
+	} else if permissions&0o400 == 0 {
+		return 0, fmt.Errorf("IPA contains an unreadable archive file mode")
+	}
+	return permissions, nil
+}
+
+func signingResignArchiveMemberMode(member *zip.File) (os.FileMode, error) {
+	if member == nil {
+		return 0, fmt.Errorf("IPA contains a missing archive member")
+	}
+	isDirectory := member.FileInfo().IsDir()
+	mode := member.Mode()
+	if member.CreatorVersion>>8 == 0 {
+		// A DOS-created member carries no Unix permission metadata. Use safe
+		// defaults only for that explicitly identified case; an explicit Unix
+		// mode of 000 remains an error rather than being silently widened.
+		if isDirectory {
+			return 0o700, nil
+		}
+		return 0o644, nil
+	}
+	return signingResignSafeFileMode(mode, isDirectory)
 }
 
 func materializeSigningResignArchive(ctx context.Context, reader *zip.Reader, destination *os.Root) error {
@@ -268,6 +312,11 @@ func materializeSigningResignArchive(ctx context.Context, reader *zip.Reader, de
 	}
 	members := append([]*zip.File(nil), reader.File...)
 	sort.Slice(members, func(i, j int) bool { return members[i].Name < members[j].Name })
+	type directoryMode struct {
+		name string
+		mode os.FileMode
+	}
+	var directories []directoryMode
 	for _, member := range members {
 		if err := contextError(ctx); err != nil {
 			return err
@@ -277,7 +326,16 @@ func materializeSigningResignArchive(ctx context.Context, reader *zip.Reader, de
 			if err := destination.MkdirAll(name, 0o700); err != nil {
 				return err
 			}
+			mode, err := signingResignArchiveMemberMode(member)
+			if err != nil {
+				return err
+			}
+			directories = append(directories, directoryMode{name: name, mode: mode})
 			continue
+		}
+		mode, err := signingResignArchiveMemberMode(member)
+		if err != nil {
+			return err
 		}
 		if err := destination.MkdirAll(filepath.Dir(name), 0o700); err != nil {
 			return err
@@ -301,10 +359,13 @@ func materializeSigningResignArchive(ctx context.Context, reader *zip.Reader, de
 		if openErr != nil || closeErr != nil {
 			return errors.Join(openErr, closeErr)
 		}
-		if member.Mode().Perm()&0o111 != 0 {
-			if err := destination.Chmod(name, 0o700); err != nil {
-				return err
-			}
+		if err := destination.Chmod(name, mode); err != nil {
+			return err
+		}
+	}
+	for _, directory := range directories {
+		if err := destination.Chmod(directory.name, directory.mode); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -414,7 +475,7 @@ func inspectSigningResignTarget(ctx context.Context, tree rootfs.Root, relativeP
 	if err := validateSigningResignExecutable(executable); err != nil {
 		return signingResignTarget{}, err
 	}
-	if err := validateSigningResignPlatform(info); err != nil {
+	if err := validateSigningResignPlatform(info, kind); err != nil {
 		return signingResignTarget{}, err
 	}
 	executablePath := filepath.FromSlash(path.Join(relativePath, executable))
@@ -430,11 +491,31 @@ func inspectSigningResignTarget(ctx context.Context, tree rootfs.Root, relativeP
 	if !isSigningResignMachOFile(file, stat.Size()) {
 		return signingResignTarget{}, fmt.Errorf("executable is not a loadable Mach-O")
 	}
+	profileMode := os.FileMode(0o644)
+	profilePath := filepath.FromSlash(path.Join(relativePath, "embedded.mobileprovision"))
+	profileFile, profileErr := tree.OpenFile(profilePath)
+	switch {
+	case profileErr == nil:
+		profileInfo, statErr := profileFile.Stat()
+		closeErr := profileFile.Close()
+		if statErr != nil || closeErr != nil {
+			return signingResignTarget{}, fmt.Errorf("inspect embedded profile")
+		}
+		profileMode, profileErr = signingResignSafeFileMode(profileInfo.Mode(), false)
+		if profileErr != nil {
+			return signingResignTarget{}, profileErr
+		}
+	case errors.Is(profileErr, os.ErrNotExist):
+		// An input may be unsigned. The replacement profile is created with
+		// the ordinary regular-file mode when there is no source mode to keep.
+	default:
+		return signingResignTarget{}, fmt.Errorf("inspect embedded profile")
+	}
 	entitlements, err := readSigningResignEntitlements(ctx, filepath.Join(tree.Path(), executablePath))
 	if err != nil {
 		return signingResignTarget{}, fmt.Errorf("read signed entitlements: %w", err)
 	}
-	return signingResignTarget{Kind: kind, RelativePath: relativePath, BundleID: bundleID, Executable: executable, ExistingEntitlements: entitlements}, nil
+	return signingResignTarget{Kind: kind, RelativePath: relativePath, BundleID: bundleID, Executable: executable, ProfileMode: profileMode, ExistingEntitlements: entitlements}, nil
 }
 
 func validateSigningResignExecutable(value string) error {
@@ -449,21 +530,91 @@ func validateSigningResignExecutable(value string) error {
 	return nil
 }
 
-func validateSigningResignPlatform(info map[string]any) error {
-	platformName := strings.ToLower(strings.TrimSpace(plistString(info["DTPlatformName"])))
-	platforms := plistStrings(info["CFBundleSupportedPlatforms"])
+func validateSigningResignPlatform(info map[string]any, kind string) error {
+	expectedPlatformName := "iphoneos"
+	expectedSupportedPlatform := "iPhoneOS"
+	if strings.HasPrefix(kind, "watch-") {
+		expectedPlatformName = "watchos"
+		expectedSupportedPlatform = "WatchOS"
+	}
+	platformName := ""
+	if value, exists := info["DTPlatformName"]; exists {
+		var err error
+		platformName, err = signingResignPlatformString(value, "DTPlatformName")
+		if err != nil {
+			return err
+		}
+	}
+	platforms := []string(nil)
+	if value, exists := info["CFBundleSupportedPlatforms"]; exists {
+		var err error
+		platforms, err = signingResignPlatformStrings(value)
+		if err != nil {
+			return err
+		}
+	}
 	if platformName == "" && len(platforms) == 0 {
 		return fmt.Errorf("target platform metadata is missing")
 	}
-	if platformName != "" && platformName != "iphoneos" {
-		return fmt.Errorf("target platform is not iOS")
+	if platformName != "" && platformName != expectedPlatformName {
+		return signingResignUsage(fmt.Errorf("target platform is not %s", expectedSupportedPlatform))
 	}
 	for _, platform := range platforms {
-		if !strings.EqualFold(strings.TrimSpace(platform), "iPhoneOS") {
-			return fmt.Errorf("target platform is not iOS")
+		if platform != expectedSupportedPlatform {
+			return signingResignUsage(fmt.Errorf("target platform is not %s", expectedSupportedPlatform))
 		}
 	}
 	return nil
+}
+
+func signingResignPlatformString(value any, key string) (string, error) {
+	text, ok := value.(string)
+	if !ok || text == "" || strings.TrimSpace(text) != text || signingResignPlatformStringHasControl(text) {
+		return "", fmt.Errorf("%s must be a non-empty string without control characters", key)
+	}
+	return text, nil
+}
+
+func signingResignPlatformStrings(value any) ([]string, error) {
+	var values []any
+	switch typed := value.(type) {
+	case []string:
+		values = make([]any, len(typed))
+		for index, item := range typed {
+			values[index] = item
+		}
+	case []any:
+		values = typed
+	default:
+		return nil, fmt.Errorf("CFBundleSupportedPlatforms must be an array of strings")
+	}
+	if len(values) == 0 {
+		return nil, fmt.Errorf("CFBundleSupportedPlatforms must contain at least one platform")
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		platform, err := signingResignPlatformString(value, "CFBundleSupportedPlatforms entry")
+		if err != nil {
+			return nil, err
+		}
+		key := strings.ToLower(platform)
+		if _, exists := seen[key]; exists {
+			return nil, fmt.Errorf("CFBundleSupportedPlatforms contains a duplicate platform")
+		}
+		seen[key] = struct{}{}
+		result = append(result, platform)
+	}
+	return result, nil
+}
+
+func signingResignPlatformStringHasControl(value string) bool {
+	for _, character := range value {
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) || unicode.In(character, unicode.Bidi_Control) {
+			return true
+		}
+	}
+	return false
 }
 
 func enumerateSigningResignMachOFiles(ctx context.Context, rootPath string) ([]string, error) {

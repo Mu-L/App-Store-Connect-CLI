@@ -14,7 +14,10 @@ import (
 	"howett.net/plist"
 )
 
-const signingResignToolTimeout = 30 * time.Second
+// codesign may process large app bundles and many nested code objects. Keep a
+// bounded fallback for callers without a deadline, but never replace a
+// caller-supplied operation deadline with a shorter per-object timeout.
+const signingResignToolTimeout = 5 * time.Minute
 
 type signingResignToolOutput struct {
 	Stdout []byte
@@ -30,7 +33,7 @@ func runSigningResignTool(ctx context.Context, executable string, args ...string
 	if err := ctx.Err(); err != nil {
 		return signingResignToolOutput{}, err
 	}
-	toolContext, cancel := context.WithTimeout(ctx, signingResignToolTimeout)
+	toolContext, cancel := signingResignToolContext(ctx)
 	defer cancel()
 	command := exec.CommandContext(toolContext, executable, args...)
 	command.Env = SanitizedChildEnvironment(os.Environ())
@@ -50,6 +53,16 @@ func runSigningResignTool(ctx context.Context, executable string, args ...string
 		return result, contextErr
 	}
 	return result, fmt.Errorf("%s failed", filepath.Base(executable))
+}
+
+func signingResignToolContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); hasDeadline {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, signingResignToolTimeout)
 }
 
 const signingResignToolOutputLimit = infoplist.MaxBytes + 64*1024

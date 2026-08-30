@@ -65,16 +65,23 @@ var signingResignAppleProfileRootFingerprints = map[string]struct{}{
 var signingResignNowFn = time.Now
 
 func readSigningResignManifest(path string) (signingResignManifest, error) {
-	path = filepath.Clean(strings.TrimSpace(path))
-	if path == "" {
+	if strings.TrimSpace(path) == "" {
 		return signingResignManifest{}, fmt.Errorf("profiles manifest path is empty")
 	}
+	path = filepath.Clean(path)
 	data, err := readBoundedSigningRunFile(path, signingResignManifestMaxBytes, false)
 	if err != nil {
 		return signingResignManifest{}, fmt.Errorf("read profiles manifest failed")
 	}
 	defer clear(data)
-	return decodeSigningResignManifest(data)
+	manifest, err := decodeSigningResignManifest(data)
+	if err != nil {
+		// Only the manifest's schema/JSON validation is a usage failure. File
+		// access remains an operational failure so a missing or unreadable
+		// manifest does not masquerade as a malformed command invocation.
+		return signingResignManifest{}, signingResignUsage(err)
+	}
+	return manifest, nil
 }
 
 func decodeSigningResignManifest(data []byte) (signingResignManifest, error) {
@@ -110,7 +117,6 @@ func decodeSigningResignManifest(data []byte) (signingResignManifest, error) {
 	for index := range manifest.Profiles {
 		entry := &manifest.Profiles[index]
 		entry.BundleID = strings.TrimSpace(entry.BundleID)
-		entry.ProfilePath = strings.TrimSpace(entry.ProfilePath)
 		if err := validateSigningResignBundleID(entry.BundleID); err != nil {
 			return signingResignManifest{}, fmt.Errorf("profiles[%d].bundleId: %w", index, err)
 		}
@@ -132,7 +138,7 @@ func decodeSigningResignManifest(data []byte) (signingResignManifest, error) {
 }
 
 func validateSigningResignProfilePath(value string) error {
-	if value == "" {
+	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("profilePath is required")
 	}
 	if strings.ContainsRune(value, '\\') {
@@ -207,10 +213,41 @@ func readSigningResignProfiles(manifestPath string, manifest signingResignManife
 			clear(data)
 			return nil, fmt.Errorf("profiles[%d] bundle %s does not match its manifest bundle %s", index, profile.BundleID, entry.BundleID)
 		}
+		if err := validateSigningResignProfileForTarget(profile, entry.BundleID); err != nil {
+			clear(data)
+			return nil, fmt.Errorf("validate profile for bundle %s failed", entry.BundleID)
+		}
 		profile.Data = data
 		profiles[entry.BundleID] = profile
 	}
 	return profiles, nil
+}
+
+func validateSigningResignProfileForTarget(profile signingResignProfile, bundleID string) error {
+	if profile.BundleID != bundleID {
+		return fmt.Errorf("profile bundle identifier does not match target")
+	}
+	if err := validateSigningResignTeamID(profile.TeamID); err != nil {
+		return fmt.Errorf("profile team identifier is invalid")
+	}
+	if err := validateSigningResignTeamID(profile.ApplicationIdentifierPrefix); err != nil {
+		return fmt.Errorf("profile application identifier prefix is invalid")
+	}
+	applicationID, ok := profile.Entitlements["application-identifier"].(string)
+	if !ok || applicationID != profile.ApplicationIdentifierPrefix+"."+bundleID {
+		return fmt.Errorf("profile application identifier does not match target")
+	}
+	teamID, ok := profile.Entitlements["com.apple.developer.team-identifier"].(string)
+	if !ok || teamID != profile.TeamID {
+		return fmt.Errorf("profile team entitlement does not match profile team")
+	}
+	if alternate, exists := profile.Entitlements["com.apple.application-identifier"]; exists {
+		value, ok := alternate.(string)
+		if !ok || value != applicationID {
+			return fmt.Errorf("profile application identifiers are contradictory")
+		}
+	}
+	return nil
 }
 
 func validateSigningResignProfileFile(_ string, info os.FileInfo) error {
@@ -419,7 +456,13 @@ func validateSigningResignProfileSet(profiles map[string]signingResignProfile, i
 		return fmt.Errorf("profiles manifest contains no profiles")
 	}
 	var teamID, class string
-	for bundleID, profile := range profiles {
+	bundleIDs := make([]string, 0, len(profiles))
+	for bundleID := range profiles {
+		bundleIDs = append(bundleIDs, bundleID)
+	}
+	slices.Sort(bundleIDs)
+	for _, bundleID := range bundleIDs {
+		profile := profiles[bundleID]
 		if profile.BundleID != bundleID {
 			return fmt.Errorf("profile mapping for bundle %s is inconsistent", bundleID)
 		}
@@ -442,11 +485,11 @@ func validateSigningResignProfileSet(profiles map[string]signingResignProfile, i
 
 func validateSigningResignManifestTargets(manifest signingResignManifest, targetIDs map[string]struct{}) error {
 	if len(manifest.Profiles) != len(targetIDs) {
-		return fmt.Errorf("profiles manifest must contain exactly one entry for every app-like target")
+		return signingResignUsage(fmt.Errorf("profiles manifest must contain exactly one entry for every app-like target"))
 	}
 	for _, entry := range manifest.Profiles {
 		if _, ok := targetIDs[entry.BundleID]; !ok {
-			return fmt.Errorf("profiles manifest contains an entry for an undiscovered target")
+			return signingResignUsage(fmt.Errorf("profiles manifest contains an entry for an undiscovered target"))
 		}
 	}
 	return nil
