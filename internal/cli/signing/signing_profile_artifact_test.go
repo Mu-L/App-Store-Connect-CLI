@@ -2,12 +2,12 @@ package signing
 
 import (
 	"bytes"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	signingpkg "github.com/rudrankriyam/App-Store-Connect-CLI/internal/signing"
 )
 
@@ -35,15 +35,20 @@ func TestSigningProfileArtifactUpgradesLegacyAndPreservesExactScope(t *testing.T
 		gotMetadata.BundleID != "com.example.mac" || gotMetadata.ProfileType != "MAC_CATALYST_APP_STORE" || gotMetadata.ProfileResourceID != "profile-1" {
 		t.Fatalf("artifact metadata = %+v plaintext=%q", gotMetadata, got)
 	}
-	encryptedPath := filepath.Join(store.LocalDir, path+".enc")
-	before, err := os.ReadFile(encryptedPath)
+	repositoryRoot, err := rootfs.New(store.LocalDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repositoryRoot.Close()
+	encryptedPath := path + ".enc"
+	before, err := repositoryRoot.ReadFileLimited(encryptedPath, maxEncryptedSigningBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := writeOrReuseSigningProfileArtifact(store, path, plaintext, password, metadata); err != nil {
 		t.Fatal(err)
 	}
-	after, err := os.ReadFile(encryptedPath)
+	after, err := repositoryRoot.ReadFileLimited(encryptedPath, maxEncryptedSigningBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
