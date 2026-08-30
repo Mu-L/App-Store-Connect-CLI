@@ -33,6 +33,7 @@ const (
 	maxMatrixCells           = 256
 	maxMatrixConcurrency     = 8
 	maxMatrixAttempts        = 3
+	matrixSubprocessTimeout  = 30 * time.Second
 	defaultMatrixConcurrency = 1
 	defaultMatrixAttempts    = 1
 	defaultMatrixRawDir      = "./screenshots/matrix/raw"
@@ -1175,7 +1176,7 @@ func executeMatrixCell(ctx context.Context, cell MatrixCell, base *Plan, matrixP
 }
 
 func restoreMatrixAppearance(appearance MatrixAppearance, udid, state string) error {
-	restoreCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	restoreCtx, cancel := context.WithTimeout(context.Background(), matrixSubprocessTimeout)
 	defer cancel()
 	return appearance.Restore(restoreCtx, udid, state)
 }
@@ -1644,7 +1645,13 @@ type matrixSimulatorDevice struct {
 }
 
 func readMatrixSimulatorInventory(ctx context.Context) ([]matrixSimulatorDevice, error) {
-	command := exec.CommandContext(ctx, "xcrun", "simctl", "list", "devices", "--json")
+	return readMatrixSimulatorInventoryWithTimeout(ctx, matrixSubprocessTimeout)
+}
+
+func readMatrixSimulatorInventoryWithTimeout(ctx context.Context, timeout time.Duration) ([]matrixSimulatorDevice, error) {
+	inventoryCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	command := exec.CommandContext(inventoryCtx, "xcrun", "simctl", "list", "devices", "--json")
 	var output cappedMatrixBuffer
 	output.limit = maxMatrixInventoryBytes
 	command.Stdout = &output

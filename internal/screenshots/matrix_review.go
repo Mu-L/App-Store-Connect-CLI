@@ -35,7 +35,7 @@ type (
 // It includes every planned cell, including failed and canceled cells.
 func GenerateMatrixReview(ctx context.Context, request MatrixReviewRequest) (*MatrixReviewResult, error) {
 	return generateMatrixReviewWithWriter(ctx, request, func(root rootfs.Root, name string, data []byte, perm os.FileMode) error {
-		return root.WriteFile(name, data, perm)
+		return root.WriteFilePreservingMode(name, data, perm)
 	})
 }
 
@@ -156,7 +156,7 @@ func readMatrixReviewFile(root rootfs.Root, name string) ([]byte, bool, error) {
 
 func restoreMatrixReviewFile(root rootfs.Root, name string, data []byte, existed bool) error {
 	if existed {
-		return root.WriteFile(name, data, 0o644)
+		return root.WriteFilePreservingMode(name, data, 0o644)
 	}
 	rooted, err := root.OpenRoot()
 	if err != nil {

@@ -146,10 +146,12 @@ out of scope.
 
 The command prints the structured result through the existing output helpers.
 Computed result fields use the CLI's governed camelCase contract: `planPath`,
-`status`, `totalCells`, `succeeded`, `failed`, `retried`, `cells`, and `review`
-(with `manifestPath` and `htmlPath`). Each cell error is an object containing
-only a sanitized `stage`, `code`, and `message`; step errors are sanitized as
-well. The on-disk review manifest uses the same camelCase result contract.
+`bundleId`, `rawDir`, `framedDir`, `reviewDir`, `status`, `totalCells`,
+`succeeded`, `failed`, `canceled`, `retried`, `cleanupFailed`, `cells`, and
+`review` (with `manifestPath` and `htmlPath`). Each cell error is an object
+containing only a sanitized `stage`, `code`, and `message`; step errors are
+sanitized as well. The on-disk review manifest uses the same camelCase result
+contract.
 All cells succeeding returns nil and exit code 0. Partial or failed execution
 writes its result/artifacts and then returns a runtime error for exit code 1.
 Invalid flags/plans return usage exit code 2 before side effects.
@@ -200,11 +202,11 @@ an installed sample app. Confirm that cells are isolated, same-device cells do
 not overlap, appearance is restored, review artifacts contain failures, and no
 App Store Connect request occurs.
 
-The implementation is delivered as additive commits on the
-`codex/2230-screenshot-matrix` branch and tracked by PR #2247; it is not merged.
-Unresolved risks are the absence of a live Simulator smoke test on this host and
-dependence on the installed Xcode `simctl ui` appearance interface and selected
-framing profiles for any opt-in framed run.
+The implementation follows the repository handoff contract: additive commits
+are pushed for review and must remain unmerged until explicit merge
+authorization. Unresolved risks are the absence of a live Simulator smoke test
+on this host and dependence on the installed Xcode `simctl ui` appearance
+interface and selected framing profiles for any opt-in framed run.
 
 ## Alternatives rejected
 

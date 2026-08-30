@@ -469,6 +469,27 @@ printf '%s\n' '{"devices":{"runtime":[{"udid":"SIM-UDID","state":"Booted","isAva
 	}
 }
 
+func TestReadMatrixSimulatorInventoryUsesBoundedTimeout(t *testing.T) {
+	binDir := t.TempDir()
+	xcrunPath := filepath.Join(binDir, "xcrun")
+	script := "#!/bin/sh\nwhile :; do :; done\n"
+	if err := os.WriteFile(xcrunPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write xcrun fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	parentCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err := readMatrixSimulatorInventoryWithTimeout(parentCtx, 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("readMatrixSimulatorInventoryWithTimeout() error = nil, want timeout failure")
+	}
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("inventory command took %s, want derived timeout before caller deadline", elapsed)
+	}
+}
+
 func TestSimctlMatrixAppearanceUsesSupportedUIContractAndRestores(t *testing.T) {
 	binDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "xcrun.log")
@@ -670,14 +691,41 @@ func TestGenerateMatrixReview_DoesNotReplaceManifestWhenHTMLPublishFails(t *test
 	}
 }
 
+func TestGenerateMatrixReviewPreservesExistingFileModes(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"index.html", "manifest.json"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("previous"), 0o600); err != nil {
+			t.Fatalf("write previous %s: %v", name, err)
+		}
+	}
+
+	_, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{
+		Result:    &MatrixResult{Cells: []MatrixCellResult{{ID: "phone|en-US|light|default", Status: MatrixCellSuccess}}},
+		OutputDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v", err)
+	}
+	for _, name := range []string{"index.html", "manifest.json"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("stat generated %s: %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("generated %s mode = %o, want preserved 600", name, got)
+		}
+	}
+}
+
 func TestGenerateMatrixReview_RollsBackPairWhenManifestPublishFails(t *testing.T) {
 	dir := t.TempDir()
 	oldHTML := []byte("<html>previous</html>\n")
 	oldManifest := []byte("{\"status\":\"previous\"}\n")
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), oldHTML, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), oldHTML, 0o600); err != nil {
 		t.Fatalf("write previous HTML: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), oldManifest, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), oldManifest, 0o600); err != nil {
 		t.Fatalf("write previous manifest: %v", err)
 	}
 
@@ -685,7 +733,7 @@ func TestGenerateMatrixReview_RollsBackPairWhenManifestPublishFails(t *testing.T
 		if name == "manifest.json" {
 			return errors.New("injected manifest publication failure")
 		}
-		return root.WriteFile(name, data, perm)
+		return root.WriteFilePreservingMode(name, data, perm)
 	}
 	_, err := generateMatrixReviewWithWriter(context.Background(), MatrixReviewRequest{
 		Result:    &MatrixResult{Cells: []MatrixCellResult{{ID: "phone|en-US|light|default", Status: MatrixCellSuccess}}},
@@ -704,6 +752,15 @@ func TestGenerateMatrixReview_RollsBackPairWhenManifestPublishFails(t *testing.T
 	}
 	if string(gotHTML) != string(oldHTML) || string(gotManifest) != string(oldManifest) {
 		t.Fatalf("review pair changed after rollback: HTML=%q manifest=%q", gotHTML, gotManifest)
+	}
+	for _, name := range []string{"index.html", "manifest.json"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("stat rolled-back %s: %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("rolled-back %s mode = %o, want preserved 600", name, got)
+		}
 	}
 }
 
