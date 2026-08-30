@@ -16,13 +16,13 @@ The command accepts an IPA and one exact CoreDevice identifier:
 asc xcode install --ipa ./App.ipa --device-id COREDEVICE_IDENTIFIER --timeout 5m --output json
 ```
 
-The current Xcode 27 beta help was checked locally. `devicectl device install
-app` requires `--device` plus a path whose extension is `.app`; it does not
-accept an enclosing IPA. `devicectl list devices` returns the CoreDevice
-identifier as the JSON `result.devices[].identifier` field. `devicectl device
-info apps` supports exact `--bundle-id` filtering and is used after install for
-verification. The default Command Line Tools developer directory does not
-resolve `devicectl`; an active Xcode developer directory is required.
+The Xcode-provided `devicectl device install app` contract requires `--device`
+plus a path whose extension is `.app`; it does not accept an enclosing IPA.
+`devicectl list devices` returns the CoreDevice identifier as the JSON
+`result.devices[].identifier` field. `devicectl device info apps` supports exact
+`--bundle-id` filtering and is used after install for verification. The command
+resolves `devicectl` from the active Xcode developer directory rather than
+assuming the default Command Line Tools selection.
 
 There is no App Store Connect API endpoint in this flow. It is a local,
 read-only artifact inspection followed by a local device mutation through the
@@ -39,7 +39,9 @@ Xcode-provided tool.
    with device membership included. Continue only for an iOS IPA whose
    non-expired development or ad-hoc profile is internally consistent, has at
    least one provisioned device, and has a verified complete main-app code
-   signature.
+   signature. Installation applies its own explicit profile and main-app
+   requirements; generic preparation warnings for metadata or embedded targets
+   do not independently block a valid install.
 3. Resolve `devicectl` through `/usr/bin/xcrun --find devicectl` using the
    sanitized child environment. Run `devicectl list devices` into an
    unpredictable, mode-0600 JSON file inside a mode-0700 temporary directory.
@@ -58,9 +60,11 @@ Xcode-provided tool.
    IPA is never changed.
 5. Invoke only `devicectl device install app --device <resolved identifier>
    <temporary app path>` with bounded diagnostics and structured JSON output.
-   Parse the command type, supported JSON version, outcome, target device, and
-   installed bundle identity strictly. Do not expose raw tool output or device
-   identifiers in errors or command output.
+   Parse the command type, one of the supported JSON schema versions 4 or 5,
+   outcome, target device, and installed bundle identity strictly. A documented
+   v5 `_deprecationNotice` is accepted and ignored. Future versions and unknown
+   fields remain rejected. Do not expose raw tool output or device identifiers
+   in errors or command output.
 6. On a successful install, run the existing exact-bundle app observation
    shape (`device info apps --bundle-id`) and require the installed bundle's
    version and build to match the inspected IPA. A tool success without this
@@ -95,10 +99,9 @@ selection, profile membership, strict devicectl schemas, install argument
 construction, timeout handling, post-install mismatch, and cleanup. Use fake
 devicectl runners and generated signed/fixture IPAs; never require a device in
 unit tests. Run the built binary for help and deterministic usage cases. A
-live smoke test is attempted only when an actual connected device is available;
-this environment has no connected device, and the default active developer
-directory currently lacks the `devicectl` lookup, so that limitation is
-reported rather than bypassed.
+live smoke test may be run only when an actual connected device and a valid
+installable IPA are available; otherwise the limitation is reported rather
+than bypassed.
 
 ## Compatibility and alternatives
 
@@ -108,9 +111,9 @@ unchanged. A future implementation may add a user-facing device-name lookup,
 but this first slice deliberately requires the exact CoreDevice identifier to
 avoid ambiguity and privacy leakage.
 
-An alternative is to pass the IPA directly to `devicectl`; the current tool
-help disproves that contract, so it would fail for every valid IPA. Another is
-to use a shell extractor or a broad temporary tree; that would duplicate or
+An alternative is to pass the IPA directly to `devicectl`; its install contract
+requires an app bundle, so that would fail for valid IPA inputs. Another is to
+use a shell extractor or a broad temporary tree; that would duplicate or
 weaken the repository's bounded archive and rooted filesystem guarantees. A
 single immutable snapshot plus bounded rooted extraction keeps inspection,
 installation, and privacy guarantees aligned.

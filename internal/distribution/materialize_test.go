@@ -8,9 +8,11 @@ import (
 	"time"
 )
 
-func TestMaterializeIPAAppContextCopiesOnlyMainAppAndPreservesExecutableMode(t *testing.T) {
+func TestMaterializeIPAAppContextUsesSelectedMainAppAndPreservesExecutableMode(t *testing.T) {
 	path := writeOrderedIPA(t, []orderedZipEntry{
 		{Name: "Payload/", Mode: os.ModeDir | 0o755},
+		{Name: "Payload/Decoy.app/", Mode: os.ModeDir | 0o755},
+		{Name: "Payload/Decoy.app/Info.plist", Mode: os.ModeDir | 0o755},
 		{Name: "Payload/Demo.app/", Mode: os.ModeDir | 0o755},
 		{Name: "Payload/Demo.app/Info.plist", Data: infoPlist(t, "com.example.demo")},
 		{Name: "Payload/Demo.app/Demo", Data: []byte("executable"), Mode: 0o755},

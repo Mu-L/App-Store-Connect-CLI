@@ -98,7 +98,8 @@ func MaterializeIPAAppContext(ctx context.Context, source *os.File, size int64, 
 		cleanupSnapshot()
 		return nil, materializationError(inspection, fmt.Errorf("open private app directory: %w", err))
 	}
-	if err := materializeMainAppFromSnapshot(ctx, root, snapshot, size); err != nil {
+	appName, err := materializeMainAppFromSnapshot(ctx, root, snapshot, size)
+	if err != nil {
 		_ = root.Close()
 		_ = os.RemoveAll(appRoot)
 		cleanupSnapshot()
@@ -115,48 +116,35 @@ func MaterializeIPAAppContext(ctx context.Context, source *os.File, size int64, 
 	}
 	return &MaterializedApp{
 		Inspection: inspection,
-		Path:       filepath.Join(appRoot, mainAppNameFromSnapshot(snapshot, size)),
+		Path:       filepath.Join(appRoot, filepath.FromSlash(appName)),
 		cleanup:    cleanup,
 	}, nil
 }
 
-func mainAppNameFromSnapshot(file *os.File, size int64) string {
+func materializeMainAppFromSnapshot(ctx context.Context, destination *os.Root, file *os.File, size int64) (string, error) {
 	reader, err := zip.NewReader(file, size)
 	if err != nil {
-		return "App.app"
-	}
-	for _, member := range reader.File {
-		if isMainAppMember(member.Name, "Info.plist") {
-			return filepath.FromSlash(path.Base(path.Dir(member.Name)))
-		}
-	}
-	return "App.app"
-}
-
-func materializeMainAppFromSnapshot(ctx context.Context, destination *os.Root, file *os.File, size int64) error {
-	reader, err := zip.NewReader(file, size)
-	if err != nil {
-		return fmt.Errorf("open IPA for app materialization: %w", err)
+		return "", fmt.Errorf("open IPA for app materialization: %w", err)
 	}
 	appDir, err := findMainAppDirectory(reader.File)
 	if err != nil {
-		return err
+		return "", err
 	}
 	appName := path.Base(appDir)
 	if err := destination.MkdirAll(appName, 0o700); err != nil {
-		return fmt.Errorf("create materialized app directory: %w", err)
+		return "", fmt.Errorf("create materialized app directory: %w", err)
 	}
 	prefix := appDir + "/"
 	var total int64
 	for _, member := range reader.File {
 		if err := contextError(ctx); err != nil {
-			return err
+			return "", err
 		}
 		if !strings.HasPrefix(member.Name, prefix) {
 			continue
 		}
 		if err := validateArchiveMember(member); err != nil {
-			return err
+			return "", err
 		}
 		relative := strings.TrimPrefix(member.Name, prefix)
 		if relative == "" {
@@ -165,26 +153,26 @@ func materializeMainAppFromSnapshot(ctx context.Context, destination *os.Root, f
 		target := filepath.Join(filepath.FromSlash(appName), filepath.FromSlash(relative))
 		if member.FileInfo().IsDir() {
 			if err := destination.MkdirAll(strings.TrimSuffix(target, string(filepath.Separator)), 0o700); err != nil {
-				return fmt.Errorf("create materialized app directory: %w", err)
+				return "", fmt.Errorf("create materialized app directory: %w", err)
 			}
 			continue
 		}
 		if member.UncompressedSize64 > uint64(maxMaterializedAppExpandedBytes) || total > maxMaterializedAppExpandedBytes-int64(member.UncompressedSize64) {
-			return fmt.Errorf("expanded main app exceeds %d bytes", maxMaterializedAppExpandedBytes)
+			return "", fmt.Errorf("expanded main app exceeds %d bytes", maxMaterializedAppExpandedBytes)
 		}
 		total += int64(member.UncompressedSize64)
 		if err := destination.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			return fmt.Errorf("create materialized app parent directory: %w", err)
+			return "", fmt.Errorf("create materialized app parent directory: %w", err)
 		}
 		mode := member.Mode().Perm()
 		if mode == 0 {
 			mode = 0o644
 		}
 		if err := copyZipMemberToNewFileContextWithMode(ctx, destination, target, member, int64(member.UncompressedSize64), mode); err != nil {
-			return fmt.Errorf("materialize app member %q: %w", relative, err)
+			return "", fmt.Errorf("materialize app member %q: %w", relative, err)
 		}
 	}
-	return nil
+	return appName, nil
 }
 
 func findMainAppDirectory(members []*zip.File) (string, error) {

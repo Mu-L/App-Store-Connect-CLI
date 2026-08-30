@@ -26,9 +26,9 @@ var (
 func XcodeInstallCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("xcode install", flag.ExitOnError)
 
-	ipaPath := fs.String("ipa", "", "Path to an iOS IPA (required)")
-	deviceID := fs.String("device-id", "", "Exact CoreDevice identifier from devicectl list devices (required)")
-	timeout := fs.Duration("timeout", xcodeInstallDefaultTimeout, "Maximum duration for inspection, installation, and verification")
+	ipaPath := fs.String("ipa", "", "[experimental] Path to an iOS IPA (required)")
+	deviceID := fs.String("device-id", "", "[experimental] Exact CoreDevice identifier from devicectl list devices (required)")
+	timeout := fs.Duration("timeout", xcodeInstallDefaultTimeout, "[experimental] Maximum duration for inspection, installation, and verification")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{

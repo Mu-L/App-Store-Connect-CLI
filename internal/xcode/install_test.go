@@ -81,6 +81,57 @@ func TestValidateInstallInspectionAllowsDevelopmentAndAdHocProfiles(t *testing.T
 	}
 }
 
+func TestValidateInstallInspectionAllowsGenericPreparationWarnings(t *testing.T) {
+	inspection := installTestInspection(distribution.ProfileClassAdHoc)
+	inspection.Preparation.Issues = []string{
+		"embedded targets require target-by-target signing validation before preparation",
+		"app title is missing",
+	}
+	if err := validateInstallInspection(inspection); err != nil {
+		t.Fatalf("validateInstallInspection() error = %v, want installable main app despite preparation warnings", err)
+	}
+}
+
+func TestValidateInstallInspectionRequiresInstallIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*distribution.Inspection)
+		want   string
+	}{
+		{name: "bundle identifier", mutate: func(inspection *distribution.Inspection) { inspection.App.BundleID = "" }, want: "bundle identifier"},
+		{name: "version", mutate: func(inspection *distribution.Inspection) { inspection.App.Version = "" }, want: "version"},
+		{name: "build", mutate: func(inspection *distribution.Inspection) { inspection.App.BuildNumber = "" }, want: "build"},
+		{name: "profile UUID", mutate: func(inspection *distribution.Inspection) { inspection.Signing.ProfileUUID = "" }, want: "profile UUID"},
+		{name: "profile expiration", mutate: func(inspection *distribution.Inspection) { inspection.Signing.ExpiresAt = "" }, want: "expiration"},
+		{name: "profile certificates", mutate: func(inspection *distribution.Inspection) {
+			inspection.Signing.ProfileCertificateSHA256Fingerprints = nil
+		}, want: "certificates"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			inspection := installTestInspection(distribution.ProfileClassAdHoc)
+			test.mutate(&inspection)
+			if err := validateInstallInspection(inspection); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateInstallInspection() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateInstallInspectionRejectsInstallBlockingPreparationIssue(t *testing.T) {
+	for _, issue := range []string{
+		"provisioning profile bundle identifier does not match the app",
+		"provisioning profile does not include the iOS platform",
+	} {
+		t.Run(issue, func(t *testing.T) {
+			inspection := installTestInspection(distribution.ProfileClassAdHoc)
+			inspection.Preparation.Issues = []string{issue}
+			if err := validateInstallInspection(inspection); err == nil {
+				t.Fatal("validateInstallInspection() accepted install-blocking preparation issue")
+			}
+		})
+	}
+}
+
 func TestInstallUsesAppPathAndVerifiesInstalledBuild(t *testing.T) {
 	previousGOOS := runtimeGOOS
 	previousRunner := installRunner
@@ -275,6 +326,47 @@ func TestParseDevicectlEnvelopeRejectsDuplicateKeys(t *testing.T) {
 	}
 }
 
+func TestParseDevicectlEnvelopeAcceptsLegacyJSONVersion(t *testing.T) {
+	payload := []byte(`{"info":{"arguments":[],"commandType":"devicectl.list.devices","environment":{},"jsonVersion":4,"outcome":"success","version":"legacy"},"result":{"devices":[]}}`)
+	if _, err := parseDevicectlEnvelope(payload, "devicectl.list.devices"); err != nil {
+		t.Fatalf("parseDevicectlEnvelope() error = %v, want legacy schema accepted", err)
+	}
+}
+
+func TestParseDevicectlEnvelopeAcceptsV5DeprecationNotice(t *testing.T) {
+	payload := []byte(`{"info":{"arguments":[],"commandType":"devicectl.list.devices","environment":{},"jsonVersion":5,"outcome":"success","version":"current"},"result":{"_deprecationNotice":{"deprecatedFields":["hardwareProperties"],"message":"diagnostic-only","replacement":"properties"},"devices":[]}}`)
+	envelope, err := parseDevicectlEnvelope(payload, "devicectl.list.devices")
+	if err != nil {
+		t.Fatalf("parseDevicectlEnvelope() error = %v, want v5 deprecation notice accepted", err)
+	}
+	var result installDeviceListResult
+	if err := decodeStrictDevicectlResult(envelope.Result, envelope.Info.JSONVersion, &result); err != nil {
+		t.Fatalf("decodeStrictDevicectlResult() error = %v, want v5 deprecation notice accepted", err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "_deprecationNotice") || strings.Contains(string(encoded), "diagnostic-only") {
+		t.Fatalf("decoded result exposed the deprecation notice: %s", encoded)
+	}
+}
+
+func TestDecodeStrictDevicectlResultRejectsLegacyDeprecationNotice(t *testing.T) {
+	payload := json.RawMessage(`{"_deprecationNotice":{"message":"diagnostic-only"},"devices":[]}`)
+	var result installDeviceListResult
+	if err := decodeStrictDevicectlResult(payload, installLegacyJSONVersion, &result); err == nil {
+		t.Fatal("decodeStrictDevicectlResult() accepted a legacy deprecation notice")
+	}
+}
+
+func TestParseDevicectlEnvelopeRejectsFutureJSONVersion(t *testing.T) {
+	payload := []byte(`{"info":{"arguments":[],"commandType":"devicectl.list.devices","environment":{},"jsonVersion":6,"outcome":"success","version":"future"},"result":{"devices":[]}}`)
+	if _, err := parseDevicectlEnvelope(payload, "devicectl.list.devices"); err == nil {
+		t.Fatal("parseDevicectlEnvelope() accepted unsupported future schema")
+	}
+}
+
 func TestNormalizeInstallDeviceFailsClosedWithoutHardwareUDID(t *testing.T) {
 	entry := installDeviceEntry{
 		Identifier: "SELECTOR_CANARY",
@@ -307,12 +399,15 @@ func installTestInspection(profileClass distribution.ProfileClass) distribution.
 		},
 		Artifact: distribution.Artifact{SizeBytes: 4, SHA256: strings.Repeat("a", 64)},
 		Signing: distribution.Signing{
-			ProfileClass:                 profileClass,
-			DeviceCount:                  1,
-			Devices:                      []string{"UDID_CANARY"},
-			ProfileIntegrityVerification: distribution.CodeSignatureVerification{Status: distribution.CodeSignatureVerified},
-			ProfileTrustVerification:     distribution.CodeSignatureVerification{Status: distribution.CodeSignatureVerified},
-			CodeSignatureVerification:    distribution.CodeSignatureVerification{Status: distribution.CodeSignatureVerified},
+			ProfileClass:                         profileClass,
+			ProfileUUID:                          "PROFILE_CANARY",
+			ExpiresAt:                            "2035-01-01T00:00:00Z",
+			DeviceCount:                          1,
+			Devices:                              []string{"UDID_CANARY"},
+			ProfileCertificateSHA256Fingerprints: []string{strings.Repeat("c", 64)},
+			ProfileIntegrityVerification:         distribution.CodeSignatureVerification{Status: distribution.CodeSignatureVerified},
+			ProfileTrustVerification:             distribution.CodeSignatureVerification{Status: distribution.CodeSignatureVerified},
+			CodeSignatureVerification:            distribution.CodeSignatureVerification{Status: distribution.CodeSignatureVerified},
 		},
 		Preparation: distribution.Preparation{MetadataEligible: profileClass == distribution.ProfileClassAdHoc, Issues: issues},
 	}

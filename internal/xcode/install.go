@@ -23,13 +23,14 @@ import (
 )
 
 const (
-	installMinimumTimeout   = 5 * time.Second
-	installMaximumTimeout   = 10 * time.Minute
-	installJSONLimit        = 8 << 20
-	installDiagnosticLimit  = 32 << 10
-	installJSONVersion      = 5
-	installJSONHeadroom     = 2 * time.Second
-	installDeviceHashDomain = "asc.xcode.install.device.v1:\x00"
+	installMinimumTimeout    = 5 * time.Second
+	installMaximumTimeout    = 10 * time.Minute
+	installJSONLimit         = 8 << 20
+	installDiagnosticLimit   = 32 << 10
+	installLegacyJSONVersion = 4
+	installJSONVersion       = 5
+	installJSONHeadroom      = 2 * time.Second
+	installDeviceHashDomain  = "asc.xcode.install.device.v1:\x00"
 )
 
 var (
@@ -489,6 +490,29 @@ func validateInstallInspection(inspection distribution.Inspection) error {
 	if inspection.Signing.ProfileClass != distribution.ProfileClassDevelopment && inspection.Signing.ProfileClass != distribution.ProfileClassAdHoc {
 		return fmt.Errorf("IPA provisioning profile must be development or ad-hoc")
 	}
+	if strings.TrimSpace(inspection.App.BundleID) == "" {
+		return fmt.Errorf("IPA main-app bundle identifier is missing")
+	}
+	if strings.TrimSpace(inspection.App.Version) == "" {
+		return fmt.Errorf("IPA main-app version is missing")
+	}
+	if strings.TrimSpace(inspection.App.BuildNumber) == "" {
+		return fmt.Errorf("IPA main-app build number is missing")
+	}
+	if strings.TrimSpace(inspection.Signing.ProfileUUID) == "" {
+		return fmt.Errorf("IPA provisioning profile UUID is missing")
+	}
+	expiresAt := strings.TrimSpace(inspection.Signing.ExpiresAt)
+	if expiresAt == "" {
+		return fmt.Errorf("IPA provisioning profile expiration is missing")
+	}
+	expires, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil || !expires.After(installNow()) {
+		return fmt.Errorf("IPA provisioning profile is expired or invalid")
+	}
+	if len(inspection.Signing.ProfileCertificateSHA256Fingerprints) == 0 {
+		return fmt.Errorf("IPA provisioning profile contains no signing certificates")
+	}
 	if inspection.Signing.DeviceCount < 1 || len(inspection.Signing.Devices) == 0 {
 		return fmt.Errorf("IPA provisioning profile contains no provisioned devices")
 	}
@@ -501,11 +525,23 @@ func validateInstallInspection(inspection distribution.Inspection) error {
 	if inspection.Signing.CodeSignatureVerification.Status != distribution.CodeSignatureVerified {
 		return fmt.Errorf("IPA main-app code signature is not verified")
 	}
-	for _, issue := range inspection.Preparation.Issues {
-		if inspection.Signing.ProfileClass == distribution.ProfileClassDevelopment && issue == "provisioning profile class is development; expected ad-hoc" {
+	if err := validateInstallPreparationIssues(inspection.Preparation.Issues, inspection.Signing.ProfileClass); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateInstallPreparationIssues(issues []string, profileClass distribution.ProfileClass) error {
+	for _, issue := range issues {
+		switch issue {
+		case "app title is missing", "embedded targets require target-by-target signing validation before preparation":
 			continue
+		case "provisioning profile class is development; expected ad-hoc":
+			if profileClass == distribution.ProfileClassDevelopment {
+				continue
+			}
 		}
-		return fmt.Errorf("IPA is not installable: %s", issue)
+		return fmt.Errorf("IPA contains an install-blocking preparation issue")
 	}
 	return nil
 }
@@ -547,7 +583,7 @@ func discoverInstallDevice(ctx context.Context, runner installDeviceRunner, devi
 		return installDevice{}, &installCommandError{Stage: "devicectl device discovery", ExitCode: installExitCode(runErr)}
 	}
 	var listed installDeviceListResult
-	if err := decodeStrictInstallJSON(envelope.Result, &listed); err != nil {
+	if err := decodeStrictDevicectlResult(envelope.Result, envelope.Info.JSONVersion, &listed); err != nil {
 		return installDevice{}, fmt.Errorf("parse devicectl device discovery result: invalid schema")
 	}
 	if listed.Devices == nil {
@@ -610,7 +646,7 @@ func runInstallCommand(ctx context.Context, runner installDeviceRunner, devicect
 		return &installCommandError{Stage: "devicectl app installation", ExitCode: installExitCode(runErr)}
 	}
 	var installed installDeviceInstallResult
-	if err := decodeStrictInstallJSON(envelope.Result, &installed); err != nil {
+	if err := decodeStrictDevicectlResult(envelope.Result, envelope.Info.JSONVersion, &installed); err != nil {
 		return fmt.Errorf("parse devicectl app installation result: invalid schema")
 	}
 	if installed.DeviceIdentifier == "" || installed.DeviceIdentifier != device.Identifier {
@@ -667,7 +703,7 @@ func verifyInstalledApp(ctx context.Context, runner installDeviceRunner, devicec
 		return &installCommandError{Stage: "devicectl app verification", ExitCode: installExitCode(runErr)}
 	}
 	var apps installAppsResult
-	if err := decodeStrictInstallJSON(envelope.Result, &apps); err != nil {
+	if err := decodeStrictDevicectlResult(envelope.Result, envelope.Info.JSONVersion, &apps); err != nil {
 		return &installVerificationError{reason: "structured app list is invalid"}
 	}
 	if apps.Apps == nil {
@@ -891,13 +927,44 @@ func parseDevicectlEnvelope(payload []byte, commandType string) (devicectlEnvelo
 	if envelope.Info.CommandType != commandType {
 		return devicectlEnvelope{}, fmt.Errorf("parse devicectl JSON output: unexpected command type")
 	}
-	if envelope.Info.JSONVersion != installJSONVersion {
+	if !supportedInstallJSONVersion(envelope.Info.JSONVersion) {
 		return devicectlEnvelope{}, fmt.Errorf("parse devicectl JSON output: unsupported JSON schema version %d", envelope.Info.JSONVersion)
 	}
 	if envelope.Info.Outcome == "" {
 		return devicectlEnvelope{}, fmt.Errorf("parse devicectl JSON output: outcome is required")
 	}
 	return envelope, nil
+}
+
+func decodeStrictDevicectlResult(payload []byte, version int, destination any) error {
+	if version != installJSONVersion {
+		return decodeStrictInstallJSON(payload, destination)
+	}
+	if err := rejectDuplicateInstallJSONKeys(payload); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := decodeStrictInstallJSON(payload, &fields); err != nil {
+		return err
+	}
+	if _, exists := fields["_deprecationNotice"]; exists {
+		delete(fields, "_deprecationNotice")
+		stripped, err := json.Marshal(fields)
+		if err != nil {
+			return err
+		}
+		payload = stripped
+	}
+	return decodeStrictInstallJSON(payload, destination)
+}
+
+func supportedInstallJSONVersion(version int) bool {
+	switch version {
+	case installLegacyJSONVersion, installJSONVersion:
+		return true
+	default:
+		return false
+	}
 }
 
 func decodeStrictInstallJSON(payload []byte, destination any) error {
