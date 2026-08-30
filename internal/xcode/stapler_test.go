@@ -1197,6 +1197,47 @@ func TestStapleWithVerifierCancellationBeforeInitialChildStartIsNotPartial(t *te
 	assertStaplerCommands(t, logPath, []string{"xcrun|--find|stapler"})
 }
 
+func TestStapleWithVerifierCancellationBeforeInitialChildStartPreservesStageFailureWithoutPartialMutation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	helperCommandContext := commandContextFn
+	commandContextFn = func(commandCtx context.Context, name string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "stapler" {
+			cancel()
+		}
+		return helperCommandContext(commandCtx, name, args...)
+	}
+	stageCause := errors.New("target identity changed")
+	result, err := StapleWithVerifier(ctx, target, nil, func(operation StaplerOperation, before bool) error {
+		if operation == StaplerOperationStaple && !before {
+			return stageCause
+		}
+		return nil
+	})
+	if result != nil {
+		t.Fatalf("StapleWithVerifier() result = %#v, want nil before child start", result)
+	}
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, stageCause) {
+		t.Fatalf("StapleWithVerifier() error = %v, want joined cancellation and stage failure", err)
+	}
+	var stageErr *StaplerStageVerificationError
+	if !errors.As(err, &stageErr) || stageErr.Operation != StaplerOperationStaple || stageErr.Before {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want post-staple stage failure", err, err)
+	}
+	var partialErr *StaplerPartialMutationError
+	if errors.As(err, &partialErr) {
+		t.Fatalf("StapleWithVerifier() error = %T %v, child that never started must not be partial", err, err)
+	}
+	assertStaplerCommands(t, logPath, []string{"xcrun|--find|stapler"})
+}
+
 func waitForStaplerCommand(t *testing.T, logPath, prefix string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)

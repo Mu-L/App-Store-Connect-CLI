@@ -137,6 +137,17 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 		return nil, err
 	}
 	stapleErr := runStaplerOperation(ctx, StaplerOperationStaple, path, logWriter)
+	// A context error without the attempted-cancellation marker means the
+	// staple child never started. Still run the stage verifier so callers can
+	// report a concurrent target replacement, but do not claim that stapling
+	// completed or may have modified the artifact.
+	if stapleErr != nil && !isStaplerOperationAttemptedCancellation(stapleErr) &&
+		(errors.Is(stapleErr, context.Canceled) || errors.Is(stapleErr, context.DeadlineExceeded)) {
+		if verifyErr := verifyStaplerStage(verifier, StaplerOperationStaple, false); verifyErr != nil {
+			return nil, errors.Join(stapleErr, verifyErr)
+		}
+		return nil, stapleErr
+	}
 	if verifyErr := verifyStaplerStage(verifier, StaplerOperationStaple, false); verifyErr != nil {
 		partialErr := error(verifyErr)
 		if stapleErr != nil {
