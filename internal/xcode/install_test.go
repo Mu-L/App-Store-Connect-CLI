@@ -245,6 +245,18 @@ func TestInstallProceedsToDevicectlForIPAWithEmbeddedTargets(t *testing.T) {
 	if len(runner.calls) != 3 {
 		t.Fatalf("devicectl calls = %d, want discovery/install/verification despite embedded-target preparation warning", len(runner.calls))
 	}
+	if !containsInstallSequence(runner.calls[0], []string{"list", "devices"}) {
+		t.Fatalf("discovery args = %#v, want device listing first", runner.calls[0])
+	}
+	if !containsInstallSequence(runner.calls[1], []string{"device", "install", "app", "--device", "SELECTOR_CANARY", appPath}) {
+		t.Fatalf("install args = %#v, want exact install sequence with the materialized app path second", runner.calls[1])
+	}
+	if containsInstallArg(runner.calls[1], ipaPath) {
+		t.Fatalf("install args = %#v, want no source IPA path", runner.calls[1])
+	}
+	if !containsInstallSequence(runner.calls[2], []string{"device", "info", "apps", "--device", "SELECTOR_CANARY", "--bundle-id", "com.example.demo"}) {
+		t.Fatalf("verification args = %#v, want exact bundle observation last", runner.calls[2])
+	}
 }
 
 func TestInstallDoesNotMaterializeIneligibleProfile(t *testing.T) {
