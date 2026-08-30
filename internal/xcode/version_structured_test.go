@@ -1844,6 +1844,51 @@ func TestStructuredVersion_RollsBackWritePublishedBeforeError(t *testing.T) {
 	}
 }
 
+func TestStructuredVersion_PublishedWriteCleanupFailureLeavesNoReceipt(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "settings.xcconfig")
+	receiptPath := filepath.Join(root, "receipt.json")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	injectedErr := errors.New("injected staged-file cleanup failure")
+	originalWriter := atomicWriteVersionFileFn
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+		info, err := originalWriter(write, data)
+		if err != nil {
+			return info, err
+		}
+		if write.path == path {
+			return info, injectedErr
+		}
+		return info, nil
+	}
+	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
+
+	fileRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptRoot, err := rootfs.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = commitVersionWrites([]preparedVersionWrite{
+		{path: path, root: fileRoot, name: filepath.Base(path), original: []byte("old"), updated: []byte("new"), mode: 0o640, preserveMetadata: true},
+		{path: receiptPath, root: receiptRoot, name: filepath.Base(receiptPath), updated: []byte("receipt"), mode: 0o600, createOnly: true},
+	})
+	if !errors.Is(err, injectedErr) {
+		t.Fatalf("commitVersionWrites() error = %v, want staged cleanup failure", err)
+	}
+	if got := mustReadVersionTestFile(t, path); got != "old" {
+		t.Fatalf("ordinary write was not rolled back: %q", got)
+	}
+	if _, statErr := os.Lstat(receiptPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("receipt after ordinary publication uncertainty = %v, want absent", statErr)
+	}
+}
+
 func TestStructuredVersion_PublishedWriteRollbackPreservesPostCaptureReplacement(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "a.xcconfig")

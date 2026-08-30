@@ -722,6 +722,74 @@ func TestSigningPlanRejectsSelectedUnresolvedEntitlements(t *testing.T) {
 	}
 }
 
+func TestSigningPlanClassifiesXCConfigEntitlementPathByConsumer(t *testing.T) {
+	tests := []struct {
+		name         string
+		selectWidget bool
+		wantPlan     bool
+		wantReady    bool
+		wantError    bool
+	}{
+		{name: "unselected", wantPlan: true, wantReady: false},
+		{name: "selected", selectWidget: true, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			project := writeStructuredVersionProject(t, true)
+			projectRoot := filepath.Dir(project)
+			widgetXCConfig := filepath.Join(projectRoot, "Configs", "Widget.xcconfig")
+			if err := os.WriteFile(widgetXCConfig, []byte("CODE_SIGN_ENTITLEMENTS = ../Widget.entitlements\n"), 0o640); err != nil {
+				t.Fatalf("write widget xcconfig error = %v", err)
+			}
+			pbxprojPath := filepath.Join(project, "project.pbxproj")
+			contents := mustReadVersionTestFile(t, pbxprojPath)
+			const widgetReference = "BBBBBBBBBBBBBBBBBBBBBBBB"
+			fileReference := "\t\t" + widgetReference + " /* Widget.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configs/Widget.xcconfig; sourceTree = SOURCE_ROOT; };\n"
+			marker := "\t\t111111111111111111111111 /* Project object */ = {"
+			if !strings.Contains(contents, marker) {
+				t.Fatalf("project fixture is missing project object marker")
+			}
+			contents = strings.Replace(contents, marker, fileReference+marker, 1)
+			widgetConfiguration := "999999999999999999999995 /* Widget Debug */ = {isa = XCBuildConfiguration; buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+			updatedWidgetConfiguration := "999999999999999999999995 /* Widget Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = " + widgetReference + "; buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+			if !strings.Contains(contents, widgetConfiguration) {
+				t.Fatalf("project fixture is missing Widget Debug configuration")
+			}
+			contents = strings.Replace(contents, widgetConfiguration, updatedWidgetConfiguration, 1)
+			if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+				t.Fatalf("write project error = %v", err)
+			}
+
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			targets := `{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}`
+			if test.selectWidget {
+				targets += `,{"name":"Widget","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}`
+			}
+			writeSigningSettingsTestFile(t, settingsPath, `{"schemaVersion":1,"targets":[`+targets+`]}`)
+
+			plan, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+			})
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "CODE_SIGN_ENTITLEMENTS") {
+					t.Fatalf("BuildSigningPlan() error = %v, want selected invalid entitlement failure", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("BuildSigningPlan() error = %v, want blocked plan", err)
+			}
+			if (plan != nil) != test.wantPlan || plan == nil || plan.Ready != test.wantReady {
+				t.Fatalf("plan = %#v, want present=%t ready=%t", plan, test.wantPlan, test.wantReady)
+			}
+			if !strings.Contains(strings.Join(plan.Blockers, "\n"), "Widget") || !strings.Contains(strings.Join(plan.Blockers, "\n"), "CODE_SIGN_ENTITLEMENTS") {
+				t.Fatalf("plan blockers = %#v, want unselected invalid-entitlement blocker", plan.Blockers)
+			}
+		})
+	}
+}
+
 func TestSigningPlanDoesNotAuthorizeSharedXCConfigPerSelectedConfiguration(t *testing.T) {
 	project := writeStructuredVersionProject(t, true)
 	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
@@ -1715,7 +1783,7 @@ func TestSigningPlanRevalidatesTransitiveNoOpReferenceAfterDependentChange(t *te
 	if err != nil {
 		t.Fatalf("find updated configuration: %v", err)
 	}
-	identity, _, err := newSigningSettingResolver(updated, nil, false).resolveSetting(configuration, "CODE_SIGN_IDENTITY")
+	identity, _, err := newSigningSettingResolver(updated, nil, false, nil).resolveSetting(configuration, "CODE_SIGN_IDENTITY")
 	if err != nil {
 		t.Fatalf("resolve applied identity: %v", err)
 	}
@@ -2018,7 +2086,7 @@ func TestSigningPlanRejectsBuildSettingReferenceModifiers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signingConfigurationFor() error = %v", err)
 	}
-	resolver := newSigningSettingResolver(structured, nil, false)
+	resolver := newSigningSettingResolver(structured, nil, false, nil)
 	_, _, err = resolver.expandSettingReferences(configuration, "$(MARKETING_VERSION:rfc1034identifier)", map[string]bool{})
 	if err == nil || !strings.Contains(err.Error(), "reference modifier") {
 		t.Fatalf("expandSettingReferences() error = %v, want unsupported modifier", err)
@@ -2036,7 +2104,7 @@ func TestSigningSettingResolverRejectsIncompleteBuildSettingReferences(t *testin
 		t.Fatalf("signingConfigurationFor() error = %v", err)
 	}
 	configuration.buildSettings["KNOWN_SETTING"] = "resolved"
-	resolver := newSigningSettingResolver(structured, nil, false)
+	resolver := newSigningSettingResolver(structured, nil, false, nil)
 	tests := []struct {
 		name      string
 		value     string
@@ -2155,6 +2223,72 @@ func TestSigningPlanAllowsOptionalXCConfigAssignmentWithoutProjectFallback(t *te
 	}
 	if !plan.Ready {
 		t.Fatalf("optional xcconfig assignment without fallback blocked plan: %#v", plan.Blockers)
+	}
+}
+
+func TestSigningPlanAllowsDirectlyMissingOptionalXCConfigInclude(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	appXCConfig := filepath.Join(filepath.Dir(project), "Configs", "App.xcconfig")
+	contents := mustReadVersionTestFile(t, appXCConfig)
+	contents = strings.Replace(contents, `#include "Shared.xcconfig"`, "#include? \"Missing.xcconfig\"\n#include \"Shared.xcconfig\"", 1)
+	if err := os.WriteFile(appXCConfig, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write app xcconfig error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want optional missing include to be ignored", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("optional missing include blocked plan: %#v", plan.Blockers)
+	}
+}
+
+func TestSigningSettingResolverDoesNotShareOptionalIncludeAuthorizationBetweenConfigurations(t *testing.T) {
+	projectPath := writeStructuredVersionProject(t, true)
+	project, err := openStructuredVersionProject(projectPath)
+	if err != nil {
+		t.Fatalf("openStructuredVersionProject() error = %v", err)
+	}
+	app, err := signingConfigurationFor(project, "App", "Debug")
+	if err != nil {
+		t.Fatalf("find App configuration: %v", err)
+	}
+	widget, err := signingConfigurationFor(project, "Widget", "Debug")
+	if err != nil {
+		t.Fatalf("find Widget configuration: %v", err)
+	}
+	shared := filepath.Join(filepath.Dir(projectPath), "Configs", "LateShared.xcconfig")
+	resolver := newSigningSettingResolver(
+		project,
+		map[string][]string{
+			app.id:    {filepath.Join(filepath.Dir(projectPath), "Configs", "App.xcconfig")},
+			widget.id: {shared},
+		},
+		false,
+		map[string][]string{app.id: {shared}},
+	)
+	if err := os.WriteFile(shared, []byte("CODE_SIGN_STYLE = manual\n"), 0o640); err != nil {
+		t.Fatalf("write late optional include: %v", err)
+	}
+
+	if _, err := resolver.statXCConfigFor(app, shared); err == nil || !strings.Contains(err.Error(), "appeared after configuration collection") {
+		t.Fatalf("App stat error = %v, want late-appearance refusal", err)
+	}
+	if _, err := resolver.readXCConfigFor(app, shared); err == nil || !strings.Contains(err.Error(), "not collected for this configuration") {
+		t.Fatalf("App read error = %v, want configuration-bound refusal", err)
+	}
+	if _, err := resolver.readXCConfigFor(widget, shared); err != nil {
+		t.Fatalf("Widget read error = %v, want collected consumer access", err)
 	}
 }
 
@@ -2340,7 +2474,7 @@ func TestSigningPlanProtectsResolvedEntitlementsReference(t *testing.T) {
 	paths, _, _, err := signingProjectInputPaths(structured, settingsPath, nil, []signingRequest{{
 		target: "App", configuration: "Debug",
 		settings: []signingDesiredSetting{{key: "CODE_SIGN_STYLE", value: stringPtr("manual")}},
-	}}, false)
+	}}, false, nil)
 	if err != nil {
 		t.Fatalf("signingProjectInputPaths() error = %v", err)
 	}

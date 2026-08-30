@@ -1154,6 +1154,107 @@ func TestWriteFileIfSameRestoresOriginalWhenUnchanged(t *testing.T) {
 	}
 }
 
+func TestWriteFileIfSameWithInfoReturnsIdentityAfterStagedLinkCleanupFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unrelated"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupErr := errors.New("injected staged-file cleanup failure")
+	var stagedName string
+	root.renameNoReplaceForTest = func(_ *os.Root, _, _ string) error {
+		return secureopen.ErrRenameNoReplaceUnsupported
+	}
+	root.removeStagedFileForTest = func(_ *os.Root, name string) error {
+		stagedName = name
+		return cleanupErr
+	}
+
+	info, err := root.WriteFileIfSameWithInfo("settings.xcconfig", []byte("updated"), 0o640, expected, []byte("old"), true)
+	if err == nil || !errors.Is(err, cleanupErr) || !strings.Contains(err.Error(), "remove staged file") {
+		t.Fatalf("WriteFileIfSameWithInfo() error = %v, want staged cleanup failure", err)
+	}
+	if info == nil {
+		t.Fatal("WriteFileIfSameWithInfo() returned nil identity after successful hard-link publication")
+	}
+	diskInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat published path: %v", err)
+	}
+	if !os.SameFile(info, diskInfo) {
+		t.Fatal("returned identity does not identify installed destination")
+	}
+	if got := mustRead(t, path); got != "updated" {
+		t.Fatalf("published content = %q, want updated", got)
+	}
+	if got := mustRead(t, filepath.Join(dir, "unrelated")); got != "keep" {
+		t.Fatalf("unrelated content = %q, want keep", got)
+	}
+	if stagedName == "" {
+		t.Fatal("cleanup seam was not invoked")
+	}
+	if got := mustRead(t, filepath.Join(dir, stagedName)); got != "updated" {
+		t.Fatalf("preserved staged content = %q, want updated", got)
+	}
+}
+
+func TestWriteFileIfSameWithInfoReturnsIdentityAfterParentSyncFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncErr := errors.New("injected parent directory sync failure")
+	var syncObserved bool
+	root.syncDirectoryForTest = func(_ *os.Root) error {
+		syncObserved = true
+		return syncErr
+	}
+
+	info, err := root.WriteFileIfSameWithInfo("settings.xcconfig", []byte("updated"), 0o640, expected, []byte("old"), true)
+	if err == nil || !errors.Is(err, syncErr) {
+		t.Fatalf("WriteFileIfSameWithInfo() error = %v, want parent sync failure", err)
+	}
+	if info == nil {
+		t.Fatal("WriteFileIfSameWithInfo() returned nil identity after published sync failure")
+	}
+	if !syncObserved {
+		t.Fatal("parent directory sync hook was not invoked")
+	}
+	diskInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat published path: %v", err)
+	}
+	if !os.SameFile(info, diskInfo) {
+		t.Fatal("returned identity does not identify installed destination")
+	}
+	if got := mustRead(t, path); got != "updated" {
+		t.Fatalf("published content = %q, want updated", got)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("quarantine entries remain after sync failure: %v", matches)
+	}
+}
+
 func TestCreateNewFileFallsBackWhenAtomicRenameIsUnsupported(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)

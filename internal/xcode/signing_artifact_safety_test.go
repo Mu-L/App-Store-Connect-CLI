@@ -318,6 +318,7 @@ func TestSigningProjectInputPathsFailsClosedWhenConfigDisappears(t *testing.T) {
 		map[string][]string{"configuration": {missingPath}},
 		nil,
 		false,
+		nil,
 	)
 	if err == nil || !strings.Contains(err.Error(), "read xcconfig") {
 		t.Fatalf("signingProjectInputPaths() error = %v, want missing-source failure", err)

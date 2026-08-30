@@ -369,10 +369,10 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		}
 	}
 
-	fileConsumers, configFiles, fileIdentities, uncertainConsumers, protectedConfigPaths, blockedExternalPaths, err := project.signingXCConfigConsumers(selectedIDs, opts.AllowExternalXCConfig)
+	fileConsumers, configFiles, fileIdentities, uncertainConsumers, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, err := project.signingXCConfigConsumers(selectedIDs, opts.AllowExternalXCConfig)
 	if err != nil {
 		if len(blockedExternalPaths) > 0 {
-			inputPaths, externalEntitlementPaths, inputPathBlockers, inputErr := signingProjectInputPaths(project, settingsPath, configFiles, requests, opts.AllowExternalXCConfig)
+			inputPaths, externalEntitlementPaths, inputPathBlockers, inputErr := signingProjectInputPaths(project, settingsPath, configFiles, requests, opts.AllowExternalXCConfig, lexicalConfigPaths)
 			if inputErr != nil {
 				return nil, inputErr
 			}
@@ -391,7 +391,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		}
 		return nil, err
 	}
-	inputPaths, externalEntitlementPaths, inputPathBlockers, err := signingProjectInputPaths(project, settingsPath, configFiles, requests, opts.AllowExternalXCConfig)
+	inputPaths, externalEntitlementPaths, inputPathBlockers, err := signingProjectInputPaths(project, settingsPath, configFiles, requests, opts.AllowExternalXCConfig, lexicalConfigPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -442,6 +442,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 				requestedValues,
 				uncertainConsumers,
 				opts.AllowExternalXCConfig,
+				lexicalConfigPaths,
 			)
 			if warning != "" {
 				plan.Warnings = append(plan.Warnings, warning)
@@ -858,12 +859,13 @@ func inspectSigningCandidate(
 	requestedValues map[string]map[string]*string,
 	uncertainConsumers bool,
 	allowExternal bool,
+	lexicalConfigPaths map[string][]string,
 ) (signingCandidate, string, string) {
 	candidate := signingCandidate{configuration: configuration, setting: setting.key, desired: cloneSigningString(setting.value)}
 	if !signingConfigurationSourcesAuthorized(project, configuration, configFiles) {
 		return candidate, signingSettingBlocker(configuration, setting.key, errors.New("configuration inherits from an xcconfig that was not authorized or could not be read")), ""
 	}
-	resolver := newSigningSettingResolver(project, configFiles, allowExternal)
+	resolver := newSigningSettingResolver(project, configFiles, allowExternal, lexicalConfigPaths)
 	if setting.key == "CODE_SIGN_ENTITLEMENTS" && setting.value != nil {
 		if err := validateSigningEntitlementsPath(project, *setting.value); err != nil {
 			return candidate, signingSettingBlocker(configuration, setting.key, fmt.Errorf("validate path %q: %w", *setting.value, err)), ""
@@ -1373,18 +1375,24 @@ func signingConfigurationSourcesAuthorized(
 // later setting-resolution pass from reopening an unselected or redirected
 // external include through the generic resolver.
 type signingSettingResolver struct {
-	project        *structuredVersionProject
-	configFiles    map[string][]string
-	authorizedPath map[string]bool
-	allowExternal  bool
+	project     *structuredVersionProject
+	configFiles map[string][]string
+	// lexicalConfigPaths retains every path the collector observed for each
+	// configuration, including a directly missing optional include. It is used
+	// only to authorize the later no-follow existence check; reads still
+	// require membership in authorizedPath (the successfully collected files).
+	lexicalConfigPaths map[string][]string
+	authorizedPath     map[string]bool
+	allowExternal      bool
 }
 
-func newSigningSettingResolver(project *structuredVersionProject, configFiles map[string][]string, allowExternal bool) *signingSettingResolver {
+func newSigningSettingResolver(project *structuredVersionProject, configFiles map[string][]string, allowExternal bool, lexicalConfigPaths map[string][]string) *signingSettingResolver {
 	resolver := &signingSettingResolver{
-		project:        project,
-		configFiles:    configFiles,
-		authorizedPath: make(map[string]bool),
-		allowExternal:  allowExternal,
+		project:            project,
+		configFiles:        configFiles,
+		lexicalConfigPaths: lexicalConfigPaths,
+		authorizedPath:     make(map[string]bool),
+		allowExternal:      allowExternal,
 	}
 	for _, paths := range configFiles {
 		for _, path := range paths {
@@ -1405,15 +1413,58 @@ func (resolver *signingSettingResolver) readXCConfig(path string) ([]byte, error
 	return readSigningRegularFile(absolute, signingPlanMaxBytes)
 }
 
-func (resolver *signingSettingResolver) statXCConfig(path string) (os.FileInfo, error) {
+func (resolver *signingSettingResolver) statXCConfigFor(configuration *versionConfiguration, path string) (os.FileInfo, error) {
 	absolute := normalizeSigningLexicalPath(path)
-	if !resolver.authorizedPath[signingLexicalPathKey(absolute)] {
-		return nil, fmt.Errorf("xcconfig %s was not collected for this signing plan", absolute)
+	key := signingLexicalPathKey(absolute)
+	if !resolver.configurationCollectedPath(configuration, key) {
+		known := false
+		if configuration != nil {
+			for _, observed := range resolver.lexicalConfigPaths[configuration.id] {
+				if signingLexicalPathKey(observed) == key {
+					known = true
+					break
+				}
+			}
+		}
+		if !known {
+			return nil, fmt.Errorf("xcconfig %s was not collected for this signing plan", absolute)
+		}
+		if err := resolver.authorizeXCConfigPath(absolute); err != nil {
+			return nil, err
+		}
+		info, err := signingRegularFileInfo(absolute)
+		if err != nil {
+			return nil, err
+		}
+		if info != nil {
+			return nil, fmt.Errorf("xcconfig %s appeared after configuration collection", absolute)
+		}
+		return nil, os.ErrNotExist
 	}
 	if err := resolver.authorizeXCConfigPath(absolute); err != nil {
 		return nil, err
 	}
 	return signingRegularFileInfo(absolute)
+}
+
+func (resolver *signingSettingResolver) readXCConfigFor(configuration *versionConfiguration, path string) ([]byte, error) {
+	absolute := normalizeSigningLexicalPath(path)
+	if !resolver.configurationCollectedPath(configuration, signingLexicalPathKey(absolute)) {
+		return nil, fmt.Errorf("xcconfig %s was not collected for this configuration", absolute)
+	}
+	return resolver.readXCConfig(absolute)
+}
+
+func (resolver *signingSettingResolver) configurationCollectedPath(configuration *versionConfiguration, key string) bool {
+	if configuration == nil {
+		return false
+	}
+	for _, collected := range resolver.configFiles[configuration.id] {
+		if signingLexicalPathKey(collected) == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (resolver *signingSettingResolver) authorizeXCConfigPath(path string) error {
@@ -1537,18 +1588,24 @@ func (resolver *signingSettingResolver) resolveConfigurationXCConfig(
 				// project-level value and does not depend on it. Probe with and
 				// without a private sentinel so only ?=/+=/inherited resolution
 				// paths retain a fallback error as a blocker.
-				if resolver.xcconfigDependsOnFallback(path, setting) {
+				if resolver.xcconfigDependsOnFallback(configuration, path, setting) {
 					return xcconfigResolvedValue{}, fmt.Errorf("resolve project-level fallback for %s: %w", setting, err)
 				}
 			}
 		}
 	}
+	stat := func(includePath string) (os.FileInfo, error) {
+		return resolver.statXCConfigFor(configuration, includePath)
+	}
+	read := func(includePath string) ([]byte, error) {
+		return resolver.readXCConfigFor(configuration, includePath)
+	}
 	return resolveXCConfigSettingWithBaseReader(
 		path,
 		setting,
 		base,
-		resolver.readXCConfig,
-		resolver.statXCConfig,
+		read,
+		stat,
 	)
 }
 
@@ -1557,21 +1614,27 @@ func (resolver *signingSettingResolver) resolveConfigurationXCConfig(
 // assignment. The probe is read-only and uses the same authorization-aware
 // callbacks as normal resolution. A sentinel is intentionally private: it is
 // only compared inside this helper and is never surfaced in a plan or error.
-func (resolver *signingSettingResolver) xcconfigDependsOnFallback(path, setting string) bool {
+func (resolver *signingSettingResolver) xcconfigDependsOnFallback(configuration *versionConfiguration, path, setting string) bool {
+	stat := func(includePath string) (os.FileInfo, error) {
+		return resolver.statXCConfigFor(configuration, includePath)
+	}
+	read := func(includePath string) ([]byte, error) {
+		return resolver.readXCConfigFor(configuration, includePath)
+	}
 	withoutBase, withoutErr := resolveXCConfigSettingWithBaseReader(
 		path,
 		setting,
 		xcconfigResolvedValue{},
-		resolver.readXCConfig,
-		resolver.statXCConfig,
+		read,
+		stat,
 	)
 	const sentinel = "__asc_signing_project_fallback_sentinel__"
 	withBase, withErr := resolveXCConfigSettingWithBaseReader(
 		path,
 		setting,
 		xcconfigResolvedValue{value: sentinel, path: resolver.project.pbxprojPath, found: true, exact: true},
-		resolver.readXCConfig,
-		resolver.statXCConfig,
+		read,
+		stat,
 	)
 	if withoutErr != nil || withErr != nil {
 		// If one probe succeeds and the other does not, the base changes the
@@ -1940,6 +2003,7 @@ func signingProjectInputPaths(
 	configFiles map[string][]string,
 	requests []signingRequest,
 	allowExternal bool,
+	lexicalConfigPaths map[string][]string,
 ) ([]string, []string, []string, error) {
 	// Paths that failed collection or authorization are intentionally not added
 	// to the readable input set. The caller protects their lexical paths
@@ -1982,6 +2046,17 @@ func signingProjectInputPaths(
 		}
 		return fmt.Errorf("CODE_SIGN_ENTITLEMENTS path %q is invalid and cannot be protected", value)
 	}
+	appendLexicalEntitlementCandidate := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || strings.ContainsRune(value, '\x00') || strings.Contains(value, "$(") || strings.Contains(value, "${") {
+			return
+		}
+		candidate := value
+		if !filepath.IsAbs(candidate) && !pathpkg.IsAbs(candidate) && !isWindowsDrivePath(candidate) {
+			candidate = filepath.Join(project.rootDir, filepath.FromSlash(candidate))
+		}
+		externalEntitlementPaths = appendUniqueSigningPaths(externalEntitlementPaths, filepath.Clean(candidate))
+	}
 	for _, files := range configFiles {
 		paths = append(paths, files...)
 	}
@@ -1994,7 +2069,7 @@ func signingProjectInputPaths(
 			}
 		}
 	}
-	resolver := newSigningSettingResolver(project, configFiles, allowExternal)
+	resolver := newSigningSettingResolver(project, configFiles, allowExternal, lexicalConfigPaths)
 	for _, configuration := range project.configurations {
 		selected := selectedIDs[configuration.id]
 		authorized := signingConfigurationSourcesAuthorized(project, configuration, configFiles)
@@ -2031,7 +2106,14 @@ func signingProjectInputPaths(
 			}
 		}
 	}
-	for _, files := range configFiles {
+	knownConfigurationIDs := make(map[string]bool, len(project.configurations))
+	for _, configuration := range project.configurations {
+		knownConfigurationIDs[configuration.id] = true
+		files, ok := configFiles[configuration.id]
+		if !ok {
+			continue
+		}
+		selected := selectedIDs[configuration.id]
 		for _, filePath := range files {
 			// These paths came from the successful collector, but keep the
 			// membership and authorization checks on this later read as well.
@@ -2049,8 +2131,40 @@ func signingProjectInputPaths(
 			for _, assignment := range document.assignments {
 				if assignment.baseKey == "CODE_SIGN_ENTITLEMENTS" {
 					if err := appendEntitlements(assignment.value); err != nil {
-						return nil, externalEntitlementPaths, inputBlockers, err
+						appendLexicalEntitlementCandidate(assignment.value)
+						if selected {
+							return nil, externalEntitlementPaths, inputBlockers, err
+						}
+						inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has an invalid CODE_SIGN_ENTITLEMENTS input: %v", configuration.target, configuration.name, err))
 					}
+				}
+			}
+		}
+	}
+	// configFiles is normally keyed only by configurations parsed from the
+	// project. Keep this boundary fail-closed for injected or future collector
+	// results as well: an unassociated source cannot be safely classified as an
+	// unselected consumer, so it must remain readable and representable rather
+	// than being silently omitted from the protected-input inventory.
+	for configurationID, files := range configFiles {
+		if knownConfigurationIDs[configurationID] {
+			continue
+		}
+		for _, filePath := range files {
+			data, err := resolver.readXCConfig(filePath)
+			if err != nil {
+				return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("read xcconfig %s: %w", filePath, err)
+			}
+			document, err := parseXCConfig(data)
+			if err != nil {
+				return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("parse xcconfig %s: %w", filePath, err)
+			}
+			for _, assignment := range document.assignments {
+				if assignment.baseKey != "CODE_SIGN_ENTITLEMENTS" {
+					continue
+				}
+				if err := appendEntitlements(assignment.value); err != nil {
+					return nil, externalEntitlementPaths, inputBlockers, err
 				}
 			}
 		}

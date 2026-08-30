@@ -1311,9 +1311,11 @@ func (project *structuredVersionProject) xcconfigConsumers(selectedIDs map[strin
 	return project.xcconfigConsumersWithCollector(selectedIDs, collectXCConfigFiles)
 }
 
-func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs map[string]bool, allowExternal bool) (map[string]map[string]bool, map[string][]string, map[string]string, bool, []string, []string, error) {
+func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs map[string]bool, allowExternal bool) (map[string]map[string]bool, map[string][]string, map[string]string, bool, []string, []string, map[string][]string, error) {
 	var protectedConfigPaths []string
 	var blockedExternalPaths []string
+	lexicalConfigPaths := make(map[string][]string)
+	observedPathsByRoot := make(map[string][]string)
 	addProtectedPath := func(path string) {
 		absolute := normalizeSigningLexicalPath(path)
 		for _, existing := range protectedConfigPaths {
@@ -1334,6 +1336,7 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 	}
 	collect := func(path string) ([]string, error) {
 		var collectionErrorPath string
+		observedPaths := make([]string, 0)
 		files, err := collectXCConfigFilesWithHooks(
 			path,
 			func(filePath string) ([]byte, error) {
@@ -1353,11 +1356,13 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 				// An external path remains protected from artifact writes even
 				// when the operator opted into reading it.
 				addProtectedPath(filePath)
+				observedPaths = appendUniqueSigningPaths(observedPaths, filePath)
 			},
 			func(filePath string, _ error) {
 				collectionErrorPath = filePath
 			},
 		)
+		observedPathsByRoot[signingLexicalPathKey(path)] = observedPaths
 		if err == nil {
 			return files, nil
 		}
@@ -1376,7 +1381,19 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 			addBlockedPath(accessErr.path)
 		}
 	})
-	return consumers, configFiles, identities, uncertain, protectedConfigPaths, blockedExternalPaths, err
+	for _, configuration := range project.configurations {
+		if configuration.baseReferenceID == "" {
+			continue
+		}
+		root, rootErr := project.fileReferencePath(configuration.baseReferenceID)
+		if rootErr != nil {
+			continue
+		}
+		if observed := observedPathsByRoot[signingLexicalPathKey(root)]; len(observed) > 0 {
+			lexicalConfigPaths[configuration.id] = append([]string(nil), observed...)
+		}
+	}
+	return consumers, configFiles, identities, uncertain, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, err
 }
 
 func (project *structuredVersionProject) xcconfigConsumersWithCollector(

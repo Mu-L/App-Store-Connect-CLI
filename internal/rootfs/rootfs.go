@@ -64,6 +64,14 @@ type Root struct {
 	// renameNoReplaceForTest makes unsupported-filesystem regressions
 	// deterministic. It is intentionally unexported and unset outside tests.
 	renameNoReplaceForTest func(root *os.Root, oldName, newName string) error
+	// removeStagedFileForTest injects a cleanup failure after a hard-link
+	// fallback has already published the complete destination. The destination
+	// identity must still be returned while the staged entry is preserved.
+	removeStagedFileForTest func(root *os.Root, name string) error
+	// syncDirectoryForTest injects a post-publication directory-sync result so
+	// callers can verify that a sync failure still returns the installed
+	// identity for conditional rollback.
+	syncDirectoryForTest func(root *os.Root) error
 	// afterPublicationOpenForTest runs after the published file has been
 	// reopened no-follow but before its directory entry is checked again. It
 	// makes the post-publication identity window deterministic in rootfs tests.
@@ -1369,11 +1377,15 @@ func (r Root) writeFileIfSame(
 	if r.beforeConditionalPublishForTest != nil {
 		r.beforeConditionalPublishForTest(parent, base)
 	}
-	if err := renameOrLinkNoReplace(parent, temporaryName, base); err != nil {
-		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+	published, publicationCleanupErr := r.renameOrLinkNoReplace(parent, temporaryName, base)
+	if !published {
+		return nil, errors.Join(publicationCleanupErr, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 	}
 	temporaryDone = true
 	quarantineLeftAfterPublication := func(err error) error {
+		if publicationCleanupErr != nil {
+			err = errors.Join(err, publicationCleanupErr)
+		}
 		return errors.Join(
 			err,
 			fmt.Errorf("quarantined file %q was left in place after publication uncertainty", quarantineName),
@@ -1459,9 +1471,12 @@ func (r Root) writeFileIfSame(
 	// quarantined inode is removed. A concurrent replacement at base is never
 	// targeted by this cleanup.
 	if err := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData); err != nil {
-		return publishedInfo, err
+		return publishedInfo, errors.Join(err, publicationCleanupErr)
 	}
-	return publishedInfo, nil
+	if err := r.syncConditionalParentDirectory(parent); err != nil {
+		return publishedInfo, errors.Join(err, publicationCleanupErr)
+	}
+	return publishedInfo, publicationCleanupErr
 }
 
 func (r Root) openConditionalFileParent(name string) (*os.Root, string, error) {
@@ -1615,6 +1630,24 @@ func (r Root) lstatAfterConditionalQuarantine(parent *os.Root, name string) (os.
 	return parent.Lstat(name)
 }
 
+func (r Root) syncConditionalParentDirectory(parent *os.Root) error {
+	if r.syncDirectoryForTest != nil {
+		return r.syncDirectoryForTest(parent)
+	}
+	directory, err := parent.Open(".")
+	if err != nil {
+		return fmt.Errorf("open parent directory for durability sync: %w", err)
+	}
+	if err := directory.Sync(); err != nil && !unsupportedDirectorySyncError(err) {
+		_ = directory.Close()
+		return fmt.Errorf("sync parent directory after conditional write: %w", err)
+	}
+	if err := directory.Close(); err != nil {
+		return fmt.Errorf("close parent directory after conditional write: %w", err)
+	}
+	return nil
+}
+
 func (r Root) restoreOrRemoveQuarantine(parent *os.Root, quarantineName, base string, expected os.FileInfo, expectedData []byte) error {
 	file, _, err := openExpectedRootedFile(parent, quarantineName, expected, expectedData)
 	if err != nil {
@@ -1656,16 +1689,29 @@ func restoreQuarantineEntry(parent *os.Root, quarantineName, base string) error 
 	}
 }
 
-func renameOrLinkNoReplace(parent *os.Root, temporaryName, name string) error {
-	if err := secureopen.RenameNoReplaceInRoot(parent, temporaryName, name); err == nil {
-		return nil
+func (r Root) renameOrLinkNoReplace(parent *os.Root, temporaryName, name string) (bool, error) {
+	renameNoReplace := secureopen.RenameNoReplaceInRoot
+	if r.renameNoReplaceForTest != nil {
+		renameNoReplace = r.renameNoReplaceForTest
+	}
+	if err := renameNoReplace(parent, temporaryName, name); err == nil {
+		return true, nil
 	} else if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
-		return err
+		return false, err
 	}
 	if err := parent.Link(temporaryName, name); err != nil {
-		return err
+		return false, err
 	}
-	return parent.Remove(temporaryName)
+	remove := parent.Remove
+	if r.removeStagedFileForTest != nil {
+		remove = func(path string) error {
+			return r.removeStagedFileForTest(parent, path)
+		}
+	}
+	if err := remove(temporaryName); err != nil {
+		return true, fmt.Errorf("publish succeeded but remove staged file: %w", err)
+	}
+	return true, nil
 }
 
 // CheckFileParent validates a future file path and all existing parent
