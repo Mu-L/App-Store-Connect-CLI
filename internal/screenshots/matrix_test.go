@@ -24,6 +24,18 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
+func TestMain(m *testing.M) {
+	lockBase, err := os.MkdirTemp("", "asc-matrix-lock-tests-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create matrix lock test root: %v\n", err)
+		os.Exit(1)
+	}
+	matrixGlobalLockBaseDirForTest = lockBase
+	status := m.Run()
+	_ = os.RemoveAll(lockBase)
+	os.Exit(status)
+}
+
 func TestLoadMatrixPlanAndExpand_UsesStableAxisOrder(t *testing.T) {
 	t.Parallel()
 
@@ -1953,6 +1965,46 @@ func TestRunMatrixLateCancellationAfterCompletedCellsStillSucceeds(t *testing.T)
 	}
 }
 
+func TestRunMatrixPreservesCompletedCellsWhenLaterCancellationOccurs(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"first"},{"id":"second"}],"execution":{"max_concurrency":1},"output":{"raw_dir":"raw","review_dir":"review"}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	appearance := &matrixTestAppearance{restoreFunc: cancel}
+	var calls int
+	result, runErr := RunMatrixWithDependencies(ctx, matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			calls++
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{Steps: []RunStepResult{{Index: 1, Action: "screenshot", Status: "ok"}}}, nil
+		},
+		Appearance:  appearance,
+		CheckDevice: func(context.Context, MatrixDevice) error { return nil },
+	})
+	if !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want caller cancellation", runErr)
+	}
+	if calls != 1 {
+		t.Fatalf("RunPlan calls = %d, want only the first cell before cancellation", calls)
+	}
+	if result == nil || result.Succeeded != 1 || result.Canceled != 1 || result.Failed != 0 {
+		t.Fatalf("result summary = %+v, want one success and one cancellation", result)
+	}
+	if result.Cells[0].Status != MatrixCellSuccess || len(result.Cells[0].RawPaths) != 1 {
+		t.Fatalf("completed cell = %+v, want success with retained raw artifact", result.Cells[0])
+	}
+	if result.Cells[1].Status != MatrixCellCanceled || result.Cells[1].FailureCode != "canceled" {
+		t.Fatalf("canceled cell = %+v, want canceled status", result.Cells[1])
+	}
+}
+
 func TestRunMatrix_PreflightFailureDoesNotSuppressReadyDevices(t *testing.T) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.json")
@@ -2760,13 +2812,30 @@ func TestValidateMatrixPlanRejectsBothRetryBackoffFieldsWhenMillisecondsIsZero(t
 	}
 }
 
+func TestValidateMatrixPlanRejectsExplicitEmptyRetryBackoff(t *testing.T) {
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	for _, value := range []string{"", "   "} {
+		t.Run(fmt.Sprintf("%q", value), func(t *testing.T) {
+			dir := t.TempDir()
+			matrixPath := filepath.Join(dir, "matrix.json")
+			writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"execution":{"retry_backoff":"`+value+`"},"output":{"raw_dir":"raw","review_dir":"review"}}`)
+			plan, err := LoadMatrixPlan(matrixPath)
+			if err != nil {
+				t.Fatalf("LoadMatrixPlan() error = %v", err)
+			}
+			if err := ValidateMatrixPlan(plan, base); err == nil || !strings.Contains(err.Error(), "execution.retry_backoff must not be empty") {
+				t.Fatalf("ValidateMatrixPlan() error = %v, want explicit-empty retry rejection", err)
+			}
+		})
+	}
+}
+
 func TestValidateMatrixPlanAcceptsASingleRetryBackoffEncoding(t *testing.T) {
 	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
 	for _, execution := range []string{
 		`{"retry_backoff_ms":0}`,
 		`{"retry_backoff_ms":250}`,
 		`{"retry_backoff":"1s"}`,
-		`{"retry_backoff":""}`,
 		`{}`,
 	} {
 		t.Run(execution, func(t *testing.T) {
@@ -2882,6 +2951,26 @@ func TestLoadMatrixPlanRejectsExplicitNullObjectSections(t *testing.T) {
 	}
 }
 
+func TestLoadMatrixPlanRejectsExplicitNullScalarValues(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "raw directory", data: `{"version":1,"base_plan":"base.json","devices":[],"locales":[],"appearances":[],"content_variants":[],"output":{"raw_dir":null}}`},
+		{name: "frame enabled", data: `{"version":1,"base_plan":"base.json","devices":[],"locales":[],"appearances":[],"content_variants":[],"output":{"frame":{"enabled":null}}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "matrix.json")
+			writeMatrixTestFile(t, path, tc.data)
+			_, err := LoadMatrixPlan(path)
+			if err == nil || !errors.Is(err, ErrMatrixPlanParseJSON) || !strings.Contains(err.Error(), "must not be null") {
+				t.Fatalf("LoadMatrixPlan() error = %v, want explicit-null scalar rejection", err)
+			}
+		})
+	}
+}
+
 func TestOpenMatrixOutputRootRejectsChildSwapAfterAnchoring(t *testing.T) {
 	dir := t.TempDir()
 	selected := filepath.Join(dir, "selected")
@@ -2940,6 +3029,54 @@ func TestAcquireMatrixSimulatorLockSerializesSameUDID(t *testing.T) {
 	}
 	if err := other(); err != nil {
 		t.Fatalf("release unrelated simulator lock: %v", err)
+	}
+}
+
+func TestAcquireMatrixSimulatorLockUsesStableNamespaceAcrossTempDirs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("TMPDIR does not control os.TempDir on Windows")
+	}
+	firstTemp := t.TempDir()
+	secondTemp := t.TempDir()
+	key := fmt.Sprintf("stable-lock-%d-%s", os.Getpid(), filepath.Base(firstTemp))
+	t.Setenv("TMPDIR", firstTemp)
+	first, err := acquireMatrixSimulatorLock(context.Background(), key)
+	if err != nil {
+		t.Fatalf("first simulator lock: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := first(); err != nil {
+			t.Errorf("release first simulator lock: %v", err)
+		}
+	})
+	t.Setenv("TMPDIR", secondTemp)
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	second, err := acquireMatrixSimulatorLock(ctx, key)
+	if second != nil {
+		if releaseErr := second(); releaseErr != nil {
+			t.Errorf("release unexpectedly acquired second simulator lock: %v", releaseErr)
+		}
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second simulator lock error = %v, want deadline across temp roots", err)
+	}
+}
+
+func TestNormalizeMatrixLockPathUsesWindowsCaseFoldForMissingRoots(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "drive root", path: `C:\ASC-MATRIX-MISSING\Output`, want: `c:\asc-matrix-missing\output`},
+		{name: "UNC root", path: `\\SERVER\Share\ASC-MATRIX-MISSING\Output`, want: `\\server\share\asc-matrix-missing\output`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := normalizeMatrixLockPathWithCase(test.path, true); got != test.want {
+				t.Fatalf("normalizeMatrixLockPathWithCase(%q, true) = %q, want %q", test.path, got, test.want)
+			}
+		})
 	}
 }
 

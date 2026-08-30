@@ -398,6 +398,9 @@ func walkMatrixJSONValue(decoder *json.Decoder, scope matrixJSONScope) error {
 		return err
 	}
 	if token == nil {
+		if scope == matrixJSONScopeGeneric {
+			return fmt.Errorf("matrix plan %s must not be null", scope)
+		}
 		switch scope {
 		case matrixJSONScopeExecution, matrixJSONScopeOutput, matrixJSONScopeFrame:
 			return fmt.Errorf("matrix plan %s must be an object", scope)
@@ -774,6 +777,9 @@ func validateMatrixPlan(plan *MatrixPlan, base *Plan, outputBaseDir string) erro
 	if (plan.Execution.retryBackoffMSSet && plan.Execution.retryBackoffSet) ||
 		(retryBackoffText != "" && plan.Execution.RetryBackoffMS != 0) {
 		return errors.New("set only one of execution.retry_backoff or execution.retry_backoff_ms")
+	}
+	if plan.Execution.retryBackoffSet && retryBackoffText == "" {
+		return errors.New("execution.retry_backoff must not be empty")
 	}
 	if err := validateMatrixOutputPaths(plan.Output, outputBaseDir); err != nil {
 		return err
@@ -1330,7 +1336,7 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	}
 	rawVerificationCtx := ctx
 	var rawVerificationCancel context.CancelFunc
-	if runErr == nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		rawVerificationCtx, rawVerificationCancel = context.WithTimeout(context.WithoutCancel(ctx), matrixSubprocessTimeout)
 		defer rawVerificationCancel()
 	}

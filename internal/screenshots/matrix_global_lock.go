@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -43,56 +44,46 @@ func acquireMatrixGlobalLock(ctx context.Context, key string) (func() error, err
 	}, nil
 }
 
+// matrixGlobalLockBaseDirForTest is intentionally a narrow test seam. The
+// production namespace is rooted in the user's home directory, while tests
+// use a disposable equivalent without changing the host's home state.
+var matrixGlobalLockBaseDirForTest string
+
 func openMatrixGlobalLockRoot() (rootfs.Root, error) {
-	tempRoot, err := rootfs.New(os.TempDir())
+	baseDir := matrixGlobalLockBaseDirForTest
+	if baseDir == "" {
+		var err error
+		baseDir, err = os.UserHomeDir()
+		if err != nil {
+			return rootfs.Root{}, err
+		}
+	}
+	if strings.TrimSpace(baseDir) == "" {
+		return rootfs.Root{}, errors.New("user home directory is empty")
+	}
+	lockRootPath := filepath.Join(baseDir, ".asc", matrixGlobalLockDirectory)
+	lockRoot, err := rootfs.New(lockRootPath)
 	if err != nil {
 		return rootfs.Root{}, err
 	}
-	if err := tempRoot.MkdirAll(matrixGlobalLockDirectory, 0o700); err != nil {
-		_ = tempRoot.Close()
+	if err := lockRoot.MkdirAll(".", 0o700); err != nil {
+		_ = lockRoot.Close()
 		return rootfs.Root{}, err
 	}
-	anchor, err := tempRoot.OpenDir(matrixGlobalLockDirectory)
+	anchor, err := lockRoot.OpenDir(".")
 	if err != nil {
-		_ = tempRoot.Close()
+		_ = lockRoot.Close()
 		return rootfs.Root{}, err
 	}
 	if err := anchor.Chmod(0o700); err != nil {
 		_ = anchor.Close()
-		_ = tempRoot.Close()
+		_ = lockRoot.Close()
 		return rootfs.Root{}, err
 	}
-	lockRootPath := filepath.Join(tempRoot.Path(), matrixGlobalLockDirectory)
-	lockRoot, err := rootfs.New(lockRootPath)
-	if err != nil {
-		_ = anchor.Close()
-		_ = tempRoot.Close()
+	if err := anchor.Close(); err != nil {
+		_ = lockRoot.Close()
 		return rootfs.Root{}, err
 	}
-	opened, err := lockRoot.OpenRoot()
-	if err != nil {
-		_ = lockRoot.Close()
-		_ = anchor.Close()
-		_ = tempRoot.Close()
-		return rootfs.Root{}, err
-	}
-	anchoredInfo, anchorErr := anchor.Stat()
-	openedInfo, openedErr := opened.Stat(".")
-	closeErr := opened.Close()
-	if anchorErr != nil || openedErr != nil || closeErr != nil {
-		_ = lockRoot.Close()
-		_ = anchor.Close()
-		_ = tempRoot.Close()
-		return rootfs.Root{}, errors.Join(anchorErr, openedErr, closeErr)
-	}
-	if !os.SameFile(anchoredInfo, openedInfo) {
-		_ = lockRoot.Close()
-		_ = anchor.Close()
-		_ = tempRoot.Close()
-		return rootfs.Root{}, errors.New("matrix global lock root changed while opening")
-	}
-	_ = anchor.Close()
-	_ = tempRoot.Close()
 	return lockRoot, nil
 }
 
@@ -150,7 +141,11 @@ func matrixOutputLockIdentity(path string) string {
 
 func normalizeMatrixLockPath(path string) string {
 	path = filepath.Clean(path)
-	if matrixFilesystemCaseInsensitive(path) {
+	return normalizeMatrixLockPathWithCase(path, matrixFilesystemCaseInsensitive(path))
+}
+
+func normalizeMatrixLockPathWithCase(path string, caseInsensitive bool) string {
+	if caseInsensitive {
 		return strings.ToLower(path)
 	}
 	return path
@@ -161,6 +156,9 @@ func normalizeMatrixLockPath(path string) string {
 // selected filesystem itself aliases a case variant; preserving spelling on a
 // case-sensitive filesystem keeps distinct destinations independently locked.
 func matrixFilesystemCaseInsensitive(path string) bool {
+	if runtime.GOOS == "windows" {
+		return true
+	}
 	current := filepath.Clean(path)
 	for {
 		info, err := os.Lstat(current)
