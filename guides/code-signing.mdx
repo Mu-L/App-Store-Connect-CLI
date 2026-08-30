@@ -100,6 +100,8 @@ CERTIFICATE_SHA256="$(
 )"
 ```
 
+`signing sync pull` does not transport the App Store Connect certificate resource ID. Save `CERTIFICATE_ID` as a protected, non-secret CI variable named `ASC_DISTRIBUTION_CERTIFICATE_ID`, scoped to the environment that uses this signing repository. Keep that variable paired with the synced identity and update both during rotation.
+
 Push that verified private key, certificate, and profile into a private encrypted Git repository:
 
 ```bash  theme={null}
@@ -174,10 +176,13 @@ The result lists private identities under `sensitiveFiles`. Import the pulled PK
 For an iOS archive with extensions or other embedded targets, reconcile the archive against an exact protected device file:
 
 ```bash  theme={null}
+: "${ASC_DISTRIBUTION_CERTIFICATE_ID:?configure the resource ID paired with the synced identity}"
+chmod 600 .asc/distribution/devices.json
+
 asc signing reconcile plan \
   --archive-path .asc/artifacts/Example.xcarchive \
   --devices-file .asc/distribution/devices.json \
-  --certificate "$CERTIFICATE_ID" \
+  --certificate "$ASC_DISTRIBUTION_CERTIFICATE_ID" \
   --minimum-validity-days 14 \
   --output json \
   --pretty
