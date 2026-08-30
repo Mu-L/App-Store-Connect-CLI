@@ -44,7 +44,7 @@ func notarizationCommand() *ffcli.Command {
 Examples:
   asc notarization submit --file ./MyApp.zip
   asc notarization submit --file ./MyApp.zip --wait
-  asc notarization staple --file ./MyApp.dmg
+  asc notarization staple --file ./MyApp.dmg --confirm
   asc notarization validate --file ./MyApp.dmg
   asc notarization status --id "SUBMISSION_ID"
   asc notarization log --id "SUBMISSION_ID"
@@ -69,11 +69,12 @@ func stapleCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("notarization staple", flag.ExitOnError)
 
 	filePath := fs.String("file", "", "Path to a notarized app bundle, disk image, or signed flat package (required; zip files must be recreated after stapling)")
+	confirm := fs.Bool("confirm", false, "Confirm in-place ticket stapling (required)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "staple",
-		ShortUsage: "asc notarization staple --file <path> [flags]",
+		ShortUsage: "asc notarization staple --file <path> --confirm [flags]",
 		ShortHelp:  "Attach and validate a macOS notarization ticket locally.",
 		LongHelp: `Attach Apple's notarization ticket to a local macOS artifact and
 validate it immediately afterward. The target must be a notarized app bundle,
@@ -82,14 +83,18 @@ stapled directly; staple the contained item and recreate the archive. This
 command runs on macOS only and Apple's stapler may require network access.
 
 Examples:
-  asc notarization staple --file ./MyApp.dmg
-  asc notarization staple --file ./MyApp.pkg --output json
-  asc notarization staple --file ./MyApp.app --output table`,
+  asc notarization staple --file ./MyApp.dmg --confirm
+  asc notarization staple --file ./MyApp.pkg --confirm --output json
+  asc notarization staple --file ./MyApp.app --confirm --output table`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) > 0 {
 				return shared.UsageError("notarization staple does not accept positional arguments")
+			}
+			if !*confirm {
+				fmt.Fprintln(os.Stderr, "Error: --confirm is required for in-place ticket stapling")
+				return shared.MissingRequiredUsageError("--confirm")
 			}
 			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
 				return shared.UsageError(err.Error())

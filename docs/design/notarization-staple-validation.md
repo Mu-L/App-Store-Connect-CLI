@@ -11,7 +11,7 @@ in this change.
 The new invocations are:
 
 ```text
-asc notarization staple --file PATH [--output FORMAT] [--pretty]
+asc notarization staple --file PATH --confirm [--output FORMAT] [--pretty]
 asc notarization validate --file PATH [--output FORMAT] [--pretty]
 ```
 
@@ -25,7 +25,9 @@ recreated after stapling its contained item.
 ## Design
 
 The command layer validates the invocation and target before any tool or auth
-work. It trims and cleans the supplied path once, resolves it to an absolute
+work. Because stapling mutates the artifact in place, `staple` requires an
+explicit `--confirm` flag before it inspects the target or invokes Apple's
+tool. It trims and cleans the supplied path once, resolves it to an absolute
 path, rejects NULs, missing paths, final symlinks, unsafe parent symlinks,
 special files, and empty regular files, and accepts regular files or directory
 bundles for Apple's tool to classify. Direct `.zip` paths fail with a usage
@@ -84,6 +86,7 @@ both operations, but the CLI itself does not resolve App Store Connect auth.
 ## RED-GREEN and verification
 
 Tests begin with CLI usage and output cases for required/empty `--file`,
+missing `--confirm` (including the usage exit and no target/tool work),
 positional arguments, direct ZIP rejection, invalid output/pretty combinations,
 help discoverability, JSON/table/Markdown rendering, and unchanged existing
 commands. Runner tests cover exact argv, path preservation, tool resolution,

@@ -178,7 +178,7 @@ asc builds upload --app "123456789" --ipa "/path/to/MyApp.ipa"
 asc xcode inject --manifest .asc/deployment.json --set version=1.2.3 --set build_number=42 --dry-run --output json
 
 # Staple and validate a notarized macOS artifact locally
-ASC_BYPASS_KEYCHAIN=1 asc notarization staple --file ./MyApp.dmg --output json
+ASC_BYPASS_KEYCHAIN=1 asc notarization staple --file ./MyApp.dmg --confirm --output json
 ASC_BYPASS_KEYCHAIN=1 asc notarization validate --file ./MyApp.dmg --output json
 
 # Plan, confirm, resume, check status, and live-verify a private ad hoc distribution run
