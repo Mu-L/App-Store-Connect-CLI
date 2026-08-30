@@ -786,12 +786,68 @@ func validateMatrixOutputPaths(output MatrixOutput, baseDir string) error {
 		for j := i + 1; j < len(paths); j++ {
 			left := resolveMatrixValidationPath(baseDir, paths[i].path)
 			right := resolveMatrixValidationPath(baseDir, paths[j].path)
-			if strings.EqualFold(filepath.Clean(left), filepath.Clean(right)) {
+			if sameMatrixDirectory(left, right) {
 				return fmt.Errorf("output.%s and output.%s must be different directories", paths[i].name, paths[j].name)
 			}
 		}
 	}
 	return nil
+}
+
+// sameMatrixDirectory reports whether two output paths resolve to the same
+// directory, including when one path reaches the other through a symlinked
+// ancestor or a platform alias such as /tmp versus /private/tmp. Output roots
+// do not need to exist yet, so the comparison resolves the nearest existing
+// ancestor and appends the not-yet-created suffix without creating anything.
+func sameMatrixDirectory(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if strings.EqualFold(left, right) {
+		return true
+	}
+	if leftInfo, leftErr := os.Stat(left); leftErr == nil {
+		if rightInfo, rightErr := os.Stat(right); rightErr == nil && os.SameFile(leftInfo, rightInfo) {
+			return true
+		}
+	}
+	leftPhysical, leftOK := resolveMatrixPhysicalPath(left)
+	rightPhysical, rightOK := resolveMatrixPhysicalPath(right)
+	return leftOK && rightOK && strings.EqualFold(leftPhysical, rightPhysical)
+}
+
+// resolveMatrixPhysicalPath resolves the existing prefix of a possibly
+// missing path. This is intentionally a read-only identity check: it does not
+// create output directories or follow a final path during publication. The
+// rooted writers still enforce their no-follow contract when they open roots
+// and files.
+func resolveMatrixPhysicalPath(path string) (string, bool) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	absPath = filepath.Clean(absPath)
+	missing := make([]string, 0, 4)
+	current := absPath
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", false
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Clean(resolved), true
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", false
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", false
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
 }
 
 // validateMatrixReviewDoesNotOverwritePlans refuses a review directory whose
@@ -866,6 +922,72 @@ func sameMatrixFile(left, right string) bool {
 		return false
 	}
 	return os.SameFile(leftInfo, rightInfo)
+}
+
+// validateMatrixArtifactPathsDoNotOverwritePlans checks every expanded raw
+// and framed artifact path before any execution or output-root creation. Plan
+// and base-plan files are inputs to the run, so allowing a generated artifact
+// to alias either one would turn the first run into a destructive rewrite.
+func validateMatrixArtifactPathsDoNotOverwritePlans(plan *MatrixPlan, matrixPath, baseDir string, cells []MatrixCell) error {
+	if plan == nil {
+		return errors.New("matrix plan is required")
+	}
+	planPath := strings.TrimSpace(plan.sourcePath)
+	if planPath == "" {
+		planPath = strings.TrimSpace(matrixPath)
+	}
+	planDir := strings.TrimSpace(baseDir)
+	if planPath != "" {
+		if absolute, err := filepath.Abs(planPath); err == nil {
+			planPath = filepath.Clean(absolute)
+		}
+		planDir = filepath.Dir(planPath)
+	}
+	if planDir == "" {
+		planDir = "."
+	}
+
+	type matrixPlanInput struct {
+		label string
+		path  string
+	}
+	inputs := make([]matrixPlanInput, 0, 2)
+	if planPath != "" {
+		inputs = append(inputs, matrixPlanInput{label: "matrix plan", path: filepath.Clean(planPath)})
+	}
+	if reference := strings.TrimSpace(plan.BasePlan); reference != "" && !filepath.IsAbs(reference) {
+		inputs = append(inputs, matrixPlanInput{
+			label: "base plan",
+			path:  filepath.Clean(resolveMatrixArtifactPath(planDir, reference)),
+		})
+	}
+	if len(inputs) == 0 {
+		return nil
+	}
+
+	for _, cell := range cells {
+		artifacts := []struct {
+			kind  string
+			paths []string
+		}{
+			{kind: "raw", paths: cell.RawPaths},
+			{kind: "framed", paths: cell.FramedPaths},
+		}
+		for _, artifact := range artifacts {
+			for _, path := range artifact.paths {
+				resolvedPath := filepath.Clean(resolveMatrixArtifactPath(baseDir, path))
+				for _, input := range inputs {
+					if strings.EqualFold(resolvedPath, input.path) || sameMatrixFile(resolvedPath, input.path) {
+						return fmt.Errorf(
+							"output %s artifact %q would overwrite the %s at %q; choose distinct output paths",
+							artifact.kind, resolvedPath, input.label, input.path,
+						)
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func resolveMatrixValidationPath(baseDir, path string) string {
@@ -1001,6 +1123,9 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	}
 	cells, err := expandMatrix(matrixPlan, base, baseDir)
 	if err != nil {
+		return nil, newMatrixValidationError(err)
+	}
+	if err := validateMatrixArtifactPathsDoNotOverwritePlans(matrixPlan, matrixPath, baseDir, cells); err != nil {
 		return nil, newMatrixValidationError(err)
 	}
 	for i := range cells {

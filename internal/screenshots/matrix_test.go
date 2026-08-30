@@ -2161,6 +2161,88 @@ func TestValidateMatrixPlanRejectsReviewOutputAliasingPlanInputs(t *testing.T) {
 	}
 }
 
+func TestRunMatrixRejectsArtifactOutputAliasingBasePlan(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "raw", "en-US", "phone", "light", "default", "home.png")
+	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
+		t.Fatalf("create base-plan directory: %v", err)
+	}
+	baseContents := []byte(`{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	if err := os.WriteFile(basePath, baseContents, 0o644); err != nil {
+		t.Fatalf("write base plan: %v", err)
+	}
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"raw/en-US/phone/light/default/home.png","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","framed_dir":"framed","review_dir":"review"}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	runCalled := false
+	_, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			runCalled = true
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Appearance: &matrixTestAppearance{},
+	})
+	if runErr == nil || !strings.Contains(runErr.Error(), "base plan") {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want base-plan artifact collision", runErr)
+	}
+	if runCalled {
+		t.Fatal("RunMatrixWithDependencies() invoked the screenshot plan before rejecting the artifact collision")
+	}
+	got, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatalf("read base plan after rejected run: %v", err)
+	}
+	if !bytes.Equal(got, baseContents) {
+		t.Fatalf("base plan changed after rejected run: got %q, want %q", got, baseContents)
+	}
+}
+
+func TestRunMatrixRejectsPhysicallyAliasedOutputDirectories(t *testing.T) {
+	dir := t.TempDir()
+	realRoot := filepath.Join(dir, "real")
+	linkRoot := filepath.Join(dir, "link")
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatalf("create real output parent: %v", err)
+	}
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	basePath := filepath.Join(dir, "base.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"real/out","framed_dir":"link/out","review_dir":"review","frame":{"enabled":true,"device_by_matrix_device":{"phone":"iphone-17-pro"}}}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	if filepath.Clean(filepath.Join(realRoot, "out")) == filepath.Clean(filepath.Join(linkRoot, "out")) {
+		t.Fatal("test setup produced lexically equal output paths; identity validation was not exercised")
+	}
+	runCalled := false
+	_, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			runCalled = true
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Frame: func(_ context.Context, request FrameRequest) (*FrameResult, error) {
+			writeMatrixPNG(t, request.OutputPath)
+			return &FrameResult{}, nil
+		},
+		Appearance: &matrixTestAppearance{},
+	})
+	if runErr == nil || !strings.Contains(runErr.Error(), "raw_dir and output.framed_dir") {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want physically aliased output rejection", runErr)
+	}
+	if runCalled {
+		t.Fatal("RunMatrixWithDependencies() invoked the screenshot plan before rejecting aliased output roots")
+	}
+}
+
 func TestValidateMatrixPlanAllowsReviewDirBesidePlanWithDifferentNames(t *testing.T) {
 	dir := t.TempDir()
 	configDir := filepath.Join(dir, "config")
