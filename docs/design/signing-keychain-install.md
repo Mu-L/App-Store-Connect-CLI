@@ -65,7 +65,10 @@ rollback fail, both errors are returned. Rollback uses an independent bounded
 context, so cancellation of the initiating command does not prevent keychain
 deletion or search-list restoration. The same rule applies when cancellation
 interrupts initial keychain configuration before the outer installer can mark
-creation complete.
+creation complete. Keychain creation and unlocking are separate checked stages;
+an unlock failure deletes the newly created destination through the same
+Security framework keychain reference before returning. A cleanup failure is
+joined with the unlock failure.
 
 The command does not delete, replace, or merge an existing keychain. It does
 not install provisioning profiles; use `asc profiles local install` for that
@@ -140,9 +143,12 @@ private input handling, certificate checks, exact output fields, destination
 refusal, search-list isolation and activation, shared-lock ordering,
 independent-context rollback after cancellation, exact search-list restoration,
 rollback error propagation, configuration-failure cleanup after cancellation,
-and probe isolation from the destination directory. Darwin coverage accepts a
-leaf certificate plus its chain while rejecting a missing or duplicated leaf.
-cgo-disabled, Linux, and Windows compile paths verify the platform guard.
+and probe isolation from the destination directory. The Darwin Security
+framework wrapper deletes the just-created keychain through its retained
+reference when unlocking fails and reports any cleanup error alongside the
+unlock error. Darwin coverage accepts a leaf certificate plus its chain while
+rejecting a missing or duplicated leaf. cgo-disabled, Linux, and Windows
+compile paths verify the platform guard.
 
 A gated macOS integration test creates a disposable keychain, imports a real
 test PKCS#12 identity, runs the codesign probe, confirms search-list activation,

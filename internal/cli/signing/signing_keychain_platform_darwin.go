@@ -31,7 +31,7 @@ func createPersistentSigningKeychain(ctx context.Context, keychainPath string, p
 	if len(password) == 0 {
 		return fmt.Errorf("keychain password is empty")
 	}
-	if err := createKeychainWithSecurityFramework(keychainPath, password); err != nil {
+	if err := createPersistentKeychainWithSecurityFramework(keychainPath, password); err != nil {
 		return err
 	}
 	return configurePersistentSigningKeychain(ctx, keychainPath, runSigningUtility, deleteSigningRunKeychain)
@@ -46,12 +46,19 @@ func configurePersistentSigningKeychain(
 	_, stderr, err := runUtility(ctx, nil, "set-keychain-settings", "-l", keychainPath)
 	if err != nil {
 		configureErr := utilityFailure("configure persistent keychain", stderr, err)
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if cleanupErr := deleteKeychain(cleanupCtx, keychainPath); cleanupErr != nil {
-			return errors.Join(configureErr, fmt.Errorf("remove unconfigured keychain: %w", cleanupErr))
+		if cleanupErr := deleteCreatedPersistentSigningKeychain(keychainPath, deleteKeychain); cleanupErr != nil {
+			return errors.Join(configureErr, cleanupErr)
 		}
 		return configureErr
+	}
+	return nil
+}
+
+func deleteCreatedPersistentSigningKeychain(keychainPath string, deleteKeychain func(context.Context, string) error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := deleteKeychain(cleanupCtx, keychainPath); err != nil {
+		return fmt.Errorf("remove unconfigured keychain: %w", err)
 	}
 	return nil
 }
