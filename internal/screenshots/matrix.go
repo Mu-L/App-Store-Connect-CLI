@@ -105,6 +105,12 @@ type MatrixExecution struct {
 	// explicit zero is rejected as out of the documented 1-N range.
 	maxConcurrencySet bool
 	maxAttemptsSet    bool
+
+	// retryBackoffMSSet and retryBackoffSet record which retry-backoff encoding
+	// was stated. Zero milliseconds and an empty duration are both meaningful
+	// values, so only presence can tell that both encodings were supplied.
+	retryBackoffMSSet bool
+	retryBackoffSet   bool
 }
 
 // UnmarshalJSON decodes execution settings while recording which bounded limits
@@ -128,6 +134,8 @@ func (e *MatrixExecution) UnmarshalJSON(data []byte) error {
 	}
 	_, e.maxConcurrencySet = present["max_concurrency"]
 	_, e.maxAttemptsSet = present["max_attempts"]
+	_, e.retryBackoffMSSet = present["retry_backoff_ms"]
+	_, e.retryBackoffSet = present["retry_backoff"]
 	return nil
 }
 
@@ -709,14 +717,20 @@ func validateMatrixPlan(plan *MatrixPlan, base *Plan, outputBaseDir string) erro
 	if plan.Execution.RetryBackoffMS < 0 {
 		return errors.New("execution.retry_backoff_ms must be >= 0")
 	}
-	if strings.TrimSpace(plan.Execution.RetryBackoff) != "" {
-		parsed, err := time.ParseDuration(strings.TrimSpace(plan.Execution.RetryBackoff))
+	retryBackoffText := strings.TrimSpace(plan.Execution.RetryBackoff)
+	if retryBackoffText != "" {
+		parsed, err := time.ParseDuration(retryBackoffText)
 		if err != nil || parsed < 0 {
 			return errors.New("execution.retry_backoff must be a non-negative duration")
 		}
-		if plan.Execution.RetryBackoffMS != 0 {
-			return errors.New("set only one of execution.retry_backoff or execution.retry_backoff_ms")
-		}
+	}
+	// Zero milliseconds is a valid explicit no-delay value, so a nonzero test
+	// cannot tell "omitted" from "stated as 0". Presence decides when the plan
+	// came from a document; the value comparison still covers plans built in Go,
+	// which carry no presence information.
+	if (plan.Execution.retryBackoffMSSet && plan.Execution.retryBackoffSet) ||
+		(retryBackoffText != "" && plan.Execution.RetryBackoffMS != 0) {
+		return errors.New("set only one of execution.retry_backoff or execution.retry_backoff_ms")
 	}
 	if err := validateMatrixOutputPaths(plan.Output, outputBaseDir); err != nil {
 		return err
@@ -820,7 +834,7 @@ func validateMatrixReviewDoesNotOverwritePlans(plan *MatrixPlan, baseDir string)
 	for _, generated := range matrixReviewGeneratedFiles {
 		generatedPath := filepath.Clean(filepath.Join(resolvedReviewDir, generated))
 		for _, input := range inputs {
-			if strings.EqualFold(generatedPath, input.path) {
+			if strings.EqualFold(generatedPath, input.path) || sameMatrixFile(generatedPath, input.path) {
 				return fmt.Errorf(
 					"output.review_dir would overwrite the %s at %q with the generated %s; use a different review_dir or plan filename",
 					input.label, input.path, generated,
@@ -829,6 +843,29 @@ func validateMatrixReviewDoesNotOverwritePlans(plan *MatrixPlan, baseDir string)
 		}
 	}
 	return nil
+}
+
+// sameMatrixFile reports whether two paths name the same existing file.
+//
+// Cleaned strings cannot see through a symlinked ancestor or a platform alias
+// such as /tmp versus /private/tmp, and openMatrixOutputRoot resolves the review
+// directory's parent physically, so filesystem identity is what actually decides
+// whether publishing would land on a plan input. If the generated path does not
+// exist yet it cannot already be the plan, so a failed stat is not a collision.
+//
+// Lstat rather than Stat is deliberate: a symlink sitting at the generated path
+// is refused by the rooted, no-follow writer instead of being followed to the
+// plan, so comparing the link itself is the accurate test.
+func sameMatrixFile(left, right string) bool {
+	leftInfo, err := os.Lstat(left)
+	if err != nil {
+		return false
+	}
+	rightInfo, err := os.Lstat(right)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(leftInfo, rightInfo)
 }
 
 func resolveMatrixValidationPath(baseDir, path string) string {

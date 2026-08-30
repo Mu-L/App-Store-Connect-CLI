@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -2213,5 +2214,114 @@ func TestGenerateMatrixReviewWritesOnlyTheDeclaredFiles(t *testing.T) {
 	// undeclared published file would be an unguarded overwrite hazard.
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("review dir contents = %v, want exactly matrixReviewGeneratedFiles %v", got, want)
+	}
+}
+
+func TestValidateMatrixPlanRejectsReviewOutputAliasingPlanThroughSymlinkedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	// openMatrixOutputRoot resolves the review directory's parent physically, so
+	// a symlinked ancestor still lands the generated files in the real
+	// directory. Only components below the opened root are refused as symlinks.
+	realParent := filepath.Join(dir, "real")
+	realDir := filepath.Join(realParent, "project")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("create real dir: %v", err)
+	}
+	if err := os.Symlink(realParent, filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	linkDir := filepath.Join(dir, "link", "project")
+	basePath := filepath.Join(realDir, "base.json")
+	matrixPath := filepath.Join(realDir, "manifest.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	// review_dir reaches the plan's own directory through a different path.
+	// Cleaned-string comparison cannot see that these are the same directory.
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","framed_dir":"framed","review_dir":`+strconv.Quote(linkDir)+`}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	if filepath.Clean(filepath.Join(linkDir, "manifest.json")) == filepath.Clean(matrixPath) {
+		t.Fatal("test setup produced lexically equal paths; the identity check would not be exercised")
+	}
+	_, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Appearance: &matrixTestAppearance{},
+	})
+	if runErr == nil || !strings.Contains(runErr.Error(), "matrix plan") {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want refusal naming the matrix plan", runErr)
+	}
+	data, err := os.ReadFile(matrixPath)
+	if err != nil {
+		t.Fatalf("read matrix plan: %v", err)
+	}
+	if !strings.Contains(string(data), `"base_plan"`) {
+		t.Fatalf("matrix plan was overwritten through the symlinked review dir: %s", data)
+	}
+}
+
+func TestValidateMatrixPlanRejectsBothRetryBackoffFieldsWhenMillisecondsIsZero(t *testing.T) {
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	tests := []struct {
+		name      string
+		execution string
+		wantErr   string
+	}{
+		{
+			name:      "explicit zero milliseconds beside a duration string",
+			execution: `{"retry_backoff_ms":0,"retry_backoff":"1s"}`,
+			wantErr:   "set only one of execution.retry_backoff or execution.retry_backoff_ms",
+		},
+		{
+			name:      "nonzero milliseconds beside a duration string",
+			execution: `{"retry_backoff_ms":5,"retry_backoff":"1s"}`,
+			wantErr:   "set only one of execution.retry_backoff or execution.retry_backoff_ms",
+		},
+		{
+			name:      "explicit zero milliseconds beside an empty duration string",
+			execution: `{"retry_backoff_ms":0,"retry_backoff":""}`,
+			wantErr:   "set only one of execution.retry_backoff or execution.retry_backoff_ms",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			matrixPath := filepath.Join(dir, "matrix.json")
+			writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"execution":`+tt.execution+`,"output":{"raw_dir":"raw","review_dir":"review"}}`)
+			plan, err := LoadMatrixPlan(matrixPath)
+			if err != nil {
+				t.Fatalf("LoadMatrixPlan() error = %v", err)
+			}
+			if err := ValidateMatrixPlan(plan, base); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateMatrixPlan() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateMatrixPlanAcceptsASingleRetryBackoffEncoding(t *testing.T) {
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	for _, execution := range []string{
+		`{"retry_backoff_ms":0}`,
+		`{"retry_backoff_ms":250}`,
+		`{"retry_backoff":"1s"}`,
+		`{"retry_backoff":""}`,
+		`{}`,
+	} {
+		t.Run(execution, func(t *testing.T) {
+			dir := t.TempDir()
+			matrixPath := filepath.Join(dir, "matrix.json")
+			writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"execution":`+execution+`,"output":{"raw_dir":"raw","review_dir":"review"}}`)
+			plan, err := LoadMatrixPlan(matrixPath)
+			if err != nil {
+				t.Fatalf("LoadMatrixPlan() error = %v", err)
+			}
+			if err := ValidateMatrixPlan(plan, base); err != nil {
+				t.Fatalf("ValidateMatrixPlan() error = %v, want a single retry-backoff encoding to be accepted", err)
+			}
+		})
 	}
 }
