@@ -1553,6 +1553,7 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 	plan.App.UDID = cell.UDID
 	plan.App.OutputDir = attemptDir
 	plan.App.LaunchArguments = append(append([]string(nil), base.App.LaunchArguments...), cell.LaunchArguments...)
+	plan.App.terminateRunningProcess = true
 	ensureMatrixLaunchStep(plan)
 	runResult, err := deps.RunPlan(ctx, plan)
 	attempt := matrixAttemptResult{}

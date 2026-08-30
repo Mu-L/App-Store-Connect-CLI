@@ -145,3 +145,41 @@ cp "$AXE_TEMPLATE_PNG" "$out"
 		t.Fatalf("expected two screenshot captures, got %q", string(axeArgs))
 	}
 }
+
+func TestRunPlan_TerminatesOnlyTheInitialMatrixLaunch(t *testing.T) {
+	binDir := t.TempDir()
+	xcrunLog := filepath.Join(t.TempDir(), "xcrun.log")
+	writeExecutable(t, filepath.Join(binDir, "xcrun"), `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$XCRUN_LOG"
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XCRUN_LOG", xcrunLog)
+
+	plan := &Plan{
+		Version: 1,
+		App: PlanApp{
+			BundleID:                "com.example.app",
+			UDID:                    "SIM-UDID-123",
+			OutputDir:               t.TempDir(),
+			LaunchArguments:         []string{"--fixture", "empty"},
+			terminateRunningProcess: true,
+		},
+		Steps: []PlanStep{{Action: ActionLaunch}, {Action: ActionLaunch}},
+	}
+	if _, err := RunPlan(context.Background(), plan); err != nil {
+		t.Fatalf("RunPlan() error = %v", err)
+	}
+	data, err := os.ReadFile(xcrunLog)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", xcrunLog, err)
+	}
+	launches := strings.Split(strings.TrimSpace(string(data)), "\n")
+	want := []string{
+		"simctl launch --terminate-running-process SIM-UDID-123 com.example.app --fixture empty",
+		"simctl launch SIM-UDID-123 com.example.app --fixture empty",
+	}
+	if len(launches) != len(want) || launches[0] != want[0] || launches[1] != want[1] {
+		t.Fatalf("launches = %q, want %q", launches, want)
+	}
+}

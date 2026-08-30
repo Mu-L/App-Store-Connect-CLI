@@ -1707,6 +1707,70 @@ func TestRunMatrix_RetriesExecutionButNotValidation(t *testing.T) {
 	}
 }
 
+func TestRunMatrixRestartsAppBeforeEveryCellAttempt(t *testing.T) {
+	dir := t.TempDir()
+	binDir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	xcrunLog := filepath.Join(dir, "xcrun.log")
+	captureCount := filepath.Join(dir, "capture-count")
+	axeTemplate := filepath.Join(dir, "template.png")
+	writeMinimalPNG(t, axeTemplate, 10, 10)
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"launch"},{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"first","launch_arguments":["--fixture","first"]},{"id":"second","launch_arguments":["--fixture","second"]}],"execution":{"max_attempts":2,"retry_backoff_ms":0},"output":{"raw_dir":"raw","review_dir":"review"}}`)
+
+	writeExecutable(t, filepath.Join(binDir, "xcrun"), `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$XCRUN_LOG"
+`)
+	writeExecutable(t, filepath.Join(binDir, "axe"), `#!/bin/sh
+set -eu
+count=0
+if [ -f "$CAPTURE_COUNT" ]; then count=$(cat "$CAPTURE_COUNT"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$CAPTURE_COUNT"
+if [ "$count" -eq 1 ]; then exit 1; fi
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then out="$2"; break; fi
+  shift
+done
+cp "$AXE_TEMPLATE_PNG" "$out"
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XCRUN_LOG", xcrunLog)
+	t.Setenv("CAPTURE_COUNT", captureCount)
+	t.Setenv("AXE_TEMPLATE_PNG", axeTemplate)
+
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{Appearance: &matrixTestAppearance{}})
+	if runErr != nil {
+		t.Fatalf("RunMatrixWithDependencies() error = %v", runErr)
+	}
+	if result.Succeeded != 2 {
+		t.Fatalf("result = %+v, want two successful cells", result)
+	}
+	data, err := os.ReadFile(xcrunLog)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", xcrunLog, err)
+	}
+	launches := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(launches) != 3 {
+		t.Fatalf("launches = %q, want one failed attempt, its retry, and the second cell", launches)
+	}
+	wantLaunches := []string{
+		"simctl launch --terminate-running-process SIM-UDID com.example.app -AppleLanguages (en) -AppleLocale en_US --fixture first",
+		"simctl launch --terminate-running-process SIM-UDID com.example.app -AppleLanguages (en) -AppleLocale en_US --fixture first",
+		"simctl launch --terminate-running-process SIM-UDID com.example.app -AppleLanguages (en) -AppleLocale en_US --fixture second",
+	}
+	if !reflect.DeepEqual(launches, wantLaunches) {
+		t.Fatalf("launches = %q, want %q", launches, wantLaunches)
+	}
+}
+
 func TestRunMatrixLateCancellationAfterCompletedCellsStillSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.json")

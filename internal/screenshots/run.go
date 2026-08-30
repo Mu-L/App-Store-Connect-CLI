@@ -61,6 +61,7 @@ func RunPlan(ctx context.Context, plan *Plan) (*RunResult, error) {
 		OutputDir: absOutputDir,
 		Steps:     make([]RunStepResult, 0, len(plan.Steps)),
 	}
+	terminateRunningProcess := plan.App.terminateRunningProcess
 
 	for i, step := range plan.Steps {
 		start := time.Now()
@@ -71,12 +72,15 @@ func RunPlan(ctx context.Context, plan *Plan) (*RunResult, error) {
 			Status: "ok",
 		}
 
-		if err := runStep(ctx, action, step, plan.App.BundleID, plan.App.LaunchArguments, udid, absOutputDir); err != nil {
+		if err := runStep(ctx, action, step, plan.App.BundleID, plan.App.LaunchArguments, terminateRunningProcess, udid, absOutputDir); err != nil {
 			stepResult.Status = "error"
 			stepResult.Error = err.Error()
 			stepResult.DurationMS = time.Since(start).Milliseconds()
 			result.Steps = append(result.Steps, stepResult)
 			return result, fmt.Errorf("step %d (%s): %w", i+1, string(action), err)
+		}
+		if action == ActionLaunch {
+			terminateRunningProcess = false
 		}
 		stepResult.DurationMS = time.Since(start).Milliseconds()
 		result.Steps = append(result.Steps, stepResult)
@@ -92,10 +96,14 @@ func RunPlan(ctx context.Context, plan *Plan) (*RunResult, error) {
 	return result, nil
 }
 
-func runStep(ctx context.Context, action StepAction, step PlanStep, bundleID string, launchArguments []string, udid, outputDir string) error {
+func runStep(ctx context.Context, action StepAction, step PlanStep, bundleID string, launchArguments []string, terminateRunningProcess bool, udid, outputDir string) error {
 	switch action {
 	case ActionLaunch:
-		args := []string{"simctl", "launch", udid, bundleID}
+		args := []string{"simctl", "launch"}
+		if terminateRunningProcess {
+			args = append(args, "--terminate-running-process")
+		}
+		args = append(args, udid, bundleID)
 		args = append(args, launchArguments...)
 		return runExternal(ctx, "xcrun", args...)
 	case ActionTap:

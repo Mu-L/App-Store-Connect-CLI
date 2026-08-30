@@ -80,6 +80,11 @@ type PlanApp struct {
 	UDID            string   `json:"udid,omitempty"`
 	OutputDir       string   `json:"output_dir,omitempty"`
 	LaunchArguments []string `json:"launch_arguments,omitempty"`
+
+	// terminateRunningProcess is enabled by matrix execution so every cell and
+	// retry applies its launch arguments to a fresh app process. It is internal
+	// execution state rather than part of the persisted screenshot-plan format.
+	terminateRunningProcess bool
 }
 
 // PlanDefaults defines default timing behavior.
