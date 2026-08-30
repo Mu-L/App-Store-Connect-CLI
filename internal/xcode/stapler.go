@@ -101,6 +101,9 @@ func (e *StaplerPartialMutationError) Error() string {
 	if e == nil {
 		return "stapler follow-up validation failed after staple; artifact may have been modified but was not verified"
 	}
+	if e.Operation == StaplerOperationStaple {
+		return "stapler post-staple verification failed; artifact may have been modified but was not verified"
+	}
 	return "stapler " + string(e.Operation) + " failed after staple; artifact may have been modified but was not verified"
 }
 
@@ -131,6 +134,12 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 	}
 	stapleErr := runStaplerOperation(ctx, StaplerOperationStaple, path, logWriter)
 	if verifyErr := verifyStaplerStage(verifier, StaplerOperationStaple, false); verifyErr != nil {
+		if stapleErr == nil {
+			return nil, &StaplerPartialMutationError{
+				Operation: StaplerOperationStaple,
+				Err:       verifyErr,
+			}
+		}
 		return nil, verifyErr
 	}
 	if stapleErr != nil {

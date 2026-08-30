@@ -1509,6 +1509,49 @@ func TestNotarizationStapleCancellationAfterMutationReportsUnverified(t *testing
 	}
 }
 
+func TestNotarizationStaplePostStapleVerifierFailureReportsUnverified(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	wantErr := errors.New("target changed after staple")
+	previous := runStaplerStaple
+	runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		stageErr := &localxcode.StaplerStageVerificationError{
+			Operation: localxcode.StaplerOperationStaple,
+			Before:    false,
+			Err:       wantErr,
+		}
+		return nil, &localxcode.StaplerPartialMutationError{
+			Operation: localxcode.StaplerOperationStaple,
+			Err:       stageErr,
+		}
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil || !errors.Is(runErr, wantErr) {
+		t.Fatalf("command error = %v, want preserved verifier cause", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "staple completed") || !strings.Contains(stderr, "not verified") {
+		t.Fatalf("stderr = %q, want post-staple verification warning", stderr)
+	}
+	if strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must not expose target path", stderr)
+	}
+}
+
 func TestNotarizationValidateStartFailureRedactsUnderlyingDiagnostic(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
