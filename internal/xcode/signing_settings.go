@@ -2008,6 +2008,17 @@ func sortSigningPlanOperations(operations []signingPlanOperation) {
 }
 
 func validateSigningProjectFile(project *structuredVersionProject) error {
+	projectConfigurationNames := make(map[string]struct{})
+	for _, configuration := range project.configurations {
+		if !configuration.projectLevel {
+			continue
+		}
+		if _, seen := projectConfigurationNames[configuration.name]; seen {
+			return fmt.Errorf("project contains multiple configurations named %q", configuration.name)
+		}
+		projectConfigurationNames[configuration.name] = struct{}{}
+	}
+
 	root, err := rootfs.New(project.rootDir)
 	if err != nil {
 		return err
