@@ -57,7 +57,7 @@ For every target that has a rebased claim:
 
 1. Require a concrete existing `application-identifier` whose suffix exactly equals that target's bundle identifier.
 2. Extract `oldPrefix` from that value and validate it with the existing identity validation rules.
-3. Require the replacement profile's `application-identifier` to be the exact concrete `<newPrefix>.<bundle-id>` value already required by the current `signing resign` profile parser. Derive `newPrefix` from that value and require it to match one validated member of the profile's `ApplicationIdentifierPrefix` array; it need not be the first member. Wildcards may authorize specific optional entitlement values below, but wildcard application identifiers remain unsupported and are never materialized by this feature.
+3. Require the replacement profile's `application-identifier` to be the exact concrete `<newPrefix>.<bundle-id>` value already required by the current `signing resign` profile parser. Preserve that parser's exact-one `ApplicationIdentifierPrefix` contract: derive `newPrefix` from the application identifier and require it to equal the profile's sole validated prefix. Wildcards may authorize specific optional entitlement values below, but wildcard application identifiers remain unsupported and are never materialized by this feature.
 4. Require the profile's application identifier, team identifier, and certificate identity to pass the normal #2241 checks.
 5. Derive each generic prefix-only candidate transformed value only from the target's own `oldPrefix` and the replacement profile's `newPrefix`. The KVS and graph rules below use their own authenticated destination sources instead of this generic substitution.
 
@@ -227,7 +227,7 @@ Implement the feature against the current `signing resign` contract in these are
 5. `internal/asc/output_signing_resign.go`: add exported rewrite result types and deterministic table/Markdown rows while preserving the existing result fields.
 6. `internal/asc/output_signing_resign_test.go`: assert JSON field shape, empty and non-empty arrays, table headers/rows, Markdown rows, and ordering.
 7. `internal/cli/signing/signing_resign_test.go`: add unit, command-boundary, planning, graph, authorization, ordering, and no-mutation coverage.
-8. `internal/cli/signing/signing_resign_privacy_test.go`: assert that success and failure output do not leak credentials, profile paths, raw profiles, temporary paths, or non-allowlisted claims.
+8. `internal/cli/signing/signing_resign_privacy_test.go`: assert that success and failure output do not leak credentials, profile paths, raw profiles, or temporary paths, and that success results contain values only for allowlisted automatic rewrites. Existing refusal diagnostics may continue to identify the offending claim and value when the flag is absent.
 9. `commands/signing.mdx` and `docs/design/signing-ipa-resign.md`: update only after the #2241 command surface exists on the target branch. Document the opt-in flag, allowlist, graph rules, output records, and refusal examples.
 
 `internal/cli/signing/signing_resign_manifest.go`, `internal/cli/signing/signing_json.go`, and `internal/asc/output_registry_init.go` should remain unchanged unless implementation discovers a real schema or renderer registration requirement. The standalone design PR changes only this design document.
@@ -279,7 +279,7 @@ Tests should begin with the smallest failing assertion at the command or planner
 
 - `TestSigningResignResultReportsEveryEntitlementRewrite`: JSON contains target, bundle, key, optional index, exact old value, and exact new value for every rewrite.
 - Renderer tests assert deterministic table and Markdown rows, an empty array when the flag is enabled without changes, and omission of the field when the flag is absent.
-- Privacy tests inject a password, profile path, temporary path, and non-allowlisted entitlement and assert that none appear in result or refusal output.
+- Privacy tests inject a password, profile path, temporary path, and non-allowlisted entitlement. Credentials and paths never appear in success or refusal output; the non-allowlisted value never appears in a success result, while the no-flag refusal keeps the existing offending-claim diagnostic contract.
 - Built-binary checks assert stdout/stderr separation, exit codes, and no duplicate error rendering.
 
 Focused signing tests should run first with `ASC_BYPASS_KEYCHAIN=1`. Before implementation is opened for review, run the repository's required serialized gates: `make build`, `make format`, `make check-docs`, `make lint`, and `ASC_BYPASS_KEYCHAIN=1 make test`. A macOS fixture with genuinely signed nested targets should verify codesign and concrete entitlements; it must remain local and read-only with respect to App Store Connect.
