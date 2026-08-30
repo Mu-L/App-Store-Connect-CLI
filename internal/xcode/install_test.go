@@ -1,0 +1,413 @@
+package xcode
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/distribution"
+)
+
+func TestValidateInstallOptions(t *testing.T) {
+	valid := InstallOptions{IPAPath: "App.ipa", DeviceID: "SELECTOR_CANARY", Timeout: 5 * time.Minute}
+	if err := ValidateInstallOptions(valid); err != nil {
+		t.Fatalf("ValidateInstallOptions(valid) error = %v", err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*InstallOptions)
+		want string
+	}{
+		{name: "missing IPA", edit: func(options *InstallOptions) { options.IPAPath = "" }, want: "--ipa is required"},
+		{name: "wrong extension", edit: func(options *InstallOptions) { options.IPAPath = "App.zip" }, want: "must end with .ipa"},
+		{name: "missing device", edit: func(options *InstallOptions) { options.DeviceID = "" }, want: "--device-id is required"},
+		{name: "device whitespace", edit: func(options *InstallOptions) { options.DeviceID = " SELECTOR_CANARY" }, want: "leading or trailing whitespace"},
+		{name: "short timeout", edit: func(options *InstallOptions) { options.Timeout = time.Second }, want: "between"},
+		{name: "long timeout", edit: func(options *InstallOptions) { options.Timeout = 11 * time.Minute }, want: "between"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			options := valid
+			test.edit(&options)
+			if err := ValidateInstallOptions(options); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ValidateInstallOptions() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestInstallRejectsUnreadableIPAAsUsageInputWithoutResult(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = previousGOOS })
+	runtimeGOOS = "darwin"
+
+	result, err := Install(context.Background(), InstallOptions{
+		IPAPath:  filepath.Join(t.TempDir(), "missing.ipa"),
+		DeviceID: "SELECTOR_CANARY",
+		Timeout:  5 * time.Minute,
+	})
+	if result != nil {
+		t.Fatalf("Install() result = %#v, want nil for usage input", result)
+	}
+	var inputErr *InstallInputError
+	if !errors.As(err, &inputErr) {
+		t.Fatalf("Install() error = %v, want InstallInputError", err)
+	}
+	if strings.Contains(err.Error(), "missing.ipa") {
+		t.Fatalf("Install() error leaked source path: %v", err)
+	}
+}
+
+func TestValidateInstallInspectionAllowsDevelopmentAndAdHocProfiles(t *testing.T) {
+	for _, profileClass := range []distribution.ProfileClass{distribution.ProfileClassDevelopment, distribution.ProfileClassAdHoc} {
+		t.Run(string(profileClass), func(t *testing.T) {
+			inspection := installTestInspection(profileClass)
+			if err := validateInstallInspection(inspection); err != nil {
+				t.Fatalf("validateInstallInspection() error = %v", err)
+			}
+		})
+	}
+	for _, profileClass := range []distribution.ProfileClass{distribution.ProfileClassAppStore, distribution.ProfileClassEnterprise, distribution.ProfileClassUnknown} {
+		t.Run(string(profileClass), func(t *testing.T) {
+			inspection := installTestInspection(profileClass)
+			if err := validateInstallInspection(inspection); err == nil || !strings.Contains(err.Error(), "development or ad-hoc") {
+				t.Fatalf("validateInstallInspection() error = %v, want profile-class rejection", err)
+			}
+		})
+	}
+}
+
+func TestInstallUsesAppPathAndVerifiesInstalledBuild(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	previousRunner := installRunner
+	previousMaterialize := materializeInstallIPA
+	previousNow := installNow
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+		installRunner = previousRunner
+		materializeInstallIPA = previousMaterialize
+		installNow = previousNow
+	})
+	runtimeGOOS = "darwin"
+	installNow = time.Now
+
+	ipaPath := filepath.Join(t.TempDir(), "Demo.ipa")
+	if err := os.WriteFile(ipaPath, []byte("not-read-by-fake-materializer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appPath := filepath.Join(t.TempDir(), "Demo.app")
+	if err := os.MkdirAll(appPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeInstallRunner{t: t}
+	installRunner = runner
+	materializeInstallIPA = func(context.Context, *os.File, int64, distribution.InspectOptions) (*distribution.MaterializedApp, error) {
+		return &distribution.MaterializedApp{Inspection: installTestInspection(distribution.ProfileClassAdHoc), Path: appPath}, nil
+	}
+
+	result, err := Install(context.Background(), InstallOptions{
+		IPAPath:  ipaPath,
+		DeviceID: "SELECTOR_CANARY",
+		Timeout:  5 * time.Minute,
+		Environment: []string{
+			"DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer",
+			"ASC_API_KEY=must-not-leak",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if result == nil || !result.Success || !result.Installed || !result.Verified {
+		t.Fatalf("Install() result = %#v, want successful verified result", result)
+	}
+	if result.Device == nil || result.Device.IdentifierSHA256 == "SELECTOR_CANARY" || result.Device.IdentifierSHA256 == "" {
+		t.Fatalf("result leaked or omitted device digest: %#v", result)
+	}
+	if result.IPA.SHA256 == "" || result.IPA.BundleID != "com.example.demo" || result.IPA.BuildNumber != "45" {
+		t.Fatalf("result omitted artifact identity: %#v", result)
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("devicectl calls = %d, want discovery/install/verification", len(runner.calls))
+	}
+	installArgs := runner.calls[1]
+	if containsInstallArg(installArgs, ipaPath) || !containsInstallArg(installArgs, appPath) {
+		t.Fatalf("install args = %#v, want materialized app path only", installArgs)
+	}
+	if !containsInstallSequence(installArgs, []string{"device", "install", "app", "--device", "SELECTOR_CANARY", appPath}) {
+		t.Fatalf("install args = %#v, want exact device install sequence", installArgs)
+	}
+	if containsInstallArg(installArgs, "--ipa") || containsInstallArg(installArgs, "--all-devices") {
+		t.Fatalf("install args = %#v, want no source-IPA or batch selector", installArgs)
+	}
+	verificationArgs := runner.calls[2]
+	if !containsInstallSequence(verificationArgs, []string{"device", "info", "apps", "--device", "SELECTOR_CANARY", "--bundle-id", "com.example.demo"}) {
+		t.Fatalf("verification args = %#v, want exact bundle observation", verificationArgs)
+	}
+	for _, environment := range runner.environments {
+		if containsInstallArg(environment, "ASC_API_KEY=must-not-leak") {
+			t.Fatalf("secret environment leaked to devicectl: %#v", runner.environments)
+		}
+	}
+}
+
+func TestInstallReturnsUnverifiedResultWhenPostInstallDoesNotMatch(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	previousRunner := installRunner
+	previousMaterialize := materializeInstallIPA
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+		installRunner = previousRunner
+		materializeInstallIPA = previousMaterialize
+	})
+	runtimeGOOS = "darwin"
+	ipaPath := filepath.Join(t.TempDir(), "Demo.ipa")
+	if err := os.WriteFile(ipaPath, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appPath := filepath.Join(t.TempDir(), "Demo.app")
+	if err := os.MkdirAll(appPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeInstallRunner{t: t, verificationBuild: "different"}
+	installRunner = runner
+	materializeInstallIPA = func(context.Context, *os.File, int64, distribution.InspectOptions) (*distribution.MaterializedApp, error) {
+		return &distribution.MaterializedApp{Inspection: installTestInspection(distribution.ProfileClassAdHoc), Path: appPath}, nil
+	}
+
+	result, err := Install(context.Background(), InstallOptions{IPAPath: ipaPath, DeviceID: "SELECTOR_CANARY", Timeout: 5 * time.Minute})
+	if err == nil || !strings.Contains(err.Error(), "version or build") {
+		t.Fatalf("Install() error = %v, want post-install mismatch", err)
+	}
+	if result == nil || !result.Installed || result.Verified || result.Success {
+		t.Fatalf("Install() result = %#v, want installed but unverified", result)
+	}
+	if result.FailureStage != "verification" || result.FailureCode != "verification_failed" {
+		t.Fatalf("Install() failure = %#v, want verification failure classification", result)
+	}
+}
+
+func TestInstallReturnsRedactedDeviceDiscoveryFailureResult(t *testing.T) {
+	previousGOOS := runtimeGOOS
+	previousRunner := installRunner
+	previousMaterialize := materializeInstallIPA
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+		installRunner = previousRunner
+		materializeInstallIPA = previousMaterialize
+	})
+	runtimeGOOS = "darwin"
+	ipaPath := filepath.Join(t.TempDir(), "Demo.ipa")
+	if err := os.WriteFile(ipaPath, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appPath := filepath.Join(t.TempDir(), "Demo.app")
+	if err := os.MkdirAll(appPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	installRunner = &failingInstallRunner{}
+	materializeInstallIPA = func(context.Context, *os.File, int64, distribution.InspectOptions) (*distribution.MaterializedApp, error) {
+		return &distribution.MaterializedApp{Inspection: installTestInspection(distribution.ProfileClassAdHoc), Path: appPath}, nil
+	}
+
+	result, err := Install(context.Background(), InstallOptions{IPAPath: ipaPath, DeviceID: "SELECTOR_CANARY", Timeout: 5 * time.Minute})
+	if err == nil {
+		t.Fatal("Install() error = nil, want discovery failure")
+	}
+	if result == nil || result.Success || result.FailureStage != "device-discovery" || result.FailureCode != "devicectl_unavailable" {
+		t.Fatalf("Install() result = %#v, want redacted device-discovery failure", result)
+	}
+	data, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	output := string(data)
+	for _, secret := range []string{"SELECTOR_CANARY", "UDID_CANARY", ipaPath, appPath} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("result JSON leaked %q: %s", secret, output)
+		}
+	}
+}
+
+func TestReadInstallJSONRejectsHardLink(t *testing.T) {
+	directory := t.TempDir()
+	pathValue := filepath.Join(directory, "devices.json")
+	if err := os.WriteFile(pathValue, []byte(`{"ok":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(directory, "alias.json")
+	if err := os.Link(pathValue, linkPath); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if _, err := readInstallJSON(directory, "devices.json"); err == nil || !strings.Contains(err.Error(), "single-link") {
+		t.Fatalf("readInstallJSON() error = %v, want hard-link rejection", err)
+	}
+}
+
+func TestReadInstallJSONRejectsDestinationReplacement(t *testing.T) {
+	directory := t.TempDir()
+	pathValue := filepath.Join(directory, "devices.json")
+	replacement := filepath.Join(directory, "replacement.json")
+	if err := os.WriteFile(pathValue, []byte(`{"ok":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(replacement, []byte(`{"replacement":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := installAfterJSONLstatForTest
+	t.Cleanup(func() { installAfterJSONLstatForTest = previous })
+	installAfterJSONLstatForTest = func() {
+		_ = os.Remove(pathValue)
+		_ = os.Rename(replacement, pathValue)
+	}
+	if _, err := readInstallJSON(directory, "devices.json"); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("readInstallJSON() error = %v, want replacement rejection", err)
+	}
+}
+
+func TestParseDevicectlEnvelopeRejectsDuplicateKeys(t *testing.T) {
+	payload := []byte(`{"info":{"commandType":"devicectl.list.devices","commandType":"devicectl.list.devices","jsonVersion":5,"outcome":"success"},"result":{"devices":[]}}`)
+	if _, err := parseDevicectlEnvelope(payload, "devicectl.list.devices"); err == nil {
+		t.Fatal("parseDevicectlEnvelope() accepted duplicate JSON key")
+	}
+}
+
+func TestNormalizeInstallDeviceFailsClosedWithoutHardwareUDID(t *testing.T) {
+	entry := installDeviceEntry{
+		Identifier: "SELECTOR_CANARY",
+		Properties: json.RawMessage(`{"connection":{"pairingState":"paired","state":"connected"},"hardware":{"platform":"iOS","reality":"physical"}}`),
+	}
+	_, err := normalizeInstallDevice(entry)
+	var membershipErr *installDeviceMembershipUnavailableError
+	if !errors.As(err, &membershipErr) {
+		t.Fatalf("normalizeInstallDevice() error = %v, want membership-unavailable error", err)
+	}
+	if strings.Contains(err.Error(), "SELECTOR_CANARY") {
+		t.Fatalf("normalizeInstallDevice() error leaked selector: %v", err)
+	}
+}
+
+func installTestInspection(profileClass distribution.ProfileClass) distribution.Inspection {
+	issues := []string{}
+	if profileClass == distribution.ProfileClassDevelopment {
+		issues = []string{"provisioning profile class is development; expected ad-hoc"}
+	}
+	return distribution.Inspection{
+		SchemaVersion:      "1",
+		Platform:           "IOS",
+		DistributionMethod: "release-testing",
+		App: distribution.App{
+			BundleID:    "com.example.demo",
+			Title:       "Demo",
+			Version:     "1.2.3",
+			BuildNumber: "45",
+		},
+		Artifact: distribution.Artifact{SizeBytes: 4, SHA256: strings.Repeat("a", 64)},
+		Signing: distribution.Signing{
+			ProfileClass:                 profileClass,
+			DeviceCount:                  1,
+			Devices:                      []string{"UDID_CANARY"},
+			ProfileIntegrityVerification: distribution.CodeSignatureVerification{Status: distribution.CodeSignatureVerified},
+			ProfileTrustVerification:     distribution.CodeSignatureVerification{Status: distribution.CodeSignatureVerified},
+			CodeSignatureVerification:    distribution.CodeSignatureVerification{Status: distribution.CodeSignatureVerified},
+		},
+		Preparation: distribution.Preparation{MetadataEligible: profileClass == distribution.ProfileClassAdHoc, Issues: issues},
+	}
+}
+
+type fakeInstallRunner struct {
+	t                 *testing.T
+	calls             [][]string
+	environments      [][]string
+	verificationBuild string
+}
+
+type failingInstallRunner struct{}
+
+func (*failingInstallRunner) ResolveDevicectl(context.Context, []string) (string, error) {
+	return "", errors.New("tool lookup failed")
+}
+
+func (*failingInstallRunner) Run(context.Context, string, []string, []string) error {
+	return errors.New("run should not be reached")
+}
+
+func (runner *fakeInstallRunner) ResolveDevicectl(context.Context, []string) (string, error) {
+	return "/private/tmp/fake-devicectl", nil
+}
+
+func (runner *fakeInstallRunner) Run(_ context.Context, _ string, args, environment []string) error {
+	runner.calls = append(runner.calls, append([]string(nil), args...))
+	runner.environments = append(runner.environments, append([]string(nil), environment...))
+	index := -1
+	for i, arg := range args {
+		if arg == "--json-output" && i+1 < len(args) {
+			index = i + 1
+			break
+		}
+	}
+	if index < 0 {
+		runner.t.Fatal("fake devicectl call did not provide --json-output")
+	}
+	pathValue := args[index]
+	var payload string
+	switch {
+	case containsInstallArg(args, "list") && containsInstallArg(args, "devices"):
+		payload = fakeDeviceListPayload()
+	case containsInstallArg(args, "install"):
+		payload = fakeInstallPayload()
+	case containsInstallArg(args, "info"):
+		build := "45"
+		if runner.verificationBuild != "" {
+			build = runner.verificationBuild
+		}
+		payload = fakeAppsPayload(build)
+	default:
+		runner.t.Fatalf("unexpected fake devicectl args: %#v", args)
+	}
+	return os.WriteFile(pathValue, []byte(payload), 0o600)
+}
+
+func fakeDeviceListPayload() string {
+	return `{"info":{"arguments":[],"commandType":"devicectl.list.devices","environment":{},"jsonVersion":5,"outcome":"success","version":"642.15"},"result":{"devices":[{"identifier":"SELECTOR_CANARY","properties":{"connection":{"pairingState":"paired","state":"connected"},"hardware":{"platform":"iOS","reality":"physical","udid":"UDID_CANARY"},"state":{"visibilityClass":"default"}}}]}}`
+}
+
+func fakeInstallPayload() string {
+	return `{"info":{"arguments":[],"commandType":"devicectl.device.install.app","environment":{},"jsonVersion":5,"outcome":"success","version":"642.15"},"result":{"deviceIdentifier":"SELECTOR_CANARY","installedApplications":[{"bundleID":"com.example.demo"}]}}`
+}
+
+func fakeAppsPayload(build string) string {
+	value, _ := json.Marshal(build)
+	return `{"info":{"arguments":[],"commandType":"devicectl.device.info.apps","environment":{},"jsonVersion":5,"outcome":"success","version":"642.15"},"result":{"apps":[{"bundleIdentifier":"com.example.demo","version":"1.2.3","bundleVersion":` + string(value) + `}]}}`
+}
+
+func containsInstallArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsInstallSequence(args, want []string) bool {
+	if len(want) == 0 {
+		return true
+	}
+	for start := 0; start+len(want) <= len(args); start++ {
+		matched := true
+		for index, value := range want {
+			if args[start+index] != value {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
