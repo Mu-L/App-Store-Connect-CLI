@@ -384,7 +384,11 @@ The encrypted store currently uses Git. Push applies one profile configuration a
 
 ## CI example
 
-The example below writes the repository password to a runner-private file without enabling shell tracing, pulls the encrypted assets, and removes the password file after use. Do not upload `.asc/signing/pulled` as a workflow artifact.
+The example below keeps all secret-file, profile-installation, and keychain
+steps in one shell process. The repository password therefore remains
+available through identity installation, and one trap removes both password
+files and the persistent job keychain. Do not upload `.asc/signing/pulled` as a
+workflow artifact.
 
 ```yaml  theme={null}
 - name: Pull signing assets
@@ -395,7 +399,13 @@ The example below writes the repository password to a runner-private file withou
     set +x
     umask 077
     password_file="$RUNNER_TEMP/asc-signing-password"
-    trap 'rm -f "$password_file"' EXIT
+    keychain_path="$RUNNER_TEMP/asc-release.keychain-db"
+    keychain_password_file="$RUNNER_TEMP/asc-release-keychain-password"
+    cleanup_signing() {
+      /usr/bin/security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+      rm -f "$password_file" "$keychain_password_file"
+    }
+    trap cleanup_signing EXIT
     printf '%s' "$SIGNING_SYNC_PASSWORD" > "$password_file"
     mkdir -p .asc/signing
     chmod 700 .asc/signing
@@ -405,40 +415,31 @@ The example below writes the repository password to a runner-private file withou
       --password-file "$password_file" \
       --output-dir .asc/signing/pulled \
       --output json > .asc/signing/pull-result.json
-```
 
-For an App Store export, install the pulled provisioning profiles and put the pulled identity in a dedicated job-scoped macOS keychain. Read the exact paths from the pull result instead of guessing the repository layout:
+    jq -r '.files[] | select(endswith(".mobileprovision"))' \
+      .asc/signing/pull-result.json \
+    | while IFS= read -r profile_path; do
+        asc profiles local install \
+          --path ".asc/signing/pulled/$profile_path" \
+          --output json
+      done
 
-```bash  theme={null}
-jq -r '.files[] | select(endswith(".mobileprovision"))' \
-  .asc/signing/pull-result.json \
-| while IFS= read -r profile_path; do
-    asc profiles local install \
-      --path ".asc/signing/pulled/$profile_path" \
+    openssl rand -base64 32 > "$keychain_password_file"
+    asc signing keychain install \
+      --identity .asc/signing/pulled/identities/IDENTITY.p12 \
+      --identity-password-file "$password_file" \
+      --keychain "$keychain_path" \
+      --keychain-password-file "$keychain_password_file" \
+      --add-to-search-list \
+      --confirm \
       --output json
-done
 ```
 
-Create the job keychain after writing a generated keychain password to a
-runner-private file. Add a cleanup trap before installation because the
-keychain intentionally persists after a successful command:
-
-```bash  theme={null}
-keychain_path="$RUNNER_TEMP/asc-release.keychain-db"
-keychain_password_file="$RUNNER_TEMP/asc-release-keychain-password"
-trap '/usr/bin/security delete-keychain "$keychain_path" >/dev/null 2>&1 || true; rm -f "$keychain_password_file"' EXIT
-umask 077
-openssl rand -base64 32 > "$keychain_password_file"
-
-asc signing keychain install \
-  --identity .asc/signing/pulled/identities/IDENTITY.p12 \
-  --identity-password-file "$password_file" \
-  --keychain "$keychain_path" \
-  --keychain-password-file "$keychain_password_file" \
-  --add-to-search-list \
-  --confirm \
-  --output json
-```
+For an App Store export, the profile loop reads exact paths from the pull
+receipt instead of guessing the repository layout. Replace `IDENTITY.p12` with
+the identity path reported in `sensitiveFiles`. The generated keychain password
+is independent of the repository password, and the keychain intentionally
+persists until the job-level cleanup trap runs.
 
 Then archive and export with manual signing when the project requires an exact local identity/profile match:
 

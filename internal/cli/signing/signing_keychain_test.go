@@ -160,6 +160,10 @@ func TestExecuteSigningKeychainInstallCreatesDedicatedKeychain(t *testing.T) {
 		GOOS:              "darwin",
 		SecurityAvailable: true,
 		Now:               func() time.Time { return fixture.now },
+		AcquireLock: func(context.Context) (func() error, error) {
+			events = append(events, "lock")
+			return func() error { events = append(events, "unlock"); return nil }, nil
+		},
 		CreateKeychain: func(_ context.Context, path string, password []byte) error {
 			events = append(events, "create")
 			if path != resolvedKeychainPath || string(password) != "keychain-secret" {
@@ -206,7 +210,7 @@ func TestExecuteSigningKeychainInstallCreatesDedicatedKeychain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(events, []string{"list", "create", "import", "set"}) {
+	if !reflect.DeepEqual(events, []string{"lock", "list", "create", "import", "set", "unlock"}) {
 		t.Fatalf("events = %v", events)
 	}
 	if result.Action != "installed" || result.KeychainPath != resolvedKeychainPath || !result.SearchListUpdated {
@@ -263,6 +267,7 @@ func TestExecuteSigningKeychainInstallRejectsDigestMismatchBeforeCreation(t *tes
 		GOOS:                      "darwin",
 		SecurityAvailable:         true,
 		Now:                       func() time.Time { return fixture.now },
+		AcquireLock:               acquireSigningKeychainTestLock,
 		CreateKeychain:            func(context.Context, string, []byte) error { created = true; return nil },
 		ImportIdentity:            func(context.Context, string, []byte, []byte, []byte, string) error { return nil },
 		RemoveKeychainSearchEntry: func(context.Context, string) error { return nil },
@@ -294,6 +299,7 @@ func TestExecuteSigningKeychainInstallKeepsSearchListUnchangedByDefault(t *testi
 		GOOS:              "darwin",
 		SecurityAvailable: true,
 		Now:               func() time.Time { return fixture.now },
+		AcquireLock:       acquireSigningKeychainTestLock,
 		CreateKeychain:    func(context.Context, string, []byte) error { events = append(events, "create"); return nil },
 		ImportIdentity: func(context.Context, string, []byte, []byte, []byte, string) error {
 			events = append(events, "import")
@@ -332,6 +338,7 @@ func TestExecuteSigningKeychainInstallRollsBackAfterImportFailure(t *testing.T) 
 		GOOS:              "darwin",
 		SecurityAvailable: true,
 		Now:               func() time.Time { return fixture.now },
+		AcquireLock:       acquireSigningKeychainTestLock,
 		CreateKeychain:    func(context.Context, string, []byte) error { return nil },
 		ImportIdentity: func(context.Context, string, []byte, []byte, []byte, string) error {
 			return errors.New("import failed")
@@ -354,6 +361,54 @@ func TestExecuteSigningKeychainInstallRollsBackAfterImportFailure(t *testing.T) 
 	}
 }
 
+func TestExecuteSigningKeychainInstallRollsBackAfterCancellationWithIndependentContext(t *testing.T) {
+	fixture := newSigningRunFixture(t, signingRunFixtureOptions{})
+	identityPath := filepath.Join(t.TempDir(), "App.p12")
+	identityPasswordPath := filepath.Join(t.TempDir(), "identity-password")
+	keychainPasswordPath := filepath.Join(t.TempDir(), "keychain-password")
+	writePrivateTestFile(t, identityPath, fixture.identity)
+	writePrivateTestFile(t, identityPasswordPath, []byte(fixture.password))
+	writePrivateTestFile(t, keychainPasswordPath, []byte("keychain-secret"))
+	keychainPath := filepath.Join(t.TempDir(), "release.keychain-db")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deleted := false
+	restored := false
+	_, err := executeSigningKeychainInstallWith(ctx, signingKeychainInstallOptions{
+		IdentityPath: identityPath, IdentityPasswordPath: identityPasswordPath,
+		KeychainPath: keychainPath, KeychainPasswordPath: keychainPasswordPath,
+		AddToSearchList: true,
+	}, signingKeychainInstallDeps{
+		GOOS:              "darwin",
+		SecurityAvailable: true,
+		Now:               func() time.Time { return fixture.now },
+		AcquireLock:       acquireSigningKeychainTestLock,
+		CreateKeychain:    func(context.Context, string, []byte) error { return nil },
+		ImportIdentity: func(context.Context, string, []byte, []byte, []byte, string) error {
+			cancel()
+			return context.Canceled
+		},
+		KeychainSearchList: func(context.Context) ([]string, error) { return []string{"login.keychain-db"}, nil },
+		SetKeychainSearchList: func(cleanupCtx context.Context, paths []string) error {
+			if cleanupCtx.Err() != nil {
+				t.Fatalf("rollback search-list context is canceled: %v", cleanupCtx.Err())
+			}
+			restored = reflect.DeepEqual(paths, []string{"login.keychain-db"})
+			return nil
+		},
+		DeleteKeychain: func(cleanupCtx context.Context, _ string) error {
+			if cleanupCtx.Err() != nil {
+				t.Fatalf("rollback deletion context is canceled: %v", cleanupCtx.Err())
+			}
+			deleted = true
+			return nil
+		},
+	})
+	if !errors.Is(err, context.Canceled) || !deleted || !restored {
+		t.Fatalf("error=%v deleted=%v restored=%v", err, deleted, restored)
+	}
+}
+
 func TestExecuteSigningKeychainInstallRollsBackAfterSearchListFailure(t *testing.T) {
 	fixture := newSigningRunFixture(t, signingRunFixtureOptions{})
 	identityPath := filepath.Join(t.TempDir(), "App.p12")
@@ -371,6 +426,7 @@ func TestExecuteSigningKeychainInstallRollsBackAfterSearchListFailure(t *testing
 		GOOS:              "darwin",
 		SecurityAvailable: true,
 		Now:               func() time.Time { return fixture.now },
+		AcquireLock:       acquireSigningKeychainTestLock,
 		CreateKeychain:    func(context.Context, string, []byte) error { return nil },
 		ImportIdentity:    func(context.Context, string, []byte, []byte, []byte, string) error { return nil },
 		KeychainSearchList: func(context.Context) ([]string, error) {
@@ -422,6 +478,7 @@ func TestExecuteSigningKeychainInstallRollbackPreservesPreexistingStaleSearchEnt
 		GOOS:              "darwin",
 		SecurityAvailable: true,
 		Now:               func() time.Time { return fixture.now },
+		AcquireLock:       acquireSigningKeychainTestLock,
 		CreateKeychain:    func(context.Context, string, []byte) error { return nil },
 		ImportIdentity: func(context.Context, string, []byte, []byte, []byte, string) error {
 			return errors.New("import failed")
@@ -506,4 +563,8 @@ func canonicalSigningKeychainTestPath(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return filepath.Join(parent, filepath.Base(path))
+}
+
+func acquireSigningKeychainTestLock(context.Context) (func() error, error) {
+	return func() error { return nil }, nil
 }

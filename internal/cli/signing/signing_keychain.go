@@ -32,6 +32,7 @@ type signingKeychainInstallDeps struct {
 	GOOS                      string
 	SecurityAvailable         bool
 	Now                       func() time.Time
+	AcquireLock               func(context.Context) (func() error, error)
 	CreateKeychain            func(context.Context, string, []byte) error
 	ImportIdentity            func(context.Context, string, []byte, []byte, []byte, string) error
 	KeychainSearchList        func(context.Context) ([]string, error)
@@ -145,7 +146,7 @@ func executeSigningKeychainInstall(ctx context.Context, options signingKeychainI
 	return executeSigningKeychainInstallWith(ctx, options, platformSigningKeychainInstallDeps())
 }
 
-func executeSigningKeychainInstallWith(ctx context.Context, options signingKeychainInstallOptions, deps signingKeychainInstallDeps) (*asc.SigningKeychainInstallResult, error) {
+func executeSigningKeychainInstallWith(ctx context.Context, options signingKeychainInstallOptions, deps signingKeychainInstallDeps) (result *asc.SigningKeychainInstallResult, resultErr error) {
 	if deps.GOOS != "darwin" {
 		return nil, shared.NewValidationError(fmt.Errorf("signing keychain install is supported only on macOS"))
 	}
@@ -208,6 +209,18 @@ func executeSigningKeychainInstallWith(ctx context.Context, options signingKeych
 	if err != nil {
 		return nil, fmt.Errorf("signing keychain install: inspect identity: %w", err)
 	}
+	unlock, err := deps.AcquireLock(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("signing keychain install: acquire signing environment lock: %w", err)
+	}
+	defer func() {
+		if unlock == nil {
+			return
+		}
+		if err := unlock(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("signing keychain install: release signing environment lock: %w", err))
+		}
+	}()
 	var originalSearchList []string
 	searchListHadPath := false
 	if options.AddToSearchList {
@@ -224,16 +237,18 @@ func executeSigningKeychainInstallWith(ctx context.Context, options signingKeych
 		if !created {
 			return primary
 		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
 		var cleanupErr error
-		if err := deps.DeleteKeychain(ctx, resolvedKeychainPath); err != nil {
+		if err := deps.DeleteKeychain(cleanupCtx, resolvedKeychainPath); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete keychain: %w", err))
 		}
 		if options.AddToSearchList {
-			if err := deps.SetKeychainSearchList(ctx, originalSearchList); err != nil {
+			if err := deps.SetKeychainSearchList(cleanupCtx, originalSearchList); err != nil {
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("restore keychain search list: %w", err))
 			}
 		} else if deps.RemoveKeychainSearchEntry != nil {
-			if err := deps.RemoveKeychainSearchEntry(ctx, resolvedKeychainPath); err != nil {
+			if err := deps.RemoveKeychainSearchEntry(cleanupCtx, resolvedKeychainPath); err != nil {
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove keychain search-list entry: %w", err))
 			}
 		}
@@ -275,7 +290,7 @@ func executeSigningKeychainInstallWith(ctx context.Context, options signingKeych
 }
 
 func requireSigningKeychainInstallDeps(deps signingKeychainInstallDeps, addToSearchList bool) error {
-	if deps.CreateKeychain == nil || deps.ImportIdentity == nil || deps.DeleteKeychain == nil {
+	if deps.AcquireLock == nil || deps.CreateKeychain == nil || deps.ImportIdentity == nil || deps.DeleteKeychain == nil {
 		return fmt.Errorf("signing keychain install: platform keychain operations are unavailable")
 	}
 	if addToSearchList && (deps.KeychainSearchList == nil || deps.SetKeychainSearchList == nil) {

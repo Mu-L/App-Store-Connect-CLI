@@ -15,6 +15,7 @@ func platformSigningKeychainInstallDeps() signingKeychainInstallDeps {
 	return signingKeychainInstallDeps{
 		GOOS:                      "darwin",
 		SecurityAvailable:         signingRunSecurityAvailable(),
+		AcquireLock:               runDeps.AcquireLock,
 		CreateKeychain:            createPersistentSigningKeychain,
 		ImportIdentity:            importPersistentSigningIdentity,
 		KeychainSearchList:        runDeps.KeychainSearchList,
@@ -60,14 +61,27 @@ func importPersistentSigningIdentity(ctx context.Context, keychainPath string, k
 		return utilityFailure("verify imported certificate", stderr, err)
 	}
 	certificates := parseSigningRunCertificateFingerprints(stdout)
-	if len(certificates) != 1 || !strings.EqualFold(certificates[0], expectedSHA1) {
-		return fmt.Errorf("verify imported certificate: expected only certificate %s, found %v", expectedSHA1, certificates)
+	if err := validatePersistentSigningCertificateFingerprints(certificates, expectedSHA1); err != nil {
+		return err
 	}
 	_, stderr, err = runSigningUtility(ctx, nil, "find-key", "-s", "-t", "private", keychainPath)
 	if err != nil {
 		return utilityFailure("verify imported private key", stderr, err)
 	}
 	return verifySigningRunIdentityUsable(ctx, filepath.Dir(keychainPath), keychainPath, expectedSHA1)
+}
+
+func validatePersistentSigningCertificateFingerprints(certificates []string, expectedSHA1 string) error {
+	matches := 0
+	for _, fingerprint := range certificates {
+		if strings.EqualFold(fingerprint, expectedSHA1) {
+			matches++
+		}
+	}
+	if matches != 1 {
+		return fmt.Errorf("verify imported certificate: expected certificate %s exactly once, found %v", expectedSHA1, certificates)
+	}
+	return nil
 }
 
 func withPersistentSigningKeychainPasswordInput(password []byte, operation func([]byte) error) error {
