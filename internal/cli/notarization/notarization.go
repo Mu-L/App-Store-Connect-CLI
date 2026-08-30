@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -17,7 +18,14 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
+	localxcode "github.com/rudrankriyam/App-Store-Connect-CLI/internal/xcode"
+)
+
+var (
+	runStaplerStaple   = localxcode.Staple
+	runStaplerValidate = localxcode.ValidateStaple
 )
 
 // NotarizationCommand returns the notarization command group.
@@ -36,12 +44,16 @@ func notarizationCommand() *ffcli.Command {
 Examples:
   asc notarization submit --file ./MyApp.zip
   asc notarization submit --file ./MyApp.zip --wait
+  asc notarization staple --file ./MyApp.dmg
+  asc notarization validate --file ./MyApp.dmg
   asc notarization status --id "SUBMISSION_ID"
   asc notarization log --id "SUBMISSION_ID"
   asc notarization list`,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
 			submitCommand(),
+			stapleCommand(),
+			validateStapleCommand(),
 			statusCommand(),
 			logCommand(),
 			listCommand(),
@@ -50,6 +62,247 @@ Examples:
 			return flag.ErrHelp
 		},
 	}
+}
+
+// stapleCommand returns the local ticket stapling subcommand.
+func stapleCommand() *ffcli.Command {
+	fs := flag.NewFlagSet("notarization staple", flag.ExitOnError)
+
+	filePath := fs.String("file", "", "Path to a notarized app bundle, disk image, or signed flat package (required; zip files must be recreated after stapling)")
+	output := shared.BindOutputFlags(fs)
+
+	return &ffcli.Command{
+		Name:       "staple",
+		ShortUsage: "asc notarization staple --file <path> [flags]",
+		ShortHelp:  "Attach and validate a macOS notarization ticket locally.",
+		LongHelp: `Attach Apple's notarization ticket to a local macOS artifact and
+validate it immediately afterward. The target must be a notarized app bundle,
+UDIF disk image, or signed flat installer package. ZIP archives cannot be
+stapled directly; staple the contained item and recreate the archive. This
+command runs on macOS only and Apple's stapler may require network access.
+
+Examples:
+  asc notarization staple --file ./MyApp.dmg
+  asc notarization staple --file ./MyApp.pkg --output json
+  asc notarization staple --file ./MyApp.app --output table`,
+		FlagSet:   fs,
+		UsageFunc: shared.DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 {
+				return shared.UsageError("notarization staple does not accept positional arguments")
+			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageError(err.Error())
+			}
+			pathValue, err := validateStaplerTarget(*filePath)
+			if err != nil {
+				return shared.UsageErrorf("notarization staple: %v", err)
+			}
+
+			result, runErr := runStaplerStaple(ctx, pathValue, os.Stderr)
+			if runErr != nil {
+				return reportStaplerFailure("staple", runErr)
+			}
+			if result == nil {
+				return reportStaplerFailure("staple", errors.New("local stapler returned no result"))
+			}
+			if !result.Stapled || !result.Validated {
+				return reportStaplerFailure("staple", errors.New("local stapler did not report a verified ticket"))
+			}
+			return shared.PrintOutput(&asc.NotarizationStapleResult{
+				FilePath:  pathValue,
+				Operation: "staple",
+				Stapled:   result.Stapled,
+				Validated: result.Validated,
+			}, *output.Output, *output.Pretty)
+		},
+	}
+}
+
+// validateStapleCommand returns the local ticket validation subcommand.
+func validateStapleCommand() *ffcli.Command {
+	fs := flag.NewFlagSet("notarization validate", flag.ExitOnError)
+
+	filePath := fs.String("file", "", "Path to an artifact with an existing notarization ticket (required; zip files must be validated after recreating them)")
+	output := shared.BindOutputFlags(fs)
+
+	return &ffcli.Command{
+		Name:       "validate",
+		ShortUsage: "asc notarization validate --file <path> [flags]",
+		ShortHelp:  "Validate a stapled macOS notarization ticket locally.",
+		LongHelp: `Validate an existing stapled ticket on a local macOS artifact.
+The target must be a notarized app bundle, UDIF disk image, or signed flat
+installer package. ZIP archives cannot be validated directly; validate the
+contained item after recreating the archive. This command never mutates the
+target, runs on macOS only, and Apple's stapler may require network access.
+
+Examples:
+  asc notarization validate --file ./MyApp.dmg
+  asc notarization validate --file ./MyApp.pkg --output json
+  asc notarization validate --file ./MyApp.app --output markdown`,
+		FlagSet:   fs,
+		UsageFunc: shared.DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 {
+				return shared.UsageError("notarization validate does not accept positional arguments")
+			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageError(err.Error())
+			}
+			pathValue, err := validateStaplerTarget(*filePath)
+			if err != nil {
+				return shared.UsageErrorf("notarization validate: %v", err)
+			}
+
+			result, runErr := runStaplerValidate(ctx, pathValue, os.Stderr)
+			if runErr != nil {
+				return reportStaplerFailure("validate", runErr)
+			}
+			if result == nil {
+				return reportStaplerFailure("validate", errors.New("local stapler returned no result"))
+			}
+			if !result.Validated {
+				return reportStaplerFailure("validate", errors.New("local stapler did not report a valid ticket"))
+			}
+			return shared.PrintOutput(&asc.NotarizationValidateResult{
+				FilePath:  pathValue,
+				Operation: "validate",
+				Validated: result.Validated,
+			}, *output.Output, *output.Pretty)
+		},
+	}
+}
+
+func validateStaplerTarget(pathValue string) (string, error) {
+	trimmed := strings.TrimSpace(pathValue)
+	if trimmed == "" {
+		return "", errors.New("--file is required")
+	}
+	if strings.ContainsRune(trimmed, 0) {
+		return "", errors.New("--file must not contain a NUL byte")
+	}
+	absolute, err := filepath.Abs(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("resolve --file: %w", err)
+	}
+	absolute = filepath.Clean(absolute)
+	if strings.EqualFold(filepath.Ext(absolute), ".zip") {
+		return "", errors.New("zip archives cannot be stapled or validated directly; staple the contained item and recreate the archive")
+	}
+
+	info, err := os.Lstat(absolute)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%q does not exist", absolute)
+		}
+		return "", fmt.Errorf("inspect %q: %w", absolute, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("refusing to read symlink %q", absolute)
+	}
+	if err := rejectStaplerParentSymlinks(absolute); err != nil {
+		return "", err
+	}
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%q is not a regular file or directory bundle", absolute)
+	}
+
+	parent, err := rootfs.New(filepath.Dir(absolute))
+	if err != nil {
+		return "", fmt.Errorf("open artifact parent: %w", err)
+	}
+	defer parent.Close()
+
+	base := filepath.Base(absolute)
+	if info.IsDir() {
+		opened, openErr := parent.OpenDir(base)
+		if openErr != nil {
+			return "", fmt.Errorf("open artifact directory %q: %w", absolute, openErr)
+		}
+		defer opened.Close()
+		openedInfo, statErr := opened.Stat()
+		if statErr != nil {
+			return "", fmt.Errorf("stat artifact directory %q: %w", absolute, statErr)
+		}
+		if !openedInfo.IsDir() {
+			return "", fmt.Errorf("%q is not a directory bundle", absolute)
+		}
+		return absolute, nil
+	}
+
+	opened, openErr := parent.OpenFile(base)
+	if openErr != nil {
+		return "", fmt.Errorf("open artifact %q: %w", absolute, openErr)
+	}
+	defer opened.Close()
+	openedInfo, statErr := opened.Stat()
+	if statErr != nil {
+		return "", fmt.Errorf("stat artifact %q: %w", absolute, statErr)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return "", fmt.Errorf("%q is not a regular file", absolute)
+	}
+	if openedInfo.Size() <= 0 {
+		return "", errors.New("artifact file must not be empty")
+	}
+	return absolute, nil
+}
+
+func rejectStaplerParentSymlinks(absolute string) error {
+	current := filepath.Dir(absolute)
+	volumeRoot := filepath.VolumeName(absolute) + string(os.PathSeparator)
+	if volumeRoot == string(os.PathSeparator) {
+		volumeRoot = string(os.PathSeparator)
+	}
+	for {
+		if current == volumeRoot || current == "." || current == "" {
+			return nil
+		}
+		info, err := os.Lstat(current)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("artifact parent %q does not exist", current)
+			}
+			return fmt.Errorf("inspect artifact parent %q: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if runtime.GOOS == "darwin" && filepath.Dir(current) == volumeRoot {
+				switch filepath.Base(current) {
+				case "etc", "tmp", "var":
+					// macOS exposes these stable system aliases below /private.
+					// Treat them as the filesystem boundary selected by the
+					// operator; rootfs still rejects symlinks below the selected
+					// artifact parent.
+					return nil
+				}
+			}
+			return fmt.Errorf("refusing to read symlink path component %q", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("artifact parent %q is not a directory", current)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+		current = parent
+	}
+}
+
+func reportStaplerFailure(command string, err error) error {
+	var commandErr *localxcode.StaplerCommandError
+	if errors.As(err, &commandErr) && commandErr.ExitCode > 0 {
+		if command == "staple" && commandErr.Operation == string(localxcode.StaplerOperationValidate) {
+			fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")
+		} else if commandErr.Operation == string(localxcode.StaplerOperationResolve) {
+			fmt.Fprintf(os.Stderr, "Error: notarization %s could not resolve Apple's stapler tool (exit status %d)\n", command, commandErr.ExitCode)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: notarization %s failed during %s (exit status %d)\n", command, commandErr.Operation, commandErr.ExitCode)
+		}
+		return shared.NewReportedError(shared.NewProcessExitError(commandErr.ExitCode))
+	}
+	fmt.Fprintf(os.Stderr, "Error: notarization %s: %v\n", command, err)
+	return shared.NewReportedError(err)
 }
 
 // submitCommand returns the submit subcommand.
