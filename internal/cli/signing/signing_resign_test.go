@@ -597,6 +597,32 @@ func TestBuildSigningResignEntitlementsReplacesIdentity(t *testing.T) {
 	}
 }
 
+func TestBuildSigningResignEntitlementsDerivesPushEnvironmentFromProfileClass(t *testing.T) {
+	existing := map[string]any{
+		"application-identifier":              "OLDTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "OLDTEAM",
+		"get-task-allow":                      true,
+		"aps-environment":                     "development",
+	}
+	profile := signingResignProfile{
+		Class: signingResignProfileClassAdHoc,
+		Entitlements: map[string]any{
+			"application-identifier":              "NEWTEAM.com.example.app",
+			"com.apple.developer.team-identifier": "NEWTEAM",
+			"get-task-allow":                      false,
+			"aps-environment":                     "production",
+		},
+	}
+
+	got, err := buildSigningResignEntitlementsForProfile(existing, profile)
+	if err != nil {
+		t.Fatalf("buildSigningResignEntitlementsForProfile() error = %v", err)
+	}
+	if got["aps-environment"] != "production" {
+		t.Fatalf("aps-environment = %#v, want replacement profile class value", got["aps-environment"])
+	}
+}
+
 func TestBuildSigningResignEntitlementsKeepsConcreteValuesForWildcardProfileClaims(t *testing.T) {
 	existing := map[string]any{
 		"application-identifier":                             "OLDTEAM.com.example.app",
@@ -2631,6 +2657,47 @@ func TestSigningResignCommandPublicationAmbiguityRetainsCauseAndRedactsIt(t *tes
 	}
 	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "artifact verification (artifact-hash)") {
 		t.Fatalf("command error = %q, want closed artifact stage/code without private path", err)
+	}
+}
+
+func TestSigningResignCommandReceiptRenderFailureRetainsPublicationAmbiguity(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("signing resign is macOS-only")
+	}
+	const secret = "/private/tmp/secret-receipt-renderer"
+	renderErr := errors.New("stdout closed at " + secret)
+	outputPath := filepath.Join(t.TempDir(), "published.ipa")
+	originalExecute := executeSigningResignFn
+	originalPrint := printSigningResignResultFn
+	t.Cleanup(func() {
+		executeSigningResignFn = originalExecute
+		printSigningResignResultFn = originalPrint
+	})
+	executeSigningResignFn = func(context.Context, signingResignOptions) (signingResignResult, error) {
+		return signingResignResult{
+			Output: signingResignArtifactResult{Path: outputPath},
+		}, nil
+	}
+	printSigningResignResultFn = func(signingResignResult, string, bool) error {
+		return renderErr
+	}
+
+	command := SigningResignCommand()
+	if err := command.FlagSet.Parse([]string{
+		"--ipa", "input.ipa", "--output", outputPath,
+		"--identity", "identity.p12", "--profiles-manifest", "profiles.json",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := command.Exec(context.Background(), nil)
+	if err == nil {
+		t.Fatal("SigningResignCommand().Exec() error = nil, want post-publication uncertainty")
+	}
+	if !errors.Is(err, ErrSigningResignPublicationAmbiguous) || !errors.Is(err, renderErr) {
+		t.Fatalf("command error = %v, want publication ambiguity and renderer cause", err)
+	}
+	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "artifact verification (artifact-publish)") {
+		t.Fatalf("command error = %q, want closed artifact publication stage/code", err)
 	}
 }
 

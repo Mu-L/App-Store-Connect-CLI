@@ -374,7 +374,7 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 		if !ok {
 			return signingResignPreparedTree{}, fmt.Errorf("missing profile for target %s", target.BundleID)
 		}
-		entitlements, err := buildSigningResignEntitlements(target.ExistingEntitlements, profile.Entitlements)
+		entitlements, err := buildSigningResignEntitlementsForProfile(target.ExistingEntitlements, profile)
 		if err != nil {
 			// An unauthorized-claims refusal is public-safe and actionable;
 			// keep it that way through the operational boundary instead of

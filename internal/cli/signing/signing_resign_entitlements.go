@@ -173,6 +173,19 @@ var signingResignIdentityEntitlementKeyOrder = []string{
 }
 
 func buildSigningResignEntitlements(existing, profile map[string]any) (map[string]any, error) {
+	return buildSigningResignEntitlementsWithClass(existing, profile, "")
+}
+
+// buildSigningResignEntitlementsForProfile applies the replacement profile's
+// class-controlled values while retaining the existing claim-preservation
+// rules for capabilities. The profile is the authority for values such as
+// aps-environment when the source signature and replacement profile belong to
+// different signing classes.
+func buildSigningResignEntitlementsForProfile(existing map[string]any, profile signingResignProfile) (map[string]any, error) {
+	return buildSigningResignEntitlementsWithClass(existing, profile.Entitlements, profile.Class)
+}
+
+func buildSigningResignEntitlementsWithClass(existing, profile map[string]any, profileClass string) (map[string]any, error) {
 	if profile == nil {
 		return nil, fmt.Errorf("profile entitlements are missing")
 	}
@@ -223,6 +236,15 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 			continue
 		}
 		profileValue, permitted := profile[key]
+		if profileClass != "" {
+			if resolved, handled, err := resolveSigningResignProfileClassEntitlement(key, profileClass, value, profileValue, permitted); handled {
+				if err != nil {
+					return nil, err
+				}
+				result[key] = resolved
+				continue
+			}
+		}
 		if !permitted || !signingResignEntitlementValuePermits(profileValue, value) {
 			unauthorized = append(unauthorized, signingResignUnauthorizedClaim{Key: key, Existing: value, Profile: profileValue})
 			continue
@@ -266,6 +288,41 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 		result[key] = value
 	}
 	return result, nil
+}
+
+// resolveSigningResignProfileClassEntitlement identifies claims whose value
+// is controlled by the replacement profile class rather than preserved as an
+// arbitrary subset of the old signed document. A profile is still required to
+// carry the concrete value; this helper only permits the class value Apple
+// authorizes and never grants a claim that was absent from the old signature.
+func resolveSigningResignProfileClassEntitlement(key, profileClass string, existingValue, profileValue any, present bool) (value any, handled bool, err error) {
+	if key != "aps-environment" {
+		return nil, false, nil
+	}
+	if !present {
+		return nil, false, nil
+	}
+	existingText, ok := existingValue.(string)
+	if !ok || strings.TrimSpace(existingText) != existingText || existingText != "development" && existingText != "production" {
+		return nil, true, fmt.Errorf("existing entitlement %s is invalid", key)
+	}
+	text, ok := profileValue.(string)
+	if !ok || strings.TrimSpace(text) != text {
+		return nil, true, fmt.Errorf("replacement profile entitlement %s is invalid", key)
+	}
+	expected := ""
+	switch profileClass {
+	case signingResignProfileClassDevelopment:
+		expected = "development"
+	case signingResignProfileClassAdHoc, signingResignProfileClassAppStore:
+		expected = "production"
+	default:
+		return nil, true, fmt.Errorf("replacement profile class is unsupported for entitlement %s", key)
+	}
+	if text != expected {
+		return nil, true, fmt.Errorf("replacement profile entitlement %s does not match profile class", key)
+	}
+	return text, true, nil
 }
 
 // signingResignOptionalIdentityEntitlementKey reports whether an identity
