@@ -3,6 +3,7 @@ package rootfs
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -12,6 +13,7 @@ import (
 )
 
 func TestCaptureFileIdentityRejectsSameContentReplacement(t *testing.T) {
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -42,6 +44,149 @@ func TestCaptureFileIdentityRejectsSameContentReplacement(t *testing.T) {
 	}
 }
 
+func TestCaptureFileLimitedRejectsTornSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("before"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	var callbackCalls int
+	root.afterIdentityCaptureReadForTest = func() {
+		callbackCalls++
+		if err := os.WriteFile(path, []byte("after"), 0o640); err != nil {
+			t.Fatalf("replace captured contents: %v", err)
+		}
+	}
+
+	identity, err := root.CaptureFileLimited("settings.xcconfig", int64(len("before")))
+	if identity != nil {
+		t.Fatal("CaptureFileLimited() returned an identity for a torn snapshot")
+	}
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CaptureFileLimited() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if callbackCalls != 1 {
+		t.Fatalf("identity capture hook calls = %d, want one", callbackCalls)
+	}
+	if got := mustRead(t, path); got != "after" {
+		t.Fatalf("post-race contents = %q, want after", got)
+	}
+}
+
+func TestCaptureFileLimitedRejectsSameContentPathReplacementDuringCapture(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	const content = "same bytes"
+	path := filepath.Join(dir, "settings.xcconfig")
+	replacementPath := filepath.Join(dir, "replacement.xcconfig")
+	if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(replacementPath, []byte(content), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	root.afterIdentityCaptureReadForTest = func() {
+		if err := os.Rename(replacementPath, path); err != nil {
+			t.Fatalf("replace capture path: %v", err)
+		}
+	}
+
+	identity, err := root.CaptureFileLimited("settings.xcconfig", int64(len(content)))
+	if identity != nil {
+		t.Fatal("CaptureFileLimited() returned an identity after path replacement")
+	}
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CaptureFileLimited() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != content {
+		t.Fatalf("replacement contents = %q, want %q", got, content)
+	}
+}
+
+func TestCaptureFileLimitedRejectsHardLinkCreatedDuringCapture(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	const content = "settings"
+	path := filepath.Join(dir, "settings.xcconfig")
+	linkPath := filepath.Join(dir, "settings-link.xcconfig")
+	if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	root.afterIdentityCaptureReadForTest = func() {
+		if err := os.Link(path, linkPath); err != nil {
+			t.Skipf("hard links are unavailable: %v", err)
+		}
+	}
+
+	identity, err := root.CaptureFileLimited("settings.xcconfig", int64(len(content)))
+	if identity != nil {
+		t.Fatal("CaptureFileLimited() returned an identity after hard-link state changed")
+	}
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CaptureFileLimited() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != content {
+		t.Fatalf("destination contents = %q, want %q", got, content)
+	}
+	if got := mustRead(t, linkPath); got != content {
+		t.Fatalf("hard-link contents = %q, want %q", got, content)
+	}
+}
+
+func TestCaptureFileIdentityRejectsSymlinkAndFIFO(t *testing.T) {
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "special")
+		if err := os.Symlink("target", path); err != nil {
+			t.Skipf("symlink creation is not permitted: %v", err)
+		}
+		root := mustRoot(t, dir)
+		t.Cleanup(func() { _ = root.Close() })
+		if identity, err := root.CaptureFile("special"); identity != nil || err == nil {
+			t.Fatalf("CaptureFile() identity = %v, error = %v; want symlink rejection", identity, err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("Lstat(symlink) error = %v", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("special mode = %v, want symlink preserved", info.Mode())
+		}
+	})
+
+	t.Run("fifo", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("FIFO creation is unavailable on Windows")
+		}
+		mkfifo, err := exec.LookPath("mkfifo")
+		if err != nil {
+			t.Skipf("mkfifo is unavailable: %v", err)
+		}
+		dir := t.TempDir()
+		path := filepath.Join(dir, "special")
+		if err := exec.Command(mkfifo, path).Run(); err != nil {
+			t.Skipf("FIFO creation is unavailable: %v", err)
+		}
+		root := mustRoot(t, dir)
+		t.Cleanup(func() { _ = root.Close() })
+		if identity, err := root.CaptureFile("special"); identity != nil || err == nil {
+			t.Fatalf("CaptureFile() identity = %v, error = %v; want FIFO rejection", identity, err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("Lstat(FIFO) error = %v", err)
+		}
+		if info.Mode()&os.ModeNamedPipe == 0 {
+			t.Fatalf("special mode = %v, want FIFO preserved", info.Mode())
+		}
+	})
+}
+
 func TestFileIdentityIsInvalidAfterRootClose(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
@@ -61,6 +206,7 @@ func TestFileIdentityIsInvalidAfterRootClose(t *testing.T) {
 }
 
 func TestCheckFileIdentityRejectsSameContentReplacement(t *testing.T) {
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -84,7 +230,62 @@ func TestCheckFileIdentityRejectsSameContentReplacement(t *testing.T) {
 	}
 }
 
+func TestCheckFileIdentityRejectsHardLinkAddedAfterCapture(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	linkPath := filepath.Join(dir, "settings-link.xcconfig")
+	if err := os.WriteFile(path, []byte("settings"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	if err := os.Link(path, linkPath); err != nil {
+		t.Skipf("hard links are unavailable: %v", err)
+	}
+
+	if err := root.CheckFileIdentity("settings.xcconfig", identity); !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CheckFileIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != "settings" {
+		t.Fatalf("destination contents = %q, want settings", got)
+	}
+	if got := mustRead(t, linkPath); got != "settings" {
+		t.Fatalf("hard-link contents = %q, want settings", got)
+	}
+}
+
+func TestCheckFileIdentityRejectsInPlaceChangeDuringVerification(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("before"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	root.afterIdentityCheckReadForTest = func() {
+		root.afterIdentityCheckReadForTest = nil
+		if err := os.WriteFile(path, []byte("after!"), 0o640); err != nil {
+			t.Fatalf("change file during identity verification: %v", err)
+		}
+	}
+	if err := root.CheckFileIdentity("settings.xcconfig", identity); !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CheckFileIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != "after!" {
+		t.Fatalf("post-race contents = %q, want after!", got)
+	}
+}
+
 func TestCreateNewFileAtomicWithIdentityReturnsPublicationToken(t *testing.T) {
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -105,7 +306,69 @@ func TestCreateNewFileAtomicWithIdentityReturnsPublicationToken(t *testing.T) {
 	}
 }
 
+func TestCreateNewFileAtomicWithIdentityUnsupportedOnWindowsLeavesDestinationAbsent(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("strict identity creation is unsupported only on Windows")
+	}
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+
+	identity, err := root.CreateNewFileAtomicWithIdentity("receipt.json", []byte("receipt"), 0o600)
+	if identity != nil {
+		t.Fatal("CreateNewFileAtomicWithIdentity() returned an identity on Windows")
+	}
+	if !errors.Is(err, ErrFileIdentityMutationUnsupported) {
+		t.Fatalf("CreateNewFileAtomicWithIdentity() error = %v, want ErrFileIdentityMutationUnsupported", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination after unsupported creation = %v, want absent", err)
+	}
+	if leftovers := temporaryLeftovers(t, dir); len(leftovers) != 0 {
+		t.Fatalf("temporary files after unsupported creation = %v, want none", leftovers)
+	}
+}
+
+func TestStrictIdentityReplacementAndRemovalUnsupportedOnWindowsLeaveDestinationUntouched(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("strict identity replacement and removal are unsupported only on Windows")
+	}
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	const original = "original"
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o600, true)
+	if installed != nil {
+		t.Fatal("ReplaceFileIfSame() returned an identity on Windows")
+	}
+	if !errors.Is(err, ErrFileIdentityMutationUnsupported) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrFileIdentityMutationUnsupported", err)
+	}
+	if got := mustRead(t, path); got != original {
+		t.Fatalf("destination after unsupported replacement = %q, want %q", got, original)
+	}
+	if err := root.RemoveFileIfSameIdentity("settings.xcconfig", identity); !errors.Is(err, ErrFileIdentityMutationUnsupported) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want ErrFileIdentityMutationUnsupported", err)
+	}
+	if got := mustRead(t, path); got != original {
+		t.Fatalf("destination after unsupported removal = %q, want %q", got, original)
+	}
+	if leftovers := temporaryLeftovers(t, dir); len(leftovers) != 0 {
+		t.Fatalf("temporary files after unsupported mutations = %v, want none", leftovers)
+	}
+}
+
 func TestRemoveFileIfSameIdentityPreservesSameContentReplacement(t *testing.T) {
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -134,6 +397,7 @@ func TestRemoveFileIfSameIdentityPreservesSameContentReplacement(t *testing.T) {
 }
 
 func TestFileIdentityCannotCrossRoots(t *testing.T) {
+	requireStrictIdentityPlatform(t)
 	firstDir := t.TempDir()
 	secondDir := t.TempDir()
 	first := mustRoot(t, firstDir)
@@ -152,6 +416,7 @@ func TestFileIdentityCannotCrossRoots(t *testing.T) {
 }
 
 func TestCaptureFileIdentityRejectsOversizeSnapshot(t *testing.T) {
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -176,6 +441,7 @@ func TestCaptureFileIdentityRejectsOversizeSnapshot(t *testing.T) {
 }
 
 func TestReplaceFileIfSameDoesNotFallBackWhenNativeNoReplaceIsUnavailable(t *testing.T) {
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -187,22 +453,269 @@ func TestReplaceFileIfSameDoesNotFallBackWhenNativeNoReplaceIsUnavailable(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	root.renameNoReplaceForTest = func(*os.Root, string, string) error {
-		return secureopen.ErrRenameNoReplaceUnsupported
+	var renameCalls int
+	root.renameNoReplaceForTest = func(parent *os.Root, oldName, newName string) error {
+		renameCalls++
+		if renameCalls == 1 {
+			return secureopen.RenameNoReplaceInRoot(parent, oldName, newName)
+		}
+		if renameCalls == 2 {
+			return secureopen.ErrRenameNoReplaceUnsupported
+		}
+		return secureopen.RenameNoReplaceInRoot(parent, oldName, newName)
 	}
 
 	if _, err := root.ReplaceFileIfSame("value", identity, []byte("updated"), 0o640, true); !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
 		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrRenameNoReplaceUnsupported", err)
+	}
+	if renameCalls != 2 {
+		t.Fatalf("rename hook calls = %d, want quarantine and publication attempts", renameCalls)
 	}
 	if got := mustRead(t, filepath.Join(dir, "value")); got != original {
 		t.Fatalf("destination after unsupported publication = %q, want %q", got, original)
 	}
 }
 
-func TestRootCloseWaitsForIdentityOperation(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("strict identity removal requires a handle-backed Windows primitive")
+func TestReplaceFileIfSameLeavesChangedStagingEntryOnCleanupUncertainty(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
 	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	publicationErr := errors.New("injected publication failure")
+	var renameCalls int
+	var stagingName string
+	root.renameNoReplaceForTest = func(parent *os.Root, oldName, newName string) error {
+		renameCalls++
+		if renameCalls == 1 {
+			return secureopen.RenameNoReplaceInRoot(parent, oldName, newName)
+		}
+		if renameCalls != 2 {
+			return secureopen.RenameNoReplaceInRoot(parent, oldName, newName)
+		}
+		stagingName = oldName
+		if err := parent.Rename(oldName, "staging-original"); err != nil {
+			t.Fatalf("move original staging entry: %v", err)
+		}
+		replacement, err := secureopen.OpenNewFileNoFollowInRoot(parent, oldName, 0o600)
+		if err != nil {
+			t.Fatalf("create staging replacement: %v", err)
+		}
+		if _, err := replacement.Write([]byte("racer")); err != nil {
+			_ = replacement.Close()
+			t.Fatalf("write staging replacement: %v", err)
+		}
+		if err := replacement.Close(); err != nil {
+			t.Fatalf("close staging replacement: %v", err)
+		}
+		return publicationErr
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o640, true)
+	if installed != nil {
+		t.Fatal("ReplaceFileIfSame() returned an identity before publication")
+	}
+	if !errors.Is(err, publicationErr) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want publication failure", err)
+	}
+	if !errors.Is(err, ErrStagingCleanupUncertain) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want staging cleanup uncertainty", err)
+	}
+	if renameCalls != 2 {
+		t.Fatalf("rename hook calls = %d, want quarantine and publication attempts", renameCalls)
+	}
+	if stagingName == "" {
+		t.Fatal("staging replacement hook did not capture the staging name")
+	}
+	if got := mustRead(t, path); got != "original" {
+		t.Fatalf("destination after failed publication = %q, want original", got)
+	}
+	if got := mustRead(t, filepath.Join(dir, "staging-original")); got != "updated" {
+		t.Fatalf("moved staging evidence = %q, want updated", got)
+	}
+	if got := mustRead(t, filepath.Join(dir, stagingName)); got != "racer" {
+		t.Fatalf("replacement staging entry = %q, want racer", got)
+	}
+}
+
+func TestReplaceFileIfSameRejectsInPlaceChangeDuringPublication(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	root.afterConditionalPublicationOpenForTest = func(_ *os.Root, _ string, _ *os.File) {
+		root.afterConditionalPublicationOpenForTest = nil
+		if err := os.WriteFile(path, []byte("racer!!"), 0o640); err != nil {
+			t.Fatalf("change published file in place: %v", err)
+		}
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o640, true)
+	if installed == nil {
+		t.Fatal("ReplaceFileIfSame() returned nil installed identity after proving publication")
+	}
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != "racer!!" {
+		t.Fatalf("racing contents = %q, want racer!!", got)
+	}
+	if rollbackIdentity, rollbackErr := root.ReplaceFileIfSame("settings.xcconfig", installed, []byte("original"), 0o640, true); rollbackIdentity != nil || !errors.Is(rollbackErr, ErrFileIdentityChanged) {
+		t.Fatalf("rollback identity = %v, error = %v; want racing contents preserved", rollbackIdentity, rollbackErr)
+	}
+}
+
+func TestReplaceFileIfSamePreservesHardLinkAndMetadata(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	alias := filepath.Join(dir, "settings-alias.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(path, alias); err != nil {
+		t.Skipf("hard links are unavailable: %v", err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o600, true)
+	if err != nil {
+		t.Fatalf("ReplaceFileIfSame() error = %v", err)
+	}
+	if installed == nil {
+		t.Fatal("ReplaceFileIfSame() returned nil installed identity")
+	}
+	if got := mustRead(t, path); got != "updated" {
+		t.Fatalf("destination content = %q, want updated", got)
+	}
+	if got := mustRead(t, alias); got != "original" {
+		t.Fatalf("hard-link content = %q, want original", got)
+	}
+	destinationInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(destination) error = %v", err)
+	}
+	if destinationInfo.Mode().Perm() != 0o640 {
+		t.Fatalf("destination mode = %o, want preserved 640", destinationInfo.Mode().Perm())
+	}
+	aliasInfo, err := os.Stat(alias)
+	if err != nil {
+		t.Fatalf("Stat(alias) error = %v", err)
+	}
+	if os.SameFile(destinationInfo, aliasInfo) {
+		t.Fatal("replacement reused the hard-linked inode")
+	}
+	if !os.SameFile(identity.Info(), aliasInfo) {
+		t.Fatal("hard-link alias no longer identifies the original inode")
+	}
+	if !os.SameFile(installed.Info(), destinationInfo) {
+		t.Fatal("installed identity does not identify the replacement inode")
+	}
+}
+
+func TestReplaceFileIfSameRejectsHardLinkAddedAfterCapture(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	alias := filepath.Join(dir, "settings-alias.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	root.beforeConditionalQuarantineForTest = func(_ *os.Root, _ string) {
+		root.beforeConditionalQuarantineForTest = nil
+		if err := os.Link(path, alias); err != nil {
+			t.Fatalf("create late hard link: %v", err)
+		}
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o640, true)
+	if installed != nil {
+		t.Fatal("ReplaceFileIfSame() returned an identity after the hard-link state changed")
+	}
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != "original" {
+		t.Fatalf("destination content = %q, want original", got)
+	}
+	if got := mustRead(t, alias); got != "original" {
+		t.Fatalf("hard-link content = %q, want original", got)
+	}
+}
+
+func TestReplaceFileIfSameReturnsInstalledIdentityAfterDirectorySyncFailure(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	syncErr := errors.New("injected parent directory sync failure")
+	var syncObserved bool
+	root.syncDirectoryForTest = func(_ *os.Root) error {
+		syncObserved = true
+		return syncErr
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o600, true)
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want parent sync failure", err)
+	}
+	if !syncObserved {
+		t.Fatal("parent directory sync hook was not invoked")
+	}
+	if installed == nil {
+		t.Fatal("ReplaceFileIfSame() returned nil installed identity after sync failure")
+	}
+	if got := mustRead(t, path); got != "updated" {
+		t.Fatalf("destination content = %q, want updated", got)
+	}
+	diskInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(destination) error = %v", err)
+	}
+	if !os.SameFile(installed.Info(), diskInfo) {
+		t.Fatal("installed identity does not identify the published destination")
+	}
+	if err := root.CheckFileIdentity("settings.xcconfig", installed); err != nil {
+		t.Fatalf("CheckFileIdentity(installed) error = %v", err)
+	}
+}
+
+func TestRootCloseWaitsForIdentityOperation(t *testing.T) {
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, "receipt.json"), []byte("receipt"), 0o600); err != nil {
@@ -244,6 +757,7 @@ func TestRootCloseWaitsForIdentityOperation(t *testing.T) {
 }
 
 func TestCreateNewFileAtomicWithIdentityDoesNotReturnUnprovenToken(t *testing.T) {
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -264,7 +778,36 @@ func TestCreateNewFileAtomicWithIdentityDoesNotReturnUnprovenToken(t *testing.T)
 	}
 }
 
+func TestCreateNewFileAtomicWithIdentityRejectsInPlaceChangeDuringPublication(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "receipt.json")
+	root.afterPublicationOpenForTest = func(_ *os.Root, _ string) {
+		root.afterPublicationOpenForTest = nil
+		if err := os.WriteFile(path, []byte("racer!!"), 0o600); err != nil {
+			t.Fatalf("change published file in place: %v", err)
+		}
+	}
+
+	identity, err := root.CreateNewFileAtomicWithIdentity("receipt.json", []byte("receipt"), 0o600)
+	if identity == nil {
+		t.Fatal("CreateNewFileAtomicWithIdentity() returned nil identity after proving publication")
+	}
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CreateNewFileAtomicWithIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != "racer!!" {
+		t.Fatalf("racing contents = %q, want racer!!", got)
+	}
+	if removeErr := root.RemoveFileIfSameIdentity("receipt.json", identity); !errors.Is(removeErr, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want racing contents preserved", removeErr)
+	}
+}
+
 func TestCreateNewFileAtomicWithIdentityRejectsReplacementDuringIdentityCheck(t *testing.T) {
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -297,9 +840,7 @@ func TestCreateNewFileAtomicWithIdentityRejectsReplacementDuringIdentityCheck(t 
 }
 
 func TestRemoveFileIfSameIdentityRestoresReplacementMovedBeforeQuarantineObservation(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("strict identity removal requires a handle-backed Windows primitive")
-	}
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -333,9 +874,7 @@ func TestRemoveFileIfSameIdentityRestoresReplacementMovedBeforeQuarantineObserva
 }
 
 func TestReplaceFileIfSameIdentityRestoresReplacementMovedBeforeQuarantineObservation(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("strict identity replacement requires a handle-backed Windows primitive")
-	}
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -372,9 +911,7 @@ func TestReplaceFileIfSameIdentityRestoresReplacementMovedBeforeQuarantineObserv
 }
 
 func TestRemoveFileIfSameIdentityLeavesChangedQuarantine(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("strict identity removal requires a handle-backed Windows primitive")
-	}
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -419,9 +956,7 @@ func TestRemoveFileIfSameIdentityLeavesChangedQuarantine(t *testing.T) {
 }
 
 func TestReplaceFileIfSameIdentityLeavesChangedQuarantineWithInstalledToken(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("strict identity replacement requires a handle-backed Windows primitive")
-	}
+	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -465,5 +1000,12 @@ func TestReplaceFileIfSameIdentityLeavesChangedQuarantineWithInstalledToken(t *t
 	}
 	if got := mustRead(t, filepath.Join(dir, changedQuarantine)); got != "replacement" {
 		t.Fatalf("replacement quarantine contents = %q, want replacement", got)
+	}
+}
+
+func requireStrictIdentityPlatform(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("strict identity mutation requires a native no-replace rename platform")
 	}
 }

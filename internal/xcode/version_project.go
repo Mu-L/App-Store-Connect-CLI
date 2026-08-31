@@ -1740,6 +1740,18 @@ func commitVersionWritesWithCreateCheck(
 	writes []preparedVersionWrite,
 	beforeCreate func([]preparedVersionWrite) error,
 ) (resultErr error) {
+	return commitVersionWritesWithCreateChecks(writes, beforeCreate, nil)
+}
+
+// commitVersionWritesWithCreateChecks adds an optional post-create validation
+// point. Signing apply uses both checks so a source replacement that races the
+// receipt publication causes identity-checked removal of the receipt and
+// rollback of the ordinary writes before the transaction returns.
+func commitVersionWritesWithCreateChecks(
+	writes []preparedVersionWrite,
+	beforeCreate func([]preparedVersionWrite) error,
+	afterCreate func([]preparedVersionWrite) error,
+) (resultErr error) {
 	defer func() {
 		resultErr = errors.Join(resultErr, closeVersionWrites(writes))
 	}()
@@ -1825,7 +1837,32 @@ func commitVersionWritesWithCreateCheck(
 				committedWithWrite,
 			)
 		}
+		if write.createOnly && write.createdIdentity == nil {
+			return commitVersionWriteFailure(
+				write,
+				errors.New("created identity unavailable; rollback uncertain"),
+				committed,
+			)
+		}
 		committed = append(committed, write)
+		if write.createOnly && afterCreate != nil {
+			if err := afterCreate(committed); err != nil {
+				return commitVersionWriteFailure(
+					write,
+					fmt.Errorf("verify sources after receipt: %w", err),
+					committed,
+				)
+			}
+		}
+		if write.createOnly {
+			if err := write.root.CheckFileIdentity(write.name, write.createdIdentity); err != nil {
+				return commitVersionWriteFailure(
+					write,
+					fmt.Errorf("verify created file: %w", err),
+					committed,
+				)
+			}
+		}
 	}
 	return nil
 }

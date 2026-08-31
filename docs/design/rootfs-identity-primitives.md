@@ -54,12 +54,16 @@ later mutation. Capture and retained publication data are bounded at 8 MiB,
 matching the existing Xcode signing-plan input limit; `CaptureFileLimited` can
 choose a smaller bound and refuses oversize files with
 `ErrFileIdentityDataTooLarge`. Oversize identity-backed replacements fail
-before mutation.
+before mutation. Capture and verification use repeated bounded reads plus
+descriptor and rooted-entry observations so an overlapping in-place write,
+path replacement, permission change, or late transition to or from a multiply
+linked file fails closed.
 
-The historical `os.FileInfo` methods remain compatibility adapters. They do
-not acquire a retained descriptor or inherit the strict 8 MiB snapshot limit;
-their existing portable fallback behavior is unchanged. New transaction code
-must use the descriptor-backed methods above.
+The historical `os.FileInfo` methods remain compatibility adapters and do not
+inherit the strict 8 MiB input-snapshot limit. The existing `WithInfo` forms
+continue retaining their publication descriptor until `Root.Close`; the basic
+forms do not add retained descriptors. Their portable fallback behavior is
+unchanged. New transaction code must use the descriptor-backed methods above.
 
 ## Platform boundary and recovery
 
@@ -97,11 +101,13 @@ quarantine path and is not presented as an identity-coupled unlink guarantee.
 fallback. The compatibility `WriteFileIfSame*` adapters retain their historic
 fallback behavior, but Xcode transaction callers do not use those adapters.
 
-The current secureopen surface has no handle-backed compare-and-remove
-primitive for Windows strict mutations. Accordingly, strict replacement and
-removal return `ErrFileIdentityMutationUnsupported` before moving any entry on
-Windows. This boundary can be narrowed only when a handle-backed rename and
-delete implementation is available and tested for the target filesystem.
+The current secureopen surface has no handle-backed publication or
+compare-and-remove primitive that can retain and prove the installed Windows
+file identity without a reuse window. Accordingly, strict creation,
+replacement, and removal return `ErrFileIdentityMutationUnsupported` before
+moving any entry on Windows. This boundary can be narrowed only when
+handle-backed publication, rename, and delete implementations are available
+and tested for the target filesystem.
 Directory durability remains separately reported where a directory handle
 cannot be flushed.
 

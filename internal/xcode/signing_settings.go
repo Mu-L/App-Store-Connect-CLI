@@ -2751,9 +2751,10 @@ func ApplySigningPlan(opts SigningApplyOptions) (*SigningApplyResult, error) {
 		return nil, fmt.Errorf("prepare signing receipt: %w", err)
 	}
 	prepared.writes = append(prepared.writes, receiptWrite)
-	if err := commitVersionWritesWithCreateCheck(prepared.writes, func(committed []preparedVersionWrite) error {
-		return verifySigningPlanSourcesBeforeReceipt(plan, committed, built.fileIdentities)
-	}); err != nil {
+	verifyReceiptSources := func(committed []preparedVersionWrite) error {
+		return verifySigningPlanSourcesBeforeReceipt(plan, committed, prepared.writes, built.fileIdentities)
+	}
+	if err := commitVersionWritesWithCreateChecks(prepared.writes, verifyReceiptSources, verifyReceiptSources); err != nil {
 		return nil, fmt.Errorf("apply signing settings transaction: %w", err)
 	}
 	return result, nil
@@ -2790,22 +2791,19 @@ func verifySigningPlanSources(plan *SigningPlan, writes []preparedVersionWrite, 
 	}
 	for _, file := range plan.Files {
 		if write, ok := staged[signingXCConfigOperationKey(file.Path, fileIdentities)]; ok {
-			current, _, err := readRegularVersionFile(&write)
-			if err != nil {
-				return fmt.Errorf("signing plan is stale; read source %s: %w", file.Path, err)
+			if write.originalIdentity == nil {
+				return fmt.Errorf("signing plan is stale; source %s has no captured identity", file.Path)
 			}
+			if err := write.root.CheckFileIdentity(write.name, write.originalIdentity); err != nil {
+				return fmt.Errorf("signing plan is stale; source %s identity changed after preparation: %w", file.Path, err)
+			}
+			current := write.originalIdentity.Data()
 			if !bytes.Equal(current, write.original) || signingFileDigestBytes(current) != file.SHA256 {
 				return fmt.Errorf("signing plan is stale; source %s changed after preparation", file.Path)
 			}
 			continue
 		}
-		current, err := readSigningRegularFile(file.Path, signingPlanMaxBytes)
-		if err != nil {
-			return fmt.Errorf("signing plan is stale; read source %s: %w", file.Path, err)
-		}
-		if signingFileDigestBytes(current) != file.SHA256 {
-			return fmt.Errorf("signing plan is stale; source %s differs from plan", file.Path)
-		}
+		return fmt.Errorf("signing plan is stale; source %s has no prepared identity", file.Path)
 	}
 	return nil
 }
@@ -2816,7 +2814,7 @@ func verifySigningPlanSources(plan *SigningPlan, writes []preparedVersionWrite, 
 // bytes; untouched files must still match their plan digest. A concurrent save
 // in this final window therefore fails the transaction and is handled by the
 // ordinary rollback path instead of receiving a misleading successful receipt.
-func verifySigningPlanSourcesBeforeReceipt(plan *SigningPlan, committed []preparedVersionWrite, fileIdentities map[string]string) error {
+func verifySigningPlanSourcesBeforeReceipt(plan *SigningPlan, committed, prepared []preparedVersionWrite, fileIdentities map[string]string) error {
 	if plan == nil {
 		return fmt.Errorf("signing plan is nil")
 	}
@@ -2824,6 +2822,12 @@ func verifySigningPlanSourcesBeforeReceipt(plan *SigningPlan, committed []prepar
 	for _, write := range committed {
 		if !write.createOnly {
 			committedByPath[signingXCConfigOperationKey(write.path, fileIdentities)] = write
+		}
+	}
+	preparedByPath := make(map[string]preparedVersionWrite, len(prepared))
+	for _, write := range prepared {
+		if !write.createOnly {
+			preparedByPath[signingXCConfigOperationKey(write.path, fileIdentities)] = write
 		}
 	}
 	for _, file := range plan.Files {
@@ -2845,10 +2849,14 @@ func verifySigningPlanSourcesBeforeReceipt(plan *SigningPlan, committed []prepar
 			}
 			continue
 		}
-		current, err := readSigningRegularFile(file.Path, signingPlanMaxBytes)
-		if err != nil {
-			return fmt.Errorf("read source %s: %w", file.Path, err)
+		write, ok := preparedByPath[signingXCConfigOperationKey(file.Path, fileIdentities)]
+		if !ok || write.originalIdentity == nil {
+			return fmt.Errorf("source %s has no captured identity before receipt", file.Path)
 		}
+		if err := write.root.CheckFileIdentity(write.name, write.originalIdentity); err != nil {
+			return fmt.Errorf("source %s identity changed before receipt: %w", file.Path, err)
+		}
+		current := write.originalIdentity.Data()
 		if signingFileDigestBytes(current) != file.SHA256 {
 			return fmt.Errorf("source %s differs from plan before receipt", file.Path)
 		}
@@ -3075,10 +3083,73 @@ func prepareSigningOperations(built *signingPlanBuild) (*preparedSigningOperatio
 	}
 	prepared.changedFiles = make([]string, 0, len(prepared.writes))
 	for _, write := range prepared.writes {
-		prepared.changedFiles = append(prepared.changedFiles, write.path)
+		if !write.createOnly && !bytes.Equal(write.original, write.updated) {
+			prepared.changedFiles = append(prepared.changedFiles, write.path)
+		}
 	}
 	sort.Strings(prepared.changedFiles)
+	watches, err := prepareSigningSourceWatches(built.plan, prepared.writes, built.fileIdentities)
+	if err != nil {
+		return fail(err)
+	}
+	prepared.writes = append(prepared.writes, watches...)
 	return prepared, nil
+}
+
+// prepareSigningSourceWatches captures descriptor-backed identities for every
+// plan input that is not already represented by a prepared write. The watches
+// stay open through receipt publication so a same-content pathname replacement
+// remains observable during both the pre- and post-publication checks.
+func prepareSigningSourceWatches(plan *SigningPlan, writes []preparedVersionWrite, fileIdentities map[string]string) ([]preparedVersionWrite, error) {
+	if plan == nil {
+		return nil, fmt.Errorf("signing plan is nil")
+	}
+	seen := make(map[string]struct{}, len(writes)+len(plan.Files))
+	for _, write := range writes {
+		if !write.createOnly {
+			seen[signingXCConfigOperationKey(write.path, fileIdentities)] = struct{}{}
+		}
+	}
+	var watches []preparedVersionWrite
+	fail := func(err error) ([]preparedVersionWrite, error) {
+		return nil, errors.Join(err, closeVersionWrites(watches))
+	}
+	for _, file := range plan.Files {
+		key := signingXCConfigOperationKey(file.Path, fileIdentities)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		absolute, err := canonicalSigningPath(file.Path, "signing source")
+		if err != nil {
+			return fail(err)
+		}
+		root, err := rootfs.New(filepath.Dir(absolute))
+		if err != nil {
+			return fail(fmt.Errorf("capture signing source %s: %w", file.Path, err))
+		}
+		identity, err := root.CaptureFileLimited(filepath.Base(absolute), signingPlanMaxBytes)
+		if err != nil {
+			_ = root.Close()
+			return fail(fmt.Errorf("capture signing source %s: %w", file.Path, err))
+		}
+		data := identity.Data()
+		if signingFileDigestBytes(data) != file.SHA256 {
+			_ = root.Close()
+			return fail(fmt.Errorf("signing plan is stale; source %s differs from plan", file.Path))
+		}
+		watches = append(watches, preparedVersionWrite{
+			path:             absolute,
+			original:         data,
+			updated:          bytes.Clone(data),
+			mode:             identity.Mode(),
+			root:             root,
+			name:             filepath.Base(absolute),
+			ownsRoot:         true,
+			originalIdentity: identity,
+		})
+		seen[key] = struct{}{}
+	}
+	return watches, nil
 }
 
 func applySigningPBXOperation(operation signingPlanOperation) error {

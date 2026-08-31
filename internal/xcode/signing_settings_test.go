@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -129,6 +130,41 @@ func TestSigningApplyDoesNotUseStablePortableWriteFallback(t *testing.T) {
 	}
 	if after := mustReadVersionTestFile(t, filepath.Join(project, "project.pbxproj")); after != before {
 		t.Fatal("failed signing transaction modified the project")
+	}
+}
+
+func TestSigningApplyUnsupportedOnWindowsLeavesProjectUntouched(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("strict signing apply is unsupported only on Windows")
+	}
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	before := mustReadVersionTestFile(t, pbxprojPath)
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if !errors.Is(err, rootfs.ErrFileIdentityMutationUnsupported) {
+		t.Fatalf("ApplySigningPlan() error = %v, want ErrFileIdentityMutationUnsupported", err)
+	}
+	if after := mustReadVersionTestFile(t, pbxprojPath); after != before {
+		t.Fatal("unsupported signing apply modified the project")
+	}
+	if _, statErr := os.Lstat(plan.ReceiptPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("receipt after unsupported signing apply = %v, want absent", statErr)
 	}
 }
 
@@ -265,6 +301,175 @@ func TestSigningApplyRollsBackProjectWhenReceiptFinalizationFails(t *testing.T) 
 	}
 	if _, err := os.Lstat(plan.ReceiptPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("receipt after failed transaction = %v, want absent", err)
+	}
+}
+
+func TestSigningApplyRejectsUntouchedSourceChangeAfterReceiptPublication(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("strict signing apply fails closed before publication on Windows")
+	}
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
+	beforeProjectInfo, err := os.Stat(pbxprojPath)
+	if err != nil {
+		t.Fatalf("Stat(project) error = %v", err)
+	}
+	beforeSettings := mustReadVersionTestFile(t, settingsPath)
+	replacementPath := filepath.Join(root, "settings-replacement.json")
+	swapped := false
+	originalCreator := atomicCreateVersionFileFn
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
+		identity, err := originalCreator(write, data)
+		if err != nil || !write.createOnly || swapped {
+			return identity, err
+		}
+		// The receipt has been published. Replace an untouched source with the
+		// same bytes but a new inode before the post-create source check so the
+		// transaction must reject the receipt and preserve this replacement.
+		swapped = true
+		if err := os.WriteFile(replacementPath, []byte(beforeSettings), 0o600); err != nil {
+			t.Fatalf("write racing settings replacement: %v", err)
+		}
+		if err := os.Rename(replacementPath, settingsPath); err != nil {
+			t.Fatalf("install racing settings replacement: %v", err)
+		}
+		return identity, nil
+	}
+	t.Cleanup(func() { atomicCreateVersionFileFn = originalCreator })
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err == nil || !strings.Contains(err.Error(), "after receipt") {
+		t.Fatalf("ApplySigningPlan() error = %v, want post-publication source rejection", err)
+	}
+	if after := mustReadVersionTestFile(t, pbxprojPath); after != beforeProject {
+		t.Fatal("post-publication source rejection left project changes behind")
+	}
+	afterProjectInfo, err := os.Stat(pbxprojPath)
+	if err != nil {
+		t.Fatalf("Stat(project after rollback) error = %v", err)
+	}
+	if afterProjectInfo.Mode().Perm() != beforeProjectInfo.Mode().Perm() {
+		t.Fatalf("project mode after rollback = %o, want %o", afterProjectInfo.Mode().Perm(), beforeProjectInfo.Mode().Perm())
+	}
+	if _, statErr := os.Lstat(plan.ReceiptPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("receipt after post-publication source drift = %v, want absent", statErr)
+	}
+	if after := mustReadVersionTestFile(t, settingsPath); after != beforeSettings {
+		t.Fatalf("racing settings replacement was changed: %q", after)
+	}
+	settingsInfo, err := os.Stat(settingsPath)
+	if err != nil {
+		t.Fatalf("Stat(settings replacement) error = %v", err)
+	}
+	if settingsInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("racing settings replacement mode = %o, want 600", settingsInfo.Mode().Perm())
+	}
+}
+
+func TestSigningApplyRejectsCreateOnlySuccessWithoutIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("strict signing apply fails closed before receipt creation on Windows")
+	}
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
+	originalCreator := atomicCreateVersionFileFn
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
+		if write.createOnly {
+			return nil, nil
+		}
+		return originalCreator(write, data)
+	}
+	t.Cleanup(func() { atomicCreateVersionFileFn = originalCreator })
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err == nil || !strings.Contains(err.Error(), "created identity unavailable") {
+		t.Fatalf("ApplySigningPlan() error = %v, want create-only identity failure", err)
+	}
+	if after := mustReadVersionTestFile(t, pbxprojPath); after != beforeProject {
+		t.Fatal("create-only identity failure left project changes behind")
+	}
+	if _, statErr := os.Lstat(plan.ReceiptPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("receipt after create-only identity failure = %v, want absent", statErr)
+	}
+}
+
+func TestSigningApplyRejectsReceiptContentChangedAfterPublication(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("strict signing apply fails closed before receipt publication on Windows")
+	}
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
+	const racingReceipt = "racing receipt contents\n"
+	originalCreator := atomicCreateVersionFileFn
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
+		identity, err := originalCreator(write, data)
+		if err != nil || !write.createOnly {
+			return identity, err
+		}
+		if err := os.WriteFile(write.path, []byte(racingReceipt), 0o600); err != nil {
+			t.Fatalf("change receipt after publication: %v", err)
+		}
+		return identity, nil
+	}
+	t.Cleanup(func() { atomicCreateVersionFileFn = originalCreator })
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err == nil || !strings.Contains(err.Error(), "verify created file") || !strings.Contains(err.Error(), "rollback failed") {
+		t.Fatalf("ApplySigningPlan() error = %v, want receipt-content rejection with safe rollback uncertainty", err)
+	}
+	if after := mustReadVersionTestFile(t, pbxprojPath); after != beforeProject {
+		t.Fatal("receipt-content rejection left project changes behind")
+	}
+	if after := mustReadVersionTestFile(t, plan.ReceiptPath); after != racingReceipt {
+		t.Fatalf("racing receipt was removed or changed: %q", after)
 	}
 }
 
@@ -906,7 +1111,7 @@ func TestPrepareSigningOperationsUsesWindowsXCConfigIdentity(t *testing.T) {
 			original: write.original, updated: write.updated, committedIdentity: committedIdentity,
 		})
 	}
-	if err := verifySigningPlanSourcesBeforeReceipt(plan, committed, fileIdentities); err != nil {
+	if err := verifySigningPlanSourcesBeforeReceipt(plan, committed, prepared.writes, fileIdentities); err != nil {
 		t.Fatalf("verifySigningPlanSourcesBeforeReceipt() error = %v", err)
 	}
 	for _, path := range []string{configPath, caseVariantPath} {
@@ -1797,6 +2002,53 @@ func TestSigningApplyPreflightsMetadataPreservationBeforeWrites(t *testing.T) {
 	}
 	if _, statErr := os.Lstat(plan.ReceiptPath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("receipt after metadata preflight failure = %v, want absent", statErr)
+	}
+}
+
+func TestSigningApplyRejectsHardLinkAddedAfterPreparation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("strict signing apply fails closed before replacement on Windows")
+	}
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
+	aliasPath := filepath.Join(root, "project-alias.pbxproj")
+	originalHook := beforeSigningCommitForTest
+	beforeSigningCommitForTest = func() {
+		beforeSigningCommitForTest = nil
+		if err := os.Link(pbxprojPath, aliasPath); err != nil {
+			t.Skipf("hard links are unavailable: %v", err)
+		}
+	}
+	t.Cleanup(func() { beforeSigningCommitForTest = originalHook })
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err == nil || !strings.Contains(err.Error(), "hard-link state changed") {
+		t.Fatalf("ApplySigningPlan() error = %v, want late hard-link rejection", err)
+	}
+	if after := mustReadVersionTestFile(t, pbxprojPath); after != beforeProject {
+		t.Fatal("late hard-link rejection changed the project")
+	}
+	if after := mustReadVersionTestFile(t, aliasPath); after != beforeProject {
+		t.Fatal("late hard-link rejection changed the alias")
+	}
+	if _, statErr := os.Lstat(plan.ReceiptPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("receipt after late hard-link rejection = %v, want absent", statErr)
 	}
 }
 
