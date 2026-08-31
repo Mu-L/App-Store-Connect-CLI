@@ -181,10 +181,16 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 		return nil, err
 	}
 	stapleErr := runStaplerOperation(ctx, StaplerOperationStaple, path, logWriter)
-	// A context error without the attempted-cancellation marker means the
-	// staple child never started. Still run the stage verifier so callers can
-	// report a concurrent target replacement, but do not claim that stapling
-	// completed or may have modified the artifact.
+	// A child-start failure or a context error without the attempted-cancellation
+	// marker means the staple child never started. Still run the stage verifier
+	// so callers can report a concurrent target replacement, but do not claim
+	// that stapling completed or may have modified the artifact.
+	if stapleErr != nil && isStaplerOperationNotStarted(stapleErr) {
+		if verifyErr := verifyStaplerStage(verifier, StaplerOperationStaple, false); verifyErr != nil {
+			return nil, errors.Join(stapleErr, verifyErr)
+		}
+		return nil, stapleErr
+	}
 	if stapleErr != nil && !isStaplerOperationAttemptedCancellation(stapleErr) &&
 		(errors.Is(stapleErr, context.Canceled) || errors.Is(stapleErr, context.DeadlineExceeded)) {
 		if verifyErr := verifyStaplerStage(verifier, StaplerOperationStaple, false); verifyErr != nil {
@@ -344,6 +350,30 @@ type staplerOperationAttemptedCancellationError struct {
 	err error
 }
 
+// staplerOperationNotStartedError records that constructing or starting the
+// child failed before it could run. A post-stage verifier error joined with
+// this marker must remain an ordinary failure: no child ran and therefore no
+// partial mutation is possible.
+type staplerOperationNotStartedError struct {
+	err error
+}
+
+func (e *staplerOperationNotStartedError) Error() string {
+	return "stapler operation did not start"
+}
+
+func (e *staplerOperationNotStartedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func isStaplerOperationNotStarted(err error) bool {
+	var notStarted *staplerOperationNotStartedError
+	return errors.As(err, &notStarted)
+}
+
 func (e *staplerOperationAttemptedCancellationError) Error() string {
 	return "stapler operation canceled after child invocation"
 }
@@ -412,6 +442,9 @@ func runStaplerOperation(ctx context.Context, operation StaplerOperation, path s
 		return &staplerOperationAttemptedCancellationError{err: ctxErr}
 	}
 	commandErr := newStaplerCommandError(operation, err)
+	if !started {
+		return &staplerOperationNotStartedError{err: commandErr}
+	}
 	if staplerProcessWasSignaled(err) {
 		return &staplerOperationAttemptedSignalError{err: commandErr}
 	}

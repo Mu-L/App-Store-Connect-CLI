@@ -40,6 +40,9 @@ var (
 	openStaplerTargetFileFn = func(root rootfs.Root, relative string) (*os.File, error) {
 		return root.OpenFile(relative)
 	}
+	// statStaplerWorkingDirectoryPathFn is a narrow test seam for distinguishing
+	// a vanished/replaced cwd from an operational path-inspection failure.
+	statStaplerWorkingDirectoryPathFn = os.Stat
 	// afterStaplerPathResolutionFn is a narrow test seam for cwd replacement
 	// races between resolving a relative path and opening the selected target.
 	// Production leaves it nil.
@@ -197,6 +200,14 @@ Examples:
 			if err := target.verifyIdentity("before stapling"); err != nil {
 				return reportStaplerTargetStageFailure("staple", "before stapling", err)
 			}
+			if target.directory {
+				// Bound the directory inventory before the destructive child runs.
+				// The post-staple callback still captures a fresh inventory for the
+				// later validation-stage comparison.
+				if _, err := target.captureDirectoryInventoryAtStage(ctx, "before stapling"); err != nil {
+					return reportStaplerTargetStageFailure("staple", "before stapling", err)
+				}
+			}
 
 			var expectedInventory staplerDirectoryInventory
 			inventoryCaptured := false
@@ -209,6 +220,10 @@ Examples:
 				}
 				if !target.directory {
 					switch {
+					case operation == localxcode.StaplerOperationStaple && before:
+						if _, err := target.captureRegularFileFingerprintAtStage(ctx, "before stapling"); err != nil {
+							return err
+						}
 					case operation == localxcode.StaplerOperationStaple && !before:
 						fingerprint, err := target.captureRegularFileFingerprintAtStage(ctx, "after stapling")
 						if err != nil {
@@ -515,7 +530,10 @@ func (target *validatedStaplerTarget) verifyIdentity(stage string) error {
 		return &staplerTargetIdentityError{stage: stage}
 	}
 	if err := target.verifyWorkingDirectory(); err != nil {
-		return &staplerTargetIdentityError{stage: stage}
+		if errors.Is(err, errStaplerWorkingDirectoryChanged) {
+			return &staplerTargetIdentityError{stage: stage}
+		}
+		return &staplerTargetVerifyError{stage: stage, err: err}
 	}
 	pinned, err := target.pinnedIdentity()
 	if err != nil {
@@ -547,10 +565,13 @@ func (target *validatedStaplerTarget) verifyIdentity(stage string) error {
 func (target *validatedStaplerTarget) classifyStageOpenFailure(stage string, openErr error) error {
 	info, probeErr := target.probeKind()
 	if probeErr != nil {
+		if errors.Is(probeErr, errStaplerWorkingDirectoryChanged) {
+			return &staplerTargetIdentityError{stage: stage}
+		}
 		if errors.Is(probeErr, os.ErrNotExist) || errors.Is(probeErr, syscall.ENOTDIR) {
 			return &staplerTargetIdentityError{stage: stage}
 		}
-		return &staplerTargetVerifyError{stage: stage, err: openErr}
+		return &staplerTargetVerifyError{stage: stage, err: probeErr}
 	}
 	if info == nil {
 		return &staplerTargetIdentityError{stage: stage}
@@ -613,13 +634,19 @@ func verifyStaplerWorkingDirectory(handle *os.File, pathValue string) error {
 	}
 	expected, err := handle.Stat()
 	if err != nil {
-		return err
+		return fmt.Errorf("stat retained current working directory: %w", err)
 	}
-	current, err := os.Stat(pathValue)
+	if !expected.IsDir() {
+		return errors.New("retained current working directory is not a directory")
+	}
+	current, err := statStaplerWorkingDirectoryPathFn(pathValue)
 	if err != nil {
-		return errStaplerWorkingDirectoryChanged
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			return errStaplerWorkingDirectoryChanged
+		}
+		return fmt.Errorf("stat current working directory path: %w", err)
 	}
-	if !expected.IsDir() || !os.SameFile(expected, current) {
+	if !current.IsDir() || !os.SameFile(expected, current) {
 		return errStaplerWorkingDirectoryChanged
 	}
 	return nil
@@ -767,6 +794,9 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 	}
 	if workingDirectory != nil {
 		if err := verifyStaplerWorkingDirectory(workingDirectory, workingDirectoryPath); err != nil {
+			if errors.Is(err, errStaplerWorkingDirectoryChanged) {
+				return nil, &staplerTargetIdentityError{stage: "resolving current directory"}
+			}
 			return nil, &staplerTargetVerifyError{stage: "resolving current directory", err: err}
 		}
 	}
@@ -852,6 +882,12 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 	}
 	if openedInfo.Size() <= 0 {
 		return nil, newStaplerTargetUsageError(errors.New("artifact file must not be empty"))
+	}
+	if openedInfo.Size() < 0 || openedInfo.Size() > staplerInventoryMaxBytes {
+		return nil, &staplerTargetVerifyError{
+			stage: "before operation",
+			err:   errStaplerRegularFileFingerprintTooLarge,
+		}
 	}
 	keepRoot = true
 	keepHandle = true

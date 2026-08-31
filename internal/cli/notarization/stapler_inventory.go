@@ -30,7 +30,10 @@ const (
 	staplerInventoryReadBatchSize = 256
 )
 
-var errStaplerInventoryChanged = errors.New("artifact directory contents changed during inspection")
+var (
+	errStaplerInventoryChanged               = errors.New("artifact directory contents changed during inspection")
+	errStaplerRegularFileFingerprintTooLarge = errors.New("regular-file fingerprint exceeds supported size")
+)
 
 // This narrow seam keeps the scanner testable without manufacturing hundreds
 // of thousands of filesystem entries. Production reads are always bounded by
@@ -96,7 +99,7 @@ func (target *validatedStaplerTarget) captureRegularFileFingerprint(ctx context.
 		return staplerRegularFileFingerprint{}, errStaplerInventoryChanged
 	}
 	if openedInfo.Size() < 0 || openedInfo.Size() > staplerInventoryMaxBytes {
-		return staplerRegularFileFingerprint{}, fmt.Errorf("regular-file content exceeds %d bytes", staplerInventoryMaxBytes)
+		return staplerRegularFileFingerprint{}, errStaplerRegularFileFingerprintTooLarge
 	}
 
 	digest := sha256.New()

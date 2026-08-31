@@ -300,6 +300,196 @@ func TestNotarizationValidateRejectsSameInodeRegularFileRewriteAfterValidation(t
 	}
 }
 
+func TestNotarizationStapleRejectsOversizedRegularFileBeforeRunner(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "oversized.dmg")
+	if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Truncate(targetPath, staplerInventoryMaxBytes+1); err != nil {
+		t.Fatalf("sparsely grow target: %v", err)
+	}
+
+	previous := runStaplerStaple
+	runnerCalls := 0
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, _ localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		runnerCalls++
+		return &localxcode.StaplerResult{
+			Path:      path,
+			Operation: string(localxcode.StaplerOperationStaple),
+			Stapled:   true,
+			Validated: true,
+		}, nil
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want preflight size rejection")
+	}
+	if runnerCalls != 0 {
+		t.Fatalf("stapler runner calls = %d, want zero before fingerprint-size validation", runnerCalls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "could not inspect artifact filesystem") {
+		t.Fatalf("stderr = %q, want stable filesystem diagnostic", stderr)
+	}
+	if strings.Contains(stderr, targetPath) || strings.Contains(stderr, strconv.FormatInt(staplerInventoryMaxBytes, 10)) {
+		t.Fatalf("stderr = %q, must not expose target path or private size cap", stderr)
+	}
+}
+
+func TestNotarizationStapleRejectsRegularFileGrowthBeforeChild(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "growing.dmg")
+	if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	previous := runStaplerStaple
+	childCalls := 0
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := os.Truncate(targetPath, staplerInventoryMaxBytes+1); err != nil {
+			t.Fatalf("grow target before staple: %v", err)
+		}
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		childCalls++
+		return &localxcode.StaplerResult{
+			Path:      path,
+			Operation: string(localxcode.StaplerOperationStaple),
+			Stapled:   true,
+			Validated: true,
+		}, nil
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want growth rejection before child")
+	}
+	if childCalls != 0 {
+		t.Fatalf("stapler child calls = %d, want zero after pre-child growth rejection", childCalls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "could not inspect artifact filesystem") {
+		t.Fatalf("stderr = %q, want stable filesystem diagnostic", stderr)
+	}
+	if strings.Contains(stderr, targetPath) || strings.Contains(stderr, strconv.FormatInt(staplerInventoryMaxBytes, 10)) {
+		t.Fatalf("stderr = %q, must not expose target path or private size cap", stderr)
+	}
+}
+
+func TestNotarizationStapleRejectsOversizedDirectoryBeforeRunner(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	oversizedPath := filepath.Join(targetPath, "Contents", "Oversized.bin")
+	if err := os.MkdirAll(filepath.Dir(oversizedPath), 0o755); err != nil {
+		t.Fatalf("create bundle contents: %v", err)
+	}
+	if err := os.WriteFile(oversizedPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write oversized fixture: %v", err)
+	}
+	if err := os.Truncate(oversizedPath, staplerInventoryMaxBytes+1); err != nil {
+		t.Fatalf("sparsely grow oversized fixture: %v", err)
+	}
+
+	previous := runStaplerStaple
+	runnerCalls := 0
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, _ localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		runnerCalls++
+		return &localxcode.StaplerResult{
+			Path:      path,
+			Operation: string(localxcode.StaplerOperationStaple),
+			Stapled:   true,
+			Validated: true,
+		}, nil
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want preflight inventory-size rejection")
+	}
+	if runnerCalls != 0 {
+		t.Fatalf("stapler runner calls = %d, want zero before inventory-size validation", runnerCalls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "could not inspect artifact filesystem") {
+		t.Fatalf("stderr = %q, want stable filesystem diagnostic", stderr)
+	}
+	if strings.Contains(stderr, targetPath) || strings.Contains(stderr, strconv.FormatInt(staplerInventoryMaxBytes, 10)) {
+		t.Fatalf("stderr = %q, must not expose target path or private size cap", stderr)
+	}
+}
+
+func TestNotarizationStapleRejectsDirectoryOverEntryCapBeforeRunner(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	if err := os.Mkdir(targetPath, 0o755); err != nil {
+		t.Fatalf("create bundle: %v", err)
+	}
+
+	previousNames := readdirStaplerInventoryNamesFn
+	readdirStaplerInventoryNamesFn = func(_ *os.File, _ int) ([]string, error) {
+		return make([]string, staplerInventoryMaxEntries), io.EOF
+	}
+	t.Cleanup(func() { readdirStaplerInventoryNamesFn = previousNames })
+
+	previous := runStaplerStaple
+	runnerCalls := 0
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, _ localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		runnerCalls++
+		return &localxcode.StaplerResult{
+			Path:      path,
+			Operation: string(localxcode.StaplerOperationStaple),
+			Stapled:   true,
+			Validated: true,
+		}, nil
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want preflight entry-cap rejection")
+	}
+	if runnerCalls != 0 {
+		t.Fatalf("stapler runner calls = %d, want zero before entry-cap validation", runnerCalls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed before stapling") {
+		t.Fatalf("stderr = %q, want stable entry-cap diagnostic", stderr)
+	}
+	if strings.Contains(stderr, targetPath) || strings.Contains(stderr, strconv.Itoa(staplerInventoryMaxEntries)) {
+		t.Fatalf("stderr = %q, must not expose target path or private entry cap", stderr)
+	}
+}
+
 func TestValidateStaplerTargetResolvesRelativeParentFromPhysicalWorkingDirectory(t *testing.T) {
 	workspace := t.TempDir()
 	physical := filepath.Join(workspace, "physical")
@@ -405,6 +595,89 @@ func TestValidateStaplerTargetRejectsRelativeTargetAfterCWDReplacement(t *testin
 	if isStaplerTargetUsageError(err) {
 		t.Fatalf("validateStaplerTargetDetails() error = %v, want closed operational cwd identity failure", err)
 	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("validateStaplerTargetDetails() error = %T %v, want proven cwd identity error", err, err)
+	}
+	var verifyErr *staplerTargetVerifyError
+	if errors.As(err, &verifyErr) {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, cwd replacement must not be operational verification", err)
+	}
+}
+
+func TestStaplerTargetRetainedWorkingDirectoryHandleFailureIsOperational(t *testing.T) {
+	target := newRelativeStaplerTargetForTest(t)
+	if err := target.workingDirectory.Close(); err != nil {
+		t.Fatalf("close retained working directory: %v", err)
+	}
+
+	err := target.verifyIdentity("before validation")
+	if err == nil {
+		t.Fatal("verifyIdentity() = nil, want retained-cwd stat failure")
+	}
+	var verifyErr *staplerTargetVerifyError
+	if !errors.As(err, &verifyErr) {
+		t.Fatalf("verifyIdentity() error = %T %v, want operational verification error", err, err)
+	}
+	var identityErr *staplerTargetIdentityError
+	if errors.As(err, &identityErr) {
+		t.Fatalf("verifyIdentity() error = %v, closed retained handle must not imply cwd replacement", err)
+	}
+}
+
+func TestStaplerTargetRetainedWorkingDirectoryPathFailureIsOperational(t *testing.T) {
+	target := newRelativeStaplerTargetForTest(t)
+	previous := statStaplerWorkingDirectoryPathFn
+	statStaplerWorkingDirectoryPathFn = func(string) (os.FileInfo, error) {
+		return nil, syscall.EACCES
+	}
+	t.Cleanup(func() { statStaplerWorkingDirectoryPathFn = previous })
+
+	err := target.verifyIdentity("before validation")
+	if err == nil {
+		t.Fatal("verifyIdentity() = nil, want retained-cwd path stat failure")
+	}
+	var verifyErr *staplerTargetVerifyError
+	if !errors.As(err, &verifyErr) {
+		t.Fatalf("verifyIdentity() error = %T %v, want operational verification error", err, err)
+	}
+	var identityErr *staplerTargetIdentityError
+	if errors.As(err, &identityErr) {
+		t.Fatalf("verifyIdentity() error = %v, EACCES must not imply cwd replacement", err)
+	}
+	if !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("verifyIdentity() error = %v, want retained EACCES cause", err)
+	}
+}
+
+func newRelativeStaplerTargetForTest(t *testing.T) *validatedStaplerTarget {
+	t.Helper()
+	directory := t.TempDir()
+	pathValue := filepath.Join(directory, "target.dmg")
+	if err := os.WriteFile(pathValue, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write relative target: %v", err)
+	}
+	originalCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get original cwd: %v", err)
+	}
+	if err := os.Chdir(directory); err != nil {
+		t.Fatalf("change cwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalCWD); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+	target, err := validateStaplerTargetDetails("target.dmg")
+	if err != nil {
+		t.Fatalf("validate relative target: %v", err)
+	}
+	t.Cleanup(target.close)
+	if target.workingDirectory == nil {
+		t.Fatal("validated target retained no working-directory handle")
+	}
+	return target
 }
 
 func TestNotarizationValidateRejectsDirectoryQualifiedRegularFile(t *testing.T) {

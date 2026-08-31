@@ -293,6 +293,53 @@ func TestStapleWithVerifierKeepsPreStapleVerifierFailureOrdinary(t *testing.T) {
 	assertStaplerCommands(t, logPath, []string{"xcrun|--find|stapler"})
 }
 
+func TestStapleWithVerifierDoesNotMarkStartFailureAsPartialMutation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	lookupCommandContext := commandContextFn
+	previousCommandContext := commandContextFn
+	commandContextFn = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "xcrun" && len(args) == 2 && args[0] == "--find" && args[1] == "stapler" {
+			return lookupCommandContext(ctx, name, args...)
+		}
+		return exec.CommandContext(ctx, filepath.Join(t.TempDir(), "missing-stapler"), args...)
+	}
+	t.Cleanup(func() { commandContextFn = previousCommandContext })
+	verifierErr := errors.New("target changed after a child start failure")
+
+	result, err := StapleWithVerifier(context.Background(), target, nil, func(operation StaplerOperation, before bool) error {
+		if operation == StaplerOperationStaple && !before {
+			return verifierErr
+		}
+		return nil
+	})
+	if result != nil {
+		t.Fatalf("StapleWithVerifier() result = %#v, want nil after child start failure", result)
+	}
+	if err == nil || !errors.Is(err, verifierErr) {
+		t.Fatalf("StapleWithVerifier() error = %v, want verifier cause", err)
+	}
+	var partialErr *StaplerPartialMutationError
+	if errors.As(err, &partialErr) {
+		t.Fatalf("StapleWithVerifier() error = %v, child that never started must not be partial mutation", err)
+	}
+	var stageErr *StaplerStageVerificationError
+	if !errors.As(err, &stageErr) || stageErr.Before {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want joined post-staple stage error", err, err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationStaple) {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want retained staple start failure", err, err)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+	})
+}
+
 func TestStapleWithVerifierMarksCancellationBeforeFollowUpValidation(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
