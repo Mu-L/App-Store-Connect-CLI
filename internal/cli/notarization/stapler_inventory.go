@@ -52,6 +52,112 @@ type staplerDirectoryInventory struct {
 	entryCount int
 }
 
+// staplerRegularFileFingerprint binds a regular-file target by both its exact
+// byte content and its size. The outer target's inode identity alone is not
+// sufficient: an in-place rewrite can preserve the same device/inode pair.
+// This remains private comparison evidence and is never serialized or exposed
+// in command output.
+type staplerRegularFileFingerprint struct {
+	digest    [sha256.Size]byte
+	sizeBytes int64
+}
+
+func (fingerprint staplerRegularFileFingerprint) equal(other staplerRegularFileFingerprint) bool {
+	return fingerprint.digest == other.digest && fingerprint.sizeBytes == other.sizeBytes
+}
+
+func (target *validatedStaplerTarget) captureRegularFileFingerprint(ctx context.Context) (staplerRegularFileFingerprint, error) {
+	if target == nil || target.directory || target.identity == nil || target.handle == nil {
+		return staplerRegularFileFingerprint{}, errors.New("regular-file target is missing")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return staplerRegularFileFingerprint{}, err
+	}
+	pinned, err := target.pinnedIdentity()
+	if err != nil {
+		return staplerRegularFileFingerprint{}, err
+	}
+	if !os.SameFile(target.identity, pinned) || !pinned.Mode().IsRegular() {
+		return staplerRegularFileFingerprint{}, errStaplerInventoryChanged
+	}
+	file, err := target.open()
+	if err != nil {
+		return staplerRegularFileFingerprint{}, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return staplerRegularFileFingerprint{}, err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(target.identity, openedInfo) {
+		return staplerRegularFileFingerprint{}, errStaplerInventoryChanged
+	}
+	if openedInfo.Size() < 0 || openedInfo.Size() > staplerInventoryMaxBytes {
+		return staplerRegularFileFingerprint{}, fmt.Errorf("regular-file content exceeds %d bytes", staplerInventoryMaxBytes)
+	}
+
+	digest := sha256.New()
+	reader := &staplerInventoryExactReader{
+		ctx:       ctx,
+		reader:    file,
+		remaining: openedInfo.Size(),
+	}
+	written, err := io.Copy(digest, reader)
+	if err != nil {
+		return staplerRegularFileFingerprint{}, err
+	}
+	if written != openedInfo.Size() {
+		return staplerRegularFileFingerprint{}, errStaplerInventoryChanged
+	}
+	finalInfo, err := file.Stat()
+	if err != nil {
+		return staplerRegularFileFingerprint{}, err
+	}
+	if !finalInfo.Mode().IsRegular() || !os.SameFile(openedInfo, finalInfo) ||
+		finalInfo.Size() != written || !staplerInventoryInfoStable(openedInfo, finalInfo) {
+		return staplerRegularFileFingerprint{}, errStaplerInventoryChanged
+	}
+	finalPinned, err := target.pinnedIdentity()
+	if err != nil {
+		return staplerRegularFileFingerprint{}, err
+	}
+	if !os.SameFile(target.identity, finalPinned) || !finalPinned.Mode().IsRegular() {
+		return staplerRegularFileFingerprint{}, errStaplerInventoryChanged
+	}
+	var result staplerRegularFileFingerprint
+	copy(result.digest[:], digest.Sum(nil))
+	result.sizeBytes = written
+	return result, nil
+}
+
+func (target *validatedStaplerTarget) captureRegularFileFingerprintAtStage(ctx context.Context, stage string) (staplerRegularFileFingerprint, error) {
+	fingerprint, err := target.captureRegularFileFingerprint(ctx)
+	if err == nil {
+		return fingerprint, nil
+	}
+	if errors.Is(err, errStaplerInventoryChanged) {
+		return staplerRegularFileFingerprint{}, &staplerTargetIdentityError{stage: stage}
+	}
+	return staplerRegularFileFingerprint{}, &staplerTargetVerifyError{stage: stage, err: err}
+}
+
+func (target *validatedStaplerTarget) verifyRegularFileFingerprint(ctx context.Context, expected staplerRegularFileFingerprint, stage string) error {
+	actual, err := target.captureRegularFileFingerprint(ctx)
+	if err != nil {
+		if errors.Is(err, errStaplerInventoryChanged) {
+			return &staplerTargetIdentityError{stage: stage}
+		}
+		return &staplerTargetVerifyError{stage: stage, err: err}
+	}
+	if !actual.equal(expected) {
+		return &staplerTargetIdentityError{stage: stage}
+	}
+	return nil
+}
+
 func (inventory staplerDirectoryInventory) equal(other staplerDirectoryInventory) bool {
 	return inventory.digest == other.digest &&
 		inventory.sizeBytes == other.sizeBytes &&
@@ -265,6 +371,7 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 		return err
 	}
 	initialEntries := make(map[string]os.FileInfo, len(names))
+	initialSymlinkTargets := make(map[string]string)
 	for _, name := range names {
 		if err := scanner.checkContext(); err != nil {
 			return err
@@ -281,10 +388,19 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 			return fmt.Errorf("inspect inventory entry %q: %w", entryRelative, err)
 		}
 		initialEntries[name] = info
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("inventory entry %q is a symlink", entryRelative)
-		}
 		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := directory.Readlink(name)
+			if err != nil {
+				return fmt.Errorf("read inventory symlink %q: %w", entryRelative, err)
+			}
+			if !staplerContainedSymlinkTarget(entryRelative, target) {
+				return fmt.Errorf("inventory symlink %q escapes the bundle", entryRelative)
+			}
+			initialSymlinkTargets[name] = target
+			if err := scanner.recordSymlink(entryRelative, info, target); err != nil {
+				return err
+			}
 		case info.IsDir():
 			if err := scanner.recordDirectory(directory, name, entryRelative, info); err != nil {
 				return err
@@ -333,11 +449,21 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 			}
 			return fmt.Errorf("reinspect inventory entry %q: %w", entryRelative, err)
 		}
-		if initial == nil || current.Mode()&os.ModeSymlink != 0 ||
+		if initial == nil ||
 			initial.IsDir() != current.IsDir() ||
 			initial.Mode().IsRegular() != current.Mode().IsRegular() ||
 			!staplerInventoryInfoStable(initial, current) {
 			return errStaplerInventoryChanged
+		}
+		if current.Mode()&os.ModeSymlink != 0 {
+			initialTarget, ok := initialSymlinkTargets[name]
+			if !ok {
+				return errStaplerInventoryChanged
+			}
+			currentTarget, readErr := directory.Readlink(name)
+			if readErr != nil || currentTarget != initialTarget || !staplerContainedSymlinkTarget(entryRelative, currentTarget) {
+				return errStaplerInventoryChanged
+			}
 		}
 	}
 	final, err := directory.Stat(".")
@@ -438,6 +564,19 @@ func (scanner *staplerInventoryScanner) recordDirectoryEntry(relative string, in
 	return nil
 }
 
+func (scanner *staplerInventoryScanner) recordSymlink(relative string, info os.FileInfo, target string) error {
+	if info == nil || info.Mode()&os.ModeSymlink == 0 || target == "" {
+		return errStaplerInventoryChanged
+	}
+	if err := scanner.noteEntry(relative); err != nil {
+		return err
+	}
+	targetBytes := []byte(target)
+	digest := sha256.Sum256(targetBytes)
+	writeStaplerInventoryEntry(scanner.treeHash, 'l', relative, info.Mode(), int64(len(targetBytes)), digest[:])
+	return nil
+}
+
 func (scanner *staplerInventoryScanner) recordFile(parent *os.Root, name, relative string, before os.FileInfo) error {
 	if err := scanner.checkContext(); err != nil {
 		return err
@@ -502,6 +641,23 @@ func (scanner *staplerInventoryScanner) noteEntry(relative string) error {
 	}
 	scanner.entryCount++
 	return nil
+}
+
+// staplerContainedSymlinkTarget validates a symlink lexically without opening
+// or following its target. A link may point at another entry inside the
+// selected bundle, including a relative target from a nested directory, but
+// absolute and escaping targets are rejected before they can affect later
+// inspection.
+func staplerContainedSymlinkTarget(relative, target string) bool {
+	if target == "" {
+		return false
+	}
+	targetSlash := filepath.ToSlash(target)
+	if path.IsAbs(targetSlash) || filepath.IsAbs(target) || filepath.VolumeName(target) != "" {
+		return false
+	}
+	resolved := path.Clean(path.Join(path.Dir(filepath.ToSlash(relative)), targetSlash))
+	return resolved != ".." && !strings.HasPrefix(resolved, "../")
 }
 
 func (scanner *staplerInventoryScanner) checkContext() error {

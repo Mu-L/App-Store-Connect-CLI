@@ -40,6 +40,10 @@ var (
 	openStaplerTargetFileFn = func(root rootfs.Root, relative string) (*os.File, error) {
 		return root.OpenFile(relative)
 	}
+	// afterStaplerPathResolutionFn is a narrow test seam for cwd replacement
+	// races between resolving a relative path and opening the selected target.
+	// Production leaves it nil.
+	afterStaplerPathResolutionFn func()
 )
 
 // SetOpenStaplerLexicalDirectoryForTesting replaces the rooted directory open
@@ -196,12 +200,28 @@ Examples:
 
 			var expectedInventory staplerDirectoryInventory
 			inventoryCaptured := false
+			var expectedFingerprint staplerRegularFileFingerprint
+			fingerprintCaptured := false
 			result, runErr := runStaplerStaple(ctx, pathValue, os.Stderr, func(operation localxcode.StaplerOperation, before bool) error {
 				stage := staplerStageDescription(operation, before)
 				if err := target.verifyIdentity(stage); err != nil {
 					return err
 				}
 				if !target.directory {
+					switch {
+					case operation == localxcode.StaplerOperationStaple && !before:
+						fingerprint, err := target.captureRegularFileFingerprintAtStage(ctx, "after stapling")
+						if err != nil {
+							return err
+						}
+						expectedFingerprint = fingerprint
+						fingerprintCaptured = true
+					case operation == localxcode.StaplerOperationValidate:
+						if !fingerprintCaptured {
+							return &staplerTargetVerifyError{stage: stage, err: errors.New("artifact file fingerprint is unavailable")}
+						}
+						return target.verifyRegularFileFingerprint(ctx, expectedFingerprint, stage)
+					}
 					return nil
 				}
 				switch {
@@ -306,12 +326,28 @@ Examples:
 
 			var expectedInventory staplerDirectoryInventory
 			inventoryCaptured := false
+			var expectedFingerprint staplerRegularFileFingerprint
+			fingerprintCaptured := false
 			result, runErr := runStaplerValidate(ctx, pathValue, os.Stderr, func(operation localxcode.StaplerOperation, before bool) error {
 				stage := staplerStageDescription(operation, before)
 				if err := target.verifyIdentity(stage); err != nil {
 					return err
 				}
 				if !target.directory {
+					switch {
+					case operation == localxcode.StaplerOperationValidate && before:
+						fingerprint, err := target.captureRegularFileFingerprintAtStage(ctx, "before validation")
+						if err != nil {
+							return err
+						}
+						expectedFingerprint = fingerprint
+						fingerprintCaptured = true
+					case operation == localxcode.StaplerOperationValidate && !before:
+						if !fingerprintCaptured {
+							return &staplerTargetVerifyError{stage: stage, err: errors.New("artifact file fingerprint is unavailable")}
+						}
+						return target.verifyRegularFileFingerprint(ctx, expectedFingerprint, "after validation")
+					}
 					return nil
 				}
 				switch {
@@ -398,11 +434,17 @@ func validateStaplerTarget(pathValue string) (string, error) {
 }
 
 type validatedStaplerTarget struct {
-	path      string
-	root      rootfs.Root
-	relative  string
-	directory bool
-	identity  os.FileInfo
+	path     string
+	root     rootfs.Root
+	relative string
+	// workingDirectory is retained for relative operator paths. Holding the
+	// descriptor prevents the original cwd identity from being recycled while
+	// the command runs; workingDirectoryPath is checked before every stage so a
+	// renamed/replaced cwd cannot redirect the child pathname to another tree.
+	workingDirectory     *os.File
+	workingDirectoryPath string
+	directory            bool
+	identity             os.FileInfo
 	// handle stays open for the whole operation. Retaining the descriptor
 	// keeps the artifact's inode allocated, so a replacement cannot receive
 	// the recycled file ID and then satisfy os.SameFile against the recorded
@@ -416,6 +458,9 @@ func (target *validatedStaplerTarget) close() {
 	}
 	if target.handle != nil {
 		_ = target.handle.Close()
+	}
+	if target.workingDirectory != nil {
+		_ = target.workingDirectory.Close()
 	}
 	_ = target.root.Close()
 }
@@ -469,6 +514,9 @@ func (target *validatedStaplerTarget) verifyIdentity(stage string) error {
 	if target == nil || target.identity == nil {
 		return &staplerTargetIdentityError{stage: stage}
 	}
+	if err := target.verifyWorkingDirectory(); err != nil {
+		return &staplerTargetIdentityError{stage: stage}
+	}
 	pinned, err := target.pinnedIdentity()
 	if err != nil {
 		return &staplerTargetVerifyError{stage: stage, err: err}
@@ -497,7 +545,7 @@ func (target *validatedStaplerTarget) verifyIdentity(stage string) error {
 // open error's text, so a vanished target, a kind flip, or a replacement by a
 // symlink stays an identity failure while every other cause stays operational.
 func (target *validatedStaplerTarget) classifyStageOpenFailure(stage string, openErr error) error {
-	info, probeErr := probeStaplerTargetKindFn(target.root, target.relative)
+	info, probeErr := target.probeKind()
 	if probeErr != nil {
 		if errors.Is(probeErr, os.ErrNotExist) || errors.Is(probeErr, syscall.ENOTDIR) {
 			return &staplerTargetIdentityError{stage: stage}
@@ -538,6 +586,43 @@ func (target *validatedStaplerTarget) open() (*os.File, error) {
 		return openStaplerTargetDirectoryFn(target.root, target.relative)
 	}
 	return openStaplerTargetFileFn(target.root, target.relative)
+}
+
+func (target *validatedStaplerTarget) probeKind() (os.FileInfo, error) {
+	if target == nil {
+		return nil, errors.New("artifact target is missing")
+	}
+	if err := target.verifyWorkingDirectory(); err != nil {
+		return nil, err
+	}
+	return probeStaplerTargetKindFn(target.root, target.relative)
+}
+
+func (target *validatedStaplerTarget) verifyWorkingDirectory() error {
+	if target == nil || target.workingDirectory == nil {
+		return nil
+	}
+	return verifyStaplerWorkingDirectory(target.workingDirectory, target.workingDirectoryPath)
+}
+
+var errStaplerWorkingDirectoryChanged = errors.New("current working directory changed during artifact validation")
+
+func verifyStaplerWorkingDirectory(handle *os.File, pathValue string) error {
+	if handle == nil || pathValue == "" {
+		return nil
+	}
+	expected, err := handle.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Stat(pathValue)
+	if err != nil {
+		return errStaplerWorkingDirectoryChanged
+	}
+	if !expected.IsDir() || !os.SameFile(expected, current) {
+		return errStaplerWorkingDirectoryChanged
+	}
+	return nil
 }
 
 // errStaplerTargetRaced marks a target that changed between the kind probe and
@@ -651,10 +736,16 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 		return nil, newStaplerTargetUsageError(errors.New("--file must not contain a NUL byte"))
 	}
 	requiresDirectory := staplerPathRequiresDirectory(pathValue)
-	absolute, err := resolveStaplerPath(pathValue)
+	absolute, workingDirectoryPath, workingDirectory, err := resolveStaplerPathWithWorkingDirectory(pathValue)
 	if err != nil {
 		return nil, fmt.Errorf("resolve --file: %w", err)
 	}
+	keepWorkingDirectory := false
+	defer func() {
+		if !keepWorkingDirectory && workingDirectory != nil {
+			_ = workingDirectory.Close()
+		}
+	}()
 	if err := rejectSymlinkedLexicalParentTraversal(absolute); err != nil {
 		if errors.Is(err, rootfs.ErrSymlink) {
 			return nil, newStaplerTargetUsageError(errors.New("artifact path contains a symlinked component before lexical parent traversal"))
@@ -670,6 +761,14 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 	absolute = filepath.Clean(absolute)
 	if strings.EqualFold(filepath.Ext(absolute), ".zip") {
 		return nil, newStaplerTargetUsageError(errors.New("zip archives cannot be stapled or validated directly; staple the contained item and recreate the archive"))
+	}
+	if workingDirectory != nil && afterStaplerPathResolutionFn != nil {
+		afterStaplerPathResolutionFn()
+	}
+	if workingDirectory != nil {
+		if err := verifyStaplerWorkingDirectory(workingDirectory, workingDirectoryPath); err != nil {
+			return nil, &staplerTargetVerifyError{stage: "resolving current directory", err: err}
+		}
 	}
 
 	root, relative, err := newStaplerTargetRoot(absolute)
@@ -700,13 +799,16 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 		}
 		keepRoot = true
 		keepHandle = true
+		keepWorkingDirectory = true
 		return &validatedStaplerTarget{
-			path:      absolute,
-			root:      root,
-			relative:  relative,
-			directory: true,
-			identity:  openedInfo,
-			handle:    opened,
+			path:                 absolute,
+			root:                 root,
+			relative:             relative,
+			directory:            true,
+			identity:             openedInfo,
+			handle:               opened,
+			workingDirectory:     workingDirectory,
+			workingDirectoryPath: workingDirectoryPath,
 		}, nil
 	}
 
@@ -753,12 +855,15 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 	}
 	keepRoot = true
 	keepHandle = true
+	keepWorkingDirectory = true
 	return &validatedStaplerTarget{
-		path:     absolute,
-		root:     root,
-		relative: relative,
-		identity: openedInfo,
-		handle:   opened,
+		path:                 absolute,
+		root:                 root,
+		relative:             relative,
+		identity:             openedInfo,
+		handle:               opened,
+		workingDirectory:     workingDirectory,
+		workingDirectoryPath: workingDirectoryPath,
 	}, nil
 }
 
@@ -779,49 +884,56 @@ func staplerPathRequiresDirectory(pathValue string) bool {
 	return separator >= 0 && trimmed[separator+1:] == "."
 }
 
-// resolveStaplerPath anchors relative paths to the physical current working
-// directory. os.Getwd may return the logical PWD spelling when the process was
-// launched through a symlink; cleaning a relative path against that spelling
-// would make "../artifact" refer to a different directory than the kernel's
-// current-directory handle.
-func resolveStaplerPath(pathValue string) (string, error) {
-	if filepath.IsAbs(pathValue) {
-		return pathValue, nil
-	}
-	physicalCWD, err := staplerPhysicalWorkingDirectory()
+func staplerPhysicalWorkingDirectory() (string, error) {
+	_, physicalCWD, currentDir, err := resolveStaplerPathWithWorkingDirectory(".")
 	if err != nil {
 		return "", err
 	}
-	return physicalCWD + string(filepath.Separator) + pathValue, nil
+	if currentDir != nil {
+		defer currentDir.Close()
+	}
+	return physicalCWD, nil
 }
 
-func staplerPhysicalWorkingDirectory() (string, error) {
+// resolveStaplerPathWithWorkingDirectory resolves a relative artifact path
+// against the physical cwd while retaining the descriptor used to establish
+// that identity. The descriptor remains open with the validated target, so a
+// cwd rename/replacement cannot silently select a different tree between path
+// resolution and the stage checks that precede each child invocation.
+func resolveStaplerPathWithWorkingDirectory(pathValue string) (string, string, *os.File, error) {
+	if filepath.IsAbs(pathValue) {
+		return pathValue, "", nil, nil
+	}
 	currentDir, err := os.Open(".")
 	if err != nil {
-		return "", fmt.Errorf("open current directory: %w", err)
+		return "", "", nil, fmt.Errorf("open current directory: %w", err)
 	}
-	defer currentDir.Close()
 	currentInfo, err := currentDir.Stat()
 	if err != nil {
-		return "", fmt.Errorf("stat current directory: %w", err)
+		_ = currentDir.Close()
+		return "", "", nil, fmt.Errorf("stat current directory: %w", err)
 	}
 	logicalCWD, err := os.Getwd()
 	if err != nil {
-		return "", err
+		_ = currentDir.Close()
+		return "", "", nil, err
 	}
 	physicalCWD, err := filepath.EvalSymlinks(logicalCWD)
 	if err != nil {
-		return "", fmt.Errorf("resolve physical current directory: %w", err)
+		_ = currentDir.Close()
+		return "", "", nil, fmt.Errorf("resolve physical current directory: %w", err)
 	}
 	physicalCWD = filepath.Clean(physicalCWD)
 	physicalInfo, err := os.Stat(physicalCWD)
 	if err != nil {
-		return "", fmt.Errorf("stat physical current directory: %w", err)
+		_ = currentDir.Close()
+		return "", "", nil, fmt.Errorf("stat physical current directory: %w", err)
 	}
 	if !os.SameFile(currentInfo, physicalInfo) {
-		return "", errors.New("current directory changed while resolving its physical path")
+		_ = currentDir.Close()
+		return "", "", nil, errors.New("current directory changed while resolving its physical path")
 	}
-	return physicalCWD, nil
+	return physicalCWD + string(filepath.Separator) + pathValue, physicalCWD, currentDir, nil
 }
 
 type lexicalStaplerPathComponent struct {

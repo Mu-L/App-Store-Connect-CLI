@@ -117,6 +117,31 @@ type StaplerPartialMutationError struct {
 	Err         error
 }
 
+// staplerDiagnosticOutputError records a failure copying diagnostics after a
+// stapler child was started. A successful child may already have changed the
+// artifact before its output becomes unwriteable, so the staple caller must
+// preserve the partial-mutation warning. The public marker is stable while the
+// original writer/process cause remains available through Unwrap.
+type staplerDiagnosticOutputError struct {
+	err error
+}
+
+func (e *staplerDiagnosticOutputError) Error() string {
+	return "stapler diagnostic output could not be copied"
+}
+
+func (e *staplerDiagnosticOutputError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func isStaplerDiagnosticOutputError(err error) bool {
+	var outputErr *staplerDiagnosticOutputError
+	return errors.As(err, &outputErr)
+}
+
 func (e *StaplerPartialMutationError) Error() string {
 	if e == nil {
 		return "stapler follow-up validation failed after staple; artifact may have been modified but was not verified"
@@ -179,6 +204,12 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 		}
 	}
 	if stapleErr != nil {
+		if isStaplerDiagnosticOutputError(stapleErr) {
+			return nil, &StaplerPartialMutationError{
+				Operation: StaplerOperationStaple,
+				Err:       stapleErr,
+			}
+		}
 		if isStaplerOperationAttemptedCancellation(stapleErr) || isStaplerOperationAttemptedSignal(stapleErr) {
 			return nil, &StaplerPartialMutationError{
 				Operation:   StaplerOperationStaple,
@@ -397,7 +428,11 @@ func runStaplerChildCommand(ctx context.Context, operation StaplerOperation, pat
 		return false, formatCommandOutputError(ctx, err, outputWindow, string(operation), "xcrun stapler", true)
 	}
 	if err := normalizeXcodeCommandWaitError(cmd, cmd.Wait()); err != nil {
-		return true, formatCommandOutputError(ctx, err, outputWindow, string(operation), "xcrun stapler", true)
+		formatted := formatCommandOutputError(ctx, err, outputWindow, string(operation), "xcrun stapler", true)
+		if cmd.ProcessState != nil && cmd.ProcessState.Success() {
+			return true, &staplerDiagnosticOutputError{err: formatted}
+		}
+		return true, formatted
 	}
 	return true, nil
 }

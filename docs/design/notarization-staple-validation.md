@@ -89,15 +89,27 @@ captures one immediately before its child. The inventory is a deterministic
 SHA-256 over every relative entry's kind, normalized relative path, permission
 mode, size, and file SHA-256, together with total byte and entry counts. The
 scanner is rooted at the already pinned filesystem root, opens directories and
-files without following final symlinks, rejects symlinks and special files, and
-rechecks each entry's identity, size, and mode after reading it. It checks the
-active context between entries and reads and fails closed at bounded path,
-entry, and total-byte limits. A second inventory is required after validation;
-any mismatch is an unverified artifact change and cannot produce success. The
-inventory is comparison evidence only: paths, names, digests, and raw scanner
-causes never enter public output or telemetry. Extended attributes and
-filesystem ACLs remain outside this content digest and are not represented as
-unchanged by it.
+files without following final symlinks. Contained relative symlinks are
+accepted and recorded as link entries using their raw target length and a
+SHA-256 of the target text; absolute or lexically escaping links are rejected,
+and no link target is followed by the scanner. Special files remain rejected.
+Every entry is rechecked for identity, size, mode, and (for links) unchanged
+target text after it is read. It checks the active context between entries and
+reads and fails closed at bounded path, entry, and total-byte limits. A second
+inventory is required after validation; any mismatch is an unverified artifact
+change and cannot produce success. The inventory is comparison evidence only:
+paths, names, digests, and raw scanner causes never enter public output or
+telemetry. Extended attributes and filesystem ACLs remain outside this content
+digest and are not represented as unchanged by it.
+
+Regular-file targets receive the same bounded byte binding at each stage
+boundary. The command captures a size and SHA-256 fingerprint after stapling
+and compares it before and after the follow-up validation; validate-only
+captures before validation and compares after. A same-inode rewrite therefore
+cannot pass only because its outer device/inode identity was retained. Relative
+paths retain an open descriptor for the physical current directory while the
+operation runs and revalidate that directory identity before each stage, so a
+cwd rename/replacement is rejected before a child receives the old pathname.
 
 A stage boundary distinguishes a proven replacement from a boundary that could
 not be evaluated. A `SameFile` mismatch, a vanished target, a kind flip, or a
@@ -117,7 +129,10 @@ or signal failure represented by the typed runner error keeps its underlying
 cause for internal classification but emits only a stable stage diagnostic, so
 an executable or temporary path from the operating system is not exposed.
 Non-NotFound `xcrun` lookup failures use the same closed resolution-stage
-diagnostic while retaining the lookup cause internally.
+diagnostic while retaining the lookup cause internally. If a staple child has
+already completed successfully but its diagnostic writer fails, the runner
+returns the writer/process cause as a partial-mutation failure and does not
+claim an unverified success result.
 
 Successful computed output is represented by exported structs in
 `internal/asc/output_notary.go` and registered with the normal output registry:
@@ -206,7 +221,8 @@ The wrapper keeps the validated target identity anchored through each local
 stage, but Apple's stapler accepts a pathname rather than the wrapper's open
 descriptor. A concurrent replacement can still occur after an identity check
 and before or during the child process; the wrapper detects replacements at the
-stage boundaries and the bounded directory inventory detects content changes
-between those boundaries, but neither can eliminate the provider/path-based
-TOCTOU window during the child itself. A regular-file target has no recursive
-inventory and remains protected by descriptor and outer identity checks only.
+stage boundaries and the bounded directory/regular-file bindings detect
+content changes between those boundaries, but neither can eliminate the
+provider/path-based TOCTOU window during the child itself. Regular-file
+fingerprints are comparison evidence and are not a rollback or atomicity
+guarantee.

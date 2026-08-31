@@ -181,6 +181,125 @@ func TestValidateStaplerTargetPreservesTrailingWhitespace(t *testing.T) {
 	}
 }
 
+func TestStaplerRegularFileFingerprintBindsSameSizeBytes(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(targetPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+
+	expected, err := target.captureRegularFileFingerprintAtStage(context.Background(), "after stapling")
+	if err != nil {
+		t.Fatalf("capture regular-file fingerprint: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("changed!"), 0o600); err != nil {
+		t.Fatalf("rewrite target: %v", err)
+	}
+	err = target.verifyRegularFileFingerprint(context.Background(), expected, "before validation")
+	if err == nil {
+		t.Fatal("verifyRegularFileFingerprint() = nil, want same-size byte mismatch")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("verifyRegularFileFingerprint() error = %T %v, want identity error", err, err)
+	}
+	if strings.Contains(err.Error(), targetPath) {
+		t.Fatalf("verification error = %q, must not expose target path", err.Error())
+	}
+}
+
+func TestNotarizationStapleRejectsSameInodeRegularFileRewriteBeforeValidation(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(targetPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previous := runStaplerStaple
+	validationChildCalls := 0
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, false); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(targetPath, []byte("changed!"), 0o600); err != nil {
+			t.Fatalf("rewrite target: %v", err)
+		}
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationValidate, true); err != nil {
+			return nil, err
+		}
+		validationChildCalls++
+		return &localxcode.StaplerResult{Path: path, Operation: string(localxcode.StaplerOperationStaple), Stapled: true, Validated: true}, nil
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want same-inode rewrite failure")
+	}
+	if validationChildCalls != 0 {
+		t.Fatalf("validation child calls = %d, want zero after fingerprint mismatch", validationChildCalls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed before validate") {
+		t.Fatalf("stderr = %q, want regular-file fingerprint stage diagnostic", stderr)
+	}
+	if strings.Contains(stderr, targetPath) {
+		t.Fatalf("stderr = %q, must not expose target path", stderr)
+	}
+}
+
+func TestNotarizationValidateRejectsSameInodeRegularFileRewriteAfterValidation(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(targetPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previous := runStaplerValidate
+	runStaplerValidate = func(_ context.Context, path string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationValidate, true); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(targetPath, []byte("changed!"), 0o600); err != nil {
+			t.Fatalf("rewrite target: %v", err)
+		}
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationValidate, false); err != nil {
+			return nil, err
+		}
+		return &localxcode.StaplerResult{Path: path, Operation: string(localxcode.StaplerOperationValidate), Validated: true}, nil
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("validate command error = nil, want same-inode rewrite failure")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed after validation") {
+		t.Fatalf("stderr = %q, want regular-file fingerprint stage diagnostic", stderr)
+	}
+	if strings.Contains(stderr, targetPath) {
+		t.Fatalf("stderr = %q, must not expose target path", stderr)
+	}
+}
+
 func TestValidateStaplerTargetResolvesRelativeParentFromPhysicalWorkingDirectory(t *testing.T) {
 	workspace := t.TempDir()
 	physical := filepath.Join(workspace, "physical")
@@ -224,6 +343,67 @@ func TestValidateStaplerTargetResolvesRelativeParentFromPhysicalWorkingDirectory
 	}
 	if validated.path != physicalTarget {
 		t.Fatalf("validated path = %q, want physical target %q", validated.path, physicalTarget)
+	}
+}
+
+func TestValidateStaplerTargetRejectsRelativeTargetAfterCWDReplacement(t *testing.T) {
+	workspace := t.TempDir()
+	physicalCWD := filepath.Join(workspace, "physical")
+	if err := os.Mkdir(physicalCWD, 0o755); err != nil {
+		t.Fatalf("create physical cwd: %v", err)
+	}
+	targetPath := filepath.Join(physicalCWD, "target.dmg")
+	if err := os.WriteFile(targetPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write original target: %v", err)
+	}
+	originalCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get original cwd: %v", err)
+	}
+	if err := os.Chdir(physicalCWD); err != nil {
+		t.Fatalf("change cwd: %v", err)
+	}
+	previousHook := afterStaplerPathResolutionFn
+	replaced := false
+	afterStaplerPathResolutionFn = func() {
+		if replaced {
+			return
+		}
+		replaced = true
+		if err := os.Rename(physicalCWD, physicalCWD+".original"); err != nil {
+			t.Fatalf("rename original cwd: %v", err)
+		}
+		if err := os.Mkdir(physicalCWD, 0o755); err != nil {
+			t.Fatalf("create replacement cwd: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(physicalCWD, "target.dmg"), []byte("replacement"), 0o600); err != nil {
+			t.Fatalf("write replacement target: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		afterStaplerPathResolutionFn = previousHook
+		if err := os.Chdir(originalCWD); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+		if replaced {
+			if err := os.RemoveAll(physicalCWD); err != nil {
+				t.Errorf("remove replacement cwd: %v", err)
+			}
+			if err := os.Rename(physicalCWD+".original", physicalCWD); err != nil {
+				t.Errorf("restore original cwd: %v", err)
+			}
+		}
+	})
+
+	validated, err := validateStaplerTargetDetails("target.dmg")
+	if validated != nil {
+		validated.close()
+	}
+	if err == nil {
+		t.Fatal("validateStaplerTargetDetails() = nil, want cwd replacement rejection")
+	}
+	if isStaplerTargetUsageError(err) {
+		t.Fatalf("validateStaplerTargetDetails() error = %v, want closed operational cwd identity failure", err)
 	}
 }
 

@@ -73,7 +73,7 @@ func TestStaplerDirectoryInventoryRejectsSymlinkAndSpecialEntries(t *testing.T) 
 		make func(t *testing.T, directory string)
 	}{
 		{
-			name: "symlink",
+			name: "escaping symlink",
 			make: func(t *testing.T, directory string) {
 				if err := os.Symlink(filepath.Dir(directory), filepath.Join(directory, "Contents-link")); err != nil {
 					if runtime.GOOS == "windows" {
@@ -116,6 +116,51 @@ func TestStaplerDirectoryInventoryRejectsSymlinkAndSpecialEntries(t *testing.T) 
 				t.Fatalf("inventory error = %q, must not expose entry path", err.Error())
 			}
 		})
+	}
+}
+
+func TestStaplerDirectoryInventoryAllowsContainedSymlinkWithoutFollowing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixtures require platform support")
+	}
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	versioned := filepath.Join(targetPath, "Versions", "1")
+	if err := os.MkdirAll(versioned, 0o755); err != nil {
+		t.Fatalf("create versioned bundle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(versioned, "Info.plist"), []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write versioned bundle file: %v", err)
+	}
+	linkPath := filepath.Join(targetPath, "Versions", "Current")
+	if err := os.Symlink("1", linkPath); err != nil {
+		t.Fatalf("create contained symlink: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+
+	inventory, err := target.captureDirectoryInventoryAtStage(context.Background(), "before validation")
+	if err != nil {
+		t.Fatalf("capture contained-symlink inventory: %v", err)
+	}
+	if inventory.entryCount != 5 {
+		t.Fatalf("inventory entry count = %d, want root, Versions, 1, Info.plist, and Current", inventory.entryCount)
+	}
+
+	if err := os.Remove(linkPath); err != nil {
+		t.Fatalf("remove contained symlink: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	if err := os.Symlink(outside, linkPath); err != nil {
+		t.Fatalf("create escaping symlink: %v", err)
+	}
+	if _, err := target.captureDirectoryInventoryAtStage(context.Background(), "before validation"); err == nil {
+		t.Fatal("capture escaping-symlink inventory = nil, want fail-closed rejection")
 	}
 }
 

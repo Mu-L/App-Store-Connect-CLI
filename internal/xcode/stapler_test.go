@@ -1096,6 +1096,45 @@ type ioDiscardForStaplerTest struct{}
 
 func (ioDiscardForStaplerTest) Write(p []byte) (int, error) { return len(p), nil }
 
+type staplerDiagnosticFailureWriter struct {
+	err error
+}
+
+func (writer staplerDiagnosticFailureWriter) Write([]byte) (int, error) {
+	return 0, writer.err
+}
+
+func TestStapleDiagnosticWriterFailurePreservesPartialMutation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_STAPLE_STDOUT", "staple diagnostic\n")
+	writerErr := errors.New("diagnostic sink unavailable")
+
+	result, err := Staple(context.Background(), target, staplerDiagnosticFailureWriter{err: writerErr})
+	if result != nil {
+		t.Fatalf("Staple() result = %#v, want nil after diagnostic writer failure", result)
+	}
+	var partialErr *StaplerPartialMutationError
+	if !errors.As(err, &partialErr) || partialErr.Operation != StaplerOperationStaple {
+		t.Fatalf("Staple() error = %T %v, want staple partial-mutation marker", err, err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationStaple) {
+		t.Fatalf("Staple() error = %T %v, want staple command cause", err, err)
+	}
+	if !errors.Is(err, writerErr) {
+		t.Fatalf("Staple() error = %v, want diagnostic writer cause", err)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|staple|" + target,
+	})
+}
+
 func assertStaplerCommands(t *testing.T, logPath string, want []string) {
 	t.Helper()
 	data, err := os.ReadFile(logPath)
