@@ -16,6 +16,11 @@ const staplerResolutionOutputLimit = 4 * 1024
 // formatted. Production leaves it nil.
 var afterStaplerCommandWaitFn func()
 
+// afterStaplerCommandStartFn is a narrow test seam for cancellation that lands
+// after a stapler child has started but before Wait observes its result.
+// Production leaves it nil.
+var afterStaplerCommandStartFn func(*exec.Cmd)
+
 // StaplerOperation identifies the local ticket operation that was requested.
 type StaplerOperation string
 
@@ -474,14 +479,16 @@ func runStaplerChildCommand(ctx context.Context, operation StaplerOperation, pat
 	if err := cmd.Start(); err != nil {
 		return false, formatCommandOutputError(ctx, err, outputWindow, string(operation), "xcrun stapler", true)
 	}
-	waitContextErr := ctx.Err()
+	if afterStaplerCommandStartFn != nil {
+		afterStaplerCommandStartFn(cmd)
+	}
 	waitErr := normalizeXcodeCommandWaitError(cmd, cmd.Wait())
 	if afterStaplerCommandWaitFn != nil {
 		afterStaplerCommandWaitFn()
 	}
 	if waitErr != nil {
 		formatContext := ctx
-		if waitContextErr == nil && ctx.Err() != nil && staplerHasProcessExitStatus(waitErr) {
+		if ctx.Err() != nil && staplerHasProcessExitStatus(waitErr) {
 			// formatCommandOutputError intentionally prefers context errors. Once
 			// Wait has returned a real process status, use a non-canceling view so
 			// that status remains wrapped for runStaplerOperation to preserve.
