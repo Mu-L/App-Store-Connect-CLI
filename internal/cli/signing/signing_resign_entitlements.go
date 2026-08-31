@@ -1,10 +1,8 @@
 package signing
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/infoplist"
@@ -143,13 +141,14 @@ func signingResignFormatClaimValue(value any) string {
 }
 
 var signingResignIdentityEntitlementKeys = map[string]struct{}{
-	"application-identifier":                             {},
-	"com.apple.application-identifier":                   {},
-	"com.apple.developer.team-identifier":                {},
-	"get-task-allow":                                     {},
-	"keychain-access-groups":                             {},
-	"com.apple.developer.ubiquity-kvstore-identifier":    {},
-	"com.apple.developer.parent-application-identifiers": {},
+	"application-identifier":                                 {},
+	"com.apple.application-identifier":                       {},
+	"com.apple.developer.team-identifier":                    {},
+	"get-task-allow":                                         {},
+	"keychain-access-groups":                                 {},
+	"com.apple.developer.ubiquity-kvstore-identifier":        {},
+	"com.apple.developer.parent-application-identifiers":     {},
+	"com.apple.developer.associated-appclip-app-identifiers": {},
 }
 
 var signingResignIdentityEntitlementKeyOrder = []string{
@@ -160,89 +159,12 @@ var signingResignIdentityEntitlementKeyOrder = []string{
 	"keychain-access-groups",
 	"com.apple.developer.ubiquity-kvstore-identifier",
 	"com.apple.developer.parent-application-identifiers",
+	"com.apple.developer.associated-appclip-app-identifiers",
 }
 
 func buildSigningResignEntitlements(existing, profile map[string]any) (map[string]any, error) {
-	if profile == nil {
-		return nil, fmt.Errorf("profile entitlements are missing")
-	}
-	for _, key := range []string{"application-identifier", "com.apple.application-identifier"} {
-		if value, exists := existing[key]; exists {
-			text, ok := value.(string)
-			if !ok || strings.TrimSpace(text) == "" || strings.ContainsRune(text, '*') {
-				return nil, fmt.Errorf("existing entitlement %s is invalid", key)
-			}
-		}
-	}
-	if value, exists := existing["com.apple.developer.team-identifier"]; exists {
-		text, ok := value.(string)
-		if !ok || strings.TrimSpace(text) == "" {
-			return nil, fmt.Errorf("existing entitlement %s is invalid", "com.apple.developer.team-identifier")
-		}
-	}
-	if value, exists := existing["get-task-allow"]; exists {
-		if _, ok := value.(bool); !ok {
-			return nil, fmt.Errorf("existing entitlement get-task-allow is invalid")
-		}
-	}
-	result := make(map[string]any, len(existing)+4)
-	existingKeys := make([]string, 0, len(existing))
-	for key := range existing {
-		existingKeys = append(existingKeys, key)
-	}
-	sort.Strings(existingKeys)
-	var unauthorized []signingResignUnauthorizedClaim
-	for _, key := range existingKeys {
-		value := existing[key]
-		if _, identityKey := signingResignIdentityEntitlementKeys[key]; identityKey {
-			profileValue, exists := profile[key]
-			if !exists {
-				unauthorized = append(unauthorized, signingResignUnauthorizedClaim{Key: key, Existing: value})
-				continue
-			}
-			resolved, err := resolveSigningResignIdentityEntitlement(key, value, profileValue)
-			if err != nil {
-				var claimErr signingResignClaimUnauthorizedError
-				if errors.As(err, &claimErr) {
-					unauthorized = append(unauthorized, signingResignUnauthorizedClaim{Key: key, Existing: value, Profile: profileValue})
-					continue
-				}
-				return nil, err
-			}
-			result[key] = resolved
-			continue
-		}
-		profileValue, permitted := profile[key]
-		if !permitted || !signingResignEntitlementValuePermits(profileValue, value) {
-			unauthorized = append(unauthorized, signingResignUnauthorizedClaim{Key: key, Existing: value, Profile: profileValue})
-			continue
-		}
-		result[key] = value
-	}
-	if len(unauthorized) > 0 {
-		return nil, signingResignUnauthorizedClaimsError(unauthorized)
-	}
-	for _, key := range signingResignIdentityEntitlementKeyOrder {
-		if _, exists := existing[key]; exists {
-			continue
-		}
-		if signingResignOptionalIdentityEntitlementKey(key) {
-			// Optional identity capabilities are granted only when the
-			// existing signature already claims them. The profile value,
-			// wildcard or concrete, is an authorization boundary: signing an
-			// unclaimed capability in would widen the app's access.
-			continue
-		}
-		value, exists := profile[key]
-		if !exists {
-			return nil, fmt.Errorf("replacement profile entitlement %s is missing", key)
-		}
-		if signingResignEntitlementContainsWildcard(value) {
-			return nil, fmt.Errorf("replacement profile entitlement %s is wildcard-only and has no concrete signed value", key)
-		}
-		result[key] = value
-	}
-	return result, nil
+	result, _, err := buildSigningResignEntitlementPlan(existing, profile, "", nil)
+	return result, err
 }
 
 // signingResignOptionalIdentityEntitlementKey reports whether an identity
@@ -254,7 +176,8 @@ func signingResignOptionalIdentityEntitlementKey(key string) bool {
 	case "com.apple.application-identifier",
 		"keychain-access-groups",
 		"com.apple.developer.ubiquity-kvstore-identifier",
-		"com.apple.developer.parent-application-identifiers":
+		"com.apple.developer.parent-application-identifiers",
+		"com.apple.developer.associated-appclip-app-identifiers":
 		return true
 	default:
 		return false
@@ -264,11 +187,12 @@ func signingResignOptionalIdentityEntitlementKey(key string) bool {
 // signingResignPreserveExistingIdentityKeys lists capability-group claims
 // whose signed value must stay the app's own concrete subset. The replacement
 // profile value, wildcard or concrete, is a permission boundary; adopting it
-// verbatim could widen keychain, ubiquity, or parent-application access.
+// verbatim could widen keychain, ubiquity, or App Clip access.
 var signingResignPreserveExistingIdentityKeys = map[string]struct{}{
-	"keychain-access-groups":                             {},
-	"com.apple.developer.ubiquity-kvstore-identifier":    {},
-	"com.apple.developer.parent-application-identifiers": {},
+	"keychain-access-groups":                                 {},
+	"com.apple.developer.ubiquity-kvstore-identifier":        {},
+	"com.apple.developer.parent-application-identifiers":     {},
+	"com.apple.developer.associated-appclip-app-identifiers": {},
 }
 
 // validateSigningResignExistingEntitlements checks the identity claims from

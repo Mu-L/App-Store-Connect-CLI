@@ -38,7 +38,7 @@ func TestSigningCommandExposesResign(t *testing.T) {
 
 func TestSigningResignHelpMarksCommandSpecificFlagsExperimental(t *testing.T) {
 	command := SigningResignCommand()
-	for _, name := range []string{"ipa", "output", "identity", "identity-password-file", "profiles-manifest"} {
+	for _, name := range []string{"ipa", "output", "identity", "identity-password-file", "profiles-manifest", "rebase-team-claims"} {
 		flagValue := command.FlagSet.Lookup(name)
 		if flagValue == nil {
 			t.Fatalf("missing --%s flag", name)
@@ -46,6 +46,63 @@ func TestSigningResignHelpMarksCommandSpecificFlagsExperimental(t *testing.T) {
 		if !strings.HasPrefix(flagValue.Usage, "[experimental] ") {
 			t.Fatalf("--%s usage = %q, want [experimental] prefix", name, flagValue.Usage)
 		}
+	}
+}
+
+func TestSigningResignRebaseTeamClaimsFlagIsOptIn(t *testing.T) {
+	command := SigningResignCommand()
+	flagValue := command.FlagSet.Lookup("rebase-team-claims")
+	if flagValue == nil {
+		t.Fatal("missing --rebase-team-claims flag")
+	}
+	if flagValue.DefValue != "false" {
+		t.Fatalf("--rebase-team-claims default = %q, want false", flagValue.DefValue)
+	}
+	if err := command.FlagSet.Parse([]string{"--rebase-team-claims"}); err != nil {
+		t.Fatal(err)
+	}
+	getter, ok := flagValue.Value.(flag.Getter)
+	if !ok {
+		t.Fatal("--rebase-team-claims flag does not expose a boolean getter")
+	}
+	enabled, ok := getter.Get().(bool)
+	if !ok || !enabled {
+		t.Fatal("--rebase-team-claims did not enable the opt-in mode")
+	}
+	if err := flagValue.Value.Set("not-a-bool"); err == nil {
+		t.Fatal("--rebase-team-claims accepted an invalid boolean value")
+	}
+	if runtime.GOOS != "darwin" {
+		t.Skip("signing resign is macOS-only")
+	}
+	originalExecute := executeSigningResignFn
+	t.Cleanup(func() { executeSigningResignFn = originalExecute })
+	var captured []signingResignOptions
+	executeSigningResignFn = func(_ context.Context, options signingResignOptions) (signingResignResult, error) {
+		captured = append(captured, options)
+		return signingResignResult{SchemaVersion: 1, Command: "signing resign"}, nil
+	}
+	for _, enabled := range []bool{false, true} {
+		args := []string{
+			"--ipa", "input.ipa",
+			"--output", "output.ipa",
+			"--identity", "identity.p12",
+			"--profiles-manifest", "profiles.json",
+			"--format", "json",
+		}
+		if enabled {
+			args = append(args, "--rebase-team-claims")
+		}
+		command := SigningResignCommand()
+		if err := command.FlagSet.Parse(args); err != nil {
+			t.Fatal(err)
+		}
+		if err := command.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("SigningResignCommand().Exec(enabled=%t) error = %v", enabled, err)
+		}
+	}
+	if len(captured) != 2 || captured[0].RebaseTeamClaims || !captured[1].RebaseTeamClaims {
+		t.Fatalf("executor options = %#v, want absent=false and present=true", captured)
 	}
 }
 
@@ -775,6 +832,62 @@ func TestPrepareSigningResignTreeRejectsIncoherentInputBeforeMutation(t *testing
 	}
 	if _, statErr := os.Stat(filepath.Join(stagePath, "entitlements")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("incoherent input created private entitlements directory: %v", statErr)
+	}
+}
+
+func TestPrepareSigningResignTreePlansAllTargetsBeforeLaterValidationFailure(t *testing.T) {
+	stagePath := t.TempDir()
+	treePath := filepath.Join(stagePath, "tree")
+	if err := os.MkdirAll(filepath.Join(treePath, "Payload", "App.app"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(treePath, "Payload", "App.app", "PlugIns", "Feature.appex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// This failure occurs after target/profile planning in the legacy flow,
+	// making it a regression test for whole-IPA no-mutation preflight.
+	if err := os.WriteFile(filepath.Join(treePath, "SwiftSupport"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stageRoot, err := rootfs.New(stagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stageRoot.Close()
+	treeRoot, err := rootfs.New(treePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer treeRoot.Close()
+	profile := func(bundleID string) signingResignProfile {
+		return signingResignProfile{Data: []byte("replacement profile"), Entitlements: map[string]any{
+			"application-identifier":              "NEWPREFIX." + bundleID,
+			"com.apple.application-identifier":    "NEWPREFIX." + bundleID,
+			"com.apple.developer.team-identifier": "NEWTEAM",
+			"get-task-allow":                      false,
+		}}
+	}
+	archive := signingResignArchive{
+		MainPath: "Payload/App.app",
+		Targets: []signingResignTarget{
+			{Kind: "application", RelativePath: "Payload/App.app", BundleID: "com.example.app"},
+			{Kind: "app-extension", RelativePath: "Payload/App.app/PlugIns/Feature.appex", BundleID: "com.example.app.Feature"},
+		},
+	}
+	_, err = prepareSigningResignTree(context.Background(), stageRoot, treeRoot, archive, map[string]signingResignProfile{
+		"com.example.app":         profile("com.example.app"),
+		"com.example.app.Feature": profile("com.example.app.Feature"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "SwiftSupport") {
+		t.Fatalf("prepareSigningResignTree() error = %v, want later preserved-directory failure", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(stagePath, "entitlements")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("later preflight failure left entitlement staging behind: %v", statErr)
+	}
+	for _, target := range archive.Targets {
+		if _, statErr := os.Stat(filepath.Join(treePath, filepath.FromSlash(target.RelativePath), "embedded.mobileprovision")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("later preflight failure embedded profile for %s: %v", target.BundleID, statErr)
+		}
 	}
 }
 
