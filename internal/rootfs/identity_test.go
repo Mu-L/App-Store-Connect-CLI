@@ -294,9 +294,7 @@ func TestCreateNewFileAtomicWithIdentityReturnsPublicationToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateNewFileAtomicWithIdentity() error = %v", err)
 	}
-	if identity == nil {
-		t.Fatal("CreateNewFileAtomicWithIdentity() returned nil identity")
-	}
+	requireBoundedRecoveryToken(t, identity)
 	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -381,8 +379,13 @@ func TestRemoveFileIfSameIdentityPreservesSameContentReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CaptureFile() error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "replacement.json"), []byte(content), 0o600); err != nil {
+	replacementPath := filepath.Join(dir, "replacement.json")
+	if err := os.WriteFile(replacementPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	replacementInfo, err := os.Stat(replacementPath)
+	if err != nil {
+		t.Fatalf("Stat(replacement) error = %v", err)
 	}
 	if err := os.Rename(filepath.Join(dir, "replacement.json"), path); err != nil {
 		t.Fatal(err)
@@ -390,6 +393,134 @@ func TestRemoveFileIfSameIdentityPreservesSameContentReplacement(t *testing.T) {
 
 	if err := root.RemoveFileIfSameIdentity("receipt.json", identity); !errors.Is(err, ErrFileIdentityChanged) {
 		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != content {
+		t.Fatalf("replacement content = %q, want %q", got, content)
+	}
+	racerInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(replacement destination) error = %v", err)
+	}
+	if os.SameFile(identity.Info(), racerInfo) {
+		t.Fatal("replacement destination still refers to the original receipt inode")
+	}
+	if !os.SameFile(replacementInfo, racerInfo) {
+		t.Fatal("replacement destination does not retain the renamed replacement inode")
+	}
+}
+
+func TestRemoveFileIfSameIdentityPreservesReplacementAfterQuarantine(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	const content = "receipt"
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("receipt.json")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	replacementPath := filepath.Join(dir, "replacement.json")
+	if err := os.WriteFile(replacementPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacementInfo, err := os.Stat(replacementPath)
+	if err != nil {
+		t.Fatalf("Stat(replacement) error = %v", err)
+	}
+	var syncObserved bool
+	root.afterConditionalQuarantineForTest = func(parent *os.Root, _, name string) {
+		if err := parent.Rename("replacement.json", name); err != nil {
+			t.Fatalf("install replacement after quarantine: %v", err)
+		}
+	}
+	root.syncDirectoryForTest = func(*os.Root) error {
+		syncObserved = true
+		return nil
+	}
+
+	err = root.RemoveFileIfSameIdentity("receipt.json", identity)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if errors.Is(err, ErrFileIdentityRemoved) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, replacement still occupies destination", err)
+	}
+	if !syncObserved {
+		t.Fatal("quarantine removal was not followed by a parent directory sync")
+	}
+	if got := mustRead(t, path); got != content {
+		t.Fatalf("replacement content = %q, want %q", got, content)
+	}
+	racerInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(replacement destination) error = %v", err)
+	}
+	if os.SameFile(identity.Info(), racerInfo) {
+		t.Fatal("replacement destination still refers to the original receipt inode")
+	}
+	if !os.SameFile(replacementInfo, racerInfo) {
+		t.Fatal("replacement destination does not retain the renamed replacement inode")
+	}
+	if matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*")); globErr != nil {
+		t.Fatal(globErr)
+	} else if len(matches) != 0 {
+		t.Fatalf("quarantine files remain after replacement preservation: %v", matches)
+	}
+}
+
+func TestRemoveFileIfSameIdentityPreservesReplacementDuringQuarantineRemoval(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	const content = "receipt"
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("receipt.json")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	replacementPath := filepath.Join(dir, "replacement.json")
+	if err := os.WriteFile(replacementPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacementInfo, err := os.Stat(replacementPath)
+	if err != nil {
+		t.Fatalf("Stat(replacement) error = %v", err)
+	}
+	var hookCalls int
+	root.beforeConditionalQuarantineRemovalForTest = func(parent *os.Root, _ string) {
+		hookCalls++
+		if err := parent.Rename("replacement.json", "receipt.json"); err != nil {
+			t.Fatalf("install replacement during quarantine removal: %v", err)
+		}
+	}
+
+	err = root.RemoveFileIfSameIdentity("receipt.json", identity)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if errors.Is(err, ErrFileIdentityRemoved) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, replacement still occupies destination", err)
+	}
+	if hookCalls != 1 {
+		t.Fatalf("quarantine-removal hook calls = %d, want one", hookCalls)
+	}
+	racerInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(replacement destination) error = %v", err)
+	}
+	if os.SameFile(identity.Info(), racerInfo) || os.SameFile(replacementInfo, identity.Info()) {
+		t.Fatal("replacement reused the original receipt inode")
+	}
+	if !os.SameFile(replacementInfo, racerInfo) {
+		t.Fatal("replacement destination does not retain the renamed replacement inode")
 	}
 	if got := mustRead(t, path); got != content {
 		t.Fatalf("replacement content = %q, want %q", got, content)
@@ -473,6 +604,46 @@ func TestReplaceFileIfSameDoesNotFallBackWhenNativeNoReplaceIsUnavailable(t *tes
 	}
 	if got := mustRead(t, filepath.Join(dir, "value")); got != original {
 		t.Fatalf("destination after unsupported publication = %q, want %q", got, original)
+	}
+}
+
+func TestReplaceFileIfSameSyncsParentAfterReplacementAppearsAfterQuarantine(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "racer-source"), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root.afterConditionalQuarantineForTest = func(parent *os.Root, _, name string) {
+		if err := parent.Rename("racer-source", name); err != nil {
+			t.Fatalf("install replacement after quarantine: %v", err)
+		}
+	}
+	syncErr := errors.New("injected replacement cleanup sync failure")
+	var syncObserved bool
+	root.syncDirectoryForTest = func(*os.Root) error {
+		syncObserved = true
+		return syncErr
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o640, true)
+	if installed != nil {
+		t.Fatal("ReplaceFileIfSame() returned an identity before publication")
+	}
+	if !errors.Is(err, ErrFileIdentityChanged) || !errors.Is(err, syncErr) || !syncObserved {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want replacement and parent sync failures", err)
+	}
+	if got := mustRead(t, path); got != "replacement" {
+		t.Fatalf("replacement content = %q, want preserved replacement", got)
 	}
 }
 
@@ -566,17 +737,230 @@ func TestReplaceFileIfSameRejectsInPlaceChangeDuringPublication(t *testing.T) {
 	}
 
 	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o640, true)
-	if installed == nil {
-		t.Fatal("ReplaceFileIfSame() returned nil installed identity after proving publication")
-	}
+	requireBoundedRecoveryToken(t, installed)
 	if !errors.Is(err, ErrFileIdentityChanged) {
 		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrFileIdentityChanged", err)
 	}
 	if got := mustRead(t, path); got != "racer!!" {
 		t.Fatalf("racing contents = %q, want racer!!", got)
 	}
-	if rollbackIdentity, rollbackErr := root.ReplaceFileIfSame("settings.xcconfig", installed, []byte("original"), 0o640, true); rollbackIdentity != nil || !errors.Is(rollbackErr, ErrFileIdentityChanged) {
-		t.Fatalf("rollback identity = %v, error = %v; want racing contents preserved", rollbackIdentity, rollbackErr)
+	if removeErr := root.RemoveFileIfSameIdentity("settings.xcconfig", installed); !errors.Is(removeErr, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want changed destination preserved", removeErr)
+	}
+	if got := mustRead(t, path); got != "racer!!" {
+		t.Fatalf("destination after rejected recovery = %q, want racer!!", got)
+	}
+}
+
+func TestReplaceFileIfSameRejectsInPlaceDataChangeAfterContentVerification(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	root.afterConditionalContentVerificationForTest = func(_ *os.Root, _ string) {
+		root.afterConditionalContentVerificationForTest = nil
+		if err := os.WriteFile(path, []byte("racing!!"), 0o640); err != nil {
+			t.Fatalf("change published file in place: %v", err)
+		}
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated!"), 0o640, true)
+	requireBoundedRecoveryToken(t, installed)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != "racing!!" {
+		t.Fatalf("racing contents = %q, want racing!!", got)
+	}
+	if removeErr := root.RemoveFileIfSameIdentity("settings.xcconfig", installed); !errors.Is(removeErr, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want changed destination preserved", removeErr)
+	}
+	if got := mustRead(t, path); got != "racing!!" {
+		t.Fatalf("destination after rejected recovery = %q, want racing!!", got)
+	}
+}
+
+func TestReplaceFileIfSameRejectsInPlaceMetadataChangeAfterContentVerification(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	root.afterConditionalContentVerificationForTest = func(_ *os.Root, _ string) {
+		root.afterConditionalContentVerificationForTest = nil
+		if err := os.Chmod(path, 0o600); err != nil {
+			t.Fatalf("change published file metadata in place: %v", err)
+		}
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated!"), 0o640, true)
+	requireBoundedRecoveryToken(t, installed)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrFileIdentityChanged", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("racing mode = %o, want 600", got)
+	}
+	if removeErr := root.RemoveFileIfSameIdentity("settings.xcconfig", installed); !errors.Is(removeErr, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want changed destination preserved", removeErr)
+	}
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("destination after rejected recovery mode = %o, want 600", got)
+	}
+}
+
+func TestReplaceFileIfSameRejectsReplacementAtFinalRootedCheck(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	replacementPath := filepath.Join(dir, "replacement.xcconfig")
+	if err := os.WriteFile(replacementPath, []byte("racer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacementInfo, err := os.Stat(replacementPath)
+	if err != nil {
+		t.Fatalf("Stat(replacement) error = %v", err)
+	}
+	var hookCalls int
+	root.beforeConditionalFinalRootedCheckForTest = func(parent *os.Root, name string) {
+		hookCalls++
+		if err := parent.Rename("replacement.xcconfig", name); err != nil {
+			t.Fatalf("install replacement before final rooted check: %v", err)
+		}
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o640, true)
+	requireBoundedRecoveryToken(t, installed)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if hookCalls != 1 {
+		t.Fatalf("final-rooted-check hook calls = %d, want one", hookCalls)
+	}
+	racerInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(replacement destination) error = %v", err)
+	}
+	if os.SameFile(installed.Info(), racerInfo) || os.SameFile(replacementInfo, installed.Info()) {
+		t.Fatal("replacement reused the published receipt inode")
+	}
+	if !os.SameFile(replacementInfo, racerInfo) {
+		t.Fatal("replacement destination does not retain the renamed replacement inode")
+	}
+	if got := mustRead(t, path); got != "racer" {
+		t.Fatalf("replacement content = %q, want racer", got)
+	}
+	removeErr := root.RemoveFileIfSameIdentity("settings.xcconfig", installed)
+	if !errors.Is(removeErr, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want ErrFileIdentityChanged", removeErr)
+	}
+	if errors.Is(removeErr, ErrFileIdentityRemoved) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, replacement still occupies destination", removeErr)
+	}
+	if got := mustRead(t, path); got != "racer" {
+		t.Fatalf("destination after rejected recovery = %q, want racer", got)
+	}
+}
+
+func TestReplaceFileIfSameRejectsMetadataChangeBeforePublishedIdentityBaseline(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	root.afterConditionalPublicationForTest = func(_ *os.Root, _ string) {
+		root.afterConditionalPublicationForTest = nil
+		if err := os.Chmod(path, 0o600); err != nil {
+			t.Fatalf("change published file metadata before identity baseline: %v", err)
+		}
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o640, true)
+	requireBoundedRecoveryToken(t, installed)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrFileIdentityChanged", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("racing mode = %o, want 600", got)
+	}
+	if removeErr := root.RemoveFileIfSameIdentity("settings.xcconfig", installed); !errors.Is(removeErr, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want changed destination preserved", removeErr)
+	}
+}
+
+func TestReplaceFileIfSameRetainsTokenWhenDestinationDisappearsAfterPublication(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	root.afterConditionalPublicationForTest = func(parent *os.Root, name string) {
+		root.afterConditionalPublicationForTest = nil
+		if err := parent.Remove(name); err != nil {
+			t.Fatalf("remove published destination: %v", err)
+		}
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o640, true)
+	requireBoundedRecoveryToken(t, installed)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if removeErr := root.RemoveFileIfSameIdentity("settings.xcconfig", installed); !errors.Is(removeErr, ErrFileIdentityChanged) || !errors.Is(removeErr, ErrFileIdentityRemoved) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want known-absent identity result", removeErr)
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination after rejected recovery = %v, want absent", statErr)
 	}
 }
 
@@ -696,9 +1080,7 @@ func TestReplaceFileIfSameReturnsInstalledIdentityAfterDirectorySyncFailure(t *t
 	if !syncObserved {
 		t.Fatal("parent directory sync hook was not invoked")
 	}
-	if installed == nil {
-		t.Fatal("ReplaceFileIfSame() returned nil installed identity after sync failure")
-	}
+	requireBoundedRecoveryToken(t, installed)
 	if got := mustRead(t, path); got != "updated" {
 		t.Fatalf("destination content = %q, want updated", got)
 	}
@@ -756,7 +1138,119 @@ func TestRootCloseWaitsForIdentityOperation(t *testing.T) {
 	}
 }
 
-func TestCreateNewFileAtomicWithIdentityDoesNotReturnUnprovenToken(t *testing.T) {
+func TestRemoveFileIfSameIdentityReturnsRemovedSentinelAfterDirectorySyncFailure(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, []byte("receipt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("receipt.json")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	syncErr := errors.New("injected receipt removal sync failure")
+	var syncObserved bool
+	root.syncDirectoryForTest = func(_ *os.Root) error {
+		syncObserved = true
+		return syncErr
+	}
+
+	err = root.RemoveFileIfSameIdentity("receipt.json", identity)
+	if !errors.Is(err, ErrFileIdentityRemoved) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want ErrFileIdentityRemoved", err)
+	}
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want parent sync failure", err)
+	}
+	if !syncObserved {
+		t.Fatal("parent directory sync hook was not invoked")
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("removed receipt stat error = %v, want absent", statErr)
+	}
+}
+
+func TestWriteFileIfSameWithInfoRootCloseWaitsForIdentityRetention(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "settings.xcconfig"), []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(filepath.Join(dir, "settings.xcconfig"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	root.afterConditionalPublicationForTest = func(*os.Root, string) {
+		close(entered)
+		<-release
+	}
+	operationDone := make(chan error, 1)
+	go func() {
+		_, operationErr := root.WriteFileIfSameWithInfo("settings.xcconfig", []byte("updated"), 0o640, expected, []byte("old"), true)
+		operationDone <- operationErr
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("compatibility write did not reach the identity-retention barrier")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- root.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Root.Close() returned before compatibility identity operation completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	if err := <-operationDone; err != nil {
+		t.Fatalf("WriteFileIfSameWithInfo() error = %v", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Root.Close() error = %v", err)
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoRootCloseWaitsForIdentityRetention(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	root.beforePublicationOpenForTest = func(*os.Root, string) {
+		close(entered)
+		<-release
+	}
+	operationDone := make(chan error, 1)
+	go func() {
+		_, operationErr := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("receipt"), 0o600)
+		operationDone <- operationErr
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("compatibility create did not reach the identity-retention barrier")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- root.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Root.Close() returned before compatibility identity operation completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	if err := <-operationDone; err != nil {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Root.Close() error = %v", err)
+	}
+}
+
+func TestCreateNewFileAtomicWithIdentityRetainsTokenAfterPublicationObservationFailure(t *testing.T) {
 	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
@@ -767,14 +1261,18 @@ func TestCreateNewFileAtomicWithIdentityDoesNotReturnUnprovenToken(t *testing.T)
 	}
 
 	identity, err := root.CreateNewFileAtomicWithIdentity("receipt.json", []byte("receipt"), 0o600)
-	if identity != nil {
-		t.Fatal("CreateNewFileAtomicWithIdentity() returned a token before publication identity was proven")
-	}
+	requireBoundedRecoveryToken(t, identity)
 	if !errors.Is(err, injected) {
 		t.Fatalf("CreateNewFileAtomicWithIdentity() error = %v, want injected observation failure", err)
 	}
 	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "receipt" {
 		t.Fatalf("published contents = %q, want receipt", got)
+	}
+	if err := root.RemoveFileIfSameIdentity("receipt.json", identity); err != nil {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want retained publication token to clean up", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(dir, "receipt.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination after token cleanup = %v, want absent", statErr)
 	}
 }
 
@@ -792,9 +1290,7 @@ func TestCreateNewFileAtomicWithIdentityRejectsInPlaceChangeDuringPublication(t 
 	}
 
 	identity, err := root.CreateNewFileAtomicWithIdentity("receipt.json", []byte("receipt"), 0o600)
-	if identity == nil {
-		t.Fatal("CreateNewFileAtomicWithIdentity() returned nil identity after proving publication")
-	}
+	requireBoundedRecoveryToken(t, identity)
 	if !errors.Is(err, ErrFileIdentityChanged) {
 		t.Fatalf("CreateNewFileAtomicWithIdentity() error = %v, want ErrFileIdentityChanged", err)
 	}
@@ -802,7 +1298,160 @@ func TestCreateNewFileAtomicWithIdentityRejectsInPlaceChangeDuringPublication(t 
 		t.Fatalf("racing contents = %q, want racer!!", got)
 	}
 	if removeErr := root.RemoveFileIfSameIdentity("receipt.json", identity); !errors.Is(removeErr, ErrFileIdentityChanged) {
-		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want racing contents preserved", removeErr)
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want changed destination preserved", removeErr)
+	}
+	if got := mustRead(t, path); got != "racer!!" {
+		t.Fatalf("destination after rejected recovery = %q, want racer!!", got)
+	}
+}
+
+func TestCreateNewFileAtomicWithIdentityRejectsInPlaceDataChangeAfterContentVerification(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "receipt.json")
+	root.afterPublicationContentVerificationForTest = func(_ *os.Root, _ string) {
+		root.afterPublicationContentVerificationForTest = nil
+		if err := os.WriteFile(path, []byte("racing!"), 0o600); err != nil {
+			t.Fatalf("change published file in place: %v", err)
+		}
+	}
+
+	identity, err := root.CreateNewFileAtomicWithIdentity("receipt.json", []byte("receipt"), 0o600)
+	requireBoundedRecoveryToken(t, identity)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CreateNewFileAtomicWithIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != "racing!" {
+		t.Fatalf("racing contents = %q, want racing!", got)
+	}
+	if removeErr := root.RemoveFileIfSameIdentity("receipt.json", identity); !errors.Is(removeErr, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want changed destination preserved", removeErr)
+	}
+	if got := mustRead(t, path); got != "racing!" {
+		t.Fatalf("destination after rejected recovery = %q, want racing!", got)
+	}
+}
+
+func TestCreateNewFileAtomicWithIdentityRejectsInPlaceMetadataChangeAfterContentVerification(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "receipt.json")
+	root.afterPublicationContentVerificationForTest = func(_ *os.Root, _ string) {
+		root.afterPublicationContentVerificationForTest = nil
+		if err := os.Chmod(path, 0o640); err != nil {
+			t.Fatalf("change published file metadata in place: %v", err)
+		}
+	}
+
+	identity, err := root.CreateNewFileAtomicWithIdentity("receipt.json", []byte("receipt"), 0o600)
+	requireBoundedRecoveryToken(t, identity)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CreateNewFileAtomicWithIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("racing mode = %o, want 640", got)
+	}
+	if removeErr := root.RemoveFileIfSameIdentity("receipt.json", identity); !errors.Is(removeErr, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want changed destination preserved", removeErr)
+	}
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("destination after rejected recovery mode = %o, want 640", got)
+	}
+}
+
+func TestCreateNewFileAtomicWithIdentityRejectsReplacementAtFinalRootedCheck(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "receipt.json")
+	replacementPath := filepath.Join(dir, "replacement.json")
+	if err := os.WriteFile(replacementPath, []byte("racer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacementInfo, err := os.Stat(replacementPath)
+	if err != nil {
+		t.Fatalf("Stat(replacement) error = %v", err)
+	}
+	var hookCalls int
+	root.beforePublicationFinalRootedCheckForTest = func(parent *os.Root, name string) {
+		hookCalls++
+		if err := parent.Rename("replacement.json", name); err != nil {
+			t.Fatalf("install replacement before final rooted check: %v", err)
+		}
+	}
+
+	identity, err := root.CreateNewFileAtomicWithIdentity("receipt.json", []byte("receipt"), 0o600)
+	requireBoundedRecoveryToken(t, identity)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CreateNewFileAtomicWithIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if hookCalls != 1 {
+		t.Fatalf("final-rooted-check hook calls = %d, want one", hookCalls)
+	}
+	racerInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(replacement destination) error = %v", err)
+	}
+	if os.SameFile(identity.Info(), racerInfo) || os.SameFile(replacementInfo, identity.Info()) {
+		t.Fatal("replacement reused the published receipt inode")
+	}
+	if !os.SameFile(replacementInfo, racerInfo) {
+		t.Fatal("replacement destination does not retain the renamed replacement inode")
+	}
+	if got := mustRead(t, path); got != "racer" {
+		t.Fatalf("replacement content = %q, want racer", got)
+	}
+	removeErr := root.RemoveFileIfSameIdentity("receipt.json", identity)
+	if !errors.Is(removeErr, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want ErrFileIdentityChanged", removeErr)
+	}
+	if errors.Is(removeErr, ErrFileIdentityRemoved) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, replacement still occupies destination", removeErr)
+	}
+	if got := mustRead(t, path); got != "racer" {
+		t.Fatalf("destination after rejected recovery = %q, want racer", got)
+	}
+}
+
+func TestCreateNewFileAtomicWithIdentityRejectsMetadataChangeBeforePublishedIdentityBaseline(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "receipt.json")
+	root.beforePublicationOpenForTest = func(_ *os.Root, _ string) {
+		if err := os.Chmod(path, 0o640); err != nil {
+			t.Fatalf("change published file metadata before identity baseline: %v", err)
+		}
+	}
+
+	identity, err := root.CreateNewFileAtomicWithIdentity("receipt.json", []byte("receipt"), 0o600)
+	requireBoundedRecoveryToken(t, identity)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CreateNewFileAtomicWithIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("racing mode = %o, want 640", got)
+	}
+	if removeErr := root.RemoveFileIfSameIdentity("receipt.json", identity); !errors.Is(removeErr, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want changed destination preserved", removeErr)
 	}
 }
 
@@ -825,9 +1474,7 @@ func TestCreateNewFileAtomicWithIdentityRejectsReplacementDuringIdentityCheck(t 
 	}
 
 	identity, err := root.CreateNewFileAtomicWithIdentity("receipt.json", []byte(content), 0o600)
-	if identity != nil {
-		t.Fatal("CreateNewFileAtomicWithIdentity() returned a token after the destination was replaced")
-	}
+	requireBoundedRecoveryToken(t, identity)
 	if !errors.Is(err, ErrFileIdentityChanged) {
 		t.Fatalf("CreateNewFileAtomicWithIdentity() error = %v, want ErrFileIdentityChanged", err)
 	}
@@ -836,6 +1483,37 @@ func TestCreateNewFileAtomicWithIdentityRejectsReplacementDuringIdentityCheck(t 
 	}
 	if got := mustRead(t, filepath.Join(dir, "published-original")); got != content {
 		t.Fatalf("original publication contents = %q, want %q", got, content)
+	}
+	if removeErr := root.RemoveFileIfSameIdentity("receipt.json", identity); !errors.Is(removeErr, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want replacement preserved", removeErr)
+	}
+	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != content {
+		t.Fatalf("replacement after rejected recovery = %q, want %q", got, content)
+	}
+}
+
+func TestCreateNewFileAtomicWithIdentityRetainsTokenWhenDestinationDisappearsAfterPublication(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "receipt.json")
+	root.afterPublicationOpenForTest = func(parent *os.Root, name string) {
+		if err := parent.Remove(name); err != nil {
+			t.Fatalf("remove published destination: %v", err)
+		}
+	}
+
+	identity, err := root.CreateNewFileAtomicWithIdentity("receipt.json", []byte("receipt"), 0o600)
+	requireBoundedRecoveryToken(t, identity)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CreateNewFileAtomicWithIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if removeErr := root.RemoveFileIfSameIdentity("receipt.json", identity); !errors.Is(removeErr, ErrFileIdentityChanged) || !errors.Is(removeErr, ErrFileIdentityRemoved) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want known-absent identity result", removeErr)
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination after rejected recovery = %v, want absent", statErr)
 	}
 }
 
@@ -983,9 +1661,7 @@ func TestReplaceFileIfSameIdentityLeavesChangedQuarantineWithInstalledToken(t *t
 	}
 
 	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o640, true)
-	if installed == nil {
-		t.Fatal("ReplaceFileIfSame() returned nil token after proving publication")
-	}
+	requireBoundedRecoveryToken(t, installed)
 	if !errors.Is(err, ErrQuarantineCleanupUncertain) {
 		t.Fatalf("ReplaceFileIfSame() error = %v, want quarantine uncertainty", err)
 	}
@@ -1007,5 +1683,18 @@ func requireStrictIdentityPlatform(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("strict identity mutation requires a native no-replace rename platform")
+	}
+}
+
+func requireBoundedRecoveryToken(t *testing.T, identity *FileIdentity) {
+	t.Helper()
+	if identity == nil {
+		t.Fatal("strict publication returned nil recovery token")
+	}
+	if identity.Info() == nil {
+		t.Fatal("strict publication recovery token has nil metadata")
+	}
+	if got := identity.Data(); int64(len(got)) > fileIdentityDataLimit {
+		t.Fatalf("strict publication recovery token retained %d bytes, want at most %d", len(got), fileIdentityDataLimit)
 	}
 }

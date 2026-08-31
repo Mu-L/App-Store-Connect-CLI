@@ -141,6 +141,9 @@ Apply re-resolves the project and strict settings manifest and refuses stale,
 redirected, blocked, or tampered plans. It requires --confirm and records a
 mode-0600 receipt beside the plan.
 
+Apply requires native identity-coupled file mutation support. On Windows, it
+currently fails closed before modifying project or receipt files.
+
 Examples:
   asc xcode signing apply --plan .asc/xcode/signing/plan.json --confirm
   asc xcode signing apply --plan .asc/xcode/signing/plan.json --confirm --output json`,

@@ -46,6 +46,15 @@ func TestXcodeSigningApplyRequiresConfirm(t *testing.T) {
 	}
 }
 
+func TestXcodeSigningApplyHelpExplainsWindowsBoundary(t *testing.T) {
+	command := xcodeSigningApplyCommand()
+	help := strings.Join(strings.Fields(command.LongHelp), " ")
+	want := "Apply requires native identity-coupled file mutation support. On Windows, it currently fails closed before modifying project or receipt files."
+	if !strings.Contains(help, want) {
+		t.Fatalf("apply help = %q, want Windows fail-closed limitation", command.LongHelp)
+	}
+}
+
 func TestXcodeSigningPlanWritesBlockedPlan(t *testing.T) {
 	originalBuild := runBuildSigningPlan
 	originalWrite := writeSigningPlanArtifact

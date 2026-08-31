@@ -71,10 +71,21 @@ type preparedVersionWrite struct {
 	// is retained by the same Root and consumed by conditional rollback, so a
 	// same-content replacement cannot be mistaken for our update.
 	committedIdentity *rootfs.FileIdentity
+	// committedInfo is the historical metadata snapshot returned by a stable
+	// compatibility write. Strict signing writes use committedIdentity instead.
+	committedInfo os.FileInfo
 	// originalIdentity pins the source inode and bytes observed while preparing
 	// an ordinary write. The commit path must use this token rather than a
 	// caller-supplied os.FileInfo snapshot.
 	originalIdentity *rootfs.FileIdentity
+	// originalInfo retains the historical metadata snapshot used by stable
+	// structured-version writes. Strict signing writes always use
+	// originalIdentity and its bounded content snapshot instead.
+	originalInfo os.FileInfo
+	// strictIdentity selects the bounded descriptor-backed signing path. Stable
+	// version edit/bump operations preserve their historical unrestricted
+	// os.FileInfo compatibility behavior.
+	strictIdentity bool
 	// portableFallback preserves stable version-command writes on filesystems
 	// without atomic no-replace rename. Signing transactions leave it disabled.
 	portableFallback bool
@@ -1109,7 +1120,7 @@ func (project *structuredVersionProject) setVersion(opts SetVersionOptions) (*Se
 	var writes []preparedVersionWrite
 	defer func() { _ = closeVersionWrites(writes) }()
 	if pbxprojChanged {
-		write, err := project.preparePBXProjWrite(projectRoot)
+		write, err := project.preparePBXProjWrite(projectRoot, false)
 		if err != nil {
 			return nil, err
 		}
@@ -1595,11 +1606,12 @@ func consumersAuthorizeSetting(
 	return true
 }
 
-func (project *structuredVersionProject) preparePBXProjWrite(projectRoot rootfs.Root) (result preparedVersionWrite, resultErr error) {
+func (project *structuredVersionProject) preparePBXProjWrite(projectRoot rootfs.Root, strictIdentity bool) (result preparedVersionWrite, resultErr error) {
 	target, err := project.containedVersionFileTarget(projectRoot, project.pbxprojPath)
 	if err != nil {
 		return preparedVersionWrite{}, fmt.Errorf("prepare Xcode project file: %w", err)
 	}
+	target.strictIdentity = strictIdentity
 	defer func() {
 		if resultErr != nil {
 			_ = target.root.Close()
@@ -1692,14 +1704,27 @@ func readRegularVersionFile(target *preparedVersionWrite) ([]byte, os.FileMode, 
 	if target == nil {
 		return nil, 0, fmt.Errorf("prepared version write is nil")
 	}
-	if target.originalIdentity == nil {
-		identity, err := target.root.CaptureFileLimited(target.name, signingPlanMaxBytes)
+	if target.strictIdentity {
+		if target.originalIdentity == nil {
+			identity, err := target.root.CaptureFileLimited(target.name, signingPlanMaxBytes)
+			if err != nil {
+				return nil, 0, err
+			}
+			target.originalIdentity = identity
+			return identity.Data(), identity.Mode(), nil
+		}
+	}
+	if !target.strictIdentity {
+		info, data, err := readRegularVersionFileCompatibility(target)
 		if err != nil {
 			return nil, 0, err
 		}
-		target.originalIdentity = identity
-		return identity.Data(), identity.Mode(), nil
+		if target.originalInfo == nil {
+			target.originalInfo = info
+		}
+		return data, info.Mode().Perm(), nil
 	}
+
 	file, err := target.root.OpenFile(target.name)
 	if err != nil {
 		return nil, 0, err
@@ -1722,7 +1747,29 @@ func readRegularVersionFile(target *preparedVersionWrite) ([]byte, os.FileMode, 
 	return data, info.Mode().Perm(), nil
 }
 
+func readRegularVersionFileCompatibility(target *preparedVersionWrite) (os.FileInfo, []byte, error) {
+	file, err := target.root.OpenFile(target.name)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("not a regular file: %s", target.path)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	return info, data, nil
+}
+
 var atomicWriteVersionFileFn = atomicWritePreparedVersionFile
+
+var atomicWriteVersionFileInfoFn = atomicWritePreparedVersionFileInfo
 
 var atomicCreateVersionFileFn = atomicCreatePreparedVersionFile
 
@@ -1743,6 +1790,19 @@ var rollbackOrdinaryVersionBeforeConditionalWriteForTest func()
 // before the rooted compare-and-publish rollback.
 // It is intentionally test-only and nil in production.
 var rollbackPublishedVersionBeforeConditionalWriteForTest func()
+
+// rollbackPublishedVersionWriteInfoFn is replaceable only so tests can cover
+// the stable-command fallback used on platforms without identity mutation.
+var rollbackPublishedVersionWriteInfoFn = func(write preparedVersionWrite) error {
+	return write.root.WriteFileIfSame(
+		write.name,
+		write.original,
+		write.mode,
+		write.committedInfo,
+		write.updated,
+		write.preserveMetadata,
+	)
+}
 
 func commitVersionWrites(writes []preparedVersionWrite) (resultErr error) {
 	return commitVersionWritesWithCreateCheck(writes, nil)
@@ -1815,24 +1875,33 @@ func commitVersionWritesWithCreateChecks(
 		}
 		if write.createOnly {
 			write.createdIdentity, err = atomicCreateVersionFileFn(write, write.updated)
-		} else {
+		} else if write.strictIdentity {
 			write.committedIdentity, err = atomicWriteVersionFileFn(write, write.updated)
-			if write.committedIdentity == nil && write.portableFallback && identityPublicationUnsupported(err) {
+		} else {
+			write.committedInfo, err = atomicWriteVersionFileInfoFn(write, write.updated)
+			if write.committedInfo == nil && write.portableFallback && identityPublicationUnsupported(err) {
 				if checkErr := verifyPortableVersionWriteSource(write, write.original); checkErr != nil {
 					err = errors.Join(err, fmt.Errorf("verify source before portable fallback: %w", checkErr))
 				} else {
-					write.committedIdentity, err = portableWritePreparedVersionFile(write, write.updated)
+					write.committedInfo, err = portableWritePreparedVersionFile(write, write.updated)
 				}
 			}
 		}
 		if err != nil {
-			if !write.createOnly && write.committedIdentity == nil {
+			publicationMaySurvive := errors.Is(err, rootfs.ErrFilePublicationUncertain)
+			if !write.createOnly && write.strictIdentity && write.committedIdentity == nil {
 				err = errors.Join(err, errors.New("installed identity unavailable; rollback uncertain"))
 			}
 			rollbackErrors := make([]error, 0)
+			receiptMaySurvive := false
 			if write.createOnly && write.createdIdentity != nil {
 				if rollbackErr := removeCreatedVersionFileFn(write); rollbackErr != nil {
 					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", write.path, rollbackErr))
+					// The target is already gone when the cleanup primitive reports
+					// ErrFileIdentityRemoved. A later durability or handle-close
+					// failure still matters, but it does not justify leaving earlier
+					// project writes in place for a receipt that cannot survive.
+					receiptMaySurvive = !errors.Is(rollbackErr, rootfs.ErrFileIdentityRemoved)
 				}
 			}
 			if !write.createOnly {
@@ -1840,19 +1909,33 @@ func commitVersionWritesWithCreateChecks(
 					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", write.path, rollbackErr))
 				}
 			}
-			rollbackErrors = append(rollbackErrors, rollbackVersionWrites(committed)...)
+			// A retained create-only identity is the only proof that a receipt can
+			// be removed without touching a concurrent replacement. If any file
+			// remains at the receipt path, it may be a concurrently published
+			// Completed receipt. Keep earlier project writes in place so that file
+			// cannot certify settings that rollback has removed.
+			if !receiptMaySurvive && !publicationMaySurvive {
+				rollbackErrors = append(rollbackErrors, rollbackVersionWrites(committed)...)
+			}
 			writeErr := fmt.Errorf("write %s: %w", write.path, err)
 			if len(rollbackErrors) > 0 {
 				return errors.Join(writeErr, fmt.Errorf("rollback failed: %w", errors.Join(rollbackErrors...)))
 			}
 			return writeErr
 		}
-		if !write.createOnly && write.committedIdentity == nil {
+		if !write.createOnly && write.strictIdentity && write.committedIdentity == nil {
 			committedWithWrite := append(append([]preparedVersionWrite(nil), committed...), write)
 			return commitVersionWriteFailure(
 				write,
 				fmt.Errorf("verify written file: installed identity unavailable"),
 				committedWithWrite,
+			)
+		}
+		if !write.createOnly && !write.strictIdentity && write.committedInfo == nil {
+			return commitVersionWriteFailure(
+				write,
+				fmt.Errorf("verify written file: installed metadata unavailable"),
+				append(append([]preparedVersionWrite(nil), committed...), write),
 			)
 		}
 		if write.createOnly && write.createdIdentity == nil {
@@ -1905,6 +1988,13 @@ func rollbackVersionWrites(committed []preparedVersionWrite) []error {
 		}
 		if rollbackErr != nil {
 			rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", committed[index].path, rollbackErr))
+			if committed[index].createOnly && !errors.Is(rollbackErr, rootfs.ErrFileIdentityRemoved) {
+				// Do not roll back any earlier project writes after a receipt
+				// cleanup failure unless the primitive proves the receipt was
+				// removed before a later durability or close failure. Their state
+				// must remain consistent with a receipt whose removal is uncertain.
+				break
+			}
 		}
 	}
 	return rollbackErrors
@@ -1928,24 +2018,35 @@ func rollbackVersionWrites(committed []preparedVersionWrite) []error {
 // the error text. Callers join that error into the returned failure, so the
 // stranded path is reported to the operator rather than silently discarded.
 func rollbackPublishedVersionWriteAfterError(write preparedVersionWrite) error {
-	if write.committedIdentity == nil {
-		return nil
-	}
 	if rollbackPublishedVersionBeforeConditionalWriteForTest != nil {
 		rollbackPublishedVersionBeforeConditionalWriteForTest()
 	}
-	_, err := write.root.ReplaceFileIfSame(
-		write.name,
-		write.committedIdentity,
-		write.original,
-		write.mode,
-		write.preserveMetadata,
-	)
+	var err error
+	if write.strictIdentity {
+		if write.committedIdentity == nil {
+			return nil
+		}
+		_, err = write.root.ReplaceFileIfSame(
+			write.name,
+			write.committedIdentity,
+			write.original,
+			write.mode,
+			write.preserveMetadata,
+		)
+	} else {
+		if write.committedInfo == nil {
+			return nil
+		}
+		err = rollbackPublishedVersionWriteInfoFn(write)
+	}
 	if write.portableFallback && identityPublicationUnsupported(err) {
 		if checkErr := verifyPortableVersionWriteSource(write, write.updated); checkErr != nil {
 			err = errors.Join(err, checkErr)
+		} else if info, fallbackErr := portableWritePreparedVersionFile(write, write.original); fallbackErr != nil {
+			err = fallbackErr
 		} else {
-			_, err = portableWritePreparedVersionFile(write, write.original)
+			write.committedInfo = info
+			err = nil
 		}
 	}
 	if err != nil {
@@ -1955,24 +2056,39 @@ func rollbackPublishedVersionWriteAfterError(write preparedVersionWrite) error {
 }
 
 func rollbackOrdinaryVersionWrite(write preparedVersionWrite) error {
-	if write.committedIdentity == nil {
+	if write.strictIdentity && write.committedIdentity == nil {
 		return fmt.Errorf("preserve current file after concurrent change: committed file identity unavailable")
+	}
+	if !write.strictIdentity && write.committedInfo == nil {
+		return fmt.Errorf("preserve current file after concurrent change: committed file metadata unavailable")
 	}
 	if rollbackOrdinaryVersionBeforeConditionalWriteForTest != nil {
 		rollbackOrdinaryVersionBeforeConditionalWriteForTest()
 	}
-	_, err := write.root.ReplaceFileIfSame(
-		write.name,
-		write.committedIdentity,
-		write.original,
-		write.mode,
-		write.preserveMetadata,
-	)
+	var err error
+	if write.strictIdentity {
+		_, err = write.root.ReplaceFileIfSame(
+			write.name,
+			write.committedIdentity,
+			write.original,
+			write.mode,
+			write.preserveMetadata,
+		)
+	} else {
+		err = write.root.WriteFileIfSame(
+			write.name,
+			write.original,
+			write.mode,
+			write.committedInfo,
+			write.updated,
+			write.preserveMetadata,
+		)
+	}
 	if write.portableFallback && identityPublicationUnsupported(err) {
 		if checkErr := verifyPortableVersionWriteSource(write, write.updated); checkErr != nil {
 			err = errors.Join(err, checkErr)
 		} else {
-			_, err = portableWritePreparedVersionFile(write, write.original)
+			write.committedInfo, err = portableWritePreparedVersionFile(write, write.original)
 		}
 	}
 	if err != nil {
@@ -2008,7 +2124,21 @@ func atomicWritePreparedVersionFile(write preparedVersionWrite, data []byte) (*r
 	return nil, fmt.Errorf("prepared write source identity unavailable")
 }
 
-func portableWritePreparedVersionFile(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
+func atomicWritePreparedVersionFileInfo(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	if write.originalInfo != nil {
+		return write.root.WriteFileIfSameWithInfo(
+			write.name,
+			data,
+			write.mode,
+			write.originalInfo,
+			write.original,
+			write.preserveMetadata,
+		)
+	}
+	return nil, fmt.Errorf("prepared write source metadata unavailable")
+}
+
+func portableWritePreparedVersionFile(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
 	var err error
 	if write.preserveMetadata {
 		err = write.root.WriteFilePreservingMode(write.name, data, write.mode)
@@ -2018,14 +2148,23 @@ func portableWritePreparedVersionFile(write preparedVersionWrite, data []byte) (
 	if err != nil {
 		return nil, err
 	}
-	identity, err := write.root.CaptureFileLimited(write.name, signingPlanMaxBytes)
+	file, err := write.root.OpenFile(write.name)
 	if err != nil {
 		return nil, err
 	}
-	if !bytes.Equal(identity.Data(), data) {
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, int64(len(data))+1))
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(contents, data) {
 		return nil, fmt.Errorf("portable version write verification failed")
 	}
-	return identity, nil
+	return info, nil
 }
 
 func verifyPortableVersionWriteSource(write preparedVersionWrite, expected []byte) error {
@@ -2040,10 +2179,10 @@ func verifyPortableVersionWriteSource(write preparedVersionWrite, expected []byt
 }
 
 func atomicCreatePreparedVersionFile(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
-	// CreateNewFileAtomicWithIdentity returns an identity only after the
-	// destination publication has been observed through its descriptor and
-	// final rooted entry check. A nil identity on observation failure is
-	// intentionally not converted into a path-based rollback.
+	// CreateNewFileAtomicWithIdentity returns the retained staging identity on
+	// every supported post-publication failure. If retention itself fails, the
+	// rootfs error carries ErrFilePublicationUncertain so callers keep earlier
+	// writes in place instead of attempting path-based rollback.
 	return write.root.CreateNewFileAtomicWithIdentity(write.name, data, write.mode)
 }
 

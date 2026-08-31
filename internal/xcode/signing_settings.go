@@ -3078,7 +3078,7 @@ func prepareSigningOperations(built *signingPlanBuild) (*preparedSigningOperatio
 		pbxprojChanged = true
 	}
 	if pbxprojChanged {
-		write, err := project.preparePBXProjWrite(projectRoot)
+		write, err := project.preparePBXProjWrite(projectRoot, true)
 		if err != nil {
 			return fail(err)
 		}
@@ -3125,12 +3125,14 @@ func prepareSigningOperations(built *signingPlanBuild) (*preparedSigningOperatio
 			}
 			return fail(fmt.Errorf("prepare xcconfig %s: %w", path, err))
 		}
+		target.strictIdentity = true
 		write, _, changed, err := prepareXCConfigWrite(target, xcconfigMutations[pathKey])
 		if err != nil {
 			_ = target.root.Close()
 			return fail(err)
 		}
 		if changed {
+			write.strictIdentity = true
 			write.preserveMetadata = true
 			prepared.writes = append(prepared.writes, write)
 		} else if target.ownsRoot {
@@ -3215,6 +3217,7 @@ func prepareSigningSourceWatches(plan *SigningPlan, writes []preparedVersionWrit
 			name:             filepath.Base(absolute),
 			ownsRoot:         true,
 			originalIdentity: identity,
+			strictIdentity:   true,
 		})
 		seen[key] = struct{}{}
 	}

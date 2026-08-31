@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 // externalXCConfigProject builds an xcconfig-backed project whose base
@@ -250,8 +248,8 @@ func TestSetVersionRefusesXCConfigParentSwapAfterValidation(t *testing.T) {
 	}
 
 	swapped := false
-	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
+	originalWriter := atomicWriteVersionFileInfoFn
+	atomicWriteVersionFileInfoFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
 		if write.path == sharedPath && !swapped {
 			swapped = true
 			if err := os.Rename(configsDir, originalConfigsDir); err != nil {
@@ -261,9 +259,9 @@ func TestSetVersionRefusesXCConfigParentSwapAfterValidation(t *testing.T) {
 				return nil, err
 			}
 		}
-		return atomicWritePreparedVersionFile(write, data)
+		return atomicWritePreparedVersionFileInfo(write, data)
 	}
-	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
+	t.Cleanup(func() { atomicWriteVersionFileInfoFn = originalWriter })
 
 	_, err := SetVersion(context.Background(), SetVersionOptions{
 		ProjectDir:  projectPath,
@@ -301,8 +299,8 @@ func TestSetVersionRefusesXcodeprojParentSwapAfterValidation(t *testing.T) {
 	}
 
 	swapped := false
-	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
+	originalWriter := atomicWriteVersionFileInfoFn
+	atomicWriteVersionFileInfoFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
 		if write.path == pbxprojPath && !swapped {
 			swapped = true
 			if err := os.Rename(projectPath, originalProjectPath); err != nil {
@@ -312,9 +310,9 @@ func TestSetVersionRefusesXcodeprojParentSwapAfterValidation(t *testing.T) {
 				return nil, err
 			}
 		}
-		return atomicWritePreparedVersionFile(write, data)
+		return atomicWritePreparedVersionFileInfo(write, data)
 	}
-	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
+	t.Cleanup(func() { atomicWriteVersionFileInfoFn = originalWriter })
 
 	_, err := SetVersion(context.Background(), SetVersionOptions{
 		ProjectDir:  projectPath,

@@ -44,13 +44,15 @@ func (r Root) CreateNewFileAtomicWithIdentity(
 ) (*FileIdentity, error)
 ```
 
-An installed identity is returned only after the destination descriptor and a
-final rooted entry observation prove that the staged inode was installed. A
-nil identity means publication identity was not proven; callers must preserve
-transaction evidence and must not perform a path-based rollback. An identity
-may still accompany an error reported after that proof (for example, backup
-cleanup or directory durability); the caller must revalidate it before a
-later mutation. Capture and retained publication data are bounded at 8 MiB,
+On supported platforms, publication retains the staging descriptor before any
+later destination observation. The operation returns success only after descriptor,
+content, metadata, and final rooted-entry checks prove that the staged inode is
+still installed. Once publication has succeeded, its identity also accompanies
+any later observation, cleanup, or durability error so the caller can target
+only that inode during recovery. If retaining the identity fails, the operation
+returns a nil identity with `ErrFilePublicationUncertain`;
+callers must then preserve transaction evidence and must not perform a
+path-based rollback. Capture and retained publication data are bounded at 8 MiB,
 matching the existing Xcode signing-plan input limit; `CaptureFileLimited` can
 choose a smaller bound and refuses oversize files with
 `ErrFileIdentityDataTooLarge`. Oversize identity-backed replacements fail
@@ -61,9 +63,16 @@ linked file fails closed.
 
 The historical `os.FileInfo` methods remain compatibility adapters and do not
 inherit the strict 8 MiB input-snapshot limit. The existing `WithInfo` forms
-continue retaining their publication descriptor until `Root.Close`; the basic
-forms do not add retained descriptors. Their portable fallback behavior is
-unchanged. New transaction code must use the descriptor-backed methods above.
+retain a verified publication descriptor until `Root.Close` when the platform
+can keep that descriptor open or recover it after publication. Windows may
+require the staging descriptor to close before publication. If the published
+destination cannot then be reopened and verified, a `WithInfo` method returns
+nil metadata with the observation error instead of claiming an identity it no
+longer holds. The basic forms do not add retained descriptors. The legacy
+hard-link fallback marks the destination as published as soon as its link
+succeeds. If removal of the private staging link then fails, that entry is
+preserved as evidence and deferred cleanup does not retry an unchecked pathname
+removal. New transaction code must use the descriptor-backed methods above.
 
 ## Platform boundary and recovery
 
@@ -88,6 +97,15 @@ cannot be removed, it performs no further cleanup mutation and returns
 `ErrQuarantineCleanupUncertain` with recoverable evidence. The remaining
 name-based unlink interval is an explicit Unix/Darwin limitation, not an
 atomic compare-and-act guarantee.
+
+Receipt cleanup distinguishes an expected identity that is known absent from a
+replacement that occupies the receipt pathname. A known-absent result carries
+`ErrFileIdentityRemoved`, allowing earlier project writes to roll back while
+the durability error is still surfaced. If a replacement appears before or
+after quarantine cleanup, the operation preserves it and returns
+`ErrFileIdentityChanged` without the removed sentinel. The caller keeps earlier
+project writes in place because that pathname may contain a concurrently
+published completed receipt.
 
 Unpublished strict transactions apply the same rule to their private random
 staging entry. While its descriptor is live, cleanup verifies the staged
@@ -115,8 +133,11 @@ Before publication, complete staged bytes and file metadata are synced. On a
 failure before publication, the original identity is restored only when the
 destination is still empty or the expected replacement is still present. If a
 concurrent writer occupies the destination, both entries remain recoverable
-and the operation reports uncertainty. After publication, rollback is another
-identity-checked replacement; it never reopens a path and trusts a snapshot.
+and the operation reports uncertainty. Strict publication repeats its rooted
+pathname observation after final descriptor and content validation and again
+after cleanup or directory durability work. After publication, rollback is
+another identity-checked replacement; it never reopens a path and trusts a
+snapshot.
 
 ## Callers and tests
 
