@@ -156,7 +156,7 @@ func buildSigningResignEntitlementPlan(existing, profile map[string]any, profile
 				if signingResignRebaseProfileKey(key) {
 					profilePermits = signingResignStrictEntitlementValuePermits(profileValue, resolvedValue)
 					if changed && key != signingResignKVStoreEntitlement {
-						profilePermits = signingResignRebaseProfilePermits(profileValue, resolvedValue, graph.DestinationPrefixes[bundleID])
+						profilePermits = signingResignRebaseProfilePermits(profileValue, value, resolvedValue, graph.DestinationPrefixes[bundleID])
 					}
 				}
 				if !profilePermits {
@@ -427,20 +427,54 @@ func signingResignStrictEntitlementValuePermits(profileValue, signedValue any) b
 	return true
 }
 
-func signingResignRebaseProfilePermits(profileValue, signedValue any, destinationPrefix string) bool {
-	if !signingResignStrictEntitlementValuePermits(profileValue, signedValue) {
+func signingResignRebaseProfilePermits(profileValue, existingValue, plannedValue any, destinationPrefix string) bool {
+	if !signingResignStrictEntitlementValuePermits(profileValue, plannedValue) {
 		return false
 	}
-	for _, profileText := range signingResignProfileStrings(profileValue) {
-		if !strings.ContainsRune(profileText, '*') {
-			continue
-		}
-		prefix, ok := signingResignStrictTerminalWildcardPrefix(profileText)
-		if !ok || !strings.HasPrefix(prefix, destinationPrefix+".") {
+
+	// A profile may authorize a mixed keychain list with both destination-
+	// prefixed values that were rebased and concrete values from another
+	// namespace that were preserved. Only a wildcard that is actually used to
+	// authorize a changed value must be rooted at this target's destination
+	// prefix; a wildcard used solely by an unchanged value is independent.
+	existingList, existingIsList := signingResignEntitlementList(existingValue)
+	plannedList, plannedIsList := signingResignEntitlementList(plannedValue)
+	if existingIsList || plannedIsList {
+		if !existingIsList || !plannedIsList || len(existingList) != len(plannedList) {
 			return false
 		}
+		for index, plannedItem := range plannedList {
+			if signingResignEntitlementValuesEqual(existingList[index], plannedItem) {
+				continue
+			}
+			plannedText, ok := plannedItem.(string)
+			if !ok || !signingResignRebaseProfileAuthorizesChangedValue(profileValue, plannedText, destinationPrefix) {
+				return false
+			}
+		}
+		return true
 	}
-	return true
+	plannedText, ok := plannedValue.(string)
+	return ok && signingResignRebaseProfileAuthorizesChangedValue(profileValue, plannedText, destinationPrefix)
+}
+
+func signingResignRebaseProfileAuthorizesChangedValue(profileValue any, plannedValue, destinationPrefix string) bool {
+	for _, profileText := range signingResignProfileStrings(profileValue) {
+		if strings.ContainsRune(profileText, '*') {
+			prefix, ok := signingResignStrictTerminalWildcardPrefix(profileText)
+			if !ok || !strings.HasPrefix(plannedValue, prefix) || len(plannedValue) <= len(prefix) {
+				continue
+			}
+			if !strings.HasPrefix(prefix, destinationPrefix+".") {
+				continue
+			}
+			return true
+		}
+		if profileText == plannedValue {
+			return true
+		}
+	}
+	return false
 }
 
 func signingResignProfileStrings(value any) []string {

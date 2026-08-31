@@ -388,6 +388,34 @@ func TestPlanSigningResignEntitlementsPreservesAuthorizedUnrelatedKeychainValues
 	}
 }
 
+func TestPlanSigningResignEntitlementsPreservesWildcardAuthorizedUnrelatedKeychainValues(t *testing.T) {
+	target := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{
+		signingResignKeychainGroupsEntitlement: []string{
+			"OLDPREFIX.com.example.shared",
+			"SHARED.com.example.other",
+		},
+	})
+	profile := rebaseTestProfile(target.BundleID, "NEWPREFIX", map[string]any{
+		signingResignKeychainGroupsEntitlement: []any{"NEWPREFIX.*", "SHARED.*"},
+	})
+	plans, err := planSigningResignEntitlements(signingResignArchive{
+		MainPath: "Payload/App.app",
+		Targets:  []signingResignTarget{target},
+	}, map[string]signingResignProfile{target.BundleID: profile}, true)
+	if err != nil {
+		t.Fatalf("planSigningResignEntitlements() error = %v, want wildcard-authorized unrelated value preserved", err)
+	}
+	if got := plans[0].Entitlements[signingResignKeychainGroupsEntitlement]; !signingResignEntitlementValuesEqual(got, []string{
+		"NEWPREFIX.com.example.shared",
+		"SHARED.com.example.other",
+	}) {
+		t.Fatalf("keychain-access-groups = %#v, want rebased and wildcard-preserved values", got)
+	}
+	if len(plans[0].Rewrites) != 1 || plans[0].Rewrites[0].Index == nil || *plans[0].Rewrites[0].Index != 0 {
+		t.Fatalf("keychain rewrites = %#v, want only source-prefixed element rewritten", plans[0].Rewrites)
+	}
+}
+
 func TestPlanSigningResignEntitlementsAuthorizesOnlyTheTransformedValue(t *testing.T) {
 	target := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{
 		signingResignKeychainGroupsEntitlement: []string{"OLDPREFIX.com.example.shared"},
