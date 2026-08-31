@@ -200,14 +200,6 @@ Examples:
 			if err := target.verifyIdentity("before stapling"); err != nil {
 				return reportStaplerTargetStageFailure("staple", "before stapling", err)
 			}
-			if target.directory {
-				// Bound the directory inventory before the destructive child runs.
-				// The post-staple callback still captures a fresh inventory for the
-				// later validation-stage comparison.
-				if _, err := target.captureDirectoryInventoryAtStage(ctx, "before stapling"); err != nil {
-					return reportStaplerTargetStageFailure("staple", "before stapling", err)
-				}
-			}
 
 			var expectedInventory staplerDirectoryInventory
 			inventoryCaptured := false

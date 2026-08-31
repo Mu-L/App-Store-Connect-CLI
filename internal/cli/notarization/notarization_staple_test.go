@@ -445,7 +445,7 @@ func TestNotarizationStapleRejectsRegularFileGrowthBeforeChild(t *testing.T) {
 	}
 }
 
-func TestNotarizationStapleRejectsOversizedDirectoryBeforeRunner(t *testing.T) {
+func TestNotarizationStapleRejectsOversizedDirectoryAtVerifierBoundary(t *testing.T) {
 	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
 	oversizedPath := filepath.Join(targetPath, "Contents", "Oversized.bin")
 	if err := os.MkdirAll(filepath.Dir(oversizedPath), 0o755); err != nil {
@@ -460,8 +460,13 @@ func TestNotarizationStapleRejectsOversizedDirectoryBeforeRunner(t *testing.T) {
 
 	previous := runStaplerStaple
 	runnerCalls := 0
-	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, _ localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+	childCalls := 0
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
 		runnerCalls++
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		childCalls++
 		return &localxcode.StaplerResult{
 			Path:      path,
 			Operation: string(localxcode.StaplerOperationStaple),
@@ -478,10 +483,13 @@ func TestNotarizationStapleRejectsOversizedDirectoryBeforeRunner(t *testing.T) {
 	var runErr error
 	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
 	if runErr == nil {
-		t.Fatal("staple command error = nil, want preflight inventory-size rejection")
+		t.Fatal("staple command error = nil, want inventory-size rejection")
 	}
-	if runnerCalls != 0 {
-		t.Fatalf("stapler runner calls = %d, want zero before inventory-size validation", runnerCalls)
+	if runnerCalls != 1 {
+		t.Fatalf("stapler runner calls = %d, want one before verifier inventory-size validation", runnerCalls)
+	}
+	if childCalls != 0 {
+		t.Fatalf("stapler child calls = %d, want zero after inventory-size validation", childCalls)
 	}
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want no success output", stdout)
@@ -507,9 +515,8 @@ func TestNotarizationStapleRejectsDirectoryGrowthAfterPreflightBeforeRunner(t *t
 	previous := runStaplerStaple
 	childCalls := 0
 	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
-		// The command's initial inventory preflight has already returned. Grow the
-		// same regular file before the callback that runs immediately before the
-		// destructive staple child.
+		// Grow the same regular file before the callback that runs immediately
+		// before the destructive staple child.
 		if err := os.Truncate(growingPath, staplerInventoryMaxBytes+1); err != nil {
 			t.Fatalf("grow bundle entry after preflight: %v", err)
 		}
@@ -549,28 +556,25 @@ func TestNotarizationStapleRejectsDirectoryGrowthAfterPreflightBeforeRunner(t *t
 	}
 }
 
-func TestNotarizationStapleRejectsDirectoryOverEntryCapBeforeRunner(t *testing.T) {
+func TestNotarizationStapleDefersDirectoryInventoryUntilStaplerRunner(t *testing.T) {
 	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
 	if err := os.Mkdir(targetPath, 0o755); err != nil {
 		t.Fatalf("create bundle: %v", err)
 	}
 
 	previousNames := readdirStaplerInventoryNamesFn
+	inventoryCalls := 0
 	readdirStaplerInventoryNamesFn = func(_ *os.File, _ int) ([]string, error) {
+		inventoryCalls++
 		return make([]string, staplerInventoryMaxEntries), io.EOF
 	}
 	t.Cleanup(func() { readdirStaplerInventoryNamesFn = previousNames })
 
 	previous := runStaplerStaple
 	runnerCalls := 0
-	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, _ localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+	runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, _ localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
 		runnerCalls++
-		return &localxcode.StaplerResult{
-			Path:      path,
-			Operation: string(localxcode.StaplerOperationStaple),
-			Stapled:   true,
-			Validated: true,
-		}, nil
+		return nil, errors.New("stapler is supported on macOS only")
 	}
 	t.Cleanup(func() { runStaplerStaple = previous })
 
@@ -581,16 +585,19 @@ func TestNotarizationStapleRejectsDirectoryOverEntryCapBeforeRunner(t *testing.T
 	var runErr error
 	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
 	if runErr == nil {
-		t.Fatal("staple command error = nil, want preflight entry-cap rejection")
+		t.Fatal("staple command error = nil, want runner failure")
 	}
-	if runnerCalls != 0 {
-		t.Fatalf("stapler runner calls = %d, want zero before entry-cap validation", runnerCalls)
+	if runnerCalls != 1 {
+		t.Fatalf("stapler runner calls = %d, want one after target validation", runnerCalls)
+	}
+	if inventoryCalls != 0 {
+		t.Fatalf("directory inventory calls = %d, want zero before verifier invokes it", inventoryCalls)
 	}
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want no success output", stdout)
 	}
-	if !strings.Contains(stderr, "artifact target changed before stapling") {
-		t.Fatalf("stderr = %q, want stable entry-cap diagnostic", stderr)
+	if !strings.Contains(stderr, "stapler is supported on macOS only") {
+		t.Fatalf("stderr = %q, want stable runner diagnostic", stderr)
 	}
 	if strings.Contains(stderr, targetPath) || strings.Contains(stderr, strconv.Itoa(staplerInventoryMaxEntries)) {
 		t.Fatalf("stderr = %q, must not expose target path or private entry cap", stderr)
