@@ -501,8 +501,13 @@ func TestXCConfigCollectorKeepsCaseDistinctFilesOnCaseSensitiveHost(t *testing.T
 
 func TestIdentityAwareDarwinCollectorDeduplicatesCaseVariantSameFile(t *testing.T) {
 	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
 	runtimeGOOS = "darwin"
-	t.Cleanup(func() { runtimeGOOS = previousOS })
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return true, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+	})
 
 	root := t.TempDir()
 	rootPath := filepath.Join(root, "Config.xcconfig")
@@ -542,6 +547,240 @@ func TestIdentityAwareDarwinCollectorDeduplicatesCaseVariantSameFile(t *testing.
 		t.Fatalf("read calls = %d, want one after identity deduplication", readCalls)
 	}
 	_ = caseVariantPath
+}
+
+func TestIdentityAwareWindowsCollectorKeepsCaseDistinctFilesOnCaseSensitiveDirectory(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "windows"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+	})
+
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Root.xcconfig")
+	firstPath := filepath.Join(root, "First.xcconfig")
+	secondPath := filepath.Join(root, "first.xcconfig")
+	identityPath := filepath.Join(root, "identity")
+	if err := os.WriteFile(identityPath, []byte("identity"), 0o600); err != nil {
+		t.Fatalf("WriteFile(identity) error = %v", err)
+	}
+	identity, err := os.Stat(identityPath)
+	if err != nil {
+		t.Fatalf("Stat(identity) error = %v", err)
+	}
+	files, err := collectXCConfigFilesWithHooksAndIdentity(
+		rootPath,
+		func(path string) ([]byte, error) {
+			switch filepath.Clean(path) {
+			case rootPath:
+				return []byte("#include \"First.xcconfig\"\n#include \"first.xcconfig\"\n"), nil
+			case firstPath, secondPath:
+				return []byte("CODE_SIGN_STYLE = Manual\n"), nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		nil,
+		nil,
+		nil,
+		func(string) (os.FileInfo, error) { return identity, nil },
+	)
+	if err != nil {
+		t.Fatalf("collectXCConfigFilesWithHooksAndIdentity() error = %v", err)
+	}
+	if len(files) != 3 || files[0] != rootPath || files[1] != firstPath || files[2] != secondPath {
+		t.Fatalf("files = %#v, want both case-distinct Windows includes", files)
+	}
+}
+
+func TestIdentityAwareWindowsCollectorCoalescesCaseVariantOnCaseInsensitiveDirectory(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "windows"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return true, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+	})
+
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Root.xcconfig")
+	firstPath := filepath.Join(root, "First.xcconfig")
+	secondPath := filepath.Join(root, "first.xcconfig")
+	identityPath := filepath.Join(root, "identity")
+	if err := os.WriteFile(identityPath, []byte("identity"), 0o600); err != nil {
+		t.Fatalf("WriteFile(identity) error = %v", err)
+	}
+	identity, err := os.Stat(identityPath)
+	if err != nil {
+		t.Fatalf("Stat(identity) error = %v", err)
+	}
+	files, err := collectXCConfigFilesWithHooksAndIdentity(
+		rootPath,
+		func(path string) ([]byte, error) {
+			switch filepath.Clean(path) {
+			case rootPath:
+				return []byte("#include \"First.xcconfig\"\n#include \"first.xcconfig\"\n"), nil
+			case firstPath, secondPath:
+				return []byte("CODE_SIGN_STYLE = Manual\n"), nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		nil,
+		nil,
+		nil,
+		func(string) (os.FileInfo, error) { return identity, nil },
+	)
+	if err != nil {
+		t.Fatalf("collectXCConfigFilesWithHooksAndIdentity() error = %v", err)
+	}
+	if len(files) != 2 || files[0] != rootPath || files[1] != firstPath {
+		t.Fatalf("files = %#v, want one case-insensitive Windows include", files)
+	}
+}
+
+func TestSigningPathCaseEquivalentUsesWindowsDirectorySemantics(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "windows"
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+	})
+
+	root := t.TempDir()
+	upper := filepath.Join(root, "Config.xcconfig")
+	lower := filepath.Join(root, "config.xcconfig")
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, true }
+	if signingPathCaseEquivalent(upper, lower) {
+		t.Fatal("case-sensitive Windows directory collapsed case-distinct paths")
+	}
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return true, true }
+	if !signingPathCaseEquivalent(upper, lower) {
+		t.Fatal("case-insensitive Windows directory did not coalesce case-variant paths")
+	}
+}
+
+func TestIdentityAwareCollectorKeepsCaseDistinctHardlinkedIncludesOnCaseSensitiveHost(t *testing.T) {
+	previousOS := runtimeGOOS
+	runtimeGOOS = "linux"
+	t.Cleanup(func() { runtimeGOOS = previousOS })
+
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Root.xcconfig")
+	firstPath := filepath.Join(root, "First.xcconfig")
+	secondPath := filepath.Join(root, "first.xcconfig")
+	identityPath := filepath.Join(root, "identity")
+	if err := os.WriteFile(identityPath, []byte("identity"), 0o600); err != nil {
+		t.Fatalf("WriteFile(identity) error = %v", err)
+	}
+	identity, err := os.Stat(identityPath)
+	if err != nil {
+		t.Fatalf("Stat(identity) error = %v", err)
+	}
+
+	files, err := collectXCConfigFilesWithHooksAndIdentity(
+		rootPath,
+		func(path string) ([]byte, error) {
+			switch filepath.Clean(path) {
+			case rootPath:
+				return []byte("#include \"First.xcconfig\"\n#include \"first.xcconfig\"\n"), nil
+			case firstPath, secondPath:
+				return []byte("CODE_SIGN_STYLE = Manual\n"), nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		nil,
+		nil,
+		nil,
+		func(path string) (os.FileInfo, error) {
+			return identity, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("collectXCConfigFilesWithHooksAndIdentity() error = %v", err)
+	}
+	if len(files) != 3 || files[0] != rootPath || files[1] != firstPath || files[2] != secondPath {
+		t.Fatalf("files = %#v, want root and case-distinct include", files)
+	}
+}
+
+func TestStableVersionResolverUsesLaterCaseDistinctInclude(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "windows"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+	})
+
+	root := t.TempDir()
+	appPath := filepath.Join(root, "App.xcconfig")
+	basePath := filepath.Join(root, "Base.xcconfig")
+	lowerBasePath := filepath.Join(root, "base.xcconfig")
+	appBacking := filepath.Join(root, "app.backing")
+	baseBacking := filepath.Join(root, "base.backing")
+	lowerBaseBacking := filepath.Join(root, "lower-base.backing")
+	for path, contents := range map[string]string{
+		appBacking:       "#include \"Base.xcconfig\"\n",
+		baseBacking:      "MARKETING_VERSION = 1.0.0\n#include \"base.xcconfig\"\n",
+		lowerBaseBacking: "MARKETING_VERSION = 2.0.0\n",
+	} {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", path, err)
+		}
+	}
+	identities := make(map[string]os.FileInfo)
+	for requested, backing := range map[string]string{
+		appPath:       appBacking,
+		basePath:      baseBacking,
+		lowerBasePath: lowerBaseBacking,
+	} {
+		info, err := os.Stat(backing)
+		if err != nil {
+			t.Fatalf("Stat(%s) error = %v", backing, err)
+		}
+		identities[requested] = info
+	}
+	contents := map[string][]byte{
+		appPath:       []byte("#include \"Base.xcconfig\"\n"),
+		basePath:      []byte("MARKETING_VERSION = 1.0.0\n#include \"base.xcconfig\"\n"),
+		lowerBasePath: []byte("MARKETING_VERSION = 2.0.0\n"),
+	}
+	read := func(path string) ([]byte, error) {
+		data, ok := contents[filepath.Clean(path)]
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+		return data, nil
+	}
+	stat := func(path string) (os.FileInfo, error) {
+		info, ok := identities[filepath.Clean(path)]
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+		return info, nil
+	}
+	resolved, err := resolveXCConfigSettingWithBaseReaderAndIdentity(
+		appPath,
+		marketingVersionSetting,
+		xcconfigResolvedValue{},
+		read,
+		stat,
+		stat,
+	)
+	if err != nil {
+		t.Fatalf("resolveXCConfigSettingWithBaseReaderAndIdentity() error = %v", err)
+	}
+	if resolved.value != "2.0.0" || resolved.path != lowerBasePath {
+		t.Fatalf("resolved = %#v, want later case-distinct include", resolved)
+	}
 }
 
 func TestSigningXCConfigConsumersKeepsWindowsCaseDistinctFilesByIdentity(t *testing.T) {
