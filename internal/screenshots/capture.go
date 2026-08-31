@@ -38,7 +38,6 @@ func Capture(ctx context.Context, req CaptureRequest) (*CaptureResult, error) {
 func CaptureWithProvider(ctx context.Context, req CaptureRequest, p Provider) (*CaptureResult, error) {
 	req.Provider = strings.TrimSpace(strings.ToLower(req.Provider))
 	req.Name = strings.TrimSpace(req.Name)
-	req.OutputDir = strings.TrimSpace(req.OutputDir)
 	if err := validateCaptureDestination(req.Name, req.OutputDir); err != nil {
 		return nil, err
 	}
@@ -101,7 +100,6 @@ func captureWithRoot(ctx context.Context, req CaptureRequest, destination rootfs
 func captureWithRootProvider(ctx context.Context, req CaptureRequest, destination rootfs.Root, provider Provider) (result *CaptureResult, returnErr error) {
 	req.Provider = strings.TrimSpace(strings.ToLower(req.Provider))
 	req.Name = strings.TrimSpace(req.Name)
-	req.OutputDir = strings.TrimSpace(req.OutputDir)
 	if err := validateCaptureDestination(req.Name, req.OutputDir); err != nil {
 		return nil, err
 	}
@@ -112,33 +110,36 @@ func captureWithRootProvider(ctx context.Context, req CaptureRequest, destinatio
 		return nil, fmt.Errorf("matrix capture output escapes rooted destination: %w", err)
 	}
 
-	scratchDir, err := os.MkdirTemp("", "asc-shots-capture-")
+	scratchAttempt, err := createMatrixPrivateAttemptRoot()
 	if err != nil {
 		return nil, fmt.Errorf("create capture scratch directory: %w", err)
 	}
-	scratchRoot, err := rootfs.New(scratchDir)
-	if err != nil {
-		return nil, fmt.Errorf("open capture scratch directory: %w", err)
-	}
-	scratchAnchor, err := scratchRoot.OpenRoot()
-	if err != nil {
-		_ = scratchRoot.Close()
-		return nil, fmt.Errorf("anchor capture scratch directory: %w", err)
-	}
 	defer func() {
-		cleanupErr := cleanupMatrixProviderScratch(scratchAnchor, scratchDir)
-		anchorCloseErr := scratchAnchor.Close()
-		rootCloseErr := scratchRoot.Close()
-		if resourceErr := errors.Join(cleanupErr, anchorCloseErr, rootCloseErr); resourceErr != nil {
+		cleanupErr := cleanupMatrixPrivateAttemptForExecution(scratchAttempt)
+		closeErr := closeMatrixPrivateAttemptForExecution(scratchAttempt)
+		if resourceErr := errors.Join(cleanupErr, closeErr); resourceErr != nil {
 			result = nil
 			returnErr = errors.Join(returnErr, resourceErr)
 		}
 	}()
+	scratchOutputRoot, err := openMatrixPrivateAttemptOutputRoot(&scratchAttempt)
+	if err != nil {
+		return nil, fmt.Errorf("open capture scratch output: %w", err)
+	}
+	defer func() {
+		if closeErr := scratchOutputRoot.Close(); closeErr != nil {
+			result = nil
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+	if err := lockMatrixPrivateAttemptChild(&scratchAttempt); err != nil {
+		return nil, fmt.Errorf("protect capture scratch: %w", err)
+	}
 	provider, err = captureProviderForRequest(req, provider)
 	if err != nil {
 		return nil, err
 	}
-	req.OutputDir = scratchDir
+	req.OutputDir = scratchOutputRoot.Path()
 	pngPath, err := provider.Capture(ctx, req)
 	if err != nil {
 		return nil, err
@@ -146,7 +147,7 @@ func captureWithRootProvider(ctx context.Context, req CaptureRequest, destinatio
 	if strings.TrimSpace(pngPath) == "" {
 		return nil, errors.New("capture provider returned no image")
 	}
-	verifiedScratch, err := scratchRoot.OpenRoot()
+	verifiedScratch, err := scratchAttempt.root.OpenRoot()
 	if err != nil {
 		return nil, fmt.Errorf("capture scratch directory changed during provider execution: %w", err)
 	}
@@ -157,11 +158,11 @@ func captureWithRootProvider(ctx context.Context, req CaptureRequest, destinatio
 	if err != nil {
 		return nil, fmt.Errorf("resolve captured path: %w", err)
 	}
-	scratchRelative, err := filepath.Rel(scratchDir, absCapturedPath)
+	scratchRelative, err := filepath.Rel(scratchOutputRoot.Path(), absCapturedPath)
 	if err != nil || scratchRelative == ".." || strings.HasPrefix(scratchRelative, ".."+string(filepath.Separator)) || filepath.IsAbs(scratchRelative) || strings.ContainsAny(scratchRelative, `/\\`) {
 		return nil, errors.New("capture provider returned an unsafe image path")
 	}
-	scratchFile, err := scratchRoot.OpenFile(scratchRelative)
+	scratchFile, err := scratchOutputRoot.OpenFile(scratchRelative)
 	if err != nil {
 		return nil, fmt.Errorf("open captured image: %w", err)
 	}
@@ -173,7 +174,7 @@ func captureWithRootProvider(ctx context.Context, req CaptureRequest, destinatio
 	if closeErr != nil {
 		return nil, fmt.Errorf("close captured image: %w", closeErr)
 	}
-	data, err := scratchRoot.ReadFileLimited(scratchRelative, maxMatrixArtifactBytes)
+	data, err := scratchOutputRoot.ReadFileLimited(scratchRelative, maxMatrixArtifactBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read captured image: %w", err)
 	}
@@ -220,7 +221,7 @@ func cleanupMatrixProviderScratch(anchor *os.Root, path string) error {
 }
 
 func validateCaptureDestination(name, outputDir string) error {
-	if outputDir == "" {
+	if outputDir == "" || strings.TrimSpace(outputDir) == "" {
 		return fmt.Errorf("output directory is required")
 	}
 	if name == "" {

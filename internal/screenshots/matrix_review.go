@@ -17,6 +17,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 // MatrixReviewRequest describes the local report to write after a matrix run.
@@ -37,6 +38,17 @@ type (
 // matrixReviewManifestLoadedForTest is a narrow race-test seam. It runs after
 // the manifest has been decoded but before its HTML pair is validated.
 var matrixReviewManifestLoadedForTest func()
+
+// These narrow seams make filesystem replacement and cancellation races
+// deterministic in package tests. They are unset in production.
+var (
+	matrixReviewAssetRootBeforeOpenForTest func(kind, path string)
+	matrixReviewAssetRootOpenedForTest     func(kind, path string)
+	matrixReviewAssetBeforeHashForTest     func(path string)
+	matrixReviewAssetRootBeforePinForTest  func(kind, path string)
+	matrixReviewAssetRootsCapturedForTest  func(kind, path string)
+	matrixReviewAssetValidatedForTest      func(path string)
+)
 
 // GenerateMatrixReview writes an offline HTML report and its JSON manifest.
 // It includes every planned cell, including failed and canceled cells.
@@ -60,7 +72,31 @@ var errMatrixReviewPairMismatch = errors.New("matrix review HTML does not match 
 
 var matrixReviewGeneratedFiles = []string{".asc-matrix-review.lock", "index.html", "manifest.json"}
 
-const matrixReviewLockAfterCancelTimeout = 250 * time.Millisecond
+const (
+	matrixReviewLockAfterCancelTimeout = 250 * time.Millisecond
+	// Browser snapshots are deliberately bounded independently from the
+	// generated report limit.  A matrix can reference many small images, so a
+	// per-file limit alone is not enough to keep the opener's memory/disk work
+	// predictable.
+	maxMatrixReviewBrowserAssets = 1024
+	maxMatrixReviewBrowserBytes  = 256 << 20
+)
+
+func openMatrixReviewFile(root *os.Root, name string) (*os.File, error) {
+	if root == nil {
+		return nil, errors.New("matrix review root is unavailable")
+	}
+	file, err := secureopen.OpenExistingNoFollowInRoot(root, name)
+	if err == nil {
+		return file, nil
+	}
+	// Preserve the rootfs error contract for a final symlink while keeping the
+	// actual read anchored to the already-open directory descriptor.
+	if info, statErr := root.Lstat(name); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: refusing to follow symlink %q", rootfs.ErrSymlink, name)
+	}
+	return nil, err
+}
 
 func matrixReviewLockContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if ctx == nil {
@@ -283,7 +319,21 @@ func matrixReviewCounts(result *MatrixResult) (total, succeeded, failed, cancele
 
 // LoadMatrixReviewManifest parses a generated matrix review manifest.
 func LoadMatrixReviewManifest(path string) (*MatrixReviewManifest, error) {
-	file, err := rootfs.OpenFile(path)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("read matrix review manifest: %w", err)
+	}
+	reviewRoot, err := rootfs.New(filepath.Dir(absPath))
+	if err != nil {
+		return nil, fmt.Errorf("read matrix review manifest: %w", err)
+	}
+	defer reviewRoot.Close()
+	openedRoot, err := reviewRoot.OpenRoot()
+	if err != nil {
+		return nil, fmt.Errorf("read matrix review manifest: %w", err)
+	}
+	defer openedRoot.Close()
+	file, err := openMatrixReviewFile(openedRoot, filepath.Base(absPath))
 	if err != nil {
 		return nil, fmt.Errorf("read matrix review manifest: %w", err)
 	}
@@ -302,70 +352,407 @@ func LoadMatrixReviewManifest(path string) (*MatrixReviewManifest, error) {
 	if matrixReviewManifestLoadedForTest != nil {
 		matrixReviewManifestLoadedForTest()
 	}
-	if err := validateMatrixReviewManifestHTML(filepath.Join(filepath.Dir(path), "index.html"), manifest.HTMLSHA256); err != nil {
+	htmlFile, err := openMatrixReviewFile(openedRoot, "index.html")
+	if err != nil {
+		return nil, errMatrixReviewPairMismatch
+	}
+	htmlData, readErr := io.ReadAll(io.LimitReader(htmlFile, maxMatrixReviewBytes+1))
+	closeErr := htmlFile.Close()
+	if readErr != nil || closeErr != nil {
+		return nil, errMatrixReviewPairMismatch
+	}
+	if err := validateMatrixReviewHTMLData(htmlData, manifest.HTMLSHA256); err != nil {
 		return nil, err
 	}
 	return &manifest, nil
 }
 
-func validateMatrixReviewPairForHTML(path string) error {
-	if filepath.Base(path) != "index.html" {
-		return nil
-	}
-	htmlFile, err := rootfs.OpenFile(path)
+// matrixReviewBrowserAsset is a bounded copy of one artifact referenced by a
+// generated review. Browser snapshots rewrite links to these copies so the
+// browser never follows the mutable published output tree after validation.
+type matrixReviewBrowserAsset struct {
+	sourceRoot   *rootfs.Root
+	relativePath string
+	sourcePath   string
+	originalLink string
+	linkPath     string
+	size         int64
+	identity     os.FileInfo
+	digest       [sha256.Size]byte
+}
+
+type matrixReviewPairSnapshot struct {
+	htmlData       []byte
+	manifest       *MatrixReviewManifest
+	assetRootRoots map[string]*rootfs.Root
+}
+
+func readMatrixReviewPairSnapshotWithRoots(path string) (matrixReviewPairSnapshot, error) {
+	matrixPair := filepath.Base(path) == "index.html"
+	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return errMatrixReviewPairMismatch
+		return matrixReviewPairSnapshot{}, errMatrixReviewPairMismatch
+	}
+	reviewRoot, err := rootfs.New(filepath.Dir(absPath))
+	if err != nil {
+		return matrixReviewPairSnapshot{}, errMatrixReviewPairMismatch
+	}
+	defer func() { _ = reviewRoot.Close() }()
+	openedRoot, err := reviewRoot.OpenRoot()
+	if err != nil {
+		return matrixReviewPairSnapshot{}, errMatrixReviewPairMismatch
+	}
+	defer func() { _ = openedRoot.Close() }()
+	htmlFile, err := openMatrixReviewFile(openedRoot, filepath.Base(absPath))
+	if err != nil {
+		return matrixReviewPairSnapshot{}, errMatrixReviewPairMismatch
 	}
 	htmlData, readErr := io.ReadAll(io.LimitReader(htmlFile, maxMatrixReviewBytes+1))
 	closeErr := htmlFile.Close()
 	if readErr != nil || closeErr != nil {
-		return errMatrixReviewPairMismatch
+		return matrixReviewPairSnapshot{}, errMatrixReviewPairMismatch
+	}
+	if !matrixPair {
+		return matrixReviewPairSnapshot{htmlData: htmlData}, nil
 	}
 	matrixMarked := bytes.Contains(htmlData, []byte(`<meta name="asc-matrix-review" content="1">`))
-	manifestPath := filepath.Join(filepath.Dir(path), "manifest.json")
-	file, err := rootfs.OpenFile(manifestPath)
+	file, err := openMatrixReviewFile(openedRoot, "manifest.json")
 	if err != nil {
 		if matrixMarked {
-			return errMatrixReviewPairMismatch
+			return matrixReviewPairSnapshot{}, errMatrixReviewPairMismatch
 		}
-		return nil
+		return matrixReviewPairSnapshot{htmlData: htmlData}, nil
 	}
-	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, maxMatrixReviewBytes+1))
-	if err != nil || len(data) > maxMatrixReviewBytes {
+	closeErr = file.Close()
+	if err != nil || closeErr != nil || len(data) > maxMatrixReviewBytes {
 		if matrixMarked {
-			return errMatrixReviewPairMismatch
+			return matrixReviewPairSnapshot{}, errMatrixReviewPairMismatch
 		}
-		return nil
+		return matrixReviewPairSnapshot{htmlData: htmlData}, nil
+	}
+	var manifest MatrixReviewManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		if matrixMarked {
+			return matrixReviewPairSnapshot{}, errMatrixReviewPairMismatch
+		}
+		return matrixReviewPairSnapshot{htmlData: htmlData}, nil
 	}
 	var binding struct {
 		HTMLSHA256 string `json:"htmlSha256"`
 	}
 	if err := json.Unmarshal(data, &binding); err != nil || strings.TrimSpace(binding.HTMLSHA256) == "" {
 		if matrixMarked {
-			return errMatrixReviewPairMismatch
+			return matrixReviewPairSnapshot{}, errMatrixReviewPairMismatch
 		}
 		// Non-matrix and pre-binding review pairs remain backward compatible.
-		return nil
+		return matrixReviewPairSnapshot{htmlData: htmlData}, nil
 	}
-	return validateMatrixReviewHTMLData(htmlData, binding.HTMLSHA256)
+	assetRootRoots, rootsErr := captureMatrixReviewAssetRootIdentities(filepath.Dir(absPath), &manifest)
+	if rootsErr != nil {
+		return matrixReviewPairSnapshot{}, rootsErr
+	}
+	if err := validateMatrixReviewHTMLData(htmlData, binding.HTMLSHA256); err != nil {
+		_ = closeMatrixReviewAssetRoots(assetRootRoots)
+		return matrixReviewPairSnapshot{}, err
+	}
+	return matrixReviewPairSnapshot{htmlData: htmlData, manifest: &manifest, assetRootRoots: assetRootRoots}, nil
 }
 
-// validateMatrixReviewManifestHTML binds a decoded manifest to the exact HTML
-// snapshot validated for it. The caller may have read the manifest before a
-// concurrent publisher replaced the pair; validating its digest against one
-// HTML read prevents accepting a newer generation while returning old metadata.
-func validateMatrixReviewManifestHTML(path, expected string) error {
-	file, err := rootfs.OpenFile(path)
+func matrixReviewAssetRootPaths(outputDir string, manifest *MatrixReviewManifest) (map[string]string, error) {
+	if manifest == nil {
+		return nil, nil
+	}
+	manifestOutputDir, err := filepath.Abs(manifest.OutputDir)
+	if err != nil || strings.TrimSpace(manifest.OutputDir) == "" || filepath.Clean(manifestOutputDir) != filepath.Clean(outputDir) {
+		return nil, errMatrixReviewPairMismatch
+	}
+	assetRoots := make(map[string]string, 2)
+	for kind, value := range map[string]string{"raw": manifest.RawDir, "framed": manifest.FramedDir} {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		rootPath := filepath.FromSlash(value)
+		if !filepath.IsAbs(rootPath) {
+			rootPath = filepath.Join(outputDir, rootPath)
+		}
+		rootPath, err = filepath.Abs(rootPath)
+		if err != nil {
+			return nil, errMatrixReviewPairMismatch
+		}
+		assetRoots[kind] = filepath.Clean(rootPath)
+	}
+	return assetRoots, nil
+}
+
+// captureMatrixReviewAssetRootIdentities retains the declared source roots while
+// the review pair is still held open. OpenReview uses these descriptors for the
+// later rooted source reads, so an inode cannot be recycled between pair
+// validation and snapshot publication. The references, rather than only
+// FileInfo values, are carried across that handoff.
+func captureMatrixReviewAssetRootIdentities(outputDir string, manifest *MatrixReviewManifest) (map[string]*rootfs.Root, error) {
+	if manifest == nil {
+		return nil, nil
+	}
+	assetRoots, err := matrixReviewAssetRootPaths(outputDir, manifest)
 	if err != nil {
-		return errMatrixReviewPairMismatch
+		return nil, err
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, maxMatrixReviewBytes+1))
-	closeErr := file.Close()
-	if readErr != nil || closeErr != nil {
-		return errMatrixReviewPairMismatch
+	needed := make(map[string]struct{}, len(assetRoots))
+	for _, cell := range manifest.Cells {
+		if len(cell.RawPaths) > 0 {
+			needed["raw"] = struct{}{}
+		}
+		if len(cell.FramedPaths) > 0 {
+			needed["framed"] = struct{}{}
+		}
 	}
-	return validateMatrixReviewHTMLData(data, expected)
+	roots := make(map[string]*rootfs.Root, len(needed))
+	for kind := range needed {
+		rootPath, ok := assetRoots[kind]
+		if !ok {
+			return nil, errMatrixReviewPairMismatch
+		}
+		info, statErr := os.Lstat(rootPath)
+		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, errMatrixReviewPairMismatch
+		}
+		if matrixReviewAssetRootBeforePinForTest != nil {
+			matrixReviewAssetRootBeforePinForTest(kind, rootPath)
+		}
+		root, rootErr := rootfs.New(rootPath)
+		if rootErr != nil {
+			_ = closeMatrixReviewAssetRoots(roots)
+			return nil, errMatrixReviewPairMismatch
+		}
+		opened, openErr := root.OpenRoot()
+		if openErr != nil {
+			_ = root.Close()
+			_ = closeMatrixReviewAssetRoots(roots)
+			return nil, errMatrixReviewPairMismatch
+		}
+		openedInfo, openedErr := opened.Stat(".")
+		currentInfo, currentErr := os.Lstat(rootPath)
+		_ = opened.Close()
+		if openedErr != nil || currentErr != nil || currentInfo.Mode()&os.ModeSymlink != 0 || !currentInfo.IsDir() || !os.SameFile(info, openedInfo) || !os.SameFile(openedInfo, currentInfo) {
+			_ = root.Close()
+			_ = closeMatrixReviewAssetRoots(roots)
+			return nil, errMatrixReviewPairMismatch
+		}
+		rootCopy := root
+		roots[kind] = &rootCopy
+	}
+	if matrixReviewAssetRootsCapturedForTest != nil {
+		for kind, rootPath := range assetRoots {
+			if _, needed := roots[kind]; needed {
+				matrixReviewAssetRootsCapturedForTest(kind, rootPath)
+			}
+		}
+	}
+	return roots, nil
+}
+
+func closeMatrixReviewAssetRoots(roots map[string]*rootfs.Root) error {
+	seen := make(map[*rootfs.Root]struct{}, len(roots))
+	var closeErr error
+	for _, root := range roots {
+		if root == nil {
+			continue
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		closeErr = errors.Join(closeErr, root.Close())
+	}
+	return closeErr
+}
+
+func matrixReviewBrowserAssets(htmlPath string, htmlData []byte, manifest *MatrixReviewManifest) ([]matrixReviewBrowserAsset, error) {
+	return matrixReviewBrowserAssetsWithContext(context.Background(), htmlPath, htmlData, manifest)
+}
+
+func matrixReviewBrowserAssetsWithContext(ctx context.Context, htmlPath string, htmlData []byte, manifest *MatrixReviewManifest) ([]matrixReviewBrowserAsset, error) {
+	return matrixReviewBrowserAssetsWithExpectedRoots(ctx, htmlPath, htmlData, manifest, nil)
+}
+
+func matrixReviewBrowserAssetsWithExpectedRoots(ctx context.Context, htmlPath string, htmlData []byte, manifest *MatrixReviewManifest, expectedRoots map[string]*rootfs.Root) ([]matrixReviewBrowserAsset, error) {
+	if manifest == nil {
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, errMatrixReviewPairMismatch
+	}
+	outputDir, err := filepath.Abs(manifest.OutputDir)
+	if err != nil || strings.TrimSpace(manifest.OutputDir) == "" {
+		return nil, errMatrixReviewPairMismatch
+	}
+	htmlDir, err := filepath.Abs(filepath.Dir(htmlPath))
+	if err != nil || filepath.Clean(htmlDir) != filepath.Clean(outputDir) {
+		return nil, errMatrixReviewPairMismatch
+	}
+	assetRoots, err := matrixReviewAssetRootPaths(outputDir, manifest)
+	if err != nil {
+		return nil, err
+	}
+	assetCount := 0
+	for _, cell := range manifest.Cells {
+		assetCount += len(cell.RawPaths) + len(cell.FramedPaths)
+	}
+	if assetCount > maxMatrixReviewBrowserAssets {
+		return nil, errMatrixReviewPairMismatch
+	}
+	type openedAssetRoot struct{ root *rootfs.Root }
+	openedRoots := make(map[string]openedAssetRoot)
+	closeRoots := func() error {
+		var closeErr error
+		for _, opened := range openedRoots {
+			if opened.root != nil {
+				closeErr = errors.Join(closeErr, opened.root.Close())
+			}
+		}
+		return closeErr
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = closeRoots()
+		}
+	}()
+	assets := make([]matrixReviewBrowserAsset, 0)
+	seen := make(map[string]struct{})
+	var totalSize int64
+	for _, cell := range manifest.Cells {
+		for kind, paths := range map[string][]string{"raw": cell.RawPaths, "framed": cell.FramedPaths} {
+			rootPath, ok := assetRoots[kind]
+			if !ok {
+				if len(paths) > 0 {
+					return nil, errMatrixReviewPairMismatch
+				}
+				continue
+			}
+			for _, path := range paths {
+				absolute, err := filepath.Abs(path)
+				if err != nil {
+					return nil, errMatrixReviewPairMismatch
+				}
+				relative, err := filepath.Rel(rootPath, absolute)
+				if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+					return nil, errMatrixReviewPairMismatch
+				}
+				absolute = filepath.Clean(absolute)
+				if _, ok := seen[absolute]; ok {
+					continue
+				}
+				opened, ok := openedRoots[kind]
+				if !ok {
+					if matrixReviewAssetRootBeforeOpenForTest != nil {
+						matrixReviewAssetRootBeforeOpenForTest(kind, rootPath)
+					}
+					if expected, ok := expectedRoots[kind]; ok {
+						opened = openedAssetRoot{root: expected}
+					} else {
+						// The declared source root is part of the validated matrix
+						// manifest, but it is still a filesystem boundary. Reject a
+						// final symlink and retain the rooted descriptor so later
+						// reads cannot follow a replacement path.
+						rootInfo, statErr := os.Lstat(rootPath)
+						if statErr != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+							return nil, errMatrixReviewPairMismatch
+						}
+						root, err := rootfs.New(rootPath)
+						if err != nil {
+							return nil, errMatrixReviewPairMismatch
+						}
+						openedRoot, openErr := root.OpenRoot()
+						if openErr != nil {
+							_ = root.Close()
+							return nil, errMatrixReviewPairMismatch
+						}
+						openedInfo, openedErr := openedRoot.Stat(".")
+						if matrixReviewAssetRootOpenedForTest != nil {
+							matrixReviewAssetRootOpenedForTest(kind, rootPath)
+						}
+						currentInfo, currentErr := os.Lstat(rootPath)
+						_ = openedRoot.Close()
+						if openedErr != nil || currentErr != nil || currentInfo.Mode()&os.ModeSymlink != 0 || !currentInfo.IsDir() || !os.SameFile(rootInfo, openedInfo) || !os.SameFile(openedInfo, currentInfo) {
+							_ = root.Close()
+							return nil, errMatrixReviewPairMismatch
+						}
+						opened = openedAssetRoot{root: &root}
+					}
+					openedRoots[kind] = opened
+				}
+				file, err := opened.root.OpenFile(relative)
+				if err != nil {
+					return nil, errMatrixReviewPairMismatch
+				}
+				info, statErr := file.Stat()
+				closeErr := file.Close()
+				if statErr != nil || closeErr != nil || !info.Mode().IsRegular() || info.Size() > maxMatrixArtifactBytes {
+					return nil, errMatrixReviewPairMismatch
+				}
+				if info.Size() > maxMatrixReviewBrowserBytes-totalSize {
+					return nil, errMatrixReviewPairMismatch
+				}
+				if err := ctx.Err(); err != nil {
+					return nil, errMatrixReviewPairMismatch
+				}
+				remainingBrowserBytes := maxMatrixReviewBrowserBytes - totalSize
+				if remainingBrowserBytes <= 0 {
+					return nil, errMatrixReviewPairMismatch
+				}
+				hasher := sha256.New()
+				hashFile, hashOpenErr := opened.root.OpenFile(relative)
+				if hashOpenErr != nil {
+					return nil, errMatrixReviewPairMismatch
+				}
+				hashInfo, hashStatErr := hashFile.Stat()
+				if hashStatErr != nil || !os.SameFile(info, hashInfo) || hashInfo.Size() != info.Size() {
+					_ = hashFile.Close()
+					return nil, errMatrixReviewPairMismatch
+				}
+				if matrixReviewAssetBeforeHashForTest != nil {
+					matrixReviewAssetBeforeHashForTest(absolute)
+				}
+				hashedSize, hashErr := io.Copy(hasher, io.LimitReader(matrixReviewSnapshotContextReader{ctx: ctx, r: hashFile}, remainingBrowserBytes+1))
+				hashCloseErr := hashFile.Close()
+				if hashErr != nil || hashCloseErr != nil || hashedSize != info.Size() {
+					return nil, errMatrixReviewPairMismatch
+				}
+				if err := ctx.Err(); err != nil {
+					return nil, errMatrixReviewPairMismatch
+				}
+				var digest [sha256.Size]byte
+				copy(digest[:], hasher.Sum(nil))
+				originalLink := filepath.ToSlash(relativeOrCleanPath(outputDir, absolute))
+				escapedLink := html.EscapeString(matrixArtifactURLPath(originalLink))
+				if originalLink == "" || !bytes.Contains(htmlData, []byte(`href="`+escapedLink+`"`)) || !bytes.Contains(htmlData, []byte(`src="`+escapedLink+`"`)) {
+					return nil, errMatrixReviewPairMismatch
+				}
+				assets = append(assets, matrixReviewBrowserAsset{
+					sourceRoot:   opened.root,
+					relativePath: relative,
+					sourcePath:   absolute,
+					originalLink: escapedLink,
+					linkPath:     filepath.ToSlash(fmt.Sprintf("assets/%06d%s", len(assets), filepath.Ext(absolute))),
+					size:         info.Size(),
+					identity:     info,
+					digest:       digest,
+				})
+				seen[absolute] = struct{}{}
+				totalSize += info.Size()
+				if matrixReviewAssetValidatedForTest != nil {
+					matrixReviewAssetValidatedForTest(absolute)
+				}
+			}
+		}
+	}
+	failed = false
+	return assets, nil
 }
 
 func validateMatrixReviewHTMLData(data []byte, expected string) error {

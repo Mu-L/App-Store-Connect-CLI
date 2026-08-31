@@ -191,7 +191,8 @@ func (input *matrixPreparedFrameInput) close() error {
 		// The input directory is read-only while Koubou runs so its pathname
 		// cannot be replaced by a concurrent path-based writer. Restore the
 		// private directory before rooted cleanup.
-		cleanupErr = errors.Join(cleanupErr, input.anchor.Chmod(".", 0o700))
+		cleanupErr = errors.Join(cleanupErr, unlockMatrixPrivateAttemptFile(input.path))
+		cleanupErr = errors.Join(cleanupErr, unlockMatrixPrivateAttemptDirectory(input.anchor))
 	}
 	cleanupErr = errors.Join(cleanupErr, cleanupMatrixProviderScratch(input.anchor, filepath.Dir(input.path)))
 	if input.anchor != nil {
@@ -292,7 +293,7 @@ func prepareMatrixFrameInput(ctx context.Context, inputPath string) (*matrixPrep
 		return nil, fmt.Errorf("rewind frame input: %w", err)
 	}
 
-	scratchDir, err := os.MkdirTemp("", "asc-shots-frame-input-")
+	scratchDir, err := createMatrixPrivateScratchDir("asc-shots-frame-input-")
 	if err != nil {
 		_ = sourceFile.Close()
 		_ = sourceRoot.Close()
@@ -338,7 +339,10 @@ func prepareMatrixFrameInput(ctx context.Context, inputPath string) (*matrixPrep
 	if err := prepared.verify(ctx); err != nil {
 		return fail(err)
 	}
-	if err := scratchAnchor.Chmod(".", 0o500); err != nil {
+	if err := lockMatrixPrivateAttemptFile(prepared.path); err != nil {
+		return fail(fmt.Errorf("protect frame input file: %w", err))
+	}
+	if err := lockMatrixPrivateAttemptDirectory(scratchAnchor); err != nil {
 		return fail(fmt.Errorf("protect frame input scratch: %w", err))
 	}
 	prepared.locked = true
@@ -509,22 +513,25 @@ func frame(ctx context.Context, req FrameRequest, rootedOutput *rootfs.Root) (re
 		return nil, err
 	}
 
-	outputPath := strings.TrimSpace(req.OutputPath)
-	configPath := strings.TrimSpace(req.ConfigPath)
+	// Validate path emptiness without changing a caller-supplied path. A
+	// trailing space can be a legitimate filename component on supported
+	// filesystems.
+	outputPath := req.OutputPath
+	configPath := req.ConfigPath
 	resultDevice := string(device)
 	metadata := frameExecutionMetadata{
 		FrameRef: string(device),
 	}
 	var generatedWorkRoot *rootfs.Root
-	var generatedWorkAnchor *os.Root
+	var generatedWorkAttempt matrixPrivateAttemptRoot
 	var preparedInput *matrixPreparedFrameInput
 
-	if configPath == "" {
-		inputPath := strings.TrimSpace(req.InputPath)
-		if inputPath == "" {
+	if strings.TrimSpace(configPath) == "" {
+		inputPath := req.InputPath
+		if strings.TrimSpace(inputPath) == "" {
 			return nil, fmt.Errorf("input path is required")
 		}
-		if outputPath == "" {
+		if strings.TrimSpace(outputPath) == "" {
 			return nil, fmt.Errorf("output path is required")
 		}
 
@@ -564,32 +571,36 @@ func frame(ctx context.Context, req FrameRequest, rootedOutput *rootfs.Root) (re
 			}
 		}
 
-		generatedConfigPath, generatedMetadata, generatedWorkDir, err := createDefaultKoubouConfig(absInputPath, spec, req.Canvas)
-		if err != nil {
-			return nil, err
-		}
+		var generatedConfigPath, generatedWorkDir string
+		var generatedMetadata frameExecutionMetadata
 		if rootedOutput == nil {
+			generatedConfigPath, generatedMetadata, generatedWorkDir, err = createDefaultKoubouConfig(absInputPath, spec, req.Canvas)
+			if err != nil {
+				return nil, err
+			}
 			defer func() { _ = os.RemoveAll(generatedWorkDir) }()
 		} else {
-			workRoot, rootErr := rootfs.New(generatedWorkDir)
-			if rootErr != nil {
-				return nil, fmt.Errorf("open Koubou work directory: %w", rootErr)
+			generatedWorkAttempt, err = createMatrixPrivateAttemptRoot()
+			if err != nil {
+				return nil, fmt.Errorf("create Koubou work directory: %w", err)
 			}
-			if matrixFrameWorkRootBeforeAnchorForTest != nil {
-				matrixFrameWorkRootBeforeAnchorForTest(generatedWorkDir)
+			generatedWorkDir = generatedWorkAttempt.path
+			generatedConfigPath, generatedMetadata, err = createDefaultKoubouConfigAtRoot(absInputPath, spec, req.Canvas, generatedWorkDir, generatedWorkAttempt.pinned)
+			if err != nil {
+				cleanupErr := cleanupMatrixPrivateAttemptForExecution(generatedWorkAttempt)
+				closeErr := closeMatrixPrivateAttemptForExecution(generatedWorkAttempt)
+				return nil, errors.Join(err, cleanupErr, closeErr)
 			}
-			workAnchor, anchorErr := workRoot.OpenRoot()
-			if anchorErr != nil {
-				_ = workRoot.Close()
-				return nil, fmt.Errorf("anchor Koubou work directory: %w", anchorErr)
+			generatedWorkRoot = &generatedWorkAttempt.root
+			if err := lockMatrixPrivateAttemptChild(&generatedWorkAttempt); err != nil {
+				cleanupErr := cleanupMatrixPrivateAttemptForExecution(generatedWorkAttempt)
+				closeErr := closeMatrixPrivateAttemptForExecution(generatedWorkAttempt)
+				return nil, errors.Join(fmt.Errorf("lock Koubou work directory: %w", err), cleanupErr, closeErr)
 			}
-			generatedWorkRoot = &workRoot
-			generatedWorkAnchor = workAnchor
 			defer func() {
-				cleanupErr := cleanupMatrixProviderScratch(generatedWorkAnchor, generatedWorkDir)
-				anchorCloseErr := generatedWorkAnchor.Close()
-				rootCloseErr := generatedWorkRoot.Close()
-				if resourceErr := errors.Join(cleanupErr, anchorCloseErr, rootCloseErr); resourceErr != nil {
+				cleanupErr := cleanupMatrixPrivateAttemptForExecution(generatedWorkAttempt)
+				closeErr := closeMatrixPrivateAttemptForExecution(generatedWorkAttempt)
+				if resourceErr := errors.Join(cleanupErr, closeErr); resourceErr != nil {
 					result = nil
 					returnErr = errors.Join(returnErr, resourceErr)
 				}
@@ -736,14 +747,56 @@ func createDefaultKoubouConfig(
 	spec frameDeviceKoubouSpec,
 	canvas *CanvasOptions,
 ) (string, frameExecutionMetadata, string, error) {
-	workDir, err := os.MkdirTemp("", "asc-shots-kou-*")
+	workDir, err := createMatrixPrivateScratchDir("asc-shots-kou-")
 	if err != nil {
 		return "", frameExecutionMetadata{}, "", fmt.Errorf("create temp config directory: %w", err)
 	}
+	configPath, metadata, err := createDefaultKoubouConfigAt(absInputPath, spec, canvas, workDir)
+	if err != nil {
+		_ = os.RemoveAll(workDir)
+		return "", frameExecutionMetadata{}, "", err
+	}
+	return configPath, metadata, workDir, nil
+}
+
+// createDefaultKoubouConfigAt writes the generated config beneath a caller-
+// owned work directory. Matrix callers supply a private attempt root whose
+// parent remains locked for the entire external Koubou invocation, so the
+// path handed to Koubou cannot be renamed into an attacker-controlled tree.
+func createDefaultKoubouConfigAt(
+	absInputPath string,
+	spec frameDeviceKoubouSpec,
+	canvas *CanvasOptions,
+	workDir string,
+) (string, frameExecutionMetadata, error) {
+	return createDefaultKoubouConfigAtRoot(absInputPath, spec, canvas, workDir, nil)
+}
+
+// createDefaultKoubouConfigAtRoot is the matrix-only variant of
+// createDefaultKoubouConfigAt. When workRoot is non-nil, all generated
+// directories and files are created relative to the already-pinned attempt
+// root. The path arguments remain only for the external Koubou contract and
+// diagnostics; they are not used to resolve the generated objects.
+func createDefaultKoubouConfigAtRoot(
+	absInputPath string,
+	spec frameDeviceKoubouSpec,
+	canvas *CanvasOptions,
+	workDir string,
+	workRoot *os.Root,
+) (string, frameExecutionMetadata, error) {
+	if strings.TrimSpace(workDir) == "" {
+		return "", frameExecutionMetadata{}, errors.New("koubou work directory is required")
+	}
 
 	kouOutputDir := filepath.Join(workDir, "output")
-	if err := os.MkdirAll(kouOutputDir, 0o755); err != nil {
-		return "", frameExecutionMetadata{}, "", fmt.Errorf("create temp output directory: %w", err)
+	var outputErr error
+	if workRoot != nil {
+		outputErr = createMatrixPrivateAttemptOutputDirInRoot(workRoot)
+	} else {
+		outputErr = createMatrixPrivateAttemptOutputDir(workDir)
+	}
+	if outputErr != nil {
+		return "", frameExecutionMetadata{}, fmt.Errorf("create temp output directory: %w", outputErr)
 	}
 
 	scale := 1.0
@@ -866,10 +919,28 @@ func createDefaultKoubouConfig(
 
 	data, err := yaml.Marshal(config)
 	if err != nil {
-		return "", frameExecutionMetadata{}, "", fmt.Errorf("marshal default Koubou YAML: %w", err)
+		return "", frameExecutionMetadata{}, fmt.Errorf("marshal default Koubou YAML: %w", err)
 	}
-	if err := os.WriteFile(configPath, data, 0o600); err != nil {
-		return "", frameExecutionMetadata{}, "", fmt.Errorf("write default Koubou YAML: %w", err)
+	var configFile *os.File
+	if workRoot != nil {
+		configFile, err = createMatrixPrivateAttemptFileInRoot(workRoot, "frame.yaml", configPath)
+	} else {
+		configFile, err = createMatrixPrivateAttemptFile(configPath)
+	}
+	if err != nil {
+		return "", frameExecutionMetadata{}, fmt.Errorf("write default Koubou YAML: %w", err)
+	}
+	_, writeErr := configFile.Write(data)
+	if writeErr != nil {
+		_ = configFile.Close()
+		return "", frameExecutionMetadata{}, fmt.Errorf("write default Koubou YAML: %w", writeErr)
+	}
+	if err := lockMatrixPrivateAttemptFileHandle(configFile); err != nil {
+		_ = configFile.Close()
+		return "", frameExecutionMetadata{}, fmt.Errorf("protect default Koubou YAML: %w", err)
+	}
+	if err := configFile.Close(); err != nil {
+		return "", frameExecutionMetadata{}, fmt.Errorf("close default Koubou YAML: %w", err)
 	}
 
 	metadata := frameExecutionMetadata{
@@ -880,7 +951,7 @@ func createDefaultKoubouConfig(
 		metadata.UploadWidth = width
 		metadata.UploadHeight = height
 	}
-	return configPath, metadata, workDir, nil
+	return configPath, metadata, nil
 }
 
 func resolveFrameDeviceForConfig(frameRef, fallback string) string {
@@ -910,7 +981,7 @@ func frameSpecMatchesFrameRef(spec frameDeviceKoubouSpec, frameRef string) bool 
 
 // ResolveFrameDeviceFromConfig resolves the config device to a supported CLI slug.
 func ResolveFrameDeviceFromConfig(configPath, fallback string) string {
-	parsed := parseKoubouConfigMetadata(strings.TrimSpace(configPath))
+	parsed := parseKoubouConfigMetadata(configPath)
 	if parsed == nil {
 		return fallback
 	}

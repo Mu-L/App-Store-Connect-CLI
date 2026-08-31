@@ -57,7 +57,7 @@ func runPlan(ctx context.Context, plan *Plan, rootedOutput *rootfs.Root) (*RunRe
 	if udid == "" {
 		udid = "booted"
 	}
-	outputDir := strings.TrimSpace(plan.App.OutputDir)
+	outputDir := plan.App.OutputDir
 	if outputDir == "" {
 		outputDir = "./screenshots/raw"
 	}

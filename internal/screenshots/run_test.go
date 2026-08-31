@@ -66,6 +66,27 @@ func TestRunPlan_RejectsNilPlan(t *testing.T) {
 	}
 }
 
+func TestRunPlanPreservesLiteralOutputDirectorySpelling(t *testing.T) {
+	outputDir := filepath.Join(t.TempDir(), "run ")
+	waitMS := 1
+	plan := &Plan{
+		Version: 1,
+		App:     PlanApp{BundleID: "com.example.app", OutputDir: outputDir},
+		Steps:   []PlanStep{{Action: ActionWait, DurationMS: &waitMS}},
+	}
+	result, err := RunPlan(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("RunPlan() error = %v", err)
+	}
+	want, err := filepath.Abs(outputDir)
+	if err != nil {
+		t.Fatalf("resolve output directory: %v", err)
+	}
+	if result.OutputDir != want {
+		t.Fatalf("RunPlan() OutputDir = %q, want %q", result.OutputDir, want)
+	}
+}
+
 func TestRunPlan_ScreenshotStepsDoNotRelaunchApp(t *testing.T) {
 	binDir := t.TempDir()
 	logDir := t.TempDir()

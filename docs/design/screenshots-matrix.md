@@ -158,9 +158,21 @@ or externally mixed HTML/manifest generation instead of displaying it.
 
 The HTML report is self-contained and network-free. It displays all cells,
 including failures and cancellations, and links only to local raw/framed
-artifacts. Plan-provided labels are escaped. Raw-only reports are valid when
-framing is disabled. Approval and App Store upload integration are explicitly
-out of scope.
+artifacts. Plan-provided labels are escaped. When the default review opener
+launches a browser for a digest-bound matrix report, it takes fresh, bounded
+open-time copies of the validated HTML and its referenced raw/framed bytes
+from anchored roots into an owner-only private snapshot directory and rewrites
+links to those copies. The HTML/manifest digest still binds the report pair;
+asset bytes are fresh open-time snapshots and are not persisted as a separate
+per-asset digest contract. Successful snapshots are retained for asynchronous
+browser consumption and reclaimed opportunistically when older than 24 hours;
+a failed browser launch removes its snapshot immediately. Legacy/custom HTML
+without a valid matrix binding keeps the historical direct-open behavior.
+On Windows, private staging and browser-snapshot objects receive a protected
+owner-only DACL at creation; the rooted parent/child locks remain in force
+while external capture or framing tools run.
+Raw-only reports are valid when framing is disabled. Approval and App Store
+upload integration are explicitly out of scope.
 
 The command prints the structured result through the existing output helpers.
 Computed result fields use the CLI's governed camelCase contract: `planPath`,
