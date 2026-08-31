@@ -843,6 +843,92 @@ func TestStaplePreservesChildExitWhenContextCancelsAfterWait(t *testing.T) {
 	}
 }
 
+func TestStaplePreservesSignaledChildWhenContextCancelsAfterWait(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Interrupt is not implemented for child processes on Windows")
+	}
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_STAPLE_SIGNAL", "1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previousWaitHook := afterStaplerCommandWaitFn
+	afterStaplerCommandWaitFn = cancel
+	t.Cleanup(func() { afterStaplerCommandWaitFn = previousWaitHook })
+
+	result, err := Staple(ctx, target, nil)
+	if result != nil {
+		t.Fatalf("Staple() result = %#v, want nil after signaled child", result)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Staple() error = %v, want context cancellation", err)
+	}
+	var partialErr *StaplerPartialMutationError
+	if !errors.As(err, &partialErr) || !partialErr.Interrupted {
+		t.Fatalf("Staple() error = %T %v, want interrupted partial-mutation marker", err, err)
+	}
+	if !isStaplerOperationAttemptedSignal(err) {
+		t.Fatalf("Staple() error = %T %v, want attempted-signal marker", err, err)
+	}
+	if isStaplerOperationAttemptedCancellation(err) {
+		t.Fatalf("Staple() error = %T %v, want signal marker instead of cancellation marker", err, err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationStaple) || commandErr.ExitCode != -1 {
+		t.Fatalf("Staple() error = %T %v, want preserved signaled staple command cause", err, err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || !staplerExitWasSignaled(exitErr) {
+		t.Fatalf("Staple() error = %T %v, want underlying signaled child cause", err, err)
+	}
+}
+
+func TestValidatePreservesSignaledChildWhenContextCancelsAfterWait(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Interrupt is not implemented for child processes on Windows")
+	}
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_VALIDATE_SIGNAL", "1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previousWaitHook := afterStaplerCommandWaitFn
+	afterStaplerCommandWaitFn = cancel
+	t.Cleanup(func() { afterStaplerCommandWaitFn = previousWaitHook })
+
+	result, err := ValidateStaple(ctx, target, nil)
+	if result != nil {
+		t.Fatalf("ValidateStaple() result = %#v, want nil after signaled child", result)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ValidateStaple() error = %v, want context cancellation", err)
+	}
+	if !isStaplerOperationAttemptedSignal(err) {
+		t.Fatalf("ValidateStaple() error = %T %v, want attempted-signal marker", err, err)
+	}
+	if isStaplerOperationAttemptedCancellation(err) {
+		t.Fatalf("ValidateStaple() error = %T %v, want signal marker instead of cancellation marker", err, err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationValidate) || commandErr.ExitCode != -1 {
+		t.Fatalf("ValidateStaple() error = %T %v, want preserved signaled validate command cause", err, err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || !staplerExitWasSignaled(exitErr) {
+		t.Fatalf("ValidateStaple() error = %T %v, want underlying signaled child cause", err, err)
+	}
+}
+
 func TestStaplePreservesChildExitWhenContextCancelsAfterStartBeforeWait(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {

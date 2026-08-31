@@ -207,7 +207,7 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 		}
 		return nil, stapleErr
 	}
-	if stapleErr != nil && !isStaplerOperationAttemptedCancellation(stapleErr) &&
+	if stapleErr != nil && !isStaplerOperationAttemptedCancellation(stapleErr) && !isStaplerOperationAttemptedSignal(stapleErr) &&
 		(errors.Is(stapleErr, context.Canceled) || errors.Is(stapleErr, context.DeadlineExceeded)) {
 		if verifyErr := verifyStaplerStage(verifier, StaplerOperationStaple, false); verifyErr != nil {
 			return nil, errors.Join(stapleErr, verifyErr)
@@ -471,6 +471,14 @@ func runStaplerOperation(ctx context.Context, operation StaplerOperation, path s
 				err: errors.Join(newStaplerCommandError(operation, err), ctxErr),
 			}
 		}
+		if staplerProcessWasSignaled(err) {
+			// A signaled child has no ordinary exit code, but its process result
+			// is still meaningful. Preserve the signal and cancellation together
+			// so callers retain the partial-mutation classification and cause.
+			return &staplerOperationAttemptedSignalError{
+				err: errors.Join(newStaplerCommandError(operation, err), ctxErr),
+			}
+		}
 		return &staplerOperationAttemptedCancellationError{err: ctxErr}
 	}
 	commandErr := newStaplerCommandError(operation, err)
@@ -501,10 +509,10 @@ func runStaplerChildCommand(ctx context.Context, operation StaplerOperation, pat
 	}
 	if waitErr != nil {
 		formatContext := ctx
-		if ctx.Err() != nil && staplerHasProcessExitStatus(waitErr) {
+		if ctx.Err() != nil && (staplerHasProcessExitStatus(waitErr) || staplerProcessWasSignaled(waitErr)) {
 			// formatCommandOutputError intentionally prefers context errors. Once
-			// Wait has returned a real process status, use a non-canceling view so
-			// that status remains wrapped for runStaplerOperation to preserve.
+			// Wait has returned a process result, use a non-canceling view so that
+			// its status or signal remains wrapped for runStaplerOperation to preserve.
 			formatContext = context.WithoutCancel(ctx)
 		}
 		formatted := formatCommandOutputError(formatContext, waitErr, outputWindow, string(operation), "xcrun stapler", true)
