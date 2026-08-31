@@ -240,6 +240,10 @@ Examples:
 					return nil
 				}
 				switch {
+				case operation == localxcode.StaplerOperationStaple && before:
+					if _, err := target.captureDirectoryInventoryAtStage(ctx, "before stapling"); err != nil {
+						return err
+					}
 				case operation == localxcode.StaplerOperationStaple && !before:
 					inventory, err := target.captureDirectoryInventoryAtStage(ctx, "after stapling")
 					if err != nil {

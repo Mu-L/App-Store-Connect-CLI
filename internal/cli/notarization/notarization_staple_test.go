@@ -442,6 +442,61 @@ func TestNotarizationStapleRejectsOversizedDirectoryBeforeRunner(t *testing.T) {
 	}
 }
 
+func TestNotarizationStapleRejectsDirectoryGrowthAfterPreflightBeforeRunner(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	growingPath := filepath.Join(targetPath, "Contents", "Growing.bin")
+	if err := os.MkdirAll(filepath.Dir(growingPath), 0o755); err != nil {
+		t.Fatalf("create bundle contents: %v", err)
+	}
+	if err := os.WriteFile(growingPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write growing fixture: %v", err)
+	}
+
+	previous := runStaplerStaple
+	childCalls := 0
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		// The command's initial inventory preflight has already returned. Grow the
+		// same regular file before the callback that runs immediately before the
+		// destructive staple child.
+		if err := os.Truncate(growingPath, staplerInventoryMaxBytes+1); err != nil {
+			t.Fatalf("grow bundle entry after preflight: %v", err)
+		}
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		childCalls++
+		return &localxcode.StaplerResult{
+			Path:      path,
+			Operation: string(localxcode.StaplerOperationStaple),
+			Stapled:   true,
+			Validated: true,
+		}, nil
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want growth rejection before child")
+	}
+	if childCalls != 0 {
+		t.Fatalf("stapler child calls = %d, want zero after pre-child growth rejection", childCalls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "could not inspect artifact filesystem") {
+		t.Fatalf("stderr = %q, want stable filesystem diagnostic", stderr)
+	}
+	if strings.Contains(stderr, targetPath) || strings.Contains(stderr, strconv.FormatInt(staplerInventoryMaxBytes, 10)) {
+		t.Fatalf("stderr = %q, must not expose target path or private size cap", stderr)
+	}
+}
+
 func TestNotarizationStapleRejectsDirectoryOverEntryCapBeforeRunner(t *testing.T) {
 	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
 	if err := os.Mkdir(targetPath, 0o755); err != nil {
