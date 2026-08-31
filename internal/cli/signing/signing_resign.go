@@ -111,7 +111,21 @@ Example:
 				)
 				return fmt.Errorf("signing resign: %w", err)
 			}
-			return printSigningResignResult(result, *format.Output, *format.Pretty)
+			if err := printSigningResignResultFn(result, *format.Output, *format.Pretty); err != nil {
+				if result.Output.Path == "" {
+					return err
+				}
+				publicationErr := errors.Join(
+					ErrSigningResignPublicationAmbiguous,
+					fmt.Errorf("render signing resign receipt: %w", err),
+				)
+				return fmt.Errorf("signing resign: %w", wrapSigningResignOperationalError(
+					signingResignStageArtifact,
+					signingResignCodeArtifactPublish,
+					publicationErr,
+				))
+			}
+			return nil
 		},
 	}
 }
@@ -157,7 +171,10 @@ func printSigningResignResult(result signingResignResult, format string, pretty 
 	return shared.PrintOutput(&result, format, pretty)
 }
 
-var executeSigningResignFn = executeSigningResign
+var (
+	executeSigningResignFn     = executeSigningResign
+	printSigningResignResultFn = printSigningResignResult
+)
 
 func executeSigningResign(ctx context.Context, options signingResignOptions) (signingResignResult, error) {
 	return executeSigningResignImplementation(ctx, options)

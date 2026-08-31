@@ -3,6 +3,7 @@ package signing
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -42,6 +43,20 @@ func TestRunSigningResignToolKeepsCallerCancellationBare(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("runSigningResignToolWithFallback() error = %v, want caller cancellation without a timeout label", err)
+	}
+}
+
+func TestRunSigningResignToolRetainsChildExitCause(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test relies on a POSIX shell executable")
+	}
+	_, err := runSigningResignToolWithFallback(context.Background(), time.Minute, "/bin/sh", "-c", "exit 7")
+	if err == nil {
+		t.Fatal("runSigningResignToolWithFallback() error = nil, want child failure")
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("runSigningResignToolWithFallback() error = %v, want *exec.ExitError cause retained", err)
 	}
 }
 

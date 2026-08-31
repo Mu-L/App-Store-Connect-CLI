@@ -90,7 +90,12 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    fails closed. Claims the replacement profile does not authorize, such as
    old-team-prefixed keychain or ubiquity values, fail closed with a refusal
    that lists every blocked claim, its offending value, and a per-claim
-   manual remediation; claims are never rewritten automatically. Before
+   manual remediation; claims are never rewritten automatically. The refusal
+   contains only entitlement keys, entitlement values, and remediation text,
+   so it is reported verbatim through the CLI instead of being reduced to a
+   closed stage/code message. Profile-class-required distribution claims
+   (currently `beta-reports-active`) are derived from the replacement
+   profile when the existing signature has no claim. Before
    writing the private entitlement documents, require existing concrete
    application-identifier claims to agree with one another and end in the
    exact target bundle identifier; the alternate
@@ -125,8 +130,8 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    canonical target/key/index/value order under `entitlementRewrites`.
 7. Create a dedicated temporary keychain using the existing recovery/journal
    and lock boundary, import the already validated identity, and sign leaf
-   nested frameworks/dylibs before nested bundles, extensions, watch apps/App
-   Clips, and the main app. Invoke `/usr/bin/codesign` directly with an
+   nested code before its enclosing `.framework`, `.bundle`, and `.xpc` code
+   containers, then extensions, watch apps/App Clips, and the main app. Invoke `/usr/bin/codesign` directly with an
    explicit keychain and identity; never use `codesign --deep` for mutation.
 8. Verify every target and nested Mach-O object with bounded direct tool
    invocations, including resource seal, profile, entitlements, team,

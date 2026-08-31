@@ -65,9 +65,9 @@ func planSigningResignEntitlements(archive signingResignArchive, profiles map[st
 		if !ok {
 			return nil, fmt.Errorf("missing profile for target %s", target.BundleID)
 		}
-		entitlements, rewrites, err := buildSigningResignEntitlementPlan(target.ExistingEntitlements, profile.Entitlements, target.BundleID, graph)
+		entitlements, rewrites, err := buildSigningResignEntitlementPlan(target.ExistingEntitlements, profile.Entitlements, profile.Class, target.BundleID, graph)
 		if err != nil {
-			return nil, fmt.Errorf("target %s entitlements: %w", target.BundleID, err)
+			return nil, wrapSigningResignPublicDetail(fmt.Sprintf("target %s entitlements", target.BundleID), err)
 		}
 		entitlementsData, err := marshalSigningResignEntitlements(entitlements)
 		if err != nil {
@@ -82,7 +82,7 @@ func planSigningResignEntitlements(archive signingResignArchive, profiles map[st
 	return plans, nil
 }
 
-func buildSigningResignEntitlementPlan(existing, profile map[string]any, bundleID string, graph *signingResignRebaseGraph) (map[string]any, []signingResignEntitlementRewrite, error) {
+func buildSigningResignEntitlementPlan(existing, profile map[string]any, profileClass, bundleID string, graph *signingResignRebaseGraph) (map[string]any, []signingResignEntitlementRewrite, error) {
 	if profile == nil {
 		return nil, nil, fmt.Errorf("profile entitlements are missing")
 	}
@@ -177,6 +177,15 @@ func buildSigningResignEntitlementPlan(existing, profile map[string]any, bundleI
 			continue
 		}
 		profileValue, permitted := profile[key]
+		if profileClass != "" {
+			if resolved, handled, err := resolveSigningResignProfileClassEntitlement(key, profileClass, value, profileValue, permitted); handled {
+				if err != nil {
+					return nil, nil, err
+				}
+				result[key] = cloneSigningResignEntitlementValue(resolved)
+				continue
+			}
+		}
 		if graph != nil && key == signingResignAssociatedAppClipEntitlement {
 			if _, err := signingResignConcreteStringList(value, key); err != nil {
 				return nil, nil, err
@@ -214,6 +223,19 @@ func buildSigningResignEntitlementPlan(existing, profile map[string]any, bundleI
 	})
 	if len(unauthorized) > 0 {
 		return nil, nil, signingResignUnauthorizedClaimsError(unauthorized)
+	}
+	for _, key := range signingResignProfileRequiredEntitlementKeyOrder {
+		if _, exists := existing[key]; exists {
+			continue
+		}
+		value, exists := profile[key]
+		if !exists {
+			continue
+		}
+		if _, isBool := value.(bool); !isBool {
+			return nil, nil, fmt.Errorf("replacement profile entitlement %s is not a concrete boolean value", key)
+		}
+		result[key] = cloneSigningResignEntitlementValue(value)
 	}
 	for _, key := range signingResignIdentityEntitlementKeyOrder {
 		if _, exists := existing[key]; exists {
