@@ -155,6 +155,44 @@ func TestBuildSigningPlanRejectsMissingEntitlementArtifactCollision(t *testing.T
 	}
 }
 
+func TestBuildSigningPlanRejectsNonStringEntitlementsBeforeArtifactWrite(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		configurationID string
+	}{
+		{name: "selected", configurationID: "999999999999999999999993"},
+		{name: "unselected", configurationID: "999999999999999999999995"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			project := writeStructuredVersionProject(t, false)
+			injectSigningBuildSetting(t, filepath.Join(project, "project.pbxproj"), test.configurationID, `CODE_SIGN_ENTITLEMENTS = ( "plan.json" );`)
+
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			planPath := filepath.Join(filepath.Dir(project), "plan.json")
+			const existingPlan = "existing plan bytes\n"
+			writeSigningSettingsTestFile(t, settingsPath, `{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+			}`)
+			if err := os.WriteFile(planPath, []byte(existingPlan), 0o600); err != nil {
+				t.Fatalf("WriteFile(existing plan) error = %v", err)
+			}
+
+			_, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath,
+				PlanPath: planPath, StateDir: filepath.Join(root, "state"),
+			})
+			if err == nil || !strings.Contains(err.Error(), "non-string CODE_SIGN_ENTITLEMENTS") {
+				t.Fatalf("BuildSigningPlan() error = %v, want non-string entitlement rejection", err)
+			}
+			if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
+				t.Fatalf("existing plan changed after non-string entitlement rejection: %q", got)
+			}
+		})
+	}
+}
+
 func TestValidateSigningArtifactAliasesRejectsMissingInputThroughSymlinkedArtifactParent(t *testing.T) {
 	root := t.TempDir()
 	realParent := filepath.Join(root, "real")

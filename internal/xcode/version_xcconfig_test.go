@@ -70,15 +70,30 @@ func TestXCConfigInheritedValueAndExactPrecedence(t *testing.T) {
 }
 
 func TestXCConfigResolverRejectsDivergentConditionalOverride(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "Values.xcconfig")
-	contents := "CURRENT_PROJECT_VERSION = 42\nCURRENT_PROJECT_VERSION[sdk=iphoneos*] = 100\n"
-	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	for _, test := range []struct {
+		name     string
+		contents string
+	}{
+		{
+			name:     "unconditional-before-conditional",
+			contents: "CURRENT_PROJECT_VERSION = 42\nCURRENT_PROJECT_VERSION[sdk=iphoneos*] = 100\n",
+		},
+		{
+			name:     "conditional-before-unconditional",
+			contents: "CURRENT_PROJECT_VERSION[sdk=iphoneos*] = 100\nCURRENT_PROJECT_VERSION = 42\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "Values.xcconfig")
+			if err := os.WriteFile(path, []byte(test.contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	_, err := resolveXCConfigSetting(path, currentProjectSetting)
-	if err == nil || !strings.Contains(err.Error(), "differing conditional") {
-		t.Fatalf("expected divergent conditional error, got %v", err)
+			_, err := resolveXCConfigSetting(path, currentProjectSetting)
+			if err == nil || !strings.Contains(err.Error(), "differing conditional") {
+				t.Fatalf("expected divergent conditional error, got %v", err)
+			}
+		})
 	}
 }
 

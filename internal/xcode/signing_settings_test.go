@@ -749,6 +749,34 @@ func TestSigningPlanBlocksAmbiguousProjectNames(t *testing.T) {
 	}
 }
 
+func TestSigningPlanRejectsDuplicateProjectConfigurationNames(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	const original = "999999999999999999999992 /* Project Release */ = {isa = XCBuildConfiguration; buildSettings = {}; name = Release; };"
+	const duplicate = "999999999999999999999992 /* Project Release */ = {isa = XCBuildConfiguration; buildSettings = {}; name = Debug; };"
+	if !strings.Contains(contents, original) {
+		t.Fatal("project fixture is missing project Release configuration")
+	}
+	if err := os.WriteFile(pbxprojPath, []byte(strings.Replace(contents, original, duplicate, 1)), 0o644); err != nil {
+		t.Fatalf("write project error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	_, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), `project contains multiple configurations named "Debug"`) {
+		t.Fatalf("BuildSigningPlan() error = %v, want duplicate project configuration rejection", err)
+	}
+}
+
 func TestPrepareSigningOperationsUsesWindowsXCConfigIdentity(t *testing.T) {
 	previousOS := runtimeGOOS
 	runtimeGOOS = "windows"

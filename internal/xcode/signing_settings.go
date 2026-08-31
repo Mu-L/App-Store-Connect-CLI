@@ -2094,6 +2094,17 @@ func sortSigningPlanOperations(operations []signingPlanOperation) {
 }
 
 func validateSigningProjectFile(project *structuredVersionProject) error {
+	projectConfigurationNames := make(map[string]struct{})
+	for _, configuration := range project.configurations {
+		if !configuration.projectLevel {
+			continue
+		}
+		if _, seen := projectConfigurationNames[configuration.name]; seen {
+			return fmt.Errorf("project contains multiple configurations named %q", configuration.name)
+		}
+		projectConfigurationNames[configuration.name] = struct{}{}
+	}
+
 	root, err := rootfs.New(project.rootDir)
 	if err != nil {
 		return err
@@ -2381,6 +2392,15 @@ func signingProjectInputPaths(
 	}
 	for _, configuration := range project.configurations {
 		selected := selectedIDs[configuration.id]
+		for _, key := range matchingBuildSettingKeys(configuration.buildSettings, "CODE_SIGN_ENTITLEMENTS") {
+			if _, ok := configuration.buildSettings[key].(string); !ok {
+				// Xcode project values can be arbitrary serialized objects, but
+				// signing can only safely inventory a scalar entitlement path. Do
+				// not silently drop a list/object value: it may name a protected
+				// input that would otherwise be overwritten by an artifact.
+				return nil, externalEntitlementPaths, inputBlockers, fmt.Errorf("target %q configuration %q has a non-string CODE_SIGN_ENTITLEMENTS value", configuration.target, configuration.name)
+			}
+		}
 		authorized := signingConfigurationSourcesAuthorized(project, configuration, configFiles)
 		if authorized {
 			value, _, err := resolver.resolveSetting(configuration, "CODE_SIGN_ENTITLEMENTS")

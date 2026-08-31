@@ -576,11 +576,17 @@ func resolveXCConfigSettingRecursiveWithReader(
 				value = strings.TrimSpace(strings.TrimSpace(resolved.value) + " " + strings.TrimSpace(value))
 			}
 		}
-		conditionals := resolved.conditionals
+		conditionals := append([]xcconfigConditionalValue(nil), resolved.conditionals...)
 		if assignment.operator == "=" && !hasInherited {
-			// A later unconditional replacement wins in every build context,
-			// so earlier conditional defaults cannot affect the final value.
-			conditionals = nil
+			// A later unconditional replacement shadows earlier conditional
+			// defaults, but an explicit conditional assignment remains relevant
+			// in its build context and must still be reconciled below.
+			conditionals = conditionals[:0]
+			for _, conditional := range resolved.conditionals {
+				if conditional.operator != "?=" {
+					conditionals = append(conditionals, conditional)
+				}
+			}
 		}
 		resolved = xcconfigResolvedValue{
 			value:            strings.TrimSpace(value),
