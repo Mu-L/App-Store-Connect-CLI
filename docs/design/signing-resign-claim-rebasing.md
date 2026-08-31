@@ -116,6 +116,8 @@ If the replacement profile authorizes the existing full concrete KVS value, pres
 
 Plan KVS across the complete target graph. Every occurrence of one old full KVS value must resolve to the same planned full value. If the main app and an extension share an old KVS value but their replacement profiles preserve or propose different values, reject the whole IPA before mutation rather than splitting a shared namespace.
 
+Apply the same graph-wide consistency rule to repeated keychain groups. Every occurrence of one old full keychain group must resolve to one planned full value across all targets. Different old groups remain independent, but if one profile preserves a shared old group while another profile would rebase it, or two profiles would produce different destinations, reject the IPA before mutation rather than silently splitting access to that keychain group.
+
 For an array, apply the same rule to every element. First preserve any concrete value that the replacement profile already authorizes exactly or by a valid entitlement wildcard. Only an unauthorized value with the exact `oldPrefix.` prefix is a rebase candidate. A remaining third-prefix or unprefixed value, empty suffix, wildcard source value, non-string element, or ambiguous grammar fails closed. There are no silent partial rewrites.
 
 An already-new-prefix or other value may remain unchanged only when it is concrete and the replacement profile authorizes that exact value or a valid wildcard pattern authorizes it. A list may therefore contain source-old values that transform and already-authorized values that remain unchanged. Every unauthorized non-source-prefix value is a refusal. This mixed-set rule is per element and is not an invitation to accept arbitrary values.
@@ -132,7 +134,7 @@ The following cases all fail closed:
 - a transformed value is not authorized by the replacement profile;
 - the profile application identifier cannot produce one concrete target prefix, an entitlement wildcard is malformed, or no exact value or valid pattern permits the candidate;
 - a required identity claim remains wildcard-only or otherwise non-concrete;
-- a source value cannot be classified as old-prefix or already-authorized new-prefix;
+- a source value can neither be classified as a valid old-prefix rebase candidate nor preserved as an already-authorized concrete value;
 - a candidate is accepted by a capability presence check but not by its value-specific profile entitlement.
 
 The rebasing planner returns a new entitlement map and a separate ordered list of rewrite records. It must not mutate the existing entitlement map, profile object, archive, or output tree while evaluating authorization.
@@ -250,6 +252,7 @@ Tests should begin with the smallest failing assertion at the command or planner
 - `TestRebaseSigningResignKVSUsesProfileKVSPrefix`: KVS preserves an authorized transfer prefix and otherwise uses only the unambiguous prefix authenticated by the replacement profile's KVS entitlement.
 - A no-flag KVS regression case proves that an existing full value already authorized by the replacement profile remains unchanged; the opt-in rewrite case instead starts with an unauthorized source value and an exact concrete profile destination with the same suffix.
 - A multi-target KVS regression gives two targets the same old full value but replacement profiles that preserve or propose different planned values, and asserts that the complete IPA fails before any signing-tree mutation.
+- A multi-target keychain regression gives two targets the same old full group but profiles that preserve or produce different planned values, and asserts the same pre-mutation whole-IPA refusal.
 - `TestRebaseSigningResignClaimRejectsUnauthorizedThirdPrefix`: an unauthorized third prefix fails closed, while an unchanged value already authorized by the replacement profile is preserved.
 - `TestRebaseSigningResignClaimRejectsMalformedUnprefixedAndWildcardValues`: empty suffixes, unprefixed values, and wildcards fail closed.
 - `TestRebaseSigningResignClaimPreservesListOrderAndShape`: old and already-new values remain in original order and retain array shape.
