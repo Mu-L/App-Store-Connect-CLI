@@ -172,6 +172,40 @@ func TestXCConfigEditorEscapesTrailingBackslashInQuotedValue(t *testing.T) {
 	}
 }
 
+func TestXCConfigQuotedValueRoundTripsEscapedBackslashesAndQuotes(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		quote string
+	}{
+		{name: "unquoted backslashes", value: `Profiles\Team\`, quote: ""},
+		{name: "double quoted backslashes", value: `Profiles\Team\`, quote: `"`},
+		{name: "double quoted matching quote", value: `Profile "Preview"\Team\`, quote: `"`},
+		{name: "single quoted matching quote", value: `Profile 'Preview'\Team\`, quote: `'`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			encoded := quoteXCConfigValue(test.value, test.quote)
+			decoded, quote, err := parseXCConfigValue(encoded)
+			if err != nil {
+				t.Fatalf("parseXCConfigValue(%q) error = %v", encoded, err)
+			}
+			if decoded != test.value || quote != test.quote {
+				t.Fatalf("quoted round-trip = value %q, quote %q; want value %q, quote %q", decoded, quote, test.value, test.quote)
+			}
+		})
+	}
+}
+
+func TestXCConfigParserRejectsMalformedQuotedEscapes(t *testing.T) {
+	for _, raw := range []string{`"dangling\`, `"unsupported\q"`} {
+		if _, _, err := parseXCConfigValue(raw); err == nil {
+			t.Fatalf("parseXCConfigValue(%q) error = nil, want malformed escape rejection", raw)
+		}
+	}
+}
+
 func TestXCConfigEditorPreservesStableVersionContinuationSupport(t *testing.T) {
 	input := []byte("MARKETING_VERSION = 1.2.3\\\n 4\n")
 	updated, oldValues, changed, err := editXCConfig(input, marketingVersionSetting, "2.0.0")

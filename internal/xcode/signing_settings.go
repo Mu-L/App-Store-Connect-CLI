@@ -2028,9 +2028,6 @@ func validateSigningXCConfigWrite(resolver *signingSettingResolver, path, settin
 	if desired == nil {
 		return nil
 	}
-	if xcconfigValueHasLineContinuation(*desired) {
-		return fmt.Errorf("desired value has a trailing backslash that would continue the xcconfig assignment")
-	}
 	data, err := resolver.readXCConfig(path)
 	if err != nil {
 		return err
@@ -2039,12 +2036,15 @@ func validateSigningXCConfigWrite(resolver *signingSettingResolver, path, settin
 	if err != nil {
 		return err
 	}
+	if !xcconfigValueHasLineContinuation(*desired) {
+		return nil
+	}
 	for _, assignment := range document.assignments {
-		if assignment.baseKey != setting || assignment.quote == "" {
+		if assignment.baseKey != setting {
 			continue
 		}
-		if strings.Contains(*desired, assignment.quote) {
-			return fmt.Errorf("desired value contains the quote delimiter used by the xcconfig assignment")
+		if assignment.quote == "" {
+			return fmt.Errorf("desired value has a trailing backslash that would continue the xcconfig assignment")
 		}
 	}
 	return nil

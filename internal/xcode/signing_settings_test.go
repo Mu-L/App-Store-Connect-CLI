@@ -1,7 +1,9 @@
 package xcode
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -663,10 +665,10 @@ func TestSigningPlanBlocksUnterminatedQuotedSigningValue(t *testing.T) {
 	}
 }
 
-func TestSigningPlanBlocksUnsafeQuotedXCConfigValue(t *testing.T) {
+func TestSigningPlanBlocksUnsafeUnquotedXCConfigValue(t *testing.T) {
 	project := writeStructuredVersionProject(t, true)
 	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
-	before := `PROVISIONING_PROFILE_SPECIFIER = "Old Profile"` + "\r\n" + mustReadVersionTestFile(t, sharedPath)
+	before := `PROVISIONING_PROFILE_SPECIFIER = Old Profile` + "\r\n" + mustReadVersionTestFile(t, sharedPath)
 	if err := os.WriteFile(sharedPath, []byte(before), 0o640); err != nil {
 		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
 	}
@@ -691,6 +693,74 @@ func TestSigningPlanBlocksUnsafeQuotedXCConfigValue(t *testing.T) {
 	}
 	if after := mustReadVersionTestFile(t, sharedPath); after != before {
 		t.Fatal("planning an unsafe quoted value modified the xcconfig")
+	}
+}
+
+func TestSigningPlanApplyIsIdempotentForQuotedProfileSpecifierEscapes(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		quote string
+		value string
+	}{
+		{name: "double quoted", quote: `"`, value: `Profile\Path "Preview"\Tail\`},
+		{name: "single quoted", quote: `'`, value: `Profile\Path 'Preview'\Tail\`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			project := writeStructuredVersionProject(t, true)
+			sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+			shared := mustReadVersionTestFile(t, sharedPath)
+			shared = fmt.Sprintf("PROVISIONING_PROFILE_SPECIFIER = %sOld Profile%s\r\n", test.quote, test.quote) + shared
+			if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+				t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+			}
+
+			encodedValue, err := json.Marshal(test.value)
+			if err != nil {
+				t.Fatalf("json.Marshal(profile specifier) error = %v", err)
+			}
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			settings := fmt.Sprintf(`{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[
+					{"name":"Debug","settings":{"PROVISIONING_PROFILE_SPECIFIER":%s}},
+					{"name":"Release","settings":{"PROVISIONING_PROFILE_SPECIFIER":%s}}
+				]}]
+			}`, encodedValue, encodedValue)
+			writeSigningSettingsTestFile(t, settingsPath, settings)
+
+			first, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "first"),
+			})
+			if err != nil {
+				t.Fatalf("BuildSigningPlan(first) error = %v", err)
+			}
+			if !first.Ready || len(first.Changes) == 0 {
+				t.Fatalf("first plan = ready=%t changes=%#v blockers=%#v, want a ready update", first.Ready, first.Changes, first.Blockers)
+			}
+			if err := WriteSigningPlanArtifact(first, false); err != nil {
+				t.Fatalf("WriteSigningPlanArtifact(first) error = %v", err)
+			}
+			if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: first.PlanPath}); err != nil {
+				t.Fatalf("ApplySigningPlan(first) error = %v", err)
+			}
+
+			updated := mustReadVersionTestFile(t, sharedPath)
+			serialized := quoteXCConfigValue(test.value, test.quote)
+			if !strings.Contains(updated, "PROVISIONING_PROFILE_SPECIFIER = "+serialized) {
+				t.Fatalf("applied xcconfig does not preserve the logical quoted value: %q", updated)
+			}
+
+			second, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "second"),
+			})
+			if err != nil {
+				t.Fatalf("BuildSigningPlan(second) error = %v", err)
+			}
+			if !second.Ready || len(second.Changes) != 0 {
+				t.Fatalf("second plan = ready=%t changes=%#v blockers=%#v, want ready no-op", second.Ready, second.Changes, second.Blockers)
+			}
+		})
 	}
 }
 

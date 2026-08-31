@@ -124,9 +124,39 @@ func parseXCConfigValue(raw string) (string, string, error) {
 		return "", "", err
 	}
 	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
-		return value[1 : len(value)-1], string(value[0]), nil
+		decoded, err := decodeXCConfigQuotedValue(value[1:len(value)-1], value[0])
+		if err != nil {
+			return "", "", err
+		}
+		return decoded, string(value[0]), nil
 	}
 	return value, "", nil
+}
+
+// decodeXCConfigQuotedValue reverses the escaping emitted by
+// quoteXCConfigValue. Backslashes are significant only inside a quoted value:
+// a doubled backslash represents one literal backslash, and a backslash before
+// the matching delimiter represents that delimiter. Unquoted values retain
+// their existing literal backslashes and continuation behavior.
+func decodeXCConfigQuotedValue(value string, quote byte) (string, error) {
+	var decoded strings.Builder
+	decoded.Grow(len(value))
+	for index := 0; index < len(value); index++ {
+		if value[index] != '\\' {
+			decoded.WriteByte(value[index])
+			continue
+		}
+		if index+1 >= len(value) {
+			return "", fmt.Errorf("dangling escape in quoted xcconfig value")
+		}
+		next := value[index+1]
+		if next != '\\' && next != quote {
+			return "", fmt.Errorf("unsupported escape in quoted xcconfig value")
+		}
+		decoded.WriteByte(next)
+		index++
+	}
+	return decoded.String(), nil
 }
 
 func validateXCConfigValueQuotes(value string) error {
