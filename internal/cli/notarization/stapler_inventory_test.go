@@ -175,6 +175,10 @@ func TestStaplerDirectoryInventoryHonorsCanceledContext(t *testing.T) {
 	}
 	t.Cleanup(target.close)
 
+	baseline, err := target.captureDirectoryInventoryAtStage(context.Background(), "before validation")
+	if err != nil {
+		t.Fatalf("capture baseline: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = target.captureDirectoryInventoryAtStage(ctx, "before validation")
@@ -182,11 +186,18 @@ func TestStaplerDirectoryInventoryHonorsCanceledContext(t *testing.T) {
 		t.Fatalf("captureDirectoryInventoryAtStage() error = %v, want context cancellation", err)
 	}
 	var verifyErr *staplerTargetVerifyError
-	if !errors.As(err, &verifyErr) {
-		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want verify error", err, err)
+	if errors.As(err, &verifyErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, cancellation must not be classified as verify error", err, err)
 	}
 	if strings.Contains(err.Error(), targetPath) {
 		t.Fatalf("inventory error = %q, must not expose target path", err.Error())
+	}
+	err = target.verifyDirectoryInventory(ctx, baseline, "before validation")
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("verifyDirectoryInventory() error = %v, want context cancellation", err)
+	}
+	if errors.As(err, &verifyErr) {
+		t.Fatalf("verifyDirectoryInventory() error = %T %v, cancellation must not be classified as verify error", err, err)
 	}
 }
 
@@ -211,12 +222,95 @@ func TestStaplerDirectoryInventoryStopsWhenContextCancelsDuringScan(t *testing.T
 		t.Fatalf("captureDirectoryInventoryAtStage() error = %v, want cancellation during scan", err)
 	}
 	var verifyErr *staplerTargetVerifyError
-	if !errors.As(err, &verifyErr) {
-		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want verify error", err, err)
+	if errors.As(err, &verifyErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, cancellation must not be classified as verify error", err, err)
 	}
 	if strings.Contains(err.Error(), targetPath) || strings.Contains(err.Error(), "Info.plist") {
 		t.Fatalf("inventory error = %q, must not expose path", err.Error())
 	}
+}
+
+func TestStaplerRegularFileFingerprintPreservesContextCancellation(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+
+	expected, err := target.captureRegularFileFingerprintAtStage(context.Background(), "before validation")
+	if err != nil {
+		t.Fatalf("capture baseline fingerprint: %v", err)
+	}
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want error
+	}{
+		{name: "canceled", ctx: canceledContextForStaplerTest(), want: context.Canceled},
+		{name: "deadline exceeded", ctx: expiredContextForStaplerTest(), want: context.DeadlineExceeded},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := target.captureRegularFileFingerprintAtStage(test.ctx, "before validation")
+			if err == nil || !errors.Is(err, test.want) {
+				t.Fatalf("captureRegularFileFingerprintAtStage() error = %v, want %v", err, test.want)
+			}
+			var verifyErr *staplerTargetVerifyError
+			if errors.As(err, &verifyErr) {
+				t.Fatalf("captureRegularFileFingerprintAtStage() error = %T %v, context failure must not be classified as verify error", err, err)
+			}
+			err = target.verifyRegularFileFingerprint(test.ctx, expected, "after validation")
+			if err == nil || !errors.Is(err, test.want) {
+				t.Fatalf("verifyRegularFileFingerprint() error = %v, want %v", err, test.want)
+			}
+			if errors.As(err, &verifyErr) {
+				t.Fatalf("verifyRegularFileFingerprint() error = %T %v, context failure must not be classified as verify error", err, err)
+			}
+		})
+	}
+}
+
+func TestStaplerRegularFileFingerprintWrapsOperationalFailure(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+	if err := target.handle.Close(); err != nil {
+		t.Fatalf("close retained target handle: %v", err)
+	}
+
+	_, err = target.captureRegularFileFingerprintAtStage(context.Background(), "before validation")
+	if err == nil {
+		t.Fatal("captureRegularFileFingerprintAtStage() = nil, want operational failure")
+	}
+	var verifyErr *staplerTargetVerifyError
+	if !errors.As(err, &verifyErr) {
+		t.Fatalf("captureRegularFileFingerprintAtStage() error = %T %v, want verify error", err, err)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("captureRegularFileFingerprintAtStage() error = %v, unexpected context failure", err)
+	}
+}
+
+func canceledContextForStaplerTest() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+func expiredContextForStaplerTest() context.Context {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	cancel()
+	return ctx
 }
 
 type cancelDuringStaplerInventoryContext struct {

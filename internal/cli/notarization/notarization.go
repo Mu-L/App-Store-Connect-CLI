@@ -1266,6 +1266,14 @@ func reportStaplerFailure(command string, err error) error {
 		reportStaplerPartialMutation(partialErr)
 		return shared.NewReportedError(err)
 	}
+	if errors.Is(err, context.Canceled) {
+		fmt.Fprintf(os.Stderr, "Error: notarization %s was canceled\n", command)
+		return shared.NewReportedError(err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		fmt.Fprintf(os.Stderr, "Error: notarization %s timed out\n", command)
+		return shared.NewReportedError(err)
+	}
 	fmt.Fprintf(os.Stderr, "Error: notarization %s: %v\n", command, err)
 	return shared.NewReportedError(err)
 }

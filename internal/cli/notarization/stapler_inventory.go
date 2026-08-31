@@ -202,6 +202,9 @@ func (target *validatedStaplerTarget) captureRegularFileFingerprintAtStage(ctx c
 	if err == nil {
 		return fingerprint, nil
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return staplerRegularFileFingerprint{}, err
+	}
 	if errors.Is(err, errStaplerInventoryChanged) || errors.Is(err, errStaplerTargetRaced) {
 		return staplerRegularFileFingerprint{}, &staplerTargetIdentityError{stage: stage}
 	}
@@ -211,6 +214,9 @@ func (target *validatedStaplerTarget) captureRegularFileFingerprintAtStage(ctx c
 func (target *validatedStaplerTarget) verifyRegularFileFingerprint(ctx context.Context, expected staplerRegularFileFingerprint, stage string) error {
 	actual, err := target.captureRegularFileFingerprint(ctx)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		if errors.Is(err, errStaplerInventoryChanged) || errors.Is(err, errStaplerTargetRaced) {
 			return &staplerTargetIdentityError{stage: stage}
 		}
@@ -354,6 +360,9 @@ func (target *validatedStaplerTarget) captureDirectoryInventoryAtStage(ctx conte
 	if err == nil {
 		return inventory, nil
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return staplerDirectoryInventory{}, err
+	}
 	if errors.Is(err, errStaplerInventoryChanged) {
 		return staplerDirectoryInventory{}, &staplerTargetIdentityError{stage: stage}
 	}
@@ -363,6 +372,9 @@ func (target *validatedStaplerTarget) captureDirectoryInventoryAtStage(ctx conte
 func (target *validatedStaplerTarget) verifyDirectoryInventory(ctx context.Context, expected staplerDirectoryInventory, stage string) error {
 	actual, err := target.captureDirectoryInventory(ctx)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		if errors.Is(err, errStaplerInventoryChanged) {
 			return &staplerTargetIdentityError{stage: stage}
 		}

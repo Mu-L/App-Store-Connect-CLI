@@ -2576,6 +2576,80 @@ func TestNotarizationStapleCancellationAfterMutationReportsUnverified(t *testing
 	}
 }
 
+func TestNotarizationValidateInventoryCancellationPreservesCommandContext(t *testing.T) {
+	tests := []struct {
+		name      string
+		directory bool
+		ctx       context.Context
+		want      error
+	}{
+		{name: "directory canceled", directory: true, ctx: canceledContextForStaplerTest(), want: context.Canceled},
+		{name: "directory deadline", directory: true, ctx: expiredContextForStaplerTest(), want: context.DeadlineExceeded},
+		{name: "regular file canceled", ctx: canceledContextForStaplerTest(), want: context.Canceled},
+		{name: "regular file deadline", ctx: expiredContextForStaplerTest(), want: context.DeadlineExceeded},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			targetPath := filepath.Join(t.TempDir(), "target")
+			if test.directory {
+				targetPath += ".app"
+				if err := os.Mkdir(targetPath, 0o755); err != nil {
+					t.Fatalf("create directory target: %v", err)
+				}
+			} else if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+				t.Fatalf("write regular target: %v", err)
+			}
+
+			previousRunner := runStaplerValidate
+			runnerCalls := 0
+			runStaplerValidate = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+				runnerCalls++
+				if verifier == nil {
+					return nil, errors.New("missing stapler verifier")
+				}
+				if err := verifier(localxcode.StaplerOperationValidate, true); err != nil {
+					return nil, &localxcode.StaplerStageVerificationError{
+						Operation: localxcode.StaplerOperationValidate,
+						Before:    true,
+						Err:       err,
+					}
+				}
+				return &localxcode.StaplerResult{Path: targetPath, Operation: string(localxcode.StaplerOperationValidate), Validated: true}, nil
+			}
+			t.Cleanup(func() { runStaplerValidate = previousRunner })
+
+			cmd := validateStapleCommand()
+			if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--output", "json"}); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var runErr error
+			stdout, stderr := captureNotarizationOutput(t, func() {
+				runErr = cmd.Exec(test.ctx, nil)
+			})
+			if runnerCalls != 1 {
+				t.Fatalf("runner calls = %d, want one verifier invocation", runnerCalls)
+			}
+			if runErr == nil || !errors.Is(runErr, test.want) {
+				t.Fatalf("command error = %v, want %v", runErr, test.want)
+			}
+			var verifyErr *staplerTargetVerifyError
+			if errors.As(runErr, &verifyErr) {
+				t.Fatalf("command error = %T %v, context failure must not be classified as verify error", runErr, runErr)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want no success output", stdout)
+			}
+			wantDiagnostic := "was canceled"
+			if errors.Is(test.want, context.DeadlineExceeded) {
+				wantDiagnostic = "timed out"
+			}
+			if !strings.Contains(stderr, wantDiagnostic) || strings.Contains(stderr, "could not inspect artifact filesystem") {
+				t.Fatalf("stderr = %q, want stable cancellation diagnostic %q", stderr, wantDiagnostic)
+			}
+		})
+	}
+}
+
 func TestNotarizationStapleInterruptedChildStatusProjectsExitCode(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
