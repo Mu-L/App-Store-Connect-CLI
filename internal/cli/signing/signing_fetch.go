@@ -631,13 +631,13 @@ func inferCertificateType(profileType string) (string, error) {
 	case strings.Contains(normalized, "MAC_CATALYST_APP_STORE"):
 		return "MAC_APP_DISTRIBUTION,DISTRIBUTION", nil
 	case strings.Contains(normalized, "MAC_CATALYST_APP_DIRECT"):
-		return "DEVELOPER_ID_APPLICATION", nil
+		return "DEVELOPER_ID_APPLICATION,DEVELOPER_ID_APPLICATION_G2", nil
 	case strings.Contains(normalized, "MAC_APP_DEVELOPMENT"):
 		return "MAC_APP_DEVELOPMENT,DEVELOPMENT", nil
 	case strings.Contains(normalized, "MAC_APP_STORE"):
 		return "MAC_APP_DISTRIBUTION,DISTRIBUTION", nil
 	case strings.Contains(normalized, "MAC_APP_DIRECT"):
-		return "DEVELOPER_ID_APPLICATION", nil
+		return "DEVELOPER_ID_APPLICATION,DEVELOPER_ID_APPLICATION_G2", nil
 	default:
 		return "", fmt.Errorf("unable to infer certificate type for profile type %s; use --certificate-type", profileType)
 	}
