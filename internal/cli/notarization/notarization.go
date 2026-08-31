@@ -469,19 +469,27 @@ type validatedStaplerTarget struct {
 	// the recycled file ID and then satisfy os.SameFile against the recorded
 	// identity. The retained rootfs.Root pins only the filesystem root.
 	handle *os.File
+	// regularAccess is populated only when a regular file must be traversed
+	// through search-only parent descriptors. Directory bundles continue to use
+	// rootfs.Root so their read/inventory semantics remain unchanged.
+	regularAccess *staplerRegularFileAccess
 }
 
 func (target *validatedStaplerTarget) close() {
 	if target == nil {
 		return
 	}
-	if target.handle != nil {
+	if target.regularAccess != nil {
+		_ = target.regularAccess.close()
+	} else if target.handle != nil {
 		_ = target.handle.Close()
 	}
 	if target.workingDirectory != nil {
 		_ = target.workingDirectory.Close()
 	}
-	_ = target.root.Close()
+	if target.regularAccess == nil {
+		_ = target.root.Close()
+	}
 }
 
 // pinnedIdentity reports the retained descriptor's current metadata. It fails
@@ -610,6 +618,9 @@ func (target *validatedStaplerTarget) open() (*os.File, error) {
 	if target.directory {
 		return openStaplerTargetDirectoryFn(target.root, target.relative)
 	}
+	if target.regularAccess != nil {
+		return target.regularAccess.open()
+	}
 	return openStaplerTargetFileFn(target.root, target.relative)
 }
 
@@ -619,6 +630,9 @@ func (target *validatedStaplerTarget) probeKind() (os.FileInfo, error) {
 	}
 	if err := target.verifyWorkingDirectory(); err != nil {
 		return nil, err
+	}
+	if target.regularAccess != nil {
+		return target.regularAccess.probe()
 	}
 	return probeStaplerTargetKindFn(target.root, target.relative)
 }
@@ -661,6 +675,12 @@ func verifyStaplerWorkingDirectory(handle *os.File, pathValue string) error {
 // preconditions, so a later disagreement is an operational race rather than
 // invalid operator input.
 var errStaplerTargetRaced = errors.New("artifact target changed during inspection")
+
+// errStaplerSearchFallbackEligible marks an EACCES returned by the default
+// rooted traversal. Test seams and arbitrary operational EACCES values do not
+// carry this marker, so they cannot accidentally bypass their injected
+// behavior through the search-only capability.
+var errStaplerSearchFallbackEligible = errors.New("rooted traversal denied search fallback")
 
 // staplerTargetWrongKindError reports that the final component exists but is
 // not a directory bundle. It carries the probed identity so the caller can
@@ -712,11 +732,17 @@ func (e *staplerTargetTraversalError) Unwrap() error {
 func probeStaplerTargetKind(root rootfs.Root, relative string) (os.FileInfo, error) {
 	rooted, err := root.OpenRoot()
 	if err != nil {
+		if errors.Is(err, syscall.EACCES) {
+			return nil, fmt.Errorf("%w: %w", errStaplerSearchFallbackEligible, err)
+		}
 		return nil, err
 	}
 	info, err := rooted.Lstat(relative)
 	closeErr := rooted.Close()
 	if err != nil {
+		if errors.Is(err, syscall.EACCES) {
+			return nil, fmt.Errorf("%w: %w", errStaplerSearchFallbackEligible, err)
+		}
 		return nil, err
 	}
 	if closeErr != nil {
@@ -731,6 +757,9 @@ func probeStaplerTargetKind(root rootfs.Root, relative string) (os.FileInfo, err
 // operational error string returned by a directory open.
 func openStaplerTargetDir(root rootfs.Root, relative string) (*os.File, error) {
 	if err := checkStaplerTargetContainedFn(root, relative); err != nil {
+		if errors.Is(err, syscall.EACCES) {
+			err = fmt.Errorf("%w: %w", errStaplerSearchFallbackEligible, err)
+		}
 		return nil, &staplerTargetTraversalError{err: err}
 	}
 	info, err := probeStaplerTargetKindFn(root, relative)
@@ -757,6 +786,46 @@ func openStaplerTargetDir(root rootfs.Root, relative string) (*os.File, error) {
 		return nil, &staplerTargetDirectoryOpenError{err: errStaplerTargetRaced}
 	}
 	return opened, nil
+}
+
+// validateStaplerRegularFileThroughSearch is used only after the rooted
+// directory probe reports EACCES. It keeps the existing rootfs path as the
+// default while allowing a regular artifact behind search-only parents to be
+// opened through retained descriptor capabilities.
+func validateStaplerRegularFileThroughSearch(absolute, workingDirectoryPath string, workingDirectory *os.File, requiresDirectory bool) (*validatedStaplerTarget, error) {
+	access, err := newStaplerRegularFileAccess(absolute, workingDirectoryPath, workingDirectory)
+	if err != nil {
+		return nil, err
+	}
+	info := access.identity
+	if info == nil || !info.Mode().IsRegular() {
+		_ = access.close()
+		return nil, &staplerRegularFileNotRegularError{info: info}
+	}
+	if requiresDirectory {
+		_ = access.close()
+		return nil, newStaplerTargetUsageError(errors.New("artifact path requires a directory bundle"))
+	}
+	if info.Size() <= 0 {
+		_ = access.close()
+		return nil, newStaplerTargetUsageError(errors.New("artifact file must not be empty"))
+	}
+	if info.Size() > staplerInventoryMaxBytes {
+		_ = access.close()
+		return nil, &staplerTargetVerifyError{
+			stage: "before operation",
+			err:   errStaplerRegularFileFingerprintTooLarge,
+		}
+	}
+	return &validatedStaplerTarget{
+		path:                 absolute,
+		directory:            false,
+		identity:             info,
+		handle:               access.final,
+		workingDirectory:     workingDirectory,
+		workingDirectoryPath: workingDirectoryPath,
+		regularAccess:        access,
+	}, nil
 }
 
 func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, error) {
@@ -807,6 +876,12 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 
 	root, relative, err := newStaplerTargetRoot(absolute)
 	if err != nil {
+		if errors.Is(err, syscall.EACCES) {
+			if target, accessErr := validateStaplerRegularFileThroughSearch(absolute, workingDirectoryPath, workingDirectory, requiresDirectory); accessErr == nil {
+				keepWorkingDirectory = true
+				return target, nil
+			}
+		}
 		return nil, fmt.Errorf("open artifact root: %w", err)
 	}
 	keepRoot := false
@@ -848,6 +923,21 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 
 	var wrongKindErr *staplerTargetWrongKindError
 	if !errors.As(openErr, &wrongKindErr) {
+		var traversalErr *staplerTargetTraversalError
+		if errors.As(openErr, &traversalErr) && errors.Is(openErr, errStaplerSearchFallbackEligible) {
+			if target, accessErr := validateStaplerRegularFileThroughSearch(absolute, workingDirectoryPath, workingDirectory, requiresDirectory); accessErr == nil {
+				keepWorkingDirectory = true
+				return target, nil
+			} else if !errors.Is(accessErr, errStaplerRegularFileDirectory) && !errors.Is(accessErr, errStaplerRegularFileUnsupported) {
+				var notRegularErr *staplerRegularFileNotRegularError
+				switch {
+				case errors.As(accessErr, &notRegularErr):
+					return nil, newStaplerTargetUsageError(fmt.Errorf("%q is not a regular file or directory bundle", absolute))
+				case errors.Is(accessErr, rootfs.ErrSymlink):
+					return nil, newStaplerTargetUsageError(fmt.Errorf("refusing to read symlink %q", absolute))
+				}
+			}
+		}
 		if semanticErr := staplerTargetSemanticError(openErr, absolute); semanticErr != nil {
 			return nil, semanticErr
 		}
@@ -946,7 +1036,13 @@ func resolveStaplerPathWithWorkingDirectory(pathValue string) (string, string, *
 	}
 	currentDir, err := os.Open(".")
 	if err != nil {
-		return "", "", nil, fmt.Errorf("open current directory: %w", err)
+		if !errors.Is(err, syscall.EACCES) {
+			return "", "", nil, fmt.Errorf("open current directory: %w", err)
+		}
+		currentDir, err = openStaplerSearchableDirectoryNoFollow(".")
+		if err != nil {
+			return "", "", nil, fmt.Errorf("open current directory for search: %w", err)
+		}
 	}
 	currentInfo, err := currentDir.Stat()
 	if err != nil {

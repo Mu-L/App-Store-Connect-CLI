@@ -167,18 +167,25 @@ func (target *validatedStaplerTarget) captureRegularFileFingerprint(ctx context.
 	// The retained descriptor proves that the bytes came from the originally
 	// validated inode, but the child receives the pathname. Rebind that rooted,
 	// no-follow pathname after hashing so a rename/replacement between open and
-	// the child cannot redirect the operation to a different regular file.
-	filesystemRoot, err := target.root.OpenRoot()
+	// the child cannot redirect the operation to a different regular file. A
+	// regular file behind search-only parents uses its retained openat
+	// capability; directory bundles retain the existing rootfs path.
+	var currentPathInfo os.FileInfo
+	if target.regularAccess != nil {
+		currentPathInfo, err = target.regularAccess.probe()
+	} else {
+		filesystemRoot, rootErr := target.root.OpenRoot()
+		if rootErr != nil {
+			return staplerRegularFileFingerprint{}, rootErr
+		}
+		currentPathInfo, err = filesystemRoot.Lstat(target.relative)
+		closeErr := filesystemRoot.Close()
+		if err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}
 	if err != nil {
 		return staplerRegularFileFingerprint{}, err
-	}
-	currentPathInfo, pathErr := filesystemRoot.Lstat(target.relative)
-	closeErr := filesystemRoot.Close()
-	if pathErr != nil {
-		return staplerRegularFileFingerprint{}, pathErr
-	}
-	if closeErr != nil {
-		return staplerRegularFileFingerprint{}, closeErr
 	}
 	if currentPathInfo == nil || currentPathInfo.Mode()&os.ModeSymlink != 0 ||
 		!currentPathInfo.Mode().IsRegular() || !os.SameFile(target.identity, currentPathInfo) {
@@ -195,7 +202,7 @@ func (target *validatedStaplerTarget) captureRegularFileFingerprintAtStage(ctx c
 	if err == nil {
 		return fingerprint, nil
 	}
-	if errors.Is(err, errStaplerInventoryChanged) {
+	if errors.Is(err, errStaplerInventoryChanged) || errors.Is(err, errStaplerTargetRaced) {
 		return staplerRegularFileFingerprint{}, &staplerTargetIdentityError{stage: stage}
 	}
 	return staplerRegularFileFingerprint{}, &staplerTargetVerifyError{stage: stage, err: err}
@@ -204,7 +211,7 @@ func (target *validatedStaplerTarget) captureRegularFileFingerprintAtStage(ctx c
 func (target *validatedStaplerTarget) verifyRegularFileFingerprint(ctx context.Context, expected staplerRegularFileFingerprint, stage string) error {
 	actual, err := target.captureRegularFileFingerprint(ctx)
 	if err != nil {
-		if errors.Is(err, errStaplerInventoryChanged) {
+		if errors.Is(err, errStaplerInventoryChanged) || errors.Is(err, errStaplerTargetRaced) {
 			return &staplerTargetIdentityError{stage: stage}
 		}
 		return &staplerTargetVerifyError{stage: stage, err: err}

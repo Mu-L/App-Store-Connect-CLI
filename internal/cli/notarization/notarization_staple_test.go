@@ -3107,6 +3107,325 @@ func TestRejectSymlinkedLexicalParentTraversalChecksSearchPermissionWithoutRequi
 	}
 }
 
+func TestValidateStaplerTargetAllowsRegularFileBehindSearchOnlyRelativeWorkingDirectory(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("search-only regular-file traversal is covered on Darwin and Linux")
+	}
+	skipIfDACOverrideForStaplerTest(t)
+
+	workingDirectory := t.TempDir()
+	targetPath := filepath.Join(workingDirectory, "App.dmg")
+	if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	originalCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get original cwd: %v", err)
+	}
+	if err := os.Chdir(workingDirectory); err != nil {
+		t.Fatalf("change cwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalCWD); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+	if err := os.Chmod(workingDirectory, 0o111); err != nil {
+		t.Fatalf("remove cwd read permission: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(workingDirectory, 0o700); err != nil {
+			t.Errorf("restore cwd permissions: %v", err)
+		}
+	})
+
+	validated, err := validateStaplerTargetDetails("App.dmg")
+	if validated != nil {
+		validated.close()
+	}
+	if err != nil {
+		t.Fatalf("validate search-only relative target: %v", err)
+	}
+	if validated == nil || validated.directory {
+		t.Fatalf("validated target = %#v, want retained regular file", validated)
+	}
+}
+
+func TestValidateStaplerTargetAllowsRegularFileBehindSearchOnlyAbsoluteParent(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("search-only regular-file traversal is covered on Darwin and Linux")
+	}
+	skipIfDACOverrideForStaplerTest(t)
+
+	root := t.TempDir()
+	blockedParent := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blockedParent, 0o700); err != nil {
+		t.Fatalf("create blocked parent: %v", err)
+	}
+	targetPath := filepath.Join(blockedParent, "App.dmg")
+	if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Chmod(blockedParent, 0o111); err != nil {
+		t.Fatalf("remove parent read permission: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(blockedParent, 0o700); err != nil {
+			t.Errorf("restore parent permissions: %v", err)
+		}
+	})
+	otherWorkingDirectory := t.TempDir()
+	originalCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get original cwd: %v", err)
+	}
+	if err := os.Chdir(otherWorkingDirectory); err != nil {
+		t.Fatalf("change cwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalCWD); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+
+	validated, err := validateStaplerTargetDetails(targetPath)
+	if validated != nil {
+		validated.close()
+	}
+	if err != nil {
+		t.Fatalf("validate search-only absolute target: %v", err)
+	}
+	if validated == nil || validated.directory {
+		t.Fatalf("validated target = %#v, want retained regular file", validated)
+	}
+}
+
+func TestNotarizationValidateCommandUsesSearchOnlyRegularFileFallback(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("search-only regular-file traversal is covered on Darwin and Linux")
+	}
+	skipIfDACOverrideForStaplerTest(t)
+
+	tests := []struct {
+		name     string
+		relative bool
+	}{
+		{name: "relative from search-only cwd", relative: true},
+		{name: "absolute from another cwd", relative: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			blockedParent := root
+			pathValue := "App.dmg"
+			targetPath := filepath.Join(blockedParent, "App.dmg")
+			if !test.relative {
+				blockedParent = filepath.Join(root, "blocked")
+				if err := os.Mkdir(blockedParent, 0o700); err != nil {
+					t.Fatalf("create blocked parent: %v", err)
+				}
+				targetPath = filepath.Join(blockedParent, "App.dmg")
+				pathValue = targetPath
+			}
+			if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+				t.Fatalf("write target: %v", err)
+			}
+			expectedRunnerPath := targetPath
+			if test.relative {
+				if resolved, err := filepath.EvalSymlinks(targetPath); err == nil {
+					expectedRunnerPath = resolved
+				}
+				originalCWD, err := os.Getwd()
+				if err != nil {
+					t.Fatalf("get original cwd: %v", err)
+				}
+				if err := os.Chdir(blockedParent); err != nil {
+					t.Fatalf("change cwd: %v", err)
+				}
+				t.Cleanup(func() {
+					if err := os.Chdir(originalCWD); err != nil {
+						t.Errorf("restore cwd: %v", err)
+					}
+				})
+			}
+			if err := os.Chmod(blockedParent, 0o111); err != nil {
+				t.Fatalf("remove parent read permission: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chmod(blockedParent, 0o700); err != nil {
+					t.Errorf("restore parent permissions: %v", err)
+				}
+			})
+
+			previousRunner := runStaplerValidate
+			runStaplerValidate = func(_ context.Context, path string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+				if path != expectedRunnerPath {
+					t.Errorf("runner path = %q, want %q", path, expectedRunnerPath)
+				}
+				if err := invokeStaplerStage(verifier, localxcode.StaplerOperationValidate, true); err != nil {
+					return nil, err
+				}
+				if err := invokeStaplerStage(verifier, localxcode.StaplerOperationValidate, false); err != nil {
+					return nil, err
+				}
+				return &localxcode.StaplerResult{
+					Path:      path,
+					Operation: string(localxcode.StaplerOperationValidate),
+					Validated: true,
+				}, nil
+			}
+			t.Cleanup(func() { runStaplerValidate = previousRunner })
+
+			cmd := validateStapleCommand()
+			if err := cmd.FlagSet.Parse([]string{"--file", pathValue, "--output", "json"}); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var runErr error
+			stdout, stderr := captureNotarizationOutput(t, func() {
+				runErr = cmd.Exec(context.Background(), nil)
+			})
+			if runErr != nil {
+				t.Fatalf("validate command error = %v", runErr)
+			}
+			if stdout == "" {
+				t.Fatal("stdout is empty, want successful validation result")
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty for successful validation", stderr)
+			}
+		})
+	}
+}
+
+func TestSearchOnlyRegularFileRejectsPathReplacementAfterFingerprint(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("search-only regular-file traversal is covered on Darwin and Linux")
+	}
+	skipIfDACOverrideForStaplerTest(t)
+
+	root := t.TempDir()
+	blockedParent := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blockedParent, 0o700); err != nil {
+		t.Fatalf("create blocked parent: %v", err)
+	}
+	targetPath := filepath.Join(blockedParent, "App.dmg")
+	originalPath := filepath.Join(blockedParent, "App.dmg.original")
+	if err := os.WriteFile(targetPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Chmod(blockedParent, 0o111); err != nil {
+		t.Fatalf("remove parent read permission: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(blockedParent, 0o700); err != nil {
+			t.Errorf("restore parent permissions: %v", err)
+		}
+	})
+
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate search-only target: %v", err)
+	}
+	t.Cleanup(target.close)
+	previousHook := afterStaplerRegularFileFingerprintFn
+	afterStaplerRegularFileFingerprintFn = func() {
+		// The selected process has search-only access; briefly grant the test
+		// racer directory write permission so the replacement window is real.
+		if err := os.Chmod(blockedParent, 0o311); err != nil {
+			t.Fatalf("grant racer directory write permission: %v", err)
+		}
+		if err := os.Rename(targetPath, originalPath); err != nil {
+			t.Fatalf("preserve original target: %v", err)
+		}
+		if err := os.WriteFile(targetPath, []byte("changed!"), 0o600); err != nil {
+			t.Fatalf("write replacement target: %v", err)
+		}
+		if err := os.Chmod(blockedParent, 0o111); err != nil {
+			t.Fatalf("restore search-only parent: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterStaplerRegularFileFingerprintFn = previousHook })
+
+	_, err = target.captureRegularFileFingerprintAtStage(context.Background(), "before validation")
+	if err == nil {
+		t.Fatal("capture regular-file fingerprint = nil, want replacement failure")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("capture regular-file fingerprint error = %T %v, want identity error", err, err)
+	}
+	contents, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read replacement target: %v", err)
+	}
+	if string(contents) != "changed!" {
+		t.Fatalf("replacement contents = %q, want preserved replacement", contents)
+	}
+}
+
+func TestSearchOnlyRegularFileRejectsParentReplacementAfterFingerprint(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("search-only regular-file traversal is covered on Darwin and Linux")
+	}
+	skipIfDACOverrideForStaplerTest(t)
+
+	root := t.TempDir()
+	blockedParent := filepath.Join(root, "blocked")
+	replacementParent := filepath.Join(root, "replacement")
+	originalParent := filepath.Join(root, "blocked.original")
+	if err := os.Mkdir(blockedParent, 0o700); err != nil {
+		t.Fatalf("create blocked parent: %v", err)
+	}
+	if err := os.Mkdir(replacementParent, 0o700); err != nil {
+		t.Fatalf("create replacement parent: %v", err)
+	}
+	targetPath := filepath.Join(blockedParent, "App.dmg")
+	replacementPath := filepath.Join(replacementParent, "App.dmg")
+	if err := os.WriteFile(targetPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write original target: %v", err)
+	}
+	if err := os.WriteFile(replacementPath, []byte("replacement"), 0o600); err != nil {
+		t.Fatalf("write replacement target: %v", err)
+	}
+	for _, path := range []string{blockedParent, replacementParent} {
+		if err := os.Chmod(path, 0o111); err != nil {
+			t.Fatalf("remove parent read permission for %s: %v", path, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, path := range []string{blockedParent, originalParent} {
+			if err := os.Chmod(path, 0o700); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("restore parent permissions for %s: %v", path, err)
+			}
+		}
+	})
+
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate search-only target: %v", err)
+	}
+	t.Cleanup(target.close)
+	previousHook := afterStaplerRegularFileFingerprintFn
+	afterStaplerRegularFileFingerprintFn = func() {
+		if err := os.Rename(blockedParent, originalParent); err != nil {
+			t.Fatalf("preserve original parent: %v", err)
+		}
+		if err := os.Rename(replacementParent, blockedParent); err != nil {
+			t.Fatalf("replace parent: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterStaplerRegularFileFingerprintFn = previousHook })
+
+	_, err = target.captureRegularFileFingerprintAtStage(context.Background(), "before validation")
+	if err == nil {
+		t.Fatal("capture regular-file fingerprint = nil, want parent replacement failure")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("capture regular-file fingerprint error = %T %v, want identity error", err, err)
+	}
+}
+
 func skipIfDACOverrideForStaplerTest(t *testing.T) {
 	t.Helper()
 	if os.Geteuid() == 0 {
