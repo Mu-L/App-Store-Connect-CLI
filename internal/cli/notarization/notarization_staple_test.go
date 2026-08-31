@@ -3073,11 +3073,65 @@ func TestNotarizationStapleJoinedChildAndPostStapleVerifierFailureReportsUnverif
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want no success JSON", stdout)
 	}
-	if !strings.Contains(stderr, "staple completed") || !strings.Contains(stderr, "not verified") {
-		t.Fatalf("stderr = %q, want post-staple warning", stderr)
+	if !strings.Contains(stderr, "failed during staple") || !strings.Contains(stderr, "not verified") {
+		t.Fatalf("stderr = %q, want failed-staple partial warning", stderr)
+	}
+	if strings.Contains(stderr, "staple completed") {
+		t.Fatalf("stderr = %q, must not claim completion after child failure", stderr)
 	}
 	if strings.Contains(stderr, target) {
 		t.Fatalf("stderr = %q, must not expose target path", stderr)
+	}
+}
+
+func TestNotarizationStapleChildAndPostVerifierFailureDoesNotClaimCompletion(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	wantErr := errors.New("target changed after failed staple")
+	childErr := &localxcode.StaplerCommandError{
+		Operation: string(localxcode.StaplerOperationStaple),
+		ExitCode:  66,
+		Err:       errors.New("stapler child failed"),
+	}
+	stageErr := &localxcode.StaplerStageVerificationError{
+		Operation: localxcode.StaplerOperationStaple,
+		Before:    false,
+		Err:       wantErr,
+	}
+	previous := runStaplerStaple
+	runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		return nil, &localxcode.StaplerPartialMutationError{
+			Operation: localxcode.StaplerOperationStaple,
+			Err:       errors.Join(childErr, stageErr),
+		}
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil || !errors.Is(runErr, wantErr) {
+		t.Fatalf("command error = %v, want failed-staple and verifier causes", runErr)
+	}
+	if code, ok := sharedProcessExitCodeForTest(runErr); !ok || code != 66 {
+		t.Fatalf("command error = %v, process code = %d/%v, want 66", runErr, code, ok)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "failed during staple") || !strings.Contains(stderr, "not verified") {
+		t.Fatalf("stderr = %q, want failed-staple partial warning", stderr)
+	}
+	if strings.Contains(stderr, "staple completed") {
+		t.Fatalf("stderr = %q, must not claim staple completed after child failure", stderr)
 	}
 }
 
@@ -3330,6 +3384,46 @@ func TestNotarizationValidateResolutionFailureRedactsLookupPath(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "stapler tool resolution failed") {
 		t.Fatalf("stderr = %q, want stable resolution diagnostic", stderr)
+	}
+}
+
+func TestNotarizationValidateResolverDiagnosticRedactsPath(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	const canary = "RESOLVER_DIAGNOSTIC_PATH_CANARY_2242"
+	underlying := errors.New("xcrun --find stapler: /private/tmp/" + canary + "/developer-dir")
+	previous := runStaplerValidate
+	runStaplerValidate = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationValidate, true); err != nil {
+			return nil, err
+		}
+		return nil, &localxcode.StaplerCommandError{
+			Operation: string(localxcode.StaplerOperationResolve),
+			ExitCode:  64,
+			Err:       underlying,
+		}
+	}
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil || !errors.Is(runErr, underlying) {
+		t.Fatalf("command error = %v, want resolver cause", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no structured output on resolver failure", stdout)
+	}
+	if strings.Contains(stderr, canary) || strings.Contains(stderr, "/private/tmp/") {
+		t.Fatalf("stderr = %q, must redact resolver diagnostic path", stderr)
+	}
+	if !strings.Contains(stderr, "could not resolve Apple's stapler tool (exit status 64)") {
+		t.Fatalf("stderr = %q, want stable resolver diagnostic", stderr)
 	}
 }
 

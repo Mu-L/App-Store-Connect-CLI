@@ -190,7 +190,7 @@ func Staple(ctx context.Context, path string, logWriter io.Writer) (*StaplerResu
 // both child operations so callers can reject a replaced target between the
 // staple and validation stages.
 func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, verifier StaplerStageVerifier) (*StaplerResult, error) {
-	if err := ensureStaplerAvailable(ctx, logWriter); err != nil {
+	if err := ensureStaplerAvailable(ctx); err != nil {
 		return nil, err
 	}
 	if err := verifyStaplerStage(verifier, StaplerOperationStaple, true); err != nil {
@@ -226,17 +226,17 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 		}
 	}
 	if stapleErr != nil {
-		if isStaplerDiagnosticOutputError(stapleErr) {
-			return nil, &StaplerPartialMutationError{
-				Operation: StaplerOperationStaple,
-				Err:       stapleErr,
-			}
-		}
 		if isStaplerOperationAttemptedCancellation(stapleErr) || isStaplerOperationAttemptedSignal(stapleErr) {
 			return nil, &StaplerPartialMutationError{
 				Operation:   StaplerOperationStaple,
 				Interrupted: true,
 				Err:         stapleErr,
+			}
+		}
+		if isStaplerDiagnosticOutputError(stapleErr) {
+			return nil, &StaplerPartialMutationError{
+				Operation: StaplerOperationStaple,
+				Err:       stapleErr,
 			}
 		}
 		return nil, stapleErr
@@ -297,7 +297,7 @@ func ValidateStaple(ctx context.Context, path string, logWriter io.Writer) (*Sta
 // modifying it. When verifier is non-nil, it runs immediately before and after
 // the validation child process, after stapler resolution has completed.
 func ValidateWithVerifier(ctx context.Context, path string, logWriter io.Writer, verifier StaplerStageVerifier) (*StaplerResult, error) {
-	if err := ensureStaplerAvailable(ctx, logWriter); err != nil {
+	if err := ensureStaplerAvailable(ctx); err != nil {
 		return nil, err
 	}
 	if err := verifyStaplerStage(verifier, StaplerOperationValidate, true); err != nil {
@@ -320,7 +320,7 @@ func ValidateWithVerifier(ctx context.Context, path string, logWriter io.Writer,
 	}, nil
 }
 
-func ensureStaplerAvailable(ctx context.Context, logWriter io.Writer) error {
+func ensureStaplerAvailable(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -339,7 +339,11 @@ func ensureStaplerAvailable(ctx context.Context, logWriter io.Writer) error {
 
 	cmd := commandContextFn(ctx, "xcrun", "--find", "stapler")
 	stdout := newTailBuffer(staplerResolutionOutputLimit)
-	stderr := newXcodeDiagnosticBuffer(staplerResolutionOutputLimit, logWriter)
+	// Resolver diagnostics may contain the selected developer directory or
+	// other host paths. Keep them available to the bounded error formatter, but
+	// never stream them to the caller's diagnostic writer before the resolver
+	// result has been classified.
+	stderr := newXcodeDiagnosticBuffer(staplerResolutionOutputLimit, nil)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := runXcodeCommand(cmd); err != nil {
@@ -482,6 +486,15 @@ func runStaplerOperation(ctx context.Context, operation StaplerOperation, path s
 				err: errors.Join(newStaplerCommandError(operation, err), ctxErr),
 			}
 		}
+		if isStaplerDiagnosticOutputError(err) {
+			// A successful child can still leave a diagnostic-copy error when its
+			// output sink fails. Preserve that concrete cause alongside the late
+			// cancellation so staple callers retain the partial-mutation warning
+			// and internal errors.Is/As classification.
+			return &staplerOperationAttemptedCancellationError{
+				err: errors.Join(err, ctxErr),
+			}
+		}
 		return &staplerOperationAttemptedCancellationError{err: ctxErr}
 	}
 	commandErr := newStaplerCommandError(operation, err)
@@ -512,14 +525,19 @@ func runStaplerChildCommand(ctx context.Context, operation StaplerOperation, pat
 	}
 	if waitErr != nil {
 		formatContext := ctx
-		if ctx.Err() != nil && (staplerHasProcessExitStatus(waitErr) || staplerProcessWasSignaled(waitErr)) {
+		if ctx.Err() != nil && (staplerHasProcessExitStatus(waitErr) || staplerProcessWasSignaled(waitErr) ||
+			(cmd.ProcessState != nil && cmd.ProcessState.Success())) {
 			// formatCommandOutputError intentionally prefers context errors. Once
 			// Wait has returned a process result, use a non-canceling view so that
-			// its status or signal remains wrapped for runStaplerOperation to preserve.
+			// its status, signal, or diagnostic-copy failure remains wrapped for
+			// runStaplerOperation to preserve.
 			formatContext = context.WithoutCancel(ctx)
 		}
 		formatted := formatCommandOutputError(formatContext, waitErr, outputWindow, string(operation), "xcrun stapler", true)
 		if cmd.ProcessState != nil && cmd.ProcessState.Success() {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				formatted = errors.Join(formatted, ctxErr)
+			}
 			return true, &staplerDiagnosticOutputError{err: formatted}
 		}
 		return true, formatted

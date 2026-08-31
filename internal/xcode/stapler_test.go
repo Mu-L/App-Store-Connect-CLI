@@ -1101,6 +1101,28 @@ func TestStaplerPreservesResolutionExitStatus(t *testing.T) {
 	}
 }
 
+func TestStaplerDoesNotStreamResolverDiagnosticsToLogWriter(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_FIND_EXIT_CODE", "64")
+	const canary = "RESOLVER_DIAGNOSTIC_PATH_CANARY_2242"
+	t.Setenv("ASC_STAPLER_FIND_STDERR", "/private/tmp/"+canary+"/developer-dir\n")
+
+	var diagnostics bytes.Buffer
+	_, err := Staple(context.Background(), target, &diagnostics)
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("Staple() error = %T %v, want resolver command error", err, err)
+	}
+	if strings.Contains(diagnostics.String(), canary) {
+		t.Fatalf("resolver diagnostics = %q, must not stream raw resolver output", diagnostics.String())
+	}
+}
+
 func TestStaplerPreservesResolutionExitStatusWhenContextCancelsAfterLookup(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -1286,7 +1308,11 @@ func TestStaplerHelperProcess(t *testing.T) {
 			os.Exit(125)
 		}
 		if code := staplerHelperExitCode("ASC_STAPLER_FIND_EXIT_CODE"); code >= 0 {
-			fmt.Fprintln(os.Stderr, "stapler lookup failed")
+			if output := os.Getenv("ASC_STAPLER_FIND_STDERR"); output != "" {
+				fmt.Fprint(os.Stderr, output)
+			} else {
+				fmt.Fprintln(os.Stderr, "stapler lookup failed")
+			}
 			os.Exit(code)
 		}
 		fmt.Fprintln(os.Stdout, "/usr/bin/stapler")
@@ -1427,6 +1453,68 @@ func TestStapleDiagnosticWriterFailurePreservesPartialMutation(t *testing.T) {
 		"xcrun|--find|stapler",
 		"xcrun|stapler|staple|" + target,
 	})
+}
+
+func TestStapleDiagnosticWriterFailurePreservesLateCancellationCause(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_STAPLE_STDOUT", "staple diagnostic\n")
+	writerErr := errors.New("diagnostic sink unavailable")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previousHook := afterStaplerCommandWaitFn
+	afterStaplerCommandWaitFn = cancel
+	t.Cleanup(func() { afterStaplerCommandWaitFn = previousHook })
+
+	result, err := Staple(ctx, target, staplerDiagnosticFailureWriter{err: writerErr})
+	if result != nil {
+		t.Fatalf("Staple() result = %#v, want nil after diagnostic writer failure", result)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Staple() error = %v, want late cancellation cause", err)
+	}
+	if !errors.Is(err, writerErr) {
+		t.Fatalf("Staple() error = %v, want diagnostic writer cause preserved with cancellation", err)
+	}
+	var partialErr *StaplerPartialMutationError
+	if !errors.As(err, &partialErr) || !partialErr.Interrupted {
+		t.Fatalf("Staple() error = %T %v, want interrupted partial-mutation marker", err, err)
+	}
+}
+
+func TestValidateStapleDiagnosticWriterFailurePreservesLateCancellationCause(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_VALIDATE_STDOUT", "validation diagnostic\n")
+	writerErr := errors.New("diagnostic sink unavailable")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previousHook := afterStaplerCommandWaitFn
+	afterStaplerCommandWaitFn = cancel
+	t.Cleanup(func() { afterStaplerCommandWaitFn = previousHook })
+
+	result, err := ValidateStaple(ctx, target, staplerDiagnosticFailureWriter{err: writerErr})
+	if result != nil {
+		t.Fatalf("ValidateStaple() result = %#v, want nil after diagnostic writer failure", result)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ValidateStaple() error = %v, want late cancellation cause", err)
+	}
+	if !errors.Is(err, writerErr) {
+		t.Fatalf("ValidateStaple() error = %v, want diagnostic writer cause preserved with cancellation", err)
+	}
+	var partialErr *StaplerPartialMutationError
+	if errors.As(err, &partialErr) {
+		t.Fatalf("ValidateStaple() error = %T %v, validation-only failure must not be partial mutation", err, err)
+	}
 }
 
 func assertStaplerCommands(t *testing.T, logPath string, want []string) {
