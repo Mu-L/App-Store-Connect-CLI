@@ -11,6 +11,11 @@ import (
 
 const staplerResolutionOutputLimit = 4 * 1024
 
+// afterStaplerCommandWaitFn is a narrow test seam for cancellation that lands
+// after a stapler child has returned from Wait but before its result is
+// formatted. Production leaves it nil.
+var afterStaplerCommandWaitFn func()
+
 // StaplerOperation identifies the local ticket operation that was requested.
 type StaplerOperation string
 
@@ -439,6 +444,15 @@ func runStaplerOperation(ctx context.Context, operation StaplerOperation, path s
 		if !started {
 			return ctxErr
 		}
+		if staplerHasProcessExitStatus(err) {
+			// The child has already returned a concrete process result. Preserve
+			// that result even when cancellation is observed in the tiny window
+			// after Wait, while retaining cancellation for the caller's partial
+			// mutation classification.
+			return &staplerOperationAttemptedCancellationError{
+				err: errors.Join(newStaplerCommandError(operation, err), ctxErr),
+			}
+		}
 		return &staplerOperationAttemptedCancellationError{err: ctxErr}
 	}
 	commandErr := newStaplerCommandError(operation, err)
@@ -460,14 +474,31 @@ func runStaplerChildCommand(ctx context.Context, operation StaplerOperation, pat
 	if err := cmd.Start(); err != nil {
 		return false, formatCommandOutputError(ctx, err, outputWindow, string(operation), "xcrun stapler", true)
 	}
-	if err := normalizeXcodeCommandWaitError(cmd, cmd.Wait()); err != nil {
-		formatted := formatCommandOutputError(ctx, err, outputWindow, string(operation), "xcrun stapler", true)
+	waitContextErr := ctx.Err()
+	waitErr := normalizeXcodeCommandWaitError(cmd, cmd.Wait())
+	if afterStaplerCommandWaitFn != nil {
+		afterStaplerCommandWaitFn()
+	}
+	if waitErr != nil {
+		formatContext := ctx
+		if waitContextErr == nil && ctx.Err() != nil && staplerHasProcessExitStatus(waitErr) {
+			// formatCommandOutputError intentionally prefers context errors. Once
+			// Wait has returned a real process status, use a non-canceling view so
+			// that status remains wrapped for runStaplerOperation to preserve.
+			formatContext = context.WithoutCancel(ctx)
+		}
+		formatted := formatCommandOutputError(formatContext, waitErr, outputWindow, string(operation), "xcrun stapler", true)
 		if cmd.ProcessState != nil && cmd.ProcessState.Success() {
 			return true, &staplerDiagnosticOutputError{err: formatted}
 		}
 		return true, formatted
 	}
 	return true, nil
+}
+
+func staplerHasProcessExitStatus(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr != nil && exitErr.ExitCode() >= 0
 }
 
 func newStaplerCommandError(operation StaplerOperation, err error) *StaplerCommandError {

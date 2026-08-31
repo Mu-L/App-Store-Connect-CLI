@@ -808,6 +808,41 @@ func TestStapleStopsBeforeValidationWhenStapleFails(t *testing.T) {
 	})
 }
 
+func TestStaplePreservesChildExitWhenContextCancelsAfterWait(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_STAPLE_EXIT_CODE", "65")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previousWaitHook := afterStaplerCommandWaitFn
+	afterStaplerCommandWaitFn = cancel
+	t.Cleanup(func() { afterStaplerCommandWaitFn = previousWaitHook })
+
+	result, err := Staple(ctx, target, nil)
+	if result != nil {
+		t.Fatalf("Staple() result = %#v, want nil after canceled failed child", result)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Staple() error = %v, want context cancellation", err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("Staple() error = %T %v, want preserved child command error", err, err)
+	}
+	if commandErr.Operation != string(StaplerOperationStaple) || commandErr.ExitCode != 65 {
+		t.Fatalf("Staple() command error = %#v, want staple/65", commandErr)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 65 {
+		t.Fatalf("Staple() error = %T %v, want underlying exit 65", err, err)
+	}
+}
+
 func TestStapleReturnsValidationFailureAfterMutation(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {

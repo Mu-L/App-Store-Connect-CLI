@@ -33,6 +33,12 @@ const (
 var (
 	errStaplerInventoryChanged               = errors.New("artifact directory contents changed during inspection")
 	errStaplerRegularFileFingerprintTooLarge = errors.New("regular-file fingerprint exceeds supported size")
+
+	// afterStaplerRegularFileFingerprintFn is a narrow test seam for replacing
+	// the pathname after the retained descriptor has been hashed but before
+	// the caller is allowed to invoke a child against that pathname.
+	// Production leaves it nil.
+	afterStaplerRegularFileFingerprintFn func()
 )
 
 // This narrow seam keeps the scanner testable without manufacturing hundreds
@@ -153,6 +159,29 @@ func (target *validatedStaplerTarget) captureRegularFileFingerprint(ctx context.
 		return staplerRegularFileFingerprint{}, err
 	}
 	if !os.SameFile(target.identity, finalPinned) || !finalPinned.Mode().IsRegular() {
+		return staplerRegularFileFingerprint{}, errStaplerInventoryChanged
+	}
+	if afterStaplerRegularFileFingerprintFn != nil {
+		afterStaplerRegularFileFingerprintFn()
+	}
+	// The retained descriptor proves that the bytes came from the originally
+	// validated inode, but the child receives the pathname. Rebind that rooted,
+	// no-follow pathname after hashing so a rename/replacement between open and
+	// the child cannot redirect the operation to a different regular file.
+	filesystemRoot, err := target.root.OpenRoot()
+	if err != nil {
+		return staplerRegularFileFingerprint{}, err
+	}
+	currentPathInfo, pathErr := filesystemRoot.Lstat(target.relative)
+	closeErr := filesystemRoot.Close()
+	if pathErr != nil {
+		return staplerRegularFileFingerprint{}, pathErr
+	}
+	if closeErr != nil {
+		return staplerRegularFileFingerprint{}, closeErr
+	}
+	if currentPathInfo == nil || currentPathInfo.Mode()&os.ModeSymlink != 0 ||
+		!currentPathInfo.Mode().IsRegular() || !os.SameFile(target.identity, currentPathInfo) {
 		return staplerRegularFileFingerprint{}, errStaplerInventoryChanged
 	}
 	var result staplerRegularFileFingerprint

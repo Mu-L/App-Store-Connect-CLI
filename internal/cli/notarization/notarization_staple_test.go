@@ -212,6 +212,58 @@ func TestStaplerRegularFileFingerprintBindsSameSizeBytes(t *testing.T) {
 	}
 }
 
+func TestNotarizationStapleRejectsRegularFilePathReplacementAfterFingerprint(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.dmg")
+	originalPath := targetPath + ".original"
+	if err := os.WriteFile(targetPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	previousFingerprintHook := afterStaplerRegularFileFingerprintFn
+	afterStaplerRegularFileFingerprintFn = func() {
+		if err := os.Rename(targetPath, originalPath); err != nil {
+			t.Fatalf("move original target: %v", err)
+		}
+		if err := os.WriteFile(targetPath, []byte("replacement"), 0o600); err != nil {
+			t.Fatalf("write replacement target: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterStaplerRegularFileFingerprintFn = previousFingerprintHook })
+
+	previousRunner := runStaplerStaple
+	childCalls := 0
+	runStaplerStaple = func(_ context.Context, path string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		childCalls++
+		return &localxcode.StaplerResult{Path: path, Operation: string(localxcode.StaplerOperationStaple), Stapled: true, Validated: true}, nil
+	}
+	t.Cleanup(func() { runStaplerStaple = previousRunner })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want path replacement failure")
+	}
+	if childCalls != 0 {
+		t.Fatalf("stapler child calls = %d, want zero after pathname replacement", childCalls)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed before stapling") {
+		t.Fatalf("stderr = %q, want pre-staple identity diagnostic", stderr)
+	}
+	if strings.Contains(stderr, targetPath) || strings.Contains(stderr, "replacement") {
+		t.Fatalf("stderr = %q, must not expose target path or replacement content", stderr)
+	}
+}
+
 func TestNotarizationStapleRejectsSameInodeRegularFileRewriteBeforeValidation(t *testing.T) {
 	targetPath := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(targetPath, []byte("original"), 0o600); err != nil {
