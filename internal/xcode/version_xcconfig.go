@@ -511,8 +511,8 @@ func resolveXCConfigSettingWithBaseReaderAndIdentity(
 	stat func(string) (os.FileInfo, error),
 	identify func(string) (os.FileInfo, error),
 ) (xcconfigResolvedValue, error) {
-	resolved, conditional, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(
-		filepath.Clean(root), setting, make(map[string]bool), nil, base, read, stat, identify,
+	resolved, conditional, err := resolveXCConfigSettingStateWithReaderAndIdentity(
+		root, setting, base, read, stat, identify, nil,
 	)
 	if err != nil {
 		return xcconfigResolvedValue{}, err
@@ -544,6 +544,30 @@ func resolveXCConfigSettingWithBaseReaderAndIdentity(
 	return resolved, nil
 }
 
+// xcconfigAssignmentObserver receives each matching assignment in the same
+// include/event order used by the resolver, including assignments that the
+// resolver later skips because a lower or earlier value wins. Security-
+// sensitive callers use this to retain provenance without implementing a
+// second include walker or authorization path.
+type xcconfigAssignmentObserver func(path string, assignment xcconfigAssignment)
+
+// resolveXCConfigSettingStateWithReaderAndIdentity exposes the raw traversal
+// state to narrow provenance consumers. Unlike the public resolution wrapper,
+// it does not convert conditional-only or divergent assignments into a
+// resolution error; operational read/parse/include failures still propagate.
+func resolveXCConfigSettingStateWithReaderAndIdentity(
+	root, setting string,
+	base xcconfigResolvedValue,
+	read func(string) ([]byte, error),
+	stat func(string) (os.FileInfo, error),
+	identify func(string) (os.FileInfo, error),
+	observe xcconfigAssignmentObserver,
+) (xcconfigResolvedValue, bool, error) {
+	return resolveXCConfigSettingRecursiveWithReaderAndIdentity(
+		filepath.Clean(root), setting, make(map[string]bool), nil, base, read, stat, identify, observe,
+	)
+}
+
 type xcconfigResolutionPath struct {
 	path string
 	info os.FileInfo
@@ -558,6 +582,7 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 	read func(string) ([]byte, error),
 	stat func(string) (os.FileInfo, error),
 	identify func(string) (os.FileInfo, error),
+	observe xcconfigAssignmentObserver,
 ) (xcconfigResolvedValue, bool, error) {
 	path = filepath.Clean(path)
 	pathKey := signingLexicalPathKey(path)
@@ -623,7 +648,7 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 				}
 				return xcconfigResolvedValue{}, false, fmt.Errorf("read xcconfig include %s: %w", includePath, err)
 			}
-			included, _, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(includePath, setting, nextStack, nextStackPaths, resolved, read, stat, identify)
+			included, _, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(includePath, setting, nextStack, nextStackPaths, resolved, read, stat, identify, observe)
 			if err != nil {
 				return xcconfigResolvedValue{}, false, err
 			}
@@ -634,6 +659,9 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 		assignment := item.assignment
 		if assignment.baseKey != setting {
 			continue
+		}
+		if observe != nil {
+			observe(path, *assignment)
 		}
 		if assignment.key != setting {
 			if assignment.operator == "?=" && resolved.found {

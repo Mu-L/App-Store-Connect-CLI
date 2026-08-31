@@ -1347,7 +1347,7 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 	addProtectedPath := func(path string) {
 		absolute := normalizeSigningLexicalPath(path)
 		for _, existing := range protectedConfigPaths {
-			if signingPathCaseEquivalent(existing, absolute) {
+			if normalizeSigningLexicalPath(existing) == absolute {
 				return
 			}
 		}
@@ -1356,7 +1356,7 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 	addBlockedPath := func(path string) {
 		absolute := normalizeSigningLexicalPath(path)
 		for _, existing := range blockedExternalPaths {
-			if signingPathCaseEquivalent(existing, absolute) {
+			if normalizeSigningLexicalPath(existing) == absolute {
 				return
 			}
 		}
@@ -1364,6 +1364,7 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 	}
 	collect := func(path string) ([]string, error) {
 		var collectionErrorPath string
+		var collectionErrorExternal bool
 		observedPaths := make([]string, 0)
 		var identify func(string) (os.FileInfo, error)
 		if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
@@ -1375,7 +1376,7 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 				return signingXCConfigReadFileFn(filePath, signingPlanMaxBytes)
 			},
 			func(filePath string) error {
-				if !allowExternal && !signingPathLexicallyContained(project, filePath) {
+				if !allowExternal && signingPathDefinitelyExternal(project, filePath) {
 					unauthorizedExternal = true
 					return &signingXCConfigAccessError{path: filePath, err: errors.New("path is outside the project directory"), external: true}
 				}
@@ -1384,10 +1385,20 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 					// root, even when its lexical spelling is inside the project.
 					// Treat it as untrusted external content: its target may hide
 					// an entitlement expression that cannot be inventoried here.
-					if !allowExternal && errors.Is(err, rootfs.ErrSymlink) {
+					// ErrEscapesRoot also covers a case-variant spelling rejected
+					// on a modeled case-sensitive Darwin/Windows directory. That
+					// path was not proven to be an internal source, so it must take
+					// the same no-opt-in fail-closed path as other external inputs.
+					pathRejectedAsExternal := !allowExternal &&
+						(errors.Is(err, rootfs.ErrEscapesRoot) || errors.Is(err, rootfs.ErrSymlink))
+					if pathRejectedAsExternal {
 						unauthorizedExternal = true
 					}
-					return &signingXCConfigAccessError{path: filePath, err: err, external: !signingPathLexicallyContained(project, filePath)}
+					return &signingXCConfigAccessError{
+						path:     filePath,
+						err:      err,
+						external: pathRejectedAsExternal || signingPathDefinitelyExternal(project, filePath),
+					}
 				}
 				return nil
 			},
@@ -1408,10 +1419,14 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 			return files, nil
 		}
 		if collectionErrorPath != "" {
+			var accessErr *signingXCConfigAccessError
+			if errors.As(err, &accessErr) {
+				collectionErrorExternal = accessErr.external
+			}
 			return nil, &signingXCConfigAccessError{
 				path:     collectionErrorPath,
 				err:      err,
-				external: !signingPathLexicallyContained(project, collectionErrorPath),
+				external: collectionErrorExternal,
 			}
 		}
 		return nil, err
