@@ -652,6 +652,9 @@ func TestCreateNewFileAtomicClosesStagingBeforePublication(t *testing.T) {
 }
 
 func TestCreateNewFileAtomicWithInfoClosesStagingAfterIdentityVerification(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows closes the staging handle before publication")
+	}
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -685,6 +688,39 @@ func TestCreateNewFileAtomicWithInfoClosesStagingAfterIdentityVerification(t *te
 	}
 	if !os.SameFile(info, diskInfo) {
 		t.Fatal("returned identity does not identify the published file")
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoClosesStagingBeforePublicationWhenWindowsRequiresIt(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	root.simulateWindowsCloseForTest = true
+	path := filepath.Join(dir, "identity-windows.txt")
+	closeErr := errors.New("injected staging close failure")
+	var closeCalls int
+	root.closeStagingFileForTest = func(file *os.File) error {
+		closeCalls++
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("destination during simulated Windows staging close: err = %v, want absent", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close staging file in test seam: %v", err)
+		}
+		return closeErr
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("identity-windows.txt", []byte("complete"), 0o600)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want staging close failure", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("staging close calls = %d, want 1", closeCalls)
+	}
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned an identity before publication")
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination after simulated Windows staging close failure: %v", err)
 	}
 }
 
