@@ -1015,6 +1015,38 @@ func TestStaplerPreservesResolutionExitStatus(t *testing.T) {
 	}
 }
 
+func TestStaplerPreservesResolutionExitStatusWhenContextCancelsAfterLookup(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_FIND_EXIT_CODE", "64")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previousHook := afterStaplerResolutionFn
+	afterStaplerResolutionFn = cancel
+	t.Cleanup(func() { afterStaplerResolutionFn = previousHook })
+
+	_, err := Staple(ctx, target, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Staple() error = %v, want context cancellation", err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("Staple() error = %T %v, want preserved lookup command error", err, err)
+	}
+	if commandErr.Operation != string(StaplerOperationResolve) || commandErr.ExitCode != 64 {
+		t.Fatalf("Staple() command error = %#v, want resolve/64", commandErr)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 64 {
+		t.Fatalf("Staple() error = %T %v, want underlying lookup exit 64", err, err)
+	}
+}
+
 func TestStaplerPropagatesCancellationWithoutSuccess(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {

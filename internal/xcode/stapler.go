@@ -21,6 +21,12 @@ var afterStaplerCommandWaitFn func()
 // Production leaves it nil.
 var afterStaplerCommandStartFn func(*exec.Cmd)
 
+// afterStaplerResolutionFn is a narrow test seam for cancellation that lands
+// after the xcrun stapler lookup has returned its process result but before
+// ensureStaplerAvailable observes the caller's context. Production leaves it
+// nil.
+var afterStaplerResolutionFn func()
+
 // StaplerOperation identifies the local ticket operation that was requested.
 type StaplerOperation string
 
@@ -337,14 +343,21 @@ func ensureStaplerAvailable(ctx context.Context, logWriter io.Writer) error {
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := runXcodeCommand(cmd); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
+		if afterStaplerResolutionFn != nil {
+			afterStaplerResolutionFn()
 		}
 		failure := error(fmt.Errorf("xcrun --find stapler failed: %w", err))
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
 			failure = fmt.Errorf("xcrun --find stapler failed: %s: %w", detail, err)
 		}
-		return newStaplerCommandError(StaplerOperationResolve, failure)
+		commandErr := newStaplerCommandError(StaplerOperationResolve, failure)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if staplerHasProcessExitStatus(err) {
+				return errors.Join(ctxErr, commandErr)
+			}
+			return ctxErr
+		}
+		return commandErr
 	}
 	if strings.TrimSpace(stdout.String()) == "" {
 		return fmt.Errorf("xcrun did not resolve stapler")
