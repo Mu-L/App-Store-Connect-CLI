@@ -595,6 +595,99 @@ func TestCreateNewFileAtomicWritesExactMode(t *testing.T) {
 	}
 }
 
+func TestCreateNewFromClosesStagingBeforePublication(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "ordinary.txt")
+	closeErr := errors.New("injected staging close failure")
+	var closeCalls int
+	root.closeStagingFileForTest = func(file *os.File) error {
+		closeCalls++
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("destination during staging close: err = %v, want absent", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close staging file in test seam: %v", err)
+		}
+		return closeErr
+	}
+
+	if _, err := root.CreateNewFrom("ordinary.txt", bytes.NewReader([]byte("complete")), 0o600); !errors.Is(err, closeErr) {
+		t.Fatalf("CreateNewFrom() error = %v, want staging close failure", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("staging close calls = %d, want 1", closeCalls)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination after staging close failure: %v", err)
+	}
+}
+
+func TestCreateNewFileAtomicClosesStagingBeforePublication(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "ordinary-atomic.txt")
+	closeErr := errors.New("injected staging close failure")
+	var closeCalls int
+	root.closeStagingFileForTest = func(file *os.File) error {
+		closeCalls++
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("destination during staging close: err = %v, want absent", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close staging file in test seam: %v", err)
+		}
+		return closeErr
+	}
+
+	if err := root.CreateNewFileAtomic("ordinary-atomic.txt", []byte("complete"), 0o600); !errors.Is(err, closeErr) {
+		t.Fatalf("CreateNewFileAtomic() error = %v, want staging close failure", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("staging close calls = %d, want 1", closeCalls)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination after staging close failure: %v", err)
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoClosesStagingAfterIdentityVerification(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "identity.txt")
+	closeErr := errors.New("injected staging close failure")
+	var closeCalls int
+	root.closeStagingFileForTest = func(file *os.File) error {
+		closeCalls++
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("published destination during identity close: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close staging file in test seam: %v", err)
+		}
+		return closeErr
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("identity.txt", []byte("complete"), 0o600)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want staging close failure", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("staging close calls = %d, want 1", closeCalls)
+	}
+	if info == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned nil identity after post-publication close failure")
+	}
+	diskInfo, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatalf("Stat(identity) error = %v", statErr)
+	}
+	if !os.SameFile(info, diskInfo) {
+		t.Fatal("returned identity does not identify the published file")
+	}
+}
+
 func TestCreateNewFileAtomicWithInfoReturnsPublishedIdentity(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)

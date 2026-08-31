@@ -109,6 +109,9 @@ type Root struct {
 	// publication and skips Unix descriptor retention, exercising the
 	// pre-identity failure contract without requiring a Windows runner.
 	simulateWindowsCloseForTest bool
+	// closeStagingFileForTest injects a staging-descriptor close result without
+	// widening the production API. It is intentionally unset outside tests.
+	closeStagingFileForTest func(file *os.File) error
 	// requireNativeNoReplace preserves CreateNewFileAtomic's strict contract
 	// while CreateNewFrom may use the atomic hard-link fallback.
 	requireNativeNoReplace bool
@@ -1972,6 +1975,9 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 			return nil
 		}
 		stagingClosed = true
+		if r.closeStagingFileForTest != nil {
+			return r.closeStagingFileForTest(file)
+		}
 		return file.Close()
 	}
 	retainStagingIdentity := func() bool {
@@ -2030,12 +2036,13 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	if !stagedInfo.Mode().IsRegular() {
 		return written, nil, fmt.Errorf("staged file %q is not regular", resolved)
 	}
-	// Keep the staging descriptor open through publication and the identity
-	// check on Unix. If a racing writer unlinks the published name immediately,
-	// the open descriptor keeps the original inode alive so the filesystem
-	// cannot reuse its identity for the replacement before Lstat observes it.
-	// Windows requires the handle to be closed before its rename operation.
-	if runtime.GOOS == "windows" || r.simulateWindowsCloseForTest {
+	// Ordinary writes do not return a publication identity, so close the
+	// staging descriptor before publication. If that close fails, no durable
+	// destination has been installed yet. The identity-returning path keeps
+	// the descriptor through publication on Unix so an immediate replacement
+	// cannot reuse its inode before identity verification; Windows and the test
+	// simulation still require a pre-publication close for rename compatibility.
+	if !retainPublishedIdentity || runtime.GOOS == "windows" || r.simulateWindowsCloseForTest {
 		if err := closeStaging(); err != nil {
 			return written, nil, err
 		}
