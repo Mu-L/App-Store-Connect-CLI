@@ -207,6 +207,84 @@ func TestStructuredVersion_ProjectWideEditUpdatesRecursiveXCConfigLosslessly(t *
 	}
 }
 
+func TestStructuredVersionWindowsCaseSensitiveIncludeGraphUsesLaterInclude(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "windows"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+	})
+
+	project := writeStructuredVersionProject(t, true)
+	configDir := filepath.Join(filepath.Dir(project), "Configs")
+	appPath := filepath.Join(configDir, "App.xcconfig")
+	basePath := filepath.Join(configDir, "Base.xcconfig")
+	lowerBasePath := filepath.Join(configDir, "base.xcconfig")
+	if err := os.WriteFile(appPath, []byte("#include \"Base.xcconfig\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(App.xcconfig) error = %v", err)
+	}
+	if err := os.WriteFile(basePath, []byte("MARKETING_VERSION = 1.0.0\nCURRENT_PROJECT_VERSION = 10\n#include \"base.xcconfig\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(Base.xcconfig) error = %v", err)
+	}
+	if err := os.WriteFile(lowerBasePath, []byte("MARKETING_VERSION = 2.0.0\nCURRENT_PROJECT_VERSION = 20\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(base.xcconfig) error = %v", err)
+	}
+	if _, err := os.Stat(basePath); err != nil {
+		t.Fatalf("Stat(Base.xcconfig) error = %v", err)
+	}
+	if _, err := os.Stat(lowerBasePath); err != nil {
+		t.Fatalf("Stat(base.xcconfig) error = %v", err)
+	}
+	baseInfo, err := os.Stat(basePath)
+	if err != nil {
+		t.Fatalf("Stat(Base.xcconfig identity) error = %v", err)
+	}
+	lowerBaseInfo, err := os.Stat(lowerBasePath)
+	if err != nil {
+		t.Fatalf("Stat(base.xcconfig identity) error = %v", err)
+	}
+	if os.SameFile(baseInfo, lowerBaseInfo) {
+		t.Skip("temporary filesystem is case-insensitive; Windows case-sensitive directory required")
+	}
+
+	before, err := GetVersionScoped(context.Background(), GetVersionOptions{
+		ProjectDir: project, Target: "App", Configuration: "Release",
+	})
+	if err != nil {
+		t.Fatalf("GetVersionScoped() before update error = %v", err)
+	}
+	if before.Version != "2.0.0" || before.BuildNumber != "20" || before.VersionSource != lowerBasePath {
+		t.Fatalf("GetVersionScoped() before update = %#v, want later case-distinct include", before)
+	}
+
+	result, err := SetVersion(context.Background(), SetVersionOptions{
+		ProjectDir: project, Version: "3.0.0", BuildNumber: "30",
+	})
+	if err != nil {
+		t.Fatalf("SetVersion() error = %v", err)
+	}
+	if !containsString(result.ChangedFiles, basePath) || !containsString(result.ChangedFiles, lowerBasePath) {
+		t.Fatalf("SetVersion() changed files = %#v, want both case-distinct includes", result.ChangedFiles)
+	}
+	for _, path := range []string{basePath, lowerBasePath} {
+		contents := mustReadVersionTestFile(t, path)
+		if !strings.Contains(contents, "MARKETING_VERSION = 3.0.0") || !strings.Contains(contents, "CURRENT_PROJECT_VERSION = 30") {
+			t.Fatalf("updated %s = %q, want version/build changes", path, contents)
+		}
+	}
+	after, err := GetVersionScoped(context.Background(), GetVersionOptions{
+		ProjectDir: project, Target: "App", Configuration: "Release",
+	})
+	if err != nil {
+		t.Fatalf("GetVersionScoped() after update error = %v", err)
+	}
+	if after.Version != "3.0.0" || after.BuildNumber != "30" || after.VersionSource != lowerBasePath {
+		t.Fatalf("GetVersionScoped() after update = %#v, want later case-distinct include", after)
+	}
+}
+
 func TestStructuredVersion_ProjectWideEditKeepsContinuedXCConfigCompatibility(t *testing.T) {
 	project := writeStructuredVersionProject(t, true)
 	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
@@ -1569,6 +1647,17 @@ func TestSetVersionKeepsProvenWindowsCaseDistinctXCConfigsSeparate(t *testing.T)
 	if err := os.WriteFile(secondPath, contents, 0o640); err != nil {
 		t.Fatalf("WriteFile(second xcconfig) error = %v", err)
 	}
+	firstInfo, err := os.Stat(firstPath)
+	if err != nil {
+		t.Fatalf("Stat(first xcconfig) error = %v", err)
+	}
+	secondInfo, err := os.Stat(secondPath)
+	if err != nil {
+		t.Fatalf("Stat(second xcconfig) error = %v", err)
+	}
+	if os.SameFile(firstInfo, secondInfo) {
+		t.Skip("temporary filesystem is case-insensitive")
+	}
 
 	pbxprojPath := filepath.Join(projectPath, "project.pbxproj")
 	pbxproj := mustReadVersionTestFile(t, pbxprojPath)
@@ -1582,7 +1671,7 @@ func TestSetVersionKeepsProvenWindowsCaseDistinctXCConfigsSeparate(t *testing.T)
 		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
 	}
 
-	_, err := SetVersion(context.Background(), SetVersionOptions{
+	_, err = SetVersion(context.Background(), SetVersionOptions{
 		ProjectDir: projectPath,
 		Target:     "App",
 		Version:    "2.0.0",

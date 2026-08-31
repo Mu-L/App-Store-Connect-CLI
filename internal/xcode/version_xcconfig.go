@@ -261,6 +261,19 @@ func collectXCConfigFiles(root string) ([]string, error) {
 	return collectXCConfigFilesWithReader(root, os.ReadFile, nil)
 }
 
+// collectStableXCConfigFiles walks a stable version command's include graph
+// with per-directory case semantics. Stable commands retain ordinary
+// os.Stat/os.ReadFile behavior (including selected symlinks), but a Windows
+// case-sensitive directory must not collapse two case-distinct include paths
+// into one traversal key.
+func collectStableXCConfigFiles(root string) ([]string, error) {
+	var identify func(string) (os.FileInfo, error)
+	if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
+		identify = os.Stat
+	}
+	return collectXCConfigFilesWithHooksAndIdentity(root, os.ReadFile, nil, nil, nil, identify)
+}
+
 // collectXCConfigFilesWithReader walks an xcconfig include graph using the
 // caller's reader and authorization hook. Security-sensitive callers should
 // authorize every path before the reader or existence check touches it.
@@ -304,10 +317,21 @@ func collectXCConfigFilesWithHooksAndIdentity(
 	}
 	var collected []collectedIdentity
 	var paths []string
+	traversalKey := func(path string) string {
+		// With an identity callback, preserve the exact spelling. Identity
+		// checks below can safely coalesce an alias only after the platform's
+		// directory case semantics prove that the spellings name one path. A
+		// generic collector has no such proof and retains its historical
+		// platform lexical key for cycle protection.
+		if identify != nil {
+			return normalizeSigningLexicalPath(path)
+		}
+		return signingLexicalPathKey(path)
+	}
 	var visit func(string, map[string][]os.FileInfo) (error, bool)
 	visit = func(path string, stack map[string][]os.FileInfo) (error, bool) {
 		path = filepath.Clean(path)
-		pathKey := signingLexicalPathKey(path)
+		pathKey := traversalKey(path)
 		if onPath != nil {
 			onPath(path)
 		}
@@ -347,7 +371,7 @@ func collectXCConfigFilesWithHooksAndIdentity(
 		// against different bases and must still be traversed independently.
 		if identity != nil {
 			for _, entry := range collected {
-				if strings.EqualFold(entry.path, path) && entry.info != nil && os.SameFile(identity, entry.info) {
+				if signingPathCaseEquivalent(entry.path, path) && entry.info != nil && os.SameFile(identity, entry.info) {
 					return nil, false
 				}
 			}
@@ -362,7 +386,7 @@ func collectXCConfigFilesWithHooksAndIdentity(
 				return nil, false
 			}
 			for _, entry := range collected {
-				if signingLexicalPathKey(entry.path) == pathKey && entry.info != nil && os.SameFile(identity, entry.info) {
+				if traversalKey(entry.path) == pathKey && entry.info != nil && os.SameFile(identity, entry.info) {
 					return nil, false
 				}
 			}
@@ -436,12 +460,39 @@ func collectXCConfigFilesWithHooksAndIdentity(
 	return paths, nil
 }
 
+// signingPathCaseEquivalent reports whether two path spellings may be the same
+// path solely because their containing directory is case-insensitive.
+// Equal-folding a path is not enough: a case-sensitive directory can contain
+// two hard-linked files whose path operations must remain distinct. Unknown
+// filesystem metadata therefore keeps both spellings rather than coalescing.
+func signingPathCaseEquivalent(left, right string) bool {
+	left = normalizeSigningLexicalPath(left)
+	right = normalizeSigningLexicalPath(right)
+	if left == right {
+		return true
+	}
+	if !strings.EqualFold(left, right) {
+		return false
+	}
+	leftInsensitive, leftKnown := signingCaseInsensitiveVolumeFn(filepath.Dir(left))
+	rightInsensitive, rightKnown := signingCaseInsensitiveVolumeFn(filepath.Dir(right))
+	return leftKnown && rightKnown && leftInsensitive && rightInsensitive
+}
+
 func resolveXCConfigSetting(root, setting string) (xcconfigResolvedValue, error) {
 	return resolveXCConfigSettingWithBase(root, setting, xcconfigResolvedValue{})
 }
 
 func resolveXCConfigSettingWithBase(root, setting string, base xcconfigResolvedValue) (xcconfigResolvedValue, error) {
-	return resolveXCConfigSettingWithBaseReader(root, setting, base, os.ReadFile, os.Stat)
+	var identify func(string) (os.FileInfo, error)
+	if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
+		// Stable version commands intentionally retain ordinary filesystem
+		// behavior, including selected symlinks. os.Stat supplies the identity
+		// needed only to disambiguate case-variant paths on filesystems whose
+		// directory semantics are not uniform.
+		identify = os.Stat
+	}
+	return resolveXCConfigSettingWithBaseReaderAndIdentity(root, setting, base, os.ReadFile, os.Stat, identify)
 }
 
 func resolveXCConfigSettingWithBaseReader(
@@ -450,8 +501,18 @@ func resolveXCConfigSettingWithBaseReader(
 	read func(string) ([]byte, error),
 	stat func(string) (os.FileInfo, error),
 ) (xcconfigResolvedValue, error) {
-	resolved, conditional, err := resolveXCConfigSettingRecursiveWithReader(
-		filepath.Clean(root), setting, make(map[string]bool), base, read, stat,
+	return resolveXCConfigSettingWithBaseReaderAndIdentity(root, setting, base, read, stat, nil)
+}
+
+func resolveXCConfigSettingWithBaseReaderAndIdentity(
+	root, setting string,
+	base xcconfigResolvedValue,
+	read func(string) ([]byte, error),
+	stat func(string) (os.FileInfo, error),
+	identify func(string) (os.FileInfo, error),
+) (xcconfigResolvedValue, error) {
+	resolved, conditional, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(
+		filepath.Clean(root), setting, make(map[string]bool), nil, base, read, stat, identify,
 	)
 	if err != nil {
 		return xcconfigResolvedValue{}, err
@@ -483,16 +544,37 @@ func resolveXCConfigSettingWithBaseReader(
 	return resolved, nil
 }
 
-func resolveXCConfigSettingRecursiveWithReader(
+type xcconfigResolutionPath struct {
+	path string
+	info os.FileInfo
+}
+
+func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 	path string,
 	setting string,
 	stack map[string]bool,
+	stackPaths []xcconfigResolutionPath,
 	resolved xcconfigResolvedValue,
 	read func(string) ([]byte, error),
 	stat func(string) (os.FileInfo, error),
+	identify func(string) (os.FileInfo, error),
 ) (xcconfigResolvedValue, bool, error) {
 	path = filepath.Clean(path)
 	pathKey := signingLexicalPathKey(path)
+	var identity os.FileInfo
+	if identify != nil {
+		var err error
+		identity, err = identify(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return xcconfigResolvedValue{}, false, err
+		}
+		pathKey = normalizeSigningLexicalPath(path)
+		for _, entry := range stackPaths {
+			if identity != nil && entry.info != nil && signingPathCaseEquivalent(entry.path, path) && os.SameFile(identity, entry.info) {
+				return resolved, false, nil
+			}
+		}
+	}
 	if stack[pathKey] {
 		return resolved, false, nil
 	}
@@ -506,6 +588,10 @@ func resolveXCConfigSettingRecursiveWithReader(
 	}
 	nextStack := clonePathSet(stack)
 	nextStack[pathKey] = true
+	nextStackPaths := append([]xcconfigResolutionPath(nil), stackPaths...)
+	if identify != nil && identity != nil {
+		nextStackPaths = append(nextStackPaths, xcconfigResolutionPath{path: path, info: identity})
+	}
 
 	type event struct {
 		line       int
@@ -537,7 +623,7 @@ func resolveXCConfigSettingRecursiveWithReader(
 				}
 				return xcconfigResolvedValue{}, false, fmt.Errorf("read xcconfig include %s: %w", includePath, err)
 			}
-			included, _, err := resolveXCConfigSettingRecursiveWithReader(includePath, setting, nextStack, resolved, read, stat)
+			included, _, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(includePath, setting, nextStack, nextStackPaths, resolved, read, stat, identify)
 			if err != nil {
 				return xcconfigResolvedValue{}, false, err
 			}

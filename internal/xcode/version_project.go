@@ -301,7 +301,7 @@ func (project *structuredVersionProject) configurationDefinesSetting(configurati
 		if err != nil {
 			return false, err
 		}
-		paths, err := collectXCConfigFiles(root)
+		paths, err := collectStableXCConfigFiles(root)
 		if err != nil {
 			return false, err
 		}
@@ -1304,7 +1304,11 @@ type xcconfigFileIdentityIndex struct {
 // identity records a file identity only after the collector has successfully
 // authorized and read the path. Keeping that invariant explicit prevents a
 // later identity pass from reopening an unselected or unauthorized path.
-func (index *xcconfigFileIdentityIndex) identity(path string, collected map[string]bool) (string, error) {
+func (index *xcconfigFileIdentityIndex) identity(
+	path string,
+	collected map[string]bool,
+	identifiers ...func(string) (os.FileInfo, error),
+) (string, error) {
 	absolutePath, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -1313,7 +1317,11 @@ func (index *xcconfigFileIdentityIndex) identity(path string, collected map[stri
 	if !collected[normalizeSigningLexicalPath(absolutePath)] && !collected[signingLexicalPathKey(absolutePath)] {
 		return "", fmt.Errorf("xcconfig path %s was not collected for this signing plan", absolutePath)
 	}
-	info, err := signingXCConfigIdentityFn(absolutePath)
+	identify := signingXCConfigIdentityFn
+	if len(identifiers) > 0 && identifiers[0] != nil {
+		identify = identifiers[0]
+	}
+	info, err := identify(absolutePath)
 	if err != nil {
 		return "", err
 	}
@@ -1328,7 +1336,7 @@ func (index *xcconfigFileIdentityIndex) identity(path string, collected map[stri
 }
 
 func (project *structuredVersionProject) xcconfigConsumers(selectedIDs map[string]bool) (map[string]map[string]bool, map[string][]string, map[string]string, bool, error) {
-	return project.xcconfigConsumersWithCollector(selectedIDs, collectXCConfigFiles)
+	return project.xcconfigConsumersWithCollectorAndIdentity(selectedIDs, collectStableXCConfigFiles, os.Stat)
 }
 
 func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs map[string]bool, allowExternal bool) (map[string]map[string]bool, map[string][]string, map[string]string, bool, []string, []string, map[string][]string, bool, error) {
@@ -1340,7 +1348,7 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 	addProtectedPath := func(path string) {
 		absolute := normalizeSigningLexicalPath(path)
 		for _, existing := range protectedConfigPaths {
-			if signingLexicalPathEqual(existing, absolute) {
+			if signingPathCaseEquivalent(existing, absolute) {
 				return
 			}
 		}
@@ -1349,7 +1357,7 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 	addBlockedPath := func(path string) {
 		absolute := normalizeSigningLexicalPath(path)
 		for _, existing := range blockedExternalPaths {
-			if signingLexicalPathEqual(existing, absolute) {
+			if signingPathCaseEquivalent(existing, absolute) {
 				return
 			}
 		}
@@ -1430,16 +1438,26 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 	return consumers, configFiles, identities, uncertain, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, unauthorizedExternal, err
 }
 
-func (project *structuredVersionProject) xcconfigConsumersWithCollector(
-	selectedIDs map[string]bool,
-	collect func(string) ([]string, error),
-) (map[string]map[string]bool, map[string][]string, map[string]string, bool, error) {
-	return project.xcconfigConsumersWithCollectorAndErrorHook(selectedIDs, collect, nil)
-}
-
 func (project *structuredVersionProject) xcconfigConsumersWithCollectorAndErrorHook(
 	selectedIDs map[string]bool,
 	collect func(string) ([]string, error),
+	onUnselectedError func(*versionConfiguration, error),
+) (map[string]map[string]bool, map[string][]string, map[string]string, bool, error) {
+	return project.xcconfigConsumersWithCollectorAndIdentityAndErrorHook(selectedIDs, collect, signingXCConfigIdentityFn, onUnselectedError)
+}
+
+func (project *structuredVersionProject) xcconfigConsumersWithCollectorAndIdentity(
+	selectedIDs map[string]bool,
+	collect func(string) ([]string, error),
+	identify func(string) (os.FileInfo, error),
+) (map[string]map[string]bool, map[string][]string, map[string]string, bool, error) {
+	return project.xcconfigConsumersWithCollectorAndIdentityAndErrorHook(selectedIDs, collect, identify, nil)
+}
+
+func (project *structuredVersionProject) xcconfigConsumersWithCollectorAndIdentityAndErrorHook(
+	selectedIDs map[string]bool,
+	collect func(string) ([]string, error),
+	identify func(string) (os.FileInfo, error),
 	onUnselectedError func(*versionConfiguration, error),
 ) (map[string]map[string]bool, map[string][]string, map[string]string, bool, error) {
 	consumers := make(map[string]map[string]bool)
@@ -1488,7 +1506,7 @@ func (project *structuredVersionProject) xcconfigConsumersWithCollectorAndErrorH
 			collected[normalizeSigningLexicalPath(absolute)] = true
 		}
 		for _, path := range files {
-			identity, err := identityIndex.identity(path, collected)
+			identity, err := identityIndex.identity(path, collected, identify)
 			if err != nil {
 				if selectedIDs[configuration.id] {
 					selectedError = errors.Join(selectedError, fmt.Errorf("identify xcconfig for target %q configuration %q: %w", configuration.target, configuration.name, err))

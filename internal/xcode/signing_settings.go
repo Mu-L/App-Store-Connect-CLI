@@ -1844,7 +1844,12 @@ func resolveSigningSharedCandidates(candidates []signingCandidate, fileIdentitie
 			continue
 		}
 		for _, path := range candidate.paths {
-			key := signingXCConfigOperationKey(path, fileIdentities) + "\x00" + candidate.setting
+			// Shared-file conflict detection is identity-based: two consumers of
+			// one inode must not receive different values through an xcconfig
+			// mutation. Publication and receipt grouping below deliberately use the
+			// path-preserving operation key so hard-linked path intents remain
+			// separate writes.
+			key := signingXCConfigPhysicalKey(path, fileIdentities) + "\x00" + candidate.setting
 			value := *candidate.desired
 			if previous, exists := desiredByFile[key]; exists && previous != value {
 				conflictByFile[key] = true
@@ -1858,7 +1863,7 @@ func resolveSigningSharedCandidates(candidates []signingCandidate, fileIdentitie
 			continue
 		}
 		for _, path := range candidates[index].paths {
-			if conflictByFile[signingXCConfigOperationKey(path, fileIdentities)+"\x00"+candidates[index].setting] {
+			if conflictByFile[signingXCConfigPhysicalKey(path, fileIdentities)+"\x00"+candidates[index].setting] {
 				candidates[index].mode = "pbxproj"
 				candidates[index].paths = nil
 				break
@@ -1867,18 +1872,38 @@ func resolveSigningSharedCandidates(candidates []signingCandidate, fileIdentitie
 	}
 }
 
-// signingXCConfigOperationKey groups authorized xcconfig paths by the
-// filesystem identity captured during collection. This is important on
-// case-insensitive macOS volumes, where two operator spellings can name the
-// same file even though their lexical paths differ. Missing or uncollected
-// paths retain the platform lexical key; prepared signing operations only
-// accept paths that were successfully collected and identity-bound.
-func signingXCConfigOperationKey(path string, fileIdentities map[string]string) string {
-	pathKey := signingLexicalPathKey(path)
+// signingXCConfigPhysicalKey groups authorized xcconfig paths by the
+// filesystem identity captured during collection. It is used only for
+// consumer/conflict decisions: a hard link is one physical source even when
+// the project names it through two paths.
+func signingXCConfigPhysicalKey(path string, fileIdentities map[string]string) string {
 	if identity, ok := signingFileIdentity(path, fileIdentities); ok && identity != "" {
 		return "identity:" + identity
 	}
+	return "path:" + signingLexicalPathKey(path)
+}
+
+// signingXCConfigOperationKey is the path-preserving key used for plan files,
+// prepared writes, and receipts. A physical identity alone is insufficient:
+// hard-linked paths are distinct project operations and an atomic rename of
+// one must not silently satisfy or discard the other. Keep the normalized
+// lexical path alongside the identity so only the same requested path
+// coalesces; missing paths still retain their platform lexical key.
+func signingXCConfigOperationKey(path string, fileIdentities map[string]string) string {
+	pathKey := signingXCConfigPathIntentKey(path)
+	if identity, ok := signingFileIdentity(path, fileIdentities); ok && identity != "" {
+		return "identity:" + identity + "\x00path:" + pathKey
+	}
 	return "path:" + pathKey
+}
+
+func signingXCConfigPathIntentKey(path string) string {
+	normalized := normalizeSigningLexicalPath(path)
+	caseInsensitive, known := signingCaseInsensitiveVolumeFn(filepath.Dir(normalized))
+	if known && caseInsensitive {
+		return strings.ToLower(normalized)
+	}
+	return normalized
 }
 
 // signingFileIdentity first uses the exact normalized spelling emitted by the
@@ -2014,14 +2039,16 @@ func signingPathLexicallyContained(project *structuredVersionProject, path strin
 	if signingNormalizedPathContained(root, absolute) {
 		return true
 	}
-	if runtimeGOOS == "windows" {
-		return signingNormalizedPathContained(strings.ToLower(root), strings.ToLower(absolute))
-	}
-	if runtimeGOOS != "darwin" {
+	if runtimeGOOS != "windows" && runtimeGOOS != "darwin" {
 		return false
 	}
-	rootInsensitive, rootKnown := signingCaseInsensitiveVolumeFor(root)
-	pathInsensitive, pathKnown := signingCaseInsensitiveVolumeFor(absolute)
+	// A case-folded containment result is safe only when both the project
+	// root and the candidate's containing directory are proven
+	// case-insensitive. Windows supports case-sensitive directories on an
+	// otherwise case-insensitive volume, so a global lowercase comparison can
+	// incorrectly authorize C:\\project when the root is C:\\Project.
+	rootInsensitive, rootKnown := signingCaseInsensitiveVolumeFn(root)
+	pathInsensitive, pathKnown := signingCaseInsensitiveVolumeFn(filepath.Dir(absolute))
 	if !rootKnown || !pathKnown || !rootInsensitive || !pathInsensitive {
 		return false
 	}
@@ -2029,11 +2056,32 @@ func signingPathLexicallyContained(project *structuredVersionProject, path strin
 }
 
 func signingNormalizedPathContained(root, absolute string) bool {
-	relative, err := filepath.Rel(root, absolute)
+	root = filepath.Clean(root)
+	absolute = filepath.Clean(absolute)
+	if runtimeGOOS == "windows" {
+		// filepath.Rel uses case-folded component comparisons on Windows. That
+		// is unsafe for a case-sensitive directory, so containment must first
+		// use the exact normalized spelling and separator boundaries.
+		return signingPathComponentsContained(root, absolute, string(filepath.Separator))
+	}
+	relative, err := signingPathRelFn(root, absolute)
 	if err != nil {
 		return false
 	}
 	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+// signingPathComponentsContained compares already-normalized absolute paths
+// without filepath.Rel's platform-specific case folding. The separator is
+// explicit so Windows component semantics can be tested on other hosts.
+func signingPathComponentsContained(root, absolute, separator string) bool {
+	if root == absolute {
+		return true
+	}
+	if root == separator || strings.HasSuffix(root, separator) {
+		return strings.HasPrefix(absolute, root)
+	}
+	return strings.HasPrefix(absolute, root+separator)
 }
 
 func signingXCConfigCollectionBlocker(project *structuredVersionProject, path string, allowExternal bool) string {
@@ -2042,6 +2090,7 @@ func signingXCConfigCollectionBlocker(project *structuredVersionProject, path st
 			return fmt.Sprintf("xcconfig %s is external and could not be read without --allow-external-xcconfig", path)
 		}
 		return fmt.Sprintf("xcconfig %s is external and could not be safely collected", path)
+
 	}
 	return fmt.Sprintf("xcconfig %s could not be safely collected; signing scope is uncertain", path)
 }
@@ -2066,15 +2115,13 @@ func appendUniqueSigningPaths(paths []string, additions ...string) []string {
 	return paths
 }
 
-// signingPathListEqual is used only for retaining lexical provenance. On
-// Windows, keep case-distinct spellings until a rooted file identity proves
-// that they are the same object; alias validation remains conservatively
-// case-insensitive for prospective artifact collisions.
+// signingPathListEqual retains lexical provenance while applying the
+// filesystem's proven directory case semantics. Case-sensitive directories
+// keep distinct spellings even when their files share an inode; alias
+// validation remains conservatively case-insensitive for prospective artifact
+// collisions.
 func signingPathListEqual(left, right string) bool {
-	if runtimeGOOS == "windows" {
-		return normalizeSigningLexicalPath(left) == normalizeSigningLexicalPath(right)
-	}
-	return signingLexicalPathEqual(left, right)
+	return signingPathCaseEquivalent(left, right)
 }
 
 func sortSigningPlanOperations(operations []signingPlanOperation) {
@@ -2095,7 +2142,22 @@ func sortSigningPlanOperations(operations []signingPlanOperation) {
 
 func validateSigningProjectFile(project *structuredVersionProject) error {
 	projectConfigurationNames := make(map[string]struct{})
+	configurationConsumers := make(map[string]string)
 	for _, configuration := range project.configurations {
+		consumer := "project"
+		if !configuration.projectLevel {
+			consumer = "target " + configuration.target
+		}
+		consumer += " configuration " + configuration.name
+		if previous, seen := configurationConsumers[configuration.id]; seen {
+			return fmt.Errorf(
+				"XCBuildConfiguration %q is reused by multiple project or target consumers (%s and %s)",
+				configuration.id,
+				previous,
+				consumer,
+			)
+		}
+		configurationConsumers[configuration.id] = consumer
 		if !configuration.projectLevel {
 			continue
 		}
@@ -2267,7 +2329,7 @@ func validateSigningArtifactAliasesWithAuthorizedProtectedPaths(planPath, receip
 
 func protectedPathIsAuthorized(path string, authorizedPaths []string) bool {
 	for _, authorizedPath := range authorizedPaths {
-		if signingLexicalPathEqual(path, authorizedPath) {
+		if signingPathCaseEquivalent(path, authorizedPath) {
 			return true
 		}
 	}
@@ -2532,6 +2594,13 @@ func signingProjectInputPaths(
 }
 
 func validateSigningXCConfigPath(project *structuredVersionProject, path string, allowExternal bool) error {
+	// Do the lexical/platform check before opening any rooted handle. On
+	// Windows, a case-sensitive directory can make a case-variant sibling look
+	// internal to a global lowercase comparison; unknown case metadata is
+	// intentionally treated as external and therefore requires explicit opt-in.
+	if !signingPathLexicallyContained(project, path) && !allowExternal {
+		return fmt.Errorf("xcconfig path %s is outside the project directory: %w", path, rootfs.ErrEscapesRoot)
+	}
 	root, err := rootfs.New(project.rootDir)
 	if err != nil {
 		return err
