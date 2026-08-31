@@ -1245,6 +1245,9 @@ func reportStaplerFailure(command string, err error) error {
 		if partialMutation {
 			reportStaplerPartialMutation(partialErr)
 			if partialErr != nil && partialErr.Interrupted {
+				if commandErr.ExitCode > 0 {
+					return shared.NewReportedError(shared.NewProcessExitErrorWithCause(commandErr.ExitCode, err))
+				}
 				return shared.NewReportedError(err)
 			}
 		}

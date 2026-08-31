@@ -2435,6 +2435,101 @@ func TestNotarizationStapleCancellationAfterMutationReportsUnverified(t *testing
 	}
 }
 
+func TestNotarizationStapleInterruptedChildStatusProjectsExitCode(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previous := runStaplerStaple
+	childErr := &localxcode.StaplerCommandError{
+		Operation: string(localxcode.StaplerOperationStaple),
+		ExitCode:  65,
+		Err:       errors.New("child command exited with status 65"),
+	}
+	runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStapleVerifier(verifier); err != nil {
+			return nil, err
+		}
+		return nil, &localxcode.StaplerPartialMutationError{
+			Operation:   localxcode.StaplerOperationStaple,
+			Interrupted: true,
+			Err:         errors.Join(childErr, context.Canceled),
+		}
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want interrupted partial-mutation failure")
+	}
+	if !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("staple command error = %v, want cancellation cause", runErr)
+	}
+	var partialErr *localxcode.StaplerPartialMutationError
+	if !errors.As(runErr, &partialErr) || !partialErr.Interrupted {
+		t.Fatalf("staple command error = %T %v, want interrupted partial-mutation cause", runErr, runErr)
+	}
+	var commandErr *localxcode.StaplerCommandError
+	if !errors.As(runErr, &commandErr) || commandErr.ExitCode != 65 {
+		t.Fatalf("staple command error = %T %v, want preserved child status 65", runErr, runErr)
+	}
+	if code, ok := sharedProcessExitCodeForTest(runErr); !ok || code != 65 {
+		t.Fatalf("process exit marker = %d/%v, want 65", code, ok)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "staple was interrupted") || !strings.Contains(stderr, "not verified") {
+		t.Fatalf("stderr = %q, want interrupted partial-mutation warning", stderr)
+	}
+}
+
+func TestNotarizationStapleInterruptedWithoutChildStatusUsesGenericExit(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previous := runStaplerStaple
+	runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStapleVerifier(verifier); err != nil {
+			return nil, err
+		}
+		return nil, &localxcode.StaplerPartialMutationError{
+			Operation:   localxcode.StaplerOperationStaple,
+			Interrupted: true,
+			Err:         context.Canceled,
+		}
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want interrupted partial-mutation failure")
+	}
+	if !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("staple command error = %v, want cancellation cause", runErr)
+	}
+	if _, ok := sharedProcessExitCodeForTest(runErr); ok {
+		t.Fatalf("process exit marker = %v, want no marker when child status is unavailable", ok)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "staple was interrupted") || !strings.Contains(stderr, "not verified") {
+		t.Fatalf("stderr = %q, want interrupted partial-mutation warning", stderr)
+	}
+}
+
 func TestNotarizationStapleInterruptedDuringInitialChildDoesNotClaimCompletion(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
