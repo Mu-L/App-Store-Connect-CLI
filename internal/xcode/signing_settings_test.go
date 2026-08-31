@@ -829,6 +829,9 @@ func TestPrepareSigningOperationsUsesWindowsXCConfigIdentity(t *testing.T) {
 		t.Fatalf("Stat(case variant) error = %v", err)
 	}
 	sameFile := os.SameFile(configInfo, caseVariantInfo)
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return sameFile, true }
+	t.Cleanup(func() { signingCaseInsensitiveVolumeFn = previousCaseSemantics })
 	secondIdentity := "identity:second"
 	if sameFile {
 		secondIdentity = "identity:first"
@@ -953,6 +956,58 @@ func TestResolveSigningSharedCandidatesCoalescesCaseVariantSameFile(t *testing.T
 	}
 }
 
+func TestSigningXCConfigOperationKeyPreservesHardLinkPathIntent(t *testing.T) {
+	root := t.TempDir()
+	firstPath := filepath.Join(root, "First.xcconfig")
+	secondPath := filepath.Join(root, "Second.xcconfig")
+	if err := os.WriteFile(firstPath, []byte("CODE_SIGN_STYLE = Automatic\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(first) error = %v", err)
+	}
+	if err := os.Link(firstPath, secondPath); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	firstInfo, err := os.Stat(firstPath)
+	if err != nil {
+		t.Fatalf("Stat(first) error = %v", err)
+	}
+	secondInfo, err := os.Stat(secondPath)
+	if err != nil {
+		t.Fatalf("Stat(second) error = %v", err)
+	}
+	if !os.SameFile(firstInfo, secondInfo) {
+		t.Fatal("test fixture is not hard-linked")
+	}
+	identities := map[string]string{
+		normalizeSigningLexicalPath(firstPath):  "shared-identity",
+		normalizeSigningLexicalPath(secondPath): "shared-identity",
+	}
+	firstIdentity, firstOK := signingFileIdentity(firstPath, identities)
+	secondIdentity, secondOK := signingFileIdentity(secondPath, identities)
+	if !firstOK || !secondOK || firstIdentity != secondIdentity {
+		t.Fatal("hard-linked paths should retain one physical identity for consumer safety")
+	}
+	if signingXCConfigOperationKey(firstPath, identities) == signingXCConfigOperationKey(secondPath, identities) {
+		t.Fatal("hard-linked paths must retain distinct operation path intent")
+	}
+	oldData := []byte("CODE_SIGN_STYLE = Automatic\n")
+	firstUpdated := []byte("CODE_SIGN_STYLE = Manual\n")
+	secondUpdated := []byte("CODE_SIGN_STYLE = Automatic /* retained */\n")
+	plan := &SigningPlan{Files: []SigningPlanFile{
+		{Path: firstPath, SHA256: signingFileDigestBytes(oldData), Source: "xcconfig"},
+		{Path: secondPath, SHA256: signingFileDigestBytes(oldData), Source: "xcconfig"},
+	}}
+	changes, err := signingReceiptFileChanges(plan, []preparedVersionWrite{
+		{path: firstPath, original: oldData, updated: firstUpdated},
+		{path: secondPath, original: oldData, updated: secondUpdated},
+	}, []string{firstPath, secondPath}, identities)
+	if err != nil {
+		t.Fatalf("signingReceiptFileChanges() error = %v", err)
+	}
+	if len(changes) != 2 || changes[0].Path != firstPath || changes[1].Path != secondPath {
+		t.Fatalf("receipt changes = %#v, want one change per hard-linked path intent", changes)
+	}
+}
+
 func TestResolveSigningSharedCandidatesKeepsProvenWindowsCaseDistinctFilesSeparate(t *testing.T) {
 	previousOS := runtimeGOOS
 	runtimeGOOS = "windows"
@@ -1008,6 +1063,67 @@ func TestSigningPathLexicallyContainedAcceptsCaseVariantRootOnInsensitiveVolume(
 	project := &structuredVersionProject{rootDir: root}
 	if !signingPathLexicallyContained(project, variantPath) {
 		t.Fatalf("case-variant internal path %q was classified outside %q", variantPath, root)
+	}
+}
+
+func TestSigningPathLexicallyContainedRejectsCaseVariantRootOnSensitiveWindowsDirectory(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "windows"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+	})
+
+	root := t.TempDir()
+	rootName := filepath.Base(root)
+	variantName := strings.ToUpper(rootName[:1]) + rootName[1:]
+	if variantName == rootName {
+		variantName = strings.ToLower(rootName[:1]) + rootName[1:]
+	}
+	if variantName == rootName {
+		t.Skip("temporary directory name has no case variant")
+	}
+	variantPath := filepath.Join(filepath.Dir(root), variantName, "Config.xcconfig")
+	project := &structuredVersionProject{rootDir: root}
+	if signingPathLexicallyContained(project, variantPath) {
+		t.Fatalf("case-variant path %q was authorized inside case-sensitive Windows root %q", variantPath, root)
+	}
+
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return true, true }
+	if !signingPathLexicallyContained(project, variantPath) {
+		t.Fatalf("case-variant path %q was not accepted on a proven case-insensitive Windows directory", variantPath)
+	}
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, false }
+	if signingPathLexicallyContained(project, variantPath) {
+		t.Fatalf("case-variant path %q was authorized with unknown Windows directory semantics", variantPath)
+	}
+}
+
+func TestValidateSigningXCConfigPathRejectsCaseVariantRootOnSensitiveWindowsDirectory(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "windows"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+	})
+
+	root := t.TempDir()
+	rootName := filepath.Base(root)
+	variantName := strings.ToUpper(rootName[:1]) + rootName[1:]
+	if variantName == rootName {
+		variantName = strings.ToLower(rootName[:1]) + rootName[1:]
+	}
+	if variantName == rootName {
+		t.Skip("temporary directory name has no case variant")
+	}
+	project := &structuredVersionProject{rootDir: root}
+	path := filepath.Join(filepath.Dir(root), variantName, "Config.xcconfig")
+	if err := validateSigningXCConfigPath(project, path, false); !errors.Is(err, rootfs.ErrEscapesRoot) {
+		t.Fatalf("validateSigningXCConfigPath() error = %v, want path escape for case-sensitive Windows root", err)
 	}
 }
 
@@ -1225,6 +1341,82 @@ func TestSigningPlanDoesNotAuthorizeSharedXCConfigPerSelectedConfiguration(t *te
 	}
 	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "shared xcconfig") {
 		t.Fatalf("expected shared xcconfig safety warning, got %#v", plan.Warnings)
+	}
+}
+
+func TestSigningPlanRejectsReusedConfigurationIDAcrossTargetConsumers(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	const widgetConfigurations = "buildConfigurations = (999999999999999999999995, 999999999999999999999996);"
+	const reusedWidgetConfigurations = "buildConfigurations = (999999999999999999999993, 999999999999999999999996);"
+	if !strings.Contains(contents, widgetConfigurations) {
+		t.Fatal("project fixture is missing Widget configuration list")
+	}
+	contents = strings.Replace(contents, widgetConfigurations, reusedWidgetConfigurations, 1)
+	if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project) error = %v", err)
+	}
+	appXCConfig := filepath.Join(filepath.Dir(project), "Configs", "App.xcconfig")
+	if err := os.WriteFile(appXCConfig, []byte("CODE_SIGN_STYLE = Automatic\n#include \"Shared.xcconfig\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(App.xcconfig) error = %v", err)
+	}
+
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	stateDir := filepath.Join(t.TempDir(), "state")
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: stateDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "reused by multiple project or target consumers") {
+		t.Fatalf("BuildSigningPlan() error = %v, want reused-configuration rejection", err)
+	}
+	if plan != nil {
+		t.Fatalf("BuildSigningPlan() plan = %#v, want no plan on ambiguous configuration identity", plan)
+	}
+	if _, statErr := os.Stat(filepath.Join(stateDir, "plan.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plan artifact after reused-configuration rejection = %v, want absent", statErr)
+	}
+}
+
+func TestSigningPlanRejectsReusedConfigurationIDAcrossProjectAndTargetConsumers(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	const projectConfigurations = "buildConfigurations = (999999999999999999999991, 999999999999999999999992);"
+	const reusedProjectConfigurations = "buildConfigurations = (999999999999999999999993, 999999999999999999999992);"
+	if !strings.Contains(contents, projectConfigurations) {
+		t.Fatal("project fixture is missing project configuration list")
+	}
+	contents = strings.Replace(contents, projectConfigurations, reusedProjectConfigurations, 1)
+	if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project) error = %v", err)
+	}
+	appXCConfig := filepath.Join(filepath.Dir(project), "Configs", "App.xcconfig")
+	if err := os.WriteFile(appXCConfig, []byte("CODE_SIGN_STYLE = Automatic\n#include \"Shared.xcconfig\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(App.xcconfig) error = %v", err)
+	}
+
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	stateDir := filepath.Join(t.TempDir(), "state")
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: stateDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "reused by multiple project or target consumers") {
+		t.Fatalf("BuildSigningPlan() error = %v, want reused-configuration rejection", err)
+	}
+	if plan != nil {
+		t.Fatalf("BuildSigningPlan() plan = %#v, want no plan on ambiguous configuration identity", plan)
+	}
+	if _, statErr := os.Stat(filepath.Join(stateDir, "plan.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plan artifact after reused-configuration rejection = %v, want absent", statErr)
 	}
 }
 
@@ -3789,5 +3981,25 @@ func TestSigningPlanExpandsInheritedXCConfigEntitlementForProtectedInputs(t *tes
 	})
 	if err == nil || !strings.Contains(err.Error(), "aliases project input") {
 		t.Fatalf("BuildSigningPlan() error = %v, want inherited xcconfig entitlement alias protection", err)
+	}
+}
+
+func TestSigningPathLexicallyContainedDoesNotTrustCaseFoldedWindowsRel(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	previousRel := signingPathRelFn
+	runtimeGOOS = "windows"
+	signingPathRelFn = func(string, string) (string, error) { return `child\\Config.xcconfig`, nil }
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+		signingPathRelFn = previousRel
+	})
+	root := filepath.Join(t.TempDir(), "Project")
+	variantPath := filepath.Join(filepath.Dir(root), "project", "Config.xcconfig")
+	project := &structuredVersionProject{rootDir: root}
+	if signingPathLexicallyContained(project, variantPath) {
+		t.Fatalf("case-variant Windows root %q was authorized from a case-folded Rel result", variantPath)
 	}
 }
