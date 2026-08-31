@@ -2808,10 +2808,18 @@ func verifySigningPlanSourcesBeforeReceipt(plan *SigningPlan, committed []prepar
 	}
 	for _, file := range plan.Files {
 		if write, ok := committedByPath[signingXCConfigOperationKey(file.Path, fileIdentities)]; ok {
-			current, _, err := readRegularVersionFile(&write)
-			if err != nil {
-				return fmt.Errorf("read written source %s: %w", file.Path, err)
+			if write.committedIdentity == nil {
+				return fmt.Errorf("written source %s has no committed identity", file.Path)
 			}
+			if err := write.root.CheckFileIdentity(write.name, write.committedIdentity); err != nil {
+				return fmt.Errorf("written source %s identity changed before receipt: %w", file.Path, err)
+			}
+			// CheckFileIdentity validates the current rooted entry and its bytes
+			// against the retained publication token. Reuse the token's immutable
+			// snapshot instead of opening the path again between identity and
+			// content checks, which would reintroduce a same-content replacement
+			// window.
+			current := write.committedIdentity.Data()
 			if !bytes.Equal(current, write.updated) || signingFileDigestBytes(current) != signingFileDigestBytes(write.updated) {
 				return fmt.Errorf("written source %s changed before receipt", file.Path)
 			}

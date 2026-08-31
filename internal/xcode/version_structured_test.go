@@ -16,7 +16,7 @@ import (
 func TestStructuredVersionFallsBackWhenNoReplaceRenameIsUnsupported(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(preparedVersionWrite, []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(preparedVersionWrite, []byte) (*rootfs.FileIdentity, error) {
 		return nil, secureopen.ErrRenameNoReplaceUnsupported
 	}
 	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
@@ -41,6 +41,25 @@ func TestStructuredVersionFallsBackWhenNoReplaceRenameIsUnsupported(t *testing.T
 	}
 	if updated.Version != "2.0.0" || updated.BuildNumber != "50" {
 		t.Fatalf("updated version = %#v", updated)
+	}
+}
+
+func TestStructuredVersionFallsBackWhenIdentityMutationIsUnsupported(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	originalWriter := atomicWriteVersionFileFn
+	atomicWriteVersionFileFn = func(preparedVersionWrite, []byte) (*rootfs.FileIdentity, error) {
+		return nil, rootfs.ErrFileIdentityMutationUnsupported
+	}
+	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
+
+	result, err := SetVersion(context.Background(), SetVersionOptions{
+		ProjectDir: project, Target: "App", Version: "2.0.0", BuildNumber: "50",
+	})
+	if err != nil {
+		t.Fatalf("SetVersion() error = %v, want portable stable-command fallback", err)
+	}
+	if len(result.ChangedFiles) != 1 || !strings.HasSuffix(result.ChangedFiles[0], "project.pbxproj") {
+		t.Fatalf("changed files = %#v", result.ChangedFiles)
 	}
 }
 
@@ -1397,7 +1416,7 @@ func TestStructuredVersion_CommitFailureRollsBackEarlierFiles(t *testing.T) {
 
 	injectedErr := errors.New("injected write failure")
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		if write.path == secondPath {
 			return nil, injectedErr
 		}
@@ -1441,7 +1460,7 @@ func TestStructuredVersion_CommitVerificationFailureRollsBackEarlierFiles(t *tes
 
 	originalWriter := atomicWriteVersionFileFn
 	firstWrite := true
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		if write.path == firstPath && firstWrite {
 			firstWrite = false
 			info, err := atomicWritePreparedVersionFile(write, data)
@@ -1487,10 +1506,15 @@ func TestStructuredVersion_CommitRejectsSameByteReplacementOfPinnedSource(t *tes
 	if err := os.WriteFile(path, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pinnedInfo, err := os.Stat(path)
+	fileRoot, err := rootfs.New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	pinnedIdentity, err := fileRoot.CaptureFile(filepath.Base(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fileRoot.Close() })
 	replacement := filepath.Join(root, "replacement.xcconfig")
 	if err := os.WriteFile(replacement, original, 0o600); err != nil {
 		t.Fatal(err)
@@ -1499,14 +1523,10 @@ func TestStructuredVersion_CommitRejectsSameByteReplacementOfPinnedSource(t *tes
 		t.Fatal(err)
 	}
 
-	fileRoot, err := rootfs.New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
 	err = commitVersionWrites([]preparedVersionWrite{{
 		path: path, root: fileRoot, name: filepath.Base(path),
 		original: original, updated: []byte("updated bytes"), mode: 0o644,
-		originalInfo: pinnedInfo,
+		originalIdentity: pinnedIdentity,
 	}})
 	if err == nil || !strings.Contains(err.Error(), "file identity changed") {
 		t.Fatalf("commitVersionWrites() error = %v, want pinned-identity rejection", err)
@@ -1587,7 +1607,7 @@ func TestStructuredVersion_RollbackPreservesConcurrentSave(t *testing.T) {
 
 	injectedErr := errors.New("injected receipt failure")
 	originalCreator := atomicCreateVersionFileFn
-	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		if write.createOnly {
 			if err := os.WriteFile(filePath, []byte("concurrent"), 0o644); err != nil {
 				return nil, err
@@ -1630,7 +1650,7 @@ func TestStructuredVersion_RollbackDoesNotRestoreWhenWriteIdentityCaptureFails(t
 
 	injectedErr := errors.New("injected identity capture failure")
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		info, err := originalWriter(write, data)
 		if write.path == path && err == nil {
 			return nil, injectedErr
@@ -1666,7 +1686,7 @@ func TestStructuredVersion_RollbackUsesConditionalIdentityAndPreservesSameConten
 
 	injectedErr := errors.New("injected receipt failure")
 	originalCreator := atomicCreateVersionFileFn
-	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		if write.createOnly {
 			return nil, injectedErr
 		}
@@ -1719,17 +1739,17 @@ func TestStructuredVersion_RollbackCreatedFilePreservesDisappearance(t *testing.
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
+	fileRoot, err := rootfs.New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fileRoot, err := rootfs.New(root)
+	identity, err := fileRoot.CaptureFile(filepath.Base(path))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = fileRoot.Close() })
 	write := preparedVersionWrite{
-		path: path, root: fileRoot, name: filepath.Base(path), updated: contents, createdInfo: info, createOnly: true,
+		path: path, root: fileRoot, name: filepath.Base(path), updated: contents, createdIdentity: identity, createOnly: true,
 	}
 	removeCreatedVersionFileBeforeFinalCheckForTest = func() {
 		if err := os.Remove(path); err != nil {
@@ -1739,7 +1759,7 @@ func TestStructuredVersion_RollbackCreatedFilePreservesDisappearance(t *testing.
 	t.Cleanup(func() { removeCreatedVersionFileBeforeFinalCheckForTest = nil })
 
 	err = removeCreatedPreparedVersionFile(write)
-	if err == nil || !strings.Contains(err.Error(), "recheck created path") {
+	if err == nil || !strings.Contains(err.Error(), "file identity changed") {
 		t.Fatalf("removeCreatedPreparedVersionFile() error = %v, want disappearance uncertainty", err)
 	}
 	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
@@ -1759,17 +1779,17 @@ func TestStructuredVersion_RollbackCreatedFilePreservesReplacement(t *testing.T)
 	if err := os.WriteFile(replacementPath, []byte(replacement), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
+	fileRoot, err := rootfs.New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fileRoot, err := rootfs.New(root)
+	identity, err := fileRoot.CaptureFile(filepath.Base(path))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = fileRoot.Close() })
 	write := preparedVersionWrite{
-		path: path, root: fileRoot, name: filepath.Base(path), updated: contents, createdInfo: info, createOnly: true,
+		path: path, root: fileRoot, name: filepath.Base(path), updated: contents, createdIdentity: identity, createOnly: true,
 	}
 	removeCreatedVersionFileBeforeFinalCheckForTest = func() {
 		if err := os.Remove(path); err != nil {
@@ -1782,7 +1802,7 @@ func TestStructuredVersion_RollbackCreatedFilePreservesReplacement(t *testing.T)
 	t.Cleanup(func() { removeCreatedVersionFileBeforeFinalCheckForTest = nil })
 
 	err = removeCreatedPreparedVersionFile(write)
-	if err == nil || !strings.Contains(err.Error(), "changed before rollback") {
+	if err == nil || !strings.Contains(err.Error(), "file identity changed") {
 		t.Fatalf("removeCreatedPreparedVersionFile() error = %v, want replacement uncertainty", err)
 	}
 	if got := mustReadVersionTestFile(t, path); got != replacement {
@@ -1977,7 +1997,7 @@ func TestStructuredVersion_RollsBackWritePublishedBeforeError(t *testing.T) {
 	}
 
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		info, err := atomicWritePreparedVersionFile(write, data)
 		if err != nil {
 			return info, err
@@ -2019,7 +2039,7 @@ func TestStructuredVersion_PublishedWriteCleanupFailureLeavesNoReceipt(t *testin
 
 	injectedErr := errors.New("injected staged-file cleanup failure")
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		info, err := originalWriter(write, data)
 		if err != nil {
 			return info, err
@@ -2064,7 +2084,7 @@ func TestStructuredVersion_PublishedWriteRollbackPreservesPostCaptureReplacement
 
 	injectedErr := errors.New("published write cleanup failure")
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		info, err := atomicWritePreparedVersionFile(write, data)
 		if err != nil {
 			return info, err
@@ -2117,7 +2137,7 @@ func TestStructuredVersion_LeavesUnpublishedFailedWriteAlone(t *testing.T) {
 	}
 
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(preparedVersionWrite, []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(preparedVersionWrite, []byte) (*rootfs.FileIdentity, error) {
 		return nil, errors.New("open destination: permission denied")
 	}
 	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })

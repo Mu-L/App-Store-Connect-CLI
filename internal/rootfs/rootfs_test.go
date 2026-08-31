@@ -595,7 +595,7 @@ func TestCreateNewFileAtomicWritesExactMode(t *testing.T) {
 	}
 }
 
-func TestCreateNewFileAtomicWithInfoReturnsPublishedIdentity(t *testing.T) {
+func TestCreateNewFileAtomicWithInfoReturnsPublishedMetadata(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -604,14 +604,40 @@ func TestCreateNewFileAtomicWithInfoReturnsPublishedIdentity(t *testing.T) {
 		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v", err)
 	}
 	if info == nil {
-		t.Fatal("CreateNewFileAtomicWithInfo() returned nil identity")
+		t.Fatal("CreateNewFileAtomicWithInfo() returned nil metadata")
 	}
 	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
 	if err != nil {
 		t.Fatalf("Stat(receipt) error = %v", err)
 	}
 	if !os.SameFile(info, diskInfo) {
-		t.Fatal("returned identity does not identify the published file")
+		t.Fatal("returned metadata does not identify the published file")
+	}
+}
+
+func TestInfoCompatibilityAPIsDoNotRetainDescriptors(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.WriteFileIfSameWithInfo("settings.xcconfig", []byte("updated"), 0o640, expected, []byte("old"), true); err != nil {
+		t.Fatalf("WriteFileIfSameWithInfo() error = %v", err)
+	}
+	if _, err := root.CreateNewFileAtomicWithInfo("receipt.json", []byte("receipt"), 0o600); err != nil {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v", err)
+	}
+	root.selectedIdentity.mu.RLock()
+	retained := len(root.selectedIdentity.retainedFiles)
+	root.selectedIdentity.mu.RUnlock()
+	if retained != 0 {
+		t.Fatalf("compatibility APIs retained %d descriptors, want none", retained)
 	}
 }
 
@@ -637,7 +663,7 @@ func TestCreateNewFileAtomicWithInfoRejectsPublishedIdentityReplacement(t *testi
 		t.Fatal("CreateNewFileAtomicWithInfo() succeeded after the published inode was replaced")
 	}
 	if info != nil {
-		t.Fatal("CreateNewFileAtomicWithInfo() returned a bare staged snapshot without a retained destination identity")
+		t.Fatal("CreateNewFileAtomicWithInfo() returned metadata after the published identity changed")
 	}
 	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "racer" {
 		t.Fatalf("replacement content = %q, want racer", got)
@@ -676,21 +702,21 @@ func TestCreateNewFileAtomicWithInfoRechecksActualPublishedIdentity(t *testing.T
 		t.Fatal("CreateNewFileAtomicWithInfo() succeeded after same-content replacement")
 	}
 	if info == nil {
-		t.Fatal("CreateNewFileAtomicWithInfo() returned no installed identity")
+		t.Fatal("CreateNewFileAtomicWithInfo() returned no published metadata")
 	}
 	originalInfo, err := os.Stat(filepath.Join(dir, "published-original"))
 	if err != nil {
 		t.Fatalf("stat original publication: %v", err)
 	}
 	if !os.SameFile(info, originalInfo) {
-		t.Fatal("returned identity does not identify the originally installed inode")
+		t.Fatal("returned metadata does not identify the originally installed inode")
 	}
 	replacementInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
 	if err != nil {
 		t.Fatalf("stat replacement: %v", err)
 	}
 	if os.SameFile(info, replacementInfo) {
-		t.Fatal("returned identity incorrectly identified same-content replacement")
+		t.Fatal("returned metadata incorrectly identified same-content replacement")
 	}
 }
 
@@ -717,7 +743,7 @@ func TestCreateNewFileAtomicWithInfoReturnsNilBeforeDestinationIdentity(t *testi
 		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want reopen identity uncertainty", err)
 	}
 	if info != nil {
-		t.Fatal("CreateNewFileAtomicWithInfo() returned a bare staged snapshot without a retained destination identity")
+		t.Fatal("CreateNewFileAtomicWithInfo() returned metadata before the destination identity was proven")
 	}
 	if got := mustRead(t, filepath.Join(dir, "published-original")); got != content {
 		t.Fatalf("original published content = %q, want staged bytes", got)
@@ -731,7 +757,7 @@ func TestCreateNewFileAtomicWithInfoReturnsNilBeforeDestinationIdentity(t *testi
 	}
 }
 
-func TestCreateNewFileAtomicWithInfoRetainsIdentityAfterInitialPublishedLstatFailure(t *testing.T) {
+func TestCreateNewFileAtomicWithInfoReturnsNilAfterInitialPublishedLstatFailure(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -744,19 +770,15 @@ func TestCreateNewFileAtomicWithInfoRetainsIdentityAfterInitialPublishedLstatFai
 	if err == nil || !errors.Is(err, transient) {
 		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected Lstat failure", err)
 	}
-	if info == nil {
-		t.Fatal("CreateNewFileAtomicWithInfo() returned nil identity after transient Lstat failure")
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned metadata after publication identity was unproven")
 	}
-	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
-	if err != nil {
-		t.Fatalf("Stat(receipt) error = %v", err)
-	}
-	if !os.SameFile(info, diskInfo) {
-		t.Fatal("returned identity does not identify the published file")
+	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "complete" {
+		t.Fatalf("published content = %q, want complete", got)
 	}
 }
 
-func TestCreateNewFileAtomicWithInfoRetainsIdentityAfterPublishedReopenFailure(t *testing.T) {
+func TestCreateNewFileAtomicWithInfoReturnsNilAfterPublishedReopenFailure(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -774,19 +796,15 @@ func TestCreateNewFileAtomicWithInfoRetainsIdentityAfterPublishedReopenFailure(t
 	if err == nil || !errors.Is(err, transient) {
 		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected reopen failure", err)
 	}
-	if info == nil {
-		t.Fatal("CreateNewFileAtomicWithInfo() returned nil identity after transient reopen failure")
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned metadata after publication identity was unproven")
 	}
-	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
-	if err != nil {
-		t.Fatalf("Stat(receipt) error = %v", err)
-	}
-	if !os.SameFile(info, diskInfo) {
-		t.Fatal("returned identity does not identify the published file")
+	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "complete" {
+		t.Fatalf("published content = %q, want complete", got)
 	}
 }
 
-func TestCreateNewFileAtomicWithInfoRetainsIdentityAfterPublishedDescriptorStatFailure(t *testing.T) {
+func TestCreateNewFileAtomicWithInfoReturnsNilAfterPublishedDescriptorStatFailure(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -804,19 +822,15 @@ func TestCreateNewFileAtomicWithInfoRetainsIdentityAfterPublishedDescriptorStatF
 	if err == nil || !errors.Is(err, transient) {
 		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected descriptor Stat failure", err)
 	}
-	if info == nil {
-		t.Fatal("CreateNewFileAtomicWithInfo() returned nil identity after transient descriptor Stat failure")
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned metadata after publication identity was unproven")
 	}
-	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
-	if err != nil {
-		t.Fatalf("Stat(receipt) error = %v", err)
-	}
-	if !os.SameFile(info, diskInfo) {
-		t.Fatal("returned identity does not identify the published file")
+	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "complete" {
+		t.Fatalf("published content = %q, want complete", got)
 	}
 }
 
-func TestCreateNewFileAtomicWithInfoKeepsUnixStagingIdentityWhenPublishedStatStaysUnavailable(t *testing.T) {
+func TestCreateNewFileAtomicWithInfoReturnsNilWhenPublishedStatStaysUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -829,28 +843,15 @@ func TestCreateNewFileAtomicWithInfoKeepsUnixStagingIdentityWhenPublishedStatSta
 	if err == nil || !errors.Is(err, transient) {
 		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want persistent descriptor Stat failure", err)
 	}
-	if runtime.GOOS == "windows" {
-		if info != nil {
-			t.Fatal("Windows returned an identity without a verified published descriptor")
-		}
-		return
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned metadata after publication identity was unproven")
 	}
-	if info == nil {
-		t.Fatal("Unix lost the retained staging identity after persistent descriptor Stat failure")
-	}
-	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
-	if err != nil {
-		t.Fatalf("Stat(receipt) error = %v", err)
-	}
-	if !os.SameFile(info, diskInfo) {
-		t.Fatal("returned identity does not identify the published file")
+	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "complete" {
+		t.Fatalf("published content = %q, want complete", got)
 	}
 }
 
-func TestCreateNewFileAtomicWithInfoRetainsStagingIdentityWhilePublishedReopenFails(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows must close the staging descriptor before publication")
-	}
+func TestCreateNewFileAtomicWithInfoReturnsNilWhilePublishedReopenFails(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -863,19 +864,15 @@ func TestCreateNewFileAtomicWithInfoRetainsStagingIdentityWhilePublishedReopenFa
 	if err == nil || !errors.Is(err, transient) {
 		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected reopen failure", err)
 	}
-	if info == nil {
-		t.Fatal("CreateNewFileAtomicWithInfo() returned nil retained staging identity")
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned metadata after publication identity was unproven")
 	}
-	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
-	if err != nil {
-		t.Fatalf("Stat(receipt) error = %v", err)
-	}
-	if !os.SameFile(info, diskInfo) {
-		t.Fatal("retained staging identity does not identify the published file")
+	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "complete" {
+		t.Fatalf("published content = %q, want complete", got)
 	}
 }
 
-func TestCreateNewFileAtomicWithInfoCapturesDestinationAfterInitialPublishedLstatFailure(t *testing.T) {
+func TestCreateNewFileAtomicWithInfoReturnsNilAfterWindowsPublishedLstatFailure(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -889,15 +886,11 @@ func TestCreateNewFileAtomicWithInfoCapturesDestinationAfterInitialPublishedLsta
 	if err == nil || !errors.Is(err, transient) {
 		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected Lstat failure", err)
 	}
-	if info == nil {
-		t.Fatal("CreateNewFileAtomicWithInfo() returned nil destination identity after transient Lstat failure")
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned metadata after publication identity was unproven")
 	}
-	diskInfo, err := os.Stat(filepath.Join(dir, "receipt.json"))
-	if err != nil {
-		t.Fatalf("Stat(receipt) error = %v", err)
-	}
-	if !os.SameFile(info, diskInfo) {
-		t.Fatal("returned identity does not identify the published file")
+	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "complete" {
+		t.Fatalf("published content = %q, want complete", got)
 	}
 }
 
@@ -923,8 +916,8 @@ func TestCreateNewFileAtomicWithInfoPreservesReplacementAfterInitialPublishedLst
 	if err == nil || !errors.Is(err, transient) {
 		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected Lstat failure", err)
 	}
-	if runtime.GOOS != "windows" && info == nil {
-		t.Fatal("Unix publication did not retain staged identity for replacement-safe rollback")
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned metadata after publication identity was unproven")
 	}
 	if got := mustRead(t, filepath.Join(dir, "receipt.json")); got != "replacement" {
 		t.Fatalf("replacement content = %q, want replacement preserved", got)
@@ -950,8 +943,8 @@ func TestCreateNewFileAtomicWithInfoPreservesDisappearanceAfterInitialPublishedL
 	if err == nil || !errors.Is(err, transient) {
 		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want injected Lstat failure", err)
 	}
-	if runtime.GOOS != "windows" && info == nil {
-		t.Fatal("Unix publication did not retain staged identity after disappearance")
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned metadata after publication identity was unproven")
 	}
 	if _, err := os.Lstat(filepath.Join(dir, "receipt.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("receipt after disappearance = %v, want absent", err)
@@ -1154,6 +1147,9 @@ func TestRemoveFileIfSamePreservesReplacementBetweenQuarantineCheckAndRemoval(t 
 	err = root.RemoveFileIfSame("receipt.json", expected, []byte(content))
 	if err == nil || !strings.Contains(err.Error(), "identity changed before removal") {
 		t.Fatalf("RemoveFileIfSame() error = %v, want identity uncertainty", err)
+	}
+	if !errors.Is(err, ErrQuarantineCleanupUncertain) {
+		t.Fatalf("RemoveFileIfSame() error = %v, want explicit quarantine-cleanup uncertainty", err)
 	}
 	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("destination after quarantine race = %v, want absent", statErr)
@@ -1481,7 +1477,7 @@ func TestWriteFileIfSamePreservesQuarantineAfterPublishedIdentityFailure(t *test
 		t.Fatalf("WriteFileIfSameWithInfo() error = %v, want identity uncertainty with quarantine preservation", err)
 	}
 	if info != nil {
-		t.Fatal("WriteFileIfSameWithInfo() returned a bare staged snapshot without a retained destination identity")
+		t.Fatal("WriteFileIfSameWithInfo() returned metadata after the published identity changed")
 	}
 	if got := mustRead(t, path); got != "replacement" {
 		t.Fatalf("replacement content = %q, want preserved replacement", got)
@@ -1527,7 +1523,7 @@ func TestWriteFileIfSameRestoresOriginalWhenUnchanged(t *testing.T) {
 	}
 }
 
-func TestWriteFileIfSameWithInfoReturnsIdentityAfterStagedLinkCleanupFailure(t *testing.T) {
+func TestWriteFileIfSameWithInfoReturnsMetadataAfterStagedLinkCleanupFailure(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -1557,14 +1553,14 @@ func TestWriteFileIfSameWithInfoReturnsIdentityAfterStagedLinkCleanupFailure(t *
 		t.Fatalf("WriteFileIfSameWithInfo() error = %v, want staged cleanup failure", err)
 	}
 	if info == nil {
-		t.Fatal("WriteFileIfSameWithInfo() returned nil identity after successful hard-link publication")
+		t.Fatal("WriteFileIfSameWithInfo() returned nil metadata after successful hard-link publication")
 	}
 	diskInfo, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat published path: %v", err)
 	}
 	if !os.SameFile(info, diskInfo) {
-		t.Fatal("returned identity does not identify installed destination")
+		t.Fatal("returned metadata does not identify installed destination")
 	}
 	if got := mustRead(t, path); got != "updated" {
 		t.Fatalf("published content = %q, want updated", got)
@@ -1580,7 +1576,7 @@ func TestWriteFileIfSameWithInfoReturnsIdentityAfterStagedLinkCleanupFailure(t *
 	}
 }
 
-func TestWriteFileIfSameWithInfoReturnsIdentityAfterParentSyncFailure(t *testing.T) {
+func TestWriteFileIfSameWithInfoReturnsMetadataAfterParentSyncFailure(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	t.Cleanup(func() { _ = root.Close() })
@@ -1604,7 +1600,7 @@ func TestWriteFileIfSameWithInfoReturnsIdentityAfterParentSyncFailure(t *testing
 		t.Fatalf("WriteFileIfSameWithInfo() error = %v, want parent sync failure", err)
 	}
 	if info == nil {
-		t.Fatal("WriteFileIfSameWithInfo() returned nil identity after published sync failure")
+		t.Fatal("WriteFileIfSameWithInfo() returned nil metadata after published sync failure")
 	}
 	if !syncObserved {
 		t.Fatal("parent directory sync hook was not invoked")
@@ -1614,7 +1610,7 @@ func TestWriteFileIfSameWithInfoReturnsIdentityAfterParentSyncFailure(t *testing
 		t.Fatalf("stat published path: %v", err)
 	}
 	if !os.SameFile(info, diskInfo) {
-		t.Fatal("returned identity does not identify installed destination")
+		t.Fatal("returned metadata does not identify installed destination")
 	}
 	if got := mustRead(t, path); got != "updated" {
 		t.Fatalf("published content = %q, want updated", got)

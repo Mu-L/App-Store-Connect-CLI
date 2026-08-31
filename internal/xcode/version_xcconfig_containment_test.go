@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 // externalXCConfigProject builds an xcconfig-backed project whose base
@@ -249,7 +251,7 @@ func TestSetVersionRefusesXCConfigParentSwapAfterValidation(t *testing.T) {
 
 	swapped := false
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		if write.path == sharedPath && !swapped {
 			swapped = true
 			if err := os.Rename(configsDir, originalConfigsDir); err != nil {
@@ -300,7 +302,7 @@ func TestSetVersionRefusesXcodeprojParentSwapAfterValidation(t *testing.T) {
 
 	swapped := false
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		if write.path == pbxprojPath && !swapped {
 			swapped = true
 			if err := os.Rename(projectPath, originalProjectPath); err != nil {

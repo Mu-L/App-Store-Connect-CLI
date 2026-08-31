@@ -118,7 +118,7 @@ func TestSigningApplyDoesNotUseStablePortableWriteFallback(t *testing.T) {
 	}
 	before := mustReadVersionTestFile(t, filepath.Join(project, "project.pbxproj"))
 	originalWriter := atomicWriteVersionFileFn
-	atomicWriteVersionFileFn = func(preparedVersionWrite, []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(preparedVersionWrite, []byte) (*rootfs.FileIdentity, error) {
 		return nil, secureopen.ErrRenameNoReplaceUnsupported
 	}
 	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
@@ -241,7 +241,7 @@ func TestSigningApplyRollsBackProjectWhenReceiptFinalizationFails(t *testing.T) 
 	}
 	injectedErr := errors.New("injected receipt finalization failure")
 	originalCreator := atomicCreateVersionFileFn
-	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		if write.createOnly {
 			return nil, injectedErr
 		}
@@ -289,7 +289,7 @@ func TestSigningApplyRemovesReceiptWhenPostCreateVerificationFails(t *testing.T)
 	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
 	injectedErr := errors.New("injected post-create receipt verification failure")
 	originalCreator := atomicCreateVersionFileFn
-	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		createdInfo, err := originalCreator(write, data)
 		if err != nil || !write.createOnly {
 			return createdInfo, err
@@ -311,11 +311,9 @@ func TestSigningApplyRemovesReceiptWhenPostCreateVerificationFails(t *testing.T)
 }
 
 func TestSigningApplyRollsBackProjectWhenReceiptIdentityObservationFailsAfterPublication(t *testing.T) {
-	// Rootfs tests exercise the real initial-publish Lstat failure seam and
-	// establish that it returns the retained published identity together with
-	// the observation error. This transaction test composes that exact
-	// (identity, error) contract through atomicCreatePreparedVersionFile and
-	// verifies receipt cleanup plus ordinary project rollback.
+	// Compose a post-publication error with the proven installed identity and
+	// verify receipt cleanup plus ordinary project rollback. Observation failures
+	// before the destination identity is proven return a nil identity instead.
 	project := writeStructuredVersionProject(t, false)
 	root := t.TempDir()
 	settingsPath := filepath.Join(root, "settings.json")
@@ -336,14 +334,13 @@ func TestSigningApplyRollsBackProjectWhenReceiptIdentityObservationFailsAfterPub
 	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
 	const transientObservationFailure = "injected post-publication identity observation failure"
 	originalCreator := atomicCreateVersionFileFn
-	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		info, err := atomicCreatePreparedVersionFile(write, data)
 		if err != nil || !write.createOnly {
 			return info, err
 		}
-		// This is the contract returned by CreateNewFileAtomicWithInfo when its
-		// first post-publication Lstat is transiently unavailable: publication
-		// happened, its retained identity is returned, and the operation fails.
+		// Publication has already returned a proven installed identity; callers
+		// may use it for conditional rollback even though a later check fails.
 		return info, errors.New(transientObservationFailure)
 	}
 	t.Cleanup(func() { atomicCreateVersionFileFn = originalCreator })
@@ -382,7 +379,7 @@ func TestSigningApplyPreservesReceiptReplacementWhenRollbackIdentityChanges(t *t
 	const concurrentReceipt = "concurrent receipt wins\n"
 	injectedErr := errors.New("injected post-create receipt verification failure")
 	originalCreator := atomicCreateVersionFileFn
-	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		createdInfo, err := originalCreator(write, data)
 		if err != nil || !write.createOnly {
 			return createdInfo, err
@@ -427,7 +424,7 @@ func TestSigningApplyRollsBackProjectWhenReceiptRacesIntoPlace(t *testing.T) {
 	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
 	const racingReceipt = "concurrent receipt wins\n"
 	originalCreator := atomicCreateVersionFileFn
-	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicCreateVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		if write.createOnly {
 			if err := os.WriteFile(write.path, []byte(racingReceipt), 0o600); err != nil {
 				t.Fatalf("create racing receipt: %v", err)
@@ -503,7 +500,7 @@ func TestSigningApplyRechecksSourcesBeforeReceipt(t *testing.T) {
 	beforeProject := mustReadVersionTestFile(t, pbxprojPath)
 	originalWriter := atomicWriteVersionFileFn
 	mutated := false
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		info, err := originalWriter(write, data)
 		if err == nil && !write.createOnly && !mutated {
 			mutated = true
@@ -872,9 +869,13 @@ func TestPrepareSigningOperationsUsesWindowsXCConfigIdentity(t *testing.T) {
 	defer recheckRoot.Close()
 	committed := make([]preparedVersionWrite, 0, len(prepared.writes))
 	for _, write := range prepared.writes {
+		committedIdentity, captureErr := recheckRoot.CaptureFile(filepath.Base(write.path))
+		if captureErr != nil {
+			t.Fatalf("CaptureFile(%q) error = %v", write.path, captureErr)
+		}
 		committed = append(committed, preparedVersionWrite{
 			path: write.path, name: filepath.Base(write.path), root: recheckRoot,
-			original: write.original, updated: write.updated,
+			original: write.original, updated: write.updated, committedIdentity: committedIdentity,
 		})
 	}
 	if err := verifySigningPlanSourcesBeforeReceipt(plan, committed, fileIdentities); err != nil {
@@ -1718,7 +1719,7 @@ func TestSigningApplyUsesMetadataPreservingWrites(t *testing.T) {
 
 	originalWriter := atomicWriteVersionFileFn
 	var writes []preparedVersionWrite
-	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (os.FileInfo, error) {
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
 		writes = append(writes, write)
 		return originalWriter(write, data)
 	}
