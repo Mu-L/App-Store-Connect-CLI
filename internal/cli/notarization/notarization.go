@@ -874,6 +874,8 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 			if target, accessErr := validateStaplerRegularFileThroughSearch(absolute, workingDirectoryPath, workingDirectory, requiresDirectory); accessErr == nil {
 				keepWorkingDirectory = true
 				return target, nil
+			} else if isStaplerTargetUsageError(accessErr) {
+				return nil, accessErr
 			}
 		}
 		return nil, fmt.Errorf("open artifact root: %w", err)
@@ -922,6 +924,8 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 			if target, accessErr := validateStaplerRegularFileThroughSearch(absolute, workingDirectoryPath, workingDirectory, requiresDirectory); accessErr == nil {
 				keepWorkingDirectory = true
 				return target, nil
+			} else if isStaplerTargetUsageError(accessErr) {
+				return nil, accessErr
 			} else if !errors.Is(accessErr, errStaplerRegularFileDirectory) && !errors.Is(accessErr, errStaplerRegularFileUnsupported) {
 				var notRegularErr *staplerRegularFileNotRegularError
 				switch {

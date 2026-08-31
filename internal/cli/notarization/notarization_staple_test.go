@@ -3533,6 +3533,122 @@ func TestNotarizationValidateCommandUsesSearchOnlyRegularFileFallback(t *testing
 	}
 }
 
+func TestNotarizationValidateCommandPreservesSearchOnlyUsageErrors(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("search-only regular-file traversal is covered on Darwin and Linux")
+	}
+	skipIfDACOverrideForStaplerTest(t)
+
+	tests := []struct {
+		name           string
+		relative       bool
+		pathSuffix     string
+		contents       []byte
+		wantDiagnostic string
+	}{
+		{
+			name:           "relative requires directory",
+			relative:       true,
+			pathSuffix:     string(filepath.Separator),
+			contents:       []byte("fixture"),
+			wantDiagnostic: "artifact path requires a directory bundle",
+		},
+		{
+			name:           "absolute requires directory",
+			relative:       false,
+			pathSuffix:     string(filepath.Separator),
+			contents:       []byte("fixture"),
+			wantDiagnostic: "artifact path requires a directory bundle",
+		},
+		{
+			name:           "relative empty file",
+			relative:       true,
+			contents:       []byte{},
+			wantDiagnostic: "artifact file must not be empty",
+		},
+		{
+			name:           "absolute empty file",
+			relative:       false,
+			contents:       []byte{},
+			wantDiagnostic: "artifact file must not be empty",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			blockedParent := root
+			pathValue := "App.dmg" + test.pathSuffix
+			targetPath := filepath.Join(blockedParent, "App.dmg")
+			if !test.relative {
+				blockedParent = filepath.Join(root, "blocked")
+				if err := os.Mkdir(blockedParent, 0o700); err != nil {
+					t.Fatalf("create blocked parent: %v", err)
+				}
+				targetPath = filepath.Join(blockedParent, "App.dmg")
+				pathValue = targetPath + test.pathSuffix
+			}
+			if err := os.WriteFile(targetPath, test.contents, 0o600); err != nil {
+				t.Fatalf("write target: %v", err)
+			}
+
+			originalCWD, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("get original cwd: %v", err)
+			}
+			workingDirectory := t.TempDir()
+			if test.relative {
+				workingDirectory = blockedParent
+			}
+			if err := os.Chdir(workingDirectory); err != nil {
+				t.Fatalf("change cwd: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chdir(originalCWD); err != nil {
+					t.Errorf("restore cwd: %v", err)
+				}
+			})
+
+			if err := os.Chmod(blockedParent, 0o111); err != nil {
+				t.Fatalf("remove parent read permission: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chmod(blockedParent, 0o700); err != nil {
+					t.Errorf("restore parent permissions: %v", err)
+				}
+			})
+
+			previousRunner := runStaplerValidate
+			runnerCalls := 0
+			runStaplerValidate = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+				runnerCalls++
+				return nil, errors.New("validation runner must not be called for target usage errors")
+			}
+			t.Cleanup(func() { runStaplerValidate = previousRunner })
+
+			cmd := validateStapleCommand()
+			if err := cmd.FlagSet.Parse([]string{"--file", pathValue, "--output", "json"}); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var runErr error
+			stdout, stderr := captureNotarizationOutput(t, func() {
+				runErr = cmd.Exec(context.Background(), cmd.FlagSet.Args())
+			})
+			if runErr == nil || !errors.Is(runErr, flag.ErrHelp) || shared.ClassifyUsageError(runErr) == "" {
+				t.Fatalf("command error = %v, want classified usage/exit 2 error", runErr)
+			}
+			if runnerCalls != 0 {
+				t.Fatalf("validation runner calls = %d, want zero", runnerCalls)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, test.wantDiagnostic) {
+				t.Fatalf("stderr = %q, want stable usage diagnostic %q", stderr, test.wantDiagnostic)
+			}
+		})
+	}
+}
+
 func TestSearchOnlyRegularFileRejectsPathReplacementAfterFingerprint(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("search-only regular-file traversal is covered on Darwin and Linux")
