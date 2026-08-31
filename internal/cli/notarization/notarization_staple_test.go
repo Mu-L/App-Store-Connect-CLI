@@ -757,6 +757,140 @@ func TestStaplerTargetRetainedWorkingDirectoryPathFailureIsOperational(t *testin
 	}
 }
 
+func TestNotarizationValidateSearchOnlyStageClassifiesReplacementsByIdentity(t *testing.T) {
+	tests := []struct {
+		name         string
+		openErr      error
+		probeErr     error
+		wantIdentity bool
+	}{
+		{
+			name:         "final symlink replacement",
+			openErr:      fmt.Errorf("final component replaced: %w", rootfs.ErrSymlink),
+			probeErr:     fmt.Errorf("final component replaced: %w", rootfs.ErrSymlink),
+			wantIdentity: true,
+		},
+		{
+			name:         "intermediate directory replacement",
+			openErr:      fmt.Errorf("intermediate directory replaced: %w", errStaplerTargetRaced),
+			probeErr:     fmt.Errorf("intermediate directory replaced: %w", errStaplerTargetRaced),
+			wantIdentity: true,
+		},
+		{
+			name:         "intermediate symlink replacement",
+			openErr:      fmt.Errorf("intermediate component replaced: %w", rootfs.ErrSymlink),
+			probeErr:     fmt.Errorf("intermediate component replaced: %w", rootfs.ErrSymlink),
+			wantIdentity: true,
+		},
+		{
+			name:         "operational unreadable probe",
+			openErr:      syscall.EACCES,
+			probeErr:     syscall.EACCES,
+			wantIdentity: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			target := newSyntheticSearchOnlyStaplerTarget(t, test.openErr, test.probeErr)
+			previousDetails := validateStaplerDetailsFn
+			previousRunner := runStaplerValidate
+			validateStaplerDetailsFn = func(string) (*validatedStaplerTarget, error) {
+				return target, nil
+			}
+			runnerCalls := 0
+			runStaplerValidate = func(context.Context, string, io.Writer, localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+				runnerCalls++
+				return nil, errors.New("validation runner must not run after target replacement")
+			}
+			t.Cleanup(func() {
+				validateStaplerDetailsFn = previousDetails
+				runStaplerValidate = previousRunner
+			})
+
+			cmd := validateStapleCommand()
+			if err := cmd.FlagSet.Parse([]string{"--file", "selected-artifact.dmg", "--output", "json"}); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var runErr error
+			stdout, stderr := captureNotarizationOutput(t, func() {
+				runErr = cmd.Exec(context.Background(), nil)
+			})
+			if runErr == nil {
+				t.Fatal("validate command error = nil, want stage failure")
+			}
+			if runnerCalls != 0 {
+				t.Fatalf("validation runner calls = %d, want zero", runnerCalls)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want no success output", stdout)
+			}
+			var identityErr *staplerTargetIdentityError
+			var verifyErr *staplerTargetVerifyError
+			if test.wantIdentity {
+				if !errors.As(runErr, &identityErr) {
+					t.Fatalf("command error = %T %v, want identity error", runErr, runErr)
+				}
+				if errors.As(runErr, &verifyErr) {
+					t.Fatalf("command error = %v, replacement must not be generic verification failure", runErr)
+				}
+				if !strings.Contains(stderr, "artifact target changed before validation") {
+					t.Fatalf("stderr = %q, want exact identity stage", stderr)
+				}
+			} else {
+				if !errors.As(runErr, &verifyErr) {
+					t.Fatalf("command error = %T %v, want operational verification error", runErr, runErr)
+				}
+				if errors.As(runErr, &identityErr) {
+					t.Fatalf("command error = %v, unreadable artifact must not imply replacement", runErr)
+				}
+				if !errors.Is(runErr, syscall.EACCES) {
+					t.Fatalf("command error = %v, want EACCES cause", runErr)
+				}
+				if !strings.Contains(stderr, "could not inspect artifact filesystem") {
+					t.Fatalf("stderr = %q, want generic verification diagnostic", stderr)
+				}
+			}
+			if strings.Contains(stderr, "selected-artifact.dmg") {
+				t.Fatalf("stderr = %q, must not expose selected artifact path", stderr)
+			}
+		})
+	}
+}
+
+func newSyntheticSearchOnlyStaplerTarget(t *testing.T, openErr, probeErr error) *validatedStaplerTarget {
+	t.Helper()
+	pathValue := filepath.Join(t.TempDir(), "artifact.dmg")
+	if err := os.WriteFile(pathValue, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write synthetic target: %v", err)
+	}
+	handle, err := os.Open(pathValue)
+	if err != nil {
+		t.Fatalf("open synthetic target: %v", err)
+	}
+	identity, err := handle.Stat()
+	if err != nil {
+		_ = handle.Close()
+		t.Fatalf("stat synthetic target: %v", err)
+	}
+	return &validatedStaplerTarget{
+		path:     pathValue,
+		identity: identity,
+		handle:   handle,
+		regularAccess: &staplerRegularFileAccess{
+			final:    handle,
+			identity: identity,
+			openFn: func() (*os.File, error) {
+				return nil, openErr
+			},
+			verifyPathFn: func() (os.FileInfo, error) {
+				return nil, probeErr
+			},
+			closeFn: handle.Close,
+		},
+	}
+}
+
 func newRelativeStaplerTargetForTest(t *testing.T) *validatedStaplerTarget {
 	t.Helper()
 	directory := t.TempDir()

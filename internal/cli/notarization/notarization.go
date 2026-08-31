@@ -577,7 +577,9 @@ func (target *validatedStaplerTarget) verifyIdentity(stage string) error {
 func (target *validatedStaplerTarget) classifyStageOpenFailure(stage string, openErr error) error {
 	info, probeErr := target.probeKind()
 	if probeErr != nil {
-		if errors.Is(probeErr, errStaplerWorkingDirectoryChanged) {
+		if errors.Is(probeErr, errStaplerWorkingDirectoryChanged) ||
+			errors.Is(probeErr, rootfs.ErrSymlink) ||
+			errors.Is(probeErr, errStaplerTargetRaced) {
 			return &staplerTargetIdentityError{stage: stage}
 		}
 		if errors.Is(probeErr, os.ErrNotExist) || errors.Is(probeErr, syscall.ENOTDIR) {
@@ -598,7 +600,7 @@ func (target *validatedStaplerTarget) classifyStageOpenFailure(stage string, ope
 	if info.IsDir() != target.directory {
 		return &staplerTargetIdentityError{stage: stage}
 	}
-	if errors.Is(openErr, rootfs.ErrSymlink) {
+	if errors.Is(openErr, rootfs.ErrSymlink) || errors.Is(openErr, errStaplerTargetRaced) {
 		return &staplerTargetIdentityError{stage: stage}
 	}
 	return &staplerTargetVerifyError{stage: stage, err: openErr}
