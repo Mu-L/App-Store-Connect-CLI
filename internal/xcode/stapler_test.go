@@ -1133,6 +1133,41 @@ func TestStaplerPreservesResolutionExitStatusWhenContextCancelsAfterLookup(t *te
 	}
 }
 
+func TestStaplerPreservesSignaledResolutionWhenContextCancelsAfterLookup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Interrupt is not implemented for child processes on Windows")
+	}
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_FIND_SIGNAL", "1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previousHook := afterStaplerResolutionFn
+	afterStaplerResolutionFn = cancel
+	t.Cleanup(func() { afterStaplerResolutionFn = previousHook })
+
+	_, err := Staple(ctx, target, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Staple() error = %v, want context cancellation", err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("Staple() error = %T %v, want preserved lookup command error", err, err)
+	}
+	if commandErr.Operation != string(StaplerOperationResolve) || commandErr.ExitCode != -1 {
+		t.Fatalf("Staple() command error = %#v, want signaled resolve/-1", commandErr)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || !staplerExitWasSignaled(exitErr) {
+		t.Fatalf("Staple() error = %T %v, want underlying signaled lookup exit", err, err)
+	}
+}
+
 func TestStaplerPropagatesCancellationWithoutSuccess(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -1236,6 +1271,19 @@ func TestStaplerHelperProcess(t *testing.T) {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(2)
 			}
+		}
+		if os.Getenv("ASC_STAPLER_FIND_SIGNAL") == "1" {
+			process, err := os.FindProcess(os.Getpid())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			if err := process.Signal(os.Interrupt); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			time.Sleep(100 * time.Millisecond)
+			os.Exit(125)
 		}
 		if code := staplerHelperExitCode("ASC_STAPLER_FIND_EXIT_CODE"); code >= 0 {
 			fmt.Fprintln(os.Stderr, "stapler lookup failed")

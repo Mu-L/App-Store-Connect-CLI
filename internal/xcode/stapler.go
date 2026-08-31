@@ -352,7 +352,10 @@ func ensureStaplerAvailable(ctx context.Context, logWriter io.Writer) error {
 		}
 		commandErr := newStaplerCommandError(StaplerOperationResolve, failure)
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			if staplerHasProcessExitStatus(err) {
+			if staplerHasProcessExitStatus(err) || staplerProcessWasSignaled(err) {
+				// Preserve a concrete resolver process result, including a signal
+				// termination with no ordinary exit code, when cancellation becomes
+				// visible in the same late-result window.
 				return errors.Join(ctxErr, commandErr)
 			}
 			return ctxErr
