@@ -361,6 +361,39 @@ func TestXCConfigCollectorRecordsMissingIncludeBeforeAccess(t *testing.T) {
 	}
 }
 
+func TestXCConfigCollectorRecordsOptionalMissingIncludeAbsence(t *testing.T) {
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Root.xcconfig")
+	missingPath := filepath.Join(root, "Missing.xcconfig")
+	if err := os.WriteFile(rootPath, []byte("#include? \"Missing.xcconfig\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(root) error = %v", err)
+	}
+
+	var optionalMissing string
+	readPaths := make(map[string]bool)
+	_, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
+		rootPath,
+		func(path string) ([]byte, error) {
+			readPaths[filepath.Clean(path)] = true
+			return os.ReadFile(path)
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		func(path string) { optionalMissing = filepath.Clean(path) },
+	)
+	if err != nil {
+		t.Fatalf("collector error = %v, want optional absence to be ignored", err)
+	}
+	if optionalMissing != missingPath {
+		t.Fatalf("optional missing path = %q, want %q", optionalMissing, missingPath)
+	}
+	if !readPaths[missingPath] {
+		t.Fatalf("optional missing target did not use the authorized reader: %#v", readPaths)
+	}
+}
+
 func TestXCConfigFileIdentityRequiresAuthorizedCollectionBeforeInspection(t *testing.T) {
 	root := t.TempDir()
 	externalPath := filepath.Join(root, "external.xcconfig")

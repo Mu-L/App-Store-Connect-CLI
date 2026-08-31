@@ -340,6 +340,24 @@ func collectXCConfigFilesWithHooksAndIdentity(
 	onError func(string, error),
 	identify func(string) (os.FileInfo, error),
 ) ([]string, error) {
+	return collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(root, read, authorize, onPath, onError, identify, nil)
+}
+
+// collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing is the
+// instrumentable collector used by signing plan generation. onOptionalMissing
+// receives each lexically resolved optional include whose target is absent.
+// The callback runs after the authorization check and before the missing target
+// is ignored, so callers can persist an absence assertion without granting
+// access to an untrusted path.
+func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
+	root string,
+	read func(string) ([]byte, error),
+	authorize func(string) error,
+	onPath func(string),
+	onError func(string, error),
+	identify func(string) (os.FileInfo, error),
+	onOptionalMissing func(string),
+) ([]string, error) {
 	seen := make(map[string]bool)
 	type collectedIdentity struct {
 		path string
@@ -471,6 +489,9 @@ func collectXCConfigFilesWithHooksAndIdentity(
 			childErr, missingTarget := visit(includePath, nextStack)
 			if childErr != nil {
 				if include.optional && missingTarget {
+					if onOptionalMissing != nil {
+						onOptionalMissing(includePath)
+					}
 					continue
 				}
 				includeErrors = append(includeErrors, childErr)

@@ -22,9 +22,10 @@ import (
 )
 
 const (
-	signingPlanSchemaVersion = 1
-	signingSettingsMaxBytes  = 1 << 20
-	signingPlanMaxBytes      = 8 << 20
+	signingPlanSchemaVersion                      = 1
+	signingSettingsMaxBytes                       = 1 << 20
+	signingPlanMaxBytes                           = 8 << 20
+	signingPlanMaxMissingOptionalIncludePathBytes = 4096
 
 	signingPlanCommand = "asc xcode signing plan"
 )
@@ -167,8 +168,13 @@ type SigningPlan struct {
 	Desired               []SigningPlanTarget    `json:"desired"`
 	Files                 []SigningPlanFile      `json:"files"`
 	Changes               []SigningSettingChange `json:"changes"`
-	Blockers              []string               `json:"blockers"`
-	Warnings              []string               `json:"warnings"`
+	// MissingOptionalIncludes records bounded lexical paths for optional
+	// xcconfig includes that were absent during planning. Apply rechecks these
+	// assertions before any ordinary write and immediately before publishing a
+	// receipt so a late-created source cannot collide with an artifact.
+	MissingOptionalIncludes []string `json:"missingOptionalIncludes,omitempty"`
+	Blockers                []string `json:"blockers"`
+	Warnings                []string `json:"warnings"`
 }
 
 // SigningPlanTarget describes the requested target/configuration scope.
@@ -411,7 +417,8 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		}
 	}
 
-	fileConsumers, configFiles, fileIdentities, uncertainConsumers, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, unauthorizedExternal, err := project.signingXCConfigConsumers(selectedIDs, opts.AllowExternalXCConfig)
+	fileConsumers, configFiles, fileIdentities, uncertainConsumers, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, unauthorizedExternal, missingOptionalIncludes, err := project.signingXCConfigConsumersWithOptionalMissing(selectedIDs, opts.AllowExternalXCConfig)
+	plan.MissingOptionalIncludes = append([]string(nil), missingOptionalIncludes...)
 	authorizedProtectedConfigPaths := make([]string, 0)
 	for _, protectedPath := range protectedConfigPaths {
 		contained := false
@@ -1935,6 +1942,8 @@ func validateSigningEntitlementsPath(project *structuredVersionProject, path str
 func resolveSigningSharedCandidates(candidates []signingCandidate, fileIdentities map[string]string) {
 	desiredByFile := make(map[string]string)
 	conflictByFile := make(map[string]bool)
+	changedByFile := make(map[string]bool)
+	noOpByFile := make(map[string]bool)
 	for _, candidate := range candidates {
 		if candidate.mode != "xcconfig" || candidate.desired == nil {
 			continue
@@ -1946,7 +1955,14 @@ func resolveSigningSharedCandidates(candidates []signingCandidate, fileIdentitie
 			// path-preserving operation key so hard-linked path intents remain
 			// separate writes.
 			key := signingXCConfigPhysicalKey(path, fileIdentities) + "\x00" + candidate.setting
+			if candidate.noOp {
+				noOpByFile[key] = true
+				continue
+			}
 			value := *candidate.desired
+			if !signingValuesEqual(candidate.old, candidate.desired) {
+				changedByFile[key] = true
+			}
 			if previous, exists := desiredByFile[key]; exists && previous != value {
 				conflictByFile[key] = true
 				continue
@@ -1959,9 +1975,22 @@ func resolveSigningSharedCandidates(candidates []signingCandidate, fileIdentitie
 			continue
 		}
 		for _, path := range candidates[index].paths {
-			if conflictByFile[signingXCConfigPhysicalKey(path, fileIdentities)+"\x00"+candidates[index].setting] {
+			key := signingXCConfigPhysicalKey(path, fileIdentities) + "\x00" + candidates[index].setting
+			if !candidates[index].noOp && noOpByFile[key] && changedByFile[key] {
+				// A no-op direct/inherited consumer is still semantically tied to
+				// this shared setting. Keep the shared source unchanged and
+				// materialize the requested value at each changing target instead;
+				// this preserves the no-op consumer without inventing a lower-layer
+				// value or relying on algebraic inherited-value assumptions.
 				candidates[index].mode = "pbxproj"
 				candidates[index].paths = nil
+				candidates[index].noOp = false
+				break
+			}
+			if conflictByFile[key] {
+				candidates[index].mode = "pbxproj"
+				candidates[index].paths = nil
+				candidates[index].noOp = false
 				break
 			}
 		}
@@ -3191,6 +3220,9 @@ func verifySigningPlanSources(plan *SigningPlan, writes []preparedVersionWrite, 
 	if plan == nil {
 		return fmt.Errorf("signing plan is nil")
 	}
+	if err := verifySigningPlanMissingOptionalIncludes(plan); err != nil {
+		return err
+	}
 	expected := make(map[string]SigningPlanFile, len(plan.Files))
 	for _, file := range plan.Files {
 		expected[signingXCConfigOperationKey(file.Path, fileIdentities)] = file
@@ -3242,6 +3274,9 @@ func verifySigningPlanSourcesBeforeReceipt(plan *SigningPlan, committed []prepar
 	if plan == nil {
 		return fmt.Errorf("signing plan is nil")
 	}
+	if err := verifySigningPlanMissingOptionalIncludes(plan); err != nil {
+		return err
+	}
 	committedByPath := make(map[string]preparedVersionWrite, len(committed))
 	for _, write := range committed {
 		if !write.createOnly {
@@ -3265,6 +3300,39 @@ func verifySigningPlanSourcesBeforeReceipt(plan *SigningPlan, committed []prepar
 		}
 		if signingFileDigestBytes(current) != file.SHA256 {
 			return fmt.Errorf("source %s differs from plan before receipt", file.Path)
+		}
+	}
+	return nil
+}
+
+// verifySigningPlanMissingOptionalIncludes rechecks the lexical absence
+// assertions captured during collection. It deliberately performs only a
+// rooted no-follow create preflight: an optional include that appeared after
+// preparation is a source race, regardless of whether the new entry is a
+// regular file, directory, or symlink.
+func verifySigningPlanMissingOptionalIncludes(plan *SigningPlan) error {
+	if len(plan.MissingOptionalIncludes) == 0 {
+		return nil
+	}
+	if len(plan.MissingOptionalIncludes) > signingPlanMaxMissingOptionalIncludes {
+		return fmt.Errorf("signing plan contains too many missing optional xcconfig includes")
+	}
+	for _, path := range plan.MissingOptionalIncludes {
+		absolute, err := canonicalSigningPath(path, "optional xcconfig include")
+		if err != nil {
+			return fmt.Errorf("verify optional xcconfig include absence: %w", err)
+		}
+		root, err := rootfs.New(filepath.Dir(absolute))
+		if err != nil {
+			return fmt.Errorf("verify optional xcconfig include absence: %w", err)
+		}
+		err = root.CheckCreateNewFile(filepath.Base(absolute))
+		closeErr := root.Close()
+		if err != nil {
+			return fmt.Errorf("optional xcconfig include appeared before signing commit: %w", err)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("verify optional xcconfig include absence: %w", closeErr)
 		}
 	}
 	return nil
@@ -3326,6 +3394,17 @@ func readSigningPlanArtifact(path string) (*SigningPlan, error) {
 	}
 	if plan.Command != signingPlanCommand {
 		return nil, newSigningInputError(fmt.Errorf("plan command is not %q", signingPlanCommand))
+	}
+	if len(plan.MissingOptionalIncludes) > signingPlanMaxMissingOptionalIncludes {
+		return nil, newSigningInputError(fmt.Errorf("plan contains too many missing optional xcconfig includes"))
+	}
+	for _, includePath := range plan.MissingOptionalIncludes {
+		if len(includePath) > signingPlanMaxMissingOptionalIncludePathBytes {
+			return nil, newSigningInputError(fmt.Errorf("plan contains an oversized missing optional xcconfig include path"))
+		}
+		if _, err := canonicalSigningPath(includePath, "optional xcconfig include"); err != nil {
+			return nil, newSigningInputError(fmt.Errorf("plan contains an invalid missing optional xcconfig include path: %w", err))
+		}
 	}
 	return &plan, nil
 }

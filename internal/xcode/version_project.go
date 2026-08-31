@@ -1339,8 +1339,17 @@ func (project *structuredVersionProject) xcconfigConsumers(selectedIDs map[strin
 }
 
 func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs map[string]bool, allowExternal bool) (map[string]map[string]bool, map[string][]string, map[string]string, bool, []string, []string, map[string][]string, bool, error) {
+	consumers, configFiles, identities, uncertain, protected, blocked, lexical, unauthorized, _, err := project.signingXCConfigConsumersWithOptionalMissing(selectedIDs, allowExternal)
+	return consumers, configFiles, identities, uncertain, protected, blocked, lexical, unauthorized, err
+}
+
+const signingPlanMaxMissingOptionalIncludes = 256
+
+func (project *structuredVersionProject) signingXCConfigConsumersWithOptionalMissing(selectedIDs map[string]bool, allowExternal bool) (map[string]map[string]bool, map[string][]string, map[string]string, bool, []string, []string, map[string][]string, bool, []string, error) {
 	var protectedConfigPaths []string
 	var blockedExternalPaths []string
+	var missingOptionalIncludes []string
+	missingOptionalOverflow := false
 	unauthorizedExternal := false
 	lexicalConfigPaths := make(map[string][]string)
 	observedPathsByRoot := make(map[string][]string)
@@ -1362,6 +1371,23 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 		}
 		blockedExternalPaths = append(blockedExternalPaths, absolute)
 	}
+	addMissingOptionalInclude := func(path string) {
+		path = normalizeSigningLexicalPath(path)
+		if len(path) > signingPlanMaxMissingOptionalIncludePathBytes {
+			missingOptionalOverflow = true
+			return
+		}
+		for _, existing := range missingOptionalIncludes {
+			if existing == path {
+				return
+			}
+		}
+		if len(missingOptionalIncludes) >= signingPlanMaxMissingOptionalIncludes {
+			missingOptionalOverflow = true
+			return
+		}
+		missingOptionalIncludes = append(missingOptionalIncludes, path)
+	}
 	collect := func(path string) ([]string, error) {
 		var collectionErrorPath string
 		var collectionErrorExternal bool
@@ -1370,7 +1396,7 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 		if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
 			identify = signingXCConfigIdentityFn
 		}
-		files, err := collectXCConfigFilesWithHooksAndIdentity(
+		files, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
 			path,
 			func(filePath string) ([]byte, error) {
 				return signingXCConfigReadFileFn(filePath, signingPlanMaxBytes)
@@ -1413,6 +1439,7 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 				collectionErrorPath = filePath
 			},
 			identify,
+			addMissingOptionalInclude,
 		)
 		observedPathsByRoot[normalizeSigningLexicalPath(path)] = observedPaths
 		if err == nil {
@@ -1449,7 +1476,11 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 			lexicalConfigPaths[configuration.id] = append([]string(nil), observed...)
 		}
 	}
-	return consumers, configFiles, identities, uncertain, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, unauthorizedExternal, err
+	if missingOptionalOverflow {
+		err = errors.Join(err, fmt.Errorf("too many missing optional xcconfig includes; refusing to publish a signing plan"))
+	}
+	sort.Strings(missingOptionalIncludes)
+	return consumers, configFiles, identities, uncertain, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, unauthorizedExternal, missingOptionalIncludes, err
 }
 
 func (project *structuredVersionProject) xcconfigConsumersWithCollectorAndErrorHook(
