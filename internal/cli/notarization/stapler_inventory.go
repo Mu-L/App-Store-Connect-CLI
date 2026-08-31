@@ -47,12 +47,37 @@ var readdirStaplerInventoryNamesFn = func(file *os.File, count int) ([]string, e
 // leaves it nil.
 var afterStaplerInventoryNamesFn func()
 
+// This narrow seam lets tests replace a retained entry after its identity and
+// content checks but before the final name-set recapture. Production leaves it
+// nil.
+var afterStaplerInventoryEntriesFn func()
+
 // staplerDirectoryInventory is deliberately private. It is comparison
 // evidence for a single invocation, not a public artifact description.
 type staplerDirectoryInventory struct {
 	digest     [sha256.Size]byte
 	sizeBytes  int64
 	entryCount int
+}
+
+// staplerInventoryEntryEvidence is the private binding captured for every
+// directory entry during the first inventory pass. The follow-up pass uses it
+// to catch a same-name replacement that can otherwise evade name-set checks.
+// It is comparison evidence only and is never serialized or exposed.
+type staplerInventoryEntryEvidence struct {
+	info          os.FileInfo
+	kind          byte
+	sizeBytes     int64
+	digest        [sha256.Size]byte
+	symlinkTarget string
+}
+
+func (evidence staplerInventoryEntryEvidence) equal(other staplerInventoryEntryEvidence) bool {
+	return evidence.kind == other.kind &&
+		evidence.sizeBytes == other.sizeBytes &&
+		evidence.digest == other.digest &&
+		evidence.symlinkTarget == other.symlinkTarget &&
+		staplerInventoryInfoStable(evidence.info, other.info)
 }
 
 // staplerRegularFileFingerprint binds a regular-file target by both its exact
@@ -207,14 +232,47 @@ func (target *validatedStaplerTarget) captureDirectoryInventory(ctx context.Cont
 	hashTree := sha256.New()
 	_, _ = io.WriteString(hashTree, staplerInventoryVersion)
 	scanner := staplerInventoryScanner{
-		ctx:      ctx,
-		treeHash: hashTree,
+		ctx:             ctx,
+		treeHash:        hashTree,
+		capturedEntries: make(map[string]staplerInventoryEntryEvidence),
+		runTestHooks:    true,
 	}
 	if err := scanner.recordDirectoryEntry(".", selectedInfo); err != nil {
 		return staplerDirectoryInventory{}, err
 	}
 	if err := scanner.scanDirectory(selected, "", selectedInfo); err != nil {
 		return staplerDirectoryInventory{}, err
+	}
+	initialInventory := staplerDirectoryInventoryFromScanner(hashTree, &scanner)
+
+	// Re-scan the bounded tree and compare every captured entry's identity,
+	// metadata, and content binding. This is intentionally a consistency
+	// recheck, not an atomic filesystem snapshot: a replacement after the final
+	// check can still race the caller's next operation.
+	verificationSelected, err := selected.Stat(".")
+	if err != nil {
+		return staplerDirectoryInventory{}, fmt.Errorf("reinspect inventory root: %w", err)
+	}
+	if !staplerInventoryInfoStable(selectedInfo, verificationSelected) {
+		return staplerDirectoryInventory{}, errStaplerInventoryChanged
+	}
+	verificationHash := sha256.New()
+	_, _ = io.WriteString(verificationHash, staplerInventoryVersion)
+	verificationScanner := staplerInventoryScanner{
+		ctx:             ctx,
+		treeHash:        verificationHash,
+		expectedEntries: scanner.capturedEntries,
+		capturedEntries: make(map[string]staplerInventoryEntryEvidence),
+	}
+	if err := verificationScanner.recordDirectoryEntry(".", verificationSelected); err != nil {
+		return staplerDirectoryInventory{}, err
+	}
+	if err := verificationScanner.scanDirectory(selected, "", verificationSelected); err != nil {
+		return staplerDirectoryInventory{}, err
+	}
+	verifiedInventory := staplerDirectoryInventoryFromScanner(verificationHash, &verificationScanner)
+	if !initialInventory.equal(verifiedInventory) || len(scanner.capturedEntries) != len(verificationScanner.capturedEntries) {
+		return staplerDirectoryInventory{}, errStaplerInventoryChanged
 	}
 
 	finalSelected, err := selected.Stat(".")
@@ -239,13 +297,17 @@ func (target *validatedStaplerTarget) captureDirectoryInventory(ctx context.Cont
 		return staplerDirectoryInventory{}, errStaplerInventoryChanged
 	}
 
+	return initialInventory, nil
+}
+
+func staplerDirectoryInventoryFromScanner(treeHash hash.Hash, scanner *staplerInventoryScanner) staplerDirectoryInventory {
 	var digest [sha256.Size]byte
-	copy(digest[:], hashTree.Sum(nil))
+	copy(digest[:], treeHash.Sum(nil))
 	return staplerDirectoryInventory{
 		digest:     digest,
 		sizeBytes:  scanner.sizeBytes,
 		entryCount: scanner.entryCount,
-	}, nil
+	}
 }
 
 // captureDirectoryInventoryAtStage maps scanner failures into the existing
@@ -359,10 +421,13 @@ func openStaplerInventoryDirectory(filesystemRoot *os.Root, relative string, exp
 }
 
 type staplerInventoryScanner struct {
-	ctx        context.Context
-	treeHash   hash.Hash
-	sizeBytes  int64
-	entryCount int
+	ctx             context.Context
+	treeHash        hash.Hash
+	sizeBytes       int64
+	entryCount      int
+	capturedEntries map[string]staplerInventoryEntryEvidence
+	expectedEntries map[string]staplerInventoryEntryEvidence
+	runTestHooks    bool
 }
 
 func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relative string, initial os.FileInfo) error {
@@ -433,7 +498,7 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 	if err := scanner.checkContext(); err != nil {
 		return err
 	}
-	if afterStaplerInventoryNamesFn != nil {
+	if scanner.runTestHooks && afterStaplerInventoryNamesFn != nil {
 		afterStaplerInventoryNamesFn()
 	}
 	for _, name := range finalNames {
@@ -469,11 +534,25 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 			}
 		}
 	}
+	if scanner.runTestHooks && afterStaplerInventoryEntriesFn != nil {
+		afterStaplerInventoryEntriesFn()
+	}
 	final, err := directory.Stat(".")
 	if err != nil {
 		return fmt.Errorf("reinspect inventory directory %q: %w", staplerInventoryDisplayPath(relative), err)
 	}
 	if !staplerInventoryInfoStable(initial, final) {
+		return errStaplerInventoryChanged
+	}
+	// Re-read the direct-child name set after all retained entries and the
+	// directory identity have been checked. This closes the window where a new
+	// child appears after the earlier finalNames snapshot but before return;
+	// directory size and mtime are intentionally not identity signals.
+	latestNames, err := scanner.readDirectoryNames(directory, relative, len(finalNames))
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(finalNames, latestNames) {
 		return errStaplerInventoryChanged
 	}
 	return nil
@@ -563,6 +642,9 @@ func (scanner *staplerInventoryScanner) recordDirectoryEntry(relative string, in
 	if err := scanner.noteEntry(relative); err != nil {
 		return err
 	}
+	if err := scanner.recordEvidence(relative, staplerInventoryEntryEvidence{info: info, kind: 'd'}); err != nil {
+		return err
+	}
 	writeStaplerInventoryEntry(scanner.treeHash, 'd', relative, info.Mode(), 0, nil)
 	return nil
 }
@@ -576,6 +658,15 @@ func (scanner *staplerInventoryScanner) recordSymlink(relative string, info os.F
 	}
 	targetBytes := []byte(target)
 	digest := sha256.Sum256(targetBytes)
+	if err := scanner.recordEvidence(relative, staplerInventoryEntryEvidence{
+		info:          info,
+		kind:          'l',
+		sizeBytes:     int64(len(targetBytes)),
+		digest:        digest,
+		symlinkTarget: target,
+	}); err != nil {
+		return err
+	}
 	writeStaplerInventoryEntry(scanner.treeHash, 'l', relative, info.Mode(), int64(len(targetBytes)), digest[:])
 	return nil
 }
@@ -631,7 +722,30 @@ func (scanner *staplerInventoryScanner) recordFile(parent *os.Root, name, relati
 	}
 
 	scanner.sizeBytes += written
-	writeStaplerInventoryEntry(scanner.treeHash, 'f', relative, openedInfo.Mode(), written, contentHash.Sum(nil))
+	var digest [sha256.Size]byte
+	copy(digest[:], contentHash.Sum(nil))
+	if err := scanner.recordEvidence(relative, staplerInventoryEntryEvidence{
+		info:      openedInfo,
+		kind:      'f',
+		sizeBytes: written,
+		digest:    digest,
+	}); err != nil {
+		return err
+	}
+	writeStaplerInventoryEntry(scanner.treeHash, 'f', relative, openedInfo.Mode(), written, digest[:])
+	return nil
+}
+
+func (scanner *staplerInventoryScanner) recordEvidence(relative string, evidence staplerInventoryEntryEvidence) error {
+	if scanner.expectedEntries != nil {
+		expected, ok := scanner.expectedEntries[relative]
+		if !ok || !expected.equal(evidence) {
+			return errStaplerInventoryChanged
+		}
+	}
+	if scanner.capturedEntries != nil {
+		scanner.capturedEntries[relative] = evidence
+	}
 	return nil
 }
 
