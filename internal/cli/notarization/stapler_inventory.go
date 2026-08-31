@@ -305,6 +305,7 @@ func (target *validatedStaplerTarget) captureDirectoryInventory(ctx context.Cont
 		treeHash:        verificationHash,
 		expectedEntries: scanner.capturedEntries,
 		capturedEntries: make(map[string]staplerInventoryEntryEvidence),
+		runTestHooks:    true,
 	}
 	if err := verificationScanner.recordDirectoryEntry(".", verificationSelected); err != nil {
 		return staplerDirectoryInventory{}, err
@@ -314,6 +315,32 @@ func (target *validatedStaplerTarget) captureDirectoryInventory(ctx context.Cont
 	}
 	verifiedInventory := staplerDirectoryInventoryFromScanner(verificationHash, &verificationScanner)
 	if !initialInventory.equal(verifiedInventory) || len(scanner.capturedEntries) != len(verificationScanner.capturedEntries) {
+		return staplerDirectoryInventory{}, errStaplerInventoryChanged
+	}
+
+	// A second complete scan can still miss a mutation made in an earlier
+	// subtree after that subtree was visited and before the scan reached a
+	// later sibling. Run one final bounded rooted pass against the evidence
+	// captured by the completed verification scan so that window is checked
+	// before the caller invokes a child operation. This remains a consistency
+	// recheck rather than an atomic filesystem snapshot; a replacement after
+	// this final pass is still reported by the caller's next identity check.
+	finalHash := sha256.New()
+	_, _ = io.WriteString(finalHash, staplerInventoryVersion)
+	finalScanner := staplerInventoryScanner{
+		ctx:             ctx,
+		treeHash:        finalHash,
+		expectedEntries: verificationScanner.capturedEntries,
+		capturedEntries: make(map[string]staplerInventoryEntryEvidence),
+	}
+	if err := finalScanner.recordDirectoryEntry(".", verificationSelected); err != nil {
+		return staplerDirectoryInventory{}, err
+	}
+	if err := finalScanner.scanDirectory(selected, "", verificationSelected); err != nil {
+		return staplerDirectoryInventory{}, err
+	}
+	finalInventory := staplerDirectoryInventoryFromScanner(finalHash, &finalScanner)
+	if !verifiedInventory.equal(finalInventory) || len(verificationScanner.capturedEntries) != len(finalScanner.capturedEntries) {
 		return staplerDirectoryInventory{}, errStaplerInventoryChanged
 	}
 

@@ -2650,6 +2650,78 @@ func TestNotarizationValidateInventoryCancellationPreservesCommandContext(t *tes
 	}
 }
 
+func TestNotarizationValidateRejectsEarlierSubtreeMutationBeforeChild(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	earlierPath := filepath.Join(targetPath, "A", "payload.bin")
+	laterPath := filepath.Join(targetPath, "Z", "payload.bin")
+	if err := os.MkdirAll(filepath.Dir(earlierPath), 0o755); err != nil {
+		t.Fatalf("create earlier subtree: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(laterPath), 0o755); err != nil {
+		t.Fatalf("create later subtree: %v", err)
+	}
+	if err := os.WriteFile(earlierPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write earlier file: %v", err)
+	}
+	if err := os.WriteFile(laterPath, []byte("later"), 0o600); err != nil {
+		t.Fatalf("write later file: %v", err)
+	}
+
+	previousEntriesHook := afterStaplerInventoryEntriesFn
+	entryHookCalls := 0
+	afterStaplerInventoryEntriesFn = func() {
+		entryHookCalls++
+		// The deterministic traversal visits A, Z, and then the selected root
+		// during each pass. Mutate A immediately after A has been checked in
+		// the second pass, while the rest of that pass still has to inspect Z.
+		if entryHookCalls == 4 {
+			if err := os.WriteFile(earlierPath, []byte("modified"), 0o600); err != nil {
+				t.Fatalf("mutate earlier subtree: %v", err)
+			}
+		}
+	}
+	t.Cleanup(func() { afterStaplerInventoryEntriesFn = previousEntriesHook })
+
+	previousRunner := runStaplerValidate
+	childCalls := 0
+	runStaplerValidate = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationValidate, true); err != nil {
+			return nil, err
+		}
+		childCalls++
+		return &localxcode.StaplerResult{Path: targetPath, Operation: string(localxcode.StaplerOperationValidate), Validated: true}, nil
+	}
+	t.Cleanup(func() { runStaplerValidate = previousRunner })
+
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), nil)
+	})
+	if runErr == nil {
+		t.Fatalf("command error = nil, want earlier subtree mutation rejection (entry hooks=%d)", entryHookCalls)
+	}
+	if childCalls != 0 {
+		t.Fatalf("stapler child calls = %d, want zero after complete-tree recheck", childCalls)
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(runErr, &identityErr) {
+		t.Fatalf("command error = %T %v, want target identity error", runErr, runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if !strings.Contains(stderr, "artifact target changed before validation") {
+		t.Fatalf("stderr = %q, want stable identity diagnostic", stderr)
+	}
+	if strings.Contains(stderr, targetPath) || strings.Contains(stderr, "payload.bin") {
+		t.Fatalf("stderr = %q, must not expose artifact paths", stderr)
+	}
+}
+
 func TestNotarizationStapleInterruptedChildStatusProjectsExitCode(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
