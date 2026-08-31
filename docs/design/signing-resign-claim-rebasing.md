@@ -73,13 +73,13 @@ The allowlist is intentionally narrow. A key is not eligible because its value h
 | --- | --- | --- | --- |
 | `keychain-access-groups` | array of strings | allow, prefix-only | Transform each concrete `<oldPrefix>.<suffix>` item to `<newPrefix>.<suffix>`; preserve order and authorize the resulting array items against the replacement profile. |
 | `com.apple.developer.ubiquity-kvstore-identifier` | string | allow only through its transfer-aware rule | Preserve an already-authorized value. Otherwise derive the destination prefix from the replacement profile's KVS entitlement, never from the App ID prefix or Team ID; transform only when that profile value proves one unambiguous concrete destination prefix. |
-| `com.apple.developer.parent-application-identifiers` | array of strings | allow only through the App Clip graph | Do not perform a generic prefix swap; replace only the one value proven to be the discovered main app's old application identifier, using the main app's planned new application identifier. |
+| `com.apple.developer.parent-application-identifiers` | array of strings | unsupported in v1; graph-only if added | Enable only together with reciprocal associated App Clip references so both sides of the relationship are planned and authorized as one graph change. |
 | `com.apple.developer.ubiquity-container-identifiers` | array of strings | unsupported in v1 | Enable only after signed/profile fixtures prove the exact prefix grammar and replacement profile authorization behavior. |
 | `com.apple.developer.icloud-container-identifiers` | array of strings | unsupported in v1 | Treat the container identifier as a shared resource reference, not as a string to rewrite, until its signed grammar and ownership rules are proven for this command. |
 | `com.apple.developer.icloud-container-development-container-identifiers` | array of strings | unsupported in v1 | Same boundary as production iCloud container identifiers; no speculative rewrite. |
-| `com.apple.developer.associated-appclip-app-identifiers` | array of strings | unsupported in v1; graph-only if added | A future implementation must map references to discovered App Clip targets and verify both sides; it must never rewrite an arbitrary sibling bundle identifier. |
+| `com.apple.developer.associated-appclip-app-identifiers` | array of strings | unsupported in v1; graph-only if added | Enable only together with parent application identifiers. A future implementation must map references to discovered App Clip targets and verify both sides; it must never rewrite an arbitrary sibling bundle identifier. |
 
-The first implementation ships only the rows marked allow, with the graph-only parent rule implemented together with the target graph. Unsupported v1 keys remain unchanged when the replacement profile authorizes their exact existing values and are refused otherwise. Adding a key later is an additive allowlist change with its own fixtures and output tests.
+The first implementation ships only the rows marked allow. Unsupported v1 keys remain unchanged when the replacement profile authorizes their exact existing values and are refused otherwise. Adding a key later is an additive allowlist change with its own fixtures and output tests; paired graph claims enter together or remain deferred together.
 
 ### Never-rewrite policy
 
@@ -114,9 +114,9 @@ The KVS entitlement uses its own transfer-aware scalar parser. Require valid UTF
 
 If the replacement profile authorizes the existing full concrete KVS value, preserve it exactly so a transfer can retain its storage namespace. Otherwise v1 requires the replacement profile's KVS entitlement to be one exact concrete value with the same validated suffix. That exact profile value is authoritative: rewrite only the prefix, then run normal profile authorization. A wildcard may authorize a candidate but cannot select the destination KVS namespace, so an unauthorized old value plus only wildcard KVS authorization fails closed. Missing, conflicting, malformed, or suffix-incompatible profile values also fail closed. The opt-in flag help and command documentation must state that changing the KVS value selects a different namespace and can make existing data inaccessible; no additional interactive prompt is introduced.
 
-Plan KVS across the complete target graph. Every occurrence of one old full KVS value must resolve to the same planned full value. If the main app and an extension share an old KVS value but their replacement profiles preserve or propose different values, reject the whole IPA before mutation rather than splitting a shared namespace.
+Plan KVS across the complete target graph as a one-to-one source-to-destination mapping. Every occurrence of one old full KVS value must resolve to the same planned full value, and distinct old full values must not converge on one planned full value. If shared source values split or distinct source namespaces collapse, reject the whole IPA before mutation.
 
-Apply the same graph-wide consistency rule to repeated keychain groups. Every occurrence of one old full keychain group must resolve to one planned full value across all targets. Different old groups remain independent, but if one profile preserves a shared old group while another profile would rebase it, or two profiles would produce different destinations, reject the IPA before mutation rather than silently splitting access to that keychain group.
+Apply the same one-to-one graph rule to keychain groups. Every occurrence of one old full keychain group must resolve to one planned full value across all targets, and distinct old groups must not converge on one destination. Different old groups remain independent only while their planned destinations remain distinct. Reject a shared source group that splits, or distinct source groups that collapse, before mutation rather than silently changing the archive's keychain-sharing relationships.
 
 For an array, apply the same rule to every element. First preserve any concrete value that the replacement profile already authorizes exactly or by a valid entitlement wildcard. Only an unauthorized value with the exact `oldPrefix.` prefix is a rebase candidate. A remaining third-prefix or unprefixed value, empty suffix, wildcard source value, non-string element, or ambiguous grammar fails closed. There are no silent partial rewrites.
 
@@ -151,15 +151,11 @@ All target entitlement plans are built before the first generated entitlement fi
 - the existing signed claim must pass its type and grammar checks, and the replacement profile must authorize the planned candidate;
 - a failure in any node or edge rejects the complete operation without a partial output IPA.
 
-### App Clip parent relationship
+### App Clip relationships
 
-`com.apple.developer.parent-application-identifiers` is an App Clip-only array with exactly one value. For a discovered App Clip, an exact match for the discovered main app's old concrete `application-identifier` is rewritten to the main app's planned new concrete application identifier. A value already equal to that planned new identifier is preserved unchanged. Every other value fails closed. The same old-to-new-or-preserve rule applies if associated App Clip references are added later.
+V1 does not rewrite either side of the App Clip relationship. `com.apple.developer.parent-application-identifiers` and `com.apple.developer.associated-appclip-app-identifiers` remain unchanged only when their respective replacement profiles authorize the existing concrete values; otherwise the operation refuses the IPA before mutation. Rewriting only the parent edge would leave a reciprocal main-app claim pointing at the old App Clip identifier, so the two claims cannot be enabled independently.
 
-The App Clip replacement profile must authorize that exact new parent value. The main app and App Clip must both be present, uniquely identified, and paired by the archive relationship; a prefix that merely looks compatible is not sufficient. Reject multiple parent values, a parent outside the IPA, a missing or ambiguous main app, a mismatched pair, or an App Clip profile that does not authorize the planned value. If reciprocal associated App Clip identifiers are supported later, the main app profile separately authorizes that main-app claim; the main app profile is not an authorization source for the App Clip-only parent entitlement.
-
-### Associated App Clip references
-
-If `com.apple.developer.associated-appclip-app-identifiers` is added to the allowlist, it is graph-only. Each main-app reference must map to one discovered App Clip, and the App Clip must map back to the same main application. The planner uses the paired target's planned application identifier and checks both replacement profiles. It never performs a generic substitution on an arbitrary bundle identifier.
+A future additive implementation must discover a unique main-app/App-Clip pair, map both existing concrete references to that pair, plan both new application identifiers together, and require each replacement profile to authorize its own planned claim. It must reject missing or ambiguous targets, multiple parents, arbitrary sibling references, mismatched pairs, and any one-sided rewrite.
 
 Other cross-bundle or sibling references remain unchanged and must be authorized unchanged by the replacement profile. If their relationship cannot be proven, the operation fails closed rather than signing a partially rebased IPA.
 
@@ -252,7 +248,9 @@ Tests should begin with the smallest failing assertion at the command or planner
 - `TestRebaseSigningResignKVSUsesProfileKVSPrefix`: KVS preserves an authorized transfer prefix and otherwise uses only the unambiguous prefix authenticated by the replacement profile's KVS entitlement.
 - A no-flag KVS regression case proves that an existing full value already authorized by the replacement profile remains unchanged; the opt-in rewrite case instead starts with an unauthorized source value and an exact concrete profile destination with the same suffix.
 - A multi-target KVS regression gives two targets the same old full value but replacement profiles that preserve or propose different planned values, and asserts that the complete IPA fails before any signing-tree mutation.
+- A KVS collision regression gives two distinct old full values that would resolve to one planned destination and asserts the same pre-mutation refusal.
 - A multi-target keychain regression gives two targets the same old full group but profiles that preserve or produce different planned values, and asserts the same pre-mutation whole-IPA refusal.
+- A keychain collision regression gives distinct old full groups that would resolve to one planned group and asserts that the planner cannot create a new sharing relationship.
 - `TestRebaseSigningResignClaimRejectsUnauthorizedThirdPrefix`: an unauthorized third prefix fails closed, while an unchanged value already authorized by the replacement profile is preserved.
 - `TestRebaseSigningResignClaimRejectsMalformedUnprefixedAndWildcardValues`: empty suffixes, unprefixed values, and wildcards fail closed.
 - `TestRebaseSigningResignClaimPreservesListOrderAndShape`: old and already-new values remain in original order and retain array shape.
@@ -271,12 +269,8 @@ Tests should begin with the smallest failing assertion at the command or planner
 
 ### Cross-target graph
 
-- `TestRebaseSigningResignParentApplicationIdentifierUsesReplacedMainApplicationID`: an App Clip parent claim follows the main app's planned concrete application identifier.
-- `TestRebaseSigningResignParentRejectsMultipleParents`: more than one parent value fails.
-- `TestRebaseSigningResignParentRejectsReferenceOutsideIPA`: an undiscovered parent fails.
-- `TestRebaseSigningResignParentRejectsMismatchedMainClipPair`: a relationship that cannot be proven fails.
-- `TestRebaseSigningResignParentRequiresClipProfileAuthorization`: the App Clip profile authorizes the parent claim; if reciprocal associated identifiers are added, the main app profile independently authorizes its own claim.
-- If associated App Clip identifiers are enabled, add a paired two-way mapping test and an arbitrary-sibling-reference rejection test.
+- App Clip relationship tests prove that both parent and associated claims are preserved only when separately authorized unchanged, and that either unauthorized old-team claim refuses the whole IPA before mutation.
+- Any future App Clip rewrite starts with paired two-way mapping, one-sided-rewrite rejection, and arbitrary-sibling-reference rejection tests before either claim enters the allowlist.
 
 ### Output and privacy
 
@@ -298,7 +292,7 @@ Rewriting every dotted string or copying the complete profile entitlement set wo
 Before coding, maintainers must resolve these gates with fixtures or retain the stated fail-closed defaults:
 
 - whether iCloud and ubiquity container identifiers are genuinely prefix-scoped in the signed values used by this command;
-- whether associated App Clip identifiers are included in the first graph implementation;
+- whether a later paired App Clip graph implementation has enough signed fixtures to enable both relationship claims together;
 - #2249 remains the canonical design issue and #2251 is the implementation follow-up; implementation work should link both issues.
 
 No gate may be resolved by making the flag broader or by treating a passing profile capability-presence check as value authorization.
