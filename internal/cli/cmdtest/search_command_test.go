@@ -255,6 +255,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc testflight review submissions view",
 		},
 		{
+			name:     "list TestFlight beta review submissions status",
+			query:    []string{"list", "TestFlight", "beta", "review", "submissions", "status"},
+			expected: "asc testflight review submissions list",
+		},
+		{
 			name:     "update release pipeline",
 			query:    []string{"update", "release", "pipeline"},
 			expected: "asc versions phased-release update",
