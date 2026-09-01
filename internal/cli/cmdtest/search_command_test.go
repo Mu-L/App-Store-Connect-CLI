@@ -234,6 +234,31 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			query:    []string{"update", "phased", "release", "status"},
 			expected: "asc versions phased-release update",
 		},
+		{
+			name:     "TestFlight App Review status",
+			query:    []string{"TestFlight", "App", "Review", "status"},
+			expected: "asc testflight review view",
+		},
+		{
+			name:     "App Review attachment upload status",
+			query:    []string{"App", "Review", "attachment", "upload", "status"},
+			expected: "asc review attachments-upload",
+		},
+		{
+			name:     "update release pipeline",
+			query:    []string{"update", "release", "pipeline"},
+			expected: "asc versions phased-release update",
+		},
+		{
+			name:     "App Store Connect and TestFlight system status",
+			query:    []string{"App", "Store", "Connect", "and", "TestFlight", "system", "status"},
+			expected: "asc system-status",
+		},
+		{
+			name:     "Xcode Cloud build and App Review status",
+			query:    []string{"Xcode", "Cloud", "build", "and", "App", "Review", "status"},
+			expected: "asc xcode-cloud status",
+		},
 	}
 
 	for _, test := range tests {

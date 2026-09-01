@@ -505,6 +505,13 @@ func hasSupportingQueryToken(doc commandDoc, queryTokens []string, leafToken str
 }
 
 func canonicalBoostFor(command string, queryTokens []string) (int, string) {
+	if target, reason, ok := scopedCanonicalIntent(queryTokens); ok {
+		if command == target {
+			return canonicalIntentBoost, reason
+		}
+		return 0, ""
+	}
+
 	if releaseDashboardIntent(queryTokens) {
 		if command == "asc status" {
 			return canonicalIntentBoost, "canonical:release-status"
@@ -538,8 +545,31 @@ func canonicalBoostFor(command string, queryTokens []string) (int, string) {
 	return 0, ""
 }
 
+func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
+	if tokenContains(queryTokens, "review") &&
+		tokenContains(queryTokens, "attachment") &&
+		tokenContains(queryTokens, "upload") {
+		return "asc review attachments-upload", "canonical:review-attachment-upload", true
+	}
+	if !statusQueryIntent(queryTokens) || mutationQueryIntent(queryTokens) {
+		return "", "", false
+	}
+	if tokenContains(queryTokens, "system") {
+		return "asc system-status", "canonical:system-status", true
+	}
+	if tokenContains(queryTokens, "xcode") && tokenContains(queryTokens, "cloud") {
+		return "asc xcode-cloud status", "canonical:xcode-cloud-status", true
+	}
+	if tokenContains(queryTokens, "testflight") &&
+		tokenContains(queryTokens, "review") &&
+		!tokenContains(queryTokens, "build") {
+		return "asc testflight review view", "canonical:testflight-review-status", true
+	}
+	return "", "", false
+}
+
 func releaseDashboardIntent(queryTokens []string) bool {
-	if !statusQueryIntent(queryTokens) {
+	if !statusQueryIntent(queryTokens) || unambiguousMutationQueryIntent(queryTokens) {
 		return false
 	}
 
@@ -565,9 +595,13 @@ func statusQueryIntent(queryTokens []string) bool {
 }
 
 func mutationQueryIntent(queryTokens []string) bool {
+	return tokenContains(queryTokens, "upload") || unambiguousMutationQueryIntent(queryTokens)
+}
+
+func unambiguousMutationQueryIntent(queryTokens []string) bool {
 	return tokenContainsAny(queryTokens, []string{
 		"create", "update", "edit", "delete", "remove", "set", "pause", "resume",
-		"start", "stop", "complete", "submit", "publish", "upload", "distribute",
+		"start", "stop", "complete", "submit", "publish", "distribute",
 	})
 }
 
