@@ -290,6 +290,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc account status",
 		},
 		{
+			name:     "TestFlight App Store telemetry status",
+			query:    []string{"TestFlight", "App", "Store", "telemetry", "status"},
+			expected: "asc telemetry status",
+		},
+		{
 			name:     "TestFlight and App Store auth status",
 			query:    []string{"TestFlight", "and", "App", "Store", "auth", "status"},
 			expected: "asc auth status",

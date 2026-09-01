@@ -563,6 +563,9 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 	if !statusQueryIntent(queryTokens) || mutationQueryIntent(queryTokens) {
 		return "", "", false
 	}
+	if tokenContains(queryTokens, "telemetry") {
+		return "asc telemetry status", "canonical:telemetry-status", true
+	}
 	if tokenContains(queryTokens, "auth") {
 		if tokenContains(queryTokens, "storekit") {
 			return "asc storekit auth status", "canonical:storekit-auth-status", true
