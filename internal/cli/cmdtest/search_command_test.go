@@ -285,6 +285,21 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc auth status",
 		},
 		{
+			name:     "StoreKit auth status",
+			query:    []string{"StoreKit", "auth", "status"},
+			expected: "asc storekit auth status",
+		},
+		{
+			name:     "Apple Ads auth status",
+			query:    []string{"Apple", "Ads", "auth", "status"},
+			expected: "asc ads auth status",
+		},
+		{
+			name:     "web auth status",
+			query:    []string{"web", "auth", "status"},
+			expected: "asc web auth status",
+		},
+		{
 			name:     "Xcode Cloud build and App Review status",
 			query:    []string{"Xcode", "Cloud", "build", "and", "App", "Review", "status"},
 			expected: "asc xcode-cloud status",

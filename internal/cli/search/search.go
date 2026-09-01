@@ -561,6 +561,15 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		return "asc account status", "canonical:account-status", true
 	}
 	if tokenContains(queryTokens, "auth") {
+		if tokenContains(queryTokens, "storekit") {
+			return "asc storekit auth status", "canonical:storekit-auth-status", true
+		}
+		if tokenContains(queryTokens, "ads") {
+			return "asc ads auth status", "canonical:ads-auth-status", true
+		}
+		if tokenContains(queryTokens, "web") {
+			return "asc web auth status", "canonical:web-auth-status", true
+		}
 		return "asc auth status", "canonical:auth-status", true
 	}
 	if tokenContains(queryTokens, "system") {
