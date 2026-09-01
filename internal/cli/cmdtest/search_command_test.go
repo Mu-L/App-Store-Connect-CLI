@@ -112,6 +112,7 @@ func TestSearchPrioritizesCanonicalPublishWorkflowForNaturalLanguage(t *testing.
 	}{
 		{name: "ship app", query: []string{"ship", "app"}, expected: "asc publish appstore"},
 		{name: "release app", query: []string{"release", "app"}, expected: "asc publish appstore"},
+		{name: "upload appstore status", query: []string{"upload", "appstore", "status"}, expected: "asc publish appstore"},
 		{name: "ship beta", query: []string{"ship", "beta"}, expected: "asc publish testflight"},
 	}
 

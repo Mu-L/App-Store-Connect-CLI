@@ -543,7 +543,7 @@ func releaseDashboardIntent(queryTokens []string) bool {
 		return false
 	}
 
-	hasTestFlightContext := tokenContainsAny(queryTokens, []string{"testflight", "beta", "build", "upload"})
+	hasTestFlightContext := tokenContainsAny(queryTokens, []string{"testflight", "beta", "build"})
 	hasAppStoreContext := tokenContainsAny(queryTokens, []string{"appstore", "store"}) ||
 		(tokenContains(queryTokens, "app") && tokenContainsAny(queryTokens, []string{"review", "submission"}))
 	hasCrossSurfaceContext := hasTestFlightContext && hasAppStoreContext
