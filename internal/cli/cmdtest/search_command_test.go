@@ -300,6 +300,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc web auth status",
 		},
 		{
+			name:     "TestFlight and App Store agreement status",
+			query:    []string{"TestFlight", "and", "App", "Store", "agreement", "status"},
+			expected: "asc web agreements status",
+		},
+		{
 			name:     "Xcode Cloud build and App Review status",
 			query:    []string{"Xcode", "Cloud", "build", "and", "App", "Review", "status"},
 			expected: "asc xcode-cloud status",

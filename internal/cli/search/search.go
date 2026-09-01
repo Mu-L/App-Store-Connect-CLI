@@ -572,6 +572,9 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		}
 		return "asc auth status", "canonical:auth-status", true
 	}
+	if tokenContains(queryTokens, "agreement") {
+		return "asc web agreements status", "canonical:agreement-status", true
+	}
 	if tokenContains(queryTokens, "system") {
 		return "asc system-status", "canonical:system-status", true
 	}
