@@ -557,22 +557,28 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 	if !statusQueryIntent(queryTokens) || mutationQueryIntent(queryTokens) {
 		return "", "", false
 	}
+	if tokenContains(queryTokens, "account") {
+		return "asc account status", "canonical:account-status", true
+	}
+	if tokenContains(queryTokens, "auth") {
+		return "asc auth status", "canonical:auth-status", true
+	}
 	if tokenContains(queryTokens, "system") {
 		return "asc system-status", "canonical:system-status", true
 	}
 	if tokenContains(queryTokens, "xcode") && tokenContains(queryTokens, "cloud") {
 		return "asc xcode-cloud status", "canonical:xcode-cloud-status", true
 	}
-	if tokenContains(queryTokens, "testflight") &&
-		tokenContains(queryTokens, "review") &&
-		!tokenContains(queryTokens, "build") {
+	if tokenContains(queryTokens, "testflight") && tokenContains(queryTokens, "review") {
 		if tokenContains(queryTokens, "submission") {
 			if tokenContains(queryTokens, "list") {
 				return "asc testflight review submissions list", "canonical:testflight-review-submissions-list", true
 			}
 			return "asc testflight review submissions view", "canonical:testflight-review-submission-status", true
 		}
-		return "asc testflight review view", "canonical:testflight-review-status", true
+		if !tokenContains(queryTokens, "build") {
+			return "asc testflight review view", "canonical:testflight-review-status", true
+		}
 	}
 	return "", "", false
 }

@@ -260,6 +260,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc testflight review submissions list",
 		},
 		{
+			name:     "list TestFlight App Review submissions for build status",
+			query:    []string{"list", "TestFlight", "App", "Review", "submissions", "for", "build", "status"},
+			expected: "asc testflight review submissions list",
+		},
+		{
 			name:     "update release pipeline",
 			query:    []string{"update", "release", "pipeline"},
 			expected: "asc versions phased-release update",
@@ -268,6 +273,16 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			name:     "App Store Connect and TestFlight system status",
 			query:    []string{"App", "Store", "Connect", "and", "TestFlight", "system", "status"},
 			expected: "asc system-status",
+		},
+		{
+			name:     "TestFlight and App Store account status",
+			query:    []string{"TestFlight", "and", "App", "Store", "account", "status"},
+			expected: "asc account status",
+		},
+		{
+			name:     "TestFlight and App Store auth status",
+			query:    []string{"TestFlight", "and", "App", "Store", "auth", "status"},
+			expected: "asc auth status",
 		},
 		{
 			name:     "Xcode Cloud build and App Review status",
