@@ -375,6 +375,51 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc xcode-cloud status",
 		},
 		{
+			name:     "trigger Xcode Cloud workflow status",
+			query:    []string{"trigger", "Xcode", "Cloud", "workflow", "status"},
+			expected: "asc xcode-cloud run",
+		},
+		{
+			name:     "doctor Xcode Cloud workflow status",
+			query:    []string{"doctor", "Xcode", "Cloud", "workflow", "status"},
+			expected: "asc xcode-cloud doctor",
+		},
+		{
+			name:     "list Xcode Cloud workflows status",
+			query:    []string{"list", "Xcode", "Cloud", "workflows", "status"},
+			expected: "asc xcode-cloud workflows list",
+		},
+		{
+			name:     "view Xcode Cloud artifact status",
+			query:    []string{"view", "Xcode", "Cloud", "artifact", "status"},
+			expected: "asc xcode-cloud artifacts view",
+		},
+		{
+			name:     "view TestFlight review app status",
+			query:    []string{"view", "TestFlight", "review", "app", "status"},
+			expected: "asc testflight review app view",
+		},
+		{
+			name:     "TestFlight App Store notarization status",
+			query:    []string{"TestFlight", "App", "Store", "notarization", "status"},
+			expected: "asc notarization status",
+		},
+		{
+			name:     "log TestFlight App Store notarization status",
+			query:    []string{"log", "TestFlight", "App", "Store", "notarization", "status"},
+			expected: "asc notarization log",
+		},
+		{
+			name:     "list TestFlight App Store notarization status",
+			query:    []string{"list", "TestFlight", "App", "Store", "notarization", "status"},
+			expected: "asc notarization list",
+		},
+		{
+			name:     "submit TestFlight App Store notarization status",
+			query:    []string{"submit", "TestFlight", "App", "Store", "notarization", "status"},
+			expected: "asc notarization submit",
+		},
+		{
 			name:     "TestFlight App Review release dashboard",
 			query:    []string{"TestFlight", "App", "Review", "release", "dashboard"},
 			expected: "asc status",

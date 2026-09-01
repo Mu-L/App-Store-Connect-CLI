@@ -604,11 +604,36 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 			return "asc telemetry enable", "canonical:telemetry-enable", true
 		}
 	}
+	if tokenContains(queryTokens, "notarization") {
+		if tokenContains(queryTokens, "submit") {
+			return "asc notarization submit", "canonical:notarization-submit", true
+		}
+		if tokenContains(queryTokens, "log") {
+			return "asc notarization log", "canonical:notarization-log", true
+		}
+		if tokenContains(queryTokens, "list") {
+			return "asc notarization list", "canonical:notarization-list", true
+		}
+	}
 	if target, reason, ok := scopedAuthActionIntent(queryTokens); ok {
 		return target, reason, true
 	}
+	if tokenContains(queryTokens, "xcode") && tokenContains(queryTokens, "cloud") {
+		if tokenContainsAny(queryTokens, []string{"run", "trigger"}) {
+			return "asc xcode-cloud run", "canonical:xcode-cloud-run", true
+		}
+		if tokenContains(queryTokens, "doctor") {
+			return "asc xcode-cloud doctor", "canonical:xcode-cloud-doctor", true
+		}
+		if tokenContainsAny(queryTokens, []string{"list", "view", "download"}) {
+			return "", "", false
+		}
+	}
 	if !statusQueryIntent(queryTokens) || mutationQueryIntent(queryTokens) {
 		return "", "", false
+	}
+	if tokenContains(queryTokens, "notarization") {
+		return "asc notarization status", "canonical:notarization-status", true
 	}
 	if tokenContains(queryTokens, "telemetry") {
 		return "asc telemetry status", "canonical:telemetry-status", true
@@ -655,6 +680,10 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 			return "asc testflight review submissions build", "canonical:testflight-review-submission-build", true
 		}
 		return "asc testflight review submissions view", "canonical:testflight-review-submission-status", true
+	}
+	if tokenContains(queryTokens, "testflight") && tokenContains(queryTokens, "review") &&
+		tokenContains(queryTokens, "app") && tokenContains(queryTokens, "view") {
+		return "asc testflight review app view", "canonical:testflight-review-app-view", true
 	}
 	if tokenContains(queryTokens, "testflight") && tokenContains(queryTokens, "review") {
 		if !tokenContains(queryTokens, "build") && !explicitReleaseDashboardIntent(queryTokens) {
