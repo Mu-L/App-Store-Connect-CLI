@@ -560,6 +560,14 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 			return "asc review attachments-upload", "canonical:review-attachment-upload", true
 		}
 	}
+	if tokenContains(queryTokens, "telemetry") {
+		if tokenContains(queryTokens, "disable") {
+			return "asc telemetry disable", "canonical:telemetry-disable", true
+		}
+		if tokenContains(queryTokens, "enable") {
+			return "asc telemetry enable", "canonical:telemetry-enable", true
+		}
+	}
 	if !statusQueryIntent(queryTokens) || mutationQueryIntent(queryTokens) {
 		return "", "", false
 	}
@@ -599,14 +607,15 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		}
 		return "asc app-clips domain-status", "canonical:app-clip-domain-status", true
 	}
-	if tokenContains(queryTokens, "testflight") && tokenContains(queryTokens, "review") {
-		if tokenContains(queryTokens, "submission") {
-			if tokenContains(queryTokens, "list") {
-				return "asc testflight review submissions list", "canonical:testflight-review-submissions-list", true
-			}
-			return "asc testflight review submissions view", "canonical:testflight-review-submission-status", true
+	if tokenContainsAny(queryTokens, []string{"testflight", "beta"}) &&
+		tokenContains(queryTokens, "review") && tokenContains(queryTokens, "submission") {
+		if tokenContains(queryTokens, "list") {
+			return "asc testflight review submissions list", "canonical:testflight-review-submissions-list", true
 		}
-		if !tokenContains(queryTokens, "build") {
+		return "asc testflight review submissions view", "canonical:testflight-review-submission-status", true
+	}
+	if tokenContains(queryTokens, "testflight") && tokenContains(queryTokens, "review") {
+		if !tokenContains(queryTokens, "build") && !explicitReleaseDashboardIntent(queryTokens) {
 			return "asc testflight review view", "canonical:testflight-review-status", true
 		}
 	}
@@ -622,8 +631,7 @@ func releaseDashboardIntent(queryTokens []string) bool {
 	hasAppStoreContext := tokenContainsAny(queryTokens, []string{"appstore", "store"}) ||
 		(tokenContains(queryTokens, "app") && tokenContainsAny(queryTokens, []string{"review", "submission"}))
 	hasCrossSurfaceContext := hasTestFlightContext && hasAppStoreContext
-	hasExplicitDashboardContext := tokenContainsAny(queryTokens, []string{"pipeline", "dashboard", "overview"}) &&
-		(tokenContains(queryTokens, "release") || hasCrossSurfaceContext)
+	hasExplicitDashboardContext := explicitReleaseDashboardIntent(queryTokens)
 	hasScopedReleaseContext := tokenContains(queryTokens, "phased") ||
 		(tokenContains(queryTokens, "beta") && tokenContains(queryTokens, "review"))
 	if hasScopedReleaseContext && (!hasExplicitDashboardContext || !hasCrossSurfaceContext) {
@@ -633,6 +641,14 @@ func releaseDashboardIntent(queryTokens []string) bool {
 		return true
 	}
 	return hasCrossSurfaceContext
+}
+
+func explicitReleaseDashboardIntent(queryTokens []string) bool {
+	hasTestFlightContext := tokenContainsAny(queryTokens, []string{"testflight", "beta"})
+	hasAppStoreContext := tokenContainsAny(queryTokens, []string{"appstore", "store"}) ||
+		(tokenContains(queryTokens, "app") && tokenContainsAny(queryTokens, []string{"review", "submission"}))
+	return tokenContainsAny(queryTokens, []string{"pipeline", "dashboard", "overview"}) &&
+		(tokenContains(queryTokens, "release") || (hasTestFlightContext && hasAppStoreContext))
 }
 
 func statusQueryIntent(queryTokens []string) bool {
@@ -646,7 +662,7 @@ func mutationQueryIntent(queryTokens []string) bool {
 func unambiguousMutationQueryIntent(queryTokens []string) bool {
 	return tokenContainsAny(queryTokens, []string{
 		"create", "update", "edit", "delete", "remove", "set", "pause", "resume",
-		"start", "stop", "complete", "submit", "publish", "distribute",
+		"start", "stop", "complete", "submit", "publish", "distribute", "enable", "disable",
 	})
 }
 

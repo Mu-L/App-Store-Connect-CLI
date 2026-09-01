@@ -265,6 +265,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc testflight review submissions view",
 		},
 		{
+			name:     "list beta review submissions status",
+			query:    []string{"list", "beta", "review", "submissions", "status"},
+			expected: "asc testflight review submissions list",
+		},
+		{
 			name:     "list TestFlight beta review submissions status",
 			query:    []string{"list", "TestFlight", "beta", "review", "submissions", "status"},
 			expected: "asc testflight review submissions list",
@@ -293,6 +298,16 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			name:     "TestFlight App Store telemetry status",
 			query:    []string{"TestFlight", "App", "Store", "telemetry", "status"},
 			expected: "asc telemetry status",
+		},
+		{
+			name:     "disable telemetry status",
+			query:    []string{"disable", "telemetry", "status"},
+			expected: "asc telemetry disable",
+		},
+		{
+			name:     "enable telemetry status",
+			query:    []string{"enable", "telemetry", "status"},
+			expected: "asc telemetry enable",
 		},
 		{
 			name:     "TestFlight and App Store auth status",
@@ -328,6 +343,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			name:     "Xcode Cloud build and App Review status",
 			query:    []string{"Xcode", "Cloud", "build", "and", "App", "Review", "status"},
 			expected: "asc xcode-cloud status",
+		},
+		{
+			name:     "TestFlight App Review release dashboard",
+			query:    []string{"TestFlight", "App", "Review", "release", "dashboard"},
+			expected: "asc status",
 		},
 		{
 			name:     "App Store App Clip build domain status",
