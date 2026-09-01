@@ -505,6 +505,17 @@ func hasSupportingQueryToken(doc commandDoc, queryTokens []string, leafToken str
 }
 
 func canonicalBoostFor(command string, queryTokens []string) (int, string) {
+	if statusQueryIntent(queryTokens) {
+		if command == "asc versions phased-release view" &&
+			tokenContains(queryTokens, "phased") && tokenContains(queryTokens, "release") {
+			return canonicalIntentBoost, "canonical:phased-release-status"
+		}
+		if command == "asc builds beta-app-review-submission view" &&
+			tokenContains(queryTokens, "beta") && tokenContains(queryTokens, "review") {
+			return canonicalIntentBoost, "canonical:beta-review-status"
+		}
+	}
+
 	if command == "asc status" && releaseDashboardIntent(queryTokens) {
 		return canonicalIntentBoost, "canonical:release-status"
 	}
@@ -525,16 +536,25 @@ func canonicalBoostFor(command string, queryTokens []string) (int, string) {
 }
 
 func releaseDashboardIntent(queryTokens []string) bool {
-	if !tokenContainsAny(queryTokens, []string{"check", "verify", "monitor", "watch", "status", "dashboard", "overview"}) {
+	if !statusQueryIntent(queryTokens) {
 		return false
 	}
-	if tokenContainsAny(queryTokens, []string{"release", "pipeline"}) {
+	if tokenContains(queryTokens, "phased") ||
+		(tokenContains(queryTokens, "beta") && tokenContains(queryTokens, "review")) {
+		return false
+	}
+	if tokenContainsAny(queryTokens, []string{"pipeline", "dashboard", "overview"}) {
 		return true
 	}
 
 	hasTestFlightContext := tokenContainsAny(queryTokens, []string{"testflight", "beta", "build", "upload"})
-	hasAppStoreContext := tokenContainsAny(queryTokens, []string{"appstore", "review", "submission"})
+	hasAppStoreContext := tokenContainsAny(queryTokens, []string{"appstore", "store"}) ||
+		(tokenContains(queryTokens, "app") && tokenContainsAny(queryTokens, []string{"review", "submission"}))
 	return hasTestFlightContext && hasAppStoreContext
+}
+
+func statusQueryIntent(queryTokens []string) bool {
+	return tokenContainsAny(queryTokens, []string{"check", "verify", "monitor", "watch", "status", "dashboard", "overview"})
 }
 
 func tokenContainsAny(tokens, terms []string) bool {
