@@ -561,6 +561,9 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		}
 	}
 	if tokenContains(queryTokens, "telemetry") {
+		if tokenContains(queryTokens, "reset-id") {
+			return "asc telemetry reset-id", "canonical:telemetry-reset-id", true
+		}
 		if tokenContains(queryTokens, "disable") {
 			return "asc telemetry disable", "canonical:telemetry-disable", true
 		}
@@ -611,6 +614,9 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		tokenContains(queryTokens, "review") && tokenContains(queryTokens, "submission") {
 		if tokenContains(queryTokens, "list") {
 			return "asc testflight review submissions list", "canonical:testflight-review-submissions-list", true
+		}
+		if tokenContains(queryTokens, "build") {
+			return "asc testflight review submissions build", "canonical:testflight-review-submission-build", true
 		}
 		return "asc testflight review submissions view", "canonical:testflight-review-submission-status", true
 	}

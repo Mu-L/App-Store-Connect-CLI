@@ -280,6 +280,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc testflight review submissions list",
 		},
 		{
+			name:     "get TestFlight review submission build status",
+			query:    []string{"get", "TestFlight", "review", "submission", "build", "status"},
+			expected: "asc testflight review submissions build",
+		},
+		{
 			name:     "update release pipeline",
 			query:    []string{"update", "release", "pipeline"},
 			expected: "asc versions phased-release update",
@@ -308,6 +313,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			name:     "enable telemetry status",
 			query:    []string{"enable", "telemetry", "status"},
 			expected: "asc telemetry enable",
+		},
+		{
+			name:     "telemetry reset-id status",
+			query:    []string{"telemetry", "reset-id", "status"},
+			expected: "asc telemetry reset-id",
 		},
 		{
 			name:     "TestFlight and App Store auth status",
