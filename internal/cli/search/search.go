@@ -505,7 +505,14 @@ func hasSupportingQueryToken(doc commandDoc, queryTokens []string, leafToken str
 }
 
 func canonicalBoostFor(command string, queryTokens []string) (int, string) {
-	if statusQueryIntent(queryTokens) {
+	if releaseDashboardIntent(queryTokens) {
+		if command == "asc status" {
+			return canonicalIntentBoost, "canonical:release-status"
+		}
+		return 0, ""
+	}
+
+	if statusQueryIntent(queryTokens) && !mutationQueryIntent(queryTokens) {
 		if command == "asc versions phased-release view" &&
 			tokenContains(queryTokens, "phased") && tokenContains(queryTokens, "release") {
 			return canonicalIntentBoost, "canonical:phased-release-status"
@@ -514,10 +521,6 @@ func canonicalBoostFor(command string, queryTokens []string) (int, string) {
 			tokenContains(queryTokens, "beta") && tokenContains(queryTokens, "review") {
 			return canonicalIntentBoost, "canonical:beta-review-status"
 		}
-	}
-
-	if command == "asc status" && releaseDashboardIntent(queryTokens) {
-		return canonicalIntentBoost, "canonical:release-status"
 	}
 
 	if tokenContains(queryTokens, "upload") && tokenContains(queryTokens, "build") {
@@ -539,22 +542,32 @@ func releaseDashboardIntent(queryTokens []string) bool {
 	if !statusQueryIntent(queryTokens) {
 		return false
 	}
-	if tokenContains(queryTokens, "phased") ||
-		(tokenContains(queryTokens, "beta") && tokenContains(queryTokens, "review")) {
-		return false
-	}
-	if tokenContainsAny(queryTokens, []string{"pipeline", "dashboard", "overview"}) {
-		return true
-	}
 
 	hasTestFlightContext := tokenContainsAny(queryTokens, []string{"testflight", "beta", "build", "upload"})
 	hasAppStoreContext := tokenContainsAny(queryTokens, []string{"appstore", "store"}) ||
 		(tokenContains(queryTokens, "app") && tokenContainsAny(queryTokens, []string{"review", "submission"}))
-	return hasTestFlightContext && hasAppStoreContext
+	hasCrossSurfaceContext := hasTestFlightContext && hasAppStoreContext
+	hasExplicitDashboardContext := tokenContainsAny(queryTokens, []string{"pipeline", "dashboard", "overview"}) &&
+		(tokenContains(queryTokens, "release") || hasCrossSurfaceContext)
+	if hasExplicitDashboardContext {
+		return true
+	}
+	if tokenContains(queryTokens, "phased") ||
+		(tokenContains(queryTokens, "beta") && tokenContains(queryTokens, "review")) {
+		return false
+	}
+	return hasCrossSurfaceContext
 }
 
 func statusQueryIntent(queryTokens []string) bool {
 	return tokenContainsAny(queryTokens, []string{"check", "verify", "monitor", "watch", "status", "dashboard", "overview"})
+}
+
+func mutationQueryIntent(queryTokens []string) bool {
+	return tokenContainsAny(queryTokens, []string{
+		"create", "update", "edit", "delete", "remove", "set", "pause", "resume",
+		"start", "stop", "complete", "submit", "publish", "upload", "distribute",
+	})
 }
 
 func tokenContainsAny(tokens, terms []string) bool {
