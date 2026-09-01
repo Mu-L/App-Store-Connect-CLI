@@ -245,6 +245,16 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc review attachments-upload",
 		},
 		{
+			name:     "delete App Review attachment upload",
+			query:    []string{"delete", "App", "Review", "attachment", "upload"},
+			expected: "asc review attachments-delete",
+		},
+		{
+			name:     "TestFlight beta review submission status",
+			query:    []string{"TestFlight", "beta", "review", "submission", "status"},
+			expected: "asc testflight review submissions view",
+		},
+		{
 			name:     "update release pipeline",
 			query:    []string{"update", "release", "pipeline"},
 			expected: "asc versions phased-release update",

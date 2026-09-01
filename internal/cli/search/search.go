@@ -546,10 +546,13 @@ func canonicalBoostFor(command string, queryTokens []string) (int, string) {
 }
 
 func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
-	if tokenContains(queryTokens, "review") &&
-		tokenContains(queryTokens, "attachment") &&
-		tokenContains(queryTokens, "upload") {
-		return "asc review attachments-upload", "canonical:review-attachment-upload", true
+	if tokenContains(queryTokens, "review") && tokenContains(queryTokens, "attachment") {
+		if tokenContainsAny(queryTokens, []string{"delete", "remove"}) {
+			return "asc review attachments-delete", "canonical:review-attachment-delete", true
+		}
+		if tokenContains(queryTokens, "upload") {
+			return "asc review attachments-upload", "canonical:review-attachment-upload", true
+		}
 	}
 	if !statusQueryIntent(queryTokens) || mutationQueryIntent(queryTokens) {
 		return "", "", false
@@ -563,6 +566,9 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 	if tokenContains(queryTokens, "testflight") &&
 		tokenContains(queryTokens, "review") &&
 		!tokenContains(queryTokens, "build") {
+		if tokenContains(queryTokens, "submission") {
+			return "asc testflight review submissions view", "canonical:testflight-review-submission-status", true
+		}
 		return "asc testflight review view", "canonical:testflight-review-status", true
 	}
 	return "", "", false
