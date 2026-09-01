@@ -549,18 +549,19 @@ func releaseDashboardIntent(queryTokens []string) bool {
 	hasCrossSurfaceContext := hasTestFlightContext && hasAppStoreContext
 	hasExplicitDashboardContext := tokenContainsAny(queryTokens, []string{"pipeline", "dashboard", "overview"}) &&
 		(tokenContains(queryTokens, "release") || hasCrossSurfaceContext)
+	hasScopedReleaseContext := tokenContains(queryTokens, "phased") ||
+		(tokenContains(queryTokens, "beta") && tokenContains(queryTokens, "review"))
+	if hasScopedReleaseContext && (!hasExplicitDashboardContext || !hasCrossSurfaceContext) {
+		return false
+	}
 	if hasExplicitDashboardContext {
 		return true
-	}
-	if tokenContains(queryTokens, "phased") ||
-		(tokenContains(queryTokens, "beta") && tokenContains(queryTokens, "review")) {
-		return false
 	}
 	return hasCrossSurfaceContext
 }
 
 func statusQueryIntent(queryTokens []string) bool {
-	return tokenContainsAny(queryTokens, []string{"check", "verify", "monitor", "watch", "status", "dashboard", "overview"})
+	return tokenContainsAny(queryTokens, []string{"check", "verify", "monitor", "watch", "status", "pipeline", "dashboard", "overview"})
 }
 
 func mutationQueryIntent(queryTokens []string) bool {

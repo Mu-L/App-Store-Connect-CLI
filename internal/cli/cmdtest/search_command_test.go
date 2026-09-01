@@ -219,6 +219,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc versions phased-release view",
 		},
 		{
+			name:     "phased release overview",
+			query:    []string{"phased", "release", "overview"},
+			expected: "asc versions phased-release view",
+		},
+		{
 			name:     "beta review status",
 			query:    []string{"beta", "review", "status"},
 			expected: "asc builds beta-app-review-submission view",
@@ -318,6 +323,31 @@ func TestSearchPrioritizesExplicitReleaseDashboardOverScopedTerms(t *testing.T) 
 	}
 	if response.Results[0].Command != "asc status" {
 		t.Fatalf("expected aggregate release dashboard first, got %#v", response.Results)
+	}
+}
+
+func TestSearchPrioritizesReleasePipelineDashboard(t *testing.T) {
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = rootcmd.Run([]string{"search", "--output", "json", "release", "pipeline"}, "1.2.3")
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d with stderr %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	var response searchResponse
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatalf("failed to unmarshal search JSON: %v\nstdout=%s", err, stdout)
+	}
+	if len(response.Results) == 0 {
+		t.Fatalf("expected search results, got %#v", response)
+	}
+	if response.Results[0].Command != "asc status" {
+		t.Fatalf("expected release pipeline dashboard first, got %#v", response.Results)
 	}
 }
 
