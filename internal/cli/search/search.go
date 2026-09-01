@@ -66,6 +66,13 @@ type canonicalIntentRule struct {
 	reason   string
 }
 
+type authActionScope struct {
+	queryToken    string
+	commandPrefix string
+	reasonPrefix  string
+	actions       []string
+}
+
 var canonicalIntentRules = []canonicalIntentRule{
 	{
 		command:  "asc publish appstore",
@@ -78,6 +85,32 @@ var canonicalIntentRules = []canonicalIntentRule{
 		actions:  []string{"ship", "shipping", "publish", "release", "distribute", "distribution", "upload"},
 		subjects: []string{"beta", "testflight"},
 		reason:   "canonical:testflight-publish",
+	},
+}
+
+var authActionScopes = []authActionScope{
+	{
+		queryToken:    "storekit",
+		commandPrefix: "asc storekit auth",
+		reasonPrefix:  "canonical:storekit-auth",
+		actions:       []string{"login", "switch", "doctor", "logout"},
+	},
+	{
+		queryToken:    "ads",
+		commandPrefix: "asc ads auth",
+		reasonPrefix:  "canonical:ads-auth",
+		actions:       []string{"login", "discover", "switch", "token", "doctor", "logout"},
+	},
+	{
+		queryToken:    "web",
+		commandPrefix: "asc web auth",
+		reasonPrefix:  "canonical:web-auth",
+		actions:       []string{"login", "capabilities", "logout"},
+	},
+	{
+		commandPrefix: "asc auth",
+		reasonPrefix:  "canonical:auth",
+		actions:       []string{"init", "login", "export-to-config", "export", "switch", "logout", "doctor", "issuer-id", "token"},
 	},
 }
 
@@ -571,6 +604,9 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 			return "asc telemetry enable", "canonical:telemetry-enable", true
 		}
 	}
+	if target, reason, ok := scopedAuthActionIntent(queryTokens); ok {
+		return target, reason, true
+	}
 	if !statusQueryIntent(queryTokens) || mutationQueryIntent(queryTokens) {
 		return "", "", false
 	}
@@ -625,6 +661,31 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 			return "asc testflight review view", "canonical:testflight-review-status", true
 		}
 	}
+	return "", "", false
+}
+
+func scopedAuthActionIntent(queryTokens []string) (string, string, bool) {
+	if !tokenContains(queryTokens, "auth") {
+		return "", "", false
+	}
+
+	for _, scope := range authActionScopes {
+		if scope.queryToken != "" && !tokenContains(queryTokens, scope.queryToken) {
+			continue
+		}
+		for _, action := range scope.actions {
+			if !tokenContains(queryTokens, action) {
+				continue
+			}
+			leaf := action
+			if action == "export" {
+				leaf = "export-to-config"
+			}
+			return scope.commandPrefix + " " + leaf, scope.reasonPrefix + "-" + leaf, true
+		}
+		return "", "", false
+	}
+
 	return "", "", false
 }
 

@@ -330,9 +330,19 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc storekit auth status",
 		},
 		{
+			name:     "login StoreKit auth status",
+			query:    []string{"login", "StoreKit", "auth", "status"},
+			expected: "asc storekit auth login",
+		},
+		{
 			name:     "Apple Ads auth status",
 			query:    []string{"Apple", "Ads", "auth", "status"},
 			expected: "asc ads auth status",
+		},
+		{
+			name:     "discover Apple Ads auth status",
+			query:    []string{"discover", "Apple", "Ads", "auth", "status"},
+			expected: "asc ads auth discover",
 		},
 		{
 			name:     "Apple Ads account auth status",
@@ -343,6 +353,16 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			name:     "web auth status",
 			query:    []string{"web", "auth", "status"},
 			expected: "asc web auth status",
+		},
+		{
+			name:     "web auth capabilities status",
+			query:    []string{"web", "auth", "capabilities", "status"},
+			expected: "asc web auth capabilities",
+		},
+		{
+			name:     "auth doctor status",
+			query:    []string{"auth", "doctor", "status"},
+			expected: "asc auth doctor",
 		},
 		{
 			name:     "TestFlight and App Store agreement status",

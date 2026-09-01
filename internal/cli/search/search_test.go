@@ -162,3 +162,46 @@ func TestTokenContainsMatchesSingularPluralAndHyphenatedComponents(t *testing.T)
 		})
 	}
 }
+
+func TestScopedAuthActionIntentPrefersEverySupportedActionOverStatus(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    []string
+		expected string
+	}{
+		{name: "auth init", query: []string{"auth", "init", "status"}, expected: "asc auth init"},
+		{name: "auth login", query: []string{"auth", "login", "status"}, expected: "asc auth login"},
+		{name: "auth export-to-config", query: []string{"auth", "export-to-config", "status"}, expected: "asc auth export-to-config"},
+		{name: "auth export alias", query: []string{"auth", "export", "status"}, expected: "asc auth export-to-config"},
+		{name: "auth switch", query: []string{"auth", "switch", "status"}, expected: "asc auth switch"},
+		{name: "auth logout", query: []string{"auth", "logout", "status"}, expected: "asc auth logout"},
+		{name: "auth doctor", query: []string{"auth", "doctor", "status"}, expected: "asc auth doctor"},
+		{name: "auth issuer-id", query: []string{"auth", "issuer-id", "status"}, expected: "asc auth issuer-id"},
+		{name: "auth token", query: []string{"auth", "token", "status"}, expected: "asc auth token"},
+		{name: "StoreKit login", query: []string{"storekit", "auth", "login", "status"}, expected: "asc storekit auth login"},
+		{name: "StoreKit switch", query: []string{"storekit", "auth", "switch", "status"}, expected: "asc storekit auth switch"},
+		{name: "StoreKit doctor", query: []string{"storekit", "auth", "doctor", "status"}, expected: "asc storekit auth doctor"},
+		{name: "StoreKit logout", query: []string{"storekit", "auth", "logout", "status"}, expected: "asc storekit auth logout"},
+		{name: "Ads login", query: []string{"ads", "auth", "login", "status"}, expected: "asc ads auth login"},
+		{name: "Ads discover", query: []string{"ads", "auth", "discover", "status"}, expected: "asc ads auth discover"},
+		{name: "Ads switch", query: []string{"ads", "auth", "switch", "status"}, expected: "asc ads auth switch"},
+		{name: "Ads token", query: []string{"ads", "auth", "token", "status"}, expected: "asc ads auth token"},
+		{name: "Ads doctor", query: []string{"ads", "auth", "doctor", "status"}, expected: "asc ads auth doctor"},
+		{name: "Ads logout", query: []string{"ads", "auth", "logout", "status"}, expected: "asc ads auth logout"},
+		{name: "web login", query: []string{"web", "auth", "login", "status"}, expected: "asc web auth login"},
+		{name: "web capabilities", query: []string{"web", "auth", "capabilities", "status"}, expected: "asc web auth capabilities"},
+		{name: "web logout", query: []string{"web", "auth", "logout", "status"}, expected: "asc web auth logout"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			target, _, ok := scopedAuthActionIntent(test.query)
+			if !ok {
+				t.Fatal("expected an auth action intent")
+			}
+			if target != test.expected {
+				t.Fatalf("scopedAuthActionIntent() = %q, want %q", target, test.expected)
+			}
+		})
+	}
+}
