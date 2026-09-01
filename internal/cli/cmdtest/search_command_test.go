@@ -245,6 +245,16 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc review attachments-upload",
 		},
 		{
+			name:     "list App Review attachment uploads",
+			query:    []string{"list", "App", "Review", "attachment", "uploads"},
+			expected: "asc review attachments-list",
+		},
+		{
+			name:     "get App Review attachment upload",
+			query:    []string{"get", "App", "Review", "attachment", "upload"},
+			expected: "asc review attachments-get",
+		},
+		{
 			name:     "delete App Review attachment upload",
 			query:    []string{"delete", "App", "Review", "attachment", "upload"},
 			expected: "asc review attachments-delete",
@@ -308,6 +318,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			name:     "Xcode Cloud build and App Review status",
 			query:    []string{"Xcode", "Cloud", "build", "and", "App", "Review", "status"},
 			expected: "asc xcode-cloud status",
+		},
+		{
+			name:     "App Store App Clip build domain status",
+			query:    []string{"App", "Store", "App", "Clip", "build", "domain", "status"},
+			expected: "asc app-clips domain-status",
 		},
 	}
 

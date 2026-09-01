@@ -550,6 +550,12 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		if tokenContainsAny(queryTokens, []string{"delete", "remove"}) {
 			return "asc review attachments-delete", "canonical:review-attachment-delete", true
 		}
+		if tokenContains(queryTokens, "list") {
+			return "asc review attachments-list", "canonical:review-attachment-list", true
+		}
+		if tokenContains(queryTokens, "get") {
+			return "asc review attachments-get", "canonical:review-attachment-get", true
+		}
 		if tokenContains(queryTokens, "upload") {
 			return "asc review attachments-upload", "canonical:review-attachment-upload", true
 		}
@@ -581,6 +587,9 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 	if tokenContains(queryTokens, "xcode") && tokenContains(queryTokens, "cloud") {
 		return "asc xcode-cloud status", "canonical:xcode-cloud-status", true
 	}
+	if tokenContains(queryTokens, "app") && tokenContains(queryTokens, "clip") && tokenContains(queryTokens, "domain") {
+		return "asc app-clips domain-status", "canonical:app-clip-domain-status", true
+	}
 	if tokenContains(queryTokens, "testflight") && tokenContains(queryTokens, "review") {
 		if tokenContains(queryTokens, "submission") {
 			if tokenContains(queryTokens, "list") {
@@ -600,7 +609,7 @@ func releaseDashboardIntent(queryTokens []string) bool {
 		return false
 	}
 
-	hasTestFlightContext := tokenContainsAny(queryTokens, []string{"testflight", "beta", "build"})
+	hasTestFlightContext := tokenContainsAny(queryTokens, []string{"testflight", "beta"})
 	hasAppStoreContext := tokenContainsAny(queryTokens, []string{"appstore", "store"}) ||
 		(tokenContains(queryTokens, "app") && tokenContainsAny(queryTokens, []string{"review", "submission"}))
 	hasCrossSurfaceContext := hasTestFlightContext && hasAppStoreContext
