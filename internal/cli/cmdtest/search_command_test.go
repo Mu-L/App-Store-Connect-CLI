@@ -145,6 +145,68 @@ func TestSearchPrioritizesCanonicalPublishWorkflowForNaturalLanguage(t *testing.
 	}
 }
 
+func TestSearchPrioritizesReleaseDashboardForCrossSurfaceStatusQuery(t *testing.T) {
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = rootcmd.Run([]string{
+			"search",
+			"--output",
+			"json",
+			"verify",
+			"TestFlight",
+			"build",
+			"upload",
+			"and",
+			"App",
+			"Review",
+			"status",
+		}, "1.2.3")
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d with stderr %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	var response searchResponse
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatalf("failed to unmarshal search JSON: %v\nstdout=%s", err, stdout)
+	}
+	if len(response.Results) == 0 {
+		t.Fatalf("expected search results, got %#v", response)
+	}
+	if response.Results[0].Command != "asc status" {
+		t.Fatalf("expected release dashboard first, got %#v", response.Results)
+	}
+}
+
+func TestSearchKeepsAppReviewStatusAheadOfAggregateDashboard(t *testing.T) {
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = rootcmd.Run([]string{"search", "--output", "json", "app", "review", "status"}, "1.2.3")
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d with stderr %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	var response searchResponse
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatalf("failed to unmarshal search JSON: %v\nstdout=%s", err, stdout)
+	}
+	if len(response.Results) == 0 {
+		t.Fatalf("expected search results, got %#v", response)
+	}
+	if response.Results[0].Command != "asc review status" {
+		t.Fatalf("expected App Review status first, got %#v", response.Results)
+	}
+}
+
 func TestSearchPrioritizesPreciseCommandPathsForNaturalLanguage(t *testing.T) {
 	tests := []struct {
 		name     string

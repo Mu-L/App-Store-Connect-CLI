@@ -505,6 +505,10 @@ func hasSupportingQueryToken(doc commandDoc, queryTokens []string, leafToken str
 }
 
 func canonicalBoostFor(command string, queryTokens []string) (int, string) {
+	if command == "asc status" && releaseDashboardIntent(queryTokens) {
+		return canonicalIntentBoost, "canonical:release-status"
+	}
+
 	if tokenContains(queryTokens, "upload") && tokenContains(queryTokens, "build") {
 		return 0, ""
 	}
@@ -518,6 +522,19 @@ func canonicalBoostFor(command string, queryTokens []string) (int, string) {
 		}
 	}
 	return 0, ""
+}
+
+func releaseDashboardIntent(queryTokens []string) bool {
+	if !tokenContainsAny(queryTokens, []string{"check", "verify", "monitor", "watch", "status", "dashboard", "overview"}) {
+		return false
+	}
+	if tokenContainsAny(queryTokens, []string{"release", "pipeline"}) {
+		return true
+	}
+
+	hasTestFlightContext := tokenContainsAny(queryTokens, []string{"testflight", "beta", "build", "upload"})
+	hasAppStoreContext := tokenContainsAny(queryTokens, []string{"appstore", "review", "submission"})
+	return hasTestFlightContext && hasAppStoreContext
 }
 
 func tokenContainsAny(tokens, terms []string) bool {
