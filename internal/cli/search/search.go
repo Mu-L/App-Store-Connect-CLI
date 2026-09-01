@@ -563,9 +563,6 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 	if !statusQueryIntent(queryTokens) || mutationQueryIntent(queryTokens) {
 		return "", "", false
 	}
-	if tokenContains(queryTokens, "account") {
-		return "asc account status", "canonical:account-status", true
-	}
 	if tokenContains(queryTokens, "auth") {
 		if tokenContains(queryTokens, "storekit") {
 			return "asc storekit auth status", "canonical:storekit-auth-status", true
@@ -578,6 +575,9 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		}
 		return "asc auth status", "canonical:auth-status", true
 	}
+	if tokenContains(queryTokens, "account") {
+		return "asc account status", "canonical:account-status", true
+	}
 	if tokenContains(queryTokens, "agreement") {
 		return "asc web agreements status", "canonical:agreement-status", true
 	}
@@ -588,6 +588,12 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		return "asc xcode-cloud status", "canonical:xcode-cloud-status", true
 	}
 	if tokenContains(queryTokens, "app") && tokenContains(queryTokens, "clip") && tokenContains(queryTokens, "domain") {
+		if tokenContains(queryTokens, "cache") {
+			return "asc app-clips domain-status cache", "canonical:app-clip-domain-cache-status", true
+		}
+		if tokenContains(queryTokens, "debug") {
+			return "asc app-clips domain-status debug", "canonical:app-clip-domain-debug-status", true
+		}
 		return "asc app-clips domain-status", "canonical:app-clip-domain-status", true
 	}
 	if tokenContains(queryTokens, "testflight") && tokenContains(queryTokens, "review") {

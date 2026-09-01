@@ -305,6 +305,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc ads auth status",
 		},
 		{
+			name:     "Apple Ads account auth status",
+			query:    []string{"Apple", "Ads", "account", "auth", "status"},
+			expected: "asc ads auth status",
+		},
+		{
 			name:     "web auth status",
 			query:    []string{"web", "auth", "status"},
 			expected: "asc web auth status",
@@ -323,6 +328,16 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			name:     "App Store App Clip build domain status",
 			query:    []string{"App", "Store", "App", "Clip", "build", "domain", "status"},
 			expected: "asc app-clips domain-status",
+		},
+		{
+			name:     "App Clip domain cache status",
+			query:    []string{"App", "Clip", "domain", "cache", "status"},
+			expected: "asc app-clips domain-status cache",
+		},
+		{
+			name:     "App Clip domain debug status",
+			query:    []string{"App", "Clip", "domain", "debug", "status"},
+			expected: "asc app-clips domain-status debug",
 		},
 	}
 
