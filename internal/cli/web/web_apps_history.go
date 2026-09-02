@@ -124,11 +124,11 @@ func webAppStatusHistoryRows(result *webcore.AppStatusHistory) [][]string {
 				status = change.AppVersionState
 			}
 			rows = append(rows, []string{
-				webAppDistributionValue(versionLabel),
-				webAppDistributionValue(version.Platform),
-				webAppDistributionValue(status),
-				webAppDistributionValue(change.Date),
-				webAppDistributionValue(change.Initiator),
+				webAppValueOrUnknown(versionLabel),
+				webAppValueOrUnknown(version.Platform),
+				webAppValueOrUnknown(status),
+				webAppValueOrUnknown(change.Date),
+				webAppValueOrUnknown(change.Initiator),
 			})
 		}
 	}

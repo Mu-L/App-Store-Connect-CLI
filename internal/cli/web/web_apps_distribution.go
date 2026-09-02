@@ -130,16 +130,9 @@ func webAppDistributionRows(result *webcore.AppDistribution) [][]string {
 	}
 	return [][]string{
 		{"app_id", result.AppID},
-		{"name", webAppDistributionValue(result.Name)},
-		{"bundle_id", webAppDistributionValue(result.BundleID)},
-		{"distribution_type", webAppDistributionValue(result.DistributionType)},
-		{"education_discount_type", webAppDistributionValue(result.EducationDiscountType)},
+		{"name", webAppValueOrUnknown(result.Name)},
+		{"bundle_id", webAppValueOrUnknown(result.BundleID)},
+		{"distribution_type", webAppValueOrUnknown(result.DistributionType)},
+		{"education_discount_type", webAppValueOrUnknown(result.EducationDiscountType)},
 	}
-}
-
-func webAppDistributionValue(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return "unknown"
-	}
-	return value
 }

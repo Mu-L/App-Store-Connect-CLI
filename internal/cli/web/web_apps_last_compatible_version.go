@@ -142,11 +142,11 @@ func webAppLastCompatibleVersionRows(result *webcore.AppLastCompatibleVersions) 
 		}
 		rows = append(rows, []string{
 			version.ID,
-			webAppDistributionValue(version.VersionString),
-			webAppDistributionValue(version.Platform),
-			webAppDistributionValue(state),
+			webAppValueOrUnknown(version.VersionString),
+			webAppValueOrUnknown(version.Platform),
+			webAppValueOrUnknown(state),
 			formatWebCompatibilityBool(version.Downloadable),
-			webAppDistributionValue(version.CreatedDate),
+			webAppValueOrUnknown(version.CreatedDate),
 		})
 	}
 	return rows
