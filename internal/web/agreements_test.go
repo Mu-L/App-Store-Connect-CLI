@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,48 @@ func TestGetAgreementsStatusPreservesContractMessagesWhenPortalUnavailable(t *te
 	}
 	if result == nil || !result.Pending || len(result.ContractMessages) != 1 {
 		t.Fatalf("GetAgreementsStatus() result = %#v, want preserved pending contract message", result)
+	}
+}
+
+func TestGetAgreementHistoryReadsPortalWithoutContractMessages(t *testing.T) {
+	requestCount := 0
+	client := agreementsTestClient(t, func(r *http.Request) (*http.Response, error) {
+		requestCount++
+		if r.URL.Host == "appstoreconnect.apple.com" {
+			t.Fatalf("history-only read must not request %s", r.URL.String())
+		}
+		switch requestCount {
+		case 1:
+			return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), nil), nil
+		case 2:
+			if r.URL.Path != developerPortalAgreementHistoryPath {
+				t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+			}
+			return developerPortalTestResponse(http.StatusOK, agreementHistoryFixture(true), nil), nil
+		default:
+			t.Fatalf("unexpected extra request %s %s", r.Method, r.URL.String())
+			return nil, nil
+		}
+	})
+
+	result, err := client.GetAgreementHistory(context.Background())
+	if err != nil {
+		t.Fatalf("GetAgreementHistory() error: %v", err)
+	}
+	if requestCount != 2 {
+		t.Fatalf("request count = %d, want 2 (bootstrap + history)", requestCount)
+	}
+	if result.TeamID != "TEAM123456" {
+		t.Fatalf("TeamID = %q, want TEAM123456", result.TeamID)
+	}
+	if len(result.ContractMessages) != 0 {
+		t.Fatalf("ContractMessages = %+v, want none for a history-only read", result.ContractMessages)
+	}
+	if result.Pending {
+		t.Fatal("Pending = true, want false for an accepted history")
+	}
+	if len(result.Agreements) != 1 || result.Agreements[0].AgreementID != "XG8DNV4HYY" || result.Agreements[0].Pending {
+		t.Fatalf("Agreements = %+v, want one accepted XG8DNV4HYY record", result.Agreements)
 	}
 }
 
@@ -477,6 +520,40 @@ func TestDownloadAgreementCapsSameOriginRedirectLoopDespitePermissiveClientPolic
 	}
 	if portal.contentCalls > 11 {
 		t.Fatalf("content requests = %d, want the redirect chain capped at 10 hops", portal.contentCalls)
+	}
+}
+
+func TestDownloadAgreementRejectsRedirectRewrittenByClientPolicy(t *testing.T) {
+	elsewhereCalls := 0
+	elsewhere := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		elsewhereCalls++
+		_, _ = w.Write([]byte("leaked"))
+	}))
+	defer elsewhere.Close()
+	elsewhereURL, err := url.Parse(elsewhere.URL + "/agreement.pdf?token=very-secret")
+	if err != nil {
+		t.Fatalf("url.Parse() error: %v", err)
+	}
+
+	portal := newAgreementDownloadPortal(t)
+	portal.contentHandler = func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/services-account/agreement/XG8DNV4HYY/content/pdf?hop=1", http.StatusFound)
+	}
+	client := portal.client(t)
+	client.httpClient.CheckRedirect = func(redirect *http.Request, via []*http.Request) error {
+		redirect.URL = elsewhereURL
+		return nil
+	}
+
+	_, err = client.DownloadAgreement(context.Background(), "XG8DNV4HYY")
+	if err == nil || !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("DownloadAgreement() error = %v, want rejection of the rewritten redirect", err)
+	}
+	if strings.Contains(err.Error(), "very-secret") {
+		t.Fatalf("DownloadAgreement() error = %q leaks the rewritten URL", err)
+	}
+	if elsewhereCalls != 0 {
+		t.Fatalf("rewritten redirect target was requested %d times, want 0", elsewhereCalls)
 	}
 }
 

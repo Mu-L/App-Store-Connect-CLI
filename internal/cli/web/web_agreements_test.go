@@ -37,19 +37,22 @@ func stubWebAgreementsSession(t *testing.T) {
 	}
 }
 
-// stubWebAgreementsAccept replaces the accept and status hooks. The accept hook
-// records every request; the status hook returns reread for the verification
-// re-read after the write.
+// stubWebAgreementsAccept replaces the accept and history hooks. The accept hook
+// records every request; the history hook returns reread for the verification
+// re-read after the write. The combined status hook (which also reads App Store
+// Connect contract messages) fails the test if the accept flow touches it.
 func stubWebAgreementsAccept(t *testing.T, reread *asc.WebAgreementsStatusResult, rereadErr error) (*[]webcore.AgreementsAcceptRequest, *int) {
 	t.Helper()
 	origAccept := acceptAgreementsFn
+	origHistory := getAgreementHistoryFn
 	origStatus := getAgreementsStatusFn
 	t.Cleanup(func() {
 		acceptAgreementsFn = origAccept
+		getAgreementHistoryFn = origHistory
 		getAgreementsStatusFn = origStatus
 	})
 	requests := &[]webcore.AgreementsAcceptRequest{}
-	statusCalls := new(int)
+	historyCalls := new(int)
 	acceptAgreementsFn = func(ctx context.Context, client *webcore.Client, req webcore.AgreementsAcceptRequest) (*asc.WebAgreementsAcceptResult, error) {
 		*requests = append(*requests, req)
 		return &asc.WebAgreementsAcceptResult{
@@ -58,14 +61,18 @@ func stubWebAgreementsAccept(t *testing.T, reread *asc.WebAgreementsStatusResult
 			Status:       "accepted",
 		}, nil
 	}
-	getAgreementsStatusFn = func(ctx context.Context, client *webcore.Client) (*asc.WebAgreementsStatusResult, error) {
-		*statusCalls++
+	getAgreementHistoryFn = func(ctx context.Context, client *webcore.Client) (*asc.WebAgreementsStatusResult, error) {
+		*historyCalls++
 		if rereadErr != nil {
 			return nil, rereadErr
 		}
 		return reread, nil
 	}
-	return requests, statusCalls
+	getAgreementsStatusFn = func(ctx context.Context, client *webcore.Client) (*asc.WebAgreementsStatusResult, error) {
+		t.Errorf("accept verification must use the history-only read, not the combined status read")
+		return nil, errors.New("unexpected status read")
+	}
+	return requests, historyCalls
 }
 
 func acceptedAgreement(id, version string) asc.WebAgreement {
@@ -406,6 +413,7 @@ func TestWebAgreementsDownloadValidationErrors(t *testing.T) {
 	}{
 		{name: "missing agreement id", args: []string{"--out", "agreement.pdf"}, wantErr: "--agreement-id is required"},
 		{name: "missing out", args: []string{"--agreement-id", "XG8DNV4HYY"}, wantErr: "--out is required"},
+		{name: "blank out", args: []string{"--agreement-id", "XG8DNV4HYY", "--out", "   "}, wantErr: "--out is required"},
 		{name: "out is a directory path", args: []string{"--agreement-id", "XG8DNV4HYY", "--out", "downloads/"}, wantErr: "--out must be a file path"},
 	}
 
@@ -494,6 +502,46 @@ func TestWebAgreementsDownloadWritesFileAndPrintsReceipt(t *testing.T) {
 	}
 	if payload.Path != outPath || payload.BytesWritten != int64(len(body)) || payload.ContentType != "application/pdf" {
 		t.Fatalf("receipt = %+v, want path %q, %d bytes, application/pdf", payload, outPath, len(body))
+	}
+}
+
+func TestWebAgreementsDownloadPreservesWhitespaceInOutPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("trailing whitespace in file names is not portable on Windows")
+	}
+	stubWebAgreementsSession(t)
+	stubWebAgreementsDownload(t, sampleAgreementDownload(), nil)
+
+	dir := t.TempDir()
+	trimmedPath := filepath.Join(dir, "agreement.pdf")
+	if err := os.WriteFile(trimmedPath, []byte("keep me"), 0o600); err != nil {
+		t.Fatalf("seed existing file: %v", err)
+	}
+	outPath := trimmedPath + " "
+	cmd := WebAgreementsDownloadCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--out", outPath, "--overwrite", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	stdout, _ := captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("Exec() error: %v", err)
+		}
+	})
+
+	if body, err := os.ReadFile(outPath); err != nil || string(body) != "%PDF-1.7 agreement body" {
+		t.Fatalf("selected path %q content = %q, err = %v; want the downloaded agreement", outPath, body, err)
+	}
+	if body, err := os.ReadFile(trimmedPath); err != nil || string(body) != "keep me" {
+		t.Fatalf("trimmed path %q content = %q, err = %v; must not be replaced", trimmedPath, body, err)
+	}
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("unmarshal stdout %q: %v", stdout, err)
+	}
+	if payload.Path != outPath {
+		t.Fatalf("receipt path = %q, want the selected path %q unchanged", payload.Path, outPath)
 	}
 }
 
@@ -759,9 +807,12 @@ func TestWebAgreementsAcceptTableOutputShowsVerification(t *testing.T) {
 			t.Fatalf("Exec() error: %v", err)
 		}
 	})
-	for _, want := range []string{"Verified", "XG8DNV4HYY, AB12CD34EF", "accepted", "true", "2026-08-19T16:56:47Z"} {
+	for _, want := range []string{"Verified", "XG8DNV4HYY", "AB12CD34EF", "accepted", "true", "2026-08-19T16:56:47Z"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("table output missing %q: %q", want, stdout)
 		}
+	}
+	if strings.Contains(stdout, "XG8DNV4HYY, AB12CD34EF") {
+		t.Fatalf("table output joins agreements into one row; want one row per agreement: %q", stdout)
 	}
 }

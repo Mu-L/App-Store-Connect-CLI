@@ -90,7 +90,28 @@ func (c *Client) GetAgreementsStatus(ctx context.Context) (*asc.WebAgreementsSta
 	if err != nil {
 		return result, err
 	}
+	c.applyAgreementHistory(result, envelope)
+	return result, nil
+}
 
+// GetAgreementHistory reads only the team's Developer Portal agreement history.
+// It skips the App Store Connect contract-message banner so post-mutation
+// verification does not fail on that unrelated read; ContractMessages is
+// always empty in the result.
+func (c *Client) GetAgreementHistory(ctx context.Context) (*asc.WebAgreementsStatusResult, error) {
+	teamID, envelope, err := c.fetchAgreementHistory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := &asc.WebAgreementsStatusResult{
+		TeamID:           teamID,
+		ContractMessages: []asc.WebAgreementContractMessage{},
+	}
+	c.applyAgreementHistory(result, envelope)
+	return result, nil
+}
+
+func (c *Client) applyAgreementHistory(result *asc.WebAgreementsStatusResult, envelope *developerAgreementsEnvelope) {
 	agreements := make([]asc.WebAgreement, 0, len(envelope.Agreements))
 	for _, record := range envelope.Agreements {
 		agreement := c.newAgreement(record)
@@ -100,7 +121,6 @@ func (c *Client) GetAgreementsStatus(ctx context.Context) (*asc.WebAgreementsSta
 		agreements = append(agreements, agreement)
 	}
 	result.Agreements = agreements
-	return result, nil
 }
 
 // fetchAgreementHistory bootstraps the Developer Portal session and returns the
@@ -191,7 +211,12 @@ func (c *Client) DownloadAgreement(ctx context.Context, agreementID string) (*Ag
 			return fmt.Errorf("agreement download stopped after 10 redirects")
 		}
 		if previousCheckRedirect != nil {
-			return previousCheckRedirect(redirect, via)
+			if err := previousCheckRedirect(redirect, via); err != nil {
+				return err
+			}
+			// The wrapped policy receives the mutable upcoming request and may
+			// have rewritten its URL; never send the session to an unchecked target.
+			return validateAgreementDownloadTarget(portalOrigin, redirect.URL, "redirect")
 		}
 		return nil
 	}

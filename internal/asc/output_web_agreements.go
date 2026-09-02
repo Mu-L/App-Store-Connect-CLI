@@ -1,9 +1,6 @@
 package asc
 
-import (
-	"fmt"
-	"strings"
-)
+import "fmt"
 
 // WebAgreementContractMessage is an App Store Connect alert banner entry.
 type WebAgreementContractMessage struct {
@@ -114,19 +111,28 @@ func webAgreementsRows(agreements []WebAgreement) [][]string {
 	return rows
 }
 
+// webAgreementsAcceptRows renders one row per requested agreement so each
+// acceptance timestamp is attributed to its own agreement.
 func webAgreementsAcceptRows(result *WebAgreementsAcceptResult) ([]string, [][]string) {
-	acceptedAt := ""
+	byID := make(map[string]WebAgreement, len(result.Agreements))
 	for _, agreement := range result.Agreements {
-		if agreement.DateAccepted != "" {
-			acceptedAt = agreement.DateAccepted
-			break
+		byID[agreement.AgreementID] = agreement
+	}
+	ids := result.AgreementIDs
+	if len(ids) == 0 {
+		for _, agreement := range result.Agreements {
+			ids = append(ids, agreement.AgreementID)
 		}
 	}
-	return []string{"Team ID", "Agreement IDs", "Status", "Verified", "Accepted At"}, [][]string{{
-		result.TeamID,
-		strings.Join(result.AgreementIDs, ", "),
-		result.Status,
-		fmt.Sprintf("%t", result.Verified),
-		acceptedAt,
-	}}
+	rows := make([][]string, 0, len(ids))
+	for _, id := range ids {
+		rows = append(rows, []string{
+			result.TeamID,
+			id,
+			result.Status,
+			fmt.Sprintf("%t", result.Verified),
+			byID[id].DateAccepted,
+		})
+	}
+	return []string{"Team ID", "Agreement ID", "Status", "Verified", "Accepted At"}, rows
 }

@@ -21,6 +21,10 @@ var getAgreementsStatusFn = func(ctx context.Context, client *webcore.Client) (*
 	return client.GetAgreementsStatus(ctx)
 }
 
+var getAgreementHistoryFn = func(ctx context.Context, client *webcore.Client) (*asc.WebAgreementsStatusResult, error) {
+	return client.GetAgreementHistory(ctx)
+}
+
 var acceptAgreementsFn = func(ctx context.Context, client *webcore.Client, req webcore.AgreementsAcceptRequest) (*asc.WebAgreementsAcceptResult, error) {
 	return client.AcceptAgreements(ctx, req)
 }
@@ -175,8 +179,10 @@ Examples:
 			if resolvedAgreementID == "" {
 				return shared.UsageError("--agreement-id is required")
 			}
-			outPath := strings.TrimSpace(*out)
-			if outPath == "" {
+			// Keep the operator's path byte-for-byte; trimming would silently
+			// redirect the write (and any --overwrite) to a different file.
+			outPath := *out
+			if strings.TrimSpace(outPath) == "" {
 				return shared.UsageError("--out is required")
 			}
 			destination, err := newAgreementDownloadDestination(outPath)
@@ -360,17 +366,20 @@ Examples:
 				return fmt.Errorf("web agreements accept failed: missing accept result")
 			}
 
+			// Verify against the Developer Portal history alone; the combined
+			// status read also depends on the App Store Connect banner endpoint,
+			// whose failure would falsely report an unverified acceptance.
 			var status *asc.WebAgreementsStatusResult
 			err = withWebSpinner("Verifying Apple Developer Program agreement status", func() error {
 				var statusErr error
-				status, statusErr = getAgreementsStatusFn(requestCtx, client)
+				status, statusErr = getAgreementHistoryFn(requestCtx, client)
 				return statusErr
 			})
 			if err != nil {
-				return fmt.Errorf("web agreements accept failed: the accept request succeeded but re-reading agreement status failed; run 'asc web agreements status' to confirm the result: %w", err)
+				return fmt.Errorf("web agreements accept failed: the accept request succeeded but re-reading agreement history failed; run 'asc web agreements status' to confirm the result: %w", err)
 			}
 			if status == nil {
-				return fmt.Errorf("web agreements accept failed: the accept request succeeded but the agreement status re-read returned no result")
+				return fmt.Errorf("web agreements accept failed: the accept request succeeded but the agreement history re-read returned no result")
 			}
 			result, err := verifyAcceptedAgreements(accepted.TeamID, resolvedAgreementIDs, status)
 			if err != nil {

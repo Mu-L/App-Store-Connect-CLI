@@ -38,6 +38,10 @@ type webAgreementsPortal struct {
 	acceptCalls  int
 	readCalls    int
 	contentCalls int
+	messageCalls int
+	// contractMessagesStatus overrides the App Store Connect banner response
+	// status so tests can make that unrelated read fail.
+	contractMessagesStatus int
 	// contentResponse overrides the agreement content download response.
 	contentResponse func(req *http.Request) *http.Response
 }
@@ -74,6 +78,10 @@ func (p *webAgreementsPortal) roundTrip(t *testing.T, req *http.Request) (*http.
 
 	switch {
 	case req.Method == http.MethodGet && req.URL.String() == webAgreementsContractMessageURL:
+		p.messageCalls++
+		if p.contractMessagesStatus != 0 {
+			return webAgreementsJSONResponse(p.contractMessagesStatus, `{}`), nil
+		}
 		return webAgreementsJSONResponse(http.StatusOK, `[]`), nil
 	case req.Method == http.MethodPost && req.URL.Host == webAgreementsPortalHost && req.URL.Path == webAgreementsTeamsPath:
 		p.teamsCalls++
@@ -275,6 +283,37 @@ func TestWebAgreementsDownloadRunRejectsCrossOriginRedirectWithoutLeakingURL(t *
 	}
 	if _, err := os.Lstat(outPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected no file after rejected download, got %v", err)
+	}
+}
+
+func TestWebAgreementsAcceptRunVerifiesFromHistoryWhenContractMessagesFail(t *testing.T) {
+	portal := newWebAgreementsPortal("XG8DNV4HYY")
+	portal.contractMessagesStatus = http.StatusServiceUnavailable
+	installWebAgreementsPortal(t, portal)
+
+	stdout, stderr := captureOutput(t, func() {
+		code := cmd.Run([]string{
+			"--profile", "test-web",
+			"web", "agreements", "accept",
+			"--agreement-id", "XG8DNV4HYY",
+			"--confirm",
+			"--output", "json",
+		}, "1.0.0")
+		if code != cmd.ExitSuccess {
+			t.Fatalf("exit code = %d, want %d", code, cmd.ExitSuccess)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if portal.messageCalls != 0 {
+		t.Fatalf("contractMessages calls = %d, want 0 during accept verification", portal.messageCalls)
+	}
+	if portal.acceptCalls != 1 || portal.readCalls != 1 {
+		t.Fatalf("accept/history calls = %d/%d, want 1/1", portal.acceptCalls, portal.readCalls)
+	}
+	if !strings.Contains(stdout, `"verified":true`) {
+		t.Fatalf("stdout = %q, want verified receipt", stdout)
 	}
 }
 
