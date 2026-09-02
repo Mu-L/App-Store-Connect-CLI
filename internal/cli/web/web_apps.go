@@ -55,9 +55,6 @@ var (
 	findWebAppFn = func(ctx context.Context, client *webcore.Client, bundleID string) (*webcore.AppResponse, error) {
 		return client.FindApp(ctx, bundleID)
 	}
-	getWebAppFn = func(ctx context.Context, client *webcore.Client, appID string) (*webcore.AppResponse, error) {
-		return client.GetApp(ctx, appID)
-	}
 	deleteWebAppFn = func(ctx context.Context, client *webcore.Client, appID string) (*webcore.AppResponse, error) {
 		return client.DeleteApp(ctx, appID)
 	}

@@ -183,6 +183,295 @@ func TestDeleteAppSendsRemovedPatch(t *testing.T) {
 	}
 }
 
+func TestDeleteAppEmptyResponseDoesNotSynthesizeID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		baseURL:    server.URL,
+	}
+	app, err := client.DeleteApp(context.Background(), "1234567890")
+	if err != nil {
+		t.Fatalf("DeleteApp error: %v", err)
+	}
+	if app == nil {
+		t.Fatal("expected parsed response")
+	}
+	if strings.TrimSpace(app.Data.ID) != "" {
+		t.Fatalf("empty PATCH payload must not synthesize data.id from the request, got %q", app.Data.ID)
+	}
+}
+
+func TestGetAppRemovalStateRequestsCapturedFields(t *testing.T) {
+	var gotPath, gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"type": "apps",
+				"id": "1234567890",
+				"attributes": {
+					"name": "Throwaway",
+					"bundleId": "com.example.throwaway",
+					"removed": false,
+					"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
+					"marketplace": "APP_STORE"
+				},
+				"relationships": {
+					"displayableVersions": {
+						"data": [{"type": "appStoreVersions", "id": "version-1"}]
+					}
+				}
+			},
+			"included": [{
+				"type": "appStoreVersions",
+				"id": "version-1",
+				"attributes": {
+					"platform": "IOS",
+					"versionString": "1.0",
+					"appStoreState": "PREPARE_FOR_SUBMISSION"
+				}
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		baseURL:    server.URL,
+	}
+	state, err := client.GetAppRemovalState(context.Background(), "1234567890")
+	if err != nil {
+		t.Fatalf("GetAppRemovalState error: %v", err)
+	}
+	if gotPath != "/apps/1234567890" {
+		t.Fatalf("expected /apps/1234567890, got %s", gotPath)
+	}
+	if !strings.Contains(gotQuery, "removed") || !strings.Contains(gotQuery, "appStoreLegacyStatus") || !strings.Contains(gotQuery, "marketplace") {
+		t.Fatalf("expected captured app fields in query, got %q", gotQuery)
+	}
+	if !strings.Contains(gotQuery, "displayableVersions") {
+		t.Fatalf("expected displayableVersions include, got %q", gotQuery)
+	}
+	if state.ID != "1234567890" || state.Name != "Throwaway" || state.BundleID != "com.example.throwaway" {
+		t.Fatalf("unexpected state identity: %+v", state)
+	}
+	if state.Removed || !state.RemovedKnown {
+		t.Fatalf("expected removed=false from server, got %+v", state)
+	}
+	if state.AppStoreLegacyStatus != "PREPARE_FOR_SUBMISSION" || state.Marketplace != "APP_STORE" {
+		t.Fatalf("unexpected status fields: %+v", state)
+	}
+	if len(state.VersionStates) != 1 || state.VersionStates[0] != "PREPARE_FOR_SUBMISSION" {
+		t.Fatalf("unexpected version states: %+v", state.VersionStates)
+	}
+	if !state.DisplayableVersionsLoaded {
+		t.Fatal("expected displayableVersions linkage to be complete")
+	}
+}
+
+func TestGetAppRemovalStatePreservesBothVersionStateFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"type": "apps",
+				"id": "1234567890",
+				"attributes": {
+					"name": "Throwaway",
+					"bundleId": "com.example.throwaway",
+					"removed": false,
+					"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
+					"marketplace": "APP_STORE"
+				},
+				"relationships": {
+					"displayableVersions": {
+						"data": [{"type": "appStoreVersions", "id": "version-1"}]
+					}
+				}
+			},
+			"included": [{
+				"type": "appStoreVersions",
+				"id": "version-1",
+				"attributes": {
+					"platform": "IOS",
+					"versionString": "1.0",
+					"appStoreState": "READY_FOR_SALE",
+					"appVersionState": "WAITING_FOR_REVIEW"
+				}
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		baseURL:    server.URL,
+	}
+	state, err := client.GetAppRemovalState(context.Background(), "1234567890")
+	if err != nil {
+		t.Fatalf("GetAppRemovalState error: %v", err)
+	}
+	got := strings.Join(state.VersionStates, ",")
+	if !strings.Contains(got, "READY_FOR_SALE") {
+		t.Fatalf("expected appStoreState READY_FOR_SALE, got %+v", state.VersionStates)
+	}
+	if !strings.Contains(got, "WAITING_FOR_REVIEW") {
+		t.Fatalf("expected appVersionState WAITING_FOR_REVIEW, got %+v", state.VersionStates)
+	}
+}
+
+func TestGetAppRemovalStateLeavesVersionsUnloadedWhenRelationshipOmitted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"type": "apps",
+				"id": "1234567890",
+				"attributes": {
+					"name": "Throwaway",
+					"bundleId": "com.example.throwaway",
+					"removed": false,
+					"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
+					"marketplace": "APP_STORE"
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := &Client{httpClient: server.Client(), baseURL: server.URL}
+	state, err := client.GetAppRemovalState(context.Background(), "1234567890")
+	if err != nil {
+		t.Fatalf("GetAppRemovalState error: %v", err)
+	}
+	if state.DisplayableVersionsLoaded {
+		t.Fatal("omitted displayableVersions relationship must not count as loaded")
+	}
+}
+
+func TestGetAppRemovalStateLeavesVersionsUnloadedWhenIncludeMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"type": "apps",
+				"id": "1234567890",
+				"attributes": {
+					"name": "Throwaway",
+					"bundleId": "com.example.throwaway",
+					"removed": false,
+					"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
+					"marketplace": "APP_STORE"
+				},
+				"relationships": {
+					"displayableVersions": {
+						"data": [{"type": "appStoreVersions", "id": "version-1"}]
+					}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := &Client{httpClient: server.Client(), baseURL: server.URL}
+	state, err := client.GetAppRemovalState(context.Background(), "1234567890")
+	if err != nil {
+		t.Fatalf("GetAppRemovalState error: %v", err)
+	}
+	if state.DisplayableVersionsLoaded {
+		t.Fatal("missing included displayableVersions must not count as loaded")
+	}
+}
+
+func TestGetAppRemovalStateLeavesVersionsUnloadedWhenStateFieldsMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"type": "apps",
+				"id": "1234567890",
+				"attributes": {
+					"name": "Throwaway",
+					"bundleId": "com.example.throwaway",
+					"removed": false,
+					"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
+					"marketplace": "APP_STORE"
+				},
+				"relationships": {
+					"displayableVersions": {
+						"data": [{"type": "appStoreVersions", "id": "version-1"}]
+					}
+				}
+			},
+			"included": [{
+				"type": "appStoreVersions",
+				"id": "version-1",
+				"attributes": {
+					"platform": "IOS",
+					"versionString": "1.0"
+				}
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	client := &Client{httpClient: server.Client(), baseURL: server.URL}
+	state, err := client.GetAppRemovalState(context.Background(), "1234567890")
+	if err != nil {
+		t.Fatalf("GetAppRemovalState error: %v", err)
+	}
+	if state.DisplayableVersionsLoaded {
+		t.Fatal("included versions without state fields must not count as loaded")
+	}
+}
+
+func TestGetAppRemovalStateRequiresMatchingID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"type": "apps",
+				"id": "9999999999",
+				"attributes": {
+					"name": "Other",
+					"bundleId": "com.example.other",
+					"removed": false
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := &Client{httpClient: server.Client(), baseURL: server.URL}
+	_, err := client.GetAppRemovalState(context.Background(), "1234567890")
+	if err == nil {
+		t.Fatal("expected mismatched app id error")
+	}
+	if !strings.Contains(err.Error(), "1234567890") || !strings.Contains(err.Error(), "9999999999") {
+		t.Fatalf("expected both ids in error, got %v", err)
+	}
+}
+
+func TestGetAppRemovalStateRequiresID(t *testing.T) {
+	client := &Client{}
+	if _, err := client.GetAppRemovalState(context.Background(), "  "); err == nil {
+		t.Fatal("expected missing app id error")
+	}
+}
+
 func TestDeleteAppRequiresID(t *testing.T) {
 	client := &Client{}
 	if _, err := client.DeleteApp(context.Background(), "  "); err == nil {
