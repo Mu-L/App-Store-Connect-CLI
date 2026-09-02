@@ -57,6 +57,15 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - Those payloads expose key ID, nickname, roles, `isActive`, key type, and last-used. They do not include a creation date, so list/view omit that column rather than inventing one. Private key material is never copied into command output.
 - Revoke and `--individual` create still need a live web-session endpoint capture.
 
+## Web-session Resolution Center
+
+- Resolution Center has no official App Store Connect API surface; the OpenAPI snapshot contains no `resolutionCenter*` or `reviewRejection*` path. Every reader below is a web-session (`/iris/v1`) call and needs Apple ID auth, not an API key.
+- Threads have two scopes and they are not interchangeable. `asc web review show` resolves the submission scope (`GET /iris/v1/resolutionCenterThreads?filter[reviewSubmission]={id}&include=reviewSubmission`), which only returns threads Apple attached to that review submission. `asc web review threads --app` reads the app scope (`GET /iris/v1/apps/{appId}/resolutionCenterThreads?include=appStoreVersions,app,appMessageThreadDetail,build,betaBackgroundAssetReviewSubmission&limit[appStoreVersions]=2000&filter[threadType]=REJECTION_BINARY,REJECTION_METADATA,REJECTION_REVIEW_SUBMISSION,APP_MESSAGE_ARC,APP_MESSAGE_ARB,APP_MESSAGE_COMM,APP_MESSAGE_INFORMATIONAL`), which also returns binary, metadata, and informational threads that no submission owns. `show` reports the app-scoped threads the selected submission does not cover under `appThreads`.
+- The app-scoped relationship is sent with the review center's captured `filter[threadType]` set rather than a narrowed one. Unsupported include or filter shapes on these surfaces answer 400 (for example `include=fromActor,rejections,resolutionCenterThread` on `resolutionCenterMessages`), so the known-good query shapes are sent verbatim.
+- A thread's unsent draft reply lives at `GET /iris/v1/resolutionCenterThreads/{threadId}/resolutionCenterDraftMessage?include=resolutionCenterMessageAttachments,fromActor&limit[resolutionCenterMessageAttachments]=1000`. It is a single-resource document: a thread with no draft answers with a null `data` member, and the relationship can also answer 404. Both mean "no draft" rather than an error. `asc web review threads --drafts` reads it read-only, keeps Apple's raw HTML body, and never returns the attachments' signed download URLs.
+- All of these readers follow `links.next` internally, so the commands have no `--paginate` flag.
+- Sending a reply or a draft is not implemented; only reads are supported.
+
 ## TestFlight Distribution
 
 - `asc testflight distribution edit --external-testing` shipped in 0.35.3 but App Store Connect does not allow `externalBuildState` in the build beta detail PATCH request. The flag remains parseable during its deprecation window and fails before HTTP instead of sending an unsupported update.

@@ -21,8 +21,15 @@ const (
 	reviewSubmissionsInclude      = "appStoreVersionForReview,items,lastUpdatedByActor,submittedByActor,createdByActor"
 	reviewSubmissionsItemsInclude = "appStoreVersion,appCustomProductPageVersion,appStoreVersionExperiment,appStoreVersionExperimentV2,appEvent,backgroundAssetVersion,gameCenterAchievementVersion,gameCenterActivityVersion,gameCenterChallengeVersion,gameCenterLeaderboardSetVersion,gameCenterLeaderboardVersion,inAppPurchaseVersion,subscriptionVersion,subscriptionGroupVersion"
 	reviewMessagesInclude         = "fromActor,rejections,resolutionCenterMessageAttachments"
-	reviewRejectionsInclude       = "appCustomProductPageVersion,appEvent,appStoreVersion,appStoreVersionExperiment,backgroundAssetVersions,gameCenterAchievementVersions,gameCenterLeaderboardVersions,gameCenterLeaderboardSetVersions,gameCenterChallengeVersions,gameCenterActivityVersions,build,appBundleVersion,rejectionAttachments"
-	attachmentHostsEnv            = "ASC_WEB_ALLOWED_ATTACHMENT_HOSTS"
+	reviewDraftMessageInclude     = "resolutionCenterMessageAttachments,fromActor"
+	reviewAppThreadsInclude       = "appStoreVersions,app,appMessageThreadDetail,build,betaBackgroundAssetReviewSubmission"
+	// reviewAppThreadTypes is the thread-type set the App Store Connect review
+	// center requests for an app. It is sent verbatim rather than narrowed
+	// here: the captured query always carries it, and unsupported include or
+	// filter shapes on this surface answer 400.
+	reviewAppThreadTypes    = "REJECTION_BINARY,REJECTION_METADATA,REJECTION_REVIEW_SUBMISSION,APP_MESSAGE_ARC,APP_MESSAGE_ARB,APP_MESSAGE_COMM,APP_MESSAGE_INFORMATIONAL"
+	reviewRejectionsInclude = "appCustomProductPageVersion,appEvent,appStoreVersion,appStoreVersionExperiment,backgroundAssetVersions,gameCenterAchievementVersions,gameCenterLeaderboardVersions,gameCenterLeaderboardSetVersions,gameCenterChallengeVersions,gameCenterActivityVersions,build,appBundleVersion,rejectionAttachments"
+	attachmentHostsEnv      = "ASC_WEB_ALLOWED_ATTACHMENT_HOSTS"
 )
 
 var htmlTagPattern = regexp.MustCompile(`(?s)<[^>]*>`)
@@ -53,6 +60,11 @@ type jsonAPIListPayload struct {
 	Data     []jsonAPIResource `json:"data"`
 	Included []jsonAPIResource `json:"included"`
 	Links    map[string]any    `json:"links"`
+}
+
+type jsonAPISingleResourcePayload struct {
+	Data     json.RawMessage   `json:"data"`
+	Included []jsonAPIResource `json:"included"`
 }
 
 type resourceRef struct {
@@ -131,6 +143,19 @@ type ResolutionCenterMessage struct {
 	FromActor        *ReviewActor `json:"fromActor,omitempty"`
 	RejectionIDs     []string     `json:"rejectionIds,omitempty"`
 	AttachmentIDs    []string     `json:"attachmentIds,omitempty"`
+}
+
+// ResolutionCenterDraftMessage models the unsent draft reply Apple keeps on a
+// resolution center thread. Attachment download URLs are never populated: the
+// draft surface is read-only and its signed URLs are not offered for download.
+type ResolutionCenterDraftMessage struct {
+	ID               string             `json:"id"`
+	ThreadID         string             `json:"threadId,omitempty"`
+	CreatedDate      string             `json:"createdDate,omitempty"`
+	MessageBody      string             `json:"messageBody,omitempty"`
+	MessageBodyPlain string             `json:"messageBodyPlain,omitempty"`
+	FromActor        *ReviewActor       `json:"fromActor,omitempty"`
+	Attachments      []ReviewAttachment `json:"attachments,omitempty"`
 }
 
 // ReviewRejectionReason captures normalized review rejection reason fields.
@@ -579,6 +604,93 @@ func (c *Client) ListResolutionCenterThreadsBySubmission(ctx context.Context, re
 		return nil, err
 	}
 	return decodeResolutionCenterThreads(payload.Data), nil
+}
+
+// ListResolutionCenterThreadsByApp lists every resolution center thread on an
+// app, including threads that are not attached to a review submission and are
+// therefore invisible to ListResolutionCenterThreadsBySubmission.
+func (c *Client) ListResolutionCenterThreadsByApp(ctx context.Context, appID string) ([]ResolutionCenterThread, error) {
+	appID = strings.TrimSpace(appID)
+	if appID == "" {
+		return nil, fmt.Errorf("app id is required")
+	}
+	query := url.Values{}
+	query.Set("include", reviewAppThreadsInclude)
+	query.Set("limit[appStoreVersions]", "2000")
+	query.Set("filter[threadType]", reviewAppThreadTypes)
+	path := queryPath("/apps/"+url.PathEscape(appID)+"/resolutionCenterThreads", query)
+
+	payload, err := c.fetchJSONAPIPages(ctx, path, "resolution center threads")
+	if err != nil {
+		return nil, err
+	}
+	return decodeResolutionCenterThreads(payload.Data), nil
+}
+
+// GetResolutionCenterDraftMessage returns the unsent draft reply on a thread,
+// or nil when the thread has no draft. Apple reports an absent draft either as
+// a null data member or as a 404 on the relationship, so both mean "no draft"
+// rather than an error.
+func (c *Client) GetResolutionCenterDraftMessage(ctx context.Context, threadID string, plainText bool) (*ResolutionCenterDraftMessage, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return nil, fmt.Errorf("thread id is required")
+	}
+	query := url.Values{}
+	query.Set("include", reviewDraftMessageInclude)
+	query.Set("limit[resolutionCenterMessageAttachments]", "1000")
+	path := queryPath("/resolutionCenterThreads/"+url.PathEscape(threadID)+"/resolutionCenterDraftMessage", query)
+
+	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var payload jsonAPISingleResourcePayload
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse resolution center draft message response: %w", err)
+	}
+	trimmedData := bytes.TrimSpace(payload.Data)
+	if len(trimmedData) == 0 || bytes.Equal(trimmedData, []byte("null")) {
+		return nil, nil
+	}
+	var resource jsonAPIResource
+	if err := json.Unmarshal(trimmedData, &resource); err != nil {
+		return nil, fmt.Errorf("failed to parse resolution center draft message response: %w", err)
+	}
+	return decodeResolutionCenterDraftMessage(resource, payload.Included, threadID, plainText), nil
+}
+
+func decodeResolutionCenterDraftMessage(resource jsonAPIResource, included []jsonAPIResource, threadID string, plainText bool) *ResolutionCenterDraftMessage {
+	includedMap := buildIncludedMap(included)
+	draft := &ResolutionCenterDraftMessage{
+		ID:          strings.TrimSpace(resource.ID),
+		ThreadID:    strings.TrimSpace(threadID),
+		CreatedDate: stringAttr(resource.Attributes, "createdDate"),
+		MessageBody: stringAttr(resource.Attributes, "messageBody"),
+		FromActor:   actorFromRef(firstRelationshipRef(resource, "fromActor"), includedMap),
+	}
+	if plainText {
+		draft.MessageBodyPlain = htmlToPlainText(draft.MessageBody)
+	}
+	attachments := make([]ReviewAttachment, 0)
+	for _, ref := range relationshipRefs(resource, "resolutionCenterMessageAttachments") {
+		attachmentResource, ok := includedMap[jsonAPIResourceKey(ref.Type, ref.ID)]
+		if !ok {
+			attachmentResource = jsonAPIResource{ID: ref.ID, Type: ref.Type}
+		}
+		attachment := attachmentFromResource(attachmentResource, false)
+		attachment.ThreadID = draft.ThreadID
+		attachment.MessageID = draft.ID
+		attachments = append(attachments, attachment)
+	}
+	if len(attachments) > 0 {
+		draft.Attachments = attachments
+	}
+	return draft
 }
 
 func decodeResolutionCenterMessages(resources []jsonAPIResource, included []jsonAPIResource, plainText bool) []ResolutionCenterMessage {
