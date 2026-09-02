@@ -180,12 +180,16 @@ func summarizeSubmissionItemRelated(related []webcore.ReviewSubmissionItemRelati
 	}
 	parts := make([]string, 0, len(related))
 	for _, relation := range related {
-		parts = append(parts, fmt.Sprintf(
+		part := fmt.Sprintf(
 			"%s:%s:%s",
 			normalizeReviewShowValue(relation.Relationship),
 			normalizeReviewShowValue(relation.Type),
 			normalizeReviewShowValue(relation.ID),
-		))
+		)
+		if label := strings.TrimSpace(relation.Label); label != "" {
+			part += ":" + normalizeReviewShowValue(label)
+		}
+		parts = append(parts, part)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -216,6 +220,37 @@ func summarizeReasonForTable(reason webcore.ReviewRejectionReason) string {
 		normalizeReviewShowValue(reason.ReasonSection),
 		normalizeReviewShowValue(reason.ReasonDescription),
 	)
+}
+
+func summarizeRelatedResource(related webcore.ReviewRelatedResource) string {
+	label := strings.TrimSpace(related.Label)
+	if label == "" {
+		label = related.ID
+	}
+	typeName := strings.TrimSpace(related.Type)
+	if typeName == "" {
+		typeName = related.Relationship
+	}
+	return strings.TrimSpace(typeName + " " + label)
+}
+
+func summarizeRejectionArtifacts(related []webcore.ReviewRelatedResource) string {
+	if len(related) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(related))
+	for _, item := range related {
+		parts = append(parts, summarizeRelatedResource(item))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatRejectionReasonRow(rejection webcore.ReviewRejection, reason webcore.ReviewRejectionReason) string {
+	summary := summarizeReasonForTable(reason)
+	if artifacts := summarizeRejectionArtifacts(rejection.Related); artifacts != "" {
+		return "artifact=" + artifacts + " " + summary
+	}
+	return summary
 }
 
 func countReviewMessages(threads []reviewThreadDetails) int {
@@ -304,7 +339,7 @@ func buildReviewShowTableRows(payload reviewShowOutput) [][]string {
 				addRow(
 					"Rejections",
 					fmt.Sprintf("Reason %d", reasonIndex),
-					summarizeReasonForTable(webcore.ReviewRejectionReason{}),
+					formatRejectionReasonRow(rejection, webcore.ReviewRejectionReason{}),
 				)
 				continue
 			}
@@ -313,7 +348,7 @@ func buildReviewShowTableRows(payload reviewShowOutput) [][]string {
 				addRow(
 					"Rejections",
 					fmt.Sprintf("Reason %d", reasonIndex),
-					summarizeReasonForTable(reason),
+					formatRejectionReasonRow(rejection, reason),
 				)
 			}
 		}

@@ -836,13 +836,96 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
           WINGET_FORK_OWNER: ${{ vars.WINGET_FORK_OWNER }}
+          WINGET_RETRY_ATTEMPTS: "5"
+          WINGET_RETRY_BASE_DELAY: "10"
+          WINGET_RETRY_MAX_DELAY: "120"
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::error::WINGET_GITHUB_TOKEN not set; create a token that can fork/push to winget-pkgs and open PRs"
             exit 1
           fi
 
-          AUTH_LOGIN=$(gh api user --jq .login)
+          # Only GitHub throttling and transient transport failures are worth a
+          # retry. Auth, permission, validation, and not-found errors fail fast.
+          # Go's net package prefixes every socket-level failure (DNS, routing,
+          # connect, read, write) with `dial|read|write tcp`, and libcurl reports
+          # its transport-class failures with a numeric code, so match those
+          # families instead of enumerating individual messages.
+          is_transient_failure() {
+            grep -qiE \
+              -e 'rate[ -]?limit' \
+              -e 'abuse detection' \
+              -e 'HTTP (408|429|5[0-9][0-9])' \
+              -e 'returned error: (408|429|5[0-9][0-9])' \
+              -e 'Too Many Requests|Service Unavailable|Bad Gateway|Gateway Timeout|temporarily unavailable' \
+              -e '(dial|read|write) tcp|Temporary failure in name resolution' \
+              -e 'curl (5|6|7|16|18|28|35|52|55|56) ' \
+              -e 'Could not resolve (host|proxy)|Failed to connect|Connection (refused|reset|timed out)|broken pipe' \
+              -e 'Operation timed out|i/o timeout|TLS handshake timeout' \
+              -e 'SSL_(read|write|connect)|SSL_ERROR_(SYSCALL|ZERO_RETURN)|gnutls_handshake|Recv failure|Empty reply from server' \
+              -e 'Failure when receiving data|transfer closed with outstanding read data' \
+              -e '(^|[^[:alnum:]_])EOF([^[:alnum:]_]|$)|remote end hung up unexpectedly|RPC failed|unexpected disconnect' \
+              "$1"
+          }
+
+          # retry_transient <command...>: run a gh or git network call with bounded
+          # exponential backoff and jitter. Stdout is forwarded only from the
+          # attempt that succeeds (or the final failure) so callers can capture it.
+          retry_transient() {
+            local attempt=1 rc delay pause label stdout_file stderr_file
+            label="$1${2:+ $2}${3:+ $3}"
+            stdout_file=$(mktemp)
+            stderr_file=$(mktemp)
+            while :; do
+              rc=0
+              "$@" >"$stdout_file" 2>"$stderr_file" || rc=$?
+              cat "$stderr_file" >&2
+              if [ "$rc" -eq 0 ]; then
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return 0
+              fi
+              if ! is_transient_failure "$stderr_file"; then
+                echo "retry_transient: '${label}' failed (exit ${rc}) with a non-transient error; not retrying" >&2
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return "$rc"
+              fi
+              if [ "$attempt" -ge "${WINGET_RETRY_ATTEMPTS:-5}" ]; then
+                # The caller decides whether this is fatal, so annotate as a warning.
+                echo "::warning::'${label}' still failing after ${attempt} attempts (exit ${rc}); giving up" >&2
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return "$rc"
+              fi
+              delay=$(( ${WINGET_RETRY_BASE_DELAY:-10} * (1 << (attempt - 1)) ))
+              if [ "$delay" -gt "${WINGET_RETRY_MAX_DELAY:-120}" ]; then
+                delay=${WINGET_RETRY_MAX_DELAY:-120}
+              fi
+              pause=$(( delay + RANDOM % (delay / 2 + 1) ))
+              echo "::warning::'${label}' hit a GitHub rate limit or transient failure (exit ${rc}); attempt ${attempt}/${WINGET_RETRY_ATTEMPTS:-5}, retrying in ${pause}s" >&2
+              sleep "$pause"
+              attempt=$((attempt + 1))
+            done
+          }
+
+          # Reading rate_limit does not count against quota; log it so a throttled
+          # run is diagnosable from the job log instead of an opaque gh failure.
+          log_rate_limit() {
+            local snapshot
+            if ! snapshot=$(gh api rate_limit --jq '.resources | to_entries[] | select(.key == "core" or .key == "graphql" or .key == "search") | "\(.key): \(.value.remaining)/\(.value.limit) remaining, resets at \(.value.reset | todate)"' 2>&1); then
+              echo "::warning::Could not read the GitHub API rate limit for the WinGet token: ${snapshot}"
+              return 0
+            fi
+            echo "GitHub API rate limit for the WinGet token:"
+            echo "${snapshot}"
+            if printf '%s\n' "${snapshot}" | grep -qE ': 0/'; then
+              echo "::warning::The WinGet token has exhausted a GitHub API rate limit; submission calls will back off and retry, and the job can be re-run after the reset time above"
+            fi
+          }
+          log_rate_limit
+
+          AUTH_LOGIN=$(retry_transient gh api user --jq .login)
           if [ -z "$WINGET_FORK_OWNER" ]; then
             WINGET_FORK_OWNER="${AUTH_LOGIN}"
           fi
@@ -850,34 +933,44 @@ jobs:
           BRANCH="rorkai-asc-${VERSION}"
           MANIFEST_SOURCE="${PWD}/winget-output/manifests/r/Rorkai/ASC/${VERSION}"
 
-          if ! gh repo view "${WINGET_FORK_OWNER}/winget-pkgs" >/dev/null 2>&1; then
+          if ! retry_transient gh repo view "${WINGET_FORK_OWNER}/winget-pkgs" >/dev/null; then
+            # Forking is idempotent on GitHub's side: an existing fork is returned as is.
             if [ "${WINGET_FORK_OWNER}" = "${AUTH_LOGIN}" ]; then
-              gh repo fork microsoft/winget-pkgs --clone=false
+              retry_transient gh repo fork microsoft/winget-pkgs --clone=false
             else
-              gh repo fork microsoft/winget-pkgs --org "${WINGET_FORK_OWNER}" --clone=false
+              retry_transient gh repo fork microsoft/winget-pkgs --org "${WINGET_FORK_OWNER}" --clone=false
             fi
           fi
 
-          git clone --filter=blob:none --sparse "https://x-access-token:${GH_TOKEN}@github.com/${WINGET_FORK_OWNER}/winget-pkgs.git" winget-pkgs
+          # A clone interrupted by a throttle leaves a partial directory behind, so
+          # every attempt starts from scratch. Keep the token out of retry log lines.
+          clone_winget_fork() {
+            rm -rf winget-pkgs &&
+              git clone --filter=blob:none --sparse "https://x-access-token:${GH_TOKEN}@github.com/${WINGET_FORK_OWNER}/winget-pkgs.git" winget-pkgs
+          }
+          retry_transient clone_winget_fork
           cd winget-pkgs
           git remote add upstream https://github.com/microsoft/winget-pkgs.git
-          git fetch origin master
-          git fetch upstream master
+          retry_transient git fetch origin master
+          retry_transient git fetch upstream master
           if ! git merge-base --is-ancestor origin/master upstream/master; then
             echo "::error::The WinGet fork master branch is not an ancestor of upstream/master"
             exit 1
           fi
 
-          git fetch origin "${BRANCH}:refs/remotes/origin/${BRANCH}" || true
+          retry_transient git fetch origin "${BRANCH}:refs/remotes/origin/${BRANCH}" || true
           BRANCH_EXISTS=0
+          # The blob:none clone fetches missing objects lazily, so checkout and
+          # sparse-checkout are network calls too. -B keeps a retried checkout
+          # idempotent when the first attempt created the branch before failing.
           if git show-ref --verify --quiet "refs/remotes/origin/${BRANCH}"; then
             BRANCH_EXISTS=1
-            git checkout -B "${BRANCH}" "origin/${BRANCH}"
+            retry_transient git checkout -B "${BRANCH}" "origin/${BRANCH}"
           else
             # Avoid requiring workflow scope when the upstream repository has newer workflow files.
-            git checkout -b "${BRANCH}" origin/master
+            retry_transient git checkout -B "${BRANCH}" origin/master
           fi
-          git sparse-checkout set "manifests/r/Rorkai/ASC"
+          retry_transient git sparse-checkout set "manifests/r/Rorkai/ASC"
 
           verify_winget_scope() {
             unexpected_paths=()
@@ -899,7 +992,11 @@ jobs:
           if [ -d manifests/r/Rorkai/ASC ] && find manifests/r/Rorkai/ASC -mindepth 1 -maxdepth 1 -type d | grep -q .; then
             PR_KIND="New version"
           fi
-          OPEN_PACKAGE_PRS=$(gh pr list --repo microsoft/winget-pkgs --state open --search "Rorkai.ASC in:title" --json headRefName --jq "[.[] | select(.headRefName != \"${BRANCH}\")] | length" || echo "0")
+          # Best-effort count: an exhausted lookup must still yield a number.
+          OPEN_PACKAGE_PRS=$(retry_transient gh pr list --repo microsoft/winget-pkgs --state open --search "Rorkai.ASC in:title" --json headRefName --jq "[.[] | select(.headRefName != \"${BRANCH}\")] | length") || OPEN_PACKAGE_PRS=""
+          case "${OPEN_PACKAGE_PRS}" in
+            ''|*[!0-9]*) OPEN_PACKAGE_PRS="0" ;;
+          esac
           if [ "${PR_KIND}" = "New package" ] && [ "${OPEN_PACKAGE_PRS}" != "0" ]; then
             PR_KIND="New version"
           fi
@@ -919,22 +1016,37 @@ jobs:
           else
             git commit -m "${PR_KIND}: Rorkai.ASC version ${VERSION}"
             verify_winget_scope
+            # Re-pushing an already-pushed branch is a no-op, so a retry after a
+            # lost response cannot rewrite history.
             if [ "${BRANCH_EXISTS}" = "1" ]; then
-              git push origin "${BRANCH}"
+              retry_transient git push origin "${BRANCH}"
             else
-              git push --set-upstream origin "${BRANCH}"
+              retry_transient git push --set-upstream origin "${BRANCH}"
             fi
           fi
 
-          if gh pr list --repo microsoft/winget-pkgs --state open --search "Rorkai.ASC version ${VERSION} in:title" --json number --jq '.[0].number // empty' | grep -q .; then
-            echo "WinGet PR already exists for Rorkai.ASC ${VERSION}."
-          elif gh pr list --repo microsoft/winget-pkgs --head "${WINGET_FORK_OWNER}:${BRANCH}" --json number --jq '.[0].number // empty' | grep -q .; then
-            echo "WinGet PR already exists for ${VERSION}."
-          else
+          # The existence checks run inside the retried unit so a create attempt
+          # whose response was lost is detected on the next attempt instead of
+          # opening a duplicate microsoft/winget-pkgs PR.
+          submit_winget_pr() {
+            local existing_pr
+            existing_pr=$(gh pr list --repo microsoft/winget-pkgs --state open --search "Rorkai.ASC version ${VERSION} in:title" --json number --jq '.[0].number // empty') || return $?
+            if [ -n "${existing_pr}" ]; then
+              echo "WinGet PR already exists for Rorkai.ASC ${VERSION}."
+              return 0
+            fi
+            # gh pr list --head only accepts a bare branch name, so the cross-fork
+            # lookup goes through the REST head filter (owner:branch).
+            existing_pr=$(gh api "repos/microsoft/winget-pkgs/pulls?state=open&head=${WINGET_FORK_OWNER}:${BRANCH}" --jq '.[0].number // empty') || return $?
+            if [ -n "${existing_pr}" ]; then
+              echo "WinGet PR already exists for ${VERSION}."
+              return 0
+            fi
             gh pr create \
               --repo microsoft/winget-pkgs \
               --base master \
               --head "${WINGET_FORK_OWNER}:${BRANCH}" \
               --title "${PR_KIND}: Rorkai.ASC version ${VERSION}" \
               --body "Adds Rorkai.ASC ${VERSION} from https://github.com/rorkai/App-Store-Connect-CLI/releases/tag/${VERSION}."
-          fi
+          }
+          retry_transient submit_winget_pr
