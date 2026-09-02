@@ -38,6 +38,7 @@ func webSubscriptionMonthlyCommitmentBootstrapRows(result *WebSubscriptionMonthl
 			"Prices Created",
 			"Verified",
 			"Completed Stage",
+			"Failure",
 		}, [][]string{{
 			result.SubscriptionID,
 			result.Territory,
@@ -46,5 +47,6 @@ func webSubscriptionMonthlyCommitmentBootstrapRows(result *WebSubscriptionMonthl
 			fmt.Sprintf("%t", result.PricesCreated),
 			fmt.Sprintf("%t", result.Verified),
 			result.CompletedStage,
+			result.Failure,
 		}}
 }

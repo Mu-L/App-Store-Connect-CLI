@@ -12,10 +12,20 @@ func TestWebSubscriptionMonthlyCommitmentBootstrapRows(t *testing.T) {
 		Verified:            true,
 		CompletedStage:      WebMonthlyCommitmentStageVerified,
 	})
-	if len(headers) != 7 || len(rows) != 1 {
+	if len(headers) != 8 || len(rows) != 1 {
 		t.Fatalf("headers=%d rows=%d", len(headers), len(rows))
 	}
 	if rows[0][0] != "sub-1" || rows[0][5] != "true" || rows[0][6] != WebMonthlyCommitmentStageVerified {
 		t.Fatalf("unexpected row: %#v", rows[0])
+	}
+}
+
+func TestWebSubscriptionMonthlyCommitmentBootstrapRowsIncludeFailure(t *testing.T) {
+	_, rows := webSubscriptionMonthlyCommitmentBootstrapRows(&WebSubscriptionMonthlyCommitmentBootstrapResult{
+		CompletedStage: WebMonthlyCommitmentStagePrices,
+		Failure:        "UPFRONT price record for NOR did not match price point upfront-point",
+	})
+	if rows[0][7] != "UPFRONT price record for NOR did not match price point upfront-point" {
+		t.Fatalf("failure column = %q", rows[0][7])
 	}
 }

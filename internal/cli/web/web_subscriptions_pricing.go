@@ -217,11 +217,10 @@ resolution but does not mutate App Store Connect.
 				StartDate:            scheduledDate,
 				PreserveCurrentPrice: *preserveCurrentPrice,
 			}
-			var prices *webcore.SubscriptionPlanPricesResult
 			if scheduledDate == "" {
-				prices, err = createWebSubscriptionPlanPricesFn(requestCtx, client, id, upfrontID, monthlyID)
+				_, err = createWebSubscriptionPlanPricesFn(requestCtx, client, id, upfrontID, monthlyID)
 			} else {
-				prices, err = setWebSubscriptionPlanPricesFn(requestCtx, client, id, []webcore.SubscriptionPlanPrice{
+				_, err = setWebSubscriptionPlanPricesFn(requestCtx, client, id, []webcore.SubscriptionPlanPrice{
 					{PlanType: "UPFRONT", PricePointID: upfrontID, StartDate: scheduledDate, PreserveCurrentPrice: *preserveCurrentPrice},
 					{PlanType: "MONTHLY", PricePointID: monthlyID, StartDate: scheduledDate, PreserveCurrentPrice: *preserveCurrentPrice},
 				})
@@ -233,14 +232,6 @@ resolution but does not mutate App Store Connect.
 			}
 			result.PricesCreated = true
 			result.CompletedStage = asc.WebMonthlyCommitmentStagePrices
-			if prices != nil {
-				if strings.TrimSpace(prices.UpfrontPricePointID) != "" {
-					result.UpfrontPricePointID = prices.UpfrontPricePointID
-				}
-				if strings.TrimSpace(prices.MonthlyPricePointID) != "" {
-					result.MonthlyPricePointID = prices.MonthlyPricePointID
-				}
-			}
 			if verifyErr := verifyMonthlyCommitmentBootstrap(requestCtx, client, result); verifyErr != nil {
 				result.Failure = verifyErr.Error()
 				return printMonthlyCommitmentBootstrapReceipt(result, *output.Output, *output.Pretty, verifyErr)
@@ -362,7 +353,7 @@ func verifyMonthlyCommitmentBootstrap(ctx context.Context, client *webcore.Clien
 	if strings.TrimSpace(result.PlanAvailabilityID) != "" && !strings.EqualFold(strings.TrimSpace(monthlyAvailability.ID), strings.TrimSpace(result.PlanAvailabilityID)) {
 		return fmt.Errorf("MONTHLY plan availability %q does not match written id %q", monthlyAvailability.ID, result.PlanAvailabilityID)
 	}
-	if availabilityExcludesTerritory(monthlyAvailability, result.Territory) {
+	if !monthlyAvailability.AvailableTerritoriesLoaded || !containsTerritory(monthlyAvailability.AvailableTerritories, result.Territory) {
 		return fmt.Errorf("MONTHLY plan availability %q does not include %s after write", monthlyAvailability.ID, result.Territory)
 	}
 
@@ -371,16 +362,11 @@ func verifyMonthlyCommitmentBootstrap(ctx context.Context, client *webcore.Clien
 		return fmt.Errorf("read back subscription prices: %w", err)
 	}
 	startDate := webcore.NormalizeSubscriptionPriceStartDate(result.StartDate)
-	upfrontPrice, ok := webcore.FindSubscriptionPrice(prices, "UPFRONT", result.Territory, result.UpfrontPricePointID, startDate)
-	if !ok {
+	if _, ok := webcore.FindSubscriptionPrice(prices, "UPFRONT", result.Territory, result.UpfrontPricePointID, startDate); !ok {
 		return fmt.Errorf("UPFRONT price record for %s did not match price point %s", result.Territory, result.UpfrontPricePointID)
 	}
-	monthlyPrice, ok := webcore.FindSubscriptionPrice(prices, "MONTHLY", result.Territory, result.MonthlyPricePointID, startDate)
-	if !ok {
+	if _, ok := webcore.FindSubscriptionPrice(prices, "MONTHLY", result.Territory, result.MonthlyPricePointID, startDate); !ok {
 		return fmt.Errorf("MONTHLY price record for %s did not match price point %s", result.Territory, result.MonthlyPricePointID)
-	}
-	if startDate != "" && result.PreserveCurrentPrice && (!upfrontPrice.Preserved || !monthlyPrice.Preserved) {
-		return fmt.Errorf("paired price records for %s did not preserve the current price", result.Territory)
 	}
 	return nil
 }

@@ -76,3 +76,74 @@ func TestVerifyMonthlyCommitmentBootstrapRejectsStalePricePoints(t *testing.T) {
 		t.Fatal("expected stale price points to fail verification")
 	}
 }
+
+func TestVerifyMonthlyCommitmentBootstrapRequiresConfirmedTerritory(t *testing.T) {
+	origListAvailability := listWebSubscriptionPlanAvailabilitiesFn
+	origListPrices := listWebSubscriptionPricesFn
+	t.Cleanup(func() {
+		listWebSubscriptionPlanAvailabilitiesFn = origListAvailability
+		listWebSubscriptionPricesFn = origListPrices
+	})
+	listWebSubscriptionPricesFn = func(ctx context.Context, client *webcore.Client, subscriptionID, territory string) ([]webcore.SubscriptionPrice, error) {
+		t.Fatal("price readback should not run when territory inclusion is unconfirmed")
+		return nil, nil
+	}
+	listWebSubscriptionPlanAvailabilitiesFn = func(ctx context.Context, client *webcore.Client, subscriptionID string) ([]webcore.SubscriptionPlanAvailability, error) {
+		return []webcore.SubscriptionPlanAvailability{{
+			ID:       "plan-monthly",
+			PlanType: "MONTHLY",
+		}}, nil
+	}
+	err := verifyMonthlyCommitmentBootstrap(context.Background(), &webcore.Client{}, asc.WebSubscriptionMonthlyCommitmentBootstrapResult{
+		SubscriptionID:     "sub-1",
+		Territory:          "NOR",
+		PlanAvailabilityID: "plan-monthly",
+	})
+	if err == nil {
+		t.Fatal("expected unverified result when territory inclusion is not confirmed")
+	}
+}
+
+func TestVerifyMonthlyCommitmentBootstrapIgnoresCreatePreserveOption(t *testing.T) {
+	origListAvailability := listWebSubscriptionPlanAvailabilitiesFn
+	origListPrices := listWebSubscriptionPricesFn
+	t.Cleanup(func() {
+		listWebSubscriptionPlanAvailabilitiesFn = origListAvailability
+		listWebSubscriptionPricesFn = origListPrices
+	})
+	listWebSubscriptionPlanAvailabilitiesFn = func(ctx context.Context, client *webcore.Client, subscriptionID string) ([]webcore.SubscriptionPlanAvailability, error) {
+		return []webcore.SubscriptionPlanAvailability{{
+			ID:                         "plan-monthly",
+			PlanType:                   "MONTHLY",
+			AvailableTerritories:       []string{"NOR"},
+			AvailableTerritoriesLoaded: true,
+		}}, nil
+	}
+	listWebSubscriptionPricesFn = func(ctx context.Context, client *webcore.Client, subscriptionID, territory string) ([]webcore.SubscriptionPrice, error) {
+		return []webcore.SubscriptionPrice{{
+			PlanType:     "UPFRONT",
+			Territory:    "NOR",
+			PricePointID: "upfront-point",
+			StartDate:    "2026-07-01",
+			Preserved:    false,
+		}, {
+			PlanType:     "MONTHLY",
+			Territory:    "NOR",
+			PricePointID: "monthly-point",
+			StartDate:    "2026-07-01",
+			Preserved:    false,
+		}}, nil
+	}
+	err := verifyMonthlyCommitmentBootstrap(context.Background(), &webcore.Client{}, asc.WebSubscriptionMonthlyCommitmentBootstrapResult{
+		SubscriptionID:       "sub-1",
+		Territory:            "NOR",
+		PlanAvailabilityID:   "plan-monthly",
+		UpfrontPricePointID:  "upfront-point",
+		MonthlyPricePointID:  "monthly-point",
+		StartDate:            "2026-07-01",
+		PreserveCurrentPrice: true,
+	})
+	if err != nil {
+		t.Fatalf("preserveCurrentPrice create option must not be compared with preserved state: %v", err)
+	}
+}
