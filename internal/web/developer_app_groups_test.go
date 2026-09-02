@@ -1041,6 +1041,76 @@ func TestSetDeveloperAppGroupsSettlesAmbiguousWriteFailure(t *testing.T) {
 	}
 }
 
+func TestSetDeveloperAppGroupsDoesNotSettleCSRFPrimeFailure(t *testing.T) {
+	seen := 0
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		seen = requestNumber
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1"), nil), nil
+		case 3:
+			// No PATCH was sent, so nothing about the write is ambiguous.
+			return abortDeveloperPortalResponse()
+		default:
+			t.Fatalf("a failed CSRF prime must not be followed by request %d (%s %s)", requestNumber, request.Method, request.URL.Path)
+			return nil, nil
+		}
+	})
+	_, err := client.SetDeveloperAppGroups(context.Background(), DeveloperAppGroupSetRequest{BundleID: "bundle-1", GroupIDs: []string{"GROUP2"}})
+	if err == nil || !strings.Contains(err.Error(), "request to Developer Portal failed") {
+		t.Fatalf("expected the plain transport error, got %v", err)
+	}
+	var unverified *DeveloperAppGroupUnverifiedError
+	if errors.As(err, &unverified) {
+		t.Fatalf("CSRF prime failure must stay retry-safe, got unverified error: %v", err)
+	}
+	if seen != 3 {
+		t.Fatalf("expected 3 requests, saw %d", seen)
+	}
+}
+
+func TestSetDeveloperAppGroupsRejectsUnsafeBundleIDGraphs(t *testing.T) {
+	for name, test := range map[string]struct {
+		body string
+		want string
+	}{
+		"padded resource id": {
+			body: strings.Replace(developerBundleAppGroupsFixture(true, "GROUP1"), `"id":"bundle-1"`, `"id":" bundle-1 "`, 1),
+			want: "returned resource",
+		},
+		"included capability not referenced by the bundle": {
+			body: `{
+				"data":{"type":"bundleIds","id":"bundle-1","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}},
+				"included":[
+					{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[{"type":"appGroups","id":"GROUP1"}]}}},
+					{"type":"bundleIdCapabilities","id":"foreign-push","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"PUSH_NOTIFICATIONS"}}}}
+				]
+			}`,
+			want: "foreign-push",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+				switch requestNumber {
+				case 1:
+					return assertDeveloperPortalBootstrap(t, request), nil
+				case 2:
+					return developerPortalTestResponse(http.StatusOK, test.body, nil), nil
+				default:
+					t.Fatalf("unsafe graph must not lead to request %d (%s %s)", requestNumber, request.Method, request.URL.Path)
+					return nil, nil
+				}
+			})
+			_, err := client.SetDeveloperAppGroups(context.Background(), DeveloperAppGroupSetRequest{BundleID: "bundle-1", GroupIDs: []string{"GROUP2"}})
+			if err == nil || !strings.Contains(err.Error(), "cannot safely update") || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected cannot-safely-update error mentioning %q, got %v", test.want, err)
+			}
+		})
+	}
+}
+
 func TestDeleteDeveloperAppGroupSettlesAmbiguousWriteFailure(t *testing.T) {
 	tests := map[string]struct {
 		write        func() (*http.Response, error)

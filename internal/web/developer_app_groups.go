@@ -753,7 +753,13 @@ func (c *Client) SetDeveloperAppGroups(ctx context.Context, request DeveloperApp
 // unverified.
 func (c *Client) applyDeveloperAppGroups(ctx context.Context, current developerBundleIDResponse, before developerAppGroupsState, enabled bool, desired []string) error {
 	bundleID := current.Data.ID
-	writeErr := c.patchDeveloperAppGroups(ctx, current, enabled, desired)
+	payload, err := c.prepareDeveloperAppGroupsPatch(ctx, current, enabled, desired)
+	if err != nil {
+		// Nothing was sent yet, so this failure is plainly retry-safe and must
+		// not be settled as an ambiguous write.
+		return err
+	}
+	_, writeErr := c.doDeveloperPortalRequest(ctx, http.MethodPatch, "/bundleIds/"+url.PathEscape(bundleID), payload, developerPortalHeaders(bundleID), true)
 	if writeErr == nil {
 		return c.verifyDeveloperAppGroups(ctx, bundleID, enabled, desired)
 	}
@@ -774,32 +780,28 @@ func (c *Client) applyDeveloperAppGroups(ctx context.Context, current developerB
 	}
 }
 
-func (c *Client) patchDeveloperAppGroups(ctx context.Context, current developerBundleIDResponse, enabled bool, desired []string) error {
+// prepareDeveloperAppGroupsPatch builds the PATCH body and primes the CSRF
+// tokens it needs without sending the write itself.
+func (c *Client) prepareDeveloperAppGroupsPatch(ctx context.Context, current developerBundleIDResponse, enabled bool, desired []string) (developerBundleIDPatchRequest, error) {
 	payload, err := buildDeveloperAppGroupsPatchRequest(current, enabled, desired)
 	if err != nil {
-		return err
+		return developerBundleIDPatchRequest{}, err
 	}
 	if err := c.primeDeveloperAppGroupCSRF(ctx); err != nil {
-		return err
+		return developerBundleIDPatchRequest{}, err
 	}
-	payload, err = addDeveloperPortalTeamID(payload, c.developerPortalTeamID())
-	if err != nil {
-		return err
-	}
-	bundleID := current.Data.ID
-	_, err = c.doDeveloperPortalRequest(ctx, http.MethodPatch, "/bundleIds/"+url.PathEscape(bundleID), payload, developerPortalHeaders(bundleID), true)
-	return err
+	return addDeveloperPortalTeamID(payload, c.developerPortalTeamID())
 }
 
 // loadDeveloperBundleIDAppGroups reads one Bundle ID for an App Group mutation
-// and rejects a response whose resource ID differs from the requested one, so
+// and rejects a response whose resource ID is not exactly the requested one, so
 // the follow-up PATCH can never target a Bundle ID the caller did not name.
 func (c *Client) loadDeveloperBundleIDAppGroups(ctx context.Context, bundleID string) (developerBundleIDResponse, developerAppGroupsState, error) {
 	current, err := c.loadDeveloperBundleID(ctx, bundleID)
 	if err != nil {
 		return developerBundleIDResponse{}, developerAppGroupsState{}, err
 	}
-	if strings.TrimSpace(current.Data.ID) != bundleID {
+	if current.Data.ID != bundleID {
 		return developerBundleIDResponse{}, developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: Developer Portal returned resource %q instead", bundleID, current.Data.ID)
 	}
 	state, err := developerBundleIDAppGroupsState(current)
@@ -963,6 +965,21 @@ func developerBundleIDAppGroupsState(current developerBundleIDResponse) (develop
 	// conflicting duplicates must be rejected before the graph is rebuilt.
 	if _, err := indexDeveloperCapabilityResources(current.Included); err != nil {
 		return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: %w", current.Data.ID, err)
+	}
+	// developerBundleIDCapabilities also carries included capabilities the
+	// primary resource never referenced into the replacement PATCH; for this
+	// Bundle ID that would attach a capability it does not own.
+	referenced := make(map[string]struct{}, len(references))
+	for _, reference := range references {
+		referenced[reference.ID] = struct{}{}
+	}
+	for _, resource := range current.Included {
+		if resource.Type != "bundleIdCapabilities" || strings.TrimSpace(resource.ID) == "" {
+			continue
+		}
+		if _, ok := referenced[resource.ID]; !ok {
+			return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: Developer Portal included capability %q that the Bundle ID does not reference", current.Data.ID, resource.ID)
+		}
 	}
 	capabilities, err := developerBundleIDCapabilities(current)
 	if err != nil {
