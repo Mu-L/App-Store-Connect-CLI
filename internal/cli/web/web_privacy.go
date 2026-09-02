@@ -169,6 +169,10 @@ type privacyMutationClient interface {
 	DeleteAppDataUsage(ctx context.Context, appDataUsageID string) error
 }
 
+type privacyUsageReader interface {
+	ListAppDataUsages(ctx context.Context, appID string) ([]webcore.AppDataUsage, error)
+}
+
 type privacyCatalogClient interface {
 	ListAppDataUsageCategories(ctx context.Context) ([]webcore.AppDataUsageCategory, error)
 	ListAppDataUsagePurposes(ctx context.Context) ([]webcore.AppDataUsagePurpose, error)
@@ -912,6 +916,21 @@ func executePrivacyStep(ctx context.Context, client privacyMutationClient, appID
 	default:
 		return "", fmt.Errorf("web privacy apply failed: unsupported action %q", step.Action)
 	}
+}
+
+// recheckPrivacyRemoteUsages re-reads remote usages on a fresh timeout budget.
+// The apply request context can already be past its deadline - a timeout is
+// exactly the failure where reconciliation matters most - so this derives a new
+// deadline from the command context while still honouring its cancellation.
+func recheckPrivacyRemoteUsages(ctx context.Context, client privacyUsageReader, appID string) ([]webcore.AppDataUsage, error) {
+	recheckCtx, cancel := shared.ContextWithTimeout(ctx)
+	defer cancel()
+	return withWebSpinnerValue(
+		"Re-reading privacy state after failure",
+		func() ([]webcore.AppDataUsage, error) {
+			return client.ListAppDataUsages(recheckCtx, appID)
+		},
+	)
 }
 
 // privacyApplyFailureMessage describes an interrupted apply without claiming
@@ -1937,12 +1956,7 @@ Examples:
 			}
 			if applyErr != nil {
 				recheck := privacyApplyRecheck{Performed: true}
-				remoteUsages, readErr := withWebSpinnerValue(
-					"Re-reading privacy state after failure",
-					func() ([]webcore.AppDataUsage, error) {
-						return client.ListAppDataUsages(requestCtx, resolvedAppID)
-					},
-				)
+				remoteUsages, readErr := recheckPrivacyRemoteUsages(ctx, client, resolvedAppID)
 				if readErr == nil {
 					remoteState := remoteStateFromDataUsages(remoteUsages)
 					result = resolvePrivacyApplyResult(result, remoteState)

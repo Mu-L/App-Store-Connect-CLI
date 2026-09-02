@@ -2168,3 +2168,52 @@ func TestPrivacyApplyFailureMessageDistinguishesNoConfirmedChange(t *testing.T) 
 		t.Fatalf("no-change message must carry the receipt counts: %q", nothing)
 	}
 }
+
+type recordingPrivacyUsageReader struct {
+	ctxErr      error
+	hadDeadline bool
+	called      bool
+}
+
+func (r *recordingPrivacyUsageReader) ListAppDataUsages(ctx context.Context, _ string) ([]webcore.AppDataUsage, error) {
+	r.called = true
+	r.ctxErr = ctx.Err()
+	_, r.hadDeadline = ctx.Deadline()
+	return []webcore.AppDataUsage{}, nil
+}
+
+func TestRecheckPrivacyRemoteUsagesUsesAFreshTimeoutBudget(t *testing.T) {
+	_ = stubWebProgressLabels(t)
+
+	// The apply request context can already be past its deadline when the
+	// mutation fails, so the recheck derives its own budget from the command
+	// context instead of inheriting the exhausted one.
+	reader := &recordingPrivacyUsageReader{}
+	if _, err := recheckPrivacyRemoteUsages(context.Background(), reader, "123456789"); err != nil {
+		t.Fatalf("recheckPrivacyRemoteUsages() error = %v", err)
+	}
+	if !reader.called {
+		t.Fatal("expected the recheck to reach the client")
+	}
+	if reader.ctxErr != nil {
+		t.Fatalf("recheck context must still be live, got %v", reader.ctxErr)
+	}
+	if !reader.hadDeadline {
+		t.Fatal("recheck context must carry its own deadline")
+	}
+}
+
+func TestRecheckPrivacyRemoteUsagesHonoursParentCancellation(t *testing.T) {
+	_ = stubWebProgressLabels(t)
+
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	reader := &recordingPrivacyUsageReader{}
+	if _, err := recheckPrivacyRemoteUsages(parent, reader, "123456789"); err != nil {
+		t.Fatalf("recheckPrivacyRemoteUsages() error = %v", err)
+	}
+	if reader.ctxErr == nil {
+		t.Fatal("a cancelled command context must still cancel the recheck")
+	}
+}
