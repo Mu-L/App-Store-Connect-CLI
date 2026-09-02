@@ -2142,3 +2142,29 @@ func TestWebPrivacyApplyTableReceiptSeparatesAppliedAndNotAppliedActions(t *test
 		t.Fatalf("every attempted action was resolved, so no unknown section belongs in:\n%s", stdout)
 	}
 }
+
+func TestPrivacyApplyFailureMessageDistinguishesNoConfirmedChange(t *testing.T) {
+	partial := privacyApplyFailureMessage("123456789", privacyApplyOutput{
+		Actions:           []privacyApplyAction{{Action: "update"}},
+		NotAppliedActions: []privacyApplyAction{{Action: "create"}},
+	})
+	if !strings.Contains(partial, "partially applied changes for app 123456789") {
+		t.Fatalf("unexpected partial message: %q", partial)
+	}
+	if !strings.Contains(partial, "1 committed, 0 unknown, 1 not applied") {
+		t.Fatalf("partial message must carry the receipt counts: %q", partial)
+	}
+
+	nothing := privacyApplyFailureMessage("123456789", privacyApplyOutput{
+		NotAppliedActions: []privacyApplyAction{{Action: "create"}, {Action: "delete"}},
+	})
+	if strings.Contains(nothing, "partially applied") {
+		t.Fatalf("an apply that committed nothing is not a partial apply: %q", nothing)
+	}
+	if !strings.Contains(nothing, "without a confirmed change") {
+		t.Fatalf("unexpected no-change message: %q", nothing)
+	}
+	if !strings.Contains(nothing, "0 committed, 0 unknown, 2 not applied") {
+		t.Fatalf("no-change message must carry the receipt counts: %q", nothing)
+	}
+}

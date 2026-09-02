@@ -914,6 +914,27 @@ func executePrivacyStep(ctx context.Context, client privacyMutationClient, appID
 	}
 }
 
+// privacyApplyFailureMessage describes an interrupted apply without claiming
+// more than the receipt proves: an apply that committed nothing is not a
+// partial apply.
+func privacyApplyFailureMessage(appID string, payload privacyApplyOutput) string {
+	summary := fmt.Sprintf(
+		"%d committed, %d unknown, %d not applied",
+		len(payload.Actions),
+		len(payload.UnknownActions),
+		len(payload.NotAppliedActions),
+	)
+	lead := fmt.Sprintf("web privacy apply partially applied changes for app %s", appID)
+	if len(payload.Actions) == 0 {
+		lead = fmt.Sprintf("web privacy apply failed for app %s without a confirmed change", appID)
+	}
+	return fmt.Sprintf(
+		"%s: %s; the receipt above lists each action, and rerunning the same command converges from current remote state",
+		lead,
+		summary,
+	)
+}
+
 // resolvePrivacyApplyResult reclassifies attempted-but-unconfirmed actions
 // using a fresh remote read. A 5xx can still have committed the write, so the
 // remote state is the only honest evidence.
@@ -1946,13 +1967,7 @@ Examples:
 				); renderErr != nil {
 					return renderErr
 				}
-				message := fmt.Sprintf(
-					"web privacy apply partially applied changes for app %s: %d committed, %d unknown, %d not applied; the receipt above lists each action, and rerunning the same command converges from current remote state",
-					resolvedAppID,
-					len(payload.Actions),
-					len(payload.UnknownActions),
-					len(payload.NotAppliedActions),
-				)
+				message := privacyApplyFailureMessage(resolvedAppID, payload)
 				fmt.Fprintf(os.Stderr, "Error: %s\n", shared.SanitizeTerminal(message))
 				return shared.NewReportedError(
 					shared.NewErrorWithCause(fmt.Errorf("%s", message), withWebAuthHint(applyErr, "web privacy apply")),
