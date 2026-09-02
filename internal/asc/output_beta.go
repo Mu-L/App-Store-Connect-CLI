@@ -321,6 +321,16 @@ type BetaTesterUsageTesterInfo struct {
 	InviteType string `json:"inviteType,omitempty"`
 }
 
+func betaTesterUsagesResponseTables(v *BetaTesterUsagesResponse, render func([]string, [][]string)) error {
+	page := &BetaTesterUsagesPage{}
+	if v != nil && len(v.Data) > 0 {
+		if err := json.Unmarshal(v.Data, page); err != nil {
+			return fmt.Errorf("parse tester usage metrics: %w", err)
+		}
+	}
+	return betaTesterUsagesPageTables(page, render)
+}
+
 func betaTesterUsagesPageTables(v *BetaTesterUsagesPage, render func([]string, [][]string)) error {
 	type metricEntry struct {
 		DataPoints []struct {
@@ -334,7 +344,7 @@ func betaTesterUsagesPageTables(v *BetaTesterUsagesPage, render func([]string, [
 		} `json:"dataPoints"`
 		Dimensions struct {
 			BetaTesters struct {
-				Data string `json:"data"`
+				Data *MetricDimensionData `json:"data"`
 			} `json:"betaTesters"`
 		} `json:"dimensions"`
 	}
@@ -344,15 +354,23 @@ func betaTesterUsagesPageTables(v *BetaTesterUsagesPage, render func([]string, [
 		}
 		return fmt.Sprintf("%d", *n)
 	}
+	if v == nil {
+		render([]string{"Tester ID", "Start", "End", "Sessions", "Crashes", "Feedback"}, nil)
+		return nil
+	}
 	rows := make([][]string, 0, len(v.Data))
-	for _, raw := range v.Data {
+	for i, raw := range v.Data {
 		var entry metricEntry
 		if err := json.Unmarshal(raw, &entry); err != nil {
-			continue
+			return fmt.Errorf("parse data[%d]: %w", i, err)
+		}
+		testerID := ""
+		if entry.Dimensions.BetaTesters.Data != nil {
+			testerID = strings.TrimSpace(entry.Dimensions.BetaTesters.Data.ID)
 		}
 		for _, point := range entry.DataPoints {
 			rows = append(rows, []string{
-				entry.Dimensions.BetaTesters.Data,
+				testerID,
 				point.Start,
 				point.End,
 				formatCount(point.Values.SessionCount),

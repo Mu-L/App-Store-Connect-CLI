@@ -361,14 +361,17 @@ func betaTesterUsageTesterIDs(rows []json.RawMessage) ([]string, error) {
 		var parsed struct {
 			Dimensions struct {
 				BetaTesters struct {
-					Data string `json:"data"`
+					Data *asc.MetricDimensionData `json:"data"`
 				} `json:"betaTesters"`
 			} `json:"dimensions"`
 		}
 		if err := json.Unmarshal(row, &parsed); err != nil {
 			return nil, fmt.Errorf("parse data[%d] dimensions: %w", i, err)
 		}
-		id := strings.TrimSpace(parsed.Dimensions.BetaTesters.Data)
+		if parsed.Dimensions.BetaTesters.Data == nil {
+			continue
+		}
+		id := strings.TrimSpace(parsed.Dimensions.BetaTesters.Data.ID)
 		if id == "" {
 			continue
 		}
