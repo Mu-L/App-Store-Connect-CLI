@@ -2624,6 +2624,7 @@ func restoreStaleSessionRetryHooks(t *testing.T) {
 	origWebLogin := webLoginFn
 	origWebLoginWithClient := webLoginWithClientFn
 	origPersistWebSession := persistWebSessionFn
+	origDeleteWebSession := deleteWebSessionFn
 	origOpenTTY := openTTYFn
 	origIsTerminal := termIsTerminalFn
 	origExpiredWriter := sessionExpiredWriter
@@ -2642,6 +2643,7 @@ func restoreStaleSessionRetryHooks(t *testing.T) {
 		webLoginFn = origWebLogin
 		webLoginWithClientFn = origWebLoginWithClient
 		persistWebSessionFn = origPersistWebSession
+		deleteWebSessionFn = origDeleteWebSession
 		openTTYFn = origOpenTTY
 		termIsTerminalFn = origIsTerminal
 		sessionExpiredWriter = origExpiredWriter
@@ -2675,6 +2677,10 @@ func restoreStaleSessionRetryHooks(t *testing.T) {
 		return &webcore.TwoFactorChallenge{Method: "trusted-device"}, nil
 	}
 	persistWebSessionFn = func(session *webcore.AuthSession) error { return nil }
+	deleteWebSessionFn = func(appleID string) error {
+		t.Fatalf("did not expect the cached session to be deleted for %q", appleID)
+		return nil
+	}
 }
 
 // Apple consumes the submitted 2FA code before the stale cached jar fails the
@@ -2755,6 +2761,12 @@ func TestResolveSessionFailsWhenConsumedTwoFactorCodeCannotBeReplaced(t *testing
 
 			cachedClient := &http.Client{}
 			staleSession := &webcore.AuthSession{}
+			var deletedAppleIDs []string
+
+			deleteWebSessionFn = func(appleID string) error {
+				deletedAppleIDs = append(deletedAppleIDs, appleID)
+				return nil
+			}
 
 			if tt.ttyAvailable {
 				tty, err := os.CreateTemp(t.TempDir(), "tty")
@@ -2803,6 +2815,12 @@ func TestResolveSessionFailsWhenConsumedTwoFactorCodeCannotBeReplaced(t *testing
 			}
 			if !strings.Contains(got, webTwoFactorCodeCommandEnv) {
 				t.Fatalf("expected the message to point at the 2fa code command, got %q", got)
+			}
+			if !strings.Contains(got, "discarded") {
+				t.Fatalf("expected the message to say the stale cached session was discarded, got %q", got)
+			}
+			if len(deletedAppleIDs) != 1 || deletedAppleIDs[0] != "user@example.com" {
+				t.Fatalf("expected the proven-stale cached session to be discarded once, got %v", deletedAppleIDs)
 			}
 		})
 	}

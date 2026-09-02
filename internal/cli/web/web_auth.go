@@ -686,8 +686,14 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 	canReplaceConsumedTwoFactorCode := func() bool {
 		return twoFactorCode == "" || command != ""
 	}
-	consumedTwoFactorCodeError := func(loginErr error) error {
-		return fmt.Errorf("%w; the supplied two-factor code was already consumed by the expired session, so re-run with a new code or configure --two-factor-code-command or %s to fetch one automatically", loginErr, webTwoFactorCodeCommandEnv)
+	// The cached jar is proven unusable once it fails the post-2FA bootstrap, so
+	// discard it before giving up. Leaving it on disk would make the next run
+	// reload the same jar, consume the replacement code, and fail identically.
+	consumedTwoFactorCodeError := func(loginErr error, targetAppleID string) error {
+		if deleteErr := deleteWebSessionFn(strings.TrimSpace(targetAppleID)); deleteErr != nil {
+			return fmt.Errorf("%w; the supplied two-factor code was already consumed by the expired session and the stale cached session could not be discarded (%w): run `asc web auth logout` before re-running with a new code", loginErr, deleteErr)
+		}
+		return fmt.Errorf("%w; the supplied two-factor code was already consumed by the expired session, so the stale cached session was discarded: re-run with a new code, or configure --two-factor-code-command or %s to fetch one automatically", loginErr, webTwoFactorCodeCommandEnv)
 	}
 
 	tryKnownSession := func(targetAppleID string) (*webcore.AuthSession, string, bool, error) {
@@ -752,7 +758,7 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 				return nil, "", false, fmt.Errorf("web auth auto-reauth failed: %w", loginErr)
 			}
 			if !canReplaceConsumedTwoFactorCode() {
-				return nil, "", false, fmt.Errorf("web auth auto-reauth failed: %w", consumedTwoFactorCodeError(loginErr))
+				return nil, "", false, fmt.Errorf("web auth auto-reauth failed: %w", consumedTwoFactorCodeError(loginErr, reauthAppleID))
 			}
 			twoFactorCodeConsumed = true
 		}
@@ -844,7 +850,7 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 		// while preserving the already-resolved password.
 		if twoFactorStarted {
 			if !canReplaceConsumedTwoFactorCode() {
-				return nil, consumedTwoFactorCodeError(err)
+				return nil, consumedTwoFactorCodeError(err, resolvedAppleID)
 			}
 			twoFactorCodeConsumed = true
 		}
