@@ -58,6 +58,11 @@ var afterStaplerInventoryNamesFn func()
 // nil.
 var afterStaplerInventoryEntriesFn func()
 
+// This narrow seam lets tests remove an entry after the scanner's first-pass
+// Lstat resolved it but before the entry is opened for recursion or hashing.
+// Production leaves it nil.
+var afterStaplerInventoryEntryLstatFn func(relative string)
+
 // staplerDirectoryInventory is deliberately private. It is comparison
 // evidence for a single invocation, not a public artifact description.
 type staplerDirectoryInventory struct {
@@ -495,6 +500,15 @@ func openStaplerInventoryDirectory(filesystemRoot *os.Root, relative string, exp
 	return current, info, nil
 }
 
+// staplerInventoryEntryVanished reports whether a filesystem failure observed
+// on an entry name that directory enumeration already resolved proves the entry
+// disappeared mid-scan. Observing a name and then failing to resolve it is
+// evidence that the bundle changed during the scan, so callers report the
+// identity-change signal instead of a generic operational scanner failure.
+func staplerInventoryEntryVanished(err error) bool {
+	return errors.Is(err, os.ErrNotExist)
+}
+
 type staplerInventoryScanner struct {
 	ctx             context.Context
 	treeHash        hash.Hash
@@ -528,20 +542,22 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 		}
 		info, err := directory.Lstat(name)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				// Enumeration already observed this name, so its disappearance
-				// before the first inspection proves the bundle changed during
-				// the scan rather than an operational filesystem failure. The
-				// second inspection pass classifies the same race identically.
+			if staplerInventoryEntryVanished(err) {
 				return errStaplerInventoryChanged
 			}
 			return fmt.Errorf("inspect inventory entry %q: %w", entryRelative, err)
 		}
 		initialEntries[name] = info
+		if scanner.runTestHooks && afterStaplerInventoryEntryLstatFn != nil {
+			afterStaplerInventoryEntryLstatFn(entryRelative)
+		}
 		switch {
 		case info.Mode()&os.ModeSymlink != 0:
 			target, err := directory.Readlink(name)
 			if err != nil {
+				if staplerInventoryEntryVanished(err) {
+					return errStaplerInventoryChanged
+				}
 				return fmt.Errorf("read inventory symlink %q: %w", entryRelative, err)
 			}
 			if !staplerContainedSymlinkTarget(entryRelative, target) {
@@ -687,6 +703,9 @@ func (scanner *staplerInventoryScanner) recordDirectory(parent *os.Root, name, r
 	}
 	opened, err := parent.OpenRoot(name)
 	if err != nil {
+		if staplerInventoryEntryVanished(err) {
+			return errStaplerInventoryChanged
+		}
 		return fmt.Errorf("open inventory directory %q: %w", relative, err)
 	}
 	defer opened.Close()
@@ -696,6 +715,9 @@ func (scanner *staplerInventoryScanner) recordDirectory(parent *os.Root, name, r
 	}
 	afterOpen, err := parent.Lstat(name)
 	if err != nil {
+		if staplerInventoryEntryVanished(err) {
+			return errStaplerInventoryChanged
+		}
 		return fmt.Errorf("reinspect inventory directory %q: %w", relative, err)
 	}
 	if afterOpen.Mode()&os.ModeSymlink != 0 || !staplerInventoryInfoStable(before, openedInfo) || !staplerInventoryInfoStable(before, afterOpen) {
@@ -709,6 +731,9 @@ func (scanner *staplerInventoryScanner) recordDirectory(parent *os.Root, name, r
 	}
 	finalParent, err := parent.Lstat(name)
 	if err != nil {
+		if staplerInventoryEntryVanished(err) {
+			return errStaplerInventoryChanged
+		}
 		return fmt.Errorf("reinspect inventory directory %q: %w", relative, err)
 	}
 	if finalParent.Mode()&os.ModeSymlink != 0 || !staplerInventoryInfoStable(openedInfo, finalParent) {
@@ -765,6 +790,9 @@ func (scanner *staplerInventoryScanner) recordFile(parent *os.Root, name, relati
 	}
 	file, err := secureopen.OpenExistingNoFollowInRoot(parent, name)
 	if err != nil {
+		if staplerInventoryEntryVanished(err) {
+			return errStaplerInventoryChanged
+		}
 		return fmt.Errorf("open inventory file %q: %w", relative, err)
 	}
 	defer file.Close()
@@ -796,6 +824,9 @@ func (scanner *staplerInventoryScanner) recordFile(parent *os.Root, name, relati
 	}
 	finalPathInfo, err := parent.Lstat(name)
 	if err != nil {
+		if staplerInventoryEntryVanished(err) {
+			return errStaplerInventoryChanged
+		}
 		return fmt.Errorf("reinspect inventory file %q: %w", relative, err)
 	}
 	if finalPathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(finalInfo, finalPathInfo) ||
