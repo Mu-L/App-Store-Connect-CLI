@@ -22,13 +22,26 @@ func TestValidateWebAppDeleteAvailabilityNamesTerritories(t *testing.T) {
 
 func TestValidateWebAppDeleteAvailabilityNamesNewTerritories(t *testing.T) {
 	err := validateWebAppDeleteAvailability("1234567890", &webcore.AppAvailability{
-		AvailableInNewTerritories: true,
+		AvailableInNewTerritories:  true,
+		AvailableTerritoriesLoaded: true,
 	})
 	if err == nil {
 		t.Fatal("expected new-territory blocker")
 	}
 	if !strings.Contains(err.Error(), "still available in new territories") {
 		t.Fatalf("expected new-territory message, got %v", err)
+	}
+}
+
+func TestValidateWebAppDeleteAvailabilityFailsWhenTerritoriesUnloaded(t *testing.T) {
+	err := validateWebAppDeleteAvailability("1234567890", &webcore.AppAvailability{
+		ID: "avail-1",
+	})
+	if err == nil {
+		t.Fatal("expected missing territory linkage blocker")
+	}
+	if !strings.Contains(err.Error(), "could not confirm") || !strings.Contains(err.Error(), "availableTerritories") {
+		t.Fatalf("expected stderr to name missing territory linkage, got %v", err)
 	}
 }
 

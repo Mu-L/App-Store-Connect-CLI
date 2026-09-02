@@ -1430,7 +1430,7 @@ func TestWebAppsDeleteByBundleID(t *testing.T) {
 		return resp, nil
 	}
 	getWebAppAvailabilityFn = func(ctx context.Context, client *webcore.Client, appID string) (*webcore.AppAvailability, error) {
-		return &webcore.AppAvailability{ID: "avail-1", AvailableTerritories: []string{}}, nil
+		return &webcore.AppAvailability{ID: "avail-1", AvailableTerritories: []string{}, AvailableTerritoriesLoaded: true}, nil
 	}
 	getWebAppRemovalStateFn = func(ctx context.Context, client *webcore.Client, appID string) (*webcore.AppRemovalState, error) {
 		removalReads++

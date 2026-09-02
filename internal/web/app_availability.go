@@ -13,10 +13,11 @@ import (
 
 // AppAvailability models the internal web API app availability resource.
 type AppAvailability struct {
-	ID                        string   `json:"id"`
-	Type                      string   `json:"type,omitempty"`
-	AvailableInNewTerritories bool     `json:"availableInNewTerritories"`
-	AvailableTerritories      []string `json:"availableTerritories,omitempty"`
+	ID                         string   `json:"id"`
+	Type                       string   `json:"type,omitempty"`
+	AvailableInNewTerritories  bool     `json:"availableInNewTerritories"`
+	AvailableTerritories       []string `json:"availableTerritories,omitempty"`
+	AvailableTerritoriesLoaded bool     `json:"-"`
 }
 
 // AppAvailabilityCreateAttributes defines inputs for creating initial app availability.
@@ -66,7 +67,13 @@ func decodeAppAvailabilityResource(resource jsonAPIResource) AppAvailability {
 		AvailableInNewTerritories: boolAttr(resource.Attributes, "availableInNewTerritories"),
 	}
 
-	refs := relationshipRefs(resource, "availableTerritories")
+	relationship, ok := resource.Relationships["availableTerritories"]
+	if ok {
+		trimmedData := strings.TrimSpace(string(relationship.Data))
+		availability.AvailableTerritoriesLoaded = trimmedData != "" && trimmedData != "null"
+	}
+
+	refs := parseRelationshipRefs(relationship.Data)
 	if len(refs) == 0 {
 		return availability
 	}

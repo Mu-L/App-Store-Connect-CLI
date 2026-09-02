@@ -228,6 +228,9 @@ func validateWebAppDeleteAvailability(appID string, availability *webcore.AppAva
 	if len(availability.AvailableTerritories) > 0 {
 		return fmt.Errorf("web apps delete failed: app %q is still available in territories %s; remove it from sale in all territories first", appID, strings.Join(availability.AvailableTerritories, ", "))
 	}
+	if !availability.AvailableTerritoriesLoaded {
+		return fmt.Errorf("web apps delete failed: could not confirm availableTerritories for app %q; Apple omitted or nulled the territory linkage", appID)
+	}
 	if availability.AvailableInNewTerritories {
 		return fmt.Errorf("web apps delete failed: app %q is still available in new territories; disable new-territory availability first", appID)
 	}
