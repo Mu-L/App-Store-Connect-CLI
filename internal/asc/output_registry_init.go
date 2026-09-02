@@ -16,6 +16,7 @@ func registerAllOutputRenderers() {
 	registerRows(xcodeInstallResultRows)
 	registerDirect(webAgreementsStatusTables)
 	registerRows(webAgreementsAcceptRows)
+	registerRows(webAgreementDownloadRows)
 	registerRows(webAppDeleteRows)
 	registerRows(webSubscriptionMonthlyCommitmentBootstrapRows)
 	registerRows(webXcodeCloudWorkflowsListRows)
