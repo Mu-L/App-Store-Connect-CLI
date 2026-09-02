@@ -389,6 +389,33 @@ func TestGetAppRemovalStateLeavesVersionsUnloadedWhenStateFieldsMissing(t *testi
 	}
 }
 
+func TestGetAppRemovalStateRequiresMatchingID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"type": "apps",
+				"id": "9999999999",
+				"attributes": {
+					"name": "Other",
+					"bundleId": "com.example.other",
+					"removed": false
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := &Client{httpClient: server.Client(), baseURL: server.URL}
+	_, err := client.GetAppRemovalState(context.Background(), "1234567890")
+	if err == nil {
+		t.Fatal("expected mismatched app id error")
+	}
+	if !strings.Contains(err.Error(), "1234567890") || !strings.Contains(err.Error(), "9999999999") {
+		t.Fatalf("expected both ids in error, got %v", err)
+	}
+}
+
 func TestGetAppRemovalStateRequiresID(t *testing.T) {
 	client := &Client{}
 	if _, err := client.GetAppRemovalState(context.Background(), "  "); err == nil {

@@ -217,6 +217,9 @@ func validateWebAppDeleteRemovalState(state *webcore.AppRemovalState) error {
 	if !state.DisplayableVersionsLoaded {
 		return fmt.Errorf("web apps delete failed: could not confirm displayableVersions for app %q; Apple omitted the version linkage or included payload", state.ID)
 	}
+	if strings.TrimSpace(state.AppStoreLegacyStatus) == "" && len(state.VersionStates) == 0 {
+		return fmt.Errorf("web apps delete failed: could not confirm appStoreLegacyStatus for app %q; Apple omitted the app-level review status and no displayable version states were present", state.ID)
+	}
 	marketplace := strings.ToUpper(strings.TrimSpace(state.Marketplace))
 	if marketplace != "" && marketplace != "APP_STORE" {
 		return fmt.Errorf("web apps delete failed: app %q is still distributed via marketplace %q; remove it from alternative marketplace distribution first", state.ID, strings.TrimSpace(state.Marketplace))

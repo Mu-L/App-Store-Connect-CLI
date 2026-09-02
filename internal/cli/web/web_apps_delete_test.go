@@ -59,6 +59,20 @@ func TestValidateWebAppDeleteAvailabilityFailsWhenNewTerritoriesUnknown(t *testi
 	}
 }
 
+func TestValidateWebAppDeleteRemovalStateFailsWhenReviewStatusUnknown(t *testing.T) {
+	err := validateWebAppDeleteRemovalState(&webcore.AppRemovalState{
+		ID:                        "1234567890",
+		Marketplace:               "APP_STORE",
+		DisplayableVersionsLoaded: true,
+	})
+	if err == nil {
+		t.Fatal("expected unknown review-status blocker")
+	}
+	if !strings.Contains(err.Error(), "could not confirm") || !strings.Contains(err.Error(), "appStoreLegacyStatus") {
+		t.Fatalf("expected stderr to name missing app-level review status, got %v", err)
+	}
+}
+
 func TestValidateWebAppDeleteRemovalStateFailsWhenVersionsUnloaded(t *testing.T) {
 	err := validateWebAppDeleteRemovalState(&webcore.AppRemovalState{
 		ID:                   "1234567890",
@@ -89,6 +103,7 @@ func TestValidateWebAppDeleteRemovalStateBlocksReview(t *testing.T) {
 func TestValidateWebAppDeleteRemovalStateBlocksMarketplace(t *testing.T) {
 	err := validateWebAppDeleteRemovalState(&webcore.AppRemovalState{
 		ID:                        "1234567890",
+		AppStoreLegacyStatus:      "PREPARE_FOR_SUBMISSION",
 		Marketplace:               "ALT_MARKETPLACE",
 		DisplayableVersionsLoaded: true,
 	})

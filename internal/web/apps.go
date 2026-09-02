@@ -304,6 +304,9 @@ func (c *Client) GetAppRemovalState(ctx context.Context, appID string) (*AppRemo
 	if strings.TrimSpace(payload.Data.ID) == "" {
 		return nil, fmt.Errorf("app %q was not found", appID)
 	}
+	if strings.TrimSpace(payload.Data.ID) != appID {
+		return nil, fmt.Errorf("app %q response returned id %q", appID, strings.TrimSpace(payload.Data.ID))
+	}
 
 	included := make(map[string]jsonAPIResource, len(payload.Included))
 	for _, resource := range payload.Included {
