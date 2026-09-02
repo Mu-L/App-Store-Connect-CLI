@@ -46,8 +46,8 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - Password must include uppercase, lowercase, and a number (8+ chars)
 - Sandbox territory inputs accept alpha-2, alpha-3, and exact English country names, but the CLI sends canonical 3-letter App Store territory codes (for example, `US`, `USA`, and `United States` all resolve to `USA`)
 - This normalization is limited to verified ASC alpha-3 territory surfaces, including customer-review filters; public storefront and finance region flags keep their existing namespaces
-- List/get use the v2 API; create/delete use v1 endpoints (may be unavailable on some accounts)
-- Update/clear-history use the v2 API
+- List, view, update, and clear-history use the v2 API through `asc sandbox`
+- Public `asc sandbox` does not expose create or delete. Create testers with `asc web sandbox create`, which posts to `/sandbox/v2/account/create`
 
 ## TestFlight Distribution
 
