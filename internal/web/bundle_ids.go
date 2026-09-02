@@ -200,25 +200,27 @@ func (c *Client) SyncAppClipBundleIDCapability(ctx context.Context, req AppClipB
 // appClipBundleIDCapabilityAlreadySynced reports whether the current graph
 // already carries the requested capability with the requested enabled state and
 // parentBundleId. When the caller supplied settings explicitly they must match
-// too; otherwise the existing settings are preserved and cannot differ.
+// too; otherwise the existing settings are preserved and cannot differ. Apple
+// can return duplicate records for one capability, so every record is checked
+// before concluding that a write is needed.
 func appClipBundleIDCapabilityAlreadySynced(existing []webBundleIDCapabilityRelationship, req AppClipBundleIDCapabilitySyncRequest) bool {
 	for _, capability := range existing {
-		if capability.capabilityID() != req.Capability {
-			continue
-		}
-		if capability.enabled() != req.Enabled || capability.parentBundleID() != req.ParentBundleID {
-			return false
-		}
-		if !req.SettingsProvided {
+		if capability.capabilityID() == req.Capability && appClipBundleIDCapabilityMatches(capability, req) {
 			return true
 		}
-		currentSettings, ok := capability.settings()
-		if !ok {
-			return false
-		}
-		return jsonEquivalent(currentSettings, req.Settings)
 	}
 	return false
+}
+
+func appClipBundleIDCapabilityMatches(capability webBundleIDCapabilityRelationship, req AppClipBundleIDCapabilitySyncRequest) bool {
+	if capability.enabled() != req.Enabled || capability.parentBundleID() != req.ParentBundleID {
+		return false
+	}
+	if !req.SettingsProvided {
+		return true
+	}
+	currentSettings, ok := capability.settings()
+	return ok && jsonEquivalent(currentSettings, req.Settings)
 }
 
 func jsonEquivalent(left, right any) bool {

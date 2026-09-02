@@ -360,6 +360,62 @@ func TestSyncAppClipBundleIDCapabilitySkipsPatchWhenParentAlreadySynced(t *testi
 	}
 }
 
+func TestSyncAppClipBundleIDCapabilitySkipsPatchWhenAnyDuplicateRecordAlreadyMatches(t *testing.T) {
+	var patchCount atomic.Int32
+	var patchBody []byte
+	client := newSyncAppClipBundleIDTestServer(t, `{
+		"data":{
+			"id":"clip-bundle",
+			"type":"bundleIds",
+			"attributes":{"name":"Example Clip","identifier":"com.example.app.Clip"},
+			"relationships":{
+				"bundleIdCapabilities":{
+					"data":[
+						{"id":"stale-push","type":"bundleIdCapabilities"},
+						{"id":"current-push","type":"bundleIdCapabilities"}
+					]
+				}
+			}
+		},
+		"included":[
+			{
+				"id":"stale-push",
+				"type":"bundleIdCapabilities",
+				"attributes":{"enabled":false,"settings":[]},
+				"relationships":{
+					"capability":{"data":{"type":"capabilities","id":"PUSH_NOTIFICATIONS"}},
+					"parentBundleId":{"data":{"type":"bundleIds","id":"old-parent"}}
+				}
+			},
+			{
+				"id":"current-push",
+				"type":"bundleIdCapabilities",
+				"attributes":{"enabled":true,"settings":[]},
+				"relationships":{
+					"capability":{"data":{"type":"capabilities","id":"PUSH_NOTIFICATIONS"}},
+					"parentBundleId":{"data":{"type":"bundleIds","id":"parent-bundle"}}
+				}
+			}
+		]
+	}`, &patchCount, &patchBody)
+
+	result, err := client.SyncAppClipBundleIDCapability(context.Background(), AppClipBundleIDCapabilitySyncRequest{
+		BundleID:       "clip-bundle",
+		ParentBundleID: "parent-bundle",
+		Capability:     "PUSH_NOTIFICATIONS",
+		Enabled:        true,
+	})
+	if err != nil {
+		t.Fatalf("SyncAppClipBundleIDCapability error: %v", err)
+	}
+	if got := patchCount.Load(); got != 0 {
+		t.Fatalf("expected no PATCH when a later duplicate record already matches, got %d: %s", got, patchBody)
+	}
+	if result.Changed || result.Status != "already-synced" {
+		t.Fatalf("expected already-synced receipt, got %+v", result)
+	}
+}
+
 func TestSyncAppClipBundleIDCapabilitySkipsPatchWhenExplicitSettingsMatch(t *testing.T) {
 	var patchCount atomic.Int32
 	var patchBody []byte

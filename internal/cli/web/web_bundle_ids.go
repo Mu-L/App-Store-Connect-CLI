@@ -184,7 +184,7 @@ func WebBundleIDCapabilitiesSyncAppClipCommand() *ffcli.Command {
 	parentBundleID := fs.String("parent-bundle-id", "", "Opaque parent app Bundle ID resource ID")
 	capability := fs.String("capability", "", "Capability ID (for example: PUSH_NOTIFICATIONS)")
 	settingsJSON := fs.String("settings-json", "", "Optional JSON array of capability settings")
-	confirm := fs.Bool("confirm", false, "Confirm the sync; a changed App ID invalidates existing provisioning profiles")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm the sync; a changed App ID invalidates existing provisioning profiles")
 	authFlags := bindWebSessionFlags(fs)
 	output := shared.BindOutputFlags(fs)
 
