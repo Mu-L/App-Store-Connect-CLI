@@ -2353,3 +2353,255 @@ func TestWebAuthLoginReportsInvalidCredentialMessage(t *testing.T) {
 		t.Fatalf("expected error %q, got %q", want, got)
 	}
 }
+
+// Root-caused 2026-08-29: after 2FA succeeded, auto-reauth reused the expired
+// cached cookie jar, the App Store Connect session bootstrap returned 401, and
+// the CLI aborted with a misleading "2fa verification failed" message instead of
+// discarding the stale jar and retrying a fresh login once.
+func TestResolveSessionRetriesFreshLoginAfterStaleSessionBootstrap401(t *testing.T) {
+	origTryResume := tryResumeSessionFn
+	origTryResumeLast := tryResumeLastFn
+	origLoadCachedSession := loadCachedSessionFn
+	origLoadLastCachedSession := loadLastCachedSessionFn
+	origPromptPassword := promptPasswordFn
+	origPromptTwoFactor := promptTwoFactorCodeFn
+	origReadCommand := readTwoFactorCodeFromCommandFn
+	origPrepare := prepareTwoFactorChallengeFn
+	origSubmit := submitTwoFactorCodeFn
+	origWebLogin := webLoginFn
+	origWebLoginWithClient := webLoginWithClientFn
+	origPersistWebSession := persistWebSessionFn
+	origExpiredWriter := sessionExpiredWriter
+	origStatusWriter := twoFactorStatusWriter
+	t.Cleanup(func() {
+		tryResumeSessionFn = origTryResume
+		tryResumeLastFn = origTryResumeLast
+		loadCachedSessionFn = origLoadCachedSession
+		loadLastCachedSessionFn = origLoadLastCachedSession
+		promptPasswordFn = origPromptPassword
+		promptTwoFactorCodeFn = origPromptTwoFactor
+		readTwoFactorCodeFromCommandFn = origReadCommand
+		prepareTwoFactorChallengeFn = origPrepare
+		submitTwoFactorCodeFn = origSubmit
+		webLoginFn = origWebLogin
+		webLoginWithClientFn = origWebLoginWithClient
+		persistWebSessionFn = origPersistWebSession
+		sessionExpiredWriter = origExpiredWriter
+		twoFactorStatusWriter = origStatusWriter
+	})
+
+	t.Setenv(webPasswordEnv, "env-secret")
+	t.Setenv(webTwoFactorCodeCommandEnv, "")
+
+	var notice bytes.Buffer
+	sessionExpiredWriter = &notice
+	twoFactorStatusWriter = io.Discard
+
+	cachedClient := &http.Client{}
+	staleSession := &webcore.AuthSession{}
+	freshSession := &webcore.AuthSession{UserEmail: "user@example.com", ProviderID: 99}
+	cachedAttempts := 0
+	freshAttempts := 0
+	persisted := 0
+
+	tryResumeSessionFn = func(ctx context.Context, username string) (*webcore.AuthSession, bool, error) {
+		return nil, false, webcore.ErrCachedSessionExpired
+	}
+	tryResumeLastFn = func(ctx context.Context) (*webcore.AuthSession, bool, error) {
+		t.Fatal("did not expect last-session cache lookup when apple-id is provided")
+		return nil, false, nil
+	}
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	loadLastCachedSessionFn = func() (*webcore.AuthSession, bool, error) {
+		t.Fatal("did not expect last cached-session load when apple-id is provided")
+		return nil, false, nil
+	}
+	promptPasswordFn = func(ctx context.Context) (string, error) {
+		t.Fatal("did not expect password prompt when env password is set")
+		return "", nil
+	}
+	prepareTwoFactorChallengeFn = func(ctx context.Context, session *webcore.AuthSession) (*webcore.TwoFactorChallenge, error) {
+		return &webcore.TwoFactorChallenge{Method: "trusted-device"}, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) {
+		return "654321", nil
+	}
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		t.Fatal("did not expect a 2fa code command when none is configured")
+		return "", nil
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		if session == staleSession {
+			return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+		}
+		return nil
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		cachedAttempts++
+		if client != cachedClient {
+			t.Fatal("expected the cached cookie jar to be reused for auto-reauth")
+		}
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		freshAttempts++
+		if creds.Password != "env-secret" {
+			t.Fatalf("expected the resolved password to be reused for the fresh retry, got %q", creds.Password)
+		}
+		return freshSession, nil
+	}
+	persistWebSessionFn = func(session *webcore.AuthSession) error {
+		persisted++
+		if session != freshSession {
+			t.Fatal("expected only the fresh session to be persisted")
+		}
+		return nil
+	}
+
+	session, source, err := resolveSession(context.Background(), "user@example.com", "", "")
+	if err != nil {
+		t.Fatalf("resolveSession returned error: %v", err)
+	}
+	if cachedAttempts != 1 {
+		t.Fatalf("expected exactly one cached-jar auto-reauth attempt, got %d", cachedAttempts)
+	}
+	if freshAttempts != 1 {
+		t.Fatalf("expected exactly one fresh retry after the stale session bootstrap 401, got %d", freshAttempts)
+	}
+	if persisted != 1 {
+		t.Fatalf("expected the fresh session to be persisted once, got %d", persisted)
+	}
+	if source != "fresh" {
+		t.Fatalf("expected source %q, got %q", "fresh", source)
+	}
+	if session != freshSession {
+		t.Fatal("expected the fresh session to be returned")
+	}
+	if got := notice.String(); got != "Session expired.\n" {
+		t.Fatalf("expected expired notice before the fresh retry, got %q", got)
+	}
+}
+
+func TestResolveSessionDoesNotRetryFreshLoginOnRejectedTwoFactorCode(t *testing.T) {
+	origTryResume := tryResumeSessionFn
+	origTryResumeLast := tryResumeLastFn
+	origLoadCachedSession := loadCachedSessionFn
+	origLoadLastCachedSession := loadLastCachedSessionFn
+	origPromptPassword := promptPasswordFn
+	origPromptTwoFactor := promptTwoFactorCodeFn
+	origReadCommand := readTwoFactorCodeFromCommandFn
+	origPrepare := prepareTwoFactorChallengeFn
+	origSubmit := submitTwoFactorCodeFn
+	origWebLogin := webLoginFn
+	origWebLoginWithClient := webLoginWithClientFn
+	origExpiredWriter := sessionExpiredWriter
+	origStatusWriter := twoFactorStatusWriter
+	t.Cleanup(func() {
+		tryResumeSessionFn = origTryResume
+		tryResumeLastFn = origTryResumeLast
+		loadCachedSessionFn = origLoadCachedSession
+		loadLastCachedSessionFn = origLoadLastCachedSession
+		promptPasswordFn = origPromptPassword
+		promptTwoFactorCodeFn = origPromptTwoFactor
+		readTwoFactorCodeFromCommandFn = origReadCommand
+		prepareTwoFactorChallengeFn = origPrepare
+		submitTwoFactorCodeFn = origSubmit
+		webLoginFn = origWebLogin
+		webLoginWithClientFn = origWebLoginWithClient
+		sessionExpiredWriter = origExpiredWriter
+		twoFactorStatusWriter = origStatusWriter
+	})
+
+	t.Setenv(webPasswordEnv, "env-secret")
+	t.Setenv(webTwoFactorCodeCommandEnv, "")
+	sessionExpiredWriter = io.Discard
+	twoFactorStatusWriter = io.Discard
+
+	cachedClient := &http.Client{}
+
+	tryResumeSessionFn = func(ctx context.Context, username string) (*webcore.AuthSession, bool, error) {
+		return nil, false, webcore.ErrCachedSessionExpired
+	}
+	tryResumeLastFn = func(ctx context.Context) (*webcore.AuthSession, bool, error) {
+		t.Fatal("did not expect last-session cache lookup when apple-id is provided")
+		return nil, false, nil
+	}
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	loadLastCachedSessionFn = func() (*webcore.AuthSession, bool, error) {
+		t.Fatal("did not expect last cached-session load when apple-id is provided")
+		return nil, false, nil
+	}
+	promptPasswordFn = func(ctx context.Context) (string, error) {
+		t.Fatal("did not expect password prompt when env password is set")
+		return "", nil
+	}
+	prepareTwoFactorChallengeFn = func(ctx context.Context, session *webcore.AuthSession) (*webcore.TwoFactorChallenge, error) {
+		return &webcore.TwoFactorChallenge{Method: "trusted-device"}, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) {
+		return "654321", nil
+	}
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		t.Fatal("did not expect a 2fa code command when none is configured")
+		return "", nil
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		return errors.New("trusted-device 2fa failed (status 400, codes=[-21669])")
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return &webcore.AuthSession{}, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		t.Fatal("did not expect a fresh retry after a rejected 2fa code")
+		return nil, nil
+	}
+
+	_, _, err := resolveSession(context.Background(), "user@example.com", "", "")
+	if err == nil {
+		t.Fatal("expected auto-reauth to fail on a rejected 2fa code")
+	}
+	if got := err.Error(); !strings.Contains(got, "2fa verification failed") {
+		t.Fatalf("expected rejected-code wording, got %q", got)
+	}
+}
+
+func TestTwoFactorSubmitFailureDistinguishesFinalizationFromVerification(t *testing.T) {
+	tests := []struct {
+		name               string
+		err                error
+		afterPhoneDelivery bool
+		want               string
+	}{
+		{
+			name: "stale session bootstrap",
+			err:  &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized},
+			want: "2fa finalization failed: session bootstrap returned status 401",
+		},
+		{
+			name:               "stale session bootstrap after phone delivery",
+			err:                &webcore.TwoFactorFinalizationError{Status: http.StatusForbidden},
+			afterPhoneDelivery: true,
+			want:               "2fa finalization failed after switching to phone delivery: session bootstrap returned status 403",
+		},
+		{
+			name: "rejected code",
+			err:  errors.New("trusted-device 2fa failed (status 400)"),
+			want: "2fa verification failed: trusted-device 2fa failed (status 400)",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := twoFactorSubmitFailure(tc.err, tc.afterPhoneDelivery)
+			if got.Error() != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got.Error())
+			}
+			if !errors.Is(got, tc.err) {
+				t.Fatal("expected the underlying error to remain unwrappable")
+			}
+		})
+	}
+}

@@ -462,6 +462,22 @@ func storedWebPasswordStatus(appleID string) bool {
 	return stored
 }
 
+// twoFactorSubmitFailure describes a failed 2FA submission. Apple accepting the
+// code and then failing the App Store Connect session bootstrap is reported as a
+// finalization failure carrying the HTTP status, because calling it a
+// verification failure misleads users into retrying a code that was accepted.
+func twoFactorSubmitFailure(err error, afterPhoneDelivery bool) error {
+	stage := "2fa verification failed"
+	var finalizeErr *webcore.TwoFactorFinalizationError
+	if errors.As(err, &finalizeErr) {
+		stage = "2fa finalization failed"
+	}
+	if afterPhoneDelivery {
+		stage += " after switching to phone delivery"
+	}
+	return fmt.Errorf("%s: %w", stage, err)
+}
+
 func loginWithOptionalTwoFactorUsing(ctx context.Context, progressMessage, appleID, password, twoFactorCode string, loginFn func(context.Context, webcore.LoginCredentials) (*webcore.AuthSession, error), twoFactorStarted func(), twoFactorCodeCommand ...string) (*webcore.AuthSession, error) {
 	session, err := withWebSpinnerValue(progressMessage, func() (*webcore.AuthSession, error) {
 		return loginFn(ctx, webcore.LoginCredentials{
@@ -558,11 +574,11 @@ func loginWithOptionalTwoFactorUsing(ctx context.Context, progressMessage, apple
 					return nil, codeErr
 				}
 				if err := submitCode(resolvedCode); err != nil {
-					return nil, fmt.Errorf("2fa verification failed after switching to phone delivery: %w", err)
+					return nil, twoFactorSubmitFailure(err, true)
 				}
 				return session, nil
 			}
-			return nil, fmt.Errorf("2fa verification failed: %w", err)
+			return nil, twoFactorSubmitFailure(err, false)
 		}
 		return session, nil
 	}
@@ -716,7 +732,9 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 			}
 			return session, "auto-reauth", true, nil
 		}
-		if twoFactorStarted {
+		// A post-2FA session bootstrap 401/403 means the reused cookie jar is
+		// stale, not that the code was wrong. Fall through to one fresh login.
+		if twoFactorStarted && !webcore.IsStaleSessionAfterTwoFactor(loginErr) {
 			return nil, "", false, fmt.Errorf("web auth auto-reauth failed: %w", loginErr)
 		}
 		if errors.Is(loginErr, webcore.ErrInvalidAppleAccountCredentials) {
@@ -729,8 +747,9 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 			return nil, "", false, nil
 		}
 
-		// Before 2FA begins, a cached jar can become unusable independently of
-		// the credentials. Preserve the password source for one fresh fallback.
+		// A cached jar can become unusable independently of the credentials,
+		// either before 2FA begins or when the post-2FA session bootstrap is
+		// rejected. Preserve the password source for one fresh fallback.
 		fallbackPassword = silentPassword
 		expiredCachedSession = nil
 		printExpiredNotice()
@@ -787,12 +806,14 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 	}
 	loginWithPromptedFreshFallback := func(candidate resolvedWebPassword) (*webcore.AuthSession, error) {
 		session, twoFactorStarted, err := login(candidate)
-		if err == nil || candidate.source != webPasswordSourcePrompted || expiredCachedSession == nil || twoFactorStarted || errors.Is(err, webcore.ErrInvalidAppleAccountCredentials) {
+		blockedByTwoFactor := twoFactorStarted && !webcore.IsStaleSessionAfterTwoFactor(err)
+		if err == nil || candidate.source != webPasswordSourcePrompted || expiredCachedSession == nil || blockedByTwoFactor || errors.Is(err, webcore.ErrInvalidAppleAccountCredentials) {
 			return session, err
 		}
 		// Match the non-interactive reauth path: a non-credential failure can
-		// mean that the cached cookie jar itself is unusable. Retry once with a
-		// fresh client while preserving the already-resolved password.
+		// mean that the cached cookie jar itself is unusable, including when the
+		// post-2FA session bootstrap is rejected. Retry once with a fresh client
+		// while preserving the already-resolved password.
 		expiredCachedSession = nil
 		session, _, err = login(candidate)
 		return session, err
