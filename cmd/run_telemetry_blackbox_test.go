@@ -64,68 +64,49 @@ func TestRun_BuiltBinaryEmitsSchemaV4Payload(t *testing.T) {
 }
 
 // blockedTelemetryHold is how long the collector holds an accepted connection.
-// Emit must return well before that: a foreground send waits up to
-// telemetry.maxSendDuration (3s), which is longer than hold/2.
+// The parent must exit while that connection is still held; a foreground wait
+// stays blocked until telemetry.maxSendDuration (3s) or this hold elapses.
 const blockedTelemetryHold = 4 * time.Second
 
 func TestRun_BuiltBinaryDoesNotWaitForBlockedTelemetryEndpoint(t *testing.T) {
 	binaryPath := buildASCBlackboxBinary(t)
 	blockedEndpoint, accepted, release := startBlockedTelemetryEndpoint(t)
 
-	disabledHome := t.TempDir()
-	runTimedTelemetryCommand(t, binaryPath, disabledHome, true, "")
-	disabledDuration := runTimedTelemetryCommand(t, binaryPath, disabledHome, true, "")
-
-	blockedHome := t.TempDir()
-	blockedDuration := runTimedTelemetryCommand(t, binaryPath, blockedHome, false, blockedEndpoint)
-	added := blockedDuration - disabledDuration
-	t.Logf(
-		"foreground timing: disabled=%s blocked=%s added=%s hold=%s",
-		disabledDuration,
-		blockedDuration,
-		added,
-		blockedTelemetryHold,
-	)
-	// Compare extra foreground time against the collector hold, not a
-	// host-dependent 175ms budget. A process that waits on telemetry stalls
-	// for ~maxSendDuration (3s); loaded shards that slow both runs still pass.
-	if added >= blockedTelemetryHold/2 {
-		t.Fatalf(
-			"blocked telemetry added %s to foreground runtime (disabled=%s blocked=%s), want less than half of the %s endpoint hold",
-			added,
-			disabledDuration,
-			blockedDuration,
-			blockedTelemetryHold,
-		)
+	command := exec.Command(binaryPath, "builds", "--definitely-invalid")
+	command.Env = telemetryBlackboxEnv(t.TempDir(), false, blockedEndpoint)
+	type runResult struct {
+		output   []byte
+		err      error
+		duration time.Duration
 	}
+	done := make(chan runResult, 1)
+	go func() {
+		start := time.Now()
+		output, err := command.CombinedOutput()
+		done <- runResult{output: output, err: err, duration: time.Since(start)}
+	}()
 
 	select {
 	case <-accepted:
 	case <-time.After(blockedTelemetryHold):
 		t.Fatal("detached telemetry worker did not reach blocked endpoint")
 	}
-	release()
-}
 
-func runTimedTelemetryCommand(
-	t *testing.T,
-	binaryPath string,
-	home string,
-	disabled bool,
-	endpoint string,
-) time.Duration {
-	t.Helper()
-	command := exec.Command(binaryPath, "builds", "--definitely-invalid")
-	command.Env = telemetryBlackboxEnv(home, disabled, endpoint)
-	start := time.Now()
-	output, err := command.CombinedOutput()
-	duration := time.Since(start)
-
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != ExitUsage {
-		t.Fatalf("built command error = %v, want exit %d; output=%s", err, ExitUsage, output)
+	// The collector is still holding. Detached emit has already returned; a
+	// parent that waits on the worker stays blocked until send times out.
+	var result runResult
+	select {
+	case result = <-done:
+	case <-time.After(blockedTelemetryHold / 8):
+		t.Fatal("process still running while the blocked telemetry collector holds the connection")
 	}
-	return duration
+	release()
+
+	t.Logf("foreground duration=%s hold=%s", result.duration, blockedTelemetryHold)
+	var exitErr *exec.ExitError
+	if !errors.As(result.err, &exitErr) || exitErr.ExitCode() != ExitUsage {
+		t.Fatalf("built command error = %v, want exit %d; output=%s", result.err, ExitUsage, result.output)
+	}
 }
 
 func telemetryBlackboxEnv(home string, disabled bool, endpoint string) []string {
@@ -155,8 +136,8 @@ func telemetryBlackboxEnv(home string, disabled bool, endpoint string) []string 
 		"ASC_TELEMETRY_DISABLED="+disabledValue,
 		"ASC_TELEMETRY_ENDPOINT="+endpoint,
 		"ASC_TELEMETRY_EPHEMERAL=",
-		// Above telemetry.maxSendDuration so a foreground wait lasts ~3s and
-		// fails the hold/2 assertion instead of exiting at the 1s CLI timeout.
+		// Longer than maxSendDuration so a parent that waits on send stays
+		// blocked after the collector accepts instead of returning at 1s.
 		"ASC_TIMEOUT=10s",
 		"ASC_TIMEOUT_SECONDS=",
 		"DO_NOT_TRACK=",
