@@ -2,14 +2,18 @@ package web
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
@@ -21,6 +25,10 @@ var acceptAgreementsFn = func(ctx context.Context, client *webcore.Client, req w
 	return client.AcceptAgreements(ctx, req)
 }
 
+var downloadAgreementFn = func(ctx context.Context, client *webcore.Client, agreementID string) (*webcore.AgreementDownload, error) {
+	return client.DownloadAgreement(ctx, agreementID)
+}
+
 // WebAgreementsCommand returns the Apple Developer Program agreements group.
 func WebAgreementsCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web agreements", flag.ExitOnError)
@@ -28,17 +36,19 @@ func WebAgreementsCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "agreements",
 		ShortUsage: "asc web agreements <subcommand> [flags]",
-		ShortHelp:  "[experimental] Check and accept Apple Developer Program agreements.",
+		ShortHelp:  "[experimental] Check, download, and accept Apple Developer Program agreements.",
 		LongHelp: `WEB SESSION WORKFLOWS
 
 This command is experimental.
 
-Check and accept Apple Developer Program agreements, such as the Apple
-Developer Program License Agreement, through Apple web-session endpoints.
-The public App Store Connect API has no endpoint for these agreements.
+Check, download, and accept Apple Developer Program agreements, such as the
+Apple Developer Program License Agreement, through Apple web-session
+endpoints. The public App Store Connect API has no endpoint for these
+agreements.
 
 Examples:
   asc web agreements status
+  asc web agreements download --agreement-id "AGREEMENT_ID" --out ./agreement.pdf
   asc web agreements accept --agreement-id "AGREEMENT_ID" --confirm
 
 `,
@@ -46,6 +56,7 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
 			WebAgreementsStatusCommand(),
+			WebAgreementsDownloadCommand(),
 			WebAgreementsAcceptCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
@@ -116,6 +127,161 @@ Example:
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+// WebAgreementsDownloadCommand saves the content of one program agreement.
+func WebAgreementsDownloadCommand() *ffcli.Command {
+	fs := flag.NewFlagSet("web agreements download", flag.ExitOnError)
+
+	agreementID := fs.String("agreement-id", "", "[experimental] Developer Portal agreement ID to download (from `asc web agreements status`)")
+	out := fs.String("out", "", "[experimental] Destination file path for the agreement content")
+	overwrite := fs.Bool("overwrite", false, "[experimental] Replace an existing file at --out")
+	authFlags := bindWebSessionFlags(fs)
+	output := shared.BindOutputFlags(fs)
+
+	return &ffcli.Command{
+		Name:       "download",
+		ShortUsage: "asc web agreements download --agreement-id AGREEMENT_ID --out ./agreement.pdf [flags]",
+		ShortHelp:  "[experimental] Download an Apple Developer Program agreement.",
+		LongHelp: `WEB SESSION WORKFLOWS
+
+This command is experimental.
+
+Download the content of an Apple Developer Program agreement, such as the
+Apple Developer Program License Agreement PDF, so it can be reviewed before
+it is accepted. The file is fetched with the web session from the Developer
+Portal origin only; redirects to other origins or to plain HTTP are rejected.
+
+The content is written atomically to --out with mode 0600 and is never
+printed to command output. An existing file is not replaced unless
+--overwrite is set. The reported download URL is never printed.
+
+Examples:
+  asc web agreements download --agreement-id "AGREEMENT_ID" --out ./agreement.pdf
+  asc web agreements download --agreement-id "AGREEMENT_ID" --out ./agreement.pdf --overwrite
+
+`,
+		FlagSet:   fs,
+		UsageFunc: shared.DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 {
+				return shared.UsageError("web agreements download does not accept positional arguments")
+			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageError(err.Error())
+			}
+
+			resolvedAgreementID := strings.TrimSpace(*agreementID)
+			if resolvedAgreementID == "" {
+				return shared.UsageError("--agreement-id is required")
+			}
+			outPath := strings.TrimSpace(*out)
+			if outPath == "" {
+				return shared.UsageError("--out is required")
+			}
+			destination, err := newAgreementDownloadDestination(outPath)
+			if err != nil {
+				return shared.UsageErrorf("--out must be a file path: %v", err)
+			}
+			if err := destination.check(*overwrite); err != nil {
+				return fmt.Errorf("web agreements download failed: %w", err)
+			}
+
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
+
+			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
+			if err != nil {
+				return err
+			}
+			client := newWebClientFn(session)
+
+			var download *webcore.AgreementDownload
+			err = withWebSpinner("Downloading Apple Developer Program agreement", func() error {
+				var downloadErr error
+				download, downloadErr = downloadAgreementFn(requestCtx, client, resolvedAgreementID)
+				return downloadErr
+			})
+			if err != nil {
+				return withWebAuthHint(err, "web agreements download")
+			}
+			if download == nil {
+				return fmt.Errorf("web agreements download failed: missing download result")
+			}
+
+			if err := destination.write(download.Body, *overwrite); err != nil {
+				return fmt.Errorf("web agreements download failed: agreement %q was downloaded but saving %q failed: %w", resolvedAgreementID, outPath, err)
+			}
+			// Developer Portal bootstrap can add origin-specific cookies to the
+			// shared jar. Cache them best-effort after the operation succeeds.
+			_ = persistWebSessionFn(session)
+
+			return shared.PrintOutput(&asc.WebAgreementDownloadResult{
+				AgreementID:  download.AgreementID,
+				TeamID:       download.TeamID,
+				Title:        download.Title,
+				Version:      download.Version,
+				Path:         outPath,
+				BytesWritten: int64(len(download.Body)),
+				ContentType:  download.ContentType,
+			}, *output.Output, *output.Pretty)
+		},
+	}
+}
+
+// agreementDownloadDestination anchors an agreement download at the
+// operator-selected output directory (or the working directory when --out is
+// inside it) so every component below the root is validated before writing.
+type agreementDownloadDestination struct {
+	root rootfs.Root
+	name string
+}
+
+func newAgreementDownloadDestination(outPath string) (agreementDownloadDestination, error) {
+	if os.IsPathSeparator(outPath[len(outPath)-1]) {
+		return agreementDownloadDestination{}, fmt.Errorf("%q ends with a path separator", outPath)
+	}
+	base := filepath.Base(outPath)
+	if base == "." || base == ".." || base == string(filepath.Separator) {
+		return agreementDownloadDestination{}, fmt.Errorf("%q has no file name", outPath)
+	}
+	if err := rootfs.ValidateRelative(base); err != nil {
+		return agreementDownloadDestination{}, err
+	}
+	root, prefix, err := newDownloadRoot(filepath.Dir(outPath))
+	if err != nil {
+		return agreementDownloadDestination{}, err
+	}
+	return agreementDownloadDestination{root: root, name: filepath.Join(prefix, base)}, nil
+}
+
+// check validates the destination before any network activity. Without
+// overwrite an existing file is refused; with overwrite only a regular,
+// non-symlinked file may be replaced.
+func (d agreementDownloadDestination) check(overwrite bool) error {
+	if overwrite {
+		return d.root.CheckWriteFilePreservingMode(d.name)
+	}
+	if err := d.root.CheckCreateNewFile(d.name); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%w; pass --overwrite to replace it", err)
+		}
+		return err
+	}
+	return nil
+}
+
+func (d agreementDownloadDestination) write(body []byte, overwrite bool) error {
+	if overwrite {
+		return d.root.WriteFile(d.name, body, 0o600)
+	}
+	if err := d.root.CreateNewFile(d.name, body, 0o600); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%w; pass --overwrite to replace it", err)
+		}
+		return err
+	}
+	return nil
 }
 
 // WebAgreementsAcceptCommand accepts one or more pending program agreements.

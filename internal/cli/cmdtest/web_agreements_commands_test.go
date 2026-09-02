@@ -3,8 +3,11 @@ package cmdtest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -27,13 +30,16 @@ const (
 // Accepting marks the requested agreements accepted unless stayPending is set,
 // so the CLI's verification re-read observes server-side state.
 type webAgreementsPortal struct {
-	mu          sync.Mutex
-	accepted    map[string]bool
-	stayPending map[string]bool
-	acceptBody  []map[string]any
-	teamsCalls  int
-	acceptCalls int
-	readCalls   int
+	mu           sync.Mutex
+	accepted     map[string]bool
+	stayPending  map[string]bool
+	acceptBody   []map[string]any
+	teamsCalls   int
+	acceptCalls  int
+	readCalls    int
+	contentCalls int
+	// contentResponse overrides the agreement content download response.
+	contentResponse func(req *http.Request) *http.Response
 }
 
 func newWebAgreementsPortal(pendingIDs ...string) *webAgreementsPortal {
@@ -91,6 +97,16 @@ func (p *webAgreementsPortal) roundTrip(t *testing.T, req *http.Request) (*http.
 			}
 		}
 		return webAgreementsJSONResponse(http.StatusOK, p.historyJSON()), nil
+	case req.Method == http.MethodGet && req.URL.Host == webAgreementsPortalHost && strings.HasPrefix(req.URL.Path, "/services-account/agreement/") && strings.HasSuffix(req.URL.Path, "/content/pdf"):
+		p.contentCalls++
+		if p.contentResponse != nil {
+			return p.contentResponse(req), nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/pdf"}},
+			Body:       io.NopCloser(strings.NewReader("%PDF-1.7 agreement body")),
+		}, nil
 	default:
 		t.Errorf("unexpected request %s %s", req.Method, req.URL.String())
 		return webAgreementsJSONResponse(http.StatusInternalServerError, `{}`), nil
@@ -132,6 +148,133 @@ func TestWebAgreementsAcceptCommandRegistration(t *testing.T) {
 	}
 	if usage := accept.FlagSet.Lookup("agreement-id").Usage; !strings.Contains(usage, "repeatable") {
 		t.Fatalf("--agreement-id usage = %q, want repeatable hint", usage)
+	}
+}
+
+func TestWebAgreementsDownloadCommandRegistration(t *testing.T) {
+	root := RootCommand("1.2.3")
+	download := findSubcommand(root, "web", "agreements", "download")
+	if download == nil {
+		t.Fatal("expected web agreements download command")
+	}
+	for _, flagName := range []string{"agreement-id", "out", "overwrite", "apple-id", "output", "pretty"} {
+		if download.FlagSet.Lookup(flagName) == nil {
+			t.Fatalf("expected --%s flag on download", flagName)
+		}
+	}
+	if download.FlagSet.Lookup("confirm") != nil {
+		t.Fatal("download is read-only and must not expose --confirm")
+	}
+}
+
+func TestWebAgreementsDownloadRunWritesAgreementAndRefusesOverwrite(t *testing.T) {
+	portal := newWebAgreementsPortal("XG8DNV4HYY")
+	portal.accepted["XG8DNV4HYY"] = true
+	installWebAgreementsPortal(t, portal)
+
+	outPath := filepath.Join(t.TempDir(), "agreement.pdf")
+	stdout, stderr := captureOutput(t, func() {
+		code := cmd.Run([]string{
+			"--profile", "test-web",
+			"web", "agreements", "download",
+			"--agreement-id", "XG8DNV4HYY",
+			"--out", outPath,
+			"--output", "json",
+		}, "1.0.0")
+		if code != cmd.ExitSuccess {
+			t.Fatalf("exit code = %d, want %d", code, cmd.ExitSuccess)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if portal.contentCalls != 1 {
+		t.Fatalf("content downloads = %d, want 1", portal.contentCalls)
+	}
+	body, err := os.ReadFile(outPath)
+	if err != nil || string(body) != "%PDF-1.7 agreement body" {
+		t.Fatalf("downloaded body = %q, err = %v", body, err)
+	}
+	if strings.Contains(stdout, "%PDF") || strings.Contains(stdout, "content/pdf") {
+		t.Fatalf("stdout must not include agreement content or the download URL: %q", stdout)
+	}
+
+	var payload struct {
+		AgreementID  string `json:"agreementId"`
+		TeamID       string `json:"teamId"`
+		Path         string `json:"path"`
+		BytesWritten int64  `json:"bytesWritten"`
+		ContentType  string `json:"contentType"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v; stdout=%q", err, stdout)
+	}
+	if payload.AgreementID != "XG8DNV4HYY" || payload.TeamID != "TEAM123456" || payload.Path != outPath {
+		t.Fatalf("unexpected receipt: %+v", payload)
+	}
+	if payload.BytesWritten != int64(len(body)) || payload.ContentType != "application/pdf" {
+		t.Fatalf("unexpected receipt size/type: %+v", payload)
+	}
+
+	stdout, stderr = captureOutput(t, func() {
+		code := cmd.Run([]string{
+			"--profile", "test-web",
+			"web", "agreements", "download",
+			"--agreement-id", "XG8DNV4HYY",
+			"--out", outPath,
+		}, "1.0.0")
+		if code != cmd.ExitError {
+			t.Fatalf("exit code = %d, want %d", code, cmd.ExitError)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "already exists") || !strings.Contains(stderr, "--overwrite") {
+		t.Fatalf("expected overwrite refusal, got %q", stderr)
+	}
+	if portal.contentCalls != 1 {
+		t.Fatalf("content downloads = %d, want no second download without --overwrite", portal.contentCalls)
+	}
+}
+
+func TestWebAgreementsDownloadRunRejectsCrossOriginRedirectWithoutLeakingURL(t *testing.T) {
+	portal := newWebAgreementsPortal("XG8DNV4HYY")
+	portal.accepted["XG8DNV4HYY"] = true
+	portal.contentResponse = func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"https://cdn.example.test/agreement.pdf?token=very-secret&X-Amz-Signature=abc123"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+	}
+	installWebAgreementsPortal(t, portal)
+
+	outPath := filepath.Join(t.TempDir(), "agreement.pdf")
+	stdout, stderr := captureOutput(t, func() {
+		code := cmd.Run([]string{
+			"--profile", "test-web",
+			"web", "agreements", "download",
+			"--agreement-id", "XG8DNV4HYY",
+			"--out", outPath,
+		}, "1.0.0")
+		if code != cmd.ExitError {
+			t.Fatalf("exit code = %d, want %d", code, cmd.ExitError)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "redirect") {
+		t.Fatalf("expected redirect rejection on stderr, got %q", stderr)
+	}
+	for _, leaked := range []string{"very-secret", "X-Amz-Signature", "?token="} {
+		if strings.Contains(stderr, leaked) {
+			t.Fatalf("stderr leaks %q: %q", leaked, stderr)
+		}
+	}
+	if _, err := os.Lstat(outPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no file after rejected download, got %v", err)
 	}
 }
 

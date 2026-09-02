@@ -6,6 +6,9 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -294,6 +297,18 @@ func TestWebAgreementsRejectPositionalArgs(t *testing.T) {
 			},
 			wantErr: "web agreements accept does not accept positional arguments",
 		},
+		{
+			name: "download",
+			cmd: func(t *testing.T) func(context.Context, []string) error {
+				t.Helper()
+				cmd := WebAgreementsDownloadCommand()
+				if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--out", filepath.Join(t.TempDir(), "agreement.pdf")}); err != nil {
+					t.Fatalf("parse error: %v", err)
+				}
+				return cmd.Exec
+			},
+			wantErr: "web agreements download does not accept positional arguments",
+		},
 	}
 
 	for _, tc := range tests {
@@ -338,6 +353,256 @@ func TestWebAgreementsCommandsAndFlagsAreExperimental(t *testing.T) {
 		if !strings.HasPrefix(flag.Usage, "[experimental] ") {
 			t.Fatalf("--%s usage = %q, want experimental prefix", name, flag.Usage)
 		}
+	}
+
+	download := WebAgreementsDownloadCommand()
+	if !strings.HasPrefix(download.ShortHelp, "[experimental] ") {
+		t.Fatalf("download ShortHelp = %q, want experimental prefix", download.ShortHelp)
+	}
+	for _, name := range []string{"agreement-id", "out", "overwrite"} {
+		flag := download.FlagSet.Lookup(name)
+		if flag == nil {
+			t.Fatalf("expected download --%s flag", name)
+		}
+		if !strings.HasPrefix(flag.Usage, "[experimental] ") {
+			t.Fatalf("download --%s usage = %q, want experimental prefix", name, flag.Usage)
+		}
+	}
+}
+
+// stubWebAgreementsDownload replaces the download hook and records the
+// requested agreement IDs.
+func stubWebAgreementsDownload(t *testing.T, download *webcore.AgreementDownload, downloadErr error) *[]string {
+	t.Helper()
+	orig := downloadAgreementFn
+	t.Cleanup(func() { downloadAgreementFn = orig })
+	requested := &[]string{}
+	downloadAgreementFn = func(ctx context.Context, client *webcore.Client, agreementID string) (*webcore.AgreementDownload, error) {
+		*requested = append(*requested, agreementID)
+		if downloadErr != nil {
+			return nil, downloadErr
+		}
+		return download, nil
+	}
+	return requested
+}
+
+func sampleAgreementDownload() *webcore.AgreementDownload {
+	return &webcore.AgreementDownload{
+		AgreementID: "XG8DNV4HYY",
+		TeamID:      "TEAM123456",
+		Title:       "Apple Developer Program License Agreement",
+		Version:     "5031",
+		ContentType: "application/pdf",
+		Body:        []byte("%PDF-1.7 agreement body"),
+	}
+}
+
+func TestWebAgreementsDownloadValidationErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "missing agreement id", args: []string{"--out", "agreement.pdf"}, wantErr: "--agreement-id is required"},
+		{name: "missing out", args: []string{"--agreement-id", "XG8DNV4HYY"}, wantErr: "--out is required"},
+		{name: "out is a directory path", args: []string{"--agreement-id", "XG8DNV4HYY", "--out", "downloads/"}, wantErr: "--out must be a file path"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stubWebAgreementsSession(t)
+			requested := stubWebAgreementsDownload(t, sampleAgreementDownload(), nil)
+
+			cmd := WebAgreementsDownloadCommand()
+			if err := cmd.FlagSet.Parse(tc.args); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			stdout, stderr := captureWebCommandOutput(t, func() {
+				err := cmd.Exec(context.Background(), nil)
+				if !errors.Is(err, flag.ErrHelp) {
+					t.Fatalf("expected flag.ErrHelp, got %v", err)
+				}
+			})
+			if stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", stdout)
+			}
+			if !strings.Contains(stderr, tc.wantErr) {
+				t.Fatalf("expected stderr to contain %q, got %q", tc.wantErr, stderr)
+			}
+			if len(*requested) != 0 {
+				t.Fatalf("expected no download before validation passes, got %v", *requested)
+			}
+		})
+	}
+}
+
+func TestWebAgreementsDownloadWritesFileAndPrintsReceipt(t *testing.T) {
+	stubWebAgreementsSession(t)
+	requested := stubWebAgreementsDownload(t, sampleAgreementDownload(), nil)
+
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "nested", "agreement.pdf")
+	cmd := WebAgreementsDownloadCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", " XG8DNV4HYY ", "--out", outPath, "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("Exec() error: %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if len(*requested) != 1 || (*requested)[0] != "XG8DNV4HYY" {
+		t.Fatalf("download requests = %v, want [XG8DNV4HYY]", *requested)
+	}
+
+	body, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read downloaded agreement: %v", err)
+	}
+	if string(body) != "%PDF-1.7 agreement body" {
+		t.Fatalf("downloaded body = %q", body)
+	}
+	info, err := os.Stat(outPath)
+	if err != nil {
+		t.Fatalf("stat downloaded agreement: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("downloaded file mode = %o, want 0600", info.Mode().Perm())
+	}
+
+	if strings.Contains(stdout, "%PDF") || strings.Contains(strings.ToLower(stdout), "http") {
+		t.Fatalf("stdout must not include file content or URLs: %q", stdout)
+	}
+	var payload struct {
+		AgreementID  string `json:"agreementId"`
+		TeamID       string `json:"teamId"`
+		Title        string `json:"title"`
+		Version      string `json:"version"`
+		Path         string `json:"path"`
+		BytesWritten int64  `json:"bytesWritten"`
+		ContentType  string `json:"contentType"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("unmarshal stdout %q: %v", stdout, err)
+	}
+	if payload.AgreementID != "XG8DNV4HYY" || payload.TeamID != "TEAM123456" || payload.Version != "5031" {
+		t.Fatalf("receipt identity = %+v", payload)
+	}
+	if payload.Path != outPath || payload.BytesWritten != int64(len(body)) || payload.ContentType != "application/pdf" {
+		t.Fatalf("receipt = %+v, want path %q, %d bytes, application/pdf", payload, outPath, len(body))
+	}
+}
+
+func TestWebAgreementsDownloadRefusesOverwriteWithoutFlag(t *testing.T) {
+	stubWebAgreementsSession(t)
+	requested := stubWebAgreementsDownload(t, sampleAgreementDownload(), nil)
+
+	outPath := filepath.Join(t.TempDir(), "agreement.pdf")
+	if err := os.WriteFile(outPath, []byte("keep me"), 0o600); err != nil {
+		t.Fatalf("seed existing file: %v", err)
+	}
+
+	cmd := WebAgreementsDownloadCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--out", outPath}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var execErr error
+	stdout, _ := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	if execErr == nil || errors.Is(execErr, flag.ErrHelp) {
+		t.Fatalf("Exec() error = %v, want overwrite refusal", execErr)
+	}
+	if !strings.Contains(execErr.Error(), "already exists") || !strings.Contains(execErr.Error(), "--overwrite") {
+		t.Fatalf("Exec() error = %q, want existing-file refusal mentioning --overwrite", execErr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if len(*requested) != 0 {
+		t.Fatalf("expected no download when the destination exists, got %v", *requested)
+	}
+	body, err := os.ReadFile(outPath)
+	if err != nil || string(body) != "keep me" {
+		t.Fatalf("existing file was modified: %q, %v", body, err)
+	}
+}
+
+func TestWebAgreementsDownloadOverwritesWithFlag(t *testing.T) {
+	stubWebAgreementsSession(t)
+	stubWebAgreementsDownload(t, sampleAgreementDownload(), nil)
+
+	outPath := filepath.Join(t.TempDir(), "agreement.pdf")
+	if err := os.WriteFile(outPath, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("seed existing file: %v", err)
+	}
+
+	cmd := WebAgreementsDownloadCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--out", outPath, "--overwrite", "--output", "table"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	stdout, _ := captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("Exec() error: %v", err)
+		}
+	})
+	body, err := os.ReadFile(outPath)
+	if err != nil || string(body) != "%PDF-1.7 agreement body" {
+		t.Fatalf("overwritten file = %q, %v", body, err)
+	}
+	for _, want := range []string{"Agreement ID", "Path", "Bytes", "Content Type", "XG8DNV4HYY", "application/pdf"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("table output missing %q: %q", want, stdout)
+		}
+	}
+}
+
+func TestWebAgreementsDownloadRejectsExistingDirectory(t *testing.T) {
+	stubWebAgreementsSession(t)
+	requested := stubWebAgreementsDownload(t, sampleAgreementDownload(), nil)
+
+	dir := t.TempDir()
+	cmd := WebAgreementsDownloadCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--out", dir, "--overwrite"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var execErr error
+	captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	if execErr == nil {
+		t.Fatal("Exec() error = nil, want directory destination rejection")
+	}
+	if len(*requested) != 0 {
+		t.Fatalf("expected no download for a directory destination, got %v", *requested)
+	}
+}
+
+func TestWebAgreementsDownloadSurfacesClientErrorWithoutFile(t *testing.T) {
+	stubWebAgreementsSession(t)
+	stubWebAgreementsDownload(t, nil, errors.New("agreement download was redirected to cdn.example.test instead of the Developer Portal"))
+
+	outPath := filepath.Join(t.TempDir(), "agreement.pdf")
+	cmd := WebAgreementsDownloadCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--out", outPath}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var execErr error
+	stdout, _ := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	if execErr == nil || !strings.Contains(execErr.Error(), "web agreements download failed") || !strings.Contains(execErr.Error(), "redirected") {
+		t.Fatalf("Exec() error = %v, want wrapped download failure", execErr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if _, err := os.Lstat(outPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no file after a failed download, got %v", err)
 	}
 }
 

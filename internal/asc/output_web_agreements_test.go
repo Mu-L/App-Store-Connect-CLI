@@ -43,3 +43,22 @@ func TestPrintMarkdownWebAgreementsAcceptResultUsesRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintTableWebAgreementDownloadResultUsesRegistry(t *testing.T) {
+	result := &WebAgreementDownloadResult{
+		AgreementID:  "XG8DNV4HYY",
+		TeamID:       "TEAM123456",
+		Title:        "Apple Developer Program License Agreement",
+		Version:      "5031",
+		Path:         "./agreement.pdf",
+		BytesWritten: 1234,
+		ContentType:  "application/pdf",
+	}
+
+	output := captureStdout(t, func() error { return PrintTable(result) })
+	for _, want := range []string{"Agreement ID", "Path", "Bytes", "Content Type", "XG8DNV4HYY", "TEAM123456", "./agreement.pdf", "1234", "application/pdf"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("table output missing %q: %q", want, output)
+		}
+	}
+}

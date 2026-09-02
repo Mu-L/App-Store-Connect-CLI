@@ -46,6 +46,30 @@ type WebAgreementsAcceptResult struct {
 	Agreements   []WebAgreement `json:"agreements"`
 }
 
+// WebAgreementDownloadResult is the receipt for a saved agreement download. It
+// intentionally omits the (possibly signed) download URL.
+type WebAgreementDownloadResult struct {
+	AgreementID  string `json:"agreementId"`
+	TeamID       string `json:"teamId"`
+	Title        string `json:"title,omitempty"`
+	Version      string `json:"version,omitempty"`
+	Path         string `json:"path"`
+	BytesWritten int64  `json:"bytesWritten"`
+	ContentType  string `json:"contentType,omitempty"`
+}
+
+func webAgreementDownloadRows(result *WebAgreementDownloadResult) ([]string, [][]string) {
+	return []string{"Agreement ID", "Team ID", "Title", "Version", "Path", "Bytes", "Content Type"}, [][]string{{
+		result.AgreementID,
+		result.TeamID,
+		result.Title,
+		result.Version,
+		result.Path,
+		fmt.Sprintf("%d", result.BytesWritten),
+		result.ContentType,
+	}}
+}
+
 func webAgreementsStatusTables(result *WebAgreementsStatusResult, render func([]string, [][]string)) error {
 	render(
 		[]string{"Team ID", "Pending", "Contract Messages", "Agreements"},
