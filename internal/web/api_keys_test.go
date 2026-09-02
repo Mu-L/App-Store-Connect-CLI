@@ -310,6 +310,72 @@ func TestClientListAPIKeysFallsBackWhenTeamKeysForbidden(t *testing.T) {
 	}
 }
 
+func TestClientListAPIKeysPropagatesIndividualPaginationForbidden(t *testing.T) {
+	fixture := handlertest.New(t)
+	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/iris/v1/apiKeys":
+			_, _ = w.Write([]byte(`{"data":[{"id":"ABC123XYZ","attributes":{"nickname":"Release automation","roles":["ADMIN"],"isActive":true,"keyType":"PUBLIC_API"}}]}`))
+		case r.URL.Path == "/iris/v2/apiKeys" && r.URL.Query().Get("cursor") == "page-2":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"errors":[{"status":"403","title":"Forbidden"}]}`))
+		case r.URL.Path == "/iris/v2/apiKeys":
+			_, _ = w.Write([]byte(`{
+				"data":[{"id":"IND456ABC","attributes":{"nickname":"Personal","roles":["ADMIN"],"isActive":true,"keyType":"PUBLIC_API"}}],
+				"links":{"next":"https://appstoreconnect.apple.com/iris/v2/apiKeys?cursor=page-2"}
+			}`))
+		default:
+			fixture.Respond(w, "unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	keys, err := client.ListAPIKeys(context.Background())
+	if keys != nil {
+		t.Fatalf("expected no keys when individual pagination fails, got %#v", keys)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
+		t.Fatalf("expected individual pagination 403, got %v", err)
+	}
+	if !errors.Is(err, errAPIKeyListPagination) {
+		t.Fatalf("expected pagination sentinel, got %v", err)
+	}
+}
+
+func TestClientListAPIKeysPropagatesTeamPaginationNotFound(t *testing.T) {
+	fixture := handlertest.New(t)
+	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/iris/v1/apiKeys" && r.URL.Query().Get("cursor") == "page-2":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"errors":[{"status":"404","title":"Not Found"}]}`))
+		case r.URL.Path == "/iris/v1/apiKeys":
+			_, _ = w.Write([]byte(`{
+				"data":[{"id":"ABC123XYZ","attributes":{"nickname":"Release automation","roles":["ADMIN"],"isActive":true,"keyType":"PUBLIC_API"}}],
+				"links":{"next":"https://appstoreconnect.apple.com/iris/v1/apiKeys?cursor=page-2"}
+			}`))
+		case r.URL.Path == "/iris/v2/apiKeys":
+			_, _ = w.Write([]byte(`{"data":[{"id":"IND456ABC","attributes":{"nickname":"Personal","roles":["ADMIN"],"isActive":true,"keyType":"PUBLIC_API"}}]}`))
+		default:
+			fixture.Respond(w, "unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	keys, err := client.ListAPIKeys(context.Background())
+	if keys != nil {
+		t.Fatalf("expected no keys when team pagination fails, got %#v", keys)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
+		t.Fatalf("expected team pagination 404, got %v", err)
+	}
+	if !errors.Is(err, errAPIKeyListPagination) {
+		t.Fatalf("expected pagination sentinel, got %v", err)
+	}
+}
+
 func TestClientListAPIKeysReturnsIndividualErrorAfterTeamFallback(t *testing.T) {
 	fixture := handlertest.New(t)
 	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
