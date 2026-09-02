@@ -1268,6 +1268,17 @@ func reportStaplerFailure(command string, err error) error {
 			}
 			return shared.NewReportedError(shared.NewProcessExitErrorWithCause(commandErr.ExitCode, err))
 		}
+		if errors.Is(err, localxcode.ErrStaplerDiagnosticOutput) && !isStaplerTargetStageError(err) {
+			// The child reported success; only copying its output to the
+			// diagnostic writer failed. Report the delivery failure without
+			// claiming the operation itself lacked a usable status.
+			if commandErr.Operation == command {
+				fmt.Fprintf(os.Stderr, "Error: notarization %s completed, but its diagnostic output could not be written\n", command)
+			} else {
+				fmt.Fprintf(os.Stderr, "Error: notarization %s completed, but the %s diagnostic output could not be written\n", command, commandErr.Operation)
+			}
+			return shared.NewReportedError(err)
+		}
 		fmt.Fprintf(os.Stderr, "Error: notarization %s failed during %s before a usable exit status was available\n", command, commandErr.Operation)
 		return shared.NewReportedError(err)
 	}
@@ -1293,12 +1304,13 @@ func reportStaplerPartialMutation(err *localxcode.StaplerPartialMutationError) {
 		return
 	}
 	var commandErr *localxcode.StaplerCommandError
-	if err != nil && errors.As(err, &commandErr) &&
-		commandErr.Operation == string(localxcode.StaplerOperationStaple) && commandErr.ExitCode > 0 {
+	staplerChildFailure := err != nil && errors.As(err, &commandErr) &&
+		commandErr.Operation == string(localxcode.StaplerOperationStaple)
+	if staplerChildFailure && commandErr.ExitCode > 0 {
 		fmt.Fprintf(os.Stderr, "Error: notarization staple failed during staple (exit status %d); the artifact may have been modified but was not verified\n", commandErr.ExitCode)
 		return
 	}
-	if err != nil && errors.Is(err, localxcode.ErrStaplerDiagnosticOutput) && !isStaplerTargetStageError(err) {
+	if staplerChildFailure && errors.Is(err, localxcode.ErrStaplerDiagnosticOutput) && !isStaplerTargetStageError(err) {
 		// The staple child reported success but its output could not be copied
 		// to the diagnostic writer, so the runner stopped before follow-up
 		// validation. Do not claim that a validation ran and failed. A joined

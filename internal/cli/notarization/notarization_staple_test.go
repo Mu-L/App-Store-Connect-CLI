@@ -4112,3 +4112,55 @@ func TestNotarizationStapleReportsDiagnosticCopyFailureWithoutClaimingValidation
 		t.Fatalf("stderr = %q, want unverified-mutation warning", stderr)
 	}
 }
+
+func TestNotarizationStapleReportsValidationDiagnosticCopyFailureAsCompleted(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	previous := runStaplerStaple
+	runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		for _, stage := range []struct {
+			operation localxcode.StaplerOperation
+			before    bool
+		}{
+			{localxcode.StaplerOperationStaple, true},
+			{localxcode.StaplerOperationStaple, false},
+			{localxcode.StaplerOperationValidate, true},
+			{localxcode.StaplerOperationValidate, false},
+		} {
+			if err := invokeStaplerStage(verifier, stage.operation, stage.before); err != nil {
+				return nil, err
+			}
+		}
+		return nil, &localxcode.StaplerCommandError{
+			Operation: string(localxcode.StaplerOperationValidate),
+			ExitCode:  -1,
+			Err:       localxcode.ErrStaplerDiagnosticOutput,
+		}
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want diagnostic copy failure")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if strings.Contains(stderr, "was not attempted") || strings.Contains(stderr, "was not verified") {
+		t.Fatalf("stderr = %q, must not claim validation was skipped or unverified", stderr)
+	}
+	if strings.Contains(stderr, "before a usable exit status was available") {
+		t.Fatalf("stderr = %q, must not claim the validate child had no usable status", stderr)
+	}
+	if !strings.Contains(stderr, "diagnostic output could not be written") {
+		t.Fatalf("stderr = %q, want diagnostic-copy diagnosis", stderr)
+	}
+}

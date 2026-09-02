@@ -271,6 +271,13 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 		}
 	}
 	if validateErr != nil {
+		if isStaplerDiagnosticOutputError(validateErr) {
+			// The validation child itself succeeded; only copying its output to
+			// the caller's diagnostic writer failed. The artifact is stapled and
+			// verified, so preserve the writer failure without the partial
+			// mutation claim that tells callers the ticket went unverified.
+			return nil, validateErr
+		}
 		return nil, &StaplerPartialMutationError{
 			Operation: StaplerOperationValidate,
 			Err:       validateErr,

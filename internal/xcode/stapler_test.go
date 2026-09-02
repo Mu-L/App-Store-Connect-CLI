@@ -1880,3 +1880,36 @@ type failingStaplerDiagnosticWriter struct{}
 func (failingStaplerDiagnosticWriter) Write([]byte) (int, error) {
 	return 0, errors.New("diagnostic sink closed")
 }
+
+func TestStapleKeepsValidationDiagnosticCopyFailureOutOfPartialMutation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	// Only the validation child emits output, so the staple child completes
+	// without touching the failing diagnostic writer.
+	t.Setenv("ASC_STAPLER_VALIDATE_STDERR", "validation detail\n")
+
+	result, err := Staple(context.Background(), target, failingStaplerDiagnosticWriter{})
+	if result != nil {
+		t.Fatalf("Staple() result = %#v, want nil after diagnostic copy failure", result)
+	}
+	if !errors.Is(err, ErrStaplerDiagnosticOutput) {
+		t.Fatalf("Staple() error = %T %v, want diagnostic-output marker", err, err)
+	}
+	var partialErr *StaplerPartialMutationError
+	if errors.As(err, &partialErr) {
+		t.Fatalf("Staple() error = %#v, must not claim partial mutation when validation succeeded", err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationValidate) {
+		t.Fatalf("Staple() error = %#v, want validate command error", err)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|staple|" + target,
+		"xcrun|stapler|validate|" + target,
+	})
+}
