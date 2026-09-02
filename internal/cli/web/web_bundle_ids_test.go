@@ -141,6 +141,16 @@ func TestWebBundleIDCapabilitiesEnableValidationErrors(t *testing.T) {
 	}
 }
 
+func TestWebBundleIDsCommandHelpDoesNotDuplicateWebSession(t *testing.T) {
+	help := WebBundleIDsCommand().LongHelp
+	if strings.Contains(help, "web-session web-session") {
+		t.Fatalf("bundle-ids LongHelp duplicates web-session phrase: %q", help)
+	}
+	if !strings.Contains(help, "Apple web-session endpoints") {
+		t.Fatalf("bundle-ids LongHelp missing web-session endpoints wording: %q", help)
+	}
+}
+
 func TestWebBundleIDCapabilitiesEnableHelpUsesSupportedLoginFlags(t *testing.T) {
 	cmd := WebBundleIDCapabilitiesEnableCommand()
 	if strings.Contains(cmd.LongHelp, "--reauthenticate") {
