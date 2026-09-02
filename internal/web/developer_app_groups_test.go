@@ -784,6 +784,14 @@ func TestAppGroupMutationsFailClosedWhenCapabilityGraphIsUnreadable(t *testing.T
 			"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":""}]}}},
 			"included":[]
 		}`,
+		"omitted enabled on APP_GROUPS capability": `{
+			"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}},
+			"included":[{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"settings":[]},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[{"type":"appGroups","id":"GROUP1"},{"type":"appGroups","id":"GROUP2"}]}}}]
+		}`,
+		"null enabled on APP_GROUPS capability": `{
+			"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}},
+			"included":[{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":null},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[{"type":"appGroups","id":"GROUP1"},{"type":"appGroups","id":"GROUP2"}]}}}]
+		}`,
 	}
 	mutations := map[string]func(*Client) error{
 		"assign": func(client *Client) error {

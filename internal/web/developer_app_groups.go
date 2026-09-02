@@ -826,9 +826,9 @@ func developerBundleIDAppGroupsState(current developerBundleIDResponse) (develop
 			return developerAppGroupsState{}, fmt.Errorf("cannot safely update duplicate APP_GROUPS capability resources")
 		}
 		found = true
-		state.Enabled, err = developerBundleIDCapabilityEnabled(capability)
+		state.Enabled, err = developerAppGroupsCapabilityEnabled(capability)
 		if err != nil {
-			return developerAppGroupsState{}, err
+			return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: %w", current.Data.ID, err)
 		}
 		// The read requested include=bundleIdCapabilities.appGroups; the PATCH
 		// replaces this collection wholesale, so it must be readable first.
@@ -848,6 +848,29 @@ func developerBundleIDAppGroupsState(current developerBundleIDResponse) (develop
 		}
 	}
 	return state, nil
+}
+
+// developerAppGroupsCapabilityEnabled reads the enabled state of the APP_GROUPS
+// capability strictly. unassign carries the current state forward into the
+// PATCH, so an omitted or null value must be unreadable rather than "false",
+// which would disable every remaining assignment.
+func developerAppGroupsCapabilityEnabled(capability developerResource) (bool, error) {
+	if len(capability.Attributes) == 0 {
+		return false, fmt.Errorf("APP_GROUPS capability %q is missing attributes", capability.ID)
+	}
+	var attributes map[string]json.RawMessage
+	if err := json.Unmarshal(capability.Attributes, &attributes); err != nil {
+		return false, fmt.Errorf("failed to parse APP_GROUPS capability %q attributes: %w", capability.ID, err)
+	}
+	raw, ok := attributes["enabled"]
+	if !ok || string(raw) == "null" {
+		return false, fmt.Errorf("APP_GROUPS capability %q has no readable enabled state", capability.ID)
+	}
+	var enabled bool
+	if err := json.Unmarshal(raw, &enabled); err != nil {
+		return false, fmt.Errorf("failed to parse APP_GROUPS capability %q enabled state: %w", capability.ID, err)
+	}
+	return enabled, nil
 }
 
 // buildDeveloperAppGroupsPatchRequest rewrites only the APP_GROUPS capability
