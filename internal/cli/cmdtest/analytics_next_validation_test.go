@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
@@ -60,11 +61,14 @@ func runAnalyticsInvalidNextURLCases(
 			if !strings.Contains(runErr.Error(), test.wantErr) {
 				t.Fatalf("expected error %q, got %v", test.wantErr, runErr)
 			}
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
+			}
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if stderr != "" {
-				t.Fatalf("expected empty stderr, got %q", stderr)
+			if !strings.Contains(stderr, "Error: "+test.wantErr) {
+				t.Fatalf("expected usage error on stderr, got %q", stderr)
 			}
 		})
 	}

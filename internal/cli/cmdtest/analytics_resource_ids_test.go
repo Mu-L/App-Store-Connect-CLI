@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
@@ -111,8 +112,14 @@ func TestAnalyticsRequestIDValidationRemainsBeforeClientConstruction(t *testing.
 			if runErr == nil || !strings.Contains(runErr.Error(), "--request-id must be a valid UUID") {
 				t.Fatalf("run error = %v, want request UUID validation", runErr)
 			}
-			if stdout != "" || stderr != "" {
-				t.Fatalf("expected empty output, got stdout=%q stderr=%q", stdout, stderr)
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
+			}
+			if stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", stdout)
+			}
+			if !strings.Contains(stderr, "--request-id must be a valid UUID") {
+				t.Fatalf("expected request UUID usage error on stderr, got %q", stderr)
 			}
 			if clientFactoryCalls != 0 {
 				t.Fatalf("client factory calls = %d, want 0", clientFactoryCalls)
@@ -188,8 +195,14 @@ func TestAnalyticsResourcePathValidationRemainsBeforeClientConstruction(t *testi
 			if runErr == nil || !strings.Contains(runErr.Error(), "single path segment") {
 				t.Fatalf("run error = %v, want resource path-segment validation", runErr)
 			}
-			if stdout != "" || stderr != "" {
-				t.Fatalf("expected empty output, got stdout=%q stderr=%q", stdout, stderr)
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
+			}
+			if stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", stdout)
+			}
+			if !strings.Contains(stderr, "single path segment") {
+				t.Fatalf("expected path-segment usage error on stderr, got %q", stderr)
 			}
 			if clientFactoryCalls != 0 {
 				t.Fatalf("client factory calls = %d, want 0", clientFactoryCalls)
