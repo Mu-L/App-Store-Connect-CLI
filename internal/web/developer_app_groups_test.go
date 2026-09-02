@@ -517,6 +517,40 @@ func TestDeleteDeveloperAppGroupFailsWhenGroupStillListedAfterDelete(t *testing.
 	}
 }
 
+func TestDeleteDeveloperAppGroupFailsWhenVerificationListIsMalformed(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing collection": `{"resultCode":0}`,
+		"null collection":    `{"resultCode":0,"applicationGroupList":null}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+				switch requestNumber {
+				case 1:
+					return assertDeveloperPortalBootstrap(t, request), nil
+				case 2:
+					return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), nil), nil
+				case 3:
+					return developerPortalTestResponse(http.StatusOK, `{"data":[],"included":[]}`, nil), nil
+				case 4:
+					return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+				case 5:
+					return developerPortalTestResponse(http.StatusOK, `{"resultCode":0}`, nil), nil
+				case 6:
+					return developerPortalTestResponse(http.StatusOK, body, nil), nil
+				default:
+					t.Fatalf("unexpected request %d", requestNumber)
+					return nil, nil
+				}
+			})
+
+			result, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
+			if err == nil || !strings.Contains(err.Error(), "verification failed") {
+				t.Fatalf("expected verification failure, got result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestDeleteDeveloperAppGroupFailsClosedOnUnknownGroupOrUnreadableAssignments(t *testing.T) {
 	t.Run("unknown group", func(t *testing.T) {
 		client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
@@ -560,8 +594,14 @@ func TestDeleteDeveloperAppGroupFailsClosedOnUnknownGroupOrUnreadableAssignments
 	})
 
 	for name, body := range map[string]string{
-		"empty envelope": `{}`,
-		"null data":      `{"data":null,"included":[]}`,
+		"empty envelope":                       `{}`,
+		"null data":                            `{"data":null,"included":[]}`,
+		"null capability relationship":         `{"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":null}}}],"included":[]}`,
+		"capability relationship without data": `{"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"links":{}}}}],"included":[]}`,
+		"null app group relationship": `{
+			"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}}],
+			"included":[{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":null}}}]
+		}`,
 	} {
 		t.Run("malformed bundle list "+name, func(t *testing.T) {
 			client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {

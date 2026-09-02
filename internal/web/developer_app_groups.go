@@ -184,10 +184,14 @@ func (c *Client) ListDeveloperAppGroups(ctx context.Context, options DeveloperAp
 	if teamID == "" {
 		return nil, fmt.Errorf("developer portal team is not selected; %s", developerPortalAuthHint)
 	}
-	return c.listDeveloperAppGroupPages(ctx, teamID, options.Paginate)
+	return c.listDeveloperAppGroupPages(ctx, teamID, options.Paginate, false)
 }
 
-func (c *Client) listDeveloperAppGroupPages(ctx context.Context, teamID string, paginate bool) (*DeveloperAppGroupsListResult, error) {
+// listDeveloperAppGroupPages reads the team's App Groups. With requireCollection
+// set, a success envelope whose applicationGroupList is absent or null is an
+// error instead of an empty team; the delete path needs that to stay
+// fail-closed while the list command keeps tolerating a sparse envelope.
+func (c *Client) listDeveloperAppGroupPages(ctx context.Context, teamID string, paginate bool, requireCollection bool) (*DeveloperAppGroupsListResult, error) {
 	result := &DeveloperAppGroupsListResult{Data: []DeveloperAppGroup{}}
 	for pageNumber := 1; ; pageNumber++ {
 		body, err := c.doDeveloperPortalLegacyFormRequest(ctx, developerAppGroupsListPath, url.Values{
@@ -206,6 +210,9 @@ func (c *Client) listDeveloperAppGroupPages(ctx context.Context, teamID string, 
 		}
 		if err := validateDeveloperPortalLegacyResponse(page.developerPortalLegacyResponse); err != nil {
 			return nil, err
+		}
+		if requireCollection && page.ApplicationGroupList == nil {
+			return nil, fmt.Errorf("developer portal App Groups response has no applicationGroupList collection")
 		}
 		for _, group := range page.ApplicationGroupList {
 			decoded, err := decodeDeveloperAppGroup(group)
@@ -238,7 +245,7 @@ func (c *Client) DeleteDeveloperAppGroup(ctx context.Context, request DeveloperA
 		return nil, fmt.Errorf("developer portal team is not selected; %s", developerPortalAuthHint)
 	}
 
-	groups, err := c.listDeveloperAppGroupPages(ctx, teamID, true)
+	groups, err := c.listDeveloperAppGroupPages(ctx, teamID, true, true)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +280,7 @@ func (c *Client) DeleteDeveloperAppGroup(ctx context.Context, request DeveloperA
 		return nil, err
 	}
 
-	remaining, err := c.listDeveloperAppGroupPages(ctx, teamID, true)
+	remaining, err := c.listDeveloperAppGroupPages(ctx, teamID, true, true)
 	if err != nil {
 		return nil, fmt.Errorf("developer portal accepted the delete but verification failed: %w", err)
 	}
@@ -392,11 +399,11 @@ func developerBundleIDReferencesAppGroup(bundle developerResource, includedByID 
 	if !ok {
 		return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: Developer Portal omitted its capability relationships", label)
 	}
-	var relationship developerResourceRelationship
-	if err := json.Unmarshal(rawRelationship, &relationship); err != nil {
-		return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: %w", label, err)
+	capabilityReferences, err := decodeStrictDeveloperRelationship(rawRelationship)
+	if err != nil {
+		return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: capability relationship %w", label, err)
 	}
-	for _, reference := range relationship.Data {
+	for _, reference := range capabilityReferences {
 		if reference.Type != "bundleIdCapabilities" {
 			continue
 		}
@@ -411,6 +418,13 @@ func developerBundleIDReferencesAppGroup(bundle developerResource, includedByID 
 		if capabilityID != developerAppGroupsCapabilityType {
 			continue
 		}
+		// The preflight requested include=bundleIdCapabilities.appGroups, so a
+		// present-but-null collection is unreadable rather than empty.
+		if rawGroups, exists := capability.Relationships["appGroups"]; exists {
+			if _, err := decodeStrictDeveloperRelationship(rawGroups); err != nil {
+				return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: appGroups relationship %w", label, err)
+			}
+		}
 		groups, err := developerAppGroupRelationships(capability)
 		if err != nil {
 			return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: %w", label, err)
@@ -420,6 +434,20 @@ func developerBundleIDReferencesAppGroup(bundle developerResource, includedByID 
 		}
 	}
 	return assignment, false, nil
+}
+
+// decodeStrictDeveloperRelationship decodes a JSON:API relationship object and
+// rejects an absent or null data collection, which destructive preflights must
+// treat as unreadable rather than as an empty set.
+func decodeStrictDeveloperRelationship(raw json.RawMessage) ([]developerResource, error) {
+	var relationship developerResourceRelationship
+	if err := json.Unmarshal(raw, &relationship); err != nil {
+		return nil, fmt.Errorf("could not be parsed: %w", err)
+	}
+	if relationship.Data == nil {
+		return nil, fmt.Errorf("has no data collection")
+	}
+	return relationship.Data, nil
 }
 
 // CreateDeveloperAppGroup registers an App Group through Developer Portal.
