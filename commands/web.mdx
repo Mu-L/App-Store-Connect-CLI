@@ -193,7 +193,8 @@ sending a PATCH.
 Both commands require `--confirm` because a changed App ID invalidates existing
 provisioning profiles. `sync-app-clip` reads the current capability graph first
 and returns `changed: false` without sending a PATCH when the capability is
-already enabled with the requested `parentBundleId`.
+already enabled with the requested `parentBundleId` and, if `--settings-json`
+is supplied, the requested settings already match.
 
 Example:
 
