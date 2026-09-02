@@ -657,3 +657,46 @@ func TestStaplerDirectoryInventoryRejectsSameNameReplacementAfterRetainedChecks(
 		t.Fatalf("inventory error = %q, must not expose entry path", err.Error())
 	}
 }
+
+func TestStaplerDirectoryInventoryRejectsEntryRemovedAfterEnumeration(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	if err := os.Mkdir(targetPath, 0o755); err != nil {
+		t.Fatalf("create bundle: %v", err)
+	}
+	keptPath := filepath.Join(targetPath, "Info.plist")
+	if err := os.WriteFile(keptPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write kept file: %v", err)
+	}
+	removedPath := filepath.Join(targetPath, "Removed.bin")
+	if err := os.WriteFile(removedPath, []byte("vanishing"), 0o600); err != nil {
+		t.Fatalf("write removed file: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+
+	previous := readdirStaplerInventoryNamesFn
+	injected := false
+	readdirStaplerInventoryNamesFn = func(file *os.File, count int) ([]string, error) {
+		batch, readErr := file.Readdirnames(count)
+		if !injected && errors.Is(readErr, io.EOF) {
+			injected = true
+			if err := os.Remove(removedPath); err != nil {
+				t.Fatalf("remove enumerated bundle entry: %v", err)
+			}
+		}
+		return batch, readErr
+	}
+	t.Cleanup(func() { readdirStaplerInventoryNamesFn = previous })
+
+	_, err = target.captureDirectoryInventoryAtStage(context.Background(), "before validation")
+	if err == nil {
+		t.Fatal("captureDirectoryInventoryAtStage() = nil, want entry-removal race rejection")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity error", err, err)
+	}
+}

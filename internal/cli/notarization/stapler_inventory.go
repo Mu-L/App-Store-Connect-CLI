@@ -528,6 +528,13 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 		}
 		info, err := directory.Lstat(name)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// Enumeration already observed this name, so its disappearance
+				// before the first inspection proves the bundle changed during
+				// the scan rather than an operational filesystem failure. The
+				// second inspection pass classifies the same race identically.
+				return errStaplerInventoryChanged
+			}
 			return fmt.Errorf("inspect inventory entry %q: %w", entryRelative, err)
 		}
 		initialEntries[name] = info
