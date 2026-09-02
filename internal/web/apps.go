@@ -313,12 +313,18 @@ func (c *Client) GetAppRemovalState(ctx context.Context, appID string) (*AppRemo
 	removed, removedKnown := boolAttrKnown(payload.Data.Attributes, "removed")
 
 	versionStates := make([]string, 0, len(decoded.DisplayableVersions)*2)
+	versionsHaveState := true
 	for _, version := range decoded.DisplayableVersions {
-		if state := strings.TrimSpace(version.AppStoreState); state != "" {
-			versionStates = append(versionStates, state)
+		storeState := strings.TrimSpace(version.AppStoreState)
+		versionState := strings.TrimSpace(version.AppVersionState)
+		if storeState == "" && versionState == "" {
+			versionsHaveState = false
 		}
-		if state := strings.TrimSpace(version.AppVersionState); state != "" {
-			versionStates = append(versionStates, state)
+		if storeState != "" {
+			versionStates = append(versionStates, storeState)
+		}
+		if versionState != "" {
+			versionStates = append(versionStates, versionState)
 		}
 	}
 
@@ -331,7 +337,7 @@ func (c *Client) GetAppRemovalState(ctx context.Context, appID string) (*AppRemo
 		AppStoreLegacyStatus:      decoded.AppStoreLegacyStatus,
 		Marketplace:               decoded.Marketplace,
 		VersionStates:             versionStates,
-		DisplayableVersionsLoaded: displayableVersionsIncluded(payload.Data, included),
+		DisplayableVersionsLoaded: displayableVersionsIncluded(payload.Data, included) && versionsHaveState,
 	}, nil
 }
 

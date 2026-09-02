@@ -347,6 +347,48 @@ func TestGetAppRemovalStateLeavesVersionsUnloadedWhenIncludeMissing(t *testing.T
 	}
 }
 
+func TestGetAppRemovalStateLeavesVersionsUnloadedWhenStateFieldsMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"type": "apps",
+				"id": "1234567890",
+				"attributes": {
+					"name": "Throwaway",
+					"bundleId": "com.example.throwaway",
+					"removed": false,
+					"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
+					"marketplace": "APP_STORE"
+				},
+				"relationships": {
+					"displayableVersions": {
+						"data": [{"type": "appStoreVersions", "id": "version-1"}]
+					}
+				}
+			},
+			"included": [{
+				"type": "appStoreVersions",
+				"id": "version-1",
+				"attributes": {
+					"platform": "IOS",
+					"versionString": "1.0"
+				}
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	client := &Client{httpClient: server.Client(), baseURL: server.URL}
+	state, err := client.GetAppRemovalState(context.Background(), "1234567890")
+	if err != nil {
+		t.Fatalf("GetAppRemovalState error: %v", err)
+	}
+	if state.DisplayableVersionsLoaded {
+		t.Fatal("included versions without state fields must not count as loaded")
+	}
+}
+
 func TestGetAppRemovalStateRequiresID(t *testing.T) {
 	client := &Client{}
 	if _, err := client.GetAppRemovalState(context.Background(), "  "); err == nil {

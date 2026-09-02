@@ -694,6 +694,78 @@ func TestWebAppsDeleteRunAlreadyRemovedSkipsEligibilityWithoutPatch(t *testing.T
 	}
 }
 
+func TestWebAppsDeleteRunRejectsVersionsWithoutDecodedStateWithoutPatch(t *testing.T) {
+	var patchCalls int
+	restoreSession := webcmd.SetResolveWebSession(func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{
+			Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch {
+				case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/1234567890":
+					return webAppsDeleteJSONResponse(`{
+						"data": {
+							"type": "apps",
+							"id": "1234567890",
+							"attributes": {
+								"name": "Throwaway",
+								"bundleId": "com.example.throwaway",
+								"removed": false,
+								"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
+								"marketplace": "APP_STORE"
+							},
+							"relationships": {
+								"displayableVersions": {
+									"data": [{"type": "appStoreVersions", "id": "version-1"}]
+								}
+							}
+						},
+						"included": [{
+							"type": "appStoreVersions",
+							"id": "version-1",
+							"attributes": {
+								"platform": "IOS",
+								"versionString": "1.0"
+							}
+						}]
+					}`), nil
+				case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/1234567890/appAvailabilityV2":
+					t.Fatal("did not expect availability read when version state was undecoded")
+					return nil, nil
+				case req.Method == http.MethodPatch && req.URL.Path == "/iris/v1/apps/1234567890":
+					patchCalls++
+					t.Fatal("did not expect PATCH when version state was undecoded")
+					return nil, nil
+				default:
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+					return nil, nil
+				}
+			})},
+		}, "cache", nil
+	})
+	t.Cleanup(restoreSession)
+
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{
+			"web", "apps", "delete",
+			"--app", "1234567890",
+			"--confirm",
+			"--output", "json",
+		}, "1.0.0")
+	})
+	if code != cmd.ExitError {
+		t.Fatalf("exit code = %d, want %d; stdout=%q stderr=%q", code, cmd.ExitError, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "could not confirm") || !strings.Contains(stderr, "displayableVersions") {
+		t.Fatalf("expected stderr to name missing version linkage, got %q", stderr)
+	}
+	if patchCalls != 0 {
+		t.Fatalf("expected no PATCH, got %d", patchCalls)
+	}
+}
+
 func webAppsDeleteJSONResponse(body string) *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
