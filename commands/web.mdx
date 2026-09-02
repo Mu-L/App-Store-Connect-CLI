@@ -242,9 +242,10 @@ the capability, so `delete` can always be unblocked from the CLI.
 
 `delete` fails closed: when the group is still assigned to any Bundle ID the
 command exits non-zero without sending a delete and names the assigned Bundle
-IDs on stderr. Remove those assignments with `unassign` or `set` first. Every
-mutation verifies its result by re-reading the Bundle ID or the team's App Group
-list before reporting success.
+IDs on stderr. Remove those assignments with `unassign` or `set` first. The
+`assign`, `unassign`, `set`, and `delete` commands verify their result by
+re-reading the Bundle ID or the team's App Group list before reporting success;
+`create` returns the group as the portal reported it.
 
 When an assignment change or deletion changes an App ID, existing provisioning
 profiles that contain that App ID become invalid. The commands print a warning
