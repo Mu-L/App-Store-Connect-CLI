@@ -419,13 +419,11 @@ def assert_winget_submission_retries_transient_failures_text(path: Path, workflo
         assert knob in functions[WINGET_RETRY_HELPER], f"{path}: {WINGET_RETRY_HELPER} must honor {knob}"
     assert "RANDOM" in functions[WINGET_RETRY_HELPER], f"{path}: {WINGET_RETRY_HELPER} must add jitter"
 
-    preflight = script.find("gh api rate_limit")
-    first_call = script.find("gh api user")
-    assert preflight >= 0, f"{path}: WinGet submission must log the GitHub rate limit before submitting"
-    assert 0 <= preflight < first_call, f"{path}: the rate_limit preflight must run before the first API call"
-
-    retried_functions = set(re.findall(rf"\b{WINGET_RETRY_HELPER} ([A-Za-z_][A-Za-z0-9_]*)\b", script))
-    retried_functions &= set(functions)
+    # Compare invocation sites, not definitions: the preflight lives in a
+    # function, so its body position says nothing about when it runs.
+    preflight_functions = {name for name, body in functions.items() if "gh api rate_limit" in body}
+    assert preflight_functions, f"{path}: WinGet submission must log the GitHub rate limit before submitting"
+    top_level = []
     current_function = None
     for line in script.splitlines():
         header = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{\s*$", line)
@@ -435,11 +433,43 @@ def assert_winget_submission_retries_transient_failures_text(path: Path, workflo
         if line == "}":
             current_function = None
             continue
-        call = WINGET_NETWORK_CALL.search(line)
-        if not call or line.lstrip().startswith("#"):
+        top_level.append((current_function, line))
+    preflight_call = next(
+        (i for i, (fn, line) in enumerate(top_level) if fn is None and re.match(r"^\s*(\w+)\s*$", line) and line.strip() in preflight_functions),
+        None,
+    )
+    first_call = next((i for i, (fn, line) in enumerate(top_level) if fn is None and "gh api user" in line), None)
+    assert preflight_call is not None, f"{path}: the rate_limit preflight function must be invoked at the top level"
+    assert first_call is not None, f"{path}: WinGet submission must authenticate with gh api user"
+    assert preflight_call < first_call, f"{path}: the rate_limit preflight must run before the first API call"
+
+    # Any function whose body performs a network call must be invoked only
+    # through the retry helper, at every call site.
+    network_functions = {
+        name
+        for name, body in functions.items()
+        if name != WINGET_RETRY_HELPER
+        and any(WINGET_NETWORK_CALL.search(l) and not l.lstrip().startswith("#") for l in body.splitlines())
+    }
+    retried_functions: set[str] = set()
+    for fn, line in top_level:
+        if line.lstrip().startswith("#"):
             continue
-        wrapped = WINGET_RETRY_HELPER in line or current_function in retried_functions
+        for name in network_functions:
+            for match in re.finditer(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_(])", line):
+                prefix = line[: match.start()].rstrip()
+                assert prefix.endswith(WINGET_RETRY_HELPER), (
+                    f"{path}: {name}() performs network calls and must be invoked via {WINGET_RETRY_HELPER}: {line.strip()}"
+                )
+                retried_functions.add(name)
+        call = WINGET_NETWORK_CALL.search(line)
+        if not call:
+            continue
+        wrapped = WINGET_RETRY_HELPER in line or fn in network_functions
         assert wrapped, f"{path}: unguarded WinGet network call {call.group(1)!r}: {line.strip()}"
+    assert network_functions <= retried_functions, (
+        f"{path}: network-bearing functions never invoked via {WINGET_RETRY_HELPER}: {sorted(network_functions - retried_functions)}"
+    )
 
     # verify_winget_scope must stay a hard refusal that no retry loop can paper over.
     assert "verify_winget_scope" in functions, f"{path}: WinGet submission must keep verify_winget_scope"
@@ -502,13 +532,31 @@ def assert_winget_retry_guard_rejects_unguarded_calls() -> None:
             continue
         raise AssertionError(f"{RELEASE_WORKFLOW}: guard accepts an unguarded {wrapped!r}")
 
-    weakened = workflow.replace("gh api rate_limit", "gh api user", 1)
-    try:
-        assert_winget_submission_retries_transient_failures_text(RELEASE_WORKFLOW, weakened)
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError(f"{RELEASE_WORKFLOW}: guard accepts a missing rate_limit preflight")
+    auth_call = f"AUTH_LOGIN=$({WINGET_RETRY_HELPER} gh api user --jq .login)"
+    assert auth_call in workflow, f"{RELEASE_WORKFLOW}: expected to find {auth_call!r}"
+    for label, weakened in (
+        ("a missing rate_limit preflight", workflow.replace("gh api rate_limit", "gh api user", 1)),
+        (
+            "a preflight invoked after the first API call",
+            workflow.replace("\n          log_rate_limit\n", "\n", 1).replace(
+                auth_call, f"{auth_call}\n          log_rate_limit", 1
+            ),
+        ),
+        (
+            "a bare call to a network-bearing function",
+            workflow.replace(
+                f"{WINGET_RETRY_HELPER} clone_winget_fork",
+                f"{WINGET_RETRY_HELPER} clone_winget_fork\n          clone_winget_fork",
+                1,
+            ),
+        ),
+    ):
+        assert weakened != workflow, f"{RELEASE_WORKFLOW}: could not construct weakening {label!r}"
+        try:
+            assert_winget_submission_retries_transient_failures_text(RELEASE_WORKFLOW, weakened)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{RELEASE_WORKFLOW}: guard accepts {label}")
 
 
 FAKE_GH = """#!/bin/sh
