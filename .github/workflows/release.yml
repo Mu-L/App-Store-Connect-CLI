@@ -854,7 +854,7 @@ jobs:
               -e 'HTTP (429|5[0-9][0-9])' \
               -e 'returned error: (429|5[0-9][0-9])' \
               -e 'Too Many Requests|Service Unavailable|Bad Gateway|Gateway Timeout|temporarily unavailable' \
-              -e 'Could not resolve host|Failed to connect|Connection (refused|reset|timed out)' \
+              -e 'Could not resolve host|Failed to connect|Connection (refused|reset|timed out)|broken pipe' \
               -e 'Operation timed out|i/o timeout|TLS handshake timeout' \
               -e 'SSL_read|gnutls_handshake|Recv failure|Empty reply from server' \
               -e '(^|[^[:alnum:]_])EOF([^[:alnum:]_]|$)|remote end hung up unexpectedly|RPC failed|unexpected disconnect' \

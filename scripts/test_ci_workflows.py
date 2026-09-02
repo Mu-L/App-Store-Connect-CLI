@@ -576,6 +576,7 @@ def assert_winget_retry_helper_behavior() -> None:
         "error: RPC failed; curl 56 Recv failure: Connection reset by peer",
         "fatal: early EOF",
         "Get \"https://api.github.com/user\": EOF",
+        "Post \"https://api.github.com/graphql\": write tcp 10.0.0.2:51234->140.82.112.6:443: write: broken pipe",
         "fatal: the remote end hung up unexpectedly",
         "Post \"https://api.github.com/graphql\": dial tcp: i/o timeout",
         "fatal: unable to access 'https://github.com/': Could not resolve host: github.com",

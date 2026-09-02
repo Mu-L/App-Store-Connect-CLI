@@ -109,8 +109,11 @@ creation are idempotent under retry, so a lost response cannot open a duplicate
 `microsoft/winget-pkgs` PR.
 
 If the `winget` job still fails after the retries, re-run that job (or dispatch
-the release workflow for the same version) once the logged reset time has
-passed. The job is safe to re-run: it reuses the published release artifact,
+the release workflow for the same version). If the preflight showed a primary
+quota (`core`, `graphql`, or `search`) at zero, wait for that bucket's logged
+reset time first; for secondary throttles, 5xx responses, or transport
+failures the reset times are unrelated, so re-run after a few minutes. The job
+is safe to re-run: it reuses the published release artifact,
 recognizes an existing `rorkai-asc-<version>` branch, and skips PR creation
 when one is already open. Fall back to a manual submission only when a re-run
 fails for a non-transient reason.
