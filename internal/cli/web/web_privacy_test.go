@@ -1121,9 +1121,6 @@ func TestWebPrivacyPublishErrorsBeforePatchWhenPublishStateIDEmpty(t *testing.T)
 	if !strings.Contains(execErr.Error(), "publish-state id is missing") {
 		t.Fatalf("error = %v, want publish-state id is missing", execErr)
 	}
-	if !strings.Contains(stderr, "publish-state id is missing") && !strings.Contains(execErr.Error(), "publish-state id is missing") {
-		t.Fatalf("expected missing id guidance on stderr or error, stderr=%q err=%v", stderr, execErr)
-	}
 	if patchCount != 0 {
 		t.Fatalf("expected no PATCH before missing id error, got %d", patchCount)
 	}
