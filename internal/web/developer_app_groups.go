@@ -796,8 +796,17 @@ func developerBundleIDAppGroupsState(current developerBundleIDResponse) (develop
 	if !ok {
 		return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: Developer Portal omitted its capability graph", current.Data.ID)
 	}
-	if _, err := decodeStrictDeveloperRelationship(rawRelationship); err != nil {
+	references, err := decodeStrictDeveloperRelationship(rawRelationship)
+	if err != nil {
 		return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: capability graph %w", current.Data.ID, err)
+	}
+	// developerBundleIDCapabilities drops references it cannot resolve; a PATCH
+	// built from that filtered graph would silently detach them, so reject every
+	// invalid reference before any write is computed.
+	for _, reference := range references {
+		if reference.Type != "bundleIdCapabilities" || strings.TrimSpace(reference.ID) == "" {
+			return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: capability graph contains an invalid reference (type %q, id %q)", current.Data.ID, reference.Type, reference.ID)
+		}
 	}
 	capabilities, err := developerBundleIDCapabilities(current)
 	if err != nil {
