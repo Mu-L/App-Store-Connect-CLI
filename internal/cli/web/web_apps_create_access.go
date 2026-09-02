@@ -78,7 +78,8 @@ func uniqueAppCreateUserIDs(userIDs []string) []string {
 
 func ensureAppCreateUsersExist(ctx context.Context, client *asc.Client, userIDs []string) error {
 	for _, userID := range userIDs {
-		if _, err := client.GetUser(ctx, userID); err != nil {
+		user, err := client.GetUser(ctx, userID)
+		if err != nil {
 			if asc.IsNotFound(err) {
 				return shared.WithDiagnostic(
 					shared.UsageError(fmt.Sprintf("unknown user ID %q", userID)),
@@ -87,6 +88,13 @@ func ensureAppCreateUsersExist(ctx context.Context, client *asc.Client, userIDs 
 				)
 			}
 			return fmt.Errorf("web apps create failed: lookup user %q: %w", userID, err)
+		}
+		if user.Data.Attributes.AllAppsVisible {
+			return shared.WithDiagnostic(
+				shared.UsageError(fmt.Sprintf("user ID %q has access to all apps; --access limited requires users with limited app visibility", userID)),
+				shared.DiagnosticInvalidInput,
+				"--user",
+			)
 		}
 	}
 	return nil

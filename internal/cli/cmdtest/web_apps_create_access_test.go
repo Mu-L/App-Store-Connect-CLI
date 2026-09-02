@@ -86,6 +86,39 @@ func TestWebAppsCreateUnknownUserFailsBeforeCreate(t *testing.T) {
 	}
 }
 
+func TestWebAppsCreateAllAppsVisibleUserFailsBeforeCreate(t *testing.T) {
+	fixture := handlertest.New(t)
+	var (
+		mu       sync.Mutex
+		requests []string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		requests = append(requests, req.Method+" "+req.URL.Path)
+		mu.Unlock()
+		if req.Method == http.MethodGet && req.URL.Path == "/v1/users/full-user" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"type":"users","id":"full-user","attributes":{"username":"full@example.com","allAppsVisible":true}}}`))
+			return
+		}
+		fixture.Respond(w, "unexpected request: %s %s", req.Method, req.URL.Path)
+	}))
+	defer server.Close()
+	setWebAppsCreateASCClient(t, server)
+
+	assertUsageExit(t, webAppsCreateAccessArgs(
+		"--access", "limited",
+		"--user", "full-user",
+	), `user ID "full-user" has access to all apps`)
+
+	mu.Lock()
+	got := append([]string(nil), requests...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "GET /v1/users/full-user" {
+		t.Fatalf("requests = %v, want only GET /v1/users/full-user", got)
+	}
+}
+
 func setWebAppsCreateASCClient(t *testing.T, server *httptest.Server) {
 	t.Helper()
 	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")

@@ -119,6 +119,59 @@ func TestRunAppsCreateUnknownUserMakesNoCreate(t *testing.T) {
 	}
 }
 
+func TestRunAppsCreateAllAppsVisibleUserMakesNoCreate(t *testing.T) {
+	createCalled := false
+	origCreate := createWebAppFn
+	origResolve := resolveAppCreateSessionFn
+	t.Cleanup(func() {
+		createWebAppFn = origCreate
+		resolveAppCreateSessionFn = origResolve
+	})
+	createWebAppFn = func(ctx context.Context, client *webcore.Client, attrs webcore.AppCreateAttributes) (*webcore.AppResponse, error) {
+		createCalled = true
+		return nil, nil
+	}
+	resolveAppCreateSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		t.Fatal("did not expect web session lookup")
+		return nil, "", nil
+	}
+
+	fixture := handlertest.New(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodGet && req.URL.Path == "/v1/users/full-user" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"type":"users","id":"full-user","attributes":{"username":"full@example.com","allAppsVisible":true}}}`))
+			return
+		}
+		fixture.Respond(w, "unexpected request: %s %s", req.Method, req.URL.Path)
+	}))
+	defer server.Close()
+	setAppCreateASCClient(t, server)
+
+	var err error
+	_, stderr := captureOutput(t, func() {
+		err = RunAppsCreate(context.Background(), AppsCreateRunOptions{
+			Name:                     "My App",
+			BundleID:                 "com.example.app",
+			SKU:                      "SKU123",
+			Access:                   "limited",
+			Users:                    []string{"full-user"},
+			Output:                   "json",
+			DisableBundleIDPreflight: true,
+		})
+	})
+	if err == nil {
+		t.Fatal("expected all-apps-visible user error")
+	}
+	if !strings.Contains(stderr, `user ID "full-user" has access to all apps`) &&
+		!strings.Contains(err.Error(), `user ID "full-user" has access to all apps`) {
+		t.Fatalf("stderr = %q err = %v", stderr, err)
+	}
+	if createCalled {
+		t.Fatal("create should not run for a user with access to all apps")
+	}
+}
+
 func TestRunAppsCreateOmittingAccessFlagsKeepsCreateBody(t *testing.T) {
 	origResolve := resolveAppCreateSessionFn
 	t.Cleanup(func() {
