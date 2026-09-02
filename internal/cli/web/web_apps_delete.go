@@ -110,7 +110,10 @@ Examples:
 			if err := validateWebAppDeleteGuards(appResponseFromRemovalState(snapshot), wantBundleID, wantName); err != nil {
 				return err
 			}
-			if snapshot.RemovedKnown && snapshot.Removed {
+			if !snapshot.RemovedKnown {
+				return fmt.Errorf("web apps delete failed: could not confirm removed for app %q; Apple omitted or mistyped the removed attribute", snapshot.ID)
+			}
+			if snapshot.Removed {
 				return printWebAppDeleteResult(webAppDeleteResultFromState(snapshot, *dryRun), *output.Output, *output.Pretty)
 			}
 			if err := validateWebAppDeleteRemovalState(snapshot); err != nil {
