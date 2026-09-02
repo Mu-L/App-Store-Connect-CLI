@@ -110,6 +110,9 @@ Examples:
 			if err := validateWebAppDeleteGuards(appResponseFromRemovalState(snapshot), wantBundleID, wantName); err != nil {
 				return err
 			}
+			if snapshot.RemovedKnown && snapshot.Removed {
+				return printWebAppDeleteResult(webAppDeleteResultFromState(snapshot, *dryRun), *output.Output, *output.Pretty)
+			}
 			if err := validateWebAppDeleteRemovalState(snapshot); err != nil {
 				return err
 			}
@@ -122,9 +125,6 @@ Examples:
 				return err
 			}
 
-			if snapshot.RemovedKnown && snapshot.Removed {
-				return printWebAppDeleteResult(webAppDeleteResultFromState(snapshot, *dryRun), *output.Output, *output.Pretty)
-			}
 			if *dryRun {
 				return printWebAppDeleteResult(webAppDeleteResultFromState(snapshot, true), *output.Output, *output.Pretty)
 			}
@@ -214,6 +214,9 @@ func validateWebAppDeleteRemovalState(state *webcore.AppRemovalState) error {
 			return fmt.Errorf("web apps delete failed: app %q has a version in %s; Apple does not allow removal while an app is Ready for Review, Waiting for Review, In Review, Metadata Rejected, or Rejected", state.ID, normalized)
 		}
 	}
+	if !state.DisplayableVersionsLoaded {
+		return fmt.Errorf("web apps delete failed: could not confirm displayableVersions for app %q; Apple omitted the version linkage or included payload", state.ID)
+	}
 	marketplace := strings.ToUpper(strings.TrimSpace(state.Marketplace))
 	if marketplace != "" && marketplace != "APP_STORE" {
 		return fmt.Errorf("web apps delete failed: app %q is still distributed via marketplace %q; remove it from alternative marketplace distribution first", state.ID, strings.TrimSpace(state.Marketplace))
@@ -230,6 +233,9 @@ func validateWebAppDeleteAvailability(appID string, availability *webcore.AppAva
 	}
 	if !availability.AvailableTerritoriesLoaded {
 		return fmt.Errorf("web apps delete failed: could not confirm availableTerritories for app %q; Apple omitted or nulled the territory linkage", appID)
+	}
+	if !availability.AvailableInNewTerritoriesKnown {
+		return fmt.Errorf("web apps delete failed: could not confirm availableInNewTerritories for app %q; Apple omitted or mistyped the new-territory setting", appID)
 	}
 	if availability.AvailableInNewTerritories {
 		return fmt.Errorf("web apps delete failed: app %q is still available in new territories; disable new-territory availability first", appID)

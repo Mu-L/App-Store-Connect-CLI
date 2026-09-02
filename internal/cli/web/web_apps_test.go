@@ -1430,18 +1430,19 @@ func TestWebAppsDeleteByBundleID(t *testing.T) {
 		return resp, nil
 	}
 	getWebAppAvailabilityFn = func(ctx context.Context, client *webcore.Client, appID string) (*webcore.AppAvailability, error) {
-		return &webcore.AppAvailability{ID: "avail-1", AvailableTerritories: []string{}, AvailableTerritoriesLoaded: true}, nil
+		return &webcore.AppAvailability{ID: "avail-1", AvailableTerritories: []string{}, AvailableTerritoriesLoaded: true, AvailableInNewTerritoriesKnown: true}, nil
 	}
 	getWebAppRemovalStateFn = func(ctx context.Context, client *webcore.Client, appID string) (*webcore.AppRemovalState, error) {
 		removalReads++
 		return &webcore.AppRemovalState{
-			ID:                   appID,
-			Name:                 "Throwaway",
-			BundleID:             "com.example.throwaway",
-			Removed:              deletedID != "",
-			RemovedKnown:         true,
-			AppStoreLegacyStatus: "PREPARE_FOR_SUBMISSION",
-			Marketplace:          "APP_STORE",
+			ID:                        appID,
+			Name:                      "Throwaway",
+			BundleID:                  "com.example.throwaway",
+			Removed:                   deletedID != "",
+			RemovedKnown:              true,
+			AppStoreLegacyStatus:      "PREPARE_FOR_SUBMISSION",
+			Marketplace:               "APP_STORE",
+			DisplayableVersionsLoaded: true,
 		}, nil
 	}
 	deleteWebAppFn = func(ctx context.Context, client *webcore.Client, appID string) (*webcore.AppResponse, error) {

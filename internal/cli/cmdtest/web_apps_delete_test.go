@@ -30,6 +30,9 @@ func TestWebAppsDeleteRunRejectsAppStillOnSaleWithoutPatch(t *testing.T) {
 								"removed": false,
 								"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
 								"marketplace": "APP_STORE"
+							},
+							"relationships": {
+								"displayableVersions": {"data": []}
 							}
 						}
 					}`), nil
@@ -181,6 +184,9 @@ func TestWebAppsDeleteRunRejectsOmittedTerritoryLinkageWithoutPatch(t *testing.T
 								"removed": false,
 								"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
 								"marketplace": "APP_STORE"
+							},
+							"relationships": {
+								"displayableVersions": {"data": []}
 							}
 						}
 					}`), nil
@@ -248,6 +254,9 @@ func TestWebAppsDeleteRunReReadsAndFailsWhenPatchDoesNotRemove(t *testing.T) {
 								"removed": false,
 								"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
 								"marketplace": "APP_STORE"
+							},
+							"relationships": {
+								"displayableVersions": {"data": []}
 							}
 						}
 					}`), nil
@@ -317,6 +326,9 @@ func TestWebAppsDeleteRunDryRunReportsEligibleWithoutPatch(t *testing.T) {
 								"removed": false,
 								"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
 								"marketplace": "APP_STORE"
+							},
+							"relationships": {
+								"displayableVersions": {"data": []}
 							}
 						}
 					}`), nil
@@ -404,6 +416,9 @@ func TestWebAppsDeleteRunSuccessReceiptUsesRereadState(t *testing.T) {
 								"removed": ` + boolJSON(removed) + `,
 								"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
 								"marketplace": "APP_STORE"
+							},
+							"relationships": {
+								"displayableVersions": {"data": []}
 							}
 						}
 					}`), nil
@@ -488,6 +503,194 @@ func TestWebAppsDeleteRunRequiresConfirmUnlessDryRun(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "--confirm is required unless --dry-run is set") {
 		t.Fatalf("expected confirm-unless-dry-run stderr, got %q", stderr)
+	}
+}
+
+func TestWebAppsDeleteRunRejectsOmittedDisplayableVersionsWithoutPatch(t *testing.T) {
+	var patchCalls int
+	restoreSession := webcmd.SetResolveWebSession(func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{
+			Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch {
+				case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/1234567890":
+					return webAppsDeleteJSONResponse(`{
+						"data": {
+							"type": "apps",
+							"id": "1234567890",
+							"attributes": {
+								"name": "Throwaway",
+								"bundleId": "com.example.throwaway",
+								"removed": false,
+								"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
+								"marketplace": "APP_STORE"
+							}
+						}
+					}`), nil
+				case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/1234567890/appAvailabilityV2":
+					t.Fatal("did not expect availability read when displayableVersions were omitted")
+					return nil, nil
+				case req.Method == http.MethodPatch && req.URL.Path == "/iris/v1/apps/1234567890":
+					patchCalls++
+					t.Fatal("did not expect PATCH when displayableVersions were omitted")
+					return nil, nil
+				default:
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+					return nil, nil
+				}
+			})},
+		}, "cache", nil
+	})
+	t.Cleanup(restoreSession)
+
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{
+			"web", "apps", "delete",
+			"--app", "1234567890",
+			"--confirm",
+			"--output", "json",
+		}, "1.0.0")
+	})
+	if code != cmd.ExitError {
+		t.Fatalf("exit code = %d, want %d; stdout=%q stderr=%q", code, cmd.ExitError, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "could not confirm") || !strings.Contains(stderr, "displayableVersions") {
+		t.Fatalf("expected stderr to name missing version linkage, got %q", stderr)
+	}
+	if patchCalls != 0 {
+		t.Fatalf("expected no PATCH, got %d", patchCalls)
+	}
+}
+
+func TestWebAppsDeleteRunRejectsUnknownNewTerritoriesWithoutPatch(t *testing.T) {
+	var patchCalls int
+	restoreSession := webcmd.SetResolveWebSession(func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{
+			Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch {
+				case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/1234567890":
+					return webAppsDeleteJSONResponse(`{
+						"data": {
+							"type": "apps",
+							"id": "1234567890",
+							"attributes": {
+								"name": "Throwaway",
+								"bundleId": "com.example.throwaway",
+								"removed": false,
+								"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
+								"marketplace": "APP_STORE"
+							},
+							"relationships": {
+								"displayableVersions": {"data": []}
+							}
+						}
+					}`), nil
+				case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/1234567890/appAvailabilityV2":
+					return webAppsDeleteJSONResponse(`{
+						"data": {
+							"id": "avail-1",
+							"type": "appAvailabilities",
+							"attributes": {},
+							"relationships": {
+								"availableTerritories": {"data": []}
+							}
+						}
+					}`), nil
+				case req.Method == http.MethodPatch && req.URL.Path == "/iris/v1/apps/1234567890":
+					patchCalls++
+					t.Fatal("did not expect PATCH when availableInNewTerritories was unknown")
+					return nil, nil
+				default:
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+					return nil, nil
+				}
+			})},
+		}, "cache", nil
+	})
+	t.Cleanup(restoreSession)
+
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{
+			"web", "apps", "delete",
+			"--app", "1234567890",
+			"--confirm",
+			"--output", "json",
+		}, "1.0.0")
+	})
+	if code != cmd.ExitError {
+		t.Fatalf("exit code = %d, want %d; stdout=%q stderr=%q", code, cmd.ExitError, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "could not confirm") || !strings.Contains(stderr, "availableInNewTerritories") {
+		t.Fatalf("expected stderr to name missing new-territory setting, got %q", stderr)
+	}
+	if patchCalls != 0 {
+		t.Fatalf("expected no PATCH, got %d", patchCalls)
+	}
+}
+
+func TestWebAppsDeleteRunAlreadyRemovedSkipsEligibilityWithoutPatch(t *testing.T) {
+	var patchCalls int
+	restoreSession := webcmd.SetResolveWebSession(func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{
+			Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch {
+				case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/1234567890":
+					return webAppsDeleteJSONResponse(`{
+						"data": {
+							"type": "apps",
+							"id": "1234567890",
+							"attributes": {
+								"name": "Throwaway",
+								"bundleId": "com.example.throwaway",
+								"removed": true,
+								"appStoreLegacyStatus": "WAITING_FOR_REVIEW",
+								"marketplace": "ALT_MARKETPLACE"
+							}
+						}
+					}`), nil
+				case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/1234567890/appAvailabilityV2":
+					t.Fatal("already-removed apps must not read availability")
+					return nil, nil
+				case req.Method == http.MethodPatch && req.URL.Path == "/iris/v1/apps/1234567890":
+					patchCalls++
+					t.Fatal("already-removed apps must not PATCH")
+					return nil, nil
+				default:
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+					return nil, nil
+				}
+			})},
+		}, "cache", nil
+	})
+	t.Cleanup(restoreSession)
+
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{
+			"web", "apps", "delete",
+			"--app", "1234567890",
+			"--confirm",
+			"--output", "json",
+		}, "1.0.0")
+	})
+	if code != cmd.ExitSuccess {
+		t.Fatalf("exit code = %d, want %d; stdout=%q stderr=%q", code, cmd.ExitSuccess, stdout, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if !strings.Contains(stdout, `"removed":true`) {
+		t.Fatalf("expected success receipt with removed=true, got %q", stdout)
+	}
+	if patchCalls != 0 {
+		t.Fatalf("expected no PATCH, got %d", patchCalls)
 	}
 }
 

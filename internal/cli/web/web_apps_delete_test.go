@@ -22,8 +22,9 @@ func TestValidateWebAppDeleteAvailabilityNamesTerritories(t *testing.T) {
 
 func TestValidateWebAppDeleteAvailabilityNamesNewTerritories(t *testing.T) {
 	err := validateWebAppDeleteAvailability("1234567890", &webcore.AppAvailability{
-		AvailableInNewTerritories:  true,
-		AvailableTerritoriesLoaded: true,
+		AvailableInNewTerritories:      true,
+		AvailableTerritoriesLoaded:     true,
+		AvailableInNewTerritoriesKnown: true,
 	})
 	if err == nil {
 		t.Fatal("expected new-territory blocker")
@@ -45,6 +46,33 @@ func TestValidateWebAppDeleteAvailabilityFailsWhenTerritoriesUnloaded(t *testing
 	}
 }
 
+func TestValidateWebAppDeleteAvailabilityFailsWhenNewTerritoriesUnknown(t *testing.T) {
+	err := validateWebAppDeleteAvailability("1234567890", &webcore.AppAvailability{
+		ID:                         "avail-1",
+		AvailableTerritoriesLoaded: true,
+	})
+	if err == nil {
+		t.Fatal("expected unknown new-territory blocker")
+	}
+	if !strings.Contains(err.Error(), "could not confirm") || !strings.Contains(err.Error(), "availableInNewTerritories") {
+		t.Fatalf("expected stderr to name missing new-territory setting, got %v", err)
+	}
+}
+
+func TestValidateWebAppDeleteRemovalStateFailsWhenVersionsUnloaded(t *testing.T) {
+	err := validateWebAppDeleteRemovalState(&webcore.AppRemovalState{
+		ID:                   "1234567890",
+		AppStoreLegacyStatus: "PREPARE_FOR_SUBMISSION",
+		Marketplace:          "APP_STORE",
+	})
+	if err == nil {
+		t.Fatal("expected missing displayableVersions blocker")
+	}
+	if !strings.Contains(err.Error(), "could not confirm") || !strings.Contains(err.Error(), "displayableVersions") {
+		t.Fatalf("expected stderr to name missing version linkage, got %v", err)
+	}
+}
+
 func TestValidateWebAppDeleteRemovalStateBlocksReview(t *testing.T) {
 	err := validateWebAppDeleteRemovalState(&webcore.AppRemovalState{
 		ID:                   "1234567890",
@@ -60,8 +88,9 @@ func TestValidateWebAppDeleteRemovalStateBlocksReview(t *testing.T) {
 
 func TestValidateWebAppDeleteRemovalStateBlocksMarketplace(t *testing.T) {
 	err := validateWebAppDeleteRemovalState(&webcore.AppRemovalState{
-		ID:          "1234567890",
-		Marketplace: "ALT_MARKETPLACE",
+		ID:                        "1234567890",
+		Marketplace:               "ALT_MARKETPLACE",
+		DisplayableVersionsLoaded: true,
 	})
 	if err == nil {
 		t.Fatal("expected marketplace blocker")

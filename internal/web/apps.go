@@ -263,14 +263,15 @@ func (c *Client) DeleteApp(ctx context.Context, appID string) (*AppResponse, err
 // AppRemovalState is the read model used to preflight and verify web app removal.
 // Field names match the captured removed-apps listing on GET /apps.
 type AppRemovalState struct {
-	ID                   string
-	Name                 string
-	BundleID             string
-	Removed              bool
-	RemovedKnown         bool
-	AppStoreLegacyStatus string
-	Marketplace          string
-	VersionStates        []string
+	ID                        string
+	Name                      string
+	BundleID                  string
+	Removed                   bool
+	RemovedKnown              bool
+	AppStoreLegacyStatus      string
+	Marketplace               string
+	VersionStates             []string
+	DisplayableVersionsLoaded bool
 }
 
 // GetAppRemovalState reads the app attributes needed to check removal
@@ -322,15 +323,33 @@ func (c *Client) GetAppRemovalState(ctx context.Context, appID string) (*AppRemo
 	}
 
 	return &AppRemovalState{
-		ID:                   decoded.ID,
-		Name:                 decoded.Name,
-		BundleID:             decoded.BundleID,
-		Removed:              removed,
-		RemovedKnown:         removedKnown,
-		AppStoreLegacyStatus: decoded.AppStoreLegacyStatus,
-		Marketplace:          decoded.Marketplace,
-		VersionStates:        versionStates,
+		ID:                        decoded.ID,
+		Name:                      decoded.Name,
+		BundleID:                  decoded.BundleID,
+		Removed:                   removed,
+		RemovedKnown:              removedKnown,
+		AppStoreLegacyStatus:      decoded.AppStoreLegacyStatus,
+		Marketplace:               decoded.Marketplace,
+		VersionStates:             versionStates,
+		DisplayableVersionsLoaded: displayableVersionsIncluded(payload.Data, included),
 	}, nil
+}
+
+func displayableVersionsIncluded(resource jsonAPIResource, included map[string]jsonAPIResource) bool {
+	relationship, ok := resource.Relationships["displayableVersions"]
+	if !ok {
+		return false
+	}
+	trimmed := strings.TrimSpace(string(relationship.Data))
+	if trimmed == "" || trimmed == "null" {
+		return false
+	}
+	for _, ref := range parseRelationshipRefs(relationship.Data) {
+		if _, found := included[jsonAPIResourceKey(ref.Type, ref.ID)]; !found {
+			return false
+		}
+	}
+	return true
 }
 
 // FindApp finds an existing app by bundle ID.
