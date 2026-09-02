@@ -859,8 +859,8 @@ jobs:
               -e 'returned error: (408|429|5[0-9][0-9])' \
               -e 'Too Many Requests|Service Unavailable|Bad Gateway|Gateway Timeout|temporarily unavailable' \
               -e '(dial|read|write) tcp|Temporary failure in name resolution' \
-              -e 'curl (6|7|16|18|28|35|52|55|56) ' \
-              -e 'Could not resolve host|Failed to connect|Connection (refused|reset|timed out)|broken pipe' \
+              -e 'curl (5|6|7|16|18|28|35|52|55|56) ' \
+              -e 'Could not resolve (host|proxy)|Failed to connect|Connection (refused|reset|timed out)|broken pipe' \
               -e 'Operation timed out|i/o timeout|TLS handshake timeout' \
               -e 'SSL_(read|write|connect)|SSL_ERROR_(SYSCALL|ZERO_RETURN)|gnutls_handshake|Recv failure|Empty reply from server' \
               -e 'Failure when receiving data|transfer closed with outstanding read data' \

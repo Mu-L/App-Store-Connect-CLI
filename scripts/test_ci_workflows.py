@@ -486,10 +486,12 @@ def assert_winget_submission_retries_transient_failures_text(path: Path, workflo
     assert create_functions, f"{path}: gh pr create must live inside a retried function"
     for name in create_functions:
         assert name in retried_functions, f"{path}: {name} must be invoked through {WINGET_RETRY_HELPER}"
-        assert "gh pr list" in functions[name], f"{path}: {name} must check for an existing PR before creating one"
-        assert WINGET_HEAD_LOOKUP in functions[name], (
-            f"{path}: {name} must look up the fork branch PR with the REST head filter"
-        )
+        body = functions[name]
+        create_at = body.find("gh pr create")
+        for lookup in ("gh pr list", WINGET_HEAD_LOOKUP):
+            lookup_at = body.find(lookup)
+            assert lookup_at >= 0, f"{path}: {name} must check for an existing PR ({lookup!r}) before creating one"
+            assert lookup_at < create_at, f"{path}: {name} must run {lookup!r} before gh pr create"
     for line in script.splitlines():
         assert not ("gh pr list" in line and "--head" in line and ":" in line.split("--head", 1)[1]), (
             f"{path}: gh pr list --head does not support owner:branch: {line.strip()}"
@@ -547,6 +549,15 @@ def assert_winget_retry_guard_rejects_unguarded_calls() -> None:
             workflow.replace(
                 f"{WINGET_RETRY_HELPER} clone_winget_fork",
                 f"{WINGET_RETRY_HELPER} clone_winget_fork\n          clone_winget_fork",
+                1,
+            ),
+        ),
+        (
+            "PR creation ahead of the existing-PR lookups",
+            workflow.replace(
+                "          submit_winget_pr() {\n            local existing_pr\n",
+                "          submit_winget_pr() {\n            local existing_pr\n"
+                '            gh pr create --repo microsoft/winget-pkgs --head "${WINGET_FORK_OWNER}:${BRANCH}" --title t --body b || true\n',
                 1,
             ),
         ),
@@ -646,6 +657,7 @@ def assert_winget_retry_helper_behavior() -> None:
         "fatal: unable to access 'https://github.com/example/winget-pkgs.git/': "
         "Failure when receiving data from the peer",
         "error: RPC failed; curl 18 transfer closed with outstanding read data remaining",
+        "fatal: unable to access 'https://github.com/example/winget-pkgs.git/': Could not resolve proxy: proxy.example",
     )
     for message in transient:
         result, made = run_winget_retry_helper(helpers, message, succeed_on=3)
