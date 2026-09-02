@@ -145,6 +145,7 @@ func TestWebPrivacyApplyHelpDocumentsPartialFailureReceipt(t *testing.T) {
 		"catalog tokens Apple",
 		"applied, unknown, and not applied",
 		"changed=false",
+		"The exception is a delete a later create depends on",
 	} {
 		if !strings.Contains(apply.LongHelp, want) {
 			t.Fatalf("web privacy apply help missing %q:\n%s", want, apply.LongHelp)

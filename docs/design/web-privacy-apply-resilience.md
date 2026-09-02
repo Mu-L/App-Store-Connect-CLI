@@ -51,6 +51,13 @@ that adds `DATA_NOT_COLLECTED` runs every delete first, and a delete of an
 existing `DATA_NOT_COLLECTED` tuple runs before collected creates. Every other
 delete runs last, after the creates that make it safe.
 
+The superset property therefore holds for every plan except one with
+prerequisite deletes. Apple rejects a declaration that holds
+`DATA_NOT_COLLECTED` alongside collected tuples, so no ordering can make that
+transition atomic: an interruption between the prerequisite delete and its
+replacement create leaves a tuple missing until a rerun. The help text and the
+receipt say so rather than promising a guarantee the API cannot support.
+
 ## Receipt
 
 `apply` reports each planned step in exactly one bucket:
@@ -71,12 +78,21 @@ step from remote evidence, because a 5xx can still have committed the write:
 
 The same re-read produces `recheck.remainingChanges`, the number of plan steps
 still outstanding, so an operator knows how much a rerun has left to do. When
-the re-read itself fails, `recheck.succeeded` is `false` and attempted steps
-stay `unknown` rather than being reported as either outcome.
+the re-read itself fails, `recheck.succeeded` is `false`, `remainingChanges` is
+omitted entirely rather than reported as `0`, and attempted steps stay
+`unknown` rather than being reported as either outcome.
+
+Apple can also commit the final mutation and still fail the response. When the
+re-read resolves every action and leaves no remaining change, `applied` is
+`true` and the diagnostic says a rerun is a no-op. The exit stays non-zero
+because the transport failure is real.
 
 The receipt prints on stdout in the requested format even on the failure path,
-and the command exits non-zero with a stderr diagnostic. No raw Apple response
-body reaches stdout or stderr.
+and the command exits non-zero with a stderr diagnostic that carries the
+sanitized mutation cause, and the re-read cause when that failed too. The
+returned error is already reported, so without this the operator would never
+see the session hint, HTTP status, request id, or Apple service codes. No raw
+Apple response body reaches stdout or stderr.
 
 ## Idempotency
 
@@ -90,8 +106,14 @@ mutation and reports `applied: true`, `changed: false`.
 All output changes are additive: `changed`, `unknownActions`,
 `notAppliedActions`, and `recheck` on the apply receipt, and `staleTokens` on
 the plan payload. `applied` keeps its meaning - the whole plan committed - and
-is now `false` on the partial path instead of unreachable. `--allow-deletes`
-and `--confirm` gating is unchanged, and no prompt is introduced.
+is now reachable as `false` on the partial path. `--allow-deletes` and
+`--confirm` gating is unchanged, and no prompt is introduced.
+
+The privacy receipts stay CLI-local structs rendered through
+`shared.PrintOutputWithRenderers`, matching every other command in
+`internal/cli/web`. Migrating that whole family to `internal/asc/output_*.go`
+is a separate, package-wide change; doing it for one subcommand inside a bug
+fix would leave the group inconsistent.
 
 ## Alternatives considered
 

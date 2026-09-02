@@ -941,7 +941,7 @@ func recheckPrivacyRemoteUsages(ctx context.Context, client privacyUsageReader, 
 // either. The cause is rendered inline because the returned error is already
 // reported and would otherwise never reach the operator; every web error
 // string here is redacted and carries no raw Apple response body.
-func privacyApplyFailureMessage(appID string, payload privacyApplyOutput, cause error) string {
+func privacyApplyFailureMessage(appID string, payload privacyApplyOutput, cause, recheckErr error) string {
 	summary := fmt.Sprintf(
 		"%d committed, %d unknown, %d not applied",
 		len(payload.Actions),
@@ -958,14 +958,17 @@ func privacyApplyFailureMessage(appID string, payload privacyApplyOutput, cause 
 		lead = fmt.Sprintf("web privacy apply failed for app %s without a confirmed change", appID)
 	}
 	message := fmt.Sprintf("%s: %s; %s", lead, summary, trailer)
-	if cause == nil {
-		return message
+	if cause != nil {
+		if causeText := strings.TrimSpace(cause.Error()); causeText != "" {
+			message = fmt.Sprintf("%s; cause: %s", message, causeText)
+		}
 	}
-	causeText := strings.TrimSpace(cause.Error())
-	if causeText == "" {
-		return message
+	if recheckErr != nil {
+		if recheckText := strings.TrimSpace(recheckErr.Error()); recheckText != "" {
+			message = fmt.Sprintf("%s; recheck failed: %s", message, recheckText)
+		}
 	}
-	return fmt.Sprintf("%s; cause: %s", message, causeText)
+	return message
 }
 
 // resolvePrivacyApplyResult reclassifies attempted-but-unconfirmed actions
@@ -1882,11 +1885,13 @@ are rejected before any create, update, or delete.
 
 apply refuses to mutate when the declaration references catalog tokens Apple
 has deleted or no longer lists. Updates run first, then creates, then the
-deletes that are safe to defer, so an interruption leaves extra tuples instead
-of missing ones. A mid-sequence failure re-reads remote state, prints a receipt
-that splits every step into applied, unknown, and not applied, and exits
-non-zero. Rerunning the same file converges and reports changed=false once
-nothing is left to do.
+deletes that are safe to defer, so an interruption usually leaves extra tuples
+rather than missing ones. The exception is a delete a later create depends on:
+DATA_NOT_COLLECTED and collected tuples cannot coexist, so that delete must run
+first and an interruption after it can leave a tuple missing until a rerun.
+A mid-sequence failure re-reads remote state, prints a receipt that splits every
+step into applied, unknown, and not applied, and exits non-zero. Rerunning the
+same file converges and reports changed=false once nothing is left to do.
 
 Examples:
   asc web privacy apply --app "123456789" --file "./privacy.json"
@@ -1972,9 +1977,13 @@ Examples:
 				Applied:        applyErr == nil,
 				APICalls:       plan.APICalls,
 			}
+			var recheckErr error
 			if applyErr != nil {
 				recheck := privacyApplyRecheck{Performed: true}
 				remoteUsages, readErr := recheckPrivacyRemoteUsages(ctx, client, resolvedAppID)
+				if readErr != nil {
+					recheckErr = withWebAuthHint(readErr, "web privacy apply recheck")
+				}
 				if readErr == nil {
 					remoteState := remoteStateFromDataUsages(remoteUsages)
 					result = resolvePrivacyApplyResult(result, remoteState)
@@ -2008,7 +2017,7 @@ Examples:
 					return renderErr
 				}
 				cause := withWebAuthHint(applyErr, "web privacy apply")
-				message := privacyApplyFailureMessage(resolvedAppID, payload, cause)
+				message := privacyApplyFailureMessage(resolvedAppID, payload, cause, recheckErr)
 				fmt.Fprintf(os.Stderr, "Error: %s\n", shared.SanitizeTerminal(message))
 				return shared.NewReportedError(
 					shared.NewErrorWithCause(fmt.Errorf("%s", message), cause),

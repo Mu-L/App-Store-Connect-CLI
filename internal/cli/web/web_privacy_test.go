@@ -2150,7 +2150,7 @@ func TestPrivacyApplyFailureMessageDistinguishesNoConfirmedChange(t *testing.T) 
 	partial := privacyApplyFailureMessage("123456789", privacyApplyOutput{
 		Actions:           []privacyApplyAction{{Action: "update"}},
 		NotAppliedActions: []privacyApplyAction{{Action: "create"}},
-	}, fmt.Errorf("web privacy apply failed: web api error (status 500), codes=[ENTITY_ERROR]"))
+	}, fmt.Errorf("web privacy apply failed: web api error (status 500), codes=[ENTITY_ERROR]"), nil)
 	if !strings.Contains(partial, "partially applied changes for app 123456789") {
 		t.Fatalf("unexpected partial message: %q", partial)
 	}
@@ -2164,7 +2164,10 @@ func TestPrivacyApplyFailureMessageDistinguishesNoConfirmedChange(t *testing.T) 
 
 	nothing := privacyApplyFailureMessage("123456789", privacyApplyOutput{
 		NotAppliedActions: []privacyApplyAction{{Action: "create"}, {Action: "delete"}},
-	}, nil)
+	}, nil, fmt.Errorf("web privacy apply recheck failed: web api error (status 503)"))
+	if !strings.Contains(nothing, "recheck failed: web privacy apply recheck failed: web api error (status 503)") {
+		t.Fatalf("a failed recheck must be reported: %q", nothing)
+	}
 	if strings.Contains(nothing, "partially applied") {
 		t.Fatalf("an apply that committed nothing is not a partial apply: %q", nothing)
 	}
@@ -2399,6 +2402,12 @@ func TestWebPrivacyApplyOmitsRemainingChangesWhenTheRecheckFails(t *testing.T) {
 	if len(privacyApplyActionKinds(t, payload, "unknownActions")) == 0 {
 		t.Fatalf("the attempted create must remain unknown: %#v", payload)
 	}
+	if !strings.Contains(stderr, "recheck failed: web privacy apply recheck failed: web api error (status 500)") {
+		t.Fatalf("stderr = %q, want the redacted re-read failure reported alongside the mutation cause", stderr)
+	}
+	if !strings.Contains(stderr, "cause: web privacy apply failed: web api error (status 500)") {
+		t.Fatalf("stderr = %q, want the original mutation cause", stderr)
+	}
 }
 
 func TestBuildPrivacyRecheckRowsRendersUnknownRemainingChanges(t *testing.T) {
@@ -2418,7 +2427,7 @@ func TestPrivacyApplyFailureMessageReportsConvergence(t *testing.T) {
 	message := privacyApplyFailureMessage("123456789", privacyApplyOutput{
 		Applied: true,
 		Actions: []privacyApplyAction{{Action: "delete"}},
-	}, fmt.Errorf("web privacy apply failed: web api error (status 502)"))
+	}, fmt.Errorf("web privacy apply failed: web api error (status 502)"), nil)
 	if strings.Contains(message, "partially applied") {
 		t.Fatalf("a converged plan is not a partial apply: %q", message)
 	}
