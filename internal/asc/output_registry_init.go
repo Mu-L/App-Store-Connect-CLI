@@ -16,6 +16,7 @@ func registerAllOutputRenderers() {
 	registerRows(xcodeInstallResultRows)
 	registerDirect(webAgreementsStatusTables)
 	registerRows(webAgreementsAcceptRows)
+	registerRows(webSubscriptionMonthlyCommitmentBootstrapRows)
 	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {
 		h, r := keywordRankSummaryRows(v)
 		render(h, r)

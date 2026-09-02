@@ -1,9 +1,11 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
@@ -32,5 +34,45 @@ func TestExistingMonthlyAvailabilityOnlyRejectsConfirmedMissingTerritory(t *test
 	loaded.AvailableTerritories = []string{"DEU"}
 	if !availabilityExcludesTerritory(loaded, "NOR") {
 		t.Fatal("loaded relationship should confirm the territory is missing")
+	}
+}
+
+func TestVerifyMonthlyCommitmentBootstrapRejectsStalePricePoints(t *testing.T) {
+	origListAvailability := listWebSubscriptionPlanAvailabilitiesFn
+	origListPrices := listWebSubscriptionPricesFn
+	t.Cleanup(func() {
+		listWebSubscriptionPlanAvailabilitiesFn = origListAvailability
+		listWebSubscriptionPricesFn = origListPrices
+	})
+
+	listWebSubscriptionPlanAvailabilitiesFn = func(ctx context.Context, client *webcore.Client, subscriptionID string) ([]webcore.SubscriptionPlanAvailability, error) {
+		return []webcore.SubscriptionPlanAvailability{{
+			ID:                         "plan-monthly",
+			PlanType:                   "MONTHLY",
+			AvailableTerritories:       []string{"NOR"},
+			AvailableTerritoriesLoaded: true,
+		}}, nil
+	}
+	listWebSubscriptionPricesFn = func(ctx context.Context, client *webcore.Client, subscriptionID, territory string) ([]webcore.SubscriptionPrice, error) {
+		return []webcore.SubscriptionPrice{{
+			PlanType:     "UPFRONT",
+			Territory:    "NOR",
+			PricePointID: "stale-upfront",
+		}, {
+			PlanType:     "MONTHLY",
+			Territory:    "NOR",
+			PricePointID: "stale-monthly",
+		}}, nil
+	}
+
+	err := verifyMonthlyCommitmentBootstrap(context.Background(), &webcore.Client{}, asc.WebSubscriptionMonthlyCommitmentBootstrapResult{
+		SubscriptionID:      "sub-1",
+		Territory:           "NOR",
+		PlanAvailabilityID:  "plan-monthly",
+		UpfrontPricePointID: "upfront-point",
+		MonthlyPricePointID: "monthly-point",
+	})
+	if err == nil {
+		t.Fatal("expected stale price points to fail verification")
 	}
 }
