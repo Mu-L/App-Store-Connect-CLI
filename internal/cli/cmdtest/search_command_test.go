@@ -1057,3 +1057,51 @@ func searchResultsMention(results []searchResult, match string) bool {
 	}
 	return false
 }
+
+func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    []string
+		expected string
+	}{
+		{
+			name:     "accept Apple Developer agreement status",
+			query:    []string{"accept", "Apple", "Developer", "agreement", "status"},
+			expected: "asc web agreements accept",
+		},
+		{
+			name:     "agreement status without acceptance",
+			query:    []string{"Apple", "Developer", "agreement", "status"},
+			expected: "asc web agreements status",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var code int
+			stdout, stderr := captureOutput(t, func() {
+				args := []string{"search", "--output", "json", "--limit", "5"}
+				args = append(args, test.query...)
+				code = rootcmd.Run(args, "1.2.3")
+			})
+
+			if code != 0 {
+				t.Fatalf("expected exit code 0, got %d with stderr %q", code, stderr)
+			}
+			if stderr != "" {
+				t.Fatalf("expected empty stderr, got %q", stderr)
+			}
+
+			var response searchResponse
+			if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+				t.Fatalf("failed to unmarshal search JSON: %v\nstdout=%s", err, stdout)
+			}
+			if len(response.Results) == 0 {
+				t.Fatalf("expected search results, got %#v", response)
+			}
+			if response.Results[0].Command != test.expected {
+				t.Fatalf("expected %q first, got %#v", test.expected, response.Results)
+			}
+		})
+	}
+}

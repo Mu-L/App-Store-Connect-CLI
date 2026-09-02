@@ -615,6 +615,9 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 			return "asc notarization list", "canonical:notarization-list", true
 		}
 	}
+	if tokenContains(queryTokens, "agreement") && tokenContains(queryTokens, "accept") {
+		return "asc web agreements accept", "canonical:agreement-accept", true
+	}
 	if target, reason, ok := scopedAuthActionIntent(queryTokens); ok {
 		return target, reason, true
 	}
