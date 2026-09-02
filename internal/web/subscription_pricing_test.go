@@ -157,6 +157,24 @@ func TestFindSubscriptionPriceSelectsLatestNonFutureRecordWhenStartDateOmitted(t
 	}
 }
 
+func TestFindSubscriptionPricePrefersNonPreservedOnEqualEffectiveDate(t *testing.T) {
+	now := time.Date(2026, time.September, 2, 12, 0, 0, 0, time.UTC)
+	preserved := SubscriptionPrice{ID: "preserved", PlanType: "UPFRONT", Territory: "NOR", PricePointID: "old-point", StartDate: "2026-08-01", Preserved: true}
+	canonical := SubscriptionPrice{ID: "canonical", PlanType: "UPFRONT", Territory: "NOR", PricePointID: "upfront-point", StartDate: "2026-08-01", Preserved: false}
+	for _, prices := range [][]SubscriptionPrice{
+		{preserved, canonical},
+		{canonical, preserved},
+	} {
+		got, ok := FindSubscriptionPrice(prices, "UPFRONT", "NOR", "upfront-point", "", now)
+		if !ok || got.ID != "canonical" {
+			t.Fatalf("canonical match = %#v ok=%t (order %#v)", got, ok, prices)
+		}
+		if _, ok := FindSubscriptionPrice(prices, "UPFRONT", "NOR", "old-point", "", now); ok {
+			t.Fatal("same-day preserved record must not verify when a canonical price exists")
+		}
+	}
+}
+
 func TestListSubscriptionPricesFollowsNextPage(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -30,6 +30,27 @@ type WebSubscriptionMonthlyCommitmentBootstrapResult struct {
 }
 
 func webSubscriptionMonthlyCommitmentBootstrapRows(result *WebSubscriptionMonthlyCommitmentBootstrapResult) ([]string, [][]string) {
+	if result.DryRun {
+		return []string{
+				"Dry Run",
+				"Subscription ID",
+				"Territory",
+				"Plan Availability ID",
+				"Would Create Availability",
+				"Upfront Price Point ID",
+				"Monthly Price Point ID",
+				"Start Date",
+			}, [][]string{{
+				fmt.Sprintf("%t", result.DryRun),
+				result.SubscriptionID,
+				result.Territory,
+				result.PlanAvailabilityID,
+				fmt.Sprintf("%t", result.PlanAvailabilityWouldCreate),
+				result.UpfrontPricePointID,
+				result.MonthlyPricePointID,
+				result.StartDate,
+			}}
+	}
 	return []string{
 			"Subscription ID",
 			"Territory",

@@ -254,7 +254,8 @@ func FindSubscriptionPrice(prices []SubscriptionPrice, planType, territory, pric
 			}
 			start = parsed
 		}
-		if selected == nil || start.After(selectedStart) {
+		if selected == nil || start.After(selectedStart) ||
+			(start.Equal(selectedStart) && selected.Preserved && !price.Preserved) {
 			candidate := price
 			selected = &candidate
 			selectedStart = start

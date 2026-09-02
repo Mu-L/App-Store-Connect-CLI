@@ -29,3 +29,21 @@ func TestWebSubscriptionMonthlyCommitmentBootstrapRowsIncludeFailure(t *testing.
 		t.Fatalf("failure column = %q", rows[0][7])
 	}
 }
+
+func TestWebSubscriptionMonthlyCommitmentBootstrapRowsDryRun(t *testing.T) {
+	headers, rows := webSubscriptionMonthlyCommitmentBootstrapRows(&WebSubscriptionMonthlyCommitmentBootstrapResult{
+		SubscriptionID:              "sub-1",
+		Territory:                   "NOR",
+		PlanAvailabilityWouldCreate: true,
+		UpfrontPricePointID:         "upfront-point",
+		MonthlyPricePointID:         "monthly-point",
+		DryRun:                      true,
+		StartDate:                   "2026-10-01",
+	})
+	if len(headers) != 8 || headers[0] != "Dry Run" || headers[4] != "Would Create Availability" {
+		t.Fatalf("unexpected dry-run headers: %#v", headers)
+	}
+	if rows[0][0] != "true" || rows[0][4] != "true" || rows[0][5] != "upfront-point" || rows[0][7] != "2026-10-01" {
+		t.Fatalf("unexpected dry-run row: %#v", rows[0])
+	}
+}
