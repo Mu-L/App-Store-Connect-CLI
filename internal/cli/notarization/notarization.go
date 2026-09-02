@@ -1251,6 +1251,12 @@ func reportStaplerFailure(command string, err error) error {
 			if commandErr.ExitCode > 0 {
 				return shared.NewReportedError(shared.NewProcessExitErrorWithCause(commandErr.ExitCode, err))
 			}
+			if errors.Is(err, localxcode.ErrStaplerDiagnosticOutput) && !isStaplerTargetStageError(err) {
+				// The child already reported a successful process status, so the
+				// partial-mutation warning above is the complete diagnosis. Adding
+				// the missing-exit-status message would misreport a working child.
+				return shared.NewReportedError(err)
+			}
 		}
 		if commandErr.ExitCode > 0 {
 			if command == "staple" && commandErr.Operation == string(localxcode.StaplerOperationValidate) && !partialMutation {
@@ -1290,6 +1296,15 @@ func reportStaplerPartialMutation(err *localxcode.StaplerPartialMutationError) {
 	if err != nil && errors.As(err, &commandErr) &&
 		commandErr.Operation == string(localxcode.StaplerOperationStaple) && commandErr.ExitCode > 0 {
 		fmt.Fprintf(os.Stderr, "Error: notarization staple failed during staple (exit status %d); the artifact may have been modified but was not verified\n", commandErr.ExitCode)
+		return
+	}
+	if err != nil && errors.Is(err, localxcode.ErrStaplerDiagnosticOutput) && !isStaplerTargetStageError(err) {
+		// The staple child reported success but its output could not be copied
+		// to the diagnostic writer, so the runner stopped before follow-up
+		// validation. Do not claim that a validation ran and failed. A joined
+		// stage-verification failure is the stronger signal and keeps its own
+		// diagnostic.
+		fmt.Fprintln(os.Stderr, "Error: notarization staple ran, but its diagnostic output could not be written and follow-up validation was not attempted; the artifact may have been modified but was not verified")
 		return
 	}
 	fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")

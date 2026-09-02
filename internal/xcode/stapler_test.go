@@ -1848,3 +1848,35 @@ func (ctx *staplerDeadlineTestContext) close() {
 		close(ctx.done)
 	}
 }
+
+func TestStapleMarksDiagnosticCopyFailureAfterSuccessfulChild(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_STAPLE_STDERR", "stapler progress\n")
+
+	result, err := Staple(context.Background(), target, failingStaplerDiagnosticWriter{})
+	if result != nil {
+		t.Fatalf("Staple() result = %#v, want nil after diagnostic copy failure", result)
+	}
+	if !errors.Is(err, ErrStaplerDiagnosticOutput) {
+		t.Fatalf("Staple() error = %T %v, want diagnostic-output marker", err, err)
+	}
+	var partialErr *StaplerPartialMutationError
+	if !errors.As(err, &partialErr) || partialErr.Operation != StaplerOperationStaple || partialErr.Interrupted {
+		t.Fatalf("Staple() error = %#v, want non-interrupted staple partial-mutation marker", err)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|staple|" + target,
+	})
+}
+
+type failingStaplerDiagnosticWriter struct{}
+
+func (failingStaplerDiagnosticWriter) Write([]byte) (int, error) {
+	return 0, errors.New("diagnostic sink closed")
+}

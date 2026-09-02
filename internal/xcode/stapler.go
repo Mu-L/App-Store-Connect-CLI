@@ -133,6 +133,12 @@ type StaplerPartialMutationError struct {
 	Err         error
 }
 
+// ErrStaplerDiagnosticOutput marks a failure to copy a stapler child's output
+// to the caller's diagnostic writer after the child itself reported success.
+// Command layers match it so they can report a completed-but-unverified staple
+// instead of claiming that a follow-up validation ran and failed.
+var ErrStaplerDiagnosticOutput = errors.New("stapler diagnostic output could not be copied")
+
 // staplerDiagnosticOutputError records a failure copying diagnostics after a
 // stapler child was started. A successful child may already have changed the
 // artifact before its output becomes unwriteable, so the staple caller must
@@ -143,7 +149,13 @@ type staplerDiagnosticOutputError struct {
 }
 
 func (e *staplerDiagnosticOutputError) Error() string {
-	return "stapler diagnostic output could not be copied"
+	return ErrStaplerDiagnosticOutput.Error()
+}
+
+// Is exposes the stable public marker without widening the private type. Only
+// the sentinel matches; the original writer/process cause stays behind Unwrap.
+func (e *staplerDiagnosticOutputError) Is(target error) bool {
+	return target == ErrStaplerDiagnosticOutput
 }
 
 func (e *staplerDiagnosticOutputError) Unwrap() error {

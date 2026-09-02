@@ -4064,3 +4064,51 @@ func TestRejectSymlinkedLexicalParentTraversalRejectsOpenedDirectoryIdentityChan
 		t.Fatalf("directory identity change error = %v, want fail-closed race error", err)
 	}
 }
+
+func TestNotarizationStapleReportsDiagnosticCopyFailureWithoutClaimingValidation(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	previous := runStaplerStaple
+	runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		return nil, &localxcode.StaplerPartialMutationError{
+			Operation: localxcode.StaplerOperationStaple,
+			Err: &localxcode.StaplerCommandError{
+				Operation: string(localxcode.StaplerOperationStaple),
+				ExitCode:  -1,
+				Err:       localxcode.ErrStaplerDiagnosticOutput,
+			},
+		}
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", targetPath, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("staple command error = nil, want diagnostic copy failure")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success output", stdout)
+	}
+	if strings.Contains(stderr, "follow-up validation failed") {
+		t.Fatalf("stderr = %q, must not claim a follow-up validation ran", stderr)
+	}
+	if strings.Contains(stderr, "before a usable exit status was available") {
+		t.Fatalf("stderr = %q, must not claim the staple child had no usable status", stderr)
+	}
+	if !strings.Contains(stderr, "diagnostic output could not be written") {
+		t.Fatalf("stderr = %q, want diagnostic-copy diagnosis", stderr)
+	}
+	if !strings.Contains(stderr, "may have been modified but was not verified") {
+		t.Fatalf("stderr = %q, want unverified-mutation warning", stderr)
+	}
+}
