@@ -311,11 +311,10 @@ func (c *Client) GetAppRemovalState(ctx context.Context, appID string) (*AppRemo
 	decoded := decodeRemovedAppResource(payload.Data, included)
 	removed, removedKnown := boolAttrKnown(payload.Data.Attributes, "removed")
 
-	versionStates := make([]string, 0, len(decoded.DisplayableVersions))
+	versionStates := make([]string, 0, len(decoded.DisplayableVersions)*2)
 	for _, version := range decoded.DisplayableVersions {
 		if state := strings.TrimSpace(version.AppStoreState); state != "" {
 			versionStates = append(versionStates, state)
-			continue
 		}
 		if state := strings.TrimSpace(version.AppVersionState); state != "" {
 			versionStates = append(versionStates, state)

@@ -227,6 +227,60 @@ func TestGetAppRemovalStateRequestsCapturedFields(t *testing.T) {
 	}
 }
 
+func TestGetAppRemovalStatePreservesBothVersionStateFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"type": "apps",
+				"id": "1234567890",
+				"attributes": {
+					"name": "Throwaway",
+					"bundleId": "com.example.throwaway",
+					"removed": false,
+					"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
+					"marketplace": "APP_STORE"
+				},
+				"relationships": {
+					"displayableVersions": {
+						"data": [{"type": "appStoreVersions", "id": "version-1"}]
+					}
+				}
+			},
+			"included": [{
+				"type": "appStoreVersions",
+				"id": "version-1",
+				"attributes": {
+					"platform": "IOS",
+					"versionString": "1.0",
+					"appStoreState": "READY_FOR_SALE",
+					"appVersionState": "WAITING_FOR_REVIEW"
+				}
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		baseURL:    server.URL,
+	}
+	state, err := client.GetAppRemovalState(context.Background(), "1234567890")
+	if err != nil {
+		t.Fatalf("GetAppRemovalState error: %v", err)
+	}
+	got := strings.Join(state.VersionStates, ",")
+	if !strings.Contains(got, "READY_FOR_SALE") {
+		t.Fatalf("expected appStoreState READY_FOR_SALE, got %+v", state.VersionStates)
+	}
+	if !strings.Contains(got, "WAITING_FOR_REVIEW") {
+		t.Fatalf("expected appVersionState WAITING_FOR_REVIEW, got %+v", state.VersionStates)
+	}
+}
+
 func TestGetAppRemovalStateRequiresID(t *testing.T) {
 	client := &Client{}
 	if _, err := client.GetAppRemovalState(context.Background(), "  "); err == nil {
