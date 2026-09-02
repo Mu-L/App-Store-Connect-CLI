@@ -20,6 +20,8 @@ func registerAllOutputRenderers() {
 	registerRows(webSubscriptionMonthlyCommitmentBootstrapRows)
 	registerRows(webXcodeCloudWorkflowsListRows)
 	registerRows(webAPIKeysListRows)
+	registerRows(webSessionExportRows)
+	registerRows(webSessionImportRows)
 	registerRows(webAPIKeyGetRows)
 	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {
 		h, r := keywordRankSummaryRows(v)
