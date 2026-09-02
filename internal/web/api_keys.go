@@ -18,6 +18,11 @@ import (
 
 const apiKeyTypePublic = "PUBLIC_API"
 
+const (
+	APIKeyKindTeam       = "team"
+	APIKeyKindIndividual = "individual"
+)
+
 // ErrAPIKeyResponseInvalid reports a malformed or incomplete one-time P8 response.
 var ErrAPIKeyResponseInvalid = errors.New("invalid api key download response")
 
@@ -39,6 +44,19 @@ type APIKey struct {
 	KeyType        string   `json:"keyType,omitempty"`
 	LastUsed       string   `json:"lastUsed,omitempty"`
 	RevokingDate   string   `json:"revokingDate,omitempty"`
+}
+
+// APIKeyListItem is non-secret metadata for one listed App Store Connect API key.
+type APIKeyListItem struct {
+	KeyID       string    `json:"keyId"`
+	Name        string    `json:"name,omitempty"`
+	Kind        string    `json:"kind"`
+	Roles       []string  `json:"roles,omitempty"`
+	Active      bool      `json:"active"`
+	KeyType     string    `json:"keyType,omitempty"`
+	LastUsed    string    `json:"lastUsed,omitempty"`
+	GeneratedBy *KeyActor `json:"generatedBy,omitempty"`
+	RevokedBy   *KeyActor `json:"revokedBy,omitempty"`
 }
 
 type apiKeyResource struct {
@@ -113,6 +131,70 @@ func (c *Client) GetAPIKey(ctx context.Context, keyID string) (*APIKey, error) {
 		return nil, err
 	}
 	return parseAPIKeyResponse(body, "get api key")
+}
+
+// ListAPIKeys returns team and individual API keys visible to the web session.
+// Team keys come from the iris v1 integrations list; individual keys come from
+// iris v2. Both readers already follow pagination links, so this method returns
+// the complete visible set. Creation date is not present on either payload.
+func (c *Client) ListAPIKeys(ctx context.Context) ([]APIKeyListItem, error) {
+	teamKeys, teamErr := c.listTeamKeys(ctx)
+	if teamErr != nil && !shouldFallbackToIndividualKeys(teamErr) {
+		return nil, teamErr
+	}
+
+	individualKeys, individualErr := c.listIndividualKeys(ctx)
+	if individualErr != nil && !shouldFallbackToIndividualKeys(individualErr) {
+		return nil, individualErr
+	}
+	if teamErr != nil && individualErr != nil {
+		return nil, teamErr
+	}
+
+	nTeam, nIndividual := 0, 0
+	if teamErr == nil {
+		nTeam = len(teamKeys)
+	}
+	if individualErr == nil {
+		nIndividual = len(individualKeys)
+	}
+	items := make([]APIKeyListItem, 0, nTeam+nIndividual)
+	if teamErr == nil {
+		for _, key := range teamKeys {
+			items = append(items, APIKeyListItem{
+				KeyID:       key.KeyID,
+				Name:        key.Name,
+				Kind:        APIKeyKindTeam,
+				Roles:       append([]string(nil), key.Roles...),
+				Active:      key.Active,
+				KeyType:     key.KeyType,
+				LastUsed:    key.LastUsed,
+				GeneratedBy: cloneKeyActor(key.GeneratedBy),
+				RevokedBy:   cloneKeyActor(key.RevokedBy),
+			})
+		}
+	}
+	if individualErr == nil {
+		for _, key := range individualKeys {
+			item := APIKeyListItem{
+				KeyID:    key.KeyID,
+				Name:     key.Name,
+				Kind:     APIKeyKindIndividual,
+				Roles:    append([]string(nil), key.Roles...),
+				Active:   key.Active,
+				KeyType:  key.KeyType,
+				LastUsed: key.LastUsed,
+			}
+			if key.CreatedByActorID != "" {
+				item.GeneratedBy = &KeyActor{ID: key.CreatedByActorID}
+			}
+			if key.RevokedByActorID != "" {
+				item.RevokedBy = &KeyActor{ID: key.RevokedByActorID}
+			}
+			items = append(items, item)
+		}
+	}
+	return items, nil
 }
 
 // DownloadAPIKey downloads and decodes the one-time P8 for an API key.
@@ -231,4 +313,12 @@ func parseAPIKeyResponse(body []byte, operation string) (*APIKey, error) {
 		LastUsed:       strings.TrimSpace(payload.Data.Attributes.LastUsed),
 		RevokingDate:   strings.TrimSpace(payload.Data.Attributes.RevokingDate),
 	}, nil
+}
+
+func cloneKeyActor(actor *KeyActor) *KeyActor {
+	if actor == nil {
+		return nil
+	}
+	cloned := *actor
+	return &cloned
 }
