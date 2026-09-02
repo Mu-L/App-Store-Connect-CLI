@@ -189,6 +189,7 @@ Examples:
 			if err != nil {
 				return shared.UsageErrorf("--out must be a file path: %v", err)
 			}
+			defer destination.close()
 			if err := destination.check(*overwrite); err != nil {
 				return fmt.Errorf("web agreements download failed: %w", err)
 			}
@@ -277,17 +278,25 @@ func (d agreementDownloadDestination) check(overwrite bool) error {
 	return nil
 }
 
+// write publishes the complete body atomically. Without overwrite it insists
+// on a native no-replace rename and fails instead of degrading to a direct
+// O_EXCL write that could expose a partial agreement.
 func (d agreementDownloadDestination) write(body []byte, overwrite bool) error {
 	if overwrite {
 		return d.root.WriteFile(d.name, body, 0o600)
 	}
-	if err := d.root.CreateNewFile(d.name, body, 0o600); err != nil {
+	if err := d.root.CreateNewFileAtomic(d.name, body, 0o600); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("%w; pass --overwrite to replace it", err)
 		}
 		return err
 	}
 	return nil
+}
+
+// close releases the directory descriptor pinned by the destination root.
+func (d agreementDownloadDestination) close() {
+	_ = d.root.Close()
 }
 
 // WebAgreementsAcceptCommand accepts one or more pending program agreements.
