@@ -645,6 +645,16 @@ func TestDeleteDeveloperAppGroupFailsClosedOnAmbiguousBundleIDPages(t *testing.T
 			`{"data":[` + one + `],"included":[],"links":{"next":"https://developer.apple.com/services-account/v1/bundleIds?cursor=abc&limit=200"}}`,
 			`{"data":[` + one + `],"included":[]}`,
 		},
+		"paging total shrinks to the collected count on a later page": {
+			`{"data":[` + one + `],"included":[],"meta":{"paging":{"total":2,"limit":200}},"links":{"next":"https://developer.apple.com/services-account/v1/bundleIds?cursor=abc&limit=200"}}`,
+			`{"data":[],"included":[],"meta":{"paging":{"total":1,"limit":200}}}`,
+		},
+		"whitespace-padded app group relationship id": {
+			`{
+				"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}}],
+				"included":[{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[{"type":"appGroups","id":" GROUP12345 "}]}}}]
+			}`,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {

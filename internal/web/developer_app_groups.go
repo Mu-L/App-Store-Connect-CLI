@@ -413,6 +413,7 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 	seenNext := make(map[string]struct{})
 	seenBundleIDs := make(map[string]struct{})
 	collected := 0
+	var total *int
 	for page := 0; ; page++ {
 		if page >= developerBundleIDsListMaxPages {
 			return nil, fmt.Errorf("developer portal Bundle ID listing exceeded %d pages while checking App Group assignments", developerBundleIDsListMaxPages)
@@ -452,7 +453,14 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 		}
 		collected += len(response.Data)
 
-		total := response.Meta.Paging.Total
+		// The paging total describes one listing, so a later page that reports
+		// a different value is evidence the listing shifted underneath us.
+		if response.Meta.Paging.Total != nil {
+			if total != nil && *total != *response.Meta.Paging.Total {
+				return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list changed its paging total from %d to %d between pages", *total, *response.Meta.Paging.Total)
+			}
+			total = response.Meta.Paging.Total
+		}
 		if total != nil && *total < collected {
 			return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list reported %d total records but returned %d", *total, collected)
 		}
@@ -1110,8 +1118,10 @@ func developerAppGroupRelationships(capability developerResource) ([]developerRe
 	if err := json.Unmarshal(raw, &relationship); err != nil {
 		return nil, fmt.Errorf("failed to parse current App Group relationships: %w", err)
 	}
+	// IDs are compared exactly everywhere, so a padded ID would silently miss
+	// its canonical form; reject it rather than guess at a normalization.
 	for _, group := range relationship.Data {
-		if group.Type != "appGroups" || strings.TrimSpace(group.ID) == "" {
+		if group.Type != "appGroups" || group.ID == "" || group.ID != strings.TrimSpace(group.ID) {
 			return nil, fmt.Errorf("invalid App Group relationship returned by Developer Portal")
 		}
 	}
