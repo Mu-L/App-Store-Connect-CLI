@@ -2224,3 +2224,208 @@ func TestRecheckPrivacyRemoteUsagesHonoursParentCancellation(t *testing.T) {
 		t.Fatal("a cancelled command context must still cancel the recheck")
 	}
 }
+
+func TestWebPrivacyApplyReportsConvergenceWhenTheFailedStepActuallyCommitted(t *testing.T) {
+	fixture := handlertest.New(t)
+	deleted := false
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		if resp, ok := privacyCatalogRoundTrip(req); ok {
+			return resp, nil
+		}
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages":
+			usages := `{
+				"id": "usage-phone",
+				"type": "appDataUsages",
+				"relationships": {
+					"category": {"data": {"type":"appDataUsageCategories","id":"PHONE_NUMBER"}},
+					"purpose": {"data": {"type":"appDataUsagePurposes","id":"ANALYTICS"}},
+					"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_LINKED_TO_YOU"}}
+				}
+			},`
+			if deleted {
+				usages = ""
+			}
+			return privacyJSONResponse(req, `{"data":[`+usages+`
+				{
+					"id": "usage-email",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"EMAIL_ADDRESS"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"APP_FUNCTIONALITY"}},
+						"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_NOT_LINKED_TO_YOU"}}
+					}
+				},
+				{
+					"id": "usage-purchase",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"PURCHASE_HISTORY"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"ANALYTICS"}},
+						"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_LINKED_TO_YOU"}}
+					}
+				}
+			]}`), nil
+		case req.Method == http.MethodDelete && req.URL.Path == "/iris/v1/appDataUsages/usage-phone":
+			// Apple commits the delete and then fails the response.
+			deleted = true
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"errors":[{"code":"GATEWAY","detail":"upstream hiccup"}]}`)),
+				Request:    req,
+			}, nil
+		default:
+			return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+		}
+	})
+
+	path := writePrivacyDeclarationForTest(t)
+	cmd := WebPrivacyApplyCommand()
+	if err := cmd.FlagSet.Parse([]string{
+		"--app", privacyTestAppID,
+		"--file", path,
+		"--allow-deletes",
+		"--confirm",
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var execErr error
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+	if execErr == nil {
+		t.Fatal("a failed mutation response must still exit non-zero")
+	}
+	if strings.Contains(stdout+stderr, "upstream hiccup") {
+		t.Fatalf("output leaked raw Apple response body:\nstdout=%s\nstderr=%s", stdout, stderr)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("failed to parse receipt JSON: %v\nstdout=%s", err, stdout)
+	}
+	if payload["applied"] != true {
+		t.Fatalf("the re-read proved every change committed, so applied must be true: %#v", payload["applied"])
+	}
+	if len(privacyApplyActionKinds(t, payload, "notAppliedActions")) != 0 {
+		t.Fatalf("expected no not-applied actions, got %#v", payload["notAppliedActions"])
+	}
+	if len(privacyApplyActionKinds(t, payload, "unknownActions")) != 0 {
+		t.Fatalf("expected no unknown actions, got %#v", payload["unknownActions"])
+	}
+	recheck, ok := payload["recheck"].(map[string]any)
+	if !ok || recheck["remainingChanges"] != float64(0) {
+		t.Fatalf("expected recheck.remainingChanges=0, got %#v", payload["recheck"])
+	}
+	if strings.Contains(stderr, "partially applied") {
+		t.Fatalf("a fully converged plan is not a partial apply: %q", stderr)
+	}
+	if !strings.Contains(stderr, "after every planned change committed") {
+		t.Fatalf("stderr = %q, want the convergence diagnostic", stderr)
+	}
+}
+
+func TestWebPrivacyApplyOmitsRemainingChangesWhenTheRecheckFails(t *testing.T) {
+	fixture := handlertest.New(t)
+	listCount := 0
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		if resp, ok := privacyCatalogRoundTrip(req); ok {
+			return resp, nil
+		}
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages":
+			listCount++
+			if listCount > 1 {
+				return &http.Response{
+					StatusCode: http.StatusInternalServerError,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"errors":[{"code":"UNAVAILABLE"}]}`)),
+					Request:    req,
+				}, nil
+			}
+			return privacyJSONResponse(req, `{"data":[]}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/iris/v1/appDataUsages":
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"errors":[{"code":"ENTITY_ERROR"}]}`)),
+				Request:    req,
+			}, nil
+		default:
+			return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+		}
+	})
+
+	path := writePrivacyDeclarationForTest(t)
+	cmd := WebPrivacyApplyCommand()
+	if err := cmd.FlagSet.Parse([]string{
+		"--app", privacyTestAppID,
+		"--file", path,
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var execErr error
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+	if execErr == nil {
+		t.Fatal("expected a non-zero exit")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("failed to parse receipt JSON: %v\nstdout=%s", err, stdout)
+	}
+	if payload["applied"] != false {
+		t.Fatalf("an unverified failure must not report applied=true: %#v", payload["applied"])
+	}
+	recheck, ok := payload["recheck"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected recheck object, got %#v", payload["recheck"])
+	}
+	if recheck["succeeded"] != false {
+		t.Fatalf("expected recheck.succeeded=false, got %#v", recheck["succeeded"])
+	}
+	if _, present := recheck["remainingChanges"]; present {
+		t.Fatalf("a failed re-read computed no count, so remainingChanges must be absent: %#v", recheck)
+	}
+	if len(privacyApplyActionKinds(t, payload, "unknownActions")) == 0 {
+		t.Fatalf("the attempted create must remain unknown: %#v", payload)
+	}
+}
+
+func TestBuildPrivacyRecheckRowsRendersUnknownRemainingChanges(t *testing.T) {
+	rows := buildPrivacyRecheckRows(privacyApplyRecheck{Performed: true})
+	if !reflect.DeepEqual(rows[2], []string{"Remaining Changes", "unknown"}) {
+		t.Fatalf("unexpected rows for a failed recheck: %#v", rows)
+	}
+
+	remaining := 3
+	rows = buildPrivacyRecheckRows(privacyApplyRecheck{Performed: true, Succeeded: true, RemainingChanges: &remaining})
+	if !reflect.DeepEqual(rows[2], []string{"Remaining Changes", "3"}) {
+		t.Fatalf("unexpected rows for a successful recheck: %#v", rows)
+	}
+}
+
+func TestPrivacyApplyFailureMessageReportsConvergence(t *testing.T) {
+	message := privacyApplyFailureMessage("123456789", privacyApplyOutput{
+		Applied: true,
+		Actions: []privacyApplyAction{{Action: "delete"}},
+	}, fmt.Errorf("web privacy apply failed: web api error (status 502)"))
+	if strings.Contains(message, "partially applied") {
+		t.Fatalf("a converged plan is not a partial apply: %q", message)
+	}
+	if !strings.Contains(message, "after every planned change committed") {
+		t.Fatalf("unexpected convergence message: %q", message)
+	}
+	if !strings.Contains(message, "a rerun is a no-op") {
+		t.Fatalf("convergence message must say a rerun is a no-op: %q", message)
+	}
+}

@@ -115,9 +115,11 @@ type privacyApplyAction struct {
 // privacyApplyRecheck records the post-failure remote re-read that resolves
 // which attempted actions actually committed.
 type privacyApplyRecheck struct {
-	Performed        bool `json:"performed"`
-	Succeeded        bool `json:"succeeded"`
-	RemainingChanges int  `json:"remainingChanges"`
+	Performed bool `json:"performed"`
+	Succeeded bool `json:"succeeded"`
+	// RemainingChanges is absent when the re-read failed: no count was
+	// computed, and a zero there would read as convergence.
+	RemainingChanges *int `json:"remainingChanges,omitempty"`
 }
 
 type privacyApplyOutput struct {
@@ -935,9 +937,10 @@ func recheckPrivacyRemoteUsages(ctx context.Context, client privacyUsageReader, 
 
 // privacyApplyFailureMessage describes an interrupted apply without claiming
 // more than the receipt proves: an apply that committed nothing is not a
-// partial apply. The cause is rendered inline because the returned error is
-// already reported and would otherwise never reach the operator; every web
-// error string here is redacted and carries no raw Apple response body.
+// partial apply, and one the re-read shows fully converged is not partial
+// either. The cause is rendered inline because the returned error is already
+// reported and would otherwise never reach the operator; every web error
+// string here is redacted and carries no raw Apple response body.
 func privacyApplyFailureMessage(appID string, payload privacyApplyOutput, cause error) string {
 	summary := fmt.Sprintf(
 		"%d committed, %d unknown, %d not applied",
@@ -946,14 +949,15 @@ func privacyApplyFailureMessage(appID string, payload privacyApplyOutput, cause 
 		len(payload.NotAppliedActions),
 	)
 	lead := fmt.Sprintf("web privacy apply partially applied changes for app %s", appID)
-	if len(payload.Actions) == 0 {
+	trailer := "the receipt above lists each action, and rerunning the same command converges from current remote state"
+	switch {
+	case payload.Applied:
+		lead = fmt.Sprintf("web privacy apply failed for app %s after every planned change committed", appID)
+		trailer = "the re-read shows remote state already matches the file, so a rerun is a no-op"
+	case len(payload.Actions) == 0:
 		lead = fmt.Sprintf("web privacy apply failed for app %s without a confirmed change", appID)
 	}
-	message := fmt.Sprintf(
-		"%s: %s; the receipt above lists each action, and rerunning the same command converges from current remote state",
-		lead,
-		summary,
-	)
+	message := fmt.Sprintf("%s: %s; %s", lead, summary, trailer)
 	if cause == nil {
 		return message
 	}
@@ -1201,6 +1205,18 @@ func buildPrivacySkippedDeleteRows(skipped []privacySkippedDelete) [][]string {
 	return rows
 }
 
+func buildPrivacyRecheckRows(recheck privacyApplyRecheck) [][]string {
+	remaining := "unknown"
+	if recheck.RemainingChanges != nil {
+		remaining = fmt.Sprintf("%d", *recheck.RemainingChanges)
+	}
+	return [][]string{
+		{"Recheck Performed", fmt.Sprintf("%t", recheck.Performed)},
+		{"Recheck Succeeded", fmt.Sprintf("%t", recheck.Succeeded)},
+		{"Remaining Changes", remaining},
+	}
+}
+
 func buildPrivacyStaleTokenRows(stale []privacyStaleToken) [][]string {
 	rows := make([][]string, 0, len(stale))
 	for _, token := range stale {
@@ -1440,11 +1456,7 @@ func renderPrivacyApplyTable(payload privacyApplyOutput) error {
 	}
 	if payload.Recheck != nil {
 		fmt.Println()
-		asc.RenderTable([]string{"Field", "Value"}, [][]string{
-			{"Recheck Performed", fmt.Sprintf("%t", payload.Recheck.Performed)},
-			{"Recheck Succeeded", fmt.Sprintf("%t", payload.Recheck.Succeeded)},
-			{"Remaining Changes", fmt.Sprintf("%d", payload.Recheck.RemainingChanges)},
-		})
+		asc.RenderTable([]string{"Field", "Value"}, buildPrivacyRecheckRows(*payload.Recheck))
 	}
 	if len(payload.APICalls) > 0 {
 		fmt.Println()
@@ -1499,11 +1511,7 @@ func renderPrivacyApplyMarkdown(payload privacyApplyOutput) error {
 	}
 	if payload.Recheck != nil {
 		fmt.Println()
-		asc.RenderMarkdown([]string{"Field", "Value"}, [][]string{
-			{"Recheck Performed", fmt.Sprintf("%t", payload.Recheck.Performed)},
-			{"Recheck Succeeded", fmt.Sprintf("%t", payload.Recheck.Succeeded)},
-			{"Remaining Changes", fmt.Sprintf("%d", payload.Recheck.RemainingChanges)},
-		})
+		asc.RenderMarkdown([]string{"Field", "Value"}, buildPrivacyRecheckRows(*payload.Recheck))
 	}
 	if len(payload.APICalls) > 0 {
 		fmt.Println()
@@ -1971,8 +1979,16 @@ Examples:
 					remoteState := remoteStateFromDataUsages(remoteUsages)
 					result = resolvePrivacyApplyResult(result, remoteState)
 					residual := planFromDesiredAndRemote(resolvedAppID, resolvedFilePath, desiredTuples, remoteState)
+					remaining := len(residual.Updates) + len(residual.Adds) + len(residual.Deletes)
 					recheck.Succeeded = true
-					recheck.RemainingChanges = len(residual.Updates) + len(residual.Adds) + len(residual.Deletes)
+					recheck.RemainingChanges = &remaining
+					// Apple can commit the last mutation and still fail the
+					// response. When the re-read proves every planned change
+					// landed, the receipt says so; the exit stays non-zero
+					// because the transport failure is still real.
+					if remaining == 0 && len(result.Unknown) == 0 && len(result.NotApplied) == 0 {
+						payload.Applied = true
+					}
 				}
 				payload.Recheck = &recheck
 			}
