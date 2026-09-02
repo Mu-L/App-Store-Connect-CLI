@@ -40,6 +40,15 @@ func copyReplacementMetadata(destination, source *os.File, info os.FileInfo) err
 	if err != nil {
 		return fmt.Errorf("inspect replacement access control list: %w", err)
 	}
+	shouldSet, err := shouldSetReplacementDACL(control, dacl)
+	if err != nil {
+		return fmt.Errorf("inspect replacement access control list: %w", err)
+	}
+	if !shouldSet {
+		// The replacement already inherits the parent DACL. Copying that
+		// inherited-only ACL with SetSecurityInfo fails with ACCESS_DENIED.
+		return nil
+	}
 
 	destinationHandle, err := reopenForDACL(destination)
 	if err != nil {
@@ -58,9 +67,37 @@ func copyReplacementMetadata(destination, source *os.File, info os.FileInfo) err
 	)
 	runtime.KeepAlive(descriptor)
 	if err != nil {
+		if errors.Is(err, windows.ERROR_ACCESS_DENIED) && control&windows.SE_DACL_PROTECTED == 0 {
+			// Unprotected explicit ACEs can still be rejected when Windows
+			// treats them as inherited from the parent of a newly created file.
+			return nil
+		}
 		return fmt.Errorf("preserve replacement access control list: %w", err)
 	}
 	return nil
+}
+
+func shouldSetReplacementDACL(control windows.SECURITY_DESCRIPTOR_CONTROL, dacl *windows.ACL) (bool, error) {
+	if control&windows.SE_DACL_PROTECTED != 0 {
+		return true, nil
+	}
+	return hasExplicitACE(dacl)
+}
+
+func hasExplicitACE(dacl *windows.ACL) (bool, error) {
+	if dacl == nil {
+		return false, nil
+	}
+	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			return false, err
+		}
+		if ace.Header.AceFlags&windows.INHERITED_ACE == 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func reopenForDACL(file *os.File) (windows.Handle, error) {

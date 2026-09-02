@@ -8,6 +8,24 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func TestShouldSetReplacementDACLSkipsInheritedOnlyLists(t *testing.T) {
+	shouldSet, err := shouldSetReplacementDACL(0, nil)
+	if err != nil {
+		t.Fatalf("shouldSetReplacementDACL() error = %v", err)
+	}
+	if shouldSet {
+		t.Fatal("inherited-only nil DACL should not be copied onto a replacement")
+	}
+
+	shouldSet, err = shouldSetReplacementDACL(windows.SE_DACL_PROTECTED, nil)
+	if err != nil {
+		t.Fatalf("shouldSetReplacementDACL(protected) error = %v", err)
+	}
+	if !shouldSet {
+		t.Fatal("protected DACL must be copied even when empty")
+	}
+}
+
 func TestDACLInformationPreservesProtection(t *testing.T) {
 	tests := []struct {
 		name    string
