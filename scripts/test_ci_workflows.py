@@ -253,6 +253,9 @@ def assert_optimized_workflow_text(path: Path, workflow: str, test_job: str) -> 
     for runner in ("macos-latest", "ubuntu-latest", "windows-latest"):
         assert f"runner: {runner}" in build_platforms, f"{path}: missing native build runner {runner}"
     assert "go test -short ./internal/screenshots" in build_platforms, f"{path}: missing Darwin-only tests"
+    assert build_platforms.count("go test -short -count=1 ./internal/rootfs") == 2, (
+        f"{path}: build-platforms must run ./internal/rootfs on both native legs"
+    )
     for arch in ("amd64", "arm64"):
         command = f"CGO_ENABLED=1 GOOS=darwin GOARCH={arch} go build"
         assert command in build_platforms, f"{path}: missing cgo-enabled Darwin {arch} build"
@@ -295,6 +298,7 @@ def assert_optimized_workflow_rejects_weakened_checks() -> None:
             "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build",
             "CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build",
             "CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build",
+            "go test -short -count=1 ./internal/rootfs",
         ):
             assert command in workflow, f"{path}: expected to find {command!r}"
             weakened = workflow.replace(command, "true")
