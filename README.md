@@ -506,6 +506,7 @@ For full command families, flags, and discovery patterns, see:
 - [docs/CI_CD.md](docs/CI_CD.md) - CI/CD integration guides (GitHub Actions, GitLab, Bitrise, CircleCI)
 - [commands/signing.mdx](commands/signing.mdx) - signing identities, encrypted sync, CI, and release-testing profiles
 - [docs/COMMANDS.md](docs/COMMANDS.md) - Command families and reference navigation
+- [docs/PARITY.md](docs/PARITY.md) - Remaining parity areas and intentional non-goals
 - [docs/WORKFLOWS.md](docs/WORKFLOWS.md) - Reusable workflow patterns, including local Xcode to TestFlight
 - [guides/apple-ads-playbooks.mdx](guides/apple-ads-playbooks.mdx) - Apple Ads operator playbooks
 - [docs/architecture/storekit-retention-messaging.md](docs/architecture/storekit-retention-messaging.md) - Retention Messaging setup and sandbox verification
