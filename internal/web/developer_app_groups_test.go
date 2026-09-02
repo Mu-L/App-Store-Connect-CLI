@@ -757,6 +757,49 @@ func TestSetDeveloperAppGroupsFailsWhenVerificationDiffers(t *testing.T) {
 	}
 }
 
+func TestAppGroupMutationsFailClosedWhenCapabilityGraphIsUnreadable(t *testing.T) {
+	bundles := map[string]string{
+		"omitted relationships":        `{"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"}},"included":[]}`,
+		"omitted capability relation":  `{"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"profiles":{"data":[]}}},"included":[]}`,
+		"null capability relationship": `{"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":null}}},"included":[]}`,
+	}
+	mutations := map[string]func(*Client) error{
+		"assign": func(client *Client) error {
+			_, err := client.AssignDeveloperAppGroup(context.Background(), DeveloperAppGroupAssignRequest{BundleID: "bundle-1", GroupID: "GROUP1"})
+			return err
+		},
+		"unassign": func(client *Client) error {
+			_, err := client.UnassignDeveloperAppGroup(context.Background(), DeveloperAppGroupUnassignRequest{BundleID: "bundle-1", GroupID: "GROUP1"})
+			return err
+		},
+		"set": func(client *Client) error {
+			_, err := client.SetDeveloperAppGroups(context.Background(), DeveloperAppGroupSetRequest{BundleID: "bundle-1", GroupIDs: []string{"GROUP1"}})
+			return err
+		},
+	}
+	for bundleName, bundle := range bundles {
+		for mutationName, mutate := range mutations {
+			t.Run(mutationName+" "+bundleName, func(t *testing.T) {
+				client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+					switch requestNumber {
+					case 1:
+						return assertDeveloperPortalBootstrap(t, request), nil
+					case 2:
+						return developerPortalTestResponse(http.StatusOK, bundle, nil), nil
+					default:
+						t.Fatalf("unreadable capability graph must not lead to request %d (%s %s)", requestNumber, request.Method, request.URL.Path)
+						return nil, nil
+					}
+				})
+				err := mutate(client)
+				if err == nil || !strings.Contains(err.Error(), "capability graph") {
+					t.Fatalf("expected unreadable capability graph error, got %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestSetDeveloperAppGroupsRejectsEmptyInput(t *testing.T) {
 	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
 		t.Fatalf("validation failure sent request %d", requestNumber)

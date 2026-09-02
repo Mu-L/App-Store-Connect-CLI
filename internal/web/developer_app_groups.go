@@ -776,6 +776,16 @@ func (c *Client) doDeveloperPortalLegacyFormRequest(ctx context.Context, path st
 // developerBundleIDAppGroupsState reads the APP_GROUPS capability of a Bundle
 // ID: whether it is enabled and which groups it currently lists.
 func developerBundleIDAppGroupsState(current developerBundleIDResponse) (developerAppGroupsState, error) {
+	// Every App Group mutation PATCHes the complete bundleIdCapabilities
+	// relationship back, so an omitted or null graph must abort rather than be
+	// rewritten as "no other capabilities".
+	rawRelationship, ok := current.Data.Relationships["bundleIdCapabilities"]
+	if !ok {
+		return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: Developer Portal omitted its capability graph", current.Data.ID)
+	}
+	if _, err := decodeStrictDeveloperRelationship(rawRelationship); err != nil {
+		return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: capability graph %w", current.Data.ID, err)
+	}
 	capabilities, err := developerBundleIDCapabilities(current)
 	if err != nil {
 		return developerAppGroupsState{}, err
