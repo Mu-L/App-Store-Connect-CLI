@@ -35,11 +35,14 @@ type WebAgreementsStatusResult struct {
 	Agreements       []WebAgreement                `json:"agreements"`
 }
 
-// WebAgreementsAcceptResult summarizes an agreement acceptance.
+// WebAgreementsAcceptResult summarizes an agreement acceptance. When Verified
+// is true, Agreements reflects the agreement history re-read after the write
+// rather than the acceptAgreements response.
 type WebAgreementsAcceptResult struct {
 	TeamID       string         `json:"teamId"`
 	AgreementIDs []string       `json:"agreementIds"`
 	Status       string         `json:"status"`
+	Verified     bool           `json:"verified"`
 	Agreements   []WebAgreement `json:"agreements"`
 }
 
@@ -95,10 +98,11 @@ func webAgreementsAcceptRows(result *WebAgreementsAcceptResult) ([]string, [][]s
 			break
 		}
 	}
-	return []string{"Team ID", "Agreement IDs", "Status", "Accepted At"}, [][]string{{
+	return []string{"Team ID", "Agreement IDs", "Status", "Verified", "Accepted At"}, [][]string{{
 		result.TeamID,
 		strings.Join(result.AgreementIDs, ", "),
 		result.Status,
+		fmt.Sprintf("%t", result.Verified),
 		acceptedAt,
 	}}
 }

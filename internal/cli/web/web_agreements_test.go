@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io"
 	"strings"
 	"testing"
 
@@ -33,6 +34,49 @@ func stubWebAgreementsSession(t *testing.T) {
 	}
 }
 
+// stubWebAgreementsAccept replaces the accept and status hooks. The accept hook
+// records every request; the status hook returns reread for the verification
+// re-read after the write.
+func stubWebAgreementsAccept(t *testing.T, reread *asc.WebAgreementsStatusResult, rereadErr error) (*[]webcore.AgreementsAcceptRequest, *int) {
+	t.Helper()
+	origAccept := acceptAgreementsFn
+	origStatus := getAgreementsStatusFn
+	t.Cleanup(func() {
+		acceptAgreementsFn = origAccept
+		getAgreementsStatusFn = origStatus
+	})
+	requests := &[]webcore.AgreementsAcceptRequest{}
+	statusCalls := new(int)
+	acceptAgreementsFn = func(ctx context.Context, client *webcore.Client, req webcore.AgreementsAcceptRequest) (*asc.WebAgreementsAcceptResult, error) {
+		*requests = append(*requests, req)
+		return &asc.WebAgreementsAcceptResult{
+			TeamID:       "TEAM123456",
+			AgreementIDs: req.AgreementIDs,
+			Status:       "accepted",
+		}, nil
+	}
+	getAgreementsStatusFn = func(ctx context.Context, client *webcore.Client) (*asc.WebAgreementsStatusResult, error) {
+		*statusCalls++
+		if rereadErr != nil {
+			return nil, rereadErr
+		}
+		return reread, nil
+	}
+	return requests, statusCalls
+}
+
+func acceptedAgreement(id, version string) asc.WebAgreement {
+	return asc.WebAgreement{
+		AgreementID:   id,
+		Title:         "Agreement " + id,
+		Status:        "active",
+		Version:       version,
+		Pending:       false,
+		DateEffective: "2026-08-14T09:38:53Z",
+		DateAccepted:  "2026-08-19T16:56:47Z",
+	}
+}
+
 func TestWebAgreementsAcceptValidationErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -41,10 +85,14 @@ func TestWebAgreementsAcceptValidationErrors(t *testing.T) {
 	}{
 		{name: "missing agreement id", args: []string{"--confirm"}, wantErr: "--agreement-id is required"},
 		{name: "missing confirm", args: []string{"--agreement-id", "XG8DNV4HYY"}, wantErr: "--confirm is required"},
+		{name: "missing confirm with repeated ids", args: []string{"--agreement-id", "XG8DNV4HYY", "--agreement-id", "AB12CD34EF"}, wantErr: "--confirm is required"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			stubWebAgreementsSession(t)
+			requests, statusCalls := stubWebAgreementsAccept(t, nil, nil)
+
 			cmd := WebAgreementsAcceptCommand()
 			if err := cmd.FlagSet.Parse(tc.args); err != nil {
 				t.Fatalf("parse error: %v", err)
@@ -61,7 +109,162 @@ func TestWebAgreementsAcceptValidationErrors(t *testing.T) {
 			if !strings.Contains(stderr, tc.wantErr) {
 				t.Fatalf("expected stderr to contain %q, got %q", tc.wantErr, stderr)
 			}
+			if len(*requests) != 0 || *statusCalls != 0 {
+				t.Fatalf("expected no HTTP before validation passes, got accept=%d status=%d", len(*requests), *statusCalls)
+			}
 		})
+	}
+}
+
+func TestWebAgreementsAcceptRejectsEmptyAgreementID(t *testing.T) {
+	cmd := WebAgreementsAcceptCommand()
+	cmd.FlagSet.Init(cmd.FlagSet.Name(), flag.ContinueOnError)
+	cmd.FlagSet.SetOutput(io.Discard)
+	err := cmd.FlagSet.Parse([]string{"--agreement-id", "  ", "--confirm"})
+	if err == nil || !strings.Contains(err.Error(), "cannot be empty") {
+		t.Fatalf("expected empty --agreement-id parse error, got %v", err)
+	}
+}
+
+func TestWebAgreementsAcceptRepeatedAgreementIDsSendSingleRequest(t *testing.T) {
+	stubWebAgreementsSession(t)
+	requests, statusCalls := stubWebAgreementsAccept(t, &asc.WebAgreementsStatusResult{
+		TeamID:  "TEAM123456",
+		Pending: false,
+		Agreements: []asc.WebAgreement{
+			acceptedAgreement("XG8DNV4HYY", "5031"),
+			acceptedAgreement("AB12CD34EF", "12"),
+			acceptedAgreement("UNRELATED01", "3"),
+		},
+	}, nil)
+
+	cmd := WebAgreementsAcceptCommand()
+	args := []string{"--agreement-id", "XG8DNV4HYY", "--agreement-id", "AB12CD34EF", "--agreement-id", "XG8DNV4HYY", "--confirm", "--output", "json"}
+	if err := cmd.FlagSet.Parse(args); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("Exec() error: %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	if len(*requests) != 1 {
+		t.Fatalf("accept requests = %d, want exactly one request carrying every ID", len(*requests))
+	}
+	if got := (*requests)[0].AgreementIDs; len(got) != 2 || got[0] != "XG8DNV4HYY" || got[1] != "AB12CD34EF" {
+		t.Fatalf("accept request agreement IDs = %v, want deduplicated [XG8DNV4HYY AB12CD34EF]", got)
+	}
+	if *statusCalls != 1 {
+		t.Fatalf("status re-read calls = %d, want 1", *statusCalls)
+	}
+
+	var payload struct {
+		TeamID       string   `json:"teamId"`
+		AgreementIDs []string `json:"agreementIds"`
+		Status       string   `json:"status"`
+		Verified     bool     `json:"verified"`
+		Agreements   []struct {
+			AgreementID  string `json:"agreementId"`
+			Pending      bool   `json:"pending"`
+			DateAccepted string `json:"dateAccepted"`
+		} `json:"agreements"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("unmarshal stdout %q: %v", stdout, err)
+	}
+	if payload.Status != "accepted" || payload.TeamID != "TEAM123456" || !payload.Verified {
+		t.Fatalf("payload = %+v, want verified accepted receipt", payload)
+	}
+	if len(payload.Agreements) != 2 || payload.Agreements[0].AgreementID != "XG8DNV4HYY" || payload.Agreements[1].AgreementID != "AB12CD34EF" {
+		t.Fatalf("receipt agreements = %+v, want only the two requested agreements from the re-read", payload.Agreements)
+	}
+	for _, agreement := range payload.Agreements {
+		if agreement.Pending || agreement.DateAccepted == "" {
+			t.Fatalf("receipt agreement %+v should reflect the accepted re-read state", agreement)
+		}
+	}
+}
+
+func TestWebAgreementsAcceptFailsWhenAgreementStillPendingAfterWrite(t *testing.T) {
+	stubWebAgreementsSession(t)
+	stillPending := acceptedAgreement("AB12CD34EF", "12")
+	stillPending.Pending = true
+	stillPending.DateAccepted = ""
+	requests, _ := stubWebAgreementsAccept(t, &asc.WebAgreementsStatusResult{
+		TeamID:     "TEAM123456",
+		Pending:    true,
+		Agreements: []asc.WebAgreement{acceptedAgreement("XG8DNV4HYY", "5031"), stillPending},
+	}, nil)
+
+	cmd := WebAgreementsAcceptCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--agreement-id", "AB12CD34EF", "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var execErr error
+	stdout, _ := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	if execErr == nil || errors.Is(execErr, flag.ErrHelp) {
+		t.Fatalf("Exec() error = %v, want a non-usage failure", execErr)
+	}
+	if !strings.Contains(execErr.Error(), "AB12CD34EF") || !strings.Contains(execErr.Error(), "still pending") {
+		t.Fatalf("Exec() error = %q, want the still-pending agreement ID", execErr)
+	}
+	if strings.Contains(execErr.Error(), "XG8DNV4HYY") {
+		t.Fatalf("Exec() error = %q, should not list the verified agreement as pending", execErr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected no receipt on stdout, got %q", stdout)
+	}
+	if len(*requests) != 1 {
+		t.Fatalf("accept requests = %d, want 1", len(*requests))
+	}
+}
+
+func TestWebAgreementsAcceptFailsWhenReReadOmitsAgreement(t *testing.T) {
+	stubWebAgreementsSession(t)
+	stubWebAgreementsAccept(t, &asc.WebAgreementsStatusResult{
+		TeamID:     "TEAM123456",
+		Agreements: []asc.WebAgreement{acceptedAgreement("XG8DNV4HYY", "5031")},
+	}, nil)
+
+	cmd := WebAgreementsAcceptCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "MISSING0001", "--confirm"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var execErr error
+	stdout, _ := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	if execErr == nil || !strings.Contains(execErr.Error(), "MISSING0001") || !strings.Contains(execErr.Error(), "not present") {
+		t.Fatalf("Exec() error = %v, want missing agreement failure", execErr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected no receipt on stdout, got %q", stdout)
+	}
+}
+
+func TestWebAgreementsAcceptFailsWhenVerificationReadFails(t *testing.T) {
+	stubWebAgreementsSession(t)
+	stubWebAgreementsAccept(t, nil, errors.New("portal unavailable"))
+
+	cmd := WebAgreementsAcceptCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--confirm"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var execErr error
+	stdout, _ := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	if execErr == nil || !strings.Contains(execErr.Error(), "portal unavailable") || !strings.Contains(execErr.Error(), "accept request succeeded") {
+		t.Fatalf("Exec() error = %v, want verification failure that reports the write already happened", execErr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected no receipt on stdout, got %q", stdout)
 	}
 }
 
@@ -239,24 +442,10 @@ func TestWebAgreementsStatusPrintsJSON(t *testing.T) {
 
 func TestWebAgreementsAcceptCallsClient(t *testing.T) {
 	stubWebAgreementsSession(t)
-
-	var gotReq webcore.AgreementsAcceptRequest
-	origAccept := acceptAgreementsFn
-	t.Cleanup(func() { acceptAgreementsFn = origAccept })
-	acceptAgreementsFn = func(ctx context.Context, client *webcore.Client, req webcore.AgreementsAcceptRequest) (*asc.WebAgreementsAcceptResult, error) {
-		gotReq = req
-		return &asc.WebAgreementsAcceptResult{
-			TeamID:       "TEAM123456",
-			AgreementIDs: []string{"XG8DNV4HYY"},
-			Status:       "accepted",
-			Agreements: []asc.WebAgreement{{
-				AgreementID:  "XG8DNV4HYY",
-				Version:      "5031",
-				Status:       "active",
-				DateAccepted: "2026-08-19T16:56:47Z",
-			}},
-		}, nil
-	}
+	requests, statusCalls := stubWebAgreementsAccept(t, &asc.WebAgreementsStatusResult{
+		TeamID:     "TEAM123456",
+		Agreements: []asc.WebAgreement{acceptedAgreement("XG8DNV4HYY", "5031")},
+	}, nil)
 
 	cmd := WebAgreementsAcceptCommand()
 	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--confirm", "--output", "json"}); err != nil {
@@ -268,19 +457,46 @@ func TestWebAgreementsAcceptCallsClient(t *testing.T) {
 		}
 	})
 
-	if len(gotReq.AgreementIDs) != 1 || gotReq.AgreementIDs[0] != "XG8DNV4HYY" {
-		t.Fatalf("accept request = %+v, want agreement XG8DNV4HYY", gotReq)
+	if len(*requests) != 1 || len((*requests)[0].AgreementIDs) != 1 || (*requests)[0].AgreementIDs[0] != "XG8DNV4HYY" {
+		t.Fatalf("accept requests = %+v, want one request for agreement XG8DNV4HYY", *requests)
+	}
+	if *statusCalls != 1 {
+		t.Fatalf("status re-read calls = %d, want 1", *statusCalls)
 	}
 
 	var payload struct {
 		TeamID       string   `json:"teamId"`
 		AgreementIDs []string `json:"agreementIds"`
 		Status       string   `json:"status"`
+		Verified     bool     `json:"verified"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("unmarshal stdout %q: %v", stdout, err)
 	}
-	if payload.Status != "accepted" || payload.TeamID != "TEAM123456" || len(payload.AgreementIDs) != 1 {
-		t.Fatalf("payload = %+v, want accepted receipt", payload)
+	if payload.Status != "accepted" || payload.TeamID != "TEAM123456" || len(payload.AgreementIDs) != 1 || !payload.Verified {
+		t.Fatalf("payload = %+v, want verified accepted receipt", payload)
+	}
+}
+
+func TestWebAgreementsAcceptTableOutputShowsVerification(t *testing.T) {
+	stubWebAgreementsSession(t)
+	stubWebAgreementsAccept(t, &asc.WebAgreementsStatusResult{
+		TeamID:     "TEAM123456",
+		Agreements: []asc.WebAgreement{acceptedAgreement("XG8DNV4HYY", "5031"), acceptedAgreement("AB12CD34EF", "12")},
+	}, nil)
+
+	cmd := WebAgreementsAcceptCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--agreement-id", "AB12CD34EF", "--confirm", "--output", "table"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	stdout, _ := captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("Exec() error: %v", err)
+		}
+	})
+	for _, want := range []string{"Verified", "XG8DNV4HYY, AB12CD34EF", "accepted", "true", "2026-08-19T16:56:47Z"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("table output missing %q: %q", want, stdout)
+		}
 	}
 }

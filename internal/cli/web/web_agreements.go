@@ -118,33 +118,41 @@ Example:
 	}
 }
 
-// WebAgreementsAcceptCommand accepts a pending program agreement.
+// WebAgreementsAcceptCommand accepts one or more pending program agreements.
 func WebAgreementsAcceptCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web agreements accept", flag.ExitOnError)
 
-	agreementID := fs.String("agreement-id", "", "[experimental] Developer Portal agreement ID to accept (from `asc web agreements status`)")
-	confirm := fs.Bool("confirm", false, "[experimental] Confirm accepting the agreement on behalf of the Account Holder")
+	var agreementIDs shared.MultiStringFlag
+	fs.Var(&agreementIDs, "agreement-id", "[experimental] Developer Portal agreement ID to accept (from `asc web agreements status`; repeatable)")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm accepting the agreements on behalf of the Account Holder")
 	authFlags := bindWebSessionFlags(fs)
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "accept",
-		ShortUsage: "asc web agreements accept --agreement-id AGREEMENT_ID --confirm [flags]",
-		ShortHelp:  "[experimental] Accept an Apple Developer Program agreement.",
+		ShortUsage: "asc web agreements accept --agreement-id AGREEMENT_ID [--agreement-id AGREEMENT_ID ...] --confirm [flags]",
+		ShortHelp:  "[experimental] Accept Apple Developer Program agreements.",
 		LongHelp: `WEB SESSION WORKFLOWS
 
 This command is experimental.
 
-Accept an Apple Developer Program agreement, such as an updated Apple
-Developer Program License Agreement, for the web session's team.
+Accept one or more Apple Developer Program agreements, such as an updated
+Apple Developer Program License Agreement, for the web session's team.
+Repeat --agreement-id to accept several agreements in a single request; every
+agreement must be named explicitly.
 
 Accepting an agreement is a legal action. Apple only allows the team's
 Account Holder to accept agreements; sessions for other roles fail with an
 Apple error. Find pending agreement IDs with:
   asc web agreements status
 
-Example:
+After the write, the command re-reads the team's agreement history and fails
+with a non-zero exit when any requested agreement is still pending or missing.
+The receipt reflects that re-read server state.
+
+Examples:
   asc web agreements accept --agreement-id "AGREEMENT_ID" --confirm
+  asc web agreements accept --agreement-id "AGREEMENT_ID" --agreement-id "OTHER_AGREEMENT_ID" --confirm
 
 `,
 		FlagSet:   fs,
@@ -154,9 +162,9 @@ Example:
 				return shared.UsageError("web agreements accept does not accept positional arguments")
 			}
 
-			resolvedAgreementID := strings.TrimSpace(*agreementID)
+			resolvedAgreementIDs := uniqueTrimmedStrings(agreementIDs)
 			switch {
-			case resolvedAgreementID == "":
+			case len(resolvedAgreementIDs) == 0:
 				return shared.UsageError("--agreement-id is required")
 			case !*confirm:
 				return shared.UsageError("--confirm is required")
@@ -171,19 +179,36 @@ Example:
 			}
 			client := newWebClientFn(session)
 
-			var result *asc.WebAgreementsAcceptResult
-			err = withWebSpinner("Accepting Apple Developer Program agreement", func() error {
+			var accepted *asc.WebAgreementsAcceptResult
+			err = withWebSpinner("Accepting Apple Developer Program agreements", func() error {
 				var acceptErr error
-				result, acceptErr = acceptAgreementsFn(requestCtx, client, webcore.AgreementsAcceptRequest{
-					AgreementIDs: []string{resolvedAgreementID},
+				accepted, acceptErr = acceptAgreementsFn(requestCtx, client, webcore.AgreementsAcceptRequest{
+					AgreementIDs: resolvedAgreementIDs,
 				})
 				return acceptErr
 			})
 			if err != nil {
 				return withWebAuthHint(err, "web agreements accept")
 			}
-			if result == nil {
+			if accepted == nil {
 				return fmt.Errorf("web agreements accept failed: missing accept result")
+			}
+
+			var status *asc.WebAgreementsStatusResult
+			err = withWebSpinner("Verifying Apple Developer Program agreement status", func() error {
+				var statusErr error
+				status, statusErr = getAgreementsStatusFn(requestCtx, client)
+				return statusErr
+			})
+			if err != nil {
+				return fmt.Errorf("web agreements accept failed: the accept request succeeded but re-reading agreement status failed; run 'asc web agreements status' to confirm the result: %w", err)
+			}
+			if status == nil {
+				return fmt.Errorf("web agreements accept failed: the accept request succeeded but the agreement status re-read returned no result")
+			}
+			result, err := verifyAcceptedAgreements(accepted.TeamID, resolvedAgreementIDs, status)
+			if err != nil {
+				return fmt.Errorf("web agreements accept failed: %w", err)
 			}
 			// Developer Portal bootstrap can add origin-specific cookies to the
 			// shared jar. Cache them best-effort after the operation succeeds.
@@ -192,4 +217,64 @@ Example:
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+// verifyAcceptedAgreements builds the accept receipt from the re-read agreement
+// history. Every requested agreement must be present and no longer pending.
+func verifyAcceptedAgreements(teamID string, requestedIDs []string, status *asc.WebAgreementsStatusResult) (*asc.WebAgreementsAcceptResult, error) {
+	byID := make(map[string]asc.WebAgreement, len(status.Agreements))
+	for _, agreement := range status.Agreements {
+		byID[agreement.AgreementID] = agreement
+	}
+	if strings.TrimSpace(teamID) == "" {
+		teamID = status.TeamID
+	}
+
+	var missing, pending []string
+	agreements := make([]asc.WebAgreement, 0, len(requestedIDs))
+	for _, id := range requestedIDs {
+		agreement, ok := byID[id]
+		switch {
+		case !ok:
+			missing = append(missing, id)
+		case agreement.Pending:
+			pending = append(pending, id)
+		default:
+			agreements = append(agreements, agreement)
+		}
+	}
+	if len(missing) > 0 || len(pending) > 0 {
+		var problems []string
+		if len(pending) > 0 {
+			problems = append(problems, fmt.Sprintf("agreement(s) %s are still pending after acceptance", strings.Join(pending, ", ")))
+		}
+		if len(missing) > 0 {
+			problems = append(problems, fmt.Sprintf("agreement(s) %s are not present in the team's agreement history", strings.Join(missing, ", ")))
+		}
+		return nil, fmt.Errorf("%s; run 'asc web agreements status' to inspect", strings.Join(problems, "; "))
+	}
+	return &asc.WebAgreementsAcceptResult{
+		TeamID:       teamID,
+		AgreementIDs: requestedIDs,
+		Status:       "accepted",
+		Verified:     true,
+		Agreements:   agreements,
+	}, nil
+}
+
+func uniqueTrimmedStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
