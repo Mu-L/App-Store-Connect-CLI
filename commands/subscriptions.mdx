@@ -719,6 +719,7 @@ Control which territories can purchase your subscriptions.
   The underlying Subscription availability resource is deprecated in App Store
   Connect API 4.4 in favor of Subscription plan availability. These commands
   keep working for now; for plan-based availability use
+  `asc subscriptions pricing plan-availability` or
   `asc subscriptions pricing monthly-commitment`.
 </Note>
 
@@ -754,6 +755,47 @@ asc subscriptions pricing availability available-territories \
   --availability-id "AVAILABILITY_ID" \
   --paginate
 ```
+
+### Plan Availability
+
+`subscriptionPlanAvailabilities` is the App Store Connect API 4.4 replacement
+for the deprecated Subscription availability resource. Each subscription has one
+plan availability per billing plan: `UPFRONT` and `MONTHLY`.
+
+```bash  theme={null}
+asc subscriptions pricing plan-availability show \
+  --subscription-id "SUB_ID"
+
+asc subscriptions pricing plan-availability set \
+  --subscription-id "SUB_ID" \
+  --plan-type UPFRONT \
+  --territories "United States,Canada" \
+  --confirm
+```
+
+`show` prints `GET /v1/subscriptions/{id}/planAvailabilities` with
+`include=availableTerritories`. Apple caps the included linkages at 50 per plan
+availability and reports the real count in the response paging metadata.
+
+`set` is a desired-state write. The complete `--territories` list replaces the
+plan's territories: territories missing from the list are removed and new ones
+are added. Before writing, the CLI reads the plan's current territories through
+`GET /v1/subscriptionPlanAvailabilities/{id}/relationships/availableTerritories`
+and reports the diff; when the plan already matches the request it makes no
+write and reports `changed: false`. After writing it re-reads the territories and
+fails if they do not match the request.
+
+**Flags:**
+
+* `--plan-type` - Required: `UPFRONT` or `MONTHLY`
+* `--territories` - Required: the complete desired territory list
+* `--available-in-new-territories` - `UPFRONT` plans only
+* `--confirm` - Required, because the write can remove territories
+
+Emptying availability is rejected; removing a subscription from sale runs
+through `asc web subscriptions availability remove-from-sale`. USA and Singapore
+are removed from `MONTHLY` requests with a warning because Apple excludes those
+storefronts.
 
 ### Monthly With 12-Month Commitment
 

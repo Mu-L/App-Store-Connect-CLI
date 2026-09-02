@@ -246,3 +246,40 @@ func TestAdjustFilteredPagingMetadata(t *testing.T) {
 		t.Fatalf("expected unchanged metadata without total, got %d", got)
 	}
 }
+
+func TestGetSubscriptionPlanAvailabilitiesForSubscriptionIncludesAvailableTerritories(t *testing.T) {
+	client := newTestClient(t, func(req *http.Request) {
+		if got := req.URL.Query().Get("include"); got != "availableTerritories" {
+			t.Fatalf("expected include=availableTerritories, got %q", got)
+		}
+		if got := req.URL.Query().Get("limit[availableTerritories]"); got != "50" {
+			t.Fatalf("expected limit[availableTerritories]=50, got %q", got)
+		}
+	}, jsonResponse(http.StatusOK, `{"data":[],"included":[]}`))
+
+	if _, err := client.GetSubscriptionPlanAvailabilitiesForSubscription(
+		context.Background(),
+		"sub-1",
+		WithSubscriptionPlanAvailabilitiesIncludeAvailableTerritories(),
+	); err != nil {
+		t.Fatalf("GetSubscriptionPlanAvailabilitiesForSubscription() error: %v", err)
+	}
+}
+
+func TestGetSubscriptionPlanAvailabilitiesForSubscriptionIgnoresIncludeWithNextURL(t *testing.T) {
+	next := "https://api.appstoreconnect.apple.com/v1/subscriptions/sub-1/planAvailabilities?cursor=next"
+	client := newTestClient(t, func(req *http.Request) {
+		if req.URL.String() != next {
+			t.Fatalf("expected the next URL to be used verbatim, got %q", req.URL.String())
+		}
+	}, jsonResponse(http.StatusOK, `{"data":[]}`))
+
+	if _, err := client.GetSubscriptionPlanAvailabilitiesForSubscription(
+		context.Background(),
+		"sub-1",
+		WithSubscriptionPlanAvailabilitiesNextURL(next),
+		WithSubscriptionPlanAvailabilitiesIncludeAvailableTerritories(),
+	); err != nil {
+		t.Fatalf("GetSubscriptionPlanAvailabilitiesForSubscription() error: %v", err)
+	}
+}

@@ -134,6 +134,13 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - App Store Connect API 4.4.1 adds `/v1/subscriptionPricePoints/{id}/adjustedEqualizations`. Although OpenAPI models `filter[planType]` as an unconstrained string array, the live endpoint rejects `UPFRONT` and reports `MONTHLY` as the only supported value.
 - Monthly commitment remains unavailable in the United States and Singapore; the CLI removes `USA` and `SGP` from requested monthly-commitment territories before writing plan availability.
 
+## Subscription Plan Availability
+
+- Reading: `GET /v1/subscriptions/{id}/planAvailabilities` accepts `include=availableTerritories`, but `limit[availableTerritories]` is capped at 50 while a plan can be available in every storefront. The complete set comes from `GET /v1/subscriptionPlanAvailabilities/{id}/relationships/availableTerritories`, whose `limit` maximum is 200 with cursor pagination.
+- Writing: `PATCH /v1/subscriptionPlanAvailabilities/{id}` replaces the `availableTerritories` linkage array wholesale, so the request body must carry the complete desired territory set, not a delta. `SubscriptionPlanAvailabilityUpdateRequest` accepts only `availableInNewTerritories` as a mutable attribute; `planType` is create-only through `POST /v1/subscriptionPlanAvailabilities`.
+- Apple's internal web (iris) API uses the same resource, path shape, and PATCH body; `asc web subscriptions availability remove-from-sale` uses it only because emptying `availableTerritories` removes an approved subscription from sale, which Apple restricts to the Account Holder. Everything else about plan availability is available through the public API, so `asc subscriptions pricing plan-availability show|set` uses the public endpoints.
+- `availableInNewTerritories` is not supported for `MONTHLY` plan availability.
+
 ## Pass Type IDs
 
 - Live API rejects `include=passTypeId` and `fields[passTypeIds]` on `/v1/passTypeIds/{id}/certificates` despite the OpenAPI spec allowing them.
