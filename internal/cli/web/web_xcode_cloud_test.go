@@ -191,6 +191,11 @@ func TestWebXcodeCloudSubcommandsResolveSessionWithinTimeoutContext(t *testing.T
 			args:  []string{"--apple-id", "user@example.com"},
 		},
 		{
+			name:  "workflows list",
+			build: webXcodeCloudWorkflowListCommand,
+			args:  []string{"--apple-id", "user@example.com", "--product-id", "prod-123"},
+		},
+		{
 			name:  "workflows describe",
 			build: webXcodeCloudWorkflowDescribeCommand,
 			args:  []string{"--apple-id", "user@example.com", "--product-id", "prod-123", "--workflow-id", "wf-123"},
