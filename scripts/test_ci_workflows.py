@@ -196,9 +196,16 @@ def matrix_command_for_runner(job: str, runner: str) -> str:
     if command_at < 0 or (0 <= next_runner < command_at):
         return ""
     command = rest[command_at:]
-    next_entry = command.find("\n          - name:")
-    if next_entry >= 0:
-        command = command[:next_entry]
+    bounds = [
+        index
+        for index in (
+            command.find("\n          - name:"),
+            command.find("\n    steps:"),
+        )
+        if index >= 0
+    ]
+    if bounds:
+        command = command[: min(bounds)]
     return command
 
 
@@ -327,16 +334,22 @@ def assert_optimized_workflow_rejects_weakened_checks() -> None:
                 continue
             raise AssertionError(f"{path}: guard accepts CI with {command!r} removed")
 
-        macos_only_removed = workflow.replace(
-            "              ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/rootfs\n",
-            "",
-            1,
-        )
-        try:
-            assert_optimized_workflow_text(path, macos_only_removed, test_job)
-        except AssertionError:
-            continue
-        raise AssertionError(f"{path}: guard accepts CI with ./internal/rootfs removed from macOS only")
+        rootfs_command = "              ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/rootfs\n"
+        windows_only_removed = workflow
+        last = workflow.rfind(rootfs_command)
+        if last >= 0:
+            windows_only_removed = workflow[:last] + workflow[last + len(rootfs_command) :]
+        for runner, weakened in (
+            ("macOS", workflow.replace(rootfs_command, "", 1)),
+            ("Windows", windows_only_removed),
+        ):
+            try:
+                assert_optimized_workflow_text(path, weakened, test_job)
+            except AssertionError:
+                continue
+            raise AssertionError(
+                f"{path}: guard accepts CI with ./internal/rootfs removed from {runner} only"
+            )
 
 
 def run_security_target(path: str) -> subprocess.CompletedProcess[str]:
