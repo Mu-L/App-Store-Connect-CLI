@@ -32,6 +32,9 @@ var (
 	getWebAPIKeyFn = func(ctx context.Context, client *webcore.Client, keyID string) (*webcore.APIKey, error) {
 		return client.GetAPIKey(ctx, keyID)
 	}
+	listWebAPIKeysFn = func(ctx context.Context, client *webcore.Client) ([]webcore.APIKeyListItem, error) {
+		return client.ListAPIKeys(ctx)
+	}
 	waitWebAPIKeyRetryFn = waitForWebAPIKeyRetry
 )
 
@@ -59,15 +62,195 @@ func WebAPIKeysCommand() *ffcli.Command {
 
 Manage App Store Connect API keys using a cached Apple Account web session.
 
+Examples:
+  asc web api-keys list --output json
+  asc web api-keys view --key-id KEY_ID
+  asc web api-keys create --name "Release automation"
+
 `,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
+			WebAPIKeysListCommand(),
+			WebAPIKeysViewCommand(),
 			WebAPIKeysCreateCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp
 		},
+	}
+}
+
+// WebAPIKeysListCommand lists team and individual API keys visible to the web session.
+func WebAPIKeysListCommand() *ffcli.Command {
+	fs := flag.NewFlagSet("web api-keys list", flag.ExitOnError)
+
+	authFlags := bindWebSessionFlags(fs)
+	output := shared.BindOutputFlags(fs)
+
+	return &ffcli.Command{
+		Name:       "list",
+		ShortUsage: "asc web api-keys list [flags]",
+		ShortHelp:  "List App Store Connect API keys via a web session.",
+		LongHelp: `WEB SESSION WORKFLOWS
+
+List team and individual App Store Connect API keys visible to the cached Apple
+Account web session. Output includes key ID, name, kind, roles, and active
+state. Creation date is omitted because the existing key-list readers do not
+expose it. Key material is never printed. Individual keys may have empty roles
+on this list; use "asc web auth capabilities --key-id" to resolve actor-backed
+roles for one key.
+
+The underlying readers already follow every pagination link, so this command
+always returns the complete visible set and does not accept --paginate.
+
+Examples:
+  asc web api-keys list
+  asc web api-keys list --output json
+
+`,
+		FlagSet:   fs,
+		UsageFunc: shared.DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 {
+				return shared.UsageError("web api-keys list does not accept positional arguments")
+			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageError(err.Error())
+			}
+
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
+			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
+			if err != nil {
+				return err
+			}
+			client := newWebAPIKeyClientFn(session)
+
+			var keys []webcore.APIKeyListItem
+			err = withWebSpinner("Loading App Store Connect API keys", func() error {
+				var listErr error
+				keys, listErr = listWebAPIKeysFn(requestCtx, client)
+				return listErr
+			})
+			if err != nil {
+				return withWebAuthHint(err, "web api-keys list")
+			}
+			if keys == nil {
+				keys = []webcore.APIKeyListItem{}
+			}
+
+			result := &asc.WebAPIKeysListResult{Keys: make([]asc.WebAPIKeyListItem, 0, len(keys))}
+			for _, key := range keys {
+				result.Keys = append(result.Keys, webAPIKeyListItemFromClient(key))
+			}
+			return shared.PrintOutput(result, *output.Output, *output.Pretty)
+		},
+	}
+}
+
+// WebAPIKeysViewCommand inspects one team API key by ID.
+func WebAPIKeysViewCommand() *ffcli.Command {
+	fs := flag.NewFlagSet("web api-keys view", flag.ExitOnError)
+
+	keyID := fs.String("key-id", "", "API key ID")
+	authFlags := bindWebSessionFlags(fs)
+	output := shared.BindOutputFlags(fs)
+
+	return &ffcli.Command{
+		Name:       "view",
+		ShortUsage: "asc web api-keys view --key-id KEY_ID [flags]",
+		ShortHelp:  "View one App Store Connect API key via a web session.",
+		LongHelp: `WEB SESSION WORKFLOWS
+
+Inspect one team API key by ID using the iris v1 key resource. Output includes
+key ID, name, issuer ID, roles, and active state. Creation date is omitted
+because the existing GetAPIKey reader does not expose it. Key material is never
+printed.
+
+Individual keys appear in "asc web api-keys list" but are not loaded by this
+command.
+
+Examples:
+  asc web api-keys view --key-id KEY_ID
+  asc web api-keys view --key-id KEY_ID --output json
+
+`,
+		FlagSet:   fs,
+		UsageFunc: shared.DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 {
+				return shared.UsageError("web api-keys view does not accept positional arguments")
+			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageError(err.Error())
+			}
+			keyIDValue := strings.TrimSpace(*keyID)
+			if keyIDValue == "" {
+				return shared.UsageError("--key-id is required")
+			}
+
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
+			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
+			if err != nil {
+				return err
+			}
+			client := newWebAPIKeyClientFn(session)
+
+			var details *webcore.APIKey
+			err = withWebSpinner("Loading App Store Connect API key", func() error {
+				var getErr error
+				details, getErr = getWebAPIKeyFn(requestCtx, client, keyIDValue)
+				return getErr
+			})
+			if err != nil {
+				return withWebAuthHint(err, "web api-keys view")
+			}
+			if details == nil {
+				return fmt.Errorf("web api-keys view failed: response did not include a key")
+			}
+
+			result := webAPIKeyGetResultFromClient(details)
+			return shared.PrintOutput(result, *output.Output, *output.Pretty)
+		},
+	}
+}
+
+func webAPIKeyListItemFromClient(key webcore.APIKeyListItem) asc.WebAPIKeyListItem {
+	item := asc.WebAPIKeyListItem{
+		KeyID:    key.KeyID,
+		Name:     key.Name,
+		Kind:     key.Kind,
+		Roles:    append([]string(nil), key.Roles...),
+		Active:   key.Active,
+		KeyType:  key.KeyType,
+		LastUsed: key.LastUsed,
+	}
+	if key.GeneratedBy != nil {
+		item.GeneratedBy = &asc.WebAPIKeyActor{ID: key.GeneratedBy.ID, Name: key.GeneratedBy.Name}
+	}
+	if key.RevokedBy != nil {
+		item.RevokedBy = &asc.WebAPIKeyActor{ID: key.RevokedBy.ID, Name: key.RevokedBy.Name}
+	}
+	return item
+}
+
+func webAPIKeyGetResultFromClient(key *webcore.APIKey) *asc.WebAPIKeyGetResult {
+	if key == nil {
+		return &asc.WebAPIKeyGetResult{}
+	}
+	return &asc.WebAPIKeyGetResult{
+		KeyID:          key.KeyID,
+		Name:           key.Name,
+		IssuerID:       key.IssuerID,
+		Roles:          append([]string(nil), key.Roles...),
+		Active:         key.Active,
+		AllAppsVisible: key.AllAppsVisible,
+		CanDownload:    key.CanDownload,
+		KeyType:        key.KeyType,
+		LastUsed:       key.LastUsed,
+		RevokingDate:   key.RevokingDate,
 	}
 }
 
