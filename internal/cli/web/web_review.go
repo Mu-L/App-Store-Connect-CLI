@@ -737,6 +737,26 @@ func redactAttachmentURLs(attachments []webcore.ReviewAttachment) []webcore.Revi
 	return redacted
 }
 
+// webReviewDraftMessagesTimeout bounds the whole sequential draft-reading
+// phase of "web review threads --drafts". Each draft is one request and the
+// web client paces requests by its minimum request interval, so an app with
+// many threads needs an operation-sized budget instead of the single-request
+// default. An explicit ASC_TIMEOUT still wins.
+const webReviewDraftMessagesTimeout = 10 * time.Minute
+
+// reviewDraftMessagesContext returns the operation-sized context used for the
+// per-thread draft reads.
+func reviewDraftMessagesContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return shared.ContextWithResolvedTimeout(shared.ContextWithoutTimeout(ctx), webReviewDraftMessagesTimeout)
+}
+
+// reviewAppThreadsContext returns an independently bounded context for the
+// best-effort app-scoped thread lookup, so time spent there cannot expire the
+// budget the essential review requests rely on.
+func reviewAppThreadsContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return shared.ContextWithTimeout(shared.ContextWithoutTimeout(ctx))
+}
+
 // loadAppThreads reads every resolution center thread on an app. The app-scoped
 // relationship is an undocumented web-session surface, so a failure downgrades
 // to a warning instead of failing the whole command: the submission-scoped
@@ -1046,9 +1066,10 @@ are never returned because this surface is read-only.
 				entries = append(entries, reviewThreadEntry{Thread: thread})
 			}
 			if *drafts {
+				draftCtx, cancelDrafts := reviewDraftMessagesContext(ctx)
 				err = withWebSpinner("Loading resolution center draft messages", func() error {
 					for index := range entries {
-						draft, err := client.GetResolutionCenterDraftMessage(requestCtx, entries[index].Thread.ID, *plainText)
+						draft, err := client.GetResolutionCenterDraftMessage(draftCtx, entries[index].Thread.ID, *plainText)
 						if err != nil {
 							return err
 						}
@@ -1056,6 +1077,7 @@ are never returned because this surface is read-only.
 					}
 					return nil
 				})
+				cancelDrafts()
 				if err != nil {
 					return withWebAuthHint(err, "web review threads")
 				}
@@ -1143,8 +1165,10 @@ Selection:
 			if err != nil {
 				return err
 			}
-			appThreads, appThreadsWarning := loadAppThreads(requestCtx, client, trimmedAppID)
 			if selectedSubmission == nil {
+				appThreadsCtx, cancelAppThreads := reviewAppThreadsContext(ctx)
+				appThreads, appThreadsWarning := loadAppThreads(appThreadsCtx, client, trimmedAppID)
+				cancelAppThreads()
 				payload := reviewShowOutput{
 					AppID:             trimmedAppID,
 					Selection:         selection,
@@ -1203,6 +1227,10 @@ Selection:
 			if err != nil {
 				return err
 			}
+
+			appThreadsCtx, cancelAppThreads := reviewAppThreadsContext(ctx)
+			appThreads, appThreadsWarning := loadAppThreads(appThreadsCtx, client, trimmedAppID)
+			cancelAppThreads()
 
 			payload := reviewShowOutput{
 				AppID:             trimmedAppID,

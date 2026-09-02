@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
@@ -434,5 +436,80 @@ func TestWebReviewThreadsRendersMarkdownAndEmptyResults(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected an empty list, got %s", emptyStdout)
+	}
+}
+
+func TestWebReviewShowLoadsAppThreadsAfterEssentialRequests(t *testing.T) {
+	requested := stubWebReviewSession(t, map[string]string{
+		"/iris/v1/apps/app-1/reviewSubmissions":                                `{"data": [{"id": "sub-1", "type": "reviewSubmissions", "attributes": {"state": "COMPLETE", "submittedDate": "2026-02-25T00:00:00Z"}}]}`,
+		"/iris/v1/reviewSubmissions/sub-1/items":                               `{"data": []}`,
+		"/iris/v1/resolutionCenterThreads":                                     `{"data": [{"id": "thread-sub", "type": "resolutionCenterThreads", "attributes": {"state": "OPEN"}, "relationships": {"reviewSubmission": {"data": {"type": "reviewSubmissions", "id": "sub-1"}}}}]}`,
+		"/iris/v1/resolutionCenterThreads/thread-sub/resolutionCenterMessages": `{"data": []}`,
+		"/iris/v1/reviewRejections":                                            `{"data": []}`,
+		"/iris/v1/apps/app-1/resolutionCenterThreads":                          reviewThreadsAppFixture,
+	})
+
+	cmd := WebReviewShowCommand()
+	if err := cmd.FlagSet.Parse([]string{"--app", "app-1", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	runWebReviewCommand(t, func() error { return cmd.Exec(context.Background(), nil) })
+
+	appThreadsIndex, essentialIndex := -1, -1
+	for index, path := range *requested {
+		switch path {
+		case "/iris/v1/apps/app-1/resolutionCenterThreads":
+			if appThreadsIndex < 0 {
+				appThreadsIndex = index
+			}
+		case "/iris/v1/resolutionCenterThreads/thread-sub/resolutionCenterMessages":
+			essentialIndex = index
+		}
+	}
+	if appThreadsIndex < 0 || essentialIndex < 0 {
+		t.Fatalf("expected both the essential and the app-scoped requests: %v", *requested)
+	}
+	if appThreadsIndex < essentialIndex {
+		t.Fatalf("the best-effort app-scoped lookup must run after the essential submission requests so a hang there cannot expire their budget: %v", *requested)
+	}
+}
+
+func TestReviewDraftMessagesContextGetsOperationSizedBudget(t *testing.T) {
+	t.Setenv("ASC_TIMEOUT", "")
+
+	requestCtx, cancelRequest := shared.ContextWithTimeout(context.Background())
+	draftCtx, cancelDrafts := reviewDraftMessagesContext(requestCtx)
+	defer cancelDrafts()
+	cancelRequest()
+
+	if err := draftCtx.Err(); err != nil {
+		t.Fatalf("draft reads must outlive the single-request command budget: %v", err)
+	}
+	deadline, ok := draftCtx.Deadline()
+	if !ok {
+		t.Fatal("draft reads must stay bounded")
+	}
+	if remaining := time.Until(deadline); remaining <= asc.DefaultTimeout {
+		t.Fatalf("draft reads are paced one per request interval and need more than the %s single-request budget, got %s", asc.DefaultTimeout, remaining)
+	}
+}
+
+func TestReviewAppThreadsContextIsIndependentOfRequestBudget(t *testing.T) {
+	t.Setenv("ASC_TIMEOUT", "")
+
+	requestCtx, cancelRequest := shared.ContextWithTimeout(context.Background())
+	appThreadsCtx, cancelAppThreads := reviewAppThreadsContext(requestCtx)
+	defer cancelAppThreads()
+	cancelRequest()
+
+	if err := appThreadsCtx.Err(); err != nil {
+		t.Fatalf("the best-effort lookup must not inherit an already spent budget: %v", err)
+	}
+	deadline, ok := appThreadsCtx.Deadline()
+	if !ok {
+		t.Fatal("the best-effort lookup must stay bounded")
+	}
+	if remaining := time.Until(deadline); remaining <= 0 {
+		t.Fatalf("expected a fresh budget, got %s", remaining)
 	}
 }
