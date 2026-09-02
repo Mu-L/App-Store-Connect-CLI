@@ -232,7 +232,9 @@ resolution but does not mutate App Store Connect.
 			}
 			result.PricesCreated = true
 			result.CompletedStage = asc.WebMonthlyCommitmentStagePrices
-			if verifyErr := verifyMonthlyCommitmentBootstrap(requestCtx, client, result); verifyErr != nil {
+			verifyCtx, verifyCancel := shared.ContextWithTimeout(ctx)
+			defer verifyCancel()
+			if verifyErr := verifyMonthlyCommitmentBootstrap(verifyCtx, client, result); verifyErr != nil {
 				result.Failure = verifyErr.Error()
 				return printMonthlyCommitmentBootstrapReceipt(result, *output.Output, *output.Pretty, verifyErr)
 			}
@@ -353,7 +355,7 @@ func verifyMonthlyCommitmentBootstrap(ctx context.Context, client *webcore.Clien
 	if strings.TrimSpace(result.PlanAvailabilityID) != "" && !strings.EqualFold(strings.TrimSpace(monthlyAvailability.ID), strings.TrimSpace(result.PlanAvailabilityID)) {
 		return fmt.Errorf("MONTHLY plan availability %q does not match written id %q", monthlyAvailability.ID, result.PlanAvailabilityID)
 	}
-	if !monthlyAvailability.AvailableTerritoriesLoaded || !containsTerritory(monthlyAvailability.AvailableTerritories, result.Territory) {
+	if availabilityExcludesTerritory(monthlyAvailability, result.Territory) {
 		return fmt.Errorf("MONTHLY plan availability %q does not include %s after write", monthlyAvailability.ID, result.Territory)
 	}
 
