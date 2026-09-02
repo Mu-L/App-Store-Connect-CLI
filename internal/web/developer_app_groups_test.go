@@ -518,25 +518,33 @@ func TestDeleteDeveloperAppGroupFailsWhenGroupStillListedAfterDelete(t *testing.
 }
 
 func TestDeleteDeveloperAppGroupFailsWhenVerificationListIsMalformed(t *testing.T) {
-	for name, body := range map[string]string{
-		"missing collection": `{"resultCode":0}`,
-		"null collection":    `{"resultCode":0,"applicationGroupList":null}`,
+	other := `{"name":"Group OTHER","prefix":"TEAM123456","identifier":"group.com.example.OTHER","status":"current","applicationGroup":"OTHER"}`
+	for name, pages := range map[string][]string{
+		"missing collection":         {`{"resultCode":0}`},
+		"null collection":            {`{"resultCode":0,"applicationGroupList":null}`},
+		"missing totalRecords":       {`{"resultCode":0,"pageNumber":1,"pageSize":500,"applicationGroupList":[` + other + `]}`},
+		"null totalRecords":          {`{"resultCode":0,"pageNumber":1,"pageSize":500,"totalRecords":null,"applicationGroupList":[` + other + `]}`},
+		"underreported totalRecords": {`{"resultCode":0,"pageNumber":1,"pageSize":500,"totalRecords":0,"applicationGroupList":[` + other + `]}`},
+		"empty page before totalRecords is reached": {
+			`{"resultCode":0,"pageNumber":1,"pageSize":500,"totalRecords":2,"applicationGroupList":[` + other + `]}`,
+			`{"resultCode":0,"pageNumber":2,"pageSize":500,"totalRecords":2,"applicationGroupList":[]}`,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
-				switch requestNumber {
-				case 1:
+				switch {
+				case requestNumber == 1:
 					return assertDeveloperPortalBootstrap(t, request), nil
-				case 2:
+				case requestNumber == 2:
 					return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), nil), nil
-				case 3:
+				case requestNumber == 3:
 					return developerPortalTestResponse(http.StatusOK, `{"data":[],"included":[]}`, nil), nil
-				case 4:
+				case requestNumber == 4:
 					return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
-				case 5:
+				case requestNumber == 5:
 					return developerPortalTestResponse(http.StatusOK, `{"resultCode":0}`, nil), nil
-				case 6:
-					return developerPortalTestResponse(http.StatusOK, body, nil), nil
+				case requestNumber-6 < len(pages):
+					return developerPortalTestResponse(http.StatusOK, pages[requestNumber-6], nil), nil
 				default:
 					t.Fatalf("unexpected request %d", requestNumber)
 					return nil, nil
@@ -544,10 +552,36 @@ func TestDeleteDeveloperAppGroupFailsWhenVerificationListIsMalformed(t *testing.
 			})
 
 			result, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
-			if err == nil || !strings.Contains(err.Error(), "verification failed") {
-				t.Fatalf("expected verification failure, got result=%+v err=%v", result, err)
+			var unverified *DeveloperAppGroupUnverifiedError
+			if !errors.As(err, &unverified) || !strings.Contains(err.Error(), "verification failed") {
+				t.Fatalf("expected unverified verification failure, got result=%+v err=%v", result, err)
 			}
 		})
+	}
+}
+
+func TestDeleteDeveloperAppGroupTreatsMalformedAcceptedResponseAsUnverified(t *testing.T) {
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), nil), nil
+		case 3:
+			return developerPortalTestResponse(http.StatusOK, `{"data":[],"included":[]}`, nil), nil
+		case 4:
+			return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+		case 5:
+			return developerPortalTestResponse(http.StatusOK, `<html>maintenance</html>`, nil), nil
+		default:
+			t.Fatalf("malformed accepted delete response must not lead to request %d", requestNumber)
+			return nil, nil
+		}
+	})
+	result, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
+	var unverified *DeveloperAppGroupUnverifiedError
+	if !errors.As(err, &unverified) || !strings.Contains(err.Error(), "could not be parsed") {
+		t.Fatalf("expected unverified parse error, got result=%+v err=%v", result, err)
 	}
 }
 
@@ -836,6 +870,13 @@ func TestAppGroupMutationsFailClosedWhenCapabilityGraphIsUnreadable(t *testing.T
 		"empty capability reference id": `{
 			"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":""}]}}},
 			"included":[]
+		}`,
+		"conflicting duplicate capability resources": `{
+			"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}},
+			"included":[
+				{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[{"type":"appGroups","id":"GROUP1"},{"type":"appGroups","id":"GROUP2"}]}}},
+				{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[{"type":"appGroups","id":"GROUP1"}]}}}
+			]
 		}`,
 		"omitted enabled on APP_GROUPS capability": `{
 			"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}},

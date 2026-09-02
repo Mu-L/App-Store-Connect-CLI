@@ -178,7 +178,7 @@ type developerAppGroupsListResponse struct {
 	developerPortalLegacyResponse
 	PageNumber           int                        `json:"pageNumber"`
 	PageSize             int                        `json:"pageSize"`
-	TotalRecords         int                        `json:"totalRecords"`
+	TotalRecords         *int                       `json:"totalRecords"`
 	ApplicationGroupList []developerAppGroupPayload `json:"applicationGroupList"`
 }
 
@@ -200,9 +200,10 @@ func (c *Client) ListDeveloperAppGroups(ctx context.Context, options DeveloperAp
 }
 
 // listDeveloperAppGroupPages reads the team's App Groups. With requireCollection
-// set, a success envelope whose applicationGroupList is absent or null is an
-// error instead of an empty team; the delete path needs that to stay
-// fail-closed while the list command keeps tolerating a sparse envelope.
+// set, a success envelope whose applicationGroupList is absent or null, or whose
+// totalRecords is absent, null, or inconsistent with the records returned, is an
+// error instead of a short team; the delete path needs that to stay fail-closed
+// while the list command keeps tolerating a sparse envelope.
 func (c *Client) listDeveloperAppGroupPages(ctx context.Context, teamID string, paginate bool, requireCollection bool) (*DeveloperAppGroupsListResult, error) {
 	result := &DeveloperAppGroupsListResult{Data: []DeveloperAppGroup{}}
 	for pageNumber := 1; ; pageNumber++ {
@@ -226,6 +227,9 @@ func (c *Client) listDeveloperAppGroupPages(ctx context.Context, teamID string, 
 		if requireCollection && page.ApplicationGroupList == nil {
 			return nil, fmt.Errorf("developer portal App Groups response has no applicationGroupList collection")
 		}
+		if requireCollection && page.TotalRecords == nil {
+			return nil, fmt.Errorf("developer portal App Groups response has no totalRecords count")
+		}
 		for _, group := range page.ApplicationGroupList {
 			decoded, err := decodeDeveloperAppGroup(group)
 			if err != nil {
@@ -234,7 +238,22 @@ func (c *Client) listDeveloperAppGroupPages(ctx context.Context, teamID string, 
 			result.Data = append(result.Data, decoded)
 		}
 
-		if !paginate || len(page.ApplicationGroupList) == 0 || page.TotalRecords <= len(result.Data) {
+		totalRecords := 0
+		if page.TotalRecords != nil {
+			totalRecords = *page.TotalRecords
+		}
+		if requireCollection && totalRecords < len(result.Data) {
+			return nil, fmt.Errorf("developer portal App Groups response reported %d total records but returned %d", totalRecords, len(result.Data))
+		}
+		if !paginate || totalRecords <= len(result.Data) {
+			break
+		}
+		if len(page.ApplicationGroupList) == 0 {
+			// The portal announced more records than it delivered; a strict
+			// caller cannot treat this truncated listing as complete.
+			if requireCollection {
+				return nil, fmt.Errorf("developer portal App Groups response reported %d total records but stopped after %d", totalRecords, len(result.Data))
+			}
 			break
 		}
 	}
@@ -286,7 +305,9 @@ func (c *Client) DeleteDeveloperAppGroup(ctx context.Context, request DeveloperA
 	}
 	var response developerPortalLegacyResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("failed to parse Developer Portal App Group delete response: %w", err)
+		// The portal returned success but nothing readable; the group may
+		// already be gone, so a retry is not safe.
+		return nil, &DeveloperAppGroupUnverifiedError{Err: fmt.Errorf("developer portal accepted the delete but its response could not be parsed: %w", err)}
 	}
 	if err := validateDeveloperPortalLegacyResponse(response); err != nil {
 		return nil, err
@@ -349,18 +370,9 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 		if response.Data == nil {
 			return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list response has no data collection")
 		}
-		includedByID := make(map[string]developerResource, len(response.Included))
-		for _, resource := range response.Included {
-			if resource.Type != "bundleIdCapabilities" || strings.TrimSpace(resource.ID) == "" {
-				continue
-			}
-			// Two different representations of the same capability ID would let
-			// whichever one wins hide an assignment, so only identical repeats
-			// are tolerated.
-			if previous, duplicate := includedByID[resource.ID]; duplicate && !reflect.DeepEqual(previous, resource) {
-				return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal returned conflicting representations of capability %q", resource.ID)
-			}
-			includedByID[resource.ID] = resource
+		includedByID, err := indexDeveloperCapabilityResources(response.Included)
+		if err != nil {
+			return nil, fmt.Errorf("cannot determine App Group assignments: %w", err)
 		}
 		for _, bundle := range response.Data {
 			if bundle.Type != "bundleIds" || strings.TrimSpace(bundle.ID) == "" {
@@ -456,6 +468,24 @@ func developerBundleIDReferencesAppGroup(bundle developerResource, includedByID 
 		}
 	}
 	return assignment, false, nil
+}
+
+// indexDeveloperCapabilityResources maps included bundleIdCapabilities
+// resources by ID. Two different representations of the same ID would let
+// whichever one wins hide an assignment, so only identical repeats are
+// tolerated.
+func indexDeveloperCapabilityResources(included []developerResource) (map[string]developerResource, error) {
+	indexed := make(map[string]developerResource, len(included))
+	for _, resource := range included {
+		if resource.Type != "bundleIdCapabilities" || strings.TrimSpace(resource.ID) == "" {
+			continue
+		}
+		if previous, duplicate := indexed[resource.ID]; duplicate && !reflect.DeepEqual(previous, resource) {
+			return nil, fmt.Errorf("developer portal returned conflicting representations of capability %q", resource.ID)
+		}
+		indexed[resource.ID] = resource
+	}
+	return indexed, nil
 }
 
 // decodeStrictDeveloperRelationship decodes a JSON:API relationship object and
@@ -815,6 +845,11 @@ func developerBundleIDAppGroupsState(current developerBundleIDResponse) (develop
 		if reference.Type != "bundleIdCapabilities" || strings.TrimSpace(reference.ID) == "" {
 			return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: capability graph contains an invalid reference (type %q, id %q)", current.Data.ID, reference.Type, reference.ID)
 		}
+	}
+	// developerBundleIDCapabilities lets the last included copy of an ID win, so
+	// conflicting duplicates must be rejected before the graph is rebuilt.
+	if _, err := indexDeveloperCapabilityResources(current.Included); err != nil {
+		return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: %w", current.Data.ID, err)
 	}
 	capabilities, err := developerBundleIDCapabilities(current)
 	if err != nil {
