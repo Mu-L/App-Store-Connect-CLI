@@ -91,6 +91,9 @@ func TestResolveAcceptsAbsolutePathInsideRoot(t *testing.T) {
 }
 
 func TestRootPreservesWhitespaceInValidPathNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Win32 path APIs strip trailing spaces and dots from file names")
+	}
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "trusted ")
 	if err := os.Mkdir(dir, 0o755); err != nil {
@@ -581,6 +584,9 @@ func TestCreateNewFileAtomicRefusesRacingDestination(t *testing.T) {
 }
 
 func TestCreateNewFileAtomicWritesExactMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not authoritative on Windows")
+	}
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	if err := root.CreateNewFileAtomic("plan.json", []byte("planned"), 0o600); err != nil {
@@ -1125,6 +1131,7 @@ func TestOpenAbsoluteRootNoFollowFailsClosedOutsideCurrentDirectory(t *testing.T
 }
 
 func TestOpenAbsoluteRootNoFollowRejectsReplacedCurrentDirectoryPath(t *testing.T) {
+	requireDirectoryRenameWhileOpen(t)
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1225,6 +1232,7 @@ func TestContainsPathUsesPinnedRootIdentity(t *testing.T) {
 }
 
 func TestContainsAnchoredPathRejectsPathSubstitution(t *testing.T) {
+	requireDirectoryRenameWhileOpen(t)
 	parent := t.TempDir()
 	bundle := filepath.Join(parent, "bundle")
 	artifact := filepath.Join(bundle, "state")
@@ -1314,6 +1322,9 @@ func TestOpenRootRejectsSelectedPathSwappedBeforeOpen(t *testing.T) {
 		{name: "intermediate directory", rootRelative: filepath.Join("selected", "root"), swapRelative: "selected", outsideRoot: "root"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.outsideRoot != "" {
+				requireDirectoryRenameWhileOpen(t)
+			}
 			parent, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -1439,6 +1450,7 @@ func TestOpenRootDoesNotAdoptDirectoryCreatedAfterNew(t *testing.T) {
 }
 
 func TestRootedWriteRejectsIntermediateDirectoryReplacedBeforeOpen(t *testing.T) {
+	requireDirectoryRenameWhileOpen(t)
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1783,6 +1795,13 @@ func temporaryLeftovers(t *testing.T, dir string) []string {
 		}
 	}
 	return leftovers
+}
+
+func requireDirectoryRenameWhileOpen(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot rename a directory while an os.Root handle to it or a descendant is open")
+	}
 }
 
 func requireSymlinks(t *testing.T) {
