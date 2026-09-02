@@ -110,6 +110,47 @@ func TestRunAppsCreateInvalidAccessFailsBeforeWizard(t *testing.T) {
 	}
 }
 
+func TestRunAppsCreateAccessWithMissingNameMakesNoHTTP(t *testing.T) {
+	origCreate := createWebAppFn
+	origResolve := resolveAppCreateSessionFn
+	origCanPrompt := appCreateCanPromptInteractivelyFn
+	origClientFactory := shared.SetASCClientFactoryForTesting(func() (*asc.Client, error) {
+		t.Fatal("did not expect ASC client lookup")
+		return nil, nil
+	})
+	t.Cleanup(func() {
+		createWebAppFn = origCreate
+		resolveAppCreateSessionFn = origResolve
+		appCreateCanPromptInteractivelyFn = origCanPrompt
+		origClientFactory()
+	})
+	createWebAppFn = func(ctx context.Context, client *webcore.Client, attrs webcore.AppCreateAttributes) (*webcore.AppResponse, error) {
+		t.Fatal("did not expect create")
+		return nil, nil
+	}
+	resolveAppCreateSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		t.Fatal("did not expect web session lookup")
+		return nil, "", nil
+	}
+	appCreateCanPromptInteractivelyFn = func() bool { return false }
+
+	var err error
+	_, stderr := captureOutput(t, func() {
+		err = RunAppsCreate(context.Background(), AppsCreateRunOptions{
+			Access:                   "full",
+			Output:                   "json",
+			DisableBundleIDPreflight: true,
+		})
+	})
+	if err == nil {
+		t.Fatal("expected missing required flags error")
+	}
+	if !strings.Contains(errfmt.FormatStderr(err), "missing required flags") &&
+		!strings.Contains(stderr, "missing required flags") {
+		t.Fatalf("stderr = %q err = %v", stderr, err)
+	}
+}
+
 func TestRunAppsCreateBlankUserMakesNoHTTP(t *testing.T) {
 	createCalled := false
 	origCreate := createWebAppFn

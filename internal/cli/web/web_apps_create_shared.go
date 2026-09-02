@@ -317,31 +317,6 @@ func RunAppsCreate(ctx context.Context, opts AppsCreateRunOptions) error {
 		return err
 	}
 
-	var accessClient *asc.Client
-	if access != "" {
-		accessClient, err = shared.GetASCClient()
-		if err != nil {
-			return fmt.Errorf("web apps create failed: --access requires official App Store Connect API authentication: %w", err)
-		}
-		if len(userIDs) > 0 {
-			lookupCtx, lookupCancel := shared.ContextWithTimeout(ctx)
-			defer lookupCancel()
-			if lookupErr := withWebSpinner("Checking users", func() error {
-				return ensureAppCreateUsersExist(lookupCtx, accessClient, userIDs)
-			}); lookupErr != nil {
-				return lookupErr
-			}
-		} else {
-			probeCtx, probeCancel := shared.ContextWithTimeout(ctx)
-			defer probeCancel()
-			if probeErr := withWebSpinner("Checking App Store Connect API access", func() error {
-				return ensureAppCreateAPIAccess(probeCtx, accessClient)
-			}); probeErr != nil {
-				return fmt.Errorf("web apps create failed: --access requires working App Store Connect API authentication: %w", probeErr)
-			}
-		}
-	}
-
 	missingName := opts.Name == ""
 	missingBundleID := opts.BundleID == ""
 	missingSKU := opts.SKU == ""
@@ -375,6 +350,31 @@ func RunAppsCreate(ctx context.Context, opts AppsCreateRunOptions) error {
 	}
 
 	opts = normalizeAppsCreateRunOptions(opts)
+
+	var accessClient *asc.Client
+	if access != "" {
+		accessClient, err = shared.GetASCClient()
+		if err != nil {
+			return fmt.Errorf("web apps create failed: --access requires official App Store Connect API authentication: %w", err)
+		}
+		if len(userIDs) > 0 {
+			lookupCtx, lookupCancel := shared.ContextWithTimeout(ctx)
+			defer lookupCancel()
+			if lookupErr := withWebSpinner("Checking users", func() error {
+				return ensureAppCreateUsersExist(lookupCtx, accessClient, userIDs)
+			}); lookupErr != nil {
+				return lookupErr
+			}
+		} else {
+			probeCtx, probeCancel := shared.ContextWithTimeout(ctx)
+			defer probeCancel()
+			if probeErr := withWebSpinner("Checking App Store Connect API access", func() error {
+				return ensureAppCreateAPIAccess(probeCtx, accessClient)
+			}); probeErr != nil {
+				return fmt.Errorf("web apps create failed: --access requires working App Store Connect API authentication: %w", probeErr)
+			}
+		}
+	}
 
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "  Name:      %s\n", opts.Name)
