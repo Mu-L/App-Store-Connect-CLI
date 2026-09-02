@@ -150,7 +150,7 @@ func (c *Client) DownloadAPIKey(ctx context.Context, keyID string) ([]byte, erro
 	if err := validateAPIKeyP8(decoded); err != nil {
 		return nil, err
 	}
-	return decoded, nil
+	return bytes.TrimSpace(decoded), nil
 }
 
 func validateAPIKeyP8(decoded []byte) error {

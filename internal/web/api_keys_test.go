@@ -114,10 +114,27 @@ func TestClientDownloadAPIKeyDecodesP8(t *testing.T) {
 	if requestedField != "privateKey" {
 		t.Fatalf("unexpected private-key field %q", requestedField)
 	}
-	if !bytes.Equal(got, p8) {
-		t.Fatalf("unexpected decoded P8 length %d, want %d", len(got), len(p8))
-	}
+	assertSamePKCS8Key(t, p8, got)
 	assertErrorHasNoKeyMaterial(t, err, p8)
+}
+
+func TestClientDownloadAPIKeyNormalizesSurroundingWhitespace(t *testing.T) {
+	p8 := generateP256PKCS8PEM(t)
+	padded := append(append([]byte("   \t"), p8...), []byte("  \n")...)
+	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(apiKeyDownloadJSON("ABC123XYZ", padded))
+	}))
+
+	got, err := client.DownloadAPIKey(context.Background(), "ABC123XYZ")
+	if err != nil {
+		t.Fatalf("DownloadAPIKey() error: %v", err)
+	}
+	assertSamePKCS8Key(t, p8, got)
+	if bytes.Contains(got, []byte("   \t")) {
+		t.Fatal("expected leading whitespace to be stripped from persisted P8")
+	}
+	assertErrorHasNoKeyMaterial(t, err, p8, padded)
 }
 
 func TestClientDownloadAPIKeyRejectsInvalidP8Payloads(t *testing.T) {
@@ -274,6 +291,24 @@ func truncatedPKCS8PEM(t *testing.T, valid []byte) []byte {
 func apiKeyDownloadJSON(id string, p8 []byte) []byte {
 	encoded := base64.StdEncoding.EncodeToString(p8)
 	return []byte(`{"data":{"type":"apiKeys","id":"` + id + `","attributes":{"privateKey":"` + encoded + `"}}}`)
+}
+
+func assertSamePKCS8Key(t *testing.T, want, got []byte) {
+	t.Helper()
+	wantBlock, _ := pem.Decode(want)
+	gotBlock, rest := pem.Decode(got)
+	if wantBlock == nil || gotBlock == nil {
+		t.Fatal("expected PKCS#8 PEM blocks")
+	}
+	if len(bytes.TrimSpace(rest)) > 0 {
+		t.Fatal("expected returned P8 to decode without trailing junk")
+	}
+	if gotBlock.Type != "PRIVATE KEY" {
+		t.Fatalf("unexpected PEM type %q", gotBlock.Type)
+	}
+	if !bytes.Equal(wantBlock.Bytes, gotBlock.Bytes) {
+		t.Fatalf("returned P8 DER does not match validated key")
+	}
 }
 
 func assertErrorHasNoKeyMaterial(t *testing.T, err error, payloads ...[]byte) {
