@@ -42,12 +42,20 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 
 ## Sandbox Testers
 
-- Required fields: email, first/last name, password + confirm, secret question/answer, birth date, territory
+- `asc web sandbox create` requires `--first-name`, `--last-name`, `--email`, `--password`, and `--territory`
 - Password must include uppercase, lowercase, and a number (8+ chars)
+- Historical public v1 create also required password confirmation, a secret question/answer, and a birth date; that create endpoint is not exposed by the current CLI
 - Sandbox territory inputs accept alpha-2, alpha-3, and exact English country names, but the CLI sends canonical 3-letter App Store territory codes (for example, `US`, `USA`, and `United States` all resolve to `USA`)
 - This normalization is limited to verified ASC alpha-3 territory surfaces, including customer-review filters; public storefront and finance region flags keep their existing namespaces
-- List/get use the v2 API; create/delete use v1 endpoints (may be unavailable on some accounts)
-- Update/clear-history use the v2 API
+- List, view, update, and clear-history use the v2 API through `asc sandbox`
+- Public `asc sandbox` does not expose create or delete. Create testers with `asc web sandbox create`, which posts to `/sandbox/v2/account/create`
+
+## Web-session API keys
+
+- `asc web api-keys list` reuses the iris v1 team-key list (`GET /iris/v1/apiKeys?include=createdBy,revokedBy,provider`) and the iris v2 individual-key list (`GET /iris/v2/apiKeys?include=visibleApps,createdByActor,revokedByActor`) already used by `asc web auth capabilities`. Both readers follow `links.next` internally, so the command has no `--paginate` flag. Individual keys sometimes carry an empty `roles` array on that list payload; list does not issue per-key actor lookups. Use `asc web auth capabilities --key-id` to resolve actor-backed roles for one key.
+- `asc web api-keys view --key-id` uses the existing iris v1 team-key resource (`GET /iris/v1/apiKeys/{id}?include=provider`). Individual keys appear in `list` but are not loaded by `view`. The issue proposed `get`; current CLI taxonomy uses `view` for this leaf.
+- Those payloads expose key ID, nickname, roles, `isActive`, key type, and last-used. They do not include a creation date, so list/view omit that column rather than inventing one. Private key material is never copied into command output.
+- Revoke and `--individual` create still need a live web-session endpoint capture.
 
 ## TestFlight Distribution
 
@@ -130,6 +138,13 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 
 - Live API rejects `include=passTypeId` and `fields[passTypeIds]` on `/v1/passTypeIds/{id}/certificates` despite the OpenAPI spec allowing them.
 - The CLI does not expose those parameters for `pass-type-ids certificates list` to avoid API errors.
+
+## Sparse Fieldsets Combined with Includes
+
+Observed 2026-09-02 against a live App Store Connect team. The CLI does not add included relationship names to the primary fieldset for these list commands.
+
+- `GET /v1/profiles` with `fields[profiles]=name&include=devices` returns HTTP 200 and still puts related devices in `included`. Apple omits `relationships` on each profile unless `devices` is also listed in `fields[profiles]`. `fields[devices]=name,udid` still sparse-filters those included devices.
+- `GET /v1/certificates` with `fields[certificates]=displayName&include=passTypeId` returns HTTP 200. This team has no `PASS_TYPE_ID` certificates, so `included` was absent both with that sparse fieldset and with `include=passTypeId` alone. Non-pass certificates expose `relationships.passTypeId.data=null` only when the relationship is in the fieldset (or when no certificate fieldset is sent).
 
 ## App Store Connect API 4.4.1
 
