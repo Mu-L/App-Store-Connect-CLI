@@ -67,17 +67,18 @@ func copyReplacementMetadata(destination, source *os.File, info os.FileInfo) err
 	)
 	runtime.KeepAlive(descriptor)
 	if err != nil {
-		if errors.Is(err, windows.ERROR_ACCESS_DENIED) && control&windows.SE_DACL_PROTECTED == 0 {
-			// Unprotected explicit ACEs can still be rejected when Windows
-			// treats them as inherited from the parent of a newly created file.
-			return nil
-		}
 		return fmt.Errorf("preserve replacement access control list: %w", err)
 	}
 	return nil
 }
 
 func shouldSetReplacementDACL(control windows.SECURITY_DESCRIPTOR_CONTROL, dacl *windows.ACL) (bool, error) {
+	if dacl == nil {
+		// SECURITY_DESCRIPTOR.DACL() returns (nil, _, nil) for a present NULL
+		// DACL, which is fully permissive and must be preserved. A missing
+		// DACL is reported as an error by DACL() before we get here.
+		return true, nil
+	}
 	if control&windows.SE_DACL_PROTECTED != 0 {
 		return true, nil
 	}
