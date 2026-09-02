@@ -52,9 +52,9 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 
 ## Web-session API keys
 
-- `asc web api-keys list` reuses the iris v1 team-key list (`GET /iris/v1/apiKeys?include=createdBy,revokedBy,provider`) and the iris v2 individual-key list (`GET /iris/v2/apiKeys?include=visibleApps,createdByActor,revokedByActor`) already used by `asc web auth capabilities`. Both readers follow `links.next` internally, so the command has no `--paginate` flag.
+- `asc web api-keys list` reuses the iris v1 team-key list (`GET /iris/v1/apiKeys?include=createdBy,revokedBy,provider`) and the iris v2 individual-key list (`GET /iris/v2/apiKeys?include=visibleApps,createdByActor,revokedByActor`) already used by `asc web auth capabilities`. Both readers follow `links.next` internally, so the command has no `--paginate` flag. Individual keys sometimes carry an empty `roles` array on that list payload; list does not issue per-key actor lookups. Use `asc web auth capabilities --key-id` to resolve actor-backed roles for one key.
 - `asc web api-keys view --key-id` uses the existing iris v1 team-key resource (`GET /iris/v1/apiKeys/{id}?include=provider`). Individual keys appear in `list` but are not loaded by `view`. The issue proposed `get`; current CLI taxonomy uses `view` for this leaf.
-- Those payloads expose key ID, nickname, roles, `isActive`, key type, and last-used. They do not include a creation date, so list/get omit that column rather than inventing one. Private key material is never copied into command output.
+- Those payloads expose key ID, nickname, roles, `isActive`, key type, and last-used. They do not include a creation date, so list/view omit that column rather than inventing one. Private key material is never copied into command output.
 - Revoke and `--individual` create still need a live web-session endpoint capture.
 
 ## TestFlight Distribution

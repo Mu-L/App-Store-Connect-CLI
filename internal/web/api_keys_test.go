@@ -310,6 +310,32 @@ func TestClientListAPIKeysFallsBackWhenTeamKeysForbidden(t *testing.T) {
 	}
 }
 
+func TestClientListAPIKeysReturnsIndividualErrorAfterTeamFallback(t *testing.T) {
+	fixture := handlertest.New(t)
+	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/iris/v1/apiKeys":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"errors":[{"status":"403","title":"Forbidden"}]}`))
+		case "/iris/v2/apiKeys":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"errors":[{"status":"500","title":"Internal Server Error"}]}`))
+		default:
+			fixture.Respond(w, "unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	keys, err := client.ListAPIKeys(context.Background())
+	if keys != nil {
+		t.Fatalf("expected no keys on error, got %#v", keys)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusInternalServerError {
+		t.Fatalf("expected individual-list 500 after team fallback, got %v", err)
+	}
+}
+
 func TestClientListAPIKeysErrorsWhenBothListsForbidden(t *testing.T) {
 	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

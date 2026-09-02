@@ -97,7 +97,9 @@ func WebAPIKeysListCommand() *ffcli.Command {
 List team and individual App Store Connect API keys visible to the cached Apple
 Account web session. Output includes key ID, name, kind, roles, and active
 state. Creation date is omitted because the existing key-list readers do not
-expose it. Key material is never printed.
+expose it. Key material is never printed. Individual keys may have empty roles
+on this list; use "asc web auth capabilities --key-id" to resolve actor-backed
+roles for one key.
 
 The underlying readers already follow every pagination link, so this command
 always returns the complete visible set and does not accept --paginate.

@@ -145,10 +145,7 @@ func (c *Client) ListAPIKeys(ctx context.Context) ([]APIKeyListItem, error) {
 
 	individualKeys, individualErr := c.listIndividualKeys(ctx)
 	if individualErr != nil && !shouldFallbackToIndividualKeys(individualErr) {
-		if teamErr == nil {
-			return nil, individualErr
-		}
-		return nil, teamErr
+		return nil, individualErr
 	}
 	if teamErr != nil && individualErr != nil {
 		return nil, teamErr
