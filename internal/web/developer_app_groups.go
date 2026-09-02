@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -350,9 +351,16 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 		}
 		includedByID := make(map[string]developerResource, len(response.Included))
 		for _, resource := range response.Included {
-			if resource.Type == "bundleIdCapabilities" && strings.TrimSpace(resource.ID) != "" {
-				includedByID[resource.ID] = resource
+			if resource.Type != "bundleIdCapabilities" || strings.TrimSpace(resource.ID) == "" {
+				continue
 			}
+			// Two different representations of the same capability ID would let
+			// whichever one wins hide an assignment, so only identical repeats
+			// are tolerated.
+			if previous, duplicate := includedByID[resource.ID]; duplicate && !reflect.DeepEqual(previous, resource) {
+				return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal returned conflicting representations of capability %q", resource.ID)
+			}
+			includedByID[resource.ID] = resource
 		}
 		for _, bundle := range response.Data {
 			if bundle.Type != "bundleIds" || strings.TrimSpace(bundle.ID) == "" {

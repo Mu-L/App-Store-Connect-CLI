@@ -570,6 +570,59 @@ func TestDeleteDeveloperAppGroupFailsClosedOnUnknownGroupOrUnreadableAssignments
 		}
 	})
 
+	t.Run("conflicting duplicate capability resources", func(t *testing.T) {
+		client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+			switch requestNumber {
+			case 1:
+				return assertDeveloperPortalBootstrap(t, request), nil
+			case 2:
+				return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), nil), nil
+			case 3:
+				// The first groups-1 lists the target group; the later duplicate does
+				// not. Resolving to the later one would hide the assignment.
+				return developerPortalTestResponse(http.StatusOK, `{
+					"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}}],
+					"included":[
+						{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[{"type":"appGroups","id":"GROUP12345"}]}}},
+						{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[]}}}
+					]
+				}`, nil), nil
+			default:
+				t.Fatalf("conflicting duplicate capability resources sent unexpected request %d", requestNumber)
+				return nil, nil
+			}
+		})
+		_, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
+		if err == nil || !strings.Contains(err.Error(), "cannot determine App Group assignments") || !strings.Contains(err.Error(), "groups-1") {
+			t.Fatalf("expected fail-closed duplicate capability error naming groups-1, got %v", err)
+		}
+	})
+
+	t.Run("identical duplicate capability resources still report the assignment", func(t *testing.T) {
+		client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+			switch requestNumber {
+			case 1:
+				return assertDeveloperPortalBootstrap(t, request), nil
+			case 2:
+				return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), nil), nil
+			case 3:
+				capability := `{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[{"type":"appGroups","id":"GROUP12345"}]}}}`
+				return developerPortalTestResponse(http.StatusOK, `{
+					"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}}],
+					"included":[`+capability+`,`+capability+`]
+				}`, nil), nil
+			default:
+				t.Fatalf("assigned group must not be deleted, got request %d", requestNumber)
+				return nil, nil
+			}
+		})
+		_, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
+		var assigned *DeveloperAppGroupInUseError
+		if !errors.As(err, &assigned) || len(assigned.Assignments) != 1 || assigned.Assignments[0].BundleID != "bundle-1" {
+			t.Fatalf("expected assigned error naming bundle-1, got %v", err)
+		}
+	})
+
 	t.Run("capability missing from included", func(t *testing.T) {
 		client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
 			switch requestNumber {
