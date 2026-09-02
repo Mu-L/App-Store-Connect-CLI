@@ -25,14 +25,6 @@ var appRemovalBlockedStates = map[string]struct{}{
 	"REJECTED":           {},
 }
 
-type webAppDeleteResult struct {
-	AppID    string `json:"appId"`
-	Name     string `json:"name,omitempty"`
-	BundleID string `json:"bundleId,omitempty"`
-	Removed  bool   `json:"removed"`
-	DryRun   bool   `json:"dryRun,omitempty"`
-}
-
 // WebAppsDeleteCommand removes apps using the internal web API.
 func WebAppsDeleteCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web apps delete", flag.ExitOnError)
@@ -257,11 +249,11 @@ func appResponseFromRemovalState(state *webcore.AppRemovalState) *webcore.AppRes
 	return resp
 }
 
-func webAppDeleteResultFromState(state *webcore.AppRemovalState, dryRun bool) webAppDeleteResult {
+func webAppDeleteResultFromState(state *webcore.AppRemovalState, dryRun bool) asc.WebAppDeleteResult {
 	if state == nil {
-		return webAppDeleteResult{DryRun: dryRun}
+		return asc.WebAppDeleteResult{DryRun: dryRun}
 	}
-	return webAppDeleteResult{
+	return asc.WebAppDeleteResult{
 		AppID:    strings.TrimSpace(state.ID),
 		Name:     strings.TrimSpace(state.Name),
 		BundleID: strings.TrimSpace(state.BundleID),
@@ -281,32 +273,6 @@ func webAppAttrString(app *webcore.AppResponse, key string) string {
 	return strings.TrimSpace(fmt.Sprint(value))
 }
 
-func webAppDeleteRows(result webAppDeleteResult) [][]string {
-	return [][]string{{
-		result.AppID,
-		result.Name,
-		result.BundleID,
-		fmt.Sprintf("%t", result.Removed),
-		fmt.Sprintf("%t", result.DryRun),
-	}}
-}
-
-func printWebAppDeleteResult(result webAppDeleteResult, format string, pretty bool) error {
-	return shared.PrintOutputWithRenderers(
-		result,
-		format,
-		pretty,
-		func() error { return renderWebAppDeleteTable(result) },
-		func() error { return renderWebAppDeleteMarkdown(result) },
-	)
-}
-
-func renderWebAppDeleteTable(result webAppDeleteResult) error {
-	asc.RenderTable([]string{"App ID", "Name", "Bundle ID", "Removed", "Dry Run"}, webAppDeleteRows(result))
-	return nil
-}
-
-func renderWebAppDeleteMarkdown(result webAppDeleteResult) error {
-	asc.RenderMarkdown([]string{"App ID", "Name", "Bundle ID", "Removed", "Dry Run"}, webAppDeleteRows(result))
-	return nil
+func printWebAppDeleteResult(result asc.WebAppDeleteResult, format string, pretty bool) error {
+	return shared.PrintOutput(&result, format, pretty)
 }
