@@ -165,6 +165,96 @@ func TestGetAppAvailabilityBuildsExpectedRequest(t *testing.T) {
 	if joined := strings.Join(got.AvailableTerritories, ","); joined != "GBR,USA" {
 		t.Fatalf("expected sorted territories GBR,USA, got %q", joined)
 	}
+	if !got.AvailableTerritoriesLoaded {
+		t.Fatal("expected availableTerritories relationship to be marked loaded")
+	}
+}
+
+func TestGetAppAvailabilityMarksEmptyTerritoriesLoaded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"id": "avail-123",
+				"type": "appAvailabilities",
+				"attributes": {"availableInNewTerritories": false},
+				"relationships": {
+					"availableTerritories": {"data": []}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := testWebClient(server)
+	got, err := client.GetAppAvailability(context.Background(), "app-123")
+	if err != nil {
+		t.Fatalf("GetAppAvailability() error = %v", err)
+	}
+	if !got.AvailableTerritoriesLoaded {
+		t.Fatal("expected empty availableTerritories.data to count as loaded")
+	}
+	if !got.AvailableInNewTerritoriesKnown {
+		t.Fatal("expected availableInNewTerritories=false to count as known")
+	}
+	if len(got.AvailableTerritories) != 0 {
+		t.Fatalf("expected no territories, got %#v", got.AvailableTerritories)
+	}
+}
+
+func TestGetAppAvailabilityLeavesNewTerritoriesUnknownWhenAttributeOmitted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"id": "avail-123",
+				"type": "appAvailabilities",
+				"attributes": {},
+				"relationships": {
+					"availableTerritories": {"data": []}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := testWebClient(server)
+	got, err := client.GetAppAvailability(context.Background(), "app-123")
+	if err != nil {
+		t.Fatalf("GetAppAvailability() error = %v", err)
+	}
+	if !got.AvailableTerritoriesLoaded {
+		t.Fatal("expected empty availableTerritories.data to count as loaded")
+	}
+	if got.AvailableInNewTerritoriesKnown {
+		t.Fatal("omitted availableInNewTerritories must not count as known")
+	}
+}
+
+func TestGetAppAvailabilityLeavesTerritoriesUnloadedWhenRelationshipOmitted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"id": "avail-123",
+				"type": "appAvailabilities",
+				"attributes": {"availableInNewTerritories": false}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := testWebClient(server)
+	got, err := client.GetAppAvailability(context.Background(), "app-123")
+	if err != nil {
+		t.Fatalf("GetAppAvailability() error = %v", err)
+	}
+	if got.AvailableTerritoriesLoaded {
+		t.Fatal("omitted availableTerritories relationship must not count as loaded")
+	}
+	if len(got.AvailableTerritories) != 0 {
+		t.Fatalf("expected no territories, got %#v", got.AvailableTerritories)
+	}
 }
 
 func TestIsNotFound(t *testing.T) {
