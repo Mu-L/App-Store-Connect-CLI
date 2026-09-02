@@ -1094,6 +1094,31 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			query:    []string{"auth", "issuer-id", "status"},
 			expected: "asc auth issuer-id",
 		},
+		{
+			name:     "view beta review app status",
+			query:    []string{"view", "beta", "review", "app", "status"},
+			expected: "asc testflight review app view",
+		},
+		{
+			name:     "TestFlight App Store metadata status",
+			query:    []string{"TestFlight", "App", "Store", "metadata", "status"},
+			expected: "asc metadata status",
+		},
+		{
+			name:     "cancel TestFlight App Store submission status",
+			query:    []string{"cancel", "TestFlight", "App", "Store", "submission", "status"},
+			expected: "asc submit cancel",
+		},
+		{
+			name:     "view Xcode Cloud build run",
+			query:    []string{"view", "Xcode", "Cloud", "build", "run"},
+			expected: "asc xcode-cloud build-runs view",
+		},
+		{
+			name:     "TestFlight App Store analytics overview",
+			query:    []string{"TestFlight", "App", "Store", "analytics", "overview"},
+			expected: "asc web analytics overview",
+		},
 	}
 
 	for _, test := range tests {

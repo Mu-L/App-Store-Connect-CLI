@@ -593,6 +593,9 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 			return "asc review attachments-upload", "canonical:review-attachment-upload", true
 		}
 	}
+	if tokenContains(queryTokens, "cancel") && tokenContainsAny(queryTokens, []string{"submission", "submit"}) {
+		return "asc submit cancel", "canonical:submission-cancel", true
+	}
 	if tokenContains(queryTokens, "telemetry") {
 		if compoundTokenContains(queryTokens, "reset-id") {
 			return "asc telemetry reset-id", "canonical:telemetry-reset-id", true
@@ -622,14 +625,16 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		return target, reason, true
 	}
 	if tokenContains(queryTokens, "xcode") && tokenContains(queryTokens, "cloud") {
+		// "run" doubles as the build-run resource noun, so an explicit read
+		// action must win over the trigger verb.
+		if tokenContainsAny(queryTokens, []string{"list", "view", "download"}) {
+			return "", "", false
+		}
 		if tokenContainsAny(queryTokens, []string{"run", "trigger"}) {
 			return "asc xcode-cloud run", "canonical:xcode-cloud-run", true
 		}
 		if tokenContains(queryTokens, "doctor") {
 			return "asc xcode-cloud doctor", "canonical:xcode-cloud-doctor", true
-		}
-		if tokenContainsAny(queryTokens, []string{"list", "view", "download"}) {
-			return "", "", false
 		}
 	}
 	if !statusQueryIntent(queryTokens) || mutationQueryIntent(queryTokens) {
@@ -662,6 +667,12 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 	if tokenContains(queryTokens, "system") {
 		return "asc system-status", "canonical:system-status", true
 	}
+	if tokenContains(queryTokens, "metadata") {
+		return "asc metadata status", "canonical:metadata-status", true
+	}
+	if tokenContains(queryTokens, "analytics") && tokenContainsAny(queryTokens, []string{"overview", "dashboard"}) {
+		return "asc web analytics overview", "canonical:analytics-overview", true
+	}
 	if tokenContains(queryTokens, "xcode") && tokenContains(queryTokens, "cloud") {
 		return "asc xcode-cloud status", "canonical:xcode-cloud-status", true
 	}
@@ -684,7 +695,7 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		}
 		return "asc testflight review submissions view", "canonical:testflight-review-submission-status", true
 	}
-	if tokenContains(queryTokens, "testflight") && tokenContains(queryTokens, "review") &&
+	if tokenContainsAny(queryTokens, []string{"testflight", "beta"}) && tokenContains(queryTokens, "review") &&
 		tokenContains(queryTokens, "app") && tokenContains(queryTokens, "view") {
 		return "asc testflight review app view", "canonical:testflight-review-app-view", true
 	}
@@ -761,7 +772,7 @@ func mutationQueryIntent(queryTokens []string) bool {
 func unambiguousMutationQueryIntent(queryTokens []string) bool {
 	return tokenContainsAny(queryTokens, []string{
 		"create", "update", "edit", "delete", "remove", "set", "pause", "resume",
-		"start", "stop", "complete", "submit", "publish", "distribute", "enable", "disable",
+		"start", "stop", "cancel", "complete", "submit", "publish", "distribute", "enable", "disable",
 	})
 }
 
