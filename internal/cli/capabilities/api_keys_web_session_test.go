@@ -15,12 +15,9 @@ func TestAPIKeyWebSessionNotesDoNotOverclaimIndividualKeys(t *testing.T) {
 		if !strings.Contains(lower, "individual") || !strings.Contains(lower, "list") {
 			t.Fatalf("expected notes to mention individual-key listing, got %q", notes)
 		}
-		if strings.Contains(lower, "individual api key list, view, and create") ||
-			strings.Contains(lower, "team and individual api key list, view, and create") {
-			t.Fatalf("notes overclaim individual-key view/create: %q", notes)
-		}
-		if !strings.Contains(lower, "team-key-only") {
-			t.Fatalf("expected notes to describe view and create as team-key-only, got %q", notes)
+		if !strings.Contains(lower, "view and create-with-p8 are team-key-only") ||
+			!strings.Contains(lower, "individual keys appear in list but are not loaded by view") {
+			t.Fatalf("notes do not describe API-key operation scope accurately: %q", notes)
 		}
 		return
 	}
