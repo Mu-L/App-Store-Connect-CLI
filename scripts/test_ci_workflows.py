@@ -585,6 +585,10 @@ def assert_winget_retry_helper_behavior() -> None:
         "fatal: unable to access 'https://github.com/': Could not resolve host: github.com",
         "Get \"https://api.github.com/user\": dial tcp: lookup api.github.com on 127.0.0.53:53: server misbehaving",
         "Get \"https://api.github.com/user\": dial tcp: lookup api.github.com: no such host",
+        "fatal: unable to access 'https://github.com/example/winget-pkgs.git/': "
+        "LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to github.com:443",
+        "fatal: unable to access 'https://github.com/example/winget-pkgs.git/': "
+        "OpenSSL SSL_connect: Connection reset by peer in connection to github.com:443",
     )
     for message in transient:
         result, made = run_winget_retry_helper(helpers, message, succeed_on=3)

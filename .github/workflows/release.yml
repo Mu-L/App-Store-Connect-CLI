@@ -857,7 +857,7 @@ jobs:
               -e 'Could not resolve host|Failed to connect|Connection (refused|reset|timed out)|broken pipe' \
               -e 'lookup [^ ]+( on [^ ]+)?: (server misbehaving|no such host|i/o timeout)|Temporary failure in name resolution' \
               -e 'Operation timed out|i/o timeout|TLS handshake timeout' \
-              -e 'SSL_read|gnutls_handshake|Recv failure|Empty reply from server' \
+              -e 'SSL_(read|write|connect)|SSL_ERROR_(SYSCALL|ZERO_RETURN)|gnutls_handshake|Recv failure|Empty reply from server' \
               -e '(^|[^[:alnum:]_])EOF([^[:alnum:]_]|$)|remote end hung up unexpectedly|RPC failed|unexpected disconnect' \
               "$1"
           }
