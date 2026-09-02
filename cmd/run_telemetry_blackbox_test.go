@@ -63,6 +63,11 @@ func TestRun_BuiltBinaryEmitsSchemaV4Payload(t *testing.T) {
 	}
 }
 
+// blockedTelemetryHold is how long the collector holds an accepted connection.
+// Emit must return well before that: a foreground send waits up to
+// telemetry.maxSendDuration (3s), which is longer than hold/2.
+const blockedTelemetryHold = 4 * time.Second
+
 func TestRun_BuiltBinaryDoesNotWaitForBlockedTelemetryEndpoint(t *testing.T) {
 	binaryPath := buildASCBlackboxBinary(t)
 	blockedEndpoint, accepted, release := startBlockedTelemetryEndpoint(t)
@@ -73,19 +78,30 @@ func TestRun_BuiltBinaryDoesNotWaitForBlockedTelemetryEndpoint(t *testing.T) {
 
 	blockedHome := t.TempDir()
 	blockedDuration := runTimedTelemetryCommand(t, binaryPath, blockedHome, false, blockedEndpoint)
-	t.Logf("foreground timing: disabled=%s blocked=%s added=%s", disabledDuration, blockedDuration, blockedDuration-disabledDuration)
-	if added := blockedDuration - disabledDuration; added >= 175*time.Millisecond {
+	added := blockedDuration - disabledDuration
+	t.Logf(
+		"foreground timing: disabled=%s blocked=%s added=%s hold=%s",
+		disabledDuration,
+		blockedDuration,
+		added,
+		blockedTelemetryHold,
+	)
+	// Compare extra foreground time against the collector hold, not a
+	// host-dependent 175ms budget. A process that waits on telemetry stalls
+	// for ~maxSendDuration (3s); loaded shards that slow both runs still pass.
+	if added >= blockedTelemetryHold/2 {
 		t.Fatalf(
-			"blocked telemetry added %s to foreground runtime (disabled=%s blocked=%s), want less than 175ms",
+			"blocked telemetry added %s to foreground runtime (disabled=%s blocked=%s), want less than half of the %s endpoint hold",
 			added,
 			disabledDuration,
 			blockedDuration,
+			blockedTelemetryHold,
 		)
 	}
 
 	select {
 	case <-accepted:
-	case <-time.After(time.Second):
+	case <-time.After(blockedTelemetryHold):
 		t.Fatal("detached telemetry worker did not reach blocked endpoint")
 	}
 	release()
@@ -139,7 +155,9 @@ func telemetryBlackboxEnv(home string, disabled bool, endpoint string) []string 
 		"ASC_TELEMETRY_DISABLED="+disabledValue,
 		"ASC_TELEMETRY_ENDPOINT="+endpoint,
 		"ASC_TELEMETRY_EPHEMERAL=",
-		"ASC_TIMEOUT=1s",
+		// Above telemetry.maxSendDuration so a foreground wait lasts ~3s and
+		// fails the hold/2 assertion instead of exiting at the 1s CLI timeout.
+		"ASC_TIMEOUT=10s",
 		"ASC_TIMEOUT_SECONDS=",
 		"DO_NOT_TRACK=",
 		"HOME="+home,
@@ -162,7 +180,12 @@ func startBlockedTelemetryEndpoint(t *testing.T) (string, <-chan struct{}, func(
 			return
 		}
 		accepted <- struct{}{}
-		<-release
+		timer := time.NewTimer(blockedTelemetryHold)
+		defer timer.Stop()
+		select {
+		case <-release:
+		case <-timer.C:
+		}
 		_ = connection.Close()
 	}()
 
@@ -175,7 +198,7 @@ func startBlockedTelemetryEndpoint(t *testing.T) (string, <-chan struct{}, func(
 		_ = listener.Close()
 		select {
 		case <-done:
-		case <-time.After(time.Second):
+		case <-time.After(blockedTelemetryHold):
 			t.Error("blocked telemetry endpoint did not shut down")
 		}
 	}
