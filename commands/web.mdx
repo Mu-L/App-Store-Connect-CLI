@@ -11,7 +11,9 @@ The `asc web` command family automates App Store Connect workflows through Apple
 asc web auth login --apple-id "user@example.com"
 asc web auth status
 
-# Create a team API key and save its one-time P8
+# List and inspect API keys, then create a team key and save its one-time P8
+asc web api-keys list --output json
+asc web api-keys view --key-id KEY_ID
 asc web api-keys create --name "Release automation" --output-dir ~/.asc/keys
 
 # Create an app through the web flow
@@ -52,7 +54,7 @@ Use `asc web` when one of these is true:
 
 ## Session model
 
-`asc web` authenticates with a cached Apple Account web session created with `asc web auth login`. The `api-keys create` command uses that session to create an App Store Connect API key; it does not require an existing API key.
+`asc web` authenticates with a cached Apple Account web session created with `asc web auth login`. The `api-keys` commands use that session to list, inspect, or create App Store Connect API keys; they do not require an existing API key.
 
 Common session commands:
 
@@ -105,15 +107,19 @@ asc web agreements accept --agreement-id "AGREEMENT_ID" --confirm
 
 ### `asc web api-keys`
 
-Team API key creation through an Apple Account web session.
+Team and individual API key listing, team-key inspection, and team API key creation through an Apple Account web session.
 
 Available commands:
 
+* `asc web api-keys list` - list team and individual keys visible to the cached web session
+* `asc web api-keys view` - inspect one team API key by `--key-id`
 * `asc web api-keys create` - create an all-apps team key and save its one-time P8 as `AuthKey_<KEY_ID>.p8`
 
 Example:
 
 ```bash  theme={null}
+asc web api-keys list --output json
+asc web api-keys view --key-id KEY_ID --output json
 asc web api-keys create \
   --name "Release automation" \
   --role APP_MANAGER \
@@ -121,7 +127,9 @@ asc web api-keys create \
   --output json
 ```
 
-The role defaults to `ADMIN`. The output file is created with mode `0600`, existing files are not replaced, and key contents are not printed to command output.
+`list` and `view` print key ID, name, roles, and active state. They omit creation date because the existing web-session key readers do not expose it. Key material is never printed. `list` follows every page internally, so it does not accept `--paginate`. `view` uses the iris v1 team-key resource; individual keys appear in `list` but are not loaded by `view`.
+
+The create role defaults to `ADMIN`. The output file is created with mode `0600`, existing files are not replaced, and key contents are not printed to command output.
 
 Role requirement: creating a team API key requires an Account Holder or Admin web session. The `--role` value must be one of Apple's selectable team-key roles.
 

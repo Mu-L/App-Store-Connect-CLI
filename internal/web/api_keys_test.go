@@ -18,6 +18,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/handlertest"
 )
 
 func TestClientCreateAPIKeySendsTeamKeyPayload(t *testing.T) {
@@ -206,6 +208,145 @@ func TestClientGetAPIKeyParsesIssuerID(t *testing.T) {
 	}
 }
 
+func TestClientListAPIKeysCombinesTeamAndIndividualKeys(t *testing.T) {
+	fixture := handlertest.New(t)
+	var teamPath, individualPath string
+	var teamInclude, individualInclude string
+	p8 := generateP256PKCS8PEM(t)
+	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/iris/v1/apiKeys":
+			teamPath = r.URL.Path
+			teamInclude = r.URL.Query().Get("include")
+			_, _ = w.Write([]byte(`{
+				"data":[{
+					"id":"ABC123XYZ",
+					"attributes":{
+						"nickname":"Release automation",
+						"roles":["ADMIN"],
+						"isActive":true,
+						"keyType":"PUBLIC_API",
+						"lastUsed":"2026-03-15T11:48:57.844-07:00",
+						"privateKey":"` + base64.StdEncoding.EncodeToString(p8) + `"
+					},
+					"relationships":{"createdBy":{"data":{"id":"user-1"}}}
+				}],
+				"included":[{"type":"users","id":"user-1","attributes":{"firstName":"Ada","lastName":"Lovelace"}}]
+			}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/iris/v2/apiKeys":
+			individualPath = r.URL.Path
+			individualInclude = r.URL.Query().Get("include")
+			_, _ = w.Write([]byte(`{
+				"data":[{
+					"id":"IND456ABC",
+					"attributes":{"nickname":"Personal","roles":["APP_MANAGER"],"isActive":false,"keyType":"PUBLIC_API"},
+					"relationships":{"createdByActor":{"data":{"id":"actor-1"}}}
+				}]
+			}`))
+		default:
+			fixture.Respond(w, "unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	keys, err := client.ListAPIKeys(context.Background())
+	if err != nil {
+		t.Fatalf("ListAPIKeys() error: %v", err)
+	}
+	if teamPath != "/iris/v1/apiKeys" {
+		t.Fatalf("expected team list path /iris/v1/apiKeys, got %q", teamPath)
+	}
+	if individualPath != "/iris/v2/apiKeys" {
+		t.Fatalf("expected individual list path /iris/v2/apiKeys, got %q", individualPath)
+	}
+	if teamInclude != "createdBy,revokedBy,provider" {
+		t.Fatalf("unexpected team include %q", teamInclude)
+	}
+	if individualInclude != "visibleApps,createdByActor,revokedByActor" {
+		t.Fatalf("unexpected individual include %q", individualInclude)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 keys, got %#v", keys)
+	}
+	if keys[0].KeyID != "ABC123XYZ" || keys[0].Kind != APIKeyKindTeam || keys[0].Name != "Release automation" {
+		t.Fatalf("unexpected team key: %#v", keys[0])
+	}
+	if !keys[0].Active || len(keys[0].Roles) != 1 || keys[0].Roles[0] != "ADMIN" {
+		t.Fatalf("unexpected team key state: %#v", keys[0])
+	}
+	if keys[0].GeneratedBy == nil || keys[0].GeneratedBy.Name != "Ada Lovelace" {
+		t.Fatalf("unexpected generatedBy: %#v", keys[0].GeneratedBy)
+	}
+	if keys[1].KeyID != "IND456ABC" || keys[1].Kind != APIKeyKindIndividual || keys[1].Active {
+		t.Fatalf("unexpected individual key: %#v", keys[1])
+	}
+	if keys[1].GeneratedBy == nil || keys[1].GeneratedBy.ID != "actor-1" {
+		t.Fatalf("unexpected individual generatedBy: %#v", keys[1].GeneratedBy)
+	}
+	assertNoKeyMaterialInAPIKeys(t, p8, keys)
+}
+
+func TestClientListAPIKeysFallsBackWhenTeamKeysForbidden(t *testing.T) {
+	fixture := handlertest.New(t)
+	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/iris/v1/apiKeys":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"errors":[{"status":"403","title":"Forbidden"}]}`))
+		case "/iris/v2/apiKeys":
+			_, _ = w.Write([]byte(`{"data":[{"id":"IND456ABC","attributes":{"nickname":"Personal","roles":["ADMIN"],"isActive":true,"keyType":"PUBLIC_API"}}]}`))
+		default:
+			fixture.Respond(w, "unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	keys, err := client.ListAPIKeys(context.Background())
+	if err != nil {
+		t.Fatalf("ListAPIKeys() error: %v", err)
+	}
+	if len(keys) != 1 || keys[0].KeyID != "IND456ABC" || keys[0].Kind != APIKeyKindIndividual {
+		t.Fatalf("expected individual-only fallback, got %#v", keys)
+	}
+}
+
+func TestClientListAPIKeysErrorsWhenBothListsForbidden(t *testing.T) {
+	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"errors":[{"status":"403","title":"Forbidden"}]}`))
+	}))
+
+	keys, err := client.ListAPIKeys(context.Background())
+	if err == nil {
+		t.Fatal("expected error when both key lists are forbidden")
+	}
+	if keys != nil {
+		t.Fatalf("expected no keys on error, got %#v", keys)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
+		t.Fatalf("expected forbidden API error, got %v", err)
+	}
+}
+
+func TestClientGetAPIKeyRequiresKeyID(t *testing.T) {
+	called := false
+	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"id":"x"}}`))
+	}))
+
+	_, err := client.GetAPIKey(context.Background(), "   ")
+	if err == nil {
+		t.Fatal("expected error for empty key id")
+	}
+	if called {
+		t.Fatal("did not expect HTTP for an empty key id")
+	}
+}
+
 func TestIsAPIKeyDownloadRetryable(t *testing.T) {
 	if IsAPIKeyDownloadRetryable(nil) {
 		t.Fatal("expected nil error not to be retryable")
@@ -345,6 +486,15 @@ func assertNoKeyMaterial(t *testing.T, p8 []byte, outputs ...string) {
 			}
 		}
 	}
+}
+
+func assertNoKeyMaterialInAPIKeys(t *testing.T, p8 []byte, keys []APIKeyListItem) {
+	t.Helper()
+	encoded, err := json.Marshal(keys)
+	if err != nil {
+		t.Fatalf("marshal listed keys: %v", err)
+	}
+	assertNoKeyMaterial(t, p8, string(encoded))
 }
 
 func newAPIKeyHTTPTestClient(t *testing.T, handler http.Handler) *Client {
