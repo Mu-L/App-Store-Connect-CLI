@@ -700,13 +700,13 @@ Profiles cannot be edited. When a device, capability, certificate, or validity r
 2. Create or reconcile successor profiles that use the new certificate.
 3. Push the new identity and verified profiles to the encrypted repository. Push advances the authenticated identity-context record; Git history still contains the previous ciphertext.
 4. Pull and test on a clean worker.
-5. Keep the old certificate until every active build path has switched. Deactivate it (`asc certificates update --id CERT_ID --activated false`) when you only need to stop new profile creation. Revoke it when the private key is compromised or you must invalidate remaining profiles and already-distributed artifacts that still depend on that certificate:
+5. Keep the old certificate until every active build path has switched. Deactivate it (`asc certificates update --id CERT_ID --activated false`) when you only need to stop new profile creation. Revoke it when the private key is compromised or you must invalidate remaining profiles that still embed that certificate:
 
 ```bash  theme={null}
 asc certificates revoke --id CERT_ID --confirm
 ```
 
-`--confirm` is required. Revocation cannot be undone and cannot be reversed with `--activated`. It invalidates provisioning profiles that embed that certificate. Apple still counts a revoked certificate against the per-type limit until it expires, so revocation is not a way to free a slot immediately; see [Certificates](/commands/certificates).
+`--confirm` is required. Revocation cannot be undone and cannot be reversed with `--activated`. It invalidates provisioning profiles that embed that certificate. It does not pull App Store binaries Apple already re-signed; stopping already-installed apps is the in-house case under [Common profile types](#common-profile-types). Apple still counts a revoked certificate against the per-type limit until it expires, so revocation is not a way to free a slot immediately; see [Certificates](/commands/certificates).
 
 6. If HEAD should no longer carry unused `.enc` files, delete those paths in a later reviewed Git commit. Sync does not remove them. Password rotation re-encrypts the current branch head only; rewriting history is a separate incident-response decision.
 
