@@ -376,6 +376,7 @@ func TestWebAPIKeysCreateRejectsInvalidP8WithoutWritingFile(t *testing.T) {
 		{name: "non-pkcs8", id: "ABC123XYZ", p8: []byte("-----BEGIN PRIVATE KEY-----\nfixture-secret\n-----END PRIVATE KEY-----\n")},
 		{name: "wrong-key-type", id: "ABC123XYZ", p8: generateRSAPKCS8PEM(t)},
 		{name: "multi-block", id: "ABC123XYZ", p8: append(append([]byte{}, valid...), valid...)},
+		{name: "leading-data", id: "ABC123XYZ", p8: append(append([]byte{}, []byte("leading-junk\n")...), valid...)},
 		{name: "mismatched-id", id: "OTHERKEY", p8: valid},
 	}
 	for _, tt := range tests {

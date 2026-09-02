@@ -141,6 +141,7 @@ func TestClientDownloadAPIKeyRejectsInvalidP8Payloads(t *testing.T) {
 		{name: "p384 key type", id: "ABC123XYZ", p8: p384},
 		{name: "multi-block", id: "ABC123XYZ", p8: multi},
 		{name: "trailing data", id: "ABC123XYZ", p8: trailing},
+		{name: "leading data", id: "ABC123XYZ", p8: append(append([]byte{}, []byte("leading-junk\n")...), valid...)},
 		{name: "mismatched resource id", id: "OTHERKEY", p8: valid},
 	}
 	for _, tt := range tests {

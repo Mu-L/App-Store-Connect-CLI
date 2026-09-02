@@ -154,7 +154,11 @@ func (c *Client) DownloadAPIKey(ctx context.Context, keyID string) ([]byte, erro
 }
 
 func validateAPIKeyP8(decoded []byte) error {
-	block, rest := pem.Decode(decoded)
+	trimmed := bytes.TrimSpace(decoded)
+	if !bytes.HasPrefix(trimmed, []byte("-----BEGIN ")) {
+		return fmt.Errorf("%w: response contained an invalid P8", ErrAPIKeyResponseInvalid)
+	}
+	block, rest := pem.Decode(trimmed)
 	if block == nil {
 		return fmt.Errorf("%w: response contained an invalid P8", ErrAPIKeyResponseInvalid)
 	}
