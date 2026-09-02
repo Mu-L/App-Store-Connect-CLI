@@ -1115,6 +1115,26 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			expected: "asc xcode-cloud build-runs view",
 		},
 		{
+			name:     "doctor Xcode Cloud build run status",
+			query:    []string{"doctor", "Xcode", "Cloud", "build", "run", "status"},
+			expected: "asc xcode-cloud doctor",
+		},
+		{
+			name:     "approve metadata status",
+			query:    []string{"approve", "metadata", "status"},
+			expected: "asc metadata approve",
+		},
+		{
+			name:     "validate metadata status",
+			query:    []string{"validate", "metadata", "status"},
+			expected: "asc metadata validate",
+		},
+		{
+			name:     "subscriptions analytics dashboard",
+			query:    []string{"subscriptions", "analytics", "dashboard"},
+			expected: "asc web analytics subscriptions",
+		},
+		{
 			name:     "TestFlight App Store analytics overview",
 			query:    []string{"TestFlight", "App", "Store", "analytics", "overview"},
 			expected: "asc web analytics overview",

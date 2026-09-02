@@ -88,6 +88,17 @@ var canonicalIntentRules = []canonicalIntentRule{
 	},
 }
 
+// metadataStatusSiblingLeaves names the metadata commands that must win over
+// the generic metadata status fallback when a query asks for them by name.
+var metadataStatusSiblingLeaves = []string{"approve", "validate", "plan", "apply", "pull", "push", "keywords", "init"}
+
+// analyticsDashboardLeaves names the analytics pages that must win over the
+// generic overview dashboard when a query asks for one of them by name.
+var analyticsDashboardLeaves = []string{
+	"subscriptions", "sources", "product-pages", "in-app-events", "app-clips",
+	"campaigns", "sales", "offers", "benchmarks", "metrics", "retention", "cohorts",
+}
+
 var authActionScopes = []authActionScope{
 	{
 		queryToken:    "storekit",
@@ -630,11 +641,11 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		if tokenContainsAny(queryTokens, []string{"list", "view", "download"}) {
 			return "", "", false
 		}
-		if tokenContainsAny(queryTokens, []string{"run", "trigger"}) {
-			return "asc xcode-cloud run", "canonical:xcode-cloud-run", true
-		}
 		if tokenContains(queryTokens, "doctor") {
 			return "asc xcode-cloud doctor", "canonical:xcode-cloud-doctor", true
+		}
+		if tokenContainsAny(queryTokens, []string{"run", "trigger"}) {
+			return "asc xcode-cloud run", "canonical:xcode-cloud-run", true
 		}
 	}
 	if !statusQueryIntent(queryTokens) || mutationQueryIntent(queryTokens) {
@@ -668,9 +679,19 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		return "asc system-status", "canonical:system-status", true
 	}
 	if tokenContains(queryTokens, "metadata") {
+		for _, leaf := range metadataStatusSiblingLeaves {
+			if tokenContains(queryTokens, leaf) {
+				return "asc metadata " + leaf, "canonical:metadata-" + leaf, true
+			}
+		}
 		return "asc metadata status", "canonical:metadata-status", true
 	}
 	if tokenContains(queryTokens, "analytics") && tokenContainsAny(queryTokens, []string{"overview", "dashboard"}) {
+		for _, leaf := range analyticsDashboardLeaves {
+			if tokenContains(queryTokens, leaf) {
+				return "asc web analytics " + leaf, "canonical:analytics-" + leaf, true
+			}
+		}
 		return "asc web analytics overview", "canonical:analytics-overview", true
 	}
 	if tokenContains(queryTokens, "xcode") && tokenContains(queryTokens, "cloud") {
