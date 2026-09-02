@@ -48,6 +48,21 @@ func TestWebAppsCreateUserRequiresLimitedAccess(t *testing.T) {
 	assertUsageExit(t, webAppsCreateAccessArgs("--user", "user-1"), "--user requires --access limited")
 }
 
+func TestWebAppsCreateBlankUserFailsBeforeHTTP(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests++
+		http.Error(w, "no HTTP expected", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	setWebAppsCreateASCClient(t, server)
+
+	assertUsageExit(t, webAppsCreateAccessArgs("--access", "limited", "--user", "user-1", "--user", ""), `value cannot be empty`)
+	if requests != 0 {
+		t.Fatalf("expected no HTTP, got %d requests", requests)
+	}
+}
+
 func TestWebAppsCreateFullAccessRejectsUser(t *testing.T) {
 	assertUsageExit(t, webAppsCreateAccessArgs("--access", "full", "--user", "user-1"), "--user requires --access limited")
 }

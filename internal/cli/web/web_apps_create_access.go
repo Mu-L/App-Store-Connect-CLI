@@ -17,6 +17,15 @@ const (
 
 func normalizeAppCreateAccess(access string, userIDs []string) (string, []string, error) {
 	access = strings.ToLower(strings.TrimSpace(access))
+	for _, userID := range userIDs {
+		if strings.TrimSpace(userID) == "" {
+			return "", nil, shared.WithDiagnostic(
+				shared.UsageError("--user must not be empty"),
+				shared.DiagnosticInvalidInput,
+				"--user",
+			)
+		}
+	}
 	userIDs = uniqueAppCreateUserIDs(userIDs)
 
 	switch access {
@@ -134,9 +143,11 @@ func rollbackAppCreateVisibleApps(ctx context.Context, client *asc.Client, appID
 	if len(userIDs) == 0 {
 		return nil
 	}
+	rollbackCtx, cancel := shared.ContextWithTimeout(context.WithoutCancel(shared.ContextWithoutTimeout(ctx)))
+	defer cancel()
 	var rollbackErrs []error
 	for _, userID := range userIDs {
-		if err := client.RemoveUserVisibleApps(ctx, userID, []string{appID}); err != nil {
+		if err := client.RemoveUserVisibleApps(rollbackCtx, userID, []string{appID}); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("remove app access from user %q: %w", userID, err))
 		}
 	}

@@ -66,6 +66,47 @@ func TestRunAppsCreateAccessLimitedWithoutUserMakesNoHTTP(t *testing.T) {
 	}
 }
 
+func TestRunAppsCreateBlankUserMakesNoHTTP(t *testing.T) {
+	createCalled := false
+	origCreate := createWebAppFn
+	origResolve := resolveAppCreateSessionFn
+	t.Cleanup(func() {
+		createWebAppFn = origCreate
+		resolveAppCreateSessionFn = origResolve
+	})
+	createWebAppFn = func(ctx context.Context, client *webcore.Client, attrs webcore.AppCreateAttributes) (*webcore.AppResponse, error) {
+		createCalled = true
+		return nil, nil
+	}
+	resolveAppCreateSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		t.Fatal("did not expect web session lookup")
+		return nil, "", nil
+	}
+
+	var err error
+	_, stderr := captureOutput(t, func() {
+		err = RunAppsCreate(context.Background(), AppsCreateRunOptions{
+			Name:                     "My App",
+			BundleID:                 "com.example.app",
+			SKU:                      "SKU123",
+			Access:                   "limited",
+			Users:                    []string{"user-1", " "},
+			Output:                   "json",
+			DisableBundleIDPreflight: true,
+		})
+	})
+	if err == nil {
+		t.Fatal("expected blank --user error")
+	}
+	if !strings.Contains(errfmt.FormatStderr(err), "--user must not be empty") &&
+		!strings.Contains(stderr, "--user must not be empty") {
+		t.Fatalf("stderr = %q err = %v", stderr, err)
+	}
+	if createCalled {
+		t.Fatal("create should not run when --user is blank")
+	}
+}
+
 func TestRunAppsCreateUnknownUserMakesNoCreate(t *testing.T) {
 	createCalled := false
 	origCreate := createWebAppFn
@@ -517,7 +558,39 @@ func TestRunAppsCreateFullAccessDoesNotPostVisibleApps(t *testing.T) {
 	}
 }
 
+func TestRollbackAppCreateVisibleAppsUsesFreshTimeoutWhenParentCanceled(t *testing.T) {
+	fixture := handlertest.New(t)
+	deleted := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodDelete && req.URL.Path == "/v1/users/user-1/relationships/visibleApps" {
+			deleted = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		fixture.Respond(w, "unexpected request: %s %s", req.Method, req.URL.Path)
+	}))
+	defer server.Close()
+	client := newAppCreateTestClient(t, server)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := rollbackAppCreateVisibleApps(ctx, client, "app-123", []string{"user-1"}); err != nil {
+		t.Fatalf("rollback error: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected compensating DELETE despite canceled parent context")
+	}
+}
+
 func setAppCreateASCClient(t *testing.T, server *httptest.Server) {
+	t.Helper()
+	client := newAppCreateTestClient(t, server)
+	t.Cleanup(shared.SetASCClientFactoryForTesting(func() (*asc.Client, error) {
+		return client, nil
+	}))
+}
+
+func newAppCreateTestClient(t *testing.T, server *httptest.Server) *asc.Client {
 	t.Helper()
 	serverURL, err := url.Parse(server.URL)
 	if err != nil {
@@ -535,9 +608,7 @@ func setAppCreateASCClient(t *testing.T, server *httptest.Server) {
 	if err != nil {
 		t.Fatalf("create test client: %v", err)
 	}
-	t.Cleanup(shared.SetASCClientFactoryForTesting(func() (*asc.Client, error) {
-		return client, nil
-	}))
+	return client
 }
 
 func writeAppCreateTestPEM(t *testing.T, path string) {
