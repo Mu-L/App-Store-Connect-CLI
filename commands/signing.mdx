@@ -171,6 +171,8 @@ The command does not overwrite output files. This prevents a failed write from s
 
 Use `--certificate-type` only when the inferred type is not the one you need.
 
+Fetch and sync also accept `IOS_APP_INHOUSE` and `TVOS_APP_INHOUSE`. Those enterprise/in-house profiles install on devices that were never registered, so revoking that distribution certificate stops already-installed apps; revoking an App Store certificate does not pull binaries Apple already re-signed, and development profiles stay limited to registered devices.
+
 ## Create a certificate without losing its private key
 
 If no suitable certificate exists, generate the private key and certificate signing request locally while creating the App Store Connect certificate:
@@ -244,6 +246,16 @@ Do not print the private key or store it in shell history. The certificate finge
 ## Share a usable signing identity
 
 `signing sync push` fetches the chosen certificate and profile, verifies the local private identity against them, encrypts the assets, and publishes one Git commit. It works in a temporary clone and removes that clone after the run.
+
+### What the encrypted store protects
+
+Every `.enc` file uses AES-256-GCM. That authenticated encryption gives confidentiality plus integrity for the ciphertext: a modified file or a wrong password fails decryption. It does not replace a private, least-privilege Git repository or a generated high-entropy password. Anyone who has both can decrypt.
+
+Versioned envelopes (identity PKCS#12 files, identity-context records, and newly written provisioning profiles) derive a 32-byte key with scrypt (`N=32768`, `r=8`, `p=1`). A JSON metadata header is bound as AES-GCM additional authenticated data, so changing the recorded relative path, kind, sensitivity flag, certificate SHA-256, team, bundle ID, profile type, or KDF parameters fails the same way as a modified ciphertext. Identity metadata binds path, kind, sensitivity, certificate fingerprint, and team. Context metadata binds the bundle identifier and profile type. Profile envelopes bind bundle ID, profile type, resource ID, and UUID.
+
+Public certificate files, and older unversioned profile files still present in existing repositories, keep the stable PBKDF2 format: PBKDF2-HMAC-SHA256 with 100,000 iterations, a 16-byte salt, a 32-byte key, and no additional authenticated data. `sync pull` still reads those files. The normalized PKCS#12 payload is separately password-protected with the same sync password using PBKDF2.
+
+The store does not hide Git history, rewrite old commits when you rotate the password, or protect plaintext after a successful pull.
 
 ### Push a PKCS#12 identity
 
@@ -457,7 +469,7 @@ and follow your team's history-retention procedure.
 
 ### Current sync scope
 
-The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull selectors similarly use one profile type per invocation. Certificate renewal and stale encrypted-store deletion remain explicit operator work. Dedicated persistent keychain installation is separate from sync, creates a new keychain for one identity per invocation, and leaves provisioning-profile installation as an independent operation.
+The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull selectors similarly use one profile type per invocation. Certificate renewal and stale encrypted-store deletion remain explicit operator work; [Rotation and expiry](#rotation-and-expiry) has the ordering. Dedicated persistent keychain installation is separate from sync, creates a new keychain for one identity per invocation, and leaves provisioning-profile installation as an independent operation.
 
 ## CI example
 
@@ -467,11 +479,21 @@ available through identity installation, and one trap removes both password
 files and the persistent job keychain. Do not upload `.asc/signing/pulled` as a
 workflow artifact.
 
+`signing sync` is noninteractive for its own Git subprocesses: it sets
+`GIT_TERMINAL_PROMPT=0`, and when `GIT_SSH_COMMAND`, `GIT_SSH`, and
+`core.sshCommand` are unset it uses `GIT_SSH_COMMAND=ssh -o BatchMode=yes`. A
+custom `GIT_SSH_COMMAND` is preserved verbatim, so include `-o BatchMode=yes`
+(or an equivalent no-prompt wrapper) yourself; an SSH passphrase or unknown-host
+prompt will hang the runner. The job-level values below cover any other Git or
+SSH the step runs:
+
 ```yaml  theme={null}
 - name: Pull signing assets
   shell: bash
   env:
     SIGNING_SYNC_PASSWORD: ${{ secrets.SIGNING_SYNC_PASSWORD }}
+    GIT_TERMINAL_PROMPT: "0"
+    GIT_SSH_COMMAND: ssh -o BatchMode=yes
   run: |
     set +x
     umask 077
@@ -672,12 +694,21 @@ asc profiles local clean --expired --confirm
 
 Profiles cannot be edited. When a device, capability, certificate, or validity requirement changes, create a successor profile and move builds to it. Keep the old profile until every active build path has switched.
 
-For certificate rotation:
+`signing sync` does not renew certificates or delete stale encrypted files. Do that work in this order:
 
 1. Create the new certificate from a locally retained private key or a new generated CSR.
-2. Create or reconcile profiles that use the new certificate.
-3. Push the new identity and verified profiles to the encrypted repository.
-4. Pull and test on a clean worker before deactivating the old certificate.
+2. Create or reconcile successor profiles that use the new certificate.
+3. Push the new identity and verified profiles to the encrypted repository. Push advances the authenticated identity-context record; Git history still contains the previous ciphertext.
+4. Pull and test on a clean worker.
+5. Keep the old certificate until every active build path has switched. Deactivate it (`asc certificates update --id CERT_ID --activated false`) when you only need to stop new profile creation. Revoke it when the private key is compromised or you must invalidate remaining profiles and already-distributed artifacts that still depend on that certificate:
+
+```bash  theme={null}
+asc certificates revoke --id CERT_ID --confirm
+```
+
+`--confirm` is required. Revocation cannot be undone and cannot be reversed with `--activated`. It invalidates provisioning profiles that embed that certificate. Apple still counts a revoked certificate against the per-type limit until it expires, so revocation is not a way to free a slot immediately; see [Certificates](/commands/certificates).
+
+6. If HEAD should no longer carry unused `.enc` files, delete those paths in a later reviewed Git commit. Sync does not remove them. Password rotation re-encrypts the current branch head only; rewriting history is a separate incident-response decision.
 
 Git history retains encrypted prior assets, so repository access and password rotation deserve the same controls as other signing secrets. Do not commit the decrypted pull directory, password files, raw private keys, or PKCS#12 inputs.
 
@@ -715,9 +746,19 @@ Use an iOS ad hoc profile with registered devices and `get-task-allow` disabled.
 
 Read the plan blockers. Common causes include multiple eligible certificates, an entitlement whose capability settings cannot be verified, a team mismatch, an unsupported archive platform, or a mutation count over `--max-mutations`. Planning does not repair those conditions silently.
 
+### Expired or missing WWDR intermediate
+
+Apple issues developer certificates under a Worldwide Developer Relations (WWDR) intermediate. If that intermediate is expired or missing from the System keychain, `codesign` can reject a pulled identity that is otherwise valid. Eligible Xcode versions install current WWDR intermediates automatically; otherwise download them from the [Apple PKI](https://www.apple.com/certificateauthority/) page and install them into `/Library/Keychains/System.keychain`. `asc` does not fetch or install WWDR intermediates.
+
+### Identity is present but `codesign` cannot see it
+
+`codesign` only uses identities in keychains on the current user search list, and only when the private key's partition list includes `apple-tool:` and `apple:`. `asc signing keychain install --add-to-search-list --confirm` does both inside a new dedicated keychain. `asc signing run` prepends its temporary keychain for the child process, then restores the search list.
+
+If you imported the PKCS#12 some other way, run `security list-keychains` and confirm the destination is on that list. Partition-list updates against the login or a shared keychain can affect unrelated private keys; prefer `signing keychain install` or `signing run` so those changes stay in a dedicated keychain. Do not put a keychain password on a `security set-key-partition-list` command line.
+
 ## Related commands
 
-* [Certificates](/commands/certificates) - create, inspect, download, and deactivate public certificates
+* [Certificates](/commands/certificates) - create, inspect, download, deactivate, and revoke public certificates
 * [Profiles](/commands/profiles) - create, download, inspect, install, and clean profiles
 * [Bundle IDs](/commands/bundle-ids) - manage identifiers and capabilities
 * [Devices](/commands/devices) - list and register test devices
