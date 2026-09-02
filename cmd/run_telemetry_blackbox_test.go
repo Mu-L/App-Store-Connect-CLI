@@ -103,6 +103,13 @@ func TestRun_BuiltBinaryDoesNotWaitForBlockedTelemetryEndpoint(t *testing.T) {
 	release()
 
 	t.Logf("foreground duration=%s hold=%s", result.duration, blockedTelemetryHold)
+	if result.duration >= blockedTelemetryHold/2 {
+		t.Fatalf(
+			"blocked telemetry kept the process in the foreground for %s, want less than half of the %s endpoint hold",
+			result.duration,
+			blockedTelemetryHold,
+		)
+	}
 	var exitErr *exec.ExitError
 	if !errors.As(result.err, &exitErr) || exitErr.ExitCode() != ExitUsage {
 		t.Fatalf("built command error = %v, want exit %d; output=%s", result.err, ExitUsage, result.output)
