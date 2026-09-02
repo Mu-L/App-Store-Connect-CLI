@@ -79,6 +79,11 @@ func shouldSetReplacementDACL(control windows.SECURITY_DESCRIPTOR_CONTROL, dacl 
 		// DACL is reported as an error by DACL() before we get here.
 		return true, nil
 	}
+	if dacl.AceCount == 0 {
+		// An empty DACL denies all access. Skipping the copy would leave the
+		// replacement with its inherited parent ACL and broaden access.
+		return true, nil
+	}
 	if control&windows.SE_DACL_PROTECTED != 0 {
 		return true, nil
 	}
