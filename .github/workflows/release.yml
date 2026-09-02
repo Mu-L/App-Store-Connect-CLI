@@ -857,7 +857,7 @@ jobs:
               -e 'Could not resolve host|Failed to connect|Connection (refused|reset|timed out)' \
               -e 'Operation timed out|i/o timeout|TLS handshake timeout' \
               -e 'SSL_read|gnutls_handshake|Recv failure|Empty reply from server' \
-              -e 'early EOF|unexpected EOF|remote end hung up unexpectedly|RPC failed|unexpected disconnect' \
+              -e '(^|[^[:alnum:]_])EOF([^[:alnum:]_]|$)|remote end hung up unexpectedly|RPC failed|unexpected disconnect' \
               "$1"
           }
 
