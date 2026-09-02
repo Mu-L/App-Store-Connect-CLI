@@ -855,8 +855,8 @@ jobs:
             grep -qiE \
               -e 'rate[ -]?limit' \
               -e 'abuse detection' \
-              -e 'HTTP (429|5[0-9][0-9])' \
-              -e 'returned error: (429|5[0-9][0-9])' \
+              -e 'HTTP (408|429|5[0-9][0-9])' \
+              -e 'returned error: (408|429|5[0-9][0-9])' \
               -e 'Too Many Requests|Service Unavailable|Bad Gateway|Gateway Timeout|temporarily unavailable' \
               -e '(dial|read|write) tcp|Temporary failure in name resolution' \
               -e 'curl (6|7|16|18|28|35|52|55|56) ' \

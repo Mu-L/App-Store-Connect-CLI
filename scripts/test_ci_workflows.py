@@ -570,12 +570,15 @@ def assert_winget_retry_helper_behavior() -> None:
         "(https://docs.github.com/rest/overview/rate-limits-for-the-rest-api)",
         "HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
         "HTTP 429: Too Many Requests",
+        "HTTP 408: Request Timeout",
         "HTTP 502: Server Error",
         "GraphQL: API rate limit already exceeded for user ID 1",
         "fatal: unable to access 'https://github.com/example/winget-pkgs.git/': "
         "The requested URL returned error: 429",
         "fatal: unable to access 'https://github.com/example/winget-pkgs.git/': "
         "The requested URL returned error: 503",
+        "fatal: unable to access 'https://github.com/example/winget-pkgs.git/': "
+        "The requested URL returned error: 408",
         "error: RPC failed; curl 56 Recv failure: Connection reset by peer",
         "fatal: early EOF",
         "Get \"https://api.github.com/user\": EOF",
