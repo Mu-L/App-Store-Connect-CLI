@@ -935,8 +935,10 @@ func recheckPrivacyRemoteUsages(ctx context.Context, client privacyUsageReader, 
 
 // privacyApplyFailureMessage describes an interrupted apply without claiming
 // more than the receipt proves: an apply that committed nothing is not a
-// partial apply.
-func privacyApplyFailureMessage(appID string, payload privacyApplyOutput) string {
+// partial apply. The cause is rendered inline because the returned error is
+// already reported and would otherwise never reach the operator; every web
+// error string here is redacted and carries no raw Apple response body.
+func privacyApplyFailureMessage(appID string, payload privacyApplyOutput, cause error) string {
 	summary := fmt.Sprintf(
 		"%d committed, %d unknown, %d not applied",
 		len(payload.Actions),
@@ -947,11 +949,19 @@ func privacyApplyFailureMessage(appID string, payload privacyApplyOutput) string
 	if len(payload.Actions) == 0 {
 		lead = fmt.Sprintf("web privacy apply failed for app %s without a confirmed change", appID)
 	}
-	return fmt.Sprintf(
+	message := fmt.Sprintf(
 		"%s: %s; the receipt above lists each action, and rerunning the same command converges from current remote state",
 		lead,
 		summary,
 	)
+	if cause == nil {
+		return message
+	}
+	causeText := strings.TrimSpace(cause.Error())
+	if causeText == "" {
+		return message
+	}
+	return fmt.Sprintf("%s; cause: %s", message, causeText)
 }
 
 // resolvePrivacyApplyResult reclassifies attempted-but-unconfirmed actions
@@ -1981,10 +1991,11 @@ Examples:
 				); renderErr != nil {
 					return renderErr
 				}
-				message := privacyApplyFailureMessage(resolvedAppID, payload)
+				cause := withWebAuthHint(applyErr, "web privacy apply")
+				message := privacyApplyFailureMessage(resolvedAppID, payload, cause)
 				fmt.Fprintf(os.Stderr, "Error: %s\n", shared.SanitizeTerminal(message))
 				return shared.NewReportedError(
-					shared.NewErrorWithCause(fmt.Errorf("%s", message), withWebAuthHint(applyErr, "web privacy apply")),
+					shared.NewErrorWithCause(fmt.Errorf("%s", message), cause),
 				)
 			}
 			return shared.PrintOutputWithRenderers(

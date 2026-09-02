@@ -1748,6 +1748,9 @@ func TestWebPrivacyApplyReportsPartialReceiptWhenCreateFailsMidSequence(t *testi
 	if !strings.Contains(stderr, "partially applied") {
 		t.Fatalf("stderr = %q, want a partial-apply diagnostic", stderr)
 	}
+	if !strings.Contains(stderr, "cause: web privacy apply failed: web api error (status 500)") {
+		t.Fatalf("stderr = %q, want the redacted Apple failure cause", stderr)
+	}
 }
 
 func TestWebPrivacyApplyFailsClosedOnStaleCatalogTokenBeforeAnyMutation(t *testing.T) {
@@ -2147,7 +2150,7 @@ func TestPrivacyApplyFailureMessageDistinguishesNoConfirmedChange(t *testing.T) 
 	partial := privacyApplyFailureMessage("123456789", privacyApplyOutput{
 		Actions:           []privacyApplyAction{{Action: "update"}},
 		NotAppliedActions: []privacyApplyAction{{Action: "create"}},
-	})
+	}, fmt.Errorf("web privacy apply failed: web api error (status 500), codes=[ENTITY_ERROR]"))
 	if !strings.Contains(partial, "partially applied changes for app 123456789") {
 		t.Fatalf("unexpected partial message: %q", partial)
 	}
@@ -2155,9 +2158,13 @@ func TestPrivacyApplyFailureMessageDistinguishesNoConfirmedChange(t *testing.T) 
 		t.Fatalf("partial message must carry the receipt counts: %q", partial)
 	}
 
+	if !strings.Contains(partial, "cause: web privacy apply failed: web api error (status 500), codes=[ENTITY_ERROR]") {
+		t.Fatalf("partial message must carry the reported cause: %q", partial)
+	}
+
 	nothing := privacyApplyFailureMessage("123456789", privacyApplyOutput{
 		NotAppliedActions: []privacyApplyAction{{Action: "create"}, {Action: "delete"}},
-	})
+	}, nil)
 	if strings.Contains(nothing, "partially applied") {
 		t.Fatalf("an apply that committed nothing is not a partial apply: %q", nothing)
 	}
