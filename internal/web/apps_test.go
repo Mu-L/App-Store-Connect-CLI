@@ -134,6 +134,106 @@ func TestDeleteAppSendsRemovedPatch(t *testing.T) {
 	}
 }
 
+func TestDeleteAppEmptyResponseDoesNotSynthesizeID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		baseURL:    server.URL,
+	}
+	app, err := client.DeleteApp(context.Background(), "1234567890")
+	if err != nil {
+		t.Fatalf("DeleteApp error: %v", err)
+	}
+	if app == nil {
+		t.Fatal("expected parsed response")
+	}
+	if strings.TrimSpace(app.Data.ID) != "" {
+		t.Fatalf("empty PATCH payload must not synthesize data.id from the request, got %q", app.Data.ID)
+	}
+}
+
+func TestGetAppRemovalStateRequestsCapturedFields(t *testing.T) {
+	var gotPath, gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"type": "apps",
+				"id": "1234567890",
+				"attributes": {
+					"name": "Throwaway",
+					"bundleId": "com.example.throwaway",
+					"removed": false,
+					"appStoreLegacyStatus": "PREPARE_FOR_SUBMISSION",
+					"marketplace": "APP_STORE"
+				},
+				"relationships": {
+					"displayableVersions": {
+						"data": [{"type": "appStoreVersions", "id": "version-1"}]
+					}
+				}
+			},
+			"included": [{
+				"type": "appStoreVersions",
+				"id": "version-1",
+				"attributes": {
+					"platform": "IOS",
+					"versionString": "1.0",
+					"appStoreState": "PREPARE_FOR_SUBMISSION"
+				}
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		baseURL:    server.URL,
+	}
+	state, err := client.GetAppRemovalState(context.Background(), "1234567890")
+	if err != nil {
+		t.Fatalf("GetAppRemovalState error: %v", err)
+	}
+	if gotPath != "/apps/1234567890" {
+		t.Fatalf("expected /apps/1234567890, got %s", gotPath)
+	}
+	if !strings.Contains(gotQuery, "removed") || !strings.Contains(gotQuery, "appStoreLegacyStatus") || !strings.Contains(gotQuery, "marketplace") {
+		t.Fatalf("expected captured app fields in query, got %q", gotQuery)
+	}
+	if !strings.Contains(gotQuery, "displayableVersions") {
+		t.Fatalf("expected displayableVersions include, got %q", gotQuery)
+	}
+	if state.ID != "1234567890" || state.Name != "Throwaway" || state.BundleID != "com.example.throwaway" {
+		t.Fatalf("unexpected state identity: %+v", state)
+	}
+	if state.Removed || !state.RemovedKnown {
+		t.Fatalf("expected removed=false from server, got %+v", state)
+	}
+	if state.AppStoreLegacyStatus != "PREPARE_FOR_SUBMISSION" || state.Marketplace != "APP_STORE" {
+		t.Fatalf("unexpected status fields: %+v", state)
+	}
+	if len(state.VersionStates) != 1 || state.VersionStates[0] != "PREPARE_FOR_SUBMISSION" {
+		t.Fatalf("unexpected version states: %+v", state.VersionStates)
+	}
+}
+
+func TestGetAppRemovalStateRequiresID(t *testing.T) {
+	client := &Client{}
+	if _, err := client.GetAppRemovalState(context.Background(), "  "); err == nil {
+		t.Fatal("expected missing app id error")
+	}
+}
+
 func TestDeleteAppRequiresID(t *testing.T) {
 	client := &Client{}
 	if _, err := client.DeleteApp(context.Background(), "  "); err == nil {

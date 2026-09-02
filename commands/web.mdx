@@ -17,6 +17,9 @@ asc web api-keys create --name "Release automation" --output-dir ~/.asc/keys
 # Create an app through the web flow
 asc web apps create --name "My App" --bundle-id "com.example.app" --sku "MYAPP123"
 
+# Check whether an app can be removed (no mutation)
+asc web apps delete --app "1234567890" --dry-run
+
 # Register and list an App Group unavailable through the public API
 asc web app-groups create --name "My App Shared" --identifier "group.com.example.app.shared" --confirm
 asc web app-groups list --output table
@@ -106,12 +109,14 @@ App management workflows over Apple web-session endpoints.
 Available commands:
 
 * `asc web apps create` - create a new app via the web flow
+* `asc web apps delete` - remove an app after preflighting observable eligibility; use `--dry-run` to check without mutating
 * `asc web apps availability create` - bootstrap initial territory availability
 * `asc web apps medical-device set` - manage the regulated medical device declaration
 
 Notes:
 
 * `asc web apps create` is the canonical app-creation path in the `web` family
+* `asc web apps delete` preflights observable eligibility and re-reads the app before reporting success; `--confirm` is required unless `--dry-run`
 * `asc web apps medical-device set` currently supports only `--declared false`
 
 ### `asc web sandbox`
