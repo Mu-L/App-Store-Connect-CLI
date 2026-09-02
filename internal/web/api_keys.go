@@ -3,8 +3,12 @@ package web
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -129,6 +133,9 @@ func (c *Client) DownloadAPIKey(ctx context.Context, keyID string) ([]byte, erro
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("%w: failed to parse JSON: %w", ErrAPIKeyResponseInvalid, err)
 	}
+	if strings.TrimSpace(payload.Data.ID) != keyID {
+		return nil, fmt.Errorf("%w: response resource id did not match the created key", ErrAPIKeyResponseInvalid)
+	}
 	encoded := strings.TrimSpace(payload.Data.Attributes.PrivateKey)
 	if encoded == "" {
 		return nil, fmt.Errorf("%w: response did not include a P8", ErrAPIKeyResponseInvalid)
@@ -140,10 +147,36 @@ func (c *Client) DownloadAPIKey(ctx context.Context, keyID string) ([]byte, erro
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to decode P8: %w", ErrAPIKeyResponseInvalid, err)
 	}
-	if !bytes.Contains(decoded, []byte("-----BEGIN PRIVATE KEY-----")) || !bytes.Contains(decoded, []byte("-----END PRIVATE KEY-----")) {
-		return nil, fmt.Errorf("%w: response contained an invalid P8", ErrAPIKeyResponseInvalid)
+	if err := validateAPIKeyP8(decoded); err != nil {
+		return nil, err
 	}
-	return decoded, nil
+	return bytes.TrimSpace(decoded), nil
+}
+
+func validateAPIKeyP8(decoded []byte) error {
+	trimmed := bytes.TrimSpace(decoded)
+	if !bytes.HasPrefix(trimmed, []byte("-----BEGIN ")) {
+		return fmt.Errorf("%w: response contained an invalid P8", ErrAPIKeyResponseInvalid)
+	}
+	block, rest := pem.Decode(trimmed)
+	if block == nil {
+		return fmt.Errorf("%w: response contained an invalid P8", ErrAPIKeyResponseInvalid)
+	}
+	if block.Type != "PRIVATE KEY" {
+		return fmt.Errorf("%w: response P8 is not PKCS#8", ErrAPIKeyResponseInvalid)
+	}
+	if len(bytes.TrimSpace(rest)) > 0 {
+		return fmt.Errorf("%w: response contained extra PEM data", ErrAPIKeyResponseInvalid)
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("%w: response P8 is not a usable PKCS#8 private key", ErrAPIKeyResponseInvalid)
+	}
+	ecKey, ok := parsed.(*ecdsa.PrivateKey)
+	if !ok || ecKey.Curve != elliptic.P256() {
+		return fmt.Errorf("%w: response P8 is not a P-256 EC private key", ErrAPIKeyResponseInvalid)
+	}
+	return nil
 }
 
 // IsAPIKeyDownloadRetryable reports whether a newly created key download may
