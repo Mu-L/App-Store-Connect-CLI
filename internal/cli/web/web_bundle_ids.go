@@ -33,7 +33,7 @@ func WebBundleIDsCommand() *ffcli.Command {
 		ShortHelp:  "Manage Bundle IDs via web-session endpoints.",
 		LongHelp: `WEB SESSION WORKFLOWS
 
-Manage Bundle ID operations that are only available through Apple web-session web-session endpoints.
+Manage Bundle ID operations that are only available through Apple web-session endpoints.
 
 `,
 		FlagSet:   fs,
