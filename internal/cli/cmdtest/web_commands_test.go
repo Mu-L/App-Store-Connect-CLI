@@ -145,6 +145,26 @@ func TestWebXcodeCloudWorkflowsListMissingRequiredFlags(t *testing.T) {
 	}
 }
 
+func TestWebXcodeCloudWorkflowsListRejectsPositionalArguments(t *testing.T) {
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	_, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"web", "xcode-cloud", "workflows", "list", "--product-id", "prod-1", "extra"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("expected ErrHelp, got %v", runErr)
+	}
+	if !strings.Contains(stderr, "web xcode-cloud workflows list does not accept positional arguments") {
+		t.Fatalf("expected positional-args error, got %q", stderr)
+	}
+}
+
 func TestWebAppsCreateMissingRequiredFlags(t *testing.T) {
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
