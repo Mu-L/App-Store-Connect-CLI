@@ -589,6 +589,12 @@ def assert_winget_retry_helper_behavior() -> None:
         "LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to github.com:443",
         "fatal: unable to access 'https://github.com/example/winget-pkgs.git/': "
         "OpenSSL SSL_connect: Connection reset by peer in connection to github.com:443",
+        "Get \"https://api.github.com/user\": dial tcp 140.82.112.6:443: connect: network is unreachable",
+        "Get \"https://api.github.com/user\": dial tcp 140.82.112.6:443: connect: no route to host",
+        "Post \"https://api.github.com/graphql\": read tcp 10.0.0.2:51234->140.82.112.6:443: read: connection reset by peer",
+        "fatal: unable to access 'https://github.com/example/winget-pkgs.git/': "
+        "Failure when receiving data from the peer",
+        "error: RPC failed; curl 18 transfer closed with outstanding read data remaining",
     )
     for message in transient:
         result, made = run_winget_retry_helper(helpers, message, succeed_on=3)
