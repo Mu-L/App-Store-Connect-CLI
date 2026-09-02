@@ -252,9 +252,13 @@ func normalizeJSONValue(value any) (any, bool) {
 	return decoded, true
 }
 
-// jsonSubset reports whether requested is structurally contained in current:
-// objects may carry extra keys on the current side, arrays must have the same
-// length and are matched by their "key" field when every element has one.
+// jsonSubset reports whether requested is structurally contained in current.
+// Objects may carry extra keys on the current side. Keyed arrays (every
+// element is an object with a string "key") are matched entry by entry on that
+// key: requested keys must be unique, each requested entry must be contained in
+// the current entry with the same key, and Apple may list extra entries such as
+// the options the caller did not name. Unkeyed arrays must match in length and
+// element order.
 func jsonSubset(requested, current any) bool {
 	switch requestedValue := requested.(type) {
 	case map[string]any:
@@ -271,25 +275,31 @@ func jsonSubset(requested, current any) bool {
 		return true
 	case []any:
 		currentArray, ok := current.([]any)
-		if !ok || len(currentArray) != len(requestedValue) {
+		if !ok {
 			return false
 		}
-		if currentByKey, ok := jsonObjectsByKey(currentArray); ok {
-			for _, element := range requestedValue {
-				object, ok := element.(map[string]any)
-				if !ok {
-					return false
-				}
-				key, ok := object["key"].(string)
-				if !ok {
-					return false
-				}
+		if len(requestedValue) == 0 {
+			return len(currentArray) == 0
+		}
+		if jsonArrayIsKeyed(requestedValue) {
+			requestedByKey, ok := jsonObjectsByKey(requestedValue)
+			if !ok {
+				return false
+			}
+			currentByKey, ok := jsonObjectsByKey(currentArray)
+			if !ok {
+				return false
+			}
+			for key, object := range requestedByKey {
 				match, ok := currentByKey[key]
 				if !ok || !jsonSubset(object, match) {
 					return false
 				}
 			}
 			return true
+		}
+		if len(currentArray) != len(requestedValue) {
+			return false
 		}
 		for index, element := range requestedValue {
 			if !jsonSubset(element, currentArray[index]) {
@@ -302,17 +312,30 @@ func jsonSubset(requested, current any) bool {
 	}
 }
 
-func jsonObjectsByKey(values []any) (map[string]map[string]any, bool) {
-	byKey := make(map[string]map[string]any, len(values))
+func jsonArrayIsKeyed(values []any) bool {
 	for _, value := range values {
 		object, ok := value.(map[string]any)
 		if !ok {
-			return nil, false
+			return false
 		}
-		key, ok := object["key"].(string)
-		if !ok {
-			return nil, false
+		if _, ok := object["key"].(string); !ok {
+			return false
 		}
+	}
+	return true
+}
+
+// jsonObjectsByKey indexes keyed objects by their "key" field. It reports false
+// when an element is not a keyed object or when a key repeats, so duplicate
+// keys on either side are never reported as already applied.
+func jsonObjectsByKey(values []any) (map[string]map[string]any, bool) {
+	if !jsonArrayIsKeyed(values) {
+		return nil, false
+	}
+	byKey := make(map[string]map[string]any, len(values))
+	for _, value := range values {
+		object := value.(map[string]any)
+		key := object["key"].(string)
 		if _, duplicate := byKey[key]; duplicate {
 			return nil, false
 		}

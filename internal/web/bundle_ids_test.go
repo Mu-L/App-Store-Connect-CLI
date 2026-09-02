@@ -513,6 +513,97 @@ func TestSyncAppClipBundleIDCapabilitySkipsPatchWhenExplicitSettingsMatchEnriche
 	}
 }
 
+const multiOptionSettingsAppClipBundleIDGetBody = `{
+	"data":{
+		"id":"clip-bundle",
+		"type":"bundleIds",
+		"attributes":{"name":"Example Clip","identifier":"com.example.app.Clip"},
+		"relationships":{
+			"bundleIdCapabilities":{"data":[{"id":"icloud-capability","type":"bundleIdCapabilities"}]}
+		}
+	},
+	"included":[
+		{
+			"id":"icloud-capability",
+			"type":"bundleIdCapabilities",
+			"attributes":{
+				"enabled":true,
+				"settings":[{
+					"key":"ICLOUD_VERSION",
+					"name":"iCloud Version",
+					"options":[
+						{"key":"XCODE_5","name":"Compatible with Xcode 5","enabled":false},
+						{"key":"XCODE_6","name":"Include CloudKit support","enabled":true}
+					]
+				}]
+			},
+			"relationships":{
+				"capability":{"data":{"type":"capabilities","id":"ICLOUD"}},
+				"parentBundleId":{"data":{"type":"bundleIds","id":"parent-bundle"}}
+			}
+		}
+	]
+}`
+
+func TestSyncAppClipBundleIDCapabilitySkipsPatchWhenCurrentSettingsCarryExtraKeyedOptions(t *testing.T) {
+	var patchCount atomic.Int32
+	var patchBody []byte
+	client := newSyncAppClipBundleIDTestServer(t, multiOptionSettingsAppClipBundleIDGetBody, &patchCount, &patchBody)
+
+	enabled := true
+	result, err := client.SyncAppClipBundleIDCapability(context.Background(), AppClipBundleIDCapabilitySyncRequest{
+		BundleID:         "clip-bundle",
+		ParentBundleID:   "parent-bundle",
+		Capability:       "ICLOUD",
+		Enabled:          true,
+		SettingsProvided: true,
+		Settings: []BundleIDCapabilitySetting{{
+			Key:     "ICLOUD_VERSION",
+			Options: []BundleIDCapabilityOption{{Key: "XCODE_6", Enabled: &enabled}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SyncAppClipBundleIDCapability error: %v", err)
+	}
+	if got := patchCount.Load(); got != 0 {
+		t.Fatalf("expected no PATCH when the requested option already matches among extra keyed options, got %d: %s", got, patchBody)
+	}
+	if result.Changed || result.Status != "already-synced" {
+		t.Fatalf("expected already-synced receipt, got %+v", result)
+	}
+}
+
+func TestSyncAppClipBundleIDCapabilityPatchesWhenRequestedKeysAreDuplicated(t *testing.T) {
+	var patchCount atomic.Int32
+	var patchBody []byte
+	client := newSyncAppClipBundleIDTestServer(t, multiOptionSettingsAppClipBundleIDGetBody, &patchCount, &patchBody)
+
+	enabled := true
+	result, err := client.SyncAppClipBundleIDCapability(context.Background(), AppClipBundleIDCapabilitySyncRequest{
+		BundleID:         "clip-bundle",
+		ParentBundleID:   "parent-bundle",
+		Capability:       "ICLOUD",
+		Enabled:          true,
+		SettingsProvided: true,
+		Settings: []BundleIDCapabilitySetting{{
+			Key: "ICLOUD_VERSION",
+			Options: []BundleIDCapabilityOption{
+				{Key: "XCODE_6", Enabled: &enabled},
+				{Key: "XCODE_6", Enabled: &enabled},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SyncAppClipBundleIDCapability error: %v", err)
+	}
+	if got := patchCount.Load(); got != 1 {
+		t.Fatalf("expected duplicate requested keys to never be reported as already synced, got %d PATCH requests", got)
+	}
+	if !result.Changed || result.Status != "synced" {
+		t.Fatalf("expected synced receipt, got %+v", result)
+	}
+}
+
 func TestSyncAppClipBundleIDCapabilityPatchesWhenRequestedOptionStateDiffers(t *testing.T) {
 	var patchCount atomic.Int32
 	var patchBody []byte
