@@ -16,6 +16,7 @@ func registerAllOutputRenderers() {
 	registerRows(xcodeInstallResultRows)
 	registerDirect(webAgreementsStatusTables)
 	registerRows(webAgreementsAcceptRows)
+	registerRows(webAppDeleteRows)
 	registerRows(webSubscriptionMonthlyCommitmentBootstrapRows)
 	registerRows(webXcodeCloudWorkflowsListRows)
 	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {
@@ -34,6 +35,7 @@ func registerAllOutputRenderers() {
 	registerRowsWithSingleResourceAdapter(appsRows)
 	registerDirect(appsPublishedReportTables)
 	registerRows(appRenameResultRows)
+	registerRows(webAppCreateResultRows)
 	registerRows(appsWallRows)
 	registerRowsWithSingleResourceAdapter(appClipsRows)
 	registerRowsWithSingleToListAdapter[AppCategoryResponse, AppCategoriesResponse](appCategoriesRows)
