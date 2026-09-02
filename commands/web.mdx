@@ -32,7 +32,11 @@ asc web apps availability create --app "123456789" --territory "USA,GBR" --avail
 # Remove an approved auto-renewable subscription from sale
 asc web subscriptions availability remove-from-sale --subscription-id "SUB_ID" --confirm
 
+# Review the App Store Regulations & Permits declarations that gate submission
+asc web apps declarations list --app "123456789" --output table
+
 # Declare that an app is not a regulated medical device
+asc web apps medical-device view --app "123456789"
 asc web apps medical-device set --app "123456789" --declared false
 
 # Plan and apply privacy declaration changes
@@ -142,6 +146,8 @@ Available commands:
 * `asc web apps create` - create a new app via the web flow
 * `asc web apps delete` - remove an app after preflighting observable eligibility; use `--dry-run` to check without mutating
 * `asc web apps availability create` - bootstrap initial territory availability
+* `asc web apps declarations list` - list the App Store Regulations & Permits declarations tracked for an app
+* `asc web apps medical-device view` - read the stored regulated medical device declaration
 * `asc web apps medical-device set` - manage the regulated medical device declaration
 
 Notes:
@@ -149,7 +155,9 @@ Notes:
 * `asc web apps create` is the canonical app-creation path in the `web` family
 * `asc web apps delete` preflights observable eligibility and re-reads the app before reporting success; `--confirm` is required unless `--dry-run`
 * `asc web apps create --access full|limited [--user USER_ID]...` applies team access after create through the public users API. Limited access requires at least one `--user` with limited app visibility (not all-apps access). Omitting `--access` keeps the historical create request body.
-* `asc web apps medical-device set` currently supports only `--declared false`
+* `asc web apps declarations list` is read-only and reports each requirement with its status; a requirement still at `PENDING_COLLECTION` blocks App Store submission
+* `asc web apps medical-device set` currently supports only `--declared false`, reads the stored declaration first, and reports `changed: false` when no write was needed
+* Declarations other than the regulated medical device one, including the personal-service declaration and EU DSA trader status, are still website-only; `asc web apps declarations list` shows their status without answering them
 
 ### `asc web sandbox`
 
