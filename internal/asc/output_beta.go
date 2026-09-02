@@ -321,16 +321,6 @@ type BetaTesterUsageTesterInfo struct {
 	InviteType string `json:"inviteType,omitempty"`
 }
 
-func betaTesterUsagesResponseTables(v *BetaTesterUsagesResponse, render func([]string, [][]string)) error {
-	page := &BetaTesterUsagesPage{}
-	if v != nil && len(v.Data) > 0 {
-		if err := json.Unmarshal(v.Data, page); err != nil {
-			return fmt.Errorf("parse tester usage metrics: %w", err)
-		}
-	}
-	return betaTesterUsagesPageTables(page, render)
-}
-
 func betaTesterUsagesPageTables(v *BetaTesterUsagesPage, render func([]string, [][]string)) error {
 	type metricEntry struct {
 		DataPoints []struct {

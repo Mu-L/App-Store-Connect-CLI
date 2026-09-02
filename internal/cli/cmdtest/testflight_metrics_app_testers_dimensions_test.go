@@ -162,3 +162,47 @@ func TestTestFlightMetricsAppTestersObjectFormResolveTesters(t *testing.T) {
 		t.Fatalf("unexpected tester-1 sidecar entry: %+v", tester)
 	}
 }
+
+func TestTestFlightTestersMetricsTableDoesNotUseAppTestersRenderer(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+	body := `{"data":[{"type":"betaTesterUsages","dataPoints":[{"start":"2026-08-01T00:00:00Z","end":"2026-08-02T00:00:00Z","values":{"sessionCount":9}}],"dimensions":{"apps":{"data":{"type":"apps","id":"app-1"}}}}],"links":{}}`
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", req.Method)
+		}
+		if req.URL.Path != "/v1/betaTesters/tester-1/metrics/betaTesterUsages" {
+			t.Fatalf("expected per-tester metrics path, got %s", req.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"testflight", "testers", "metrics", "--tester-id", "tester-1", "--app", "app-123", "--output", "table"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if err := root.Run(context.Background()); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	if strings.Contains(stdout, "Tester ID") {
+		t.Fatalf("per-tester metrics table must not use the app-testers renderer, got %q", stdout)
+	}
+	if !strings.Contains(stdout, `"apps"`) || !strings.Contains(stdout, `"app-1"`) {
+		t.Fatalf("expected JSON fallback with apps dimension, got %q", stdout)
+	}
+}

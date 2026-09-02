@@ -177,7 +177,7 @@ Examples:
 				return shared.PrintOutput(page, *output.Output, *output.Pretty)
 			}
 
-			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
+			return printAppTesterUsages(resp, *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -246,6 +246,24 @@ func paginateBetaTesterUsages(ctx context.Context, client *asc.Client, appID str
 	}
 
 	return combined, nil
+}
+
+func printAppTesterUsages(resp *asc.BetaTesterUsagesResponse, format string, pretty bool) error {
+	resolved, err := shared.ValidateOutputFormat(format, pretty)
+	if err != nil {
+		return err
+	}
+	if resolved == "table" || resolved == "markdown" {
+		page := &asc.BetaTesterUsagesPage{}
+		if resp != nil && len(resp.Data) > 0 {
+			page, err = parseBetaTesterUsagesPage(resp.Data)
+			if err != nil {
+				return err
+			}
+		}
+		return shared.PrintOutput(page, resolved, pretty)
+	}
+	return shared.PrintOutput(resp, format, pretty)
 }
 
 func parseBetaTesterUsagesPage(data json.RawMessage) (*asc.BetaTesterUsagesPage, error) {
