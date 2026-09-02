@@ -3,7 +3,9 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -319,7 +321,19 @@ func (c *Client) DeleteDeveloperAppGroup(ctx context.Context, request DeveloperA
 		"applicationGroup": {request.GroupID},
 	}, true)
 	if err != nil {
-		return nil, err
+		if !isAmbiguousDeveloperPortalWriteFailure(err) {
+			return nil, err
+		}
+		// The request may have reached the portal; settle by re-reading before
+		// telling the operator whether a retry is safe.
+		remaining, readErr := c.listDeveloperAppGroupPages(ctx, teamID, true, true)
+		if readErr != nil {
+			return nil, &DeveloperAppGroupUnverifiedError{Err: fmt.Errorf("%w; the delete may have been applied but verification also failed: %w", err, readErr)}
+		}
+		if _, stillListed := findDeveloperAppGroup(remaining, request.GroupID); stillListed {
+			return nil, err
+		}
+		return developerAppGroupDeleteReceipt(group), nil
 	}
 	var response developerPortalLegacyResponse
 	if err := json.Unmarshal(body, &response); err != nil {
@@ -343,13 +357,34 @@ func (c *Client) DeleteDeveloperAppGroup(ctx context.Context, request DeveloperA
 	if _, stillListed := findDeveloperAppGroup(remaining, request.GroupID); stillListed {
 		return nil, &DeveloperAppGroupUnverifiedError{Err: fmt.Errorf("developer portal accepted the delete but App Group %q is still listed; re-run 'asc web app-groups list' before retrying", request.GroupID)}
 	}
+	return developerAppGroupDeleteReceipt(group), nil
+}
+
+func developerAppGroupDeleteReceipt(group DeveloperAppGroup) *asc.WebAppGroupDeleteResult {
 	return &asc.WebAppGroupDeleteResult{
 		GroupID:    group.ID,
 		Identifier: group.Identifier,
 		Name:       group.Name,
 		Deleted:    true,
 		Status:     "deleted",
-	}, nil
+	}
+}
+
+// isAmbiguousDeveloperPortalWriteFailure reports whether a write failed in a
+// way that leaves it unknown whether the portal applied it: the request was
+// handed to the transport but no verdict came back. Explicit HTTP statuses and
+// pre-send failures such as missing CSRF headers are not ambiguous.
+func isAmbiguousDeveloperPortalWriteFailure(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return false
+	}
+	var urlErr *url.Error
+	return errors.As(err, &urlErr) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled)
 }
 
 func findDeveloperAppGroup(result *DeveloperAppGroupsListResult, groupID string) (DeveloperAppGroup, bool) {
@@ -614,10 +649,7 @@ func (c *Client) AssignDeveloperAppGroup(ctx context.Context, request DeveloperA
 	if !slices.Contains(desired, request.GroupID) {
 		desired = append(desired, request.GroupID)
 	}
-	if err := c.patchDeveloperAppGroups(ctx, current, true, desired); err != nil {
-		return nil, err
-	}
-	if err := c.verifyDeveloperAppGroups(ctx, request.BundleID, true, desired); err != nil {
+	if err := c.applyDeveloperAppGroups(ctx, current, state, true, desired); err != nil {
 		return nil, err
 	}
 	return &DeveloperAppGroupAssignResult{BundleID: request.BundleID, GroupID: request.GroupID, Changed: true, Status: "assigned"}, nil
@@ -655,10 +687,7 @@ func (c *Client) UnassignDeveloperAppGroup(ctx context.Context, request Develope
 		}
 	}
 	enabled := state.Enabled && len(desired) > 0
-	if err := c.patchDeveloperAppGroups(ctx, current, enabled, desired); err != nil {
-		return nil, err
-	}
-	if err := c.verifyDeveloperAppGroups(ctx, request.BundleID, enabled, desired); err != nil {
+	if err := c.applyDeveloperAppGroups(ctx, current, state, enabled, desired); err != nil {
 		return nil, err
 	}
 	return &asc.WebAppGroupUnassignResult{BundleID: request.BundleID, GroupID: request.GroupID, RemainingGroupIDs: desired, Changed: true, Status: "unassigned"}, nil
@@ -693,15 +722,40 @@ func (c *Client) SetDeveloperAppGroups(ctx context.Context, request DeveloperApp
 		result.Status = "unchanged"
 		return result, nil
 	}
-	if err := c.patchDeveloperAppGroups(ctx, current, true, desired); err != nil {
-		return nil, err
-	}
-	if err := c.verifyDeveloperAppGroups(ctx, request.BundleID, true, desired); err != nil {
+	if err := c.applyDeveloperAppGroups(ctx, current, state, true, desired); err != nil {
 		return nil, err
 	}
 	result.Changed = true
 	result.Status = "updated"
 	return result, nil
+}
+
+// applyDeveloperAppGroups PATCHes the desired APP_GROUPS state and verifies it
+// by re-reading the Bundle ID. A write that fails without a verdict is settled
+// by the same read: the desired state means it applied, the prior state means
+// it did not and the original error is safe to retry, anything else is
+// unverified.
+func (c *Client) applyDeveloperAppGroups(ctx context.Context, current developerBundleIDResponse, before developerAppGroupsState, enabled bool, desired []string) error {
+	bundleID := current.Data.ID
+	writeErr := c.patchDeveloperAppGroups(ctx, current, enabled, desired)
+	if writeErr == nil {
+		return c.verifyDeveloperAppGroups(ctx, bundleID, enabled, desired)
+	}
+	if !isAmbiguousDeveloperPortalWriteFailure(writeErr) {
+		return writeErr
+	}
+	_, state, readErr := c.loadDeveloperBundleIDAppGroups(ctx, bundleID)
+	if readErr != nil {
+		return &DeveloperAppGroupUnverifiedError{Err: fmt.Errorf("%w; the update may have been applied but verification also failed: %w", writeErr, readErr)}
+	}
+	switch {
+	case state.matches(enabled, desired):
+		return nil
+	case state.matches(before.Enabled, before.GroupIDs):
+		return writeErr
+	default:
+		return &DeveloperAppGroupUnverifiedError{Err: fmt.Errorf("%w; Bundle ID %q now reports APP_GROUPS enabled=%t with groups [%s], which is neither the previous nor the requested state", writeErr, bundleID, state.Enabled, strings.Join(state.GroupIDs, ", "))}
+	}
 }
 
 func (c *Client) patchDeveloperAppGroups(ctx context.Context, current developerBundleIDResponse, enabled bool, desired []string) error {

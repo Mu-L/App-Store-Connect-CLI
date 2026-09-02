@@ -932,6 +932,186 @@ func TestSetDeveloperAppGroupsFailsWhenVerificationDiffers(t *testing.T) {
 	}
 }
 
+// abortDeveloperPortalResponse drops the connection before any response is
+// written, which the client observes as a transport failure after the request
+// was sent.
+func abortDeveloperPortalResponse() (*http.Response, error) {
+	panic(http.ErrAbortHandler)
+}
+
+func TestSetDeveloperAppGroupsSettlesAmbiguousWriteFailure(t *testing.T) {
+	tests := map[string]struct {
+		write        func() (*http.Response, error)
+		read         func() (*http.Response, error)
+		wantChanged  bool
+		wantErr      string
+		wantVerified bool
+		wantRequests int
+	}{
+		"transport failure but the read shows the write applied": {
+			write: abortDeveloperPortalResponse,
+			read: func() (*http.Response, error) {
+				return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP2"), nil), nil
+			},
+			wantChanged:  true,
+			wantRequests: 5,
+		},
+		"transport failure and the read shows the prior state": {
+			write: abortDeveloperPortalResponse,
+			read: func() (*http.Response, error) {
+				return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1"), nil), nil
+			},
+			wantErr:      "request to Developer Portal failed",
+			wantRequests: 5,
+		},
+		"transport failure and the read fails": {
+			write:        abortDeveloperPortalResponse,
+			read:         abortDeveloperPortalResponse,
+			wantErr:      "request to Developer Portal failed",
+			wantVerified: true,
+			wantRequests: 5,
+		},
+		"explicit refusal is not re-read": {
+			write: func() (*http.Response, error) {
+				return developerPortalTestResponse(http.StatusConflict, `{"errors":[{"status":"409","detail":"conflict"}]}`, nil), nil
+			},
+			wantErr:      "409",
+			wantRequests: 4,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			seen := 0
+			client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+				seen = requestNumber
+				switch requestNumber {
+				case 1:
+					return assertDeveloperPortalBootstrap(t, request), nil
+				case 2:
+					return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1"), nil), nil
+				case 3:
+					return developerPortalTestResponse(http.StatusOK, `{"resultCode":0,"applicationGroupList":[]}`, http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+				case 4:
+					if request.Method != http.MethodPatch {
+						t.Fatalf("expected PATCH, got %s %s", request.Method, request.URL.Path)
+					}
+					return test.write()
+				case 5:
+					if request.Method == http.MethodPatch {
+						t.Fatalf("expected a verification read, got another PATCH to %s", request.URL.Path)
+					}
+					return test.read()
+				default:
+					t.Fatalf("unexpected request %d", requestNumber)
+					return nil, nil
+				}
+			})
+			result, err := client.SetDeveloperAppGroups(context.Background(), DeveloperAppGroupSetRequest{BundleID: "bundle-1", GroupIDs: []string{"GROUP2"}})
+			if seen != test.wantRequests {
+				t.Fatalf("expected %d requests, saw %d", test.wantRequests, seen)
+			}
+			var unverified *DeveloperAppGroupUnverifiedError
+			if test.wantErr == "" {
+				if err != nil || result == nil || result.Changed != test.wantChanged {
+					t.Fatalf("expected a changed receipt, got result=%+v err=%v", result, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("expected error containing %q, got result=%+v err=%v", test.wantErr, result, err)
+			}
+			if errors.As(err, &unverified) != test.wantVerified {
+				t.Fatalf("expected unverified=%t, got %T: %v", test.wantVerified, err, err)
+			}
+		})
+	}
+}
+
+func TestDeleteDeveloperAppGroupSettlesAmbiguousWriteFailure(t *testing.T) {
+	tests := map[string]struct {
+		write        func() (*http.Response, error)
+		read         func() (*http.Response, error)
+		wantErr      string
+		wantVerified bool
+		wantRequests int
+	}{
+		"transport failure but the group is gone": {
+			write: abortDeveloperPortalResponse,
+			read: func() (*http.Response, error) {
+				return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture(), nil), nil
+			},
+			wantRequests: 6,
+		},
+		"transport failure and the group is still listed": {
+			write: abortDeveloperPortalResponse,
+			read: func() (*http.Response, error) {
+				return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), nil), nil
+			},
+			wantErr:      "request to Developer Portal failed",
+			wantRequests: 6,
+		},
+		"transport failure and the read fails": {
+			write:        abortDeveloperPortalResponse,
+			read:         abortDeveloperPortalResponse,
+			wantErr:      "request to Developer Portal failed",
+			wantVerified: true,
+			wantRequests: 6,
+		},
+		"explicit refusal is not re-read": {
+			write: func() (*http.Response, error) {
+				return developerPortalTestResponse(http.StatusBadRequest, `{"resultCode":35}`, nil), nil
+			},
+			wantErr:      "400",
+			wantRequests: 5,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			seen := 0
+			client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+				seen = requestNumber
+				switch requestNumber {
+				case 1:
+					return assertDeveloperPortalBootstrap(t, request), nil
+				case 2:
+					return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), nil), nil
+				case 3:
+					return developerPortalTestResponse(http.StatusOK, `{"data":[],"included":[]}`, nil), nil
+				case 4:
+					return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+				case 5:
+					if !strings.HasSuffix(request.URL.Path, "deleteApplicationGroup.action") {
+						t.Fatalf("expected delete action, got %s %s", request.Method, request.URL.Path)
+					}
+					return test.write()
+				case 6:
+					return test.read()
+				default:
+					t.Fatalf("unexpected request %d", requestNumber)
+					return nil, nil
+				}
+			})
+			result, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
+			if seen != test.wantRequests {
+				t.Fatalf("expected %d requests, saw %d", test.wantRequests, seen)
+			}
+			var unverified *DeveloperAppGroupUnverifiedError
+			if test.wantErr == "" {
+				if err != nil || result == nil || !result.Deleted {
+					t.Fatalf("expected a deleted receipt, got result=%+v err=%v", result, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("expected error containing %q, got result=%+v err=%v", test.wantErr, result, err)
+			}
+			if errors.As(err, &unverified) != test.wantVerified {
+				t.Fatalf("expected unverified=%t, got %T: %v", test.wantVerified, err, err)
+			}
+		})
+	}
+}
+
 func TestAppGroupMutationsFailClosedWhenCapabilityGraphIsUnreadable(t *testing.T) {
 	bundles := map[string]string{
 		"omitted relationships":        `{"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"}},"included":[]}`,
