@@ -59,6 +59,30 @@ func SetSyncAppClipBundleIDCapability(fn func(context.Context, *webcore.Client, 
 	}
 }
 
+func SetUnassignDeveloperAppGroup(fn func(context.Context, *webcore.Client, webcore.DeveloperAppGroupUnassignRequest) (*webcore.DeveloperAppGroupUnassignResult, error)) func() {
+	prev := unassignDeveloperAppGroupFn
+	unassignDeveloperAppGroupFn = fn
+	return func() {
+		unassignDeveloperAppGroupFn = prev
+	}
+}
+
+func SetSetDeveloperAppGroups(fn func(context.Context, *webcore.Client, webcore.DeveloperAppGroupSetRequest) (*webcore.DeveloperAppGroupSetResult, error)) func() {
+	prev := setDeveloperAppGroupsFn
+	setDeveloperAppGroupsFn = fn
+	return func() {
+		setDeveloperAppGroupsFn = prev
+	}
+}
+
+func SetDeleteDeveloperAppGroup(fn func(context.Context, *webcore.Client, webcore.DeveloperAppGroupDeleteRequest) (*webcore.DeveloperAppGroupDeleteResult, error)) func() {
+	prev := deleteDeveloperAppGroupFn
+	deleteDeveloperAppGroupFn = fn
+	return func() {
+		deleteDeveloperAppGroupFn = prev
+	}
+}
+
 func SetEnableDeveloperBundleIDCapability(fn func(context.Context, *webcore.Client, webcore.DeveloperBundleIDCapabilityEnableRequest) (*webcore.DeveloperBundleIDCapabilityEnableResult, error)) func() {
 	prev := enableDeveloperBundleIDCapabilityFn
 	enableDeveloperBundleIDCapabilityFn = fn

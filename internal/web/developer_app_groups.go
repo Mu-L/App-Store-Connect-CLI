@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -14,9 +15,18 @@ const (
 	developerPortalLegacyPath        = "/services-account/QH65B2"
 	developerAppGroupsListPath       = "/account/ios/identifiers/listApplicationGroups.action"
 	developerAppGroupsCreatePath     = "/account/ios/identifiers/addApplicationGroup.action"
+	developerAppGroupsDeletePath     = "/account/ios/identifiers/deleteApplicationGroup.action"
 	developerAppGroupsPageSize       = 500
 	developerAppGroupsCapabilityType = "APP_GROUPS"
+	developerBundleIDsListPageSize   = 200
+	developerBundleIDsListMaxPages   = 100
 )
+
+var developerBundleIDsListIncludes = []string{
+	"bundleIdCapabilities",
+	"bundleIdCapabilities.capability",
+	"bundleIdCapabilities.appGroups",
+}
 
 // DeveloperAppGroup is an App Group identifier returned by Apple Developer Portal.
 type DeveloperAppGroup struct {
@@ -57,6 +67,113 @@ type DeveloperAppGroupAssignResult struct {
 	Status   string `json:"status"`
 }
 
+// DeveloperAppGroupUnassignRequest removes one App Group from a Bundle ID.
+type DeveloperAppGroupUnassignRequest struct {
+	BundleID string
+	GroupID  string
+}
+
+// DeveloperAppGroupUnassignResult summarizes an App Group removal. Changed is
+// false when the group was not assigned and no PATCH was sent.
+type DeveloperAppGroupUnassignResult struct {
+	BundleID          string   `json:"bundleId"`
+	GroupID           string   `json:"groupId"`
+	RemainingGroupIDs []string `json:"remainingGroupIds"`
+	Changed           bool     `json:"changed"`
+	Status            string   `json:"status"`
+}
+
+// DeveloperAppGroupSetRequest replaces a Bundle ID's complete App Group set.
+type DeveloperAppGroupSetRequest struct {
+	BundleID string
+	GroupIDs []string
+}
+
+// DeveloperAppGroupSetResult is the diff receipt for a desired-set update.
+// Changed is false when the current set already matched and no PATCH was sent.
+type DeveloperAppGroupSetResult struct {
+	BundleID string   `json:"bundleId"`
+	GroupIDs []string `json:"groupIds"`
+	Added    []string `json:"added"`
+	Removed  []string `json:"removed"`
+	Changed  bool     `json:"changed"`
+	Status   string   `json:"status"`
+}
+
+// DeveloperAppGroupDeleteRequest deletes an App Group registration.
+type DeveloperAppGroupDeleteRequest struct {
+	GroupID string
+}
+
+// DeveloperAppGroupDeleteResult summarizes a verified App Group deletion.
+type DeveloperAppGroupDeleteResult struct {
+	GroupID    string `json:"groupId"`
+	Identifier string `json:"identifier"`
+	Name       string `json:"name,omitempty"`
+	Deleted    bool   `json:"deleted"`
+	Status     string `json:"status"`
+}
+
+// DeveloperAppGroupAssignment names a Bundle ID that references an App Group.
+type DeveloperAppGroupAssignment struct {
+	BundleID   string `json:"bundleId"`
+	Identifier string `json:"identifier,omitempty"`
+	Name       string `json:"name,omitempty"`
+}
+
+// DeveloperAppGroupInUseError is returned when a delete is refused because the
+// App Group is still referenced by at least one Bundle ID.
+type DeveloperAppGroupInUseError struct {
+	GroupID     string
+	Identifier  string
+	Assignments []DeveloperAppGroupAssignment
+}
+
+func (e *DeveloperAppGroupInUseError) Error() string {
+	group := e.GroupID
+	if e.Identifier != "" {
+		group = fmt.Sprintf("%s (%s)", e.GroupID, e.Identifier)
+	}
+	names := make([]string, 0, len(e.Assignments))
+	for _, assignment := range e.Assignments {
+		label := assignment.Identifier
+		if label == "" {
+			label = assignment.Name
+		}
+		if label == "" {
+			names = append(names, assignment.BundleID)
+			continue
+		}
+		names = append(names, fmt.Sprintf("%s (%s)", label, assignment.BundleID))
+	}
+	noun := "Bundle IDs"
+	if len(e.Assignments) == 1 {
+		noun = "Bundle ID"
+	}
+	return fmt.Sprintf("App Group %s is still assigned to %d %s: %s; run 'asc web app-groups unassign --bundle-id BUNDLE_RESOURCE_ID --group-id %s --confirm' for each Bundle ID before deleting",
+		group, len(e.Assignments), noun, strings.Join(names, ", "), e.GroupID)
+}
+
+type developerAppGroupsState struct {
+	Enabled  bool
+	GroupIDs []string
+}
+
+func (s developerAppGroupsState) effectiveGroupIDs() []string {
+	if !s.Enabled {
+		return []string{}
+	}
+	return append([]string{}, s.GroupIDs...)
+}
+
+type developerBundleIDListResponse struct {
+	Data     []developerResource `json:"data"`
+	Included []developerResource `json:"included"`
+	Links    struct {
+		Next string `json:"next"`
+	} `json:"links"`
+}
+
 type developerPortalLegacyResponse struct {
 	ResultCode   *int   `json:"resultCode"`
 	ResultString string `json:"resultString"`
@@ -94,7 +211,10 @@ func (c *Client) ListDeveloperAppGroups(ctx context.Context, options DeveloperAp
 	if teamID == "" {
 		return nil, fmt.Errorf("developer portal team is not selected; %s", developerPortalAuthHint)
 	}
+	return c.listDeveloperAppGroupPages(ctx, teamID, options.Paginate)
+}
 
+func (c *Client) listDeveloperAppGroupPages(ctx context.Context, teamID string, paginate bool) (*DeveloperAppGroupsListResult, error) {
 	result := &DeveloperAppGroupsListResult{Data: []DeveloperAppGroup{}}
 	for pageNumber := 1; ; pageNumber++ {
 		body, err := c.doDeveloperPortalLegacyFormRequest(ctx, developerAppGroupsListPath, url.Values{
@@ -122,11 +242,206 @@ func (c *Client) ListDeveloperAppGroups(ctx context.Context, options DeveloperAp
 			result.Data = append(result.Data, decoded)
 		}
 
-		if !options.Paginate || len(page.ApplicationGroupList) == 0 || page.TotalRecords <= len(result.Data) {
+		if !paginate || len(page.ApplicationGroupList) == 0 || page.TotalRecords <= len(result.Data) {
 			break
 		}
 	}
 	return result, nil
+}
+
+// DeleteDeveloperAppGroup deletes an App Group registration. It fails closed
+// when the group is still referenced by any Bundle ID and verifies the deletion
+// by re-reading the team's App Group list.
+func (c *Client) DeleteDeveloperAppGroup(ctx context.Context, request DeveloperAppGroupDeleteRequest) (*DeveloperAppGroupDeleteResult, error) {
+	request.GroupID = strings.TrimSpace(request.GroupID)
+	if request.GroupID == "" {
+		return nil, fmt.Errorf("group id is required")
+	}
+	if err := c.ensureDeveloperPortalSession(ctx); err != nil {
+		return nil, err
+	}
+	teamID := c.developerPortalTeamID()
+	if teamID == "" {
+		return nil, fmt.Errorf("developer portal team is not selected; %s", developerPortalAuthHint)
+	}
+
+	groups, err := c.listDeveloperAppGroupPages(ctx, teamID, true)
+	if err != nil {
+		return nil, err
+	}
+	group, found := findDeveloperAppGroup(groups, request.GroupID)
+	if !found {
+		return nil, fmt.Errorf("app group %q not found in the selected Developer Portal team", request.GroupID)
+	}
+
+	assignments, err := c.listDeveloperAppGroupAssignments(ctx, request.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	if len(assignments) > 0 {
+		return nil, &DeveloperAppGroupInUseError{GroupID: group.ID, Identifier: group.Identifier, Assignments: assignments}
+	}
+
+	if err := c.primeDeveloperAppGroupCSRF(ctx); err != nil {
+		return nil, err
+	}
+	body, err := c.doDeveloperPortalLegacyFormRequest(ctx, developerAppGroupsDeletePath, url.Values{
+		"teamId":           {teamID},
+		"applicationGroup": {request.GroupID},
+	}, true)
+	if err != nil {
+		return nil, err
+	}
+	var response developerPortalLegacyResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse Developer Portal App Group delete response: %w", err)
+	}
+	if err := validateDeveloperPortalLegacyResponse(response); err != nil {
+		return nil, err
+	}
+
+	remaining, err := c.listDeveloperAppGroupPages(ctx, teamID, true)
+	if err != nil {
+		return nil, fmt.Errorf("developer portal accepted the delete but verification failed: %w", err)
+	}
+	if _, stillListed := findDeveloperAppGroup(remaining, request.GroupID); stillListed {
+		return nil, fmt.Errorf("developer portal accepted the delete but App Group %q is still listed; re-run 'asc web app-groups list' before retrying", request.GroupID)
+	}
+	return &DeveloperAppGroupDeleteResult{
+		GroupID:    group.ID,
+		Identifier: group.Identifier,
+		Name:       group.Name,
+		Deleted:    true,
+		Status:     "deleted",
+	}, nil
+}
+
+func findDeveloperAppGroup(result *DeveloperAppGroupsListResult, groupID string) (DeveloperAppGroup, bool) {
+	if result == nil {
+		return DeveloperAppGroup{}, false
+	}
+	for _, group := range result.Data {
+		if group.ID == groupID {
+			return group, true
+		}
+	}
+	return DeveloperAppGroup{}, false
+}
+
+// listDeveloperAppGroupAssignments walks every Bundle ID in the selected team
+// and returns the ones whose APP_GROUPS capability references groupID. Any
+// Bundle ID whose capability graph cannot be resolved is an error so callers
+// never treat an unreadable graph as "unassigned".
+func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID string) ([]DeveloperAppGroupAssignment, error) {
+	query := make(url.Values)
+	query.Set("fields[bundleIds]", "name,identifier,platform")
+	query.Set("include", strings.Join(developerBundleIDsListIncludes, ","))
+	query.Set("limit", strconv.Itoa(developerBundleIDsListPageSize))
+
+	assignments := []DeveloperAppGroupAssignment{}
+	seenNext := make(map[string]struct{})
+	for page := 0; ; page++ {
+		if page >= developerBundleIDsListMaxPages {
+			return nil, fmt.Errorf("developer portal Bundle ID listing exceeded %d pages while checking App Group assignments", developerBundleIDsListMaxPages)
+		}
+		body, err := c.doDeveloperPortalProxyRead(ctx, "/bundleIds", query, developerPortalHeaders(""))
+		if err != nil {
+			return nil, err
+		}
+		var response developerBundleIDListResponse
+		if err := json.Unmarshal(body, &response); err != nil {
+			return nil, fmt.Errorf("failed to parse Developer Portal Bundle ID list response: %w", err)
+		}
+		includedByID := make(map[string]developerResource, len(response.Included))
+		for _, resource := range response.Included {
+			if resource.Type == "bundleIdCapabilities" && strings.TrimSpace(resource.ID) != "" {
+				includedByID[resource.ID] = resource
+			}
+		}
+		for _, bundle := range response.Data {
+			if bundle.Type != "bundleIds" {
+				continue
+			}
+			assignment, referenced, err := developerBundleIDReferencesAppGroup(bundle, includedByID, groupID)
+			if err != nil {
+				return nil, err
+			}
+			if referenced {
+				assignments = append(assignments, assignment)
+			}
+		}
+
+		next := strings.TrimSpace(response.Links.Next)
+		if next == "" {
+			break
+		}
+		if _, repeated := seenNext[next]; repeated {
+			return nil, fmt.Errorf("developer portal Bundle ID listing repeated pagination cursor while checking App Group assignments")
+		}
+		seenNext[next] = struct{}{}
+		nextURL, err := url.Parse(next)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Developer Portal Bundle ID pagination link: %w", err)
+		}
+		// Overlay the cursor link on the original query so the include and
+		// field selections survive even if Apple returns a cursor-only link.
+		for key, values := range nextURL.Query() {
+			query[key] = values
+		}
+	}
+	return assignments, nil
+}
+
+func developerBundleIDReferencesAppGroup(bundle developerResource, includedByID map[string]developerResource, groupID string) (DeveloperAppGroupAssignment, bool, error) {
+	assignment := DeveloperAppGroupAssignment{BundleID: strings.TrimSpace(bundle.ID)}
+	if len(bundle.Attributes) > 0 {
+		var attributes struct {
+			Name       string `json:"name"`
+			Identifier string `json:"identifier"`
+		}
+		if err := json.Unmarshal(bundle.Attributes, &attributes); err != nil {
+			return assignment, false, fmt.Errorf("failed to parse Bundle ID %q attributes: %w", bundle.ID, err)
+		}
+		assignment.Name = strings.TrimSpace(attributes.Name)
+		assignment.Identifier = strings.TrimSpace(attributes.Identifier)
+	}
+	label := assignment.Identifier
+	if label == "" {
+		label = assignment.BundleID
+	}
+
+	rawRelationship, ok := bundle.Relationships["bundleIdCapabilities"]
+	if !ok {
+		return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: Developer Portal omitted its capability relationships", label)
+	}
+	var relationship developerResourceRelationship
+	if err := json.Unmarshal(rawRelationship, &relationship); err != nil {
+		return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: %w", label, err)
+	}
+	for _, reference := range relationship.Data {
+		if reference.Type != "bundleIdCapabilities" {
+			continue
+		}
+		capability, included := includedByID[reference.ID]
+		if !included {
+			return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: capability %q missing from Developer Portal response", label, reference.ID)
+		}
+		capabilityID, err := developerBundleIDCapabilityID(capability)
+		if err != nil {
+			return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: %w", label, err)
+		}
+		if capabilityID != developerAppGroupsCapabilityType {
+			continue
+		}
+		groups, err := developerAppGroupRelationships(capability)
+		if err != nil {
+			return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: %w", label, err)
+		}
+		if containsDeveloperResource(groups, "appGroups", groupID) {
+			return assignment, true, nil
+		}
+	}
+	return assignment, false, nil
 }
 
 // CreateDeveloperAppGroup registers an App Group through Developer Portal.
@@ -190,24 +505,139 @@ func (c *Client) AssignDeveloperAppGroup(ctx context.Context, request DeveloperA
 	if err != nil {
 		return nil, err
 	}
-	payload, alreadyAssigned, err := buildDeveloperAppGroupAssignmentPatchRequest(current, request.GroupID)
+	state, err := developerBundleIDAppGroupsState(current)
 	if err != nil {
 		return nil, err
 	}
-	if alreadyAssigned {
+	if state.Enabled && slices.Contains(state.GroupIDs, request.GroupID) {
 		return &DeveloperAppGroupAssignResult{BundleID: request.BundleID, GroupID: request.GroupID, Changed: false, Status: "already-assigned"}, nil
 	}
-	if err := c.primeDeveloperAppGroupCSRF(ctx); err != nil {
-		return nil, err
+	desired := append([]string{}, state.GroupIDs...)
+	if !slices.Contains(desired, request.GroupID) {
+		desired = append(desired, request.GroupID)
 	}
-	payload, err = addDeveloperPortalTeamID(payload, c.developerPortalTeamID())
-	if err != nil {
-		return nil, err
-	}
-	if _, err := c.doDeveloperPortalRequest(ctx, http.MethodPatch, "/bundleIds/"+url.PathEscape(request.BundleID), payload, developerPortalHeaders(request.BundleID), true); err != nil {
+	if err := c.patchDeveloperAppGroups(ctx, current, desired); err != nil {
 		return nil, err
 	}
 	return &DeveloperAppGroupAssignResult{BundleID: request.BundleID, GroupID: request.GroupID, Changed: true, Status: "assigned"}, nil
+}
+
+// UnassignDeveloperAppGroup removes one App Group from a Bundle ID while
+// preserving every other capability. Removing the last group disables the
+// APP_GROUPS capability. The result is verified by re-reading the Bundle ID.
+func (c *Client) UnassignDeveloperAppGroup(ctx context.Context, request DeveloperAppGroupUnassignRequest) (*DeveloperAppGroupUnassignResult, error) {
+	request.BundleID = strings.TrimSpace(request.BundleID)
+	request.GroupID = strings.TrimSpace(request.GroupID)
+	if request.BundleID == "" {
+		return nil, fmt.Errorf("bundle id is required")
+	}
+	if request.GroupID == "" {
+		return nil, fmt.Errorf("group id is required")
+	}
+	if err := c.ensureDeveloperPortalSession(ctx); err != nil {
+		return nil, err
+	}
+	current, err := c.loadDeveloperBundleID(ctx, request.BundleID)
+	if err != nil {
+		return nil, err
+	}
+	state, err := developerBundleIDAppGroupsState(current)
+	if err != nil {
+		return nil, err
+	}
+	effective := state.effectiveGroupIDs()
+	if !slices.Contains(effective, request.GroupID) {
+		return &DeveloperAppGroupUnassignResult{BundleID: request.BundleID, GroupID: request.GroupID, RemainingGroupIDs: effective, Changed: false, Status: "not-assigned"}, nil
+	}
+	desired := make([]string, 0, len(effective))
+	for _, id := range effective {
+		if id != request.GroupID {
+			desired = append(desired, id)
+		}
+	}
+	if err := c.patchDeveloperAppGroups(ctx, current, desired); err != nil {
+		return nil, err
+	}
+	if err := c.verifyDeveloperAppGroups(ctx, request.BundleID, desired); err != nil {
+		return nil, err
+	}
+	return &DeveloperAppGroupUnassignResult{BundleID: request.BundleID, GroupID: request.GroupID, RemainingGroupIDs: desired, Changed: true, Status: "unassigned"}, nil
+}
+
+// SetDeveloperAppGroups converges a Bundle ID on exactly the requested App
+// Group set, reports the added and removed groups, and skips the write when the
+// current set already matches. The result is verified by re-reading the Bundle ID.
+func (c *Client) SetDeveloperAppGroups(ctx context.Context, request DeveloperAppGroupSetRequest) (*DeveloperAppGroupSetResult, error) {
+	request.BundleID = strings.TrimSpace(request.BundleID)
+	if request.BundleID == "" {
+		return nil, fmt.Errorf("bundle id is required")
+	}
+	desired := dedupeTrimmedStrings(request.GroupIDs)
+	if len(desired) == 0 {
+		return nil, fmt.Errorf("at least one group id is required")
+	}
+	if err := c.ensureDeveloperPortalSession(ctx); err != nil {
+		return nil, err
+	}
+	current, err := c.loadDeveloperBundleID(ctx, request.BundleID)
+	if err != nil {
+		return nil, err
+	}
+	state, err := developerBundleIDAppGroupsState(current)
+	if err != nil {
+		return nil, err
+	}
+	effective := state.effectiveGroupIDs()
+	added := differenceStrings(desired, effective)
+	removed := differenceStrings(effective, desired)
+	result := &DeveloperAppGroupSetResult{BundleID: request.BundleID, GroupIDs: desired, Added: added, Removed: removed}
+	if len(added) == 0 && len(removed) == 0 {
+		result.Changed = false
+		result.Status = "unchanged"
+		return result, nil
+	}
+	if err := c.patchDeveloperAppGroups(ctx, current, desired); err != nil {
+		return nil, err
+	}
+	if err := c.verifyDeveloperAppGroups(ctx, request.BundleID, desired); err != nil {
+		return nil, err
+	}
+	result.Changed = true
+	result.Status = "updated"
+	return result, nil
+}
+
+func (c *Client) patchDeveloperAppGroups(ctx context.Context, current developerBundleIDResponse, desired []string) error {
+	payload, err := buildDeveloperAppGroupsPatchRequest(current, desired)
+	if err != nil {
+		return err
+	}
+	if err := c.primeDeveloperAppGroupCSRF(ctx); err != nil {
+		return err
+	}
+	payload, err = addDeveloperPortalTeamID(payload, c.developerPortalTeamID())
+	if err != nil {
+		return err
+	}
+	bundleID := current.Data.ID
+	_, err = c.doDeveloperPortalRequest(ctx, http.MethodPatch, "/bundleIds/"+url.PathEscape(bundleID), payload, developerPortalHeaders(bundleID), true)
+	return err
+}
+
+func (c *Client) verifyDeveloperAppGroups(ctx context.Context, bundleID string, desired []string) error {
+	updated, err := c.loadDeveloperBundleID(ctx, bundleID)
+	if err != nil {
+		return fmt.Errorf("developer portal accepted the update but verification failed: %w", err)
+	}
+	state, err := developerBundleIDAppGroupsState(updated)
+	if err != nil {
+		return fmt.Errorf("developer portal accepted the update but verification failed: %w", err)
+	}
+	effective := state.effectiveGroupIDs()
+	if len(differenceStrings(desired, effective)) != 0 || len(differenceStrings(effective, desired)) != 0 {
+		return fmt.Errorf("developer portal accepted the update but Bundle ID %q still reports App Groups [%s] instead of [%s]", bundleID, strings.Join(effective, ", "), strings.Join(desired, ", "))
+	}
+	return nil
 }
 
 func (c *Client) primeDeveloperAppGroupCSRF(ctx context.Context) error {
@@ -327,67 +757,92 @@ func (c *Client) doDeveloperPortalLegacyFormRequest(ctx context.Context, path st
 	return body, nil
 }
 
-func buildDeveloperAppGroupAssignmentPatchRequest(current developerBundleIDResponse, groupID string) (developerBundleIDPatchRequest, bool, error) {
+// developerBundleIDAppGroupsState reads the APP_GROUPS capability of a Bundle
+// ID: whether it is enabled and which groups it currently lists.
+func developerBundleIDAppGroupsState(current developerBundleIDResponse) (developerAppGroupsState, error) {
 	capabilities, err := developerBundleIDCapabilities(current)
 	if err != nil {
-		return developerBundleIDPatchRequest{}, false, err
+		return developerAppGroupsState{}, err
 	}
-	groupID = strings.TrimSpace(groupID)
-	if groupID == "" {
-		return developerBundleIDPatchRequest{}, false, fmt.Errorf("group id is required")
+	state := developerAppGroupsState{GroupIDs: []string{}}
+	found := false
+	for _, capability := range capabilities {
+		capabilityID, err := developerBundleIDCapabilityID(capability)
+		if err != nil {
+			return developerAppGroupsState{}, err
+		}
+		if capabilityID != developerAppGroupsCapabilityType {
+			continue
+		}
+		if found {
+			return developerAppGroupsState{}, fmt.Errorf("cannot safely update duplicate APP_GROUPS capability resources")
+		}
+		found = true
+		state.Enabled, err = developerBundleIDCapabilityEnabled(capability)
+		if err != nil {
+			return developerAppGroupsState{}, err
+		}
+		groups, err := developerAppGroupRelationships(capability)
+		if err != nil {
+			return developerAppGroupsState{}, err
+		}
+		for _, group := range groups {
+			state.GroupIDs = append(state.GroupIDs, group.ID)
+		}
 	}
+	return state, nil
+}
+
+// buildDeveloperAppGroupsPatchRequest rewrites only the APP_GROUPS capability
+// so it lists exactly the desired groups, enabling it when the set is non-empty
+// and disabling it when the set is empty, while preserving every other
+// capability and relationship Apple returned.
+func buildDeveloperAppGroupsPatchRequest(current developerBundleIDResponse, desired []string) (developerBundleIDPatchRequest, error) {
+	capabilities, err := developerBundleIDCapabilities(current)
+	if err != nil {
+		return developerBundleIDPatchRequest{}, err
+	}
+	groups := make([]developerResource, 0, len(desired))
+	for _, groupID := range desired {
+		groups = append(groups, developerResource{Type: "appGroups", ID: groupID})
+	}
+	enabled := len(groups) > 0
 
 	updated := make([]developerResource, 0, len(capabilities)+1)
 	foundAppGroups := false
 	for _, capability := range capabilities {
 		capabilityID, err := developerBundleIDCapabilityID(capability)
 		if err != nil {
-			return developerBundleIDPatchRequest{}, false, err
+			return developerBundleIDPatchRequest{}, err
 		}
 		if capabilityID != developerAppGroupsCapabilityType {
 			updated = append(updated, capability)
 			continue
 		}
 		if foundAppGroups {
-			return developerBundleIDPatchRequest{}, false, fmt.Errorf("cannot safely update duplicate APP_GROUPS capability resources")
+			return developerBundleIDPatchRequest{}, fmt.Errorf("cannot safely update duplicate APP_GROUPS capability resources")
 		}
 		foundAppGroups = true
-		enabled, err := developerBundleIDCapabilityEnabled(capability)
+		capability.Attributes, err = setDeveloperCapabilityEnabledValue(capability.Attributes, enabled)
 		if err != nil {
-			return developerBundleIDPatchRequest{}, false, err
-		}
-		groups, err := developerAppGroupRelationships(capability)
-		if err != nil {
-			return developerBundleIDPatchRequest{}, false, err
-		}
-		for _, group := range groups {
-			if group.ID == groupID && enabled {
-				return developerBundleIDPatchRequest{}, true, nil
-			}
-		}
-		capability.Attributes, err = setDeveloperCapabilityEnabled(capability.Attributes)
-		if err != nil {
-			return developerBundleIDPatchRequest{}, false, err
-		}
-		if !containsDeveloperResource(groups, "appGroups", groupID) {
-			groups = append(groups, developerResource{Type: "appGroups", ID: groupID})
+			return developerBundleIDPatchRequest{}, err
 		}
 		if err := setDeveloperAppGroupRelationships(&capability, groups); err != nil {
-			return developerBundleIDPatchRequest{}, false, err
+			return developerBundleIDPatchRequest{}, err
 		}
 		updated = append(updated, capability)
 	}
-	if !foundAppGroups {
+	if !foundAppGroups && enabled {
 		capability := newDeveloperBundleIDCapability(developerAppGroupsCapabilityType)
-		if err := setDeveloperAppGroupRelationships(&capability, []developerResource{{Type: "appGroups", ID: groupID}}); err != nil {
-			return developerBundleIDPatchRequest{}, false, err
+		if err := setDeveloperAppGroupRelationships(&capability, groups); err != nil {
+			return developerBundleIDPatchRequest{}, err
 		}
 		updated = append(updated, capability)
 	}
 
 	relationship, err := marshalDeveloperBundleIDCapabilitiesForPatch(updated)
 	if err != nil {
-		return developerBundleIDPatchRequest{}, false, err
+		return developerBundleIDPatchRequest{}, err
 	}
 	relationships := cloneRawMessageMap(current.Data.Relationships)
 	if relationships == nil {
@@ -400,7 +855,31 @@ func buildDeveloperAppGroupAssignmentPatchRequest(current developerBundleIDRespo
 	payload.Data.Type = current.Data.Type
 	payload.Data.Attributes = append(json.RawMessage(nil), current.Data.Attributes...)
 	payload.Data.Relationships = relationships
-	return payload, false, nil
+	return payload, nil
+}
+
+func dedupeTrimmedStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || slices.Contains(result, trimmed) {
+			continue
+		}
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+// differenceStrings returns the values of left that are absent from right,
+// preserving left's order.
+func differenceStrings(left, right []string) []string {
+	result := []string{}
+	for _, value := range left {
+		if !slices.Contains(right, value) {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func developerAppGroupRelationships(capability developerResource) ([]developerResource, error) {

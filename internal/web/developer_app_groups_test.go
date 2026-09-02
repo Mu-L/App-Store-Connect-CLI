@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -349,6 +350,516 @@ func TestAssignDeveloperAppGroupIsIdempotent(t *testing.T) {
 	if result.Changed || result.Status != "already-assigned" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
+}
+
+func TestDeleteDeveloperAppGroupRefusesWhenStillAssigned(t *testing.T) {
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			if request.URL.Path != "/services-account/QH65B2/account/ios/identifiers/listApplicationGroups.action" {
+				t.Fatalf("unexpected group lookup %s %s", request.Method, request.URL.String())
+			}
+			return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345", "GROUP67890"), nil), nil
+		case 3:
+			assertDeveloperBundleIDsListRead(t, request, "")
+			return developerPortalTestResponse(http.StatusOK, `{
+				"data":[{"id":"bundle-2","type":"bundleIds","attributes":{"name":"Widget","identifier":"com.example.widget"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"push-2"}]}}}],
+				"included":[{"type":"bundleIdCapabilities","id":"push-2","attributes":{"enabled":true,"settings":[]},"relationships":{"capability":{"data":{"type":"capabilities","id":"PUSH_NOTIFICATIONS"}}}}],
+				"links":{"next":"https://developer.apple.com/services-account/v1/bundleIds?cursor=page-2&limit=200"}
+			}`, nil), nil
+		case 4:
+			assertDeveloperBundleIDsListRead(t, request, "page-2")
+			return developerPortalTestResponse(http.StatusOK, `{
+				"data":[
+					{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}},
+					{"id":"bundle-3","type":"bundleIds","attributes":{"name":"Other","identifier":"com.example.other"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-3"}]}}}
+				],
+				"included":[
+					{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true,"settings":[]},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[{"type":"appGroups","id":"GROUP12345"},{"type":"appGroups","id":"GROUP67890"}]}}},
+					{"type":"bundleIdCapabilities","id":"groups-3","attributes":{"enabled":true,"settings":[]},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[{"type":"appGroups","id":"GROUP67890"}]}}}
+				],
+				"links":{}
+			}`, nil), nil
+		default:
+			t.Fatalf("delete of an assigned App Group sent unexpected request %d: %s %s", requestNumber, request.Method, request.URL.String())
+			return nil, nil
+		}
+	})
+
+	_, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
+	var inUse *DeveloperAppGroupInUseError
+	if !errors.As(err, &inUse) {
+		t.Fatalf("expected DeveloperAppGroupInUseError, got %v", err)
+	}
+	if inUse.GroupID != "GROUP12345" || inUse.Identifier != "group.com.example.GROUP12345" {
+		t.Fatalf("unexpected in-use error details: %+v", inUse)
+	}
+	if len(inUse.Assignments) != 1 || inUse.Assignments[0].BundleID != "bundle-1" || inUse.Assignments[0].Identifier != "com.example.app" {
+		t.Fatalf("unexpected assignments: %+v", inUse.Assignments)
+	}
+	for _, expected := range []string{"still assigned", "com.example.app", "bundle-1", "unassign"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("error %q does not mention %q", err.Error(), expected)
+		}
+	}
+}
+
+func TestDeleteDeveloperAppGroupUsesPortalFormEndpointAndVerifies(t *testing.T) {
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			if request.URL.Path != "/services-account/QH65B2/account/ios/identifiers/listApplicationGroups.action" {
+				t.Fatalf("unexpected group lookup %s %s", request.Method, request.URL.String())
+			}
+			return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345", "GROUP67890"), nil), nil
+		case 3:
+			assertDeveloperBundleIDsListRead(t, request, "")
+			return developerPortalTestResponse(http.StatusOK, `{
+				"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}}],
+				"included":[{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true,"settings":[]},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[{"type":"appGroups","id":"GROUP67890"}]}}}]
+			}`, http.Header{"csrf": {"v1-csrf"}, "csrf_ts": {"v1-ts"}}), nil
+		case 4:
+			if request.URL.Path != "/services-account/QH65B2/account/ios/identifiers/listApplicationGroups.action" {
+				t.Fatalf("unexpected CSRF priming request %s %s", request.Method, request.URL.String())
+			}
+			if request.Header.Get("csrf") != "" || request.Header.Get("csrf_ts") != "" {
+				t.Fatalf("CSRF priming request reused tokens from another endpoint scope")
+			}
+			return developerPortalTestResponse(http.StatusOK, `{"resultCode":0,"applicationGroupList":[]}`, http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+		case 5:
+			if request.Method != http.MethodPost || request.URL.Path != "/services-account/QH65B2/account/ios/identifiers/deleteApplicationGroup.action" {
+				t.Fatalf("unexpected delete request %s %s", request.Method, request.URL.String())
+			}
+			if request.Header.Get("csrf") != "primed-csrf" || request.Header.Get("csrf_ts") != "primed-ts" {
+				t.Fatalf("delete request missing primed CSRF headers")
+			}
+			assertDeveloperPortalForm(t, request, url.Values{
+				"teamId":           {"TEAM123456"},
+				"applicationGroup": {"GROUP12345"},
+			})
+			return developerPortalTestResponse(http.StatusOK, `{"resultCode":0,"resultString":"","userString":""}`, nil), nil
+		case 6:
+			if request.URL.Path != "/services-account/QH65B2/account/ios/identifiers/listApplicationGroups.action" {
+				t.Fatalf("unexpected verification request %s %s", request.Method, request.URL.String())
+			}
+			return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP67890"), nil), nil
+		default:
+			t.Fatalf("unexpected request %d: %s %s", requestNumber, request.Method, request.URL.String())
+			return nil, nil
+		}
+	})
+
+	result, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
+	if err != nil {
+		t.Fatalf("DeleteDeveloperAppGroup() error: %v", err)
+	}
+	if !result.Deleted || result.Status != "deleted" || result.GroupID != "GROUP12345" || result.Identifier != "group.com.example.GROUP12345" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestDeleteDeveloperAppGroupFailsWhenGroupStillListedAfterDelete(t *testing.T) {
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2, 6:
+			return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), nil), nil
+		case 3:
+			return developerPortalTestResponse(http.StatusOK, `{"data":[],"included":[]}`, nil), nil
+		case 4:
+			return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+		case 5:
+			return developerPortalTestResponse(http.StatusOK, `{"resultCode":0}`, nil), nil
+		default:
+			t.Fatalf("unexpected request %d", requestNumber)
+			return nil, nil
+		}
+	})
+
+	_, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
+	if err == nil || !strings.Contains(err.Error(), "still listed") {
+		t.Fatalf("expected verification failure, got %v", err)
+	}
+}
+
+func TestDeleteDeveloperAppGroupFailsClosedOnUnknownGroupOrUnreadableAssignments(t *testing.T) {
+	t.Run("unknown group", func(t *testing.T) {
+		client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+			switch requestNumber {
+			case 1:
+				return assertDeveloperPortalBootstrap(t, request), nil
+			case 2:
+				return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP67890"), nil), nil
+			default:
+				t.Fatalf("unknown group lookup sent unexpected request %d", requestNumber)
+				return nil, nil
+			}
+		})
+		_, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
+		if err == nil || !strings.Contains(err.Error(), "not found") {
+			t.Fatalf("expected not-found error, got %v", err)
+		}
+	})
+
+	t.Run("capability missing from included", func(t *testing.T) {
+		client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+			switch requestNumber {
+			case 1:
+				return assertDeveloperPortalBootstrap(t, request), nil
+			case 2:
+				return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), nil), nil
+			case 3:
+				return developerPortalTestResponse(http.StatusOK, `{
+					"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}}],
+					"included":[]
+				}`, nil), nil
+			default:
+				t.Fatalf("unreadable assignment graph sent unexpected request %d", requestNumber)
+				return nil, nil
+			}
+		})
+		_, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
+		if err == nil || !strings.Contains(err.Error(), "cannot determine App Group assignments") {
+			t.Fatalf("expected fail-closed assignment error, got %v", err)
+		}
+	})
+
+	t.Run("missing group id", func(t *testing.T) {
+		client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+			t.Fatalf("validation failure sent request %d", requestNumber)
+			return nil, nil
+		})
+		if _, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "  "}); err == nil || !strings.Contains(err.Error(), "group id is required") {
+			t.Fatalf("expected validation error, got %v", err)
+		}
+	})
+}
+
+func TestSetDeveloperAppGroupsConvergesAndReportsDiff(t *testing.T) {
+	var patchBody []byte
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			if request.Method != http.MethodPost || request.URL.Path != "/services-account/v1/bundleIds/bundle-1" || request.Header.Get("X-HTTP-Method-Override") != http.MethodGet {
+				t.Fatalf("unexpected bundle read %s %s", request.Method, request.URL.String())
+			}
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1", "GROUP2"), nil), nil
+		case 3:
+			if request.URL.Path != "/services-account/QH65B2/account/ios/identifiers/listApplicationGroups.action" {
+				t.Fatalf("unexpected CSRF priming request %s %s", request.Method, request.URL.String())
+			}
+			return developerPortalTestResponse(http.StatusOK, `{"resultCode":0,"applicationGroupList":[]}`, http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+		case 4:
+			if request.Method != http.MethodPatch || request.URL.Path != "/services-account/v1/bundleIds/bundle-1" {
+				t.Fatalf("unexpected bundle patch %s %s", request.Method, request.URL.String())
+			}
+			if request.Header.Get("csrf") != "primed-csrf" || request.Header.Get("csrf_ts") != "primed-ts" {
+				t.Fatalf("bundle patch missing primed CSRF headers")
+			}
+			var err error
+			patchBody, err = io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("ReadAll() error: %v", err)
+			}
+			return developerPortalTestResponse(http.StatusOK, `{"data":{"type":"bundleIds","id":"bundle-1"}}`, nil), nil
+		case 5:
+			if request.Method != http.MethodPost || request.URL.Path != "/services-account/v1/bundleIds/bundle-1" || request.Header.Get("X-HTTP-Method-Override") != http.MethodGet {
+				t.Fatalf("unexpected verification read %s %s", request.Method, request.URL.String())
+			}
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP2", "GROUP3"), nil), nil
+		default:
+			t.Fatalf("unexpected request %d: %s %s", requestNumber, request.Method, request.URL.String())
+			return nil, nil
+		}
+	})
+
+	result, err := client.SetDeveloperAppGroups(context.Background(), DeveloperAppGroupSetRequest{BundleID: "bundle-1", GroupIDs: []string{"GROUP2", "GROUP3", "GROUP2"}})
+	if err != nil {
+		t.Fatalf("SetDeveloperAppGroups() error: %v", err)
+	}
+	if !result.Changed || result.Status != "updated" || result.BundleID != "bundle-1" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if strings.Join(result.GroupIDs, ",") != "GROUP2,GROUP3" || strings.Join(result.Added, ",") != "GROUP3" || strings.Join(result.Removed, ",") != "GROUP1" {
+		t.Fatalf("unexpected diff: %+v", result)
+	}
+
+	capabilities := decodeDeveloperBundlePatchCapabilities(t, patchBody)
+	if len(capabilities) != 2 {
+		t.Fatalf("capability count = %d, want PUSH_NOTIFICATIONS plus APP_GROUPS", len(capabilities))
+	}
+	if id, err := developerBundleIDCapabilityID(capabilities[0]); err != nil || id != "PUSH_NOTIFICATIONS" {
+		t.Fatalf("unrelated capability not preserved: %+v err=%v", capabilities[0], err)
+	}
+	groups, enabled := decodeDeveloperAppGroupsCapability(t, capabilities[1])
+	if !enabled || strings.Join(groups, ",") != "GROUP2,GROUP3" {
+		t.Fatalf("unexpected APP_GROUPS patch: enabled=%t groups=%v", enabled, groups)
+	}
+}
+
+func TestSetDeveloperAppGroupsIsNoOpWhenCurrentSetMatches(t *testing.T) {
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1", "GROUP2"), nil), nil
+		default:
+			t.Fatalf("no-op set sent unexpected request %d: %s %s", requestNumber, request.Method, request.URL.String())
+			return nil, nil
+		}
+	})
+
+	result, err := client.SetDeveloperAppGroups(context.Background(), DeveloperAppGroupSetRequest{BundleID: "bundle-1", GroupIDs: []string{"GROUP2", "GROUP1"}})
+	if err != nil {
+		t.Fatalf("SetDeveloperAppGroups() error: %v", err)
+	}
+	if result.Changed || result.Status != "unchanged" || len(result.Added) != 0 || len(result.Removed) != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if strings.Join(result.GroupIDs, ",") != "GROUP2,GROUP1" {
+		t.Fatalf("unexpected desired set echo: %+v", result.GroupIDs)
+	}
+}
+
+func TestSetDeveloperAppGroupsFailsWhenVerificationDiffers(t *testing.T) {
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1"), nil), nil
+		case 3:
+			return developerPortalTestResponse(http.StatusOK, `{"resultCode":0,"applicationGroupList":[]}`, http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+		case 4:
+			return developerPortalTestResponse(http.StatusOK, `{"data":{"type":"bundleIds","id":"bundle-1"}}`, nil), nil
+		case 5:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1"), nil), nil
+		default:
+			t.Fatalf("unexpected request %d", requestNumber)
+			return nil, nil
+		}
+	})
+
+	_, err := client.SetDeveloperAppGroups(context.Background(), DeveloperAppGroupSetRequest{BundleID: "bundle-1", GroupIDs: []string{"GROUP2"}})
+	if err == nil || !strings.Contains(err.Error(), "still reports") {
+		t.Fatalf("expected verification failure, got %v", err)
+	}
+}
+
+func TestSetDeveloperAppGroupsRejectsEmptyInput(t *testing.T) {
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		t.Fatalf("validation failure sent request %d", requestNumber)
+		return nil, nil
+	})
+	if _, err := client.SetDeveloperAppGroups(context.Background(), DeveloperAppGroupSetRequest{BundleID: "bundle-1"}); err == nil || !strings.Contains(err.Error(), "at least one group id is required") {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if _, err := client.SetDeveloperAppGroups(context.Background(), DeveloperAppGroupSetRequest{GroupIDs: []string{"GROUP1"}}); err == nil || !strings.Contains(err.Error(), "bundle id is required") {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
+func TestUnassignDeveloperAppGroupRemovesGroupAndVerifies(t *testing.T) {
+	var patchBody []byte
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1", "GROUP2"), nil), nil
+		case 3:
+			return developerPortalTestResponse(http.StatusOK, `{"resultCode":0,"applicationGroupList":[]}`, http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+		case 4:
+			if request.Method != http.MethodPatch || request.URL.Path != "/services-account/v1/bundleIds/bundle-1" {
+				t.Fatalf("unexpected bundle patch %s %s", request.Method, request.URL.String())
+			}
+			var err error
+			patchBody, err = io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("ReadAll() error: %v", err)
+			}
+			return developerPortalTestResponse(http.StatusOK, `{"data":{"type":"bundleIds","id":"bundle-1"}}`, nil), nil
+		case 5:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1"), nil), nil
+		default:
+			t.Fatalf("unexpected request %d", requestNumber)
+			return nil, nil
+		}
+	})
+
+	result, err := client.UnassignDeveloperAppGroup(context.Background(), DeveloperAppGroupUnassignRequest{BundleID: "bundle-1", GroupID: "GROUP2"})
+	if err != nil {
+		t.Fatalf("UnassignDeveloperAppGroup() error: %v", err)
+	}
+	if !result.Changed || result.Status != "unassigned" || strings.Join(result.RemainingGroupIDs, ",") != "GROUP1" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	capabilities := decodeDeveloperBundlePatchCapabilities(t, patchBody)
+	groups, enabled := decodeDeveloperAppGroupsCapability(t, capabilities[1])
+	if !enabled || strings.Join(groups, ",") != "GROUP1" {
+		t.Fatalf("unexpected APP_GROUPS patch: enabled=%t groups=%v", enabled, groups)
+	}
+}
+
+func TestUnassignDeveloperAppGroupDisablesCapabilityWhenLastGroupRemoved(t *testing.T) {
+	var patchBody []byte
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1"), nil), nil
+		case 3:
+			return developerPortalTestResponse(http.StatusOK, `{"resultCode":0,"applicationGroupList":[]}`, http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+		case 4:
+			var err error
+			patchBody, err = io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("ReadAll() error: %v", err)
+			}
+			return developerPortalTestResponse(http.StatusOK, `{"data":{"type":"bundleIds","id":"bundle-1"}}`, nil), nil
+		case 5:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(false), nil), nil
+		default:
+			t.Fatalf("unexpected request %d", requestNumber)
+			return nil, nil
+		}
+	})
+
+	result, err := client.UnassignDeveloperAppGroup(context.Background(), DeveloperAppGroupUnassignRequest{BundleID: "bundle-1", GroupID: "GROUP1"})
+	if err != nil {
+		t.Fatalf("UnassignDeveloperAppGroup() error: %v", err)
+	}
+	if !result.Changed || result.Status != "unassigned" || len(result.RemainingGroupIDs) != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	capabilities := decodeDeveloperBundlePatchCapabilities(t, patchBody)
+	groups, enabled := decodeDeveloperAppGroupsCapability(t, capabilities[1])
+	if enabled || len(groups) != 0 {
+		t.Fatalf("expected APP_GROUPS disabled with no groups, got enabled=%t groups=%v", enabled, groups)
+	}
+}
+
+func TestUnassignDeveloperAppGroupIsIdempotent(t *testing.T) {
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1"), nil), nil
+		default:
+			t.Fatalf("idempotent unassign sent unexpected request %d", requestNumber)
+			return nil, nil
+		}
+	})
+
+	result, err := client.UnassignDeveloperAppGroup(context.Background(), DeveloperAppGroupUnassignRequest{BundleID: "bundle-1", GroupID: "GROUP9"})
+	if err != nil {
+		t.Fatalf("UnassignDeveloperAppGroup() error: %v", err)
+	}
+	if result.Changed || result.Status != "not-assigned" || strings.Join(result.RemainingGroupIDs, ",") != "GROUP1" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func developerAppGroupsListFixture(groupIDs ...string) string {
+	entries := make([]string, 0, len(groupIDs))
+	for _, id := range groupIDs {
+		entries = append(entries, fmt.Sprintf(`{"name":"Group %s","prefix":"TEAM123456","identifier":"group.com.example.%s","status":"current","applicationGroup":"%s"}`, id, id, id))
+	}
+	return fmt.Sprintf(`{"resultCode":0,"pageNumber":1,"pageSize":500,"totalRecords":%d,"applicationGroupList":[%s]}`, len(groupIDs), strings.Join(entries, ","))
+}
+
+func developerBundleAppGroupsFixture(enabled bool, groupIDs ...string) string {
+	groups := make([]string, 0, len(groupIDs))
+	for _, id := range groupIDs {
+		groups = append(groups, fmt.Sprintf(`{"type":"appGroups","id":"%s"}`, id))
+	}
+	return fmt.Sprintf(`{
+		"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app","platform":"IOS","permissions":{"delete":true,"edit":true}},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"push-1"},{"type":"bundleIdCapabilities","id":"groups-1"}]}}},
+		"included":[
+			{"type":"bundleIdCapabilities","id":"push-1","attributes":{"enabled":true,"settings":[],"editable":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"PUSH_NOTIFICATIONS"}}}},
+			{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":%t,"settings":[],"editable":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":[%s]}}}
+		]
+	}`, enabled, strings.Join(groups, ","))
+}
+
+func assertDeveloperBundleIDsListRead(t *testing.T, request *http.Request, wantCursor string) {
+	t.Helper()
+	if request.Method != http.MethodPost || request.URL.Path != "/services-account/v1/bundleIds" || request.Header.Get("X-HTTP-Method-Override") != http.MethodGet {
+		t.Fatalf("unexpected Bundle ID list read %s %s", request.Method, request.URL.String())
+	}
+	proxy := decodeDeveloperPortalProxyReadRequest(t, request)
+	if proxy.TeamID != "TEAM123456" {
+		t.Fatalf("Bundle ID list teamId = %q", proxy.TeamID)
+	}
+	query, err := url.ParseQuery(proxy.URLEncodedQueryParams)
+	if err != nil {
+		t.Fatalf("ParseQuery() error: %v", err)
+	}
+	if query.Get("cursor") != wantCursor {
+		t.Fatalf("cursor = %q, want %q", query.Get("cursor"), wantCursor)
+	}
+	if !strings.Contains(query.Get("include"), "bundleIdCapabilities.appGroups") {
+		t.Fatalf("Bundle ID list include = %q, want appGroups", query.Get("include"))
+	}
+	if query.Get("limit") == "" {
+		t.Fatalf("Bundle ID list is missing limit: %q", proxy.URLEncodedQueryParams)
+	}
+}
+
+func decodeDeveloperBundlePatchCapabilities(t *testing.T, patchBody []byte) []developerResource {
+	t.Helper()
+	var payload developerBundleIDPatchRequest
+	if err := json.Unmarshal(patchBody, &payload); err != nil {
+		t.Fatalf("decode patch: %v; body=%s", err, patchBody)
+	}
+	var bundleAttributes map[string]json.RawMessage
+	if err := json.Unmarshal(payload.Data.Attributes, &bundleAttributes); err != nil {
+		t.Fatalf("decode Bundle ID attributes: %v", err)
+	}
+	if string(bundleAttributes["teamId"]) != `"TEAM123456"` {
+		t.Fatalf("teamId missing from PATCH attributes: %s", payload.Data.Attributes)
+	}
+	if _, ok := bundleAttributes["permissions"]; ok {
+		t.Fatalf("read-only permissions attribute was sent in PATCH: %s", payload.Data.Attributes)
+	}
+	var capabilities developerResourceRelationship
+	if err := json.Unmarshal(payload.Data.Relationships["bundleIdCapabilities"], &capabilities); err != nil {
+		t.Fatalf("decode capabilities: %v", err)
+	}
+	return capabilities.Data
+}
+
+func decodeDeveloperAppGroupsCapability(t *testing.T, capability developerResource) ([]string, bool) {
+	t.Helper()
+	if id, err := developerBundleIDCapabilityID(capability); err != nil || id != "APP_GROUPS" {
+		t.Fatalf("unexpected capability: %+v err=%v", capability, err)
+	}
+	enabled, err := developerBundleIDCapabilityEnabled(capability)
+	if err != nil {
+		t.Fatalf("decode enabled: %v", err)
+	}
+	var groups developerResourceRelationship
+	if err := json.Unmarshal(capability.Relationships["appGroups"], &groups); err != nil {
+		t.Fatalf("decode appGroups: %v", err)
+	}
+	ids := make([]string, 0, len(groups.Data))
+	for _, group := range groups.Data {
+		if group.Type != "appGroups" {
+			t.Fatalf("unexpected appGroups relationship type: %+v", group)
+		}
+		ids = append(ids, group.ID)
+	}
+	return ids, enabled
 }
 
 func newDeveloperAppGroupsTestClient(t *testing.T, handler func(int, *http.Request) (*http.Response, error)) *Client {
