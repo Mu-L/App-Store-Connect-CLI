@@ -32,6 +32,7 @@ func registerAllOutputRenderers() {
 	registerRowsWithSingleResourceAdapter(appsRows)
 	registerDirect(appsPublishedReportTables)
 	registerRows(appRenameResultRows)
+	registerRows(webAppCreateResultRows)
 	registerRows(appsWallRows)
 	registerRowsWithSingleResourceAdapter(appClipsRows)
 	registerRowsWithSingleToListAdapter[AppCategoryResponse, AppCategoriesResponse](appCategoriesRows)

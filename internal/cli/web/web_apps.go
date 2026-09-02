@@ -237,6 +237,9 @@ func WebAppsCreateCommand() *ffcli.Command {
 	twoFactorCode := bindDeprecatedTwoFactorCodeFlag(fs)
 	twoFactorCodeCommand := fs.String("two-factor-code-command", "", "Shell command that prints the 2FA code to stdout if verification is required")
 	autoRename := fs.Bool("auto-rename", true, "Retry with unique name suffix if app name is already taken")
+	access := fs.String("access", "", "App access after create: full or limited")
+	var users shared.MultiStringFlag
+	fs.Var(&users, "user", "User ID granted Limited Access (repeatable; requires --access limited)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -251,6 +254,10 @@ This is the canonical app-creation path for web-session based flows.
 
 If required fields are omitted in an interactive terminal, the CLI will prompt
 for the missing app-creation inputs.
+
+--access full|limited applies team access after create through the public
+users API. Limited access requires at least one --user. Omitting --access
+keeps the historical create request body.
 
 Authentication:
   --apple-id with one of:
@@ -271,6 +278,7 @@ Bundle ID preflight:
 Examples:
   asc web apps create
   asc web apps create --name "My App" --bundle-id "com.example.app" --sku "MYAPP123" --apple-id "user@example.com"
+  asc web apps create --name "My App" --bundle-id "com.example.app" --sku "MYAPP123" --access limited --user USER_ID
   %s asc web apps create --name "My App" --bundle-id "com.example.app" --sku "MYAPP123" --apple-id "user@example.com"
   %s='osascript /path/to/get-apple-2fa-code.scpt' asc web apps create --apple-id "user@example.com"`,
 			webPasswordEnvDisplay(),
@@ -295,6 +303,8 @@ Examples:
 				TwoFactorCode:        *twoFactorCode,
 				TwoFactorCodeCommand: *twoFactorCodeCommand,
 				AutoRename:           *autoRename,
+				Access:               *access,
+				Users:                append([]string(nil), users...),
 				Output:               *output.Output,
 				Pretty:               *output.Pretty,
 			})

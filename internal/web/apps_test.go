@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/handlertest"
 )
 
 func TestNormalizeCreateAttrsDefaults(t *testing.T) {
@@ -42,15 +44,62 @@ func TestNormalizeCreateAttrsRejectsInvalidPlatform(t *testing.T) {
 	}
 }
 
-func TestBuildAppCreateRequestUsesLocalizationForName(t *testing.T) {
-	req := buildAppCreateRequest(AppCreateAttributes{
+// frozenAppCreateRequestBody is the captured POST /apps contract without
+// access-level or user-selection fields. Apple's public New App form fields for
+// Full/Limited access are not present in this snapshot; do not add guessed
+// names to the create body.
+const frozenAppCreateRequestBody = `{"data":{"type":"apps","attributes":{"sku":"SKU123","primaryLocale":"en-US","bundleId":"com.example.app"},"relationships":{"appStoreVersions":{"data":[{"type":"appStoreVersions","id":"${new-appStoreVersion}"}]},"appInfos":{"data":[{"type":"appInfos","id":"${new-appInfo}"}]}}},"included":[{"type":"appStoreVersions","id":"${new-appStoreVersion}","attributes":{"versionString":"1.0","platform":"IOS"},"relationships":{"appStoreVersionLocalizations":{"data":[{"type":"appStoreVersionLocalizations","id":"${new-appStoreVersionLocalization}"}]}}},{"type":"appStoreVersionLocalizations","id":"${new-appStoreVersionLocalization}","attributes":{"locale":"en-US"}},{"type":"appInfos","id":"${new-appInfo}","relationships":{"appInfoLocalizations":{"data":[{"type":"appInfoLocalizations","id":"${new-appInfoLocalization}"}]}}},{"type":"appInfoLocalizations","id":"${new-appInfoLocalization}","attributes":{"locale":"en-US","name":"My App"}}]}`
+
+func fixtureAppCreateAttributes() AppCreateAttributes {
+	return AppCreateAttributes{
 		Name:          "My App",
 		BundleID:      "com.example.app",
 		SKU:           "SKU123",
 		PrimaryLocale: "en-US",
 		Platform:      "IOS",
 		VersionString: "1.0",
-	})
+	}
+}
+
+func TestBuildAppCreateRequestBodyMatchesCapturedContract(t *testing.T) {
+	raw, err := json.Marshal(buildAppCreateRequest(fixtureAppCreateAttributes()))
+	if err != nil {
+		t.Fatalf("json.Marshal error: %v", err)
+	}
+	if string(raw) != frozenAppCreateRequestBody {
+		t.Fatalf("create request body changed\ngot:  %s\nwant: %s", raw, frozenAppCreateRequestBody)
+	}
+}
+
+func TestCreateAppSendsCapturedContractBody(t *testing.T) {
+	fixture := handlertest.New(t)
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/apps" {
+			fixture.Respond(w, "unexpected request: %s %s", r.Method, r.URL.Path)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"id":"app-123","type":"apps","attributes":{}}}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		baseURL:    server.URL,
+	}
+	if _, err := client.CreateApp(context.Background(), fixtureAppCreateAttributes()); err != nil {
+		t.Fatalf("CreateApp error: %v", err)
+	}
+	if gotBody != frozenAppCreateRequestBody {
+		t.Fatalf("create request body changed\ngot:  %s\nwant: %s", gotBody, frozenAppCreateRequestBody)
+	}
+}
+
+func TestBuildAppCreateRequestUsesLocalizationForName(t *testing.T) {
+	req := buildAppCreateRequest(fixtureAppCreateAttributes())
 
 	raw, err := json.Marshal(req)
 	if err != nil {

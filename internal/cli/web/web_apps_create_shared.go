@@ -9,6 +9,7 @@ import (
 
 	"github.com/AlecAivazis/survey/v2"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
@@ -31,6 +32,9 @@ type AppsCreateRunOptions struct {
 	AutoRename bool
 	Output     string
 	Pretty     bool
+
+	Access string
+	Users  []string
 
 	// Deprecated shim compatibility: when a direct password is provided without an
 	// Apple ID, preserve the old behavior of prompting for account selection
@@ -78,6 +82,14 @@ func trimAppsCreateRunOptions(opts AppsCreateRunOptions) AppsCreateRunOptions {
 	opts.TwoFactorCode = strings.TrimSpace(opts.TwoFactorCode)
 	opts.TwoFactorCodeCommand = strings.TrimSpace(opts.TwoFactorCodeCommand)
 	opts.Output = strings.TrimSpace(opts.Output)
+	opts.Access = strings.TrimSpace(opts.Access)
+	if len(opts.Users) > 0 {
+		users := make([]string, 0, len(opts.Users))
+		for _, userID := range opts.Users {
+			users = append(users, strings.TrimSpace(userID))
+		}
+		opts.Users = users
+	}
 	return opts
 }
 
@@ -334,6 +346,28 @@ func RunAppsCreate(ctx context.Context, opts AppsCreateRunOptions) error {
 
 	opts = normalizeAppsCreateRunOptions(opts)
 
+	access, userIDs, err := normalizeAppCreateAccess(opts.Access, opts.Users)
+	if err != nil {
+		return err
+	}
+
+	var accessClient *asc.Client
+	if access != "" {
+		accessClient, err = shared.GetASCClient()
+		if err != nil {
+			return fmt.Errorf("web apps create failed: --access requires official App Store Connect API authentication: %w", err)
+		}
+		if len(userIDs) > 0 {
+			lookupCtx, lookupCancel := shared.ContextWithTimeout(ctx)
+			defer lookupCancel()
+			if lookupErr := withWebSpinner("Checking users", func() error {
+				return ensureAppCreateUsersExist(lookupCtx, accessClient, userIDs)
+			}); lookupErr != nil {
+				return lookupErr
+			}
+		}
+	}
+
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "  Name:      %s\n", opts.Name)
 	fmt.Fprintf(os.Stderr, "  Bundle ID: %s\n", opts.BundleID)
@@ -430,5 +464,15 @@ func RunAppsCreate(ctx context.Context, opts AppsCreateRunOptions) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Created app successfully (id=%s)\n", strings.TrimSpace(app.Data.ID))
-	return shared.PrintOutput(app, opts.Output, opts.Pretty)
+	if access == "" {
+		return shared.PrintOutput(app, opts.Output, opts.Pretty)
+	}
+
+	receipt, applyErr := withWebSpinnerValue("Applying app access", func() (*asc.WebAppCreateResult, error) {
+		return applyAndReadAppCreateAccess(requestCtx, accessClient, strings.TrimSpace(app.Data.ID), access, userIDs)
+	})
+	if applyErr != nil {
+		return applyErr
+	}
+	return shared.PrintOutput(receipt, opts.Output, opts.Pretty)
 }

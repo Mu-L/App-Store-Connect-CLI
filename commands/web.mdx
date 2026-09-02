@@ -112,6 +112,7 @@ Available commands:
 Notes:
 
 * `asc web apps create` is the canonical app-creation path in the `web` family
+* `asc web apps create --access full|limited [--user USER_ID]...` applies team access after create through the public users API. Limited access requires at least one `--user`. Omitting `--access` keeps the historical create request body.
 * `asc web apps medical-device set` currently supports only `--declared false`
 
 ### `asc web sandbox`
