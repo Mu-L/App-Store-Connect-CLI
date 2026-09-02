@@ -376,13 +376,9 @@ func (c *Client) ListReviewSubmissions(ctx context.Context, appID string) ([]Rev
 	query.Set("limit[items]", "0")
 	path := queryPath("/apps/"+url.PathEscape(appID)+"/reviewSubmissions", query)
 
-	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	payload, err := c.fetchJSONAPIPages(ctx, path, "review submissions")
 	if err != nil {
 		return nil, err
-	}
-	var payload jsonAPIListPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return nil, fmt.Errorf("failed to parse review submissions response: %w", err)
 	}
 	return decodeReviewSubmissions(payload.Data, payload.Included), nil
 }
@@ -398,13 +394,9 @@ func (c *Client) ListReviewSubmissionItems(ctx context.Context, reviewSubmission
 	query.Set("limit", "200")
 	path := queryPath("/reviewSubmissions/"+url.PathEscape(reviewSubmissionID)+"/items", query)
 
-	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	payload, err := c.fetchJSONAPIPages(ctx, path, "review submission items")
 	if err != nil {
 		return nil, err
-	}
-	var payload jsonAPIListPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return nil, fmt.Errorf("failed to parse review submission items response: %w", err)
 	}
 	items := make([]ReviewSubmissionItem, 0, len(payload.Data))
 	for _, resource := range payload.Data {
@@ -473,13 +465,9 @@ func (c *Client) ListResolutionCenterThreadsBySubmission(ctx context.Context, re
 	query.Set("include", "reviewSubmission")
 	path := queryPath("/resolutionCenterThreads", query)
 
-	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	payload, err := c.fetchJSONAPIPages(ctx, path, "resolution center threads")
 	if err != nil {
 		return nil, err
-	}
-	var payload jsonAPIListPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return nil, fmt.Errorf("failed to parse resolution center threads response: %w", err)
 	}
 	return decodeResolutionCenterThreads(payload.Data), nil
 }
@@ -530,15 +518,7 @@ func (c *Client) listResolutionCenterMessagesPayload(ctx context.Context, thread
 	query.Set("limit[resolutionCenterMessageAttachments]", "1000")
 	path := queryPath("/resolutionCenterThreads/"+url.PathEscape(threadID)+"/resolutionCenterMessages", query)
 
-	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return jsonAPIListPayload{}, err
-	}
-	var payload jsonAPIListPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return jsonAPIListPayload{}, fmt.Errorf("failed to parse resolution center messages response: %w", err)
-	}
-	return payload, nil
+	return c.fetchJSONAPIPages(ctx, path, "resolution center messages")
 }
 
 // ListResolutionCenterMessages lists thread messages and optional plain text body.
@@ -598,15 +578,7 @@ func (c *Client) listReviewRejectionsPayload(ctx context.Context, threadID strin
 	query.Set("limit[rejectionAttachments]", "1000")
 	path := queryPath("/reviewRejections", query)
 
-	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return jsonAPIListPayload{}, err
-	}
-	var payload jsonAPIListPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return jsonAPIListPayload{}, fmt.Errorf("failed to parse review rejections response: %w", err)
-	}
-	return payload, nil
+	return c.fetchJSONAPIPages(ctx, path, "review rejections")
 }
 
 func decodeReviewRejections(resources []jsonAPIResource) []ReviewRejection {
