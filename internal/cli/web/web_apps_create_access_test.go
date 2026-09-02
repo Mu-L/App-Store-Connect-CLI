@@ -249,6 +249,159 @@ func TestRunAppsCreateLimitedAccessReceiptUsesRereadNotRequest(t *testing.T) {
 	}
 }
 
+func TestRunAppsCreateLimitedAccessRollsBackGrantedUsersWhenLaterGrantFails(t *testing.T) {
+	origResolve := resolveAppCreateSessionFn
+	t.Cleanup(func() {
+		resolveAppCreateSessionFn = origResolve
+	})
+
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"id":"app-123","type":"apps","attributes":{}}}`)),
+			Request:    req,
+		}, nil
+	})
+	resolveAppCreateSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{Client: &http.Client{Transport: transport}}, "cache", nil
+	}
+
+	fixture := handlertest.New(t)
+	posted := make([]string, 0, 2)
+	deleted := make([]string, 0, 1)
+	rereadCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/users/user-1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"type":"users","id":"user-1","attributes":{"username":"one@example.com"}}}`))
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/users/user-2":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"type":"users","id":"user-2","attributes":{"username":"two@example.com"}}}`))
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/users/user-1/relationships/visibleApps":
+			posted = append(posted, "user-1")
+			w.WriteHeader(http.StatusNoContent)
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/users/user-2/relationships/visibleApps":
+			posted = append(posted, "user-2")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"errors":[{"status":"500","code":"UNEXPECTED_ERROR","title":"An unexpected error occurred."}]}`))
+		case req.Method == http.MethodDelete && req.URL.Path == "/v1/users/user-1/relationships/visibleApps":
+			deleted = append(deleted, "user-1")
+			w.WriteHeader(http.StatusNoContent)
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/users":
+			rereadCalled = true
+			fixture.Respond(w, "did not expect access re-read after a failed grant")
+		default:
+			fixture.Respond(w, "unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+	}))
+	defer server.Close()
+	setAppCreateASCClient(t, server)
+
+	t.Setenv("ASC_WEB_MIN_REQUEST_INTERVAL", "0")
+	var err error
+	_, stderr := captureOutput(t, func() {
+		err = RunAppsCreate(context.Background(), AppsCreateRunOptions{
+			Name:                     "My App",
+			BundleID:                 "com.example.app",
+			SKU:                      "SKU123",
+			AppleID:                  "user@example.com",
+			Access:                   "limited",
+			Users:                    []string{"user-1", "user-2"},
+			Output:                   "json",
+			DisableBundleIDPreflight: true,
+		})
+	})
+	if err == nil {
+		t.Fatal("expected later grant failure")
+	}
+	if len(posted) != 2 || posted[0] != "user-1" || posted[1] != "user-2" {
+		t.Fatalf("posted grants = %v, want user-1 then user-2", posted)
+	}
+	if len(deleted) != 1 || deleted[0] != "user-1" {
+		t.Fatalf("rolled back users = %v, want [user-1]", deleted)
+	}
+	if rereadCalled {
+		t.Fatal("did not expect access re-read after a failed grant")
+	}
+	if !strings.Contains(err.Error(), `grant app access to user "user-2"`) &&
+		!strings.Contains(stderr, `grant app access to user "user-2"`) {
+		t.Fatalf("stderr = %q err = %v", stderr, err)
+	}
+}
+
+func TestRunAppsCreateLimitedAccessJoinsRollbackErrorWhenCompensationFails(t *testing.T) {
+	origResolve := resolveAppCreateSessionFn
+	t.Cleanup(func() {
+		resolveAppCreateSessionFn = origResolve
+	})
+
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"id":"app-123","type":"apps","attributes":{}}}`)),
+			Request:    req,
+		}, nil
+	})
+	resolveAppCreateSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{Client: &http.Client{Transport: transport}}, "cache", nil
+	}
+
+	fixture := handlertest.New(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/users/user-1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"type":"users","id":"user-1","attributes":{"username":"one@example.com"}}}`))
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/users/user-2":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"type":"users","id":"user-2","attributes":{"username":"two@example.com"}}}`))
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/users/user-1/relationships/visibleApps":
+			w.WriteHeader(http.StatusNoContent)
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/users/user-2/relationships/visibleApps":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"errors":[{"status":"500","code":"UNEXPECTED_ERROR","title":"An unexpected error occurred."}]}`))
+		case req.Method == http.MethodDelete && req.URL.Path == "/v1/users/user-1/relationships/visibleApps":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"errors":[{"status":"500","code":"UNEXPECTED_ERROR","title":"An unexpected error occurred."}]}`))
+		default:
+			fixture.Respond(w, "unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+	}))
+	defer server.Close()
+	setAppCreateASCClient(t, server)
+
+	t.Setenv("ASC_WEB_MIN_REQUEST_INTERVAL", "0")
+	var err error
+	_, stderr := captureOutput(t, func() {
+		err = RunAppsCreate(context.Background(), AppsCreateRunOptions{
+			Name:                     "My App",
+			BundleID:                 "com.example.app",
+			SKU:                      "SKU123",
+			AppleID:                  "user@example.com",
+			Access:                   "limited",
+			Users:                    []string{"user-1", "user-2"},
+			Output:                   "json",
+			DisableBundleIDPreflight: true,
+		})
+	})
+	if err == nil {
+		t.Fatal("expected grant failure joined with rollback failure")
+	}
+	combined := err.Error() + "\n" + stderr
+	if !strings.Contains(combined, `grant app access to user "user-2"`) {
+		t.Fatalf("missing original grant error: stderr = %q err = %v", stderr, err)
+	}
+	if !strings.Contains(combined, "manual access repair may be required") {
+		t.Fatalf("missing compensation failure: stderr = %q err = %v", stderr, err)
+	}
+}
+
 func TestRunAppsCreateFullAccessDoesNotPostVisibleApps(t *testing.T) {
 	origResolve := resolveAppCreateSessionFn
 	t.Cleanup(func() {

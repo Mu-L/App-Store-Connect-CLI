@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -97,10 +98,16 @@ func applyAndReadAppCreateAccess(ctx context.Context, client *asc.Client, appID,
 		return nil, fmt.Errorf("web apps create failed: created app id is missing")
 	}
 	if requestedAccess == appCreateAccessLimited {
+		granted := make([]string, 0, len(userIDs))
 		for _, userID := range userIDs {
 			if err := client.AddUserVisibleApps(ctx, userID, []string{appID}); err != nil {
-				return nil, fmt.Errorf("web apps create failed: grant app access to user %q: %w", userID, err)
+				grantErr := fmt.Errorf("web apps create failed: grant app access to user %q: %w", userID, err)
+				if rollbackErr := rollbackAppCreateVisibleApps(ctx, client, appID, granted); rollbackErr != nil {
+					return nil, errors.Join(grantErr, rollbackErr)
+				}
+				return nil, grantErr
 			}
+			granted = append(granted, userID)
 		}
 	}
 
@@ -113,6 +120,22 @@ func applyAndReadAppCreateAccess(ctx context.Context, client *asc.Client, appID,
 		Access: access,
 		Users:  users,
 	}, nil
+}
+
+func rollbackAppCreateVisibleApps(ctx context.Context, client *asc.Client, appID string, userIDs []string) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	var rollbackErrs []error
+	for _, userID := range userIDs {
+		if err := client.RemoveUserVisibleApps(ctx, userID, []string{appID}); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("remove app access from user %q: %w", userID, err))
+		}
+	}
+	if len(rollbackErrs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("web apps create failed: access grant partially applied; manual access repair may be required: %w", errors.Join(rollbackErrs...))
 }
 
 func readAppCreateAccess(ctx context.Context, client *asc.Client, appID string) (string, []string, error) {
