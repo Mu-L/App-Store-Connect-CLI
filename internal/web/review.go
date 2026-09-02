@@ -25,6 +25,10 @@ const (
 
 var htmlTagPattern = regexp.MustCompile(`(?s)<[^>]*>`)
 
+var skippedReviewRelatedRelationships = map[string]struct{}{
+	"rejectionAttachments": {},
+}
+
 var defaultAttachmentHostSuffixes = []string{
 	".apple.com",
 	".mzstatic.com",
@@ -81,11 +85,20 @@ type ReviewSubmission struct {
 	CreatedByActor           *ReviewActor              `json:"createdByActor,omitempty"`
 }
 
+// ReviewRelatedResource is an included JSON:API resource decoded for display.
+type ReviewRelatedResource struct {
+	Relationship string `json:"relationship,omitempty"`
+	Type         string `json:"type"`
+	ID           string `json:"id"`
+	Label        string `json:"label,omitempty"`
+}
+
 // ReviewSubmissionItemRelation links a submission item to related resources.
 type ReviewSubmissionItemRelation struct {
 	Relationship string `json:"relationship"`
 	Type         string `json:"type"`
 	ID           string `json:"id"`
+	Label        string `json:"label,omitempty"`
 }
 
 // ReviewSubmissionItem models review submission item relationships.
@@ -130,6 +143,7 @@ type ReviewRejection struct {
 	ID            string                  `json:"id"`
 	Reasons       []ReviewRejectionReason `json:"reasons,omitempty"`
 	AttachmentIDs []string                `json:"attachmentIds,omitempty"`
+	Related       []ReviewRelatedResource `json:"related,omitempty"`
 }
 
 // ReviewAttachment models message/rejection attachment metadata.
@@ -322,6 +336,53 @@ func actorFromRef(ref *resourceRef, included map[string]jsonAPIResource) *Review
 	return actor
 }
 
+func relatedResourceLabel(resource jsonAPIResource) string {
+	return stringAttr(
+		resource.Attributes,
+		"versionString",
+		"version",
+		"buildNumber",
+		"name",
+		"referenceName",
+		"displayName",
+		"title",
+		"bundleId",
+		"identifier",
+	)
+}
+
+func includedResourceLabel(included map[string]jsonAPIResource, ref resourceRef) string {
+	if included == nil {
+		return ""
+	}
+	resource, ok := included[jsonAPIResourceKey(ref.Type, ref.ID)]
+	if !ok {
+		return ""
+	}
+	return relatedResourceLabel(resource)
+}
+
+func relatedResourcesFrom(resource jsonAPIResource, included map[string]jsonAPIResource, skip map[string]struct{}) []ReviewRelatedResource {
+	if len(resource.Relationships) == 0 {
+		return nil
+	}
+	var related []ReviewRelatedResource
+	for relationshipName := range resource.Relationships {
+		if _, skipped := skip[relationshipName]; skipped {
+			continue
+		}
+		for _, ref := range relationshipRefs(resource, relationshipName) {
+			related = append(related, ReviewRelatedResource{
+				Relationship: relationshipName,
+				Type:         strings.TrimSpace(ref.Type),
+				ID:           strings.TrimSpace(ref.ID),
+				Label:        includedResourceLabel(included, ref),
+			})
+		}
+	}
+	return related
+}
+
 func appStoreVersionFromRef(ref *resourceRef, included map[string]jsonAPIResource) *AppStoreVersionForReview {
 	if ref == nil {
 		return nil
@@ -398,6 +459,7 @@ func (c *Client) ListReviewSubmissionItems(ctx context.Context, reviewSubmission
 	if err != nil {
 		return nil, err
 	}
+	includedMap := buildIncludedMap(payload.Included)
 	items := make([]ReviewSubmissionItem, 0, len(payload.Data))
 	for _, resource := range payload.Data {
 		item := ReviewSubmissionItem{
@@ -411,6 +473,7 @@ func (c *Client) ListReviewSubmissionItems(ctx context.Context, reviewSubmission
 					Relationship: relationshipName,
 					Type:         strings.TrimSpace(ref.Type),
 					ID:           strings.TrimSpace(ref.ID),
+					Label:        includedResourceLabel(includedMap, ref),
 				})
 			}
 		}
@@ -581,15 +644,17 @@ func (c *Client) listReviewRejectionsPayload(ctx context.Context, threadID strin
 	return c.fetchJSONAPIPages(ctx, path, "review rejections")
 }
 
-func decodeReviewRejections(resources []jsonAPIResource) []ReviewRejection {
+func decodeReviewRejections(resources []jsonAPIResource, included []jsonAPIResource) []ReviewRejection {
 	if len(resources) == 0 {
 		return []ReviewRejection{}
 	}
+	includedMap := buildIncludedMap(included)
 	rejections := make([]ReviewRejection, 0, len(resources))
 	for _, resource := range resources {
 		rejection := ReviewRejection{
 			ID:      strings.TrimSpace(resource.ID),
 			Reasons: parseRejectionReasons(resource.Attributes),
+			Related: relatedResourcesFrom(resource, includedMap, skippedReviewRelatedRelationships),
 		}
 		attachmentRefs := relationshipRefs(resource, "rejectionAttachments")
 		if len(attachmentRefs) > 0 {
@@ -609,7 +674,7 @@ func (c *Client) ListReviewRejections(ctx context.Context, threadID string) ([]R
 	if err != nil {
 		return nil, err
 	}
-	rejections := decodeReviewRejections(payload.Data)
+	rejections := decodeReviewRejections(payload.Data, payload.Included)
 	if len(rejections) == 0 {
 		return []ReviewRejection{}, nil
 	}
@@ -733,7 +798,7 @@ func (c *Client) ListReviewThreadDetails(ctx context.Context, threadID string, p
 
 	details := ReviewThreadDetails{
 		Messages:   decodeResolutionCenterMessages(messagesPayload.Data, messagesPayload.Included, plainText),
-		Rejections: decodeReviewRejections(rejectionsPayload.Data),
+		Rejections: decodeReviewRejections(rejectionsPayload.Data, rejectionsPayload.Included),
 	}
 	attachments := make([]ReviewAttachment, 0)
 	seen := map[string]struct{}{}
