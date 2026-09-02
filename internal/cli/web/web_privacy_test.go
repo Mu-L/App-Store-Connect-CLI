@@ -230,7 +230,7 @@ func TestDeclarationFromRemoteDataUsagesEmptyDefaultsNotCollected(t *testing.T) 
 	}
 }
 
-func TestDeclarationFromRemoteDataUsagesMalformedOnlyDefaultsNotCollected(t *testing.T) {
+func TestDeclarationFromRemoteDataUsagesMalformedOnlyPreservesUnrepresentable(t *testing.T) {
 	declaration := declarationFromRemoteDataUsages([]webcore.AppDataUsage{
 		{
 			ID:       "usage-malformed-1",
@@ -240,14 +240,21 @@ func TestDeclarationFromRemoteDataUsagesMalformedOnlyDefaultsNotCollected(t *tes
 	})
 
 	if len(declaration.DataUsages) != 1 {
-		t.Fatalf("expected one default data usage, got %#v", declaration.DataUsages)
+		t.Fatalf("expected one unrepresentable usage, got %#v", declaration.DataUsages)
 	}
-	if !reflect.DeepEqual(declaration.DataUsages[0].DataProtections, []string{dataProtectionNotCollected}) {
-		t.Fatalf("unexpected default declaration for malformed-only usages: %#v", declaration.DataUsages[0])
+	got := declaration.DataUsages[0]
+	if containsPrivacyProtection(got.DataProtections, dataProtectionNotCollected) {
+		t.Fatalf("non-empty malformed remote usages must not collapse to DATA_NOT_COLLECTED: %#v", got)
+	}
+	if !reflect.DeepEqual(got.DataProtections, []string{dataProtectionUnknown}) {
+		t.Fatalf("expected opaque %s marker, got %#v", dataProtectionUnknown, got)
+	}
+	if got.Category != "PURCHASE_HISTORY" {
+		t.Fatalf("expected malformed category to be preserved, got %#v", got)
 	}
 }
 
-func TestDeclarationFromRemoteDataUsagesSkipsMalformedWhenValidPresent(t *testing.T) {
+func TestDeclarationFromRemoteDataUsagesPreservesMalformedWhenValidPresent(t *testing.T) {
 	declaration := declarationFromRemoteDataUsages([]webcore.AppDataUsage{
 		{
 			ID:       "usage-malformed-1",
@@ -263,13 +270,17 @@ func TestDeclarationFromRemoteDataUsagesSkipsMalformedWhenValidPresent(t *testin
 	})
 
 	if len(declaration.DataUsages) != 1 {
-		t.Fatalf("expected one valid usage group, got %#v", declaration.DataUsages)
+		t.Fatalf("expected one grouped usage, got %#v", declaration.DataUsages)
 	}
-	if declaration.DataUsages[0].Category != "PURCHASE_HISTORY" {
-		t.Fatalf("unexpected declaration category: %#v", declaration.DataUsages[0])
+	got := declaration.DataUsages[0]
+	if got.Category != "PURCHASE_HISTORY" {
+		t.Fatalf("unexpected declaration category: %#v", got)
 	}
-	if !reflect.DeepEqual(declaration.DataUsages[0].DataProtections, []string{dataProtectionLinked}) {
-		t.Fatalf("unexpected declaration protections: %#v", declaration.DataUsages[0])
+	if containsPrivacyProtection(got.DataProtections, dataProtectionNotCollected) {
+		t.Fatalf("mixed remote usages must not collapse malformed entries to DATA_NOT_COLLECTED: %#v", got)
+	}
+	if !reflect.DeepEqual(got.DataProtections, []string{dataProtectionLinked, dataProtectionUnknown}) {
+		t.Fatalf("expected valid and unrepresentable protections, got %#v", got.DataProtections)
 	}
 }
 
@@ -1281,5 +1292,225 @@ func assertNoPrivacySecrets(t *testing.T, stdout, stderr string) {
 		if strings.Contains(combined, secret) {
 			t.Fatalf("output leaked session secret %q", secret)
 		}
+	}
+}
+
+func containsPrivacyProtection(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestWebPrivacyPullDoesNotWriteNotCollectedForMalformedRemoteUsages(t *testing.T) {
+	fixture := handlertest.New(t)
+	outPath := filepath.Join(t.TempDir(), "privacy.json")
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages":
+			return privacyJSONResponse(req, `{
+				"data": [{
+					"id": "usage-malformed-1",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"PURCHASE_HISTORY"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"APP_FUNCTIONALITY"}}
+					}
+				}, {
+					"id": "usage-malformed-2",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"EMAIL_ADDRESS"}}
+					}
+				}]
+			}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsagePublishState":
+			return privacyJSONResponse(req, `{
+				"data": {
+					"id": "publish-state-1",
+					"type": "appDataUsagesPublishState",
+					"attributes": {"published": false}
+				}
+			}`), nil
+		default:
+			return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+		}
+	})
+
+	cmd := WebPrivacyPullCommand()
+	if err := cmd.FlagSet.Parse([]string{"--app", privacyTestAppID, "--out", outPath, "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("exec error: %v", err)
+		}
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("failed to parse stdout JSON: %v\nstdout=%s", err, stdout)
+	}
+	count, ok := payload["unrepresentableCount"].(float64)
+	if !ok || count != 2 {
+		t.Fatalf("expected unrepresentableCount=2, got %#v", payload["unrepresentableCount"])
+	}
+	declaration, ok := payload["declaration"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected declaration object, got %#v", payload["declaration"])
+	}
+	assertJSONDeclarationHasNoNotCollected(t, declaration)
+
+	fileData, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read --out file: %v", err)
+	}
+	if strings.Contains(string(fileData), dataProtectionNotCollected) {
+		t.Fatalf("--out wrote DATA_NOT_COLLECTED for non-empty malformed remote usages:\n%s", fileData)
+	}
+	if !strings.Contains(string(fileData), dataProtectionUnknown) {
+		t.Fatalf("--out missing opaque %s marker:\n%s", dataProtectionUnknown, fileData)
+	}
+}
+
+func TestWebPrivacyPullPreservesMalformedUsagesAlongsideValidOnes(t *testing.T) {
+	fixture := handlertest.New(t)
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages":
+			return privacyJSONResponse(req, `{
+				"data": [{
+					"id": "usage-malformed-1",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"PURCHASE_HISTORY"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"APP_FUNCTIONALITY"}}
+					}
+				}, {
+					"id": "usage-valid-1",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"PURCHASE_HISTORY"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"APP_FUNCTIONALITY"}},
+						"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_LINKED_TO_YOU"}}
+					}
+				}]
+			}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsagePublishState":
+			return privacyJSONResponse(req, `{
+				"data": {
+					"id": "publish-state-1",
+					"type": "appDataUsagesPublishState",
+					"attributes": {"published": true}
+				}
+			}`), nil
+		default:
+			return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+		}
+	})
+
+	cmd := WebPrivacyPullCommand()
+	if err := cmd.FlagSet.Parse([]string{"--app", privacyTestAppID, "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("exec error: %v", err)
+		}
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+
+	var payload struct {
+		UnrepresentableCount int `json:"unrepresentableCount"`
+		Declaration          privacyDeclarationFile
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("failed to parse stdout JSON: %v\nstdout=%s", err, stdout)
+	}
+	if payload.UnrepresentableCount != 1 {
+		t.Fatalf("expected unrepresentableCount=1, got %d", payload.UnrepresentableCount)
+	}
+	if len(payload.Declaration.DataUsages) != 1 {
+		t.Fatalf("expected one grouped usage, got %#v", payload.Declaration.DataUsages)
+	}
+	got := payload.Declaration.DataUsages[0]
+	if containsPrivacyProtection(got.DataProtections, dataProtectionNotCollected) {
+		t.Fatalf("mixed pull collapsed malformed entries: %#v", got)
+	}
+	if !containsPrivacyProtection(got.DataProtections, dataProtectionLinked) || !containsPrivacyProtection(got.DataProtections, dataProtectionUnknown) {
+		t.Fatalf("expected valid and opaque protections, got %#v", got.DataProtections)
+	}
+}
+
+func TestWebPrivacyApplyRefusesUnrepresentableDeclarationWithoutDeletes(t *testing.T) {
+	fixture := handlertest.New(t)
+	var deleteCount int
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodDelete {
+			deleteCount++
+			return fixture.Response("did not expect DELETE %s", req.URL.Path), nil
+		}
+		return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+	})
+
+	path := filepath.Join(t.TempDir(), "privacy.json")
+	if err := os.WriteFile(path, []byte(`{
+		"schemaVersion": 1,
+		"dataUsages": [{
+			"category": "PURCHASE_HISTORY",
+			"purposes": ["APP_FUNCTIONALITY"],
+			"dataProtections": ["UNKNOWN_OR_MISSING"]
+		}]
+	}`), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	cmd := WebPrivacyApplyCommand()
+	if err := cmd.FlagSet.Parse([]string{
+		"--app", privacyTestAppID,
+		"--file", path,
+		"--allow-deletes",
+		"--confirm",
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var execErr error
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+	if execErr == nil {
+		t.Fatal("expected apply to fail closed on unrepresentable declaration")
+	}
+	if !strings.Contains(execErr.Error(), "unrepresentable") {
+		t.Fatalf("error = %v, want unrepresentable", execErr)
+	}
+	if !strings.Contains(stderr, "unrepresentable") {
+		t.Fatalf("stderr = %q, want unrepresentable", stderr)
+	}
+	if deleteCount != 0 {
+		t.Fatalf("expected no deletes, got %d", deleteCount)
+	}
+}
+
+func assertJSONDeclarationHasNoNotCollected(t *testing.T, declaration map[string]any) {
+	t.Helper()
+	usages, ok := declaration["dataUsages"].([]any)
+	if !ok {
+		t.Fatalf("expected dataUsages array, got %#v", declaration["dataUsages"])
+	}
+	raw, err := json.Marshal(usages)
+	if err != nil {
+		t.Fatalf("marshal dataUsages: %v", err)
+	}
+	if strings.Contains(string(raw), dataProtectionNotCollected) {
+		t.Fatalf("declaration contained DATA_NOT_COLLECTED: %s", raw)
 	}
 }
