@@ -36,6 +36,7 @@ Use ` + "`asc web apps create`" + ` as the canonical app-creation command.
 			WebAppsAvailabilityCommand(),
 			WebAppsCompatibilityCommand(),
 			WebAppsDistributionCommand(),
+			WebAppsLastCompatibleVersionCommand(),
 			WebAppsMedicalDeviceCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
