@@ -111,6 +111,29 @@ func TestReviewReadersFollowNextLinks(t *testing.T) {
 				return ids, nil
 			},
 		},
+		{
+			name: "items",
+			path: "/reviewSubmissions/sub-1/items",
+			page1: func(next string) string {
+				return `{
+					"data": [{"id":"item-1","type":"reviewSubmissionItems"}],
+					"links": {"next": "` + next + `"}
+				}`
+			},
+			page2:   `{"data": [{"id":"item-2","type":"reviewSubmissionItems"}]}`,
+			wantIDs: []string{"item-1", "item-2"},
+			collectIDs: func(client *Client) ([]string, error) {
+				got, err := client.ListReviewSubmissionItems(context.Background(), "sub-1")
+				if err != nil {
+					return nil, err
+				}
+				ids := make([]string, 0, len(got))
+				for _, item := range got {
+					ids = append(ids, item.ID)
+				}
+				return ids, nil
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -160,6 +183,24 @@ func TestReviewReadersTerminateSelfReferentialNext(t *testing.T) {
 		bodyID     string
 		collectErr func(*Client) error
 	}{
+		{
+			name:   "submissions",
+			path:   "/apps/app-123/reviewSubmissions",
+			bodyID: "sub-1",
+			collectErr: func(client *Client) error {
+				_, err := client.ListReviewSubmissions(context.Background(), "app-123")
+				return err
+			},
+		},
+		{
+			name:   "items",
+			path:   "/reviewSubmissions/sub-1/items",
+			bodyID: "item-1",
+			collectErr: func(client *Client) error {
+				_, err := client.ListReviewSubmissionItems(context.Background(), "sub-1")
+				return err
+			},
+		},
 		{
 			name:   "threads",
 			path:   "/resolutionCenterThreads",
@@ -224,5 +265,38 @@ func TestReviewReadersTerminateSelfReferentialNext(t *testing.T) {
 				t.Fatalf("expected loop detection within 2 requests, got %d", requests)
 			}
 		})
+	}
+}
+
+func TestReviewReadersFollowQueryOnlyNextLinks(t *testing.T) {
+	fixture := handlertest.New(t)
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/reviewRejections" {
+			fixture.Respond(w, "query-only next lost collection path: %s", r.URL.Path)
+			return
+		}
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("cursor") == "page-2" {
+			_, _ = w.Write([]byte(`{"data": [{"id":"rej-2","type":"reviewRejections"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"data": [{"id":"rej-1","type":"reviewRejections"}],
+			"links": {"next": "?cursor=page-2"}
+		}`))
+	}))
+	defer server.Close()
+
+	got, err := testWebClient(server).ListReviewRejections(context.Background(), "thread-1")
+	if err != nil {
+		t.Fatalf("ListReviewRejections() error = %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected 2 page requests, got %d", requests)
+	}
+	if len(got) != 2 || got[0].ID != "rej-1" || got[1].ID != "rej-2" {
+		t.Fatalf("expected both query-only pages, got %#v", got)
 	}
 }

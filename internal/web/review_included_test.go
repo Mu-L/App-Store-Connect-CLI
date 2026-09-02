@@ -75,6 +75,12 @@ func TestListReviewRejectionsRetainsIncludedContext(t *testing.T) {
 	if _, ok := relatedByType["rejectionAttachments"]; ok {
 		t.Fatalf("did not expect attachment resources in related context: %#v", rejection.Related)
 	}
+	if len(rejection.Related) != 2 {
+		t.Fatalf("expected two related artifacts, got %#v", rejection.Related)
+	}
+	if rejection.Related[0].Relationship != "appStoreVersion" || rejection.Related[1].Relationship != "build" {
+		t.Fatalf("expected stable related order by relationship name, got %#v", rejection.Related)
+	}
 
 	encoded, err := json.Marshal(rejection)
 	if err != nil {

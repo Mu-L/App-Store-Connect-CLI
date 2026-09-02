@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -28,6 +29,7 @@ func (c *Client) fetchJSONAPIPages(ctx context.Context, path, responseName strin
 			return jsonAPIListPayload{}, fmt.Errorf("%s pagination loop detected", responseName)
 		}
 		visited[nextPath] = struct{}{}
+		currentPath := nextPath
 
 		responseBody, err := c.doRequest(ctx, http.MethodGet, nextPath, nil)
 		if err != nil {
@@ -41,11 +43,36 @@ func (c *Client) fetchJSONAPIPages(ctx context.Context, path, responseName strin
 		combined.Data = append(combined.Data, payload.Data...)
 		combined.Included = append(combined.Included, payload.Included...)
 
-		nextPath, err = nextLookupPagePath(payload.Links, c.baseURL, responseName)
+		nextLink, err := extractNextLink(payload.Links)
 		if err != nil {
-			return jsonAPIListPayload{}, err
+			return jsonAPIListPayload{}, fmt.Errorf("failed to parse %s pagination links: %w", responseName, err)
+		}
+		if strings.TrimSpace(nextLink) == "" {
+			nextPath = ""
+			continue
+		}
+		nextPath, err = resolveJSONAPINextPath(nextLink, currentPath, c.baseURL)
+		if err != nil {
+			return jsonAPIListPayload{}, fmt.Errorf("failed to normalize %s pagination link: %w", responseName, err)
 		}
 	}
 
 	return combined, nil
+}
+
+func resolveJSONAPINextPath(nextLink, currentPath, baseURL string) (string, error) {
+	baseURLParsed, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	current, err := url.Parse(currentPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid current path: %w", err)
+	}
+	currentURL := baseURLParsed.ResolveReference(current)
+	ref, err := url.Parse(nextLink)
+	if err != nil {
+		return "", fmt.Errorf("invalid next link: %w", err)
+	}
+	return normalizeNextPath(currentURL.ResolveReference(ref).String(), baseURL)
 }

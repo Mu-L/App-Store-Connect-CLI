@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -366,11 +367,17 @@ func relatedResourcesFrom(resource jsonAPIResource, included map[string]jsonAPIR
 	if len(resource.Relationships) == 0 {
 		return nil
 	}
-	var related []ReviewRelatedResource
+	names := make([]string, 0, len(resource.Relationships))
 	for relationshipName := range resource.Relationships {
 		if _, skipped := skip[relationshipName]; skipped {
 			continue
 		}
+		names = append(names, relationshipName)
+	}
+	sort.Strings(names)
+
+	var related []ReviewRelatedResource
+	for _, relationshipName := range names {
 		for _, ref := range relationshipRefs(resource, relationshipName) {
 			related = append(related, ReviewRelatedResource{
 				Relationship: relationshipName,
@@ -466,7 +473,12 @@ func (c *Client) ListReviewSubmissionItems(ctx context.Context, reviewSubmission
 			ID:   strings.TrimSpace(resource.ID),
 			Type: strings.TrimSpace(resource.Type),
 		}
+		names := make([]string, 0, len(resource.Relationships))
 		for relationshipName := range resource.Relationships {
+			names = append(names, relationshipName)
+		}
+		sort.Strings(names)
+		for _, relationshipName := range names {
 			refs := relationshipRefs(resource, relationshipName)
 			for _, ref := range refs {
 				item.Related = append(item.Related, ReviewSubmissionItemRelation{
