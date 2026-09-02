@@ -598,6 +598,14 @@ func TestDeleteDeveloperAppGroupFailsClosedOnUnknownGroupOrUnreadableAssignments
 		"null data":                            `{"data":null,"included":[]}`,
 		"null capability relationship":         `{"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":null}}}],"included":[]}`,
 		"capability relationship without data": `{"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"links":{}}}}],"included":[]}`,
+		"invalid capability reference": `{
+			"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"capabilities","id":"groups-1"},{"type":"bundleIdCapabilities","id":""}]}}}],
+			"included":[]
+		}`,
+		"omitted app group relationship": `{
+			"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}}],
+			"included":[{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}}}}]
+		}`,
 		"null app group relationship": `{
 			"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}}],
 			"included":[{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":null}}}]

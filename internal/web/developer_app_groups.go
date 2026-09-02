@@ -404,8 +404,8 @@ func developerBundleIDReferencesAppGroup(bundle developerResource, includedByID 
 		return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: capability relationship %w", label, err)
 	}
 	for _, reference := range capabilityReferences {
-		if reference.Type != "bundleIdCapabilities" {
-			continue
+		if reference.Type != "bundleIdCapabilities" || strings.TrimSpace(reference.ID) == "" {
+			return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: capability relationship contains an invalid reference (type %q, id %q)", label, reference.Type, reference.ID)
 		}
 		capability, included := includedByID[reference.ID]
 		if !included {
@@ -418,12 +418,15 @@ func developerBundleIDReferencesAppGroup(bundle developerResource, includedByID 
 		if capabilityID != developerAppGroupsCapabilityType {
 			continue
 		}
-		// The preflight requested include=bundleIdCapabilities.appGroups, so a
-		// present-but-null collection is unreadable rather than empty.
-		if rawGroups, exists := capability.Relationships["appGroups"]; exists {
-			if _, err := decodeStrictDeveloperRelationship(rawGroups); err != nil {
-				return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: appGroups relationship %w", label, err)
-			}
+		// The preflight requested include=bundleIdCapabilities.appGroups, so an
+		// APP_GROUPS capability without a readable appGroups collection is
+		// unreadable rather than empty.
+		rawGroups, exists := capability.Relationships["appGroups"]
+		if !exists {
+			return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: Developer Portal omitted the appGroups relationship of capability %q", label, reference.ID)
+		}
+		if _, err := decodeStrictDeveloperRelationship(rawGroups); err != nil {
+			return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: appGroups relationship %w", label, err)
 		}
 		groups, err := developerAppGroupRelationships(capability)
 		if err != nil {
