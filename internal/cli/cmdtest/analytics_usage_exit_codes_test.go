@@ -2,6 +2,7 @@ package cmdtest
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -57,7 +58,7 @@ func TestAnalyticsInputValidationReturnsUsageExitCode(t *testing.T) {
 		{
 			name:    "view invalid instance id",
 			args:    []string{"analytics", "view", "--request-id", analyticsUsageExitRequestID, "--instance-id", "bad/instance"},
-			wantErr: "analytics view: --instance-id: resource identifier",
+			wantErr: analyticsReservedSegmentUsageError("analytics view", "--instance-id", "bad/instance"),
 		},
 		{
 			name:    "view limit above maximum",
@@ -77,7 +78,7 @@ func TestAnalyticsInputValidationReturnsUsageExitCode(t *testing.T) {
 		{
 			name:    "download invalid instance id",
 			args:    []string{"analytics", "download", "--request-id", analyticsUsageExitRequestID, "--instance-id", "bad/instance"},
-			wantErr: "analytics download: --instance-id: resource identifier",
+			wantErr: analyticsReservedSegmentUsageError("analytics download", "--instance-id", "bad/instance"),
 		},
 		{
 			name: "download invalid segment id",
@@ -87,7 +88,7 @@ func TestAnalyticsInputValidationReturnsUsageExitCode(t *testing.T) {
 				"--instance-id", "instance-1",
 				"--segment-id", "bad/segment",
 			},
-			wantErr: "analytics download: --segment-id: resource identifier",
+			wantErr: analyticsReservedSegmentUsageError("analytics download", "--segment-id", "bad/segment"),
 		},
 		{
 			name:    "reports links limit above maximum",
@@ -102,7 +103,7 @@ func TestAnalyticsInputValidationReturnsUsageExitCode(t *testing.T) {
 		{
 			name:    "instances view invalid instance id",
 			args:    []string{"analytics", "instances", "view", "--instance-id", "bad/instance"},
-			wantErr: "analytics instances view: --instance-id: resource identifier",
+			wantErr: analyticsReservedSegmentUsageError("analytics instances view", "--instance-id", "bad/instance"),
 		},
 		{
 			name:    "instances links limit above maximum",
@@ -117,12 +118,12 @@ func TestAnalyticsInputValidationReturnsUsageExitCode(t *testing.T) {
 		{
 			name:    "instances links invalid instance id",
 			args:    []string{"analytics", "instances", "links", "--instance-id", "bad/instance"},
-			wantErr: "analytics instances links: --instance-id: resource identifier",
+			wantErr: analyticsReservedSegmentUsageError("analytics instances links", "--instance-id", "bad/instance"),
 		},
 		{
 			name:    "segments view invalid segment id",
 			args:    []string{"analytics", "segments", "view", "--segment-id", "bad/segment"},
-			wantErr: "analytics segments view: --segment-id: resource identifier",
+			wantErr: analyticsReservedSegmentUsageError("analytics segments view", "--segment-id", "bad/segment"),
 		},
 	}
 
@@ -139,9 +140,38 @@ func TestAnalyticsInputValidationReturnsUsageExitCode(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if !strings.Contains(stderr, "Error: "+test.wantErr) {
-				t.Fatalf("stderr = %q, want it to contain %q", stderr, "Error: "+test.wantErr)
-			}
+			assertUsageErrorStderr(t, stderr, test.wantErr)
 		})
+	}
+}
+
+// analyticsReservedSegmentUsageError builds the complete diagnostic a command
+// prints when a resource identifier carries a reserved path delimiter. The
+// trailing quoted set mirrors asc.ValidateResourcePathSegment, which renders
+// the reserved characters with %q.
+func analyticsReservedSegmentUsageError(commandPath, flagName, id string) string {
+	return commandPath + ": " + flagName + ": resource identifier " + strconv.Quote(id) +
+		` must be a single path segment without any of "/?#%\\"`
+}
+
+// assertUsageErrorStderr locks the usage-error stderr contract: the diagnostic
+// is the complete first line, formatted exactly as "Error: <message>\n", and it
+// appears exactly once.
+//
+// The whole buffer is deliberately not compared. shared.UsageError returns an
+// error wrapping flag.ErrHelp, so ffcli's Run renders the command's full usage
+// page after the diagnostic; asserting that too would turn every usage test
+// into a help-text golden test that `make generate-command-docs` already
+// covers. Pinning the exact diagnostic line and its occurrence count still
+// rejects extra diagnostics, duplicated errors, and changed formatting.
+func assertUsageErrorStderr(t *testing.T, stderr, wantMessage string) {
+	t.Helper()
+
+	wantLine := "Error: " + wantMessage + "\n"
+	if !strings.HasPrefix(stderr, wantLine) {
+		t.Fatalf("stderr = %q, want it to start with %q", stderr, wantLine)
+	}
+	if got := strings.Count(stderr, "Error: "); got != 1 {
+		t.Fatalf("stderr = %q, want exactly one %q diagnostic, got %d", stderr, "Error: ", got)
 	}
 }

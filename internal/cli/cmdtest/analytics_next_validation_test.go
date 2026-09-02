@@ -23,6 +23,14 @@ func runAnalyticsInvalidNextURLCases(
 ) {
 	t.Helper()
 
+	// malformedNextParseError is the url.Parse diagnostic the validator wraps
+	// for malformedNext. It is spelled out rather than recomputed here because
+	// staticcheck rejects url.Parse on a constant invalid URL (SA1007).
+	const (
+		malformedNext           = "https://api.appstoreconnect.apple.com/%zz"
+		malformedNextParseError = `parse "` + malformedNext + `": invalid URL escape "%zz"`
+	)
+
 	tests := []struct {
 		name    string
 		next    string
@@ -35,8 +43,8 @@ func runAnalyticsInvalidNextURLCases(
 		},
 		{
 			name:    "malformed URL",
-			next:    "https://api.appstoreconnect.apple.com/%zz",
-			wantErr: wantErrPrefix + " must be a valid URL:",
+			next:    malformedNext,
+			wantErr: wantErrPrefix + " must be a valid URL: " + malformedNextParseError,
 		},
 	}
 
@@ -67,9 +75,7 @@ func runAnalyticsInvalidNextURLCases(
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if !strings.Contains(stderr, "Error: "+test.wantErr) {
-				t.Fatalf("expected usage error on stderr, got %q", stderr)
-			}
+			assertUsageErrorStderr(t, stderr, test.wantErr)
 		})
 	}
 }
