@@ -871,11 +871,18 @@ func applyPrivacyPlan(ctx context.Context, client privacyMutationClient, appID s
 		Unknown:    make([]privacyApplyAction, 0),
 		NotApplied: make([]privacyApplyAction, 0),
 	}
+	steps := privacyApplySteps(plan)
+	// Validation aborts before the first mutation, so every planned step is
+	// proven not applied. Leaving the buckets empty would print a receipt that
+	// accounts for none of the plan, and would let a concurrently converged
+	// re-read report the invocation as fully applied.
 	if err := validateApplyPlanUsageIDs(plan); err != nil {
+		for _, step := range steps {
+			result.NotApplied = append(result.NotApplied, privacyActionFromStep(step, step.Change.UsageID))
+		}
 		return result, err
 	}
 
-	steps := privacyApplySteps(plan)
 	for index, step := range steps {
 		usageID, err := executePrivacyStep(ctx, client, appID, step)
 		if err != nil {

@@ -2438,3 +2438,37 @@ func TestPrivacyApplyFailureMessageReportsConvergence(t *testing.T) {
 		t.Fatalf("convergence message must say a rerun is a no-op: %q", message)
 	}
 }
+
+func TestApplyPrivacyPlanReportsPlannedStepsAsNotAppliedWhenValidationFails(t *testing.T) {
+	client := &fakePrivacyMutationClient{}
+	plan := privacyPlanOutput{
+		Updates: []privacyPlanChange{
+			{Key: "A|P|DATA_NOT_LINKED_TO_YOU", Category: "A", Purpose: "P", DataProtection: dataProtectionNotLinked, UsageID: "usage-1"},
+			{Key: "B|P|DATA_NOT_LINKED_TO_YOU", Category: "B", Purpose: "P", DataProtection: dataProtectionNotLinked, UsageID: "usage-1"},
+		},
+		Adds: []privacyPlanChange{
+			{Key: "C|P|DATA_LINKED_TO_YOU", Category: "C", Purpose: "P", DataProtection: dataProtectionLinked},
+		},
+	}
+
+	result, err := applyPrivacyPlan(context.Background(), client, "app-123", plan)
+	if err == nil {
+		t.Fatal("expected the duplicate usage id validation error")
+	}
+	if len(client.callOrder) != 0 {
+		t.Fatalf("validation must abort before any mutation: %#v", client.callOrder)
+	}
+	if len(result.Applied) != 0 || len(result.Unknown) != 0 {
+		t.Fatalf("nothing was attempted: %#v", result)
+	}
+	if len(result.NotApplied) != len(privacyApplySteps(plan)) {
+		t.Fatalf("every planned step must be reported as not applied: %#v", result.NotApplied)
+	}
+	actions := map[string]int{}
+	for _, action := range result.NotApplied {
+		actions[action.Action]++
+	}
+	if actions["update"] != 2 || actions["create"] != 1 {
+		t.Fatalf("unexpected not-applied buckets: %#v", result.NotApplied)
+	}
+}
