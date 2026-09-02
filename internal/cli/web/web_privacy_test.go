@@ -2472,3 +2472,42 @@ func TestApplyPrivacyPlanReportsPlannedStepsAsNotAppliedWhenValidationFails(t *t
 		t.Fatalf("unexpected not-applied buckets: %#v", result.NotApplied)
 	}
 }
+
+func TestPrivacyApplyConvergedRejectsResidualSkippedDeletes(t *testing.T) {
+	clean := privacyApplyResult{}
+	converged := privacyPlanOutput{}
+	if !privacyApplyConverged(converged, clean) {
+		t.Fatal("an empty residual plan with a fully resolved result is converged")
+	}
+
+	withSkipped := privacyPlanOutput{
+		SkippedDeletes: []privacySkippedDelete{
+			{
+				Key:            "PHONE_NUMBER|ANALYTICS|DATA_LINKED_TO_YOU",
+				Category:       "PHONE_NUMBER",
+				Purpose:        "ANALYTICS",
+				DataProtection: dataProtectionLinked,
+				Reason:         "missing_usage_id",
+			},
+		},
+	}
+	if privacyApplyConverged(withSkipped, clean) {
+		t.Fatal("an undeletable extra tuple still on the remote is not convergence")
+	}
+
+	if privacyApplyConverged(converged, privacyApplyResult{
+		Unknown: []privacyApplyAction{{Action: "update", Key: "A|P|DATA_LINKED_TO_YOU"}},
+	}) {
+		t.Fatal("an unresolved action is not convergence")
+	}
+	if privacyApplyConverged(converged, privacyApplyResult{
+		NotApplied: []privacyApplyAction{{Action: "create", Key: "A|P|DATA_LINKED_TO_YOU"}},
+	}) {
+		t.Fatal("a not-applied action is not convergence")
+	}
+	if privacyApplyConverged(privacyPlanOutput{
+		Adds: []privacyPlanChange{{Key: "A|P|DATA_LINKED_TO_YOU"}},
+	}, clean) {
+		t.Fatal("a residual executable change is not convergence")
+	}
+}

@@ -978,6 +978,20 @@ func privacyApplyFailureMessage(appID string, payload privacyApplyOutput, cause,
 	return message
 }
 
+// privacyApplyConverged reports whether the post-failure re-read proves the
+// remote declaration already matches the file. Residual skipped deletes count
+// against convergence: an undesired remote tuple Apple returned without a usage
+// id cannot be deleted, so it is a known mismatch that no rerun clears, and
+// claiming a match would be wrong in the one direction that matters.
+func privacyApplyConverged(residual privacyPlanOutput, result privacyApplyResult) bool {
+	return len(residual.Updates) == 0 &&
+		len(residual.Adds) == 0 &&
+		len(residual.Deletes) == 0 &&
+		len(residual.SkippedDeletes) == 0 &&
+		len(result.Unknown) == 0 &&
+		len(result.NotApplied) == 0
+}
+
 // resolvePrivacyApplyResult reclassifies attempted-but-unconfirmed actions
 // using a fresh remote read. A 5xx can still have committed the write, so the
 // remote state is the only honest evidence.
@@ -2002,7 +2016,7 @@ Examples:
 					// response. When the re-read proves every planned change
 					// landed, the receipt says so; the exit stays non-zero
 					// because the transport failure is still real.
-					if remaining == 0 && len(result.Unknown) == 0 && len(result.NotApplied) == 0 {
+					if privacyApplyConverged(residual, result) {
 						payload.Applied = true
 					}
 				}
