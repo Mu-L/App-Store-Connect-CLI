@@ -337,6 +337,16 @@ func readTwoFactorCodeFromTerminalFD(fd int, writer io.Writer) (string, error) {
 	return code, nil
 }
 
+// canPromptOnTerminal reports whether an interactive prompt can reach the
+// operator, either through the controlling terminal or through stdin.
+func canPromptOnTerminal() bool {
+	if tty, err := openTTYFn(); err == nil {
+		_ = tty.Close()
+		return true
+	}
+	return termIsTerminalFn(int(os.Stdin.Fd()))
+}
+
 func promptTwoFactorCodeInteractive() (string, error) {
 	if tty, err := openTTYFn(); err == nil {
 		defer func() { _ = tty.Close() }()
@@ -672,10 +682,24 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 	}
 
 	var (
-		expiredCachedSession *webcore.AuthSession
-		fallbackPassword     resolvedWebPassword
-		skipStoredPassword   bool
+		expiredCachedSession  *webcore.AuthSession
+		fallbackPassword      resolvedWebPassword
+		skipStoredPassword    bool
+		twoFactorCodeConsumed bool
 	)
+
+	// Apple consumes a 2FA code as soon as it is accepted, so a literal
+	// --two-factor-code value cannot be resubmitted on the fresh retry. A
+	// configured code command or an interactive prompt can produce a new one.
+	canReplaceConsumedTwoFactorCode := func() bool {
+		if twoFactorCode == "" || command != "" {
+			return true
+		}
+		return canPromptOnTerminal()
+	}
+	consumedTwoFactorCodeError := func(loginErr error) error {
+		return fmt.Errorf("%w; the supplied two-factor code was already consumed by the expired session, so re-run with a new code", loginErr)
+	}
 
 	tryKnownSession := func(targetAppleID string) (*webcore.AuthSession, string, bool, error) {
 		resumed, ok, cacheExpired, err := resolveKnownWebSession(ctx, targetAppleID)
@@ -734,8 +758,14 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 		}
 		// A post-2FA session bootstrap 401/403 means the reused cookie jar is
 		// stale, not that the code was wrong. Fall through to one fresh login.
-		if twoFactorStarted && !webcore.IsStaleSessionAfterTwoFactor(loginErr) {
-			return nil, "", false, fmt.Errorf("web auth auto-reauth failed: %w", loginErr)
+		if twoFactorStarted {
+			if !webcore.IsStaleSessionAfterTwoFactor(loginErr) {
+				return nil, "", false, fmt.Errorf("web auth auto-reauth failed: %w", loginErr)
+			}
+			if !canReplaceConsumedTwoFactorCode() {
+				return nil, "", false, fmt.Errorf("web auth auto-reauth failed: %w", consumedTwoFactorCodeError(loginErr))
+			}
+			twoFactorCodeConsumed = true
 		}
 		if errors.Is(loginErr, webcore.ErrInvalidAppleAccountCredentials) {
 			if silentPassword.source != webPasswordSourceStored {
@@ -798,10 +828,19 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 	}
 
 	login := func(candidate resolvedWebPassword) (*webcore.AuthSession, bool, error) {
-		if expiredCachedSession != nil && expiredCachedSession.Client != nil {
-			return loginWithOptionalTwoFactorClientTracked(ctx, expiredCachedSession.Client, resolvedAppleID, candidate.value, twoFactorCode, command)
+		// Interactive password and 2FA entry can outlast the caller's request
+		// deadline, so bound every attempt with a fresh timeout derived from the
+		// untimed parent context instead of an already-expired one.
+		loginCtx, cancel := shared.ContextWithTimeout(shared.ContextWithoutTimeout(ctx))
+		defer cancel()
+		code := twoFactorCode
+		if twoFactorCodeConsumed {
+			code = ""
 		}
-		session, err := loginWithOptionalTwoFactor(ctx, resolvedAppleID, candidate.value, twoFactorCode, command)
+		if expiredCachedSession != nil && expiredCachedSession.Client != nil {
+			return loginWithOptionalTwoFactorClientTracked(loginCtx, expiredCachedSession.Client, resolvedAppleID, candidate.value, code, command)
+		}
+		session, err := loginWithOptionalTwoFactor(loginCtx, resolvedAppleID, candidate.value, code, command)
 		return session, false, err
 	}
 	loginWithPromptedFreshFallback := func(candidate resolvedWebPassword) (*webcore.AuthSession, error) {
@@ -814,6 +853,12 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 		// mean that the cached cookie jar itself is unusable, including when the
 		// post-2FA session bootstrap is rejected. Retry once with a fresh client
 		// while preserving the already-resolved password.
+		if twoFactorStarted {
+			if !canReplaceConsumedTwoFactorCode() {
+				return nil, consumedTwoFactorCodeError(err)
+			}
+			twoFactorCodeConsumed = true
+		}
 		expiredCachedSession = nil
 		session, _, err = login(candidate)
 		return session, err

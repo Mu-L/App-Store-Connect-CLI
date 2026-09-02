@@ -2605,3 +2605,237 @@ func TestTwoFactorSubmitFailureDistinguishesFinalizationFromVerification(t *test
 		})
 	}
 }
+
+// restoreStaleSessionRetryHooks saves and restores every package hook and writer
+// touched by the stale-session fresh-retry tests so auth state cannot leak
+// between tests.
+func restoreStaleSessionRetryHooks(t *testing.T) {
+	t.Helper()
+
+	origTryResume := tryResumeSessionFn
+	origTryResumeLast := tryResumeLastFn
+	origLoadCachedSession := loadCachedSessionFn
+	origLoadLastCachedSession := loadLastCachedSessionFn
+	origPromptPassword := promptPasswordFn
+	origPromptTwoFactor := promptTwoFactorCodeFn
+	origReadCommand := readTwoFactorCodeFromCommandFn
+	origPrepare := prepareTwoFactorChallengeFn
+	origSubmit := submitTwoFactorCodeFn
+	origWebLogin := webLoginFn
+	origWebLoginWithClient := webLoginWithClientFn
+	origPersistWebSession := persistWebSessionFn
+	origOpenTTY := openTTYFn
+	origIsTerminal := termIsTerminalFn
+	origExpiredWriter := sessionExpiredWriter
+	origStatusWriter := twoFactorStatusWriter
+	origCacheWarningWriter := sessionCacheWarningWriter
+	t.Cleanup(func() {
+		tryResumeSessionFn = origTryResume
+		tryResumeLastFn = origTryResumeLast
+		loadCachedSessionFn = origLoadCachedSession
+		loadLastCachedSessionFn = origLoadLastCachedSession
+		promptPasswordFn = origPromptPassword
+		promptTwoFactorCodeFn = origPromptTwoFactor
+		readTwoFactorCodeFromCommandFn = origReadCommand
+		prepareTwoFactorChallengeFn = origPrepare
+		submitTwoFactorCodeFn = origSubmit
+		webLoginFn = origWebLogin
+		webLoginWithClientFn = origWebLoginWithClient
+		persistWebSessionFn = origPersistWebSession
+		openTTYFn = origOpenTTY
+		termIsTerminalFn = origIsTerminal
+		sessionExpiredWriter = origExpiredWriter
+		twoFactorStatusWriter = origStatusWriter
+		sessionCacheWarningWriter = origCacheWarningWriter
+	})
+
+	t.Setenv(webPasswordEnv, "env-secret")
+	t.Setenv(webTwoFactorCodeCommandEnv, "")
+	t.Setenv(webDontStorePasswordEnv, "1")
+
+	sessionExpiredWriter = io.Discard
+	twoFactorStatusWriter = io.Discard
+	sessionCacheWarningWriter = io.Discard
+	promptPasswordFn = func(ctx context.Context) (string, error) {
+		t.Fatal("did not expect a password prompt when the env password is set")
+		return "", nil
+	}
+	tryResumeLastFn = func(ctx context.Context) (*webcore.AuthSession, bool, error) {
+		t.Fatal("did not expect a last-session cache lookup when apple-id is provided")
+		return nil, false, nil
+	}
+	loadLastCachedSessionFn = func() (*webcore.AuthSession, bool, error) {
+		t.Fatal("did not expect a last cached-session load when apple-id is provided")
+		return nil, false, nil
+	}
+	tryResumeSessionFn = func(ctx context.Context, username string) (*webcore.AuthSession, bool, error) {
+		return nil, false, webcore.ErrCachedSessionExpired
+	}
+	prepareTwoFactorChallengeFn = func(ctx context.Context, session *webcore.AuthSession) (*webcore.TwoFactorChallenge, error) {
+		return &webcore.TwoFactorChallenge{Method: "trusted-device"}, nil
+	}
+	persistWebSessionFn = func(session *webcore.AuthSession) error { return nil }
+}
+
+// Apple consumes the submitted 2FA code before the stale cached jar fails the
+// session bootstrap, so the fresh retry must obtain a new code from the
+// configured command instead of resubmitting the literal --two-factor-code.
+func TestResolveSessionObtainsNewTwoFactorCodeForFreshRetryAfterStaleBootstrap(t *testing.T) {
+	restoreStaleSessionRetryHooks(t)
+	t.Setenv(webTwoFactorCodeCommandEnv, "print-code")
+
+	cachedClient := &http.Client{}
+	staleSession := &webcore.AuthSession{}
+	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
+	var submittedCodes []string
+	commandCalls := 0
+
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) {
+		t.Fatal("did not expect an interactive 2fa prompt when a code command is configured")
+		return "", nil
+	}
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		commandCalls++
+		return "222222", nil
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		submittedCodes = append(submittedCodes, code)
+		if session == staleSession {
+			return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+		}
+		return nil
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return freshSession, &webcore.TwoFactorRequiredError{}
+	}
+
+	session, source, err := resolveSession(context.Background(), "user@example.com", "", "111111")
+	if err != nil {
+		t.Fatalf("resolveSession returned error: %v", err)
+	}
+	if session != freshSession {
+		t.Fatal("expected the fresh session to be returned")
+	}
+	if source != "fresh" {
+		t.Fatalf("expected source %q, got %q", "fresh", source)
+	}
+	if commandCalls != 1 {
+		t.Fatalf("expected the 2fa code command to run once for the fresh retry, got %d", commandCalls)
+	}
+	if len(submittedCodes) != 2 {
+		t.Fatalf("expected two 2fa submissions, got %v", submittedCodes)
+	}
+	if submittedCodes[0] != "111111" {
+		t.Fatalf("expected the supplied code on the cached-jar attempt, got %q", submittedCodes[0])
+	}
+	if submittedCodes[1] != "222222" {
+		t.Fatalf("expected a newly obtained code on the fresh retry, got %q", submittedCodes[1])
+	}
+}
+
+// Without a code command or a terminal there is no way to replace the consumed
+// literal code, so the retry must not resubmit it; it must explain that a new
+// code is required.
+func TestResolveSessionFailsWhenConsumedTwoFactorCodeCannotBeReplaced(t *testing.T) {
+	restoreStaleSessionRetryHooks(t)
+
+	cachedClient := &http.Client{}
+	staleSession := &webcore.AuthSession{}
+
+	openTTYFn = func() (*os.File, error) { return nil, errors.New("no tty") }
+	termIsTerminalFn = func(fd int) bool { return false }
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) {
+		t.Fatal("did not expect an interactive 2fa prompt without a terminal")
+		return "", nil
+	}
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		t.Fatal("did not expect a 2fa code command when none is configured")
+		return "", nil
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		t.Fatal("did not expect a fresh retry that would resubmit the consumed 2fa code")
+		return nil, nil
+	}
+
+	_, _, err := resolveSession(context.Background(), "user@example.com", "", "111111")
+	if err == nil {
+		t.Fatal("expected resolveSession to fail when the consumed code cannot be replaced")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "2fa finalization failed: session bootstrap returned status 401") {
+		t.Fatalf("expected the finalization cause to be preserved, got %q", got)
+	}
+	if !strings.Contains(got, "already consumed") {
+		t.Fatalf("expected the message to explain that the code was consumed, got %q", got)
+	}
+}
+
+// Interactive password and 2FA entry can outlast the caller's request deadline,
+// so the fresh retry must run under a new bounded context instead of the
+// already-expired one.
+func TestResolveSessionRetriesFreshLoginAfterRequestDeadlineExpired(t *testing.T) {
+	restoreStaleSessionRetryHooks(t)
+
+	cachedClient := &http.Client{}
+	staleSession := &webcore.AuthSession{}
+	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
+	freshAttempts := 0
+
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) { return "654321", nil }
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		t.Fatal("did not expect a 2fa code command when none is configured")
+		return "", nil
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		if session == staleSession {
+			return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+		}
+		return nil
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		freshAttempts++
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("expected the fresh retry to use a live context, got %v", err)
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("expected the fresh retry context to stay bounded by a timeout")
+		}
+		return freshSession, nil
+	}
+
+	expiredCtx, cancel := shared.ContextWithTimeoutDuration(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-expiredCtx.Done()
+
+	session, source, err := resolveSession(expiredCtx, "user@example.com", "", "")
+	if err != nil {
+		t.Fatalf("resolveSession returned error: %v", err)
+	}
+	if freshAttempts != 1 {
+		t.Fatalf("expected exactly one fresh retry, got %d", freshAttempts)
+	}
+	if session != freshSession || source != "fresh" {
+		t.Fatalf("expected the fresh session, got session=%p source=%q", session, source)
+	}
+}
