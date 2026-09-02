@@ -40,6 +40,7 @@ func webSubscriptionMonthlyCommitmentBootstrapRows(result *WebSubscriptionMonthl
 				"Upfront Price Point ID",
 				"Monthly Price Point ID",
 				"Start Date",
+				"Preserve Current Price",
 			}, [][]string{{
 				fmt.Sprintf("%t", result.DryRun),
 				result.SubscriptionID,
@@ -49,6 +50,7 @@ func webSubscriptionMonthlyCommitmentBootstrapRows(result *WebSubscriptionMonthl
 				result.UpfrontPricePointID,
 				result.MonthlyPricePointID,
 				result.StartDate,
+				fmt.Sprintf("%t", result.PreserveCurrentPrice),
 			}}
 	}
 	return []string{
