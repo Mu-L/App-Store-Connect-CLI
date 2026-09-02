@@ -141,6 +141,31 @@ func TestWebAPIKeysCreateRejectsEmptyRoleBeforeResolvingSession(t *testing.T) {
 	}
 }
 
+func TestWebAPIKeysCreateRejectsKnownNonSelectableRole(t *testing.T) {
+	resolveCalled := false
+	restoreSession := SetResolveWebSession(func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		resolveCalled = true
+		return &webcore.AuthSession{}, "cache", nil
+	})
+	t.Cleanup(restoreSession)
+
+	cmd := WebAPIKeysCreateCommand()
+	if err := cmd.FlagSet.Parse([]string{"--name", "Release automation", "--role", "ACCOUNT_HOLDER"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	err := cmd.Exec(context.Background(), nil)
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("expected usage error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "ACCOUNT_HOLDER") || !strings.Contains(err.Error(), "not a selectable team API key role") {
+		t.Fatalf("expected known non-selectable role stderr, got %v", err)
+	}
+	if resolveCalled {
+		t.Fatal("did not expect session resolution for a documented non-selectable role")
+	}
+}
+
 func TestWebAPIKeysCreateWarnsAndContinuesForUnknownRole(t *testing.T) {
 	restore := installWebAPIKeyCreateFakes(t)
 	t.Cleanup(restore)

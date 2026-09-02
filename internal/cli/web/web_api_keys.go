@@ -92,9 +92,10 @@ web session. The one-time P8 is saved as AuthKey_<KEY_ID>.p8 with mode 0600.
 The P8 contents are never written to command output.
 
 Account Holder or Admin access is required. The role defaults to ADMIN and must
-be an uppercase identifier such as ADMIN or APP_MANAGER. Roles that are not in
-the bundled snapshot are sent to App Store Connect with a warning instead of
-being rejected client-side.
+be an uppercase identifier such as ADMIN or APP_MANAGER. Documented roles that
+cannot be selected for a team API key are rejected. Roles missing from the
+bundled snapshot are sent to App Store Connect with a warning instead of being
+rejected client-side.
 
 Examples:
   asc web api-keys create --name "Release automation"
@@ -253,7 +254,9 @@ func normalizeWebAPIKeyRole(value string) (string, error) {
 	if !isWebAPIKeyRoleIdentifier(role) {
 		return "", fmt.Errorf("--role must be an uppercase identifier such as ADMIN or APP_MANAGER")
 	}
-	warnUnknownWebAPIKeyRole(role)
+	if err := classifyWebAPIKeyRole(role); err != nil {
+		return "", err
+	}
 	return role, nil
 }
 
@@ -274,17 +277,23 @@ func isWebAPIKeyRoleIdentifier(role string) bool {
 	return true
 }
 
-func warnUnknownWebAPIKeyRole(role string) {
+func classifyWebAPIKeyRole(role string) error {
 	view, err := webref.Resolve("team", []string{role})
 	if err != nil || view == nil || view.KeyNotes == nil {
-		return
+		return nil
 	}
 	for _, selectable := range view.KeyNotes.SelectableRoles {
 		if role == selectable {
-			return
+			return nil
 		}
 	}
-	fmt.Fprintf(os.Stderr, "Warning: --role %s is not a documented selectable team API key role; continuing so App Store Connect can accept or reject it.\n", role)
+	for _, unknown := range view.UnknownRoles {
+		if unknown == role {
+			fmt.Fprintf(os.Stderr, "Warning: --role %s is not a documented selectable team API key role; continuing so App Store Connect can accept or reject it.\n", role)
+			return nil
+		}
+	}
+	return fmt.Errorf("--role %s is not a selectable team API key role", role)
 }
 
 func removeReservedWebAPIKeyP8(root rootfs.Root, fileName string) error {
