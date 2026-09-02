@@ -84,14 +84,15 @@ rerun the configured `--two-factor-code-command` after phone fallback.
 
 ### `asc web agreements`
 
-Check and accept Apple Developer Program agreements through Apple web-session
-endpoints. This command is experimental. The public App Store Connect API has
-no endpoint for these agreements.
+Check, download, and accept Apple Developer Program agreements through Apple
+web-session endpoints. This command is experimental. The public App Store
+Connect API has no endpoint for these agreements.
 
 Available commands:
 
 * `asc web agreements status` - show the agreement alert banner and program agreement history
-* `asc web agreements accept` - accept a pending agreement as the Account Holder
+* `asc web agreements download` - save an agreement's content (for example the PDF) to a local file
+* `asc web agreements accept` - accept one or more pending agreements as the Account Holder
 
 An agreement is reported as pending when App Store Connect shows an agreement
 alert banner or when the agreement's accepted date is older than its effective
@@ -102,8 +103,28 @@ Example:
 
 ```bash  theme={null}
 asc web agreements status
+asc web agreements download --agreement-id "AGREEMENT_ID" --out ./agreement.pdf
 asc web agreements accept --agreement-id "AGREEMENT_ID" --confirm
+asc web agreements accept --agreement-id "AGREEMENT_ID" --agreement-id "OTHER_AGREEMENT_ID" --confirm
 ```
+
+`download` fetches the agreement with the web session from the Developer
+Portal origin only. Non-HTTPS or cross-origin download URLs, and redirects to
+them, are rejected, as are empty responses. The complete content is staged in
+a temporary file and renamed into place with mode `0600`, so a partial
+download never lands at `--out`; on Windows, replacing an existing file with
+`--overwrite` may briefly leave the destination absent while the rename
+completes. An existing file is not replaced unless `--overwrite` is set. The
+receipt reports the path, bytes written, content type, and agreement ID. The
+file contents are never printed, and the `download` receipt and errors never
+include the (potentially signed) download URL; `status` still reports it as
+`downloadUrl`.
+
+`accept` requires `--confirm` and sends every `--agreement-id` in a single
+request; there is no `--all` flag because each agreement must be named
+explicitly. After the write, `accept` re-reads the team's agreement history and
+exits non-zero when any requested agreement is still pending or missing. The
+receipt reflects that re-read state and includes `verified: true`.
 
 ### `asc web api-keys`
 
@@ -190,6 +211,12 @@ Existing settings and relationships are preserved. If the requested capability
 is already enabled, the command returns an already-enabled result without
 sending a PATCH.
 
+Both commands require `--confirm` because a changed App ID invalidates existing
+provisioning profiles. `sync-app-clip` reads the current capability graph first
+and returns `changed: false` without sending a PATCH when the capability is
+already enabled with the requested `parentBundleId` and, if `--settings-json`
+is supplied, the requested settings already match.
+
 Example:
 
 ```bash  theme={null}
@@ -201,7 +228,8 @@ asc web bundle-ids capabilities enable \
 asc web bundle-ids capabilities sync-app-clip \
   --bundle-id "CLIP_BUNDLE_ID" \
   --parent-bundle-id "PARENT_BUNDLE_ID" \
-  --capability "PUSH_NOTIFICATIONS"
+  --capability "PUSH_NOTIFICATIONS" \
+  --confirm
 ```
 
 ### `asc web app-groups`
