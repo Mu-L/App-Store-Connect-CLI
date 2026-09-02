@@ -399,8 +399,11 @@ def shell_functions(script: str) -> dict[str, str]:
 
 
 WINGET_RETRY_HELPER = "retry_transient"
+# The clone uses --filter=blob:none, so checkout and sparse-checkout lazily fetch
+# blobs over the network and must be retried like any other transfer.
 WINGET_NETWORK_CALL = re.compile(
-    r"\b(gh api user|gh api \"?repos/|gh repo view|gh repo fork|gh pr list|gh pr create|git clone|git fetch|git push)"
+    r"\b(gh api user|gh api \"?repos/|gh repo view|gh repo fork|gh pr list|gh pr create"
+    r"|git clone|git fetch|git push|git checkout|git sparse-checkout)"
 )
 # `gh pr list --head` only accepts a bare branch name, so an owner:branch lookup
 # silently matches nothing; the cross-fork check must use the REST head filter.
@@ -580,6 +583,8 @@ def assert_winget_retry_helper_behavior() -> None:
         "fatal: the remote end hung up unexpectedly",
         "Post \"https://api.github.com/graphql\": dial tcp: i/o timeout",
         "fatal: unable to access 'https://github.com/': Could not resolve host: github.com",
+        "Get \"https://api.github.com/user\": dial tcp: lookup api.github.com on 127.0.0.53:53: server misbehaving",
+        "Get \"https://api.github.com/user\": dial tcp: lookup api.github.com: no such host",
     )
     for message in transient:
         result, made = run_winget_retry_helper(helpers, message, succeed_on=3)

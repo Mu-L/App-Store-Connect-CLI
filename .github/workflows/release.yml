@@ -855,6 +855,7 @@ jobs:
               -e 'returned error: (429|5[0-9][0-9])' \
               -e 'Too Many Requests|Service Unavailable|Bad Gateway|Gateway Timeout|temporarily unavailable' \
               -e 'Could not resolve host|Failed to connect|Connection (refused|reset|timed out)|broken pipe' \
+              -e 'lookup [^ ]+( on [^ ]+)?: (server misbehaving|no such host|i/o timeout)|Temporary failure in name resolution' \
               -e 'Operation timed out|i/o timeout|TLS handshake timeout' \
               -e 'SSL_read|gnutls_handshake|Recv failure|Empty reply from server' \
               -e '(^|[^[:alnum:]_])EOF([^[:alnum:]_]|$)|remote end hung up unexpectedly|RPC failed|unexpected disconnect' \
@@ -953,14 +954,17 @@ jobs:
 
           retry_transient git fetch origin "${BRANCH}:refs/remotes/origin/${BRANCH}" || true
           BRANCH_EXISTS=0
+          # The blob:none clone fetches missing objects lazily, so checkout and
+          # sparse-checkout are network calls too. -B keeps a retried checkout
+          # idempotent when the first attempt created the branch before failing.
           if git show-ref --verify --quiet "refs/remotes/origin/${BRANCH}"; then
             BRANCH_EXISTS=1
-            git checkout -B "${BRANCH}" "origin/${BRANCH}"
+            retry_transient git checkout -B "${BRANCH}" "origin/${BRANCH}"
           else
             # Avoid requiring workflow scope when the upstream repository has newer workflow files.
-            git checkout -b "${BRANCH}" origin/master
+            retry_transient git checkout -B "${BRANCH}" origin/master
           fi
-          git sparse-checkout set "manifests/r/Rorkai/ASC"
+          retry_transient git sparse-checkout set "manifests/r/Rorkai/ASC"
 
           verify_winget_scope() {
             unexpected_paths=()
