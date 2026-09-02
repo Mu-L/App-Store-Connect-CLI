@@ -171,7 +171,6 @@ Examples:
 			var excludedTerritoryIDs []string
 			if normalizedPlanType == asc.SubscriptionPlanTypeMonthly {
 				territoryIDs, excludedTerritoryIDs = filterMonthlyCommitmentTerritories(territoryIDs)
-				printMonthlyCommitmentTerritoryWarning(excludedTerritoryIDs)
 				if len(territoryIDs) == 0 {
 					return shared.UsageError("no eligible monthly-commitment territories remain after excluding USA and Singapore")
 				}
@@ -179,6 +178,7 @@ Examples:
 			if !*confirm {
 				return shared.UsageError("--confirm is required")
 			}
+			printMonthlyCommitmentTerritoryWarning(excludedTerritoryIDs)
 
 			client, err := shared.GetASCClient()
 			if err != nil {
