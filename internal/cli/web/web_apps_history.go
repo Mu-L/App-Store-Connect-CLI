@@ -46,6 +46,10 @@ the app's versions and then reads each version's state changes. Use
 Both reads follow Apple's pagination links internally, so there is no
 --paginate flag.
 
+The fan-out issues one request per version under a single request timeout, so
+an app with a long release history can exceed the 30s default. Scope the read
+with --version-id, or raise ASC_TIMEOUT.
+
 Viewing status history is gated by the App Status History role capability, so
 accounts without it can get an authorization error even when the app is
 readable.

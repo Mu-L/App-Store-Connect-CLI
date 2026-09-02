@@ -78,6 +78,7 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - The modern equivalent is version-scoped: `GET /iris/v1/appStoreVersions/{appStoreVersionId}/appStoreVersionStateChanges`, whose resources carry `appStoreState`, `date`, and `initiator`. `initiator` is the actor App Store Connect shows for the change.
 - There is no app-level history endpoint, so `asc web apps history --app APP_ID` lists the app's versions with `GET /iris/v1/apps/{id}/appStoreVersions` and then fans out one state-change request per version. `--version-id` scopes the read to a single version and skips the fan-out.
 - Both readers follow `links.next` internally, so the command has no `--paginate` flag, matching `asc web api-keys list`.
+- The fan-out is serial and shares one request timeout, so an app with a long release history can exceed the 30s default. Scope the read with `--version-id`, or raise `ASC_TIMEOUT`. Requests are not parallelized, to avoid hammering a web session with concurrent internal-API calls.
 - `AppStatusHistory` is a role capability in App Store Connect, so accounts without it can get an authorization error on the state-change read even when the app list succeeds.
 
 ## TestFlight Distribution
