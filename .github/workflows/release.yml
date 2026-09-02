@@ -884,18 +884,19 @@ jobs:
                 rm -f "$stdout_file" "$stderr_file"
                 return "$rc"
               fi
-              if [ "$attempt" -ge "$WINGET_RETRY_ATTEMPTS" ]; then
-                echo "::error::'${label}' still failing after ${attempt} attempts (exit ${rc}); giving up" >&2
+              if [ "$attempt" -ge "${WINGET_RETRY_ATTEMPTS:-5}" ]; then
+                # The caller decides whether this is fatal, so annotate as a warning.
+                echo "::warning::'${label}' still failing after ${attempt} attempts (exit ${rc}); giving up" >&2
                 cat "$stdout_file"
                 rm -f "$stdout_file" "$stderr_file"
                 return "$rc"
               fi
-              delay=$(( WINGET_RETRY_BASE_DELAY * (1 << (attempt - 1)) ))
-              if [ "$delay" -gt "$WINGET_RETRY_MAX_DELAY" ]; then
-                delay=$WINGET_RETRY_MAX_DELAY
+              delay=$(( ${WINGET_RETRY_BASE_DELAY:-10} * (1 << (attempt - 1)) ))
+              if [ "$delay" -gt "${WINGET_RETRY_MAX_DELAY:-120}" ]; then
+                delay=${WINGET_RETRY_MAX_DELAY:-120}
               fi
               pause=$(( delay + RANDOM % (delay / 2 + 1) ))
-              echo "::warning::'${label}' hit a GitHub rate limit or transient failure (exit ${rc}); attempt ${attempt}/${WINGET_RETRY_ATTEMPTS}, retrying in ${pause}s" >&2
+              echo "::warning::'${label}' hit a GitHub rate limit or transient failure (exit ${rc}); attempt ${attempt}/${WINGET_RETRY_ATTEMPTS:-5}, retrying in ${pause}s" >&2
               sleep "$pause"
               attempt=$((attempt + 1))
             done
@@ -981,7 +982,11 @@ jobs:
           if [ -d manifests/r/Rorkai/ASC ] && find manifests/r/Rorkai/ASC -mindepth 1 -maxdepth 1 -type d | grep -q .; then
             PR_KIND="New version"
           fi
-          OPEN_PACKAGE_PRS=$(retry_transient gh pr list --repo microsoft/winget-pkgs --state open --search "Rorkai.ASC in:title" --json headRefName --jq "[.[] | select(.headRefName != \"${BRANCH}\")] | length" || echo "0")
+          # Best-effort count: an exhausted lookup must still yield a number.
+          OPEN_PACKAGE_PRS=$(retry_transient gh pr list --repo microsoft/winget-pkgs --state open --search "Rorkai.ASC in:title" --json headRefName --jq "[.[] | select(.headRefName != \"${BRANCH}\")] | length") || OPEN_PACKAGE_PRS=""
+          case "${OPEN_PACKAGE_PRS}" in
+            ''|*[!0-9]*) OPEN_PACKAGE_PRS="0" ;;
+          esac
           if [ "${PR_KIND}" = "New package" ] && [ "${OPEN_PACKAGE_PRS}" != "0" ]; then
             PR_KIND="New version"
           fi
@@ -1020,7 +1025,9 @@ jobs:
               echo "WinGet PR already exists for Rorkai.ASC ${VERSION}."
               return 0
             fi
-            existing_pr=$(gh pr list --repo microsoft/winget-pkgs --head "${WINGET_FORK_OWNER}:${BRANCH}" --json number --jq '.[0].number // empty') || return $?
+            # gh pr list --head only accepts a bare branch name, so the cross-fork
+            # lookup goes through the REST head filter (owner:branch).
+            existing_pr=$(gh api "repos/microsoft/winget-pkgs/pulls?state=open&head=${WINGET_FORK_OWNER}:${BRANCH}" --jq '.[0].number // empty') || return $?
             if [ -n "${existing_pr}" ]; then
               echo "WinGet PR already exists for ${VERSION}."
               return 0

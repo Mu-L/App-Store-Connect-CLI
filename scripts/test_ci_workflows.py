@@ -400,8 +400,11 @@ def shell_functions(script: str) -> dict[str, str]:
 
 WINGET_RETRY_HELPER = "retry_transient"
 WINGET_NETWORK_CALL = re.compile(
-    r"\b(gh api user|gh repo view|gh repo fork|gh pr list|gh pr create|git clone|git fetch|git push)\b"
+    r"\b(gh api user|gh api \"?repos/|gh repo view|gh repo fork|gh pr list|gh pr create|git clone|git fetch|git push)"
 )
+# `gh pr list --head` only accepts a bare branch name, so an owner:branch lookup
+# silently matches nothing; the cross-fork check must use the REST head filter.
+WINGET_HEAD_LOOKUP = 'repos/microsoft/winget-pkgs/pulls?state=open&head=${WINGET_FORK_OWNER}:${BRANCH}'
 
 
 def assert_winget_submission_retries_transient_failures_text(path: Path, workflow: str) -> None:
@@ -451,6 +454,24 @@ def assert_winget_submission_retries_transient_failures_text(path: Path, workflo
     for name in create_functions:
         assert name in retried_functions, f"{path}: {name} must be invoked through {WINGET_RETRY_HELPER}"
         assert "gh pr list" in functions[name], f"{path}: {name} must check for an existing PR before creating one"
+        assert WINGET_HEAD_LOOKUP in functions[name], (
+            f"{path}: {name} must look up the fork branch PR with the REST head filter"
+        )
+    for line in script.splitlines():
+        assert not ("gh pr list" in line and "--head" in line and ":" in line.split("--head", 1)[1]), (
+            f"{path}: gh pr list --head does not support owner:branch: {line.strip()}"
+        )
+    # The best-effort PR count must stay numeric even when every attempt fails.
+    assert "|| OPEN_PACKAGE_PRS=\"\"" in script, f"{path}: OPEN_PACKAGE_PRS must fall back explicitly on failure"
+    assert "''|*[!0-9]*) OPEN_PACKAGE_PRS=\"0\" ;;" in script, f"{path}: OPEN_PACKAGE_PRS must be normalized to a number"
+    for knob, default in (
+        ("WINGET_RETRY_ATTEMPTS", "5"),
+        ("WINGET_RETRY_BASE_DELAY", "10"),
+        ("WINGET_RETRY_MAX_DELAY", "120"),
+    ):
+        assert f"${{{knob}:-{default}}}" in functions[WINGET_RETRY_HELPER], (
+            f"{path}: {WINGET_RETRY_HELPER} must default {knob} so a missing env cannot unbound the loop"
+        )
     clone_functions = [name for name, body in functions.items() if "git clone" in body]
     assert clone_functions, f"{path}: git clone must live inside a retried function that clears partial clones"
     for name in clone_functions:
@@ -501,7 +522,7 @@ echo "ok $*"
 
 
 def run_winget_retry_helper(
-    helpers: str, failure_message: str, succeed_on: int, attempts: int = 3
+    helpers: str, failure_message: str, succeed_on: int, attempts: int | None = 3
 ) -> tuple[subprocess.CompletedProcess[str], int]:
     with tempfile.TemporaryDirectory() as tmpdir:
         fake_gh = Path(tmpdir) / "gh"
@@ -515,11 +536,13 @@ def run_winget_retry_helper(
                 "ATTEMPT_FILE": str(attempt_file),
                 "SUCCEED_ON": str(succeed_on),
                 "FAILURE_MESSAGE": failure_message,
-                "WINGET_RETRY_ATTEMPTS": str(attempts),
                 "WINGET_RETRY_BASE_DELAY": "0",
                 "WINGET_RETRY_MAX_DELAY": "0",
             }
         )
+        env.pop("WINGET_RETRY_ATTEMPTS", None)
+        if attempts is not None:
+            env["WINGET_RETRY_ATTEMPTS"] = str(attempts)
         # GitHub runs `run:` steps with `bash -e`; mirror that so a failure inside
         # the helper surfaces the same way it would in the release job.
         result = subprocess.run(
@@ -587,6 +610,10 @@ def assert_winget_retry_helper_behavior() -> None:
     assert result.returncode == 1, "helper must fail once the attempt budget is spent"
     assert made == 4, f"helper must stop at WINGET_RETRY_ATTEMPTS, made {made} attempts"
     assert "giving up" in result.stderr, result.stderr
+
+    result, made = run_winget_retry_helper(helpers, "HTTP 429: Too Many Requests", succeed_on=99, attempts=None)
+    assert result.returncode == 1, "helper must fail once the default attempt budget is spent"
+    assert made == 5, f"helper must default WINGET_RETRY_ATTEMPTS to 5 when unset, made {made} attempts"
 
 
 def run_security_target(path: str) -> subprocess.CompletedProcess[str]:
