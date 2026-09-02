@@ -127,6 +127,12 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - App Store Connect API 4.4.1 adds `/v1/subscriptionPricePoints/{id}/adjustedEqualizations`. Although OpenAPI models `filter[planType]` as an unconstrained string array, the live endpoint rejects `UPFRONT` and reports `MONTHLY` as the only supported value.
 - Monthly commitment remains unavailable in the United States and Singapore; the CLI removes `USA` and `SGP` from requested monthly-commitment territories before writing plan availability.
 
+## Developer Portal Agreements (web session)
+
+- The public API has no agreements endpoint. `asc web agreements` uses the cookie-authenticated Developer Portal account services: `POST /services-account/QH65B2/account/getAgreementHistory` and `POST /services-account/QH65B2/account/acceptAgreements`, both with a JSON body carrying `teamId` (accept also carries an `agreementIds` array, so several agreements can be accepted in one request). They answer HTTP 200 even on failure; `resultCode` carries the outcome (`0` success).
+- Each history record includes `agreementDownloadUrl`, observed as a root-relative Developer Portal path such as `/services-account/agreement/{agreementId}/content/pdf`. `asc web agreements download` resolves it against the Developer Portal origin and only follows HTTPS, same-origin targets and redirects; the URL is treated as potentially signed and is never printed.
+- `acceptAgreements` returns the updated history, but the CLI re-reads `getAgreementHistory` after the write and reports the re-read state (`dateAccepted >= dateEffective`) instead of trusting the mutation response.
+
 ## Pass Type IDs
 
 - Live API rejects `include=passTypeId` and `fields[passTypeIds]` on `/v1/passTypeIds/{id}/certificates` despite the OpenAPI spec allowing them.
