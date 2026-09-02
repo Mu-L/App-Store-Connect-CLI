@@ -72,6 +72,10 @@ func TestRun_BuiltBinaryDoesNotWaitForBlockedTelemetryEndpoint(t *testing.T) {
 	binaryPath := buildASCBlackboxBinary(t)
 	blockedEndpoint, accepted, release := startBlockedTelemetryEndpoint(t)
 
+	disabledHome := t.TempDir()
+	runTelemetryBlackboxCommand(t, binaryPath, disabledHome, true, "")
+	disabledDuration := runTelemetryBlackboxCommand(t, binaryPath, disabledHome, true, "")
+
 	command := exec.Command(binaryPath, "builds", "--definitely-invalid")
 	command.Env = telemetryBlackboxEnv(t.TempDir(), false, blockedEndpoint)
 	type runResult struct {
@@ -102,10 +106,13 @@ func TestRun_BuiltBinaryDoesNotWaitForBlockedTelemetryEndpoint(t *testing.T) {
 	}
 	release()
 
-	t.Logf("foreground duration=%s hold=%s", result.duration, blockedTelemetryHold)
-	if result.duration >= blockedTelemetryHold/2 {
+	added := result.duration - disabledDuration
+	t.Logf("foreground duration=%s disabled=%s added=%s hold=%s", result.duration, disabledDuration, added, blockedTelemetryHold)
+	if added >= blockedTelemetryHold/2 {
 		t.Fatalf(
-			"blocked telemetry kept the process in the foreground for %s, want less than half of the %s endpoint hold",
+			"blocked telemetry added %s to foreground runtime (disabled=%s blocked=%s), want less than half of the %s endpoint hold",
+			added,
+			disabledDuration,
 			result.duration,
 			blockedTelemetryHold,
 		)
@@ -114,6 +121,20 @@ func TestRun_BuiltBinaryDoesNotWaitForBlockedTelemetryEndpoint(t *testing.T) {
 	if !errors.As(result.err, &exitErr) || exitErr.ExitCode() != ExitUsage {
 		t.Fatalf("built command error = %v, want exit %d; output=%s", result.err, ExitUsage, result.output)
 	}
+}
+
+func runTelemetryBlackboxCommand(t *testing.T, binaryPath, home string, disabled bool, endpoint string) time.Duration {
+	t.Helper()
+	command := exec.Command(binaryPath, "builds", "--definitely-invalid")
+	command.Env = telemetryBlackboxEnv(home, disabled, endpoint)
+	start := time.Now()
+	output, err := command.CombinedOutput()
+	duration := time.Since(start)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != ExitUsage {
+		t.Fatalf("built command error = %v, want exit %d; output=%s", err, ExitUsage, output)
+	}
+	return duration
 }
 
 func telemetryBlackboxEnv(home string, disabled bool, endpoint string) []string {
