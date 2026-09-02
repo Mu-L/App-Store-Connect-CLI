@@ -362,10 +362,11 @@ func verifyMonthlyCommitmentBootstrap(ctx context.Context, client *webcore.Clien
 		return fmt.Errorf("read back subscription prices: %w", err)
 	}
 	startDate := webcore.NormalizeSubscriptionPriceStartDate(result.StartDate)
-	if _, ok := webcore.FindSubscriptionPrice(prices, "UPFRONT", result.Territory, result.UpfrontPricePointID, startDate); !ok {
+	now := time.Now().UTC()
+	if _, ok := webcore.FindSubscriptionPrice(prices, "UPFRONT", result.Territory, result.UpfrontPricePointID, startDate, now); !ok {
 		return fmt.Errorf("UPFRONT price record for %s did not match price point %s", result.Territory, result.UpfrontPricePointID)
 	}
-	if _, ok := webcore.FindSubscriptionPrice(prices, "MONTHLY", result.Territory, result.MonthlyPricePointID, startDate); !ok {
+	if _, ok := webcore.FindSubscriptionPrice(prices, "MONTHLY", result.Territory, result.MonthlyPricePointID, startDate, now); !ok {
 		return fmt.Errorf("MONTHLY price record for %s did not match price point %s", result.Territory, result.MonthlyPricePointID)
 	}
 	return nil

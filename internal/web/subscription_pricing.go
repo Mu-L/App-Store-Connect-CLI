@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // SubscriptionPlanPricesResult identifies the paired billing-plan prices created.
@@ -151,18 +152,36 @@ func (c *Client) ListSubscriptionPrices(ctx context.Context, subscriptionID, ter
 	query.Set("filter[territory]", territory)
 	query.Set("include", "subscriptionPricePoint,territory")
 	query.Set("limit", "200")
-	path := queryPath("/subscriptions/"+url.PathEscape(subscriptionID)+"/prices", query)
-	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return nil, err
-	}
-	var payload jsonAPIListPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return nil, fmt.Errorf("failed to parse subscription prices response: %w", err)
-	}
-	result := make([]SubscriptionPrice, 0, len(payload.Data))
-	for _, resource := range payload.Data {
-		result = append(result, decodeSubscriptionPriceResource(resource, territory))
+	nextPath := queryPath("/subscriptions/"+url.PathEscape(subscriptionID)+"/prices", query)
+	result := make([]SubscriptionPrice, 0)
+	visited := map[string]struct{}{}
+	for nextPath != "" {
+		if _, seen := visited[nextPath]; seen {
+			return nil, fmt.Errorf("subscription prices pagination loop detected")
+		}
+		visited[nextPath] = struct{}{}
+		responseBody, err := c.doRequest(ctx, http.MethodGet, nextPath, nil)
+		if err != nil {
+			return nil, err
+		}
+		var payload jsonAPIListPayload
+		if err := json.Unmarshal(responseBody, &payload); err != nil {
+			return nil, fmt.Errorf("failed to parse subscription prices response: %w", err)
+		}
+		for _, resource := range payload.Data {
+			result = append(result, decodeSubscriptionPriceResource(resource, territory))
+		}
+		nextLink, err := extractNextLink(payload.Links)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse subscription prices pagination links: %w", err)
+		}
+		if strings.TrimSpace(nextLink) == "" {
+			break
+		}
+		nextPath, err = normalizeNextPath(nextLink, c.baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to normalize subscription prices pagination link: %w", err)
+		}
 	}
 	return result, nil
 }
@@ -197,26 +216,61 @@ func NormalizeSubscriptionPriceStartDate(value string) string {
 	return value
 }
 
-// FindSubscriptionPrice locates a price record matching plan type, territory, price point, and schedule.
-func FindSubscriptionPrice(prices []SubscriptionPrice, planType, territory, pricePointID, startDate string) (SubscriptionPrice, bool) {
+// FindSubscriptionPrice locates a price record matching plan type, territory, and price point.
+// A requested startDate matches that scheduled record. An empty startDate selects the latest
+// non-future effective record for the plan and territory, then checks the price point.
+func FindSubscriptionPrice(prices []SubscriptionPrice, planType, territory, pricePointID, startDate string, now time.Time) (SubscriptionPrice, bool) {
 	planType = strings.ToUpper(strings.TrimSpace(planType))
 	territory = strings.ToUpper(strings.TrimSpace(territory))
 	pricePointID = strings.TrimSpace(pricePointID)
 	startDate = NormalizeSubscriptionPriceStartDate(startDate)
-	for _, price := range prices {
-		if !strings.EqualFold(price.PlanType, planType) {
-			continue
+	if startDate != "" {
+		for _, price := range prices {
+			if !strings.EqualFold(price.PlanType, planType) || !strings.EqualFold(price.Territory, territory) {
+				continue
+			}
+			if strings.TrimSpace(price.PricePointID) != pricePointID {
+				continue
+			}
+			if NormalizeSubscriptionPriceStartDate(price.StartDate) != startDate {
+				continue
+			}
+			return price, true
 		}
-		if !strings.EqualFold(price.Territory, territory) {
-			continue
-		}
-		if strings.TrimSpace(price.PricePointID) != pricePointID {
-			continue
-		}
-		if NormalizeSubscriptionPriceStartDate(price.StartDate) != startDate {
-			continue
-		}
-		return price, true
+		return SubscriptionPrice{}, false
 	}
-	return SubscriptionPrice{}, false
+	asOf := subscriptionPriceDateOnlyUTC(now)
+	var selected *SubscriptionPrice
+	selectedStart := time.Time{}
+	for _, price := range prices {
+		if !strings.EqualFold(price.PlanType, planType) || !strings.EqualFold(price.Territory, territory) {
+			continue
+		}
+		start := time.Time{}
+		if date := NormalizeSubscriptionPriceStartDate(price.StartDate); date != "" {
+			parsed, err := time.Parse("2006-01-02", date)
+			if err != nil || parsed.After(asOf) {
+				continue
+			}
+			start = parsed
+		}
+		if selected == nil || start.After(selectedStart) {
+			candidate := price
+			selected = &candidate
+			selectedStart = start
+		}
+	}
+	if selected == nil || strings.TrimSpace(selected.PricePointID) != pricePointID {
+		return SubscriptionPrice{}, false
+	}
+	return *selected, true
+}
+
+func subscriptionPriceDateOnlyUTC(now time.Time) time.Time {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 }
