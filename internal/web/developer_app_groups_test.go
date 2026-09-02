@@ -538,6 +538,10 @@ func TestDeleteDeveloperAppGroupFailsWhenVerificationListIsMalformed(t *testing.
 			`{"resultCode":0,"pageNumber":1,"pageSize":500,"totalRecords":2,"applicationGroupList":[` + other + `]}`,
 			`{"resultCode":0,"pageNumber":2,"pageSize":500,"totalRecords":2,"applicationGroupList":[` + other + `]}`,
 		},
+		"totalRecords shrinks to the collected count on a later page": {
+			`{"resultCode":0,"pageNumber":1,"pageSize":500,"totalRecords":2,"applicationGroupList":[` + other + `]}`,
+			`{"resultCode":0,"pageNumber":2,"pageSize":500,"totalRecords":1,"applicationGroupList":[]}`,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {

@@ -215,6 +215,7 @@ func (c *Client) ListDeveloperAppGroups(ctx context.Context, options DeveloperAp
 func (c *Client) listDeveloperAppGroupPages(ctx context.Context, teamID string, paginate bool, requireCollection bool) (*DeveloperAppGroupsListResult, error) {
 	result := &DeveloperAppGroupsListResult{Data: []DeveloperAppGroup{}}
 	seenGroupIDs := make(map[string]struct{})
+	firstTotalRecords := 0
 	for pageNumber := 1; ; pageNumber++ {
 		body, err := c.doDeveloperPortalLegacyFormRequest(ctx, developerAppGroupsListPath, url.Values{
 			"teamId":     {teamID},
@@ -261,6 +262,13 @@ func (c *Client) listDeveloperAppGroupPages(ctx context.Context, teamID string, 
 		totalRecords := 0
 		if page.TotalRecords != nil {
 			totalRecords = *page.TotalRecords
+		}
+		// One listing has one total; a strict caller treats a page that
+		// reports a different count as a listing that shifted mid-read.
+		if pageNumber == 1 {
+			firstTotalRecords = totalRecords
+		} else if requireCollection && totalRecords != firstTotalRecords {
+			return nil, fmt.Errorf("developer portal App Groups response changed totalRecords from %d to %d between pages", firstTotalRecords, totalRecords)
 		}
 		if requireCollection && totalRecords < len(result.Data) {
 			return nil, fmt.Errorf("developer portal App Groups response reported %d total records but returned %d", totalRecords, len(result.Data))
