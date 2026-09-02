@@ -77,6 +77,29 @@ trusted-device code once; Apple then delivers the phone verification code by
 its configured method (including SMS) and `asc` prompts again. Automated flows
 rerun the configured `--two-factor-code-command` after phone fallback.
 
+### `asc web agreements`
+
+Check and accept Apple Developer Program agreements through Apple web-session
+endpoints. This command is experimental. The public App Store Connect API has
+no endpoint for these agreements.
+
+Available commands:
+
+* `asc web agreements status` - show the agreement alert banner and program agreement history
+* `asc web agreements accept` - accept a pending agreement as the Account Holder
+
+An agreement is reported as pending when App Store Connect shows an agreement
+alert banner or when the agreement's accepted date is older than its effective
+date. Accepting an agreement is a legal action; Apple only allows the team's
+Account Holder to accept it.
+
+Example:
+
+```bash  theme={null}
+asc web agreements status
+asc web agreements accept --agreement-id "AGREEMENT_ID" --confirm
+```
+
 ### `asc web api-keys`
 
 Team API key creation through an Apple Account web session.
@@ -121,6 +144,51 @@ Sandbox tester creation via the App Store Connect web UI contract.
 Available commands:
 
 * `asc web sandbox create` - create a sandbox tester
+
+### `asc web removed-apps`
+
+Inspect apps shown in App Store Connect's Removed Apps status view.
+
+Available commands:
+
+* `asc web removed-apps list` - list removed apps
+
+Example:
+
+```bash  theme={null}
+asc web removed-apps list
+asc web removed-apps list --paginate --output table
+```
+
+### `asc web bundle-ids`
+
+Bundle ID operations that are only available through Apple web-session
+endpoints, including Developer Portal-only capabilities and App Clip
+capability sync.
+
+Available commands:
+
+* `asc web bundle-ids capabilities enable` - enable a Developer Portal-only Bundle ID capability
+* `asc web bundle-ids capabilities sync-app-clip` - sync an App Clip capability with its parent Bundle ID
+
+Currently supported capability IDs for `enable`: `PRIVATE_CLOUD_COMPUTE`.
+Existing settings and relationships are preserved. If the requested capability
+is already enabled, the command returns an already-enabled result without
+sending a PATCH.
+
+Example:
+
+```bash  theme={null}
+asc web bundle-ids capabilities enable \
+  --bundle-id "BUNDLE_RESOURCE_ID" \
+  --capability "PRIVATE_CLOUD_COMPUTE" \
+  --confirm
+
+asc web bundle-ids capabilities sync-app-clip \
+  --bundle-id "CLIP_BUNDLE_ID" \
+  --parent-bundle-id "PARENT_BUNDLE_ID" \
+  --capability "PUSH_NOTIFICATIONS"
+```
 
 ### `asc web app-groups`
 
@@ -194,10 +262,18 @@ Available commands:
 * `asc web review list` - list review submissions for an app
 * `asc web review show` - inspect one submission and related messages/screenshots
 * `asc web review subscriptions` - inspect and mutate next-version subscription review selection
+* `asc web review iaps` - attach a non-renewing IAP to the next app version review
 
 Subscription JSON includes both `submitWithNextAppStoreVersion` and
 `submitWithNextAppStoreVersionKnown`. When the presence field is `false`, Apple
 omitted the attachment attribute and the boolean value is not authoritative.
+
+`asc web review iaps attach` requires `--app`, `--iap-id`, and `--confirm`.
+`--iap-id` accepts the iris resource ID or the product ID from `asc iap list`.
+
+```bash  theme={null}
+asc web review iaps attach --app "123456789" --iap-id "PRODUCT_ID" --confirm
+```
 
 ### `asc web subscriptions`
 
@@ -308,8 +384,11 @@ Use the CLI help directly to explore the current surface:
 ```bash  theme={null}
 asc web --help
 asc web auth --help
+asc web agreements --help
 asc web api-keys --help
 asc web apps --help
+asc web removed-apps --help
+asc web bundle-ids --help
 asc web privacy --help
 asc web review --help
 asc web analytics --help
