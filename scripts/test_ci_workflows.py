@@ -272,8 +272,8 @@ def assert_optimized_workflow_text(path: Path, workflow: str, test_job: str) -> 
     assert "go test -short ./internal/screenshots" in build_platforms, f"{path}: missing Darwin-only tests"
     for runner in ("macos-latest", "windows-latest"):
         command = matrix_command_for_runner(build_platforms, runner)
-        assert "go test -short -count=1 ./internal/rootfs" in command, (
-            f"{path}: {runner} must run ./internal/rootfs"
+        assert "ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/rootfs" in command, (
+            f"{path}: {runner} must run ./internal/rootfs with the keychain bypass"
         )
     for arch in ("amd64", "arm64"):
         command = f"CGO_ENABLED=1 GOOS=darwin GOARCH={arch} go build"
@@ -317,7 +317,7 @@ def assert_optimized_workflow_rejects_weakened_checks() -> None:
             "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build",
             "CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build",
             "CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build",
-            "go test -short -count=1 ./internal/rootfs",
+            "ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/rootfs",
         ):
             assert command in workflow, f"{path}: expected to find {command!r}"
             weakened = workflow.replace(command, "true")
