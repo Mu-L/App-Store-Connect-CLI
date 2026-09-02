@@ -443,6 +443,7 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 		if err != nil {
 			return nil, fmt.Errorf("cannot determine App Group assignments: %w", err)
 		}
+		referencedCapabilities := make(map[string]struct{}, len(includedByID))
 		for _, bundle := range response.Data {
 			if bundle.Type != "bundleIds" || strings.TrimSpace(bundle.ID) == "" {
 				return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list contains a non-Bundle-ID entry (type %q, id %q)", bundle.Type, bundle.ID)
@@ -451,12 +452,20 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 				return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list repeated Bundle ID %q across pages", bundle.ID)
 			}
 			seenBundleIDs[bundle.ID] = struct{}{}
-			assignment, referenced, err := developerBundleIDReferencesAppGroup(bundle, includedByID, groupID)
+			assignment, referenced, err := developerBundleIDReferencesAppGroup(bundle, includedByID, groupID, referencedCapabilities)
 			if err != nil {
 				return nil, err
 			}
 			if referenced {
 				assignments = append(assignments, assignment)
+			}
+		}
+		// An included capability no Bundle ID on the page references has an
+		// unknown owner; if it lists the target group, the assignment cannot be
+		// attributed and the page is unreadable rather than "unused".
+		for capabilityID := range includedByID {
+			if _, ok := referencedCapabilities[capabilityID]; !ok {
+				return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal included capability %q that no listed Bundle ID references", capabilityID)
 			}
 		}
 		collected += len(response.Data)
@@ -502,7 +511,10 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 	return assignments, nil
 }
 
-func developerBundleIDReferencesAppGroup(bundle developerResource, includedByID map[string]developerResource, groupID string) (DeveloperAppGroupAssignment, bool, error) {
+// developerBundleIDReferencesAppGroup reports whether one Bundle ID lists
+// groupID and records every capability it references in referenced so the
+// caller can detect included capabilities that no Bundle ID owns.
+func developerBundleIDReferencesAppGroup(bundle developerResource, includedByID map[string]developerResource, groupID string, referenced map[string]struct{}) (DeveloperAppGroupAssignment, bool, error) {
 	assignment := DeveloperAppGroupAssignment{BundleID: strings.TrimSpace(bundle.ID)}
 	if len(bundle.Attributes) > 0 {
 		var attributes struct {
@@ -532,6 +544,13 @@ func developerBundleIDReferencesAppGroup(bundle developerResource, includedByID 
 		if reference.Type != "bundleIdCapabilities" || strings.TrimSpace(reference.ID) == "" {
 			return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: capability relationship contains an invalid reference (type %q, id %q)", label, reference.Type, reference.ID)
 		}
+	}
+	// Record every reference before inspecting any, since a match returns
+	// early and must not leave this Bundle ID's other capabilities unclaimed.
+	for _, reference := range capabilityReferences {
+		referenced[reference.ID] = struct{}{}
+	}
+	for _, reference := range capabilityReferences {
 		capability, included := includedByID[reference.ID]
 		if !included {
 			return assignment, false, fmt.Errorf("cannot determine App Group assignments for Bundle ID %q: capability %q missing from Developer Portal response", label, reference.ID)
