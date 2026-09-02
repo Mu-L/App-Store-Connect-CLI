@@ -245,6 +245,7 @@ Example:
 				return fmt.Errorf("web app-groups assign failed: missing assign result")
 			}
 			persistDeveloperAppGroupSession(session)
+			warnDeveloperAppGroupProfileInvalidation(result.Changed)
 			return shared.PrintOutputWithRenderers(
 				result,
 				*output.Output,

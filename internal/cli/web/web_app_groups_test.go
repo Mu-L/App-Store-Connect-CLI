@@ -402,6 +402,39 @@ func TestWebAppGroupsUnassignCallsClient(t *testing.T) {
 	}
 }
 
+func TestWebAppGroupsAssignWarnsOnlyWhenChanged(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		changed    bool
+		status     string
+		wantWarned bool
+	}{
+		{name: "assigned", changed: true, status: "assigned", wantWarned: true},
+		{name: "already assigned", changed: false, status: "already-assigned", wantWarned: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			restore, cleanup := stubWebAppGroupsDependencies(t)
+			defer cleanup()
+			defer restore()
+			assignDeveloperAppGroupFn = func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupAssignRequest) (*webcore.DeveloperAppGroupAssignResult, error) {
+				return &webcore.DeveloperAppGroupAssignResult{BundleID: request.BundleID, GroupID: request.GroupID, Changed: test.changed, Status: test.status}, nil
+			}
+			command := WebAppGroupsAssignCommand()
+			if err := command.FlagSet.Parse([]string{"--group", "GROUP1", "--bundle-id", "bundle-1", "--confirm", "--output", "json"}); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			_, stderr := captureWebCommandOutput(t, func() {
+				if err := command.Exec(context.Background(), nil); err != nil {
+					t.Fatalf("Exec() error: %v", err)
+				}
+			})
+			if warned := strings.Contains(stderr, "invalidates existing provisioning profiles"); warned != test.wantWarned {
+				t.Fatalf("stderr %q: warned=%t, want %t", stderr, warned, test.wantWarned)
+			}
+		})
+	}
+}
+
 func TestWebAppGroupsListOutputsJSON(t *testing.T) {
 	restore, cleanup := stubWebAppGroupsDependencies(t)
 	defer cleanup()
