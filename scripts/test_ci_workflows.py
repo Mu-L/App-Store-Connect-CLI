@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 
 
@@ -352,6 +353,242 @@ def assert_optimized_workflow_rejects_weakened_checks() -> None:
             )
 
 
+def step_script(job: str, step_name: str) -> str:
+    """Return the dedented `run: |` script of the named step inside a job block."""
+    marker = f"- name: {step_name}\n"
+    start = job.find(marker)
+    if start < 0:
+        raise AssertionError(f"missing step {step_name!r}")
+    rest = job[start + len(marker) :]
+    run_at = rest.find("run: |\n")
+    if run_at < 0:
+        raise AssertionError(f"step {step_name!r} must use a `run: |` block")
+    body = rest[run_at + len("run: |\n") :]
+    script_indent = None
+    lines: list[str] = []
+    for line in body.splitlines():
+        if line.strip():
+            indent = len(line) - len(line.lstrip())
+            if script_indent is None:
+                script_indent = indent
+            if indent < script_indent:
+                break
+        lines.append(line)
+    return textwrap.dedent("\n".join(lines)) + "\n"
+
+
+def shell_functions(script: str) -> dict[str, str]:
+    """Map every top-level `name() {` ... `}` definition to its full source."""
+    functions: dict[str, str] = {}
+    current = None
+    body: list[str] = []
+    for line in script.splitlines():
+        if current is None:
+            match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{\s*$", line)
+            if match:
+                current = match.group(1)
+                body = [line]
+            continue
+        body.append(line)
+        if line == "}":
+            functions[current] = "\n".join(body) + "\n"
+            current = None
+    if current is not None:
+        raise AssertionError(f"unterminated shell function {current!r}")
+    return functions
+
+
+WINGET_RETRY_HELPER = "retry_transient"
+WINGET_NETWORK_CALL = re.compile(
+    r"\b(gh api user|gh repo view|gh repo fork|gh pr list|gh pr create|git clone|git fetch|git push)\b"
+)
+
+
+def assert_winget_submission_retries_transient_failures_text(path: Path, workflow: str) -> None:
+    script = step_script(job_block(workflow, "winget"), "Submit WinGet package PR")
+    functions = shell_functions(script)
+    for helper in (WINGET_RETRY_HELPER, "is_transient_failure"):
+        assert helper in functions, f"{path}: WinGet submission must define the {helper}() helper"
+    for knob in ("WINGET_RETRY_ATTEMPTS", "WINGET_RETRY_BASE_DELAY", "WINGET_RETRY_MAX_DELAY"):
+        assert knob in functions[WINGET_RETRY_HELPER], f"{path}: {WINGET_RETRY_HELPER} must honor {knob}"
+    assert "RANDOM" in functions[WINGET_RETRY_HELPER], f"{path}: {WINGET_RETRY_HELPER} must add jitter"
+
+    preflight = script.find("gh api rate_limit")
+    first_call = script.find("gh api user")
+    assert preflight >= 0, f"{path}: WinGet submission must log the GitHub rate limit before submitting"
+    assert 0 <= preflight < first_call, f"{path}: the rate_limit preflight must run before the first API call"
+
+    retried_functions = set(re.findall(rf"\b{WINGET_RETRY_HELPER} ([A-Za-z_][A-Za-z0-9_]*)\b", script))
+    retried_functions &= set(functions)
+    current_function = None
+    for line in script.splitlines():
+        header = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{\s*$", line)
+        if header:
+            current_function = header.group(1)
+            continue
+        if line == "}":
+            current_function = None
+            continue
+        call = WINGET_NETWORK_CALL.search(line)
+        if not call or line.lstrip().startswith("#"):
+            continue
+        wrapped = WINGET_RETRY_HELPER in line or current_function in retried_functions
+        assert wrapped, f"{path}: unguarded WinGet network call {call.group(1)!r}: {line.strip()}"
+
+    # verify_winget_scope must stay a hard refusal that no retry loop can paper over.
+    assert "verify_winget_scope" in functions, f"{path}: WinGet submission must keep verify_winget_scope"
+    assert "verify_winget_scope" not in retried_functions, f"{path}: verify_winget_scope must not be retried"
+    for want in (
+        "WinGet manifests for ${VERSION} are already published or up to date.",
+        "WinGet PR already exists for Rorkai.ASC ${VERSION}.",
+        "WinGet PR already exists for ${VERSION}.",
+    ):
+        assert want in script, f"{path}: WinGet submission must keep the idempotency branch {want!r}"
+    # A retried PR creation must re-check for an existing PR so a lost response
+    # cannot produce a duplicate microsoft/winget-pkgs PR.
+    create_functions = [name for name, body in functions.items() if "gh pr create" in body]
+    assert create_functions, f"{path}: gh pr create must live inside a retried function"
+    for name in create_functions:
+        assert name in retried_functions, f"{path}: {name} must be invoked through {WINGET_RETRY_HELPER}"
+        assert "gh pr list" in functions[name], f"{path}: {name} must check for an existing PR before creating one"
+    clone_functions = [name for name, body in functions.items() if "git clone" in body]
+    assert clone_functions, f"{path}: git clone must live inside a retried function that clears partial clones"
+    for name in clone_functions:
+        assert name in retried_functions, f"{path}: {name} must be invoked through {WINGET_RETRY_HELPER}"
+        assert "rm -rf winget-pkgs" in functions[name], f"{path}: {name} must remove a partial clone before retrying"
+
+
+def assert_winget_submission_retries_transient_failures() -> None:
+    assert_winget_submission_retries_transient_failures_text(RELEASE_WORKFLOW, RELEASE_WORKFLOW.read_text())
+
+
+def assert_winget_retry_guard_rejects_unguarded_calls() -> None:
+    workflow = RELEASE_WORKFLOW.read_text()
+    for wrapped in (
+        f"{WINGET_RETRY_HELPER} gh api user",
+        f"{WINGET_RETRY_HELPER} gh repo view",
+        f"{WINGET_RETRY_HELPER} gh pr list",
+        f'{WINGET_RETRY_HELPER} git push origin "${{BRANCH}}"',
+    ):
+        assert wrapped in workflow, f"{RELEASE_WORKFLOW}: expected to find {wrapped!r}"
+        weakened = workflow.replace(wrapped, wrapped[len(WINGET_RETRY_HELPER) + 1 :], 1)
+        try:
+            assert_winget_submission_retries_transient_failures_text(RELEASE_WORKFLOW, weakened)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{RELEASE_WORKFLOW}: guard accepts an unguarded {wrapped!r}")
+
+    weakened = workflow.replace("gh api rate_limit", "gh api user", 1)
+    try:
+        assert_winget_submission_retries_transient_failures_text(RELEASE_WORKFLOW, weakened)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError(f"{RELEASE_WORKFLOW}: guard accepts a missing rate_limit preflight")
+
+
+FAKE_GH = """#!/bin/sh
+count=$(cat "$ATTEMPT_FILE" 2>/dev/null || echo 0)
+count=$((count + 1))
+echo "$count" > "$ATTEMPT_FILE"
+if [ "$count" -lt "$SUCCEED_ON" ]; then
+  echo "partial stdout from attempt $count"
+  printf '%s\\n' "$FAILURE_MESSAGE" >&2
+  exit 1
+fi
+echo "ok $*"
+"""
+
+
+def run_winget_retry_helper(
+    helpers: str, failure_message: str, succeed_on: int, attempts: int = 3
+) -> tuple[subprocess.CompletedProcess[str], int]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fake_gh = Path(tmpdir) / "gh"
+        fake_gh.write_text(FAKE_GH)
+        fake_gh.chmod(0o755)
+        attempt_file = Path(tmpdir) / "attempts"
+        env = os.environ.copy()
+        env.update(
+            {
+                "PATH": f"{tmpdir}{os.pathsep}{env['PATH']}",
+                "ATTEMPT_FILE": str(attempt_file),
+                "SUCCEED_ON": str(succeed_on),
+                "FAILURE_MESSAGE": failure_message,
+                "WINGET_RETRY_ATTEMPTS": str(attempts),
+                "WINGET_RETRY_BASE_DELAY": "0",
+                "WINGET_RETRY_MAX_DELAY": "0",
+            }
+        )
+        # GitHub runs `run:` steps with `bash -e`; mirror that so a failure inside
+        # the helper surfaces the same way it would in the release job.
+        result = subprocess.run(
+            ["bash", "-e", "-c", helpers + "\nretry_transient gh api user --jq .login\n"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        made = int(attempt_file.read_text().strip()) if attempt_file.exists() else 0
+        return result, made
+
+
+def assert_winget_retry_helper_behavior() -> None:
+    """Exercise the real bash helper: back off on throttles, fail fast on everything else."""
+    script = step_script(job_block(RELEASE_WORKFLOW.read_text(), "winget"), "Submit WinGet package PR")
+    functions = shell_functions(script)
+    helpers = functions["is_transient_failure"] + functions[WINGET_RETRY_HELPER]
+
+    transient = (
+        "HTTP 403: API rate limit exceeded for user ID 1 "
+        "(https://docs.github.com/rest/overview/rate-limits-for-the-rest-api)",
+        "HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+        "HTTP 429: Too Many Requests",
+        "HTTP 502: Server Error",
+        "GraphQL: API rate limit already exceeded for user ID 1",
+        "fatal: unable to access 'https://github.com/example/winget-pkgs.git/': "
+        "The requested URL returned error: 429",
+        "fatal: unable to access 'https://github.com/example/winget-pkgs.git/': "
+        "The requested URL returned error: 503",
+        "error: RPC failed; curl 56 Recv failure: Connection reset by peer",
+        "fatal: early EOF",
+        "fatal: the remote end hung up unexpectedly",
+        "Post \"https://api.github.com/graphql\": dial tcp: i/o timeout",
+        "fatal: unable to access 'https://github.com/': Could not resolve host: github.com",
+    )
+    for message in transient:
+        result, made = run_winget_retry_helper(helpers, message, succeed_on=3)
+        assert result.returncode == 0, f"{message!r}: helper must recover after a transient failure\n{result.stderr}"
+        assert made == 3, f"{message!r}: expected 3 attempts, made {made}"
+        assert result.stdout == "ok api user --jq .login\n", (
+            f"{message!r}: failed attempts must not leak stdout: {result.stdout!r}"
+        )
+        assert "retrying in" in result.stderr, f"{message!r}: helper must announce the retry\n{result.stderr}"
+        assert message in result.stderr, f"{message!r}: helper must surface the underlying error"
+
+    fail_fast = (
+        "HTTP 401: Bad credentials (https://api.github.com/user)",
+        "HTTP 403: Resource not accessible by personal access token",
+        "HTTP 404: Not Found",
+        "HTTP 422: Validation Failed (https://api.github.com/repos/microsoft/winget-pkgs/pulls)",
+        "GraphQL: Could not resolve to a Repository with the name 'example/winget-pkgs'. (repository)",
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+        "::error::WinGet branch contains changes outside the 1.2.3 manifest directory",
+    )
+    for message in fail_fast:
+        result, made = run_winget_retry_helper(helpers, message, succeed_on=99)
+        assert result.returncode == 1, f"{message!r}: helper must propagate a genuine failure"
+        assert made == 1, f"{message!r}: genuine failures must not be retried, made {made} attempts"
+        assert "retrying in" not in result.stderr, f"{message!r}: helper must not retry\n{result.stderr}"
+        assert "not retrying" in result.stderr, f"{message!r}: helper must explain why it stopped\n{result.stderr}"
+        assert message in result.stderr, f"{message!r}: helper must surface the underlying error"
+
+    result, made = run_winget_retry_helper(helpers, "HTTP 429: Too Many Requests", succeed_on=99, attempts=4)
+    assert result.returncode == 1, "helper must fail once the attempt budget is spent"
+    assert made == 4, f"helper must stop at WINGET_RETRY_ATTEMPTS, made {made} attempts"
+    assert "giving up" in result.stderr, result.stderr
+
+
 def run_security_target(path: str) -> subprocess.CompletedProcess[str]:
     make = shutil.which("make")
     if make is None:
@@ -437,6 +674,9 @@ def main() -> None:
 
     release = RELEASE_WORKFLOW.read_text()
     assert "actions/upload-artifact" in release, "release workflow must retain official artifact publication"
+    assert_winget_submission_retries_transient_failures()
+    assert_winget_retry_guard_rejects_unguarded_calls()
+    assert_winget_retry_helper_behavior()
 
     subprocess.run(
         ["go", "test", ".", "-run", "^TestReleaseRehearsalWorkflowContract", "-count=1"],
