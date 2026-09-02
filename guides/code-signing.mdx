@@ -4,7 +4,7 @@
 
 A downloaded certificate is not a signing identity. The certificate contains a public key; Xcode also needs the matching private key. App Store Connect can return certificates and provisioning profiles, but it cannot return a private key after the certificate request has been created.
 
-Use the [signing command reference](/commands/signing) for every flag, profile-type table, encrypted repository format, multi-target manifest, CI example, rotation sequence, and troubleshooting case. This guide explains which workflow to choose.
+Use the [signing command reference](/commands/signing) for every flag, profile-type table, encrypted repository format, encryption guarantees, multi-target manifest, CI example, rotation and revocation sequence, and troubleshooting case. This guide explains which workflow to choose.
 
 ## Existing identity on one Mac
 
@@ -147,9 +147,11 @@ asc signing sync push \
 
 The same profile type, certificate filter, identity, and device set apply to every target. A batch can create profiles before the final repository push, so a later failure may leave those immutable App Store Connect profiles in place.
 
+What AES-256-GCM, PBKDF2, scrypt, and authenticated metadata do and do not guarantee is in [What the encrypted store protects](/commands/signing#what-the-encrypted-store-protects).
+
 ## Pull in CI
 
-Write the repository password from the CI secret manager to a runner-private file, then pull the signing assets:
+Write the repository password from the CI secret manager to a runner-private file, then pull the signing assets. `signing sync` already forces noninteractive Git (`GIT_TERMINAL_PROMPT=0` and, unless you overrode SSH, `GIT_SSH_COMMAND=ssh -o BatchMode=yes`); keep any custom SSH wrapper equally noninteractive so a prompt cannot hang the runner. The full CI example lives in the [signing command reference](/commands/signing#ci-example).
 
 ```bash  theme={null}
 set +x
@@ -289,6 +291,6 @@ For an archive with extensions, App Clips, Watch apps, or other embedded targets
 
 ## What the encrypted store does not do
 
-The current store uses Git. It does not renew certificates, delete stale encrypted assets, assign different settings per target, or manage the later lifecycle of installed persistent keychains. Treat those as separate reviewed operations.
+The current store uses Git. It does not renew certificates, delete stale encrypted assets, assign different settings per target, or manage the later lifecycle of installed persistent keychains. Treat those as separate reviewed operations. Renew first, push the successor identity, verify a clean pull, then revoke or deactivate; the ordering is under [Rotation and expiry](/commands/signing#rotation-and-expiry).
 
 Read the [signing command reference](/commands/signing) before the first live push; it includes file-permission rules, exact output fields, failure boundaries, profile maintenance, and recovery behavior.

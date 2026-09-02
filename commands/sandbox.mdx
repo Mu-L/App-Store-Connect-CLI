@@ -39,6 +39,22 @@ asc sandbox update --email "tester@example.com" --interrupt-purchases true
 asc sandbox clear-history --id "SANDBOX_TESTER_ID" --confirm
 ```
 
+### Create a sandbox tester (web session)
+
+The public App Store Connect API does not expose sandbox tester creation. Use the
+web-session workflow:
+
+```bash  theme={null}
+asc web sandbox create \
+  --first-name "Jane" \
+  --last-name "Tester" \
+  --email "jane+sandbox@example.com" \
+  --password "Passwordtest1" \
+  --territory "USA"
+```
+
+See [web sandbox](/commands/web) for session setup.
+
 ## List flags
 
 <ParamField path="--output" type="string">
@@ -105,5 +121,9 @@ asc sandbox clear-history --id "SANDBOX_TESTER_ID" --confirm
 
   <Card title="Subscriptions command" icon="repeat" href="/commands/subscriptions">
     Manage subscriptions
+  </Card>
+
+  <Card title="Web command" icon="globe" href="/commands/web">
+    Create sandbox testers through an Apple web session
   </Card>
 </CardGroup>

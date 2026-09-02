@@ -12,18 +12,24 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 )
 
 const (
 	reviewSubmissionsInclude      = "appStoreVersionForReview,items,lastUpdatedByActor,submittedByActor,createdByActor"
-	reviewSubmissionsItemsInclude = "appCustomProductPageVersion,appEvent,appStoreVersion,appStoreVersionExperiment,backgroundAssetVersion,gameCenterAchievementVersion,gameCenterLeaderboardVersion,gameCenterLeaderboardSetVersion,gameCenterChallengeVersion,gameCenterActivityVersion"
+	reviewSubmissionsItemsInclude = "appStoreVersion,appCustomProductPageVersion,appStoreVersionExperiment,appStoreVersionExperimentV2,appEvent,backgroundAssetVersion,gameCenterAchievementVersion,gameCenterActivityVersion,gameCenterChallengeVersion,gameCenterLeaderboardSetVersion,gameCenterLeaderboardVersion,inAppPurchaseVersion,subscriptionVersion,subscriptionGroupVersion"
 	reviewMessagesInclude         = "fromActor,rejections,resolutionCenterMessageAttachments"
 	reviewRejectionsInclude       = "appCustomProductPageVersion,appEvent,appStoreVersion,appStoreVersionExperiment,backgroundAssetVersions,gameCenterAchievementVersions,gameCenterLeaderboardVersions,gameCenterLeaderboardSetVersions,gameCenterChallengeVersions,gameCenterActivityVersions,build,appBundleVersion,rejectionAttachments"
 	attachmentHostsEnv            = "ASC_WEB_ALLOWED_ATTACHMENT_HOSTS"
 )
 
 var htmlTagPattern = regexp.MustCompile(`(?s)<[^>]*>`)
+
+var skippedReviewRelatedRelationships = map[string]struct{}{
+	"rejectionAttachments": {},
+}
 
 var defaultAttachmentHostSuffixes = []string{
 	".apple.com",
@@ -81,11 +87,20 @@ type ReviewSubmission struct {
 	CreatedByActor           *ReviewActor              `json:"createdByActor,omitempty"`
 }
 
+// ReviewRelatedResource is an included JSON:API resource decoded for display.
+type ReviewRelatedResource struct {
+	Relationship string `json:"relationship,omitempty"`
+	Type         string `json:"type"`
+	ID           string `json:"id"`
+	Label        string `json:"label,omitempty"`
+}
+
 // ReviewSubmissionItemRelation links a submission item to related resources.
 type ReviewSubmissionItemRelation struct {
 	Relationship string `json:"relationship"`
 	Type         string `json:"type"`
 	ID           string `json:"id"`
+	Label        string `json:"label,omitempty"`
 }
 
 // ReviewSubmissionItem models review submission item relationships.
@@ -130,6 +145,7 @@ type ReviewRejection struct {
 	ID            string                  `json:"id"`
 	Reasons       []ReviewRejectionReason `json:"reasons,omitempty"`
 	AttachmentIDs []string                `json:"attachmentIds,omitempty"`
+	Related       []ReviewRelatedResource `json:"related,omitempty"`
 }
 
 // ReviewAttachment models message/rejection attachment metadata.
@@ -322,6 +338,92 @@ func actorFromRef(ref *resourceRef, included map[string]jsonAPIResource) *Review
 	return actor
 }
 
+func relatedResourceLabel(resource jsonAPIResource) string {
+	return attrLabel(
+		resource.Attributes,
+		"versionString",
+		"version",
+		"buildNumber",
+		"name",
+		"referenceName",
+		"displayName",
+		"title",
+		"bundleId",
+		"identifier",
+	)
+}
+
+func attrLabel(attrs map[string]any, keys ...string) string {
+	if label := stringAttr(attrs, keys...); label != "" {
+		return label
+	}
+	if attrs == nil {
+		return ""
+	}
+	for _, key := range keys {
+		value, ok := attrs[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case float64:
+			if typed == float64(int64(typed)) {
+				return strconv.FormatInt(int64(typed), 10)
+			}
+			return strconv.FormatFloat(typed, 'f', -1, 64)
+		case json.Number:
+			if label := strings.TrimSpace(typed.String()); label != "" {
+				return label
+			}
+		case int:
+			return strconv.Itoa(typed)
+		case int32:
+			return strconv.FormatInt(int64(typed), 10)
+		case int64:
+			return strconv.FormatInt(typed, 10)
+		}
+	}
+	return ""
+}
+
+func includedResourceLabel(included map[string]jsonAPIResource, ref resourceRef) string {
+	if included == nil {
+		return ""
+	}
+	resource, ok := included[jsonAPIResourceKey(ref.Type, ref.ID)]
+	if !ok {
+		return ""
+	}
+	return relatedResourceLabel(resource)
+}
+
+func relatedResourcesFrom(resource jsonAPIResource, included map[string]jsonAPIResource, skip map[string]struct{}) []ReviewRelatedResource {
+	if len(resource.Relationships) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(resource.Relationships))
+	for relationshipName := range resource.Relationships {
+		if _, skipped := skip[relationshipName]; skipped {
+			continue
+		}
+		names = append(names, relationshipName)
+	}
+	sort.Strings(names)
+
+	var related []ReviewRelatedResource
+	for _, relationshipName := range names {
+		for _, ref := range relationshipRefs(resource, relationshipName) {
+			related = append(related, ReviewRelatedResource{
+				Relationship: relationshipName,
+				Type:         strings.TrimSpace(ref.Type),
+				ID:           strings.TrimSpace(ref.ID),
+				Label:        includedResourceLabel(included, ref),
+			})
+		}
+	}
+	return related
+}
+
 func appStoreVersionFromRef(ref *resourceRef, included map[string]jsonAPIResource) *AppStoreVersionForReview {
 	if ref == nil {
 		return nil
@@ -376,13 +478,9 @@ func (c *Client) ListReviewSubmissions(ctx context.Context, appID string) ([]Rev
 	query.Set("limit[items]", "0")
 	path := queryPath("/apps/"+url.PathEscape(appID)+"/reviewSubmissions", query)
 
-	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	payload, err := c.fetchJSONAPIPages(ctx, path, "review submissions")
 	if err != nil {
 		return nil, err
-	}
-	var payload jsonAPIListPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return nil, fmt.Errorf("failed to parse review submissions response: %w", err)
 	}
 	return decodeReviewSubmissions(payload.Data, payload.Included), nil
 }
@@ -398,27 +496,30 @@ func (c *Client) ListReviewSubmissionItems(ctx context.Context, reviewSubmission
 	query.Set("limit", "200")
 	path := queryPath("/reviewSubmissions/"+url.PathEscape(reviewSubmissionID)+"/items", query)
 
-	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	payload, err := c.fetchJSONAPIPages(ctx, path, "review submission items")
 	if err != nil {
 		return nil, err
 	}
-	var payload jsonAPIListPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return nil, fmt.Errorf("failed to parse review submission items response: %w", err)
-	}
+	includedMap := buildIncludedMap(payload.Included)
 	items := make([]ReviewSubmissionItem, 0, len(payload.Data))
 	for _, resource := range payload.Data {
 		item := ReviewSubmissionItem{
 			ID:   strings.TrimSpace(resource.ID),
 			Type: strings.TrimSpace(resource.Type),
 		}
+		names := make([]string, 0, len(resource.Relationships))
 		for relationshipName := range resource.Relationships {
+			names = append(names, relationshipName)
+		}
+		sort.Strings(names)
+		for _, relationshipName := range names {
 			refs := relationshipRefs(resource, relationshipName)
 			for _, ref := range refs {
 				item.Related = append(item.Related, ReviewSubmissionItemRelation{
 					Relationship: relationshipName,
 					Type:         strings.TrimSpace(ref.Type),
 					ID:           strings.TrimSpace(ref.ID),
+					Label:        includedResourceLabel(includedMap, ref),
 				})
 			}
 		}
@@ -473,13 +574,9 @@ func (c *Client) ListResolutionCenterThreadsBySubmission(ctx context.Context, re
 	query.Set("include", "reviewSubmission")
 	path := queryPath("/resolutionCenterThreads", query)
 
-	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	payload, err := c.fetchJSONAPIPages(ctx, path, "resolution center threads")
 	if err != nil {
 		return nil, err
-	}
-	var payload jsonAPIListPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return nil, fmt.Errorf("failed to parse resolution center threads response: %w", err)
 	}
 	return decodeResolutionCenterThreads(payload.Data), nil
 }
@@ -530,15 +627,7 @@ func (c *Client) listResolutionCenterMessagesPayload(ctx context.Context, thread
 	query.Set("limit[resolutionCenterMessageAttachments]", "1000")
 	path := queryPath("/resolutionCenterThreads/"+url.PathEscape(threadID)+"/resolutionCenterMessages", query)
 
-	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return jsonAPIListPayload{}, err
-	}
-	var payload jsonAPIListPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return jsonAPIListPayload{}, fmt.Errorf("failed to parse resolution center messages response: %w", err)
-	}
-	return payload, nil
+	return c.fetchJSONAPIPages(ctx, path, "resolution center messages")
 }
 
 // ListResolutionCenterMessages lists thread messages and optional plain text body.
@@ -598,26 +687,20 @@ func (c *Client) listReviewRejectionsPayload(ctx context.Context, threadID strin
 	query.Set("limit[rejectionAttachments]", "1000")
 	path := queryPath("/reviewRejections", query)
 
-	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return jsonAPIListPayload{}, err
-	}
-	var payload jsonAPIListPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return jsonAPIListPayload{}, fmt.Errorf("failed to parse review rejections response: %w", err)
-	}
-	return payload, nil
+	return c.fetchJSONAPIPages(ctx, path, "review rejections")
 }
 
-func decodeReviewRejections(resources []jsonAPIResource) []ReviewRejection {
+func decodeReviewRejections(resources []jsonAPIResource, included []jsonAPIResource) []ReviewRejection {
 	if len(resources) == 0 {
 		return []ReviewRejection{}
 	}
+	includedMap := buildIncludedMap(included)
 	rejections := make([]ReviewRejection, 0, len(resources))
 	for _, resource := range resources {
 		rejection := ReviewRejection{
 			ID:      strings.TrimSpace(resource.ID),
 			Reasons: parseRejectionReasons(resource.Attributes),
+			Related: relatedResourcesFrom(resource, includedMap, skippedReviewRelatedRelationships),
 		}
 		attachmentRefs := relationshipRefs(resource, "rejectionAttachments")
 		if len(attachmentRefs) > 0 {
@@ -637,7 +720,7 @@ func (c *Client) ListReviewRejections(ctx context.Context, threadID string) ([]R
 	if err != nil {
 		return nil, err
 	}
-	rejections := decodeReviewRejections(payload.Data)
+	rejections := decodeReviewRejections(payload.Data, payload.Included)
 	if len(rejections) == 0 {
 		return []ReviewRejection{}, nil
 	}
@@ -761,7 +844,7 @@ func (c *Client) ListReviewThreadDetails(ctx context.Context, threadID string, p
 
 	details := ReviewThreadDetails{
 		Messages:   decodeResolutionCenterMessages(messagesPayload.Data, messagesPayload.Included, plainText),
-		Rejections: decodeReviewRejections(rejectionsPayload.Data),
+		Rejections: decodeReviewRejections(rejectionsPayload.Data, rejectionsPayload.Included),
 	}
 	attachments := make([]ReviewAttachment, 0)
 	seen := map[string]struct{}{}

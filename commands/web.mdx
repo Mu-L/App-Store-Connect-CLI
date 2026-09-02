@@ -11,11 +11,16 @@ The `asc web` command family automates App Store Connect workflows through Apple
 asc web auth login --apple-id "user@example.com"
 asc web auth status
 
-# Create a team API key and save its one-time P8
+# List and inspect API keys, then create a team key and save its one-time P8
+asc web api-keys list --output json
+asc web api-keys view --key-id KEY_ID
 asc web api-keys create --name "Release automation" --output-dir ~/.asc/keys
 
 # Create an app through the web flow
 asc web apps create --name "My App" --bundle-id "com.example.app" --sku "MYAPP123"
+
+# Check whether an app can be removed (no mutation)
+asc web apps delete --app "1234567890" --dry-run
 
 # Register and list an App Group unavailable through the public API
 asc web app-groups create --name "My App Shared" --identifier "group.com.example.app.shared" --confirm
@@ -49,7 +54,7 @@ Use `asc web` when one of these is true:
 
 ## Session model
 
-`asc web` authenticates with a cached Apple Account web session created with `asc web auth login`. The `api-keys create` command uses that session to create an App Store Connect API key; it does not require an existing API key.
+`asc web` authenticates with a cached Apple Account web session created with `asc web auth login`. The `api-keys` commands use that session to list, inspect, or create App Store Connect API keys; they do not require an existing API key.
 
 Common session commands:
 
@@ -77,17 +82,44 @@ trusted-device code once; Apple then delivers the phone verification code by
 its configured method (including SMS) and `asc` prompts again. Automated flows
 rerun the configured `--two-factor-code-command` after phone fallback.
 
-### `asc web api-keys`
+### `asc web agreements`
 
-Team API key creation through an Apple Account web session.
+Check and accept Apple Developer Program agreements through Apple web-session
+endpoints. This command is experimental. The public App Store Connect API has
+no endpoint for these agreements.
 
 Available commands:
 
+* `asc web agreements status` - show the agreement alert banner and program agreement history
+* `asc web agreements accept` - accept a pending agreement as the Account Holder
+
+An agreement is reported as pending when App Store Connect shows an agreement
+alert banner or when the agreement's accepted date is older than its effective
+date. Accepting an agreement is a legal action; Apple only allows the team's
+Account Holder to accept it.
+
+Example:
+
+```bash  theme={null}
+asc web agreements status
+asc web agreements accept --agreement-id "AGREEMENT_ID" --confirm
+```
+
+### `asc web api-keys`
+
+Team and individual API key listing, team-key inspection, and team API key creation through an Apple Account web session.
+
+Available commands:
+
+* `asc web api-keys list` - list team and individual keys visible to the cached web session
+* `asc web api-keys view` - inspect one team API key by `--key-id`
 * `asc web api-keys create` - create an all-apps team key and save its one-time P8 as `AuthKey_<KEY_ID>.p8`
 
 Example:
 
 ```bash  theme={null}
+asc web api-keys list --output json
+asc web api-keys view --key-id KEY_ID --output json
 asc web api-keys create \
   --name "Release automation" \
   --role APP_MANAGER \
@@ -95,7 +127,9 @@ asc web api-keys create \
   --output json
 ```
 
-The role defaults to `ADMIN`. The output file is created with mode `0600`, existing files are not replaced, and key contents are not printed to command output.
+`list` and `view` print key ID, name, roles, and active state. They omit creation date because the existing web-session key readers do not expose it. Key material is never printed. `list` follows every page internally, so it does not accept `--paginate`. `view` uses the iris v1 team-key resource; individual keys appear in `list` but are not loaded by `view`.
+
+The create role defaults to `ADMIN`. The output file is created with mode `0600`, existing files are not replaced, and key contents are not printed to command output.
 
 Role requirement: creating a team API key requires an Account Holder or Admin web session. The `--role` value must be one of Apple's selectable team-key roles.
 
@@ -106,12 +140,15 @@ App management workflows over Apple web-session endpoints.
 Available commands:
 
 * `asc web apps create` - create a new app via the web flow
+* `asc web apps delete` - remove an app after preflighting observable eligibility; use `--dry-run` to check without mutating
 * `asc web apps availability create` - bootstrap initial territory availability
 * `asc web apps medical-device set` - manage the regulated medical device declaration
 
 Notes:
 
 * `asc web apps create` is the canonical app-creation path in the `web` family
+* `asc web apps delete` preflights observable eligibility and re-reads the app before reporting success; `--confirm` is required unless `--dry-run`
+* `asc web apps create --access full|limited [--user USER_ID]...` applies team access after create through the public users API. Limited access requires at least one `--user` with limited app visibility (not all-apps access). Omitting `--access` keeps the historical create request body.
 * `asc web apps medical-device set` currently supports only `--declared false`
 
 ### `asc web sandbox`
@@ -121,6 +158,51 @@ Sandbox tester creation via the App Store Connect web UI contract.
 Available commands:
 
 * `asc web sandbox create` - create a sandbox tester
+
+### `asc web removed-apps`
+
+Inspect apps shown in App Store Connect's Removed Apps status view.
+
+Available commands:
+
+* `asc web removed-apps list` - list removed apps
+
+Example:
+
+```bash  theme={null}
+asc web removed-apps list
+asc web removed-apps list --paginate --output table
+```
+
+### `asc web bundle-ids`
+
+Bundle ID operations that are only available through Apple web-session
+endpoints, including Developer Portal-only capabilities and App Clip
+capability sync.
+
+Available commands:
+
+* `asc web bundle-ids capabilities enable` - enable a Developer Portal-only Bundle ID capability
+* `asc web bundle-ids capabilities sync-app-clip` - sync an App Clip capability with its parent Bundle ID
+
+Currently supported capability IDs for `enable`: `PRIVATE_CLOUD_COMPUTE`.
+Existing settings and relationships are preserved. If the requested capability
+is already enabled, the command returns an already-enabled result without
+sending a PATCH.
+
+Example:
+
+```bash  theme={null}
+asc web bundle-ids capabilities enable \
+  --bundle-id "BUNDLE_RESOURCE_ID" \
+  --capability "PRIVATE_CLOUD_COMPUTE" \
+  --confirm
+
+asc web bundle-ids capabilities sync-app-clip \
+  --bundle-id "CLIP_BUNDLE_ID" \
+  --parent-bundle-id "PARENT_BUNDLE_ID" \
+  --capability "PUSH_NOTIFICATIONS"
+```
 
 ### `asc web app-groups`
 
@@ -194,10 +276,18 @@ Available commands:
 * `asc web review list` - list review submissions for an app
 * `asc web review show` - inspect one submission and related messages/screenshots
 * `asc web review subscriptions` - inspect and mutate next-version subscription review selection
+* `asc web review iaps` - attach a non-renewing IAP to the next app version review
 
 Subscription JSON includes both `submitWithNextAppStoreVersion` and
 `submitWithNextAppStoreVersionKnown`. When the presence field is `false`, Apple
 omitted the attachment attribute and the boolean value is not authoritative.
+
+`asc web review iaps attach` requires `--app`, `--iap-id`, and `--confirm`.
+`--iap-id` accepts the iris resource ID or the product ID from `asc iap list`.
+
+```bash  theme={null}
+asc web review iaps attach --app "123456789" --iap-id "PRODUCT_ID" --confirm
+```
 
 ### `asc web subscriptions`
 
@@ -287,13 +377,16 @@ Available command groups:
 
 * `asc web xcode-cloud usage` - query plan quota and usage breakdowns
 * `asc web xcode-cloud products` - list Xcode Cloud products
-* `asc web xcode-cloud workflows` - describe, create, and edit workflows
+* `asc web xcode-cloud workflows` - list, describe, create, edit, enable, and disable workflows
 * `asc web xcode-cloud env-vars` - manage shared and workflow-scoped environment variables
+
+`asc web xcode-cloud workflows list --product-id PRODUCT_ID` returns workflow ID, name, and description for a product. The web CI list payload does not include enabled state, branch/trigger summary, or last-modified; use `workflows describe` for full configuration.
 
 Example:
 
 ```bash  theme={null}
 asc web xcode-cloud usage summary --apple-id "user@example.com"
+asc web xcode-cloud workflows list --product-id "UUID" --apple-id "user@example.com"
 asc web xcode-cloud workflows create --product-id "UUID" --file ./workflow.json --apple-id "user@example.com"
 ```
 
@@ -308,8 +401,11 @@ Use the CLI help directly to explore the current surface:
 ```bash  theme={null}
 asc web --help
 asc web auth --help
+asc web agreements --help
 asc web api-keys --help
 asc web apps --help
+asc web removed-apps --help
+asc web bundle-ids --help
 asc web privacy --help
 asc web review --help
 asc web analytics --help
