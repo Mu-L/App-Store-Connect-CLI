@@ -157,6 +157,11 @@ type developerBundleIDListResponse struct {
 	Links    struct {
 		Next string `json:"next"`
 	} `json:"links"`
+	Meta struct {
+		Paging struct {
+			Total *int `json:"total"`
+		} `json:"paging"`
+	} `json:"meta"`
 }
 
 type developerPortalLegacyResponse struct {
@@ -176,7 +181,7 @@ type developerAppGroupPayload struct {
 
 type developerAppGroupsListResponse struct {
 	developerPortalLegacyResponse
-	PageNumber           int                        `json:"pageNumber"`
+	PageNumber           *int                       `json:"pageNumber"`
 	PageSize             int                        `json:"pageSize"`
 	TotalRecords         *int                       `json:"totalRecords"`
 	ApplicationGroupList []developerAppGroupPayload `json:"applicationGroupList"`
@@ -201,11 +206,13 @@ func (c *Client) ListDeveloperAppGroups(ctx context.Context, options DeveloperAp
 
 // listDeveloperAppGroupPages reads the team's App Groups. With requireCollection
 // set, a success envelope whose applicationGroupList is absent or null, or whose
-// totalRecords is absent, null, or inconsistent with the records returned, is an
-// error instead of a short team; the delete path needs that to stay fail-closed
-// while the list command keeps tolerating a sparse envelope.
+// totalRecords or pageNumber is absent, null, or inconsistent with the request
+// and the records returned, is an error instead of a short team; the delete path
+// needs that to stay fail-closed while the list command keeps tolerating a
+// sparse envelope.
 func (c *Client) listDeveloperAppGroupPages(ctx context.Context, teamID string, paginate bool, requireCollection bool) (*DeveloperAppGroupsListResult, error) {
 	result := &DeveloperAppGroupsListResult{Data: []DeveloperAppGroup{}}
+	seenGroupIDs := make(map[string]struct{})
 	for pageNumber := 1; ; pageNumber++ {
 		body, err := c.doDeveloperPortalLegacyFormRequest(ctx, developerAppGroupsListPath, url.Values{
 			"teamId":     {teamID},
@@ -230,10 +237,21 @@ func (c *Client) listDeveloperAppGroupPages(ctx context.Context, teamID string, 
 		if requireCollection && page.TotalRecords == nil {
 			return nil, fmt.Errorf("developer portal App Groups response has no totalRecords count")
 		}
+		// A stale or repeated page can make the record count line up with
+		// totalRecords while the page that holds the target was never read.
+		if requireCollection && (page.PageNumber == nil || *page.PageNumber != pageNumber) {
+			return nil, fmt.Errorf("developer portal App Groups response did not return the requested page %d", pageNumber)
+		}
 		for _, group := range page.ApplicationGroupList {
 			decoded, err := decodeDeveloperAppGroup(group)
 			if err != nil {
 				return nil, err
+			}
+			if requireCollection {
+				if _, duplicate := seenGroupIDs[decoded.ID]; duplicate {
+					return nil, fmt.Errorf("developer portal App Groups response repeated App Group %q across pages", decoded.ID)
+				}
+				seenGroupIDs[decoded.ID] = struct{}{}
 			}
 			result.Data = append(result.Data, decoded)
 		}
@@ -309,6 +327,11 @@ func (c *Client) DeleteDeveloperAppGroup(ctx context.Context, request DeveloperA
 		// already be gone, so a retry is not safe.
 		return nil, &DeveloperAppGroupUnverifiedError{Err: fmt.Errorf("developer portal accepted the delete but its response could not be parsed: %w", err)}
 	}
+	if response.ResultCode == nil {
+		// Valid JSON without a verdict is the same ambiguity as an unparseable
+		// body; only an explicit non-zero resultCode is a refused delete.
+		return nil, &DeveloperAppGroupUnverifiedError{Err: fmt.Errorf("developer portal accepted the delete but its response is missing resultCode")}
+	}
 	if err := validateDeveloperPortalLegacyResponse(response); err != nil {
 		return nil, err
 	}
@@ -353,6 +376,8 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 
 	assignments := []DeveloperAppGroupAssignment{}
 	seenNext := make(map[string]struct{})
+	seenBundleIDs := make(map[string]struct{})
+	collected := 0
 	for page := 0; ; page++ {
 		if page >= developerBundleIDsListMaxPages {
 			return nil, fmt.Errorf("developer portal Bundle ID listing exceeded %d pages while checking App Group assignments", developerBundleIDsListMaxPages)
@@ -378,6 +403,10 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 			if bundle.Type != "bundleIds" || strings.TrimSpace(bundle.ID) == "" {
 				return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list contains a non-Bundle-ID entry (type %q, id %q)", bundle.Type, bundle.ID)
 			}
+			if _, duplicate := seenBundleIDs[bundle.ID]; duplicate {
+				return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list repeated Bundle ID %q across pages", bundle.ID)
+			}
+			seenBundleIDs[bundle.ID] = struct{}{}
 			assignment, referenced, err := developerBundleIDReferencesAppGroup(bundle, includedByID, groupID)
 			if err != nil {
 				return nil, err
@@ -386,9 +415,23 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 				assignments = append(assignments, assignment)
 			}
 		}
+		collected += len(response.Data)
 
+		total := response.Meta.Paging.Total
+		if total != nil && *total < collected {
+			return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list reported %d total records but returned %d", *total, collected)
+		}
 		next := strings.TrimSpace(response.Links.Next)
 		if next == "" {
+			// Without a next link the listing is complete only if the paging
+			// total agrees, or, when no total is provided, the last page was
+			// short; a full final page with no terminal indicator is ambiguous.
+			switch {
+			case total != nil && *total != collected:
+				return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list reported %d total records but ended after %d", *total, collected)
+			case total == nil && len(response.Data) >= developerBundleIDsListPageSize:
+				return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list ended on a full page of %d without a next link or paging total", len(response.Data))
+			}
 			break
 		}
 		if _, repeated := seenNext[next]; repeated {
