@@ -13,12 +13,13 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 const (
 	reviewSubmissionsInclude      = "appStoreVersionForReview,items,lastUpdatedByActor,submittedByActor,createdByActor"
-	reviewSubmissionsItemsInclude = "appCustomProductPageVersion,appEvent,appStoreVersion,appStoreVersionExperiment,backgroundAssetVersion,gameCenterAchievementVersion,gameCenterLeaderboardVersion,gameCenterLeaderboardSetVersion,gameCenterChallengeVersion,gameCenterActivityVersion"
+	reviewSubmissionsItemsInclude = "appStoreVersion,appCustomProductPageVersion,appStoreVersionExperiment,appStoreVersionExperimentV2,appEvent,backgroundAssetVersion,gameCenterAchievementVersion,gameCenterActivityVersion,gameCenterChallengeVersion,gameCenterLeaderboardSetVersion,gameCenterLeaderboardVersion,inAppPurchaseVersion,subscriptionVersion,subscriptionGroupVersion"
 	reviewMessagesInclude         = "fromActor,rejections,resolutionCenterMessageAttachments"
 	reviewRejectionsInclude       = "appCustomProductPageVersion,appEvent,appStoreVersion,appStoreVersionExperiment,backgroundAssetVersions,gameCenterAchievementVersions,gameCenterLeaderboardVersions,gameCenterLeaderboardSetVersions,gameCenterChallengeVersions,gameCenterActivityVersions,build,appBundleVersion,rejectionAttachments"
 	attachmentHostsEnv            = "ASC_WEB_ALLOWED_ATTACHMENT_HOSTS"
@@ -338,7 +339,7 @@ func actorFromRef(ref *resourceRef, included map[string]jsonAPIResource) *Review
 }
 
 func relatedResourceLabel(resource jsonAPIResource) string {
-	return stringAttr(
+	return attrLabel(
 		resource.Attributes,
 		"versionString",
 		"version",
@@ -350,6 +351,39 @@ func relatedResourceLabel(resource jsonAPIResource) string {
 		"bundleId",
 		"identifier",
 	)
+}
+
+func attrLabel(attrs map[string]any, keys ...string) string {
+	if label := stringAttr(attrs, keys...); label != "" {
+		return label
+	}
+	if attrs == nil {
+		return ""
+	}
+	for _, key := range keys {
+		value, ok := attrs[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case float64:
+			if typed == float64(int64(typed)) {
+				return strconv.FormatInt(int64(typed), 10)
+			}
+			return strconv.FormatFloat(typed, 'f', -1, 64)
+		case json.Number:
+			if label := strings.TrimSpace(typed.String()); label != "" {
+				return label
+			}
+		case int:
+			return strconv.Itoa(typed)
+		case int32:
+			return strconv.FormatInt(int64(typed), 10)
+		case int64:
+			return strconv.FormatInt(typed, 10)
+		}
+	}
+	return ""
 }
 
 func includedResourceLabel(included map[string]jsonAPIResource, ref resourceRef) string {

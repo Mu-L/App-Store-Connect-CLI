@@ -33,12 +33,14 @@ func TestListReviewRejectionsRetainsIncludedContext(t *testing.T) {
 				"relationships": {
 					"appStoreVersion": {"data": {"type":"appStoreVersions","id":"v1"}},
 					"build": {"data": {"type":"builds","id":"b1"}},
+					"gameCenterAchievementVersions": {"data": {"type":"gameCenterAchievementVersions","id":"gc1"}},
 					"rejectionAttachments": {"data": [{"type":"rejectionAttachments","id":"ratt-1"}]}
 				}
 			}],
 			"included": [
 				{"id":"v1","type":"appStoreVersions","attributes":{"versionString":"1.2.3","platform":"IOS"}},
 				{"id":"b1","type":"builds","attributes":{"version":"45","uploadedDate":"2026-02-01T00:00:00Z"}},
+				{"id":"gc1","type":"gameCenterAchievementVersions","attributes":{"version":3}},
 				{"id":"ratt-1","type":"rejectionAttachments","attributes":{"fileName":"Crash.png","downloadUrl":"https://example.invalid/signed?token=secret"}}
 			]
 		}`))
@@ -72,13 +74,17 @@ func TestListReviewRejectionsRetainsIncludedContext(t *testing.T) {
 	if !ok || build.ID != "b1" || build.Label != "45" {
 		t.Fatalf("expected included build context, got %#v", rejection.Related)
 	}
+	achievement, ok := relatedByType["gameCenterAchievementVersions"]
+	if !ok || achievement.ID != "gc1" || achievement.Label != "3" {
+		t.Fatalf("expected numeric Game Center version label, got %#v", rejection.Related)
+	}
 	if _, ok := relatedByType["rejectionAttachments"]; ok {
 		t.Fatalf("did not expect attachment resources in related context: %#v", rejection.Related)
 	}
-	if len(rejection.Related) != 2 {
-		t.Fatalf("expected two related artifacts, got %#v", rejection.Related)
+	if len(rejection.Related) != 3 {
+		t.Fatalf("expected three related artifacts, got %#v", rejection.Related)
 	}
-	if rejection.Related[0].Relationship != "appStoreVersion" || rejection.Related[1].Relationship != "build" {
+	if rejection.Related[0].Relationship != "appStoreVersion" || rejection.Related[1].Relationship != "build" || rejection.Related[2].Relationship != "gameCenterAchievementVersions" {
 		t.Fatalf("expected stable related order by relationship name, got %#v", rejection.Related)
 	}
 
@@ -106,6 +112,18 @@ func TestListReviewSubmissionItemsRetainsIncludedContext(t *testing.T) {
 		if r.URL.Path != "/reviewSubmissions/sub-1/items" {
 			fixture.Respond(w, "unexpected path: %s", r.URL.Path)
 			return
+		}
+		include := r.URL.Query().Get("include")
+		for _, want := range []string{
+			"appStoreVersionExperimentV2",
+			"inAppPurchaseVersion",
+			"subscriptionVersion",
+			"subscriptionGroupVersion",
+		} {
+			if !strings.Contains(include, want) {
+				fixture.Respond(w, "missing include %s in %q", want, include)
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
