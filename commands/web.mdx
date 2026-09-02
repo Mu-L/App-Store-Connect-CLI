@@ -243,6 +243,9 @@ Available commands:
 * `asc web app-groups list` - list the first page of App Groups for the selected Developer team; pass `--paginate` to fetch every page
 * `asc web app-groups create` - register a new `group.` identifier
 * `asc web app-groups assign` - idempotently associate a group with a Bundle ID and enable `APP_GROUPS` when needed
+* `asc web app-groups unassign` - remove one group from a Bundle ID; removing the last group disables `APP_GROUPS`
+* `asc web app-groups set` - converge a Bundle ID on exactly the `--group` values passed and report an added/removed diff
+* `asc web app-groups delete` - delete a group registration; refuses while any Bundle ID still references the group
 
 Use the opaque IDs returned by the list commands for assignment:
 
@@ -254,14 +257,42 @@ asc web app-groups assign \
   --group "GROUP_RESOURCE_ID" \
   --bundle-id "BUNDLE_RESOURCE_ID" \
   --confirm
+
+asc web app-groups set \
+  --bundle-id "BUNDLE_RESOURCE_ID" \
+  --group "GROUP_RESOURCE_ID" \
+  --group "OTHER_GROUP_RESOURCE_ID" \
+  --confirm
+
+asc web app-groups unassign \
+  --group-id "GROUP_RESOURCE_ID" \
+  --bundle-id "BUNDLE_RESOURCE_ID" \
+  --confirm
+
+asc web app-groups delete --group-id "GROUP_RESOURCE_ID" --confirm
 ```
 
 Repeating an assignment that already exists succeeds without mutating the
-Bundle ID and returns `{"changed":false,"status":"already-assigned"}`.
+Bundle ID and returns `{"changed":false,"status":"already-assigned"}`. Likewise,
+`set` with a desired set that already matches sends no write and returns
+`{"changed":false,"status":"unchanged"}` with empty `added` and `removed` lists,
+and `unassign` of a group that is not assigned returns
+`{"changed":false,"status":"not-assigned"}`. A group the portal still lists
+under a disabled `APP_GROUPS` capability counts as assigned: `unassign` clears
+it (leaving the capability disabled) and `set` with the same groups re-enables
+the capability, so `delete` can always be unblocked from the CLI.
 
-When an assignment changes the App ID, existing provisioning profiles that
-contain that App ID become invalid. Regenerate affected profiles before the next
-signed build.
+`delete` fails closed: when the group is still assigned to any Bundle ID the
+command exits non-zero without sending a delete and names the assigned Bundle
+IDs on stderr. Remove those assignments with `unassign` or `set` first. The
+`assign`, `unassign`, `set`, and `delete` commands verify their result by
+re-reading the Bundle ID or the team's App Group list before reporting success;
+`create` returns the group as the portal reported it.
+
+When an assignment change or deletion changes an App ID, existing provisioning
+profiles that contain that App ID become invalid. The commands print a warning
+on stderr whenever they change something. Regenerate affected profiles before
+the next signed build.
 
 These commands require an Account Holder or Admin web session. Because Apple
 does not publish these Developer Portal endpoints, scripts should treat this
