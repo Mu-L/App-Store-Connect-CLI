@@ -220,30 +220,105 @@ func appClipBundleIDCapabilityMatches(capability webBundleIDCapabilityRelationsh
 		return true
 	}
 	currentSettings, ok := capability.settings()
-	return ok && jsonEquivalent(currentSettings, req.Settings)
+	return ok && requestedSettingsApplied(req.Settings, currentSettings)
 }
 
-func jsonEquivalent(left, right any) bool {
-	normalize := func(value any) (any, bool) {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return nil, false
-		}
-		var decoded any
-		if err := json.Unmarshal(encoded, &decoded); err != nil {
-			return nil, false
-		}
-		return decoded, true
-	}
-	leftValue, ok := normalize(left)
+// requestedSettingsApplied reports whether every caller-controlled settings
+// field is already present with the same value in Apple's current settings.
+// Apple enriches settings with read-only metadata such as name, description,
+// visible, and enabledByDefault, so the current value is projected onto the
+// keys the caller actually sent instead of being compared as a whole.
+func requestedSettingsApplied(requested, current any) bool {
+	requestedValue, ok := normalizeJSONValue(requested)
 	if !ok {
 		return false
 	}
-	rightValue, ok := normalize(right)
+	currentValue, ok := normalizeJSONValue(current)
 	if !ok {
 		return false
 	}
-	return reflect.DeepEqual(leftValue, rightValue)
+	return jsonSubset(requestedValue, currentValue)
+}
+
+func normalizeJSONValue(value any) (any, bool) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var decoded any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
+// jsonSubset reports whether requested is structurally contained in current:
+// objects may carry extra keys on the current side, arrays must have the same
+// length and are matched by their "key" field when every element has one.
+func jsonSubset(requested, current any) bool {
+	switch requestedValue := requested.(type) {
+	case map[string]any:
+		currentObject, ok := current.(map[string]any)
+		if !ok {
+			return false
+		}
+		for key, value := range requestedValue {
+			currentField, ok := currentObject[key]
+			if !ok || !jsonSubset(value, currentField) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		currentArray, ok := current.([]any)
+		if !ok || len(currentArray) != len(requestedValue) {
+			return false
+		}
+		if currentByKey, ok := jsonObjectsByKey(currentArray); ok {
+			for _, element := range requestedValue {
+				object, ok := element.(map[string]any)
+				if !ok {
+					return false
+				}
+				key, ok := object["key"].(string)
+				if !ok {
+					return false
+				}
+				match, ok := currentByKey[key]
+				if !ok || !jsonSubset(object, match) {
+					return false
+				}
+			}
+			return true
+		}
+		for index, element := range requestedValue {
+			if !jsonSubset(element, currentArray[index]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(requested, current)
+	}
+}
+
+func jsonObjectsByKey(values []any) (map[string]map[string]any, bool) {
+	byKey := make(map[string]map[string]any, len(values))
+	for _, value := range values {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		key, ok := object["key"].(string)
+		if !ok {
+			return nil, false
+		}
+		if _, duplicate := byKey[key]; duplicate {
+			return nil, false
+		}
+		byKey[key] = object
+	}
+	return byKey, true
 }
 
 func buildAppClipBundleIDCapabilityPatchRequest(current webBundleIDResponse, existing []webBundleIDCapabilityRelationship, req AppClipBundleIDCapabilitySyncRequest) webBundleIDPatchRequest {

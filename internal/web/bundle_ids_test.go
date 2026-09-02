@@ -444,6 +444,103 @@ func TestSyncAppClipBundleIDCapabilitySkipsPatchWhenExplicitSettingsMatch(t *tes
 	}
 }
 
+const enrichedSettingsAppClipBundleIDGetBody = `{
+	"data":{
+		"id":"clip-bundle",
+		"type":"bundleIds",
+		"attributes":{"name":"Example Clip","identifier":"com.example.app.Clip"},
+		"relationships":{
+			"bundleIdCapabilities":{"data":[{"id":"push-capability","type":"bundleIdCapabilities"}]}
+		}
+	},
+	"included":[
+		{
+			"id":"push-capability",
+			"type":"bundleIdCapabilities",
+			"attributes":{
+				"enabled":true,
+				"settings":[{
+					"key":"PUSH_NOTIFICATION_FEATURES",
+					"name":"Push Notification Features",
+					"description":"Choose the push notification features for this App ID.",
+					"enabledByDefault":false,
+					"visible":true,
+					"allowedInstances":"MULTIPLE",
+					"minInstances":0,
+					"options":[{
+						"key":"PUSH_NOTIFICATION_FEATURE_BROADCAST",
+						"name":"Broadcast Capability",
+						"description":"Send a notification to many devices at once.",
+						"enabled":true,
+						"enabledByDefault":false,
+						"supportsWildcard":false
+					}]
+				}]
+			},
+			"relationships":{
+				"capability":{"data":{"type":"capabilities","id":"PUSH_NOTIFICATIONS"}},
+				"parentBundleId":{"data":{"type":"bundleIds","id":"parent-bundle"}}
+			}
+		}
+	]
+}`
+
+func TestSyncAppClipBundleIDCapabilitySkipsPatchWhenExplicitSettingsMatchEnrichedResponse(t *testing.T) {
+	var patchCount atomic.Int32
+	var patchBody []byte
+	client := newSyncAppClipBundleIDTestServer(t, enrichedSettingsAppClipBundleIDGetBody, &patchCount, &patchBody)
+
+	enabled := true
+	result, err := client.SyncAppClipBundleIDCapability(context.Background(), AppClipBundleIDCapabilitySyncRequest{
+		BundleID:         "clip-bundle",
+		ParentBundleID:   "parent-bundle",
+		Capability:       "PUSH_NOTIFICATIONS",
+		Enabled:          true,
+		SettingsProvided: true,
+		Settings: []BundleIDCapabilitySetting{{
+			Key:     "PUSH_NOTIFICATION_FEATURES",
+			Options: []BundleIDCapabilityOption{{Key: "PUSH_NOTIFICATION_FEATURE_BROADCAST", Enabled: &enabled}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SyncAppClipBundleIDCapability error: %v", err)
+	}
+	if got := patchCount.Load(); got != 0 {
+		t.Fatalf("expected no PATCH when Apple only enriched the requested settings with read-only fields, got %d: %s", got, patchBody)
+	}
+	if result.Changed || result.Status != "already-synced" {
+		t.Fatalf("expected already-synced receipt, got %+v", result)
+	}
+}
+
+func TestSyncAppClipBundleIDCapabilityPatchesWhenRequestedOptionStateDiffers(t *testing.T) {
+	var patchCount atomic.Int32
+	var patchBody []byte
+	client := newSyncAppClipBundleIDTestServer(t, enrichedSettingsAppClipBundleIDGetBody, &patchCount, &patchBody)
+
+	disabled := false
+	result, err := client.SyncAppClipBundleIDCapability(context.Background(), AppClipBundleIDCapabilitySyncRequest{
+		BundleID:         "clip-bundle",
+		ParentBundleID:   "parent-bundle",
+		Capability:       "PUSH_NOTIFICATIONS",
+		Enabled:          true,
+		SettingsProvided: true,
+		Settings: []BundleIDCapabilitySetting{{
+			Key:     "PUSH_NOTIFICATION_FEATURES",
+			Options: []BundleIDCapabilityOption{{Key: "PUSH_NOTIFICATION_FEATURE_BROADCAST", Enabled: &disabled}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SyncAppClipBundleIDCapability error: %v", err)
+	}
+	if got := patchCount.Load(); got != 1 {
+		t.Fatalf("expected one PATCH when a caller-controlled option differs, got %d", got)
+	}
+	if !result.Changed || result.Status != "synced" {
+		t.Fatalf("expected synced receipt, got %+v", result)
+	}
+}
+
 func TestSyncAppClipBundleIDCapabilityPatchesWhenCurrentStateDiffers(t *testing.T) {
 	tests := []struct {
 		name    string
