@@ -92,7 +92,10 @@ web session. The one-time P8 is saved as AuthKey_<KEY_ID>.p8 with mode 0600.
 The P8 contents are never written to command output.
 
 Account Holder or Admin access is required. The role defaults to ADMIN and must
-be one of Apple's selectable team-key roles.
+be an uppercase identifier such as ADMIN or APP_MANAGER. Documented roles that
+cannot be selected for a team API key are rejected. Roles missing from the
+bundled snapshot are sent to App Store Connect with a warning instead of being
+rejected client-side.
 
 Examples:
   asc web api-keys create --name "Release automation"
@@ -178,7 +181,7 @@ Examples:
 					created.KeyID,
 					withWebAuthHint(err, "web api-keys create"),
 				)
-				if removeErr := os.Remove(p8Path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				if removeErr := removeReservedWebAPIKeyP8(outputRoot, fileName); removeErr != nil {
 					return errors.Join(
 						downloadFailure,
 						fmt.Errorf("remove empty reserved P8 file %q: %w", p8Path, removeErr),
@@ -248,16 +251,64 @@ func normalizeWebAPIKeyRole(value string) (string, error) {
 	if role == "" {
 		return "", fmt.Errorf("--role is required")
 	}
-	reference, err := webref.Load()
-	if err != nil {
-		return "", fmt.Errorf("load API key role reference: %w", err)
+	if !isWebAPIKeyRoleIdentifier(role) {
+		return "", fmt.Errorf("--role must be an uppercase identifier such as ADMIN or APP_MANAGER")
 	}
-	for _, selectable := range reference.APIKeyNotes.Team.SelectableRoles {
+	if err := classifyWebAPIKeyRole(role); err != nil {
+		return "", err
+	}
+	return role, nil
+}
+
+func isWebAPIKeyRoleIdentifier(role string) bool {
+	if role == "" {
+		return false
+	}
+	for i := 0; i < len(role); i++ {
+		c := role[i]
+		if c >= 'A' && c <= 'Z' {
+			continue
+		}
+		if i > 0 && (c == '_' || (c >= '0' && c <= '9')) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func classifyWebAPIKeyRole(role string) error {
+	view, err := webref.Resolve("team", []string{role})
+	if err != nil {
+		return fmt.Errorf("load team API key role reference: %w", err)
+	}
+	if view == nil || view.KeyNotes == nil {
+		return fmt.Errorf("load team API key role reference: missing team key notes")
+	}
+	for _, selectable := range view.KeyNotes.SelectableRoles {
 		if role == selectable {
-			return role, nil
+			return nil
 		}
 	}
-	return "", fmt.Errorf("--role must be one of %s", strings.Join(reference.APIKeyNotes.Team.SelectableRoles, ", "))
+	for _, unknown := range view.UnknownRoles {
+		if unknown == role {
+			fmt.Fprintf(os.Stderr, "Warning: --role %s is not a documented selectable team API key role; continuing so App Store Connect can accept or reject it.\n", role)
+			return nil
+		}
+	}
+	return fmt.Errorf("--role %s is not a selectable team API key role", role)
+}
+
+func removeReservedWebAPIKeyP8(root rootfs.Root, fileName string) error {
+	opened, err := root.OpenRoot()
+	if err != nil {
+		return err
+	}
+	defer opened.Close()
+	if err := opened.Remove(fileName); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func downloadWebAPIKeyWithRetry(ctx context.Context, client *webcore.Client, keyID string) ([]byte, error) {
