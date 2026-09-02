@@ -400,6 +400,16 @@ func printExpiredSessionNotice(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer, "Session expired.")
 }
 
+// staleSessionDiscardWarning wraps a failed discard of a proven-stale cached
+// session for the retry paths, where the fresh login can still overwrite the
+// cached entry and the failure is therefore a warning rather than a hard error.
+func staleSessionDiscardWarning(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("discarding the stale cached web session failed: %w", err)
+}
+
 func printCacheLookupWarning(writer io.Writer, err error) {
 	if writer == nil || err == nil {
 		return
@@ -672,10 +682,12 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 	}
 
 	var (
-		expiredCachedSession  *webcore.AuthSession
-		fallbackPassword      resolvedWebPassword
-		skipStoredPassword    bool
-		twoFactorCodeConsumed bool
+		expiredCachedSession   *webcore.AuthSession
+		fallbackPassword       resolvedWebPassword
+		skipStoredPassword     bool
+		twoFactorCodeConsumed  bool
+		staleSessionDiscarded  bool
+		staleSessionDiscardErr error
 	)
 
 	// Apple consumes a 2FA code as soon as it is accepted, so a literal
@@ -686,12 +698,24 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 	canReplaceConsumedTwoFactorCode := func() bool {
 		return twoFactorCode == "" || command != ""
 	}
-	// The cached jar is proven unusable once it fails the post-2FA bootstrap, so
-	// discard it before giving up. Leaving it on disk would make the next run
-	// reload the same jar, consume the replacement code, and fail identically.
-	consumedTwoFactorCodeError := func(loginErr error, targetAppleID string) error {
-		if deleteErr := deleteWebSessionFn(strings.TrimSpace(targetAppleID)); deleteErr != nil {
-			return fmt.Errorf("%w; the supplied two-factor code was already consumed by the expired session and the stale cached session could not be discarded (%w): run `asc web auth logout` before re-running with a new code", loginErr, deleteErr)
+	// A cached jar is proven unusable once it fails the post-2FA session
+	// bootstrap, so discard it as soon as that is detected rather than relying on
+	// a successful fresh login to overwrite it. A retry that never lands - a bail
+	// out, or a fresh login that fails on its own - would otherwise leave the jar
+	// on disk for the next invocation to reload, consume another code against,
+	// and fail identically. The result is memoized so one resolution deletes the
+	// cached entry at most once and every caller reports the same outcome.
+	discardProvenStaleSession := func(targetAppleID string) error {
+		if staleSessionDiscarded {
+			return staleSessionDiscardErr
+		}
+		staleSessionDiscarded = true
+		staleSessionDiscardErr = deleteWebSessionFn(strings.TrimSpace(targetAppleID))
+		return staleSessionDiscardErr
+	}
+	consumedTwoFactorCodeError := func(loginErr, discardErr error) error {
+		if discardErr != nil {
+			return fmt.Errorf("%w; the supplied two-factor code was already consumed by the expired session and the stale cached session could not be discarded (%w): run `asc web auth logout` before re-running with a new code", loginErr, discardErr)
 		}
 		return fmt.Errorf("%w; the supplied two-factor code was already consumed by the expired session, so the stale cached session was discarded: re-run with a new code, or configure --two-factor-code-command or %s to fetch one automatically", loginErr, webTwoFactorCodeCommandEnv)
 	}
@@ -757,9 +781,11 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 			if !webcore.IsStaleSessionAfterTwoFactor(loginErr) {
 				return nil, "", false, fmt.Errorf("web auth auto-reauth failed: %w", loginErr)
 			}
+			discardErr := discardProvenStaleSession(reauthAppleID)
 			if !canReplaceConsumedTwoFactorCode() {
-				return nil, "", false, fmt.Errorf("web auth auto-reauth failed: %w", consumedTwoFactorCodeError(loginErr, reauthAppleID))
+				return nil, "", false, fmt.Errorf("web auth auto-reauth failed: %w", consumedTwoFactorCodeError(loginErr, discardErr))
 			}
+			printCacheLookupWarning(sessionCacheWarningWriter, staleSessionDiscardWarning(discardErr))
 			twoFactorCodeConsumed = true
 		}
 		if errors.Is(loginErr, webcore.ErrInvalidAppleAccountCredentials) {
@@ -849,9 +875,11 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 		// post-2FA session bootstrap is rejected. Retry once with a fresh client
 		// while preserving the already-resolved password.
 		if twoFactorStarted {
+			discardErr := discardProvenStaleSession(resolvedAppleID)
 			if !canReplaceConsumedTwoFactorCode() {
-				return nil, consumedTwoFactorCodeError(err, resolvedAppleID)
+				return nil, consumedTwoFactorCodeError(err, discardErr)
 			}
+			printCacheLookupWarning(sessionCacheWarningWriter, staleSessionDiscardWarning(discardErr))
 			twoFactorCodeConsumed = true
 		}
 		expiredCachedSession = nil

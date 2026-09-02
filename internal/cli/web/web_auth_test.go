@@ -2371,6 +2371,7 @@ func TestResolveSessionRetriesFreshLoginAfterStaleSessionBootstrap401(t *testing
 	origWebLogin := webLoginFn
 	origWebLoginWithClient := webLoginWithClientFn
 	origPersistWebSession := persistWebSessionFn
+	origDeleteWebSession := deleteWebSessionFn
 	origExpiredWriter := sessionExpiredWriter
 	origStatusWriter := twoFactorStatusWriter
 	t.Cleanup(func() {
@@ -2386,6 +2387,7 @@ func TestResolveSessionRetriesFreshLoginAfterStaleSessionBootstrap401(t *testing
 		webLoginFn = origWebLogin
 		webLoginWithClientFn = origWebLoginWithClient
 		persistWebSessionFn = origPersistWebSession
+		deleteWebSessionFn = origDeleteWebSession
 		sessionExpiredWriter = origExpiredWriter
 		twoFactorStatusWriter = origStatusWriter
 	})
@@ -2403,6 +2405,12 @@ func TestResolveSessionRetriesFreshLoginAfterStaleSessionBootstrap401(t *testing
 	cachedAttempts := 0
 	freshAttempts := 0
 	persisted := 0
+	var deletedAppleIDs []string
+
+	deleteWebSessionFn = func(appleID string) error {
+		deletedAppleIDs = append(deletedAppleIDs, appleID)
+		return nil
+	}
 
 	tryResumeSessionFn = func(ctx context.Context, username string) (*webcore.AuthSession, bool, error) {
 		return nil, false, webcore.ErrCachedSessionExpired
@@ -2472,6 +2480,9 @@ func TestResolveSessionRetriesFreshLoginAfterStaleSessionBootstrap401(t *testing
 	}
 	if persisted != 1 {
 		t.Fatalf("expected the fresh session to be persisted once, got %d", persisted)
+	}
+	if len(deletedAppleIDs) != 1 || deletedAppleIDs[0] != "user@example.com" {
+		t.Fatalf("expected the proven-stale cached session to be discarded once before the retry, got %v", deletedAppleIDs)
 	}
 	if source != "fresh" {
 		t.Fatalf("expected source %q, got %q", "fresh", source)
@@ -2694,7 +2705,13 @@ func TestResolveSessionObtainsNewTwoFactorCodeForFreshRetryAfterStaleBootstrap(t
 	staleSession := &webcore.AuthSession{}
 	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
 	var submittedCodes []string
+	var deletedAppleIDs []string
 	commandCalls := 0
+
+	deleteWebSessionFn = func(appleID string) error {
+		deletedAppleIDs = append(deletedAppleIDs, appleID)
+		return nil
+	}
 
 	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
 		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
@@ -2734,6 +2751,9 @@ func TestResolveSessionObtainsNewTwoFactorCodeForFreshRetryAfterStaleBootstrap(t
 	if commandCalls != 1 {
 		t.Fatalf("expected the 2fa code command to run once for the fresh retry, got %d", commandCalls)
 	}
+	if len(deletedAppleIDs) != 1 || deletedAppleIDs[0] != "user@example.com" {
+		t.Fatalf("expected the proven-stale cached session to be discarded once before the retry, got %v", deletedAppleIDs)
+	}
 	if len(submittedCodes) != 2 {
 		t.Fatalf("expected two 2fa submissions, got %v", submittedCodes)
 	}
@@ -2742,6 +2762,61 @@ func TestResolveSessionObtainsNewTwoFactorCodeForFreshRetryAfterStaleBootstrap(t
 	}
 	if submittedCodes[1] != "222222" {
 		t.Fatalf("expected a newly obtained code on the fresh retry, got %q", submittedCodes[1])
+	}
+}
+
+// A jar that fails the post-2FA session bootstrap is proven unusable even when
+// the fresh retry itself fails, so the cached entry must be discarded at
+// detection time. Relying on a successful fresh login to overwrite it would let
+// the next invocation reload the same jar and consume another 2FA code against
+// it before reaching the identical bootstrap 401.
+func TestResolveSessionDiscardsStaleSessionWhenFreshRetryFails(t *testing.T) {
+	restoreStaleSessionRetryHooks(t)
+
+	cachedClient := &http.Client{}
+	staleSession := &webcore.AuthSession{}
+	freshAttempts := 0
+	var deletedAppleIDs []string
+
+	deleteWebSessionFn = func(appleID string) error {
+		deletedAppleIDs = append(deletedAppleIDs, appleID)
+		return nil
+	}
+
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) { return "654321", nil }
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		t.Fatal("did not expect a 2fa code command when none is configured")
+		return "", nil
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		if session == staleSession {
+			return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+		}
+		return nil
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		freshAttempts++
+		return nil, errors.New("dial tcp: connection refused")
+	}
+	persistWebSessionFn = func(session *webcore.AuthSession) error {
+		t.Fatal("did not expect a failed fresh login to be persisted")
+		return nil
+	}
+
+	if _, _, err := resolveSession(context.Background(), "user@example.com", "", ""); err == nil {
+		t.Fatal("expected the failed fresh retry to return an error")
+	}
+	if freshAttempts != 1 {
+		t.Fatalf("expected exactly one fresh retry, got %d", freshAttempts)
+	}
+	if len(deletedAppleIDs) != 1 || deletedAppleIDs[0] != "user@example.com" {
+		t.Fatalf("expected the proven-stale cached session to be discarded once, got %v", deletedAppleIDs)
 	}
 }
 
@@ -2836,6 +2911,12 @@ func TestResolveSessionRetriesFreshLoginAfterRequestDeadlineExpired(t *testing.T
 	staleSession := &webcore.AuthSession{}
 	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
 	freshAttempts := 0
+	deletedAppleIDs := 0
+
+	deleteWebSessionFn = func(appleID string) error {
+		deletedAppleIDs++
+		return nil
+	}
 
 	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
 		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
@@ -2875,6 +2956,9 @@ func TestResolveSessionRetriesFreshLoginAfterRequestDeadlineExpired(t *testing.T
 	}
 	if freshAttempts != 1 {
 		t.Fatalf("expected exactly one fresh retry, got %d", freshAttempts)
+	}
+	if deletedAppleIDs != 1 {
+		t.Fatalf("expected the proven-stale cached session to be discarded once, got %d", deletedAppleIDs)
 	}
 	if session != freshSession || source != "fresh" {
 		t.Fatalf("expected the fresh session, got session=%p source=%q", session, source)
