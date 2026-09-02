@@ -457,6 +457,32 @@ func TestDownloadAgreementFetchesSameOriginContent(t *testing.T) {
 	}
 }
 
+func TestDownloadAgreementRejectsEmptySuccessfulBody(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{name: "204 no content", status: http.StatusNoContent},
+		{name: "200 empty body", status: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			portal := newAgreementDownloadPortal(t)
+			portal.contentHandler = func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/pdf")
+				w.WriteHeader(tc.status)
+			}
+
+			download, err := portal.client(t).DownloadAgreement(context.Background(), "XG8DNV4HYY")
+			if err == nil {
+				t.Fatalf("DownloadAgreement() = %+v, want empty content error", download)
+			}
+			if !strings.Contains(err.Error(), "empty") {
+				t.Fatalf("DownloadAgreement() error = %q, want empty content rejection", err)
+			}
+		})
+	}
+}
+
 func TestDownloadAgreementRejectsCrossOriginRedirect(t *testing.T) {
 	elsewhereCalls := 0
 	elsewhere := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -156,9 +156,13 @@ Apple Developer Program License Agreement PDF, so it can be reviewed before
 it is accepted. The file is fetched with the web session from the Developer
 Portal origin only; redirects to other origins or to plain HTTP are rejected.
 
-The content is written atomically to --out with mode 0600 and is never
-printed to command output. An existing file is not replaced unless
---overwrite is set. The reported download URL is never printed.
+The complete content is staged in a temporary file and renamed into --out
+with mode 0600, so a partial or empty download never lands at --out; on
+Windows, replacing an existing file with --overwrite may briefly leave the
+destination absent while the rename completes. File contents are never
+printed to command output, and this command's receipt and errors never
+include the download URL (which may be signed). The URL is still reported by
+'asc web agreements status' as downloadUrl.
 
 Examples:
   asc web agreements download --agreement-id "AGREEMENT_ID" --out ./agreement.pdf

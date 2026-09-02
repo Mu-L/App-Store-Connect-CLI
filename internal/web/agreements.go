@@ -247,6 +247,9 @@ func (c *Client) DownloadAgreement(ctx context.Context, agreementID string) (*Ag
 	if int64(len(body)) > maxAgreementDownloadBytes {
 		return nil, fmt.Errorf("agreement %q content exceeds the %d byte download limit", agreementID, maxAgreementDownloadBytes)
 	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("developer portal returned empty content for agreement %q (HTTP %d); nothing was saved", agreementID, response.StatusCode)
+	}
 	return &AgreementDownload{
 		AgreementID: agreement.AgreementID,
 		TeamID:      teamID,

@@ -108,10 +108,15 @@ asc web agreements accept --agreement-id "AGREEMENT_ID" --agreement-id "OTHER_AG
 
 `download` fetches the agreement with the web session from the Developer
 Portal origin only. Non-HTTPS or cross-origin download URLs, and redirects to
-them, are rejected. The file is written atomically with mode `0600`; an
-existing file is not replaced unless `--overwrite` is set. The receipt reports
-the path, bytes written, content type, and agreement ID. The download URL and
-the file contents are never printed.
+them, are rejected, as are empty responses. The complete content is staged in
+a temporary file and renamed into place with mode `0600`, so a partial
+download never lands at `--out`; on Windows, replacing an existing file with
+`--overwrite` may briefly leave the destination absent while the rename
+completes. An existing file is not replaced unless `--overwrite` is set. The
+receipt reports the path, bytes written, content type, and agreement ID. The
+file contents are never printed, and the `download` receipt and errors never
+include the (potentially signed) download URL; `status` still reports it as
+`downloadUrl`.
 
 `accept` requires `--confirm` and sends every `--agreement-id` in a single
 request; there is no `--all` flag because each agreement must be named
