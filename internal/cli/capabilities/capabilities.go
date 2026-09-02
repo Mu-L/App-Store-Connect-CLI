@@ -557,7 +557,7 @@ func capabilityRows() []Capability {
 			Capability: "App Store Connect API key web-session management",
 			Status:     statusWebSession,
 			Commands:   []string{"asc web api-keys"},
-			Notes:      []string{"Team and individual API key list, view, and create-with-P8 flows use Apple web-session iris endpoints rather than a public REST key catalog."},
+			Notes:      []string{"List covers team and individual keys via web-session iris endpoints rather than a public REST key catalog. View and create-with-P8 are team-key-only; individual keys appear in list but are not loaded by view."},
 			NextAction: "Use App Store Connect web UI, or asc web api-keys.",
 		},
 		{
