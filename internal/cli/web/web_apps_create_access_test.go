@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlecAivazis/survey/v2"
+
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared/errfmt"
@@ -63,6 +65,48 @@ func TestRunAppsCreateAccessLimitedWithoutUserMakesNoHTTP(t *testing.T) {
 	}
 	if createCalled {
 		t.Fatal("create should not run when --user is missing")
+	}
+}
+
+func TestRunAppsCreateInvalidAccessFailsBeforeWizard(t *testing.T) {
+	origCreate := createWebAppFn
+	origResolve := resolveAppCreateSessionFn
+	origCanPrompt := appCreateCanPromptInteractivelyFn
+	origAskOne := appCreateAskOneFn
+	t.Cleanup(func() {
+		createWebAppFn = origCreate
+		resolveAppCreateSessionFn = origResolve
+		appCreateCanPromptInteractivelyFn = origCanPrompt
+		appCreateAskOneFn = origAskOne
+	})
+	createWebAppFn = func(ctx context.Context, client *webcore.Client, attrs webcore.AppCreateAttributes) (*webcore.AppResponse, error) {
+		t.Fatal("did not expect create")
+		return nil, nil
+	}
+	resolveAppCreateSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		t.Fatal("did not expect web session lookup")
+		return nil, "", nil
+	}
+	appCreateCanPromptInteractivelyFn = func() bool { return true }
+	appCreateAskOneFn = func(_ survey.Prompt, _ interface{}, _ ...survey.AskOpt) error {
+		t.Fatal("did not expect app-details wizard")
+		return nil
+	}
+
+	var err error
+	_, stderr := captureOutput(t, func() {
+		err = RunAppsCreate(context.Background(), AppsCreateRunOptions{
+			Access:                   "limited",
+			Output:                   "json",
+			DisableBundleIDPreflight: true,
+		})
+	})
+	if err == nil {
+		t.Fatal("expected limited-without-user error")
+	}
+	if !strings.Contains(errfmt.FormatStderr(err), "--access limited requires at least one --user") &&
+		!strings.Contains(stderr, "--access limited requires at least one --user") {
+		t.Fatalf("stderr = %q err = %v", stderr, err)
 	}
 }
 
