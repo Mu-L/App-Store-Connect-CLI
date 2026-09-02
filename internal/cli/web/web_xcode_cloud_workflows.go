@@ -23,12 +23,13 @@ func webXcodeCloudWorkflowsCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "workflows",
 		ShortUsage: "asc web xcode-cloud workflows <subcommand> [flags]",
-		ShortHelp:  "Describe, create, and edit Xcode Cloud workflows.",
+		ShortHelp:  "List, describe, create, and edit Xcode Cloud workflows.",
 		LongHelp: `WEB SESSION WORKFLOWS
 
 Describe and manage workflow state for Xcode Cloud workflows
 using Apple's CI API. Requires a web session.
 
+Use list to discover workflow IDs for a product.
 Use describe to inspect workflow configuration.
 Use create to create a workflow from a full workflow payload.
 Use options to inspect the editor option payloads.
@@ -38,6 +39,7 @@ Use enable/disable to toggle workflow state.
 
 
 Examples:
+  asc web xcode-cloud workflows list --product-id "UUID" --apple-id "user@example.com"
   asc web xcode-cloud workflows describe --product-id "UUID" --workflow-id "WF-UUID" --apple-id "user@example.com"
   asc web xcode-cloud workflows create --product-id "UUID" --file ./workflow.json --apple-id "user@example.com"
   asc web xcode-cloud workflows options product-config --product-id "UUID" --apple-id "user@example.com"
@@ -47,6 +49,7 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
+			webXcodeCloudWorkflowListCommand(),
 			webXcodeCloudWorkflowDescribeCommand(),
 			webXcodeCloudWorkflowCreateCommand(),
 			webXcodeCloudWorkflowOptionsCommand(),
@@ -100,6 +103,89 @@ type CIWorkflowEditResult struct {
 type CIWorkflowCreateResult struct {
 	CIWorkflowDescribeResult
 	Created bool `json:"created"`
+}
+
+func webXcodeCloudWorkflowListCommand() *ffcli.Command {
+	fs := flag.NewFlagSet("web xcode-cloud workflows list", flag.ExitOnError)
+	sessionFlags := bindWebSessionFlags(fs)
+	output := shared.BindOutputFlags(fs)
+
+	productID := fs.String("product-id", "", "Xcode Cloud product ID (required)")
+
+	return &ffcli.Command{
+		Name:       "list",
+		ShortUsage: "asc web xcode-cloud workflows list --product-id ID [flags]",
+		ShortHelp:  "List workflows for a product.",
+		LongHelp: `WEB SESSION WORKFLOWS
+
+List Xcode Cloud workflows for a product using Apple's CI API.
+Use the workflow IDs with describe, edit, enable, or disable.
+
+The list endpoint returns workflow ID, name, and description. Enabled state,
+branch/trigger configuration, and last-modified are not present in this
+payload; use describe for full workflow configuration.
+
+
+
+Examples:
+  asc web xcode-cloud workflows list --product-id "UUID" --apple-id "user@example.com"
+  asc web xcode-cloud workflows list --product-id "UUID" --apple-id "user@example.com" --output json`,
+		FlagSet:   fs,
+		UsageFunc: shared.DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			pid := strings.TrimSpace(*productID)
+			if pid == "" {
+				fmt.Fprintln(os.Stderr, "Error: --product-id is required")
+				return shared.MissingRequiredUsageError("--product-id")
+			}
+
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
+
+			session, err := resolveWebSessionForCommand(requestCtx, sessionFlags)
+			if err != nil {
+				return err
+			}
+			teamID := strings.TrimSpace(session.PublicProviderID)
+			if teamID == "" {
+				return fmt.Errorf("xcode-cloud workflows list failed: session has no public provider ID")
+			}
+
+			client := newCIClientFn(session)
+			var result *asc.WebXcodeCloudWorkflowsListResult
+			err = withWebSpinner("Loading Xcode Cloud workflows", func() error {
+				workflows, err := client.ListCIWorkflows(requestCtx, teamID, pid)
+				if err != nil {
+					return err
+				}
+				result = newWorkflowsListResult(pid, workflows)
+				return nil
+			})
+			if err != nil {
+				return withWebAuthHint(err, "xcode-cloud workflows list")
+			}
+
+			return shared.PrintOutput(result, *output.Output, *output.Pretty)
+		},
+	}
+}
+
+func newWorkflowsListResult(productID string, resp *webcore.CIWorkflowListResponse) *asc.WebXcodeCloudWorkflowsListResult {
+	result := &asc.WebXcodeCloudWorkflowsListResult{
+		ProductID: productID,
+		Workflows: []asc.WebXcodeCloudWorkflowListItem{},
+	}
+	if resp == nil {
+		return result
+	}
+	for _, workflow := range resp.Items {
+		result.Workflows = append(result.Workflows, asc.WebXcodeCloudWorkflowListItem{
+			ID:          workflow.ID,
+			Name:        workflow.Content.Name,
+			Description: workflow.Content.Description,
+		})
+	}
+	return result
 }
 
 func webXcodeCloudWorkflowDescribeCommand() *ffcli.Command {

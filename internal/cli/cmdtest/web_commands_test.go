@@ -111,6 +111,40 @@ func TestWebXcodeCloudWorkflowsCreateSubcommandIsRegistered(t *testing.T) {
 	}
 }
 
+func TestWebXcodeCloudWorkflowsListSubcommandIsRegistered(t *testing.T) {
+	root := RootCommand("1.2.3")
+	sub := findSubcommand(root, "web", "xcode-cloud", "workflows", "list")
+	if sub == nil {
+		t.Fatalf("expected web xcode-cloud workflows list to be registered")
+	}
+	if sub.FlagSet.Lookup("product-id") == nil {
+		t.Fatal("expected --product-id flag on web xcode-cloud workflows list")
+	}
+	if sub.FlagSet.Lookup("paginate") != nil {
+		t.Fatal("did not expect --paginate on web xcode-cloud workflows list; the CI client does not page")
+	}
+}
+
+func TestWebXcodeCloudWorkflowsListMissingRequiredFlags(t *testing.T) {
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	_, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"web", "xcode-cloud", "workflows", "list"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("expected ErrHelp, got %v", runErr)
+	}
+	if !strings.Contains(stderr, "Error: --product-id is required") {
+		t.Fatalf("expected missing --product-id error, got %q", stderr)
+	}
+}
+
 func TestWebAppsCreateMissingRequiredFlags(t *testing.T) {
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
