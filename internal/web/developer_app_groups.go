@@ -126,6 +126,17 @@ func (e *DeveloperAppGroupInUseError) Error() string {
 		group, len(e.Assignments), noun, strings.Join(names, ", "), e.GroupID)
 }
 
+// DeveloperAppGroupUnverifiedError is returned when the Developer Portal
+// accepted an App Group mutation but the follow-up read could not confirm it.
+// Callers should assume the write may have been applied.
+type DeveloperAppGroupUnverifiedError struct {
+	Err error
+}
+
+func (e *DeveloperAppGroupUnverifiedError) Error() string { return e.Err.Error() }
+
+func (e *DeveloperAppGroupUnverifiedError) Unwrap() error { return e.Err }
+
 // developerAppGroupsState is the raw APP_GROUPS capability state of a Bundle
 // ID. GroupIDs lists every group in the relationship data even when Apple
 // reports the capability disabled, because the Developer Portal still treats
@@ -282,10 +293,10 @@ func (c *Client) DeleteDeveloperAppGroup(ctx context.Context, request DeveloperA
 
 	remaining, err := c.listDeveloperAppGroupPages(ctx, teamID, true, true)
 	if err != nil {
-		return nil, fmt.Errorf("developer portal accepted the delete but verification failed: %w", err)
+		return nil, &DeveloperAppGroupUnverifiedError{Err: fmt.Errorf("developer portal accepted the delete but verification failed: %w", err)}
 	}
 	if _, stillListed := findDeveloperAppGroup(remaining, request.GroupID); stillListed {
-		return nil, fmt.Errorf("developer portal accepted the delete but App Group %q is still listed; re-run 'asc web app-groups list' before retrying", request.GroupID)
+		return nil, &DeveloperAppGroupUnverifiedError{Err: fmt.Errorf("developer portal accepted the delete but App Group %q is still listed; re-run 'asc web app-groups list' before retrying", request.GroupID)}
 	}
 	return &asc.WebAppGroupDeleteResult{
 		GroupID:    group.ID,
@@ -344,8 +355,8 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 			}
 		}
 		for _, bundle := range response.Data {
-			if bundle.Type != "bundleIds" {
-				continue
+			if bundle.Type != "bundleIds" || strings.TrimSpace(bundle.ID) == "" {
+				return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list contains a non-Bundle-ID entry (type %q, id %q)", bundle.Type, bundle.ID)
 			}
 			assignment, referenced, err := developerBundleIDReferencesAppGroup(bundle, includedByID, groupID)
 			if err != nil {
@@ -511,11 +522,7 @@ func (c *Client) AssignDeveloperAppGroup(ctx context.Context, request DeveloperA
 	if err := c.ensureDeveloperPortalSession(ctx); err != nil {
 		return nil, err
 	}
-	current, err := c.loadDeveloperBundleID(ctx, request.BundleID)
-	if err != nil {
-		return nil, err
-	}
-	state, err := developerBundleIDAppGroupsState(current)
+	current, state, err := c.loadDeveloperBundleIDAppGroups(ctx, request.BundleID)
 	if err != nil {
 		return nil, err
 	}
@@ -553,11 +560,7 @@ func (c *Client) UnassignDeveloperAppGroup(ctx context.Context, request Develope
 	if err := c.ensureDeveloperPortalSession(ctx); err != nil {
 		return nil, err
 	}
-	current, err := c.loadDeveloperBundleID(ctx, request.BundleID)
-	if err != nil {
-		return nil, err
-	}
-	state, err := developerBundleIDAppGroupsState(current)
+	current, state, err := c.loadDeveloperBundleIDAppGroups(ctx, request.BundleID)
 	if err != nil {
 		return nil, err
 	}
@@ -595,11 +598,7 @@ func (c *Client) SetDeveloperAppGroups(ctx context.Context, request DeveloperApp
 	if err := c.ensureDeveloperPortalSession(ctx); err != nil {
 		return nil, err
 	}
-	current, err := c.loadDeveloperBundleID(ctx, request.BundleID)
-	if err != nil {
-		return nil, err
-	}
-	state, err := developerBundleIDAppGroupsState(current)
+	current, state, err := c.loadDeveloperBundleIDAppGroups(ctx, request.BundleID)
 	if err != nil {
 		return nil, err
 	}
@@ -641,17 +640,31 @@ func (c *Client) patchDeveloperAppGroups(ctx context.Context, current developerB
 	return err
 }
 
-func (c *Client) verifyDeveloperAppGroups(ctx context.Context, bundleID string, enabled bool, desired []string) error {
-	updated, err := c.loadDeveloperBundleID(ctx, bundleID)
+// loadDeveloperBundleIDAppGroups reads one Bundle ID for an App Group mutation
+// and rejects a response whose resource ID differs from the requested one, so
+// the follow-up PATCH can never target a Bundle ID the caller did not name.
+func (c *Client) loadDeveloperBundleIDAppGroups(ctx context.Context, bundleID string) (developerBundleIDResponse, developerAppGroupsState, error) {
+	current, err := c.loadDeveloperBundleID(ctx, bundleID)
 	if err != nil {
-		return fmt.Errorf("developer portal accepted the update but verification failed: %w", err)
+		return developerBundleIDResponse{}, developerAppGroupsState{}, err
 	}
-	state, err := developerBundleIDAppGroupsState(updated)
+	if strings.TrimSpace(current.Data.ID) != bundleID {
+		return developerBundleIDResponse{}, developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: Developer Portal returned resource %q instead", bundleID, current.Data.ID)
+	}
+	state, err := developerBundleIDAppGroupsState(current)
 	if err != nil {
-		return fmt.Errorf("developer portal accepted the update but verification failed: %w", err)
+		return developerBundleIDResponse{}, developerAppGroupsState{}, err
+	}
+	return current, state, nil
+}
+
+func (c *Client) verifyDeveloperAppGroups(ctx context.Context, bundleID string, enabled bool, desired []string) error {
+	_, state, err := c.loadDeveloperBundleIDAppGroups(ctx, bundleID)
+	if err != nil {
+		return &DeveloperAppGroupUnverifiedError{Err: fmt.Errorf("developer portal accepted the update but verification failed: %w", err)}
 	}
 	if !state.matches(enabled, desired) {
-		return fmt.Errorf("developer portal accepted the update but Bundle ID %q still reports APP_GROUPS enabled=%t with groups [%s] instead of enabled=%t with [%s]", bundleID, state.Enabled, strings.Join(state.GroupIDs, ", "), enabled, strings.Join(desired, ", "))
+		return &DeveloperAppGroupUnverifiedError{Err: fmt.Errorf("developer portal accepted the update but Bundle ID %q still reports APP_GROUPS enabled=%t with groups [%s] instead of enabled=%t with [%s]", bundleID, state.Enabled, strings.Join(state.GroupIDs, ", "), enabled, strings.Join(desired, ", "))}
 	}
 	return nil
 }
@@ -807,6 +820,15 @@ func developerBundleIDAppGroupsState(current developerBundleIDResponse) (develop
 		state.Enabled, err = developerBundleIDCapabilityEnabled(capability)
 		if err != nil {
 			return developerAppGroupsState{}, err
+		}
+		// The read requested include=bundleIdCapabilities.appGroups; the PATCH
+		// replaces this collection wholesale, so it must be readable first.
+		rawGroups, exists := capability.Relationships["appGroups"]
+		if !exists {
+			return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: Developer Portal omitted the appGroups relationship of its APP_GROUPS capability", current.Data.ID)
+		}
+		if _, err := decodeStrictDeveloperRelationship(rawGroups); err != nil {
+			return developerAppGroupsState{}, fmt.Errorf("cannot safely update Bundle ID %q: APP_GROUPS appGroups relationship %w", current.Data.ID, err)
 		}
 		groups, err := developerAppGroupRelationships(capability)
 		if err != nil {

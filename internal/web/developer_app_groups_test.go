@@ -598,6 +598,7 @@ func TestDeleteDeveloperAppGroupFailsClosedOnUnknownGroupOrUnreadableAssignments
 		"null data":                            `{"data":null,"included":[]}`,
 		"null capability relationship":         `{"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":null}}}],"included":[]}`,
 		"capability relationship without data": `{"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"links":{}}}}],"included":[]}`,
+		"non-bundle entry":                     `{"data":[{"id":"app-1","type":"apps","attributes":{"identifier":"com.example.app"}}],"included":[]}`,
 		"invalid capability reference": `{
 			"data":[{"id":"bundle-1","type":"bundleIds","attributes":{"identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"capabilities","id":"groups-1"},{"type":"bundleIdCapabilities","id":""}]}}}],
 			"included":[]
@@ -755,6 +756,10 @@ func TestSetDeveloperAppGroupsFailsWhenVerificationDiffers(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "still reports") {
 		t.Fatalf("expected verification failure, got %v", err)
 	}
+	var unverified *DeveloperAppGroupUnverifiedError
+	if !errors.As(err, &unverified) {
+		t.Fatalf("expected DeveloperAppGroupUnverifiedError so callers can warn about an accepted write, got %T: %v", err, err)
+	}
 }
 
 func TestAppGroupMutationsFailClosedWhenCapabilityGraphIsUnreadable(t *testing.T) {
@@ -762,6 +767,15 @@ func TestAppGroupMutationsFailClosedWhenCapabilityGraphIsUnreadable(t *testing.T
 		"omitted relationships":        `{"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"}},"included":[]}`,
 		"omitted capability relation":  `{"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"profiles":{"data":[]}}},"included":[]}`,
 		"null capability relationship": `{"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":null}}},"included":[]}`,
+		"omitted app groups on APP_GROUPS capability": `{
+			"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}},
+			"included":[{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}}}}]
+		}`,
+		"null app groups on APP_GROUPS capability": `{
+			"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"groups-1"}]}}},
+			"included":[{"type":"bundleIdCapabilities","id":"groups-1","attributes":{"enabled":true},"relationships":{"capability":{"data":{"type":"capabilities","id":"APP_GROUPS"}},"appGroups":{"data":null}}}]
+		}`,
+		"bundle id mismatch": `{"data":{"id":"bundle-2","type":"bundleIds","attributes":{"name":"Other","identifier":"com.example.other"},"relationships":{"bundleIdCapabilities":{"data":[]}}},"included":[]}`,
 	}
 	mutations := map[string]func(*Client) error{
 		"assign": func(client *Client) error {
@@ -792,8 +806,8 @@ func TestAppGroupMutationsFailClosedWhenCapabilityGraphIsUnreadable(t *testing.T
 					}
 				})
 				err := mutate(client)
-				if err == nil || !strings.Contains(err.Error(), "capability graph") {
-					t.Fatalf("expected unreadable capability graph error, got %v", err)
+				if err == nil || !strings.Contains(err.Error(), "cannot safely update Bundle ID") {
+					t.Fatalf("expected fail-closed Bundle ID read error, got %v", err)
 				}
 			})
 		}
