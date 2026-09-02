@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -239,7 +240,7 @@ Example:
 			}
 			result, err := assignDeveloperAppGroupFn(requestCtx, newWebClientFn(session), webcore.DeveloperAppGroupAssignRequest{BundleID: resolvedBundleID, GroupID: resolvedGroupID})
 			if err != nil {
-				return withWebAuthHint(err, "web app-groups assign")
+				return developerAppGroupMutationError(err, "web app-groups assign")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups assign failed: missing assign result")
@@ -306,7 +307,7 @@ Example:
 			}
 			result, err := unassignDeveloperAppGroupFn(requestCtx, newWebClientFn(session), webcore.DeveloperAppGroupUnassignRequest{BundleID: resolvedBundleID, GroupID: resolvedGroupID})
 			if err != nil {
-				return withWebAuthHint(err, "web app-groups unassign")
+				return developerAppGroupMutationError(err, "web app-groups unassign")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups unassign failed: missing unassign result")
@@ -369,7 +370,7 @@ Example:
 			}
 			result, err := setDeveloperAppGroupsFn(requestCtx, newWebClientFn(session), webcore.DeveloperAppGroupSetRequest{BundleID: resolvedBundleID, GroupIDs: []string(groupIDs)})
 			if err != nil {
-				return withWebAuthHint(err, "web app-groups set")
+				return developerAppGroupMutationError(err, "web app-groups set")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups set failed: missing set result")
@@ -427,7 +428,7 @@ Example:
 			}
 			result, err := deleteDeveloperAppGroupFn(requestCtx, newWebClientFn(session), webcore.DeveloperAppGroupDeleteRequest{GroupID: resolvedGroupID})
 			if err != nil {
-				return withWebAuthHint(err, "web app-groups delete")
+				return developerAppGroupMutationError(err, "web app-groups delete")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups delete failed: missing delete result")
@@ -443,6 +444,18 @@ func persistDeveloperAppGroupSession(session *webcore.AuthSession) {
 	if err := persistWebSessionFn(session); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to persist refreshed web session: %v\n", err)
 	}
+}
+
+// developerAppGroupMutationError keeps the auth hint behavior of every other
+// web command, and additionally warns when the portal accepted a write that
+// could not be verified, because the App ID may already have changed.
+func developerAppGroupMutationError(err error, command string) error {
+	var unverified *webcore.DeveloperAppGroupUnverifiedError
+	if errors.As(err, &unverified) {
+		_, _ = fmt.Fprintln(os.Stderr, "Warning: the Developer Portal accepted the change but it could not be verified; assume it was applied.")
+		warnDeveloperAppGroupProfileInvalidation(true)
+	}
+	return withWebAuthHint(err, command)
 }
 
 func warnDeveloperAppGroupProfileInvalidation(changed bool) {

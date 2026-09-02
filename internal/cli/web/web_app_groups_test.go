@@ -435,6 +435,78 @@ func TestWebAppGroupsAssignWarnsOnlyWhenChanged(t *testing.T) {
 	}
 }
 
+func TestWebAppGroupsMutationsWarnWhenAcceptedWriteCannotBeVerified(t *testing.T) {
+	unverified := &webcore.DeveloperAppGroupUnverifiedError{Err: errors.New("verification read timed out")}
+	tests := []struct {
+		name  string
+		build func() *ffcli.Command
+		args  []string
+		stub  func()
+	}{
+		{
+			name: "assign", build: WebAppGroupsAssignCommand,
+			args: []string{"--group", "GROUP1", "--bundle-id", "bundle-1", "--confirm"},
+			stub: func() {
+				assignDeveloperAppGroupFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupAssignRequest) (*webcore.DeveloperAppGroupAssignResult, error) {
+					return nil, unverified
+				}
+			},
+		},
+		{
+			name: "unassign", build: WebAppGroupsUnassignCommand,
+			args: []string{"--group-id", "GROUP1", "--bundle-id", "bundle-1", "--confirm"},
+			stub: func() {
+				unassignDeveloperAppGroupFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupUnassignRequest) (*asc.WebAppGroupUnassignResult, error) {
+					return nil, unverified
+				}
+			},
+		},
+		{
+			name: "set", build: WebAppGroupsSetCommand,
+			args: []string{"--group", "GROUP1", "--bundle-id", "bundle-1", "--confirm"},
+			stub: func() {
+				setDeveloperAppGroupsFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupSetRequest) (*asc.WebAppGroupSetResult, error) {
+					return nil, unverified
+				}
+			},
+		},
+		{
+			name: "delete", build: WebAppGroupsDeleteCommand,
+			args: []string{"--group-id", "GROUP1", "--confirm"},
+			stub: func() {
+				deleteDeveloperAppGroupFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupDeleteRequest) (*asc.WebAppGroupDeleteResult, error) {
+					return nil, unverified
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			restore, cleanup := stubWebAppGroupsDependencies(t)
+			defer cleanup()
+			defer restore()
+			test.stub()
+			command := test.build()
+			if err := command.FlagSet.Parse(test.args); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			var runErr error
+			stdout, stderr := captureWebCommandOutput(t, func() {
+				runErr = command.Exec(context.Background(), nil)
+			})
+			if runErr == nil || !strings.Contains(runErr.Error(), "verification read timed out") {
+				t.Fatalf("expected the verification error to propagate, got %v", runErr)
+			}
+			if stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", stdout)
+			}
+			if !strings.Contains(stderr, "invalidates existing provisioning profiles") {
+				t.Fatalf("stderr %q is missing the provisioning profile warning after an accepted but unverified write", stderr)
+			}
+		})
+	}
+}
+
 func TestWebAppGroupsListOutputsJSON(t *testing.T) {
 	restore, cleanup := stubWebAppGroupsDependencies(t)
 	defer cleanup()
