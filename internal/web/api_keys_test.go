@@ -1,14 +1,22 @@
 package web
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -83,15 +91,14 @@ func TestClientCreateAPIKeySendsTeamKeyPayload(t *testing.T) {
 }
 
 func TestClientDownloadAPIKeyDecodesP8(t *testing.T) {
-	p8 := "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n"
-	encoded := base64.StdEncoding.EncodeToString([]byte(p8))
+	p8 := generateP256PKCS8PEM(t)
 	var requestMethod, requestPath, requestedField string
 	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestMethod = r.Method
 		requestPath = r.URL.Path
 		requestedField = r.URL.Query().Get("fields[apiKeys]")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"type":"apiKeys","id":"ABC123XYZ","attributes":{"privateKey":"` + encoded + `"}}}`))
+		_, _ = w.Write(apiKeyDownloadJSON("ABC123XYZ", p8))
 	}))
 
 	got, err := client.DownloadAPIKey(context.Background(), "ABC123XYZ")
@@ -107,20 +114,68 @@ func TestClientDownloadAPIKeyDecodesP8(t *testing.T) {
 	if requestedField != "privateKey" {
 		t.Fatalf("unexpected private-key field %q", requestedField)
 	}
-	if string(got) != p8 {
-		t.Fatalf("unexpected decoded P8: %q", string(got))
-	}
+	assertSamePKCS8Key(t, p8, got)
+	assertErrorHasNoKeyMaterial(t, err, p8)
 }
 
-func TestClientDownloadAPIKeyRejectsNonPEMPayload(t *testing.T) {
-	encoded := base64.StdEncoding.EncodeToString([]byte("not a key"))
+func TestClientDownloadAPIKeyNormalizesSurroundingWhitespace(t *testing.T) {
+	p8 := generateP256PKCS8PEM(t)
+	padded := append(append([]byte("   \t"), p8...), []byte("  \n")...)
 	client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"attributes":{"privateKey":"` + encoded + `"}}}`))
+		_, _ = w.Write(apiKeyDownloadJSON("ABC123XYZ", padded))
 	}))
 
-	if _, err := client.DownloadAPIKey(context.Background(), "ABC123XYZ"); !errors.Is(err, ErrAPIKeyResponseInvalid) {
-		t.Fatalf("expected invalid P8 response error, got %v", err)
+	got, err := client.DownloadAPIKey(context.Background(), "ABC123XYZ")
+	if err != nil {
+		t.Fatalf("DownloadAPIKey() error: %v", err)
+	}
+	assertSamePKCS8Key(t, p8, got)
+	if bytes.Contains(got, []byte("   \t")) {
+		t.Fatal("expected leading whitespace to be stripped from persisted P8")
+	}
+	assertErrorHasNoKeyMaterial(t, err, p8, padded)
+}
+
+func TestClientDownloadAPIKeyRejectsInvalidP8Payloads(t *testing.T) {
+	valid := generateP256PKCS8PEM(t)
+	truncated := truncatedPKCS8PEM(t, valid)
+	rsaKey := generateRSAPKCS8PEM(t)
+	p384 := generateP384PKCS8PEM(t)
+	multi := append(append([]byte{}, valid...), valid...)
+	trailing := append(append([]byte{}, valid...), []byte("trailing-not-a-block\n")...)
+	marker := []byte("-----BEGIN PRIVATE KEY-----\nfixture-secret\n-----END PRIVATE KEY-----\n")
+
+	tests := []struct {
+		name string
+		id   string
+		p8   []byte
+	}{
+		{name: "truncated", id: "ABC123XYZ", p8: truncated},
+		{name: "non-pem", id: "ABC123XYZ", p8: []byte("not a key")},
+		{name: "non-pkcs8 marker", id: "ABC123XYZ", p8: marker},
+		{name: "rsa key type", id: "ABC123XYZ", p8: rsaKey},
+		{name: "p384 key type", id: "ABC123XYZ", p8: p384},
+		{name: "multi-block", id: "ABC123XYZ", p8: multi},
+		{name: "trailing data", id: "ABC123XYZ", p8: trailing},
+		{name: "leading data", id: "ABC123XYZ", p8: append(append([]byte{}, []byte("leading-junk\n")...), valid...)},
+		{name: "mismatched resource id", id: "OTHERKEY", p8: valid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(apiKeyDownloadJSON(tt.id, tt.p8))
+			}))
+			got, err := client.DownloadAPIKey(context.Background(), "ABC123XYZ")
+			if !errors.Is(err, ErrAPIKeyResponseInvalid) {
+				t.Fatalf("expected invalid P8 response error, got %v", err)
+			}
+			if got != nil {
+				t.Fatalf("expected no decoded P8, got %d bytes", len(got))
+			}
+			assertErrorHasNoKeyMaterial(t, err, valid, tt.p8)
+		})
 	}
 }
 
@@ -185,6 +240,111 @@ func (t apiKeyRewriteTransport) RoundTrip(request *http.Request) (*http.Response
 	requestURL.Host = t.target.Host
 	clone.URL = &requestURL
 	return t.base.RoundTrip(clone)
+}
+
+func generateP256PKCS8PEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate P-256 key: %v", err)
+	}
+	return marshalPKCS8PEM(t, key)
+}
+
+func generateP384PKCS8PEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate P-384 key: %v", err)
+	}
+	return marshalPKCS8PEM(t, key)
+}
+
+func generateRSAPKCS8PEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	return marshalPKCS8PEM(t, key)
+}
+
+func marshalPKCS8PEM(t *testing.T, key any) []byte {
+	t.Helper()
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal PKCS#8: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+}
+
+func truncatedPKCS8PEM(t *testing.T, valid []byte) []byte {
+	t.Helper()
+	block, _ := pem.Decode(valid)
+	if block == nil || len(block.Bytes) < 8 {
+		t.Fatal("expected a decodable PKCS#8 PEM fixture")
+	}
+	truncated := append([]byte{}, block.Bytes[:len(block.Bytes)/2]...)
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: truncated})
+}
+
+func apiKeyDownloadJSON(id string, p8 []byte) []byte {
+	encoded := base64.StdEncoding.EncodeToString(p8)
+	return []byte(`{"data":{"type":"apiKeys","id":"` + id + `","attributes":{"privateKey":"` + encoded + `"}}}`)
+}
+
+func assertSamePKCS8Key(t *testing.T, want, got []byte) {
+	t.Helper()
+	wantBlock, _ := pem.Decode(want)
+	gotBlock, rest := pem.Decode(got)
+	if wantBlock == nil || gotBlock == nil {
+		t.Fatal("expected PKCS#8 PEM blocks")
+	}
+	if len(bytes.TrimSpace(rest)) > 0 {
+		t.Fatal("expected returned P8 to decode without trailing junk")
+	}
+	if gotBlock.Type != "PRIVATE KEY" {
+		t.Fatalf("unexpected PEM type %q", gotBlock.Type)
+	}
+	if !bytes.Equal(wantBlock.Bytes, gotBlock.Bytes) {
+		t.Fatalf("returned P8 DER does not match validated key")
+	}
+}
+
+func assertErrorHasNoKeyMaterial(t *testing.T, err error, payloads ...[]byte) {
+	t.Helper()
+	text := ""
+	if err != nil {
+		text = err.Error()
+	}
+	for _, payload := range payloads {
+		assertNoKeyMaterial(t, payload, text)
+	}
+}
+
+func assertNoKeyMaterial(t *testing.T, p8 []byte, outputs ...string) {
+	t.Helper()
+	if len(p8) == 0 {
+		return
+	}
+	full := strings.TrimSpace(string(p8))
+	block, _ := pem.Decode(p8)
+	for _, out := range outputs {
+		if out == "" {
+			continue
+		}
+		if full != "" && strings.Contains(out, full) {
+			t.Fatal("output contained P8 contents")
+		}
+		if strings.Contains(out, "-----BEGIN PRIVATE KEY-----") || strings.Contains(out, "-----END PRIVATE KEY-----") {
+			t.Fatal("output contained PEM boundary")
+		}
+		if block != nil && len(block.Bytes) > 0 {
+			if strings.Contains(out, base64.StdEncoding.EncodeToString(block.Bytes)) {
+				t.Fatal("output contained PKCS#8 DER")
+			}
+		}
+	}
 }
 
 func newAPIKeyHTTPTestClient(t *testing.T, handler http.Handler) *Client {
