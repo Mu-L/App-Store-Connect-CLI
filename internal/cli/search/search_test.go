@@ -177,6 +177,7 @@ func TestScopedAuthActionIntentPrefersEverySupportedActionOverStatus(t *testing.
 		{name: "auth logout", query: []string{"auth", "logout", "status"}, expected: "asc auth logout"},
 		{name: "auth doctor", query: []string{"auth", "doctor", "status"}, expected: "asc auth doctor"},
 		{name: "auth issuer-id", query: []string{"auth", "issuer-id", "status"}, expected: "asc auth issuer-id"},
+		{name: "auth issuer id split", query: []string{"auth", "issuer", "id", "status"}, expected: "asc auth issuer-id"},
 		{name: "auth token", query: []string{"auth", "token", "status"}, expected: "asc auth token"},
 		{name: "StoreKit login", query: []string{"storekit", "auth", "login", "status"}, expected: "asc storekit auth login"},
 		{name: "StoreKit switch", query: []string{"storekit", "auth", "switch", "status"}, expected: "asc storekit auth switch"},

@@ -594,7 +594,7 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		}
 	}
 	if tokenContains(queryTokens, "telemetry") {
-		if tokenContains(queryTokens, "reset-id") {
+		if compoundTokenContains(queryTokens, "reset-id") {
 			return "asc telemetry reset-id", "canonical:telemetry-reset-id", true
 		}
 		if tokenContains(queryTokens, "disable") {
@@ -706,7 +706,7 @@ func scopedAuthActionIntent(queryTokens []string) (string, string, bool) {
 			continue
 		}
 		for _, action := range scope.actions {
-			if !tokenContains(queryTokens, action) {
+			if !compoundTokenContains(queryTokens, action) {
 				continue
 			}
 			leaf := action
@@ -763,6 +763,25 @@ func unambiguousMutationQueryIntent(queryTokens []string) bool {
 		"create", "update", "edit", "delete", "remove", "set", "pause", "resume",
 		"start", "stop", "complete", "submit", "publish", "distribute", "enable", "disable",
 	})
+}
+
+// compoundTokenContains reports whether the query names a hyphenated command
+// leaf either as a single compound token, such as "reset-id", or as the
+// separate words a natural-language query produces, such as "reset ... id".
+func compoundTokenContains(queryTokens []string, term string) bool {
+	if tokenContains(queryTokens, term) {
+		return true
+	}
+	parts := strings.Split(term, "-")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if !tokenContains(queryTokens, part) {
+			return false
+		}
+	}
+	return true
 }
 
 func tokenContainsAny(tokens, terms []string) bool {

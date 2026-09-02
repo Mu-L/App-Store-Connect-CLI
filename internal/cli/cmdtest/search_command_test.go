@@ -1074,6 +1074,26 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			query:    []string{"Apple", "Developer", "agreement", "status"},
 			expected: "asc web agreements status",
 		},
+		{
+			name:     "split telemetry reset id status",
+			query:    []string{"reset", "telemetry", "id", "status"},
+			expected: "asc telemetry reset-id",
+		},
+		{
+			name:     "hyphenated telemetry reset-id status",
+			query:    []string{"telemetry", "reset-id", "status"},
+			expected: "asc telemetry reset-id",
+		},
+		{
+			name:     "split auth issuer id status",
+			query:    []string{"auth", "issuer", "id", "status"},
+			expected: "asc auth issuer-id",
+		},
+		{
+			name:     "hyphenated auth issuer-id status",
+			query:    []string{"auth", "issuer-id", "status"},
+			expected: "asc auth issuer-id",
+		},
 	}
 
 	for _, test := range tests {
