@@ -133,13 +133,13 @@ func TestListReviewSubmissionItemsRetainsIncludedContext(t *testing.T) {
 				"relationships": {
 					"appStoreVersion": {"data": {"type":"appStoreVersions","id":"v1"}},
 					"appEvent": {"data": {"type":"appEvents","id":"e1"}},
-					"build": {"data": {"type":"builds","id":"b1"}}
+					"inAppPurchaseVersion": {"data": {"type":"inAppPurchaseVersions","id":"iapv1"}}
 				}
 			}],
 			"included": [
 				{"id":"v1","type":"appStoreVersions","attributes":{"versionString":"2.0.0","platform":"IOS"}},
 				{"id":"e1","type":"appEvents","attributes":{"name":"Spring Sale","referenceName":"spring-sale"}},
-				{"id":"b1","type":"builds","attributes":{"version":"90"}}
+				{"id":"iapv1","type":"inAppPurchaseVersions","attributes":{"versionString":"3.1"}}
 			]
 		}`))
 	}))
@@ -166,8 +166,8 @@ func TestListReviewSubmissionItemsRetainsIncludedContext(t *testing.T) {
 	if relatedByType["appEvents"].Label != "Spring Sale" {
 		t.Fatalf("expected event name label, got %#v", items[0].Related)
 	}
-	if relatedByType["builds"].Label != "90" {
-		t.Fatalf("expected build number label, got %#v", items[0].Related)
+	if relatedByType["inAppPurchaseVersions"].Label != "3.1" {
+		t.Fatalf("expected IAP version label, got %#v", items[0].Related)
 	}
 
 	encoded, err := json.Marshal(items[0])
