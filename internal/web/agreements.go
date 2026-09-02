@@ -187,11 +187,11 @@ func (c *Client) DownloadAgreement(ctx context.Context, agreementID string) (*Ag
 		if err := validateAgreementDownloadTarget(portalOrigin, redirect.URL, "redirect"); err != nil {
 			return err
 		}
-		if previousCheckRedirect != nil {
-			return previousCheckRedirect(redirect, via)
-		}
 		if len(via) >= 10 {
 			return fmt.Errorf("agreement download stopped after 10 redirects")
+		}
+		if previousCheckRedirect != nil {
+			return previousCheckRedirect(redirect, via)
 		}
 		return nil
 	}

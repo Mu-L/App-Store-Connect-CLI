@@ -460,6 +460,26 @@ func TestDownloadAgreementRejectsNonHTTPSRedirect(t *testing.T) {
 	}
 }
 
+func TestDownloadAgreementCapsSameOriginRedirectLoopDespitePermissiveClientPolicy(t *testing.T) {
+	portal := newAgreementDownloadPortal(t)
+	portal.contentHandler = func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/services-account/agreement/XG8DNV4HYY/content/pdf?hop=very-secret", http.StatusFound)
+	}
+	client := portal.client(t)
+	client.httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return nil }
+
+	_, err := client.DownloadAgreement(context.Background(), "XG8DNV4HYY")
+	if err == nil || !strings.Contains(err.Error(), "10 redirects") {
+		t.Fatalf("DownloadAgreement() error = %v, want redirect cap error", err)
+	}
+	if strings.Contains(err.Error(), "very-secret") {
+		t.Fatalf("DownloadAgreement() error = %q leaks the redirect URL", err)
+	}
+	if portal.contentCalls > 11 {
+		t.Fatalf("content requests = %d, want the redirect chain capped at 10 hops", portal.contentCalls)
+	}
+}
+
 func TestDownloadAgreementRejectsCrossOriginDownloadURL(t *testing.T) {
 	portal := newAgreementDownloadPortal(t)
 	portal.downloadURL = "https://cdn.example.test/agreements/XG8DNV4HYY.pdf?token=very-secret"
