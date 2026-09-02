@@ -52,6 +52,9 @@ func TestBetaGroupsListHelpDocumentsAppEndpointAndBuildIDConflicts(t *testing.T)
 	if !strings.Contains(conflictHelp, "only with --app, --internal, and --external") {
 		t.Fatalf("expected --build-id help to allowlist --app, --internal, and --external, got %q", conflictHelp)
 	}
+	if !strings.Contains(conflictHelp, "among query flags") || !strings.Contains(conflictHelp, "Output flags still apply") {
+		t.Fatalf("expected --build-id help to qualify the query-flag allowlist and keep output flags, got %q", conflictHelp)
+	}
 
 	rejected := slices.Concat(
 		betaGroupsListMembershipPageControlFlags,
@@ -60,13 +63,13 @@ func TestBetaGroupsListHelpDocumentsAppEndpointAndBuildIDConflicts(t *testing.T)
 	)
 	for _, name := range rejected {
 		flagName := "--" + name
-		if !strings.Contains(conflictHelp, flagName) {
+		if !helpMentionsFlag(conflictHelp, flagName) {
 			t.Errorf("expected --build-id conflict help to mention rejected %s, got %q", flagName, conflictHelp)
 		}
 	}
 	for _, name := range betaGroupsListBuildIDCompatibleFlags {
 		flagName := "--" + name
-		if !strings.Contains(conflictHelp, flagName) {
+		if !helpMentionsFlag(conflictHelp, flagName) {
 			t.Errorf("expected --build-id conflict help to mention compatible %s, got %q", flagName, conflictHelp)
 		}
 	}
@@ -94,6 +97,38 @@ func TestBetaGroupsListHelpDocumentsAppEndpointAndBuildIDConflicts(t *testing.T)
 			t.Errorf("--%s is not classified against the --build-id allowlist or conflict sets", value.Name)
 		}
 	})
+}
+
+func TestHelpMentionsFlagRequiresTokenBoundary(t *testing.T) {
+	if helpMentionsFlag("--app-fields --public-link-enabled", "--app") {
+		t.Fatal("expected --app not to match inside --app-fields")
+	}
+	if helpMentionsFlag("--app-fields --public-link-enabled", "--public-link") {
+		t.Fatal("expected --public-link not to match inside --public-link-enabled")
+	}
+	if !helpMentionsFlag("only with --app, --internal", "--app") {
+		t.Fatal("expected --app to match as a complete token")
+	}
+}
+
+func helpMentionsFlag(help, flagName string) bool {
+	for start := 0; start <= len(help); {
+		offset := strings.Index(help[start:], flagName)
+		if offset < 0 {
+			return false
+		}
+		index := start + offset
+		end := index + len(flagName)
+		if end == len(help) || !isFlagNameContinue(help[end]) {
+			return true
+		}
+		start = end
+	}
+	return false
+}
+
+func isFlagNameContinue(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-'
 }
 
 func betaGroupsListBuildIDConflictHelp(t *testing.T, help string) string {

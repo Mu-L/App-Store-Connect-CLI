@@ -309,8 +309,9 @@ The top-level endpoint also supports --id, --public-link-enabled,
 --fields, --app-fields, --build-fields, --tester-fields, or
 --recruitment-criteria-fields to shape related resources. --testers-limit and
 --builds-limit cap included beta testers and builds respectively.
---build-id membership lookup is compatible only with --app, --internal, and --external.
-It rejects page controls (--global, --limit, --next, --paginate), --name, --sort,
+--build-id membership lookup is compatible only with --app, --internal, and --external
+among query flags. Output flags still apply. It rejects page controls
+(--global, --limit, --next, --paginate), --name, --sort,
 and query-surface flags (--id, --public-link-enabled, --public-link-limit-enabled,
 --public-link, --fields, --app-fields, --build-fields, --tester-fields,
 --recruitment-criteria-fields, --include, --testers-limit, and --builds-limit).
