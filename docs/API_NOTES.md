@@ -132,6 +132,13 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - Live API rejects `include=passTypeId` and `fields[passTypeIds]` on `/v1/passTypeIds/{id}/certificates` despite the OpenAPI spec allowing them.
 - The CLI does not expose those parameters for `pass-type-ids certificates list` to avoid API errors.
 
+## Sparse Fieldsets Combined with Includes
+
+Observed 2026-09-02 against a live App Store Connect team. The CLI does not add included relationship names to the primary fieldset for these list commands.
+
+- `GET /v1/profiles` with `fields[profiles]=name&include=devices` returns HTTP 200 and still puts related devices in `included`. Apple omits `relationships` on each profile unless `devices` is also listed in `fields[profiles]`. `fields[devices]=name,udid` still sparse-filters those included devices.
+- `GET /v1/certificates` with `fields[certificates]=displayName&include=passTypeId` returns HTTP 200. This team has no `PASS_TYPE_ID` certificates, so `included` was absent both with that sparse fieldset and with `include=passTypeId` alone. Non-pass certificates expose `relationships.passTypeId.data=null` only when the relationship is in the fieldset (or when no certificate fieldset is sent).
+
 ## App Store Connect API 4.4.1
 
 - Apple added discrete versions for in-app purchases, subscriptions, and subscription groups. Their v2 localizations and images are version-scoped; pass a version ID rather than the legacy product, subscription, or group ID.
