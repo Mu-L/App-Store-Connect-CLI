@@ -2743,45 +2743,68 @@ func TestResolveSessionObtainsNewTwoFactorCodeForFreshRetryAfterStaleBootstrap(t
 // literal code, so the retry must not resubmit it; it must explain that a new
 // code is required.
 func TestResolveSessionFailsWhenConsumedTwoFactorCodeCannotBeReplaced(t *testing.T) {
-	restoreStaleSessionRetryHooks(t)
+	for _, tt := range []struct {
+		name         string
+		ttyAvailable bool
+	}{
+		{name: "without a terminal", ttyAvailable: false},
+		{name: "with a terminal available", ttyAvailable: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			restoreStaleSessionRetryHooks(t)
 
-	cachedClient := &http.Client{}
-	staleSession := &webcore.AuthSession{}
+			cachedClient := &http.Client{}
+			staleSession := &webcore.AuthSession{}
 
-	openTTYFn = func() (*os.File, error) { return nil, errors.New("no tty") }
-	termIsTerminalFn = func(fd int) bool { return false }
-	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
-		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
-	}
-	promptTwoFactorCodeFn = func() (string, error) {
-		t.Fatal("did not expect an interactive 2fa prompt without a terminal")
-		return "", nil
-	}
-	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
-		t.Fatal("did not expect a 2fa code command when none is configured")
-		return "", nil
-	}
-	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
-		return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
-	}
-	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
-		return staleSession, &webcore.TwoFactorRequiredError{}
-	}
-	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
-		t.Fatal("did not expect a fresh retry that would resubmit the consumed 2fa code")
-		return nil, nil
-	}
+			if tt.ttyAvailable {
+				tty, err := os.CreateTemp(t.TempDir(), "tty")
+				if err != nil {
+					t.Fatalf("creating fake tty failed: %v", err)
+				}
+				t.Cleanup(func() { _ = tty.Close() })
+				openTTYFn = func() (*os.File, error) { return tty, nil }
+				termIsTerminalFn = func(fd int) bool { return true }
+			} else {
+				openTTYFn = func() (*os.File, error) { return nil, errors.New("no tty") }
+				termIsTerminalFn = func(fd int) bool { return false }
+			}
+			loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+				return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+			}
+			promptTwoFactorCodeFn = func() (string, error) {
+				t.Fatal("did not expect an interactive 2fa prompt for a scripted --two-factor-code invocation")
+				return "", nil
+			}
+			readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+				t.Fatal("did not expect a 2fa code command when none is configured")
+				return "", nil
+			}
+			submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+				return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+			}
+			webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+				return staleSession, &webcore.TwoFactorRequiredError{}
+			}
+			webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+				t.Fatal("did not expect a fresh retry that would resubmit the consumed 2fa code")
+				return nil, nil
+			}
 
-	_, _, err := resolveSession(context.Background(), "user@example.com", "", "111111")
-	if err == nil {
-		t.Fatal("expected resolveSession to fail when the consumed code cannot be replaced")
-	}
-	got := err.Error()
-	if !strings.Contains(got, "2fa finalization failed: session bootstrap returned status 401") {
-		t.Fatalf("expected the finalization cause to be preserved, got %q", got)
-	}
-	if !strings.Contains(got, "already consumed") {
-		t.Fatalf("expected the message to explain that the code was consumed, got %q", got)
+			_, _, err := resolveSession(context.Background(), "user@example.com", "", "111111")
+			if err == nil {
+				t.Fatal("expected resolveSession to fail when the consumed code cannot be replaced")
+			}
+			got := err.Error()
+			if !strings.Contains(got, "2fa finalization failed: session bootstrap returned status 401") {
+				t.Fatalf("expected the finalization cause to be preserved, got %q", got)
+			}
+			if !strings.Contains(got, "already consumed") {
+				t.Fatalf("expected the message to explain that the code was consumed, got %q", got)
+			}
+			if !strings.Contains(got, webTwoFactorCodeCommandEnv) {
+				t.Fatalf("expected the message to point at the 2fa code command, got %q", got)
+			}
+		})
 	}
 }
 

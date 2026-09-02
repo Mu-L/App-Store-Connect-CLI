@@ -337,16 +337,6 @@ func readTwoFactorCodeFromTerminalFD(fd int, writer io.Writer) (string, error) {
 	return code, nil
 }
 
-// canPromptOnTerminal reports whether an interactive prompt can reach the
-// operator, either through the controlling terminal or through stdin.
-func canPromptOnTerminal() bool {
-	if tty, err := openTTYFn(); err == nil {
-		_ = tty.Close()
-		return true
-	}
-	return termIsTerminalFn(int(os.Stdin.Fd()))
-}
-
 func promptTwoFactorCodeInteractive() (string, error) {
 	if tty, err := openTTYFn(); err == nil {
 		defer func() { _ = tty.Close() }()
@@ -689,16 +679,15 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 	)
 
 	// Apple consumes a 2FA code as soon as it is accepted, so a literal
-	// --two-factor-code value cannot be resubmitted on the fresh retry. A
-	// configured code command or an interactive prompt can produce a new one.
+	// --two-factor-code value cannot be resubmitted on the fresh retry. Only a
+	// configured code command may produce a replacement: supplying the code up
+	// front is a non-interactive choice, so falling back to a prompt could hang
+	// a scripted invocation that happens to own a terminal.
 	canReplaceConsumedTwoFactorCode := func() bool {
-		if twoFactorCode == "" || command != "" {
-			return true
-		}
-		return canPromptOnTerminal()
+		return twoFactorCode == "" || command != ""
 	}
 	consumedTwoFactorCodeError := func(loginErr error) error {
-		return fmt.Errorf("%w; the supplied two-factor code was already consumed by the expired session, so re-run with a new code", loginErr)
+		return fmt.Errorf("%w; the supplied two-factor code was already consumed by the expired session, so re-run with a new code or configure --two-factor-code-command or %s to fetch one automatically", loginErr, webTwoFactorCodeCommandEnv)
 	}
 
 	tryKnownSession := func(targetAppleID string) (*webcore.AuthSession, string, bool, error) {
