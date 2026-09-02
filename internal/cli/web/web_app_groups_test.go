@@ -10,6 +10,7 @@ import (
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
@@ -145,15 +146,15 @@ func TestWebAppGroupsMutationsRequireConfirmBeforeSessionResolution(t *testing.T
 		return &webcore.AuthSession{}, "cache", nil
 	})
 	defer restoreResolver()
-	deleteDeveloperAppGroupFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupDeleteRequest) (*webcore.DeveloperAppGroupDeleteResult, error) {
+	deleteDeveloperAppGroupFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupDeleteRequest) (*asc.WebAppGroupDeleteResult, error) {
 		t.Fatal("delete client must not be called without --confirm")
 		return nil, nil
 	}
-	unassignDeveloperAppGroupFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupUnassignRequest) (*webcore.DeveloperAppGroupUnassignResult, error) {
+	unassignDeveloperAppGroupFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupUnassignRequest) (*asc.WebAppGroupUnassignResult, error) {
 		t.Fatal("unassign client must not be called without --confirm")
 		return nil, nil
 	}
-	setDeveloperAppGroupsFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupSetRequest) (*webcore.DeveloperAppGroupSetResult, error) {
+	setDeveloperAppGroupsFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupSetRequest) (*asc.WebAppGroupSetResult, error) {
 		t.Fatal("set client must not be called without --confirm")
 		return nil, nil
 	}
@@ -202,7 +203,7 @@ func TestWebAppGroupsDeleteFailsClosedWhenGroupIsAssigned(t *testing.T) {
 		persistCalls++
 		return nil
 	}
-	deleteDeveloperAppGroupFn = func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupDeleteRequest) (*webcore.DeveloperAppGroupDeleteResult, error) {
+	deleteDeveloperAppGroupFn = func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupDeleteRequest) (*asc.WebAppGroupDeleteResult, error) {
 		return nil, &webcore.DeveloperAppGroupInUseError{
 			GroupID:    request.GroupID,
 			Identifier: "group.com.example.shared",
@@ -251,9 +252,9 @@ func TestWebAppGroupsDeleteOutputsReceiptAndWarns(t *testing.T) {
 		return nil
 	}
 	var deleteRequest webcore.DeveloperAppGroupDeleteRequest
-	deleteDeveloperAppGroupFn = func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupDeleteRequest) (*webcore.DeveloperAppGroupDeleteResult, error) {
+	deleteDeveloperAppGroupFn = func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupDeleteRequest) (*asc.WebAppGroupDeleteResult, error) {
 		deleteRequest = request
-		return &webcore.DeveloperAppGroupDeleteResult{GroupID: request.GroupID, Identifier: "group.com.example.shared", Name: "Shared", Deleted: true, Status: "deleted"}, nil
+		return &asc.WebAppGroupDeleteResult{GroupID: request.GroupID, Identifier: "group.com.example.shared", Name: "Shared", Deleted: true, Status: "deleted"}, nil
 	}
 
 	command := WebAppGroupsDeleteCommand()
@@ -268,7 +269,7 @@ func TestWebAppGroupsDeleteOutputsReceiptAndWarns(t *testing.T) {
 	if deleteRequest.GroupID != "GROUP1" {
 		t.Fatalf("unexpected delete request: %+v", deleteRequest)
 	}
-	var result webcore.DeveloperAppGroupDeleteResult
+	var result asc.WebAppGroupDeleteResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("decode output: %v; stdout=%q", err, stdout)
 	}
@@ -304,9 +305,9 @@ func TestWebAppGroupsSetReportsDiffAndNoOp(t *testing.T) {
 	defer restore()
 
 	var setRequest webcore.DeveloperAppGroupSetRequest
-	setDeveloperAppGroupsFn = func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupSetRequest) (*webcore.DeveloperAppGroupSetResult, error) {
+	setDeveloperAppGroupsFn = func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupSetRequest) (*asc.WebAppGroupSetResult, error) {
 		setRequest = request
-		return &webcore.DeveloperAppGroupSetResult{BundleID: request.BundleID, GroupIDs: request.GroupIDs, Added: []string{"GROUP3"}, Removed: []string{"GROUP1"}, Changed: true, Status: "updated"}, nil
+		return &asc.WebAppGroupSetResult{BundleID: request.BundleID, GroupIDs: request.GroupIDs, Added: []string{"GROUP3"}, Removed: []string{"GROUP1"}, Changed: true, Status: "updated"}, nil
 	}
 
 	command := WebAppGroupsSetCommand()
@@ -321,7 +322,7 @@ func TestWebAppGroupsSetReportsDiffAndNoOp(t *testing.T) {
 	if setRequest.BundleID != "bundle-1" || strings.Join(setRequest.GroupIDs, ",") != "GROUP2,GROUP3" {
 		t.Fatalf("unexpected set request: %+v", setRequest)
 	}
-	var result webcore.DeveloperAppGroupSetResult
+	var result asc.WebAppGroupSetResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("decode output: %v; stdout=%q", err, stdout)
 	}
@@ -332,8 +333,8 @@ func TestWebAppGroupsSetReportsDiffAndNoOp(t *testing.T) {
 		t.Fatalf("stderr %q is missing the provisioning profile warning", stderr)
 	}
 
-	setDeveloperAppGroupsFn = func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupSetRequest) (*webcore.DeveloperAppGroupSetResult, error) {
-		return &webcore.DeveloperAppGroupSetResult{BundleID: request.BundleID, GroupIDs: request.GroupIDs, Added: []string{}, Removed: []string{}, Changed: false, Status: "unchanged"}, nil
+	setDeveloperAppGroupsFn = func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupSetRequest) (*asc.WebAppGroupSetResult, error) {
+		return &asc.WebAppGroupSetResult{BundleID: request.BundleID, GroupIDs: request.GroupIDs, Added: []string{}, Removed: []string{}, Changed: false, Status: "unchanged"}, nil
 	}
 	noop := WebAppGroupsSetCommand()
 	if err := noop.FlagSet.Parse([]string{"--bundle-id", "bundle-1", "--group", "GROUP2", "--confirm", "--output", "json"}); err != nil {
@@ -373,9 +374,9 @@ func TestWebAppGroupsUnassignCallsClient(t *testing.T) {
 	defer restore()
 
 	var unassignRequest webcore.DeveloperAppGroupUnassignRequest
-	unassignDeveloperAppGroupFn = func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupUnassignRequest) (*webcore.DeveloperAppGroupUnassignResult, error) {
+	unassignDeveloperAppGroupFn = func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupUnassignRequest) (*asc.WebAppGroupUnassignResult, error) {
 		unassignRequest = request
-		return &webcore.DeveloperAppGroupUnassignResult{BundleID: request.BundleID, GroupID: request.GroupID, RemainingGroupIDs: []string{"GROUP2"}, Changed: true, Status: "unassigned"}, nil
+		return &asc.WebAppGroupUnassignResult{BundleID: request.BundleID, GroupID: request.GroupID, RemainingGroupIDs: []string{"GROUP2"}, Changed: true, Status: "unassigned"}, nil
 	}
 	command := WebAppGroupsUnassignCommand()
 	if err := command.FlagSet.Parse([]string{"--group-id", "GROUP1", "--bundle-id", "bundle-1", "--confirm", "--output", "json"}); err != nil {
@@ -389,7 +390,7 @@ func TestWebAppGroupsUnassignCallsClient(t *testing.T) {
 	if unassignRequest.GroupID != "GROUP1" || unassignRequest.BundleID != "bundle-1" {
 		t.Fatalf("unexpected unassign request: %+v", unassignRequest)
 	}
-	var result webcore.DeveloperAppGroupUnassignResult
+	var result asc.WebAppGroupUnassignResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("decode output: %v; stdout=%q", err, stdout)
 	}

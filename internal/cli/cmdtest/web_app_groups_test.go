@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	cmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	webcmd "github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/web"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
@@ -57,9 +58,26 @@ func TestWebAppGroupsMutationsRequireConfirmBeforeAnyRequest(t *testing.T) {
 	assertUsageExit(t, []string{"web", "app-groups", "set", "--bundle-id", "bundle-1", "--confirm"}, "Error: at least one --group is required")
 }
 
+func TestWebAppGroupsSetRejectsBlankGroupBeforeAnyRequest(t *testing.T) {
+	setCmdtestHome(t)
+	restoreSession := webcmd.SetResolveWebSession(func(context.Context, string, string, string, string) (*webcore.AuthSession, string, error) {
+		t.Fatal("web session must not be resolved when a --group value is blank")
+		return nil, "", nil
+	})
+	t.Cleanup(restoreSession)
+	restoreSet := webcmd.SetSetDeveloperAppGroups(func(context.Context, *webcore.Client, webcore.DeveloperAppGroupSetRequest) (*asc.WebAppGroupSetResult, error) {
+		t.Fatal("set must not be called when a --group value is blank")
+		return nil, nil
+	})
+	t.Cleanup(restoreSet)
+
+	assertUsageExit(t, []string{"web", "app-groups", "set", "--bundle-id", "bundle-1", "--group", "GROUP1", "--group", "   ", "--confirm"}, "value cannot be empty")
+	assertUsageExit(t, []string{"web", "app-groups", "set", "--bundle-id", "bundle-1", "--group", "", "--confirm"}, "value cannot be empty")
+}
+
 func TestWebAppGroupsDeleteAssignedGroupExitsNonZeroAndNamesAssignments(t *testing.T) {
 	stubWebAppGroupsSession(t)
-	restoreDelete := webcmd.SetDeleteDeveloperAppGroup(func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupDeleteRequest) (*webcore.DeveloperAppGroupDeleteResult, error) {
+	restoreDelete := webcmd.SetDeleteDeveloperAppGroup(func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupDeleteRequest) (*asc.WebAppGroupDeleteResult, error) {
 		return nil, &webcore.DeveloperAppGroupInUseError{
 			GroupID:    request.GroupID,
 			Identifier: "group.com.example.shared",
@@ -89,8 +107,8 @@ func TestWebAppGroupsDeleteAssignedGroupExitsNonZeroAndNamesAssignments(t *testi
 
 func TestWebAppGroupsSetNoOpReportsUnchanged(t *testing.T) {
 	stubWebAppGroupsSession(t)
-	restoreSet := webcmd.SetSetDeveloperAppGroups(func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupSetRequest) (*webcore.DeveloperAppGroupSetResult, error) {
-		return &webcore.DeveloperAppGroupSetResult{BundleID: request.BundleID, GroupIDs: request.GroupIDs, Added: []string{}, Removed: []string{}, Changed: false, Status: "unchanged"}, nil
+	restoreSet := webcmd.SetSetDeveloperAppGroups(func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupSetRequest) (*asc.WebAppGroupSetResult, error) {
+		return &asc.WebAppGroupSetResult{BundleID: request.BundleID, GroupIDs: request.GroupIDs, Added: []string{}, Removed: []string{}, Changed: false, Status: "unchanged"}, nil
 	})
 	t.Cleanup(restoreSet)
 
@@ -104,7 +122,7 @@ func TestWebAppGroupsSetNoOpReportsUnchanged(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("expected empty stderr for a no-op set, got %q", stderr)
 	}
-	var result webcore.DeveloperAppGroupSetResult
+	var result asc.WebAppGroupSetResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("decode output: %v; stdout=%q", err, stdout)
 	}
@@ -115,8 +133,8 @@ func TestWebAppGroupsSetNoOpReportsUnchanged(t *testing.T) {
 
 func TestWebAppGroupsUnassignReportsReceiptAndWarns(t *testing.T) {
 	stubWebAppGroupsSession(t)
-	restoreUnassign := webcmd.SetUnassignDeveloperAppGroup(func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupUnassignRequest) (*webcore.DeveloperAppGroupUnassignResult, error) {
-		return &webcore.DeveloperAppGroupUnassignResult{BundleID: request.BundleID, GroupID: request.GroupID, RemainingGroupIDs: []string{}, Changed: true, Status: "unassigned"}, nil
+	restoreUnassign := webcmd.SetUnassignDeveloperAppGroup(func(_ context.Context, _ *webcore.Client, request webcore.DeveloperAppGroupUnassignRequest) (*asc.WebAppGroupUnassignResult, error) {
+		return &asc.WebAppGroupUnassignResult{BundleID: request.BundleID, GroupID: request.GroupID, RemainingGroupIDs: []string{}, Changed: true, Status: "unassigned"}, nil
 	})
 	t.Cleanup(restoreUnassign)
 
@@ -127,7 +145,7 @@ func TestWebAppGroupsUnassignReportsReceiptAndWarns(t *testing.T) {
 	if code != cmd.ExitSuccess {
 		t.Fatalf("exit code = %d, want %d; stderr=%q", code, cmd.ExitSuccess, stderr)
 	}
-	var result webcore.DeveloperAppGroupUnassignResult
+	var result asc.WebAppGroupUnassignResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("decode output: %v; stdout=%q", err, stdout)
 	}

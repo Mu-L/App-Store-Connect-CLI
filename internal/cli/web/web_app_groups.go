@@ -26,15 +26,15 @@ var assignDeveloperAppGroupFn = func(ctx context.Context, client *webcore.Client
 	return client.AssignDeveloperAppGroup(ctx, request)
 }
 
-var unassignDeveloperAppGroupFn = func(ctx context.Context, client *webcore.Client, request webcore.DeveloperAppGroupUnassignRequest) (*webcore.DeveloperAppGroupUnassignResult, error) {
+var unassignDeveloperAppGroupFn = func(ctx context.Context, client *webcore.Client, request webcore.DeveloperAppGroupUnassignRequest) (*asc.WebAppGroupUnassignResult, error) {
 	return client.UnassignDeveloperAppGroup(ctx, request)
 }
 
-var setDeveloperAppGroupsFn = func(ctx context.Context, client *webcore.Client, request webcore.DeveloperAppGroupSetRequest) (*webcore.DeveloperAppGroupSetResult, error) {
+var setDeveloperAppGroupsFn = func(ctx context.Context, client *webcore.Client, request webcore.DeveloperAppGroupSetRequest) (*asc.WebAppGroupSetResult, error) {
 	return client.SetDeveloperAppGroups(ctx, request)
 }
 
-var deleteDeveloperAppGroupFn = func(ctx context.Context, client *webcore.Client, request webcore.DeveloperAppGroupDeleteRequest) (*webcore.DeveloperAppGroupDeleteResult, error) {
+var deleteDeveloperAppGroupFn = func(ctx context.Context, client *webcore.Client, request webcore.DeveloperAppGroupDeleteRequest) (*asc.WebAppGroupDeleteResult, error) {
 	return client.DeleteDeveloperAppGroup(ctx, request)
 }
 
@@ -312,13 +312,7 @@ Example:
 			}
 			persistDeveloperAppGroupSession(session)
 			warnDeveloperAppGroupProfileInvalidation(result.Changed)
-			return shared.PrintOutputWithRenderers(
-				result,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderDeveloperAppGroupUnassignTable(result) },
-				func() error { return renderDeveloperAppGroupUnassignMarkdown(result) },
-			)
+			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -381,13 +375,7 @@ Example:
 			}
 			persistDeveloperAppGroupSession(session)
 			warnDeveloperAppGroupProfileInvalidation(result.Changed)
-			return shared.PrintOutputWithRenderers(
-				result,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderDeveloperAppGroupSetTable(result) },
-				func() error { return renderDeveloperAppGroupSetMarkdown(result) },
-			)
+			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -445,13 +433,7 @@ Example:
 			}
 			persistDeveloperAppGroupSession(session)
 			warnDeveloperAppGroupProfileInvalidation(result.Deleted)
-			return shared.PrintOutputWithRenderers(
-				result,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderDeveloperAppGroupDeleteTable(result) },
-				func() error { return renderDeveloperAppGroupDeleteMarkdown(result) },
-			)
+			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -521,65 +503,4 @@ func renderDeveloperAppGroupAssignTable(result *webcore.DeveloperAppGroupAssignR
 func renderDeveloperAppGroupAssignMarkdown(result *webcore.DeveloperAppGroupAssignResult) error {
 	asc.RenderMarkdown([]string{"Bundle ID", "Group ID", "Changed", "Status"}, developerAppGroupAssignRows(result))
 	return nil
-}
-
-func developerAppGroupUnassignHeaders() []string {
-	return []string{"Bundle ID", "Group ID", "Remaining Group IDs", "Changed", "Status"}
-}
-
-func developerAppGroupUnassignRows(result *webcore.DeveloperAppGroupUnassignResult) [][]string {
-	return [][]string{{result.BundleID, result.GroupID, joinDeveloperAppGroupIDs(result.RemainingGroupIDs), fmt.Sprintf("%t", result.Changed), result.Status}}
-}
-
-func renderDeveloperAppGroupUnassignTable(result *webcore.DeveloperAppGroupUnassignResult) error {
-	asc.RenderTable(developerAppGroupUnassignHeaders(), developerAppGroupUnassignRows(result))
-	return nil
-}
-
-func renderDeveloperAppGroupUnassignMarkdown(result *webcore.DeveloperAppGroupUnassignResult) error {
-	asc.RenderMarkdown(developerAppGroupUnassignHeaders(), developerAppGroupUnassignRows(result))
-	return nil
-}
-
-func developerAppGroupSetHeaders() []string {
-	return []string{"Bundle ID", "Group IDs", "Added", "Removed", "Changed", "Status"}
-}
-
-func developerAppGroupSetRows(result *webcore.DeveloperAppGroupSetResult) [][]string {
-	return [][]string{{result.BundleID, joinDeveloperAppGroupIDs(result.GroupIDs), joinDeveloperAppGroupIDs(result.Added), joinDeveloperAppGroupIDs(result.Removed), fmt.Sprintf("%t", result.Changed), result.Status}}
-}
-
-func renderDeveloperAppGroupSetTable(result *webcore.DeveloperAppGroupSetResult) error {
-	asc.RenderTable(developerAppGroupSetHeaders(), developerAppGroupSetRows(result))
-	return nil
-}
-
-func renderDeveloperAppGroupSetMarkdown(result *webcore.DeveloperAppGroupSetResult) error {
-	asc.RenderMarkdown(developerAppGroupSetHeaders(), developerAppGroupSetRows(result))
-	return nil
-}
-
-func developerAppGroupDeleteHeaders() []string {
-	return []string{"Group ID", "Name", "Identifier", "Deleted", "Status"}
-}
-
-func developerAppGroupDeleteRows(result *webcore.DeveloperAppGroupDeleteResult) [][]string {
-	return [][]string{{result.GroupID, shared.OrNA(result.Name), shared.OrNA(result.Identifier), fmt.Sprintf("%t", result.Deleted), result.Status}}
-}
-
-func renderDeveloperAppGroupDeleteTable(result *webcore.DeveloperAppGroupDeleteResult) error {
-	asc.RenderTable(developerAppGroupDeleteHeaders(), developerAppGroupDeleteRows(result))
-	return nil
-}
-
-func renderDeveloperAppGroupDeleteMarkdown(result *webcore.DeveloperAppGroupDeleteResult) error {
-	asc.RenderMarkdown(developerAppGroupDeleteHeaders(), developerAppGroupDeleteRows(result))
-	return nil
-}
-
-func joinDeveloperAppGroupIDs(ids []string) string {
-	if len(ids) == 0 {
-		return "-"
-	}
-	return strings.Join(ids, ", ")
 }

@@ -235,7 +235,10 @@ Bundle ID and returns `{"changed":false,"status":"already-assigned"}`. Likewise,
 `set` with a desired set that already matches sends no write and returns
 `{"changed":false,"status":"unchanged"}` with empty `added` and `removed` lists,
 and `unassign` of a group that is not assigned returns
-`{"changed":false,"status":"not-assigned"}`.
+`{"changed":false,"status":"not-assigned"}`. A group the portal still lists
+under a disabled `APP_GROUPS` capability counts as assigned: `unassign` clears
+it (leaving the capability disabled) and `set` with the same groups re-enables
+the capability, so `delete` can always be unblocked from the CLI.
 
 `delete` fails closed: when the group is still assigned to any Bundle ID the
 command exits non-zero without sending a delete and names the assigned Bundle

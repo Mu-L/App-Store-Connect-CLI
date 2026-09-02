@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
@@ -59,7 +60,7 @@ func SetSyncAppClipBundleIDCapability(fn func(context.Context, *webcore.Client, 
 	}
 }
 
-func SetUnassignDeveloperAppGroup(fn func(context.Context, *webcore.Client, webcore.DeveloperAppGroupUnassignRequest) (*webcore.DeveloperAppGroupUnassignResult, error)) func() {
+func SetUnassignDeveloperAppGroup(fn func(context.Context, *webcore.Client, webcore.DeveloperAppGroupUnassignRequest) (*asc.WebAppGroupUnassignResult, error)) func() {
 	prev := unassignDeveloperAppGroupFn
 	unassignDeveloperAppGroupFn = fn
 	return func() {
@@ -67,7 +68,7 @@ func SetUnassignDeveloperAppGroup(fn func(context.Context, *webcore.Client, webc
 	}
 }
 
-func SetSetDeveloperAppGroups(fn func(context.Context, *webcore.Client, webcore.DeveloperAppGroupSetRequest) (*webcore.DeveloperAppGroupSetResult, error)) func() {
+func SetSetDeveloperAppGroups(fn func(context.Context, *webcore.Client, webcore.DeveloperAppGroupSetRequest) (*asc.WebAppGroupSetResult, error)) func() {
 	prev := setDeveloperAppGroupsFn
 	setDeveloperAppGroupsFn = fn
 	return func() {
@@ -75,7 +76,7 @@ func SetSetDeveloperAppGroups(fn func(context.Context, *webcore.Client, webcore.
 	}
 }
 
-func SetDeleteDeveloperAppGroup(fn func(context.Context, *webcore.Client, webcore.DeveloperAppGroupDeleteRequest) (*webcore.DeveloperAppGroupDeleteResult, error)) func() {
+func SetDeleteDeveloperAppGroup(fn func(context.Context, *webcore.Client, webcore.DeveloperAppGroupDeleteRequest) (*asc.WebAppGroupDeleteResult, error)) func() {
 	prev := deleteDeveloperAppGroupFn
 	deleteDeveloperAppGroupFn = fn
 	return func() {

@@ -748,6 +748,84 @@ func TestUnassignDeveloperAppGroupDisablesCapabilityWhenLastGroupRemoved(t *test
 	}
 }
 
+func TestUnassignDeveloperAppGroupClearsGroupFromDisabledCapability(t *testing.T) {
+	var patchBody []byte
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(false, "GROUP1", "GROUP2"), nil), nil
+		case 3:
+			return developerPortalTestResponse(http.StatusOK, `{"resultCode":0,"applicationGroupList":[]}`, http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+		case 4:
+			var err error
+			patchBody, err = io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("ReadAll() error: %v", err)
+			}
+			return developerPortalTestResponse(http.StatusOK, `{"data":{"type":"bundleIds","id":"bundle-1"}}`, nil), nil
+		case 5:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(false, "GROUP2"), nil), nil
+		default:
+			t.Fatalf("unexpected request %d", requestNumber)
+			return nil, nil
+		}
+	})
+
+	result, err := client.UnassignDeveloperAppGroup(context.Background(), DeveloperAppGroupUnassignRequest{BundleID: "bundle-1", GroupID: "GROUP1"})
+	if err != nil {
+		t.Fatalf("UnassignDeveloperAppGroup() error: %v", err)
+	}
+	if !result.Changed || result.Status != "unassigned" || strings.Join(result.RemainingGroupIDs, ",") != "GROUP2" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	capabilities := decodeDeveloperBundlePatchCapabilities(t, patchBody)
+	groups, enabled := decodeDeveloperAppGroupsCapability(t, capabilities[1])
+	if enabled || strings.Join(groups, ",") != "GROUP2" {
+		t.Fatalf("expected APP_GROUPS to stay disabled with only GROUP2 listed, got enabled=%t groups=%v", enabled, groups)
+	}
+}
+
+func TestSetDeveloperAppGroupsEnablesDisabledCapabilityListingDesiredGroups(t *testing.T) {
+	var patchBody []byte
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(false, "GROUP1"), nil), nil
+		case 3:
+			return developerPortalTestResponse(http.StatusOK, `{"resultCode":0,"applicationGroupList":[]}`, http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+		case 4:
+			var err error
+			patchBody, err = io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("ReadAll() error: %v", err)
+			}
+			return developerPortalTestResponse(http.StatusOK, `{"data":{"type":"bundleIds","id":"bundle-1"}}`, nil), nil
+		case 5:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1"), nil), nil
+		default:
+			t.Fatalf("unexpected request %d", requestNumber)
+			return nil, nil
+		}
+	})
+
+	result, err := client.SetDeveloperAppGroups(context.Background(), DeveloperAppGroupSetRequest{BundleID: "bundle-1", GroupIDs: []string{"GROUP1"}})
+	if err != nil {
+		t.Fatalf("SetDeveloperAppGroups() error: %v", err)
+	}
+	if !result.Changed || result.Status != "updated" || len(result.Added) != 0 || len(result.Removed) != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	capabilities := decodeDeveloperBundlePatchCapabilities(t, patchBody)
+	groups, enabled := decodeDeveloperAppGroupsCapability(t, capabilities[1])
+	if !enabled || strings.Join(groups, ",") != "GROUP1" {
+		t.Fatalf("expected APP_GROUPS enabled with GROUP1, got enabled=%t groups=%v", enabled, groups)
+	}
+}
+
 func TestUnassignDeveloperAppGroupIsIdempotent(t *testing.T) {
 	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
 		switch requestNumber {
