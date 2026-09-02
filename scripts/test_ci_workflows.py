@@ -185,6 +185,23 @@ def job_block(workflow: str, job: str) -> str:
     return workflow[start:end]
 
 
+def matrix_command_for_runner(job: str, runner: str) -> str:
+    marker = f"runner: {runner}"
+    start = job.find(marker)
+    if start < 0:
+        return ""
+    rest = job[start:]
+    command_at = rest.find("command: |")
+    next_runner = rest.find("\n            runner:", len(marker))
+    if command_at < 0 or (0 <= next_runner < command_at):
+        return ""
+    command = rest[command_at:]
+    next_entry = command.find("\n          - name:")
+    if next_entry >= 0:
+        command = command[:next_entry]
+    return command
+
+
 def assert_optimized_workflow(path: Path, test_job: str) -> None:
     assert_optimized_workflow_text(path, path.read_text(), test_job)
 
@@ -253,9 +270,11 @@ def assert_optimized_workflow_text(path: Path, workflow: str, test_job: str) -> 
     for runner in ("macos-latest", "ubuntu-latest", "windows-latest"):
         assert f"runner: {runner}" in build_platforms, f"{path}: missing native build runner {runner}"
     assert "go test -short ./internal/screenshots" in build_platforms, f"{path}: missing Darwin-only tests"
-    assert build_platforms.count("go test -short -count=1 ./internal/rootfs") == 2, (
-        f"{path}: build-platforms must run ./internal/rootfs on both native legs"
-    )
+    for runner in ("macos-latest", "windows-latest"):
+        command = matrix_command_for_runner(build_platforms, runner)
+        assert "go test -short -count=1 ./internal/rootfs" in command, (
+            f"{path}: {runner} must run ./internal/rootfs"
+        )
     for arch in ("amd64", "arm64"):
         command = f"CGO_ENABLED=1 GOOS=darwin GOARCH={arch} go build"
         assert command in build_platforms, f"{path}: missing cgo-enabled Darwin {arch} build"
@@ -307,6 +326,17 @@ def assert_optimized_workflow_rejects_weakened_checks() -> None:
             except AssertionError:
                 continue
             raise AssertionError(f"{path}: guard accepts CI with {command!r} removed")
+
+        macos_only_removed = workflow.replace(
+            "              ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/rootfs\n",
+            "",
+            1,
+        )
+        try:
+            assert_optimized_workflow_text(path, macos_only_removed, test_job)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{path}: guard accepts CI with ./internal/rootfs removed from macOS only")
 
 
 def run_security_target(path: str) -> subprocess.CompletedProcess[str]:
