@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
@@ -275,6 +276,47 @@ func TestWebAgreementsAcceptFailsWhenVerificationReadFails(t *testing.T) {
 	}
 	if stdout != "" {
 		t.Fatalf("expected no receipt on stdout, got %q", stdout)
+	}
+}
+
+func TestWebAgreementsAcceptVerificationGetsFreshTimeout(t *testing.T) {
+	stubWebAgreementsSession(t)
+	stubWebAgreementsAccept(t, &asc.WebAgreementsStatusResult{
+		TeamID:     "TEAM123456",
+		Agreements: []asc.WebAgreement{acceptedAgreement("XG8DNV4HYY", "5031")},
+	}, nil)
+
+	var acceptDeadline, verifyDeadline time.Time
+	origAccept := acceptAgreementsFn
+	origHistory := getAgreementHistoryFn
+	t.Cleanup(func() {
+		acceptAgreementsFn = origAccept
+		getAgreementHistoryFn = origHistory
+	})
+	acceptAgreementsFn = func(ctx context.Context, client *webcore.Client, req webcore.AgreementsAcceptRequest) (*asc.WebAgreementsAcceptResult, error) {
+		acceptDeadline, _ = ctx.Deadline()
+		time.Sleep(30 * time.Millisecond)
+		return origAccept(ctx, client, req)
+	}
+	getAgreementHistoryFn = func(ctx context.Context, client *webcore.Client) (*asc.WebAgreementsStatusResult, error) {
+		verifyDeadline, _ = ctx.Deadline()
+		return origHistory(ctx, client)
+	}
+
+	cmd := WebAgreementsAcceptCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("Exec() error: %v", err)
+		}
+	})
+	if acceptDeadline.IsZero() || verifyDeadline.IsZero() {
+		t.Fatalf("deadlines accept=%v verify=%v, want both requests bounded by a timeout", acceptDeadline, verifyDeadline)
+	}
+	if verifyDeadline.Sub(acceptDeadline) < 20*time.Millisecond {
+		t.Fatalf("verification deadline %v is not fresh relative to accept deadline %v; the post-mutation read must get its own timeout", verifyDeadline, acceptDeadline)
 	}
 }
 
@@ -606,6 +648,33 @@ func TestWebAgreementsDownloadOverwritesWithFlag(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("table output missing %q: %q", want, stdout)
 		}
+	}
+}
+
+func TestWebAgreementsDownloadOverwritesReadOnlyFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only attribute semantics differ on Windows")
+	}
+	stubWebAgreementsSession(t)
+	stubWebAgreementsDownload(t, sampleAgreementDownload(), nil)
+
+	outPath := filepath.Join(t.TempDir(), "agreement.pdf")
+	if err := os.WriteFile(outPath, []byte("stale"), 0o400); err != nil {
+		t.Fatalf("seed read-only file: %v", err)
+	}
+
+	cmd := WebAgreementsDownloadCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--out", outPath, "--overwrite", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("Exec() error: %v; --overwrite must replace a read-only regular file by rename", err)
+		}
+	})
+	body, err := os.ReadFile(outPath)
+	if err != nil || string(body) != "%PDF-1.7 agreement body" {
+		t.Fatalf("overwritten file = %q, %v", body, err)
 	}
 }
 

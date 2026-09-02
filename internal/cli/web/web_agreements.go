@@ -268,10 +268,10 @@ func newAgreementDownloadDestination(outPath string) (agreementDownloadDestinati
 
 // check validates the destination before any network activity. Without
 // overwrite an existing file is refused; with overwrite only a regular,
-// non-symlinked file may be replaced.
+// non-symlinked file may be replaced (by rename, so it need not be writable).
 func (d agreementDownloadDestination) check(overwrite bool) error {
 	if overwrite {
-		return d.root.CheckWriteFilePreservingMode(d.name)
+		return d.root.CheckWriteFile(d.name)
 	}
 	if err := d.root.CheckCreateNewFile(d.name); err != nil {
 		if errors.Is(err, os.ErrExist) {
@@ -382,10 +382,14 @@ Examples:
 			// Verify against the Developer Portal history alone; the combined
 			// status read also depends on the App Store Connect banner endpoint,
 			// whose failure would falsely report an unverified acceptance.
+			// The write already happened; give the verification read its own
+			// timeout window instead of whatever the accept request left over.
+			verifyCtx, cancelVerify := shared.ContextWithTimeout(ctx)
+			defer cancelVerify()
 			var status *asc.WebAgreementsStatusResult
 			err = withWebSpinner("Verifying Apple Developer Program agreement status", func() error {
 				var statusErr error
-				status, statusErr = getAgreementHistoryFn(requestCtx, client)
+				status, statusErr = getAgreementHistoryFn(verifyCtx, client)
 				return statusErr
 			})
 			if err != nil {

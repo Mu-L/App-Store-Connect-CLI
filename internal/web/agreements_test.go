@@ -457,6 +457,26 @@ func TestDownloadAgreementFetchesSameOriginContent(t *testing.T) {
 	}
 }
 
+func TestDownloadAgreementRedactsMalformedRedirectLocation(t *testing.T) {
+	portal := newAgreementDownloadPortal(t)
+	portal.contentHandler = func(w http.ResponseWriter, r *http.Request) {
+		// net/http fails to parse this Location before CheckRedirect runs and
+		// embeds the raw header value in its error.
+		w.Header().Set("Location", "https://developer.apple.com:badport/agreement.pdf?token=very-secret")
+		w.WriteHeader(http.StatusFound)
+	}
+
+	_, err := portal.client(t).DownloadAgreement(context.Background(), "XG8DNV4HYY")
+	if err == nil || !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("DownloadAgreement() error = %v, want malformed redirect rejection", err)
+	}
+	for _, leaked := range []string{"very-secret", "token=", "badport"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("DownloadAgreement() error = %q leaks %q from the Location header", err, leaked)
+		}
+	}
+}
+
 func TestDownloadAgreementRejectsEmptySuccessfulBody(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

@@ -283,6 +283,11 @@ func redactedAgreementDownloadError(err error) error {
 		if errors.Is(urlErr.Err, context.Canceled) || errors.Is(urlErr.Err, context.DeadlineExceeded) {
 			return urlErr.Err
 		}
+		// net/http rejects an unparsable Location before CheckRedirect runs and
+		// quotes the raw header, which may carry signed query data.
+		if strings.Contains(urlErr.Err.Error(), "Location header") {
+			return fmt.Errorf("agreement download request failed: redirect carried a malformed Location header")
+		}
 		return fmt.Errorf("agreement download request failed: %w", urlErr.Err)
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
