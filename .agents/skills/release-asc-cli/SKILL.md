@@ -50,6 +50,8 @@ Do not declare success from CI alone. Verify:
 - The expected WinGet submission or PR exists and references the new version.
 - Any notarization step required by the current workflow succeeded.
 
+If the `winget` job failed, read its rate-limit preflight and retry log lines first. The step retries GitHub throttles on its own and is idempotent, so re-run that job (or dispatch the release workflow for the same version) after the logged reset time before repairing the `microsoft/winget-pkgs` submission by hand. See `docs/WINGET.md`.
+
 ## Draft the announcement
 
 Read [references/release-announcement.md](references/release-announcement.md). Create the Typefully draft only after the release is visibly published. Never schedule or publish the post unless the user explicitly asks.
