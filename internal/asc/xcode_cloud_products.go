@@ -728,6 +728,21 @@ func (c *Client) GetCiWorkflow(ctx context.Context, workflowID string) (*CiWorkf
 	return &response, nil
 }
 
+// GetCiWorkflowRaw retrieves a CI workflow by ID as the unmodified Apple response body.
+// Duplicating a workflow needs fields that the typed CiWorkflowResource omits or
+// drops through omitempty, so the raw envelope is the only lossless source.
+func (c *Client) GetCiWorkflowRaw(ctx context.Context, workflowID string, include ...string) (json.RawMessage, error) {
+	path := fmt.Sprintf("/v1/ciWorkflows/%s", strings.TrimSpace(workflowID))
+	if joined := strings.Join(include, ","); joined != "" {
+		path += "?include=" + url.QueryEscape(joined)
+	}
+	data, err := c.do(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(data), nil
+}
+
 // CreateCiWorkflow creates a CI workflow from a JSON payload.
 func (c *Client) CreateCiWorkflow(ctx context.Context, payload json.RawMessage) (*CiWorkflowResponse, error) {
 	if len(bytes.TrimSpace(payload)) == 0 {

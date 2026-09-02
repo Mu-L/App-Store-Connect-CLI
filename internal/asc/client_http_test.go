@@ -12674,3 +12674,39 @@ func TestNewRequest_AcceptsSafePath(t *testing.T) {
 		}
 	}
 }
+
+func TestGetCiWorkflowRawPreservesUnknownFields(t *testing.T) {
+	body := `{"data":{"type":"ciWorkflows","id":"wf-1","attributes":{"name":"Deploy","clean":false,"isEnabled":false,"unknownFutureField":{"nested":true}}}}`
+	response := jsonResponse(http.StatusOK, body)
+	client := newTestClient(t, func(req *http.Request) {
+		if req.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", req.Method)
+		}
+		if req.URL.Path != "/v1/ciWorkflows/wf-1" {
+			t.Fatalf("expected path /v1/ciWorkflows/wf-1, got %s", req.URL.Path)
+		}
+		if include := req.URL.Query().Get("include"); include != "product,repository" {
+			t.Fatalf("expected include=product,repository, got %q", include)
+		}
+		assertAuthorized(t, req)
+	}, response)
+
+	got, err := client.GetCiWorkflowRaw(context.Background(), "wf-1", "product", "repository")
+	if err != nil {
+		t.Fatalf("GetCiWorkflowRaw() error: %v", err)
+	}
+
+	var decoded struct {
+		Data struct {
+			Attributes map[string]json.RawMessage `json:"attributes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(got, &decoded); err != nil {
+		t.Fatalf("decode raw workflow: %v", err)
+	}
+	for _, key := range []string{"clean", "isEnabled", "unknownFutureField"} {
+		if _, ok := decoded.Data.Attributes[key]; !ok {
+			t.Fatalf("expected attribute %q to survive the raw read, got %v", key, decoded.Data.Attributes)
+		}
+	}
+}
