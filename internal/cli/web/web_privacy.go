@@ -115,8 +115,9 @@ type privacyApplyOutput struct {
 }
 
 type privacyPublishState struct {
-	ID        string `json:"id,omitempty"`
-	Published bool   `json:"published"`
+	ID             string `json:"id,omitempty"`
+	Published      bool   `json:"published"`
+	PublishedKnown bool   `json:"publishedKnown"`
 }
 
 type privacyPullOutput struct {
@@ -945,9 +946,27 @@ func valueOrNA(value string) string {
 	return trimmed
 }
 
+func privacyPublishStateFromRemote(state *webcore.AppDataUsagesPublishState) privacyPublishState {
+	if state == nil {
+		return privacyPublishState{}
+	}
+	return privacyPublishState{
+		ID:             strings.TrimSpace(state.ID),
+		Published:      state.Published,
+		PublishedKnown: state.PublishedKnown,
+	}
+}
+
+func formatPrivacyPublished(state privacyPublishState) string {
+	if !state.PublishedKnown {
+		return "unknown"
+	}
+	return fmt.Sprintf("%t", state.Published)
+}
+
 func renderPrivacyPullTable(payload privacyPullOutput) error {
 	fmt.Printf("App ID: %s\n", payload.AppID)
-	fmt.Printf("Published: %t\n", payload.PublishState.Published)
+	fmt.Printf("Published: %s\n", formatPrivacyPublished(payload.PublishState))
 	if strings.TrimSpace(payload.Out) != "" {
 		fmt.Printf("Output File: %s\n", payload.Out)
 	}
@@ -961,7 +980,7 @@ func renderPrivacyPullTable(payload privacyPullOutput) error {
 
 func renderPrivacyPullMarkdown(payload privacyPullOutput) error {
 	fmt.Printf("**App ID:** %s\n\n", payload.AppID)
-	fmt.Printf("**Published:** %t\n\n", payload.PublishState.Published)
+	fmt.Printf("**Published:** %s\n\n", formatPrivacyPublished(payload.PublishState))
 	if strings.TrimSpace(payload.Out) != "" {
 		fmt.Printf("**Output File:** %s\n\n", payload.Out)
 	}
@@ -1092,7 +1111,7 @@ func renderPrivacyPublishTable(payload privacyPublishOutput) error {
 	asc.RenderTable([]string{"Field", "Value"}, [][]string{
 		{"App ID", payload.AppID},
 		{"Publish State ID", valueOrNA(payload.PublishState.ID)},
-		{"Published", fmt.Sprintf("%t", payload.PublishState.Published)},
+		{"Published", formatPrivacyPublished(payload.PublishState)},
 		{"Was Published", fmt.Sprintf("%t", payload.WasPublished)},
 		{"Changed", fmt.Sprintf("%t", payload.Changed)},
 	})
@@ -1103,7 +1122,7 @@ func renderPrivacyPublishMarkdown(payload privacyPublishOutput) error {
 	asc.RenderMarkdown([]string{"Field", "Value"}, [][]string{
 		{"App ID", payload.AppID},
 		{"Publish State ID", valueOrNA(payload.PublishState.ID)},
-		{"Published", fmt.Sprintf("%t", payload.PublishState.Published)},
+		{"Published", formatPrivacyPublished(payload.PublishState)},
 		{"Was Published", fmt.Sprintf("%t", payload.WasPublished)},
 		{"Changed", fmt.Sprintf("%t", payload.Changed)},
 	})
@@ -1315,13 +1334,10 @@ Examples:
 			}
 
 			payload := privacyPullOutput{
-				AppID:       resolvedAppID,
-				Declaration: declaration,
-				PublishState: privacyPublishState{
-					ID:        strings.TrimSpace(publishState.ID),
-					Published: publishState.Published,
-				},
-				Out: outPath,
+				AppID:        resolvedAppID,
+				Declaration:  declaration,
+				PublishState: privacyPublishStateFromRemote(publishState),
+				Out:          outPath,
 			}
 			return shared.PrintOutputWithRenderers(
 				payload,
@@ -1536,6 +1552,10 @@ func WebPrivacyPublishCommand() *ffcli.Command {
 
 Explicitly publish app data usage declarations after apply.
 
+Requires a publish-state id before PATCHing and exits non-zero unless the
+response confirms published=true. Unknown or omitted publication state is
+never reported as success.
+
 Examples:
   asc web privacy publish --app "123456789" --confirm`,
 		FlagSet:   fs,
@@ -1567,8 +1587,14 @@ Examples:
 			if err != nil {
 				return withWebAuthHint(err, "web privacy publish")
 			}
+			if stateBefore == nil {
+				return fmt.Errorf("web privacy publish: publish state is missing")
+			}
 			stateAfter := stateBefore
-			if !stateBefore.Published {
+			if !stateBefore.PublishedKnown || !stateBefore.Published {
+				if strings.TrimSpace(stateBefore.ID) == "" {
+					return fmt.Errorf("web privacy publish: publish-state id is missing; cannot publish")
+				}
 				stateAfter, err = withWebSpinnerValue("Publishing app privacy declarations", func() (*webcore.AppDataUsagesPublishState, error) {
 					return client.SetAppDataUsagesPublished(requestCtx, stateBefore.ID, true)
 				})
@@ -1576,13 +1602,13 @@ Examples:
 					return withWebAuthHint(err, "web privacy publish")
 				}
 			}
+			if stateAfter == nil || !stateAfter.PublishedKnown || !stateAfter.Published {
+				return fmt.Errorf("web privacy publish: publication could not be verified")
+			}
 
 			payload := privacyPublishOutput{
-				AppID: resolvedAppID,
-				PublishState: privacyPublishState{
-					ID:        strings.TrimSpace(stateAfter.ID),
-					Published: stateAfter.Published,
-				},
+				AppID:        resolvedAppID,
+				PublishState: privacyPublishStateFromRemote(stateAfter),
 				WasPublished: stateBefore.Published,
 				Changed:      !stateBefore.Published && stateAfter.Published,
 			}

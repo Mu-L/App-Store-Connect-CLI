@@ -2,13 +2,17 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/handlertest"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
@@ -1001,5 +1005,284 @@ func TestParsePrivacyDeclarationFileCanonicalizesTrackingPurposeAway(t *testing.
 	}
 	if !trackingFound {
 		t.Fatalf("expected canonicalized tracking usage in declaration: %#v", declaration.DataUsages)
+	}
+}
+
+const privacyTestAppID = "123456789"
+
+func TestWebPrivacyPullReportsUnknownWhenPublishedAttributeMissing(t *testing.T) {
+	fixture := handlertest.New(t)
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages":
+			return privacyJSONResponse(req, `{"data":[]}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsagePublishState":
+			return privacyJSONResponse(req, `{
+				"data": {
+					"id": "publish-state-1",
+					"type": "appDataUsagesPublishState",
+					"attributes": {}
+				}
+			}`), nil
+		default:
+			return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		cmd := WebPrivacyPullCommand()
+		if err := cmd.FlagSet.Parse([]string{"--app", privacyTestAppID, "--output", "json"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+
+		stdout, stderr := captureWebCommandOutput(t, func() {
+			if err := cmd.Exec(context.Background(), nil); err != nil {
+				t.Fatalf("exec error: %v", err)
+			}
+		})
+		assertNoPrivacySecrets(t, stdout, stderr)
+
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+			t.Fatalf("failed to parse stdout JSON: %v\nstdout=%s", err, stdout)
+		}
+		publishState, ok := payload["publishState"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected publishState object, got %#v", payload["publishState"])
+		}
+		known, ok := publishState["publishedKnown"].(bool)
+		if !ok {
+			t.Fatalf("expected additive publishedKnown bool, got %#v", publishState["publishedKnown"])
+		}
+		if known {
+			t.Fatal("expected publishedKnown=false when Apple omits published")
+		}
+		if published, ok := publishState["published"].(bool); !ok {
+			t.Fatalf("expected published bool to remain present, got %#v", publishState["published"])
+		} else if published && !known {
+			t.Fatal("published must not report true when publication state is unknown")
+		}
+	})
+
+	t.Run("table", func(t *testing.T) {
+		cmd := WebPrivacyPullCommand()
+		if err := cmd.FlagSet.Parse([]string{"--app", privacyTestAppID, "--output", "table"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+
+		stdout, stderr := captureWebCommandOutput(t, func() {
+			if err := cmd.Exec(context.Background(), nil); err != nil {
+				t.Fatalf("exec error: %v", err)
+			}
+		})
+		assertNoPrivacySecrets(t, stdout, stderr)
+		if strings.Contains(stdout, "Published: false") {
+			t.Fatalf("pull reported unpublished instead of unknown:\n%s", stdout)
+		}
+		if !strings.Contains(stdout, "Published: unknown") {
+			t.Fatalf("expected Published: unknown in table output, got:\n%s", stdout)
+		}
+	})
+}
+
+func TestWebPrivacyPublishErrorsBeforePatchWhenPublishStateIDEmpty(t *testing.T) {
+	fixture := handlertest.New(t)
+	var patchCount int
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPatch {
+			patchCount++
+			return fixture.Response("did not expect PATCH %s", req.URL.Path), nil
+		}
+		if req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsagePublishState" {
+			return privacyJSONResponse(req, `{
+				"data": {
+					"id": "",
+					"type": "appDataUsagesPublishState",
+					"attributes": {"published": false}
+				}
+			}`), nil
+		}
+		return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+	})
+
+	cmd := WebPrivacyPublishCommand()
+	if err := cmd.FlagSet.Parse([]string{"--app", privacyTestAppID, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var execErr error
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+	if execErr == nil {
+		t.Fatal("expected publish to fail when publish-state id is empty")
+	}
+	if !strings.Contains(execErr.Error(), "publish-state id is missing") {
+		t.Fatalf("error = %v, want publish-state id is missing", execErr)
+	}
+	if !strings.Contains(stderr, "publish-state id is missing") && !strings.Contains(execErr.Error(), "publish-state id is missing") {
+		t.Fatalf("expected missing id guidance on stderr or error, stderr=%q err=%v", stderr, execErr)
+	}
+	if patchCount != 0 {
+		t.Fatalf("expected no PATCH before missing id error, got %d", patchCount)
+	}
+}
+
+func TestWebPrivacyPublishExitsNonZeroWhenPatchDoesNotConfirmPublished(t *testing.T) {
+	tests := []struct {
+		name         string
+		patchBody    string
+		wantFragment string
+	}{
+		{
+			name: "published false",
+			patchBody: `{
+				"data": {
+					"id": "publish-state-1",
+					"type": "appDataUsagesPublishState",
+					"attributes": {"published": false}
+				}
+			}`,
+			wantFragment: "could not be verified",
+		},
+		{
+			name: "published omitted",
+			patchBody: `{
+				"data": {
+					"id": "publish-state-1",
+					"type": "appDataUsagesPublishState",
+					"attributes": {}
+				}
+			}`,
+			wantFragment: "could not be verified",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := handlertest.New(t)
+			stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+				switch {
+				case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsagePublishState":
+					return privacyJSONResponse(req, `{
+						"data": {
+							"id": "publish-state-1",
+							"type": "appDataUsagesPublishState",
+							"attributes": {"published": false}
+						}
+					}`), nil
+				case req.Method == http.MethodPatch && req.URL.Path == "/iris/v1/appDataUsagesPublishState/publish-state-1":
+					return privacyJSONResponse(req, tc.patchBody), nil
+				default:
+					return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+				}
+			})
+
+			cmd := WebPrivacyPublishCommand()
+			if err := cmd.FlagSet.Parse([]string{"--app", privacyTestAppID, "--confirm", "--output", "json"}); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+
+			var execErr error
+			stdout, stderr := captureWebCommandOutput(t, func() {
+				execErr = cmd.Exec(context.Background(), nil)
+			})
+			assertNoPrivacySecrets(t, stdout, stderr)
+			if execErr == nil {
+				t.Fatal("expected publish to exit non-zero when PATCH does not confirm published")
+			}
+			if !strings.Contains(execErr.Error(), tc.wantFragment) {
+				t.Fatalf("error = %v, want %q", execErr, tc.wantFragment)
+			}
+		})
+	}
+}
+
+func TestWebPrivacyPublishSucceedsWhenPatchConfirmsPublished(t *testing.T) {
+	fixture := handlertest.New(t)
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsagePublishState":
+			return privacyJSONResponse(req, `{
+				"data": {
+					"id": "publish-state-1",
+					"type": "appDataUsagesPublishState",
+					"attributes": {"published": false}
+				}
+			}`), nil
+		case req.Method == http.MethodPatch && req.URL.Path == "/iris/v1/appDataUsagesPublishState/publish-state-1":
+			return privacyJSONResponse(req, `{
+				"data": {
+					"id": "publish-state-1",
+					"type": "appDataUsagesPublishState",
+					"attributes": {"published": true}
+				}
+			}`), nil
+		default:
+			return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+		}
+	})
+
+	cmd := WebPrivacyPublishCommand()
+	if err := cmd.FlagSet.Parse([]string{"--app", privacyTestAppID, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("exec error: %v", err)
+		}
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("failed to parse stdout JSON: %v\nstdout=%s", err, stdout)
+	}
+	if payload["changed"] != true {
+		t.Fatalf("expected changed=true, got %#v", payload["changed"])
+	}
+	publishState, ok := payload["publishState"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected publishState object, got %#v", payload["publishState"])
+	}
+	if publishState["published"] != true {
+		t.Fatalf("expected published=true, got %#v", publishState["published"])
+	}
+	if publishState["publishedKnown"] != true {
+		t.Fatalf("expected additive publishedKnown=true, got %#v", publishState["publishedKnown"])
+	}
+}
+
+func stubPrivacyWebSession(t *testing.T, roundTrip func(*http.Request) (*http.Response, error)) {
+	t.Helper()
+	_ = stubWebProgressLabels(t)
+	t.Setenv("ASC_BYPASS_KEYCHAIN", "1")
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	t.Setenv("ASC_WEB_MIN_REQUEST_INTERVAL", "0")
+	t.Cleanup(SetResolveWebSession(func(ctx context.Context, appleID, password, twoFactorCode, twoFactorCodeCommand string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{
+			Client: &http.Client{Transport: roundTripFunc(roundTrip)},
+		}, "cache", nil
+	}))
+}
+
+func privacyJSONResponse(req *http.Request, body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+}
+
+func assertNoPrivacySecrets(t *testing.T, stdout, stderr string) {
+	t.Helper()
+	combined := stdout + stderr
+	for _, secret := range []string{"Set-Cookie", "cookie=", "myacinfo", "dqsid"} {
+		if strings.Contains(combined, secret) {
+			t.Fatalf("output leaked session secret %q", secret)
+		}
 	}
 }
