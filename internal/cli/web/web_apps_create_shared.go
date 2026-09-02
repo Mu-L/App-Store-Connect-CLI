@@ -365,6 +365,14 @@ func RunAppsCreate(ctx context.Context, opts AppsCreateRunOptions) error {
 			}); lookupErr != nil {
 				return lookupErr
 			}
+		} else {
+			probeCtx, probeCancel := shared.ContextWithTimeout(ctx)
+			defer probeCancel()
+			if probeErr := withWebSpinner("Checking App Store Connect API access", func() error {
+				return ensureAppCreateAPIAccess(probeCtx, accessClient)
+			}); probeErr != nil {
+				return fmt.Errorf("web apps create failed: --access requires working App Store Connect API authentication: %w", probeErr)
+			}
 		}
 	}
 
@@ -468,8 +476,10 @@ func RunAppsCreate(ctx context.Context, opts AppsCreateRunOptions) error {
 		return shared.PrintOutput(app, opts.Output, opts.Pretty)
 	}
 
+	accessCtx, accessCancel := shared.ContextWithTimeout(ctx)
+	defer accessCancel()
 	receipt, applyErr := withWebSpinnerValue("Applying app access", func() (*asc.WebAppCreateResult, error) {
-		return applyAndReadAppCreateAccess(requestCtx, accessClient, strings.TrimSpace(app.Data.ID), access, userIDs)
+		return applyAndReadAppCreateAccess(accessCtx, accessClient, strings.TrimSpace(app.Data.ID), access, userIDs)
 	})
 	if applyErr != nil {
 		return applyErr

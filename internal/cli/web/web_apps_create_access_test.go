@@ -213,6 +213,59 @@ func TestRunAppsCreateAllAppsVisibleUserMakesNoCreate(t *testing.T) {
 	}
 }
 
+func TestRunAppsCreateFullAccessUnauthorizedMakesNoCreate(t *testing.T) {
+	createCalled := false
+	origCreate := createWebAppFn
+	origResolve := resolveAppCreateSessionFn
+	t.Cleanup(func() {
+		createWebAppFn = origCreate
+		resolveAppCreateSessionFn = origResolve
+	})
+	createWebAppFn = func(ctx context.Context, client *webcore.Client, attrs webcore.AppCreateAttributes) (*webcore.AppResponse, error) {
+		createCalled = true
+		return nil, nil
+	}
+	resolveAppCreateSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		t.Fatal("did not expect web session lookup")
+		return nil, "", nil
+	}
+
+	fixture := handlertest.New(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodGet && req.URL.Path == "/v1/users" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"errors":[{"status":"401","code":"NOT_AUTHORIZED","title":"Authentication credentials are missing or invalid."}]}`))
+			return
+		}
+		fixture.Respond(w, "unexpected request: %s %s", req.Method, req.URL.Path)
+	}))
+	defer server.Close()
+	setAppCreateASCClient(t, server)
+
+	var err error
+	_, stderr := captureOutput(t, func() {
+		err = RunAppsCreate(context.Background(), AppsCreateRunOptions{
+			Name:                     "My App",
+			BundleID:                 "com.example.app",
+			SKU:                      "SKU123",
+			Access:                   "full",
+			Output:                   "json",
+			DisableBundleIDPreflight: true,
+		})
+	})
+	if err == nil {
+		t.Fatal("expected unauthorized access probe to fail")
+	}
+	if !strings.Contains(err.Error(), "--access requires working App Store Connect API authentication") &&
+		!strings.Contains(stderr, "--access requires working App Store Connect API authentication") {
+		t.Fatalf("stderr = %q err = %v", stderr, err)
+	}
+	if createCalled {
+		t.Fatal("create should not run when the Users API probe fails")
+	}
+}
+
 func TestRunAppsCreateOmittingAccessFlagsKeepsCreateBody(t *testing.T) {
 	origResolve := resolveAppCreateSessionFn
 	t.Cleanup(func() {
@@ -363,7 +416,7 @@ func TestRunAppsCreateLimitedAccessRollsBackGrantedUsersWhenLaterGrantFails(t *t
 
 	fixture := handlertest.New(t)
 	posted := make([]string, 0, 2)
-	deleted := make([]string, 0, 1)
+	deleted := make([]string, 0, 2)
 	rereadCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
@@ -383,6 +436,9 @@ func TestRunAppsCreateLimitedAccessRollsBackGrantedUsersWhenLaterGrantFails(t *t
 			_, _ = w.Write([]byte(`{"errors":[{"status":"500","code":"UNEXPECTED_ERROR","title":"An unexpected error occurred."}]}`))
 		case req.Method == http.MethodDelete && req.URL.Path == "/v1/users/user-1/relationships/visibleApps":
 			deleted = append(deleted, "user-1")
+			w.WriteHeader(http.StatusNoContent)
+		case req.Method == http.MethodDelete && req.URL.Path == "/v1/users/user-2/relationships/visibleApps":
+			deleted = append(deleted, "user-2")
 			w.WriteHeader(http.StatusNoContent)
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/users":
 			rereadCalled = true
@@ -414,8 +470,8 @@ func TestRunAppsCreateLimitedAccessRollsBackGrantedUsersWhenLaterGrantFails(t *t
 	if len(posted) != 2 || posted[0] != "user-1" || posted[1] != "user-2" {
 		t.Fatalf("posted grants = %v, want user-1 then user-2", posted)
 	}
-	if len(deleted) != 1 || deleted[0] != "user-1" {
-		t.Fatalf("rolled back users = %v, want [user-1]", deleted)
+	if len(deleted) != 2 || deleted[0] != "user-1" || deleted[1] != "user-2" {
+		t.Fatalf("rolled back users = %v, want [user-1 user-2]", deleted)
 	}
 	if rereadCalled {
 		t.Fatal("did not expect access re-read after a failed grant")
@@ -463,6 +519,8 @@ func TestRunAppsCreateLimitedAccessJoinsRollbackErrorWhenCompensationFails(t *te
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(`{"errors":[{"status":"500","code":"UNEXPECTED_ERROR","title":"An unexpected error occurred."}]}`))
+		case req.Method == http.MethodDelete && req.URL.Path == "/v1/users/user-2/relationships/visibleApps":
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			fixture.Respond(w, "unexpected request: %s %s", req.Method, req.URL.Path)
 		}

@@ -109,6 +109,11 @@ func ensureAppCreateUsersExist(ctx context.Context, client *asc.Client, userIDs 
 	return nil
 }
 
+func ensureAppCreateAPIAccess(ctx context.Context, client *asc.Client) error {
+	_, err := client.GetUsers(ctx, asc.WithUsersLimit(1))
+	return err
+}
+
 func applyAndReadAppCreateAccess(ctx context.Context, client *asc.Client, appID, requestedAccess string, userIDs []string) (*asc.WebAppCreateResult, error) {
 	appID = strings.TrimSpace(appID)
 	if appID == "" {
@@ -119,7 +124,8 @@ func applyAndReadAppCreateAccess(ctx context.Context, client *asc.Client, appID,
 		for _, userID := range userIDs {
 			if err := client.AddUserVisibleApps(ctx, userID, []string{appID}); err != nil {
 				grantErr := fmt.Errorf("web apps create failed: grant app access to user %q: %w", userID, err)
-				if rollbackErr := rollbackAppCreateVisibleApps(ctx, client, appID, granted); rollbackErr != nil {
+				rollbackUsers := append(append([]string{}, granted...), userID)
+				if rollbackErr := rollbackAppCreateVisibleApps(ctx, client, appID, rollbackUsers); rollbackErr != nil {
 					return nil, errors.Join(grantErr, rollbackErr)
 				}
 				return nil, grantErr
