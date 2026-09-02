@@ -72,6 +72,14 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - `appStoreState` and `appVersionState` are both printed verbatim. App Store Connect's web client populates `appStoreState` from `appVersionState` and applies legacy remapping (`READY_FOR_DISTRIBUTION` to `READY_FOR_SALE`) purely client-side, so raw responses can carry either field or both. The CLI does not reproduce that remapping.
 - The write is not shipped. The PATCH target is `PATCH /iris/v1/appStoreVersions/{id}`, but the serialized request body is assembled in an authenticated micro-frontend that is not observable without a live session capture, so the attribute-level write contract is unverified.
 
+## Web-session app status history
+
+- The public App Store Connect API has no status-history endpoint. fastlane's only status-history path is the retired legacy tunes API (`GET ra/apps/{id}/stateHistory?platform=...`), which has no app-level iris counterpart.
+- The modern equivalent is version-scoped: `GET /iris/v1/appStoreVersions/{appStoreVersionId}/appStoreVersionStateChanges`, whose resources carry `appStoreState`, `date`, and `initiator`. `initiator` is the actor App Store Connect shows for the change.
+- There is no app-level history endpoint, so `asc web apps history --app APP_ID` lists the app's versions with `GET /iris/v1/apps/{id}/appStoreVersions` and then fans out one state-change request per version. `--version-id` scopes the read to a single version and skips the fan-out.
+- Both readers follow `links.next` internally, so the command has no `--paginate` flag, matching `asc web api-keys list`.
+- `AppStatusHistory` is a role capability in App Store Connect, so accounts without it can get an authorization error on the state-change read even when the app list succeeds.
+
 ## TestFlight Distribution
 
 - `asc testflight distribution edit --external-testing` shipped in 0.35.3 but App Store Connect does not allow `externalBuildState` in the build beta detail PATCH request. The flag remains parseable during its deprecation window and fails before HTTP instead of sending an unsupported update.
