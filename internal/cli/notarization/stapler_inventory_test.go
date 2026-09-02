@@ -776,3 +776,74 @@ func TestStaplerDirectoryInventoryRejectsNestedFileRemovedBeforeOpen(t *testing.
 		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity error", err, err)
 	}
 }
+
+func TestStaplerDirectoryInventoryRejectsBundleRemovedBeforeFinalRebind(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	if err := os.Mkdir(targetPath, 0o755); err != nil {
+		t.Fatalf("create bundle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetPath, "Info.plist"), []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write bundle file: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+
+	previous := afterStaplerDirectoryInventoryScanFn
+	removed := false
+	afterStaplerDirectoryInventoryScanFn = func() {
+		if removed {
+			return
+		}
+		removed = true
+		if err := os.RemoveAll(targetPath); err != nil {
+			t.Fatalf("remove scanned bundle: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterStaplerDirectoryInventoryScanFn = previous })
+
+	_, err = target.captureDirectoryInventoryAtStage(context.Background(), "before validation")
+	if err == nil {
+		t.Fatal("captureDirectoryInventoryAtStage() = nil, want bundle-removal rejection")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity error", err, err)
+	}
+}
+
+func TestStaplerRegularFileFingerprintRejectsFileRemovedBeforeFinalRebind(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+
+	previous := afterStaplerRegularFileFingerprintFn
+	removed := false
+	afterStaplerRegularFileFingerprintFn = func() {
+		if removed {
+			return
+		}
+		removed = true
+		if err := os.Remove(targetPath); err != nil {
+			t.Fatalf("remove hashed target: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterStaplerRegularFileFingerprintFn = previous })
+
+	_, err = target.captureRegularFileFingerprintAtStage(context.Background(), "before validation")
+	if err == nil {
+		t.Fatal("captureRegularFileFingerprintAtStage() = nil, want target-removal rejection")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("captureRegularFileFingerprintAtStage() error = %T %v, want identity error", err, err)
+	}
+}

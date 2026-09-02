@@ -63,6 +63,11 @@ var afterStaplerInventoryEntriesFn func()
 // Production leaves it nil.
 var afterStaplerInventoryEntryLstatFn func(relative string)
 
+// This narrow seam lets tests replace or remove the directory bundle after its
+// inventory has been scanned and verified but before the final pathname rebind.
+// Production leaves it nil.
+var afterStaplerDirectoryInventoryScanFn func()
+
 // staplerDirectoryInventory is deliberately private. It is comparison
 // evidence for a single invocation, not a public artifact description.
 type staplerDirectoryInventory struct {
@@ -190,6 +195,12 @@ func (target *validatedStaplerTarget) captureRegularFileFingerprint(ctx context.
 		}
 	}
 	if err != nil {
+		if staplerInventoryEntryVanished(err) {
+			// The command retained and hashed this file, so a pathname that no
+			// longer resolves proves the artifact changed rather than an
+			// operational filesystem failure.
+			return staplerRegularFileFingerprint{}, errStaplerInventoryChanged
+		}
 		return staplerRegularFileFingerprint{}, err
 	}
 	if currentPathInfo == nil || currentPathInfo.Mode()&os.ModeSymlink != 0 ||
@@ -363,8 +374,17 @@ func (target *validatedStaplerTarget) captureDirectoryInventory(ctx context.Cont
 	if !os.SameFile(target.identity, finalPinned) || !finalPinned.IsDir() {
 		return staplerDirectoryInventory{}, errStaplerInventoryChanged
 	}
+	if afterStaplerDirectoryInventoryScanFn != nil {
+		afterStaplerDirectoryInventoryScanFn()
+	}
 	finalPathInfo, err := filesystemRoot.Lstat(target.relative)
 	if err != nil {
+		if staplerInventoryEntryVanished(err) {
+			// The command retained and scanned this bundle, so a pathname that no
+			// longer resolves proves the artifact changed rather than an
+			// operational filesystem failure.
+			return staplerDirectoryInventory{}, errStaplerInventoryChanged
+		}
 		return staplerDirectoryInventory{}, fmt.Errorf("reinspect inventory path: %w", err)
 	}
 	if finalPathInfo.Mode()&os.ModeSymlink != 0 || !staplerInventoryInfoStable(target.identity, finalPathInfo) {
