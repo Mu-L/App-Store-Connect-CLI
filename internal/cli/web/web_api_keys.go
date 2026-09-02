@@ -279,8 +279,11 @@ func isWebAPIKeyRoleIdentifier(role string) bool {
 
 func classifyWebAPIKeyRole(role string) error {
 	view, err := webref.Resolve("team", []string{role})
-	if err != nil || view == nil || view.KeyNotes == nil {
-		return nil
+	if err != nil {
+		return fmt.Errorf("load team API key role reference: %w", err)
+	}
+	if view == nil || view.KeyNotes == nil {
+		return fmt.Errorf("load team API key role reference: missing team key notes")
 	}
 	for _, selectable := range view.KeyNotes.SelectableRoles {
 		if role == selectable {
