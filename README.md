@@ -104,6 +104,16 @@ asc auth login \
   --network
 ```
 
+Individual API keys have no issuer ID. Omit `--issuer-id` and pass `--key-type individual`:
+
+```bash
+asc auth login \
+  --name "MyIndividualKey" \
+  --key-id "ABC123" \
+  --key-type individual \
+  --private-key /path/to/AuthKey.p8
+```
+
 Generate API keys at:
 https://appstoreconnect.apple.com/access/integrations/api
 
