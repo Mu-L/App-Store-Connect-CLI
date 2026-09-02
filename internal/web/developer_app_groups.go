@@ -325,6 +325,11 @@ func (c *Client) listDeveloperAppGroupAssignments(ctx context.Context, groupID s
 		if err := json.Unmarshal(body, &response); err != nil {
 			return nil, fmt.Errorf("failed to parse Developer Portal Bundle ID list response: %w", err)
 		}
+		// A missing or null collection is not an empty team; treat it as
+		// unreadable so the delete preflight stays fail-closed.
+		if response.Data == nil {
+			return nil, fmt.Errorf("cannot determine App Group assignments: Developer Portal Bundle ID list response has no data collection")
+		}
 		includedByID := make(map[string]developerResource, len(response.Included))
 		for _, resource := range response.Included {
 			if resource.Type == "bundleIdCapabilities" && strings.TrimSpace(resource.ID) != "" {
@@ -461,7 +466,8 @@ func (c *Client) CreateDeveloperAppGroup(ctx context.Context, request DeveloperA
 }
 
 // AssignDeveloperAppGroup associates an App Group with a Bundle ID while
-// preserving Apple's complete current capability graph.
+// preserving Apple's complete current capability graph. The result is verified
+// by re-reading the Bundle ID.
 func (c *Client) AssignDeveloperAppGroup(ctx context.Context, request DeveloperAppGroupAssignRequest) (*DeveloperAppGroupAssignResult, error) {
 	request.BundleID = strings.TrimSpace(request.BundleID)
 	request.GroupID = strings.TrimSpace(request.GroupID)
@@ -490,6 +496,9 @@ func (c *Client) AssignDeveloperAppGroup(ctx context.Context, request DeveloperA
 		desired = append(desired, request.GroupID)
 	}
 	if err := c.patchDeveloperAppGroups(ctx, current, true, desired); err != nil {
+		return nil, err
+	}
+	if err := c.verifyDeveloperAppGroups(ctx, request.BundleID, true, desired); err != nil {
 		return nil, err
 	}
 	return &DeveloperAppGroupAssignResult{BundleID: request.BundleID, GroupID: request.GroupID, Changed: true, Status: "assigned"}, nil

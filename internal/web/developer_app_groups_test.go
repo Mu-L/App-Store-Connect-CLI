@@ -267,6 +267,11 @@ func TestAssignDeveloperAppGroupPreservesBundleGraph(t *testing.T) {
 				t.Fatalf("ReadAll() error: %v", err)
 			}
 			return developerPortalTestResponse(http.StatusOK, `{"data":{"type":"bundleIds","id":"bundle-1"}}`, nil), nil
+		case 5:
+			if request.Method != http.MethodPost || request.URL.Path != "/services-account/v1/bundleIds/bundle-1" || request.Header.Get("X-HTTP-Method-Override") != http.MethodGet {
+				t.Fatalf("expected verification re-read, got %s %s", request.Method, request.URL.String())
+			}
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP12345"), nil), nil
 		default:
 			t.Fatalf("unexpected request %d", requestNumber)
 			return nil, nil
@@ -324,6 +329,31 @@ func TestAssignDeveloperAppGroupPreservesBundleGraph(t *testing.T) {
 	}
 	if len(groups.Data) != 1 || groups.Data[0].ID != "GROUP12345" || groups.Data[0].Type != "appGroups" {
 		t.Fatalf("unexpected appGroups relationship: %+v", groups.Data)
+	}
+}
+
+func TestAssignDeveloperAppGroupFailsWhenVerificationDiffers(t *testing.T) {
+	client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+		switch requestNumber {
+		case 1:
+			return assertDeveloperPortalBootstrap(t, request), nil
+		case 2:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1"), nil), nil
+		case 3:
+			return developerPortalTestResponse(http.StatusOK, `{"resultCode":0,"applicationGroupList":[]}`, http.Header{"csrf": {"primed-csrf"}, "csrf_ts": {"primed-ts"}}), nil
+		case 4:
+			return developerPortalTestResponse(http.StatusOK, `{"data":{"type":"bundleIds","id":"bundle-1"}}`, nil), nil
+		case 5:
+			return developerPortalTestResponse(http.StatusOK, developerBundleAppGroupsFixture(true, "GROUP1"), nil), nil
+		default:
+			t.Fatalf("unexpected request %d", requestNumber)
+			return nil, nil
+		}
+	})
+
+	_, err := client.AssignDeveloperAppGroup(context.Background(), DeveloperAppGroupAssignRequest{BundleID: "bundle-1", GroupID: "GROUP2"})
+	if err == nil || !strings.Contains(err.Error(), "accepted the update but") {
+		t.Fatalf("expected verification error, got %v", err)
 	}
 }
 
@@ -528,6 +558,31 @@ func TestDeleteDeveloperAppGroupFailsClosedOnUnknownGroupOrUnreadableAssignments
 			t.Fatalf("expected fail-closed assignment error, got %v", err)
 		}
 	})
+
+	for name, body := range map[string]string{
+		"empty envelope": `{}`,
+		"null data":      `{"data":null,"included":[]}`,
+	} {
+		t.Run("malformed bundle list "+name, func(t *testing.T) {
+			client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
+				switch requestNumber {
+				case 1:
+					return assertDeveloperPortalBootstrap(t, request), nil
+				case 2:
+					return developerPortalTestResponse(http.StatusOK, developerAppGroupsListFixture("GROUP12345"), nil), nil
+				case 3:
+					return developerPortalTestResponse(http.StatusOK, body, nil), nil
+				default:
+					t.Fatalf("malformed Bundle ID envelope must not lead to request %d", requestNumber)
+					return nil, nil
+				}
+			})
+			_, err := client.DeleteDeveloperAppGroup(context.Background(), DeveloperAppGroupDeleteRequest{GroupID: "GROUP12345"})
+			if err == nil || !strings.Contains(err.Error(), "cannot determine App Group assignments") {
+				t.Fatalf("expected fail-closed assignment error, got %v", err)
+			}
+		})
+	}
 
 	t.Run("missing group id", func(t *testing.T) {
 		client := newDeveloperAppGroupsTestClient(t, func(requestNumber int, request *http.Request) (*http.Response, error) {
