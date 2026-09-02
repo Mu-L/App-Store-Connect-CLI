@@ -185,6 +185,30 @@ def job_block(workflow: str, job: str) -> str:
     return workflow[start:end]
 
 
+def matrix_command_for_runner(job: str, runner: str) -> str:
+    marker = f"runner: {runner}"
+    start = job.find(marker)
+    if start < 0:
+        return ""
+    rest = job[start:]
+    command_at = rest.find("command: |")
+    next_runner = rest.find("\n            runner:", len(marker))
+    if command_at < 0 or (0 <= next_runner < command_at):
+        return ""
+    command = rest[command_at:]
+    bounds = [
+        index
+        for index in (
+            command.find("\n          - name:"),
+            command.find("\n    steps:"),
+        )
+        if index >= 0
+    ]
+    if bounds:
+        command = command[: min(bounds)]
+    return command
+
+
 def assert_optimized_workflow(path: Path, test_job: str) -> None:
     assert_optimized_workflow_text(path, path.read_text(), test_job)
 
@@ -253,6 +277,11 @@ def assert_optimized_workflow_text(path: Path, workflow: str, test_job: str) -> 
     for runner in ("macos-latest", "ubuntu-latest", "windows-latest"):
         assert f"runner: {runner}" in build_platforms, f"{path}: missing native build runner {runner}"
     assert "go test -short ./internal/screenshots" in build_platforms, f"{path}: missing Darwin-only tests"
+    for runner in ("macos-latest", "windows-latest"):
+        command = matrix_command_for_runner(build_platforms, runner)
+        assert "ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/rootfs" in command, (
+            f"{path}: {runner} must run ./internal/rootfs with the keychain bypass"
+        )
     for arch in ("amd64", "arm64"):
         command = f"CGO_ENABLED=1 GOOS=darwin GOARCH={arch} go build"
         assert command in build_platforms, f"{path}: missing cgo-enabled Darwin {arch} build"
@@ -295,6 +324,7 @@ def assert_optimized_workflow_rejects_weakened_checks() -> None:
             "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build",
             "CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build",
             "CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build",
+            "ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/rootfs",
         ):
             assert command in workflow, f"{path}: expected to find {command!r}"
             weakened = workflow.replace(command, "true")
@@ -303,6 +333,23 @@ def assert_optimized_workflow_rejects_weakened_checks() -> None:
             except AssertionError:
                 continue
             raise AssertionError(f"{path}: guard accepts CI with {command!r} removed")
+
+        rootfs_command = "              ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/rootfs\n"
+        windows_only_removed = workflow
+        last = workflow.rfind(rootfs_command)
+        if last >= 0:
+            windows_only_removed = workflow[:last] + workflow[last + len(rootfs_command) :]
+        for runner, weakened in (
+            ("macOS", workflow.replace(rootfs_command, "", 1)),
+            ("Windows", windows_only_removed),
+        ):
+            try:
+                assert_optimized_workflow_text(path, weakened, test_job)
+            except AssertionError:
+                continue
+            raise AssertionError(
+                f"{path}: guard accepts CI with ./internal/rootfs removed from {runner} only"
+            )
 
 
 def run_security_target(path: str) -> subprocess.CompletedProcess[str]:
