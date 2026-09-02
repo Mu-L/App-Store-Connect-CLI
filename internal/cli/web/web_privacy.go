@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -83,6 +84,14 @@ type privacyAPICall struct {
 	Count     int    `json:"count"`
 }
 
+// privacyStaleToken names one declaration token that the live Apple catalog no
+// longer accepts, so plan can flag it and apply can refuse before mutating.
+type privacyStaleToken struct {
+	Kind   string `json:"kind"`
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
 type privacyPlanOutput struct {
 	AppID          string                 `json:"appId"`
 	File           string                 `json:"file"`
@@ -90,6 +99,7 @@ type privacyPlanOutput struct {
 	Adds           []privacyPlanChange    `json:"adds"`
 	Deletes        []privacyPlanChange    `json:"deletes"`
 	SkippedDeletes []privacySkippedDelete `json:"skippedDeletes,omitempty"`
+	StaleTokens    []privacyStaleToken    `json:"staleTokens,omitempty"`
 	APICalls       []privacyAPICall       `json:"apiCalls,omitempty"`
 }
 
@@ -102,16 +112,28 @@ type privacyApplyAction struct {
 	DataProtection string `json:"dataProtection"`
 }
 
+// privacyApplyRecheck records the post-failure remote re-read that resolves
+// which attempted actions actually committed.
+type privacyApplyRecheck struct {
+	Performed        bool `json:"performed"`
+	Succeeded        bool `json:"succeeded"`
+	RemainingChanges int  `json:"remainingChanges"`
+}
+
 type privacyApplyOutput struct {
-	AppID          string                 `json:"appId"`
-	File           string                 `json:"file"`
-	Updates        []privacyPlanChange    `json:"updates,omitempty"`
-	Adds           []privacyPlanChange    `json:"adds"`
-	Deletes        []privacyPlanChange    `json:"deletes"`
-	SkippedDeletes []privacySkippedDelete `json:"skippedDeletes,omitempty"`
-	Applied        bool                   `json:"applied"`
-	Actions        []privacyApplyAction   `json:"actions,omitempty"`
-	APICalls       []privacyAPICall       `json:"apiCalls,omitempty"`
+	AppID             string                 `json:"appId"`
+	File              string                 `json:"file"`
+	Updates           []privacyPlanChange    `json:"updates,omitempty"`
+	Adds              []privacyPlanChange    `json:"adds"`
+	Deletes           []privacyPlanChange    `json:"deletes"`
+	SkippedDeletes    []privacySkippedDelete `json:"skippedDeletes,omitempty"`
+	Applied           bool                   `json:"applied"`
+	Changed           bool                   `json:"changed"`
+	Actions           []privacyApplyAction   `json:"actions,omitempty"`
+	UnknownActions    []privacyApplyAction   `json:"unknownActions,omitempty"`
+	NotAppliedActions []privacyApplyAction   `json:"notAppliedActions,omitempty"`
+	Recheck           *privacyApplyRecheck   `json:"recheck,omitempty"`
+	APICalls          []privacyAPICall       `json:"apiCalls,omitempty"`
 }
 
 type privacyPublishState struct {
@@ -145,6 +167,19 @@ type privacyMutationClient interface {
 	CreateAppDataUsage(ctx context.Context, appID string, tuple webcore.DataUsageTuple) (*webcore.AppDataUsage, error)
 	UpdateAppDataUsage(ctx context.Context, appDataUsageID string, tuple webcore.DataUsageTuple) (*webcore.AppDataUsage, error)
 	DeleteAppDataUsage(ctx context.Context, appDataUsageID string) error
+}
+
+type privacyCatalogClient interface {
+	ListAppDataUsageCategories(ctx context.Context) ([]webcore.AppDataUsageCategory, error)
+	ListAppDataUsagePurposes(ctx context.Context) ([]webcore.AppDataUsagePurpose, error)
+	ListAppDataUsageDataProtections(ctx context.Context) ([]webcore.AppDataUsageDataProtection, error)
+}
+
+// privacyCatalogTokens maps each catalog dimension to token id -> deleted.
+type privacyCatalogTokens struct {
+	Categories      map[string]bool
+	Purposes        map[string]bool
+	DataProtections map[string]bool
 }
 
 func normalizeToken(value string) string {
@@ -646,65 +681,292 @@ func planFromDesiredAndRemote(appID, file string, desired map[string]privacyTupl
 	}
 }
 
-func applyPrivacyPlan(ctx context.Context, client privacyMutationClient, appID string, plan privacyPlanOutput) ([]privacyApplyAction, error) {
-	if err := validateApplyPlanUsageIDs(plan); err != nil {
-		return nil, err
+// loadPrivacyCatalogTokens reads the live category, purpose, and
+// data-protection catalogs so plan and apply can detect tokens Apple has
+// deleted before a declaration is sent back as a relationship id.
+func loadPrivacyCatalogTokens(ctx context.Context, client privacyCatalogClient) (privacyCatalogTokens, error) {
+	tokens := privacyCatalogTokens{
+		Categories:      map[string]bool{},
+		Purposes:        map[string]bool{},
+		DataProtections: map[string]bool{},
 	}
-	actions := make([]privacyApplyAction, 0, len(plan.Updates)+len(plan.Adds)+len(plan.Deletes))
 
-	for _, deletion := range plan.Deletes {
-		if err := client.DeleteAppDataUsage(ctx, deletion.UsageID); err != nil {
-			return nil, err
+	categories, err := client.ListAppDataUsageCategories(ctx)
+	if err != nil {
+		return privacyCatalogTokens{}, err
+	}
+	for _, category := range categories {
+		id := normalizeToken(category.ID)
+		if id == "" {
+			continue
 		}
-		actions = append(actions, privacyApplyAction{
-			Action:         "delete",
-			Key:            deletion.Key,
-			UsageID:        deletion.UsageID,
-			Category:       deletion.Category,
-			Purpose:        deletion.Purpose,
-			DataProtection: deletion.DataProtection,
-		})
+		tokens.Categories[id] = category.Deleted
 	}
 
-	for _, update := range plan.Updates {
-		updated, err := client.UpdateAppDataUsage(ctx, update.UsageID, webcore.DataUsageTuple{
-			Category:       update.Category,
-			Purpose:        update.Purpose,
-			DataProtection: update.DataProtection,
-		})
-		if err != nil {
-			return nil, err
+	purposes, err := client.ListAppDataUsagePurposes(ctx)
+	if err != nil {
+		return privacyCatalogTokens{}, err
+	}
+	for _, purpose := range purposes {
+		id := normalizeToken(purpose.ID)
+		if id == "" {
+			continue
 		}
-		actions = append(actions, privacyApplyAction{
-			Action:         "update",
-			Key:            update.Key,
-			UsageID:        strings.TrimSpace(updated.ID),
-			Category:       update.Category,
-			Purpose:        update.Purpose,
-			DataProtection: update.DataProtection,
-		})
+		tokens.Purposes[id] = purpose.Deleted
 	}
 
+	protections, err := client.ListAppDataUsageDataProtections(ctx)
+	if err != nil {
+		return privacyCatalogTokens{}, err
+	}
+	for _, protection := range protections {
+		id := normalizeToken(protection.ID)
+		if id == "" {
+			continue
+		}
+		tokens.DataProtections[id] = protection.Deleted
+	}
+
+	return tokens, nil
+}
+
+// privacyStaleTokens reports declaration tokens that the catalog marks deleted
+// or no longer lists at all. A dimension Apple returned empty proves nothing,
+// so it is skipped instead of failing every token in it.
+func privacyStaleTokens(desired map[string]privacyTuple, catalog privacyCatalogTokens) []privacyStaleToken {
+	used := map[string]map[string]struct{}{
+		"category":       {},
+		"purpose":        {},
+		"dataProtection": {},
+	}
+	for _, tuple := range desired {
+		for kind, value := range map[string]string{
+			"category":       tuple.Category,
+			"purpose":        tuple.Purpose,
+			"dataProtection": tuple.DataProtection,
+		} {
+			token := normalizeToken(value)
+			if token == "" {
+				continue
+			}
+			used[kind][token] = struct{}{}
+		}
+	}
+
+	known := map[string]map[string]bool{
+		"category":       catalog.Categories,
+		"purpose":        catalog.Purposes,
+		"dataProtection": catalog.DataProtections,
+	}
+
+	stale := make([]privacyStaleToken, 0)
+	for kind, tokens := range used {
+		catalogTokens := known[kind]
+		if len(catalogTokens) == 0 {
+			continue
+		}
+		for token := range tokens {
+			deleted, exists := catalogTokens[token]
+			switch {
+			case !exists:
+				stale = append(stale, privacyStaleToken{Kind: kind, ID: token, Reason: "unknown"})
+			case deleted:
+				stale = append(stale, privacyStaleToken{Kind: kind, ID: token, Reason: "deleted"})
+			}
+		}
+	}
+
+	sort.Slice(stale, func(i, j int) bool {
+		if stale[i].Kind == stale[j].Kind {
+			return stale[i].ID < stale[j].ID
+		}
+		return stale[i].Kind < stale[j].Kind
+	})
+	return stale
+}
+
+func formatPrivacyStaleTokens(stale []privacyStaleToken) string {
+	parts := make([]string, 0, len(stale))
+	for _, token := range stale {
+		parts = append(parts, fmt.Sprintf("%s %s (%s)", token.Kind, token.ID, token.Reason))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// privacyPlannedStep is one ordered mutation in an apply sequence.
+type privacyPlannedStep struct {
+	Action string
+	Change privacyPlanChange
+}
+
+// privacyApplySteps orders a plan so a mid-sequence failure leaves a superset
+// of the desired declaration rather than a hole. Updates run first because an
+// in-place linkage flip never leaves a tuple missing, creates run next, and
+// deletes run last. The exception is a delete that a later create depends on:
+// DATA_NOT_COLLECTED and collected tuples are mutually exclusive, so those
+// deletes are prerequisites and must run before the creates that replace them.
+func privacyApplySteps(plan privacyPlanOutput) []privacyPlannedStep {
+	desiredNotCollected := false
 	for _, add := range plan.Adds {
-		created, err := client.CreateAppDataUsage(ctx, appID, webcore.DataUsageTuple{
-			Category:       add.Category,
-			Purpose:        add.Purpose,
-			DataProtection: add.DataProtection,
-		})
-		if err != nil {
-			return nil, err
+		if normalizeToken(add.DataProtection) == dataProtectionNotCollected {
+			desiredNotCollected = true
+			break
 		}
-		actions = append(actions, privacyApplyAction{
-			Action:         "create",
-			Key:            add.Key,
-			UsageID:        strings.TrimSpace(created.ID),
-			Category:       add.Category,
-			Purpose:        add.Purpose,
-			DataProtection: add.DataProtection,
-		})
 	}
 
-	return actions, nil
+	prerequisiteDeletes := make([]privacyPlanChange, 0, len(plan.Deletes))
+	trailingDeletes := make([]privacyPlanChange, 0, len(plan.Deletes))
+	for _, deletion := range plan.Deletes {
+		if desiredNotCollected || normalizeToken(deletion.DataProtection) == dataProtectionNotCollected {
+			prerequisiteDeletes = append(prerequisiteDeletes, deletion)
+			continue
+		}
+		trailingDeletes = append(trailingDeletes, deletion)
+	}
+
+	steps := make([]privacyPlannedStep, 0, len(plan.Updates)+len(plan.Adds)+len(plan.Deletes))
+	for _, deletion := range prerequisiteDeletes {
+		steps = append(steps, privacyPlannedStep{Action: "delete", Change: deletion})
+	}
+	for _, update := range plan.Updates {
+		steps = append(steps, privacyPlannedStep{Action: "update", Change: update})
+	}
+	for _, add := range plan.Adds {
+		steps = append(steps, privacyPlannedStep{Action: "create", Change: add})
+	}
+	for _, deletion := range trailingDeletes {
+		steps = append(steps, privacyPlannedStep{Action: "delete", Change: deletion})
+	}
+	return steps
+}
+
+func privacyActionFromStep(step privacyPlannedStep, usageID string) privacyApplyAction {
+	return privacyApplyAction{
+		Action:         step.Action,
+		Key:            step.Change.Key,
+		UsageID:        strings.TrimSpace(usageID),
+		Category:       step.Change.Category,
+		Purpose:        step.Change.Purpose,
+		DataProtection: step.Change.DataProtection,
+	}
+}
+
+// privacyApplyResult is the receipt for one apply sequence: what committed,
+// what was attempted without a confirmed outcome, and what never ran.
+type privacyApplyResult struct {
+	Applied    []privacyApplyAction
+	Unknown    []privacyApplyAction
+	NotApplied []privacyApplyAction
+}
+
+func applyPrivacyPlan(ctx context.Context, client privacyMutationClient, appID string, plan privacyPlanOutput) (privacyApplyResult, error) {
+	result := privacyApplyResult{
+		Applied:    make([]privacyApplyAction, 0, len(plan.Updates)+len(plan.Adds)+len(plan.Deletes)),
+		Unknown:    make([]privacyApplyAction, 0),
+		NotApplied: make([]privacyApplyAction, 0),
+	}
+	if err := validateApplyPlanUsageIDs(plan); err != nil {
+		return result, err
+	}
+
+	steps := privacyApplySteps(plan)
+	for index, step := range steps {
+		usageID, err := executePrivacyStep(ctx, client, appID, step)
+		if err != nil {
+			result.Unknown = append(result.Unknown, privacyActionFromStep(step, step.Change.UsageID))
+			for _, pending := range steps[index+1:] {
+				result.NotApplied = append(result.NotApplied, privacyActionFromStep(pending, pending.Change.UsageID))
+			}
+			return result, err
+		}
+		result.Applied = append(result.Applied, privacyActionFromStep(step, usageID))
+	}
+
+	return result, nil
+}
+
+func executePrivacyStep(ctx context.Context, client privacyMutationClient, appID string, step privacyPlannedStep) (string, error) {
+	tuple := webcore.DataUsageTuple{
+		Category:       step.Change.Category,
+		Purpose:        step.Change.Purpose,
+		DataProtection: step.Change.DataProtection,
+	}
+	switch step.Action {
+	case "delete":
+		if err := client.DeleteAppDataUsage(ctx, step.Change.UsageID); err != nil {
+			return "", err
+		}
+		return step.Change.UsageID, nil
+	case "update":
+		updated, err := client.UpdateAppDataUsage(ctx, step.Change.UsageID, tuple)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(updated.ID), nil
+	case "create":
+		created, err := client.CreateAppDataUsage(ctx, appID, tuple)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(created.ID), nil
+	default:
+		return "", fmt.Errorf("web privacy apply failed: unsupported action %q", step.Action)
+	}
+}
+
+// resolvePrivacyApplyResult reclassifies attempted-but-unconfirmed actions
+// using a fresh remote read. A 5xx can still have committed the write, so the
+// remote state is the only honest evidence.
+func resolvePrivacyApplyResult(result privacyApplyResult, remote map[string]privacyRemoteState) privacyApplyResult {
+	if len(result.Unknown) == 0 {
+		return result
+	}
+
+	remoteUsageIDs := map[string]string{}
+	for key, state := range remote {
+		for _, usageID := range state.UsageIDs {
+			remoteUsageIDs[usageID] = key
+		}
+	}
+
+	resolved := privacyApplyResult{
+		Applied:    append([]privacyApplyAction{}, result.Applied...),
+		Unknown:    make([]privacyApplyAction, 0, len(result.Unknown)),
+		NotApplied: append([]privacyApplyAction{}, result.NotApplied...),
+	}
+	for _, action := range result.Unknown {
+		switch action.Action {
+		case "create":
+			state, exists := remote[action.Key]
+			if !exists {
+				resolved.NotApplied = append(resolved.NotApplied, action)
+				continue
+			}
+			if len(state.UsageIDs) > 0 {
+				action.UsageID = state.UsageIDs[0]
+			}
+			resolved.Applied = append(resolved.Applied, action)
+		case "delete":
+			if _, exists := remoteUsageIDs[action.UsageID]; exists {
+				resolved.NotApplied = append(resolved.NotApplied, action)
+				continue
+			}
+			resolved.Applied = append(resolved.Applied, action)
+		case "update":
+			key, exists := remoteUsageIDs[action.UsageID]
+			switch {
+			case exists && key == action.Key:
+				resolved.Applied = append(resolved.Applied, action)
+			case exists:
+				resolved.NotApplied = append(resolved.NotApplied, action)
+			default:
+				resolved.Unknown = append(resolved.Unknown, action)
+			}
+		default:
+			resolved.Unknown = append(resolved.Unknown, action)
+		}
+	}
+	return resolved
 }
 
 func validateApplyPlanUsageIDs(plan privacyPlanOutput) error {
@@ -889,6 +1151,17 @@ func buildPrivacySkippedDeleteRows(skipped []privacySkippedDelete) [][]string {
 	return rows
 }
 
+func buildPrivacyStaleTokenRows(stale []privacyStaleToken) [][]string {
+	rows := make([][]string, 0, len(stale))
+	for _, token := range stale {
+		rows = append(rows, []string{token.Kind, token.ID, token.Reason})
+	}
+	if len(rows) == 0 {
+		return [][]string{{"none", "", ""}}
+	}
+	return rows
+}
+
 func buildPrivacyAPICallRows(calls []privacyAPICall) [][]string {
 	rows := make([][]string, 0, len(calls))
 	for _, call := range calls {
@@ -1017,7 +1290,8 @@ func renderPrivacyPlanTable(payload privacyPlanOutput) error {
 	fmt.Printf("Updates: %d\n", len(payload.Updates))
 	fmt.Printf("Adds: %d\n", len(payload.Adds))
 	fmt.Printf("Deletes: %d\n", len(payload.Deletes))
-	fmt.Printf("Skipped Deletes: %d\n\n", len(payload.SkippedDeletes))
+	fmt.Printf("Skipped Deletes: %d\n", len(payload.SkippedDeletes))
+	fmt.Printf("Stale Tokens: %d\n\n", len(payload.StaleTokens))
 	asc.RenderTable(
 		[]string{"Change", "Key", "Category", "Purpose", "Data Protection", "Usage ID"},
 		buildPrivacyPlanRows(payload.Updates, payload.Adds, payload.Deletes),
@@ -1028,6 +1302,10 @@ func renderPrivacyPlanTable(payload privacyPlanOutput) error {
 			[]string{"Key", "Category", "Purpose", "Data Protection", "Reason", "Usage ID"},
 			buildPrivacySkippedDeleteRows(payload.SkippedDeletes),
 		)
+	}
+	if len(payload.StaleTokens) > 0 {
+		fmt.Println()
+		asc.RenderTable([]string{"Kind", "Token", "Reason"}, buildPrivacyStaleTokenRows(payload.StaleTokens))
 	}
 	if len(payload.APICalls) > 0 {
 		fmt.Println()
@@ -1043,6 +1321,7 @@ func renderPrivacyPlanMarkdown(payload privacyPlanOutput) error {
 	fmt.Printf("**Adds:** %d\n\n", len(payload.Adds))
 	fmt.Printf("**Deletes:** %d\n\n", len(payload.Deletes))
 	fmt.Printf("**Skipped Deletes:** %d\n\n", len(payload.SkippedDeletes))
+	fmt.Printf("**Stale Tokens:** %d\n\n", len(payload.StaleTokens))
 	asc.RenderMarkdown(
 		[]string{"Change", "Key", "Category", "Purpose", "Data Protection", "Usage ID"},
 		buildPrivacyPlanRows(payload.Updates, payload.Adds, payload.Deletes),
@@ -1053,6 +1332,10 @@ func renderPrivacyPlanMarkdown(payload privacyPlanOutput) error {
 			[]string{"Key", "Category", "Purpose", "Data Protection", "Reason", "Usage ID"},
 			buildPrivacySkippedDeleteRows(payload.SkippedDeletes),
 		)
+	}
+	if len(payload.StaleTokens) > 0 {
+		fmt.Println()
+		asc.RenderMarkdown([]string{"Kind", "Token", "Reason"}, buildPrivacyStaleTokenRows(payload.StaleTokens))
 	}
 	if len(payload.APICalls) > 0 {
 		fmt.Println()
@@ -1065,6 +1348,7 @@ func renderPrivacyApplyTable(payload privacyApplyOutput) error {
 	fmt.Printf("App ID: %s\n", payload.AppID)
 	fmt.Printf("File: %s\n", payload.File)
 	fmt.Printf("Applied: %t\n", payload.Applied)
+	fmt.Printf("Changed: %t\n", payload.Changed)
 	fmt.Printf("Updates: %d\n", len(payload.Updates))
 	fmt.Printf("Adds: %d\n", len(payload.Adds))
 	fmt.Printf("Deletes: %d\n", len(payload.Deletes))
@@ -1082,10 +1366,35 @@ func renderPrivacyApplyTable(payload privacyApplyOutput) error {
 	}
 	if len(payload.Actions) > 0 {
 		fmt.Println()
+		fmt.Println("Applied Actions")
 		asc.RenderTable(
 			[]string{"Action", "Key", "Category", "Purpose", "Data Protection", "Usage ID"},
 			buildPrivacyActionRows(payload.Actions),
 		)
+	}
+	if len(payload.UnknownActions) > 0 {
+		fmt.Println()
+		fmt.Println("Unknown Actions")
+		asc.RenderTable(
+			[]string{"Action", "Key", "Category", "Purpose", "Data Protection", "Usage ID"},
+			buildPrivacyActionRows(payload.UnknownActions),
+		)
+	}
+	if len(payload.NotAppliedActions) > 0 {
+		fmt.Println()
+		fmt.Println("Not Applied Actions")
+		asc.RenderTable(
+			[]string{"Action", "Key", "Category", "Purpose", "Data Protection", "Usage ID"},
+			buildPrivacyActionRows(payload.NotAppliedActions),
+		)
+	}
+	if payload.Recheck != nil {
+		fmt.Println()
+		asc.RenderTable([]string{"Field", "Value"}, [][]string{
+			{"Recheck Performed", fmt.Sprintf("%t", payload.Recheck.Performed)},
+			{"Recheck Succeeded", fmt.Sprintf("%t", payload.Recheck.Succeeded)},
+			{"Remaining Changes", fmt.Sprintf("%d", payload.Recheck.RemainingChanges)},
+		})
 	}
 	if len(payload.APICalls) > 0 {
 		fmt.Println()
@@ -1098,6 +1407,7 @@ func renderPrivacyApplyMarkdown(payload privacyApplyOutput) error {
 	fmt.Printf("**App ID:** %s\n\n", payload.AppID)
 	fmt.Printf("**File:** %s\n\n", payload.File)
 	fmt.Printf("**Applied:** %t\n\n", payload.Applied)
+	fmt.Printf("**Changed:** %t\n\n", payload.Changed)
 	fmt.Printf("**Updates:** %d\n\n", len(payload.Updates))
 	fmt.Printf("**Adds:** %d\n\n", len(payload.Adds))
 	fmt.Printf("**Deletes:** %d\n\n", len(payload.Deletes))
@@ -1115,10 +1425,35 @@ func renderPrivacyApplyMarkdown(payload privacyApplyOutput) error {
 	}
 	if len(payload.Actions) > 0 {
 		fmt.Println()
+		fmt.Printf("**Applied Actions**\n\n")
 		asc.RenderMarkdown(
 			[]string{"Action", "Key", "Category", "Purpose", "Data Protection", "Usage ID"},
 			buildPrivacyActionRows(payload.Actions),
 		)
+	}
+	if len(payload.UnknownActions) > 0 {
+		fmt.Println()
+		fmt.Printf("**Unknown Actions**\n\n")
+		asc.RenderMarkdown(
+			[]string{"Action", "Key", "Category", "Purpose", "Data Protection", "Usage ID"},
+			buildPrivacyActionRows(payload.UnknownActions),
+		)
+	}
+	if len(payload.NotAppliedActions) > 0 {
+		fmt.Println()
+		fmt.Printf("**Not Applied Actions**\n\n")
+		asc.RenderMarkdown(
+			[]string{"Action", "Key", "Category", "Purpose", "Data Protection", "Usage ID"},
+			buildPrivacyActionRows(payload.NotAppliedActions),
+		)
+	}
+	if payload.Recheck != nil {
+		fmt.Println()
+		asc.RenderMarkdown([]string{"Field", "Value"}, [][]string{
+			{"Recheck Performed", fmt.Sprintf("%t", payload.Recheck.Performed)},
+			{"Recheck Succeeded", fmt.Sprintf("%t", payload.Recheck.Succeeded)},
+			{"Remaining Changes", fmt.Sprintf("%d", payload.Recheck.RemainingChanges)},
+		})
 	}
 	if len(payload.APICalls) > 0 {
 		fmt.Println()
@@ -1396,6 +1731,10 @@ app data usage tuples.
 Declarations that contain UNKNOWN_OR_MISSING (unrepresentable remote data)
 are rejected before any planning against the live app.
 
+Category, purpose, and data-protection tokens are checked against the live
+catalog. Tokens Apple has deleted, or no longer lists, are reported as
+staleTokens. plan stays read-only and still exits zero.
+
 Examples:
   asc web privacy plan --app "123456789" --file "./privacy.json"`,
 		FlagSet:   fs,
@@ -1436,8 +1775,13 @@ Examples:
 				if err != nil {
 					return err
 				}
+				catalog, err := loadPrivacyCatalogTokens(requestCtx, client)
+				if err != nil {
+					return err
+				}
 				remoteState := remoteStateFromDataUsages(remoteUsages)
 				plan = planFromDesiredAndRemote(resolvedAppID, resolvedFilePath, desiredTuples, remoteState)
+				plan.StaleTokens = privacyStaleTokens(desiredTuples, catalog)
 				return nil
 			})
 			if err != nil {
@@ -1477,6 +1821,14 @@ This command never publishes automatically.
 
 Declarations that contain UNKNOWN_OR_MISSING (unrepresentable remote data)
 are rejected before any create, update, or delete.
+
+apply refuses to mutate when the declaration references catalog tokens Apple
+has deleted or no longer lists. Updates run first, then creates, then the
+deletes that are safe to defer, so an interruption leaves extra tuples instead
+of missing ones. A mid-sequence failure re-reads remote state, prints a receipt
+that splits every step into applied, unknown, and not applied, and exits
+non-zero. Rerunning the same file converges and reports changed=false once
+nothing is left to do.
 
 Examples:
   asc web privacy apply --app "123456789" --file "./privacy.json"
@@ -1522,14 +1874,25 @@ Examples:
 				if err != nil {
 					return err
 				}
+				catalog, err := loadPrivacyCatalogTokens(requestCtx, client)
+				if err != nil {
+					return err
+				}
 				remoteState := remoteStateFromDataUsages(remoteUsages)
 				plan = planFromDesiredAndRemote(resolvedAppID, resolvedFilePath, desiredTuples, remoteState)
+				plan.StaleTokens = privacyStaleTokens(desiredTuples, catalog)
 				return nil
 			})
 			if err != nil {
 				return withWebAuthHint(err, "web privacy apply")
 			}
 
+			if len(plan.StaleTokens) > 0 {
+				return shared.UsageErrorf(
+					"web privacy apply: declaration references catalog tokens Apple no longer accepts: %s; refresh the catalog and the declaration before applying",
+					formatPrivacyStaleTokens(plan.StaleTokens),
+				)
+			}
 			if len(plan.Deletes) > 0 && !*allowDeletes {
 				return shared.UsageError("--allow-deletes is required to apply delete operations")
 			}
@@ -1537,12 +1900,9 @@ Examples:
 				return shared.UsageError("--confirm is required when applying delete operations")
 			}
 
-			actions, err := withWebSpinnerValue("Applying privacy changes", func() ([]privacyApplyAction, error) {
+			result, applyErr := withWebSpinnerValue("Applying privacy changes", func() (privacyApplyResult, error) {
 				return applyPrivacyPlan(requestCtx, client, resolvedAppID, plan)
 			})
-			if err != nil {
-				return withWebAuthHint(err, "web privacy apply")
-			}
 
 			payload := privacyApplyOutput{
 				AppID:          resolvedAppID,
@@ -1551,9 +1911,52 @@ Examples:
 				Adds:           plan.Adds,
 				Deletes:        plan.Deletes,
 				SkippedDeletes: plan.SkippedDeletes,
-				Applied:        true,
-				Actions:        actions,
+				Applied:        applyErr == nil,
 				APICalls:       plan.APICalls,
+			}
+			if applyErr != nil {
+				recheck := privacyApplyRecheck{Performed: true}
+				remoteUsages, readErr := withWebSpinnerValue(
+					"Re-reading privacy state after failure",
+					func() ([]webcore.AppDataUsage, error) {
+						return client.ListAppDataUsages(requestCtx, resolvedAppID)
+					},
+				)
+				if readErr == nil {
+					remoteState := remoteStateFromDataUsages(remoteUsages)
+					result = resolvePrivacyApplyResult(result, remoteState)
+					residual := planFromDesiredAndRemote(resolvedAppID, resolvedFilePath, desiredTuples, remoteState)
+					recheck.Succeeded = true
+					recheck.RemainingChanges = len(residual.Updates) + len(residual.Adds) + len(residual.Deletes)
+				}
+				payload.Recheck = &recheck
+			}
+			payload.Changed = len(result.Applied) > 0
+			payload.Actions = result.Applied
+			payload.UnknownActions = result.Unknown
+			payload.NotAppliedActions = result.NotApplied
+
+			if applyErr != nil {
+				if renderErr := shared.PrintOutputWithRenderers(
+					payload,
+					*output.Output,
+					*output.Pretty,
+					func() error { return renderPrivacyApplyTable(payload) },
+					func() error { return renderPrivacyApplyMarkdown(payload) },
+				); renderErr != nil {
+					return renderErr
+				}
+				message := fmt.Sprintf(
+					"web privacy apply partially applied changes for app %s: %d committed, %d unknown, %d not applied; the receipt above lists each action, and rerunning the same command converges from current remote state",
+					resolvedAppID,
+					len(payload.Actions),
+					len(payload.UnknownActions),
+					len(payload.NotAppliedActions),
+				)
+				fmt.Fprintf(os.Stderr, "Error: %s\n", shared.SanitizeTerminal(message))
+				return shared.NewReportedError(
+					shared.NewErrorWithCause(fmt.Errorf("%s", message), withWebAuthHint(applyErr, "web privacy apply")),
+				)
 			}
 			return shared.PrintOutputWithRenderers(
 				payload,

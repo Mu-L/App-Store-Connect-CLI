@@ -770,9 +770,14 @@ func TestPlanFromDesiredAndRemotePermutationMatrixProducesDesiredState(t *testin
 type fakePrivacyMutationClient struct {
 	callOrder     []string
 	createCounter int
+	createErr     error
 }
 
 func (f *fakePrivacyMutationClient) CreateAppDataUsage(_ context.Context, _ string, tuple webcore.DataUsageTuple) (*webcore.AppDataUsage, error) {
+	if f.createErr != nil {
+		f.callOrder = append(f.callOrder, fmt.Sprintf("create-failed:%s:%s:%s", tuple.Category, tuple.Purpose, tuple.DataProtection))
+		return nil, f.createErr
+	}
 	f.createCounter++
 	f.callOrder = append(f.callOrder, fmt.Sprintf("create:%s:%s:%s", tuple.Category, tuple.Purpose, tuple.DataProtection))
 	return &webcore.AppDataUsage{
@@ -798,7 +803,7 @@ func (f *fakePrivacyMutationClient) DeleteAppDataUsage(_ context.Context, appDat
 	return nil
 }
 
-func TestApplyPrivacyPlanExecutesDeleteUpdateCreateOrder(t *testing.T) {
+func TestApplyPrivacyPlanExecutesUpdateCreateDeleteOrder(t *testing.T) {
 	client := &fakePrivacyMutationClient{}
 	plan := privacyPlanOutput{
 		Updates: []privacyPlanChange{
@@ -829,22 +834,25 @@ func TestApplyPrivacyPlanExecutesDeleteUpdateCreateOrder(t *testing.T) {
 		},
 	}
 
-	actions, err := applyPrivacyPlan(context.Background(), client, "app-123", plan)
+	result, err := applyPrivacyPlan(context.Background(), client, "app-123", plan)
 	if err != nil {
 		t.Fatalf("applyPrivacyPlan() error = %v", err)
 	}
 	if !reflect.DeepEqual(client.callOrder, []string{
-		"delete:usage-delete-1",
 		"update:usage-update-1:DATA_NOT_LINKED_TO_YOU",
 		"create:EMAIL_ADDRESS:ANALYTICS:DATA_NOT_LINKED_TO_YOU",
+		"delete:usage-delete-1",
 	}) {
 		t.Fatalf("unexpected call order: %#v", client.callOrder)
 	}
-	if len(actions) != 3 {
-		t.Fatalf("expected 3 actions, got %#v", actions)
+	if len(result.Applied) != 3 {
+		t.Fatalf("expected 3 applied actions, got %#v", result.Applied)
 	}
-	if actions[0].Action != "delete" || actions[1].Action != "update" || actions[2].Action != "create" {
-		t.Fatalf("unexpected action order: %#v", actions)
+	if result.Applied[0].Action != "update" || result.Applied[1].Action != "create" || result.Applied[2].Action != "delete" {
+		t.Fatalf("unexpected action order: %#v", result.Applied)
+	}
+	if len(result.Unknown) != 0 || len(result.NotApplied) != 0 {
+		t.Fatalf("expected no unknown or not-applied actions: %#v", result)
 	}
 }
 
@@ -1512,5 +1520,625 @@ func assertJSONDeclarationHasNoNotCollected(t *testing.T, declaration map[string
 	}
 	if strings.Contains(string(raw), dataProtectionNotCollected) {
 		t.Fatalf("declaration contained DATA_NOT_COLLECTED: %s", raw)
+	}
+}
+
+func privacyCatalogBody(deletedCategories ...string) string {
+	deleted := map[string]bool{}
+	for _, id := range deletedCategories {
+		deleted[id] = true
+	}
+	categories := ""
+	for _, id := range []string{"EMAIL_ADDRESS", "PURCHASE_HISTORY", "PHONE_NUMBER"} {
+		if categories != "" {
+			categories += ","
+		}
+		categories += fmt.Sprintf(
+			`{"id":%q,"type":"appDataUsageCategories","attributes":{"deleted":%t}}`,
+			id,
+			deleted[id],
+		)
+	}
+	return "[" + categories + "]"
+}
+
+func privacyCatalogRoundTrip(req *http.Request, deletedCategories ...string) (*http.Response, bool) {
+	if req.Method != http.MethodGet {
+		return nil, false
+	}
+	switch req.URL.Path {
+	case "/iris/v1/appDataUsageCategories":
+		return privacyJSONResponse(req, `{"data":`+privacyCatalogBody(deletedCategories...)+`}`), true
+	case "/iris/v1/appDataUsagePurposes":
+		return privacyJSONResponse(req, `{"data":[
+			{"id":"APP_FUNCTIONALITY","type":"appDataUsagePurposes","attributes":{"deleted":false}},
+			{"id":"ANALYTICS","type":"appDataUsagePurposes","attributes":{"deleted":false}}
+		]}`), true
+	case "/iris/v1/appDataUsageDataProtections":
+		return privacyJSONResponse(req, `{"data":[
+			{"id":"DATA_NOT_COLLECTED","type":"appDataUsageDataProtections","attributes":{"deleted":false}},
+			{"id":"DATA_LINKED_TO_YOU","type":"appDataUsageDataProtections","attributes":{"deleted":false}},
+			{"id":"DATA_NOT_LINKED_TO_YOU","type":"appDataUsageDataProtections","attributes":{"deleted":false}},
+			{"id":"DATA_USED_TO_TRACK_YOU","type":"appDataUsageDataProtections","attributes":{"deleted":false}}
+		]}`), true
+	}
+	return nil, false
+}
+
+func writePrivacyDeclarationForTest(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "privacy.json")
+	if err := os.WriteFile(path, []byte(privacyTwoUsageDeclaration), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	return path
+}
+
+const privacyTwoUsageDeclaration = `{
+	"schemaVersion": 1,
+	"dataUsages": [
+		{
+			"category": "EMAIL_ADDRESS",
+			"purposes": ["APP_FUNCTIONALITY"],
+			"dataProtections": ["DATA_NOT_LINKED_TO_YOU"]
+		},
+		{
+			"category": "PURCHASE_HISTORY",
+			"purposes": ["ANALYTICS"],
+			"dataProtections": ["DATA_LINKED_TO_YOU"]
+		}
+	]
+}`
+
+func privacyApplyActionKinds(t *testing.T, payload map[string]any, field string) []string {
+	t.Helper()
+	raw, ok := payload[field]
+	if !ok || raw == nil {
+		return nil
+	}
+	entries, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("expected %s array, got %#v", field, raw)
+	}
+	kinds := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		action, ok := entry.(map[string]any)
+		if !ok {
+			t.Fatalf("expected %s entry object, got %#v", field, entry)
+		}
+		kinds = append(kinds, fmt.Sprintf("%v:%v", action["action"], action["key"]))
+	}
+	return kinds
+}
+
+type privacyMidSequenceFailureStub struct {
+	methodOrder []string
+	listCount   int
+}
+
+// stubPrivacyMidSequenceFailure serves a remote state that needs one update,
+// one create, and one delete, and fails the create with a 500.
+func stubPrivacyMidSequenceFailure(t *testing.T) *privacyMidSequenceFailureStub {
+	t.Helper()
+	stub := &privacyMidSequenceFailureStub{}
+	fixture := handlertest.New(t)
+	emailProtection := "DATA_LINKED_TO_YOU"
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		if resp, ok := privacyCatalogRoundTrip(req); ok {
+			return resp, nil
+		}
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages":
+			stub.listCount++
+			return privacyJSONResponse(req, `{"data":[
+				{
+					"id": "usage-email",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"EMAIL_ADDRESS"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"APP_FUNCTIONALITY"}},
+						"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"`+emailProtection+`"}}
+					}
+				},
+				{
+					"id": "usage-phone",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"PHONE_NUMBER"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"ANALYTICS"}},
+						"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_LINKED_TO_YOU"}}
+					}
+				}
+			]}`), nil
+		case req.Method == http.MethodPatch && req.URL.Path == "/iris/v1/appDataUsages/usage-email":
+			stub.methodOrder = append(stub.methodOrder, "PATCH")
+			emailProtection = "DATA_NOT_LINKED_TO_YOU"
+			return privacyJSONResponse(req, `{"data":{
+				"id": "usage-email",
+				"type": "appDataUsages",
+				"relationships": {
+					"category": {"data": {"type":"appDataUsageCategories","id":"EMAIL_ADDRESS"}},
+					"purpose": {"data": {"type":"appDataUsagePurposes","id":"APP_FUNCTIONALITY"}},
+					"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_NOT_LINKED_TO_YOU"}}
+				}
+			}}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/iris/v1/appDataUsages":
+			stub.methodOrder = append(stub.methodOrder, "POST")
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"errors":[{"code":"ENTITY_ERROR","detail":"apple internal failure"}]}`)),
+				Request:    req,
+			}, nil
+		case req.Method == http.MethodDelete:
+			stub.methodOrder = append(stub.methodOrder, "DELETE")
+			return fixture.Response("did not expect DELETE %s before creates succeed", req.URL.Path), nil
+		default:
+			return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+		}
+	})
+	return stub
+}
+
+func TestWebPrivacyApplyReportsPartialReceiptWhenCreateFailsMidSequence(t *testing.T) {
+	stub := stubPrivacyMidSequenceFailure(t)
+
+	path := writePrivacyDeclarationForTest(t)
+	cmd := WebPrivacyApplyCommand()
+	if err := cmd.FlagSet.Parse([]string{
+		"--app", privacyTestAppID,
+		"--file", path,
+		"--allow-deletes",
+		"--confirm",
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var execErr error
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+	if execErr == nil {
+		t.Fatal("expected non-zero exit after a mid-sequence failure")
+	}
+	methodOrder := stub.methodOrder
+	listCount := stub.listCount
+	if strings.Contains(stdout+stderr, "apple internal failure") {
+		t.Fatalf("output leaked raw Apple response body:\nstdout=%s\nstderr=%s", stdout, stderr)
+	}
+	for _, method := range methodOrder {
+		if method == "DELETE" {
+			t.Fatalf("deletes must not run before creates succeed: %#v", methodOrder)
+		}
+	}
+	if listCount < 2 {
+		t.Fatalf("expected apply to re-read remote state after failure, list count = %d", listCount)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("failed to parse receipt JSON: %v\nstdout=%s", err, stdout)
+	}
+	if payload["applied"] != false {
+		t.Fatalf("expected applied=false in partial receipt, got %#v", payload["applied"])
+	}
+	if payload["changed"] != true {
+		t.Fatalf("expected changed=true because one action committed, got %#v", payload["changed"])
+	}
+	applied := privacyApplyActionKinds(t, payload, "actions")
+	if len(applied) != 1 || !strings.HasPrefix(applied[0], "update:") {
+		t.Fatalf("expected exactly the committed update in actions, got %#v", applied)
+	}
+	notApplied := privacyApplyActionKinds(t, payload, "notAppliedActions")
+	if len(notApplied) != 2 {
+		t.Fatalf("expected the failed create and the unattempted delete in notAppliedActions, got %#v", notApplied)
+	}
+	recheck, ok := payload["recheck"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected recheck object in partial receipt, got %#v", payload["recheck"])
+	}
+	if recheck["succeeded"] != true {
+		t.Fatalf("expected recheck.succeeded=true, got %#v", recheck["succeeded"])
+	}
+	if recheck["remainingChanges"] != float64(2) {
+		t.Fatalf("expected recheck.remainingChanges=2, got %#v", recheck["remainingChanges"])
+	}
+	if !strings.Contains(stderr, "partially applied") {
+		t.Fatalf("stderr = %q, want a partial-apply diagnostic", stderr)
+	}
+}
+
+func TestWebPrivacyApplyFailsClosedOnStaleCatalogTokenBeforeAnyMutation(t *testing.T) {
+	fixture := handlertest.New(t)
+	var mutations int
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		if resp, ok := privacyCatalogRoundTrip(req, "PURCHASE_HISTORY"); ok {
+			return resp, nil
+		}
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages":
+			return privacyJSONResponse(req, `{"data":[]}`), nil
+		case req.Method == http.MethodPost || req.Method == http.MethodPatch || req.Method == http.MethodDelete:
+			mutations++
+			return fixture.Response("did not expect %s %s after a stale catalog token", req.Method, req.URL.Path), nil
+		default:
+			return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+		}
+	})
+
+	path := writePrivacyDeclarationForTest(t)
+	cmd := WebPrivacyApplyCommand()
+	if err := cmd.FlagSet.Parse([]string{
+		"--app", privacyTestAppID,
+		"--file", path,
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var execErr error
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+	if execErr == nil {
+		t.Fatal("expected apply to fail closed on a stale catalog token")
+	}
+	if mutations != 0 {
+		t.Fatalf("expected no mutations, got %d", mutations)
+	}
+	if !strings.Contains(execErr.Error(), "PURCHASE_HISTORY") {
+		t.Fatalf("error = %v, want the stale token named", execErr)
+	}
+	if !strings.Contains(stderr, "PURCHASE_HISTORY") {
+		t.Fatalf("stderr = %q, want the stale token named", stderr)
+	}
+}
+
+func TestWebPrivacyPlanFlagsStaleCatalogTokens(t *testing.T) {
+	fixture := handlertest.New(t)
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		if resp, ok := privacyCatalogRoundTrip(req, "PURCHASE_HISTORY"); ok {
+			return resp, nil
+		}
+		if req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages" {
+			return privacyJSONResponse(req, `{"data":[]}`), nil
+		}
+		return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+	})
+
+	path := writePrivacyDeclarationForTest(t)
+	cmd := WebPrivacyPlanCommand()
+	if err := cmd.FlagSet.Parse([]string{
+		"--app", privacyTestAppID,
+		"--file", path,
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("plan must stay a read-only diagnostic: %v", err)
+		}
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("failed to parse plan JSON: %v\nstdout=%s", err, stdout)
+	}
+	stale, ok := payload["staleTokens"].([]any)
+	if !ok || len(stale) != 1 {
+		t.Fatalf("expected one stale token in plan output, got %#v", payload["staleTokens"])
+	}
+	entry, ok := stale[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected stale token object, got %#v", stale[0])
+	}
+	if entry["id"] != "PURCHASE_HISTORY" || entry["kind"] != "category" || entry["reason"] != "deleted" {
+		t.Fatalf("unexpected stale token entry: %#v", entry)
+	}
+}
+
+func TestWebPrivacyApplyRerunAfterConvergenceIsANoOp(t *testing.T) {
+	fixture := handlertest.New(t)
+	var mutations int
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		if resp, ok := privacyCatalogRoundTrip(req); ok {
+			return resp, nil
+		}
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages":
+			return privacyJSONResponse(req, `{"data":[
+				{
+					"id": "usage-email",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"EMAIL_ADDRESS"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"APP_FUNCTIONALITY"}},
+						"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_NOT_LINKED_TO_YOU"}}
+					}
+				},
+				{
+					"id": "usage-purchase",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"PURCHASE_HISTORY"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"ANALYTICS"}},
+						"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_LINKED_TO_YOU"}}
+					}
+				}
+			]}`), nil
+		case req.Method == http.MethodPost || req.Method == http.MethodPatch || req.Method == http.MethodDelete:
+			mutations++
+			return fixture.Response("did not expect %s %s on a converged rerun", req.Method, req.URL.Path), nil
+		default:
+			return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+		}
+	})
+
+	path := writePrivacyDeclarationForTest(t)
+	cmd := WebPrivacyApplyCommand()
+	if err := cmd.FlagSet.Parse([]string{
+		"--app", privacyTestAppID,
+		"--file", path,
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("converged rerun must succeed: %v", err)
+		}
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+	if mutations != 0 {
+		t.Fatalf("expected no mutations on a converged rerun, got %d", mutations)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("failed to parse receipt JSON: %v\nstdout=%s", err, stdout)
+	}
+	if payload["applied"] != true {
+		t.Fatalf("expected applied=true, got %#v", payload["applied"])
+	}
+	if payload["changed"] != false {
+		t.Fatalf("expected changed=false on a converged rerun, got %#v", payload["changed"])
+	}
+}
+
+func TestPrivacyApplyStepsRunPrerequisiteDeletesBeforeCreates(t *testing.T) {
+	steps := privacyApplySteps(privacyPlanOutput{
+		Adds: []privacyPlanChange{
+			{Key: "||DATA_NOT_COLLECTED", DataProtection: dataProtectionNotCollected},
+		},
+		Deletes: []privacyPlanChange{
+			{
+				Key:            "EMAIL_ADDRESS|APP_FUNCTIONALITY|DATA_LINKED_TO_YOU",
+				Category:       "EMAIL_ADDRESS",
+				Purpose:        "APP_FUNCTIONALITY",
+				DataProtection: dataProtectionLinked,
+				UsageID:        "usage-1",
+			},
+		},
+	})
+
+	if len(steps) != 2 {
+		t.Fatalf("expected two steps, got %#v", steps)
+	}
+	if steps[0].Action != "delete" || steps[1].Action != "create" {
+		t.Fatalf("switching to DATA_NOT_COLLECTED must delete collected tuples first: %#v", steps)
+	}
+}
+
+func TestPrivacyApplyStepsRunDeletesLastForCollectedPlans(t *testing.T) {
+	steps := privacyApplySteps(privacyPlanOutput{
+		Updates: []privacyPlanChange{
+			{Key: "A|P|DATA_NOT_LINKED_TO_YOU", Category: "A", Purpose: "P", DataProtection: dataProtectionNotLinked, UsageID: "usage-update"},
+		},
+		Adds: []privacyPlanChange{
+			{Key: "B|P|DATA_LINKED_TO_YOU", Category: "B", Purpose: "P", DataProtection: dataProtectionLinked},
+		},
+		Deletes: []privacyPlanChange{
+			{Key: "C|P|DATA_LINKED_TO_YOU", Category: "C", Purpose: "P", DataProtection: dataProtectionLinked, UsageID: "usage-delete"},
+		},
+	})
+
+	got := make([]string, 0, len(steps))
+	for _, step := range steps {
+		got = append(got, step.Action)
+	}
+	if !reflect.DeepEqual(got, []string{"update", "create", "delete"}) {
+		t.Fatalf("unexpected step order: %#v", got)
+	}
+}
+
+func TestPrivacyApplyStepsRunNotCollectedDeleteBeforeCollectedCreates(t *testing.T) {
+	steps := privacyApplySteps(privacyPlanOutput{
+		Adds: []privacyPlanChange{
+			{Key: "A|P|DATA_LINKED_TO_YOU", Category: "A", Purpose: "P", DataProtection: dataProtectionLinked},
+		},
+		Deletes: []privacyPlanChange{
+			{Key: "||DATA_NOT_COLLECTED", DataProtection: dataProtectionNotCollected, UsageID: "usage-not-collected"},
+		},
+	})
+
+	if len(steps) != 2 || steps[0].Action != "delete" || steps[1].Action != "create" {
+		t.Fatalf("a DATA_NOT_COLLECTED delete must precede collected creates: %#v", steps)
+	}
+}
+
+func TestApplyPrivacyPlanRecordsUnknownAndUnattemptedStepsOnFailure(t *testing.T) {
+	client := &fakePrivacyMutationClient{createErr: fmt.Errorf("web api error (status 500)")}
+	plan := privacyPlanOutput{
+		Updates: []privacyPlanChange{
+			{Key: "A|P|DATA_NOT_LINKED_TO_YOU", Category: "A", Purpose: "P", DataProtection: dataProtectionNotLinked, UsageID: "usage-update"},
+		},
+		Adds: []privacyPlanChange{
+			{Key: "B|P|DATA_LINKED_TO_YOU", Category: "B", Purpose: "P", DataProtection: dataProtectionLinked},
+		},
+		Deletes: []privacyPlanChange{
+			{Key: "C|P|DATA_LINKED_TO_YOU", Category: "C", Purpose: "P", DataProtection: dataProtectionLinked, UsageID: "usage-delete"},
+		},
+	}
+
+	result, err := applyPrivacyPlan(context.Background(), client, "app-123", plan)
+	if err == nil {
+		t.Fatal("expected applyPrivacyPlan to return the create failure")
+	}
+	if len(result.Applied) != 1 || result.Applied[0].Action != "update" {
+		t.Fatalf("expected only the committed update: %#v", result.Applied)
+	}
+	if len(result.Unknown) != 1 || result.Unknown[0].Action != "create" {
+		t.Fatalf("expected the failed create to be unknown: %#v", result.Unknown)
+	}
+	if len(result.NotApplied) != 1 || result.NotApplied[0].Action != "delete" {
+		t.Fatalf("expected the unattempted delete to be reported: %#v", result.NotApplied)
+	}
+	for _, call := range client.callOrder {
+		if strings.HasPrefix(call, "delete:") {
+			t.Fatalf("delete must not run after a failed create: %#v", client.callOrder)
+		}
+	}
+}
+
+func TestPrivacyStaleTokensFlagsDeletedAndUnknownTokens(t *testing.T) {
+	desired := map[string]privacyTuple{
+		"a": {Category: "EMAIL_ADDRESS", Purpose: "APP_FUNCTIONALITY", DataProtection: dataProtectionLinked},
+		"b": {Category: "RETIRED_CATEGORY", Purpose: "GONE_PURPOSE", DataProtection: dataProtectionLinked},
+	}
+	catalog := privacyCatalogTokens{
+		Categories: map[string]bool{
+			"EMAIL_ADDRESS":    false,
+			"RETIRED_CATEGORY": true,
+		},
+		Purposes: map[string]bool{
+			"APP_FUNCTIONALITY": false,
+		},
+		DataProtections: map[string]bool{
+			dataProtectionLinked: false,
+		},
+	}
+
+	stale := privacyStaleTokens(desired, catalog)
+	if !reflect.DeepEqual(stale, []privacyStaleToken{
+		{Kind: "category", ID: "RETIRED_CATEGORY", Reason: "deleted"},
+		{Kind: "purpose", ID: "GONE_PURPOSE", Reason: "unknown"},
+	}) {
+		t.Fatalf("unexpected stale tokens: %#v", stale)
+	}
+}
+
+func TestPrivacyStaleTokensSkipsDimensionsAppleReturnedEmpty(t *testing.T) {
+	desired := map[string]privacyTuple{
+		"a": {Category: "EMAIL_ADDRESS", Purpose: "APP_FUNCTIONALITY", DataProtection: dataProtectionLinked},
+	}
+	stale := privacyStaleTokens(desired, privacyCatalogTokens{})
+	if len(stale) != 0 {
+		t.Fatalf("an empty catalog proves nothing and must not flag tokens: %#v", stale)
+	}
+}
+
+func TestResolvePrivacyApplyResultUsesRemoteEvidence(t *testing.T) {
+	result := privacyApplyResult{
+		Applied: []privacyApplyAction{},
+		Unknown: []privacyApplyAction{
+			{Action: "create", Key: "A|P|DATA_LINKED_TO_YOU"},
+			{Action: "create", Key: "MISSING|P|DATA_LINKED_TO_YOU"},
+			{Action: "delete", Key: "B|P|DATA_LINKED_TO_YOU", UsageID: "usage-b"},
+			{Action: "delete", Key: "C|P|DATA_LINKED_TO_YOU", UsageID: "usage-gone"},
+			{Action: "update", Key: "D|P|DATA_NOT_LINKED_TO_YOU", UsageID: "usage-d"},
+		},
+		NotApplied: []privacyApplyAction{},
+	}
+	remote := map[string]privacyRemoteState{
+		"A|P|DATA_LINKED_TO_YOU":     {UsageIDs: []string{"usage-a"}},
+		"B|P|DATA_LINKED_TO_YOU":     {UsageIDs: []string{"usage-b"}},
+		"D|P|DATA_NOT_LINKED_TO_YOU": {UsageIDs: []string{"usage-d"}},
+	}
+
+	resolved := resolvePrivacyApplyResult(result, remote)
+	appliedKeys := make([]string, 0, len(resolved.Applied))
+	for _, action := range resolved.Applied {
+		appliedKeys = append(appliedKeys, action.Action+":"+action.Key)
+	}
+	if !reflect.DeepEqual(appliedKeys, []string{
+		"create:A|P|DATA_LINKED_TO_YOU",
+		"delete:C|P|DATA_LINKED_TO_YOU",
+		"update:D|P|DATA_NOT_LINKED_TO_YOU",
+	}) {
+		t.Fatalf("unexpected applied actions: %#v", appliedKeys)
+	}
+	if len(resolved.Applied) > 0 && resolved.Applied[0].UsageID != "usage-a" {
+		t.Fatalf("expected the confirmed create to adopt the remote usage id: %#v", resolved.Applied[0])
+	}
+	notAppliedKeys := make([]string, 0, len(resolved.NotApplied))
+	for _, action := range resolved.NotApplied {
+		notAppliedKeys = append(notAppliedKeys, action.Action+":"+action.Key)
+	}
+	if !reflect.DeepEqual(notAppliedKeys, []string{
+		"create:MISSING|P|DATA_LINKED_TO_YOU",
+		"delete:B|P|DATA_LINKED_TO_YOU",
+	}) {
+		t.Fatalf("unexpected not-applied actions: %#v", notAppliedKeys)
+	}
+	if len(resolved.Unknown) != 0 {
+		t.Fatalf("expected every unknown action to be resolved: %#v", resolved.Unknown)
+	}
+}
+
+func TestResolvePrivacyApplyResultKeepsUpdateUnknownWithoutEvidence(t *testing.T) {
+	resolved := resolvePrivacyApplyResult(privacyApplyResult{
+		Unknown: []privacyApplyAction{
+			{Action: "update", Key: "A|P|DATA_LINKED_TO_YOU", UsageID: "usage-vanished"},
+		},
+	}, map[string]privacyRemoteState{})
+
+	if len(resolved.Unknown) != 1 {
+		t.Fatalf("an update whose usage id vanished stays unknown: %#v", resolved)
+	}
+}
+
+func TestWebPrivacyApplyTableReceiptSeparatesAppliedAndNotAppliedActions(t *testing.T) {
+	stubPrivacyMidSequenceFailure(t)
+
+	path := writePrivacyDeclarationForTest(t)
+	cmd := WebPrivacyApplyCommand()
+	if err := cmd.FlagSet.Parse([]string{
+		"--app", privacyTestAppID,
+		"--file", path,
+		"--allow-deletes",
+		"--confirm",
+		"--output", "table",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var execErr error
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+	if execErr == nil {
+		t.Fatal("expected non-zero exit after a mid-sequence failure")
+	}
+	for _, want := range []string{
+		"Applied: false",
+		"Changed: true",
+		"Applied Actions",
+		"Not Applied Actions",
+		"Remaining Changes",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("table receipt missing %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "Unknown Actions") {
+		t.Fatalf("every attempted action was resolved, so no unknown section belongs in:\n%s", stdout)
 	}
 }
