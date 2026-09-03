@@ -208,6 +208,54 @@ func TestSearchKeepsAppReviewStatusAheadOfAggregateDashboard(t *testing.T) {
 	}
 }
 
+func TestSearchDoesNotPrioritizeWorkflowDuplicateForOtherXcodeCloudResources(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		query    []string
+		expected string
+	}{
+		{
+			name:     "duplicate artifact",
+			query:    []string{"duplicate", "Xcode", "Cloud", "artifact"},
+			expected: "asc xcode-cloud artifacts",
+		},
+		{
+			name:  "duplicate build run status",
+			query: []string{"duplicate", "Xcode", "Cloud", "build", "run", "status"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var code int
+			stdout, stderr := captureOutput(t, func() {
+				args := []string{"search", "--output", "json", "--limit", "5"}
+				args = append(args, test.query...)
+				code = rootcmd.Run(args, "1.2.3")
+			})
+
+			if code != 0 {
+				t.Fatalf("expected exit code 0, got %d with stderr %q", code, stderr)
+			}
+			if stderr != "" {
+				t.Fatalf("expected empty stderr, got %q", stderr)
+			}
+
+			var response searchResponse
+			if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+				t.Fatalf("failed to unmarshal search JSON: %v\nstdout=%s", err, stdout)
+			}
+			if len(response.Results) == 0 {
+				t.Fatalf("expected search results, got %#v", response)
+			}
+			if response.Results[0].Command == "asc xcode-cloud workflows duplicate" {
+				t.Fatalf("expected a non-workflow Xcode Cloud result first, got %#v", response.Results)
+			}
+			if test.expected != "" && response.Results[0].Command != test.expected {
+				t.Fatalf("expected %q first, got %#v", test.expected, response.Results)
+			}
+		})
+	}
+}
+
 func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -422,6 +470,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 		{
 			name:     "TestFlight App Review release dashboard",
 			query:    []string{"TestFlight", "App", "Review", "release", "dashboard"},
+			expected: "asc status",
+		},
+		{
+			name:     "TestFlight and App Review dashboard",
+			query:    []string{"TestFlight", "and", "App", "Review", "dashboard"},
 			expected: "asc status",
 		},
 		{
@@ -1070,6 +1123,16 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			expected: "asc web agreements accept",
 		},
 		{
+			name:     "download Apple Developer agreement status",
+			query:    []string{"download", "Apple", "Developer", "agreement", "status"},
+			expected: "asc web agreements download",
+		},
+		{
+			name:     "download TestFlight beta license agreement",
+			query:    []string{"download", "TestFlight", "beta", "license", "agreement"},
+			expected: "asc testflight agreements",
+		},
+		{
 			name:     "agreement status without acceptance",
 			query:    []string{"Apple", "Developer", "agreement", "status"},
 			expected: "asc web agreements status",
@@ -1125,6 +1188,16 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			expected: "asc testflight review submissions view",
 		},
 		{
+			name:     "cancel beta app review submission status",
+			query:    []string{"cancel", "beta", "app", "review", "submission", "status"},
+			expected: "asc testflight review submissions view",
+		},
+		{
+			name:     "cancel TestFlight and App Review submission status",
+			query:    []string{"cancel", "TestFlight", "and", "App", "Review", "submission", "status"},
+			expected: "asc submit cancel",
+		},
+		{
 			name:     "cancel TestFlight review submission for build status",
 			query:    []string{"cancel", "TestFlight", "review", "submission", "for", "build", "status"},
 			expected: "asc testflight review submissions build",
@@ -1138,6 +1211,11 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			name:     "doctor Xcode Cloud build run status",
 			query:    []string{"doctor", "Xcode", "Cloud", "build", "run", "status"},
 			expected: "asc xcode-cloud doctor",
+		},
+		{
+			name:     "duplicate Xcode Cloud workflow status",
+			query:    []string{"duplicate", "Xcode", "Cloud", "workflow", "status"},
+			expected: "asc xcode-cloud workflows duplicate",
 		},
 		{
 			name:     "approve metadata status",
