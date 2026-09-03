@@ -505,16 +505,21 @@ func importSessionBundleWithValidator(ctx context.Context, bundle *SessionBundle
 	if selection.backend == sessionBackendOff {
 		return SessionImportSummary{}, ErrSessionCacheDisabled
 	}
-	if err := validateImportedSession(ctx, sess, validator); err != nil {
+	validated, err := validateImportedSession(ctx, sess, validator)
+	if err != nil {
 		return SessionImportSummary{}, err
 	}
-	if err := persistImportedSessionBySelection(selection, webSessionCacheKey(summary.AppleID), sess, overwrite); err != nil {
+	if err := persistImportedSessionBySelection(selection, webSessionCacheKey(summary.AppleID), validated, overwrite); err != nil {
 		return SessionImportSummary{}, err
 	}
 	return summary, nil
 }
 
-func validateImportedSession(ctx context.Context, sess persistedSession, validator sessionInfoValidator) error {
+// validateImportedSession proves the bundle against Apple before anything is
+// cached and returns the session to persist. Apple can rotate or add session
+// cookies while answering that request, so the validated jar, not the
+// pre-validation bundle, is what the cache must keep.
+func validateImportedSession(ctx context.Context, sess persistedSession, validator sessionInfoValidator) (persistedSession, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -524,20 +529,65 @@ func validateImportedSession(ctx context.Context, sess persistedSession, validat
 
 	jar, err := cookiejar.New(nil)
 	if err != nil {
-		return fmt.Errorf("%w: failed to create cookie jar: %w", ErrSessionBundleValidationFailed, err)
+		return persistedSession{}, fmt.Errorf("%w: failed to create cookie jar: %w", ErrSessionBundleValidationFailed, err)
 	}
 	if hydrateCookieJar(jar, sess) == 0 {
-		return fmt.Errorf("%w: session bundle has no usable cookies", ErrSessionBundleValidationFailed)
+		return persistedSession{}, fmt.Errorf("%w: session bundle has no usable cookies", ErrSessionBundleValidationFailed)
 	}
 
 	appleID, err := validator(ctx, newWebHTTPClient(jar))
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrSessionBundleValidationFailed, err)
+		return persistedSession{}, fmt.Errorf("%w: %w", ErrSessionBundleValidationFailed, err)
 	}
 	if !strings.EqualFold(strings.TrimSpace(appleID), strings.TrimSpace(sess.UserEmail)) {
-		return fmt.Errorf("%w: authenticated Apple ID does not match bundle Apple ID", ErrSessionBundleValidationFailed)
+		return persistedSession{}, fmt.Errorf("%w: authenticated Apple ID does not match bundle Apple ID", ErrSessionBundleValidationFailed)
 	}
-	return nil
+	return mergeRefreshedSessionCookies(sess, jar), nil
+}
+
+// mergeRefreshedSessionCookies folds the cookies Apple rotated or issued during
+// validation back into the session about to be cached. Values from the jar win,
+// and cookies the jar does not report keep the bundle entry, because
+// cookiejar.Cookies reports only names and values and would otherwise drop the
+// expiry and path metadata a bundle carries.
+func mergeRefreshedSessionCookies(sess persistedSession, jar http.CookieJar) persistedSession {
+	merged := persistedSession{
+		Version:   sess.Version,
+		UpdatedAt: sess.UpdatedAt,
+		UserEmail: sess.UserEmail,
+		Cookies:   make(map[string][]pCookie, len(sess.Cookies)),
+	}
+	for origin, list := range sess.Cookies {
+		merged.Cookies[origin] = append([]pCookie(nil), list...)
+	}
+
+	for _, u := range sessionCookieURLs() {
+		refreshed := jar.Cookies(u)
+		if len(refreshed) == 0 {
+			continue
+		}
+		origin := u.String()
+		list := merged.Cookies[origin]
+		for _, cookie := range refreshed {
+			if cookie == nil || cookie.Name == "" {
+				continue
+			}
+			replaced := false
+			for index := range list {
+				if list[index].Name != cookie.Name {
+					continue
+				}
+				list[index].Value = cookie.Value
+				replaced = true
+				break
+			}
+			if !replaced {
+				list = append(list, pCookie{Name: cookie.Name, Value: cookie.Value})
+			}
+		}
+		merged.Cookies[origin] = list
+	}
+	return merged
 }
 
 func validateSessionInfo(ctx context.Context, client *http.Client) (string, error) {

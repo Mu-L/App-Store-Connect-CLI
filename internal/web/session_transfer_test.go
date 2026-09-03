@@ -734,6 +734,49 @@ func TestImportSessionBundleDoesNotMergeDifferentAppleIDs(t *testing.T) {
 	}
 }
 
+func TestImportSessionBundlePersistsCookiesRefreshedDuringValidation(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	target, err := url.Parse("https://appstoreconnect.apple.com/")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	validator := func(_ context.Context, client *http.Client) (string, error) {
+		if client == nil || client.Jar == nil {
+			return "", errors.New("session info validator received no cookie jar")
+		}
+		// Apple rotates the session cookie and adds a new one while answering
+		// the validation request.
+		client.Jar.SetCookies(target, []*http.Cookie{
+			{Name: "myacinfo", Value: "rotated-token"},
+			{Name: "dqsid", Value: "issued-token"},
+		})
+		return bundle.AppleID, nil
+	}
+
+	if _, err := importSessionBundleWithValidator(context.Background(), bundle, false, validator); err != nil {
+		t.Fatalf("importSessionBundleWithValidator() error = %v", err)
+	}
+
+	sess, ok, err := readSessionFromFile(webSessionCacheKey(bundle.AppleID))
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromFile() = (%v, %v), want the imported session", ok, err)
+	}
+	values := map[string]pCookie{}
+	for _, cookie := range sess.Cookies["https://appstoreconnect.apple.com/"] {
+		values[cookie.Name] = cookie
+	}
+	if values["myacinfo"].Value != "rotated-token" {
+		t.Fatalf("cached myacinfo = %q, want the value Apple returned during validation", values["myacinfo"].Value)
+	}
+	if values["myacinfo"].Expires.IsZero() {
+		t.Fatal("cached myacinfo lost the bundle expiry while folding in the refreshed value")
+	}
+	if values["dqsid"].Value != "issued-token" {
+		t.Fatalf("cached dqsid = %q, want the cookie Apple issued during validation", values["dqsid"].Value)
+	}
+}
+
 func TestImportSessionBundleOverwriteRemovesFileFallbackOnKeychainBackend(t *testing.T) {
 	withArraySessionKeyring(t)
 	withSessionInfoStub(t)
