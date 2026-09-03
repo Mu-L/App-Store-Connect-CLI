@@ -190,3 +190,26 @@ func createMatrixPrivateAttemptFile(path string) (*os.File, error) {
 func createMatrixPrivateAttemptFileInRoot(parent *os.Root, name, displayPath string) (*os.File, error) {
 	return createMatrixOwnerOnlyFileInRoot(parent, name, displayPath)
 }
+
+func matrixOwnerOnlyProtectedDACL(file *os.File) bool {
+	if file == nil {
+		return false
+	}
+	descriptor, err := windows.GetSecurityInfo(
+		windows.Handle(file.Fd()),
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION,
+	)
+	if err != nil {
+		return false
+	}
+	control, _, err := descriptor.Control()
+	if err != nil || control&windows.SE_DACL_PROTECTED == 0 {
+		return false
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil || dacl == nil || dacl.AceCount != 1 {
+		return false
+	}
+	return true
+}

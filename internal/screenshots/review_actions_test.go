@@ -39,6 +39,9 @@ func TestOpenReview_DryRun(t *testing.T) {
 }
 
 func TestCreateMatrixReviewBrowserSnapshotRejectsReplacementBeforeRootPin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement is not reliable on Windows")
+	}
 	previous := matrixReviewSnapshotBeforeRootForTest
 	var originalPath string
 	matrixReviewSnapshotBeforeRootForTest = func(path string) {
@@ -518,12 +521,16 @@ func TestCreateMatrixReviewBrowserSnapshotUsesOwnerOnlyBoundedDirectory(t *testi
 	}
 	t.Cleanup(func() { removeMatrixReviewBrowserSnapshot(path) })
 
-	dirInfo, err := os.Stat(filepath.Dir(path))
+	dir := filepath.Dir(path)
+	dirInfo, err := os.Stat(dir)
 	if err != nil {
 		t.Fatalf("stat browser snapshot directory: %v", err)
 	}
-	if !dirInfo.IsDir() || dirInfo.Mode().Perm() != 0o700 {
-		t.Fatalf("browser snapshot directory mode = %v, want owner-only 0700", dirInfo.Mode())
+	if !matrixReviewSnapshotDirIsProtected(dirInfo, dir) {
+		t.Fatalf("browser snapshot directory is not owner-only: %v", dirInfo.Mode())
+	}
+	if runtime.GOOS == "windows" {
+		return
 	}
 	fileInfo, err := os.Stat(path)
 	if err != nil {
@@ -535,15 +542,17 @@ func TestCreateMatrixReviewBrowserSnapshotUsesOwnerOnlyBoundedDirectory(t *testi
 }
 
 func TestCleanupStaleMatrixReviewSnapshotsIsBoundedAndScoped(t *testing.T) {
-	stalePath, err := os.MkdirTemp("", matrixReviewSnapshotDirPrefix+"stale-*")
+	stalePath, err := createMatrixReviewSnapshotDir()
 	if err != nil {
 		t.Fatalf("create stale snapshot directory: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(stalePath, "index.html"), []byte("stale"), 0o600); err != nil {
 		t.Fatalf("write stale snapshot: %v", err)
 	}
-	if err := os.Chmod(stalePath, 0o700); err != nil {
-		t.Fatalf("chmod stale snapshot directory: %v", err)
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(stalePath, 0o700); err != nil {
+			t.Fatalf("chmod stale snapshot directory: %v", err)
+		}
 	}
 	old := time.Now().Add(-matrixReviewSnapshotMaxAge - time.Hour)
 	if err := os.Chtimes(stalePath, old, old); err != nil {

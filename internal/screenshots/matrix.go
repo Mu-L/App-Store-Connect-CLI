@@ -629,6 +629,11 @@ var matrixOutputLocksAcquiredForTest func()
 // tests can prove that a later open failure closes earlier descriptors.
 var matrixOutputLockRootOpenedForTest func(*os.Root)
 
+// matrixOutputLockReleaseErrForTest injects a release failure after the real
+// output locks have been dropped, so tests can prove the printed result does
+// not stay success when the command still returns an error.
+var matrixOutputLockReleaseErrForTest error
+
 func openMatrixOutputRoot(path string) (rootfs.Root, error) {
 	if strings.TrimSpace(path) == "" {
 		return rootfs.Root{}, errors.New("matrix output path is required")
@@ -2158,8 +2163,15 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 		runErr = errors.Join(runErr, fmt.Errorf("write matrix review: %w", reviewErr))
 	}
 	if releaseOutputLocks != nil {
-		if releaseErr := releaseOutputLocks(); releaseErr != nil {
+		releaseErr := releaseOutputLocks()
+		if matrixOutputLockReleaseErrForTest != nil {
+			releaseErr = errors.Join(releaseErr, matrixOutputLockReleaseErrForTest)
+		}
+		if releaseErr != nil {
 			lockErr := matrixLockError("output release", releaseErr)
+			if result.Status == MatrixCellSuccess {
+				result.Status = MatrixCellFailed
+			}
 			if runErr == nil {
 				runErr = lockErr
 			} else {

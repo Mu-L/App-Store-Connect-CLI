@@ -4,11 +4,20 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
+func skipWindowsUnixExecutableFixtures(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell executable fixtures require a Unix PATH")
+	}
+}
+
 func TestAxeMatchesTarget_ParsesJSONWhenStderrHasWarnings(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
 	axePath := filepath.Join(binDir, "axe")
 	script := `#!/bin/sh
@@ -35,6 +44,7 @@ exit 1
 }
 
 func TestRunExternalOutput_IncludesStderrOnFailure(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
 	cmdPath := filepath.Join(binDir, "tool")
 	script := `#!/bin/sh
@@ -88,6 +98,7 @@ func TestRunPlanPreservesLiteralOutputDirectorySpelling(t *testing.T) {
 }
 
 func TestRunPlan_ScreenshotStepsDoNotRelaunchApp(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
 	logDir := t.TempDir()
 	xcrunLog := filepath.Join(logDir, "xcrun.log")
@@ -168,6 +179,7 @@ cp "$AXE_TEMPLATE_PNG" "$out"
 }
 
 func TestRunPlan_TerminatesOnlyTheInitialMatrixLaunch(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
 	xcrunLog := filepath.Join(t.TempDir(), "xcrun.log")
 	writeExecutable(t, filepath.Join(binDir, "xcrun"), `#!/bin/sh

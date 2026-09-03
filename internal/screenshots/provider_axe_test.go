@@ -28,6 +28,7 @@ func TestAXeProvider_MissingBinary(t *testing.T) {
 }
 
 func TestAXeProvider_CaptureLaunchesRequestedBundleID(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
 	logDir := t.TempDir()
 	xcrunLog := filepath.Join(logDir, "xcrun.log")

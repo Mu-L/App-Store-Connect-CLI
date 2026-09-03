@@ -81,3 +81,15 @@ func openMatrixReviewSnapshotDirInRoot(root *os.Root, relative string) (*os.Root
 func createMatrixReviewSnapshotFileInRoot(root *os.Root, name, displayPath string) (*os.File, error) {
 	return createMatrixOwnerOnlyFileInRoot(root, name, displayPath)
 }
+
+func matrixReviewSnapshotDirIsProtected(info os.FileInfo, path string) bool {
+	if info == nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || strings.TrimSpace(path) == "" {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	return matrixOwnerOnlyProtectedDACL(file)
+}

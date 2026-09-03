@@ -42,7 +42,10 @@ func setMatrixPrivateAttemptDirectoryACL(root *os.Root, sddl string) error {
 		return err
 	}
 	defer file.Close()
-	handle, err := reopenMatrixDirectoryForDACL(file)
+	// ReOpenFile cannot escalate a read-only os.Root handle to WRITE_DAC, and
+	// directory reopen also requires FILE_FLAG_BACKUP_SEMANTICS. Open a fresh
+	// handle against the already-pinned name instead of widening the original.
+	handle, err := openMatrixDirectoryForDACL(file)
 	if err != nil {
 		return err
 	}
@@ -142,17 +145,28 @@ func reopenMatrixFileForDACL(file *os.File) (windows.Handle, error) {
 }
 
 func reopenMatrixDirectoryForDACL(file *os.File) (windows.Handle, error) {
-	handle, _, callErr := matrixReOpenFile.Call(
-		file.Fd(),
-		uintptr(windows.READ_CONTROL|windows.WRITE_DAC),
-		uintptr(windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE),
+	return openMatrixDirectoryForDACL(file)
+}
+
+func openMatrixDirectoryForDACL(file *os.File) (windows.Handle, error) {
+	if file == nil {
+		return windows.InvalidHandle, errors.New("private matrix directory is unavailable")
+	}
+	name, err := windows.UTF16PtrFromString(file.Name())
+	if err != nil {
+		return windows.InvalidHandle, err
+	}
+	handle, err := windows.CreateFile(
+		name,
+		windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT,
 		0,
 	)
-	if reopened := windows.Handle(handle); reopened != windows.InvalidHandle {
-		return reopened, nil
+	if err != nil {
+		return windows.InvalidHandle, err
 	}
-	if callErr != nil && callErr != syscall.Errno(0) {
-		return windows.InvalidHandle, callErr
-	}
-	return windows.InvalidHandle, syscall.EINVAL
+	return handle, nil
 }

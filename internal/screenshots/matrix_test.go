@@ -2077,6 +2077,44 @@ func TestRunMatrix_BoundsConcurrencyAndWritesPartialSafeResult(t *testing.T) {
 	}
 }
 
+func TestRunMatrix_OutputLockReleaseFailureMarksResultFailed(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{
+  "version":1,"base_plan":"base.json",
+  "devices":[{"id":"phone","udid":"UDID"}],
+  "locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],
+  "output":{"raw_dir":"raw","review_dir":"review"}
+}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	releaseErr := errors.New("injected output lock release failure")
+	previous := matrixOutputLockReleaseErrForTest
+	matrixOutputLockReleaseErrForTest = releaseErr
+	t.Cleanup(func() { matrixOutputLockReleaseErrForTest = previous })
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Appearance:  &matrixTestAppearance{},
+		CheckDevice: func(context.Context, MatrixDevice) error { return nil },
+	})
+	if runErr == nil || !errors.Is(runErr, releaseErr) {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want injected release failure", runErr)
+	}
+	if result == nil || result.Status != MatrixCellFailed {
+		t.Fatalf("result status = %+v, want failed after output-lock release error", result)
+	}
+	if result.Succeeded != 1 || result.Failed != 0 {
+		t.Fatalf("cell totals = succeeded %d failed %d, want successful cells with failed run status", result.Succeeded, result.Failed)
+	}
+}
+
 func TestRunMatrix_RetriesExecutionButNotValidation(t *testing.T) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.json")
@@ -6111,6 +6149,9 @@ func TestRevalidateMatrixRawPathsUsesPerArtifactBudget(t *testing.T) {
 }
 
 func TestLoadMatrixReviewManifestBindsDecodedGeneration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("review replacement DACL preserve is covered by rootfs tests; this race needs two successful writes")
+	}
 	dir := t.TempDir()
 	first := &MatrixResult{PlanPath: "plan.json", Cells: []MatrixCellResult{{ID: "first-generation", Status: MatrixCellSuccess}}}
 	if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{Result: first, OutputDir: dir}); err != nil {

@@ -43,6 +43,10 @@ func openMatrixReviewSnapshotDirInRoot(root *os.Root, relative string) (*os.Root
 	return root.OpenRoot(clean)
 }
 
+func matrixReviewSnapshotDirIsProtected(info os.FileInfo, _ string) bool {
+	return info != nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 && info.Mode().Perm() == 0o700
+}
+
 func createMatrixReviewSnapshotFileInRoot(root *os.Root, name, _ string) (*os.File, error) {
 	if root == nil {
 		return nil, errors.New("snapshot root is unavailable")

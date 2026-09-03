@@ -69,15 +69,18 @@ func cleanupStaleMatrixReviewSnapshots() {
 			continue
 		}
 		info, err := entry.Info()
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
 		if info.ModTime().After(cutoff) {
 			continue
 		}
 		path := filepath.Join(os.TempDir(), entry.Name())
+		if !matrixReviewSnapshotDirIsProtected(info, path) {
+			continue
+		}
 		current, err := os.Lstat(path)
-		if err != nil || current.Mode()&os.ModeSymlink != 0 || !current.IsDir() || current.Mode().Perm() != 0o700 || !os.SameFile(info, current) {
+		if err != nil || current.Mode()&os.ModeSymlink != 0 || !current.IsDir() || !os.SameFile(info, current) || !matrixReviewSnapshotDirIsProtected(current, path) {
 			continue
 		}
 		if err := os.RemoveAll(path); err == nil {
@@ -92,7 +95,7 @@ func removeMatrixReviewBrowserSnapshot(path string) {
 		return
 	}
 	info, err := os.Lstat(dir)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != 0o700 {
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !matrixReviewSnapshotDirIsProtected(info, dir) {
 		return
 	}
 	_ = os.RemoveAll(dir)
