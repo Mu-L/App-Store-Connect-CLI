@@ -2710,7 +2710,8 @@ func signingProjectInputPaths(
 			// Do not resolve the project configuration itself: it cannot see
 			// target-supplied settings such as PRODUCT_NAME. Still inventory
 			// literal project assignments, including conditional-only paths,
-			// before artifact publication.
+			// before artifact publication. Expressions are expanded later
+			// through each inheriting target configuration.
 			for _, key := range matchingBuildSettingKeys(configuration.buildSettings, "CODE_SIGN_ENTITLEMENTS") {
 				value, ok := configuration.buildSettings[key].(string)
 				if !ok || strings.Contains(value, "$(") || strings.Contains(value, "${") {
@@ -2773,6 +2774,33 @@ func signingProjectInputPaths(
 						return nil, externalEntitlementPaths, inputBlockers, err
 					}
 					inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has an unresolved CODE_SIGN_ENTITLEMENTS input: %v", configuration.target, configuration.name, err))
+				}
+			}
+		}
+		for _, projectCfg := range project.configurations {
+			if !projectCfg.projectLevel || projectCfg.name != configuration.name {
+				continue
+			}
+			for _, key := range matchingBuildSettingKeys(projectCfg.buildSettings, "CODE_SIGN_ENTITLEMENTS") {
+				value, ok := projectCfg.buildSettings[key].(string)
+				if !ok || (!strings.Contains(value, "$(") && !strings.Contains(value, "${")) {
+					continue
+				}
+				if err := appendResolvedEntitlements(configuration, value); err != nil {
+					if lexicalErr := appendLexicalEntitlementCandidate(value); lexicalErr != nil {
+						return nil, externalEntitlementPaths, inputBlockers, lexicalErr
+					}
+					if isConditionalEntitlementKey(key) {
+						if !selected {
+							inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has an unresolved inherited project CODE_SIGN_ENTITLEMENTS input; signing scope is uncertain", configuration.target, configuration.name))
+							continue
+						}
+						return nil, externalEntitlementPaths, inputBlockers, newSigningConditionalEntitlementError(err)
+					}
+					if selected {
+						return nil, externalEntitlementPaths, inputBlockers, err
+					}
+					inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has an unresolved inherited project CODE_SIGN_ENTITLEMENTS input: %v", configuration.target, configuration.name, err))
 				}
 			}
 		}

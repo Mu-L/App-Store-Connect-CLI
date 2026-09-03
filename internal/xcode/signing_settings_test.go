@@ -4732,6 +4732,49 @@ func TestSigningPlanProtectsUnselectedProjectConditionalEntitlementPath(t *testi
 	}
 }
 
+func TestSigningPlanProtectsUnselectedProjectConditionalEntitlementExpression(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "$(PRODUCT_NAME).entitlements";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_ENTITLEMENTS = App.entitlements;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`PRODUCT_NAME = App;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`PRODUCT_NAME = Widget;`)
+	projectRoot := filepath.Dir(project)
+	for _, name := range []string{"App.entitlements", "Widget.entitlements"} {
+		entitlementsPath := filepath.Join(projectRoot, name)
+		if err := os.WriteFile(entitlementsPath, []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	planPath := filepath.Join(projectRoot, "Widget.entitlements")
+	const existingEntitlements = "existing widget entitlement bytes\n"
+	if err := os.WriteFile(planPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(widget entitlement artifact) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want target-expanded project entitlement expression rejected as an artifact alias", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingEntitlements {
+		t.Fatalf("target-expanded project entitlement input was overwritten during planning: %q", got)
+	}
+}
+
 func TestSigningPlanResolvesProjectEntitlementsInTargetContext(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")
