@@ -285,7 +285,7 @@ Examples:
 func CertificatesCreateCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
 
-	certificateType := fs.String("certificate-type", "", "Certificate type (e.g., IOS_DISTRIBUTION)")
+	certificateType := fs.String("certificate-type", "", "Certificate type: "+strings.Join(shared.CertificateCreateTypeList(), ", "))
 	passTypeID := fs.String("pass-type-id", "", "Pass Type ID resource ID (required for PASS_TYPE_ID and PASS_TYPE_ID_WITH_NFC)")
 	csrPath := fs.String("csr", "", "CSR file path")
 	generateCSR := fs.Bool("generate-csr", false, "Generate a private key and CSR before creating the certificate")
@@ -319,6 +319,14 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --certificate-type is required")
 				return shared.MissingRequiredUsageError("--certificate-type")
 			}
+			// Rejects unknown types and the Apple Pay types this command cannot
+			// create, before --generate-csr writes a private key and CSR for a
+			// request App Store Connect will refuse.
+			canonicalCertificateType, err := shared.ValidateCertificateCreateType("--certificate-type", certificateValue)
+			if err != nil {
+				return err
+			}
+			certificateValue = canonicalCertificateType
 			passTypeIDValue := strings.TrimSpace(*passTypeID)
 			isPassTypeCertificate := certificateValue == "PASS_TYPE_ID" || certificateValue == "PASS_TYPE_ID_WITH_NFC"
 			if isPassTypeCertificate && passTypeIDValue == "" {
