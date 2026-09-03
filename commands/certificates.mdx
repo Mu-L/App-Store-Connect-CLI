@@ -67,10 +67,13 @@ asc certificates list --certificate-type IOS_DISTRIBUTION
 * Profile types: IOS\_APP\_STORE, IOS\_APP\_ADHOC, IOS\_APP\_INHOUSE
 * Limit: 3 active per account
 
-### tvOS Certificate Types
+### Cross-Platform Certificate Types
 
-* `TVOS_DEVELOPMENT` - tvOS development
-* `TVOS_DISTRIBUTION` - tvOS distribution
+Apple Development and Apple Distribution certificates cover iOS, tvOS, watchOS,
+visionOS, and macOS from a single certificate:
+
+* `DEVELOPMENT` - Apple Development (all platforms)
+* `DISTRIBUTION` - Apple Distribution (all platforms)
 
 ### macOS Certificate Types
 
@@ -99,20 +102,44 @@ asc certificates list --certificate-type DEVELOPER_ID_APPLICATION
 * Used for: Apps distributed outside the Mac App Store
 * Enables notarization
 
-**Developer ID Installer:**
+**Mac Installer Distribution:**
 
 ```bash  theme={null}
-asc certificates list --certificate-type DEVELOPER_ID_INSTALLER
+asc certificates list --certificate-type MAC_INSTALLER_DISTRIBUTION
 ```
 
-* Used for: Signing installer packages (.pkg) for distribution outside Mac App Store
+* Used for: Signing installer packages (.pkg) submitted to the Mac App Store
+
+<Note>
+  App Store Connect does not expose a Developer ID Installer certificate type. Create
+  Developer ID Installer certificates in the Apple Developer portal; `asc` can only
+  manage the certificate types listed here.
+</Note>
 
 ### Specialized Certificate Types
 
+* `DEVELOPER_ID_APPLICATION_G2` - Developer ID Application (G2 signing identity)
 * `DEVELOPER_ID_KEXT` - Kernel extensions (deprecated on modern macOS)
+* `DEVELOPER_ID_KEXT_G2` - Kernel extensions (G2 signing identity)
 * `PASS_TYPE_ID` - Wallet passes and Apple Pay
 * `PASS_TYPE_ID_WITH_NFC` - Wallet passes with NFC
-* `MAC_INSTALLER_DISTRIBUTION` - Mac App Store installer packages
+* `IDENTITY_ACCESS` - Identity access
+
+### Apple Pay Certificate Types
+
+* `APPLE_PAY` - Apple Pay payment processing
+* `APPLE_PAY_MERCHANT_IDENTITY` - Apple Pay merchant identity
+* `APPLE_PAY_PSP_IDENTITY` - Apple Pay payment service provider identity
+* `APPLE_PAY_RSA` - Apple Pay payment processing (RSA)
+
+<Note>
+  Apple Pay certificates are created against a merchant ID, and `asc certificates create`
+  sends only the `passTypeId` relationship. It rejects these four types with exit code 2
+  rather than generating a CSR for a request App Store Connect refuses. Use
+  `asc merchant-ids certificates list --merchant-id "MERCHANT_ID"` to inspect existing
+  Apple Pay certificates, and create new ones in the Apple Developer portal. `asc certificates list --certificate-type
+  APPLE_PAY` still works.
+</Note>
 
 ## Create Certificate
 
@@ -155,6 +182,39 @@ The CSR contains your public key. Keep the private key secure - you'll need it t
 * **Format:** PEM-encoded PKCS#10
 * **Common Name:** Any descriptive name
 * The CLI accepts CSR files in PEM format or base64-encoded
+
+## [experimental] Export an Apple Push Identity
+
+Package an Apple-issued APNs or Website Push certificate with the matching
+private key as a password-protected PKCS#12 identity:
+
+```bash
+# 1. Generate a private key and CSR
+asc certificates csr generate \
+  --key-out "./push/push.key" \
+  --csr-out "./push/push.csr"
+
+# 2. Upload ./push/push.csr through Apple's Developer website and download
+#    the resulting certificate as ./push/push.cer.
+
+# 3. Package the certificate and matching key
+asc certificates export \
+  --certificate "./push/push.cer" \
+  --private-key "./push/push.key" \
+  --csr "./push/push.csr" \
+  --password-file "./secrets/push.p12.password" \
+  --p12-out "./push/push.p12"
+```
+
+The experimental export command is local-only. It validates the X.509 certificate, private
+key, and optional CSR before writing exactly one key and leaf certificate to
+the PKCS#12 file. The certificate must currently be valid, and the output is
+written with restrictive permissions. Passwords and key material are never
+printed. Replacing an existing output requires both `--force` and `--confirm`.
+
+The public App Store Connect API does not issue Apple Push Services or Website
+Push ID certificates. Renewal therefore remains explicit: obtain a new
+certificate through Apple's Developer website and run this command again.
 
 ## Update Certificate
 
@@ -260,15 +320,15 @@ security import dev-private.key -k ~/Library/Keychains/login.keychain-db
 security import certificate.cer -k ~/Library/Keychains/login.keychain-db
 ```
 
-### Mac Developer ID Certificate
+### macOS Signing Certificates
 
 ```bash  theme={null}
 # For apps distributed outside Mac App Store
 asc certificates create --certificate-type DEVELOPER_ID_APPLICATION \
   --csr ./developer-id.csr
 
-# For installer packages
-asc certificates create --certificate-type DEVELOPER_ID_INSTALLER \
+# For Mac App Store installer packages (.pkg)
+asc certificates create --certificate-type MAC_INSTALLER_DISTRIBUTION \
   --csr ./installer.csr
 ```
 
@@ -311,7 +371,6 @@ Apple imposes limits on active certificates:
 | Mac App Development      | Unlimited     |
 | Mac App Distribution     | 3 per account |
 | Developer ID Application | 5 per account |
-| Developer ID Installer   | 5 per account |
 
 Revoked and expired certificates count against limits until they expire (1 year from creation).
 

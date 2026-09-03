@@ -323,11 +323,11 @@ func capabilityRows() []Capability {
 		},
 		{
 			Area:       "app-management",
-			Capability: "Last-compatible version settings inspection",
-			Status:     statusWebSession,
-			Commands:   []string{"asc web apps last-compatible-version view"},
-			Notes:      []string{"This command mirrors App Store Connect's Last-Compatible Version Settings iris read. The public OpenAPI snapshot documents downloadable on appStoreVersions, but the public CLI versions client does not currently request or print it."},
-			NextAction: "Use App Store Connect web UI, or asc web apps last-compatible-version view.",
+			Capability: "Last-compatible version settings",
+			Status:     statusCLISupported,
+			Commands:   []string{"asc versions list --paginate --output json", "asc versions view --output json", "asc versions update --downloadable"},
+			Notes:      []string{"App Store Connect's Last-Compatible Version Settings screen is the nullable downloadable attribute on appStoreVersions. Public versions JSON preserves it when Apple returns it; the default table omits the field. asc versions update --downloadable writes it, and --downloadable false requires --confirm."},
+			NextAction: "Read with asc versions list --app APP_ID --paginate --output json or asc versions view --version-id VERSION_ID --output json. Enable downloads with asc versions update --version-id VERSION_ID --downloadable true, or disable them with asc versions update --version-id VERSION_ID --downloadable false --confirm.",
 		},
 		{
 			Area:       "app-management",
@@ -446,6 +446,16 @@ func capabilityRows() []Capability {
 				"subscriptionOfferCodes",
 				"winBackOffers",
 			},
+		},
+		{
+			Area:       "monetization",
+			Capability: "App and In-App Purchase tax category",
+			Status:     statusNotPublicAPI,
+			Notes: []string{
+				"Apple's published App Store Connect OpenAPI spec has no tax-category endpoint, and no tax-category attribute on apps, appInfos, or inAppPurchases.",
+				"The App Store Connect web endpoints behind the App Information and In-App Purchase tax category pickers have not been captured, so no web-session command is exposed either.",
+			},
+			NextAction: "Set the tax category in App Store Connect under App Information, or in the In-App Purchase settings.",
 		},
 		{
 			Area:       "testflight",

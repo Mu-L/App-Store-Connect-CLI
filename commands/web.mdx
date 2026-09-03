@@ -77,7 +77,9 @@ Apple Account web-session lifecycle and capability inspection.
 Available commands:
 
 * `asc web auth login` - create or refresh the cached web session
-* `asc web auth status` - inspect the current session state
+* `asc web auth status` - inspect the current session state, including the
+  selected App Store Connect provider and any persisted Developer Portal team ID
+  (`developerTeamId`)
 * `asc web auth capabilities` - inspect web-visible capability metadata
 * `asc web auth logout` - clear the cached web session
 
@@ -108,6 +110,7 @@ Example:
 
 ```bash  theme={null}
 asc web agreements status
+asc web agreements status --developer-team "TEAM_ID"
 asc web agreements download --agreement-id "AGREEMENT_ID" --out ./agreement.pdf
 asc web agreements accept --agreement-id "AGREEMENT_ID" --confirm
 asc web agreements accept --agreement-id "AGREEMENT_ID" --agreement-id "OTHER_AGREEMENT_ID" --confirm
@@ -170,7 +173,6 @@ Available commands:
 * `asc web apps availability create` - bootstrap initial territory availability
 * `asc web apps compatibility view|edit` - inspect or change the Mac and Apple Vision Pro App Store opt-in settings
 * `asc web apps distribution view` - read the app distribution method (`APP_STORE` or `CUSTOM`)
-* `asc web apps last-compatible-version view` - read per-version download availability (Last-Compatible Version Settings)
 * `asc web apps history` - view App Store version status history, optionally scoped with `--version-id`
 * `asc web apps declarations list` - list the App Store Regulations & Permits declarations tracked for an app
 * `asc web apps medical-device view` - read the stored regulated medical device declaration
@@ -185,7 +187,6 @@ Notes:
 * `asc web apps medical-device set` currently supports only `--declared false`, reads the stored declaration first, and reports `changed: false` when no write was needed
 * Writes other than `medical-device set --declared false` remain website-only. `asc web apps declarations list` shows app-scoped requirements Apple returns, including personal-service if present. EU DSA trader status is account-level and is not included in that listing.
 * `asc web apps history` records live per app store version; without `--version-id` the command lists the app's versions and reads each version's status changes. `--version-id` is rejected when that version does not belong to `--app`. Both reads follow Apple's pagination links internally, so there is no `--paginate` flag. Viewing history is gated by the App Status History role capability
-* `asc web apps last-compatible-version view` is read-only. It prints Apple's `downloadable` flag per version in App Store Connect relationship order. Making a version unavailable for download is not shipped: the iris PATCH target is known but its request body is not captured
 * `asc web apps distribution view` is read-only. Apple prints `distributionType` as `APP_STORE` (public) or `CUSTOM` (private distribution through Apple Business Manager or Apple School Manager); attributes Apple omits are reported as `unknown`. Changing the distribution method and requesting unlisted distribution have Apple-side eligibility restrictions whose write contracts are not captured, so both stay in the App Store Connect web UI
 
 ### `asc web sandbox`
@@ -225,7 +226,10 @@ Available commands:
 Currently supported capability IDs for `enable`: `PRIVATE_CLOUD_COMPUTE`.
 Existing settings and relationships are preserved. If the requested capability
 is already enabled, the command returns an already-enabled result without
-sending a PATCH.
+sending a PATCH. `enable` accepts `--developer-team` (Developer Portal team ID
+or exact team name) when the Apple Account belongs to more than one portal
+team. `sync-app-clip` uses App Store Connect iris endpoints, not Developer
+Portal, so it does not take `--developer-team`.
 
 Both commands require `--confirm` because a changed App ID invalidates existing
 provisioning profiles. `sync-app-clip` reads the current capability graph first
@@ -239,6 +243,7 @@ Example:
 asc web bundle-ids capabilities enable \
   --bundle-id "BUNDLE_RESOURCE_ID" \
   --capability "PRIVATE_CLOUD_COMPUTE" \
+  --developer-team "TEAM_ID" \
   --confirm
 
 asc web bundle-ids capabilities sync-app-clip \
@@ -262,6 +267,11 @@ Available commands:
 * `asc web app-groups unassign` - remove one group from a Bundle ID; removing the last group disables `APP_GROUPS`
 * `asc web app-groups set` - converge a Bundle ID on exactly the `--group` values passed and report an added/removed diff
 * `asc web app-groups delete` - delete a group registration; refuses while any Bundle ID still references the group
+
+Pass `--developer-team` with a Developer Portal team ID (or exact team name)
+when the Apple Account belongs to multiple portal teams and none matches the
+selected App Store Connect provider. The resolved team is persisted on the web
+session for later portal commands.
 
 Use the opaque IDs returned by the list commands for assignment:
 
@@ -349,7 +359,8 @@ App-centric review, rejection, and subscription-selection inspection.
 Available commands:
 
 * `asc web review list` - list review submissions for an app
-* `asc web review show` - inspect one submission and related messages/screenshots
+* `asc web review show` - inspect one submission and related messages/screenshots, including app-scoped Resolution Center threads the selected submission does not cover
+* `asc web review threads` - list every Resolution Center thread on an app, including binary, metadata, and informational threads; `--drafts` reads each unsent draft (`--plain-text` projects HTML to plain text)
 * `asc web review subscriptions` - inspect and mutate next-version subscription review selection
 * `asc web review iaps` - attach a non-renewing IAP to the next app version review
 
@@ -375,10 +386,29 @@ Available commands:
 * `asc web subscriptions pricing monthly-commitment bootstrap` - create or reuse MONTHLY availability and attach paired UPFRONT/MONTHLY prices
 * `asc web subscriptions pricing adjusted-equalizations view` - inspect Apple's adjusted price matrix for a MONTHLY subscription price point
 
+The adjusted-equalizations commands cover the same Apple concept but expose
+different contracts:
+
+* Use `asc web subscriptions pricing adjusted-equalizations view` when you need
+  the web-session `/iris` MONTHLY price matrix or the CLI's normalized
+  `missingTerritories` diagnostic after an equalization failure. Apple returns
+  that failure as a 409 conflict; this command converts it into successful JSON
+  output on stdout instead of an error. This workflow requires web-session
+  authentication and accepts the workflow-specific
+  `--price-point-id` and `--plan-type MONTHLY` inputs. It can reuse a session
+  cached by `asc web auth login` or authenticate through the standard
+  web-session flags and environment variables. It prints a computed JSON
+  result rather than Apple's public JSON:API envelope.
+* Use `asc subscriptions pricing price-points adjusted-equalizations` for
+  API-key automation, pagination, territory filters, or `proceeds` fields.
+  Its first page requires `--price-point-id`, `--upfront-price-point-id`, and
+  `--plan-type MONTHLY`; public 409 conflicts remain errors rather than being
+  converted into the web command's missing-territory JSON.
+
 Role requirement: removing an approved auto-renewable subscription from sale requires an Account Holder web session. App Store Connect rejects Admin and App Manager users for this action.
 
 For standard monthly-commitment setup, use `asc subscriptions pricing monthly-commitment enable`.
-Use `asc web subscriptions pricing` for App Store Connect paired pricing and adjusted-equalization workflows.
+Use `asc web subscriptions pricing` for web-session paired pricing and normalized adjusted-equalization diagnostics.
 
 Example:
 
